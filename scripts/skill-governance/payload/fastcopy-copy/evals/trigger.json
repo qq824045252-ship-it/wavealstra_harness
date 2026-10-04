@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "fastcopy-copy",
+  "cases": [
+    {
+      "prompt": "复制整个软件文件夹到备份盘",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "用 FastCopy 增量同步一个目录树",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "移动这 100 个日志文件",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "将整个中文路径目录备份到另一个盘",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "复制一个 docx 文件",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "移动 3 张图片",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "读取目录里的文件名",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "把这段代码复制到聊天里",
+      "expected": "no-trigger"
+    }
+  ]
+}

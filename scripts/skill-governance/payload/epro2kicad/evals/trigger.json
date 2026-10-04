@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "epro2kicad",
+  "cases": [
+    {
+      "prompt": "把这个 epro 转换成 KiCad",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "导出 epro 中所有 PCB 到 KiCad",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把嘉立创专业版工程迁移并打 zip",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "检查迁移出来的 KiCad 板能否加载",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "在现有 KiCad PCB 上移动 R1",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "整理 EasyEDA 原理图",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "导出 KiCad Gerber",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "将 EasyEDA 标准版 JSON 转换成网页",
+      "expected": "no-trigger"
+    }
+  ]
+}

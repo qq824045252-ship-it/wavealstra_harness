@@ -1,0 +1,676 @@
+<!-- __SANITIZED__ 来源: C:\Users\user\.mybuddy\sessions\--C--Users-user-Desktop-mybuddy--\2026-08-07T06-41-07-727Z_019fdaf4-3e8f-725a-8129-543a0067f5ca.jsonl | block: call_00_KnG4g4N0riL85gybloOg2554 | 长度: 28215 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>动起来 · 运动健康规划</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #1a2332;
+    --ink-2: #5b6b82;
+    --line: #e5eaf2;
+    --brand: #10b981;
+    --brand-2: #f97316;
+    --brand-3: #3b82f6;
+    --grad: linear-gradient(135deg, #10b981, #22c55e);
+    --grad-2: linear-gradient(135deg, #f97316, #f59e0b);
+    --grad-3: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    --shadow: 0 8px 24px rgba(26, 35, 50, .08);
+    --radius: 16px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  /* ---------- 头部 ---------- */
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px; margin-bottom: 22px;
+  }
+  .logo { display: flex; align-items: center; gap: 12px; }
+  .logo .icon {
+    width: 46px; height: 46px; border-radius: 14px; background: var(--grad);
+    display: grid; place-items: center; color: #fff; font-size: 24px;
+    box-shadow: 0 6px 16px rgba(16, 185, 129, .35);
+  }
+  .logo h1 { font-size: 22px; font-weight: 800; letter-spacing: .5px; }
+  .logo p { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
+  .date-chip {
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: 8px 16px; font-size: 13px; color: var(--ink-2);
+    box-shadow: var(--shadow); display: flex; align-items: center; gap: 8px;
+  }
+  .date-chip b { color: var(--ink); font-weight: 700; }
+
+  /* ---------- 布局 ---------- */
+  .grid { display: grid; gap: 18px; }
+  .g-stats { grid-template-columns: repeat(4, 1fr); }
+  .g-main { grid-template-columns: 1.6fr 1fr; }
+  .g-charts { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 900px) {
+    .g-main, .g-charts { grid-template-columns: 1fr; }
+    .g-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .card {
+    background: var(--card); border-radius: var(--radius); padding: 20px;
+    box-shadow: var(--shadow); border: 1px solid var(--line);
+  }
+  .card h2 {
+    font-size: 15px; font-weight: 700; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+  .card h2 .sub { font-size: 12px; font-weight: 400; color: var(--ink-2); margin-left: auto; }
+
+  /* ---------- 统计卡 ---------- */
+  .stat { padding: 16px 18px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .stat .label { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .stat .num { font-size: 26px; font-weight: 800; margin-top: 6px; }
+  .stat .num small { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .stat .trend { font-size: 11.5px; margin-top: 4px; }
+  .stat .trend.up { color: var(--brand); }
+  .stat .trend.flat { color: var(--ink-2); }
+  .stat.s1 .num { color: #10b981; }
+  .stat.s2 .num { color: #f97316; }
+  .stat.s3 .num { color: #3b82f6; }
+  .stat.s4 .num { color: #8b5cf6; }
+
+  /* ---------- 周计划表 ---------- */
+  table.week { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.week th {
+    text-align: left; font-size: 12px; color: var(--ink-2); font-weight: 600;
+    padding: 6px 8px; border-bottom: 2px solid var(--line);
+  }
+  table.week td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  table.week tr:last-child td { border-bottom: none; }
+  table.week td.day { font-weight: 700; white-space: nowrap; }
+  table.week td.day .tag {
+    display: inline-block; font-size: 10px; font-weight: 700; color: #fff;
+    border-radius: 6px; padding: 2px 6px; margin-left: 6px; vertical-align: 1px;
+  }
+  table.week td .badge {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+    background: #f1f5f9; border-radius: 8px; padding: 4px 10px; margin-right: 6px;
+  }
+  table.week td .badge.done { background: #d1fae5; color: #047857; text-decoration: line-through; }
+  table.week td .empty { color: #b6c2d4; font-size: 12px; }
+  .plan-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  select, input[type=number], input[type=text] {
+    font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+    background: #f8fafc; color: var(--ink); outline: none;
+  }
+  select:focus, input:focus { border-color: var(--brand); background: #fff; }
+  .btn {
+    border: none; cursor: pointer; font: inherit; font-weight: 600; font-size: 13px;
+    border-radius: 10px; padding: 8px 16px; transition: .15s;
+  }
+  .btn-primary { background: var(--grad); color: #fff; box-shadow: 0 4px 12px rgba(16,185,129,.3); }
+  .btn-primary:hover { filter: brightness(1.05); transform: translateY(-1px); }
+  .btn-ghost { background: #f1f5f9; color: var(--ink); }
+  .btn-ghost:hover { background: #e2e8f0; }
+
+  /* ---------- 今日打卡 ---------- */
+  .today-hero {
+    border-radius: 14px; padding: 16px; margin-bottom: 14px; color: #fff;
+    background: var(--grad-3); display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  }
+  .today-hero .t1 { font-size: 13px; opacity: .9; }
+  .today-hero .t2 { font-size: 19px; font-weight: 800; margin-top: 2px; }
+  .today-hero .t3 { font-size: 12px; opacity: .9; margin-top: 3px; }
+  .check-list { display: flex; flex-direction: column; gap: 8px; }
+  .check-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 12px; background: #fafbfd;
+    cursor: pointer; transition: .15s; user-select: none;
+  }
+  .check-item:hover { border-color: var(--brand); background: #f0fdf4; }
+  .check-item.off { opacity: .55; }
+  .check-item .box {
+    width: 20px; height: 20px; border-radius: 6px; border: 2px solid #c3cede;
+    display: grid; place-items: center; color: #fff; font-size: 12px; flex: none;
+    transition: .15s;
+  }
+  .check-item.on .box { background: var(--brand); border-color: var(--brand); }
+  .check-item .info { flex: 1; }
+  .check-item .info .n { font-weight: 700; font-size: 13.5px; }
+  .check-item .info .d { font-size: 11.5px; color: var(--ink-2); margin-top: 1px; }
+  .check-item .dur { font-size: 12px; font-weight: 700; color: var(--brand); background: #d1fae5; padding: 3px 9px; border-radius: 999px; }
+  .done-msg {
+    text-align: center; padding: 26px 10px; font-size: 13.5px; color: var(--ink-2);
+  }
+  .done-msg .big { font-size: 40px; display: block; margin-bottom: 8px; }
+
+  /* ---------- 目标环 ---------- */
+  .ring-wrap { display: flex; align-items: center; gap: 18px; }
+  .ring-legend { font-size: 12.5px; color: var(--ink-2); line-height: 1.9; flex: 1; }
+  .ring-legend b { color: var(--ink); }
+
+  /* ---------- 图表 ---------- */
+  .chart-box { width: 100%; }
+  .bar-row { display: flex; align-items: flex-end; gap: 8px; height: 150px; padding-top: 8px; }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+  .bar-col .v { font-size: 11px; font-weight: 700; color: var(--ink-2); }
+  .bar {
+    width: 100%; max-width: 42px; border-radius: 7px 7px 3px 3px; min-height: 4px;
+    background: var(--grad); transition: height .5s ease; position: relative;
+  }
+  .bar.empty { background: #e8edf4; }
+  .bar.today { outline: 2px solid var(--brand-2); outline-offset: 2px; }
+  .bar-col .l { font-size: 11px; color: var(--ink-2); }
+  .bar-col .l.today { color: var(--brand-2); font-weight: 800; }
+
+  .hbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 12.5px; }
+  .hbar-row .name { width: 52px; color: var(--ink-2); flex: none; }
+  .hbar-track { flex: 1; height: 14px; background: #f1f5f9; border-radius: 999px; overflow: hidden; }
+  .hbar-fill { height: 100%; border-radius: 999px; width: 0; transition: width .6s ease; }
+  .hbar-row .pct { width: 40px; text-align: right; font-weight: 700; flex: none; }
+
+  /* ---------- 历史 ---------- */
+  .history-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+  .history-item {
+    display: flex; align-items: center; gap: 10px; font-size: 12.5px;
+    background: #fafbfd; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+  }
+  .history-item .date { font-weight: 700; flex: none; width: 86px; }
+  .history-item .items { flex: 1; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-item .total { font-weight: 800; color: var(--brand); }
+  .empty-tip { color: #b6c2d4; font-size: 12.5px; text-align: center; padding: 18px 0; }
+
+  footer { text-align: center; color: #9aa8bd; font-size: 12px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 头部 -->
+  <header>
+    <div class="logo">
+      <div class="icon">🏃</div>
+      <div>
+        <h1>动起来 · 运动健康规划</h1>
+        <p>计划 → 执行 → 复盘，让每一滴汗都有记录</p>
+      </div>
+    </div>
+    <div class="date-chip" id="dateChip">📅 <b></b></div>
+  </header>
+
+  <!-- 统计 -->
+  <div class="grid g-stats" style="margin-bottom:18px">
+    <div class="stat s1">
+      <div class="label">⏱️ 本周运动时长</div>
+      <div class="num" id="stMinutes">0 <small>分钟</small></div>
+      <div class="trend" id="stMinTrend"></div>
+    </div>
+    <div class="stat s2">
+      <div class="label">🎯 本周完成率</div>
+      <div class="num" id="stRate">0<small>%</small></div>
+      <div class="trend" id="stRateTrend"></div>
+    </div>
+    <div class="stat s3">
+      <div class="label">🔥 消耗估算</div>
+      <div class="num" id="stKcal">0 <small>kcal</small></div>
+      <div class="trend" id="stKcalTrend"></div>
+    </div>
+    <div class="stat s4">
+      <div class="label">📆 连续打卡</div>
+      <div class="num" id="stStreak">0 <small>天</small></div>
+      <div class="trend flat">坚持就是胜利 💪</div>
+    </div>
+  </div>
+
+  <div class="grid g-main" style="margin-bottom:18px">
+    <!-- 周计划 -->
+    <div class="card">
+      <h2><span class="dot" style="background:var(--brand)"></span>本周计划
+        <span class="sub">点击行末按钮编辑当天计划</span>
+      </h2>
+      <table class="week" id="weekTable"></table>
+      <div class="plan-actions">
+        <select id="planDaySel"></select>
+        <select id="planTypeSel">
+          <option value="跑步">🏃 跑步</option>
+          <option value="力量">🏋️ 力量训练</option>
+          <option value="瑜伽">🧘 瑜伽/拉伸</option>
+          <option value="游泳">🏊 游泳</option>
+          <option value="骑行">🚴 骑行</option>
+          <option value="HIIT">⚡ HIIT</option>
+          <option value="球类">⚽ 球类</option>
+          <option value="休息">😴 休息</option>
+        </select>
+        <input type="number" id="planMin" value="30" min="5" max="300" step="5" style="width:72px" title="时长(分钟)">
+        <button class="btn btn-primary" id="planAddBtn">添加到计划</button>
+        <button class="btn btn-ghost" id="planResetBtn">重置为默认</button>
+      </div>
+    </div>
+
+    <!-- 今日打卡 -->
+    <div class="card">
+      <h2><span class="dot" style="background:var(--brand-3)"></span>今日打卡 <span class="sub" id="todaySub"></span></h2>
+      <div class="today-hero" id="todayHero">
+        <div>
+          <div class="t1">今日任务</div>
+          <div class="t2" id="todayTitle">休息日 · 恢复身体</div>
+          <div class="t3" id="todayDesc">肌肉在休息中生长，拉伸一下也不错</div>
+        </div>
+        <div style="font-size:34px" id="todayEmoji">😴</div>
+      </div>
+      <div class="check-list" id="checkList"></div>
+      <div class="done-msg" id="doneMsg" style="display:none">
+        <span class="big">🎉</span>今日全部完成，太棒了！<br>
+        记得补水，早点休息，明天继续保持。
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g-charts" style="margin-bottom:18px">
+    <!-- 周时长柱状图 -->
+    <div class="card">
+      <h2><span class="dot" style="background:var(--brand-2)"></span>本周时长分布 <span class="sub" id="barSub"></span></h2>
+      <div class="bar-row" id="barRow"></div>
+    </div>
+
+    <!-- 目标环 -->
+    <div class="card">
+      <h2><span class="dot" style="background:var(--brand)"></span>周目标</h2>
+      <div class="ring-wrap">
+        <svg id="ringSvg" width="130" height="130" viewBox="0 0 130 130"></svg>
+        <div class="ring-legend" id="ringLegend"></div>
+      </div>
+    </div>
+
+    <!-- 类型占比 -->
+    <div class="card">
+      <h2><span class="dot" style="background:#8b5cf6"></span>运动类型占比</h2>
+      <div id="typeBars"></div>
+    </div>
+  </div>
+
+  <!-- 历史 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--brand-3)"></span>打卡历史 <span class="sub">最近记录</span></h2>
+    <div class="history-list" id="historyList"></div>
+  </div>
+
+  <footer>数据保存在浏览器本地（localStorage），可放心刷新 · 健康第一，量力而行 🏥</footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 数据层 ================= */
+  var WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+  var TYPE_META = {
+    '跑步':   { emoji: '🏃', color: '#10b981', kcal: 9.5 },
+    '力量':   { emoji: '🏋️', color: '#f97316', kcal: 7.5 },
+    '瑜伽':   { emoji: '🧘', color: '#8b5cf6', kcal: 4.0 },
+    '游泳':   { emoji: '🏊', color: '#3b82f6', kcal: 9.0 },
+    '骑行':   { emoji: '🚴', color: '#06b6d4', kcal: 8.0 },
+    'HIIT':   { emoji: '⚡', color: '#ef4444', kcal: 12.0 },
+    '球类':   { emoji: '⚽', color: '#84cc16', kcal: 7.0 },
+    '休息':   { emoji: '😴', color: '#94a3b8', kcal: 0 }
+  };
+
+  var DEFAULT_PLAN = [
+    [{t:'跑步', m:30}, {t:'力量', m:30}],
+    [{t:'HIIT', m:25}],
+    [{t:'力量', m:45}],
+    [{t:'跑步', m:40}, {t:'瑜伽', m:20}],
+    [{t:'游泳', m:45}],
+    [{t:'骑行', m:60}, {t:'瑜伽', m:30}],
+    [{t:'休息', m:0}]
+  ];
+
+  var LS_KEY = 'fitnessPlan_v1';
+  var state = load() || { plan: DEFAULT_PLAN, goal: 300, checkins: {} };
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY)); }
+    catch (e) { return null; }
+  }
+  function save() { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+
+  /* ================= 工具 ================= */
+  function todayKey() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function weekKey(d) { // 返回周一日期 key
+    var day = (d.getDay() + 6) % 7; // 周一是0
+    var m = new Date(d);
+    m.setDate(d.getDate() - day);
+    return m.getFullYear() + '-' + pad(m.getMonth() + 1) + '-' + pad(m.getDate());
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function fmtDate(key) {
+    var p = key.split('-');
+    return p[1] + '月' + p[2] + '日';
+  }
+  function todayIdx() { return (new Date().getDay() + 6) % 7; }
+  function minOfDay(items) {
+    return items.reduce(function (s, it) { return s + (it.m || 0); }, 0);
+  }
+  function emojiOf(t) { return (TYPE_META[t] || { emoji: '🏃' }).emoji; }
+
+  /* ================= 渲染：周计划表 ================= */
+  function renderWeek() {
+    var table = document.getElementById('weekTable');
+    var html = '<tr><th>星期</th><th>计划内容</th><th>时长</th><th style="width:64px"></th></tr>';
+    state.plan.forEach(function (items, i) {
+      var t = todayIdx();
+      var isToday = (i === t);
+      html += '<tr><td class="day">' + WEEKDAYS[i] +
+        (isToday ? '<span class="tag" style="background:var(--brand-2)">今</span>' : '') + '</td>';
+      if (items.length === 0 || (items.length === 1 && items[0].t === '休息')) {
+        html += '<td><span class="empty">😴 休息</span></td><td>—</td>';
+      } else {
+        var badges = items.map(function (it) {
+          var meta = TYPE_META[it.t] || { emoji: '' };
+          return '<span class="badge">' + meta.emoji + ' ' + it.t + '</span>';
+        }).join('');
+        html += '<td>' + badges + '</td><td><b>' + minOfDay(items) + '</b> 分钟</td>';
+      }
+      html += '<td><button class="btn btn-ghost" style="padding:4px 10px" data-del="' + i + '">清空</button></td></tr>';
+    });
+    table.innerHTML = html;
+    table.querySelectorAll('[data-del]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.plan[+btn.dataset.del] = [];
+        save(); renderAll();
+      });
+    });
+
+    // 填充选择器
+    var sel = document.getElementById('planDaySel');
+    if (sel.options.length === 0) {
+      WEEKDAYS.forEach(function (w, i) {
+        var op = document.createElement('option');
+        op.value = i; op.textContent = w;
+        sel.appendChild(op);
+      });
+      sel.value = todayIdx();
+    }
+  }
+
+  function addPlanItem() {
+    var day = +document.getElementById('planDaySel').value;
+    var type = document.getElementById('planTypeSel').value;
+    var min = Math.min(300, Math.max(5, +document.getElementById('planMin').value || 30));
+    var items = state.plan[day];
+    // 休息日替换为真实运动
+    if (items.length === 1 && items[0].t === '休息') items = [];
+    items.push({ t: type, m: min });
+    if (type === '休息') items = [{ t: '休息', m: 0 }];
+    state.plan[day] = items;
+    save(); renderAll();
+  }
+
+  /* ================= 渲染：今日打卡 ================= */
+  function renderToday() {
+    var idx = todayIdx();
+    var items = state.plan[idx];
+    var isRest = items.length === 0 || (items.length === 1 && items[0].t === '休息');
+    var key = todayKey();
+    var done = state.checkins[key] || {};
+    var doneArr = [];
+
+    var hero = document.getElementById('todayHero');
+    if (isRest) {
+      document.getElementById('todayTitle').textContent = '休息日 · 恢复身体';
+      document.getElementById('todayDesc').textContent = '肌肉在休息中生长，做点拉伸放松吧';
+      document.getElementById('todayEmoji').textContent = '😴';
+      hero.style.background = 'linear-gradient(135deg,#64748b,#94a3b8)';
+    } else {
+      var total = minOfDay(items);
+      var doneMin = items.filter(function (it) { return done[it.t + '|' + it.m]; })
+        .reduce(function (s, it) { return s + it.m; }, 0);
+      document.getElementById('todayTitle').textContent = WEEKDAYS[idx] + ' · 共 ' + items.length + ' 项 / ' + total + ' 分钟';
+      document.getElementById('todayDesc').textContent = doneMin >= total
+        ? '全部完成！给自己点个赞 👍'
+        : '已完成 ' + doneMin + ' / ' + total + ' 分钟，加油！';
+      document.getElementById('todayEmoji').textContent = doneMin >= total ? '🎯' : '🔥';
+      hero.style.background = 'var(--grad-3)';
+    }
+
+    var list = document.getElementById('checkList');
+    var html = '';
+    items.forEach(function (it) {
+      if (it.t === '休息') return;
+      var id = it.t + '|' + it.m;
+      var on = !!done[id];
+      if (on) doneArr.push(id);
+      var meta = TYPE_META[it.t] || { emoji: '🏃' };
+      html += '<div class="check-item ' + (on ? 'on' : 'off') + '" data-id="' + id + '">' +
+        '<div class="box">' + (on ? '✓' : '') + '</div>' +
+        '<div class="info"><div class="n">' + meta.emoji + ' ' + it.t + '</div>' +
+        '<div class="d">' + (meta.kcal * it.m | 0) + ' kcal 估算</div></div>' +
+        '<div class="dur">' + it.m + ' 分钟</div></div>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.check-item').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var id = el.dataset.id;
+        var ck = state.checkins[key] || {};
+        if (ck[id]) delete ck[id]; else ck[id] = true;
+        state.checkins[key] = ck;
+        save(); renderAll();
+      });
+    });
+
+    document.getElementById('doneMsg').style.display =
+      (!isRest && items.filter(function (it) { return it.t !== '休息'; }).length > 0 &&
+       doneArr.length >= items.filter(function (it) { return it.t !== '休息'; }).length)
+        ? 'block' : 'none';
+
+    var sub = document.getElementById('todaySub');
+    sub.textContent = fmtDate(key) + ' ' + WEEKDAYS[idx];
+  }
+
+  /* ================= 统计 ================= */
+  function weekStats() {
+    var mon = weekKey(new Date());
+    var days = [];
+    var totalMin = 0, plannedMin = 0, kcal = 0;
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(mon);
+      d.setDate(d.getDate() + i);
+      var key = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+      var plan = state.plan[i];
+      var planned = minOfDay(plan);
+      var done = state.checkins[key] || {};
+      var did = plan.filter(function (it) { return it.t !== '休息' && done[it.t + '|' + it.m]; })
+        .reduce(function (s, it) { return s + it.m; }, 0);
+      totalMin += did;
+      plannedMin += planned;
+      kcal += plan.filter(function (it) { return it.t !== '休息' && done[it.t + '|' + it.m]; })
+        .reduce(function (s, it) { return s + (TYPE_META[it.t].kcal * it.m); }, 0);
+      days.push({ key: key, planned: planned, done: did, isToday: key === todayKey() });
+    }
+    // 完成率：已过去的天按计划算，未来天不计
+    var idx = todayIdx();
+    var elapsed = days.slice(0, idx + 1).reduce(function (s, d) { return s + d.planned; }, 0);
+    var rate = elapsed > 0 ? Math.round(totalMin / elapsed * 100) : (totalMin > 0 ? 100 : 0);
+    return { days: days, totalMin: totalMin, rate: rate, kcal: Math.round(kcal), planned: plannedMin };
+  }
+
+  function streak() {
+    var n = 0;
+    var d = new Date();
+    for (;;) {
+      var key = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+      var done = state.checkins[key];
+      var idx = (d.getDay() + 6) % 7;
+      var plan = state.plan[idx];
+      var isRest = plan.length === 0 || (plan.length === 1 && plan[0].t === '休息');
+      var hasDone = done && Object.keys(done).length > 0;
+      if (!isRest && !hasDone) break;
+      n++;
+      d.setDate(d.getDate() - 1);
+    }
+    return n;
+  }
+
+  function renderStats() {
+    var w = weekStats();
+    document.getElementById('stMinutes').innerHTML = w.totalMin + ' <small>分钟</small>';
+    document.getElementById('stRate').innerHTML = w.rate + '<small>%</small>';
+    document.getElementById('stKcal').innerHTML = w.kcal + ' <small>kcal</small>';
+    document.getElementById('stStreak').textContent = streak() + ' 天';
+
+    var d1 = document.getElementById('stMinTrend');
+    d1.textContent = '周目标 ' + state.goal + ' 分钟';
+    d1.className = 'trend ' + (w.totalMin >= state.goal ? 'up' : 'flat');
+    var d2 = document.getElementById('stRateTrend');
+    d2.textContent = w.rate >= 100 ? '超额达成 🚀' : '距 100% 还差 ' + (100 - w.rate) + '%';
+    d2.className = 'trend ' + (w.rate >= 100 ? 'up' : 'flat');
+    var d3 = document.getElementById('stKcalTrend');
+    d3.textContent = '约相当于 ' + Math.round(w.kcal / 77) + ' 碗米饭 🍚';
+    d3.className = 'trend flat';
+  }
+
+  /* ================= 柱状图 ================= */
+  function renderBars() {
+    var w = weekStats();
+    var max = Math.max.apply(null, w.days.map(function (d) { return Math.max(d.done, d.planned); }));
+    if (max <= 0) max = 60;
+    var row = document.getElementById('barRow');
+    var html = '';
+    w.days.forEach(function (d, i) {
+      var h = Math.round(d.done / max * 100);
+      var cls = d.done > 0 ? '' : 'empty';
+      if (d.isToday) cls += ' today';
+      html += '<div class="bar-col"><div class="v">' + (d.done > 0 ? d.done : '') + '</div>' +
+        '<div class="bar ' + cls + '" style="height:' + Math.max(h, d.done > 0 ? 6 : 4) + '%" title="计划 ' + d.planned + ' 分钟 / 完成 ' + d.done + ' 分钟"></div>' +
+        '<div class="l' + (d.isToday ? ' today' : '') + '">' + WEEKDAYS[i] + '</div></div>';
+    });
+    row.innerHTML = html;
+    document.getElementById('barSub').textContent = '今日高亮';
+  }
+
+  /* ================= 目标环（SVG） ================= */
+  function renderRing() {
+    var w = weekStats();
+    var pct = Math.min(100, Math.round(w.totalMin / state.goal * 100));
+    var R = 52, C = 2 * Math.PI * R;
+    var svg = document.getElementById('ringSvg');
+    var off = C * (1 - pct / 100);
+    svg.innerHTML =
+      '<circle cx="65" cy="65" r="' + R + '" fill="none" stroke="#eef2f7" stroke-width="13"/>' +
+      '<circle cx="65" cy="65" r="' + R + '" fill="none" stroke="url(#ringGrad)" stroke-width="13" ' +
+      'stroke-linecap="round" stroke-dasharray="' + C + '" stroke-dashoffset="' + off + '" ' +
+      'transform="rotate(-90 65 65)" style="transition:stroke-dashoffset .6s ease"/>' +
+      '<defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#22c55e"/>' +
+      '</linearGradient></defs>' +
+      '<text x="65" y="60" text-anchor="middle" font-size="24" font-weight="800" fill="#1a2332">' + pct + '%</text>' +
+      '<text x="65" y="80" text-anchor="middle" font-size="10.5" fill="#5b6b82">' + w.totalMin + '/' + state.goal + ' 分钟</text>';
+
+    document.getElementById('ringLegend').innerHTML =
+      '<b>周目标：' + state.goal + ' 分钟</b><br>' +
+      '已完成：<b>' + w.totalMin + '</b> 分钟<br>' +
+      (w.totalMin >= state.goal
+        ? '🎉 目标已达成，继续突破！'
+        : '还需 <b>' + (state.goal - w.totalMin) + '</b> 分钟达成目标<br>' +
+          '剩余 ' + Math.max(0, 6 - todayIdx()) + ' 天，日均 ' +
+          Math.max(0, Math.ceil((state.goal - w.totalMin) / Math.max(1, 6 - todayIdx()))) + ' 分钟即可');
+  }
+
+  /* ================= 类型占比 ================= */
+  function renderTypes() {
+    var w = weekStats();
+    var agg = {};
+    var keys = Object.keys(TYPE_META).filter(function (t) { return t !== '休息'; });
+    keys.forEach(function (t) { agg[t] = 0; });
+    state.plan.forEach(function (items, i) {
+      var done = state.checkins[w.days[i].key] || {};
+      items.forEach(function (it) {
+        if (it.t !== '休息' && done[it.t + '|' + it.m]) agg[it.t] += it.m;
+      });
+    });
+    var sorted = keys.filter(function (t) { return agg[t] > 0; })
+      .sort(function (a, b) { return agg[b] - agg[a]; });
+    var total = sorted.reduce(function (s, t) { return s + agg[t]; }, 0);
+
+    var box = document.getElementById('typeBars');
+    if (total === 0) {
+      box.innerHTML = '<div class="empty-tip">本周还没有打卡记录<br>完成一次运动后这里会出现分布图</div>';
+      return;
+    }
+    var html = '';
+    sorted.forEach(function (t) {
+      var pct = Math.round(agg[t] / total * 100);
+      html += '<div class="hbar-row"><div class="name">' + TYPE_META[t].emoji + ' ' + t + '</div>' +
+        '<div class="hbar-track"><div class="hbar-fill" data-w="' + pct + '" style="background:' + TYPE_META[t].color + '"></div></div>' +
+        '<div class="pct">' + pct + '%</div></div>';
+    });
+    box.innerHTML = html;
+    requestAnimationFrame(function () {
+      box.querySelectorAll('.hbar-fill').forEach(function (el) {
+        el.style.width = el.dataset.w + '%';
+      });
+    });
+  }
+
+  /* ================= 历史 ================= */
+  function renderHistory() {
+    var keys = Object.keys(state.checkins).sort().reverse().slice(0, 14);
+    var list = document.getElementById('historyList');
+    if (keys.length === 0) {
+      list.innerHTML = '<div class="empty-tip">暂无打卡记录，去完成今天的第一项吧！</div>';
+      return;
+    }
+    var html = '';
+    keys.forEach(function (key) {
+      var done = state.checkins[key];
+      var arr = Object.keys(done).filter(function (id) { return done[id]; });
+      if (arr.length === 0) return;
+      var names = arr.map(function (id) {
+        var p = id.split('|');
+        return emojiOf(p[0]) + ' ' + p[0] + '×' + p[1] + 'min';
+      });
+      var total = arr.reduce(function (s, id) { return s + +id.split('|')[1]; }, 0);
+      var wd = WEEKDAYS[(new Date(key).getDay() + 6) % 7];
+      html += '<div class="history-item"><div class="date">' + fmtDate(key) + ' ' + wd + '</div>' +
+        '<div class="items">' + names.join(' · ') + '</div><div class="total">' + total + ' min</div></div>';
+    });
+    list.innerHTML = html || '<div class="empty-tip">暂无打卡记录</div>';
+  }
+
+  /* ================= 启动 ================= */
+  function renderAll() {
+    renderWeek();
+    renderToday();
+    renderStats();
+    renderBars();
+    renderRing();
+    renderTypes();
+    renderHistory();
+  }
+
+  document.getElementById('dateChip').querySelector('b').textContent =
+    new Date().getFullYear() + '年' + (new Date().getMonth() + 1) + '月' + new Date().getDate() + '日';
+
+  document.getElementById('planAddBtn').addEventListener('click', addPlanItem);
+  document.getElementById('planResetBtn').addEventListener('click', function () {
+    if (confirm('确定恢复默认计划吗？当前自定义计划将被覆盖。')) {
+      state.plan = JSON.parse(JSON.stringify(DEFAULT_PLAN));
+      save(); renderAll();
+    }
+  });
+
+  renderAll();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e3a8a"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fef08a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </radialGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.5"/>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="2" dy="4" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="640" height="400" fill="url(#sky)"/>
+  <circle cx="520" cy="90" r="42" fill="url(#sun)" filter="url(#blur)"/>
+  <circle cx="520" cy="90" r="26" fill="#fde047"/>
+
+  <g filter="url(#shadow)">
+    <path d="M0 320 L80 240 L150 290 L230 180 L310 260 L400 200 L470 250 L560 150 L640 220 L640 400 L0 400 Z" fill="#15803d"/>
+    <rect x="60" y="300" width="90" height="70" rx="4" fill="#7c2d12"/>
+    <polygon points="105,236 60,300 150,300" fill="#991b1b"/>
+    <rect x="330" y="260" width="70" height="110" rx="4" fill="#d6d3d1"/>
+    <polygon points="365,210 330,262 400,262" fill="#57534e"/>
+  </g>
+
+  <g fill="none" stroke="#e0f2fe" stroke-width="1.5" opacity="0.5">
+    <path d="M40 60 q30 -20 60 0 q30 20 60 0 q30 -20 60 0"/>
+    <path d="M40 90 q30 -20 60 0 q30 20 60 0 q30 -20 60 0"/>
+  </g>
+
+  <text x="320" y="380" text-anchor="middle" font-family="system-ui" font-size="14" fill="#e0f2fe">svg-complex — 渐变 / 滤镜 / 阴影 / 路径</text>
+</svg>

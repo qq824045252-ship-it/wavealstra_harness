@@ -1,0 +1,27 @@
+{
+  "startedAt": "2026-09-30T23:47:14.477Z",
+  "pid": 5664,
+  "status": "passed",
+  "steps": [
+    {
+      "name": "renderer",
+      "exitCode": 0,
+      "passed": true
+    },
+    {
+      "name": "sync",
+      "exitCode": 0,
+      "passed": true
+    },
+    {
+      "name": "gradle",
+      "exitCode": 0,
+      "passed": true
+    }
+  ],
+  "apk": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi0992-memory\\android\\MyBuddy-Remote-1.1.8-pi0992.apk",
+  "sha256": "8d9bafb826668a26d146490e9f587cde0d565b09f32dd0e67e549a26e3bf8dd5",
+  "adbDevices": "List of devices attached\r\n\r\n",
+  "deviceAvailable": false,
+  "finishedAt": "2026-09-30T23:47:47.313Z"
+}

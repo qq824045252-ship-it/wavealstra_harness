@@ -1,0 +1,90 @@
+{
+  "at": "2026-10-01T09:33:24.155Z",
+  "passed": false,
+  "results": [
+    {
+      "name": "working without any MCP server",
+      "passed": true,
+      "mode": "working",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 1,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\6af034cd-81a4-4852-8d4d-7dc23e6723e6\\2026-10-01T09-33-20-864Z_01a0f6cf-ae5f-7351-bf59-fe3ae1f9af59.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\6af034cd-81a4-4852-8d4d-7dc23e6723e6"
+    },
+    {
+      "name": "working with real stdio MCP and native tool discovery",
+      "passed": true,
+      "mode": "working",
+      "withMcp": true,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 3,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\9eaf1b09-a378-40fc-a214-c146a4f0ed5d\\2026-10-01T09-33-20-934Z_01a0f6cf-aea5-7351-bf59-fe3d7d46fb42.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\9eaf1b09-a378-40fc-a214-c146a4f0ed5d"
+    },
+    {
+      "name": "coding without any MCP server",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n"
+    },
+    {
+      "name": "coding with real stdio MCP and native tool discovery",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n"
+    },
+    {
+      "name": "design without any MCP server",
+      "passed": true,
+      "mode": "design",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 1,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\99a422dc-d0ee-4fd3-89e9-efdda893538a\\2026-10-01T09-33-23-058Z_01a0f6cf-b6f2-7351-bf59-fe423660914a.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\99a422dc-d0ee-4fd3-89e9-efdda893538a"
+    },
+    {
+      "name": "design with real stdio MCP and native tool discovery",
+      "passed": true,
+      "mode": "design",
+      "withMcp": true,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 3,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\b18d40ac-cc00-4941-9700-b29e50b48378\\2026-10-01T09-33-23-115Z_01a0f6cf-b72b-7351-bf59-fe44db871bf4.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-p8VQpZ\\b18d40ac-cc00-4941-9700-b29e50b48378"
+    },
+    {
+      "name": "reopen coding history as office without stale Code Mode",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n"
+    },
+    {
+      "name": "reopen office history as coding activates Code Mode",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n"
+    }
+  ]
+}

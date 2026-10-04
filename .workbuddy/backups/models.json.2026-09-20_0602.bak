@@ -1,0 +1,47 @@
+{
+  "providers": {
+    "opencode": {
+      "name": "OpenCode Zen",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "api": "openai-completions",
+      "modelDiscovery": {
+        "mode": "openai-compatible"
+      },
+      "models": [
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "thinkingLevelMap": {
+            "off": "off",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": "max"
+          },
+          "compat": {
+            "thinkingFormat": "deepseek",
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "supportsStore": false,
+            "supportsDeveloperRole": false
+          }
+        }
+      ]
+    },
+    "openrouter": {
+      "name": "OpenRouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "modelDiscovery": {
+        "mode": "openai-compatible"
+      },
+      "models": []
+    }
+  }
+}

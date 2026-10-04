@@ -1,0 +1,8 @@
+{
+  "name": "test:pi-host-control",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:11:16.812Z",
+  "durationMs": 2403,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi-host-control.log"
+}

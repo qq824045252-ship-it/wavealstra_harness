@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>进度条不自动刷新 · 根因分析（MyBuddy）</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e4e7ec;
+    --text: #1f2430;
+    --muted: #667085;
+    --accent: #3b82f6;
+    --accent-soft: #eff6ff;
+    --warn: #d97706;
+    --warn-soft: #fffbeb;
+    --danger: #dc2626;
+    --danger-soft: #fef2f2;
+    --ok: #16a34a;
+    --ok-soft: #f0fdf4;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --code-comment: #64748b;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* 头部 */
+  header.hero {
+    background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 60%, #60a5fa 100%);
+    color: #fff;
+    border-radius: var(--radius);
+    padding: 32px 36px;
+    margin-bottom: 28px;
+    box-shadow: 0 8px 24px rgba(59, 130, 246, .25);
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: .5px; }
+  header.hero p { margin: 0; opacity: .92; font-size: 14.5px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .badge {
+    background: rgba(255,255,255,.16);
+    border: 1px solid rgba(255,255,255,.25);
+    padding: 3px 12px; border-radius: 999px; font-size: 12.5px;
+  }
+
+  /* 卡片 */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px 28px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(16,24,40,.04);
+  }
+  h2 {
+    font-size: 18px;
+    margin: 0 0 4px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2 .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 13px; font-weight: 700; flex-shrink: 0;
+  }
+  .card > p.lead { margin: 6px 0 16px; color: var(--muted); font-size: 14px; }
+  .sub { color: var(--muted); font-size: 14px; }
+
+  /* 高亮结论 */
+  .callout { border-left: 4px solid var(--danger); background: var(--danger-soft); padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 14px 0; }
+  .callout.blue { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+  .callout b { display: block; margin-bottom: 2px; }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 12px 0; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: #f9fafb; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  code.inline {
+    background: #eef2f7; border: 1px solid #e2e8f0; border-radius: 5px;
+    padding: 1px 6px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12.5px; color: #1e40af;
+  }
+
+  /* 代码块 */
+  pre {
+    background: var(--code-bg); color: var(--code-text);
+    border-radius: 10px; padding: 16px 18px; overflow-x: auto;
+    font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px; line-height: 1.6;
+    margin: 12px 0;
+  }
+  pre .c { color: var(--code-comment); }
+  pre .k { color: #93c5fd; }   /* keyword */
+  pre .s { color: #86efac; }   /* string */
+  pre .n { color: #fbbf24; }   /* number */
+
+  /* 时序图（纯 CSS 简化版） */
+  .timeline { margin: 14px 0; font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px; }
+  .tl-row { display: flex; gap: 0; }
+  .tl-left { width: 200px; flex-shrink: 0; text-align: right; padding-right: 16px; color: var(--muted); font-size: 12.5px; line-height: 1.9; padding-top: 2px; }
+  .tl-line { width: 24px; flex-shrink: 0; display: flex; justify-content: center; }
+  .tl-line .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 9px; }
+  .tl-line .bar { width: 2px; margin: 0 auto; flex: 1; }
+  .tl-content { flex: 1; padding-left: 10px; padding-bottom: 18px; }
+  .tl-content .ev { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; display: inline-block; }
+  .tl-content .note { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+  .dot.gray { background: #d0d5dd; }
+  .dot.blue { background: var(--accent); }
+  .dot.green { background: var(--ok); }
+  .dot.red { background: var(--danger); }
+  .dot.amber { background: var(--warn); }
+  .dot.hollow { background: #fff; border: 2px solid var(--danger); }
+  .tl-updated { color: var(--ok); font-weight: 600; }
+  .tl-stale { color: var(--danger); font-weight: 600; }
+
+  /* 对比栏 */
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0; }
+  .vs-col { border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .vs-col h4 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .vs-col ul { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--text); }
+  .vs-col li { margin-bottom: 6px; }
+  .tui { background: var(--ok-soft); border-color: #bbf7d0; }
+  .tui h4 { color: var(--ok); }
+  .wb { background: #fff7ed; border-color: #fed7aa; }
+  .wb h4 { color: var(--warn); }
+
+  /* 修复方案 */
+  .fix-item { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px dashed var(--border); }
+  .fix-item:last-child { border-bottom: none; }
+  .fix-no {
+    width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;
+    background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px;
+  }
+  .fix-item h4 { margin: 0 0 4px; font-size: 15px; }
+  .fix-item p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+  footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 32px; }
+  @media (max-width: 720px) {
+    .vs { grid-template-columns: 1fr; }
+    .tl-left { width: 120px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <h1>为什么进度条不自动刷新？</h1>
+    <p>AI 对话流式更新 vs 上下文用量条刷新节奏脱节 —— 根因分析与修复方案（MyBuddy / Electron + pi SDK）</p>
+    <div class="badges">
+      <span class="badge">分析对象：ChatInput 底部 context-usage 进度条</span>
+      <span class="badge">链路：Renderer → IPC → AgentService → pi SDK</span>
+      <span class="badge">目标体验：与 pi 终端（TUI）一致</span>
+    </div>
+  </header>
+
+  <!-- 一、问题现象 -->
+  <div class="card">
+    <h2><span class="num">1</span>问题现象</h2>
+    <p class="lead">聊天时文字在流式输出、工具在执行，但底部上下文用量进度条完全不动，直到整轮对话全部结束才“跳”一下。</p>
+    <div class="callout">
+      <b>一句话结论</b>
+      主进程只在 <code class="inline">agent_end</code>（整轮结束）时才发一次 <code class="inline">context_usage</code> 补丁；对话本身是高频事件流。两者刷新节奏完全脱节 → 视觉上“对话在走、进度条死寂”。
+    </div>
+    <p class="sub">UI 里真正的“进度条”是 <code class="inline">ChatInput.tsx</code> 底部工具栏的 <code class="inline">.context-usage-bar</code>：宽度 = <code class="inline">used / contextWindow</code> 百分比，数据来自 store 的 <code class="inline">contextUsedTokens</code>。</p>
+  </div>
+
+  <!-- 二、当前数据链路 -->
+  <div class="card">
+    <h2><span class="num">2</span>进度条数据链路：从 pi 到 UI</h2>
+    <p class="lead">一条数据在 4 层之间流动，每一层都有“只在终点刷新”的问题。</p>
+    <table>
+      <thead>
+        <tr><th>环节</th><th>位置</th><th>刷新时机</th><th>频率</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>pi SDK</b></td>
+          <td><code class="inline">agent.state.messages</code></td>
+          <td>仅 <code class="inline">message_end</code> 时才把消息推入数组；流式中消息在 <code class="inline">streamingMessage</code>，不计入</td>
+          <td><span class="tl-stale">低频（跳变）</span></td>
+        </tr>
+        <tr>
+          <td><b>AgentService</b></td>
+          <td><code class="inline">src/main/agent/AgentService.ts</code></td>
+          <td><code class="inline">prompt()</code> 结束后、<code class="inline">agent_end</code> 事件时各发一次 <code class="inline">context_usage</code> 补丁</td>
+          <td><span class="tl-stale">每轮 1~2 次</span></td>
+        </tr>
+        <tr>
+          <td><b>store</b></td>
+          <td><code class="inline">appStore.applyAgentPatch</code></td>
+          <td>收到 <code class="inline">context_usage</code> 补丁才更新 <code class="inline">contextUsedTokens</code>（且仅限 activeTask）</td>
+          <td><span class="tl-stale">被动</span></td>
+        </tr>
+        <tr>
+          <td><b>UI</b></td>
+          <td><code class="inline">ChatInput.tsx</code></td>
+          <td>纯展示；无定时轮询 <code class="inline">getContextUsage</code> 兜底</td>
+          <td><span class="tl-stale">不主动</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 style="font-size:15px;margin:18px 0 4px">对照：一轮对话中，进度条究竟何时才更新？</h3>
+    <div class="timeline">
+      <div class="tl-row">
+        <div class="tl-left">assistant_start</div>
+        <div class="tl-line"><span class="dot gray"></span></div>
+        <div class="tl-content">
+          <span class="ev">agent:event → assistant_start</span>
+          <div class="note">对话 UI 开始流式渲染（high-frequency 通道）</div>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-left">text_delta × N</div>
+        <div class="tl-line"><span class="dot gray"></span></div>
+        <div class="tl-content">
+          <span class="ev">agent:event → text_delta（每段文本增量）</span>
+          <div class="note"><span class="tl-stale">进度条：无更新</span>（当前消息尚未落定，token 不计入）</div>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-left">tool_execution</div>
+        <div class="tl-line"><span class="dot gray"></span></div>
+        <div class="tl-content">
+          <span class="ev">agent:event → tool_start / tool_update</span>
+          <div class="note"><span class="tl-stale">进度条：无更新</span>（工具执行中，context 无变化）</div>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-left">message_end</div>
+        <div class="tl-line"><span class="dot hollow"></span></div>
+        <div class="tl-content">
+          <span class="ev">pi 内部：messages.push() ← 落定</span>
+          <div class="note"><span class="tl-stale">进度条：仍无更新</span>（AgentService 没有在此节点发 context_usage）</div>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-left">agent_end</div>
+        <div class="tl-line"><span class="dot blue"></span></div>
+        <div class="tl-content">
+          <span class="ev">AgentService → emitContextUsage() ✅</span>
+          <div class="note"><span class="tl-updated">进度条：唯一一次刷新（整轮结束时）</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 三、根因剖析 -->
+  <div class="card">
+    <h2><span class="num">3</span>根因剖析：为什么中间节点拿不到新值？</h2>
+    <p class="lead">即使我们在每个事件都去调 <code class="inline">getContextUsage()</code>，流式阶段它返回的也是旧值 —— 这是 pi 的数据语义决定的。</p>
+
+    <h3 style="font-size:15px;margin:0 0 8px">3.1 数据源：只有 message_end 才入库</h3>
+    <p>pi 的 <code class="inline">getContextUsage()</code> 基于 <code class="inline">agent.state.messages</code> 估算 token。而 agent-core 的事件处理中：</p>
+    <pre><span class="c">// node_modules/@earendil-works/pi-agent-core/dist/agent.js</span>
+<span class="k">case</span> <span class="s">"message_start"</span>:
+  <span class="k">this</span>._state.streamingMessage = event.message;   <span class="c">// 流式中：只进 streamingMessage</span>
+  <span class="k">break</span>;
+<span class="k">case</span> <span class="s">"message_update"</span>:
+  <span class="k">this</span>._state.streamingMessage = event.message;   <span class="c">// 增量更新仍在 streamingMessage</span>
+  <span class="k">break</span>;
+<span class="k">case</span> <span class="s">"message_end"</span>:
+  <span class="k">this</span>._state.streamingMessage = <span class="k">undefined</span>;
+  <span class="k">this</span>._state.messages.push(event.message);      <span class="c">// ← 唯一入库点</span>
+  <span class="k">break</span>;</pre>
+
+    <h3 style="font-size:15px;margin:16px 0 8px">3.2 估算公式：最后一条 usage + 尾部估算</h3>
+    <pre><span class="c">// pi-coding-agent/dist/core/compaction/compaction.js</span>
+<span class="k">export function</span> estimateContextTokens(messages) {
+  <span class="k">const</span> usageInfo = getLastAssistantUsageInfo(messages);   <span class="c">// 最后一条带 usage 的 assistant 消息</span>
+  <span class="k">if</span> (!usageInfo) { ... <span class="c">// 纯估算</span> }
+  <span class="k">const</span> usageTokens = calculateContextTokens(usageInfo.usage);
+  <span class="k">let</span> trailingTokens = <span class="n">0</span>;
+  <span class="k">for</span> (<span class="k">let</span> i = usageInfo.index + <span class="n">1</span>; i &lt; messages.length; i++) {
+    trailingTokens += estimateTokens(messages[i]);  <span class="c">// 只数已入库消息</span>
+  }
+  <span class="k">return</span> { tokens: usageTokens + trailingTokens, ... };
+}</pre>
+    <p class="sub">结论：流式输出 / 思考 / 工具执行期间，当前正在生成的内容都不在 <code class="inline">messages</code> 里，所以反复调用 <code class="inline">getContextUsage()</code> 数值基本不变。<b>真正的跳变点只有 <code class="inline">message_end</code> / <code class="inline">turn_end</code> / <code class="inline">agent_end</code></b> —— 而我们的主进程恰恰在这几个中间节点没有补发补丁。</p>
+  </div>
+
+  <!-- 四、终端 vs 我们 -->
+  <div class="card">
+    <h2><span class="num">4</span>终端（pi TUI）为什么“自动刷新”？</h2>
+    <p class="lead">对比两条实现路线，差距一目了然。</p>
+    <div class="vs">
+      <div class="vs-col tui">
+        <h4>🖥 pi 终端 TUI（interactive-mode.js）</h4>
+        <ul>
+          <li>每个 agent 事件都 <code class="inline">footer.invalidate()</code> + <code class="inline">ui.requestRender()</code></li>
+          <li>footer 渲染时<b>重新调用</b> <code class="inline">session.getContextUsage()</code></li>
+          <li>另有 working spinner、token 统计（usageTotals 随消息落定累积）</li>
+          <li>刷新节奏<b>与对话事件完全同步</b></li>
+        </ul>
+      </div>
+      <div class="vs-col wb">
+        <h4>📦 MyBuddy（当前实现）</h4>
+        <ul>
+          <li>只在 <code class="inline">agent_end</code> / prompt 结束补发一次 <code class="inline">context_usage</code></li>
+          <li>中间节点（message_end / turn_end / tool_execution_end）<b>不触发刷新</b></li>
+          <li>渲染端无定时轮询兜底</li>
+          <li>进度条整轮只动一次 → “不兼容”</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout blue">
+      <b>本质差异</b>
+      终端是“事件驱动 + 每事件重算重绘”；我们是“终点事件一次性推送”。token 数值同样是跳变的，但终端的刷新节奏和对话同步，因此观感上是自动刷新。
+    </div>
+  </div>
+
+  <!-- 五、修复方案 -->
+  <div class="card">
+    <h2><span class="num">5</span>修复方案（待确认后实施）</h2>
+    <p class="lead">对齐终端的“事件驱动”思路，再补一个渲染端兜底，双保险。</p>
+
+    <div class="fix-item">
+      <div class="fix-no">1</div>
+      <div>
+        <h4>主进程：关键节点补发 context_usage（对齐 TUI）</h4>
+        <p>在 <code class="inline">AgentService.createSession</code> 的 subscribe 回调里，对 <code class="inline">message_end</code> / <code class="inline">turn_end</code> / <code class="inline">tool_execution_end</code> / <code class="inline">compaction_end</code> 也调用 <code class="inline">emitContextUsage()</code>，把“只发一次”变成“每个节点都发”。</p>
+        <pre><span class="c">// AgentService.ts（示意）</span>
+session.subscribe((event) =&gt; {
+  <span class="c">// …映射补丁…</span>
+  <span class="k">if</span> (
+    event.type === <span class="s">"message_end"</span> ||
+    event.type === <span class="s">"turn_end"</span> ||
+    event.type === <span class="s">"tool_execution_end"</span> ||
+    event.type === <span class="s">"compaction_end"</span>
+  ) {
+    <span class="k">this</span>.emitContextUsage(opts.taskId, session);  <span class="c">// 数值虽跳变，节奏却同步</span>
+  }
+  <span class="k">if</span> (event.type === <span class="s">"agent_end"</span>) {
+    <span class="k">this</span>.emitContextUsage(opts.taskId, session);  <span class="c">// 原有终点刷新保留</span>
+  }
+});</pre>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-no">2</div>
+      <div>
+        <h4>渲染端：流式期间定时轮询兜底</h4>
+        <p><code class="inline">sendMessage</code> 后启动 ~1.5s 的 interval 调 <code class="inline">window.api.agent.getContextUsage(taskId)</code>，收到 <code class="inline">assistant_end</code> 后清除。即使主进程某节点漏发，进度条也会自动追上。</p>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-no">3</div>
+      <div>
+        <h4>（可选）store 增加 contextPercent 字段</h4>
+        <p>直接存 percent，避免前端每次用 <code class="inline">used / windowTokens</code> 重复计算；同时便于 ToolCallCard / ExecutionTimeline 复用。</p>
+      </div>
+    </div>
+
+    <div class="callout ok">
+      <b>预期效果</b>
+      对话的每个关键节点（一条回复落定、一个工具执行完、一轮结束）进度条都会跟着刷新，刷新节奏与 AI 对话同步 —— 即终端观感。
+    </div>
+  </div>
+
+  <!-- 六、代码位置索引 -->
+  <div class="card">
+    <h2><span class="num">6</span>涉及代码位置（修改点索引）</h2>
+    <table>
+      <thead>
+        <tr><th>文件</th><th>位置</th><th>作用</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code class="inline">src/main/agent/AgentService.ts</code></td><td>prompt() try 块末尾</td><td>整轮结束补发 context_usage</td></tr>
+        <tr><td><code class="inline">src/main/agent/AgentService.ts</code></td><td>createSession → session.subscribe 回调</td><td><b>修改点：</b>中间节点补发 context_usage</td></tr>
+        <tr><td><code class="inline">src/shared/pi-event-mapper.ts</code></td><td>mapPiEventToPatches</td><td>可选：增加 context_usage 事件映射</td></tr>
+        <tr><td><code class="inline">src/renderer/src/store/appStore.ts</code></td><td>applyAgentPatch / sendMessage</td><td><b>修改点：</b>流式期间定时轮询 getContextUsage</td></tr>
+        <tr><td><code class="inline">src/renderer/src/components/chat/ChatInput.tsx</code></td><td>context-usage-bar 渲染</td><td>展示层，一般无需改</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    MyBuddy · 根因分析文档 · 生成时间 2026-08-05 · 相关提交 960a36d / 11a2824
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,84 @@
+diff --git a/dist/index.js b/dist/index.js
+index 454fccd..229b986 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -46,7 +46,10 @@ var CommandCodeProcess = class {
+     if (this.yoloFlag) {
+       args.push("--yolo");
+     }
+-    this.child = spawn(this.cmdPath, args, {
++    const nodeEntry = process.env.COMMAND_CODE_ACP_NODE_ENTRY?.trim();
++    const command = nodeEntry ? process.execPath : this.cmdPath;
++    const commandArgs = nodeEntry ? [nodeEntry, ...args] : args;
++    this.child = spawn(command, commandArgs, {
+       cwd: this.cwd,
+       stdio: ["ignore", "pipe", "pipe"],
+       signal: abort.signal
+@@ -202,8 +205,7 @@ var CmdEventTranslator = class {
+         return {
+           update: {
+             sessionUpdate: "agent_message_chunk",
+-            type: "text",
+-            text: ev.delta
++            content: { type: "text", text: ev.delta }
+           },
+           isTextDelta: true,
+           isEndTurn: false,
+@@ -214,8 +216,7 @@ var CmdEventTranslator = class {
+         return {
+           update: {
+             sessionUpdate: "agent_thought_chunk",
+-            type: "text",
+-            text: ""
++            content: { type: "text", text: "" }
+           },
+           isTextDelta: false,
+           isEndTurn: false
+@@ -226,8 +227,7 @@ var CmdEventTranslator = class {
+         return {
+           update: {
+             sessionUpdate: "agent_thought_chunk",
+-            type: "text",
+-            text: ev.delta
++            content: { type: "text", text: ev.delta }
+           },
+           isTextDelta: false,
+           isEndTurn: false
+@@ -237,8 +237,7 @@ var CmdEventTranslator = class {
+         return {
+           update: {
+             sessionUpdate: "agent_thought_chunk",
+-            type: "text",
+-            text: ""
++            content: { type: "text", text: "" }
+           },
+           isTextDelta: false,
+           isEndTurn: false
+@@ -262,11 +261,15 @@ var CmdEventTranslator = class {
+       case "run_end": {
+         const ev = event;
+         const stopReason = mapStopReason(ev.result.stopReason);
++        const finalText = ev.result.finalText || "";
++        const remainder = finalText.startsWith(this._accumulatedText)
++          ? finalText.slice(this._accumulatedText.length)
++          : finalText === this._accumulatedText ? "" : finalText;
++        if (!remainder) return null;
+         return {
+           update: {
+             sessionUpdate: "agent_message_chunk",
+-            type: "text",
+-            text: ev.result.finalText
++            content: { type: "text", text: remainder }
+           },
+           isTextDelta: false,
+           isEndTurn: true,
+@@ -278,8 +281,7 @@ var CmdEventTranslator = class {
+         return {
+           update: {
+             sessionUpdate: "agent_message_chunk",
+-            type: "text",
+-            text: `Error: ${ev.error.message || "Unknown error"}`
++            content: { type: "text", text: `Error: ${ev.error.message || "Unknown error"}` }
+           },
+           isTextDelta: false,
+           isEndTurn: true,

@@ -1,0 +1,17 @@
+{
+  "id": "serena",
+  "name": "Serena",
+  "description": "语义级代码检索与编辑 MCP（oraios/serena）—— Agent 的 IDE 能力。仅在「代码开发」场景对会话暴露。",
+  "version": "bundled",
+  "kind": "mcp",
+  "modes": ["coding"],
+  "source": "oraios/serena",
+  "repoPath": "repo",
+  "homepage": "https://github.com/oraios/serena",
+  "installHints": [
+    "需要系统已安装 uv：https://docs.astral.sh/uv/",
+    "uv tool install -p 3.13 serena-agent",
+    "serena init",
+    "在代码项目 cwd 下使用；stdio 由 MyBuddy 按模式启动"
+  ]
+}

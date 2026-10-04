@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320">
+  <title>SVG 动画 fixture — SMIL 动画（渲染质量基线）</title>
+  <defs>
+    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="320" rx="12" fill="#0f172a"/>
+
+  <text x="240" y="36" text-anchor="middle" font-family="system-ui" font-size="16" fill="#e2e8f0">loading…</text>
+
+  <!-- 旋转圆环 -->
+  <g transform="translate(240 160)">
+    <circle r="60" fill="none" stroke="#1e293b" stroke-width="8"/>
+    <circle r="60" fill="none" stroke="url(#bar)" stroke-width="8" stroke-linecap="round"
+           stroke-dasharray="90 288" transform="rotate(-90)">
+      <animateTransform attributeName="transform" type="rotate" from="-90 0 0" to="270 0 0" dur="1.6s" repeatCount="indefinite"/>
+    </circle>
+    <text y="-80" text-anchor="middle" font-family="system-ui" font-size="12" fill="#94a3b8">SMIL spin</text>
+  </g>
+
+  <!-- 跳动圆点 -->
+  <circle cx="180" cy="250" r="7" fill="#22d3ee">
+    <animate attributeName="cy" values="250;236;250" dur="0.9s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="240" cy="250" r="7" fill="#3b82f6">
+    <animate attributeName="cy" values="250;236;250" dur="0.9s" begin="0.15s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="300" cy="250" r="7" fill="#818cf8">
+    <animate attributeName="cy" values="250;236;250" dur="0.9s" begin="0.3s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- 进度条 -->
+  <rect x="120" y="280" width="240" height="6" rx="3" fill="#1e293b"/>
+  <rect x="120" y="280" width="0" height="6" rx="3" fill="url(#bar)">
+    <animate attributeName="width" values="0;240;0" dur="4s" repeatCount="indefinite"/>
+  </rect>
+</svg>

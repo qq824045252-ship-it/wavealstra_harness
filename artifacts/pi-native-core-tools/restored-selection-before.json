@@ -1,0 +1,110 @@
+{
+  "at": "2026-10-02T04:22:29.890Z",
+  "passed": false,
+  "hostCalls": 0,
+  "results": [
+    {
+      "name": "restored session uses native settings.defaultTools rather than a host-patched historical loadout",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: native defaultTools must win over the historical read/write/edit/bash loadout\n+ actual - expected\n\n  [\n    'read',\n+   'write',\n+   'edit',\n+   'bash'\n  ]\n\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi-native-core-tools-test.mjs:30737:14\n    at async test (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi-native-core-tools-test.mjs:30657:21)\n    at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi-native-core-tools-test.mjs:30684:3"
+    },
+    {
+      "name": "production registry and final execute are Pi builtins for all four core tools",
+      "passed": true,
+      "details": [
+        {
+          "name": "read",
+          "source": {
+            "path": "builtin:read",
+            "source": "builtin",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "bash",
+          "source": {
+            "path": "builtin:bash",
+            "source": "builtin",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "edit",
+          "source": {
+            "path": "builtin:edit",
+            "source": "builtin",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "write",
+          "source": {
+            "path": "builtin:write",
+            "source": "builtin",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        }
+      ]
+    },
+    {
+      "name": "write output equals pure Pi while host context and permissions are unavailable",
+      "passed": true
+    },
+    {
+      "name": "read output equals pure Pi while host context and permissions are unavailable",
+      "passed": true
+    },
+    {
+      "name": "edit output equals pure Pi while host context and permissions are unavailable",
+      "passed": true
+    },
+    {
+      "name": "bash output equals pure Pi while host context and permissions are unavailable",
+      "passed": true
+    },
+    {
+      "name": "read error equals pure Pi and remains a tool error",
+      "passed": true
+    },
+    {
+      "name": "write error equals pure Pi and remains a tool error",
+      "passed": true
+    },
+    {
+      "name": "edit error equals pure Pi and remains a tool error",
+      "passed": true
+    },
+    {
+      "name": "bash error equals pure Pi and remains a tool error",
+      "passed": true
+    },
+    {
+      "name": "read pre-aborted signal behavior matches pure Pi's final execute",
+      "passed": true
+    },
+    {
+      "name": "write pre-aborted signal behavior matches pure Pi's final execute",
+      "passed": true
+    },
+    {
+      "name": "edit pre-aborted signal behavior matches pure Pi's final execute",
+      "passed": true
+    },
+    {
+      "name": "bash pre-aborted signal behavior matches pure Pi's final execute",
+      "passed": true
+    },
+    {
+      "name": "Bash keeps native 50KB tail truncation and native complete-output file",
+      "passed": true
+    },
+    {
+      "name": "actual Bash cancellation matches pure Pi and stops the pending command",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "at": "2026-09-30T05:39:47.500Z",
+  "baseCommit": "e997df48abb59e62bfaa4600ae98899ef697a06c",
+  "android": {
+    "versionName": "1.1.6",
+    "versionCode": 8,
+    "apk": "app/remote/android/app/build/outputs/apk/debug/app-debug.apk",
+    "bytes": 4306697,
+    "sha256": "ad26ae3e90e949a58607c0403cf4ff2095e0742b3cd5b449f7d38405fb14f823",
+    "installed": true
+  },
+  "desktop": {
+    "target": "release-models-20260930043733706/win-unpacked",
+    "asarSha256": "80fb276cb1b6a50b8bca0b58b10975b0048b1f731f699320ba710616df0d2031",
+    "originalBackedUp": true,
+    "oldInstallerCopyUnchanged": true
+  },
+  "tests": {
+    "imageAccess": 23,
+    "renderer": 23,
+    "synchronization": 20,
+    "remoteAccess": "passed",
+    "remoteTypecheck": "passed",
+    "desktopTypecheck": "passed"
+  },
+  "realPhoneChecks": 9,
+  "realImage": {
+    "bytes": 2030692,
+    "sha256": "8522f97f069a943669a8c4b5cb7201733ea802dd900e2053677947fb2ed95867"
+  },
+  "scroll": {
+    "installed": {
+      "versionName": "1.1.6",
+      "versionCode": 8
+    },
+    "ok": true,
+    "phases": [
+      {
+        "name": "earlier",
+        "startY": 17859.142578125,
+        "endY": 17859.142578125,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      },
+      {
+        "name": "later",
+        "startY": 18198.572265625,
+        "endY": 18198.572265625,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      },
+      {
+        "name": "bottom across automatic refreshes",
+        "startY": 19510,
+        "endY": 19510,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      }
+    ],
+    "decodedHistoricalSvgs": 8,
+    "svgRemounts": 0,
+    "freshHistoryReadsDuringBottomHold": 3,
+    "holdMs": 23007,
+    "failures": []
+  },
+  "debugForwardsRemoved": true,
+  "implementationCommit": "c163616d5f340b66e9ea93edc5f7a7ab31011bab"
+}

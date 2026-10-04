@@ -1,0 +1,51 @@
+[
+  {
+    "name": "pptx-simple@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-simple.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-media@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-media.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-zorder@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-zorder.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-gradient@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-gradient.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-table@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-table.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-43@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-43.pptx&kind=pptx"
+  },
+  {
+    "name": "pptx-long@1.25.png",
+    "w": 1602,
+    "h": 929,
+    "dpr": 1.25,
+    "query": "?file=pptx-long-24p.pptx&kind=pptx"
+  }
+]

@@ -1,0 +1,51 @@
+[
+  {
+    "name": "pdf-simple@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-simple.pdf&kind=pdf"
+  },
+  {
+    "name": "pdf-normal@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-normal-40p.pdf&kind=pdf"
+  },
+  {
+    "name": "pdf-zoom@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-normal-40p.pdf&kind=pdf&pdfzoom=100"
+  },
+  {
+    "name": "pdf-tables@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-tables-images.pdf&kind=pdf"
+  },
+  {
+    "name": "pdf-scanned@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-scanned.pdf&kind=pdf"
+  },
+  {
+    "name": "pdf-landscape@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-landscape.pdf&kind=pdf"
+  },
+  {
+    "name": "pdf-dark@2.0.png",
+    "w": 2176,
+    "h": 1484,
+    "dpr": 2,
+    "query": "?file=pdf-normal-40p.pdf&kind=pdf&theme=dark"
+  }
+]

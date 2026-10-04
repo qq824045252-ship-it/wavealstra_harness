@@ -1,0 +1,38 @@
+{
+  "at": "2026-10-01T10:00:18.897Z",
+  "results": [
+    {
+      "name": "scope isolation, per-turn capsule and native compaction exclusion",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0,
+      "summaryCalls": 1,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "current turn frozen; updated L1 visible next turn",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0,
+      "summaryCalls": 0,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "forget blocks next request and never resurrects next turn",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1,
+      "summaryCalls": 0,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "detached task loses old project and workspace immediately",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1,
+      "summaryCalls": 0,
+      "projectionResolutions": 2
+    }
+  ],
+  "passed": true
+}

@@ -1,0 +1,111 @@
+{
+  "startedAt": "2026-09-30T01:18:48.292Z",
+  "tests": [
+    {
+      "name": "test:mcp-config-parse",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:48.293Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:49.653Z"
+    },
+    {
+      "name": "test:mcp-mode",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:49.655Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:51.222Z"
+    },
+    {
+      "name": "test:mcp",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:51.224Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:52.491Z"
+    },
+    {
+      "name": "test:agent-loadout",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:52.492Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:53.906Z"
+    },
+    {
+      "name": "test:session-lifecycle",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:53.907Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:55.072Z"
+    },
+    {
+      "name": "test:mcp-execution-evidence",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:55.073Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:56.228Z"
+    },
+    {
+      "name": "test:pi-shell-output",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:56.229Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:18:59.722Z"
+    },
+    {
+      "name": "test:pi-autonomous-execution",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:18:59.724Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:03.249Z"
+    },
+    {
+      "name": "test:compaction",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:03.251Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:06.547Z"
+    },
+    {
+      "name": "test:compaction-policy-history",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:06.548Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:08.722Z"
+    },
+    {
+      "name": "test:conversation-branch:native",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:08.723Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:11.091Z"
+    },
+    {
+      "name": "test:pi-reasoning-stream",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:11.092Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:12.910Z"
+    },
+    {
+      "name": "test:command-code-request",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:12.911Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:14.632Z"
+    },
+    {
+      "name": "test:session-history-recovery",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:14.633Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:22.603Z"
+    },
+    {
+      "name": "test:oauth-bundle",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:19:22.603Z",
+      "code": 0,
+      "finishedAt": "2026-09-30T01:19:25.963Z"
+    }
+  ],
+  "finishedAt": "2026-09-30T01:19:25.964Z"
+}

@@ -1,0 +1,20 @@
+{
+  "temp": "C:\\Users\\servi\\AppData\\Local\\Temp\\skill-governance-中文 ' 09xMd1",
+  "results": [
+    {
+      "name": "fastcopy-native-gitbash-copy-filter-sync-delete",
+      "pass": true,
+      "detail": "copied exact bytes with spaces/CJK/apostrophe; filter respected; sync removed extra; delete scoped to fixture; error=2"
+    },
+    {
+      "name": "matlab-native-gitbash-code-script-exit",
+      "pass": true,
+      "detail": {
+        "code": "mean=3",
+        "script": "executed",
+        "failureExit": 1,
+        "tempCleanup": true
+      }
+    }
+  ]
+}

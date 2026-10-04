@@ -1,0 +1,45 @@
+.memory-tab { min-width: 0; container-type: inline-size; }
+.memory-tab .settings-row-desc,
+.memory-tab .settings-section-desc,
+.memory-tab .memory-count,
+.memory-tab .memory-empty { color: var(--fg-secondary); }
+.memory-tab .memory-source { flex-shrink: 0; white-space: nowrap; font-size: 12px; line-height: 1.6; }
+.memory-tab .memory-status { margin: 0 0 12px; background: var(--bg-secondary); overflow-wrap: anywhere; }
+.memory-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.memory-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.memory-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 180px) 140px; gap: 8px; margin: 12px 0; }
+.memory-filters > * { min-width: 0; width: 100%; }
+.memory-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 12px; }
+.memory-turn-list, .memory-turn-detail { border: 1px solid var(--border); border-radius: 8px; min-width: 0; max-height: min(520px, 58vh); overflow: auto; overscroll-behavior: contain; }
+.memory-turn-detail { padding: 12px; }
+.memory-turn-detail h4 { font-size: 13px; margin: 16px 0 6px; }
+.memory-turn-row { display: flex; width: 100%; border-bottom: 1px solid var(--border); color: var(--fg); }
+.memory-turn-row:hover, .memory-turn-row.active { background: var(--bg-hover); }
+.memory-turn-open { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; text-align: left; padding: 12px 12px 12px 0; color: inherit; }
+.memory-turn-select { display: flex; align-items: flex-start; flex-shrink: 0; padding: 15px 10px 12px 12px; cursor: pointer; }
+.memory-select-all { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.memory-turn-select input, .memory-select-all input, .memory-projection-select input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.memory-projection-select { display: inline-flex; align-items: center; flex-shrink: 0; padding: 6px 4px 6px 0; cursor: pointer; }
+.memory-turn-selection { font-size: 13px; }
+.memory-turn-heading { display: flex; align-items: center; gap: 8px; width: 100%; }
+.memory-turn-heading strong { min-width: 0; flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-turn-title { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-original { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.memory-source-link { display: block; width: 100%; text-align: left; margin: 6px 0; }
+.memory-skill-groups { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+.memory-skill-groups .active { background: var(--bg-active); font-weight: 600; }
+.memory-history-note { margin: 8px 0; }
+.memory-skill-record { padding: 12px 0; border-top: 1px solid var(--border); min-width: 0; }
+.memory-skill-record-heading { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.memory-skill-record-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.memory-skill-description { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-skill-record-actions { margin: 8px 0 0; }
+.memory-projection-focus { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+@container (max-width: 580px) {
+  .memory-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .memory-filters > input { grid-column: 1 / -1; }
+  .memory-split { grid-template-columns: minmax(0, 1fr); }
+  .memory-turn-list { max-height: 240px; }
+  .memory-turn-detail { max-height: none; overflow: visible; }
+  .memory-toolbar-actions { margin-left: 0; width: 100%; }
+}

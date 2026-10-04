@@ -1,0 +1,117 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "Android 1.1.7 / code 9 installed",
+      "ok": true
+    },
+    {
+      "name": "Clash Meta remains active",
+      "ok": true
+    },
+    {
+      "name": "Cloudflare-backed Remote UI authenticated",
+      "ok": true
+    },
+    {
+      "name": "real 3-column Markdown tables are framed, padded and readable without page overflow",
+      "ok": true,
+      "details": {
+        "timeline": {
+          "client": 363,
+          "scroll": 363
+        },
+        "tables": [
+          {
+            "client": 328,
+            "scroll": 328,
+            "width": 327.71429443359375,
+            "padding": "9px 10px",
+            "borderBottom": 0.857143,
+            "headerBg": "rgb(243, 239, 234)",
+            "radius": "12px",
+            "firstRow": [
+              62,
+              106,
+              160
+            ],
+            "rowHeights": [
+              37,
+              57,
+              75,
+              38
+            ]
+          },
+          {
+            "client": 328,
+            "scroll": 328,
+            "width": 327.71429443359375,
+            "padding": "9px 10px",
+            "borderBottom": 0.857143,
+            "headerBg": "rgb(243, 239, 234)",
+            "radius": "12px",
+            "firstRow": [
+              62,
+              137,
+              128
+            ],
+            "rowHeights": [
+              37,
+              57,
+              38,
+              57
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "metrics": {
+    "timeline": {
+      "client": 363,
+      "scroll": 363
+    },
+    "tables": [
+      {
+        "client": 328,
+        "scroll": 328,
+        "width": 327.71429443359375,
+        "padding": "9px 10px",
+        "borderBottom": 0.857143,
+        "headerBg": "rgb(243, 239, 234)",
+        "radius": "12px",
+        "firstRow": [
+          62,
+          106,
+          160
+        ],
+        "rowHeights": [
+          37,
+          57,
+          75,
+          38
+        ]
+      },
+      {
+        "client": 328,
+        "scroll": 328,
+        "width": 327.71429443359375,
+        "padding": "9px 10px",
+        "borderBottom": 0.857143,
+        "headerBg": "rgb(243, 239, 234)",
+        "radius": "12px",
+        "firstRow": [
+          62,
+          137,
+          128
+        ],
+        "rowHeights": [
+          37,
+          57,
+          38,
+          57
+        ]
+      }
+    ]
+  }
+}

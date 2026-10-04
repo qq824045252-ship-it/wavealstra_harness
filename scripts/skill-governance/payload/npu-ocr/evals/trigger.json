@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "npu-ocr",
+  "cases": [
+    {
+      "prompt": "提取这张截图里的文字",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "识别扫描 PDF 的文字和表格",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "批量 OCR 这些发票图片",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把拍照文档转换为带坐标的文字",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把会议 m4a 转写成文字",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "总结已有文本文件",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "画一张猫的照片",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "解析这个微信公众号文章链接",
+      "expected": "no-trigger"
+    }
+  ]
+}

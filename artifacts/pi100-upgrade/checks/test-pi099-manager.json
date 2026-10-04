@@ -1,0 +1,8 @@
+{
+  "name": "test:pi099-manager",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:21:13.627Z",
+  "durationMs": 3796,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi099-manager.log"
+}

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "shared-memory",
+  "cases": [
+    {
+      "prompt": "在 MyBuddy 工作区用 Codex 延续之前的架构决策",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "外部 Claude CLI 开工前恢复项目约束",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "在 Hermes CLI 检查工作区长期记忆",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "按项目记忆继续上次开发任务",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "现在几点",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "翻译一句普通英文",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "计算二加二",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "无需历史上下文，修改给定字符串",
+      "expected": "no-trigger"
+    }
+  ]
+}

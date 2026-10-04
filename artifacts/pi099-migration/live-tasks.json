@@ -1,0 +1,205 @@
+{
+  "startedAt": "2026-09-30T01:04:42.183Z",
+  "tests": [
+    {
+      "name": "inventory",
+      "passed": true,
+      "startedAt": "2026-09-30T01:04:42.269Z",
+      "calls": [
+        {
+          "tool": "mcp__fixture__get_source_inventory",
+          "id": "call_00_y9zw0yly204jeg0qyfshvfl6|fc_02179073028614400000000000000000000ffffac191d0cb35db8/1",
+          "parent": "call_00_y9zw0yly204jeg0qyfshvfl6|fc_02179073028614400000000000000000000ffffac191d0cb35db8",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_y9zw0yly204jeg0qyfshvfl6|fc_02179073028614400000000000000000000ffffac191d0cb35db8",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__get_source_inventory",
+          "id": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269/1",
+          "parent": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__write_file",
+          "id": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269/2",
+          "parent": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269/3",
+          "parent": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_x5f9n5n12825s6jhm85eve1h|fc_02179073028992800000000000000000000ffffac15a393f5e269",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_olby2kkc6e9swu9ftnl1a44f|fc_02179073029474500000000000000000000ffffac15b2ec83a950/1",
+          "parent": "call_00_olby2kkc6e9swu9ftnl1a44f|fc_02179073029474500000000000000000000ffffac15b2ec83a950",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_olby2kkc6e9swu9ftnl1a44f|fc_02179073029474500000000000000000000ffffac15b2ec83a950",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_ck6jtaap1n1orwrh212byks5|fc_02179073029933300000000000000000000ffffac1547fe59fb0a/1",
+          "parent": "call_00_ck6jtaap1n1orwrh212byks5|fc_02179073029933300000000000000000000ffffac1547fe59fb0a",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_ck6jtaap1n1orwrh212byks5|fc_02179073029933300000000000000000000ffffac1547fe59fb0a",
+          "isError": false
+        }
+      ],
+      "requests": 5,
+      "result": {
+        "total": 680,
+        "totalBytes": 7875174
+      },
+      "answer": "已通过 fixture MCP 真实调用完成（`get_source_inventory` → 计算 → `write_file` → `read_file` 回读校验一致）。\n\n结果：\n- **total**: 680 个 TypeScript 文件\n- **totalBytes**: 7,875,174 字节（约 7.51 MiB）\n- **largest（按 bytes 降序前 3）**:\n  1. `src/main/agent/AgentService.ts` — 250,784\n  2. `src/renderer/src/store/appStore.ts` — 248,342\n  3. `src/main/db/AppDatabase.ts` — 167,004\n\n落盘：`inventory-summary.json`（311 字节，内联 JSON），回读解析后与计算结果逐字节 JSON 相等，校验通过。",
+      "finishedAt": "2026-09-30T01:05:05.081Z"
+    },
+    {
+      "name": "file-workflow",
+      "passed": true,
+      "startedAt": "2026-09-30T01:05:05.084Z",
+      "calls": [
+        {
+          "tool": "mcp__fixture__write_file",
+          "id": "call_00_xl9ux9pr1a4qudn4vlitg2u9|fc_02179073030821700000000000000000000ffffac18394ba0c202/1",
+          "parent": "call_00_xl9ux9pr1a4qudn4vlitg2u9|fc_02179073030821700000000000000000000ffffac18394ba0c202",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_xl9ux9pr1a4qudn4vlitg2u9|fc_02179073030821700000000000000000000ffffac18394ba0c202/2",
+          "parent": "call_00_xl9ux9pr1a4qudn4vlitg2u9|fc_02179073030821700000000000000000000ffffac18394ba0c202",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_xl9ux9pr1a4qudn4vlitg2u9|fc_02179073030821700000000000000000000ffffac18394ba0c202",
+          "isError": true
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_eg6f8go6fmbaw5dfz8zitbvh|fc_02179073031380800000000000000000000ffffac15ed0eca0b1d/1",
+          "parent": "call_00_eg6f8go6fmbaw5dfz8zitbvh|fc_02179073031380800000000000000000000ffffac15ed0eca0b1d",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_eg6f8go6fmbaw5dfz8zitbvh|fc_02179073031380800000000000000000000ffffac15ed0eca0b1d",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__write_file",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2/1",
+          "parent": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2/2",
+          "parent": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__write_file",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2/3",
+          "parent": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2/4",
+          "parent": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__get_metrics",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2/5",
+          "parent": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_jng2axvgl5xolsvqh37tcd5e|fc_02179073031995300000000000000000000ffffac15d20c757eb2",
+          "isError": false
+        }
+      ],
+      "requests": 4,
+      "result": {
+        "sorted": [
+          3,
+          5,
+          8,
+          11
+        ],
+        "sum": 27,
+        "average": 6.75
+      },
+      "answer": "工作流完成（全部在 fixture 临时工作区内，`input.json` / `calculated.json`）：\n\n| 步骤 | 调用 | 结果 |\n|---|---|---|\n| 1. 写入 | `write_file` input.json（21 B） | `{\"values\":[8,3,11,5]}` |\n| 2. 回读+解析 | `read_file` → JSON.parse | `values=[8,3,11,5]` |\n| 3. 计算 | sort / reduce | `{\"sorted\":[3,5,8,11],\"sum\":27,\"average\":6.75}` |\n| 4. 写入 | `write_file` calculated.json（45 B） | 结果落盘 |\n| 5. 回读核对 | `read_file` + 深比较 | 与期望**完全一致**（true） |\n| 6. 观测 | `get_metrics` | writes=3, active/max=0, cancelled=0 |\n\n要点：`read_file` 的文本在 `structuredContent.text`（content 块里又是一层 `{\"text\": ...}` 包装），我第一次直接对 `content` 拼接文本导致 `parsed.values` 为 undefined；改用 `structuredContent.text` 后正常。写入计数 3 = input + calculated + 计数器的中间写。\n\n未触碰 fixture 工作区之外的任何文件系统。",
+      "finishedAt": "2026-09-30T01:05:27.767Z"
+    },
+    {
+      "name": "error-recovery",
+      "passed": true,
+      "startedAt": "2026-09-30T01:05:27.768Z",
+      "calls": [
+        {
+          "tool": "mcp__fixture__report_failure",
+          "id": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688/1",
+          "parent": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688",
+          "isError": true
+        },
+        {
+          "tool": "mcp__fixture__get_metrics",
+          "id": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688/2",
+          "parent": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__write_file",
+          "id": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688/3",
+          "parent": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688",
+          "isError": false
+        },
+        {
+          "tool": "mcp__fixture__read_file",
+          "id": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688/4",
+          "parent": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688",
+          "isError": false
+        },
+        {
+          "tool": "codemode",
+          "id": "call_00_pr4eymx9fshz85kwps6tzhx9|fc_02179073033334700000000000000000000ffffac1528cc9d0688",
+          "isError": false
+        }
+      ],
+      "requests": 2,
+      "result": {
+        "observedError": true,
+        "code": "EXPECTED_TEST_FAILURE",
+        "recoveryReadSucceeded": true
+      },
+      "answer": "完成。结果如下：\n\n**1. `report_failure`（仅调用一次，无重试）**\n- 工具**没有抛异常**，而是正常返回了一个 `CallToolResult`：`isError: true`\n- `structuredContent.code === \"EXPECTED_TEST_FAILURE\"`，`message: \"Deliberate non-mutating failure\"`\n- 判定：**业务失败**。这里的关键点是\"请求成功返回\" ≠ \"业务成功\"——必须显式检查 `isError` 与 `structuredContent.code`，我没有把这次返回当成成功。\n\n**2. `get_metrics`（只读，恢复验证）**\n```json\n{ \"activeReads\": 0, \"maxReads\": 0, \"activeWrites\": 0, \"maxWrites\": 0, \"writes\": 0, \"cancelled\": 0 }\n```\n调用成功，证明工具会话在业务错误后仍可继续。\n\n**3. 落盘 + 回读** — `error-observation.json`（95 bytes），回读内容一致：\n```json\n{ \"observedError\": true, \"code\": \"EXPECTED_TEST_FAILURE\", \"recoveryReadSucceeded\": true }\n```\n\n一点补充说明：metrics 中 `writes: 0`，而 `write_file` 明确返回成功（95 bytes 且回读一致）。说明该计数器只统计 `increment_counter` 类的写入，不包含 `write_file`；`writes: 0` 并不代表写入失败。",
+      "finishedAt": "2026-09-30T01:05:42.499Z"
+    }
+  ],
+  "kind": "real-provider-native-MCP",
+  "model": "commandcode/deepseek/deepseek-v4.1-flash",
+  "finishedAt": "2026-09-30T01:05:42.503Z"
+}

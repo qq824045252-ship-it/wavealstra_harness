@@ -1,0 +1,8 @@
+{
+  "name": "test:pi100-features",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:50:33.538Z",
+  "durationMs": 4689,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi100-features.log"
+}

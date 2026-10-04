@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "home": {
+    "height": 70.1964340209961,
+    "maxHeight": 208,
+    "brand": "Mybuddy",
+    "viewBox": "0 0 800 800",
+    "overflow": false
+  },
+  "multiline": {
+    "height": 208.00001525878906,
+    "scrollHeight": 930
+  },
+  "chatHeight": 70.1964340209961
+}

@@ -1,0 +1,8 @@
+.pi-codemode-chip { display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; padding: 3px 7px; border: 1px solid var(--border, #dededb); border-radius: 6px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--text-muted, #73736d); background: var(--bg-secondary, transparent); }
+.pi-codemode-chip svg { flex-shrink: 0; }
+.pi-codemode-chip.phase-enabled .pi-codemode-chip-state { color: var(--color-success, #31825a); }
+.pi-codemode-chip.phase-pending .pi-codemode-chip-state { color: var(--text-secondary, #767269); }
+.pi-codemode-chip-auto { font-size: 10px; opacity: .72; }
+@media (max-width: 960px) { .pi-codemode-chip-auto { display: none; } .pi-codemode-chip { gap: 4px; padding-inline: 5px; } }
+
+.hero-native-capability { display: flex; justify-content: center; margin: 0 0 10px; }

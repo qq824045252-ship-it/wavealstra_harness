@@ -1,0 +1,194 @@
+{
+  "at": "2026-10-04T23:08:09.326Z",
+  "results": [
+    {
+      "name": "scope isolation, per-turn capsule and native compaction exclusion",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0,
+      "summaryCalls": 1,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "current turn frozen; updated L1 visible next turn",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0,
+      "summaryCalls": 0,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "forget blocks next request and never resurrects next turn",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1,
+      "summaryCalls": 0,
+      "projectionResolutions": 3
+    },
+    {
+      "name": "detached task loses old project and workspace immediately",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1,
+      "summaryCalls": 0,
+      "projectionResolutions": 2
+    },
+    {
+      "name": "shared none evidence: update",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared none evidence: resolve",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared none evidence: supersede",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared none evidence: forget",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: invalid",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared scenario evidence: update",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared scenario evidence: resolve",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared scenario evidence: supersede",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared scenario evidence: forget",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared scenario evidence: invalid",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: update",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared profile evidence: resolve",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared profile evidence: supersede",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared profile evidence: forget",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: invalid",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: supersede-update",
+      "passed": true,
+      "providerRequests": 3,
+      "blockedBeforeProvider": 0
+    },
+    {
+      "name": "shared none evidence: expiry",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: future",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: scope-detach",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: disabled",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: supersede-expiry",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared none evidence: supersede-natural-expiry",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: dismiss-scenario",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: dismiss-profile",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: delete-scenario",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    },
+    {
+      "name": "shared profile evidence: delete-profile",
+      "passed": true,
+      "providerRequests": 2,
+      "blockedBeforeProvider": 1
+    }
+  ],
+  "passed": true
+}

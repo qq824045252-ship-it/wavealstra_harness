@@ -1,0 +1,213 @@
+{
+  "startedAt": "2026-10-02T23:45:00.634Z",
+  "status": "passed",
+  "kept": {
+    "directory": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final",
+    "executable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+    "asarSha256": "b5628c521efca39389910ee32038c0280c742128ff3ae9bf114c593bd92d3adf"
+  },
+  "beforeProcesses": [
+    {
+      "ProcessId": 38672,
+      "ParentProcessId": 20436,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050469)/"
+    },
+    {
+      "ProcessId": 41224,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050890)/"
+    },
+    {
+      "ProcessId": 21052,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050894)/"
+    },
+    {
+      "ProcessId": 39240,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984052073)/"
+    }
+  ],
+  "packages": [
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003",
+      "files": 599,
+      "bytes": 1344573585
+    },
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-electron4451-20261002001301583",
+      "files": 598,
+      "bytes": 1344604099
+    },
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-native-core-20261002",
+      "files": 599,
+      "bytes": 1344619556
+    },
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1059",
+      "files": 598,
+      "bytes": 1344618270
+    },
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1110",
+      "files": 598,
+      "bytes": 1344618438
+    },
+    {
+      "path": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-todo-plan-removal-20261002",
+      "files": 599,
+      "bytes": 1344558194
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-next",
+      "files": 604,
+      "bytes": 1698931441
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\verified-package",
+      "files": 599,
+      "bytes": 1344620193
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\recovery-package",
+      "files": 599,
+      "bytes": 1344620361
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\git-package-07a756a7",
+      "files": 599,
+      "bytes": 1344620365
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\final-package",
+      "files": 599,
+      "bytes": 1344618803
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\accepted-package",
+      "files": 599,
+      "bytes": 1344619147
+    },
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\package",
+      "files": 3,
+      "bytes": 174341752
+    }
+  ],
+  "deleted": [
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003",
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-electron4451-20261002001301583",
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-native-core-20261002",
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1059",
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1110",
+    "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-todo-plan-removal-20261002",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-next",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\verified-package",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\recovery-package",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\git-package-07a756a7",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\final-package",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\accepted-package",
+    "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\package"
+  ],
+  "releasedBytes": 16663964204,
+  "logs": [
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-01.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-electron4451-20261002001301583",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-02.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-native-core-20261002",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-03.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1059",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-04.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-skill-learning-20261002-1110",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-05.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-todo-plan-removal-20261002",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-06.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-next",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-07.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\verified-package",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-08.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\recovery-package",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-09.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\git-package-07a756a7",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-10.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\final-package",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-11.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\accepted-package",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-12.log",
+      "exitCode": 0
+    },
+    {
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\skill-learning-20261002\\package",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\package-cleanup-20261003\\delete-13.log",
+      "exitCode": 0
+    }
+  ],
+  "afterProcesses": [
+    {
+      "ProcessId": 38672,
+      "ParentProcessId": 20436,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050469)/"
+    },
+    {
+      "ProcessId": 41224,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050890)/"
+    },
+    {
+      "ProcessId": 21052,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984050894)/"
+    },
+    {
+      "ProcessId": 39240,
+      "ParentProcessId": 38672,
+      "ExecutablePath": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-computer-use-browser-20261003-final\\win-unpacked\\MyBuddy.exe",
+      "CreationDate": "/Date(1790984052073)/"
+    }
+  ],
+  "originalMainStillRunning": true,
+  "finishedAt": "2026-10-02T23:45:33.340Z"
+}

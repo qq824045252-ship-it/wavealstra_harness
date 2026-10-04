@@ -1,0 +1,116 @@
+{
+  "bugs": {
+    "url": "https://github.com/earendil-works/pi/issues"
+  },
+  "dist": {
+    "shasum": "1b360a332266cd8ca7634a6d56e2e8e40fd03d07",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-0.99.2.tgz",
+    "fileCount": 76,
+    "integrity": "sha512-ISk6OIsiUzmULF+sUilLnENGKo9/gVDxZG2CTEq8f4dbp70AXOr/hMiwOjtcrlX6xBd4UMUsIz4EPTOlU6U+HA==",
+    "signatures": [
+      {
+        "sig": "MEYCIQDYszl15YKx00TsUlrFE1+6ZGKEP8PObSmrXGubUof5jQIhAPRCU4jjZjSRpopZVXuJCLy4a4f4CL4q5VktpBEylvWw",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEYCIQCgNA03hHmpM97pD+JG7jNlU/5136EK2q7yjjyWpJN6egIhANIsnwKWBDFJVeh8dr3Ay5y/Yl2+pX6M0v+fCEe+GiT2",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@earendil-works%2fpi-mcp@0.99.2",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 363139
+  },
+  "main": "./dist/index.js",
+  "name": "@earendil-works/pi-mcp",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "author": {
+    "name": "Earendil Works"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "source": "./src/index.ts"
+    },
+    "./oauth": {
+      "types": "./dist/oauth/index.d.ts",
+      "import": "./dist/oauth/index.js",
+      "source": "./src/oauth/index.ts"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "source": "./src/testing/index.ts"
+    }
+  },
+  "gitHead": "005af57d88ee23b33778f343a9595b32e67ff788",
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest --run",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "shx rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "_npmUser": {
+    "name": "GitHub Actions",
+    "email": "npm-oidc-no-reply@github.com",
+    "trustedPublisher": {
+      "id": "github",
+      "oidcConfigId": "f490702b-168a-43b8-abc9-8ab9adf49e0b"
+    }
+  },
+  "homepage": "https://github.com/earendil-works/pi#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "client"
+  ],
+  "repository": {
+    "url": "git+https://github.com/earendil-works/pi.git",
+    "type": "git",
+    "directory": "packages/mcp"
+  },
+  "_npmVersion": "11.16.0",
+  "description": "Standalone Model Context Protocol client for pi and other applications",
+  "directories": {},
+  "maintainers": [
+    {
+      "name": "mitsuhiko",
+      "email": "armin.ronacher@active-4.com"
+    },
+    {
+      "name": "badlogic",
+      "email": "mario@badlogicgames.com"
+    },
+    {
+      "name": "rwachtler",
+      "email": "r.wachtler@outlook.com"
+    }
+  ],
+  "sideEffects": false,
+  "_nodeVersion": "22.23.2",
+  "dependencies": {
+    "cross-spawn": "7.0.6"
+  },
+  "_hasShrinkwrap": false,
+  "devDependencies": {
+    "shx": "0.4.0",
+    "vitest": "4.1.11",
+    "@types/cross-spawn": "6.0.6"
+  },
+  "_npmOperationalInternal": {
+    "tmp": "tmp/pi-mcp_0.99.2_1790796254461_0.7671465245679059",
+    "host": "s3://npm-registry-packages-npm-production"
+  },
+  "_id": "@earendil-works/pi-mcp@0.99.2",
+  "version": "0.99.2"
+}

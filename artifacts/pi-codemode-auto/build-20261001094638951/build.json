@@ -1,0 +1,159 @@
+{
+  "startedAt": "2026-10-01T09:46:38.954Z",
+  "status": "passed",
+  "release": "release-pi-codemode-auto-20261001094638951",
+  "output": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi-codemode-auto\\build-20261001094638951",
+  "steps": [
+    {
+      "name": "typecheck",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:46:39.105Z",
+      "pid": 4788,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:14.648Z"
+    },
+    {
+      "name": "remote-typecheck",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:14.653Z",
+      "pid": 26952,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:19.340Z"
+    },
+    {
+      "name": "codemode-auto-contract",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:19.344Z",
+      "pid": 4748,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:21.227Z"
+    },
+    {
+      "name": "codemode-native-integration",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:21.231Z",
+      "pid": 28596,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:28.210Z"
+    },
+    {
+      "name": "host-boundary",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:28.214Z",
+      "pid": 32940,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:31.455Z"
+    },
+    {
+      "name": "host-contract",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:31.459Z",
+      "pid": 9008,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:33.238Z"
+    },
+    {
+      "name": "host-native",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:33.241Z",
+      "pid": 31632,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:39.072Z"
+    },
+    {
+      "name": "native-control-contract",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:39.076Z",
+      "pid": 19024,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:41.244Z"
+    },
+    {
+      "name": "native-lifecycle",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:41.252Z",
+      "pid": 5012,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:45.175Z"
+    },
+    {
+      "name": "explicit-plan-records",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:45.179Z",
+      "pid": 8960,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:47.230Z"
+    },
+    {
+      "name": "memory-races",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:47.232Z",
+      "pid": 2064,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:49.296Z"
+    },
+    {
+      "name": "memory-capsules",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:49.300Z",
+      "pid": 15556,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:53.376Z"
+    },
+    {
+      "name": "mcp-compat",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:53.379Z",
+      "pid": 23592,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:47:55.139Z"
+    },
+    {
+      "name": "remote-build",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:47:55.140Z",
+      "pid": 31728,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:48:04.863Z"
+    },
+    {
+      "name": "desktop-build",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:48:04.866Z",
+      "pid": 27708,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:49:35.326Z"
+    },
+    {
+      "name": "portable-pack",
+      "status": "passed",
+      "startedAt": "2026-10-01T09:49:35.442Z",
+      "pid": 18772,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-01T09:50:42.303Z"
+    }
+  ],
+  "pid": 23184,
+  "sourceFingerprint": "408f942f565da306039ce870792d28bbb488b657ae0e4bd03400e95231f481b1",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi-codemode-auto-20261001094638951\\win-unpacked\\MyBuddy.exe",
+  "asar": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi-codemode-auto-20261001094638951\\win-unpacked\\resources\\app.asar",
+  "asarSha256": "be0b3057a8493f810732113209737e23558c335e1b496232f068a42c432daa4c",
+  "sourceUnchanged": true,
+  "finishedAt": "2026-10-01T09:50:42.646Z"
+}

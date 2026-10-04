@@ -1,0 +1,24 @@
+# Repository text files use LF consistently.
+* text=auto eol=lf
+
+# Windows command scripts may require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files: never perform line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

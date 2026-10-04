@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HTML Relative Assets Fixture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><h1>相对资源解析 Fixture</h1></header>
+<main>
+  <p class="note">本页通过 <code>href="style.css"</code> 与 <code>src="logo.svg"</code> 引用同目录资源。
+  验证 ArtifactProtocol 的 root boundary 与相对路径解析（V3.5 §17）。</p>
+  <img src="logo.svg" alt="logo" width="160" height="48">
+  <div class="box">样式来自外部 style.css</div>
+</main>
+</body>
+</html>

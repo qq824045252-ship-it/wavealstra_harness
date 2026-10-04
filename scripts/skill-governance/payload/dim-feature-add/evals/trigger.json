@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "dim-feature-add",
+  "cases": [
+    {
+      "prompt": "在 MyBuddy 显示实时 cache hit rate",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "为任务新增字段并贯通 DB IPC UI",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "在消息详情弹窗新增 usage 指标",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "给 Agent 新增跨层状态显示",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "第一次运行提交按钮稳定报错，请定位",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "重试竞态修了两次还失败",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "只分析仓库，不改代码",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "把一处按钮文字改为发送",
+      "expected": "no-trigger"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Runtime Preview（真实 worker E2E）</title>
+    <link rel="stylesheet" href="../../out/tests/pdf-runtime-preview.css" />
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #root.preview-pdf {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-pdf > .pdf-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="../../out/tests/pdf-runtime-preview.js"></script>
+  </body>
+</html>

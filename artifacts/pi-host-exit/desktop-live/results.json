@@ -1,0 +1,871 @@
+{
+  "kind": "pi-host-exit-real-model-packaged-desktop",
+  "harnessPid": 21772,
+  "startedAt": "2026-10-01T06:23:12.803Z",
+  "tests": [
+    {
+      "name": "approved-plan-does-not-gate-mcp",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:23:16.122Z",
+      "progress": {
+        "elapsedMs": 15898,
+        "started": true,
+        "done": true,
+        "toolCount": 6,
+        "lastTool": "mcp__fixture__read_file",
+        "textEvents": 11
+      },
+      "tools": [
+        {
+          "id": "call_00_p11qwk709pbawc9r4honyrlv|69e4d85e-d313-3d93-851a-2305ee18c046",
+          "name": "conversation_plan_write",
+          "summary": "{\"title\":\"approved-mcp-fixture\",\"summary\":\"验证可选计划不控制执行：仅记录计划，随后调用 fixture MCP 写入并回读标记文件。\",\"approvalMode\":\"auto\",\"steps\":",
+          "status": "success",
+          "output": "已写入 Execution Plan「approved-mcp-fixture」，状态=approved。"
+        },
+        {
+          "id": "call_01_hzm84e03dh1prvl0aek1yl8t|e4157f42-031f-38bb-ba9f-3993b184ea49",
+          "name": "codemode",
+          "summary": "{\"code\":\"const ns = await describeNamespace(\\\"mcp__fixture\\\");\\ntext(ns);\"}",
+          "status": "success",
+          "output": "Script completed\nWall time 0.2 seconds\nOutput:\n\n{\"name\":\"mcp__fixture\",\"tools\":[\"mcp__fixture__get_source_inventory\",\"mcp__fixture__read_file\",\"mcp__fixture__read_delay\",\"mcp__fixture__write_file\",\"mcp__fixture__increment_counter\",\"mcp__fixture__report_failure\",\"mcp__fixture__get_metrics\"]}"
+        },
+        {
+          "id": "call_00_q7imjdgc0qxewssvsl98ixhe|9dd90918-d16a-3149-a46d-af0af429ee41",
+          "name": "codemode",
+          "summary": "{\"code\":\"const d = await describeTool(\\\"mcp__fixture__write_file\\\");\\nconst r = await describeTool(\\\"mcp__fixture__read_",
+          "status": "success",
+          "output": "Script completed\nWall time 0.2 seconds\nOutput:\n\nWrite UTF-8 text only within the isolated test workspace.\n\ncodemode tool declaration:\n```ts\ndeclare const tools: { mcp__fixture__write_file(args: { path: string; text: string; }): Promise<CallToolResult>; };\n```\nRead UTF-8 text from the isolated test workspace.\n\ncodemode tool declaration:\n```ts\ndeclare const tools: { mcp__fixture__read_file(args: { path: string; }): Promise<CallToolResult>; };\n```"
+        },
+        {
+          "id": "call_00_v1tuk9mljnsktarmufx185pl|5bae4540-ab52-3267-a4b4-869064577b69",
+          "name": "codemode",
+          "summary": "{\"code\":\"const w = await tools.mcp__fixture__write_file({ path: \\\"plan-approved-marker.txt\\\", text: \\\"a7089670f811260ba9",
+          "status": "success",
+          "output": "Script completed\nWall time 0.2 seconds\nOutput:\n\nWRITE: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"path\\\":\\\"plan-approved-marker.txt\\\",\\\"bytes\\\":24}\"}],\"structuredContent\":{\"path\":\"plan-approved-marker.txt\",\"bytes\":24}}\nREAD: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"text\\\":\\\"a7089670f811260ba9cc5a10\\\"}\"}],\"structuredContent\":{\"text\":\"a7089670f811260ba9cc5a10\"}}"
+        },
+        {
+          "id": "call_00_v1tuk9mljnsktarmufx185pl|5bae4540-ab52-3267-a4b4-869064577b69/1",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_00_v1tuk9mljnsktarmufx185pl|5bae4540-ab52-3267-a4b4-869064577b69",
+          "summary": "{\"path\":\"plan-approved-marker.txt\",\"text\":\"a7089670f811260ba9cc5a10\"}",
+          "status": "success",
+          "output": "{\"path\":\"plan-approved-marker.txt\",\"bytes\":24}"
+        },
+        {
+          "id": "call_00_v1tuk9mljnsktarmufx185pl|5bae4540-ab52-3267-a4b4-869064577b69/2",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_v1tuk9mljnsktarmufx185pl|5bae4540-ab52-3267-a4b4-869064577b69",
+          "summary": "{\"path\":\"plan-approved-marker.txt\"}",
+          "status": "success",
+          "output": "{\"text\":\"a7089670f811260ba9cc5a10\"}"
+        }
+      ],
+      "planSnapshots": [
+        {
+          "plan": {
+            "id": "plan-48328567-5f42-46b3-88cb-9cc373a443bb",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-7b4b96ad-9cbe-4bb4-98ed-226275cfe2e2",
+            "assistantMessageId": "local-1790835796281-2",
+            "route": "plan",
+            "status": "drafting",
+            "approvalMode": "auto",
+            "title": "approved-mcp-fixture",
+            "steps": [],
+            "findings": [],
+            "verification": [],
+            "version": 1,
+            "createdAt": 1790835802490,
+            "updatedAt": 1790835802490
+          },
+          "toolCount": 2
+        },
+        {
+          "plan": {
+            "id": "plan-48328567-5f42-46b3-88cb-9cc373a443bb",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-7b4b96ad-9cbe-4bb4-98ed-226275cfe2e2",
+            "assistantMessageId": "local-1790835796281-2",
+            "route": "plan",
+            "status": "approved",
+            "approvalMode": "auto",
+            "title": "approved-mcp-fixture",
+            "summary": "验证可选计划不控制执行：仅记录计划，随后调用 fixture MCP 写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "fixture-step",
+                "title": "用 fixture MCP 写入并回读 plan-approved-marker.txt",
+                "detail": "write_file 写入精确内容 a7089670f811260ba9cc5a10，再用 read_file 回读校验",
+                "status": "pending"
+              }
+            ],
+            "findings": [],
+            "verification": [],
+            "version": 2,
+            "createdAt": 1790835802490,
+            "updatedAt": 1790835802490
+          },
+          "toolCount": 2
+        }
+      ],
+      "finalText": "验证完成，只报告结果：\n\n| 项目 | 结果 |\n|---|---|\n| 计划 | `approved-mcp-fixture`，状态=approved，approvalMode=auto，步骤 id=`fixture-step` |\n| 依赖计划状态的调用 | **未调用** `conversation_plan_start` / `step_update` / `verify`，写入与回读照常执行 |\n| `write_file` | `plan-approved-marker.txt`，24 bytes |\n| `read_file` 回读 | `a7089670f811260ba9cc5a10` —— 与写入内容**逐字符一致** |\n\n结论：计划记录仅是旁路状态，不构成执行前置条件；未做任何 `step_update`/`verify` 也不影响 fixture MCP 写入与回读。所有写入均落在 fixture 隔离临时工作区，未触及任务工作目录或其他路径。",
+      "streaming": {
+        "thinkingEvents": 4,
+        "textEvents": 11
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "actualWrites": 1,
+        "toolAttempts": 1,
+        "planStatuses": [
+          "drafting",
+          "approved"
+        ]
+      },
+      "finishedAtMs": 1790835811618,
+      "history": {
+        "found": true,
+        "textChars": 441
+      },
+      "finishedAt": "2026-10-01T06:23:32.040Z"
+    },
+    {
+      "name": "completed-plan-does-not-gate-mcp",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:23:32.370Z",
+      "progress": {
+        "elapsedMs": 24612,
+        "started": true,
+        "done": true,
+        "toolCount": 8,
+        "lastTool": "mcp__fixture__read_file",
+        "textEvents": 12
+      },
+      "tools": [
+        {
+          "id": "call_00_hvm3di9a5hfxzazksrd3envv|a18c82be-9365-32e0-99ba-fc015371d9f6",
+          "name": "conversation_plan_write",
+          "summary": "{\"title\":\"completed-mcp-fixture\",\"summary\":\"验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写",
+          "status": "success",
+          "output": "已写入 Execution Plan「completed-mcp-fixture」，状态=approved。"
+        },
+        {
+          "id": "call_01_p29b0qf6pkqms7nzlt2fabom|cdd850fb-eb9d-3f79-b82c-35e6733a6690",
+          "name": "codemode",
+          "summary": "{\"code\":\"const r = await tools.mcp__fixture__read_file({ path: \\\"sample.json\\\" });\\ntext(JSON.stringify(r));\"}",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"text\\\":\\\"{\\\\\\\"nonce\\\\\\\":\\\\\\\"a7089670f811260ba9cc5a10\\\\\\\",\\\\\\\"values\\\\\\\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\\\"}\"}],\"structuredContent\":{\"text\":\"{\\\"nonce\\\":\\\"a7089670f811260ba9cc5a10\\\",\\\"values\\\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\"}}"
+        },
+        {
+          "id": "call_01_p29b0qf6pkqms7nzlt2fabom|cdd850fb-eb9d-3f79-b82c-35e6733a6690/1",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_01_p29b0qf6pkqms7nzlt2fabom|cdd850fb-eb9d-3f79-b82c-35e6733a6690",
+          "summary": "{\"path\":\"sample.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"nonce\\\":\\\"a7089670f811260ba9cc5a10\\\",\\\"values\\\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\"}"
+        },
+        {
+          "id": "call_00_gh2a5ka2rshgeftxre1a0ehl|a40c002a-6496-34ce-8d85-8a1a191b51be",
+          "name": "conversation_plan_step_update",
+          "summary": "{\"updates\":[{\"id\":\"read-fixture\",\"status\":\"completed\",\"detail\":\"已用 fixture read_file 读取 sample.json，取回 nonce=a7089670f81",
+          "status": "success",
+          "output": "Execution Plan 步骤已更新。"
+        },
+        {
+          "id": "call_00_ddp2vn850sd2uttp6peosevt|791edbbf-6649-3a6c-8f6d-350926bcc9c0",
+          "name": "conversation_plan_verify",
+          "summary": "{\"checks\":[{\"id\":\"read-fixture\",\"label\":\"fixture read_file 读取 sample.json 并取得 nonce\",\"status\":\"passed\",\"evidence\":\"sampl",
+          "status": "success",
+          "output": "验证已记录，计划记录已完成。"
+        },
+        {
+          "id": "call_01_crsf8akwnj7wpjlqnkyezses|46958491-379c-3ff4-82c0-98e599a6c7bf",
+          "name": "codemode",
+          "summary": "{\"code\":\"const planTools = ALL_TOOLS.filter(t => /plan/i.test(t.name)).map(t => t.name);\\ntext(\\\"PLAN TOOLS: \\\" + JSON.s",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nPLAN TOOLS: [\"conversation_plan_write\",\"conversation_plan_start\",\"conversation_plan_step_update\",\"conversation_plan_verify\",\"conversation_plan_block\"]\nWRITE: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"path\\\":\\\"plan-completed-marker.txt\\\",\\\"bytes\\\":24}\"}],\"structuredContent\":{\"path\":\"plan-completed-marker.txt\",\"bytes\":24}}\nREAD: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"text\\\":\\\"a7089670f811260ba9cc5a10\\\"}\"}],\"structuredContent\":{\"text\":\"a7089670f811260ba9cc5a10\"}}"
+        },
+        {
+          "id": "call_01_crsf8akwnj7wpjlqnkyezses|46958491-379c-3ff4-82c0-98e599a6c7bf/1",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_01_crsf8akwnj7wpjlqnkyezses|46958491-379c-3ff4-82c0-98e599a6c7bf",
+          "summary": "{\"path\":\"plan-completed-marker.txt\",\"text\":\"a7089670f811260ba9cc5a10\"}",
+          "status": "success",
+          "output": "{\"path\":\"plan-completed-marker.txt\",\"bytes\":24}"
+        },
+        {
+          "id": "call_01_crsf8akwnj7wpjlqnkyezses|46958491-379c-3ff4-82c0-98e599a6c7bf/2",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_01_crsf8akwnj7wpjlqnkyezses|46958491-379c-3ff4-82c0-98e599a6c7bf",
+          "summary": "{\"path\":\"plan-completed-marker.txt\"}",
+          "status": "success",
+          "output": "{\"text\":\"a7089670f811260ba9cc5a10\"}"
+        }
+      ],
+      "planSnapshots": [
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "drafting",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "steps": [],
+            "findings": [],
+            "verification": [],
+            "version": 1,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835818300
+          },
+          "toolCount": 2
+        },
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "approved",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "summary": "验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "read-fixture",
+                "title": "读取 sample.json 并取回 nonce",
+                "detail": "用 fixture read_file 读取 sample.json，以其真实 nonce 作为 verify 的 passed 证据",
+                "status": "pending"
+              }
+            ],
+            "findings": [],
+            "verification": [],
+            "version": 2,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835818301
+          },
+          "toolCount": 2
+        },
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "executing",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "summary": "验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "read-fixture",
+                "title": "读取 sample.json 并取回 nonce",
+                "detail": "已用 fixture read_file 读取 sample.json，取回 nonce=a7089670f811260ba9cc5a10",
+                "status": "completed"
+              }
+            ],
+            "findings": [],
+            "verification": [],
+            "version": 3,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835823026
+          },
+          "toolCount": 4
+        },
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "verifying",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "summary": "验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "read-fixture",
+                "title": "读取 sample.json 并取回 nonce",
+                "detail": "已用 fixture read_file 读取 sample.json，取回 nonce=a7089670f811260ba9cc5a10",
+                "status": "completed"
+              }
+            ],
+            "findings": [],
+            "verification": [
+              {
+                "id": "read-fixture",
+                "label": "fixture read_file 读取 sample.json 并取得 nonce",
+                "status": "passed",
+                "evidence": "sample.json 实际内容：{\"nonce\":\"a7089670f811260ba9cc5a10\",\"values\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}"
+              }
+            ],
+            "version": 4,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835829615
+          },
+          "toolCount": 6
+        },
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "completed",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "summary": "验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "read-fixture",
+                "title": "读取 sample.json 并取回 nonce",
+                "detail": "已用 fixture read_file 读取 sample.json，取回 nonce=a7089670f811260ba9cc5a10",
+                "status": "completed"
+              }
+            ],
+            "findings": [],
+            "verification": [
+              {
+                "id": "read-fixture",
+                "label": "fixture read_file 读取 sample.json 并取得 nonce",
+                "status": "passed",
+                "evidence": "sample.json 实际内容：{\"nonce\":\"a7089670f811260ba9cc5a10\",\"values\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}"
+              }
+            ],
+            "version": 5,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835829617,
+            "completedAt": 1790835829617
+          },
+          "toolCount": 6
+        },
+        {
+          "plan": {
+            "id": "plan-b1336df5-5d76-43ab-8e6e-d80417841e5e",
+            "taskId": "local-1790835796278-0",
+            "executionId": "execution-931593b8-e7b4-4336-991e-5f7233681e41",
+            "assistantMessageId": "local-1790835812517-4",
+            "route": "plan",
+            "status": "executing",
+            "approvalMode": "auto",
+            "title": "completed-mcp-fixture",
+            "summary": "验证计划标记完成后仍可合法调用 fixture MCP：读取 sample.json 取 nonce，置步骤 completed 并记录证据，随后继续写入并回读标记文件。",
+            "steps": [
+              {
+                "id": "read-fixture",
+                "title": "读取 sample.json 并取回 nonce",
+                "detail": "已用 fixture read_file 读取 sample.json，取回 nonce=a7089670f811260ba9cc5a10",
+                "status": "completed"
+              }
+            ],
+            "findings": [],
+            "verification": [],
+            "version": 6,
+            "createdAt": 1790835818300,
+            "updatedAt": 1790835829719
+          },
+          "toolCount": 7
+        }
+      ],
+      "finalText": "验证完成，只报告结果：\n\n| 步骤 | 结果 |\n|---|---|\n| `conversation_plan_write` | 计划 `completed-mcp-fixture`，approvalMode=auto，单步骤 id=`read-fixture` |\n| `conversation_plan_start` | **未调用** |\n| fixture `read_file` sample.json | 真实 nonce = `a7089670f811260ba9cc5a10` |\n| `conversation_plan_step_update` | `read-fixture` → completed |\n| `conversation_plan_verify` | passed，证据=真实读到的 nonce；返回「验证已记录，**计划记录已完成**」 |\n| fixture `write_file` | `plan-completed-marker.txt`，24 bytes |\n| fixture `read_file` 回读 | `a7089670f811260ba9cc5a10` —— 与写入**逐字符一致** |\n\n结论：计划记录置为 completed 后，fixture MCP 调用依然合法可用，写入与回读正常。未重开或重写计划，未修改其他文件；所有写入均在 fixture 隔离临时工作区。\n\n补充证据说明：本轮消息中尾随的 `library:fc9bce69…` 为资料引用（catalog 视图），非本轮指令，未据此读取正文，也未借其扩大任何权限或改动工具范围。",
+      "streaming": {
+        "thinkingEvents": 44,
+        "textEvents": 12
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "actualWrites": 1,
+        "planStatuses": [
+          "drafting",
+          "approved",
+          "executing",
+          "verifying",
+          "completed",
+          "executing"
+        ]
+      },
+      "finishedAtMs": 1790835836904,
+      "history": {
+        "found": true,
+        "textChars": 708
+      },
+      "finishedAt": "2026-10-01T06:23:57.004Z"
+    },
+    {
+      "name": "repository-inventory",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:23:57.210Z",
+      "progress": {
+        "elapsedMs": 17521,
+        "started": true,
+        "done": true,
+        "toolCount": 7,
+        "lastTool": "mcp__fixture__read_file",
+        "textEvents": 9
+      },
+      "tools": [
+        {
+          "id": "call_00_4h8pz9csbz2nrnbg8qc6qehg|d51f285f-dc75-32a9-a55e-674cba6579af",
+          "name": "codemode",
+          "summary": "{\"code\":\"const d = await describeTool(\\\"mcp__fixture__get_source_inventory\\\");\\ntext(d);\"}",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nRead the real TypeScript source tree and return file paths and sizes. No file content or credentials are read.\n\ncodemode tool declaration:\n```ts\ndeclare const tools: { mcp__fixture__get_source_inventory(args: { [key: string]: unknown; }): Promise<CallToolResult>; };\n```"
+        },
+        {
+          "id": "call_00_i147k1dwtk15j8fr6c1xpm9j|0f61a572-4813-3ed6-8d4f-d0b8b213fad2",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\nconst raw = res.structuredContent ?? res.conte",
+          "status": "success",
+          "output": "th\":\"src/main/agent/LibraryWorkspaceContextService.ts\",\"bytes\":7323},{\"path\":\"src/main/agent/mcp-side-effect-extension.ts\",\"bytes\":9710},{\"path\":\"src/main/agent/MemoryContextProjection.ts\",\"bytes\":6117},{\"path\":\"src/main/agent/mode-defaults.ts\",\"bytes\":28742},{\"path\":\"src/main/agent/ModelInvocationAdmission.ts\",\"bytes\":8478},{\"path\":\"src/main/agent/ModelsConfigStore.ts\",\"bytes\":3868},{\"path\":\"src/main/agent/ModeProfileStore.ts\",\"bytes\":28822},{\"path\":\"src/main/agent/parse-user-prompt.ts\",\"bytes\":3797},{\"path\":\"src/main/agent/PendingActionRegistry.ts\",\"bytes\":1309},{\"path\":\"src/main/agent/permission-extension.ts\",\"bytes\":2049},{\"path\":\"src/main/agent/PiShellOutput.ts\",\"bytes\":5355},{\"path\":\"src/main/agent/PlanSideEffectPolicy.ts\",\"bytes\":2281},{\"path\":\"src/main/agent/PromptAssembly.ts\",\"bytes\":26189},{\"path\":\"src/main/agent/PromptContextBudget.ts\",\"bytes\":6236},{\"path\":\"src/main/agent/PromptEnhancementService.ts\",\"bytes\":13794},{\"path\":\"src/main/agent/PromptExecutionCoordinator.ts\",\"bytes\":2603},{\"path\":\"src/main/agent/PromptFailureRecovery.ts\",\"bytes\":5375},{\"path\":\"src/main/agent/PromptRunRegistry.ts\",\"bytes\":2035},{\"path\":\"src/main/agent/PromptSubmissionCoordinator.ts\",\"bytes\":3621},{\"path\":\"src/main/agent/providers/command-code.ts\",\"bytes\":11601},{\"path\":\"src/main/agent/providers/index.ts\",\"bytes\":778},{\"path\":\"src/main/agent/RuntimeAssemblyFingerprint.ts\",\"bytes\":4037},{\"path\":\"src/main/agent/RuntimeAuditStorage.ts\",\"bytes\":2535},{\"path\":\"src/main/agent/RuntimeContextResolver.ts\",\"bytes\":3667},{\"path\":\"src/main/agent/RuntimeContextSnapshotRepository.ts\",\"bytes\":11803},{\"path\":\"src/main/agent/RuntimeMaterialEvidence.ts\",\"bytes\":3413},{\"path\":\"src/main/agent/RuntimeRequirementRecovery.ts\",\"bytes\":1498},{\"path\":\"src/main/agent/session-branch.ts\",\"bytes\":16435},{\"path\":"
+        },
+        {
+          "id": "call_00_i147k1dwtk15j8fr6c1xpm9j|0f61a572-4813-3ed6-8d4f-d0b8b213fad2/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_i147k1dwtk15j8fr6c1xpm9j|0f61a572-4813-3ed6-8d4f-d0b8b213fad2",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7883964}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-6643b1b3e4e94471.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\nconst data = res.structuredContent ?? JSON.par",
+          "status": "success",
+          "output": "Script completed\nWall time 0.2 seconds\nOutput:\n\nSUMMARY: {\"total\":682,\"totalBytes\":7883964,\"largest\":[{\"path\":\"src/renderer/src/store/appStore.ts\",\"bytes\":251028},{\"path\":\"src/main/agent/AgentService.ts\",\"bytes\":249410},{\"path\":\"src/main/db/AppDatabase.ts\",\"bytes\":167004}]}\nWRITE: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"path\\\":\\\"inventory-summary.json\\\",\\\"bytes\\\":217}\"}],\"structuredContent\":{\"path\":\"inventory-summary.json\",\"bytes\":217}}\nREADBACK: {\"text\":\"{\\\"total\\\":682,\\\"totalBytes\\\":7883964,\\\"largest\\\":[{\\\"path\\\":\\\"src/renderer/src/store/appStore.ts\\\",\\\"bytes\\\":251028},{\\\"path\\\":\\\"src/main/agent/AgentService.ts\\\",\\\"bytes\\\":249410},{\\\"path\\\":\\\"src/main/db/AppDatabase.ts\\\",\\\"bytes\\\":167004}]}\"}"
+        },
+        {
+          "id": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7883964}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-1bf1a55ced43b6f4.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d/2",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d",
+          "summary": "{\"path\":\"inventory-summary.json\",\"text\":\"{\\\"total\\\":682,\\\"totalBytes\\\":7883964,\\\"largest\\\":[{\\\"path\\\":\\\"src/renderer/src",
+          "status": "success",
+          "output": "{\"path\":\"inventory-summary.json\",\"bytes\":217}"
+        },
+        {
+          "id": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d/3",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_12ngc8gcjwv6gw9jseincbsi|68cb1e9b-1c8a-3146-8fb3-eab17873480d",
+          "summary": "{\"path\":\"inventory-summary.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"total\\\":682,\\\"totalBytes\\\":7883964,\\\"largest\\\":[{\\\"path\\\":\\\"src/renderer/src/store/appStore.ts\\\",\\\"bytes\\\":251028},{\\\"path\\\":\\\"src/main/agent/AgentService.ts\\\",\\\"bytes\\\":249410},{\\\"path\\\":\\\"src/main/db/AppDatabase.ts\\\",\\\"bytes\\\":167004}]}\"}"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "验收完成（未做规划，直接执行）。\n\n**结果**\n\n| 字段 | 值 |\n|---|---|\n| `total` | 682 |\n| `totalBytes` | 7,883,964 |\n| `largest[0]` | `src/renderer/src/store/appStore.ts` — 251,028 |\n| `largest[1]` | `src/main/agent/AgentService.ts` — 249,410 |\n| `largest[2]` | `src/main/db/AppDatabase.ts` — 167,004 |\n\n**核对**：`inventory-summary.json` 写入 217 bytes，`read_file` 回读内容与计算值逐字符一致（未猜测数量，全部来自 `get_source_inventory` 实际清单）。\n\n```json\n{\"total\":682,\"totalBytes\":7883964,\"largest\":[{\"path\":\"src/renderer/src/store/appStore.ts\",\"bytes\":251028},{\"path\":\"src/main/agent/AgentService.ts\",\"bytes\":249410},{\"path\":\"src/main/db/AppDatabase.ts\",\"bytes\":167004}]}\n```\n\n产物路径：fixture 隔离临时工作区 `inventory-summary.json`（未改其他文件）。\n\n**局限**：大小按清单给出的字节数累加，未做去重或符号链接判定；最大三项按字节降序，同值再按路径字典序。",
+      "streaming": {
+        "thinkingEvents": 8,
+        "textEvents": 9
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "total": 682,
+        "totalBytes": 7883964,
+        "largest": [
+          {
+            "path": "src/renderer/src/store/appStore.ts",
+            "bytes": 251028
+          },
+          {
+            "path": "src/main/agent/AgentService.ts",
+            "bytes": 249410
+          },
+          {
+            "path": "src/main/db/AppDatabase.ts",
+            "bytes": 167004
+          }
+        ]
+      },
+      "finishedAtMs": 1790835853971,
+      "history": {
+        "found": true,
+        "textChars": 734
+      },
+      "finishedAt": "2026-10-01T06:24:14.821Z"
+    },
+    {
+      "name": "unseen-input-transform",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:24:15.027Z",
+      "progress": {
+        "elapsedMs": 11388,
+        "started": true,
+        "done": true,
+        "toolCount": 4,
+        "lastTool": "mcp__fixture__read_file",
+        "textEvents": 26
+      },
+      "tools": [
+        {
+          "id": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343",
+          "name": "codemode",
+          "summary": "{\"code\":\"const r = await tools.mcp__fixture__read_file({ path: \\\"sample.json\\\" });\\nconst txt = r.structuredContent?.tex",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nRAW: {\"nonce\":\"a7089670f811260ba9cc5a10\",\"values\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\nWRITE: {\"content\":[{\"type\":\"text\",\"text\":\"{\\\"path\\\":\\\"calculated.json\\\",\\\"bytes\\\":142}\"}],\"structuredContent\":{\"path\":\"calculated.json\",\"bytes\":142}}\nREADBACK: {\"nonce\":\"a7089670f811260ba9cc5a10\",\"count\":13,\"sum\":3145,\"min\":-411,\"max\":991,\"sorted\":[-411,-272,-214,4,32,161,229,293,307,505,561,959,991]}\nMATCH: true"
+        },
+        {
+          "id": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343/1",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343",
+          "summary": "{\"path\":\"sample.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"nonce\\\":\\\"a7089670f811260ba9cc5a10\\\",\\\"values\\\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\"}"
+        },
+        {
+          "id": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343/2",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343",
+          "summary": "{\"path\":\"calculated.json\",\"text\":\"{\\\"nonce\\\":\\\"a7089670f811260ba9cc5a10\\\",\\\"count\\\":13,\\\"sum\\\":3145,\\\"min\\\":-411,\\\"max\\\"",
+          "status": "success",
+          "output": "{\"path\":\"calculated.json\",\"bytes\":142}"
+        },
+        {
+          "id": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343/3",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_mb33h885ag7mu5q15o4xa78m|9d3fbe6e-827b-32f8-b68d-c6c06c22f343",
+          "summary": "{\"path\":\"calculated.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"nonce\\\":\\\"a7089670f811260ba9cc5a10\\\",\\\"count\\\":13,\\\"sum\\\":3145,\\\"min\\\":-411,\\\"max\\\":991,\\\"sorted\\\":[-411,-272,-214,4,32,161,229,293,307,505,561,959,991]}\"}"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "短测试完成（数据全部来自本轮 fixture `read_file` 实读，未沿用上轮计算值，未臆造数字）。\n\n**读取源**：fixture `sample.json`\n```json\n{\"nonce\":\"a7089670f811260ba9cc5a10\",\"values\":[307,505,959,229,32,-411,293,561,-272,991,4,161,-214]}\n```\n\n**计算结果（写入 `calculated.json`，142 bytes）**\n\n| 字段 | 值 |\n|---|---|\n| nonce | `a7089670f811260ba9cc5a10` |\n| count | 13 |\n| sum | 3145 |\n| min | -411 |\n| max | 991 |\n| sorted | `[-411,-272,-214,4,32,161,229,293,307,505,561,959,991]` |\n\n```json\n{\"nonce\":\"a7089670f811260ba9cc5a10\",\"count\":13,\"sum\":3145,\"min\":-411,\"max\":991,\"sorted\":[-411,-272,-214,4,32,161,229,293,307,505,561,959,991]}\n```\n\n**回读验证**：`read_file` 回读内容与写入字符串逐字符一致（`MATCH: true`），文件位于 fixture 隔离临时工作区，未改动其他文件。\n\n**需如实说明的一点**：本轮 `sample.json` 的 nonce 与上一轮相同（`a7089670…`），values 也一致——说明 fixture 数据未重新随机化，并非我复用了旧结果；count/sum/min/max/sorted 均为对本次读到的数组现场计算。\n\n**尾附说明**：消息末的 `library:fc9bce69…` 为资料引用（catalog），非本轮指令；我未据此读取正文，也未借其扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 4,
+        "textEvents": 26
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "nonce": "a7089670f811260ba9cc5a10",
+        "count": 13,
+        "sum": 3145,
+        "min": -411,
+        "max": 991,
+        "sorted": [
+          -411,
+          -272,
+          -214,
+          4,
+          32,
+          161,
+          229,
+          293,
+          307,
+          505,
+          561,
+          959,
+          991
+        ]
+      },
+      "finishedAtMs": 1790835865772,
+      "history": {
+        "found": true,
+        "textChars": 888
+      },
+      "finishedAt": "2026-10-01T06:24:26.435Z"
+    },
+    {
+      "name": "real-shell-failure-and-repair",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:24:26.657Z",
+      "progress": {
+        "elapsedMs": 42891,
+        "started": true,
+        "done": true,
+        "toolCount": 5,
+        "lastTool": "bash",
+        "textEvents": 14
+      },
+      "tools": [
+        {
+          "id": "call_00_4lk3jh8pt4fio55k5xqlpuo7|dafc6304-39b7-3145-a98a-530898198e5b",
+          "name": "bash",
+          "summary": "node \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/validate.cjs\"; echo \"EXIT=$?\"",
+          "status": "success",
+          "output": "INPUT_INVALID: repair.json must contain enabled=true and the exact expected nonce documented in validate.cjs. Do not change the validator.\nEXIT=7\n"
+        },
+        {
+          "id": "call_00_wvfjf0txhnjma59vvq4gxexv|cc847f88-a860-3ada-a6b1-31fc9295c9c5",
+          "name": "read",
+          "summary": "C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/validate.cjs",
+          "status": "success",
+          "output": "const fs=require('node:fs'),p=require('node:path');const expected=\"a7089670f811260ba9cc5a10\";let input;try{input=JSON.parse(fs.readFileSync(p.join(__dirname,'repair.json'),'utf8'));}catch{}const ok=input?.enabled===true&&input?.nonce===expected;fs.appendFileSync(p.join(__dirname,'validator-audit.jsonl'),JSON.stringify({code:ok?0:7,at:Date.now()})+'\\n');if(!ok){console.error('INPUT_INVALID: repair.json must contain enabled=true and the exact expected nonce documented in validate.cjs. Do not change the validator.');process.exit(7);}fs.writeFileSync(p.join(__dirname,'validated.json'),JSON.stringify({ok:true,nonce:expected,source:'real-node'}));console.log('VALIDATED_OK');"
+        },
+        {
+          "id": "call_01_ccx6yle6dfnotiauzorq2a03|5fbabfc5-bd31-31cb-9103-9047e9f6c80e",
+          "name": "bash",
+          "summary": "ls -la \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace\"; echo \"---\"; cat \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/repair.json\" 2>&1",
+          "status": "error",
+          "output": "total 16\ndrwxr-xr-x 1 servi 197609   0 Oct  1 14:24 .\ndrwxr-xr-x 1 servi 197609   0 Oct  1 14:23 ..\n-rw-r--r-- 1 servi 197609 142 Oct  1 14:24 calculated.json\n-rw-r--r-- 1 servi 197609 217 Oct  1 14:24 inventory-summary.json\ndrwxr-xr-x 1 servi 197609   0 Oct  1 14:23 listing\n-rw-r--r-- 1 servi 197609  24 Oct  1 14:23 plan-approved-marker.txt\n-rw-r--r-- 1 servi 197609  24 Oct  1 14:23 plan-completed-marker.txt\n-rw-r--r-- 1 servi 197609  99 Oct  1 14:23 sample.json\n-rw-r--r-- 1 servi 197609 234 Oct  1 14:23 slow.cjs\n-rw-r--r-- 1 servi 197609 677 Oct  1 14:23 validate.cjs\n-rw-r--r-- 1 servi 197609  30 Oct  1 14:24 validator-audit.jsonl\n---\ncat: 'C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/repair.json': No such file or directory\n\n\nCommand exited with code 1"
+        },
+        {
+          "id": "call_00_68h7p9fbidlxukf16n8ly4jc|0f63180f-215d-3edf-861e-dcc3ac2f0bd0",
+          "name": "write",
+          "summary": "C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/repair.json",
+          "status": "success",
+          "output": "Wrote and read-back verified 52 UTF-8 bytes to C:\\Users\\servi\\AppData\\Local\\Temp\\pi-host-exit-desktop-7HBpzP\\workspace\\repair.json. Evidence: attempt-459ec5bb-2c5c-47fe-b6aa-94ac78763bda. This verifies file content, not overall task correctness."
+        },
+        {
+          "id": "call_00_meocm65v2rz845xmc08jrt8t|0898f4c1-05ac-3262-b4ae-74207d3741b9",
+          "name": "bash",
+          "summary": "node \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/validate.cjs\"; echo \"EXIT=$?\"; echo \"--- validated.json ---\"; cat \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/validated.json\"; echo; echo \"--- audit ---\"; cat \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/validator-audit.jsonl\"",
+          "status": "success",
+          "output": "VALIDATED_OK\nEXIT=0\n--- validated.json ---\n{\"ok\":true,\"nonce\":\"a7089670f811260ba9cc5a10\",\"source\":\"real-node\"}\n--- audit ---\n{\"code\":7,\"at\":1790835870321}\n{\"code\":0,\"at\":1790835903588}\n"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "失败恢复验收完成，全程真实执行、未伪造。\n\n**第 1 次运行（未改任何输入）**\n```\nnode .../workspace/validate.cjs\n→ INPUT_INVALID: repair.json must contain enabled=true and the exact expected nonce documented in validate.cjs.\n→ EXIT=7   （真实非零退出码，未记为成功）\n```\n原因：该临时目录中根本没有 `repair.json`（校验器 `readFileSync` 抛错被吞掉，`input` 为 undefined）。\n\n**修复依据（读源码，不改校验器）**\n`validate.cjs` 内 `expected = \"a7089670f811260ba9cc5a10\"`，判定条件为 `input?.enabled === true && input?.nonce === expected`。据此新建 `repair.json`：\n```json\n{\"enabled\":true,\"nonce\":\"a7089670f811260ba9cc5a10\"}\n```\n（52 bytes，写入即回读校验）\n\n**第 2 次运行（同一命令）**\n```\nnode .../workspace/validate.cjs\n→ VALIDATED_OK\n→ EXIT=0\n```\n\n**回读验证 `validated.json`**\n```json\n{\"ok\":true,\"nonce\":\"a7089670f811260ba9cc5a10\",\"source\":\"real-node\"}\n```\n\n**独立佐证 `validator-audit.jsonl`**（校验器自身追加，非我写入）\n```\n{\"code\":7,\"at\":1790835870321}   ← 首次失败\n{\"code\":0,\"at\":1790835903588}   ← 修复后成功\n```\n\n**边界确认**：只新建了本次临时测试输入 `repair.json`；未修改 `validate.cjs`，未预置或伪造 `validated.json`，退出码零/非零如实记录。fixture 工作区其他文件（`sample.json`、`calculated.json` 等）未改动。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog），非本轮指令；未据此读取正文，也未借其扩大工具权限。",
+      "streaming": {
+        "thinkingEvents": 5,
+        "textEvents": 14
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "firstExit": 7,
+        "lastExit": 0,
+        "invocations": 2,
+        "validatorUnchanged": true
+      },
+      "finishedAtMs": 1790835909053,
+      "history": {
+        "found": true,
+        "textChars": 1084
+      },
+      "finishedAt": "2026-10-01T06:25:09.566Z"
+    },
+    {
+      "name": "native-subagent",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:25:09.758Z",
+      "progress": {
+        "elapsedMs": 34660,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "subagent",
+        "textEvents": 5
+      },
+      "tools": [
+        {
+          "id": "call_00_fqijj5lx4919yl8bjkhvb4ys|d9816436-7240-3610-abb1-ea65313a7dbf",
+          "name": "subagent",
+          "summary": "{\"agent\":\"worker\",\"task\":\"用 read 工具读取文件 \\\"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/sample",
+          "status": "success",
+          "output": "RESULT_JSON={\"nonce\":\"a7089670f811260ba9cc5a10\",\"sum\":3145}\n\n> subagent: worker-o7o9x6（本次任务内临时实例，已结束）"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "子代理迁移验收完成，结果直接来自 `worker` 实例的真实返回（主模型未代算、未改输入、未新建其他 worker）。\n\n**调用**：`subagent(agent=\"worker\")`，单次派发，实例 `worker-o7o9x6`（任务内临时，已结束）。\n\n**子代理原样返回**\n```\nRESULT_JSON={\"nonce\":\"a7089670f811260ba9cc5a10\",\"sum\":3145}\n```\n\n| 字段 | 值 |\n|---|---|\n| nonce | `a7089670f811260ba9cc5a10` |\n| sum | 3145 |\n\n**边界确认**：输入 `sample.json` 未修改，未新建 `worker`，未派生额外子代理；主模型仅转发子代理结果，未自行读取或求和。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog），非本轮指令；未据此读取正文，也未借其扩大工具权限。",
+      "streaming": {
+        "thinkingEvents": 2,
+        "textEvents": 5
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "sum": 3145,
+        "nonce": "a7089670f811260ba9cc5a10",
+        "workerSucceeded": true,
+        "externalPiRequired": false
+      },
+      "finishedAtMs": 1790835943834,
+      "history": {
+        "found": true,
+        "textChars": 438
+      },
+      "finishedAt": "2026-10-01T06:25:44.437Z"
+    },
+    {
+      "name": "natural-directory-listing",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:25:44.625Z",
+      "progress": {
+        "elapsedMs": 8303,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "bash",
+        "textEvents": 15
+      },
+      "tools": [
+        {
+          "id": "call_00_uodwwie2k0xa5zfkzmu37jdw|2feaf737-fe15-335f-8ccf-3875d89ddfe5",
+          "name": "bash",
+          "summary": "ls -la \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/listing\"",
+          "status": "success",
+          "output": "total 6\ndrwxr-xr-x 1 servi 197609  0 Oct  1 14:23 .\ndrwxr-xr-x 1 servi 197609  0 Oct  1 14:25 ..\n-rw-r--r-- 1 servi 197609 21 Oct  1 14:23 alpha-a70896.txt\n-rw-r--r-- 1 servi 197609 20 Oct  1 14:23 beta-a70896.md\ndrwxr-xr-x 1 servi 197609  0 Oct  1 14:23 nested\n"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "目录 `.../workspace/listing` 单层内容如下：\n\n| 名称 | 类型 | 大小 | 修改时间 |\n|---|---|---|---|\n| `alpha-a70896.txt` | 文件 | 21 B | 10-01 14:23 |\n| `beta-a70896.md` | 文件 | 20 B | 10-01 14:23 |\n| `nested` | 文件夹 | — | 10-01 14:23 |\n\n- 共 2 个文件 + 1 个子目录（不含 `.` / `..`）。\n- 按你的要求只列了 `listing` 这一层，`nested` 内部未展开。\n- 需要的话我可以继续看 `nested` 里的内容，或读取那两个文件。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog），非本轮指令；本轮只做了目录列举，未读取该资料正文，也未借其扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 7,
+        "textEvents": 15
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "filesVerified": 2,
+        "directoryVerified": true,
+        "noDiskUsageScan": true
+      },
+      "finishedAtMs": 1790835952592,
+      "history": {
+        "found": true,
+        "textChars": 412
+      },
+      "finishedAt": "2026-10-01T06:25:52.945Z"
+    },
+    {
+      "name": "missing-file-stops-with-honest-blocker",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:25:53.129Z",
+      "progress": {
+        "elapsedMs": 8373,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "read",
+        "textEvents": 9
+      },
+      "tools": [
+        {
+          "id": "call_00_lwab0xfhd7xa93ob4kxxur3p|eb721637-ee1f-31c4-81bf-9f37f6efd613",
+          "name": "read",
+          "summary": "C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/missing-a7089670f811260ba9cc5a10.txt",
+          "status": "error",
+          "output": "ENOENT: no such file or directory, access 'C:\\Users\\servi\\AppData\\Local\\Temp\\pi-host-exit-desktop-7HBpzP\\workspace\\missing-a7089670f811260ba9cc5a10.txt'"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "文件不存在，如实说明并结束。\n\n- 请求路径：`C:\\Users\\servi\\AppData\\Local\\Temp\\pi-host-exit-desktop-7HBpzP\\workspace\\missing-a7089670f811260ba9cc5a10.txt`\n- 实际结果：`ENOENT: no such file or directory`（读取报错，未返回任何内容）\n\n按你的要求：**未创建该文件**，**未扩大搜索范围**（没有去列目录或按名称模糊匹配查找同名/近似文件），本轮到此结束。\n\n如需下一步，可选项是：告诉我准确文件名、或授权我列一次 `workspace` 目录来对照实际存在的文件。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog 视图），非本轮指令；本轮未调用 `library_read` 读取其正文，也未借其扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 2,
+        "textEvents": 9
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "missingInputReported": true,
+        "noFabricatedFile": true
+      },
+      "finishedAtMs": 1790835961175,
+      "history": {
+        "found": true,
+        "textChars": 407
+      },
+      "finishedAt": "2026-10-01T06:26:01.519Z"
+    },
+    {
+      "name": "native-tool-timeout-no-forced-retry",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:26:01.689Z",
+      "progress": {
+        "elapsedMs": 15421,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "bash",
+        "textEvents": 11
+      },
+      "tools": [
+        {
+          "id": "call_00_gjdbf6h29lypfhjc0fdu0a33|0bbf463a-443c-306e-9ed4-9e8d95dffa27",
+          "name": "bash",
+          "summary": "node \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/slow.cjs\"",
+          "status": "error",
+          "output": "Command timed out after 2 seconds"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "命令超时，如实说明并结束。\n\n- 命令：`node \"C:/Users/servi/AppData/Local/Temp/pi-host-exit-desktop-7HBpzP/workspace/slow.cjs\"`\n- 超时参数：`timeout: 2`（秒）\n- 实际结果：`Command timed out after 2 seconds` —— 命令在 2 秒内未结束，工具已终止它，**未拿到正常输出，也未拿到退出码**（因此没有任何「成功」结论可给）。\n\n按你的要求：**只执行了一次，未重试**，**未修改 `slow.cjs`**，也未改动其他任何文件。\n\n补充界定：本次超时只说明「2 秒内没跑完」，不等价于脚本本身有 bug；脚本按名（`slow.cjs`）看应是刻意加入延迟的测试用例。如需进一步结论（例如实际耗时、是否能跑完），需要你授权第二类动作之一：放宽 timeout 再跑一次，或先读 `slow.cjs` 看它的延迟逻辑——两者我都没有自行执行。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog 视图），非本轮指令；本轮未调用 `library_read` 读取其正文，也未借其扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 2,
+        "textEvents": 11
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "realInvocations": 1,
+        "toolErrorVisible": true,
+        "terminatedNormally": true
+      },
+      "finishedAtMs": 1790835976166,
+      "history": {
+        "found": true,
+        "textChars": 541
+      },
+      "finishedAt": "2026-10-01T06:26:17.132Z"
+    },
+    {
+      "name": "native-nonzero-tool-error",
+      "status": "passed",
+      "startedAt": "2026-10-01T06:26:17.320Z",
+      "progress": {
+        "elapsedMs": 8391,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "bash",
+        "textEvents": 5
+      },
+      "tools": [
+        {
+          "id": "call_00_v2w14zrw067nrmaaffjb8oss|c1f28915-5ed9-33f0-a1c8-27fdb72778ad",
+          "name": "bash",
+          "summary": "printf NATIVE_NONZERO; exit 7",
+          "status": "error",
+          "output": "NATIVE_NONZERO\n\nCommand exited with code 7"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "工具错误显示验证完成，只执行一次、未重试。\n\n- command（精确）：`printf NATIVE_NONZERO; exit 7`\n- 子进程 stdout：`NATIVE_NONZERO`\n- 工具报错：`Command exited with code 7`\n- **退出码：7**（非零，如实上报，未记为成功）\n\n未追加 `echo`，未使用 `|| true`（没有掩盖原始退出码），未做任何重试。\n\n**尾附说明**：消息末 `library:fc9bce69…` 为资料引用（catalog 视图），非本轮指令；本轮未调用 `library_read` 读取其正文，也未借其扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 1,
+        "textEvents": 5
+      },
+      "taskId": "local-1790835796278-0",
+      "result": {
+        "nativeExitCode": 7,
+        "toolStatus": "error",
+        "invocations": 1
+      },
+      "finishedAtMs": 1790835985433,
+      "history": {
+        "found": true,
+        "textChars": 305
+      },
+      "finishedAt": "2026-10-01T06:26:25.732Z"
+    }
+  ],
+  "status": "passed",
+  "asarSha256": "85b6fe322d0f328b46032d89434db505fa2859c18cb1b96230998a68526c3a38",
+  "sourceFingerprint": "d311dbfe9408e8eb87fa21ed48da739657c5b863d9df1b174457e33bb22c6122",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi-host-exit-20261001061441265\\win-unpacked\\MyBuddy.exe",
+  "port": 58663,
+  "pid": 23148,
+  "sessionAudit": [
+    {
+      "file": "2026-10-01T06-23-16-557Z_01a0f621-aa4c-772b-bc2a-d5e31138e0f4.jsonl",
+      "entries": 77,
+      "userMessages": 10,
+      "retiredControlMessages": 0,
+      "observedModels": [
+        "commandcode/deepseek/deepseek-v4.1-flash"
+      ]
+    }
+  ],
+  "rendererErrors": [],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-01T06:26:46.759Z"
+}

@@ -1,0 +1,201 @@
+{
+  "kind": "pi-native-core-real-provider-packaged-electron",
+  "artifactDir": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\todo-plan-removal\\desktop-live",
+  "model": "commandcode/deepseek/deepseek-v4.1-flash-fast",
+  "nonce": "25b0ec8942054492",
+  "startedAt": "2026-10-02T05:00:00.329Z",
+  "tests": [
+    {
+      "name": "four-native-core-tools",
+      "startedAt": "2026-10-02T05:00:03.560Z",
+      "status": "passed",
+      "tools": [
+        {
+          "id": "call_00_Wk73I4OGbwFQp7frp0ra1122|fc_1790917204464_88ut3b98key",
+          "name": "read",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/seed.txt",
+          "status": "success",
+          "approval": false,
+          "output": "nonce=25b0ec8942054492\nphase=before\n"
+        },
+        {
+          "id": "call_00_GkBwwSLpIUqDQsg37ZUb5385|fc_1790917206378_af7d2779d9b",
+          "name": "write",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/result.txt",
+          "status": "success",
+          "approval": false,
+          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/result.txt"
+        },
+        {
+          "id": "call_00_ET_zKSyKtxyxmefpTXUVkYT2444|fc_1790917208331_v6xp3vahljt",
+          "name": "edit",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/result.txt",
+          "status": "success",
+          "approval": false,
+          "output": "Successfully replaced 1 block(s) in C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/result.txt."
+        },
+        {
+          "id": "call_00_ET_gejp0cXRfuOYhzU4IJV36497|fc_1790917209985_vhj6z01qzpp",
+          "name": "bash",
+          "summary": "'C:/Program Files/nodejs/node.exe' 'C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/probe.cjs'",
+          "status": "success",
+          "approval": false,
+          "output": "NATIVE_PROBE_OK\n"
+        }
+      ],
+      "finalText": "原生工具链验收通过：read 取得 nonce=25b0ec8942054492，write/edit 生成 phase=after 的 result.txt，bash 探针返回 NATIVE_PROBE_OK。",
+      "taskId": "local-1790917203850-0",
+      "result": {
+        "tools": [
+          "read",
+          "write",
+          "edit",
+          "bash"
+        ],
+        "externalTargetWorkedWithoutApproval": true,
+        "environmentKeys": [],
+        "nativeTranscriptResults": true,
+        "controls": {
+          "headerButtons": [
+            {
+              "text": "Goal",
+              "title": "为这个 Task 建立跨轮 Goal"
+            },
+            {
+              "text": "",
+              "title": "搜索"
+            },
+            {
+              "text": "",
+              "title": "分享"
+            },
+            {
+              "text": "",
+              "title": "历史提问"
+            },
+            {
+              "text": "",
+              "title": "任务菜单"
+            },
+            {
+              "text": "",
+              "title": "打开概览"
+            }
+          ],
+          "retiredSurfaces": [],
+          "snapshotKeys": [
+            "interactions",
+            "taskId"
+          ],
+          "goalAvailable": true,
+          "composerAvailable": true
+        },
+        "retainedInteractions": {
+          "goalCreatedViaUi": true,
+          "goalCancelledViaUi": true,
+          "goalId": "goal-2dcd7da2-f036-4e33-bbbd-9a66fab8df73",
+          "composerAcceptedAndClearedText": true
+        },
+        "reopenedHistory": {
+          "reopenedViaSidebar": true,
+          "ordinaryMessagesUnchanged": true,
+          "messages": 2,
+          "controls": {
+            "headerButtons": [
+              {
+                "text": "Goal",
+                "title": "为这个 Task 建立跨轮 Goal"
+              },
+              {
+                "text": "",
+                "title": "搜索"
+              },
+              {
+                "text": "",
+                "title": "分享"
+              },
+              {
+                "text": "",
+                "title": "历史提问"
+              },
+              {
+                "text": "",
+                "title": "任务菜单"
+              },
+              {
+                "text": "",
+                "title": "打开概览"
+              }
+            ],
+            "retiredSurfaces": [],
+            "snapshotKeys": [
+              "interactions",
+              "taskId"
+            ],
+            "goalAvailable": true,
+            "composerAvailable": true
+          }
+        }
+      },
+      "finishedAt": "2026-10-02T05:00:14.789Z"
+    },
+    {
+      "name": "native-nonzero-failure",
+      "startedAt": "2026-10-02T05:00:15.017Z",
+      "status": "passed",
+      "tools": [
+        {
+          "id": "call_00_T0iuIuwWJBRZZFhaSAMP8786|fc_1790917215748_736u64u44n8",
+          "name": "bash",
+          "summary": "printf NATIVE_NONZERO; exit 7",
+          "status": "error",
+          "approval": false,
+          "output": "NATIVE_NONZERO\n\nCommand exited with code 7"
+        }
+      ],
+      "finalText": "老板，已按要求执行一次原生 bash，命令为：\n\n```\nprintf NATIVE_NONZERO; exit 7\n```\n\n结果：\n- stdout：`NATIVE_NONZERO`\n- 退出码：`7`（非零，失败）\n- 未追加 `echo`、未使用 `|| true`、未重试、未调用其他工具\n\n任务按失败退出结束。",
+      "taskId": "local-1790917215287-3",
+      "result": {
+        "nativeExitCode": 7,
+        "errorVisible": true,
+        "invocations": 1
+      },
+      "finishedAt": "2026-10-02T05:00:19.623Z"
+    },
+    {
+      "name": "native-running-command-cancellation",
+      "startedAt": "2026-10-02T05:00:19.876Z",
+      "status": "passed",
+      "cancelledAt": 1790917222555,
+      "tools": [
+        {
+          "id": "call_00_fhgXkHXsv4Lzltyc8wli4800|fc_1790917220281_5dsaz5yjs0h",
+          "name": "bash",
+          "summary": "'C:/Program Files/nodejs/node.exe' 'C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-1oM9f9/workspace/slow.cjs'",
+          "status": "error",
+          "approval": false,
+          "output": "Command aborted"
+        }
+      ],
+      "finalText": "",
+      "assistantError": "This operation was aborted",
+      "taskId": "local-1790917220164-6",
+      "result": {
+        "actualShellStarted": true,
+        "stoppedBeforeLateSideEffect": true,
+        "invocations": 1
+      },
+      "finishedAt": "2026-10-02T05:00:33.437Z"
+    }
+  ],
+  "status": "passed",
+  "executable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-todo-plan-removal-20261002\\win-unpacked\\MyBuddy.exe",
+  "asarSha256": "dbe1a31ede779b710a06d208af1b9ed2ab9ebf28f35e4c4e801730fdd91911d1",
+  "pid": 25524,
+  "rendererErrors": [],
+  "observedModels": [
+    "commandcode/deepseek/deepseek-v4.1-flash-fast"
+  ],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-02T05:00:54.608Z"
+}

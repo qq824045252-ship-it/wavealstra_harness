@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "skill": "cheaper-inference-image",
+  "cases": [
+    {
+      "prompt": "用 CheaperInference 的 grok-imagine 画苹果",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "比较 CheaperInference 三个图像模型的速度",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "通过 CheaperInference 生成两张图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "测试 CheaperInference 的 gpt-image-2 输出质量",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "画一只猫",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 Vertex AI 生成图片",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 Gemini Enterprise 分析图片",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 MyBuddy 默认生图工具画海报",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "通过 Google Agent Platform 生成图片",
+      "expected": "no-trigger"
+    }
+  ]
+}

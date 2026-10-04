@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "gemini-agent-platform",
+  "cases": [
+    {
+      "prompt": "用 Vertex AI Gemini 分析这张图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "调用 Gemini Enterprise 文本模型",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "通过 Google Agent Platform 生成图片",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "通过 Gemini Developer API 执行提示词",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "画一只猫",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 CheaperInference 的 grok-imagine 画苹果",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "测试 CheaperInference 的 gpt-image-2 输出质量",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 MyBuddy 默认生图工具画海报",
+      "expected": "no-trigger"
+    }
+  ]
+}

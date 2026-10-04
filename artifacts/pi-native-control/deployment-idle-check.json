@@ -1,0 +1,39 @@
+{
+  "at": "2026-09-30T23:05:42.170Z",
+  "processStartedAt": 1790777547243,
+  "runningSinceProcessStart": [],
+  "unexpiredLeases": [],
+  "recentTasks": [
+    {
+      "id": "remote-46097b48-4aff-4886-b318-4bcfa2abb6bc",
+      "title": "帮我搜索下，怎么连接到 gmail 和 goog…",
+      "status": "completed",
+      "updated_at": 1790782030403
+    },
+    {
+      "id": "remote-f99eab0e-3368-4691-a2f2-0f60af3373cf",
+      "title": "看下我的文档有哪些文件",
+      "status": "completed",
+      "updated_at": 1790780506931
+    },
+    {
+      "id": "remote-7a804cbc-4550-4036-a25e-3325f86a94ed",
+      "title": "帮我创建一个 1 周 减肥计划，平时朝九晚五",
+      "status": "completed",
+      "updated_at": 1790778985938
+    },
+    {
+      "id": "local-1790745928818-0",
+      "title": "杭州国庆哪里最好玩啊",
+      "status": "completed",
+      "updated_at": 1790745958567
+    },
+    {
+      "id": "local-1790742709750-37",
+      "title": "ssh vivion@192.168.0.121…",
+      "status": "completed",
+      "updated_at": 1790745344826
+    }
+  ],
+  "noRecordedLiveRuns": true
+}

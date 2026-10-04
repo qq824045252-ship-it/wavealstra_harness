@@ -1,0 +1,50 @@
+{
+  "group": "core",
+  "startedAt": "2026-09-30T23:02:45.982Z",
+  "tests": [
+    {
+      "name": "test:pi-native-control",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1500,
+      "log": "test-pi-native-control.log"
+    },
+    {
+      "name": "test:message-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 968,
+      "log": "test-message-lifecycle.log"
+    },
+    {
+      "name": "test:prompt-submission",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1016,
+      "log": "test-prompt-submission.log"
+    },
+    {
+      "name": "test:prompt-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1038,
+      "log": "test-prompt-execution.log"
+    },
+    {
+      "name": "test:streaming-send",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 915,
+      "log": "test-streaming-send.log"
+    },
+    {
+      "name": "test:session-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1014,
+      "log": "test-session-lifecycle.log"
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-30T23:02:52.437Z"
+}

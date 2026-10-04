@@ -1,0 +1,128 @@
+{
+  "bugs": {
+    "url": "https://github.com/earendil-works/pi/issues"
+  },
+  "dist": {
+    "shasum": "fe7f280a0eac6f6b63025d3af1387dbd0a986fbc",
+    "tarball": "https://registry.npmjs.org/@earendil-works/chord/-/chord-0.99.2.tgz",
+    "fileCount": 119,
+    "integrity": "sha512-2dJWiNsOJm/ioBl1fhpJmw0hIjFUhM0CAteEnVkiVG0Kg4LimR7Asq8PfjclEvrbCPsDntzy7rGKhTZObI9TZw==",
+    "signatures": [
+      {
+        "sig": "MEUCIEGknHVz8ZeMxFKLZQkZxiCrvbjCZmtUjs5jt3qAAJ8KAiEA+Miv0TZqDhyq8bH3Veu+7pAYIFo/rsVGVkOJNHyH3Us=",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEQCIAXvULa5QXi+1F57qs9kNpcVkZhtk15Wjwko+7qA/A0EAiB92U1xBouANGpSvf1P9rkHazt3eO3BeT+KTsY2QNfpEA==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@earendil-works%2fchord@0.99.2",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 1024462
+  },
+  "main": "./dist/index.js",
+  "name": "@earendil-works/chord",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "author": {
+    "name": "Earendil Works"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "source": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "source": "./src/node.ts"
+    },
+    "./delta": {
+      "types": "./dist/delta/index.d.ts",
+      "import": "./dist/delta/index.js",
+      "source": "./src/delta/index.ts"
+    },
+    "./bundler": {
+      "types": "./dist/bundler.d.ts",
+      "import": "./dist/bundler.js",
+      "source": "./src/bundler.ts"
+    },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "import": "./dist/context/index.js",
+      "source": "./src/context/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "gitHead": "005af57d88ee23b33778f343a9595b32e67ff788",
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest --run",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "shx rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "_npmUser": {
+    "name": "GitHub Actions",
+    "email": "npm-oidc-no-reply@github.com",
+    "trustedPublisher": {
+      "id": "github",
+      "oidcConfigId": "9bb344c7-1b64-4b2b-a054-25c1ef29c6d7"
+    }
+  },
+  "homepage": "https://github.com/earendil-works/pi#readme",
+  "keywords": [
+    "application",
+    "plugins",
+    "rpc",
+    "services",
+    "state"
+  ],
+  "repository": {
+    "url": "git+https://github.com/earendil-works/pi.git",
+    "type": "git",
+    "directory": "packages/chord"
+  },
+  "_npmVersion": "11.16.0",
+  "description": "Application composition runtime for services, replicated state, RPC, and plugins",
+  "directories": {},
+  "maintainers": [
+    {
+      "name": "mitsuhiko",
+      "email": "armin.ronacher@active-4.com"
+    },
+    {
+      "name": "badlogic",
+      "email": "mario@badlogicgames.com"
+    },
+    {
+      "name": "rwachtler",
+      "email": "r.wachtler@outlook.com"
+    }
+  ],
+  "sideEffects": false,
+  "_nodeVersion": "22.23.2",
+  "dependencies": {
+    "esbuild": "0.28.2"
+  },
+  "_hasShrinkwrap": false,
+  "devDependencies": {
+    "shx": "0.4.0",
+    "vitest": "4.1.11"
+  },
+  "_npmOperationalInternal": {
+    "tmp": "tmp/chord_0.99.2_1790796300119_0.7892993123108651",
+    "host": "s3://npm-registry-packages-npm-production"
+  },
+  "_id": "@earendil-works/chord@0.99.2",
+  "version": "0.99.2"
+}

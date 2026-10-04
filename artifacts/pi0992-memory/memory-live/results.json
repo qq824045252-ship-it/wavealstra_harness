@@ -1,0 +1,377 @@
+{
+  "kind": "pi0992-real-model-memory-ipc-session",
+  "harnessPid": 21508,
+  "startedAt": "2026-09-30T23:49:58.480Z",
+  "tests": [
+    {
+      "name": "global-memory-auto-recall",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:50:01.871Z",
+      "progress": {
+        "elapsedMs": 7096,
+        "started": true,
+        "done": true,
+        "toolCount": 0,
+        "textEvents": 1
+      },
+      "tools": [],
+      "finalText": "G-b7a4c0cf6f1d",
+      "streaming": {
+        "thinkingEvents": 66,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-e8f07c4e-950f-4855-aa8e-08d057c6f52d",
+      "result": {
+        "expected": "G-b7a4c0cf6f1d",
+        "noForbiddenValues": true,
+        "toolsUsed": 0
+      },
+      "finishedAtMs": 1790812208329,
+      "history": {
+        "found": true,
+        "textChars": 14
+      },
+      "finishedAt": "2026-09-30T23:50:08.982Z"
+    },
+    {
+      "name": "project-a-recall-no-b-leak",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:50:09.318Z",
+      "progress": {
+        "elapsedMs": 13165,
+        "started": true,
+        "done": true,
+        "toolCount": 2,
+        "lastTool": "memory_get",
+        "textEvents": 1
+      },
+      "tools": [
+        {
+          "id": "call_00_QPLsxkAk3uY7l5PGMfQh5435|492a1540-8b8c-3906-8c68-e60693c1fd85",
+          "name": "memory_search",
+          "summary": "{\"query\":\"标定编号\",\"kind\":\"fact\"}",
+          "status": "success",
+          "output": "[fact/active][project:proj_4a60c7ce-37c6-4bba-81ff-cb81c362a4ba] 本项目标定编号 — 本项目的标定编号是 A-da165fb1401c。 (importance=2, confidence=1.00, id=mem_67bf0a79-6678-4245-9118-d359d2ccd1bb)\n  recall: bm25, lexical-exact, scope:project/1, importance:2, explicit score=114.1\n[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=44.9"
+        },
+        {
+          "id": "call_01_cCbgrm4yq7zDgFfaAWxw5277|ce465a92-d896-3245-8867-06296907a571",
+          "name": "memory_get",
+          "summary": "{\"id\":\"mem_67bf0a79-6678-4245-9118-d359d2ccd1bb\"}",
+          "status": "success",
+          "output": "[fact/active][project:proj_4a60c7ce-37c6-4bba-81ff-cb81c362a4ba] 本项目标定编号 — 本项目的标定编号是 A-da165fb1401c。 (importance=2, confidence=1.00, id=mem_67bf0a79-6678-4245-9118-d359d2ccd1bb)\n完整内容：本项目的标定编号是 A-da165fb1401c。\nsource=user explicit=true\nevidence=（无）\nrelations=（无）"
+        }
+      ],
+      "finalText": "A-da165fb1401c",
+      "streaming": {
+        "thinkingEvents": 7,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-d2660862-ab21-41c0-9d38-ec525260733c",
+      "result": {
+        "expected": "A-da165fb1401c",
+        "noForbiddenValues": true,
+        "toolsUsed": 2
+      },
+      "finishedAtMs": 1790812221557,
+      "history": {
+        "found": true,
+        "textChars": 14
+      },
+      "finishedAt": "2026-09-30T23:50:22.496Z"
+    },
+    {
+      "name": "project-b-recall-no-a-leak",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:50:22.696Z",
+      "progress": {
+        "elapsedMs": 12159,
+        "started": true,
+        "done": true,
+        "toolCount": 1,
+        "lastTool": "memory_search",
+        "textEvents": 1
+      },
+      "tools": [
+        {
+          "id": "call_00_2gkxbURCZYXOBDvS2poG3240|fc78c994-61ee-3327-9fa2-cc59e9eb6313",
+          "name": "memory_search",
+          "summary": "{\"query\":\"标定编号\"}",
+          "status": "success",
+          "output": "[fact/active][project:proj_b55ddc2a-a675-4f28-95e5-700e6971547d] 本项目标定编号 — 本项目的标定编号是 B-f7b44970e1a9。 (importance=2, confidence=1.00, id=mem_de7f2840-130f-4435-a3ba-375f50dbe47e)\n  recall: bm25, lexical-exact, scope:project/1, importance:2, explicit score=114.1\n[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=44.9"
+        }
+      ],
+      "finalText": "B-f7b44970e1a9",
+      "streaming": {
+        "thinkingEvents": 52,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-2b7b3be5-8d99-42a0-94bc-73d03443df32",
+      "result": {
+        "expected": "B-f7b44970e1a9",
+        "noForbiddenValues": true,
+        "toolsUsed": 1
+      },
+      "finishedAtMs": 1790812234043,
+      "history": {
+        "found": true,
+        "textChars": 14
+      },
+      "finishedAt": "2026-09-30T23:50:34.864Z"
+    },
+    {
+      "name": "updated-memory-new-task",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:50:35.045Z",
+      "progress": {
+        "elapsedMs": 11359,
+        "started": true,
+        "done": true,
+        "toolCount": 2,
+        "lastTool": "memory_get",
+        "textEvents": 1
+      },
+      "tools": [
+        {
+          "id": "call_00_Vdom0DWFMnuFIMIfL3zs6889|69ae1b84-626e-3f70-a098-aee61c3b128a",
+          "name": "memory_search",
+          "summary": "{\"query\":\"本项目标定编号\"}",
+          "status": "success",
+          "output": "[fact/active][project:proj_4a60c7ce-37c6-4bba-81ff-cb81c362a4ba] 本项目标定编号 — 本项目的标定编号是 U-7477d806eba9。 (importance=2, confidence=1.00, id=mem_67bf0a79-6678-4245-9118-d359d2ccd1bb)\n  recall: bm25, lexical-exact, scope:project/1, importance:2, explicit score=119.9\n[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=43.1"
+        },
+        {
+          "id": "call_01_G744SlZO7b69TMW6HXpr8975|9ebd61b6-f6ed-336e-bc23-631f70d0d160",
+          "name": "memory_get",
+          "summary": "{\"id\":\"mem_67bf0a79-6678-4245-9118-d359d2ccd1bb\"}",
+          "status": "success",
+          "output": "[fact/active][project:proj_4a60c7ce-37c6-4bba-81ff-cb81c362a4ba] 本项目标定编号 — 本项目的标定编号是 U-7477d806eba9。 (importance=2, confidence=1.00, id=mem_67bf0a79-6678-4245-9118-d359d2ccd1bb)\n完整内容：本项目的标定编号是 U-7477d806eba9。\nsource=user explicit=true\nevidence=（无）\nrelations=（无）"
+        }
+      ],
+      "finalText": "U-7477d806eba9",
+      "streaming": {
+        "thinkingEvents": 14,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-dab1c998-9c34-426f-ae57-9dfbf4582312",
+      "result": {
+        "expected": "U-7477d806eba9",
+        "noForbiddenValues": true,
+        "toolsUsed": 2
+      },
+      "finishedAtMs": 1790812245753,
+      "history": {
+        "found": true,
+        "textChars": 14
+      },
+      "finishedAt": "2026-09-30T23:50:46.417Z"
+    },
+    {
+      "name": "forgotten-memory-new-task-is-unknown",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:50:46.661Z",
+      "progress": {
+        "elapsedMs": 22357,
+        "started": true,
+        "done": true,
+        "toolCount": 5,
+        "lastTool": "memory_search",
+        "textEvents": 1
+      },
+      "tools": [
+        {
+          "id": "call_00_vk7sjepfwdmy6e3qdnu5n77v|839d7ca2-d123-391d-9737-f32a776ebc33",
+          "name": "memory_search",
+          "summary": "{\"query\":\"标定编号\",\"limit\":30}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=44.9"
+        },
+        {
+          "id": "call_01_krhl0591vvunz28s5zxn23a1|5d48b1cc-f305-35cd-9503-f488ad8bb467",
+          "name": "memory_search",
+          "summary": "{\"query\":\"calibration 编号 标定\",\"limit\":30}",
+          "status": "success",
+          "output": "没有匹配的长期记忆。"
+        },
+        {
+          "id": "call_00_b2i0z6i3tf2jhfgdv8zcws29|c18dd2ae-c840-36a5-baff-174a934a4f55",
+          "name": "memory_get",
+          "summary": "{\"id\":\"mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4\"}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n完整内容：全局参考编号是 G-b7a4c0cf6f1d。\nsource=user explicit=true\nevidence=（无）\nrelations=（无）"
+        },
+        {
+          "id": "call_01_sjjzyheahglxdizt6nzrsfuq|f66189b4-e7e0-3e35-892f-d4f72c6ca455",
+          "name": "memory_search",
+          "summary": "{\"limit\":30,\"query\":\"项目 标定\"}",
+          "status": "success",
+          "output": "没有匹配的长期记忆。"
+        },
+        {
+          "id": "call_00_z1aq6c07gl6z5ylvo0b80yqw|5905fdc0-3954-38c0-9ed1-b9ec1c00b3a1",
+          "name": "memory_search",
+          "summary": "{\"limit\":30}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=51.0"
+        }
+      ],
+      "finalText": "UNKNOWN",
+      "streaming": {
+        "thinkingEvents": 5,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-72a5d47d-9f9d-48d0-9d69-ca57dc48e033",
+      "result": {
+        "expected": "UNKNOWN",
+        "noForbiddenValues": true,
+        "toolsUsed": 5
+      },
+      "finishedAtMs": 1790812268419,
+      "history": {
+        "found": true,
+        "textChars": 7
+      },
+      "finishedAt": "2026-09-30T23:51:09.031Z"
+    },
+    {
+      "name": "sibling-task-private-memory-isolated",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:51:09.244Z",
+      "progress": {
+        "elapsedMs": 34400,
+        "started": true,
+        "done": true,
+        "toolCount": 3,
+        "lastTool": "memory_search",
+        "textEvents": 1
+      },
+      "tools": [
+        {
+          "id": "call_00_Bk9w5TS1ZHTqKX8fyGrZ7831|54ce716a-d8f7-3f12-b02b-cce7efb3e258",
+          "name": "memory_search",
+          "summary": "{\"query\":\"检测编号\"}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=44.9"
+        },
+        {
+          "id": "call_01_wXYy7fa1M23X35xh3eMh3442|1e04e4ae-7173-3da7-ab18-09511c6893dc",
+          "name": "memory_search",
+          "summary": "{\"query\":\"任务专有 检测编号\"}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: scope:global/10, importance:2, explicit score=42.8"
+        },
+        {
+          "id": "call_00_l1IwxBvafoXXvmFUlwgW4137|a20b8f96-eeda-399c-acae-8904673b548f",
+          "name": "memory_search",
+          "summary": "{\"query\":\"编号\",\"limit\":30}",
+          "status": "success",
+          "output": "[fact/active][global] 全局参考编号 — 全局参考编号是 G-b7a4c0cf6f1d。 (importance=2, confidence=1.00, id=mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4)\n  recall: lexical-exact, scope:global/10, importance:2, explicit score=74.6"
+        }
+      ],
+      "finalText": "UNKNOWN",
+      "streaming": {
+        "thinkingEvents": 5,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-e45d744e-a876-4b1d-8b59-2ac832fd75da",
+      "result": {
+        "expected": "UNKNOWN",
+        "noForbiddenValues": true,
+        "toolsUsed": 3
+      },
+      "finishedAtMs": 1790812303174,
+      "history": {
+        "found": true,
+        "textChars": 7
+      },
+      "finishedAt": "2026-09-30T23:51:43.650Z"
+    },
+    {
+      "name": "disabled-memory-not-auto-injected",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:51:43.807Z",
+      "progress": {
+        "elapsedMs": 9131,
+        "started": true,
+        "done": true,
+        "toolCount": 0,
+        "textEvents": 1
+      },
+      "tools": [],
+      "finalText": "UNKNOWN",
+      "streaming": {
+        "thinkingEvents": 12,
+        "textEvents": 1
+      },
+      "taskId": "memory-live-744ae001-b561-46fb-b891-9ad77cf7f40e",
+      "result": {
+        "expected": "UNKNOWN",
+        "noForbiddenValues": true,
+        "toolsUsed": 0
+      },
+      "finishedAtMs": 1790812312353,
+      "history": {
+        "found": true,
+        "textChars": 7
+      },
+      "finishedAt": "2026-09-30T23:51:52.949Z"
+    }
+  ],
+  "status": "passed",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi0992-20260930234642464\\win-unpacked\\MyBuddy.exe",
+  "port": 53344,
+  "pid": 22836,
+  "fixtureIds": {
+    "projectA": "proj_4a60c7ce-37c6-4bba-81ff-cb81c362a4ba",
+    "projectB": "proj_b55ddc2a-a675-4f28-95e5-700e6971547d",
+    "aMemory": "mem_67bf0a79-6678-4245-9118-d359d2ccd1bb",
+    "bMemory": "mem_de7f2840-130f-4435-a3ba-375f50dbe47e",
+    "globalMemory": "mem_618f3f33-b343-477b-a6e6-ecab0a7d9fc4",
+    "privateMemory": "mem_e5a3d570-7516-4880-8b95-bf5189927442"
+  },
+  "sessionAudit": [
+    {
+      "file": "2026-09-30T23-50-25-085Z_01a0f4b9-fe3d-7506-9127-9c2c18174c40.jsonl",
+      "entries": 10,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-50-48-624Z_01a0f4ba-5a30-7506-9127-9c3187d07837.jsonl",
+      "entries": 16,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-51-47-624Z_01a0f4bb-40a8-7506-9127-9c3426535268.jsonl",
+      "entries": 8,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-50-12-943Z_01a0f4b9-cecf-7506-9127-9c2bf20bb08c.jsonl",
+      "entries": 11,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-50-37-179Z_01a0f4ba-2d7b-7506-9127-9c2f718785f9.jsonl",
+      "entries": 11,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-51-11-245Z_01a0f4ba-b28d-7506-9127-9c321a003f8f.jsonl",
+      "entries": 15,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    },
+    {
+      "file": "2026-09-30T23-50-02-068Z_01a0f4b9-a453-7506-9127-9c2836ea4500.jsonl",
+      "entries": 8,
+      "userMessages": 1,
+      "retiredControlMessages": 0
+    }
+  ],
+  "rendererErrors": [],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-09-30T23:52:14.031Z"
+}

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "open-kimi-ppt",
+  "cases": [
+    {
+      "prompt": "从零设计一份高视觉质量发布会 PPT",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "将参考图版式复刻成 PPTD",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "用 Kimi PPT 工作流生成演示文稿",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把 PPTD 导出成 PPTX",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把现有 PPTX 第三页错字改掉",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "读取这个 PPTX 的形状树",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "把 PPTX 中一个标题改成红色",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "画一只猫",
+      "expected": "no-trigger"
+    }
+  ]
+}

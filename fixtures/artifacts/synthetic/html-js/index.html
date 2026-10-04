@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HTML + JS Fixture（外部相对脚本）</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<h1>HTML+JS Fixture（V3.5 §28 html-js）</h1>
+<p>验证：外部相对脚本加载、DOM 操作、事件绑定、动态渲染；与
+<code>html-relative-assets</code> 的差异在 JS 逻辑密度（本样本是“应用型”页面）。</p>
+
+<div id="app" class="app"></div>
+
+<template id="row-tpl">
+  <li class="row"><span class="idx"></span><span class="name"></span><span class="status"></span></li>
+</template>
+
+<script src="./app.js"></script>
+</body>
+</html>

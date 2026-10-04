@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "weekly-report-fill",
+  "cases": [
+    {
+      "prompt": "把这些工作材料转成周报系统可导入 JSON",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "生成第 36 周周报待导入文件",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "将聊天记录按周报字段整理成 JSON",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "调用周报构建脚本生成 _exports 产物",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "只用文字总结本周工作",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "根据录音生成会议纪要",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "生成 ProjectLibre 排程 XML",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "直接替我提交周报到系统",
+      "expected": "no-trigger"
+    }
+  ]
+}

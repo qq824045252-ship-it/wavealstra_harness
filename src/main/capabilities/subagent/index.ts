@@ -1,0 +1,1348 @@
+/**
+ * Subagent 扩展（MyBuddy 版）
+ *
+ * 架构（2026-08 收敛）：Subagent = Task-scoped disposable worker（非长期 Agent）。
+ * - 每个实例绑定父 Task 作用域（pi 会话 sessionId）；terminal（RESULT/FAILED/CANCELLED）
+ *   或父 Task 结束即销毁：kill worker、删 session 文件与 transcript、移除 active 记录。
+ * - worker 底层：`pi --mode rpc` 子进程（node.exe + CLI JS，shell:false）。
+ * - 注册表：active-only（内存 + active.json 最小快照，仅用于崩溃后 GC 遗留）；无历史。
+ * - 权限：子代理工具白名单由宿主 permissionMode + 角色 frontmatter 推导
+ *   （引擎级 --tools/--exclude-tools，进程外无弹窗审批）；递归工具恒排除 + 深度硬上限。
+ * - 上下文契约：继承 cwd + 角色 systemPrompt + 任务文本；Shared Context/Memory/
+ *   Plan/策略不继承（写进子代理系统提示，不伪造未知）。
+ *
+ * 工具：
+ *   subagent        single/parallel/chain（每次创建新的 Task-scoped 临时实例）
+ *   subagent_list   当前父 Task 的 active 实例
+ *   subagent_steer  当前父 Task active 实例的引导（已结束 → 明确拒绝）
+ */
+
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { assertModelAdmission } from "../../agent/ModelInvocationAdmission";
+import { type ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import type { AgentConfig, AgentScope } from "./agents.ts";
+import { discoverAgents } from "./agents.ts";
+import {
+  getAgentDirCompat,
+  getConfigDirNameCompat,
+  getMarkdownThemeCompat,
+  withFileMutationQueueCompat,
+  parseFrontmatterCompat,
+} from "./compat.ts";
+import { computeChildTools, type ToolPolicyResult } from "./policy.ts";
+import { resolveSubagentModelThinking } from "./config.ts";
+import {
+  buildContextBlock,
+  buildSystemPromptContent,
+  readOptionalSharedContext,
+} from "./context.ts";
+import {
+  MAX_SUBAGENT_DEPTH,
+  SubagentRuntime,
+  type MessageLike,
+  type RunOutcome,
+  type SubagentRecord,
+} from "./runtime.ts";
+import { resolvePiCliJs, resolvePiInvocation, resolveSystemNode, tryRequireResolve } from "./invocation.ts";
+import type { SubagentStatus } from "./registry.ts";
+
+const MAX_PARALLEL_TASKS = 8;
+const MAX_CONCURRENCY = 4;
+const COLLAPSED_ITEM_COUNT = 10;
+const PER_TASK_OUTPUT_CAP = 50 * 1024;
+export const DEFAULT_TASK_TIMEOUT_MS = 600_000;
+
+export const DEFAULT_CONFIRM_TOOLS = ["write", "edit"] as const;
+
+// ---------- 格式化/渲染辅助（沿用既有实现） ----------
+
+function formatTokens(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
+function formatUsageStats(
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens?: number; turns?: number },
+  model?: string,
+): string {
+  const parts: string[] = [];
+  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
+  if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
+  if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
+  if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
+  if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (usage.contextTokens && usage.contextTokens > 0) parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+  if (model) parts.push(model);
+  return parts.join(" ");
+}
+
+// ---------- 结果模型（工具 details + 渲染） ----------
+
+export interface SingleResult {
+  agent: string;
+  agentSource: "user" | "project" | "unknown";
+  task: string;
+  subagentId: string;
+  status: SubagentStatus;
+  exitCode: number;
+  messages: MessageLike[];
+  stderr: string;
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number; turns: number };
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  step?: number;
+  workerReused?: boolean;
+  /** 模型解析/降级诊断（如裸名解析、模型降级） */
+  diagnostics?: string[];
+}
+
+interface SubagentDetails {
+  mode: "single" | "parallel" | "chain";
+  agentScope: AgentScope;
+  projectAgentsDir: string | null;
+  results: SingleResult[];
+}
+
+function outcomeToResult(
+  outcome: RunOutcome,
+  base: { agent: string; agentSource: SingleResult["agentSource"]; task: string; step?: number },
+): SingleResult {
+  const failed = outcome.status !== "completed";
+  return {
+    agent: base.agent,
+    agentSource: base.agentSource,
+    task: base.task,
+    subagentId: outcome.subagentId,
+    status: outcome.status,
+    exitCode: failed ? 1 : 0,
+    messages: outcome.messages,
+    stderr: outcome.errorMessage ?? "",
+    usage: { ...outcome.usage },
+    model: outcome.model,
+    stopReason: outcome.stopReason,
+    errorMessage: outcome.errorMessage,
+    step: base.step,
+    workerReused: outcome.workerReused,
+    diagnostics: outcome.diagnostics,
+  };
+}
+
+export function isFailedResult(result: SingleResult): boolean {
+  return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+export function getResultOutput(result: SingleResult): string {
+  if (isFailedResult(result)) {
+    return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+  }
+  return getFinalOutput(result.messages) || "(no output)";
+}
+
+function getFinalOutput(messages: MessageLike[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant") {
+      for (const part of msg.content) {
+        if (part.type === "text" && part.text) return part.text;
+      }
+    }
+  }
+  return "";
+}
+
+function truncateParallelOutput(output: string): string {
+  const byteLength = Buffer.byteLength(output, "utf8");
+  if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
+  let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
+  while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) truncated = truncated.slice(0, -1);
+  return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+}
+
+type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
+
+function getDisplayItems(messages: MessageLike[]): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  for (const msg of messages) {
+    if (msg.role === "assistant") {
+      for (const part of msg.content) {
+        if (part.type === "text" && typeof part.text === "string") {
+          items.push({ type: "text", text: part.text });
+        } else if (
+          part.type === "toolCall" &&
+          typeof part.name === "string" &&
+          part.arguments != null &&
+          typeof part.arguments === "object"
+        ) {
+          items.push({ type: "toolCall", name: part.name, args: part.arguments as Record<string, any> });
+        }
+      }
+    }
+  }
+  return items;
+}
+
+async function mapWithConcurrencyLimit<TIn, TOut>(
+  items: TIn[],
+  concurrency: number,
+  fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]> {
+  if (items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results: TOut[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = new Array(limit).fill(null).map(async () => {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) return;
+      results[current] = await fn(items[current], current);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+// ---------- 配置 ----------
+
+interface SubagentConfig {
+  agentScope?: AgentScope;
+  confirmProjectAgents?: boolean;
+  disabledAgents?: string[];
+  timeoutMs?: number;
+  allowTools?: string[];
+  denyTools?: string[];
+  confirmTools?: string[];
+  permissionMode?: "default" | "readonly" | "auto";
+  /** 默认模型（provider/id 或裸名；三级优先级第 2 级） */
+  defaultModel?: string;
+  /** Main 派生的 Pi CLI transport；不是用户偏好。 */
+  transportThinking?: string;
+  /** transportThinking 绑定的目标模型。 */
+  transportThinkingModelId?: string;
+}
+
+function loadSubagentConfig(): SubagentConfig {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(getAgentDirCompat(), "subagent.json"), "utf-8")) as Record<string, unknown>;
+    const scope = raw.agentScope;
+    const confirm = raw.confirmProjectAgents;
+    const disabled = raw.disabledAgents;
+    const timeout = raw.timeoutMs;
+    const strList = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((d): d is string => typeof d === "string") : undefined;
+    return {
+      agentScope: scope === "project" || scope === "both" || scope === "user" ? scope : undefined,
+      confirmProjectAgents: typeof confirm === "boolean" ? confirm : undefined,
+      disabledAgents: strList(disabled),
+      timeoutMs:
+        typeof timeout === "number" && Number.isFinite(timeout) && timeout >= 1000
+          ? Math.min(Math.floor(timeout), 3_600_000)
+          : undefined,
+      allowTools: strList(raw.allowTools),
+      denyTools: strList(raw.denyTools),
+      confirmTools: strList(raw.confirmTools),
+      permissionMode:
+        raw.permissionMode === "readonly" || raw.permissionMode === "auto" ? raw.permissionMode : undefined,
+      defaultModel: typeof raw.defaultModel === "string" && raw.defaultModel.trim() ? raw.defaultModel.trim() : undefined,
+      transportThinking:
+        typeof raw.transportThinking === "string" && raw.transportThinking.trim()
+          ? raw.transportThinking.trim()
+          : undefined,
+      transportThinkingModelId:
+        typeof raw.transportThinkingModelId === "string" && raw.transportThinkingModelId.trim()
+          ? raw.transportThinkingModelId.trim()
+          : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function loadHostPermissionMode(): "default" | "readonly" | "auto" {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(getAgentDirCompat(), "settings.json"), "utf-8")) as Record<string, unknown>;
+    const mode = raw.permissionMode;
+    if (mode === "readonly" || mode === "auto" || mode === "default") return mode;
+  } catch {
+    /* ignore */
+  }
+  return "default";
+}
+
+/** 宿主全局默认只提供默认模型；reasoning preference 已改为按模型存储。 */
+function loadHostDefaults(cwd = process.cwd()): { defaultModelId?: string; defaultProvider?: string } {
+  try {
+    const settings = SettingsManager.create(cwd, getAgentDirCompat());
+    const defaultProvider = settings.getDefaultProvider() ?? "";
+    const defaultModel = settings.getDefaultModel() ?? "";
+    return {
+      defaultModelId: defaultProvider && defaultModel ? `${defaultProvider}/${defaultModel}` : undefined,
+      defaultProvider: defaultProvider || undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+let hostModelRuntime: ModelRuntime | null = null;
+export function attachSubagentModelRuntime(runtime: ModelRuntime): void { hostModelRuntime = runtime; }
+export function stopSubagentsForModelScopeChange(): void { runtimeInstance?.shutdownAll(); }
+
+async function validateSubagentModel(modelId: string | undefined, cwd: string): Promise<void> {
+  const runtime = hostModelRuntime;
+  const model = runtime?.getModels().find((candidate) => `${candidate.provider}/${candidate.id}` === modelId);
+  if (!runtime || !model) throw new Error("Subagent 缺少已准入的 Pi 模型");
+  await assertModelAdmission(runtime, SettingsManager.create(cwd, getAgentDirCompat()), model);
+}
+
+/**
+ * Enforce Pi's native enabledModels scope for explicit Subagent --model.
+ * No MyBuddy model filter is reimplemented here: Pi ModelRuntime + Pi resolver are authoritative.
+ */
+async function resolveScopedSubagentModel(
+  requestedModel: string | undefined,
+  cwd: string,
+): Promise<{ model?: string; diagnostics: string[] }> {
+  const agentDir = getAgentDirCompat();
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const modelRuntime = hostModelRuntime;
+  if (!modelRuntime) throw new Error("Subagent 的共享 Pi ModelRuntime 尚未初始化");
+  const patterns = settingsManager.getEnabledModels();
+  if (patterns === undefined) {
+    const available = await modelRuntime.getAvailable();
+    const model = available.find((item) => `${item.provider}/${item.id}` === requestedModel) ?? available[0];
+    if (!model) throw new Error("Subagent 没有可用模型");
+    return { model: `${model.provider}/${model.id}`, diagnostics: [] };
+  }
+  const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRuntime);
+  const allowed = new Map(
+    scopedModels.map((item) => [`${item.model.provider}/${item.model.id}`, item.model]),
+  );
+
+  if (requestedModel && allowed.has(requestedModel)) {
+    return {
+      model: requestedModel,
+      diagnostics: diagnostics.map((item) => item.message),
+    };
+  }
+
+  const fallback = scopedModels[0]?.model;
+  if (!fallback) throw new Error("Subagent 的 Pi enabledModels 范围为空，不能回退到范围外模型");
+  return {
+    model: fallback ? `${fallback.provider}/${fallback.id}` : undefined,
+    diagnostics: [
+      ...diagnostics.map((item) => item.message),
+      fallback
+        ? `Subagent 模型 ${requestedModel} 不在 Pi enabledModels 范围内，已回退 ${fallback.provider}/${fallback.id}`
+        : `Subagent 模型 ${requestedModel} 不在 Pi enabledModels 范围内，且当前 scope 无可用模型`,
+    ],
+  };
+}
+
+// ---------- 系统提示文件 ----------
+
+async function writeSystemPromptFile(role: AgentConfig, contextBlock: string): Promise<string> {
+  const content = buildSystemPromptContent(role.systemPrompt, contextBlock);
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+  const safeName = role.name.replace(/[^\w.-]+/g, "_");
+  const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+  await withFileMutationQueueCompat(filePath, async () => {
+    await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
+  });
+  return filePath;
+}
+
+function cleanupTempFile(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+    fs.rmdirSync(path.dirname(filePath));
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------- 运行时单例 ----------
+
+function makeInvocationResolver() {
+  return (): { command: string; args: string[] } | null => {
+    const execName = path.basename(process.execPath).toLowerCase();
+    const isElectron = execName.includes("electron") || !!process.versions.electron;
+    const bundledRoot = path.join(__dirname, "capabilities/subagent/runtime/pi-runtime.mjs").replace("app.asar", "app.asar.unpacked");
+    const isPackaged = __dirname.includes("app.asar");
+    if (isPackaged && !fs.existsSync(bundledRoot)) throw new Error("安装包缺少原生 Pi 子代理 Runtime，请重新构建应用");
+    const resolved = fs.existsSync(bundledRoot)
+      ? { command: resolveSystemNode(process.env, fs.existsSync) ?? "node", args: [bundledRoot] }
+      : resolvePiInvocation(process.env, process.execPath, isElectron, tryRequireResolve, fs.existsSync);
+    if (!resolved) return null;
+    const candidates = [
+      path.join(__dirname, "capabilities/subagent/worker-launcher.mjs").replace("app.asar", "app.asar.unpacked"),
+      path.join(process.cwd(), "src/main/capabilities/subagent/worker-launcher.mjs"),
+    ];
+    const launcher = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!launcher || resolved.args.length !== 1) throw new Error("无法加载子代理模型准入入口，请重新构建应用并检查 Pi CLI 路径");
+    return { command: resolved.command, args: [launcher, ...resolved.args] };
+  };
+}
+
+/** Same worker entry resolution used by execution; diagnostics never start a model request. */
+export function resolveBuiltinSubagentInvocation(): { command: string; args: string[] } | null {
+  return makeInvocationResolver()();
+}
+
+let runtimeInstance: SubagentRuntime | null = null;
+/** 当前父 Task 作用域（pi 会话 sessionId；MyBuddy task↔session 1:1） */
+let currentScope = "";
+
+export function getRuntime(): SubagentRuntime {
+  if (!runtimeInstance) {
+    runtimeInstance = new SubagentRuntime({
+      validateModel: validateSubagentModel,
+      baseDir: path.join(getAgentDirCompat(), "subagent"),
+      env: process.env,
+      resolveInvocation: makeInvocationResolver(),
+    });
+    // 启动 GC：清理历史临时数据（旧 registry/session/transcript 与崩溃遗留）
+    runtimeInstance.gcLegacy();
+    process.on("exit", () => {
+      try {
+        runtimeInstance?.shutdownAll();
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+  return runtimeInstance;
+}
+
+/** 解析父 Task 作用域（sessionId 优先；无会话时用 cwd 兜底保证 scope 非空） */
+function resolveScope(ctx: any): string {
+  try {
+    const sid = ctx?.sessionManager?.getSessionId?.();
+    if (typeof sid === "string" && sid) return sid;
+  } catch {
+    /* ignore */
+  }
+  return `cwd:${ctx?.cwd ?? process.cwd()}`;
+}
+
+// ---------- IPC（渲染层 Subagent 面板；electron 不可用时降级为无 IPC） ----------
+
+/** 与 src/main/agent/subagent-ipc-host.ts 的 SUBAGENT_IPC_HOST_KEY 对齐。 */
+const SUBAGENT_IPC_HOST_KEY = "__mybuddySubagentIpcHost";
+
+let ipcRegistered = false;
+let ipcViaHost = false;
+let ipcMainModule: any = null;
+const ipcChannels: string[] = [];
+let ipcRegistryUnsub: (() => void) | null = null;
+
+interface SubagentIpcHostSlot {
+  setBackend: (backend: SubagentIpcBackend | null) => void;
+}
+
+interface SubagentIpcBackend {
+  active: () => unknown;
+  transcript: (subagentId: string) => unknown;
+  steer: (subagentId: string, instruction: string) => unknown | Promise<unknown>;
+  cancel: (subagentId: string) => unknown | Promise<unknown>;
+}
+
+function getIpcHost(): SubagentIpcHostSlot | null {
+  const slot = (globalThis as Record<string, unknown>)[SUBAGENT_IPC_HOST_KEY];
+  if (slot && typeof slot === "object" && typeof (slot as SubagentIpcHostSlot).setBackend === "function") {
+    return slot as SubagentIpcHostSlot;
+  }
+  return null;
+}
+
+function tryRequireElectron(): any {
+  const req = typeof require === "function" ? require : (globalThis as { require?: NodeRequire }).require;
+  if (typeof req !== "function") return null;
+  try {
+    return req("electron");
+  } catch {
+    return null;
+  }
+}
+
+function attachRegistryPush(rt: SubagentRuntime, electronMod: any): void {
+  ipcRegistryUnsub = rt.onRegistryChange(() => {
+    try {
+      const wins = electronMod?.BrowserWindow?.getAllWindows?.() ?? [];
+      for (const w of wins) {
+        w.webContents.send("subagent:event", { ts: Date.now() });
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+function createIpcBackend(rt: SubagentRuntime): SubagentIpcBackend {
+  return {
+    active: () => (currentScope ? rt.listActive(currentScope).map((r) => toSummaryDto(r)) : []),
+    transcript: (subagentId: string) => {
+      const record = rt.get(subagentId, currentScope || undefined);
+      if (!record) return { record: null, entries: [], ended: true };
+      return { record: toSummaryDto(record), entries: rt.readTranscript(subagentId), ended: false };
+    },
+    steer: async (subagentId: string, instruction: string) => {
+      if (typeof instruction !== "string" || !instruction.trim()) return { ok: false, message: "instruction 为空" };
+      const record = rt.get(subagentId, currentScope || undefined);
+      if (!record) {
+        return { ok: false, delivered: "queued", message: `subagent 已结束或不属于当前任务（${subagentId}），请创建新的 subagent` };
+      }
+      let steerOpts: Parameters<typeof rt.steer>[2] = { permissionMode: loadHostPermissionMode() };
+      const resolved = await resolveForRecord(record, loadSubagentConfig(), loadHostDefaults(record.project));
+      steerOpts = { ...steerOpts, resolvedModel: resolved.model, resolvedThinking: resolved.thinking,
+        modelSource: resolved.modelSource, thinkingSource: resolved.thinkingSource };
+      const res = await rt.steer(subagentId, instruction.trim(), steerOpts);
+      return { ok: res.ok, delivered: res.delivered, message: res.message };
+    },
+    cancel: (subagentId: string) => rt.cancel(subagentId),
+  };
+}
+
+/**
+ * 回滚本模块已注册的全部 IPC 副作用（host backend / channel handler + registry 监听）。
+ * 事务语义：factory 执行中 registerIpc 之后的任何失败，或 registerIpc 自身
+ * 中途失败（同名 channel 已被残留占用），都必须移除已注册部分，保证
+ * 「注册后抛错 -> 无残留 -> 后续同名 handler 可注册」。
+ */
+export function rollbackIpc(): void {
+  if (!ipcRegistered) return;
+  ipcRegistered = false;
+  if (ipcViaHost) {
+    try {
+      getIpcHost()?.setBackend(null);
+    } catch {
+      /* ignore */
+    }
+    ipcViaHost = false;
+  }
+  try {
+    const ipcMain = ipcMainModule?.ipcMain;
+    if (ipcMain) {
+      for (const channel of ipcChannels) {
+        try {
+          ipcMain.removeHandler(channel);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  ipcChannels.length = 0;
+  try {
+    ipcRegistryUnsub?.();
+  } catch {
+    /* ignore */
+  }
+  ipcRegistryUnsub = null;
+}
+
+function registerIpc(): void {
+  if (ipcRegistered) return; // P2-4：严格幂等，双加载不允许重复 handle 崩主进程
+  const host = getIpcHost();
+  const electronMod = tryRequireElectron();
+  ipcMainModule = electronMod;
+  const rt = getRuntime();
+  const backend = createIpcBackend(rt);
+
+  if (host) {
+    ipcRegistered = true;
+    ipcViaHost = true;
+    try {
+      attachRegistryPush(rt, electronMod);
+      host.setBackend(backend);
+    } catch (err) {
+      rollbackIpc();
+      throw err;
+    }
+    return;
+  }
+
+  const ipcMain = electronMod?.ipcMain;
+  if (!ipcMain) return; // 非 Electron 环境（CLI/测试）无 IPC
+  ipcRegistered = true;
+  ipcViaHost = false;
+  attachRegistryPush(rt, electronMod);
+  try {
+    ipcMain.handle("subagent:transcript", (_ev: unknown, subagentId: string) => backend.transcript(subagentId));
+    ipcChannels.push("subagent:transcript");
+    ipcMain.handle("subagent:steer", (_ev: unknown, subagentId: string, instruction: string) =>
+      backend.steer(subagentId, instruction),
+    );
+    ipcChannels.push("subagent:steer");
+    ipcMain.handle("subagent:cancel", (_ev: unknown, subagentId: string) => backend.cancel(subagentId));
+    ipcChannels.push("subagent:cancel");
+    ipcMain.handle("subagent:active", (_ev: unknown) => backend.active());
+    ipcChannels.push("subagent:active");
+  } catch (err) {
+    // 事务：注册中途失败（如同名 channel 已被残留占用）→ 回滚已注册部分，不留污染
+    rollbackIpc();
+    throw err;
+  }
+}
+
+/** 主进程预加载扩展时调用：不依赖 factory(pi)，尽早把 backend 接到宿主 handler。 */
+export function installHostIpc(): void {
+  registerIpc();
+}
+
+function toSummaryDto(r: SubagentRecord): Record<string, unknown> {
+  return {
+    subagentId: r.subagentId,
+    role: r.role,
+    roleSource: r.roleSource,
+    roleDescription: r.roleDescription,
+    project: r.project,
+    status: r.status,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    lastPromptAt: r.lastPromptAt,
+    lastResultAt: r.lastResultAt,
+    runCount: r.runCount,
+    steerCount: r.steerCount,
+    pendingSteers: r.pendingSteers,
+    lastResult: r.lastResult,
+    usage: r.usage,
+    sessionId: r.sessionId,
+    pid: r.pid,
+    model: r.model,
+    lastTask: r.lastTask,
+    depth: r.depth,
+    workerAlive: r.pid != null,
+    // 模型/思考：resolved（三级优先级解析值）+ 来源 + 子进程实证值
+    resolvedModel: r.resolvedModel,
+    resolvedThinking: r.resolvedThinking,
+    modelSource: r.modelSource,
+    thinkingSource: r.thinkingSource,
+    actualModel: r.actualModel,
+    actualThinking: r.actualThinking,
+  };
+}
+
+/**
+ * 为已有 record 重新解析模型/思考 transport（配置变更后 steer/reuse 必须感知）。
+ * role 仅覆盖模型；reasoning override 始终来自宿主 native defaultReasoning 的派生 transport。
+ */
+async function resolveForRecord(
+  record: SubagentRecord,
+  config: SubagentConfig,
+  host: ReturnType<typeof loadHostDefaults>,
+): Promise<{ model?: string; thinking?: string; modelSource?: "role" | "default" | "global"; thinkingSource?: "transport"; diagnostics: string[] }> {
+  let roleModel: string | undefined;
+  try {
+    const base =
+      record.roleSource === "project" && record.project
+        ? path.join(record.project, getConfigDirNameCompat(), "agents")
+        : path.join(getAgentDirCompat(), "agents");
+    const file = path.join(base, `${record.role.replace(/[^\w.-]+/g, "_")}.md`);
+    if (fs.existsSync(file)) {
+      const { frontmatter } = parseFrontmatterCompat<Record<string, string>>(fs.readFileSync(file, "utf-8"));
+      roleModel = frontmatter.model;
+    }
+  } catch {
+    /* role 文件缺失 → 走 default/global */
+  }
+  const resolved = resolveSubagentModelThinking({
+    roleModel,
+    defaultModel: config.defaultModel,
+    transportThinking: config.transportThinking,
+    transportThinkingModelId: config.transportThinkingModelId,
+    globalDefaultModel: host.defaultModelId,
+    globalDefaultProvider: host.defaultProvider,
+  });
+  const scopedSelection = await resolveScopedSubagentModel(resolved.model ?? undefined, record.project || process.cwd());
+  const resolvedModel = scopedSelection.model;
+  const resolvedThinking =
+    resolvedModel && config.transportThinkingModelId?.trim() === resolvedModel
+      ? resolved.thinking ?? undefined
+      : undefined;
+  return {
+    model: resolvedModel,
+    thinking: resolvedThinking,
+    modelSource: resolved.modelSource ?? undefined,
+    thinkingSource: resolvedThinking ? resolved.thinkingSource ?? undefined : undefined,
+    diagnostics: [...resolved.diagnostics, ...scopedSelection.diagnostics],
+  };
+}
+
+// ---------- 参数 schema ----------
+
+const TaskItem = Type.Object({
+  agent: Type.String({ description: "Name of the agent to invoke" }),
+  task: Type.String({ description: "Task to delegate to the agent" }),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
+});
+
+const ChainItem = Type.Object({
+  agent: Type.String({ description: "Name of the agent to invoke" }),
+  task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
+});
+
+const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
+  description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
+  default: "user",
+});
+
+const SubagentParams = Type.Object({
+  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
+  task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
+  chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
+  agentScope: Type.Optional(AgentScopeSchema),
+  confirmProjectAgents: Type.Optional(
+    Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
+  ),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+  subagentId: Type.Optional(
+    Type.String({ description: "Persistent subagent id: reuse an existing one (same session/history) or create with this id" }),
+  ),
+  timeout_ms: Type.Optional(
+    Type.Integer({ description: "Per-task timeout in ms (1s..3600s). Default: config timeoutMs or 600s.", minimum: 1000, maximum: 3_600_000 }),
+  ),
+});
+
+const ListParams = Type.Object({
+  agent: Type.Optional(Type.String({ description: "Filter by role/agent name" })),
+  status: Type.Optional(
+    StringEnum(["idle", "running", "completed", "failed", "cancelled", "timedout", "interrupted", "error"] as const, {
+      description: "Filter by status",
+    }),
+  ),
+  limit: Type.Optional(Type.Integer({ description: "Max entries (newest first). Default: 20.", minimum: 1, maximum: 200 })),
+});
+
+const SteerParams = Type.Object({
+  subagentId: Type.String({ description: "Persistent subagent id from subagent_list / subagent result" }),
+  instruction: Type.String({ description: "Additional instruction to deliver" }),
+});
+
+// ---------- 委派执行 ----------
+
+async function runDelegatedStep(params: {
+  runtime: SubagentRuntime;
+  agent: AgentConfig;
+  task: string;
+  cwd: string | undefined;
+  subagentId: string | undefined;
+  step: number | undefined;
+  config: SubagentConfig;
+  hostPermissionMode: "default" | "readonly" | "auto";
+  parentDepth: number;
+  timeoutMs: number;
+  signal: AbortSignal | undefined;
+  onUpdate: ((partial: AgentToolResult<SubagentDetails>) => void) | undefined;
+  makeDetails: (results: SingleResult[]) => SubagentDetails;
+  /** 父 Task 作用域 */
+  taskScope: string;
+}): Promise<SingleResult> {
+  const { runtime, agent, task, cwd, subagentId, step, config, hostPermissionMode, parentDepth, timeoutMs, signal, onUpdate, makeDetails, taskScope } = params;
+
+  const policy: ToolPolicyResult = computeChildTools({
+    roleTools: agent.tools,
+    permissionMode: config.permissionMode ?? hostPermissionMode,
+    allowTools: config.allowTools,
+    denyTools: config.denyTools,
+    confirmTools: config.confirmTools ?? [...DEFAULT_CONFIRM_TOOLS],
+  });
+
+  // 模型优先级：role frontmatter > subagent.json default > MyBuddy global；reasoning transport 必须与最终 modelId 绑定。
+  const host = loadHostDefaults(cwd);
+  const resolved = resolveSubagentModelThinking({
+    roleModel: agent.model,
+    defaultModel: config.defaultModel,
+    transportThinking: config.transportThinking,
+    transportThinkingModelId: config.transportThinkingModelId,
+    globalDefaultModel: host.defaultModelId,
+    globalDefaultProvider: host.defaultProvider,
+  });
+  const scopedSelection = await resolveScopedSubagentModel(resolved.model ?? undefined, cwd ?? process.cwd());
+  const resolvedModel = scopedSelection.model;
+  const resolvedDiagnostics = [...resolved.diagnostics, ...scopedSelection.diagnostics];
+  const resolvedThinking =
+    resolvedModel && config.transportThinkingModelId?.trim() === resolvedModel
+      ? resolved.thinking ?? undefined
+      : undefined;
+
+  const record = runtime.ensureSubagent({
+    scope: taskScope,
+    subagentId,
+    role: agent.name,
+    roleSource: agent.source,
+    roleDescription: agent.description,
+    project: cwd ?? ".",
+    depth: parentDepth + 1,
+    model: agent.model,
+  });
+
+  // 首次创建会话才需要系统提示文件
+  let promptFile: string | null = null;
+  if (!record.sessionId && agent.systemPrompt.trim()) {
+    const shared = readOptionalSharedContext(cwd ?? process.cwd());
+    const contextBlock = buildContextBlock({
+      cwd: cwd ?? process.cwd(),
+      roleName: agent.name,
+      roleDescription: agent.description,
+      tools: policy.tools,
+      permissionMode: config.permissionMode ?? hostPermissionMode,
+      deniedTools: policy.denied,
+      sharedContext: shared,
+      depth: parentDepth + 1,
+    });
+    promptFile = await writeSystemPromptFile(agent, contextBlock);
+  }
+
+  const outcome = await runtime.runPrompt(record.subagentId, {
+    task,
+    timeoutMs,
+    signal,
+    systemPromptFile: promptFile ?? undefined,
+    // 模型优先级在 config.ts 解析；reasoning transport 仅在绑定 modelId 一致时传给 Pi。
+    // resolved 已 provider 限定（或 null=用子进程全局默认），裸名歧义有诊断
+    model: resolvedModel,
+    thinking: resolvedThinking,
+    modelSource: resolved.modelSource ?? undefined,
+    thinkingSource: resolvedThinking ? resolved.thinkingSource ?? undefined : undefined,
+    permissionMode: config.permissionMode ?? hostPermissionMode,
+    toolArgs: { tools: policy.tools, excludeTools: policy.excludeTools },
+    onUpdate: (snapshot) => {
+      if (!onUpdate) return;
+      const partial: SingleResult = {
+        agent: agent.name,
+        agentSource: agent.source,
+        task,
+        subagentId: record.subagentId,
+        status: snapshot.status,
+        exitCode: -1,
+        messages: snapshot.messages,
+        stderr: "",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+        model: agent.model,
+        step,
+      };
+      onUpdate({
+        content: [{ type: "text", text: snapshot.finalText || "(running...)" }],
+        details: makeDetails([partial]),
+      });
+    },
+  });
+
+  if (promptFile) cleanupTempFile(promptFile);
+  const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step });
+  if (resolvedDiagnostics.length > 0) result.diagnostics = resolvedDiagnostics;
+  return result;
+}
+
+export default function (pi: any) {
+  const runtime = getRuntime();
+
+  // 父 Task 生命周期：会话开始 → 更新当前作用域；会话关闭 → 清理该作用域全部 child
+  pi.on("session_start", async (_event: unknown, ctx: any) => {
+    try {
+      currentScope = resolveScope(ctx);
+    } catch {
+      /* ignore */
+    }
+  });
+  pi.on("session_shutdown", () => {
+    const scope = currentScope;
+    currentScope = "";
+    if (scope) {
+      try {
+        runtime.cleanupTask(scope);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  pi.registerTool({
+    name: "subagent",
+    label: "Subagent",
+    description: [
+      "Delegate bounded subtasks to a persistent specialized subagent (isolated pi session).",
+      "Modes: single (agent+task), parallel (tasks array), chain (sequential, {previous} placeholder).",
+      "Delegation policy: create a NEW subagent for bounded, independent, long-running subtasks; REUSE via subagentId (same persistent session/history) when continuing related work; use subagent_steer to guide a running or idle subagent; do the work yourself for trivial questions (each subagent run costs a cold start).",
+      "Context boundary: the subagent inherits ONLY cwd + role system prompt + your task text. Project shared context / memory / plan / tag / skill / expert / connector policies are NOT inherited — compress and pass needed context inside the task (unknown stays unknown, no fabrication).",
+      "Permissions: subagent tool sets are derived from the host permission mode; default (no tools frontmatter) is a READ-ONLY analysis set (read/ls/find/grep). bash/write/edit require explicit tools frontmatter or allowTools — bash is a HIGH-PRIVILEGE tool (arbitrary command execution, no approval in subagent); recursion is hard-capped and subagent tools are disabled inside subagents.",
+      "Persistence: each subagentId maps to a durable pi session (restart-safe); results are queryable via subagent_list; steerable via subagent_steer.",
+      `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")}).`,
+      `To enable project-local agents in ${getConfigDirNameCompat()}/agents, set agentScope: "both" (or "project").`,
+      "Per-task timeout: param timeout_ms (1..3600s) > subagent.json timeoutMs > 600s default; on timeout the process is aborted then killed.",
+    ].join(" "),
+    parameters: SubagentParams,
+
+    async execute(_toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+      const config = loadSubagentConfig();
+      const hostPermissionMode = loadHostPermissionMode();
+      const taskTimeoutMs = params.timeout_ms ?? config.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
+      const agentScope: AgentScope = params.agentScope ?? config.agentScope ?? "user";
+      const discovery = discoverAgents(ctx.cwd, agentScope);
+      const disabled = new Set(config.disabledAgents ?? []);
+      discovery.agents = discovery.agents.filter((a) => !disabled.has(a.name));
+      const agents = discovery.agents;
+      const resolveAgent = (name: unknown): AgentConfig | undefined => {
+        if (typeof name !== "string" || !name.trim()) return undefined;
+        const exact = agents.find((a) => a.name === name);
+        if (exact) return exact;
+        const alias = name.trim().toLowerCase();
+        if (alias === "default" || alias === "assistant" || alias === "agent") {
+          return agents.find((a) => a.name === "worker") ?? agents[0];
+        }
+        return undefined;
+      };
+      const confirmProjectAgents = params.confirmProjectAgents ?? config.confirmProjectAgents ?? true;
+
+      const parentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0") || 0;
+      const makeDetailsFn =
+        (mode: "single" | "parallel" | "chain") =>
+        (results: SingleResult[]): SubagentDetails => ({
+          mode,
+          agentScope,
+          projectAgentsDir: discovery.projectAgentsDir,
+          results,
+        });
+      if (parentDepth >= MAX_SUBAGENT_DEPTH) {
+        return {
+          content: [{ type: "text", text: `递归深度已达上限（${MAX_SUBAGENT_DEPTH}）。子代理不允许再次委派（subagent 工具已在子代理中禁用）。` }],
+          details: makeDetailsFn("single")([]),
+        };
+      }
+
+      const hasChain = (params.chain?.length ?? 0) > 0;
+      const hasTasks = (params.tasks?.length ?? 0) > 0;
+      const hasSingle = Boolean(params.agent && params.task);
+      const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
+
+      if (modeCount !== 1) {
+        const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+        return {
+          content: [{ type: "text", text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}` }],
+          details: makeDetailsFn("single")([]),
+        };
+      }
+
+      if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+        const requestedAgentNames = new Set<string>();
+        if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
+        if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+        if (params.agent) requestedAgentNames.add(params.agent);
+        const projectAgentsRequested = Array.from(requestedAgentNames)
+          .map((name) => agents.find((a) => a.name === name))
+          .filter((a): a is AgentConfig => a?.source === "project");
+        if (projectAgentsRequested.length > 0) {
+          const names = projectAgentsRequested.map((a) => a.name).join(", ");
+          const dir = discovery.projectAgentsDir ?? "(unknown)";
+          const ok = await ctx.ui.confirm(
+            "Run project-local agents?",
+            `Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+          );
+          if (!ok)
+            return {
+              content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+              details: makeDetailsFn(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+            };
+        }
+      }
+
+      const taskScope = resolveScope(ctx);
+      const runStep = (a: AgentConfig, t: string, cwd_: string | undefined, sid: string | undefined, step: number | undefined) =>
+        runDelegatedStep({
+          runtime,
+          agent: a,
+          task: t,
+          cwd: cwd_ ?? ctx.cwd,
+          subagentId: sid,
+          step,
+          config,
+          hostPermissionMode,
+          parentDepth,
+          timeoutMs: taskTimeoutMs,
+          signal,
+          onUpdate,
+          makeDetails: makeDetailsFn(hasChain ? "chain" : hasTasks ? "parallel" : "single"),
+          taskScope,
+        });
+
+      // ---- chain ----
+      if (params.chain && params.chain.length > 0) {
+        const results: SingleResult[] = [];
+        let previousOutput = "";
+        for (let i = 0; i < params.chain.length; i++) {
+          const step = params.chain[i];
+          const agent = resolveAgent(step.agent);
+          if (!agent) {
+            const result = {
+              agent: step.agent, agentSource: "unknown" as const, task: step.task, subagentId: "unknown",
+              status: "failed" as const, exitCode: 1, messages: [], stderr: `Unknown agent: "${step.agent}"`,
+              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, step: i + 1,
+            };
+            results.push(result);
+            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): unknown agent` }], details: makeDetailsFn("chain")(results), isError: true };
+          }
+          const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+          const chainUpdate = onUpdate
+            ? (partial: AgentToolResult<SubagentDetails>) => {
+                const current = partial.details?.results[0];
+                if (current) onUpdate({ content: partial.content, details: makeDetailsFn("chain")([...results, current]) });
+              }
+            : undefined;
+          const result = await runDelegatedStep({
+            runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
+            config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate: chainUpdate,
+            makeDetails: makeDetailsFn("chain"), taskScope,
+          });
+          results.push(result);
+          if (isFailedResult(result)) {
+            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }], details: makeDetailsFn("chain")(results), isError: true };
+          }
+          previousOutput = getFinalOutput(result.messages);
+        }
+        return { content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }], details: makeDetailsFn("chain")(results) };
+      }
+
+      // ---- parallel ----
+      if (params.tasks && params.tasks.length > 0) {
+        if (params.tasks.length > MAX_PARALLEL_TASKS)
+          return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }], details: makeDetailsFn("parallel")([]) };
+        const allResults: SingleResult[] = new Array(params.tasks.length);
+        for (let i = 0; i < params.tasks.length; i++) {
+          const t = params.tasks[i];
+          allResults[i] = {
+            agent: t.agent, agentSource: "unknown", task: t.task, subagentId: "", status: "running", exitCode: -1,
+            messages: [], stderr: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+          };
+        }
+        const emitParallelUpdate = () => {
+          if (!onUpdate) return;
+          const done = allResults.filter((r) => r.exitCode !== -1).length;
+          onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${allResults.length} done...` }], details: makeDetailsFn("parallel")([...allResults]) });
+        };
+        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t: any, index: number) => {
+          const agent = resolveAgent(t.agent);
+          if (!agent) {
+            const result: SingleResult = {
+              agent: t.agent, agentSource: "unknown", task: t.task, subagentId: "", status: "failed", exitCode: 1,
+              messages: [], stderr: `Unknown agent: "${t.agent}"`,
+              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+            };
+            allResults[index] = result;
+            emitParallelUpdate();
+            return result;
+          }
+          const result = await runDelegatedStep({
+            runtime, agent, task: t.task, cwd: t.cwd ?? ctx.cwd, subagentId: t.subagentId, step: undefined,
+            config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal,
+            onUpdate: (partial) => {
+              if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
+            },
+            makeDetails: makeDetailsFn("parallel"), taskScope,
+          });
+          allResults[index] = result;
+          emitParallelUpdate();
+          return result;
+        });
+        const successCount = results.filter((r) => !isFailedResult(r)).length;
+        const summaries = results.map((r) => {
+          const output = truncateParallelOutput(getResultOutput(r));
+          const status = isFailedResult(r) ? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}` : "completed";
+          return `### [${r.agent}] ${status} (id: ${r.subagentId})\n\n${output}`;
+        });
+        return { content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }], details: makeDetailsFn("parallel")(results) };
+      }
+
+      // ---- single ----
+      if (params.agent && params.task) {
+        const agent = resolveAgent(params.agent);
+        if (!agent) {
+          const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+          return { content: [{ type: "text", text: `Unknown agent: "${params.agent}". Available: ${available}` }], details: makeDetailsFn("single")([]) };
+        }
+        const result = await runDelegatedStep({
+          runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,
+          config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate,
+          makeDetails: makeDetailsFn("single"), taskScope,
+        });
+        // 结果文本携带 instanceId（主对话 chip 可据此打开临时 Chat；实例在返回后已销毁）
+        const idLine = `\n\n> subagent: ${result.subagentId}（本次任务内临时实例，已结束）`;
+        if (isFailedResult(result)) {
+          return { content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}${idLine}` }], details: makeDetailsFn("single")([result]), isError: true };
+        }
+        return { content: [{ type: "text", text: `${getFinalOutput(result.messages) || "(no output)"}${idLine}` }], details: makeDetailsFn("single")([result]) };
+      }
+
+      const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+      return { content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }], details: makeDetailsFn("single")([]) };
+    },
+
+    renderCall(args: any, theme: any, _context: any) {
+      const scope: AgentScope = args.agentScope ?? "user";
+      if (args.chain && args.chain.length > 0) {
+        let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `chain (${args.chain.length} steps)`) + theme.fg("muted", ` [${scope}]`);
+        for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
+          const step = args.chain[i];
+          const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
+          const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+          text += `\n  ${theme.fg("muted", `${i + 1}.`)} ${theme.fg("accent", step.agent)}${theme.fg("dim", ` ${preview}`)}`;
+        }
+        if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
+        return new Text(text, 0, 0);
+      }
+      if (args.tasks && args.tasks.length > 0) {
+        let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `parallel (${args.tasks.length} tasks)`) + theme.fg("muted", ` [${scope}]`);
+        for (const t of args.tasks.slice(0, 3)) {
+          const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
+          text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+        }
+        if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
+        return new Text(text, 0, 0);
+      }
+      const agentName = args.agent || "...";
+      const idSuffix = args.subagentId ? theme.fg("dim", ` [id:${args.subagentId}]`) : "";
+      const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
+      let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", agentName) + idSuffix + theme.fg("muted", ` [${scope}]`);
+      text += `\n  ${theme.fg("dim", preview)}`;
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(result: any, { expanded }: { expanded: boolean }, theme: any, _context: any) {
+      const details = result.details as SubagentDetails | undefined;
+      if (!details || details.results.length === 0) {
+        const text = result.content[0];
+        return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+      }
+      const mdTheme = getMarkdownThemeCompat();
+      const formatToolCall2 = (name: string, args: Record<string, unknown>) => {
+        const argsStr = JSON.stringify(args);
+        const preview = argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
+        return theme.fg("accent", name) + theme.fg("dim", ` ${preview}`);
+      };
+      const statusIcon = (r: SingleResult) => {
+        switch (r.status) {
+          case "completed": return theme.fg("success", "✓");
+          case "running": case "idle": return theme.fg("warning", "⏳");
+          case "cancelled": case "timedout": return theme.fg("warning", "◐");
+          default: return theme.fg("error", "✗");
+        }
+      };
+      const renderItems = (items: DisplayItem[], limit?: number) => {
+        const toShow = limit ? items.slice(-limit) : items;
+        const skipped = limit && items.length > limit ? items.length - limit : 0;
+        let text = "";
+        if (skipped > 0) text += theme.fg("muted", `... ${skipped} earlier items\n`);
+        for (const item of toShow) {
+          if (item.type === "text") text += `${theme.fg("toolOutput", expanded ? item.text : item.text.split("\n").slice(0, 3).join("\n"))}\n`;
+          else text += `${theme.fg("muted", "→ ") + formatToolCall2(item.name, item.args)}\n`;
+        }
+        return text.trimEnd();
+      };
+
+      if (details.mode === "single" && details.results.length === 1) {
+        const r = details.results[0];
+        const icon = statusIcon(r);
+        const displayItems = getDisplayItems(r.messages);
+        const finalOutput = getFinalOutput(r.messages);
+        if (expanded) {
+          const container = new Container();
+          let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+          if (r.subagentId) header += theme.fg("dim", ` id:${r.subagentId}`);
+          if (r.status !== "completed") header += ` ${theme.fg("error", `[${r.status}]`)}`;
+          container.addChild(new Text(header, 0, 0));
+          if (r.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
+          if (r.diagnostics?.length)
+            for (const d of r.diagnostics) container.addChild(new Text(theme.fg("warning", `⚠ ${d}`), 0, 0));
+          container.addChild(new Spacer(1));
+          container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
+          container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
+          container.addChild(new Spacer(1));
+          container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
+          if (displayItems.length === 0 && !finalOutput) container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+          else {
+            for (const item of displayItems) {
+              if (item.type === "toolCall")
+                container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall2(item.name, item.args), 0, 0));
+            }
+            if (finalOutput) { container.addChild(new Spacer(1)); if (mdTheme) container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme)); else container.addChild(new Text(finalOutput.trim(), 0, 0)); }
+          }
+          const usageStr = formatUsageStats(r.usage, r.model);
+          if (usageStr) { container.addChild(new Spacer(1)); container.addChild(new Text(theme.fg("dim", usageStr), 0, 0)); }
+          return container;
+        }
+        let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+        if (r.subagentId) text += theme.fg("dim", ` id:${r.subagentId}`);
+        if (r.status !== "completed") text += ` ${theme.fg("error", `[${r.status}]`)}`;
+        if (r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
+        if (r.diagnostics?.length) text += `\n${theme.fg("warning", r.diagnostics.map((d) => `⚠ ${d}`).join("\n"))}`;
+        else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+        else {
+          text += `\n${renderItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
+          if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+        }
+        const usageStr = formatUsageStats(r.usage, r.model);
+        if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
+        return new Text(text, 0, 0);
+      }
+
+      const aggregateUsage = (results: SingleResult[]) => {
+        const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+        for (const r of results) {
+          total.input += r.usage.input; total.output += r.usage.output;
+          total.cacheRead += r.usage.cacheRead; total.cacheWrite += r.usage.cacheWrite;
+          total.cost += r.usage.cost; total.turns += r.usage.turns;
+        }
+        return total;
+      };
+      const renderResultList = (title: string, results: SingleResult[]) => {
+        const successCount = results.filter((r) => r.status === "completed").length;
+        const icon = successCount === results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+        if (expanded) {
+          const container = new Container();
+          container.addChild(new Text(icon + " " + theme.fg("toolTitle", theme.bold(title)) + theme.fg("accent", ` ${successCount}/${results.length}`), 0, 0));
+          for (const r of results) {
+            const rIcon = statusIcon(r);
+            container.addChild(new Spacer(1));
+            container.addChild(new Text(`${theme.fg("muted", `─── ${r.step ? `Step ${r.step}: ` : ""}`) + theme.fg("accent", r.agent)} ${rIcon}${r.subagentId ? theme.fg("dim", ` id:${r.subagentId}`) : ""}`, 0, 0));
+            if (r.status !== "completed" && r.errorMessage) container.addChild(new Text(theme.fg("error", r.errorMessage), 0, 0));
+            const displayItems = getDisplayItems(r.messages);
+            for (const item of displayItems) {
+              if (item.type === "toolCall") container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall2(item.name, item.args), 0, 0));
+            }
+            const finalOutput = getFinalOutput(r.messages);
+            if (finalOutput) { container.addChild(new Spacer(1)); if (mdTheme) container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme)); else container.addChild(new Text(finalOutput.trim(), 0, 0)); }
+            const u = formatUsageStats(r.usage, r.model);
+            if (u) container.addChild(new Text(theme.fg("dim", u), 0, 0));
+          }
+          const usageStr = formatUsageStats(aggregateUsage(results));
+          if (usageStr) { container.addChild(new Spacer(1)); container.addChild(new Text(theme.fg("dim", `Total: ${usageStr}`), 0, 0)); }
+          return container;
+        }
+        let text = `${icon} ${theme.fg("toolTitle", theme.bold(title))}${theme.fg("accent", ` ${successCount}/${results.length}`)}`;
+        for (const r of results) {
+          text += `\n\n${theme.fg("muted", `─── ${r.step ? `Step ${r.step}: ` : ""}`)}${theme.fg("accent", r.agent)} ${statusIcon(r)}${r.subagentId ? theme.fg("dim", ` id:${r.subagentId}`) : ""}`;
+          const displayItems = getDisplayItems(r.messages);
+          if (displayItems.length === 0) text += `\n${theme.fg("muted", r.status === "running" ? "(running...)" : "(no output)")}`;
+          else text += `\n${renderItems(displayItems, 5)}`;
+        }
+        const usageStr = formatUsageStats(aggregateUsage(results));
+        if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
+        if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+        return new Text(text, 0, 0);
+      };
+
+      if (details.mode === "chain") return renderResultList("chain", details.results);
+      if (details.mode === "parallel") {
+        const running = details.results.filter((r) => r.status === "running").length;
+        const label = running > 0 ? `parallel (${details.results.length - running}/${details.results.length} done)` : "parallel";
+        return renderResultList(label, details.results);
+      }
+      const text = result.content[0];
+      return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+    },
+  });
+
+  pi.registerTool({
+    name: "subagent_list",
+    label: "Subagent List",
+    description: [
+      "List ACTIVE subagent instances of the current parent task (task-scoped, disposable).",
+      "Instances are destroyed once their result is returned (RESULT/FAILED/CANCELLED) or the parent task ends; this tool only shows the currently running ones.",
+      "Use before steering: check whether the subagent you want to steer is still active.",
+    ].join(" "),
+    parameters: ListParams,
+
+    async execute(_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: any, ctx: any) {
+      const scope = resolveScope(ctx);
+      const records = runtime
+        .listActive(scope)
+        .filter((r) => !params.agent || r.role === params.agent)
+        .filter((r) => !params.status || r.status === params.status)
+        .slice(0, params.limit ?? 20);
+      const text = records.length === 0
+        ? "No active subagents in the current task."
+        : records.map((r) => {
+            const usageStr = formatUsageStats(r.usage, r.model);
+            return `- ${r.subagentId} | role=${r.role} | ${r.status}${r.lastTask ? ` | task: ${r.lastTask.slice(0, 60)}` : ""}${usageStr ? ` | ${usageStr}` : ""}`;
+          }).join("\n");
+      return {
+        content: [{ type: "text", text }],
+        details: { mode: "single", agentScope: "user", projectAgentsDir: null, results: [] } as SubagentDetails,
+        extra: { records: records.map(toSummaryDto) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "subagent_steer",
+    label: "Subagent Steer",
+    description: [
+      "Send an additional instruction to an ACTIVE subagent instance of the current parent task (from subagent_list or a subagent result).",
+      "Instances are task-scoped and disposable: once the result is returned or the parent task ends, steering is rejected with an explicit 'ended, create a new subagent' message.",
+    ].join(" "),
+    parameters: SteerParams,
+
+    async execute(_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: any, ctx: any) {
+      // 仅当前父 Task 的 active 实例可 steer（跨 Task/已结束 → 明确拒绝）
+      const taskScope = resolveScope(ctx);
+      const record = runtime.get(params.subagentId, taskScope);
+      if (!record) {
+        return {
+          content: [{ type: "text", text: `subagent ${params.subagentId} 已结束或不属于当前任务，请创建新的 subagent` }],
+          details: { mode: "single", agentScope: "user", projectAgentsDir: null, results: [] } as SubagentDetails,
+          isError: true,
+        };
+      }
+      // 重解析模型/思考：default/global 配置变更后 steer 也感知（role override 优先）
+      let steerOpts: Parameters<typeof runtime.steer>[2] = { permissionMode: loadHostPermissionMode() };
+      const resolved = await resolveForRecord(record, loadSubagentConfig(), loadHostDefaults(record.project));
+      steerOpts = { ...steerOpts, resolvedModel: resolved.model, resolvedThinking: resolved.thinking,
+        modelSource: resolved.modelSource, thinkingSource: resolved.thinkingSource };
+      const res = await runtime.steer(params.subagentId, params.instruction, steerOpts);
+      return {
+        content: [{ type: "text", text: res.ok ? `Steered ${params.subagentId}: ${res.message}` : `Steer failed: ${res.message}` }],
+        details: { mode: "single", agentScope: "user", projectAgentsDir: null, results: [] } as SubagentDetails,
+        isError: !res.ok,
+      };
+    },
+  });
+
+  // 事务顺序：工具/事件注册全部成功后才注册进程级 IPC（ipcMain.handle 是进程级
+  // 副作用，无法随 session 销毁自动清理）。若前面任一注册抛错，factory 直接失败，
+  // 此时 IPC 尚未注册 → 无残留；registerIpc 自身中途失败由内部 rollbackIpc 回滚。
+  registerIpc();
+}
+
+// 兼容旧测试导出（invocation 解析相关）
+export { resolvePiCliJs, resolvePiInvocation, resolveSystemNode, tryRequireResolve, parseFrontmatterCompat };
+export { computeChildTools, buildContextBlock, buildSystemPromptContent, readOptionalSharedContext };
+export { SubagentRuntime, MAX_SUBAGENT_DEPTH };
+export type { RunOutcome, MessageLike };
+export {
+  createRecord,
+  applyOutcome,
+  EMPTY_USAGE,
+} from "./registry.ts";
+export { parseRpcLine, JsonlLineBuffer, spawnRpcChild, RPC_KILL_GRACE_MS } from "./rpc.ts";
+export { DEFAULT_SUBAGENT_TOOLS, READONLY_TOOLS, RECURSION_TOOLS, tightenPolicy, permissionStrictness } from "./policy.ts";
+export {
+  resolveSubagentModelThinking,
+  resolveBareModel,
+  normalizeThinking,
+  THINKING_LEVELS,
+} from "./config.ts";

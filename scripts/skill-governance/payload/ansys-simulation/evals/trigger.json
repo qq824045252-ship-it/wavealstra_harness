@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "ansys-simulation",
+  "cases": [
+    {
+      "prompt": "用 Maxwell 求这个电极的电容矩阵",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "在 HFSS 仿真天线的 S 参数",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "用 Q3D 提取连线寄生参数",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "通过 AEDT 比较不同介质的电场",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "解释电容的定义",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 MATLAB 设计数字滤波器",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "在 KiCad 布线",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 Origin 画实验曲线",
+      "expected": "no-trigger"
+    }
+  ]
+}

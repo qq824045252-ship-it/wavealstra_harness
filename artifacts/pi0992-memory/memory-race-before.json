@@ -1,0 +1,56 @@
+{
+  "at": "2026-09-30T23:29:08.790Z",
+  "results": [
+    {
+      "name": "forget during hybrid recall cannot return cached lexical content",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: forget returned a revoked/stale atom"
+    },
+    {
+      "name": "supersede during hybrid recall cannot return old active atom",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: supersede returned a revoked/stale atom"
+    },
+    {
+      "name": "task move during hybrid recall revokes old project visibility",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: task move returned a revoked/stale atom"
+    },
+    {
+      "name": "scope detachment during hybrid recall cannot leak from promoted copy",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: scope detach returned a revoked/stale atom"
+    },
+    {
+      "name": "validity expiry during hybrid recall is enforced at return",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: expiry returned a revoked/stale atom"
+    },
+    {
+      "name": "semantic failure fallback must not resurrect a forgotten lexical hit",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: error fallback returned a revoked/stale atom"
+    },
+    {
+      "name": "updated memory content is refreshed after asynchronous search",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'Calibration reference cobalt is 17.'\n- 'Calibration reference cobalt is now 29.'\n                                   ^\n"
+    },
+    {
+      "name": "slower old embedding must not overwrite newer revision",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ '073d2b0b0ec9cbb208dbd5c91f11f3dc3f3b15b270e05d124100c4b99321ca8f'\n- 'ed15f62a7b595150d1bb0b40c46681fa2dd7fc7c3f9fb0b98664590508dfee1a'\n"
+    },
+    {
+      "name": "forget while embedding is pending does not recreate index or throw",
+      "passed": false,
+      "error": "SqliteError: FOREIGN KEY constraint failed"
+    },
+    {
+      "name": "task move during extraction cannot commit evidence into old project",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: old project extraction committed after task changed\n\n2 !== 1\n"
+    }
+  ],
+  "passed": false
+}

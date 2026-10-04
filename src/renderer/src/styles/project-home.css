@@ -1,0 +1,301 @@
+/* ============ Project 首页（Wave 1B 轻量卡片式首页）============
+ * 只覆盖首页 UI，不触碰其他页面；旧 row 列表样式由收尾代理清理。
+ * 视觉：大面积留白、低信息密度、圆角轻卡片、浅边框、极少阴影、文案优先、icon 次要。 */
+
+.project-home-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  position: relative;
+  padding-top: 8px;
+}
+
+/* CSS-only 轻量插画：纯装饰、不可交互、窄屏隐藏、不参与刚性布局 */
+.project-home-hero-art {
+  position: absolute;
+  top: 2px;
+  right: 168px;
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.55;
+}
+
+.project-home-hero-art i {
+  display: block;
+  border: 1.5px solid var(--fg);
+  border-radius: 4px;
+}
+
+.project-home-hero-art i:nth-child(1) {
+  width: 20px;
+  height: 20px;
+}
+
+.project-home-hero-art i:nth-child(2) {
+  width: 14px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.project-home-hero-art i:nth-child(3) {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-panel);
+}
+
+.project-home-hero-art i:nth-child(4) {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+@media (max-width: 1120px) {
+  .project-home-hero-art {
+    display: none;
+  }
+}
+
+/* ============ 区块（我的项目 / 从模板创建）============ */
+
+.project-home-section {
+  margin-top: 30px;
+}
+
+.project-home-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.project-home-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.project-home-section-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.project-home-search {
+  min-width: 220px;
+  flex: 0 1 240px;
+}
+
+/* 弱 tab：进行中 | 已归档 */
+.project-home-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.project-home-tabs button {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.project-home-tabs button:hover {
+  color: var(--fg-secondary);
+}
+
+.project-home-tabs button.active {
+  color: var(--fg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============ Project Card 网格 ============ */
+
+.project-home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 12px;
+}
+
+.project-home-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+
+.project-home-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.project-home-card-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 16px 16px 14px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 12px;
+}
+
+.project-home-card-open:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
+
+.project-home-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  color: var(--fg-secondary);
+  background: var(--bg-hover);
+}
+
+.project-home-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  padding-right: 28px;
+}
+
+.project-home-card-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.project-home-card-time {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.project-home-card-menu {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+}
+
+/* ============ 从模板创建 ============ */
+
+.project-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.project-template-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.project-template-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.project-template-card:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 1px;
+}
+
+.project-template-card-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--fg-secondary);
+}
+
+.project-template-card-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.project-template-card-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.project-template-card-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ============ 空态（模板区仍显示）============ */
+
+.project-home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  color: var(--fg-muted);
+}
+
+.project-home-empty-title {
+  font-size: 14px;
+  color: var(--fg-secondary);
+}
+
+.project-home-empty-sub {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.project-home-empty .btn {
+  margin-top: 6px;
+}

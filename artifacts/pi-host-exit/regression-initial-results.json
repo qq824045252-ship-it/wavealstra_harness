@@ -1,0 +1,394 @@
+{
+  "pid": 9368,
+  "startedAt": "2026-10-01T05:56:11.194Z",
+  "status": "failed",
+  "total": 55,
+  "tests": [
+    {
+      "name": "test:pi-host-control",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2173,
+      "log": "test-pi-host-control.log"
+    },
+    {
+      "name": "test:pi-native-control",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2165,
+      "log": "test-pi-native-control.log"
+    },
+    {
+      "name": "test:pi-native-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4272,
+      "log": "test-pi-native-lifecycle.log"
+    },
+    {
+      "name": "test:pi-autonomous-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3508,
+      "log": "test-pi-autonomous-execution.log"
+    },
+    {
+      "name": "test:prompt-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1737,
+      "log": "test-prompt-execution.log"
+    },
+    {
+      "name": "test:prompt-submission",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2005,
+      "log": "test-prompt-submission.log"
+    },
+    {
+      "name": "test:session-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1989,
+      "log": "test-session-lifecycle.log"
+    },
+    {
+      "name": "test:message-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2116,
+      "log": "test-message-lifecycle.log"
+    },
+    {
+      "name": "test:streaming-send",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2045,
+      "log": "test-streaming-send.log"
+    },
+    {
+      "name": "test:regenerate-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2090,
+      "log": "test-regenerate-lifecycle.log"
+    },
+    {
+      "name": "test:regenerate-connection-runtime",
+      "passed": false,
+      "exitCode": 1,
+      "durationMs": 4417,
+      "log": "test-regenerate-connection-runtime.log"
+    },
+    {
+      "name": "test:regenerate-stop-runtime",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3873,
+      "log": "test-regenerate-stop-runtime.log"
+    },
+    {
+      "name": "test:conversation-plan-records",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2348,
+      "log": "test-conversation-plan-records.log"
+    },
+    {
+      "name": "test:conversation-runtime",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1772,
+      "log": "test-conversation-runtime.log"
+    },
+    {
+      "name": "test:conversation-runtime-ui",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2127,
+      "log": "test-conversation-runtime-ui.log"
+    },
+    {
+      "name": "test:conversation-branch",
+      "passed": false,
+      "exitCode": 1,
+      "durationMs": 4487,
+      "log": "test-conversation-branch.log"
+    },
+    {
+      "name": "test:verified-write-electron",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 6338,
+      "log": "test-verified-write-electron.log"
+    },
+    {
+      "name": "test:verified-edit-electron",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4472,
+      "log": "test-verified-edit-electron.log"
+    },
+    {
+      "name": "test:verified-shell",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4469,
+      "log": "test-verified-shell.log"
+    },
+    {
+      "name": "test:verified-code-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1752,
+      "log": "test-verified-code-execution.log"
+    },
+    {
+      "name": "test:mcp-execution-evidence",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1395,
+      "log": "test-mcp-execution-evidence.log"
+    },
+    {
+      "name": "test:mcp-mode",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1916,
+      "log": "test-mcp-mode.log"
+    },
+    {
+      "name": "test:pi0992-mcp-config",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1631,
+      "log": "test-pi0992-mcp-config.log"
+    },
+    {
+      "name": "test:session-approval-bridge",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1925,
+      "log": "test-session-approval-bridge.log"
+    },
+    {
+      "name": "test:architecture",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 7773,
+      "log": "test-architecture.log"
+    },
+    {
+      "name": "test:harness-quality",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2170,
+      "log": "test-harness-quality.log"
+    },
+    {
+      "name": "test:runtime-orchestrator",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1906,
+      "log": "test-runtime-orchestrator.log"
+    },
+    {
+      "name": "test:web-access-capability",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2030,
+      "log": "test-web-access-capability.log"
+    },
+    {
+      "name": "test:web-access-convergence",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1969,
+      "log": "test-web-access-convergence.log"
+    },
+    {
+      "name": "test:web-artifact-runtime",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1899,
+      "log": "test-web-artifact-runtime.log"
+    },
+    {
+      "name": "test:agent-shell-runtime",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 5744,
+      "log": "test-agent-shell-runtime.log"
+    },
+    {
+      "name": "test:pi-shell-output",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4063,
+      "log": "test-pi-shell-output.log"
+    },
+    {
+      "name": "test:memory",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2503,
+      "log": "test-memory.log"
+    },
+    {
+      "name": "test:memory-cognition",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2337,
+      "log": "test-memory-cognition.log"
+    },
+    {
+      "name": "test:memory-projection-deletion",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2321,
+      "log": "test-memory-projection-deletion.log"
+    },
+    {
+      "name": "test:memory-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 6202,
+      "log": "test-memory-lifecycle.log"
+    },
+    {
+      "name": "test:memory-skill-learning",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4130,
+      "log": "test-memory-skill-learning.log"
+    },
+    {
+      "name": "test:memory-skill-history",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2662,
+      "log": "test-memory-skill-history.log"
+    },
+    {
+      "name": "test:memory-skill-effectiveness",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3635,
+      "log": "test-memory-skill-effectiveness.log"
+    },
+    {
+      "name": "test:memory-skill-revision",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4420,
+      "log": "test-memory-skill-revision.log"
+    },
+    {
+      "name": "test:memory-gateway",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 5605,
+      "log": "test-memory-gateway.log"
+    },
+    {
+      "name": "test:memory-gateway-controller",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 5285,
+      "log": "test-memory-gateway-controller.log"
+    },
+    {
+      "name": "test:project-memory-agent",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2309,
+      "log": "test-project-memory-agent.log"
+    },
+    {
+      "name": "test:project-memory-extraction",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1637,
+      "log": "test-project-memory-extraction.log"
+    },
+    {
+      "name": "test:project-memory-migration",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1916,
+      "log": "test-project-memory-migration.log"
+    },
+    {
+      "name": "test:memory-ui",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 53184,
+      "log": "test-memory-ui.log"
+    },
+    {
+      "name": "test:pi0992-memory-race",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1436,
+      "log": "test-pi0992-memory-race.log"
+    },
+    {
+      "name": "test:pi0992-memory-capsule",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3561,
+      "log": "test-pi0992-memory-capsule.log"
+    },
+    {
+      "name": "test:compaction",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3627,
+      "log": "test-compaction.log"
+    },
+    {
+      "name": "test:compaction-policy-history",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2722,
+      "log": "test-compaction-policy-history.log"
+    },
+    {
+      "name": "test:prompt-context",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1492,
+      "log": "test-prompt-context.log"
+    },
+    {
+      "name": "test:runtime-skill-loader",
+      "passed": false,
+      "exitCode": 1,
+      "durationMs": 3542,
+      "log": "test-runtime-skill-loader.log"
+    },
+    {
+      "name": "test:runtime-materials",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3537,
+      "log": "test-runtime-materials.log"
+    },
+    {
+      "name": "test:remote-access",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3439,
+      "log": "test-remote-access.log"
+    },
+    {
+      "name": "test:pi-reasoning-stream",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2263,
+      "log": "test-pi-reasoning-stream.log"
+    }
+  ],
+  "finishedAt": "2026-10-01T05:59:49.877Z"
+}

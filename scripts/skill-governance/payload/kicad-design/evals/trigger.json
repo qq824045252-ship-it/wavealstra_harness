@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "kicad-design",
+  "cases": [
+    {
+      "prompt": "检查当前 KiCad PCB 网络",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "修改 KiCad 原理图的电源连接",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "给 KiCad 板运行 DRC",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "用 KiCad MCP 查询元件位置",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把这个 epro 转换成 KiCad",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "在 EasyEDA 重新布线",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 Ansys 求电场",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "解释阻抗公式",
+      "expected": "no-trigger"
+    }
+  ]
+}

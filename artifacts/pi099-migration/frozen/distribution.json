@@ -1,0 +1,29 @@
+{
+  "createdAt": "2026-09-30T01:45:32.302Z",
+  "sourcePackStartedAt": "2026-09-30T01:39:01.680Z",
+  "sourcePackFinishedAt": "2026-09-30T01:40:26.030Z",
+  "destination": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi099-verified-20260930014530105\\win-unpacked",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi099-verified-20260930014530105\\win-unpacked\\MyBuddy.exe",
+  "files": [
+    {
+      "file": "MyBuddy.exe",
+      "size": 204217856,
+      "sha256": "646ea8ebaba505a56d1547f6066a6c662a924cdcc1e80db15c7e7bb0f7e1537b"
+    },
+    {
+      "file": "resources/app.asar",
+      "size": 151206535,
+      "sha256": "6ec2c13452e203df1767b17424853b5cb8ccf1c096d8127d78511f97f6b82e37"
+    },
+    {
+      "file": "resources/app.asar.unpacked/out/main/codemode-worker.cjs",
+      "size": 115652,
+      "sha256": "58dfdff0c439374d2e64dd5d33e28ae7410cd549adf433cab1c9926866ec127b"
+    },
+    {
+      "file": "resources/app.asar.unpacked/out/main/quickjs.wasm",
+      "size": 637405,
+      "sha256": "d4c9375f2b1ca4dc95f72c8aa2982a7a9951ac8011490d79c6582df732b4bbd9"
+    }
+  ]
+}

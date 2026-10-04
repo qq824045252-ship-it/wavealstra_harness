@@ -1,0 +1,68 @@
+{
+  "asOf": "2026-09-30T04:36:16.498Z",
+  "installed": {
+    "versionName": "1.1.5",
+    "versionCode": 7
+  },
+  "apk": {
+    "path": "app/remote/android/app/build/outputs/apk/debug/app-debug.apk",
+    "bytes": 4303585,
+    "sha256": "34bc4dd859f9bd94ce94d0189e59517267bb152ee7d742d02281e6b8d4e5b708"
+  },
+  "before": {
+    "versionName": "1.1.4",
+    "historicalSvgCount": 7,
+    "svgRebuildSamples": 20,
+    "initialScrollHeight": 18700,
+    "minimumScrollHeight": 18061,
+    "jsScrollWrites": 0
+  },
+  "after": {
+    "installed": {
+      "versionName": "1.1.5",
+      "versionCode": 7
+    },
+    "ok": true,
+    "phases": [
+      {
+        "name": "earlier",
+        "startY": 13462.857421875,
+        "endY": 13462.857421875,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      },
+      {
+        "name": "later",
+        "startY": 13808.5712890625,
+        "endY": 13808.5712890625,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      },
+      {
+        "name": "bottom across automatic refreshes",
+        "startY": 17990.572265625,
+        "endY": 17990.572265625,
+        "maxDrift": 0,
+        "scriptWrites": 0
+      }
+    ],
+    "decodedHistoricalSvgs": 7,
+    "svgRemounts": 0,
+    "freshHistoryReadsDuringBottomHold": 4,
+    "holdMs": 23023,
+    "failures": []
+  },
+  "fixes": [
+    "Keep Markdown pre renderer identity stable across snapshot and stream updates",
+    "Memoize unchanged historical Markdown text",
+    "Do not recompute new-turn spacer on passive synchronization"
+  ],
+  "tests": {
+    "renderer": 15,
+    "client": 20,
+    "remoteTypecheck": "passed",
+    "remoteAccess": "passed"
+  },
+  "scope": "Already-open SSH task; native swipe up/down and 23-second bottom hold; no prompts sent, no desktop restart, no VPN/network settings changed",
+  "gitCommitted": false
+}

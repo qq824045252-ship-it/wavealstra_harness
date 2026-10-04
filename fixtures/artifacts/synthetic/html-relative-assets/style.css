@@ -1,0 +1,8 @@
+/* html-relative-assets fixture 的外部样式：验证 <link rel="stylesheet"> 相对解析 */
+:root { --accent: #7c3aed; }
+body { margin: 0; font: 14px/1.6 system-ui, sans-serif; background: #faf5ff; color: #2e1065; }
+header { background: var(--accent); color: #fff; padding: 14px 20px; }
+main { padding: 20px; max-width: 720px; }
+.note { background: #fff; border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 4px; }
+.box { margin-top: 16px; padding: 20px; background: #fff; border: 1px dashed var(--accent); border-radius: 8px; }
+code { background: #ede9fe; padding: 1px 6px; border-radius: 4px; }

@@ -1,0 +1,8 @@
+{
+  "name": "test:compaction",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:52:33.510Z",
+  "durationMs": 4896,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-compaction.log"
+}

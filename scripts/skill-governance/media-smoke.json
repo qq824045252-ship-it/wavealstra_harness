@@ -1,0 +1,32 @@
+{
+  "asr": {
+    "device": "NPU",
+    "startupSeconds": 170,
+    "audioSeconds": 6.7,
+    "inferenceSeconds": 3,
+    "brokerPid": 34320,
+    "transcript": "这是一条语音转写测试今天完成了技能迁移和验证。\r",
+    "pass": true
+  },
+  "ocr": {
+    "device": "NPU",
+    "shortExpected": "TEST 42",
+    "shortActual": "===== Page 1 =====\r\nTEST 42",
+    "wideSample": "partial recognition; quality limitation retained",
+    "recNpuWideWidth": 320
+  },
+  "gemini": {
+    "model": "gemini-3-pro-image",
+    "realApiImage": true,
+    "dimensions": [
+      1408,
+      768
+    ],
+    "bytes": 173309,
+    "resize": [
+      32,
+      32
+    ],
+    "powerShellSubprocess": false
+  }
+}

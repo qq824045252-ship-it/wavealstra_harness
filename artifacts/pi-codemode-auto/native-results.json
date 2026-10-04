@@ -1,0 +1,133 @@
+{
+  "at": "2026-10-02T00:21:42.287Z",
+  "passed": true,
+  "results": [
+    {
+      "name": "working without any MCP server",
+      "passed": true,
+      "mode": "working",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 1,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\633e303e-1e9e-45cc-bfa4-bebc9afb85ff\\2026-10-02T00-21-38-776Z_01a0f9fc-f157-77b9-8ced-91feb1f0d37e.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\633e303e-1e9e-45cc-bfa4-bebc9afb85ff"
+    },
+    {
+      "name": "working with real stdio MCP and native tool discovery",
+      "passed": true,
+      "mode": "working",
+      "withMcp": true,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 3,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d2e608da-efd0-40fc-9f8b-61b3d73f8935\\2026-10-02T00-21-38-835Z_01a0f9fc-f193-77b9-8ced-92008ac27c27.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d2e608da-efd0-40fc-9f8b-61b3d73f8935"
+    },
+    {
+      "name": "coding without any MCP server",
+      "passed": true,
+      "mode": "coding",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "codemode",
+        "tool_search"
+      ],
+      "requests": 2,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\71422a4d-6693-43cd-ab0c-af06e1d7ed81\\2026-10-02T00-21-39-801Z_01a0f9fc-f559-77b9-8ced-920340de4a45.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\71422a4d-6693-43cd-ab0c-af06e1d7ed81"
+    },
+    {
+      "name": "coding with real stdio MCP and native tool discovery",
+      "passed": true,
+      "mode": "coding",
+      "withMcp": true,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "codemode",
+        "tool_search"
+      ],
+      "requests": 2,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\6e31d2f8-7a5c-4ef9-a759-de5655969122\\2026-10-02T00-21-39-918Z_01a0f9fc-f5ce-77b9-8ced-920598ff0e35.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\6e31d2f8-7a5c-4ef9-a759-de5655969122"
+    },
+    {
+      "name": "design without any MCP server",
+      "passed": true,
+      "mode": "design",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 1,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\1de101af-1552-4a71-9bd5-815c06fba932\\2026-10-02T00-21-40-742Z_01a0f9fc-f906-77b9-8ced-920707f35404.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\1de101af-1552-4a71-9bd5-815c06fba932"
+    },
+    {
+      "name": "design with real stdio MCP and native tool discovery",
+      "passed": true,
+      "mode": "design",
+      "withMcp": true,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "tool_search"
+      ],
+      "requests": 3,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\5d2e7981-19ba-4f88-969f-af5e76894dc5\\2026-10-02T00-21-40-813Z_01a0f9fc-f94d-77b9-8ced-9208fa4c65d5.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\5d2e7981-19ba-4f88-969f-af5e76894dc5"
+    },
+    {
+      "name": "coding stays active with a configured but disabled MCP server after settings reload",
+      "passed": true,
+      "mode": "coding",
+      "withMcp": false,
+      "active": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "codemode",
+        "tool_search"
+      ],
+      "requests": 2,
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d666113f-a7e8-4fc7-86df-18b8c32813d5\\2026-10-02T00-21-41-837Z_01a0f9fc-fd4d-77b9-8ced-920b753f1f95.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d666113f-a7e8-4fc7-86df-18b8c32813d5"
+    },
+    {
+      "name": "reopen coding history as office without stale Code Mode",
+      "passed": true,
+      "from": "coding",
+      "to": "working"
+    },
+    {
+      "name": "reopen office history as coding activates Code Mode",
+      "passed": true,
+      "from": "working",
+      "to": "coding"
+    }
+  ]
+}

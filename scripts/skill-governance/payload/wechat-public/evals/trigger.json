@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "wechat-public",
+  "cases": [
+    {
+      "prompt": "解析 https://mp.weixin.qq.com/s/example 的文章",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "提取这个公众号链接正文",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "整理微信公众号文章作者日期和要点",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "读取微信文章链接并保留来源",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "识别微信聊天截图",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "把微信群录音转文字",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "总结普通新闻网站链接",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "生成周报系统 JSON",
+      "expected": "no-trigger"
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+import type { Api, Credential, Model } from "@earendil-works/pi-ai";
+import type { ModelsProviderConfig } from "../agent/ModelsConfigStore";
+
+export interface CustomModelDiscoveryContext {
+  allowNetwork: boolean;
+  credential?: Credential;
+  signal: AbortSignal;
+}
+
+function discoveryEndpoint(config: ModelsProviderConfig): string | undefined {
+  const mode = config.modelDiscovery?.mode ?? "auto";
+  if (mode === "disabled" || mode === "provider-native") return undefined;
+  if (
+    mode === "auto"
+    && config.api !== "openai-completions"
+    && config.api !== "openai-responses"
+  ) {
+    return undefined;
+  }
+  const explicit = config.modelDiscovery?.endpoint?.trim();
+  if (explicit) return explicit;
+  const base = config.baseUrl.trim().replace(/\/+$/u, "");
+  return base ? `${base}/models` : undefined;
+}
+
+function upstreamModelIds(value: unknown): string[] {
+  if (!value || typeof value !== "object") {
+    throw new Error("上游模型响应不是 JSON 对象");
+  }
+  const data = (value as { data?: unknown }).data;
+  if (!Array.isArray(data)) throw new Error("上游模型响应缺少 data 数组");
+  const ids = new Set<string>();
+  for (const entry of data) {
+    const id = entry && typeof entry === "object"
+      && typeof (entry as { id?: unknown }).id === "string"
+      ? (entry as { id: string }).id.trim()
+      : "";
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+function displayName(id: string): string {
+  return id
+    .split(/[-_/]+/u)
+    .filter(Boolean)
+    .map((part) => /^(ai|glm|gpt|mimo|qwen)$/iu.test(part)
+      ? part.toUpperCase()
+      : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+function requestHeaders(
+  config: ModelsProviderConfig,
+  context: CustomModelDiscoveryContext,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    ...(config.headers ?? {}),
+  };
+  const hasAuthorization = Object.keys(headers)
+    .some((name) => name.toLowerCase() === "authorization");
+  const key = context.credential?.type === "api_key"
+    ? context.credential.key
+    : undefined;
+  if (key && !hasAuthorization) headers.authorization = `Bearer ${key}`;
+  return headers;
+}
+
+export function canDiscoverCustom(config: ModelsProviderConfig | undefined): boolean {
+  return Boolean(config && discoveryEndpoint(config));
+}
+
+/**
+ * Generic OpenAI-compatible /models discovery for custom gateways.
+ * Availability comes from the provider; metadata stays conservative unless an
+ * existing local model already supplies trusted limits/capabilities.
+ */
+export async function discoverCustomProvider(
+  providerId: string,
+  config: ModelsProviderConfig,
+  baseline: readonly Model<Api>[],
+  context: CustomModelDiscoveryContext,
+  fetchImpl: typeof fetch = fetch,
+): Promise<readonly Model<Api>[]> {
+  const endpoint = discoveryEndpoint(config);
+  if (!endpoint || !context.allowNetwork) return baseline;
+
+  const response = await fetchImpl(endpoint, {
+    method: "GET",
+    headers: requestHeaders(config, context),
+    signal: context.signal,
+  });
+  if (!response.ok) {
+    throw new Error(`${providerId} 上游模型接口返回 HTTP ${response.status}`);
+  }
+  const ids = upstreamModelIds(await response.json());
+  if (ids.length === 0) throw new Error(`${providerId} 上游返回了空模型列表`);
+
+  const existingById = new Map(baseline.map((model) => [model.id, model]));
+  const fallback = baseline.find((model) => model.api === config.api) ?? baseline[0];
+
+  return ids.map((id) => {
+    const existing = existingById.get(id);
+    if (existing) {
+      return {
+        ...existing,
+        provider: providerId,
+        baseUrl: config.baseUrl,
+        api: config.api as Api,
+      };
+    }
+    return {
+      id,
+      name: displayName(id) || id,
+      api: config.api as Api,
+      provider: providerId,
+      baseUrl: config.baseUrl,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: fallback?.contextWindow ?? 16_384,
+      maxTokens: fallback?.maxTokens ?? 4_096,
+      headers: config.headers,
+      compat: fallback?.compat,
+    } as Model<Api>;
+  });
+}

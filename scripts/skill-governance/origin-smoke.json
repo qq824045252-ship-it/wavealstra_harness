@@ -1,0 +1,30 @@
+{
+  "brokerPid": 3760,
+  "protocol": 2,
+  "status": true,
+  "scriptFileResult": 42,
+  "import": {
+    "initialGraphFailure": true,
+    "recoveredWithWorksheet": true,
+    "rows": 30,
+    "cols": 2
+  },
+  "stats": {
+    "n": 4,
+    "mean": 5,
+    "sd": 2.581988897471611,
+    "min": 2,
+    "max": 8
+  },
+  "restoredActivePage": "Graph1",
+  "protectedScripts": [
+    {
+      "file": "origin_broker.ps1",
+      "sha256": "84c148dddfaee1279dd22e34f229607c659224276ac1b2a9b46dc14e4e0f8889"
+    },
+    {
+      "file": "origin_tool.ps1",
+      "sha256": "619d1a481687872fe2d1a5582fd3f3440fcef77048c807e8cfb39d520f53c59f"
+    }
+  ]
+}

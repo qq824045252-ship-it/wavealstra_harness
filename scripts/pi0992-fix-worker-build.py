@@ -1,0 +1,7 @@
+from pathlib import Path
+root=Path(__file__).resolve().parent.parent
+p=root/'src/main/capabilities/subagent/worker-launcher.mjs';s=p.read_text(encoding='utf-8').replace('const EXPECTED_PI_VERSION = "0.99.1";','const EXPECTED_PI_VERSION = "0.99.2";');p.write_text(s,encoding='utf-8',newline='\n')
+p=root/'scripts/build-subagent-runtime.mjs';s=p.read_text(encoding='utf-8');s=s.replace("  if(piVersion!=='0.99.1'||aiVersion!==piVersion)throw Error('Subagent Runtime versions are inconsistent');", "  const manifest=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));\n  const expected=manifest.devDependencies?.['@earendil-works/pi-coding-agent'] ?? manifest.dependencies?.['@earendil-works/pi-coding-agent'];\n  if(!/^\\d+\\.\\d+\\.\\d+$/.test(expected)||piVersion!==expected||aiVersion!==piVersion)throw Error('Subagent Runtime versions are inconsistent');\n  const launcher=readFileSync(join(root,'src/main/capabilities/subagent/worker-launcher.mjs'),'utf8');\n  if(!launcher.includes('const EXPECTED_PI_VERSION = '+JSON.stringify(expected)+';'))throw Error('Subagent launcher version pin must match the installed runtime');")
+p.write_text(s,encoding='utf-8',newline='\n')
+p=root/'app/remote/android/app/build.gradle';s=p.read_text(encoding='utf-8').replace('versionCode 9','versionCode 10').replace('versionName "1.1.7"','versionName "1.1.8"');p.write_text(s,encoding='utf-8',newline='\n')
+print('Worker exact-version handshake matches root manifest; Android package advanced to code10 / 1.1.8.')

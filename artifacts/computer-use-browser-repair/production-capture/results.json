@@ -1,0 +1,519 @@
+{
+  "at": "2026-10-02T23:04:53.629Z",
+  "electron": "44.5.1",
+  "profile": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-browser-screenshot-acYsIy",
+  "results": [
+    {
+      "mode": "hidden",
+      "index": 0,
+      "elapsedMs": 362,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960608579379133,
+      "sha256": "8edddcacfd9e031af758a07a2f54b3d4e9b9053d54222280bb5102fcc49da096"
+    },
+    {
+      "mode": "hidden",
+      "index": 1,
+      "elapsedMs": 170,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9962776914459182,
+      "sha256": "3a69d0255c4ebf182ceaf34014ffe8b5bfb52233bd63b1ef2ee9f16ef3312ef9"
+    },
+    {
+      "mode": "hidden",
+      "index": 2,
+      "elapsedMs": 200,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961692746919157,
+      "sha256": "297ddfff6e49966ad4494fa37b30b5011ebbeb07666834a6f539c2b0584ba85f"
+    },
+    {
+      "mode": "hidden",
+      "index": 3,
+      "elapsedMs": 246,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "f72313488d65ccb8afeee3bdb81b47c2b3cb1578189b5a294b2efb954379f4d5"
+    },
+    {
+      "mode": "hidden",
+      "index": 4,
+      "elapsedMs": 197,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.996223483068917,
+      "sha256": "033fe70e7fa2eb920593d0d0cf4dde4889f246c9eea5baae5b930e18ef1e707d"
+    },
+    {
+      "mode": "hidden",
+      "index": 5,
+      "elapsedMs": 230,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "2ebbde3d61d4ebf741edbc849f418c71fec281c420e0ad62e51a0cb9d83fb10b"
+    },
+    {
+      "mode": "hidden",
+      "index": 6,
+      "elapsedMs": 229,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961331357739149,
+      "sha256": "a5fb7f2e67ce196e450e4fa35448cbf029c59d94182d02a5f65e17c673d605bf"
+    },
+    {
+      "mode": "hidden",
+      "index": 7,
+      "elapsedMs": 196,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9963499692819197,
+      "sha256": "c930bf093b60a2a447ffe7738da8e37d58dcf2645da53f53d3061cf0ae9edf1b"
+    },
+    {
+      "mode": "hidden",
+      "index": 8,
+      "elapsedMs": 223,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9959705106429113,
+      "sha256": "84a5fbcc8a6f57f1166b8d93db6ddf5996df5936c46b8ea07667fcea7572df29"
+    },
+    {
+      "mode": "hidden",
+      "index": 9,
+      "elapsedMs": 201,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960247190199125,
+      "sha256": "d2695610a8afaa5e63d58dac0f81a285c5648845a17071d8013ba39873477ace"
+    },
+    {
+      "mode": "inspector",
+      "index": 0,
+      "elapsedMs": 290,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960608579379133,
+      "sha256": "8edddcacfd9e031af758a07a2f54b3d4e9b9053d54222280bb5102fcc49da096"
+    },
+    {
+      "mode": "inspector",
+      "index": 1,
+      "elapsedMs": 250,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9962776914459182,
+      "sha256": "3a69d0255c4ebf182ceaf34014ffe8b5bfb52233bd63b1ef2ee9f16ef3312ef9"
+    },
+    {
+      "mode": "inspector",
+      "index": 2,
+      "elapsedMs": 230,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961692746919157,
+      "sha256": "297ddfff6e49966ad4494fa37b30b5011ebbeb07666834a6f539c2b0584ba85f"
+    },
+    {
+      "mode": "inspector",
+      "index": 3,
+      "elapsedMs": 211,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "f72313488d65ccb8afeee3bdb81b47c2b3cb1578189b5a294b2efb954379f4d5"
+    },
+    {
+      "mode": "inspector",
+      "index": 4,
+      "elapsedMs": 238,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.996223483068917,
+      "sha256": "033fe70e7fa2eb920593d0d0cf4dde4889f246c9eea5baae5b930e18ef1e707d"
+    },
+    {
+      "mode": "inspector",
+      "index": 5,
+      "elapsedMs": 185,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "2ebbde3d61d4ebf741edbc849f418c71fec281c420e0ad62e51a0cb9d83fb10b"
+    },
+    {
+      "mode": "inspector",
+      "index": 6,
+      "elapsedMs": 229,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961331357739149,
+      "sha256": "a5fb7f2e67ce196e450e4fa35448cbf029c59d94182d02a5f65e17c673d605bf"
+    },
+    {
+      "mode": "inspector",
+      "index": 7,
+      "elapsedMs": 238,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9963499692819197,
+      "sha256": "c930bf093b60a2a447ffe7738da8e37d58dcf2645da53f53d3061cf0ae9edf1b"
+    },
+    {
+      "mode": "inspector",
+      "index": 8,
+      "elapsedMs": 205,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9959705106429113,
+      "sha256": "84a5fbcc8a6f57f1166b8d93db6ddf5996df5936c46b8ea07667fcea7572df29"
+    },
+    {
+      "mode": "inspector",
+      "index": 9,
+      "elapsedMs": 282,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960247190199125,
+      "sha256": "d2695610a8afaa5e63d58dac0f81a285c5648845a17071d8013ba39873477ace"
+    },
+    {
+      "mode": "blocker",
+      "index": 0,
+      "elapsedMs": 227,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960608579379133,
+      "sha256": "8edddcacfd9e031af758a07a2f54b3d4e9b9053d54222280bb5102fcc49da096"
+    },
+    {
+      "mode": "blocker",
+      "index": 1,
+      "elapsedMs": 230,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9962776914459182,
+      "sha256": "3a69d0255c4ebf182ceaf34014ffe8b5bfb52233bd63b1ef2ee9f16ef3312ef9"
+    },
+    {
+      "mode": "blocker",
+      "index": 2,
+      "elapsedMs": 232,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961692746919157,
+      "sha256": "297ddfff6e49966ad4494fa37b30b5011ebbeb07666834a6f539c2b0584ba85f"
+    },
+    {
+      "mode": "blocker",
+      "index": 3,
+      "elapsedMs": 222,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "f72313488d65ccb8afeee3bdb81b47c2b3cb1578189b5a294b2efb954379f4d5"
+    },
+    {
+      "mode": "blocker",
+      "index": 4,
+      "elapsedMs": 226,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.996223483068917,
+      "sha256": "033fe70e7fa2eb920593d0d0cf4dde4889f246c9eea5baae5b930e18ef1e707d"
+    },
+    {
+      "mode": "blocker",
+      "index": 5,
+      "elapsedMs": 197,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "2ebbde3d61d4ebf741edbc849f418c71fec281c420e0ad62e51a0cb9d83fb10b"
+    },
+    {
+      "mode": "blocker",
+      "index": 6,
+      "elapsedMs": 223,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961331357739149,
+      "sha256": "a5fb7f2e67ce196e450e4fa35448cbf029c59d94182d02a5f65e17c673d605bf"
+    },
+    {
+      "mode": "blocker",
+      "index": 7,
+      "elapsedMs": 182,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9963499692819197,
+      "sha256": "c930bf093b60a2a447ffe7738da8e37d58dcf2645da53f53d3061cf0ae9edf1b"
+    },
+    {
+      "mode": "blocker",
+      "index": 8,
+      "elapsedMs": 192,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9959705106429113,
+      "sha256": "84a5fbcc8a6f57f1166b8d93db6ddf5996df5936c46b8ea07667fcea7572df29"
+    },
+    {
+      "mode": "blocker",
+      "index": 9,
+      "elapsedMs": 210,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960247190199125,
+      "sha256": "d2695610a8afaa5e63d58dac0f81a285c5648845a17071d8013ba39873477ace"
+    },
+    {
+      "mode": "minimized",
+      "index": 0,
+      "elapsedMs": 193,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960608579379133,
+      "sha256": "8edddcacfd9e031af758a07a2f54b3d4e9b9053d54222280bb5102fcc49da096"
+    },
+    {
+      "mode": "minimized",
+      "index": 1,
+      "elapsedMs": 165,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9962776914459182,
+      "sha256": "3a69d0255c4ebf182ceaf34014ffe8b5bfb52233bd63b1ef2ee9f16ef3312ef9"
+    },
+    {
+      "mode": "minimized",
+      "index": 2,
+      "elapsedMs": 183,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961692746919157,
+      "sha256": "297ddfff6e49966ad4494fa37b30b5011ebbeb07666834a6f539c2b0584ba85f"
+    },
+    {
+      "mode": "minimized",
+      "index": 3,
+      "elapsedMs": 169,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "f72313488d65ccb8afeee3bdb81b47c2b3cb1578189b5a294b2efb954379f4d5"
+    },
+    {
+      "mode": "minimized",
+      "index": 4,
+      "elapsedMs": 186,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.996223483068917,
+      "sha256": "033fe70e7fa2eb920593d0d0cf4dde4889f246c9eea5baae5b930e18ef1e707d"
+    },
+    {
+      "mode": "minimized",
+      "index": 5,
+      "elapsedMs": 146,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "2ebbde3d61d4ebf741edbc849f418c71fec281c420e0ad62e51a0cb9d83fb10b"
+    },
+    {
+      "mode": "minimized",
+      "index": 6,
+      "elapsedMs": 160,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961331357739149,
+      "sha256": "a5fb7f2e67ce196e450e4fa35448cbf029c59d94182d02a5f65e17c673d605bf"
+    },
+    {
+      "mode": "minimized",
+      "index": 7,
+      "elapsedMs": 150,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9963499692819197,
+      "sha256": "c930bf093b60a2a447ffe7738da8e37d58dcf2645da53f53d3061cf0ae9edf1b"
+    },
+    {
+      "mode": "minimized",
+      "index": 8,
+      "elapsedMs": 196,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9959705106429113,
+      "sha256": "84a5fbcc8a6f57f1166b8d93db6ddf5996df5936c46b8ea07667fcea7572df29"
+    },
+    {
+      "mode": "minimized",
+      "index": 9,
+      "elapsedMs": 174,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960247190199125,
+      "sha256": "d2695610a8afaa5e63d58dac0f81a285c5648845a17071d8013ba39873477ace"
+    },
+    {
+      "mode": "visible",
+      "index": 0,
+      "elapsedMs": 142,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960608579379133,
+      "sha256": "8edddcacfd9e031af758a07a2f54b3d4e9b9053d54222280bb5102fcc49da096"
+    },
+    {
+      "mode": "visible",
+      "index": 1,
+      "elapsedMs": 144,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9962776914459182,
+      "sha256": "3a69d0255c4ebf182ceaf34014ffe8b5bfb52233bd63b1ef2ee9f16ef3312ef9"
+    },
+    {
+      "mode": "visible",
+      "index": 2,
+      "elapsedMs": 142,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961692746919157,
+      "sha256": "297ddfff6e49966ad4494fa37b30b5011ebbeb07666834a6f539c2b0584ba85f"
+    },
+    {
+      "mode": "visible",
+      "index": 3,
+      "elapsedMs": 128,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "f72313488d65ccb8afeee3bdb81b47c2b3cb1578189b5a294b2efb954379f4d5"
+    },
+    {
+      "mode": "visible",
+      "index": 4,
+      "elapsedMs": 140,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.996223483068917,
+      "sha256": "033fe70e7fa2eb920593d0d0cf4dde4889f246c9eea5baae5b930e18ef1e707d"
+    },
+    {
+      "mode": "visible",
+      "index": 5,
+      "elapsedMs": 165,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961512052329153,
+      "sha256": "2ebbde3d61d4ebf741edbc849f418c71fec281c420e0ad62e51a0cb9d83fb10b"
+    },
+    {
+      "mode": "visible",
+      "index": 6,
+      "elapsedMs": 140,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9961331357739149,
+      "sha256": "a5fb7f2e67ce196e450e4fa35448cbf029c59d94182d02a5f65e17c673d605bf"
+    },
+    {
+      "mode": "visible",
+      "index": 7,
+      "elapsedMs": 228,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9963499692819197,
+      "sha256": "c930bf093b60a2a447ffe7738da8e37d58dcf2645da53f53d3061cf0ae9edf1b"
+    },
+    {
+      "mode": "visible",
+      "index": 8,
+      "elapsedMs": 160,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9959705106429113,
+      "sha256": "84a5fbcc8a6f57f1166b8d93db6ddf5996df5936c46b8ea07667fcea7572df29"
+    },
+    {
+      "mode": "visible",
+      "index": 9,
+      "elapsedMs": 173,
+      "width": 1120,
+      "height": 840,
+      "coloredRatio": 0.9960247190199125,
+      "sha256": "d2695610a8afaa5e63d58dac0f81a285c5648845a17071d8013ba39873477ace"
+    },
+    {
+      "mode": "capture-during-window-hide",
+      "currentFrame": true,
+      "subsequentCaptureRecovered": true
+    },
+    {
+      "mode": "capture-during-window-minimize",
+      "currentFrame": true,
+      "subsequentCaptureRecovered": true
+    },
+    {
+      "mode": "capture-during-panel-blocker",
+      "currentFrame": true,
+      "subsequentCaptureRecovered": true
+    },
+    {
+      "mode": "cancel-in-flight-native-capture",
+      "existingInspector": false,
+      "callerPrompt": true,
+      "recovered": true
+    },
+    {
+      "mode": "cancel-in-flight-native-capture",
+      "existingInspector": true,
+      "callerPrompt": true,
+      "recovered": true
+    },
+    {
+      "mode": "abort-after-native-capture",
+      "existingInspector": false,
+      "viewport": [
+        640,
+        480
+      ],
+      "emulationCommands": 0
+    },
+    {
+      "mode": "abort-after-native-capture",
+      "existingInspector": true,
+      "viewport": [
+        640,
+        480
+      ],
+      "emulationCommands": 0
+    },
+    {
+      "mode": "late-native-result",
+      "cancelledQueue": true,
+      "timeoutQueue": true,
+      "preservedInspector": true,
+      "recovered": true
+    },
+    {
+      "mode": "stale-layout",
+      "rejected": true,
+      "currentBoundsPreserved": true
+    },
+    {
+      "mode": "stale-navigation",
+      "rejected": true,
+      "currentBoundsPreserved": true
+    }
+  ]
+}

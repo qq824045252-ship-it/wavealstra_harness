@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "startedAt": "2026-10-01T20:40:19.766Z",
+  "sourceFingerprint": "1b2a612855aed66d9a2bc62e2cc9d0070aaa9636ef52667efa7ea8251c18ef6d",
+  "release": "release-pi100-20261001204019757",
+  "output": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001204019757",
+  "packed": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi100-20261001204019757\\win-unpacked",
+  "cleanReleaseRoot": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001204019757",
+  "steps": [
+    {
+      "name": "electron-builder",
+      "status": "passed",
+      "at": "2026-10-01T20:43:03.259Z"
+    },
+    {
+      "name": "clean-acl-publish-and-worker-integrity",
+      "status": "passed",
+      "at": "2026-10-01T20:43:45.828Z"
+    }
+  ],
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi100-20261001204019757\\win-unpacked\\MyBuddy.exe",
+  "asar": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi100-20261001204019757\\win-unpacked\\resources\\app.asar",
+  "asarSha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+  "cleanExecutable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001204019757\\MyBuddy.exe",
+  "cleanAsar": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001204019757\\resources\\app.asar",
+  "cleanAsarSha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+  "sourceUnchanged": true,
+  "finishedAt": "2026-10-01T20:43:45.830Z"
+}

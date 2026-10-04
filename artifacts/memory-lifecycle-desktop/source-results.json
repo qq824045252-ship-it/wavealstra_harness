@@ -1,0 +1,155 @@
+{
+  "startedAt": "2026-10-04T15:36:38.128Z",
+  "kind": "actual-electron-local-http-provider",
+  "tests": [
+    {
+      "mutation": "update",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": true
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": true,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_bf8bda74-73aa-49a5-88b4-a8df4a86ebb4",
+      "newCanary": "MEMORY_NEW_27c2016d-a09c-4a8f-b375-b5fffb4e2bc6",
+      "status": "passed",
+      "memoryId": "mem_de87c9a4-09b0-4a92-9493-bd1e8dcc0c24"
+    },
+    {
+      "mutation": "resolved",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": true
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": false,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_405ec6bc-961b-4b96-b6c0-ac6ced8cf9df",
+      "newCanary": "MEMORY_NEW_d6877272-aa6f-4619-9a0b-02078b811c07",
+      "status": "passed",
+      "memoryId": "mem_164e092b-cbbd-4c95-9e3c-f4d88d822ceb"
+    },
+    {
+      "mutation": "forget",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": false,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_68bb7f9a-8047-410c-92e5-900da5d8a427",
+      "newCanary": "MEMORY_NEW_11c32f26-7fe6-4108-8807-0acb295f63c2",
+      "status": "passed",
+      "memoryId": "mem_94dad46f-9f39-416d-978f-0d60bb236495"
+    },
+    {
+      "mutation": "invalid",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": false,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_cd0fa1e7-c2e2-45ce-875d-9d4206837938",
+      "newCanary": "MEMORY_NEW_9780cc69-9554-46b9-9ce3-34b979b0d888",
+      "status": "passed",
+      "memoryId": "mem_ec2525ae-8689-4811-8b2c-f688572719dd"
+    },
+    {
+      "mutation": "scope",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": false,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_367e016a-d80a-4f7c-ac5b-a64acf78aa67",
+      "newCanary": "MEMORY_NEW_35d13f02-c49d-4311-8880-2f891a15608c",
+      "status": "passed",
+      "memoryId": "mem_8621a69c-978f-4a6b-a32c-7b547ae2333a"
+    },
+    {
+      "mutation": "expiry",
+      "phase": "fresh",
+      "requests": [
+        {
+          "phase": "first",
+          "oldMemory": true,
+          "newMemory": false,
+          "toolResult": false
+        },
+        {
+          "phase": "fresh",
+          "oldMemory": false,
+          "newMemory": false,
+          "toolResult": true
+        }
+      ],
+      "canary": "MEMORY_OLD_0efebec0-5d9b-4594-a30d-6deba9834608",
+      "newCanary": "MEMORY_NEW_87854c42-eb20-49f4-8359-a6c6f065611f",
+      "status": "passed",
+      "memoryId": "mem_46ef32a0-34a7-409c-8f37-2c38aa2ecd77"
+    }
+  ],
+  "status": "passed",
+  "pid": 48580,
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\node_modules\\.pnpm\\electron@44.5.1_supports-color@7.1.0\\node_modules\\electron\\dist\\electron.exe",
+  "buildSha256": "7ba81aa084cd15baaf534f661585f3af4361d714476cbd57f333c4cfc41375cd",
+  "finishedAt": "2026-10-04T15:36:44.403Z"
+}

@@ -1,0 +1,206 @@
+{
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "skill": "academic-translation",
+      "before": 19965,
+      "chars": 10866,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "ansys-simulation",
+      "before": 12220,
+      "chars": 9112,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "archify",
+      "before": 16384,
+      "chars": 10307,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "cheaper-inference-image",
+      "before": 2281,
+      "chars": 2731,
+      "positive": 4,
+      "negative": 5,
+      "status": "pass"
+    },
+    {
+      "skill": "code-view",
+      "before": 3744,
+      "chars": 3667,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "dim-feature-add",
+      "before": 5617,
+      "chars": 5845,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "dimagent-debug",
+      "before": 8881,
+      "chars": 8972,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "easyeda-agent",
+      "before": 18831,
+      "chars": 11826,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "epro2kicad",
+      "before": 6557,
+      "chars": 6917,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "fastcopy-copy",
+      "before": 4502,
+      "chars": 2774,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "gemini-agent-platform",
+      "before": 7207,
+      "chars": 2176,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "kicad-design",
+      "before": 12522,
+      "chars": 10941,
+      "positive": 4,
+      "negative": 4,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "loop-agent",
+      "before": 6896,
+      "chars": 7112,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "matlab-r2025b",
+      "before": 1933,
+      "chars": 2061,
+      "positive": 5,
+      "negative": 5,
+      "status": "pass"
+    },
+    {
+      "skill": "meeting-transcribe",
+      "before": 2082,
+      "chars": 2546,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "npu-ocr",
+      "before": 3920,
+      "chars": 4101,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "officecli",
+      "before": 25870,
+      "chars": 6252,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "open-kimi-ppt",
+      "before": 21688,
+      "chars": 6665,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "origin-analysis",
+      "before": 13465,
+      "chars": 9892,
+      "positive": 5,
+      "negative": 5,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "projectlibre-gen",
+      "before": 5045,
+      "chars": 5283,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "root-cause-debugging",
+      "before": 11935,
+      "chars": 11270,
+      "positive": 5,
+      "negative": 8,
+      "status": "context-reviewed"
+    },
+    {
+      "skill": "shared-memory",
+      "before": 3182,
+      "chars": 3391,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "wechat-public",
+      "before": 2624,
+      "chars": 2861,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "weekly-report-fill",
+      "before": 2704,
+      "chars": 3107,
+      "positive": 4,
+      "negative": 4,
+      "status": "pass"
+    },
+    {
+      "skill": "weekly-summary",
+      "before": 177,
+      "chars": 177,
+      "positive": 0,
+      "negative": 0,
+      "status": "cleanup-candidate"
+    }
+  ]
+}

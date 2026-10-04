@@ -1,0 +1,62 @@
+{
+  "at": "2026-10-01T06:27:28.707Z",
+  "status": "passed",
+  "review": {
+    "files": 719,
+    "lines": 199786,
+    "hooks": 21,
+    "nativeCallSites": 86,
+    "sourceAuditSha256": "a808f9123b3c7fe377613ce51dfa53a99ddb7df9afe63bfc37e07af6cc55ddff"
+  },
+  "validation": {
+    "regressionSuites": 57,
+    "boundaryCases": 31,
+    "nativeIntegrationCases": 16,
+    "realModelDesktopTasks": 10,
+    "upstreamCoreFiles": 122,
+    "rendererErrors": 0,
+    "retiredControlMessages": 0,
+    "observedModels": [
+      "commandcode/deepseek/deepseek-v4.1-flash"
+    ]
+  },
+  "package": {
+    "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi-host-exit-20261001061441265\\win-unpacked\\MyBuddy.exe",
+    "asarSha256": "85b6fe322d0f328b46032d89434db505fa2859c18cb1b96230998a68526c3a38",
+    "sourceFingerprint": "d311dbfe9408e8eb87fa21ed48da739657c5b863d9df1b174457e33bb22c6122",
+    "checks": [
+      {
+        "symbol": "preflightSideEffectGate",
+        "absent": true
+      },
+      {
+        "symbol": "Plan has not entered executing",
+        "absent": true
+      },
+      {
+        "symbol": "gateReasons",
+        "absent": true
+      },
+      {
+        "symbol": "requiredForCompletion",
+        "absent": true
+      },
+      {
+        "symbol": "startBackgroundFetch",
+        "absent": true
+      },
+      {
+        "symbol": "web-search-content-ready",
+        "absent": true
+      }
+    ]
+  },
+  "delivery": {
+    "status": "packaged-only",
+    "runningInstanceChanged": false
+  },
+  "git": {
+    "codeCommit": "e104857c7b201ccda61bfc859ed16e0e1bdaa911",
+    "pushPerformed": false
+  }
+}

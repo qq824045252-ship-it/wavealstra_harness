@@ -1,0 +1,51 @@
+[
+  {
+    "name": "img-basic@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-basic.png&kind=image"
+  },
+  {
+    "name": "img-dark@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-basic.jpg&kind=image&theme=dark"
+  },
+  {
+    "name": "img-transparent@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-transparent.png&kind=image"
+  },
+  {
+    "name": "img-exif@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-exif-rotated.jpg&kind=image"
+  },
+  {
+    "name": "img-8k@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-8k.png&kind=image"
+  },
+  {
+    "name": "img-zoom@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-8k.png&kind=image&zoom=100"
+  },
+  {
+    "name": "img-tall@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=image-tall.png&kind=image"
+  }
+]

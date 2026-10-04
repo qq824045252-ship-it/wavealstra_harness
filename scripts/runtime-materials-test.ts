@@ -1,0 +1,87 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { RuntimeContextSnapshotRepository } from "../src/main/agent/RuntimeContextSnapshotRepository";
+import { collectRuntimeMaterialEvidence as collect } from "../src/main/agent/RuntimeMaterialEvidence";
+import { SessionEventCoordinator } from "../src/main/agent/SessionEventCoordinator";
+import { createProjectKnowledgeExtension } from "../src/main/project/project-knowledge-extension";
+
+async function main() {
+  const root = mkdtempSync(join(tmpdir(), "mybuddy-materials-"));
+  const dbPath = join(root, "app.db");
+  let db = new AppDatabase(dbPath);
+  try {
+    db.upsertTask({ id: "task", title: "Material evidence", updatedAt: 1 });
+    let repository = new RuntimeContextSnapshotRepository(db.connection);
+    const ctx = { taskId: "task", executionId: "execution", assistantMessageId: "assistant" };
+    repository.record({ ...ctx, userMessageId: "user", status: "running", startedAt: Date.now(),
+      mode: "coding", assemblyHash: "hash", resolvedInstructions: [], resolvedCapabilities: [], warnings: [], workingDirectory: root });
+    writeFileSync(join(root, "source.txt"), "first\nsecond\nthird");
+    const args = { path: "source.txt", offset: 2, limit: 1 };
+    const result = await createReadToolDefinition(root).execute("read-1", args, undefined, undefined, {} as any);
+    const event = { toolCallId: "read-1", toolName: "read", args, result, isError: false };
+    const evidence = collect(event);
+    assert.equal(evidence[0].kind, "file-content");
+    assert.equal(evidence[0].offset, 2);
+    assert.equal(evidence[0].partial, true);
+    assert.equal(evidence[0].outputHash.length, 64);
+    assert(!JSON.stringify(evidence).includes("second"), "Read body must not be duplicated into audit storage");
+    assert.deepEqual(collect({ ...event, isError: true }), []);
+    assert.deepEqual(collect({ ...event, result: { isError: true, content: result.content } }), []);
+    assert.deepEqual(collect({ ...event, toolName: "bash" }), []);
+    const tools = new Map<string, any>();
+    let metadataOnly = false;
+    createProjectKnowledgeExtension({ taskId: "task", retrieval: {
+      read: async () => ({ item: { id: "doc", title: "Specification", kind: "pdf" }, requiresFileAccess: metadataOnly,
+        content: "extracted body", truncated: true, managedPath: "managed.pdf" }),
+      search: () => ({ scope: "project", hits: [{ itemId: "doc", title: "Specification", kind: "pdf", snippet: "excerpt", readable: true }] }),
+    } as any })({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
+    const readKnowledge = async () => collect({ toolName: "project_knowledge_read", toolCallId: "knowledge", args: { id: "doc" },
+      result: await tools.get("project_knowledge_read").execute("knowledge", { id: "doc" }), isError: false });
+    assert.equal((await readKnowledge())[0].kind, "knowledge-content");
+    metadataOnly = true;
+    assert.equal((await readKnowledge())[0].kind, "metadata", "Binary metadata is never reported as body read");
+    const search = collect({ toolName: "project_knowledge_search", toolCallId: "search", args: {},
+      result: await tools.get("project_knowledge_search").execute("search", { query: "spec" }), isError: false });
+    assert.equal(search[0].kind, "search-snippet");
+    assert.equal(search[0].returnedChars, 7);
+
+    const noop = () => {};
+    let subscriber: (event: any) => void = noop;
+    const session: any = { subscribe(callback: any) { subscriber = callback; return noop; } };
+    const entry: any = { ...ctx, session, pendingAssistantTurns: [], pendingApprovals: new Map(), pendingExternalWrites: new Map(), startedAt: Date.now() };
+    const coordinator = new SessionEventCoordinator({ registry: { get: () => entry }, userTurnCounters: new Map(),
+      runtimeSnapshots: repository, pendingActions: { remove: noop }, skillsService: { resolveLearnedSkillRead: () => undefined },
+      emitPatch: noop, emitContextUsage: noop, maybeEmitArtifact: async () => {},
+    } as any);
+    coordinator.attach("task", root, session);
+    subscriber({ type: "tool_execution_start", ...event });
+    subscriber({ type: "tool_execution_end", ...event });
+    assert.equal(repository.list("task")[0].materialUsage?.items.length, 1);
+    repository.appendMaterials(ctx, evidence);
+    assert.equal(repository.list("task")[0].materialUsage?.items.length, 1, "Repeated event is deduplicated");
+    subscriber({ type: "tool_execution_start", ...event, toolCallId: "late" });
+    entry.executionId = "next"; entry.assistantMessageId = "next-assistant";
+    subscriber({ type: "tool_execution_end", ...event, toolCallId: "late" });
+    assert.equal(repository.list("task")[0].materialUsage?.items.length, 1, "Late result is not attributed after execution switch");
+    repository.appendMaterials({ ...ctx, assistantMessageId: "wrong" }, search);
+    assert.equal(repository.list("task")[0].materialUsage?.items.length, 1);
+    repository.appendMaterials(ctx, search);
+    const stored = repository.list("task")[0];
+    db.close(); db = new AppDatabase(dbPath); repository = new RuntimeContextSnapshotRepository(db.connection);
+    assert.deepEqual(repository.list("task")[0].materialUsage, stored.materialUsage, "Evidence survives reopen");
+    repository.appendMaterials(ctx, Array.from({ length: 110 }, (_, index) => ({ ...evidence[0], toolCallId: `bulk-${index}` })));
+    assert.equal(repository.list("task")[0].materialUsage?.items.length, 100);
+    assert.equal(repository.list("task")[0].materialUsage?.omitted, 12);
+    repository.finish(ctx.executionId, "completed");
+    repository.appendMaterials(ctx, [{ ...evidence[0], toolCallId: "after-finish" }]);
+    assert.equal(repository.list("task")[0].materialUsage?.omitted, 12, "Terminal records cannot accept late evidence");
+    db.connection.prepare("UPDATE task_runtime_context_snapshots SET material_usage_json = '{broken'").run();
+    assert.equal(repository.list("task")[0].materialUsage, undefined, "Corrupt audit payload must not break the inspector");
+    console.log("runtime materials: PASS (real SDK read, knowledge adapter, lifecycle identity, dedup, reopen, bounds, corrupt record)");
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+}
+void main().catch((error) => { console.error(error); process.exitCode = 1; });

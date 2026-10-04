@@ -1,0 +1,8 @@
+{
+  "name": "test:memory",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:32:01.488Z",
+  "durationMs": 2266,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-memory.log"
+}

@@ -1,0 +1,51 @@
+[
+  {
+    "name": "img-basic@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-basic.png&kind=image"
+  },
+  {
+    "name": "img-dark@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-basic.jpg&kind=image&theme=dark"
+  },
+  {
+    "name": "img-transparent@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-transparent.png&kind=image"
+  },
+  {
+    "name": "img-exif@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-exif-rotated.jpg&kind=image"
+  },
+  {
+    "name": "img-8k@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-8k.png&kind=image"
+  },
+  {
+    "name": "img-zoom@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-8k.png&kind=image&zoom=100"
+  },
+  {
+    "name": "img-tall@1.25.png",
+    "w": 1227,
+    "h": 854,
+    "dpr": 1.25,
+    "query": "?file=image-tall.png&kind=image"
+  }
+]

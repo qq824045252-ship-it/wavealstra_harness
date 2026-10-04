@@ -1,0 +1,27 @@
+﻿.workspace-files-search-row {
+  display: flex;
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+.workspace-files-search {
+  width: min(420px, 100%);
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  padding: 7px 2px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.workspace-files-search::placeholder {
+  color: var(--fg-muted);
+}
+
+.workspace-files-search:focus {
+  border-bottom-color: var(--accent);
+}

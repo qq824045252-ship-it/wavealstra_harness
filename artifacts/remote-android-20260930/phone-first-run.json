@@ -1,0 +1,557 @@
+{
+  "ok": false,
+  "stage": "failed",
+  "checks": [
+    {
+      "name": "installed 1.1.3 / code 5",
+      "ok": true
+    },
+    {
+      "name": "real Android authenticated page loaded",
+      "ok": true,
+      "details": {
+        "connected": true,
+        "users": 6,
+        "assistants": 3,
+        "svg": [],
+        "openPanels": 0,
+        "openTools": 0,
+        "overlap": false,
+        "viewport": {
+          "width": 363,
+          "scrollWidth": 363,
+          "height": 709,
+          "scrollTop": 3571.142822265625
+        },
+        "hasDraft": false
+      }
+    },
+    {
+      "name": "real historical SSH task SVG decoded and all tools remain folded",
+      "ok": true,
+      "details": {
+        "svgCount": 7,
+        "overlap": false
+      }
+    }
+  ],
+  "network": [
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741046737
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741046762
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741046762
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741046763
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741050733
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741050733
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741050736
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741050737
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741050751
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741050754
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741050763
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741050772
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741057735
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741057735
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741057736
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741057740
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741057751
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741057760
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741057770
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741057770
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741062762
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741062762
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741062762
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741062762
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741062784
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741062806
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741062809
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741062809
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741064732
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741064732
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741064732
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741064733
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741064754
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741064776
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741064777
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741064777
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741071737
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741071738
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741071738
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741071738
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741071754
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741071764
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741071765
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741071775
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741077820
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741077820
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741077820
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741077821
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741078032
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741078033
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741078041
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741078042
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741078043
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741078043
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741078044
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741078046
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741078061
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741078066
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741078067
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741078074
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741078732
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741078732
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741078732
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741078733
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741078749
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741078751
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741078755
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741078764
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741085738
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741085739
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741085739
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741085740
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741085758
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741085772
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741085783
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741085784
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741092733
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741092733
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741092734
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741092735
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741092746
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741092752
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741092763
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741092774
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741099761
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741099763
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741099764
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741099764
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741099791
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741099811
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741099814
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741099816
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 204,
+      "at": 1790741106738
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 204,
+      "at": 1790741106738
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 204,
+      "at": 1790741106739
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 204,
+      "at": 1790741106740
+    },
+    {
+      "path": "/v1/notifications",
+      "status": 200,
+      "at": 1790741106764
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/history",
+      "status": 200,
+      "at": 1790741106769
+    },
+    {
+      "path": "/v1/tasks/remote-dd2d0fb3-5e45-48af-a4e5-99aae99c2a6e/runtime",
+      "status": 200,
+      "at": 1790741106773
+    },
+    {
+      "path": "/v1/bootstrap",
+      "status": 200,
+      "at": 1790741106780
+    }
+  ],
+  "initial": {
+    "connected": true,
+    "users": 6,
+    "assistants": 3,
+    "svg": [],
+    "openPanels": 0,
+    "openTools": 0,
+    "overlap": false,
+    "viewport": {
+      "width": 363,
+      "scrollWidth": 363,
+      "height": 709,
+      "scrollTop": 3571.142822265625
+    },
+    "hasDraft": false
+  },
+  "error": "Error: Real model task did not reach verified final state"
+}

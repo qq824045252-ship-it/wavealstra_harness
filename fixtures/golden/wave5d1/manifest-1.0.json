@@ -1,0 +1,51 @@
+[
+  {
+    "name": "docx-simple@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-simple.docx&kind=docx"
+  },
+  {
+    "name": "docx-long@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-long-24p.docx&kind=docx"
+  },
+  {
+    "name": "docx-table@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-table.docx&kind=docx"
+  },
+  {
+    "name": "docx-images@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-images.docx&kind=docx"
+  },
+  {
+    "name": "docx-hf@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-header-footer.docx&kind=docx"
+  },
+  {
+    "name": "docx-zoom@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-simple.docx&kind=docx&docxzoom=100"
+  },
+  {
+    "name": "docx-dark@1.0.png",
+    "w": 1076,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=docx-long-24p.docx&kind=docx&theme=dark"
+  }
+]

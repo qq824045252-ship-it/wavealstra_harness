@@ -1,0 +1,287 @@
+/**
+ * ModeProfileStore 单测：种子加载 / 用户覆盖 / 恢复出厂 / system 段。
+ * 使用临时 USERPROFILE，不触碰真实 ~/.mybuddy。
+ */
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const sandbox = join(tmpdir(), `mybuddy-mode-test-${Date.now()}`);
+process.env.USERPROFILE = sandbox;
+process.env.HOME = sandbox;
+mkdirSync(sandbox, { recursive: true });
+
+// eslint-disable-next-line import/first
+import { ModeProfileStore } from "../src/main/agent/ModeProfileStore";
+// eslint-disable-next-line import/first
+import { assemblePrompt, resolveSessionTools } from "../src/main/agent/PromptAssembly";
+// eslint-disable-next-line import/first
+import { filterSkillsForMode } from "../src/main/agent/SkillPolicy";
+
+let passed = 0;
+let failed = 0;
+
+function assert(cond: unknown, label: string): void {
+  if (cond) {
+    passed += 1;
+    console.log(`  ✓ ${label}`);
+  } else {
+    failed += 1;
+    console.error(`  ✗ ${label}`);
+  }
+}
+
+async function main(): Promise<void> {
+  console.log("[mode-profile-test] sandbox:", sandbox);
+  const store = new ModeProfileStore();
+
+  console.log("\n1. 种子加载");
+  const working = store.getProfile("working");
+  assert(working.labelZh === "日常办公", "working 标签");
+  assert(working.blocks.length === 5, "5 个文案块");
+  assert(working.blocks.every((b) => b.source === "seed"), "初始全为 seed（与出厂一致）");
+  assert(working.hasUserOverride === false, "无用户覆盖");
+  assert(working.blocks.every((b) => b.filePath && b.filePath.endsWith(".md")), "文案块暴露 filePath");
+  assert(!!working.policyPath && working.policyPath.endsWith("policy.json"), "暴露 policyPath");
+  assert(store.buildSystemSection("working").includes("日常办公"), "system 段含场景名");
+  // 磁盘已物化
+  const { existsSync } = await import("node:fs");
+  assert(existsSync(working.blocks[0]!.filePath), "goal.md 已写入磁盘");
+  assert(working.policy.mcpPolicy.mode === "hard", "working mcp hard");
+  assert(
+    working.policy.mcpPolicy.deny.includes("serena") &&
+      working.policy.mcpPolicy.deny.includes("codegraph"),
+    "working 默认 deny serena/codegraph",
+  );
+  assert(working.policy.artifactPolicy.mode === "hard", "working 产物 hard");
+  assert(
+    working.policy.artifactPolicy.deny.includes("py") &&
+      working.policy.artifactPolicy.deny.includes("ts"),
+    "working 默认禁 py/ts 等代码产物",
+  );
+  assert(
+    Array.isArray(working.policy.artifactPolicy.allow) &&
+      working.policy.artifactPolicy.allow.length === 0,
+    "working 默认白名单空（不启用）",
+  );
+  const codingSeed = store.getProfile("coding");
+  assert(codingSeed.policy.mcpPolicy.deny.length === 0, "coding 默认不 deny MCP");
+  assert(codingSeed.policy.artifactPolicy.deny.length === 0, "coding 默认不限制产物扩展名");
+  assert(codingSeed.policy.artifactPolicy.allow.length === 0, "coding 默认白名单空");
+  const designSeed = store.getProfile("design");
+  assert(designSeed.policy.skillPolicy.prefer.includes("open-kimi-ppt"), "design 默认优先 open-kimi-ppt");
+  assert(
+    designSeed.policy.artifactPolicy.deny.includes("py") &&
+      !designSeed.policy.artifactPolicy.deny.includes("js"),
+    "design 禁 py 但保留 js 等前端交付",
+  );
+  assert(
+    designSeed.policy.artifactPolicy.deny.length !== working.policy.artifactPolicy.deny.length ||
+      designSeed.policy.artifactPolicy.deny.join(",") !==
+        working.policy.artifactPolicy.deny.join(","),
+    "working/design 黑名单各自独立（不共用同一份）",
+  );
+
+  console.log("\n2. 用户覆盖");
+  store.saveBlock("working", "goal", "自定义目标：只做周报。");
+  const after = store.getProfile("working");
+  assert(after.blocks.find((b) => b.id === "goal")?.source === "user", "goal 为 user");
+  assert(after.blocks.find((b) => b.id === "goal")?.content.includes("自定义目标"), "goal 内容已改");
+  assert(after.hasUserOverride === true, "hasUserOverride");
+  assert(store.buildSystemSection("working").includes("自定义目标"), "system 段反映覆盖");
+
+  console.log("\n3. 策略保存");
+  const pol = { ...after.policy, scenes: [{ label: "测", prompt: "测一下" }] };
+  store.savePolicy("coding", pol);
+  const coding = store.getProfile("coding");
+  assert(coding.policy.scenes.some((s) => s.label === "测"), "coding scenes 已保存");
+
+  console.log("\n4. 恢复");
+  store.resetBlock("working", "goal");
+  assert(store.getProfile("working").blocks.find((b) => b.id === "goal")?.source === "seed", "goal 恢复 seed");
+  store.resetPolicy("coding");
+  assert(!store.getProfile("coding").policy.scenes.some((s) => s.label === "测"), "policy 恢复");
+  store.saveBlock("design", "forbid", "用户禁令测试");
+  store.resetProfile("design");
+  assert(store.getProfile("design").hasUserOverride === false, "design 整模式恢复");
+
+  console.log("\n5. 非法空内容");
+  let threw = false;
+  try {
+    store.saveBlock("working", "goal", "   ");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "空内容拒绝保存");
+
+  console.log("\n6. 装配与技能过滤");
+  const profile = store.getProfile("working");
+  const assembly = assemblePrompt({
+    welcomeMode: "working",
+    profile,
+    soul: { name: "Buddy", alias: "你", persona: "务实" },
+    expertPrompt: "## 专家角色\n你是周报专家",
+    permissionMode: "default",
+    platform: "win32",
+    memoryEnabled: true,
+    globalMemory: "喜欢简洁",
+    skills: [
+      { id: "weekly-summary", name: "weekly-summary", description: "周报摘要" },
+      { id: "k8s-deploy", name: "k8s-deploy", description: "deploy k8s" },
+      { id: "hello", name: "hello-buddy", description: "打招呼" },
+    ],
+  });
+  assert(assembly.appendParts.some((p) => p.includes("专家角色")), "含专家段");
+  assert(assembly.appendParts.some((p) => p.includes("场景模式")), "含场景段");
+  assert(assembly.appendParts.some((p) => p.includes("产物扩展名限制")), "含产物黑名单段");
+  assert(assembly.appendParts.some((p) => p.includes(".py")), "提示含 .py 禁止");
+  assert(assembly.artifactPolicy.deny.includes("py"), "装配 trace 含 artifactPolicy");
+  assert(assembly.skillFilter.hidden.includes("k8s-deploy") || assembly.skillFilter.demoted.includes("k8s-deploy"), "deploy 技能被 demote/hide");
+  assert(assembly.effectiveAt === "new_session_only", "生效语义");
+
+  // 产物扩展名匹配纯函数（黑/白名单独立）
+  const {
+    pathMatchesArtifactDeny,
+    shouldBlockArtifactWrite,
+    evaluateArtifactWrite,
+    artifactVisibleForDisplay,
+    isCadScratchArtifact,
+    normalizeArtifactExtension,
+  } = await import("../src/shared/mode-profile");
+  assert(normalizeArtifactExtension(".PY") === "py", "扩展名归一化");
+  assert(pathMatchesArtifactDeny("report.py", ["py", "ts"]), "path 命中 py");
+  assert(!pathMatchesArtifactDeny("report.md", ["py", "ts"]), "md 不命中");
+  assert(
+    shouldBlockArtifactWrite("x.py", { mode: "hard", allow: [], deny: ["py"] }),
+    "hard 黑名单拦截 .py",
+  );
+  assert(
+    !shouldBlockArtifactWrite("x.py", { mode: "soft", allow: [], deny: ["py"] }),
+    "soft 不硬拦",
+  );
+  assert(
+    shouldBlockArtifactWrite("x.py", { mode: "hard", allow: ["md", "docx"], deny: [] }),
+    "hard 白名单外拦截 .py",
+  );
+  assert(
+    !shouldBlockArtifactWrite("x.md", { mode: "hard", allow: ["md", "docx"], deny: [] }),
+    "hard 白名单内放行 .md",
+  );
+  assert(
+    evaluateArtifactWrite("a.py", { mode: "hard", allow: ["md"], deny: ["py"] }).reason === "deny",
+    "同时配置时 deny 优先",
+  );
+
+  // V3.6 显示过滤：黑白名单影响产物面板与消息芯片，不区分 soft/hard（写入拦截已移除）
+  assert(
+    !artifactVisibleForDisplay("report.py", { mode: "hard", allow: [], deny: ["py"] }),
+    "deny 命中 → 面板隐藏",
+  );
+  assert(
+    artifactVisibleForDisplay("report.md", { mode: "hard", allow: [], deny: ["py"] }),
+    "deny 未命中 → 面板显示",
+  );
+  assert(
+    !artifactVisibleForDisplay("x.py", { mode: "hard", allow: ["md", "docx"], deny: [] }),
+    "allow 非空且未命中 → 面板隐藏",
+  );
+  assert(
+    artifactVisibleForDisplay("x.md", { mode: "hard", allow: ["md", "docx"], deny: [] }),
+    "allow 命中 → 面板显示",
+  );
+  assert(
+    !artifactVisibleForDisplay("noext", { mode: "soft", allow: ["md"], deny: [] }),
+    "allow 启用时无扩展名产物隐藏（与 evaluateArtifactWrite 判定一致）",
+  );
+  assert(
+    artifactVisibleForDisplay("report.md", { mode: "soft", allow: [], deny: [] }),
+    "黑白名单皆空 → 不过滤",
+  );
+  assert(
+    artifactVisibleForDisplay("report.py", null),
+    "无策略 → 不过滤",
+  );
+  assert(
+    isCadScratchArtifact("cad/_freecad_scripts/fc_abc123.py"),
+    "cad scratch 目录内脚本",
+  );
+  assert(
+    isCadScratchArtifact("fc_mswgcza1.args.json"),
+    "FreeCAD MCP 临时 args.json",
+  );
+  assert(
+    isCadScratchArtifact("fc_mswgcza1.py"),
+    "FreeCAD MCP 临时 py",
+  );
+  assert(!isCadScratchArtifact("lego_car.fcstd"), "CAD 成品不是 scratch");
+  assert(!isCadScratchArtifact("model.py"), "普通 py 不是 scratch");
+  assert(
+    !artifactVisibleForDisplay("fc_mswgcza1.args.json", null),
+    "CAD 临时脚本无策略也隐藏",
+  );
+  assert(
+    artifactVisibleForDisplay("lego_car.step", { mode: "hard", allow: [], deny: ["py"] }),
+    "CAD 成品不受 py 黑名单影响",
+  );
+
+  // 分模式保存：各自黑白名单互不影响
+  store.savePolicy("working", {
+    ...store.getProfile("working").policy,
+    artifactPolicy: { mode: "hard", allow: ["md", "docx"], deny: ["py"] },
+  });
+  store.savePolicy("coding", {
+    ...store.getProfile("coding").policy,
+    artifactPolicy: { mode: "soft", allow: [], deny: [] },
+  });
+  assert(
+    store.getProfile("working").policy.artifactPolicy.allow.includes("md") &&
+      store.getProfile("working").policy.artifactPolicy.deny.includes("py"),
+    "working 黑白名单各自持久化",
+  );
+  assert(
+    store.getProfile("coding").policy.artifactPolicy.deny.length === 0 &&
+      store.getProfile("coding").policy.artifactPolicy.allow.length === 0,
+    "coding 名单不受 working 影响",
+  );
+
+  const toolsReadonly = resolveSessionTools("readonly", profile.policy.toolPolicy);
+  assert(toolsReadonly?.includes("read") && !toolsReadonly?.includes("write"), "readonly 工具");
+  const hardTools = resolveSessionTools("default", {
+    mode: "hard",
+    prefer: [],
+    demote: [],
+    deny: ["bash"],
+  });
+  assert(hardTools && !hardTools.includes("bash"), "hard deny bash");
+
+  const filt = filterSkillsForMode(
+    [{ id: "x", name: "foo", description: "周报" }],
+    "working",
+    { prefer: ["周报"], demote: [], hide: [], allow: [] },
+  );
+  assert(filt.visible[0]?.name === "foo", "prefer 可见");
+
+  const allowOnly = filterSkillsForMode(
+    [
+      { id: "weekly", name: "weekly-summary", description: "周报" },
+      { id: "other", name: "hello", description: "hi" },
+    ],
+    "working",
+    { prefer: [], demote: [], hide: [], allow: ["weekly"] },
+  );
+  assert(allowOnly.visible.length === 1 && allowOnly.visible[0]?.id === "weekly", "技能白名单");
+  assert(allowOnly.hidden.some((s) => s.id === "other"), "白名单外隐藏");
+
+  console.log(`\n[mode-profile-test] ${passed} passed, ${failed} failed`);
+  try {
+    rmSync(sandbox, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+  if (failed > 0) process.exit(1);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

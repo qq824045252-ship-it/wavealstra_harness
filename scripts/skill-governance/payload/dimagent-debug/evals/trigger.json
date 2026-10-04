@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "dimagent-debug",
+  "cases": [
+    {
+      "prompt": "首次发现登录按钮每次都报 TypeError，请调试",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "上传空文件会稳定报错，第一次排查",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "这个测试用错 fixture，稳定失败，帮我定位",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "设置页点击保存每次崩溃，尚未修复过",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "滚动还是会闪，之前修过又出现了，已经加过 flag 还是会跳",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "这个竞态 bug 时好时坏，并发重试来回打补丁越补越乱",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "IPC 缓存偶发不一致，单元测试全绿但线上仍复现",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "新增跨 DB IPC UI 的任务字段",
+      "expected": "no-trigger"
+    }
+  ]
+}

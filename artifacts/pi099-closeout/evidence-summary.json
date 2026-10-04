@@ -1,0 +1,114 @@
+{
+  "asOf": "2026-09-30T01:53:07.774Z",
+  "sourceFingerprint": "ccc1d8ace4afd01a35701ad21236694b833b22a85f5c4895c2841a0c0376386a",
+  "sourceFiles": 729,
+  "sourceModifiedAfterBuild": [],
+  "identicalGeneratedTouchesAfterBuild": [
+    "src\\main\\capabilities\\subagent\\vendor\\command-code.mjs",
+    "src\\main\\capabilities\\subagent\\vendor\\context-projection.mjs"
+  ],
+  "legacyDependencyAbsent": true,
+  "piVersions": {
+    "ai": "0.99.1",
+    "agent": "0.99.1"
+  },
+  "reports": [
+    {
+      "file": "artifacts/pi099-closeout/regression/results.json",
+      "status": "passed",
+      "tests": 24,
+      "passed": 24,
+      "startedAt": "2026-09-30T01:35:04.339Z",
+      "finishedAt": "2026-09-30T01:36:33.978Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-closeout/build/results.json",
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "startedAt": "2026-09-30T01:37:34.466Z",
+      "finishedAt": "2026-09-30T01:38:45.217Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-closeout/pack/results.json",
+      "status": "passed",
+      "tests": 2,
+      "passed": 2,
+      "startedAt": "2026-09-30T01:39:01.680Z",
+      "finishedAt": "2026-09-30T01:40:26.030Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-closeout/desktop-live/results.json",
+      "status": "passed",
+      "tests": 4,
+      "passed": 4,
+      "startedAt": "2026-09-30T01:49:08.825Z",
+      "finishedAt": "2026-09-30T01:53:01.039Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-closeout/manager-lifecycle.json",
+      "status": "passed",
+      "tests": 4,
+      "passed": 4,
+      "startedAt": "2026-09-30T01:37:16.877Z",
+      "finishedAt": "2026-09-30T01:37:16.881Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-migration/integration.json",
+      "status": "passed",
+      "tests": 14,
+      "passed": 14,
+      "startedAt": "2026-09-30T01:42:42.250Z",
+      "finishedAt": "2026-09-30T01:42:47.627Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-migration/oauth.json",
+      "status": "passed",
+      "tests": 6,
+      "passed": 6,
+      "startedAt": "2026-09-30T01:18:02.188Z",
+      "finishedAt": "2026-09-30T01:18:02.680Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-migration/encryption.json",
+      "status": "passed",
+      "tests": 0,
+      "passed": 0,
+      "startedAt": "2026-09-30T01:13:30.923Z",
+      "finishedAt": "2026-09-30T01:13:30.952Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-migration/history.json",
+      "status": "passed",
+      "tests": 0,
+      "passed": 0,
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-migration/live-tasks.json",
+      "status": "passed",
+      "tests": 3,
+      "passed": 3,
+      "startedAt": "2026-09-30T01:04:42.183Z",
+      "finishedAt": "2026-09-30T01:05:42.503Z",
+      "errors": []
+    },
+    {
+      "file": "artifacts/pi099-closeout/portable-worker.json",
+      "status": "passed",
+      "tests": 0,
+      "passed": 0,
+      "startedAt": "2026-09-30T01:31:13.097Z",
+      "finishedAt": "2026-09-30T01:31:20.982Z",
+      "errors": []
+    }
+  ]
+}

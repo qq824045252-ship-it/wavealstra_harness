@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "loop-agent",
+  "cases": [
+    {
+      "prompt": "给 AGENTS.md 加入自验证循环",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "让 coding agent 修复后实际验证再结束",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "为这个仓库写可执行的验证门禁",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把一次问答流程改成带停止条件的 agent 循环",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "修复一个 Python bug",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "写周报摘要",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "搭建网站首页",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "只解释测试覆盖率",
+      "expected": "no-trigger"
+    }
+  ]
+}

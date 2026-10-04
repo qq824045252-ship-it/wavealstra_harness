@@ -1,0 +1,8 @@
+{
+  "name": "test:compaction-policy-history",
+  "status": "passed",
+  "exitCode": 0,
+  "at": "2026-10-01T20:52:38.409Z",
+  "durationMs": 4327,
+  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-compaction-policy-history.log"
+}

@@ -1,0 +1,759 @@
+{
+  "checkedAt": "2026-10-01T06:10:55.868Z",
+  "version": "0.99.2",
+  "packages": [
+    {
+      "name": "@earendil-works/pi-agent-core",
+      "version": "0.99.2",
+      "registry": "https://registry.npmjs.org/%40earendil-works%2Fpi-agent-core/0.99.2",
+      "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.99.2.tgz",
+      "integrityVerified": true,
+      "checks": [
+        {
+          "file": "dist/harness/utils/adaptive-publisher.js",
+          "upstreamSha256": "72349344ccbe6e04789ee681fc9c33aaa8b410e56aaa271c5f2153a96cc68d36",
+          "installedSha256": "72349344ccbe6e04789ee681fc9c33aaa8b410e56aaa271c5f2153a96cc68d36",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/agent-harness.js",
+          "upstreamSha256": "72727858035d2e9b99aabd0532332d84c99a8c0783361ef1e05ecd5ba4ce9354",
+          "installedSha256": "72727858035d2e9b99aabd0532332d84c99a8c0783361ef1e05ecd5ba4ce9354",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/agent-loop.js",
+          "upstreamSha256": "65def8c7f3fa01e38fe05467520efc8673c22ea8197833a3b04b29c8a60cb1e3",
+          "installedSha256": "65def8c7f3fa01e38fe05467520efc8673c22ea8197833a3b04b29c8a60cb1e3",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/agent.js",
+          "upstreamSha256": "163ad28551f1c38b8eb899a5c9dd89cd9d9005fb7dd9c4abeb008ee380e98c51",
+          "installedSha256": "163ad28551f1c38b8eb899a5c9dd89cd9d9005fb7dd9c4abeb008ee380e98c51",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/execution/assistant.js",
+          "upstreamSha256": "b25fa4a8d1ec8536b93a815c0728d3905243307a490fc3305c4277777b738488",
+          "installedSha256": "b25fa4a8d1ec8536b93a815c0728d3905243307a490fc3305c4277777b738488",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/bash.js",
+          "upstreamSha256": "74c16869f210ef9ed723704b6635c904d8aa953213cc8d283012ac1dae905a57",
+          "installedSha256": "74c16869f210ef9ed723704b6635c904d8aa953213cc8d283012ac1dae905a57",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/bash.js",
+          "upstreamSha256": "d6ee76674e314b273aab7eb107d5998f1c1f39a0316dc4feffc937894048ab7b",
+          "installedSha256": "d6ee76674e314b273aab7eb107d5998f1c1f39a0316dc4feffc937894048ab7b",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/boundary.js",
+          "upstreamSha256": "0a82a88c5f9233f4fbc7ba7c3dd5480d9a8c4b6580ff0d9fc789f8539b96ae90",
+          "installedSha256": "0a82a88c5f9233f4fbc7ba7c3dd5480d9a8c4b6580ff0d9fc789f8539b96ae90",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/bounded.js",
+          "upstreamSha256": "ee7b3c0aa3448abe2e7403883932baebb42ad273f5717f17f052e7d025830cab",
+          "installedSha256": "ee7b3c0aa3448abe2e7403883932baebb42ad273f5717f17f052e7d025830cab",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/compaction/branch-summarization.js",
+          "upstreamSha256": "57c29b23ec00a0e61ae10f3a7a3e46b84d2ac13b89fb1607e8f07922592a5a36",
+          "installedSha256": "57c29b23ec00a0e61ae10f3a7a3e46b84d2ac13b89fb1607e8f07922592a5a36",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/checkpoint.js",
+          "upstreamSha256": "e89cb343c9ace871dbc8fd7beac4e86f19481dece52b2ff8dcec34599b3f3893",
+          "installedSha256": "e89cb343c9ace871dbc8fd7beac4e86f19481dece52b2ff8dcec34599b3f3893",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/chord.js",
+          "upstreamSha256": "c316725512b587c553b05e9c13ba7754a3120f4f547fc3f0067725766e0b8ac3",
+          "installedSha256": "c316725512b587c553b05e9c13ba7754a3120f4f547fc3f0067725766e0b8ac3",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/codec.js",
+          "upstreamSha256": "e8d434a71ba08bcdc337c50f2ac683a55dc22dee1260df878c16662a3462accb",
+          "installedSha256": "e8d434a71ba08bcdc337c50f2ac683a55dc22dee1260df878c16662a3462accb",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/collapse.js",
+          "upstreamSha256": "7aa1253ada0086073fbcd5389d60a7eb09985ad2ca1333431cf38b283ea776aa",
+          "installedSha256": "7aa1253ada0086073fbcd5389d60a7eb09985ad2ca1333431cf38b283ea776aa",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/commit.js",
+          "upstreamSha256": "7ef02e7e54a4bb8e908a12fc5b72fecdafac40f9fdfa23299fb95bb53e4b7711",
+          "installedSha256": "7ef02e7e54a4bb8e908a12fc5b72fecdafac40f9fdfa23299fb95bb53e4b7711",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/compaction/compaction.js",
+          "upstreamSha256": "fcaeb2e25d5cedca80e3487f8ec02014b0e780b68e67c33d579af7b80cc91dd7",
+          "installedSha256": "fcaeb2e25d5cedca80e3487f8ec02014b0e780b68e67c33d579af7b80cc91dd7",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/config.js",
+          "upstreamSha256": "542ea9b86e74224f33974f2dadb2ee371273ba51d09a88b61cad7d29dc1c1211",
+          "installedSha256": "542ea9b86e74224f33974f2dadb2ee371273ba51d09a88b61cad7d29dc1c1211",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/context.js",
+          "upstreamSha256": "3c6f154b1fd181967991b6df371e55eb2e52e834591b56bec928805cff54b143",
+          "installedSha256": "3c6f154b1fd181967991b6df371e55eb2e52e834591b56bec928805cff54b143",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/context.js",
+          "upstreamSha256": "f1c4d0707f7400213601c8a4905031c7dd178a991cc1ca63224ea3f1f27429da",
+          "installedSha256": "f1c4d0707f7400213601c8a4905031c7dd178a991cc1ca63224ea3f1f27429da",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/context.js",
+          "upstreamSha256": "b43a65b3783529a98b2b53c51146a7b61165a84b07af1ab15e4b62e9d1045c66",
+          "installedSha256": "b43a65b3783529a98b2b53c51146a7b61165a84b07af1ab15e4b62e9d1045c66",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/benchmark/datasets.js",
+          "upstreamSha256": "21400fddc8ab97b5a0e3c69ae96e9473f8509bf488ce0cc711dddb15e022da52",
+          "installedSha256": "21400fddc8ab97b5a0e3c69ae96e9473f8509bf488ce0cc711dddb15e022da52",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/deferred.js",
+          "upstreamSha256": "5ed9defdcf22fe325c1550dc37e68ec5584aa15b6ebfc4b8e2aa5cb5c4684a66",
+          "installedSha256": "5ed9defdcf22fe325c1550dc37e68ec5584aa15b6ebfc4b8e2aa5cb5c4684a66",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive.js",
+          "upstreamSha256": "e0e796afcfec755f42b1f042e9c8248d0ff1b9dd57ce904edbf1212a74638c5d",
+          "installedSha256": "e0e796afcfec755f42b1f042e9c8248d0ff1b9dd57ce904edbf1212a74638c5d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/edit-diff.js",
+          "upstreamSha256": "ba1be494ace9e21a181a939efe8a59bcdbb00386fed7cc66166b108fd8d96636",
+          "installedSha256": "ba1be494ace9e21a181a939efe8a59bcdbb00386fed7cc66166b108fd8d96636",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/edit.js",
+          "upstreamSha256": "d0824912781025b903bde88c07bc9d25092e4f84cb092970f0d813a8b2646b34",
+          "installedSha256": "d0824912781025b903bde88c07bc9d25092e4f84cb092970f0d813a8b2646b34",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/execution/effect-gate.js",
+          "upstreamSha256": "bfb48c38df3a3a73d4716214d464bf95c41f5428ff24cc830f6389ef10fbd696",
+          "installedSha256": "bfb48c38df3a3a73d4716214d464bf95c41f5428ff24cc830f6389ef10fbd696",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/entries.js",
+          "upstreamSha256": "2838d87ffaa6da22bfba64951ead37244b42967210f5645485623612c3cf96a2",
+          "installedSha256": "2838d87ffaa6da22bfba64951ead37244b42967210f5645485623612c3cf96a2",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/events.js",
+          "upstreamSha256": "07ebe626c251120d521bbfaac96f0b4503ca48f746924adffc8747fef02b45fb",
+          "installedSha256": "07ebe626c251120d521bbfaac96f0b4503ca48f746924adffc8747fef02b45fb",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/file-mutation-queue.js",
+          "upstreamSha256": "b718046e79733a76424b089bf439e5133fce5be22f94e94ff66a41f62f666fcd",
+          "installedSha256": "b718046e79733a76424b089bf439e5133fce5be22f94e94ff66a41f62f666fcd",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/fork-policy.js",
+          "upstreamSha256": "0f2a8ab523dd65e50037f7712a264c09662ddd2ba96ba1faa7f7045f7a2c3409",
+          "installedSha256": "0f2a8ab523dd65e50037f7712a264c09662ddd2ba96ba1faa7f7045f7a2c3409",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/fork.js",
+          "upstreamSha256": "87d805f0c33334f0fc642fa5f748f68db9f3402b9f0382d9a907d91dd51e0973",
+          "installedSha256": "87d805f0c33334f0fc642fa5f748f68db9f3402b9f0382d9a907d91dd51e0973",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/fork.js",
+          "upstreamSha256": "b4dc2667f86256733568f31ea5aaf69d74c93cca043814aa8da46a04f2fbb272",
+          "installedSha256": "b4dc2667f86256733568f31ea5aaf69d74c93cca043814aa8da46a04f2fbb272",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/frames.js",
+          "upstreamSha256": "8f730f1391713b6b7f1ec48489a8258eef1bc33785f11d022b7279a95d537671",
+          "installedSha256": "8f730f1391713b6b7f1ec48489a8258eef1bc33785f11d022b7279a95d537671",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/gating-storage.js",
+          "upstreamSha256": "30b40ddf971340f8eed1ba443a40afdac384c1c0dd1221583097e5744611b032",
+          "installedSha256": "30b40ddf971340f8eed1ba443a40afdac384c1c0dd1221583097e5744611b032",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/generation.js",
+          "upstreamSha256": "ffbc1b6fd9c494800c99d8ea9ae8a748a7fc0e6ae210ada5b96baa8d1d3c483f",
+          "installedSha256": "ffbc1b6fd9c494800c99d8ea9ae8a748a7fc0e6ae210ada5b96baa8d1d3c483f",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/generation.js",
+          "upstreamSha256": "38004fc109e64862343e37093bcaaf8b70550551242d455fd47f0a7c84e0bb6b",
+          "installedSha256": "38004fc109e64862343e37093bcaaf8b70550551242d455fd47f0a7c84e0bb6b",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/harness.js",
+          "upstreamSha256": "cb776e838f97a038f7b563a37dbc99834834c943686ac9048e5f62e885dd92ce",
+          "installedSha256": "cb776e838f97a038f7b563a37dbc99834834c943686ac9048e5f62e885dd92ce",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/harness.js",
+          "upstreamSha256": "423e13cfac9d37c1934e0395e3e03c73c441d0f85fbd9e3fa8f8f3fe55a555c9",
+          "installedSha256": "423e13cfac9d37c1934e0395e3e03c73c441d0f85fbd9e3fa8f8f3fe55a555c9",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/hooks.js",
+          "upstreamSha256": "80f8a4485fc4cb947117a1a199addebd60ed65024ce8f39361a87db7c31689d5",
+          "installedSha256": "80f8a4485fc4cb947117a1a199addebd60ed65024ce8f39361a87db7c31689d5",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/hooks.js",
+          "upstreamSha256": "45953a45ac778befa508ee9a5c3adaf4149b304d15407016d97cedadde761754",
+          "installedSha256": "45953a45ac778befa508ee9a5c3adaf4149b304d15407016d97cedadde761754",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/image.js",
+          "upstreamSha256": "027cd4c7ecc329bf8c04867f103921290b8402c4d5e5723bcc1a41350364fdbf",
+          "installedSha256": "027cd4c7ecc329bf8c04867f103921290b8402c4d5e5723bcc1a41350364fdbf",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/in-memory-storage-state.js",
+          "upstreamSha256": "012d64c97fa62243ec31aad0ade48e444b97915e19deb12ef60effbc086bd08c",
+          "installedSha256": "012d64c97fa62243ec31aad0ade48e444b97915e19deb12ef60effbc086bd08c",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/index.js",
+          "upstreamSha256": "ce575fbbbd66e9bcb67ff0b6be483c5baefd1750cb10adaa1d73aedb9d66eafe",
+          "installedSha256": "ce575fbbbd66e9bcb67ff0b6be483c5baefd1750cb10adaa1d73aedb9d66eafe",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/index.js",
+          "upstreamSha256": "cf258f3b6a91a342b155377be986ca244f7626c64e6626495e1ea29611a6196d",
+          "installedSha256": "cf258f3b6a91a342b155377be986ca244f7626c64e6626495e1ea29611a6196d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/index.js",
+          "upstreamSha256": "fab2c9c5eb32d52e4fff468dba4c6adbe33bf3ec23bfa642eba7aa712d537ac7",
+          "installedSha256": "fab2c9c5eb32d52e4fff468dba4c6adbe33bf3ec23bfa642eba7aa712d537ac7",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/index.js",
+          "upstreamSha256": "c0c1cd47b7e58f1e5f02b80f834998198d7706defacf56d8f171bd6488507cea",
+          "installedSha256": "c0c1cd47b7e58f1e5f02b80f834998198d7706defacf56d8f171bd6488507cea",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/index.js",
+          "upstreamSha256": "b6603b5a993e6eb678fb49352126138556e57a3963af7e000eec03f304ab02c4",
+          "installedSha256": "b6603b5a993e6eb678fb49352126138556e57a3963af7e000eec03f304ab02c4",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/index.js",
+          "upstreamSha256": "e156567eaf997c019956f43fa33cf1c64f7cbb55f54985377fc70a6d2b4fa4ff",
+          "installedSha256": "e156567eaf997c019956f43fa33cf1c64f7cbb55f54985377fc70a6d2b4fa4ff",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/index.js",
+          "upstreamSha256": "4a551a8b128525e90f3da827f5c459a6f6ba39796c63b2ba73d0f0bfb7be9e72",
+          "installedSha256": "4a551a8b128525e90f3da827f5c459a6f6ba39796c63b2ba73d0f0bfb7be9e72",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/search/index.js",
+          "upstreamSha256": "827c148a2159c5d098f9fe33185b555382ad63931193dda5f41f6af38a6a4445",
+          "installedSha256": "827c148a2159c5d098f9fe33185b555382ad63931193dda5f41f6af38a6a4445",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/instrumented-storage.js",
+          "upstreamSha256": "de733f09643284ff0664c93a6dd9ec461a608ec1fe27cfded775d7b4cef5d70a",
+          "installedSha256": "de733f09643284ff0664c93a6dd9ec461a608ec1fe27cfded775d7b4cef5d70a",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/io.js",
+          "upstreamSha256": "f9dad361f5a27d3d4df74d266ea112c6892be4a70e61d4686b193060bc5a841f",
+          "installedSha256": "f9dad361f5a27d3d4df74d266ea112c6892be4a70e61d4686b193060bc5a841f",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/job.js",
+          "upstreamSha256": "999ed765bca453504093bc1787fd0f5a4b7948a9c082320d80859fe0d140590d",
+          "installedSha256": "999ed765bca453504093bc1787fd0f5a4b7948a9c082320d80859fe0d140590d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/jsonl.js",
+          "upstreamSha256": "00a6f52214b73c992ee2a6fa47e741a85dc9e76274cf055bceb372a537eb2114",
+          "installedSha256": "00a6f52214b73c992ee2a6fa47e741a85dc9e76274cf055bceb372a537eb2114",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/lane.js",
+          "upstreamSha256": "aceddbaf3a78ebd43c1b98ba5e29f0ebc3946fcf09b15eb89db82900da8afe57",
+          "installedSha256": "aceddbaf3a78ebd43c1b98ba5e29f0ebc3946fcf09b15eb89db82900da8afe57",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/legacy-tracker.js",
+          "upstreamSha256": "1514c18e2887402add4cfd897c01862076ac750d9cacf9c48926fdc77f5899ea",
+          "installedSha256": "1514c18e2887402add4cfd897c01862076ac750d9cacf9c48926fdc77f5899ea",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/legacy-v3.js",
+          "upstreamSha256": "1c19359248a7bccaaa3e37577607db9a7fa032946c336bd98f154881143ad40b",
+          "installedSha256": "1c19359248a7bccaaa3e37577607db9a7fa032946c336bd98f154881143ad40b",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/membrane.js",
+          "upstreamSha256": "6ff693751429c37648c7ff34153138704cda411281c0e9b4a4944ce9f635d108",
+          "installedSha256": "6ff693751429c37648c7ff34153138704cda411281c0e9b4a4944ce9f635d108",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/memory.js",
+          "upstreamSha256": "74d82d2199ee9b2b8f145004ee1cbaf29f89b13000623cb2d4ed5e48209ee34c",
+          "installedSha256": "74d82d2199ee9b2b8f145004ee1cbaf29f89b13000623cb2d4ed5e48209ee34c",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/memory.js",
+          "upstreamSha256": "85cc6a45470dafe5c00f49ba4129e2db7dfd6a5d33fff6c39751bee3b8d6de71",
+          "installedSha256": "85cc6a45470dafe5c00f49ba4129e2db7dfd6a5d33fff6c39751bee3b8d6de71",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/messages.js",
+          "upstreamSha256": "9832f495a7ff60e2942590dda90bfd7ea66af9c54d16b00c072d5ba2076fbe3e",
+          "installedSha256": "9832f495a7ff60e2942590dda90bfd7ea66af9c54d16b00c072d5ba2076fbe3e",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/mutation-line.js",
+          "upstreamSha256": "9cfd10e2ade050a36b00528c694325c2f30315647f380f90aef9b76d89386d19",
+          "installedSha256": "9cfd10e2ade050a36b00528c694325c2f30315647f380f90aef9b76d89386d19",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/node.js",
+          "upstreamSha256": "84c03ea93b7c4a6a656a3f560c1301ed825ca2f97ce919e16ee52bd13d88f28c",
+          "installedSha256": "84c03ea93b7c4a6a656a3f560c1301ed825ca2f97ce919e16ee52bd13d88f28c",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/env/nodejs.js",
+          "upstreamSha256": "f197648dc272eb1065deb02467ebb7cc07d020ad1c30cfd8adab26dddd3ff150",
+          "installedSha256": "f197648dc272eb1065deb02467ebb7cc07d020ad1c30cfd8adab26dddd3ff150",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/utils/output-capture.js",
+          "upstreamSha256": "208bebb78e1f152492bde4c42f5b1a7de1e82ebbbce650975d1fc19c13b25e29",
+          "installedSha256": "208bebb78e1f152492bde4c42f5b1a7de1e82ebbbce650975d1fc19c13b25e29",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/path-utils.js",
+          "upstreamSha256": "6e38ae7fd9af85d2cb8a049dbcbc1953208d35a0a161734be89f42d588aff110",
+          "installedSha256": "6e38ae7fd9af85d2cb8a049dbcbc1953208d35a0a161734be89f42d588aff110",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/plugin.js",
+          "upstreamSha256": "77449684da7d00c1e035b32a607d12234e56006f671807a5ba045e3f85d65e3f",
+          "installedSha256": "77449684da7d00c1e035b32a607d12234e56006f671807a5ba045e3f85d65e3f",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/post-tools.js",
+          "upstreamSha256": "04c46decb579a38ff0d6057b70451cff276b59ca930d49bfb96afd570239a1b0",
+          "installedSha256": "04c46decb579a38ff0d6057b70451cff276b59ca930d49bfb96afd570239a1b0",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/progress.js",
+          "upstreamSha256": "d8f2ff2b16a0722b3927bdbc4024b333f6898db8a2753711d674731d5f0b58dc",
+          "installedSha256": "d8f2ff2b16a0722b3927bdbc4024b333f6898db8a2753711d674731d5f0b58dc",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/prompt-templates.js",
+          "upstreamSha256": "9ea82c7f1053fb6d268631e7c343b5ae47798e54d2b03f665d17dd78a1217f02",
+          "installedSha256": "9ea82c7f1053fb6d268631e7c343b5ae47798e54d2b03f665d17dd78a1217f02",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/proxy.js",
+          "upstreamSha256": "eb566386833f64962d64517707a3ee6841b3050a1cdd737b97d91fe72df5e60b",
+          "installedSha256": "eb566386833f64962d64517707a3ee6841b3050a1cdd737b97d91fe72df5e60b",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/read.js",
+          "upstreamSha256": "c3f7b6a58a212c683bf93597200196611326c58f2bda26816711b0d8ce8693fe",
+          "installedSha256": "c3f7b6a58a212c683bf93597200196611326c58f2bda26816711b0d8ce8693fe",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/reconcile.js",
+          "upstreamSha256": "d78e15588ea0e0405d00d55fab11348521aa577a410cd2b381b08de0475de89a",
+          "installedSha256": "d78e15588ea0e0405d00d55fab11348521aa577a410cd2b381b08de0475de89a",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/recovery.js",
+          "upstreamSha256": "b440937ab1bea7d95c83f3d9bf3baf868a28563a72628e9ecf0fd5601801c098",
+          "installedSha256": "b440937ab1bea7d95c83f3d9bf3baf868a28563a72628e9ecf0fd5601801c098",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/reducer.js",
+          "upstreamSha256": "d03ec3199722c0c968cde0a262d1a665ca6cb76487895a6e457c52c4772e2eed",
+          "installedSha256": "d03ec3199722c0c968cde0a262d1a665ca6cb76487895a6e457c52c4772e2eed",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/repo.js",
+          "upstreamSha256": "34c490d720a68b9f921c4140e962fc51ff0a41da5dce64051e49e782c6ddbd54",
+          "installedSha256": "34c490d720a68b9f921c4140e962fc51ff0a41da5dce64051e49e782c6ddbd54",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/response.js",
+          "upstreamSha256": "ade108d246edb2b549829c60f5324f02bb5fb38d62da67c13ee1e7330bd7df20",
+          "installedSha256": "ade108d246edb2b549829c60f5324f02bb5fb38d62da67c13ee1e7330bd7df20",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/restore.js",
+          "upstreamSha256": "c6dfd7eb1fb9088f0811d2908d077e8cd4818355bc7c25ddf120ce4e711e09ea",
+          "installedSha256": "c6dfd7eb1fb9088f0811d2908d077e8cd4818355bc7c25ddf120ce4e711e09ea",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/result.js",
+          "upstreamSha256": "263fb349383f772e3e7bf90612abfe140d9c31e438773219b9a6655871702a56",
+          "installedSha256": "263fb349383f772e3e7bf90612abfe140d9c31e438773219b9a6655871702a56",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/retry.js",
+          "upstreamSha256": "b0d017037944f044dc4d3ef9ec154c837f4c6d37cc23faeba47073c12794e90d",
+          "installedSha256": "b0d017037944f044dc4d3ef9ec154c837f4c6d37cc23faeba47073c12794e90d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/scheduler.js",
+          "upstreamSha256": "10629daaa80283233904931820b436ebc916d0ffe6d53cd51532bc26527f2104",
+          "installedSha256": "10629daaa80283233904931820b436ebc916d0ffe6d53cd51532bc26527f2104",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/benchmark/session-repo.js",
+          "upstreamSha256": "769d9c4e29053c0197a8dba8ccfffc75df120c04dc1e062ee2d528f593012429",
+          "installedSha256": "769d9c4e29053c0197a8dba8ccfffc75df120c04dc1e062ee2d528f593012429",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/conformance/session-repo.js",
+          "upstreamSha256": "9d4a4e76d5d525b2b618a16b8a404c8519e3b69813480a58daaf5f2a917533ed",
+          "installedSha256": "9d4a4e76d5d525b2b618a16b8a404c8519e3b69813480a58daaf5f2a917533ed",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/session.js",
+          "upstreamSha256": "263ffac4b262b13b569c93520d859b8ca1eb1e5cbad32d14f18a5fa1dee4c1ae",
+          "installedSha256": "263ffac4b262b13b569c93520d859b8ca1eb1e5cbad32d14f18a5fa1dee4c1ae",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/session.js",
+          "upstreamSha256": "d0fa30e2438b51d1bad5ba97dca26cd5707947161b413294c5e85f35bb949007",
+          "installedSha256": "d0fa30e2438b51d1bad5ba97dca26cd5707947161b413294c5e85f35bb949007",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/utils/shell-output.js",
+          "upstreamSha256": "4caf20085d600a137973be7b35b509962253d5235f64d9b97839d2ae2b3361be",
+          "installedSha256": "4caf20085d600a137973be7b35b509962253d5235f64d9b97839d2ae2b3361be",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/skills.js",
+          "upstreamSha256": "7372ae93fd15b304c5ac144f60cc7955918e1b6d0ae69b7392d62dde8ae29e65",
+          "installedSha256": "7372ae93fd15b304c5ac144f60cc7955918e1b6d0ae69b7392d62dde8ae29e65",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/storage-decorator.js",
+          "upstreamSha256": "b3e4195866f267fbfea7733f3d4a1892e4dc995a87e87c0257f9d119b61bbfb8",
+          "installedSha256": "b3e4195866f267fbfea7733f3d4a1892e4dc995a87e87c0257f9d119b61bbfb8",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/storage.js",
+          "upstreamSha256": "adb5ece5cd65aad348031492abaefa960db6c8b4fe17f4e881a0e554dcb47e4a",
+          "installedSha256": "adb5ece5cd65aad348031492abaefa960db6c8b4fe17f4e881a0e554dcb47e4a",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/benchmark/storage.js",
+          "upstreamSha256": "9c66f141e69684926ebfaa9b67ddd773cc05a1d22833f41ca355ce8f16e3b34d",
+          "installedSha256": "9c66f141e69684926ebfaa9b67ddd773cc05a1d22833f41ca355ce8f16e3b34d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/conformance/storage.js",
+          "upstreamSha256": "410dc2ca42f71c86f2950326790b4286fc8ac9b44dd68e099bd83bef3c9e4735",
+          "installedSha256": "410dc2ca42f71c86f2950326790b4286fc8ac9b44dd68e099bd83bef3c9e4735",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/stream-fn.js",
+          "upstreamSha256": "2218c37514f6bfd818bf7f054ff4d9e248da4e817cbf459457bc3d790b9c6e54",
+          "installedSha256": "2218c37514f6bfd818bf7f054ff4d9e248da4e817cbf459457bc3d790b9c6e54",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/structural.js",
+          "upstreamSha256": "25a920e746d08bdd344bfb0b89427602c3a109415cdfedc20f63b919937a151a",
+          "installedSha256": "25a920e746d08bdd344bfb0b89427602c3a109415cdfedc20f63b919937a151a",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/system-prompt.js",
+          "upstreamSha256": "a99be4bfbbf2cae75f66476edd3bdeab6849e91bb01d9ecd31f02f1018ba2839",
+          "installedSha256": "a99be4bfbbf2cae75f66476edd3bdeab6849e91bb01d9ecd31f02f1018ba2839",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/system.js",
+          "upstreamSha256": "5803b665350a8f49216d35c187799b49efbb59ac3135ad471e183c7339cf1eea",
+          "installedSha256": "5803b665350a8f49216d35c187799b49efbb59ac3135ad471e183c7339cf1eea",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/task-api.js",
+          "upstreamSha256": "2713f38a7db2bbbb38495e07fa8ac1047b2a68d61bb29ca8f6a6b0ccbd45576d",
+          "installedSha256": "2713f38a7db2bbbb38495e07fa8ac1047b2a68d61bb29ca8f6a6b0ccbd45576d",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/telemetry.js",
+          "upstreamSha256": "1e75ec0b85419f5b4a64973f0bc3f255fe5ab6fe2590afddcdeeff4982f841e5",
+          "installedSha256": "1e75ec0b85419f5b4a64973f0bc3f255fe5ab6fe2590afddcdeeff4982f841e5",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/terminal.js",
+          "upstreamSha256": "087a5dee38aa68c7793db93f717d7b7c104921b6158b6424cf89f4fb4edb596e",
+          "installedSha256": "087a5dee38aa68c7793db93f717d7b7c104921b6158b6424cf89f4fb4edb596e",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/tool-context.js",
+          "upstreamSha256": "c7163ad689ae342ec142adf43341a65f6700c8a2ee62e76f44d29dc68e58e54a",
+          "installedSha256": "c7163ad689ae342ec142adf43341a65f6700c8a2ee62e76f44d29dc68e58e54a",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/tool-placement.js",
+          "upstreamSha256": "8ae5c3c9038dc70749849b08adffe0bf796ee2a23f43db433302d2a16f66e667",
+          "installedSha256": "8ae5c3c9038dc70749849b08adffe0bf796ee2a23f43db433302d2a16f66e667",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/kinds/tool.js",
+          "upstreamSha256": "8d9323c4217d6582b8c76787e7bf5ca539babf185710d26fbec2906573e702d9",
+          "installedSha256": "8d9323c4217d6582b8c76787e7bf5ca539babf185710d26fbec2906573e702d9",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/execution/tools.js",
+          "upstreamSha256": "1de7fbcbfd3d0cf0c232d6c2ea590f14610b03f144e7eb2b3ae48b122237b9e0",
+          "installedSha256": "1de7fbcbfd3d0cf0c232d6c2ea590f14610b03f144e7eb2b3ae48b122237b9e0",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/drive/tools.js",
+          "upstreamSha256": "a7e8b9b0db6d403978d15a60c5b48c8b64f5e3ada954c39d691a34fe901f0553",
+          "installedSha256": "a7e8b9b0db6d403978d15a60c5b48c8b64f5e3ada954c39d691a34fe901f0553",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/transcript.js",
+          "upstreamSha256": "87979129e6fb2de96eb51959ba945c119651bf8a45d85680a86b24f60ad0e971",
+          "installedSha256": "87979129e6fb2de96eb51959ba945c119651bf8a45d85680a86b24f60ad0e971",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/utils/truncate.js",
+          "upstreamSha256": "abfabbaac3913e7c9c060b7de6fe8e126fe2b4f22b9762119009d78b67559386",
+          "installedSha256": "abfabbaac3913e7c9c060b7de6fe8e126fe2b4f22b9762119009d78b67559386",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/types.js",
+          "upstreamSha256": "0a1bba40bdf8ceb7e64b093812f24583af56b2b847db027b6b7b76172c083244",
+          "installedSha256": "0a1bba40bdf8ceb7e64b093812f24583af56b2b847db027b6b7b76172c083244",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/runtime/types.js",
+          "upstreamSha256": "7bd8c033cb2edc52b38dcb986dc9136ba5ab94f9bc6f69f6c6897b7708fbb585",
+          "installedSha256": "7bd8c033cb2edc52b38dcb986dc9136ba5ab94f9bc6f69f6c6897b7708fbb585",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/jsonl/types.js",
+          "upstreamSha256": "72b10fe984a038afee5be97a15d5b64f10111b8d3e3351b6eaab4a28424a8b92",
+          "installedSha256": "72b10fe984a038afee5be97a15d5b64f10111b8d3e3351b6eaab4a28424a8b92",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/testing/types.js",
+          "upstreamSha256": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
+          "installedSha256": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/types.js",
+          "upstreamSha256": "00e080bff6ddfeb66c94783ada4c669a78bc2be9c9eb1f42dd2f0ff7b14bb268",
+          "installedSha256": "00e080bff6ddfeb66c94783ada4c669a78bc2be9c9eb1f42dd2f0ff7b14bb268",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/types.js",
+          "upstreamSha256": "8aa91d66f770ac7046886e6a915abcf6c5e5a1f9eed7b25086f839a9b726962e",
+          "installedSha256": "8aa91d66f770ac7046886e6a915abcf6c5e5a1f9eed7b25086f839a9b726962e",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/types.js",
+          "upstreamSha256": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
+          "installedSha256": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/utils/usage.js",
+          "upstreamSha256": "c50b6a2e070c94d95d57e157af9950b40187fd8ed4e19b35189c13e62e00345e",
+          "installedSha256": "c50b6a2e070c94d95d57e157af9950b40187fd8ed4e19b35189c13e62e00345e",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/compaction/utils.js",
+          "upstreamSha256": "ab85613e2d299087a9882378da7d62adf77aa19130d16e502bbef45d82fc10b6",
+          "installedSha256": "ab85613e2d299087a9882378da7d62adf77aa19130d16e502bbef45d82fc10b6",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/session/values.js",
+          "upstreamSha256": "e482079eced91542fc7aa61c60b620037b4f80b8ace42294a692f097437d048f",
+          "installedSha256": "e482079eced91542fc7aa61c60b620037b4f80b8ace42294a692f097437d048f",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/pico3/view.js",
+          "upstreamSha256": "0e0aadac888bf85858313112d990c09033fbaa963d56186400c6771b20d36856",
+          "installedSha256": "0e0aadac888bf85858313112d990c09033fbaa963d56186400c6771b20d36856",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/harness/tools/write.js",
+          "upstreamSha256": "0a1a31acc506d26c33a4a18cf7e96fbd8eea7cab79b3888fa217fc0ce54ee215",
+          "installedSha256": "0a1a31acc506d26c33a4a18cf7e96fbd8eea7cab79b3888fa217fc0ce54ee215",
+          "exactMatch": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "0.99.2",
+      "registry": "https://registry.npmjs.org/%40earendil-works%2Fpi-coding-agent/0.99.2",
+      "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.99.2.tgz",
+      "integrityVerified": true,
+      "checks": [
+        {
+          "file": "dist/core/agent-session.js",
+          "upstreamSha256": "4da636cea504ccec903c7b39f5eb1553f4f64469408f06e5b7938c7682b131d1",
+          "installedSha256": "4da636cea504ccec903c7b39f5eb1553f4f64469408f06e5b7938c7682b131d1",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/core/agent-session-runtime.js",
+          "upstreamSha256": "928b6528bb17d26273af8f7023a4f98e5f440d5896a4280d060b9b3e1f9a6882",
+          "installedSha256": "928b6528bb17d26273af8f7023a4f98e5f440d5896a4280d060b9b3e1f9a6882",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/core/agent-session-services.js",
+          "upstreamSha256": "20b7aa4b0657b53fb522ea051df26f72901802e03cc06c89e0a8926388bca601",
+          "installedSha256": "20b7aa4b0657b53fb522ea051df26f72901802e03cc06c89e0a8926388bca601",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/core/session-manager.js",
+          "upstreamSha256": "046b6a1109ac3f0ed893bb85bf0648709362fa926a5da75761216cf2fcf9d926",
+          "installedSha256": "046b6a1109ac3f0ed893bb85bf0648709362fa926a5da75761216cf2fcf9d926",
+          "exactMatch": true
+        },
+        {
+          "file": "dist/core/settings-manager.js",
+          "upstreamSha256": "5adc92ea0ae8440e3918149f741e6f8ac3f2606e55228e059380795d7585efd7",
+          "installedSha256": "5adc92ea0ae8440e3918149f741e6f8ac3f2606e55228e059380795d7585efd7",
+          "exactMatch": true
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "passed": true
+}

@@ -1,0 +1,119 @@
+/* ============ Prompt Enhance（提示词增强）公共核心 ============
+   工具栏只放一个图标（对齐 .input-tool-btn）。applied 后换成恢复图标，
+   「恢复原文」仅 hover/focus 出现，窄宽不挤工具栏。 */
+
+.prompt-enhance-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  flex-shrink: 0;
+}
+
+.prompt-enhance-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.prompt-enhance-trigger:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.prompt-enhance-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.prompt-enhance-trigger.busy,
+.prompt-enhance-trigger.busy:disabled {
+  opacity: 0.8;
+  cursor: default;
+  color: var(--accent, #3b82f6);
+}
+
+.prompt-enhance-trigger.restore {
+  color: var(--fg-secondary);
+}
+
+.prompt-enhance-pulse {
+  animation: prompt-enhance-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes prompt-enhance-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* hover 提示：覆盖输入区底部，不参与工具栏排版 */
+.prompt-enhance-tip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s, transform 0.12s;
+  z-index: 4;
+}
+
+.prompt-enhance-trigger:hover .prompt-enhance-tip,
+.prompt-enhance-trigger:focus-visible .prompt-enhance-tip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.prompt-enhance-float {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.prompt-enhance-notice {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  max-width: min(260px, 50vw);
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-secondary);
+}
+
+.prompt-enhance-notice.error {
+  color: var(--danger, #e05a5a);
+}

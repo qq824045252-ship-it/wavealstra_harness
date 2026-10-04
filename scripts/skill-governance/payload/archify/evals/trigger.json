@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "archify",
+  "cases": [
+    {
+      "prompt": "把这段 Mermaid 转为可探索 HTML",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "画这个仓库的 IPC 架构图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把重试生命周期画成状态图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "制作 API 调用顺序的交互图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "生成一张写实产品照片",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 Origin 做直方图",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "修改 PPT 中一个错字",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "解释一个函数，不需要图",
+      "expected": "no-trigger"
+    }
+  ]
+}

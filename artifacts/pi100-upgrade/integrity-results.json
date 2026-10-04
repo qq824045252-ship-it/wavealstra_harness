@@ -1,0 +1,503 @@
+{
+  "at": "2026-10-01T23:48:16.472Z",
+  "status": "passed",
+  "buildId": "build-20261001203630057",
+  "sourceFingerprint": "1b2a612855aed66d9a2bc62e2cc9d0070aaa9636ef52667efa7ea8251c18ef6d",
+  "asarSha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+  "packages": [
+    {
+      "name": "pi-ai",
+      "version": "1.0.0",
+      "patchBytes": 922,
+      "comparedFiles": 813,
+      "changedFiles": [
+        "dist/api/openai-responses-shared.js"
+      ],
+      "unmodifiedFiles": 812
+    },
+    {
+      "name": "pi-agent-core",
+      "version": "1.0.0",
+      "comparedFiles": 26,
+      "changedFiles": [],
+      "unmodifiedFiles": 26
+    },
+    {
+      "name": "pi-coding-agent",
+      "version": "1.0.0",
+      "patchBytes": 10048,
+      "comparedFiles": 1243,
+      "changedFiles": [
+        "dist/config.d.ts",
+        "dist/config.js",
+        "dist/core/sdk.js",
+        "dist/extensions/mcp/index.d.ts",
+        "dist/extensions/mcp/index.js",
+        "dist/index.d.ts",
+        "dist/index.js"
+      ],
+      "unmodifiedFiles": 1236
+    },
+    {
+      "name": "pi-mcp",
+      "version": "1.0.0",
+      "comparedFiles": 76,
+      "changedFiles": [],
+      "unmodifiedFiles": 76
+    },
+    {
+      "name": "pi-codemode",
+      "version": "1.0.0",
+      "comparedFiles": 42,
+      "changedFiles": [],
+      "unmodifiedFiles": 42
+    },
+    {
+      "name": "pi-tui",
+      "version": "1.0.0"
+    },
+    {
+      "name": "pi-telemetry",
+      "version": "1.0.0"
+    },
+    {
+      "name": "chord",
+      "version": "1.0.0"
+    }
+  ],
+  "assets": [
+    {
+      "file": "codemode-worker.cjs",
+      "sha256": "be3924dfe4fbf7f0851f7685fefadfebd840a181f03f413f5071fb355c363a30"
+    },
+    {
+      "file": "quickjs.wasm",
+      "sha256": "d4c9375f2b1ca4dc95f72c8aa2982a7a9951ac8011490d79c6582df732b4bbd9"
+    }
+  ],
+  "checks": [
+    {
+      "name": "build",
+      "status": "passed",
+      "at": "2026-10-01T20:40:20.262Z",
+      "durationMs": 78392
+    },
+    {
+      "name": "remote:build",
+      "status": "passed",
+      "at": "2026-10-01T20:41:38.658Z",
+      "durationMs": 9177
+    },
+    {
+      "name": "remote:typecheck",
+      "status": "passed",
+      "at": "2026-10-01T20:52:03.560Z",
+      "durationMs": 5126
+    },
+    {
+      "name": "test:architecture",
+      "status": "passed",
+      "at": "2026-10-01T20:52:08.689Z",
+      "durationMs": 9254
+    },
+    {
+      "name": "test:compaction-policy-history",
+      "status": "passed",
+      "at": "2026-10-01T20:52:38.409Z",
+      "durationMs": 4327
+    },
+    {
+      "name": "test:compaction",
+      "status": "passed",
+      "at": "2026-10-01T20:52:33.510Z",
+      "durationMs": 4896
+    },
+    {
+      "name": "test:memory-lifecycle",
+      "status": "passed",
+      "at": "2026-10-01T20:31:56.472Z",
+      "durationMs": 5012
+    },
+    {
+      "name": "test:memory",
+      "status": "passed",
+      "at": "2026-10-01T20:32:01.488Z",
+      "durationMs": 2266
+    },
+    {
+      "name": "test:minimal-coding-mode",
+      "status": "passed",
+      "at": "2026-10-01T20:14:30.474Z",
+      "durationMs": 2060
+    },
+    {
+      "name": "test:mode-preset",
+      "status": "passed",
+      "at": "2026-10-01T20:14:32.540Z",
+      "durationMs": 2358
+    },
+    {
+      "name": "test:model-catalog-update",
+      "status": "passed",
+      "at": "2026-10-01T20:52:21.753Z",
+      "durationMs": 4500
+    },
+    {
+      "name": "test:model-refresh",
+      "status": "passed",
+      "at": "2026-10-01T20:52:26.260Z",
+      "durationMs": 4235
+    },
+    {
+      "name": "test:models-settings-overlay",
+      "status": "passed",
+      "at": "2026-10-01T20:22:33.279Z",
+      "durationMs": 1674
+    },
+    {
+      "name": "test:multi-model-consult",
+      "status": "passed",
+      "at": "2026-10-01T20:16:55.669Z",
+      "durationMs": 5766
+    },
+    {
+      "name": "test:pi-codemode-auto",
+      "status": "passed",
+      "at": "2026-10-01T20:33:20.197Z",
+      "durationMs": 1780
+    },
+    {
+      "name": "test:pi-codemode-native",
+      "status": "passed",
+      "at": "2026-10-01T20:50:42.620Z",
+      "durationMs": 7912
+    },
+    {
+      "name": "test:pi-codemode-ui",
+      "status": "passed",
+      "at": "2026-10-01T20:14:28.504Z",
+      "durationMs": 1966
+    },
+    {
+      "name": "test:pi-host-boundary",
+      "status": "passed",
+      "at": "2026-10-01T20:52:17.946Z",
+      "durationMs": 3804
+    },
+    {
+      "name": "test:pi-host-control",
+      "status": "passed",
+      "at": "2026-10-01T20:11:16.812Z",
+      "durationMs": 2403
+    },
+    {
+      "name": "test:pi-host-native",
+      "status": "passed",
+      "at": "2026-10-01T20:33:33.225Z",
+      "durationMs": 6175
+    },
+    {
+      "name": "test:pi-native-control",
+      "status": "passed",
+      "at": "2026-10-01T20:11:25.060Z",
+      "durationMs": 2177
+    },
+    {
+      "name": "test:pi-native-lifecycle",
+      "status": "passed",
+      "at": "2026-10-01T20:28:32.964Z",
+      "durationMs": 4520
+    },
+    {
+      "name": "test:pi-reasoning-stream",
+      "status": "passed",
+      "at": "2026-10-01T20:52:30.497Z",
+      "durationMs": 3010
+    },
+    {
+      "name": "test:pi-shell-output",
+      "status": "passed",
+      "at": "2026-10-01T20:16:42.312Z",
+      "durationMs": 4266
+    },
+    {
+      "name": "test:pi099-manager",
+      "status": "passed",
+      "at": "2026-10-01T20:21:13.627Z",
+      "durationMs": 3796
+    },
+    {
+      "name": "test:pi099-migration",
+      "status": "passed",
+      "at": "2026-10-01T20:50:50.538Z",
+      "durationMs": 12551
+    },
+    {
+      "name": "test:pi099-portable-worker",
+      "status": "passed",
+      "at": "2026-10-01T20:50:23.515Z",
+      "durationMs": 10014
+    },
+    {
+      "name": "test:pi099-worker-invocation",
+      "status": "passed",
+      "at": "2026-10-01T20:14:34.902Z",
+      "durationMs": 1843
+    },
+    {
+      "name": "test:pi0992-mcp-config",
+      "status": "passed",
+      "at": "2026-10-01T20:08:06.716Z",
+      "durationMs": 2094
+    },
+    {
+      "name": "test:pi0992-memory-capsule",
+      "status": "passed",
+      "at": "2026-10-01T20:52:44.897Z",
+      "durationMs": 4750
+    },
+    {
+      "name": "test:pi0992-memory-race",
+      "status": "passed",
+      "at": "2026-10-01T20:52:42.740Z",
+      "durationMs": 2153
+    },
+    {
+      "name": "test:pi100-context-boundary",
+      "status": "passed",
+      "at": "2026-10-01T20:35:43.026Z",
+      "durationMs": 4588
+    },
+    {
+      "name": "test:pi100-features",
+      "status": "passed",
+      "at": "2026-10-01T20:50:33.538Z",
+      "durationMs": 4689
+    },
+    {
+      "name": "test:pi100-model-admission",
+      "status": "passed",
+      "at": "2026-10-01T20:50:38.230Z",
+      "durationMs": 4386
+    },
+    {
+      "name": "test:subagent-model-ui",
+      "status": "passed",
+      "at": "2026-10-01T20:17:01.439Z",
+      "durationMs": 1889
+    },
+    {
+      "name": "typecheck",
+      "status": "passed",
+      "at": "2026-10-01T20:51:24.820Z",
+      "durationMs": 38732
+    }
+  ],
+  "desktop": [
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\bugfix-prompt-control-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "bugfix-prompt-control",
+          "result": {
+            "actual": {
+              "nonce": "66fe62edaa467ac9be94",
+              "sum": 581
+            },
+            "codemodeCalls": 3
+          },
+          "streaming": {
+            "thinkingEvents": 30,
+            "textEvents": 29
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\codemode-without-mcp-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "codemode-without-mcp",
+          "result": {
+            "actual": {
+              "nonce": "e6ce864d2db92010c42cd30d",
+              "sum": 6317
+            }
+          },
+          "streaming": {
+            "thinkingEvents": 63,
+            "textEvents": 31
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\minimal-no-prompt-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "minimal-no-prompt",
+          "result": {
+            "actual": {
+              "nonce": "ca87278125dfac241781",
+              "sum": 598
+            },
+            "codemodeCalls": 3
+          },
+          "streaming": {
+            "thinkingEvents": 22,
+            "textEvents": 27
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\minimal-no-prompt-openai-codex_gpt-6-sol\\results.json",
+      "model": "openai-codex/gpt-6-sol",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "minimal-no-prompt",
+          "result": {
+            "actual": {
+              "nonce": "126e2850380afef675d0",
+              "sum": 962
+            },
+            "codemodeCalls": 2
+          },
+          "streaming": {
+            "thinkingEvents": 4,
+            "textEvents": 3
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\native-error-repair-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001204019757\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "native-error-repair",
+          "result": {
+            "exitCodes": [
+              7,
+              0
+            ],
+            "validatorUnchanged": true
+          },
+          "streaming": {
+            "thinkingEvents": 49,
+            "textEvents": 48
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\native-models-and-reference-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "native-models-and-reference",
+          "result": {
+            "hasNativeImageAPI": true,
+            "hasNoChatAPI": true,
+            "docsHasImageAPI": true,
+            "knownChatCount": 1617,
+            "availableChatCount": 189,
+            "availableImageCount": 0
+          },
+          "streaming": {
+            "thinkingEvents": 71,
+            "textEvents": 57
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\native-readonly-worker-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "native-readonly-worker",
+          "result": {
+            "actual": {
+              "nonce": "8d9d1b745aac010d27cb802d",
+              "sum": 713
+            },
+            "childCalls": 1
+          },
+          "streaming": {
+            "thinkingEvents": 38,
+            "textEvents": 22
+          }
+        }
+      ]
+    },
+    {
+      "report": "artifacts\\pi100-upgrade\\desktop-live\\office-native-discovery-commandcode_deepseek_deepseek-v4.1-flash\\results.json",
+      "model": "commandcode/deepseek/deepseek-v4.1-flash",
+      "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+      "sha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+      "status": "passed",
+      "temporaryCredentialsRemoved": true,
+      "tests": [
+        {
+          "name": "office-native-discovery",
+          "result": {
+            "actual": {
+              "nonce": "c9d42a151fc351f6f975",
+              "sum": 1046
+            }
+          },
+          "streaming": {
+            "thinkingEvents": 17,
+            "textEvents": 26
+          }
+        }
+      ]
+    }
+  ],
+  "sourceUnchanged": true,
+  "childRuntime": {
+    "version": "1.0.0",
+    "filesCompared": 110,
+    "allMatch": true
+  },
+  "standaloneWorker": {
+    "passed": true,
+    "temporaryCredentialsRemoved": true,
+    "result": {
+      "nonce": "987da0691ca04866b35a",
+      "sum": 56
+    }
+  }
+}

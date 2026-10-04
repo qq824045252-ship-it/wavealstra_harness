@@ -1,0 +1,51 @@
+[
+  {
+    "name": "xlsx-simple@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-simple.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-multi@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-multi.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-frozen@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-frozen.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-merged@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-merged.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-formats@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-formats.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-formula@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-formula.xlsx&kind=xlsx"
+  },
+  {
+    "name": "xlsx-10k30@1.0.png",
+    "w": 1176,
+    "h": 710,
+    "dpr": 1,
+    "query": "?file=xlsx-10k30.xlsx&kind=xlsx"
+  }
+]

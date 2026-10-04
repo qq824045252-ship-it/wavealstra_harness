@@ -1,0 +1,20 @@
+{
+  "kind": "real-model-isolated-portable-worker",
+  "startedAt": "2026-10-01T20:50:24.754Z",
+  "passed": true,
+  "rpcReady": true,
+  "result": {
+    "nonce": "987da0691ca04866b35a",
+    "sum": 56
+  },
+  "toolCalls": [
+    {
+      "tool": "read",
+      "isError": false
+    }
+  ],
+  "externalPiInstallRequired": false,
+  "sourceRepositoryCwdUsed": false,
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-01T20:50:33.467Z"
+}

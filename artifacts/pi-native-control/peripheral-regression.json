@@ -1,0 +1,50 @@
+{
+  "group": "peripheral",
+  "startedAt": "2026-09-30T23:02:52.522Z",
+  "tests": [
+    {
+      "name": "test:conversation-runtime",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1239,
+      "log": "test-conversation-runtime.log"
+    },
+    {
+      "name": "test:conversation-runtime-ui",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1348,
+      "log": "test-conversation-runtime-ui.log"
+    },
+    {
+      "name": "test:session-approval-bridge",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1229,
+      "log": "test-session-approval-bridge.log"
+    },
+    {
+      "name": "test:pi-shell-output",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3523,
+      "log": "test-pi-shell-output.log"
+    },
+    {
+      "name": "test:pi-autonomous-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3197,
+      "log": "test-pi-autonomous-execution.log"
+    },
+    {
+      "name": "test:pi-reasoning-stream",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1691,
+      "log": "test-pi-reasoning-stream.log"
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-30T23:03:04.758Z"
+}

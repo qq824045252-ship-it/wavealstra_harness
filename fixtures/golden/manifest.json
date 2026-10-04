@@ -1,0 +1,362 @@
+[
+  {
+    "name": "html-basic@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-basic\\index.html",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:34.959Z",
+    "approved": true
+  },
+  {
+    "name": "html-canvas@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:35.544Z",
+    "approved": true
+  },
+  {
+    "name": "html-high-dpi-canvas@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-high-dpi-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:36.096Z",
+    "approved": true
+  },
+  {
+    "name": "html-js@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-js\\index.html",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:36.660Z",
+    "approved": true
+  },
+  {
+    "name": "html-relative-assets@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-relative-assets\\index.html",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:37.217Z",
+    "approved": true
+  },
+  {
+    "name": "svg-animation@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-animation.svg",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:37.777Z",
+    "approved": true
+  },
+  {
+    "name": "svg-basic@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-basic.svg",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:38.346Z",
+    "approved": true
+  },
+  {
+    "name": "svg-complex@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-complex.svg",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:38.895Z",
+    "approved": true
+  },
+  {
+    "name": "svg-filter@1.png",
+    "w": 876,
+    "h": 610,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-filter.svg",
+    "mode": "window",
+    "dpr": 1,
+    "at": "2026-08-08T06:13:39.457Z",
+    "approved": true
+  },
+  {
+    "name": "html-basic@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-basic\\index.html",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:41.046Z",
+    "approved": true
+  },
+  {
+    "name": "html-canvas@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:41.616Z",
+    "approved": true
+  },
+  {
+    "name": "html-high-dpi-canvas@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-high-dpi-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:42.186Z",
+    "approved": true
+  },
+  {
+    "name": "html-js@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-js\\index.html",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:42.771Z",
+    "approved": true
+  },
+  {
+    "name": "html-relative-assets@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-relative-assets\\index.html",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:43.353Z",
+    "approved": true
+  },
+  {
+    "name": "svg-animation@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-animation.svg",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:43.921Z",
+    "approved": true
+  },
+  {
+    "name": "svg-basic@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-basic.svg",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:44.973Z",
+    "approved": true
+  },
+  {
+    "name": "svg-complex@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-complex.svg",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:45.545Z",
+    "approved": true
+  },
+  {
+    "name": "svg-filter@1.25.png",
+    "w": 1102,
+    "h": 779,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-filter.svg",
+    "mode": "window",
+    "dpr": 1.25,
+    "at": "2026-08-08T06:13:46.114Z",
+    "approved": true
+  },
+  {
+    "name": "html-basic@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-basic\\index.html",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:47.710Z",
+    "approved": true
+  },
+  {
+    "name": "html-canvas@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:48.310Z",
+    "approved": true
+  },
+  {
+    "name": "html-high-dpi-canvas@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-high-dpi-canvas\\index.html",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:48.875Z",
+    "approved": true
+  },
+  {
+    "name": "html-js@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-js\\index.html",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:49.445Z",
+    "approved": true
+  },
+  {
+    "name": "html-relative-assets@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-relative-assets\\index.html",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:50.036Z",
+    "approved": true
+  },
+  {
+    "name": "svg-animation@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-animation.svg",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:50.606Z",
+    "approved": true
+  },
+  {
+    "name": "svg-basic@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-basic.svg",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:51.672Z",
+    "approved": true
+  },
+  {
+    "name": "svg-complex@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-complex.svg",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:52.264Z",
+    "approved": true
+  },
+  {
+    "name": "svg-filter@1.5.png",
+    "w": 1326,
+    "h": 948,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-filter.svg",
+    "mode": "window",
+    "dpr": 1.5,
+    "at": "2026-08-08T06:13:52.881Z",
+    "approved": true
+  },
+  {
+    "name": "html-basic@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-basic\\index.html",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:54.461Z",
+    "approved": true
+  },
+  {
+    "name": "html-canvas@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-canvas\\index.html",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:55.100Z",
+    "approved": true
+  },
+  {
+    "name": "html-high-dpi-canvas@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-high-dpi-canvas\\index.html",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:55.697Z",
+    "approved": true
+  },
+  {
+    "name": "html-js@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-js\\index.html",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:56.310Z",
+    "approved": true
+  },
+  {
+    "name": "html-relative-assets@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\html-relative-assets\\index.html",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:56.915Z",
+    "approved": true
+  },
+  {
+    "name": "svg-animation@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-animation.svg",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:57.518Z",
+    "approved": true
+  },
+  {
+    "name": "svg-basic@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-basic.svg",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:58.599Z",
+    "approved": true
+  },
+  {
+    "name": "svg-complex@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-complex.svg",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:59.224Z",
+    "approved": true
+  },
+  {
+    "name": "svg-filter@2.png",
+    "w": 1776,
+    "h": 1284,
+    "fixture": "C:\\Users\\servi\\Desktop\\mybuddy\\fixtures\\artifacts\\synthetic\\svg-filter.svg",
+    "mode": "window",
+    "dpr": 2,
+    "at": "2026-08-08T06:13:59.854Z",
+    "approved": true
+  }
+]

@@ -1,0 +1,113 @@
+{
+  "at": "2026-10-02T04:57:53.372Z",
+  "scope": "Remove chat Todo/Plan tests and dependencies while retaining goals, explicit user input and project plans",
+  "passed": true,
+  "tests": [
+    {
+      "name": "conversation-runtime",
+      "log": "artifacts/todo-plan-removal/test-conversation-runtime.log",
+      "passed": true
+    },
+    {
+      "name": "conversation-runtime-ui",
+      "log": "artifacts/todo-plan-removal/test-conversation-runtime-ui.log",
+      "passed": true
+    },
+    {
+      "name": "conversation-input",
+      "log": "artifacts/todo-plan-removal/test-conversation-input.log",
+      "passed": true
+    },
+    {
+      "name": "pi-native-control",
+      "log": "artifacts/todo-plan-removal/test-pi-native-control.log",
+      "passed": true
+    },
+    {
+      "name": "pi-host-control",
+      "log": "artifacts/todo-plan-removal/test-pi-host-control.log",
+      "passed": true
+    },
+    {
+      "name": "pi-host-native",
+      "log": "artifacts/todo-plan-removal/test-pi-host-native.log",
+      "passed": true
+    },
+    {
+      "name": "pi-native-core-tools",
+      "log": "artifacts/todo-plan-removal/test-pi-native-core-tools.log",
+      "passed": true
+    },
+    {
+      "name": "architecture",
+      "log": "artifacts/todo-plan-removal/test-architecture.log",
+      "passed": true
+    },
+    {
+      "name": "harness-quality",
+      "log": "artifacts/todo-plan-removal/test-harness-quality.log",
+      "passed": true
+    },
+    {
+      "name": "message-lifecycle",
+      "log": "artifacts/todo-plan-removal/test-message-lifecycle.log",
+      "passed": true
+    },
+    {
+      "name": "streaming-send",
+      "log": "artifacts/todo-plan-removal/test-streaming-send.log",
+      "passed": true
+    },
+    {
+      "name": "remote-access",
+      "log": "artifacts/todo-plan-removal/test-remote-access.log",
+      "passed": true
+    },
+    {
+      "name": "project-plan-agent",
+      "log": "artifacts/todo-plan-removal/test-project-plan-agent.log",
+      "passed": true
+    },
+    {
+      "name": "db-migration",
+      "log": "artifacts/todo-plan-removal/test-db-migration.log",
+      "passed": true
+    },
+    {
+      "name": "request-user-input-ui",
+      "log": "artifacts/todo-plan-removal/test-request-user-input-ui.log",
+      "passed": true
+    }
+  ],
+  "caseCounts": {
+    "nativeCore": 16,
+    "nativeCoreHostCalls": 0,
+    "architecture": 323,
+    "messageLifecycle": 53,
+    "projectPlanAgent": 78,
+    "database": 100,
+    "hostControl": 10,
+    "hostNative": 10
+  },
+  "scriptScan": {
+    "at": "2026-10-02T04:57:53.366Z",
+    "missingPackageTargets": [],
+    "missingRunnerTargets": [],
+    "syntaxCheckedScripts": 17,
+    "planRecordsTargetAbsent": true,
+    "conversationInputTargetPresent": true,
+    "projectTargetsPreserved": true
+  },
+  "compatibility": [
+    "Retired Plan message blocks render readable text without interactive controls",
+    "Native session does not register retired Todo/Plan/finding tools; five goal/input tools remain",
+    "Historical Pi tool call/results survive context projection without tool revival",
+    "Fresh DB does not create retired tables; existing same-schema historical rows survive reopen",
+    "Remote runtime omits retired fields from a legacy snapshot"
+  ],
+  "boundaries": [
+    "No production source edited by this test agent",
+    "No current user instance or deployment touched",
+    "Memory scripts preserved"
+  ]
+}

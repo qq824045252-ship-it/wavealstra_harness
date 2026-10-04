@@ -1,0 +1,43 @@
+{
+  "group": "safety",
+  "startedAt": "2026-09-30T23:03:04.846Z",
+  "tests": [
+    {
+      "name": "test:verified-write-electron",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4022,
+      "log": "test-verified-write-electron.log"
+    },
+    {
+      "name": "test:mcp-execution-evidence",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1044,
+      "log": "test-mcp-execution-evidence.log"
+    },
+    {
+      "name": "test:regenerate-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1300,
+      "log": "test-regenerate-lifecycle.log"
+    },
+    {
+      "name": "test:architecture",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 6250,
+      "log": "test-architecture.log"
+    },
+    {
+      "name": "test:harness-quality",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1166,
+      "log": "test-harness-quality.log"
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-30T23:03:18.635Z"
+}

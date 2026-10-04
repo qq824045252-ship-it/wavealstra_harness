@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "physical phone runs 1.1.13 / code 15",
+      "ok": true
+    }
+  ],
+  "startedAt": "2026-10-02T01:28:18.132Z",
+  "ui": {
+    "url": "https://localhost/",
+    "ready": "complete",
+    "title": "Mybuddy",
+    "onboard": true,
+    "header": false,
+    "titleText": "Mybuddy",
+    "rootChildren": 1,
+    "bodyText": "Mybuddy\n\n与电脑端 MyBuddy 建立安全加密配对，随时在手机端查看思考过程与控制任务。\n\n局域网自动发现\nmDNS 优先，未发现时自动使用 UDP 搜索\n重新搜索\n没有发现局域网 MyBuddy\n扫描电脑二维码配对\n读取剪贴板链接\n手动输入配对链接或设置设备名"
+  },
+  "launch": {
+    "hasPairingLink": false
+  },
+  "finishedAt": "2026-10-02T01:28:18.822Z"
+}

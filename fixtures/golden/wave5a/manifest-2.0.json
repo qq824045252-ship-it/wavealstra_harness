@@ -1,0 +1,58 @@
+[
+  {
+    "name": "md-features@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=markdown-features.md&kind=markdown"
+  },
+  {
+    "name": "md-rich@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=markdown-rich.md&kind=markdown"
+  },
+  {
+    "name": "md-long@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=markdown-long.md&kind=markdown"
+  },
+  {
+    "name": "code-ts-light@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=code-ts.ts&lang=typescript"
+  },
+  {
+    "name": "code-ts-dark@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=code-ts.ts&lang=typescript&theme=dark"
+  },
+  {
+    "name": "code-large@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=code-large.ts&lang=typescript"
+  },
+  {
+    "name": "code-longline@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=code-longline.ts&lang=typescript"
+  },
+  {
+    "name": "code-edit@2.0.png",
+    "w": 1976,
+    "h": 1404,
+    "dpr": 2,
+    "query": "?file=code-medium.ts&lang=typescript&edit=1"
+  }
+]

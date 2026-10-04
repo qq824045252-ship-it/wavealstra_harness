@@ -1,0 +1,54 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "physical phone runs 1.1.13 / code 15",
+      "ok": true
+    },
+    {
+      "name": "fresh USB pairing reaches authenticated remote UI",
+      "ok": true
+    },
+    {
+      "name": "native WebView shows desktop icon, Mybuddy name, and 1.3x input height",
+      "ok": true,
+      "details": {
+        "title": "Mybuddy",
+        "brand": "Mybuddy",
+        "height": 70.1964340209961,
+        "maxHeight": 208,
+        "width": 363,
+        "overflow": false,
+        "iconBox": "0 0 800 800",
+        "iconBg": "#09090b"
+      }
+    },
+    {
+      "name": "real phone prompt completes through desktop Pi 1.0 runtime",
+      "ok": true,
+      "details": {
+        "userIndex": 0,
+        "assistantIndex": 1,
+        "text": "PI100_ANDROID_7c441d1c SUM=6",
+        "height": 70.1964340209961
+      }
+    },
+    {
+      "name": "completed response survives a real WebView reload and history readback",
+      "ok": true
+    }
+  ],
+  "startedAt": "2026-10-02T01:36:37.831Z",
+  "ui": {
+    "title": "Mybuddy",
+    "brand": "Mybuddy",
+    "height": 70.1964340209961,
+    "maxHeight": 208,
+    "width": 363,
+    "overflow": false,
+    "iconBox": "0 0 800 800",
+    "iconBg": "#09090b"
+  },
+  "marker": "PI100_ANDROID_7c441d1c",
+  "finishedAt": "2026-10-02T01:36:45.382Z"
+}

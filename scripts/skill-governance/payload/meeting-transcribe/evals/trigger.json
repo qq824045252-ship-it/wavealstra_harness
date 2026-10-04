@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "meeting-transcribe",
+  "cases": [
+    {
+      "prompt": "把会议 m4a 转写成文字",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "根据这段会议 wav 生成纪要",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "转写录音并提取行动项",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "整理这个会议 mp4 的发言与决议",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "根据已有文字整理纪要",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "识别会议白板照片文字",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "生成会议邀请函",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "把聊天记录导入周报系统",
+      "expected": "no-trigger"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "easyeda-agent",
+  "cases": [
+    {
+      "prompt": "在嘉立创专业版整理这张原理图",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "给 EasyEDA PCB 重新布线并检查 DRC",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "查询 EasyEDA 电路块库",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "在 EasyEDA 同步原理图到 PCB",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把 epro 迁移为 KiCad",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "修改 KiCad 原理图",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "用 HFSS 仿真天线",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "解释运放原理，不画板",
+      "expected": "no-trigger"
+    }
+  ]
+}

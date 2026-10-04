@@ -1,0 +1,9 @@
+{
+  "status": "failed",
+  "startedAt": "2026-09-30T01:06:04.514Z",
+  "finishedAt": "2026-09-30T01:06:54.364Z",
+  "code": 1,
+  "signal": null,
+  "pid": 19112,
+  "childPid": 14480
+}

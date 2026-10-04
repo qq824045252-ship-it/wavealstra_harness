@@ -1,0 +1,44 @@
+{
+  "group": "integration",
+  "pid": 28760,
+  "status": "passed",
+  "startedAt": "2026-09-30T23:47:30.373Z",
+  "tests": [
+    {
+      "name": "test:architecture",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 4767,
+      "log": "test-architecture.log"
+    },
+    {
+      "name": "test:session-approval-bridge",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1066,
+      "log": "test-session-approval-bridge.log"
+    },
+    {
+      "name": "test:regenerate-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1105,
+      "log": "test-regenerate-lifecycle.log"
+    },
+    {
+      "name": "test:mcp-execution-evidence",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1048,
+      "log": "test-mcp-execution-evidence.log"
+    },
+    {
+      "name": "test:pi-reasoning-stream",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1657,
+      "log": "test-pi-reasoning-stream.log"
+    }
+  ],
+  "finishedAt": "2026-09-30T23:47:40.022Z"
+}

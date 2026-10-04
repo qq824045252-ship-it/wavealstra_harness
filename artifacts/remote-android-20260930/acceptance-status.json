@@ -1,0 +1,41 @@
+{
+  "asOf": "2026-09-30T04:22:36.218Z",
+  "repositoryHead": "0ece56dc88cac4fef7f382bb471aef38215a0895",
+  "built": {
+    "versionName": "1.1.4",
+    "versionCode": 6,
+    "apk": "app/remote/android/app/build/outputs/apk/debug/app-debug.apk",
+    "bytes": 4303565,
+    "sha256": "d79c476842d6d1cdc51e695735b4446d1940734bc863fb6b6fde09f473be05c0"
+  },
+  "installedLastConfirmed": {
+    "versionName": "1.1.4",
+    "versionCode": 6
+  },
+  "checks": {
+    "remoteClientRegression": 20,
+    "rendererRegression": 12,
+    "remoteTypecheck": "passed",
+    "desktopTypecheck": "passed",
+    "existingRemoteAccessTests": "passed",
+    "capacitorSync": "passed",
+    "androidBuild": "passed",
+    "diffCheck": "passed"
+  },
+  "phone": {
+    "historicalSvgImagesDecoded": 7,
+    "toolsInitiallyFolded": true,
+    "finalBuildInstalled": true,
+    "endToEndComplete": true,
+    "acceptanceChecks": 6,
+    "observedSseChunks": 25,
+    "replyOrder": {
+      "u": 0,
+      "a": 1
+    },
+    "networkTest": "Temporary offline/online fault injection in the actual Android WebView; fresh HTTPS history returned 200 afterward",
+    "foregroundResume": "passed",
+    "adbForwardCleanup": "no forwards remain"
+  },
+  "gitCommitted": false
+}

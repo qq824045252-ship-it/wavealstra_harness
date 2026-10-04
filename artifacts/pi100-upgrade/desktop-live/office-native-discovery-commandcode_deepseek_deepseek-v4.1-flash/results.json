@@ -1,0 +1,133 @@
+{
+  "kind": "pi100-real-model-packaged-desktop",
+  "selectedModel": "commandcode/deepseek/deepseek-v4.1-flash",
+  "harnessPid": 17792,
+  "startedAt": "2026-10-01T20:45:50.732Z",
+  "tests": [
+    {
+      "name": "office-native-discovery",
+      "status": "passed",
+      "startedAt": "2026-10-01T20:45:54.739Z",
+      "hero": {
+        "mode": "working",
+        "statusVisible": false,
+        "tags": [
+          {
+            "label": "通用办公",
+            "pressed": "true"
+          },
+          {
+            "label": "总结",
+            "pressed": "false"
+          },
+          {
+            "label": "周报",
+            "pressed": "false"
+          },
+          {
+            "label": "会议纪要",
+            "pressed": "false"
+          },
+          {
+            "label": "项目管理",
+            "pressed": "false"
+          },
+          {
+            "label": "数据分析",
+            "pressed": "false"
+          },
+          {
+            "label": "流程图",
+            "pressed": "false"
+          }
+        ]
+      },
+      "progress": {
+        "elapsedMs": 16817,
+        "started": true,
+        "done": true,
+        "toolCount": 3,
+        "lastTool": "mcp__fixture__save_result",
+        "textEvents": 26
+      },
+      "nativeCodeMode": {
+        "policy": "coding-only",
+        "welcomeMode": "working",
+        "configured": false,
+        "active": false,
+        "models": false
+      },
+      "persisted": {
+        "welcomeMode": "working",
+        "modePresetId": "general-office"
+      },
+      "promptEvidence": {
+        "hasModePresetSegment": true
+      },
+      "tools": [
+        {
+          "id": "call_00_rggj3co9z3etixk5o7kdgx69|c15eb06f-3313-3718-8cf0-2b785e90342d",
+          "name": "tool_search",
+          "summary": "{\"query\":\"fixture read_seed save_result\",\"limit\":8}",
+          "status": "success",
+          "output": "Loaded 2 tools. They are available from your next call:\n- mcp__fixture__read_seed: Read the random seed and numbers from the disposable scene-test workspace.\n- mcp__fixture__save_result: Save a calculated answer only to the disposable scene-test workspace."
+        },
+        {
+          "id": "call_00_ffrc35ajo5htle6949q9ut7t|7975aca7-86b7-3158-a51e-101747efbf5a",
+          "name": "mcp__fixture__read_seed",
+          "summary": "{}",
+          "status": "success",
+          "output": "{\"nonce\":\"c9d42a151fc351f6f975\",\"values\":[137,179,197,114,17,168,122,20,92]}"
+        },
+        {
+          "id": "call_00_i57152clopa86746w4lgdo4s|0671cb7b-22d4-3632-b34e-ad67840781bf",
+          "name": "mcp__fixture__save_result",
+          "summary": "{\"nonce\":\"c9d42a151fc351f6f975\",\"sum\":1046}",
+          "status": "success",
+          "output": "{\"nonce\":\"c9d42a151fc351f6f975\",\"sum\":1046}"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "已完成，fixture 验收通过。\n\n**结果**\n- nonce：`c9d42a151fc351f6f975`\n- values：137, 179, 197, 114, 17, 168, 122, 20, 92（9 个）\n- sum：**1046**（逐项累加，非估算）\n- 保存回执：`{\"nonce\":\"c9d42a151fc351f6f975\",\"sum\":1046}` ✅ 精确匹配\n\n**过程依据**\n1. `tool_search(\"fixture read_seed save_result\")` → 加载 `mcp__fixture__read_seed`、`mcp__fixture__save_result` 两个原生工具；\n2. `read_seed` 取回随机 nonce 与 values 原始值，未做任何猜测；\n3. 计算总和 1046；\n4. `save_result` 写入，返回值与本轮 nonce/sum 一致。\n\n**边界说明（可忽略）**\n- 全程未使用 codemode，只操作 fixture 测试空间，未触碰其他文件或系统。\n- 本轮结束后收到一条「资料库条目」补充证据（`library:6ffb53d0…` 的 catalog 引用）。它属于可过时的派生视图，本轮指令优先，我未因此扩展工具权限，也未去读取该条目。如需我核对那份资料库内容，请单独说明。",
+      "streaming": {
+        "thinkingEvents": 17,
+        "textEvents": 26
+      },
+      "taskId": "local-1790887554927-0",
+      "result": {
+        "actual": {
+          "nonce": "c9d42a151fc351f6f975",
+          "sum": 1046
+        }
+      },
+      "finishedAtMs": 1790887571207,
+      "history": {
+        "found": true,
+        "textChars": 602
+      },
+      "finishedAt": "2026-10-01T20:46:11.597Z"
+    }
+  ],
+  "status": "passed",
+  "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+  "asarSha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+  "sourceFingerprint": "1b2a612855aed66d9a2bc62e2cc9d0070aaa9636ef52667efa7ea8251c18ef6d",
+  "executable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001203630057\\MyBuddy.exe",
+  "port": 58646,
+  "pid": 38460,
+  "modeFallbackChecks": [],
+  "sessionAudit": [
+    {
+      "file": "2026-10-01T20-45-55-167Z_01a0f937-705e-7078-9278-cc650579a477.jsonl",
+      "entries": 15,
+      "userMessages": 1,
+      "retiredControlMessages": 0,
+      "observedModels": [
+        "commandcode/deepseek/deepseek-v4.1-flash"
+      ]
+    }
+  ],
+  "rendererErrors": [],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-01T20:46:21.081Z"
+}

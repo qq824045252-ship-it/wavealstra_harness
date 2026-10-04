@@ -1,0 +1,10 @@
+﻿{
+    "at":  "2026-09-30T23:06:10.3444883Z",
+    "shortcut":  "C:\\Users\\servi\\Desktop\\MyBuddy.lnk",
+    "oldTarget":  "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-models-20260930043733706\\win-unpacked\\MyBuddy.exe",
+    "oldArguments":  "",
+    "oldWorkingDirectory":  "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-models-20260930043733706\\win-unpacked",
+    "newTarget":  "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-native-pi-20260930161214934\\win-unpacked\\MyBuddy.exe",
+    "backup":  "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi-native-control\\MyBuddy-shortcut-before.lnk",
+    "phase":  "verified-new-build-running"
+}

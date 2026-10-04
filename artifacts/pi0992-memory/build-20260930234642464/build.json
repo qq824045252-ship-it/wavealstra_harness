@@ -1,0 +1,114 @@
+{
+  "startedAt": "2026-09-30T23:46:42.466Z",
+  "status": "passed",
+  "release": "release-pi0992-20260930234642464",
+  "output": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi0992-memory\\build-20260930234642464",
+  "steps": [
+    {
+      "name": "typecheck",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:46:42.588Z",
+      "pid": 32628,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:04.087Z"
+    },
+    {
+      "name": "remote-typecheck",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:04.088Z",
+      "pid": 12300,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:07.273Z"
+    },
+    {
+      "name": "native-control-contract",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:07.274Z",
+      "pid": 5692,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:08.698Z"
+    },
+    {
+      "name": "native-lifecycle",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:08.699Z",
+      "pid": 32552,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:12.188Z"
+    },
+    {
+      "name": "explicit-plan-records",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:12.190Z",
+      "pid": 30120,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:13.480Z"
+    },
+    {
+      "name": "memory-races",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:13.481Z",
+      "pid": 30172,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:14.708Z"
+    },
+    {
+      "name": "memory-capsules",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:14.710Z",
+      "pid": 28800,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:18.120Z"
+    },
+    {
+      "name": "mcp-compat",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:18.121Z",
+      "pid": 15876,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:19.263Z"
+    },
+    {
+      "name": "remote-build",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:19.264Z",
+      "pid": 25780,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:47:23.767Z"
+    },
+    {
+      "name": "desktop-build",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:47:23.769Z",
+      "pid": 9672,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:48:17.915Z"
+    },
+    {
+      "name": "portable-pack",
+      "status": "passed",
+      "startedAt": "2026-09-30T23:48:18.020Z",
+      "pid": 5228,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T23:49:21.589Z"
+    }
+  ],
+  "pid": 22624,
+  "sourceFingerprint": "35f596821d6e0012f86e0409e3540061dc5954f22c0c41a1f7e84c29c92bf2fb",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi0992-20260930234642464\\win-unpacked\\MyBuddy.exe",
+  "asar": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi0992-20260930234642464\\win-unpacked\\resources\\app.asar",
+  "asarSha256": "c6e667d26325d40b7ec22e29ca1ea972bee449f3068fe8077fc8c2a8e78657a3",
+  "sourceUnchanged": true,
+  "finishedAt": "2026-09-30T23:49:21.849Z"
+}

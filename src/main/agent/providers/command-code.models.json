@@ -1,0 +1,2552 @@
+{
+  "listUrl": "https://api.commandcode.ai/provider/v1/models",
+  "metadataUrl": "https://commandcode.ai/models/deepseek-v4-1-flash",
+  "fetchedAt": "2026-09-30T04:23:11.017Z",
+  "models": [
+    {
+      "id": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-fable-5",
+        "reasoning": "Pi: anthropic/claude-fable-5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 12.5
+      }
+    },
+    {
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-fable-5-1",
+        "reasoning": "Pi: anthropic/claude-fable-5-1"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 0.25,
+        "cacheWrite": 12.5
+      }
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "name": "Claude Haiku 4.5",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 64000,
+      "reasoning": true,
+      "reasoningControl": "budget",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-haiku-4-5-20251001",
+        "reasoning": "Pi: anthropic/claude-haiku-4-5-20251001"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "thinkingLevelMap": {},
+      "compat": {},
+      "cost": {
+        "input": 1,
+        "output": 5,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25
+      }
+    },
+    {
+      "id": "claude-opus-4-7",
+      "name": "Claude Opus 4.7",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-opus-4-7",
+        "reasoning": "Pi: anthropic/claude-opus-4-7"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      }
+    },
+    {
+      "id": "claude-opus-4-8",
+      "name": "Claude Opus 4.8",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-opus-4-8",
+        "reasoning": "Pi: anthropic/claude-opus-4-8"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      }
+    },
+    {
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-opus-5",
+        "reasoning": "Pi: anthropic/claude-opus-5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      }
+    },
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-opus-5-5",
+        "reasoning": "Pi: anthropic/claude-opus-5-5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 4,
+        "output": 20,
+        "cacheRead": 0.2,
+        "cacheWrite": 5
+      }
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-sonnet-4-6",
+        "reasoning": "Pi: anthropic/claude-sonnet-4-6"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 3,
+        "output": 15,
+        "cacheRead": 0.3,
+        "cacheWrite": 3.75
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "name": "Claude Sonnet 5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-sonnet-5",
+        "reasoning": "Pi: anthropic/claude-sonnet-5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/messages"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: anthropic/claude-sonnet-5-5",
+        "reasoning": "Pi: anthropic/claude-sonnet-5-5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash (latest)",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 384000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/deepseek-v4-flash",
+        "reasoning": "Pi: opencode/deepseek-v4-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.003,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-fast",
+      "name": "DeepSeek V4 Flash Fast",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.28,
+        "output": 0.56,
+        "cacheRead": 0.07,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp",
+      "name": "DeepSeek V4 Flash Vision (exp)",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 384000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/deepseek-v4-flash-vision-exp",
+        "reasoning": "Pi: opencode/deepseek-v4-flash-vision-exp"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.003,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "name": "DeepSeek V4 Pro (latest)",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 384000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: deepseek/deepseek-v4-pro",
+        "reasoning": "Pi: deepseek/deepseek-v4-pro"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.66,
+        "output": 1.98,
+        "cacheRead": 0.022,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 384000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/deepseek-v4.1-flash",
+        "reasoning": "Pi: opencode/deepseek-v4.1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.003,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash-fast",
+      "name": "DeepSeek V4.1 Flash Fast",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.16,
+        "output": 0.58,
+        "cacheRead": 0.016,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "google/gemini-3.1-flash-lite",
+      "name": "Gemini 3.1 Flash Lite",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.1-flash-lite",
+        "reasoning": "Pi: google/gemini-3.1-flash-lite"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0.25,
+        "output": 1.5,
+        "cacheRead": 0.03,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "name": "Gemini 3.5 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.5-flash",
+        "reasoning": "Pi: google/gemini-3.5-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 1.5,
+        "output": 9,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "google/gemini-3.5-flash-lite",
+      "name": "Gemini 3.5 Flash Lite",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.5-flash-lite",
+        "reasoning": "Pi: google/gemini-3.5-flash-lite"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0.3,
+        "output": 2.5,
+        "cacheRead": 0.03,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "google/gemini-3.6-flash",
+      "name": "Gemini 3.6 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.6-flash",
+        "reasoning": "Pi: google/gemini-3.6-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 1.5,
+        "output": 7.5,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "google/gemini-3.7-flash",
+      "name": "Gemini 3.7 Flash",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.7-flash",
+        "reasoning": "Pi: google/gemini-3.7-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 1.5,
+        "output": 7.5,
+        "cacheRead": 0.15,
+        "cacheWrite": 0.08334
+      }
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: google/gemini-3.8-flash",
+        "reasoning": "Pi: google/gemini-3.8-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 1.5,
+        "output": 7.5,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "name": "GPT-5.3 Codex",
+      "context_length": 400000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.3-codex",
+        "reasoning": "Pi: openai/gpt-5.3-codex"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 8,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "name": "GPT-5.4",
+      "context_length": 400000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.4",
+        "reasoning": "Pi: openai/gpt-5.4"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": 0.25,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "name": "GPT-5.4 Mini",
+      "context_length": 400000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.4-mini",
+        "reasoning": "Pi: openai/gpt-5.4-mini"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0.75,
+        "output": 4.5,
+        "cacheRead": 0.075,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "name": "GPT-5.5",
+      "context_length": 400000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.5",
+        "reasoning": "Pi: openai/gpt-5.5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.6-luna",
+        "reasoning": "Pi: openai/gpt-5.6-luna"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 0.2,
+        "output": 1.2,
+        "cacheRead": 0.02,
+        "cacheWrite": 0.25
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.6-sol",
+        "reasoning": "Pi: openai/gpt-5.6-sol"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-5.6-terra",
+        "reasoning": "Pi: openai/gpt-5.6-terra"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 12,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-6-astra",
+        "reasoning": "Pi: openai/gpt-6-astra"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 12.5
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-6-luna",
+        "reasoning": "Pi: openai/gpt-6-luna"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheRead": 0.01,
+        "cacheWrite": 0.125
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-6-sol",
+        "reasoning": "Pi: openai/gpt-6-sol"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "context_length": 1050000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 128000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: openai/gpt-6.1-sol",
+        "reasoning": "Pi: openai/gpt-6.1-sol"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-sante:free",
+      "name": "Ling 3.0 Flash Sante",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.1-flash:free",
+      "name": "Ling 3.1 Flash",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meituan/LongCat-2.0",
+      "name": "LongCat 2.0",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode-go/longcat-2.0",
+        "reasoning": "Pi: opencode-go/longcat-2.0"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.006,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.1",
+      "name": "Muse Spark 1.1",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: meta/muse-spark-1.1",
+        "reasoning": "Pi: meta/muse-spark-1.1"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 1.25,
+        "output": 4.25,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.2",
+      "name": "Muse Spark 1.2",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: meta/muse-spark-1.2",
+        "reasoning": "Pi: meta/muse-spark-1.2"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 1.25,
+        "output": 4.25,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.2-contributor",
+      "name": "Muse Spark 1.2 Contributor",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: meta/muse-spark-1.2-contributor",
+        "reasoning": "Pi: meta/muse-spark-1.2-contributor"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0.1,
+        "output": 0.2,
+        "cacheRead": 0.002,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.3",
+      "name": "Muse Spark 1.3",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: meta/muse-spark-1.3",
+        "reasoning": "Pi: meta/muse-spark-1.3"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": {
+        "input": 1.25,
+        "output": 4.25,
+        "cacheRead": 0.15,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "meta/muse-spark-1.3-contributor",
+      "name": "Muse Spark 1.3 Contributor",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: meta/muse-spark-1.3-contributor",
+        "reasoning": "Pi: meta/muse-spark-1.3-contributor"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0.1,
+        "output": 0.2,
+        "cacheRead": 0.002,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M2.5",
+      "name": "MiniMax M2.5",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/minimax-m2.5",
+        "reasoning": "Pi: opencode/minimax-m2.5"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.03,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M2.7",
+      "name": "MiniMax M2.7",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: minimax/MiniMax-M2.7",
+        "reasoning": "Pi: minimax/MiniMax-M2.7"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.06,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M3",
+      "name": "MiniMax M3",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 512000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: minimax/MiniMax-M3",
+        "reasoning": "Pi: minimax/MiniMax-M3"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.06,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/Kimi-K2.5",
+      "name": "Kimi K2.5",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/kimi-k2.5",
+        "reasoning": "Pi: opencode/kimi-k2.5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.6,
+        "output": 3,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/Kimi-K2.6",
+      "name": "Kimi K2.6",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 262144,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: moonshotai/kimi-k2.6",
+        "reasoning": "Pi: moonshotai/kimi-k2.6"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.16,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/Kimi-K2.7-Code",
+      "name": "Kimi K2.7 Code",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 262144,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: moonshotai/kimi-k2.7-code",
+        "reasoning": "Pi: moonshotai/kimi-k2.7-code"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.19,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/Kimi-K2.7-Code-Highspeed",
+      "name": "Kimi K2.7 Code HighSpeed",
+      "context_length": 262000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 262144,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: moonshotai/kimi-k2.7-code-highspeed",
+        "reasoning": "Pi: moonshotai/kimi-k2.7-code-highspeed"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 1.9,
+        "output": 8,
+        "cacheRead": 0.38,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/Kimi-K3",
+      "name": "Kimi K3",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 1048576,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: moonshotai/kimi-k3",
+        "reasoning": "Pi: moonshotai/kimi-k3"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 3,
+        "output": 15,
+        "cacheRead": 0.3,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "name": "Nemotron 3 Ultra",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+        "reasoning": "Pi: nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.6,
+        "output": 2.4,
+        "cacheRead": 0.12,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "poolside/laguna-s-2.1-free",
+      "name": "Laguna S 2.1",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.6-Max-Preview",
+      "name": "Qwen 3.6 Max Preview",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 1.3,
+        "output": 7.8,
+        "cacheRead": 0.26,
+        "cacheWrite": 1.63
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.6-Plus",
+      "name": "Qwen 3.6 Plus",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/qwen3.6-plus",
+        "reasoning": "Pi: opencode/qwen3.6-plus"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.5,
+        "output": 3,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.7-Flash",
+      "name": "Qwen 3.7 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.03,
+        "output": 0.13,
+        "cacheRead": 0.006,
+        "cacheWrite": 0.038
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.7-Max",
+      "name": "Qwen 3.7 Max",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 2.5,
+        "output": 7.5,
+        "cacheRead": 0.5,
+        "cacheWrite": 3.13
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.7-Plus",
+      "name": "Qwen 3.7 Plus",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 65536,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode-go/qwen3.7-plus",
+        "reasoning": "Pi: opencode-go/qwen3.7-plus"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.4,
+        "output": 1.6,
+        "cacheRead": 0.08,
+        "cacheWrite": 0.5
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.8-27B",
+      "name": "Qwen 3.8 27B",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0.4,
+        "output": 3,
+        "cacheRead": 0.04,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.8-Flash",
+      "name": "Qwen 3.8 Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/qwen3.8-flash",
+        "reasoning": "Pi: opencode/qwen3.8-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0.16,
+        "output": 0.47,
+        "cacheRead": 0.016,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.8-Max",
+      "name": "Qwen 3.8 Max",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/qwen3.8-max",
+        "reasoning": "Pi: opencode/qwen3.8-max"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 6,
+        "cacheRead": 0.25,
+        "cacheWrite": 2.5
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.8-Max-0902",
+      "name": "Qwen 3.8 Max 0902",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 6,
+        "cacheRead": 0.25,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "Qwen/Qwen3.8-Omni-Flash",
+      "name": "Qwen 3.8 Omni Flash",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0.15,
+        "output": 0.47,
+        "cacheRead": 0.016,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "sakana/fugu-ultra",
+      "name": "Fugu Ultra",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "stealth/pixel-canary",
+      "name": "Pixel Canary",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "stealth/space-bunny-alpha",
+      "name": "Space Bunny Alpha",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "stepfun/Step-3.5-Flash",
+      "name": "Step 3.5 Flash",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.09,
+        "output": 0.3,
+        "cacheRead": 0.02,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "stepfun/Step-3.7-Flash",
+      "name": "Step 3.7 Flash",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.2,
+        "output": 1.15,
+        "cacheRead": 0.04,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "stepfun/Step-5-Preview",
+      "name": "Step 5 Preview",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2.7,
+        "cacheRead": 0.05,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "tencent/hy3-paid",
+      "name": "Tencent Hy3",
+      "context_length": 262144,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.14,
+        "output": 0.58,
+        "cacheRead": 0.035,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "tencent/hy4-preview",
+      "name": "Tencent Hy4 Preview",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions"
+      ],
+      "maxTokens": 64000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode-go/hy4-preview",
+        "reasoning": "Pi: opencode-go/hy4-preview"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 0.834,
+        "output": 2.501,
+        "cacheRead": 0.042,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "thinkingmachines/inkling",
+      "name": "Inkling",
+      "context_length": 256000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 1,
+        "output": 4.05,
+        "cacheRead": 0.17,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "thinkingmachines/inkling-small",
+      "name": "Inkling Small",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 0.5,
+        "output": 1.2,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xai/grok-4.5",
+      "name": "Grok 4.5",
+      "context_length": 500000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 500000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: xai/grok-4.5",
+        "reasoning": "Pi: xai/grok-4.5"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 6,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xai/grok-4.6",
+      "name": "Grok 4.6",
+      "context_length": 500000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 500000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: xai/grok-4.6",
+        "reasoning": "Pi: xai/grok-4.6"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 6,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xai/grok-4.7",
+      "name": "Grok 4.7",
+      "context_length": 500000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 500000,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: xai/grok-4.7",
+        "reasoning": "Pi: xai/grok-4.7"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 6,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xiaomi/mimo-v2.5",
+      "name": "MiMo V2.5",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "toggle",
+      "parameterSources": {
+        "maxTokens": "https://mimo.mi.com/docs/en-US/api/chat/responses",
+        "reasoning": "https://mimo.mi.com/docs/en-US/api/chat/responses"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "none",
+        "high"
+      ],
+      "cost": {
+        "input": 0.14,
+        "output": 0.28,
+        "cacheRead": 0.0028,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xiaomi/mimo-v2.5-pro",
+      "name": "MiMo V2.5 Pro",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "toggle",
+      "parameterSources": {
+        "maxTokens": "https://mimo.mi.com/docs/en-US/api/chat/responses",
+        "reasoning": "https://mimo.mi.com/docs/en-US/api/chat/responses"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "none",
+        "high"
+      ],
+      "cost": {
+        "input": 0.435,
+        "output": 0.87,
+        "cacheRead": 0.0036,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-flash",
+      "name": "MiMo V2.6 Flash",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "toggle",
+      "parameterSources": {
+        "maxTokens": "https://mimo.mi.com/docs/en-US/api/chat/responses",
+        "reasoning": "https://mimo.mi.com/docs/en-US/api/chat/responses"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "none",
+        "high"
+      ],
+      "cost": {
+        "input": 0.14,
+        "output": 0.28,
+        "cacheRead": 0.0028,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-pro",
+      "name": "MiMo V2.6 Pro",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "toggle",
+      "parameterSources": {
+        "maxTokens": "https://mimo.mi.com/docs/en-US/api/chat/responses",
+        "reasoning": "https://mimo.mi.com/docs/en-US/api/chat/responses"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "none",
+        "high"
+      ],
+      "cost": {
+        "input": 0.435,
+        "output": 0.87,
+        "cacheRead": 0.0036,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+      "name": "MiMo V2.6 Pro UltraSpeed",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "toggle",
+      "parameterSources": {
+        "maxTokens": "https://mimo.mi.com/docs/en-US/api/chat/responses",
+        "reasoning": "https://mimo.mi.com/docs/en-US/api/chat/responses"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "none",
+        "high"
+      ],
+      "cost": {
+        "input": 4.35,
+        "output": 8.7,
+        "cacheRead": 0.036,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "name": "GLM-5.3 Flash",
+      "context_length": 1048576,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: zai/glm-5.3-flash",
+        "reasoning": "Pi: zai/glm-5.3-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.15,
+        "output": 0.5,
+        "cacheRead": 0.03,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-flashx",
+      "name": "GLM-5.3 FlashX",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "reasoning": "https://commandcode.ai/models/deepseek-v4-1-flash"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 0.37,
+        "output": 1.25,
+        "cacheRead": 0.075,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "zai-org/GLM-5",
+      "name": "GLM-5",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/glm-5",
+        "reasoning": "Pi: opencode/glm-5"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 1,
+        "output": 3.2,
+        "cacheRead": 0.2,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "zai-org/GLM-5.1",
+      "name": "GLM-5.1",
+      "context_length": 200000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "provider-default",
+      "parameterSources": {
+        "maxTokens": "Pi: opencode/glm-5.1",
+        "reasoning": "Pi: opencode/glm-5.1"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheRead": 0.26,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "zai-org/GLM-5.2",
+      "name": "GLM-5.2",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: zai/glm-5.2",
+        "reasoning": "Pi: zai/glm-5.2"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheRead": 0.26,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "zai-org/GLM-5.2-Fast",
+      "name": "GLM-5.2 Fast",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "reasoningControl": "unknown",
+      "parameterSources": {},
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [],
+      "cost": {
+        "input": 3,
+        "output": 10.25,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "zai-org/GLM-5.3",
+      "name": "GLM-5.3",
+      "context_length": 1000000,
+      "supported_endpoints": [
+        "/chat/completions",
+        "/responses"
+      ],
+      "maxTokens": 131072,
+      "reasoning": true,
+      "reasoningControl": "effort",
+      "parameterSources": {
+        "maxTokens": "Pi: zai/glm-5.3",
+        "reasoning": "Pi: zai/glm-5.3"
+      },
+      "input": [
+        "text"
+      ],
+      "reasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "cost": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheRead": 0.26,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

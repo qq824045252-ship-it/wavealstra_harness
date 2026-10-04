@@ -1,0 +1,79 @@
+{
+  "group": "native",
+  "pid": 26720,
+  "status": "passed",
+  "startedAt": "2026-09-30T23:37:56.861Z",
+  "tests": [
+    {
+      "name": "test:pi-native-control",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1755,
+      "log": "test-pi-native-control.log"
+    },
+    {
+      "name": "test:pi-native-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3661,
+      "log": "test-pi-native-lifecycle.log"
+    },
+    {
+      "name": "test:pi-autonomous-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3513,
+      "log": "test-pi-autonomous-execution.log"
+    },
+    {
+      "name": "test:compaction",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3667,
+      "log": "test-compaction.log"
+    },
+    {
+      "name": "test:compaction-policy-history",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2860,
+      "log": "test-compaction-policy-history.log"
+    },
+    {
+      "name": "test:conversation-plan-records",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1597,
+      "log": "test-conversation-plan-records.log"
+    },
+    {
+      "name": "test:prompt-submission",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1214,
+      "log": "test-prompt-submission.log"
+    },
+    {
+      "name": "test:prompt-execution",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1154,
+      "log": "test-prompt-execution.log"
+    },
+    {
+      "name": "test:message-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1070,
+      "log": "test-message-lifecycle.log"
+    },
+    {
+      "name": "test:remote-access",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3506,
+      "log": "test-remote-access.log"
+    }
+  ],
+  "finishedAt": "2026-09-30T23:38:20.870Z"
+}

@@ -1,0 +1,93 @@
+node_modules/
+out/
+dist/
+release/
+release-*/
+*.log
+.DS_Store
+*.tgz
+.wb-ref/
+.cursor/
+ui-test-workspace/
+tmp-icons/
+# 技能演示输出
+ai-learning-roadmap.html
+ai-learning-roadmap.svg
+ESP32-S31硬件设计文档.md
+ESP32-S31硬件设计文档-正式版.md
+# MyBuddy 专家归档（882MB，本地市场只读源）
+mybuddyskills-main/*
+!mybuddyskills-main/skills/
+mybuddyskills-main/skills/*
+!mybuddyskills-main/skills/drawio/
+!mybuddyskills-main/skills/blender-core/
+!mybuddyskills-main/skills/blender-modeling/
+!mybuddyskills-main/skills/blender-lookdev/
+!mybuddyskills-main/skills/blender-validation/
+
+# 上游 MCP 源码浅克隆（extensions/mcp/*/repo 联接）
+vendor/
+
+# 本地 MCP 工具索引（codegraph/serena 等）
+.codegraph/
+.serena/
+
+# TencentDB Agent Memory 参考克隆（上游仓库，带独立 .git，不入库）
+tencentdb-agent-memory/
+
+# 第三方安装包（Ardot 等）
+software/
+
+# 开发截图产物
+.screenshots/
+ardot-*-probe.png
+*-probe.png
+_exports/
+[0-9]*/
+
+
+extensions/mcp/*/repo
+
+# real-world fixture 候选（含原始 session 来源，仅本地）
+fixtures/artifacts/real-world/_candidates/
+
+# Local professional design tool runtimes (portable apps, MCP clones, benchmarks)
+MyBuddyTools/*
+
+
+# 本地工作产物（保留在磁盘，不入库）
+exports/
+protect-earth/
+
+# 任务沙箱/浏览器自动化产物目录（local-<timestamp> 项目与截图）
+projects/
+
+
+# Electron/UI audit 临时 userData（verify-dashboard 等一次性运行产物，测试结束应自行清理）
+.tmp-ui-audit-*/
+
+# R3 Semantic: frozen INT8 model externalized (never committed)
+*.onnx
+*.onnx.data
+
+# Maple Mono 本地解压包（正式位置 fronts/maple-mono-nf-cn/，不入库）
+fronts/
+MapleMono-NF-CN-*.ttf
+/LICENSE.txt
+/config.json
+
+# 临时调试/分析脚本（散落归档，不入库）
+scripts/_debug/
+
+
+
+# Local generated artifacts (Android remote / one-off diagnostics)
+/.tmp-*
+electron.vite.config.*.mjs
+/scripts/.tmp-*
+/app/remote/android/.workbuddy/
+/app/remote/android/app/build-*/
+/app/remote/android/app/*.mybuddy-tmp
+
+# IDE 本地配置
+/app/remote/android/.idea/

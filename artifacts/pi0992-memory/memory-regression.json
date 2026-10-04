@@ -1,0 +1,107 @@
+{
+  "group": "memory",
+  "pid": 23748,
+  "status": "passed",
+  "startedAt": "2026-09-30T23:43:27.896Z",
+  "tests": [
+    {
+      "name": "test:memory",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1429,
+      "log": "test-memory.log"
+    },
+    {
+      "name": "test:memory-cognition",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1212,
+      "log": "test-memory-cognition.log"
+    },
+    {
+      "name": "test:memory-projection-deletion",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1185,
+      "log": "test-memory-projection-deletion.log"
+    },
+    {
+      "name": "test:memory-lifecycle",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3359,
+      "log": "test-memory-lifecycle.log"
+    },
+    {
+      "name": "test:memory-skill-learning",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2248,
+      "log": "test-memory-skill-learning.log"
+    },
+    {
+      "name": "test:memory-skill-history",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2154,
+      "log": "test-memory-skill-history.log"
+    },
+    {
+      "name": "test:memory-skill-effectiveness",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 2230,
+      "log": "test-memory-skill-effectiveness.log"
+    },
+    {
+      "name": "test:memory-skill-revision",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3349,
+      "log": "test-memory-skill-revision.log"
+    },
+    {
+      "name": "test:memory-gateway",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 3396,
+      "log": "test-memory-gateway.log"
+    },
+    {
+      "name": "test:memory-gateway-controller",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 7767,
+      "log": "test-memory-gateway-controller.log"
+    },
+    {
+      "name": "test:project-memory-agent",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1693,
+      "log": "test-project-memory-agent.log"
+    },
+    {
+      "name": "test:project-memory-extraction",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1165,
+      "log": "test-project-memory-extraction.log"
+    },
+    {
+      "name": "test:project-memory-migration",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 1240,
+      "log": "test-project-memory-migration.log"
+    },
+    {
+      "name": "test:memory-ui",
+      "passed": true,
+      "exitCode": 0,
+      "durationMs": 51585,
+      "log": "test-memory-ui.log"
+    }
+  ],
+  "finishedAt": "2026-09-30T23:44:51.923Z"
+}

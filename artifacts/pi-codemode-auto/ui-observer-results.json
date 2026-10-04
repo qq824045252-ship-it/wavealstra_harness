@@ -1,0 +1,38 @@
+{
+  "at": "2026-10-01T09:57:05.801Z",
+  "passed": true,
+  "results": [
+    {
+      "name": "welcome screen never starts a headless MCP session",
+      "passed": true
+    },
+    {
+      "name": "headless manager and other tasks cannot change the active task badge",
+      "passed": true
+    },
+    {
+      "name": "slow initial snapshot cannot overwrite a newer live event",
+      "passed": true
+    },
+    {
+      "name": "late responses and events after unmount are ignored",
+      "passed": true
+    },
+    {
+      "name": "native session detach removes the enabled claim",
+      "passed": true
+    },
+    {
+      "name": "failed initial status read degrades to configuration without throwing",
+      "passed": true
+    },
+    {
+      "name": "new task resets coding to office and its matching preset",
+      "passed": true
+    },
+    {
+      "name": "new office task still preserves explicit workspace and project",
+      "passed": true
+    }
+  ]
+}

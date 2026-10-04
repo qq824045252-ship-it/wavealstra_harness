@@ -1,0 +1,119 @@
+{
+  "kind": "pi-native-core-real-provider-packaged-electron",
+  "model": "commandcode/deepseek/deepseek-v4.1-flash-fast",
+  "nonce": "4d9865f0df5bf5d1",
+  "startedAt": "2026-10-02T04:26:57.710Z",
+  "tests": [
+    {
+      "name": "four-native-core-tools",
+      "startedAt": "2026-10-02T04:27:01.079Z",
+      "status": "passed",
+      "tools": [
+        {
+          "id": "call_00_tEVdOsY01Rqu5xeRUG6e4871|fc_1790915221702_o8uw8n11f6",
+          "name": "read",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/seed.txt",
+          "status": "success",
+          "approval": false,
+          "output": "nonce=4d9865f0df5bf5d1\nphase=before\n"
+        },
+        {
+          "id": "call_00_ET_7zrmeEkRVRtfAFmXZWHi9773|fc_1790915223015_vbq3asv2u69",
+          "name": "write",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/result.txt",
+          "status": "success",
+          "approval": false,
+          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/result.txt"
+        },
+        {
+          "id": "call_00_ET_uFl4sxaisw6QVdWSI2Hz1626|fc_1790915224857_zsw5dk18hlh",
+          "name": "edit",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/result.txt",
+          "status": "success",
+          "approval": false,
+          "output": "Successfully replaced 1 block(s) in C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/result.txt."
+        },
+        {
+          "id": "call_00_ET_PRUfBxthIDe5v2OgyQdu3684|fc_1790915227227_nvcyjvrk14",
+          "name": "bash",
+          "summary": "'C:/Program Files/nodejs/node.exe' 'C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/probe.cjs'",
+          "status": "success",
+          "approval": false,
+          "output": "NATIVE_PROBE_OK\n"
+        }
+      ],
+      "finalText": "验收通过：read 取得 nonce `4d9865f0df5bf5d1`，write 复制 seed，edit 将 `phase=before` 改为 `phase=after`，bash 运行 probe 返回 `NATIVE_PROBE_OK`。",
+      "taskId": "local-1790915221337-0",
+      "result": {
+        "tools": [
+          "read",
+          "write",
+          "edit",
+          "bash"
+        ],
+        "externalTargetWorkedWithoutApproval": true,
+        "environmentKeys": [],
+        "nativeTranscriptResults": true
+      },
+      "finishedAt": "2026-10-02T04:27:11.360Z"
+    },
+    {
+      "name": "native-nonzero-failure",
+      "startedAt": "2026-10-02T04:27:11.580Z",
+      "status": "passed",
+      "tools": [
+        {
+          "id": "call_00_e575bLZWCtJwnFSrXzDv8496|fc_1790915232103_jwnv45mj4z",
+          "name": "bash",
+          "summary": "printf NATIVE_NONZERO; exit 7",
+          "status": "error",
+          "approval": false,
+          "output": "NATIVE_NONZERO\n\nCommand exited with code 7"
+        }
+      ],
+      "finalText": "已按要求只调用一次原生 bash，命令为 `printf NATIVE_NONZERO; exit 7`。\n\n- stdout：`NATIVE_NONZERO`（无换行）\n- 退出码：7（非零）\n\n未追加 `echo`、未使用 `|| true`、未调用其他工具、未重试。",
+      "taskId": "local-1790915231851-3",
+      "result": {
+        "nativeExitCode": 7,
+        "errorVisible": true,
+        "invocations": 1
+      },
+      "finishedAt": "2026-10-02T04:27:15.819Z"
+    },
+    {
+      "name": "native-running-command-cancellation",
+      "startedAt": "2026-10-02T04:27:16.029Z",
+      "status": "passed",
+      "cancelledAt": 1790915238577,
+      "tools": [
+        {
+          "id": "call_00_5A6NG6b8C9BQGqzzZwuV3270|fc_1790915236434_th5jkp4fs78",
+          "name": "bash",
+          "summary": "'C:/Program Files/nodejs/node.exe' 'C:/Users/servi/AppData/Local/Temp/mybuddy-pi-core-desktop-DhaI7j/workspace/slow.cjs'",
+          "status": "error",
+          "approval": false,
+          "output": "Command aborted"
+        }
+      ],
+      "finalText": "",
+      "assistantError": "This operation was aborted",
+      "taskId": "local-1790915236301-6",
+      "result": {
+        "actualShellStarted": true,
+        "stoppedBeforeLateSideEffect": true,
+        "invocations": 1
+      },
+      "finishedAt": "2026-10-02T04:27:29.267Z"
+    }
+  ],
+  "status": "passed",
+  "executable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-native-core-20261002\\win-unpacked\\MyBuddy.exe",
+  "asarSha256": "96dcf9e9295a6c19607ea40eb6894ba22b683e57e6d54bfd10a8e4cd554c1922",
+  "pid": 24216,
+  "rendererErrors": [],
+  "observedModels": [
+    "commandcode/deepseek/deepseek-v4.1-flash-fast"
+  ],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-02T04:27:50.437Z"
+}

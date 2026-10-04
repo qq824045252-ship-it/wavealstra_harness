@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { toNativeMcpConfig } from '../src/main/mcp/NativeMcpConfig';
+import { parseMcpToolIdentity } from '../src/main/security/McpSideEffectPolicy';
+const convert=(mcpServers:Record<string,unknown>)=>toNativeMcpConfig({config:{mcpServers}} as any);
+const alias=convert({fixture:{command:'node',exposure:'codemode-deferred',toolExposure:{probe:'codemode-deferred'},description:'Fixture inventory'}});
+assert.equal(alias.errors.length,0);assert.equal(alias.servers[0].config.exposure,'codemode');assert.equal(alias.servers[0].config.toolExposure?.probe,'codemode');assert.equal(alias.servers[0].config.description,'Fixture inventory');
+const collision=convert({'dev-radius':{command:'node'},dev_radius:{command:'node'}});
+assert.equal(collision.servers.length,0);assert.equal(collision.errors.length,2);
+assert.deepEqual(parseMcpToolIdentity('mcp__dev_radius__read_file',['dev-radius']),{providerId:'dev-radius',shortToolName:'read_file'});
+const oauth=convert({fixture:{url:'https://example.invalid/mcp',auth:'oauth',oauth:{clientName:'MyBuddy',clientId:'fixture-public-client'}}});
+assert.equal(oauth.errors.length,0);assert.equal((oauth.servers[0].config as any).oauth.clientName,'MyBuddy');
+const auth=convert({fixture:{url:'https://example.invalid/mcp',auth:{provider:'fixture'}}});assert.equal(auth.errors.length,0);assert.deepEqual((auth.servers[0].config as any).auth,{provider:'fixture'});
+assert.equal(convert({fixture:{url:'http://example.invalid/mcp',auth:{provider:'fixture'}}}).servers.length,0);
+assert.equal(convert({fixture:{url:'http://127.0.0.1:9000/mcp',auth:{provider:'fixture'}}}).errors.length,0);
+assert.equal(convert({fixture:{url:'https://example.invalid/mcp',auth:{provider:'fixture'},oauth:{clientName:'x'}}}).servers.length,0);
+console.log('PASS Pi 0.99.2 MCP: exposure alias, normalized namespace collisions, original provider identity, clientName and secure provider auth.');

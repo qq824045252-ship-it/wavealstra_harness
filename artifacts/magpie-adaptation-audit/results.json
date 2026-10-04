@@ -1,0 +1,89 @@
+{
+  "startedAt": "2026-10-04T15:50:05.523Z",
+  "kind": "actual-electron-external-model-config-audit",
+  "tests": [
+    {
+      "name": "external config change requires runtime refresh",
+      "status": "passed",
+      "settingsDefault": "magpie/relay/probe",
+      "beforeRefresh": [],
+      "afterRefresh": [
+        {
+          "id": "magpie/relay/probe",
+          "enabled": true,
+          "available": true
+        }
+      ],
+      "existingTaskModel": "fixture/memory-fixture",
+      "perModelReasoning": {
+        "reasoning": {
+          "effort": "low"
+        }
+      }
+    },
+    {
+      "name": "empty enabledModels disables the imported model",
+      "status": "passed",
+      "models": [
+        {
+          "id": "magpie/relay/probe",
+          "enabled": false,
+          "available": true
+        }
+      ]
+    }
+  ],
+  "status": "passed",
+  "pid": 29168,
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\win-unpacked\\MyBuddy.exe",
+  "buildSha256": "a5137063a526af2bb060dd57ef37abe33805ed86736f1da76ef81cc85d8cfaa3",
+  "finishedAt": "2026-10-04T15:50:09.675Z",
+  "liveObservations": {
+    "magpieProcessId": 11232,
+    "magpieListening": "127.0.0.1:3425",
+    "runningMagpieMatchesPatched864": true,
+    "magpieSha256": "660d80dbe484be229767498ae97835e65b09062bcc06fba1bfb504cf9ed3818a",
+    "nativeRuntimeAcceptedMagpieModels": 118,
+    "selectedMagpieReference": "magpie/workbuddy-ai/hy4-preview-f",
+    "currentDefault": "commandcode/deepseek/deepseek-v4.1-flash",
+    "referencedTasksUse": "commandcode/deepseek/deepseek-v4.1-flash"
+  },
+  "findings": [
+    {
+      "issue": "Wrong environment variable contract",
+      "evidence": "MyBuddy getMyBuddyDir always uses homedir/.mybuddy; Magpie adapter honors PI_CODING_AGENT_DIR",
+      "change": "Make MyBuddy adapter use the actual product root, independently from Pi"
+    },
+    {
+      "issue": "External models configuration is not automatically recomposed",
+      "evidence": "Packaged Electron listModels omitted new provider until agent.reloadModels(magpie)",
+      "change": "Local runtime reload plus renderer catalog/default synchronization"
+    },
+    {
+      "issue": "Existing tasks retain model ownership",
+      "evidence": "Existing task model stayed fixture/memory-fixture after external default changed",
+      "change": "Default changes affect new tasks; existing tasks use explicit user selection"
+    },
+    {
+      "issue": "Empty enabledModels semantics differ",
+      "evidence": "Magpie piScope treats [] like absence; actual MyBuddy returned enabled:false",
+      "change": "On explicit connection add the selected model even when list is empty"
+    },
+    {
+      "issue": "Thinking has model-specific precedence",
+      "evidence": "Actual app read modelThinkingLevels low with defaultThinkingLevel high; applySessionReasoningPreference prefers per-model",
+      "change": "Read/write thinking preference of selected model"
+    },
+    {
+      "issue": "Usage attribution lacks MyBuddy identity",
+      "evidence": "Adapter writes Pi block with common token and no User-Agent override; live usage contains pi calls",
+      "change": "Use gateway.TokenFor(mybuddy) or scoped provider User-Agent; validate classification on real requests"
+    },
+    {
+      "issue": "Native desktop catalog discovery differs from CLI",
+      "evidence": "piLike uses piRegistry(id), which scans CLI npm paths; MyBuddy has no CLI",
+      "change": "Use MyBuddy exported catalog or models.json for native model choices; do not assume a CLI registry"
+    }
+  ],
+  "scope": "Read-only diagnosis of user configuration and live DB; isolated fixture profile for desktop verification; no live configuration or production source changed"
+}

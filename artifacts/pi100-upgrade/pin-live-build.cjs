@@ -1,0 +1,13 @@
+const fs=require('node:fs');
+const file='scripts/pi100-desktop-live.cjs';let s=fs.readFileSync(file,'utf8');
+const old="const acceptedBuild = JSON.parse(fs.readFileSync(pointer.report, 'utf8'));";
+if(!s.includes(old))throw Error('Live harness build lookup changed; review before replacing');
+s=s.replace(old,`const buildId=process.argv.includes('--build') ? process.argv[process.argv.indexOf('--build')+1] : undefined;
+        if(buildId && !/^build-\\d+$/.test(buildId))throw Error('Invalid build identifier');
+        const buildReport=buildId ? path.join(root,'artifacts/pi100-upgrade',buildId,'build.json') : pointer.report;
+        const acceptedBuild=JSON.parse(fs.readFileSync(buildReport,'utf8'));
+        report.buildReport=buildReport;`);
+const anchor="assert(fs.existsSync(exe), 'Verified portable executable is missing');";
+if(!s.includes(anchor))throw Error('Executable validation anchor missing');
+s=s.replace(anchor,anchor+`\n        assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(path.dirname(exe),'resources/app.asar'))).digest('hex'),acceptedBuild.asarSha256,'Live binary must match verified package');`);
+fs.writeFileSync(file,s);console.log('Live acceptance now pins a build ID and verifies the packaged bytes before launch.');

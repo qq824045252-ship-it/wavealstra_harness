@@ -1,0 +1,20 @@
+﻿{
+    "asarSha256":  "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+    "runningApplicationsStopped":  false,
+    "at":  "2026-10-01T20:55:52.3595414Z",
+    "after":  {
+                  "path":  "C:\\Users\\servi\\Desktop\\MyBuddy.exe - 快捷方式.lnk",
+                  "target":  "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001203630057\\MyBuddy.exe",
+                  "workingDirectory":  "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001203630057"
+              },
+    "backup":  "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\shortcut-before-20261002045552266.lnk",
+    "before":  {
+                   "path":  "C:\\Users\\servi\\Desktop\\MyBuddy.exe - 快捷方式.lnk",
+                   "arguments":  "",
+                   "target":  "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-minimal-mode-20261001145538853\\MyBuddy.exe",
+                   "workingDirectory":  "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi-minimal-mode-20261001145538853"
+               },
+    "buildId":  "build-20261001203630057",
+    "status":  "passed",
+    "oldReleasePreserved":  true
+}

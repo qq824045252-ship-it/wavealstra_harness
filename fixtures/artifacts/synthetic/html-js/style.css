@@ -1,0 +1,15 @@
+/* html-js fixture 样式（外部相对资源） */
+body { margin: 24px; font: 14px/1.6 system-ui, sans-serif; color: #1e293b; background: #f8fafc; }
+h1 { font-size: 20px; color: #0f172a; }
+.toolbar { margin: 12px 0; }
+.toolbar button { margin-right: 8px; padding: 4px 14px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: pointer; }
+.toolbar button:hover { background: #eef2ff; }
+.list { list-style: none; padding: 0; max-width: 520px; }
+.row { display: flex; gap: 12px; align-items: center; padding: 8px 12px; margin-bottom: 6px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; cursor: pointer; }
+.row .idx { color: #94a3b8; font-variant-numeric: tabular-nums; width: 24px; }
+.row .name { flex: 1; }
+.status { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+.status.ok { background: #dcfce7; color: #166534; }
+.status.run { background: #dbeafe; color: #1e40af; }
+.meta { color: #64748b; font-size: 12px; }
+.clock { color: #94a3b8; font-size: 12px; }

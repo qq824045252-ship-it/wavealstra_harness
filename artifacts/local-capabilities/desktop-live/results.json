@@ -1,0 +1,72 @@
+{
+  "startedAt": "2026-10-02T03:57:10.012Z",
+  "tests": [
+    {
+      "name": "local tools start unverified and show only canonical bash",
+      "status": "passed",
+      "details": {
+        "terminal": "命令执行\n待检查\n统一使用 Pi bash，保留任务隔离、审批和执行证据；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
+        "code": "代码执行\n待检查\n执行 JavaScript、PowerShell 和受管 Python；检查不下载环境，缺少 Python 会显示部分可用\nexecute_code\n代码执行 · 受管 Python\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
+        "browser": "界面与桌面操作\n待检查\n读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标\nbrowser_exec · ui_exec · computer_exec\n浏览器 · 应用界面 · Windows 桌面\n检查\n已接入 3 项界面能力；点击检查验证实际读取。",
+        "diagnostics": "开发诊断"
+      }
+    },
+    {
+      "name": "command check actually executes and updates badge",
+      "status": "passed",
+      "details": {
+        "text": "命令执行\n已就绪\n统一使用 Pi bash，保留任务隔离、审批和执行证据；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n最近检查：已实际执行 Bash 探测命令；任务隔离与执行证据继续由同一 bash 工具提供。",
+        "message": "已实际执行 Bash 探测命令；任务隔离与执行证据继续由同一 bash 工具提供。"
+      }
+    },
+    {
+      "name": "missing Python is partial availability without installation",
+      "status": "passed",
+      "details": {
+        "text": "代码执行\n部分可用\n执行 JavaScript、PowerShell 和受管 Python；检查不下载环境，缺少 Python 会显示部分可用\nexecute_code\n代码执行 · 受管 Python\n检查\n最近检查：实际执行通过：JavaScript、PowerShell。受管 Python 环境尚未准备；可在 Python 设置中准备，检查不会下载安装",
+        "message": "实际执行通过：JavaScript、PowerShell。受管 Python 环境尚未准备；可在 Python 设置中准备，检查不会下载安装"
+      }
+    },
+    {
+      "name": "UI and desktop probes read actual targets",
+      "status": "passed",
+      "details": {
+        "text": "界面与桌面操作\n部分可用\n读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标\nbrowser_exec · ui_exec · computer_exec\n浏览器 · 应用界面 · Windows 桌面\n检查\n最近检查：实际读取通过：应用界面、Windows 桌面。浏览器：浏览器没有可读取的页面",
+        "message": "实际读取通过：应用界面、Windows 桌面。浏览器：浏览器没有可读取的页面"
+      }
+    },
+    {
+      "name": "runtime diagnostics reads attached renderer",
+      "status": "passed",
+      "details": {
+        "text": "运行诊断\n已就绪\n读取应用、浏览器与产物的运行状态和日志\nruntime_probe\n运行状态 · 日志\n检查\n最近检查：已实际读取运行状态：app、browser、artifact。",
+        "message": "已实际读取运行状态：app、browser、artifact。"
+      }
+    },
+    {
+      "name": "subagent check starts trusted worker entry without model inference",
+      "status": "passed",
+      "details": {
+        "text": "子代理\n已就绪\n委派独立子任务；检查实际启动子代理入口，模型登录在委派时验证\nsubagent · subagent_list · subagent_steer\nSubagent Runtime\n检查\n最近检查：子代理入口已实际启动并返回版本 1.0.0；未调用模型，模型登录在委派时验证。",
+        "message": "子代理入口已实际启动并返回版本 1.0.0；未调用模型，模型登录在委派时验证。"
+      }
+    },
+    {
+      "name": "checking another capability preserves unsaved draft",
+      "status": "passed",
+      "details": {
+        "unsavedDraftPreserved": true
+      }
+    },
+    {
+      "name": "command and diagnostics switches save independently",
+      "status": "passed",
+      "details": {
+        "commandEnabled": false,
+        "uiEnabled": false,
+        "diagnosticsEnabled": true
+      }
+    }
+  ],
+  "status": "passed"
+}

@@ -1,0 +1,10 @@
+/** Fast hook/lifecycle regression in a real isolated Electron renderer, with controlled IPC replies. */
+const path=require('node:path'),fs=require('node:fs');
+const root=path.resolve(__dirname,'..');const out=path.join(root,'out/tests/consult-selection');fs.mkdirSync(out,{recursive:true});
+if(process.versions.electron){
+ const {app,BrowserWindow}=require('electron');
+ void (async()=>{await app.whenReady();const win=new BrowserWindow({show:false,webPreferences:{contextIsolation:false,nodeIntegration:false,sandbox:true}});await win.loadURL('about:blank');await win.webContents.executeJavaScript(fs.readFileSync(path.join(out,'test.js'),'utf8'));const result=await win.webContents.executeJavaScript('window.__consultRun');fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(result,null,2));for(const t of result.tests)console.log((t.passed?'PASS ':'FAIL ')+t.name+(t.error?' '+t.error:''));app.exit(result.passed?0:1);})().catch(e=>{console.error(e);app.exit(1);});
+}else{
+ const cp=require('node:child_process');const profile=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'consult-hook-renderer-'));
+ void (async()=>{await require('esbuild').build({entryPoints:[path.join(root,'scripts/consult-selection-hook-test.tsx')],outfile:path.join(out,'test.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'},alias:{'@shared':path.join(root,'src/shared')}});const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;const child=cp.spawn(require('electron'),[__filename,'--user-data-dir='+profile],{cwd:root,env,stdio:'inherit',windowsHide:true});const timer=setTimeout(()=>{child.kill();process.exitCode=1;},30000);child.once('error',e=>{clearTimeout(timer);console.error(e);process.exitCode=1;});child.once('close',code=>{clearTimeout(timer);try{fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});}catch(e){console.error(e);code=1;}process.exitCode=code??1;});})().catch(e=>{console.error(e);process.exitCode=1;});
+}

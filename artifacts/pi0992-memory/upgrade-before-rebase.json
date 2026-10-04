@@ -1,0 +1,23 @@
+{
+  "startedAt": "2026-09-30T23:25:54.406Z",
+  "status": "failed",
+  "pid": 11092,
+  "patches": [
+    {
+      "name": "pi-ai",
+      "target": "patches\\@earendil-works__pi-ai@0.99.2.patch",
+      "appliedToCleanUpstream": true,
+      "verified": [
+        {
+          "file": "dist/api/openai-responses-shared.js",
+          "text": "response.reasoning.delta",
+          "found": true
+        }
+      ],
+      "addedLines": 3
+    }
+  ],
+  "steps": [],
+  "error": "Error: git apply --verbose C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\patches\\@earendil-works__pi-coding-agent@0.99.1.patch failed: Checking patch dist/config.d.ts...\nerror: while searching for:\nexport declare function getDebugLogPath(): string;\nexport {};\n//# sourceMappingURL=config.d.ts.map\n\nerror: patch failed: dist/config.d.ts:110\nerror: dist/config.d.ts: patch does not apply\nChecking patch dist/config.js...\nerror: while searching for:\n * - For Node.js (dist/) and tsx (src/): pi-codemode's own worker.\n */\nexport function getCodemodeWorkerUrl() {\n    if (isBunBinary)\n        return new URL(\"./src/extensions/codemode/worker.js\", import.meta.url);\n    if (isBundledNode)\n\nerror: patch failed: dist/config.js:407\nerror: dist/config.js: patch does not apply\nChecking patch dist/extensions/mcp/index.d.ts...\nHunk #1 succeeded at 30 (offset 3 lines).\nChecking patch dist/extensions/mcp/index.js...\nHunk #1 succeeded at 209 (offset 84 lines).\nHunk #2 succeeded at 838 (offset 122 lines).\nHunk #3 succeeded at 1010 (offset 153 lines).\nChecking patch dist/index.d.ts...\nerror: while searching for:\nexport { detectSupportedImageMimeTypeFromFile } from \"./utils/mime.ts\";\nexport { getPowerShellConfig, getShellConfig } from \"./utils/shell.ts\";\n//# sourceMappingURL=index.d.ts.map\n\nerror: patch failed: dist/index.d.ts:42\nerror: dist/index.d.ts: patch does not apply\nChecking patch dist/index.js...\nerror: while searching for:\n// Shell utilities\nexport { getPowerShellConfig, getShellConfig } from \"./utils/shell.js\";\n//# sourceMappingURL=index.js.map\n\nerror: patch failed: dist/index.js:51\nerror: dist/index.js: patch does not apply\n undefined\n    at exec (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\pi0992-upgrade.cjs:6:160)\n    at Object.<anonymous> (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\pi0992-upgrade.cjs:14:4)\n    at Module._compile (node:internal/modules/cjs/loader:1872:14)\n    at Object..js (node:internal/modules/cjs/loader:2003:10)\n    at Module.load (node:internal/modules/cjs/loader:1594:32)\n    at Module._load (node:internal/modules/cjs/loader:1396:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n    at node:internal/main/run_main_module:33:47",
+  "finishedAt": "2026-09-30T23:25:57.007Z"
+}

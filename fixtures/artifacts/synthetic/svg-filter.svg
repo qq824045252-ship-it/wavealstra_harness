@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="460" viewBox="0 0 640 460">
+  <!-- svg-filter：SVG 滤镜渲染行为基线（V3.5 §28）——高斯模糊/投影/颜色矩阵/位移+混合 -->
+  <title>SVG Filter Fixture</title>
+  <rect x="0" y="0" width="640" height="460" fill="#0f172a"/>
+
+  <defs>
+    <filter id="blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="6" dy="6" stdDeviation="4" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <filter id="grayscale">
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="offset-blend">
+      <feOffset dx="10" dy="10" result="off"/>
+      <feBlend in="off" in2="SourceGraphic" mode="screen"/>
+    </filter>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <text x="24" y="34" font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#f1f5f9">SVG Filter — 高斯模糊 / 投影 / 去饱和 / 辉光 / 位移混合</text>
+
+  <!-- 1. 高斯模糊 -->
+  <rect x="40" y="80" width="150" height="90" rx="10" fill="url(#grad)" filter="url(#blur)"/>
+  <text x="115" y="200" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">feGaussianBlur</text>
+
+  <!-- 2. 投影 -->
+  <circle cx="290" cy="125" r="46" fill="#10b981" filter="url(#shadow)"/>
+  <text x="290" y="200" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">feDropShadow</text>
+
+  <!-- 3. 去饱和（颜色矩阵） -->
+  <circle cx="440" cy="125" r="46" fill="#f43f5e" filter="url(#grayscale)"/>
+  <text x="440" y="200" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">feColorMatrix</text>
+
+  <!-- 4. 辉光 -->
+  <text x="555" y="140" font-family="system-ui, sans-serif" font-size="34" font-weight="700" fill="#38bdf8" filter="url(#glow)" text-anchor="middle">GLOW</text>
+  <text x="555" y="200" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">feMerge glow</text>
+
+  <!-- 5. 位移 + 混合 -->
+  <g filter="url(#offset-blend)">
+    <rect x="60" y="250" width="220" height="130" rx="12" fill="#0ea5e9"/>
+    <text x="170" y="330" font-family="system-ui, sans-serif" font-size="20" font-weight="600" fill="#ffffff" text-anchor="middle">offset+blend</text>
+  </g>
+  <text x="170" y="410" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">feOffset + feBlend screen</text>
+
+  <!-- 6. 滤镜叠加渐变形状 -->
+  <g filter="url(#shadow)">
+    <path d="M 340 260 Q 420 210 500 270 Q 540 310 500 360 Q 420 400 360 350 Z" fill="url(#grad)"/>
+  </g>
+  <text x="420" y="410" font-family="system-ui, sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">gradient + shadow</text>
+</svg>

@@ -1,0 +1,78 @@
+{
+  "at": "2026-10-01T20:33:21.886Z",
+  "passed": true,
+  "results": [
+    {
+      "name": "missing or invalid mode defaults to working",
+      "passed": true
+    },
+    {
+      "name": "explicit and persisted coding/design scenes are preserved",
+      "passed": true
+    },
+    {
+      "name": "automatic Code Mode rule working",
+      "passed": true
+    },
+    {
+      "name": "automatic Code Mode rule coding",
+      "passed": true
+    },
+    {
+      "name": "automatic Code Mode rule design",
+      "passed": true
+    },
+    {
+      "name": "automatic Code Mode rule undefined",
+      "passed": true
+    },
+    {
+      "name": "native activation preserves existing tools and respects exclusions",
+      "passed": true
+    },
+    {
+      "name": "office scene requests discovery only, not Code Mode",
+      "passed": true
+    },
+    {
+      "name": "MCP stays reachable and hidden tools stay hidden in working",
+      "passed": true
+    },
+    {
+      "name": "MCP stays reachable and hidden tools stay hidden in coding",
+      "passed": true
+    },
+    {
+      "name": "MCP stays reachable and hidden tools stay hidden in design",
+      "passed": true
+    },
+    {
+      "name": "unbound coding UI says pending, never claims enabled",
+      "passed": true
+    },
+    {
+      "name": "actual disabled tools are not shown as enabled just because scene is coding",
+      "passed": true
+    },
+    {
+      "name": "live enabled state appears only for matching scene",
+      "passed": true
+    },
+    {
+      "name": "detached session returns to pending configuration",
+      "passed": true
+    },
+    {
+      "name": "MCP runtime uses native extension conditionally and always loads search",
+      "passed": true
+    },
+    {
+      "name": "status UI observes real per-task snapshots and never starts tools",
+      "passed": true
+    },
+    {
+      "name": "task mode fallback is not coding at request/restart/remote boundaries",
+      "passed": true
+    }
+  ]
+}

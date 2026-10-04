@@ -1,0 +1,216 @@
+diff --git a/dist/index.js b/dist/index.js
+index ce05001..25893a7 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
+ 
+ // src/agy-models.ts
+ import { execFile } from "node:child_process";
+-import { readFileSync } from "node:fs";
++import { mkdirSync as mkdirSyncState, readFileSync, readdirSync as readdirSyncState, writeFileSync as writeFileSyncState } from "node:fs";
+ import { homedir } from "node:os";
+ import { join } from "node:path";
+ import { promisify } from "node:util";
+@@ -60,6 +60,7 @@ var parseAgyEvent = (line) => {
+ 
+ // src/agy-process.ts
+ var TASKKILL = join2(process.env.SystemRoot ?? String.raw`C:\Windows`, "System32", "taskkill.exe");
++var AGY_PRINT_TIMEOUT = process.env.MYBUDDY_AGY_PRINT_TIMEOUT?.trim() || "30m";
+ var runPrompt = (opts) => {
+   const args = [
+     "--add-dir",
+@@ -68,6 +69,8 @@ var runPrompt = (opts) => {
+     opts.text,
+     "--output-format",
+     "stream-json",
++    "--print-timeout",
++    AGY_PRINT_TIMEOUT,
+     "--dangerously-skip-permissions"
+   ];
+   if (opts.conversationId) args.push("--conversation", opts.conversationId);
+@@ -298,13 +301,27 @@ var closeDanglingToolCalls = async (client, sessionId, openToolCalls) => {
+   }
+   openToolCalls.clear();
+ };
+-var applyStepUpdate = async (evt, client, sessionId, openToolCalls) => {
++var applyStepUpdate = async (evt, client, sessionId, openToolCalls, textState) => {
+   for (const update of translateStepUpdate(evt)) {
+     if (update.sessionUpdate === "tool_call") openToolCalls.add(update.toolCallId);
+     else if (update.sessionUpdate === "tool_call_update") openToolCalls.delete(update.toolCallId);
++    else if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text" && typeof update.content.text === "string") {
++      textState.value += update.content.text;
++    }
+     await pushUpdate(client, sessionId, update);
+   }
+ };
++var missingResultResponse = (emitted, response) => {
++  if (!response) return "";
++  if (!emitted) return response;
++  const normalizedEmitted = emitted.replace(/\r\n/g, "\n");
++  const normalizedResponse = response.replace(/\r\n/g, "\n");
++  if (normalizedEmitted === normalizedResponse || normalizedEmitted.includes(normalizedResponse)) return "";
++  if (normalizedResponse.startsWith(normalizedEmitted)) return normalizedResponse.slice(normalizedEmitted.length);
++  const index = normalizedResponse.indexOf(normalizedEmitted);
++  if (index >= 0) return normalizedResponse.slice(index + normalizedEmitted.length);
++  return response;
++};
+ var usageFromResult = (usage) => {
+   if (usage?.total_tokens === void 0) return void 0;
+   return {
+@@ -315,8 +332,17 @@ var usageFromResult = (usage) => {
+     cachedReadTokens: usage.cache_read_tokens
+   };
+ };
+-var finishFromResult = async (evt, proc, client, sessionId, openToolCalls) => {
++var finishFromResult = async (evt, proc, client, sessionId, openToolCalls, textState) => {
+   if (evt.result.status === "SUCCESS") {
++    const response = typeof evt.result.response === "string" ? evt.result.response : "";
++    const missing = missingResultResponse(textState.value, response);
++    if (missing) {
++      await pushUpdate(client, sessionId, {
++        sessionUpdate: "agent_message_chunk",
++        content: { type: "text", text: missing }
++      });
++      textState.value += missing;
++    }
+     await closeDanglingToolCalls(client, sessionId, openToolCalls);
+     return { stopReason: "end_turn", usage: usageFromResult(evt.result.usage) };
+   }
+@@ -333,13 +359,53 @@ var endTurn = async (stopReason, client, sessionId, openToolCalls) => {
+   await closeDanglingToolCalls(client, sessionId, openToolCalls);
+   return { stopReason };
+ };
++var sessionStateDir = () => join(homedir(), ".mybuddy", "agy-acp-sessions");
++var loadPersistedSessions = () => {
++  const persisted = {};
++  try {
++    for (const name of readdirSyncState(sessionStateDir())) {
++      if (!name.endsWith(".json")) continue;
++      try {
++        const stored = JSON.parse(readFileSync(join(sessionStateDir(), name), "utf8"));
++        if (stored && typeof stored === "object" && typeof stored.sessionId === "string") {
++          persisted[stored.sessionId] = stored;
++        }
++      } catch {
++      }
++    }
++  } catch {
++  }
++  return persisted;
++};
++var persistSession = (id, session) => {
++  const dir = sessionStateDir();
++  mkdirSyncState(dir, { recursive: true });
++  writeFileSyncState(join(dir, `${id}.json`), `${JSON.stringify({
++    sessionId: id,
++    cwd: session.cwd,
++    conversationId: session.conversationId ?? null,
++    model: session.model ?? null
++  }, null, 2)}
++`, "utf8");
++};
+ var createAgyAcpAgent = (binary, defaultCwd) => {
+   const sessions = /* @__PURE__ */ new Map();
++  for (const [id, stored] of Object.entries(loadPersistedSessions())) {
++    if (!stored || typeof stored !== "object") continue;
++    sessions.set(id, {
++      cwd: typeof stored.cwd === "string" && stored.cwd ? stored.cwd : defaultCwd,
++      conversationId: typeof stored.conversationId === "string" ? stored.conversationId : null,
++      activeProc: null,
++      cancelled: false,
++      model: typeof stored.model === "string" ? stored.model : null
++    });
++  }
+   const initialize = () => ({
+     protocolVersion: PROTOCOL_VERSION,
+     agentInfo: { name: "agy-acp", version: "0.1.0" },
+     agentCapabilities: {
+-      promptCapabilities: { embeddedContext: true }
++      promptCapabilities: { embeddedContext: true },
++      sessionCapabilities: { resume: {} }
+     },
+     authMethods: []
+   });
+@@ -353,11 +419,25 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+       cancelled: false,
+       model: modelConfig?.currentValue ?? null
+     });
++    persistSession(sessionId, sessions.get(sessionId));
+     return {
+       sessionId,
+       configOptions: modelConfig ? [modelConfig.option] : null
+     };
+   };
++  const resumeSession = async (params) => {
++    const sessionId = requireSessionId(params.sessionId);
++    const session = requireSession(sessions, sessionId);
++    if (params.cwd && session.cwd && params.cwd !== session.cwd) {
++      throw RequestError.invalidParams(void 0, "session cwd does not match persisted cwd");
++    }
++    session.cwd = params.cwd || session.cwd || defaultCwd;
++    session.activeProc = null;
++    session.cancelled = false;
++    persistSession(sessionId, session);
++    const modelConfig = await buildModelConfigOption(binary, session.model);
++    return { configOptions: modelConfig ? [modelConfig.option] : null };
++  };
+   const prompt = async (params, client) => {
+     const sessionId = requireSessionId(params.sessionId);
+     const session = requireSession(sessions, sessionId);
+@@ -376,6 +456,7 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+     });
+     session.activeProc = run.proc;
+     const openToolCalls = /* @__PURE__ */ new Set();
++    const textState = { value: "" };
+     const iterator = run.events();
+     try {
+       while (true) {
+@@ -391,6 +472,7 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+         const evt = step.value;
+         if (evt.event === "init") {
+           session.conversationId = evt.conversation_id;
++          persistSession(sessionId, session);
+           if (requestedConversationId && evt.conversation_id !== requestedConversationId) {
+             await pushUpdate(client, sessionId, {
+               sessionUpdate: "agent_message_chunk",
+@@ -404,11 +486,11 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+           continue;
+         }
+         if (evt.event === "step_update") {
+-          await applyStepUpdate(evt, client, sessionId, openToolCalls);
++          await applyStepUpdate(evt, client, sessionId, openToolCalls, textState);
+           continue;
+         }
+         if (evt.event === "result") {
+-          return await finishFromResult(evt, run.proc, client, sessionId, openToolCalls);
++          return await finishFromResult(evt, run.proc, client, sessionId, openToolCalls, textState);
+         }
+       }
+     } catch (err) {
+@@ -437,6 +519,7 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+       throw RequestError.invalidParams(void 0, `unknown model "${params.value}"`);
+     }
+     session.model = params.value;
++    persistSession(sessionId, session);
+     const modelConfig = await buildModelConfigOption(binary, session.model);
+     return { configOptions: modelConfig ? [modelConfig.option] : [] };
+   };
+@@ -452,7 +535,7 @@ var createAgyAcpAgent = (binary, defaultCwd) => {
+       if (session.activeProc) killProcessTree(session.activeProc);
+     }
+   };
+-  return { initialize, newSession, prompt, setConfigOption, cancel, shutdown };
++  return { initialize, newSession, resumeSession, prompt, setConfigOption, cancel, shutdown };
+ };
+ 
+ // src/agy-binary.ts
+@@ -557,6 +640,9 @@ var main = async () => {
+   const connection = agent({ name: "agy-acp" }).onRequest(methods2.agent.initialize, () => agentImpl.initialize()).onRequest(methods2.agent.authenticate, () => ({})).onRequest(
+     methods2.agent.session.new,
+     (ctx) => agentImpl.newSession(ctx.params)
++  ).onRequest(
++    methods2.agent.session.resume,
++    (ctx) => agentImpl.resumeSession(ctx.params)
+   ).onRequest(methods2.agent.session.prompt, (ctx) => agentImpl.prompt(ctx.params, ctx.client)).onRequest(
+     methods2.agent.session.setConfigOption,
+     (ctx) => agentImpl.setConfigOption(ctx.params)

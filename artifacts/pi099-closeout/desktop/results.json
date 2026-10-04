@@ -1,0 +1,18 @@
+{
+  "stage": "desktop",
+  "startedAt": "2026-09-30T01:49:08.564Z",
+  "pid": 29852,
+  "status": "passed",
+  "tests": [
+    {
+      "name": "@desktop",
+      "status": "passed",
+      "startedAt": "2026-09-30T01:49:08.568Z",
+      "childPid": 32380,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-09-30T01:53:01.074Z"
+    }
+  ],
+  "finishedAt": "2026-09-30T01:53:01.079Z"
+}

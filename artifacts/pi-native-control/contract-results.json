@@ -1,0 +1,62 @@
+{
+  "at": "2026-10-02T04:53:54.797Z",
+  "results": [
+    {
+      "name": "no model-end handler can inject or suspend another turn",
+      "passed": true
+    },
+    {
+      "name": "no hidden follow-up, completion gate, or text-to-tool recovery",
+      "passed": true
+    },
+    {
+      "name": "no automatic task classifier or forced planning",
+      "passed": true
+    },
+    {
+      "name": "runtime exposes only user input and goal tools, with no retired conversation controls",
+      "passed": true
+    },
+    {
+      "name": "agent_end is not a UI terminal, including non-retry endings",
+      "passed": true
+    },
+    {
+      "name": "native settled emits exactly one terminal UI event",
+      "passed": true
+    },
+    {
+      "name": "native retry can recover without a premature failure or stale error",
+      "passed": true
+    },
+    {
+      "name": "terminal provider error remains visible only at settled",
+      "passed": true
+    },
+    {
+      "name": "tool error remains a tool error, not an invented run failure",
+      "passed": true
+    },
+    {
+      "name": "successive steer requests neither cancel a run nor replace Pi queues",
+      "passed": true
+    },
+    {
+      "name": "runtime observer does not turn business evidence into a model error",
+      "passed": true
+    },
+    {
+      "name": "legacy hidden directives are removed without erasing real user answers/history",
+      "passed": true
+    },
+    {
+      "name": "legacy Todo and Plan tool records remain readable history without reviving their tools",
+      "passed": true
+    },
+    {
+      "name": "tool wait, native retry and user input are not mislabeled as thinking",
+      "passed": true
+    }
+  ],
+  "passed": true
+}

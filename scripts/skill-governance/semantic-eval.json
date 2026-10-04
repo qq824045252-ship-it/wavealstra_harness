@@ -1,0 +1,1660 @@
+{
+  "evaluatedAt": "2026-09-09T08:16:23.420Z",
+  "model": "gemini-2.5-flash",
+  "results": [
+    {
+      "skill": "archify",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "1332607c0bd819de8ed45c09aeb5d6a1d14b278c36c96cc97f879cadfab92e0e",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把这段 Mermaid 转为可探索 HTML",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "Skill description explicitly mentions accepting Mermaid input and converting it to HTML diagrams.",
+          "pass": true
+        },
+        {
+          "prompt": "画这个仓库的 IPC 架构图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "User asks for an 'architecture diagram' for a 'repository', which aligns with 'visualize system architecture' and 'inspect repository evidence'.",
+          "pass": true
+        },
+        {
+          "prompt": "把重试生命周期画成状态图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "User asks to draw a 'retry lifecycle' as a 'state diagram', which directly matches the 'lifecycle' diagram type for 'retries' and 'state machines'.",
+          "pass": true
+        },
+        {
+          "prompt": "制作 API 调用顺序的交互图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "User asks to create an 'API call sequence interaction diagram', which directly matches the 'sequence' diagram type for 'API call sequences'.",
+          "pass": true
+        },
+        {
+          "prompt": "生成一张写实产品照片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "The skill generates technical diagrams, not 'realistic product photos'.",
+          "pass": true
+        },
+        {
+          "prompt": "用 Origin 做直方图",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "The skill generates specific types of diagrams (architecture, workflow, etc.), not 'histograms' or using 'Origin' software.",
+          "pass": true
+        },
+        {
+          "prompt": "修改 PPT 中一个错字",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "The skill is for diagram generation, not for editing text in a presentation (PPT).",
+          "pass": true
+        },
+        {
+          "prompt": "解释一个函数，不需要图",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "The user explicitly states 'no diagram needed', which contradicts the core purpose of the diagram generation skill.",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "cheaper-inference-image",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "374d3f5e043edb5fcf45bcd29978bf8ac935d5accf07f5ce9bc3ea62e3dd285c",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 9,
+      "total": 9,
+      "cases": [
+        {
+          "prompt": "用 CheaperInference 的 grok-imagine 画苹果",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确指定了 CheaperInference 及其模型进行生图。",
+          "pass": true
+        },
+        {
+          "prompt": "比较 CheaperInference 三个图像模型的速度",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求比较 CheaperInference 服务的模型速度。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 CheaperInference 生成两张图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确指定通过 CheaperInference 服务生成图片。",
+          "pass": true
+        },
+        {
+          "prompt": "测试 CheaperInference 的 gpt-image-2 输出质量",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求测试 CheaperInference 服务的模型质量。",
+          "pass": true
+        },
+        {
+          "prompt": "画一只猫",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个通用的生图请求，应由 MyBuddy 原生生图工具处理。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Vertex AI 生成图片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确指定了 Vertex AI，应由 gemini-agent-platform 处理。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Gemini Enterprise 分析图片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确指定了 Gemini Enterprise，且请求是分析图片而非生成图片。",
+          "pass": true
+        },
+        {
+          "prompt": "用 MyBuddy 默认生图工具画海报",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确要求使用 MyBuddy 默认生图工具。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 Google Agent Platform 生成图片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户指定了 Google Agent Platform，这不属于 CheaperInference 服务，应由其他相关技能处理。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "ansys-simulation",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "09898e3d4d3b33112cd4067bedbaf0f7aae4c494d699a98d75dbe1e2c8525a24",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "用 Maxwell 求这个电极的电容矩阵",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确请求使用 Maxwell 仿真并求电容矩阵，与 Skill 的核心意图和触发词高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "在 HFSS 仿真天线的 S 参数",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确请求使用 HFSS 仿真 S 参数，与 Skill 的核心意图和触发词高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Q3D 提取连线寄生参数",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确请求使用 Q3D 提取寄生参数，与 Skill 的核心意图和触发词高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 AEDT 比较不同介质的电场",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求通过 AEDT 比较电场，AEDT 是 Skill 的核心工具，电场是其仿真内容，符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "解释电容的定义",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求是'解释电容的定义'，这属于单纯解释电磁概念，明确落入 Skill 的边界排除范围。",
+          "pass": true
+        },
+        {
+          "prompt": "用 MATLAB 设计数字滤波器",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求使用 MATLAB 设计数字滤波器，与 Ansys 仿真无关，不匹配任何触发词。",
+          "pass": true
+        },
+        {
+          "prompt": "在 KiCad 布线",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求在 KiCad 中进行布线，明确落入 Skill 的边界排除范围（PCB 布线不触发）。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Origin 画实验曲线",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求使用 Origin 绘制实验曲线，与 Ansys 仿真无关，不匹配任何触发词。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "code-view",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "d0dc34cd32b386a581398c9cd2846af11d66beabcd0f383be1fb724dce32c3df",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "先梳理这个仓库的结构",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求“梳理仓库结构”与技能描述中的“梳理架构”、“代码结构”明确匹配，属于代码探索的核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "看下这个项目是做什么的",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求“看下这个项目是做什么的”与技能描述中的“看下这个项目”、“这是什么项目”明确匹配，属于代码探索的元信息获取阶段。",
+          "pass": true
+        },
+        {
+          "prompt": "只读分析入口和数据流",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求“分析入口和数据流”是技能流程中“核心数据流”和“入口文件”的明确任务，属于代码探索的范畴。",
+          "pass": true
+        },
+        {
+          "prompt": "快速浏览模块和代码规模",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求“快速浏览模块和代码规模”与技能描述中的“浏览代码”触发词匹配，且“目录骨架 + 规模”是技能流程的第二轮任务。",
+          "pass": true
+        },
+        {
+          "prompt": "修复登录报错",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“修复登录报错”属于代码修改或调试任务，与技能的“探索 ≠ 修复环境”铁律和“用户要改代码 → 出本技能”的反模式冲突。",
+          "pass": true
+        },
+        {
+          "prompt": "安装 GitNexus 并重建索引",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“安装 GitNexus 并重建索引”属于环境配置或工具安装任务，明确落入技能“何时不适用”中“修复 MCP / 装工具 / 分析某个引擎索引”的边界。",
+          "pass": true
+        },
+        {
+          "prompt": "生成周报系统导入 JSON",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“生成周报系统导入 JSON”与代码探索技能的核心意图完全不符，是无关任务。",
+          "pass": true
+        },
+        {
+          "prompt": "查看技能市场有哪些资源",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“查看技能市场有哪些资源”明确落入技能“何时不适用”中“用户要看技能市场资源”的边界。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "dimagent-debug",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "2f35e5d10e4c22786a28f6cb5a7a995b179f0ad492636925e71794e24e83247b",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "首次发现登录按钮每次都报 TypeError，请调试",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求调试首次发现的稳定复现的 TypeError，符合 Skill 描述的“first reproducible bug”和“runtime failure”.",
+          "pass": true
+        },
+        {
+          "prompt": "上传空文件会稳定报错，第一次排查",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求排查首次发现的稳定报错，符合 Skill 描述的“first reproducible bug”和“runtime failure”.",
+          "pass": true
+        },
+        {
+          "prompt": "这个测试用错 fixture，稳定失败，帮我定位",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求定位稳定失败的测试用例问题，符合 Skill 描述的“failing unit/integration test”和“first reproducible bug”.",
+          "pass": true
+        },
+        {
+          "prompt": "设置页点击保存每次崩溃，尚未修复过",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求调试每次崩溃的稳定问题，且尚未修复过，符合 Skill 描述的“first reproducible bug”和“runtime failure”.",
+          "pass": true
+        },
+        {
+          "prompt": "滚动还是会闪，之前修过又出现了，已经加过 flag 还是会跳",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "问题“之前修过又出现了”，属于 Skill 边界中明确指出的“recurring”或“previously failed fixes”，应交给 root-cause-debugging。",
+          "pass": true
+        },
+        {
+          "prompt": "这个竞态 bug 时好时坏，并发重试来回打补丁越补越乱",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确指出是“竞态 bug”且“时好时坏”，属于 Skill 边界中明确指出的“race”和“intermittent”问题，应交给 root-cause-debugging。",
+          "pass": true
+        },
+        {
+          "prompt": "IPC 缓存偶发不一致，单元测试全绿但线上仍复现",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "“IPC 缓存偶发不一致”属于 Skill 边界中明确指出的“cache/IPC timing”和“intermittent”问题，应交给 root-cause-debugging。",
+          "pass": true
+        },
+        {
+          "prompt": "新增跨 DB IPC UI 的任务字段",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "“新增跨层字段”属于 Skill 边界中明确指出的“dim-feature-add”任务，不属于 bug 诊断范畴。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "dim-feature-add",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "9a0cb1079a93204a789acdf16ee1108974ee6b5d287b0be209f53d310ae9c461",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "在 MyBuddy 显示实时 cache hit rate",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求在UI中显示实时指标，明确提及'cache hit rate'和'实时指标'，与Skill描述和触发关键词高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "为任务新增字段并贯通 DB IPC UI",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求新增字段并贯通DB、IPC、UI，这正是Skill核心意图'新增字段'和'5-layer patch'的直接描述。",
+          "pass": true
+        },
+        {
+          "prompt": "在消息详情弹窗新增 usage 指标",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求在弹窗中新增指标，符合Skill中'弹窗显示'和'新增指标'的触发条件。",
+          "pass": true
+        },
+        {
+          "prompt": "给 Agent 新增跨层状态显示",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求新增跨层状态显示，表明需要添加一个涉及多层数据流的UI功能，符合Skill的'添加UI功能'和'5-layer patch'的范围。",
+          "pass": true
+        },
+        {
+          "prompt": "第一次运行提交按钮稳定报错，请定位",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求定位报错，属于bug修复或调试范畴，Skill明确指出不适用于此场景，应使用'dimagent-debug'。",
+          "pass": true
+        },
+        {
+          "prompt": "重试竞态修了两次还失败",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求修复问题，属于bug修复范畴，Skill明确指出不适用于此场景，应使用'dimagent-debug'。",
+          "pass": true
+        },
+        {
+          "prompt": "只分析仓库，不改代码",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确表示只分析不改代码，Skill明确指出不适用于纯探索无代码修改的场景，应使用'code-view'。",
+          "pass": true
+        },
+        {
+          "prompt": "把一处按钮文字改为发送",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求修改按钮文字，这是一个简单的UI文本修改，不涉及新增复杂功能、新指标或跨越5层的数据流，不符合Skill的'新功能'或'新字段'的复杂性要求。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "easyeda-agent",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "c0aab789e6bb8be392be93d9fc268df773f83da39c8e61d3a54951353957530f",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "在嘉立创专业版整理这张原理图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及在嘉立创专业版整理原理图，与 Skill 描述的“混乱原理图整理”直接匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "给 EasyEDA PCB 重新布线并检查 DRC",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及 EasyEDA PCB 布线和检查 DRC，与 Skill 描述直接匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "查询 EasyEDA 电路块库",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及查询 EasyEDA 电路块库，与 Skill 描述的查询块库功能直接匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "在 EasyEDA 同步原理图到 PCB",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及在 EasyEDA 同步原理图到 PCB，与 Skill 描述直接匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "把 epro 迁移为 KiCad",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确落入 Skill Boundary，epro 到 KiCad 迁移不属于本 Skill。",
+          "pass": true
+        },
+        {
+          "prompt": "修改 KiCad 原理图",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确落入 Skill Boundary，修改 KiCad 原理图不属于本 Skill。",
+          "pass": true
+        },
+        {
+          "prompt": "用 HFSS 仿真天线",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确落入 Skill Boundary，场求解仿真不属于本 Skill。",
+          "pass": true
+        },
+        {
+          "prompt": "解释运放原理，不画板",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求解释运放原理，与 Skill 的 EasyEDA Pro 设计自动化核心意图无关。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "epro2kicad",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "066ecd904064ef3c9a3b025c138d8c6a2f2f190fcba17c57209e0690578862f8",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把这个 epro 转换成 KiCad",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确请求将epro项目转换为KiCad，与Skill的核心意图和触发器匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "导出 epro 中所有 PCB 到 KiCad",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求导出epro中的所有PCB到KiCad，这与Skill支持多PCB转换的特性和触发器匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "把嘉立创专业版工程迁移并打 zip",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求迁移嘉立创专业版工程并打包，与Skill的迁移和打包功能匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "检查迁移出来的 KiCad 板能否加载",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户请求检查转换后的KiCad板能否加载，这属于Skill描述的后转换验证范围。",
+          "pass": true
+        },
+        {
+          "prompt": "在现有 KiCad PCB 上移动 R1",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求在KiCad PCB上进行编辑操作，这明确属于Skill的'When Not to Use'边界，即不用于迁移后的编辑或设计。",
+          "pass": true
+        },
+        {
+          "prompt": "整理 EasyEDA 原理图",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求整理EasyEDA原理图，Skill明确指出不提供无头原理图转换，且不用于原理图的编辑或设计。",
+          "pass": true
+        },
+        {
+          "prompt": "导出 KiCad Gerber",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求导出KiCad Gerber，这明确属于Skill的'When Not to Use'边界，即不用于通用KiCad自动化或Gerber导出。",
+          "pass": true
+        },
+        {
+          "prompt": "将 EasyEDA 标准版 JSON 转换成网页",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求转换EasyEDA标准版JSON到网页，Skill明确指出不处理EasyEDA标准版JSON项目，且目标是KiCad而非网页。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "gemini-agent-platform",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "e888d6e65991a361650565d036a60dc7c5af72c7b6241f8a1a5fc0d3d3ec234f",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "用 Vertex AI Gemini 分析这张图",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确指定了 'Vertex AI Gemini'，符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "调用 Gemini Enterprise 文本模型",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确指定了 'Gemini Enterprise'，符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 Google Agent Platform 生成图片",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确指定了 'Google Agent Platform'，符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 Gemini Developer API 执行提示词",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确指定了 'Gemini Developer API'，符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "画一只猫",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个普通的生图请求，Skill 明确指出普通生图走 native image_generate。",
+          "pass": true
+        },
+        {
+          "prompt": "用 CheaperInference 的 grok-imagine 画苹果",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确提到了 'CheaperInference'，Skill 边界规定此类请求不触发本 Skill。",
+          "pass": true
+        },
+        {
+          "prompt": "测试 CheaperInference 的 gpt-image-2 输出质量",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确提到了 'CheaperInference'，Skill 边界规定此类请求不触发本 Skill。",
+          "pass": true
+        },
+        {
+          "prompt": "用 MyBuddy 默认生图工具画海报",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确指定使用 'MyBuddy 默认生图工具'，Skill 边界规定普通生图不触发本 Skill。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "kicad-design",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "7e7aeceaf00b429b3a67194d7d7582ed942d4ecf2d8ef76c2a04990e4eebd1b7",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "检查当前 KiCad PCB 网络",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求检查 KiCad PCB 的网络，与 Skill 的核心意图和触发词 '检查 KiCad PCB'、'查看 KiCad 网络' 明确匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "修改 KiCad 原理图的电源连接",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求修改 KiCad 原理图的电源连接，与 Skill 的核心意图和触发词 '修改 KiCad 原理图' 明确匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "给 KiCad 板运行 DRC",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求对 KiCad 板运行 DRC，与 Skill 的核心意图和触发词 'KiCad DRC' 明确匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "用 KiCad MCP 查询元件位置",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求通过 KiCad MCP 查询元件位置，与 Skill 的核心意图和触发词 '定位 KiCad 元件' 明确匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "把这个 epro 转换成 KiCad",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "Skill 的边界明确指出 '.epro / EasyEDA Pro 迁移本身，请使用单独的 epro2kicad 技能'，此请求属于迁移范畴。",
+          "pass": true
+        },
+        {
+          "prompt": "在 EasyEDA 重新布线",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求在 EasyEDA 中进行操作，而不是 KiCad，不符合 Skill 的 KiCad 专属意图。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Ansys 求电场",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求使用 Ansys 进行电场计算，与 KiCad 设计无关，不符合 Skill 的意图。",
+          "pass": true
+        },
+        {
+          "prompt": "解释阻抗公式",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求解释阻抗公式，这是一个通用知识问题，与 KiCad 软件操作无关，不符合 Skill 的意图。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "loop-agent",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "29fba9814b36d8a35e9d616cbc99dfbbe2c88aa7ccd57a7a2a655ac8be8ced9e",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "给 AGENTS.md 加入自验证循环",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求为 AGENTS.md 加入自验证循环，与 Skill 核心意图和触发条件高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "让 coding agent 修复后实际验证再结束",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求 agent 在修复后进行验证再结束，与 Skill 旨在强制 agent 自验证的核心意图一致。",
+          "pass": true
+        },
+        {
+          "prompt": "为这个仓库写可执行的验证门禁",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求为仓库编写可执行的验证门禁，这与 Skill 中 Gate Function 和 HARD-GATE 的概念直接相关。",
+          "pass": true
+        },
+        {
+          "prompt": "把一次问答流程改成带停止条件的 agent 循环",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求将单次问答流程改为带停止条件的 agent 循环，这正是 Skill 旨在解决的核心问题。",
+          "pass": true
+        },
+        {
+          "prompt": "修复一个 Python bug",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个普通的业务代码修复请求，不涉及 agent 自验证、循环或 AGENTS.md 的编写/改进，属于明确的边界排除项。",
+          "pass": true
+        },
+        {
+          "prompt": "写周报摘要",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个与 Skill 核心意图（agent 自验证、AGENTS.md）完全无关的通用任务，且明确在边界排除项中提及。",
+          "pass": true
+        },
+        {
+          "prompt": "搭建网站首页",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个普通的软件开发任务，不涉及 agent 自验证、循环或 AGENTS.md 的编写/改进，属于明确的边界排除项。",
+          "pass": true
+        },
+        {
+          "prompt": "只解释测试覆盖率",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求解释概念，与 Skill 旨在编写 AGENTS.md 以强制 agent 自验证循环的核心意图不符。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "npu-ocr",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "f122806558b4833fc2d1b62a6d45b5ae73583074c09dba9b12d65c0436edd421",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "提取这张截图里的文字",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及“提取文字”和“截图”，符合技能核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "识别扫描 PDF 的文字和表格",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及“识别扫描 PDF 的文字”，符合技能核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "批量 OCR 这些发票图片",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及“批量 OCR”和“图片”，符合技能核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "把拍照文档转换为带坐标的文字",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及“拍照文档”和“带坐标的文字”，符合技能核心意图和输出能力。",
+          "pass": true
+        },
+        {
+          "prompt": "把会议 m4a 转写成文字",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "属于语音转写任务，超出 OCR 技能范围，且在 Boundary 中明确排除。",
+          "pass": true
+        },
+        {
+          "prompt": "总结已有文本文件",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务是总结“已有文本文件”，不涉及图片文字识别，且在 Boundary 中明确排除。",
+          "pass": true
+        },
+        {
+          "prompt": "画一张猫的照片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务是生成图片，超出 OCR 技能范围，且在 Boundary 中明确排除。",
+          "pass": true
+        },
+        {
+          "prompt": "解析这个微信公众号文章链接",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务是解析链接内容，与图片文字识别无关。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "open-kimi-ppt",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "181e2dac365da30698983f357247a65149942129cc2453fc065379c63cdb1563",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "从零设计一份高视觉质量发布会 PPT",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求从零设计一份高视觉质量的PPT，符合Skill创建新视觉演示文稿的核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "将参考图版式复刻成 PPTD",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求将参考图版式复刻成PPTD，符合Skill复刻版式和处理PPTD项目的意图。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Kimi PPT 工作流生成演示文稿",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及'Kimi PPT 工作流'和'生成演示文稿'，直接命中Skill的触发条件。",
+          "pass": true
+        },
+        {
+          "prompt": "把 PPTD 导出成 PPTX",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求将PPTD导出为PPTX，符合Skill导出PPTD项目的意图。",
+          "pass": true
+        },
+        {
+          "prompt": "把现有 PPTX 第三页错字改掉",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求修改现有PPTX中的错字，这属于对现有PPTX的精确文本编辑，落入Skill的边界排除范围。",
+          "pass": true
+        },
+        {
+          "prompt": "读取这个 PPTX 的形状树",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求读取现有PPTX的形状树，这属于对现有PPTX的简单检查或分析，落入Skill的边界排除范围。",
+          "pass": true
+        },
+        {
+          "prompt": "把 PPTX 中一个标题改成红色",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求修改现有PPTX中标题的颜色，这属于对现有PPTX的精确格式编辑，落入Skill的边界排除范围。",
+          "pass": true
+        },
+        {
+          "prompt": "画一只猫",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求生成一张图片，这属于普通生图任务，不属于PPT制作或PPTD工作流，落入Skill的边界排除范围。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "officecli",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "7f1eb52d6ab38db719c6737e6248aff6ae14abfb54437d39339d99b084e5615f",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把现有 PPTX 第三页错字改掉",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "Skill明确支持对现有PPTX文件进行文字修改。",
+          "pass": true
+        },
+        {
+          "prompt": "检查 DOCX 段落格式",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "Skill明确支持读取和检查现有DOCX文件的DOM结构和格式。",
+          "pass": true
+        },
+        {
+          "prompt": "修改 XLSX 单元格样式",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "Skill明确支持对现有XLSX文件进行精确的DOM修改，包括单元格样式。",
+          "pass": true
+        },
+        {
+          "prompt": "读取这个 PPTX 的形状树",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "Skill明确支持读取和检查现有PPTX文件的DOM/XML结构，形状树属于DOM结构的一部分。",
+          "pass": true
+        },
+        {
+          "prompt": "从零设计一份高视觉质量发布会 PPT",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "根据Routing Boundary，'从零设计演示文稿'应交给open-kimi-ppt，而非officecli。",
+          "pass": true
+        },
+        {
+          "prompt": "将参考图版式复刻成 PPTD",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "根据Routing Boundary，'参考图复刻'应交给open-kimi-ppt，而非officecli。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Kimi PPT 工作流生成演示文稿",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "根据Routing Boundary，'显式 PPTD/Kimi 工作流'应交给open-kimi-ppt，而非officecli。",
+          "pass": true
+        },
+        {
+          "prompt": "把 PPTD 导出成 PPTX",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "Skill主要处理DOCX/XLSX/PPTX的读写和修改，不涉及从PPTD格式导出到PPTX的转换，且PPTD工作流被明确排除。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "projectlibre-gen",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "fac5ff6b7d7350b1a8e9017849fd510a3cb0d48ba54d30f80b985a2b114e3981",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把任务 JSON 转为 ProjectLibre XML",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及将任务 JSON 转换为 ProjectLibre XML，与 Skill 核心功能完全匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "生成可打开的 MSPDI 项目计划",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及生成 MSPDI 项目计划，且要求可打开，与 Skill 描述和触发词匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "把工期和资源依赖排成 ProjectLibre 甘特项目",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及工期、资源依赖、排程、ProjectLibre 和甘特项目，完全符合 Skill 意图。",
+          "pass": true
+        },
+        {
+          "prompt": "输出 Microsoft Project 兼容 XML",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及输出 Microsoft Project 兼容 XML，Skill 描述中包含对 MS Project 的兼容性。",
+          "pass": true
+        },
+        {
+          "prompt": "列出明天的待办文字清单",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求的是纯文字待办清单，不涉及项目文件生成、排程或特定项目管理软件，落入 Boundary。",
+          "pass": true
+        },
+        {
+          "prompt": "整理本周完成项摘要",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求的是完成项摘要，不涉及项目文件生成、排程或特定项目管理软件。",
+          "pass": true
+        },
+        {
+          "prompt": "创建周报导入 JSON",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求创建周报，虽然提及 JSON，但意图是报告而非项目文件生成，且 Skill 是将 JSON 转换为 XML，而非用于周报导入。",
+          "pass": true
+        },
+        {
+          "prompt": "修改 Excel 单元格颜色",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求修改 Excel 单元格颜色，与 Skill 的核心意图完全无关。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "root-cause-debugging",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "06180361d5a594224f0d89b279e10c0a447e0f4273d190348291815fd0b80a97",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 13,
+      "total": 13,
+      "cases": [
+        {
+          "expected": "trigger",
+          "prompt": "滚动还是会闪，之前修过又出现了，已经加过 flag 还是会跳",
+          "actual": "trigger",
+          "reason": "用户明确提及滚动闪烁、之前修复过但又出现、以及添加flag后仍有问题，符合重复出现、复杂UI问题和打补丁无效的触发条件。",
+          "pass": true
+        },
+        {
+          "expected": "trigger",
+          "prompt": "流式输出时手动向上滚动会被拉回到底部，测试通过但实际不行",
+          "actual": "trigger",
+          "reason": "用户提及流式输出、滚动问题以及“测试通过但实际不行”，符合流式/滚动问题和测试与实际不符的触发条件。",
+          "pass": true
+        },
+        {
+          "expected": "trigger",
+          "prompt": "这个竞态 bug 时好时坏，并发重试来回打补丁越补越乱",
+          "actual": "trigger",
+          "reason": "用户明确提及“竞态 bug”、“时好时坏”（间歇性）、“并发重试”以及“来回打补丁越补越乱”，完全符合竞态、间歇性、并发和补丁堆叠的触发条件。",
+          "pass": true
+        },
+        {
+          "expected": "trigger",
+          "prompt": "虚拟列表+Markdown闪烁，怀疑是重复所有权，需要定位根因",
+          "actual": "trigger",
+          "reason": "用户提及“虚拟列表+Markdown闪烁”和“怀疑是重复所有权”，符合虚拟化、UI闪烁和多所有权机制的触发条件。",
+          "pass": true
+        },
+        {
+          "expected": "trigger",
+          "prompt": "IPC 缓存偶发不一致，单元测试全绿但线上仍复现",
+          "actual": "trigger",
+          "reason": "用户提及“IPC 缓存偶发不一致”和“单元测试全绿但线上仍复现”，符合IPC、缓存、间歇性问题和测试与实际不符的触发条件。",
+          "pass": true
+        },
+        {
+          "expected": "no-trigger",
+          "prompt": "帮我翻译这篇论文摘要并润色",
+          "actual": "no-trigger",
+          "reason": "这是一个纯文本翻译和润色任务，与根因调试的意图完全不符。",
+          "pass": true
+        },
+        {
+          "expected": "no-trigger",
+          "prompt": "生成一张产品海报图",
+          "actual": "no-trigger",
+          "reason": "这是一个图像生成任务，与根因调试的意图完全不符。",
+          "pass": true
+        },
+        {
+          "expected": "no-trigger",
+          "prompt": "写一个新功能的 PRD 文档",
+          "actual": "no-trigger",
+          "reason": "这是一个新功能需求文档编写任务，与根因调试的意图完全不符，且无bug上下文。",
+          "pass": true
+        },
+        {
+          "expected": "no-trigger",
+          "prompt": "单次简单报错，改一行就能修好，不涉及并发或生命周期",
+          "actual": "no-trigger",
+          "reason": "用户明确说明是“单次简单报错”、“改一行就能修好”且“不涉及并发或生命周期”，符合边界条件中首次出现的简单一次性bug，应走常规修复。",
+          "pass": true
+        },
+        {
+          "prompt": "首次发现登录按钮每次都报 TypeError，请调试",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户提及“首次发现”且“每次都报 TypeError”，表明这是一个首次出现的确定性bug，不涉及复发、间歇性或复杂机制，应走常规修复。",
+          "pass": true
+        },
+        {
+          "prompt": "上传空文件会稳定报错，第一次排查",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户提及“稳定报错”和“第一次排查”，表明这是一个首次出现的确定性bug，不涉及复发、间歇性或复杂机制，应走常规修复。",
+          "pass": true
+        },
+        {
+          "prompt": "这个测试用错 fixture，稳定失败，帮我定位",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个测试配置错误导致的稳定失败，不属于运行时bug、间歇性问题或已修复但复现的场景，应走常规修复。",
+          "pass": true
+        },
+        {
+          "prompt": "设置页点击保存每次崩溃，尚未修复过",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户提及“每次崩溃”和“尚未修复过”，表明这是一个首次出现的确定性bug，不涉及复发、间歇性或复杂机制，应走常规修复。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "shared-memory",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "cf1fa57416f1310f81f54fc966940f2a8e2ec0bccd27130e459c36e81c6637fe",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "在 MyBuddy 工作区用 Codex 延续之前的架构决策",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及在MyBuddy工作区使用外部CLI，并要求延续之前的架构决策，这与Skill的意图和高置信度触发条件（涉及既有架构决策）高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "外部 Claude CLI 开工前恢复项目约束",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户提及外部CLI在开工前恢复项目约束，这符合Skill的意图（外部AI CLI在MyBuddy Workspace工作）和高置信度触发条件（任务涉及既有约束）。",
+          "pass": true
+        },
+        {
+          "prompt": "在 Hermes CLI 检查工作区长期记忆",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求在CLI中检查工作区长期记忆，这直接命中高置信度触发条件中的“查下项目记忆”或“共享记忆”的意图。",
+          "pass": true
+        },
+        {
+          "prompt": "按项目记忆继续上次开发任务",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求“按项目记忆继续上次开发任务”，这符合高置信度触发条件中“继续之前的”和“查下项目记忆”的意图，且任务涉及项目进度。",
+          "pass": true
+        },
+        {
+          "prompt": "现在几点",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个纯粹的知识问答，与当前Workspace的记忆、项目决策或历史上下文无关，属于“不必触发”的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "翻译一句普通英文",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个纯粹的知识问答，与当前Workspace的记忆、项目决策或历史上下文无关，属于“不必触发”的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "计算二加二",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "这是一个纯粹的计算任务，与当前Workspace的记忆、项目决策或历史上下文无关，属于“不必触发”的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "无需历史上下文，修改给定字符串",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确指出“无需历史上下文”，这直接排除了需要读取共享记忆的场景，符合“不必触发”条件。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "wechat-public",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "7f4bc466a1ffa3f6cd02c0ad7b90b59e5ab739de8a0d65d0f1d0a5a6ed9e0536",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "解析 https://mp.weixin.qq.com/s/example 的文章",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "包含公众号链接和明确的解析意图。",
+          "pass": true
+        },
+        {
+          "prompt": "提取这个公众号链接正文",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "包含明确的“公众号链接”触发词和提取正文的意图。",
+          "pass": true
+        },
+        {
+          "prompt": "整理微信公众号文章作者日期和要点",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "包含“微信公众号文章”触发词，且意图与技能输出内容高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "读取微信文章链接并保留来源",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "包含“微信文章链接”触发词，意图与技能功能一致。",
+          "pass": true
+        },
+        {
+          "prompt": "识别微信聊天截图",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确落入技能边界，微信聊天截图应由 OCR 技能处理。",
+          "pass": true
+        },
+        {
+          "prompt": "把微信群录音转文字",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确落入技能边界，录音转文字应由 ASR 技能处理。",
+          "pass": true
+        },
+        {
+          "prompt": "总结普通新闻网站链接",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "技能明确限定为微信公众号文章，普通新闻网站链接不触发。",
+          "pass": true
+        },
+        {
+          "prompt": "生成周报系统 JSON",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "与技能核心意图完全不符，无任何触发词。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "origin-analysis",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "6fc8414c7220d22eb689fc17abe366e6495a9fe7fb2cb82319a50ee00436cf7f",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 10,
+      "total": 10,
+      "cases": [
+        {
+          "prompt": "把这个 5 万行 xlsx 交给 Origin 自己导入并做统计，你只告诉我结果，不要用 Python 读原表。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求使用 Origin 导入大型 Excel 文件并进行统计分析，且明确排除 Python，符合 Skill 意图和 Trigger 中的 'large-table analysis' 和 'statistics'，以及 Positive example '这几万行数据让 Origin 自己算，你只拿结果'。",
+          "pass": true
+        },
+        {
+          "prompt": "连接我现在打开的 Origin，把第 4 列和第 11 列画出来并算相关性。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求连接现有 Origin 实例，并进行绘图和相关性计算，这明确符合 Skill 的 'plotting' 和 'correlation' 触发条件，以及 Positive example '帮我看 Origin 当前工作表有哪些列' (虽然这里是画图和相关性，但都是 Origin-native analysis)。",
+          "pass": true
+        },
+        {
+          "prompt": "Origin 里这批实验数据想判断基线段和有效信号段，先看列结构再分析。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求 Origin 分析实验数据，判断基线段和信号段，并查看列结构，这符合 Skill 的 'peak/baseline analysis' 触发条件，以及 Positive example '判断哪些是真信号，哪些是基线'。",
+          "pass": true
+        },
+        {
+          "prompt": "让 Origin 对当前工作表做 FFT 和峰值分析，给我主峰频率即可。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求 Origin 对当前工作表进行 FFT 和峰值分析，并获取主峰频率，这明确符合 Skill 的 'signal processing' 和 'peak/baseline analysis' 触发条件，以及 Positive example '对这一列做 FFT，看主频'。",
+          "pass": true
+        },
+        {
+          "prompt": "不要再启动隐藏 Origin，直接控制当前窗口做拟合。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求控制当前 Origin 窗口进行拟合，这符合 Skill 的 'fitting' 触发条件，且明确要求控制现有 Origin 实例，符合 Skill 的执行模型。",
+          "pass": true
+        },
+        {
+          "prompt": "用 pandas 读取这个 Excel，算平均值和标准差。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确要求使用 'pandas' 读取 Excel 并计算，这落入了 Boundary 中 'explicitly chooses another engine' 的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "帮我设计一个 React 数据表格组件。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求设计 React 组件，这是一个通用的编程任务，与 Origin 数据分析无关，属于 Boundary 中的 'generic coding'。",
+          "pass": true
+        },
+        {
+          "prompt": "用 MATLAB 对这个采样信号做 FFT。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确要求使用 'MATLAB' 进行 FFT，这落入了 Boundary 中 'explicitly chooses another engine' 的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "Origin 的 Set Values 菜单是干什么的？只解释，不操作软件。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求解释 Origin 菜单功能，且明确说明 '只解释，不操作软件'，这落入了 Boundary 中 '只解释 Origin 菜单是什么意思，不需要控制软件' 的情况。",
+          "pass": true
+        },
+        {
+          "prompt": "帮我下载并安装 Origin 2025b。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求下载并安装 Origin 软件，这落入了 Boundary 中 '帮我安装 Origin' 的情况，不属于数据分析任务。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "weekly-report-fill",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "551661d82a780ead3f362dd6249424a33eba550e1f540844fa37db7be53ab870",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把这些工作材料转成周报系统可导入 JSON",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求将材料转换为周报系统可导入的 JSON 格式，与技能核心意图和触发条件一致。",
+          "pass": true
+        },
+        {
+          "prompt": "生成第 36 周周报待导入文件",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求生成特定周的周报待导入文件，直接匹配技能的输出目标和触发条件 '帮我填第 N 周'。",
+          "pass": true
+        },
+        {
+          "prompt": "将聊天记录按周报字段整理成 JSON",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求将聊天记录按周报字段整理成 JSON，明确提及输入材料类型（聊天记录）和输出格式（周报字段 JSON），符合技能核心意图和触发条件。",
+          "pass": true
+        },
+        {
+          "prompt": "调用周报构建脚本生成 _exports 产物",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户直接提及调用周报构建脚本并生成 _exports 产物，这是对技能内部工具和输出路径的直接引用，明确匹配触发条件中对 _exports 产物的要求。",
+          "pass": true
+        },
+        {
+          "prompt": "只用文字总结本周工作",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求的是纯文字总结，而技能的边界明确指出 '普通文字摘要无需进入此 Skill'，且输出必须是 JSON。",
+          "pass": true
+        },
+        {
+          "prompt": "根据录音生成会议纪要",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求根据录音生成会议纪要，这与周报系统的 JSON 填写任务无关，不属于技能的核心意图和边界。",
+          "pass": true
+        },
+        {
+          "prompt": "生成 ProjectLibre 排程 XML",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求生成 ProjectLibre 排程 XML，这是一种完全不同的文件类型和系统，不符合技能 '仅生成周报系统可导入 JSON' 的边界。",
+          "pass": true
+        },
+        {
+          "prompt": "直接替我提交周报到系统",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "技能的 '交付与导入提示' 和 'Boundary' 明确指出 '不自动导入或提交' 周报到系统。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "meeting-transcribe",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "180304fd07bf3a6b6b2c3bb234ea2e3f7aa45d5c577a6eb55c27038ddde1f3f8",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把会议 m4a 转写成文字",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求将指定格式的会议音频文件转写成文字，符合技能核心意图和触发词。",
+          "pass": true
+        },
+        {
+          "prompt": "根据这段会议 wav 生成纪要",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确要求根据指定格式的会议音频文件生成会议纪要，符合技能核心意图和触发词。",
+          "pass": true
+        },
+        {
+          "prompt": "转写录音并提取行动项",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求转写录音并提取行动项，'转写录音'是明确的触发词，'行动项'是会议纪要的一部分。",
+          "pass": true
+        },
+        {
+          "prompt": "整理这个会议 mp4 的发言与决议",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户要求整理指定格式的会议文件中的发言与决议，'mp4'是支持的音频/视频格式，'发言'和'决议'是会议纪要的核心内容。",
+          "pass": true
+        },
+        {
+          "prompt": "根据已有文字整理纪要",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户明确指出是'根据已有文字整理纪要'，这落入了技能的边界条件：'已有文字会议记录的摘要不调用 ASR'。",
+          "pass": true
+        },
+        {
+          "prompt": "识别会议白板照片文字",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求'识别会议白板照片文字'，这落入了技能的边界条件：'图片文字识别走 npu-ocr'，而非音频转写。",
+          "pass": true
+        },
+        {
+          "prompt": "生成会议邀请函",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求'生成会议邀请函'，这与会议录音转写和纪要生成的核心意图完全不符。",
+          "pass": true
+        },
+        {
+          "prompt": "把聊天记录导入周报系统",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户要求'把聊天记录导入周报系统'，这与会议录音转写和纪要生成的核心意图完全不符。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "fastcopy-copy",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "30b898e2d6bab6e0d856ddffa9cd70c1a7b7af69d3ec42253e0118fbb83ade8f",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "复制整个软件文件夹到备份盘",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及复制“整个文件夹”，符合技能适用条件（处理对象是整个文件夹）。",
+          "pass": true
+        },
+        {
+          "prompt": "用 FastCopy 增量同步一个目录树",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及同步“目录树”，符合技能适用条件（处理对象是整个文件夹）。",
+          "pass": true
+        },
+        {
+          "prompt": "移动这 100 个日志文件",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及处理文件数量为 100 个，符合批量处理条件（单次处理文件数量 ≥ 30 个）。",
+          "pass": true
+        },
+        {
+          "prompt": "将整个中文路径目录备份到另一个盘",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确提及备份“整个目录”，符合技能适用条件（处理对象是整个文件夹）。",
+          "pass": true
+        },
+        {
+          "prompt": "复制一个 docx 文件",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确提及复制“一个”文件，不符合技能的文件夹或批量文件（≥30个）条件。",
+          "pass": true
+        },
+        {
+          "prompt": "移动 3 张图片",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确提及移动“3张”图片，文件数量少于 30 个，不符合技能的批量处理条件。",
+          "pass": true
+        },
+        {
+          "prompt": "读取目录里的文件名",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户意图是读取文件名，而非复制、移动、删除或同步文件，不符合技能核心功能。",
+          "pass": true
+        },
+        {
+          "prompt": "把这段代码复制到聊天里",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户意图是复制文本内容到聊天，而非文件系统操作，与技能功能无关。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "matlab-r2025b",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "a714447bd8c7ec2f7de55965f3d70ad6a850fb26a722d9af4683ac7fbb7385b8",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 10,
+      "total": 10,
+      "cases": [
+        {
+          "prompt": "用 MATLAB R2025b 对这组传感器数据做 FFT 和 Welch PSD，找主频和噪声底。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确要求使用 MATLAB R2025b 进行 FFT 和 Welch PSD 分析，这是 Skill 的核心能力。",
+          "pass": true
+        },
+        {
+          "prompt": "帮我用 MATLAB 设计一个适合 16.7Hz 采样数据的低通滤波器，比较响应时间和噪声。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确要求使用 MATLAB 设计滤波器并进行比较，这是 Skill 的核心能力。",
+          "pass": true
+        },
+        {
+          "prompt": "用 Simulink 把这个 IQ 锁相算法搭起来，验证幅值和相位响应。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确要求使用 Simulink 验证算法，这是 Skill 的核心能力。",
+          "pass": true
+        },
+        {
+          "prompt": "这组 KF 和原始电容数据用 MATLAB 做线性标定，再看看温度补偿残差。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确要求使用 MATLAB 进行标定和温度补偿，这是 Skill 的核心能力。",
+          "pass": true
+        },
+        {
+          "prompt": "我有一个 .m 脚本，帮我在本机 MATLAB 2025b 跑一下并检查结果是否合理。",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "明确要求在本机 MATLAB 2025b 执行 .m 脚本并检查结果，符合 Skill 的核心意图。",
+          "pass": true
+        },
+        {
+          "prompt": "FFT 是什么意思，给我讲一下原理。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务是纯文本解释 FFT 原理，不涉及 MATLAB 的数值计算或工程分析能力，属于 Boundary 排除项。",
+          "pass": true
+        },
+        {
+          "prompt": "帮我用 Python 写一个普通的 CSV 清洗脚本。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确要求使用 Python 编写脚本，且是普通代码编写任务，不属于 MATLAB Skill 范围。",
+          "pass": true
+        },
+        {
+          "prompt": "通过 PC MCP 看一下 matlab_exec 为什么没有出现在工具列表。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务是排查 PC MCP / matlab_exec 工具链问题，不属于 MATLAB 工程分析任务，属于 Boundary 排除项。",
+          "pass": true
+        },
+        {
+          "prompt": "这个 Excel 只用 Origin 打开并分析，不要 MATLAB。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "明确指定只使用 Origin 且不要 MATLAB，属于 Boundary 排除项。",
+          "pass": true
+        },
+        {
+          "prompt": "给我写一段 MATLAB 语法示例，不需要在本机执行。",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "任务只要求生成 MATLAB 代码片段，明确说明不需要本机执行，属于 Boundary 排除项。",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "skill": "academic-translation",
+      "model": "gemini-2.5-flash",
+      "skillContentHash": "b0b196fde4a2eebe0b6e84ce6380b21c6ff15be36c6cf33ab9ae9c583fb97793",
+      "kind": "semantic-judge-not-runtime-routing",
+      "passed": 8,
+      "total": 8,
+      "cases": [
+        {
+          "prompt": "把这篇论文摘要翻成学术英文",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及“论文摘要”和“学术英文”，与Skill的核心意图（学术论文翻译）高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "润色这段论文的 Chinglish",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及“润色”和“Chinglish”，与Skill的核心意图（润色、Chinglish修复）高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "翻译这段 LaTeX，保留公式和 cite",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及“LaTeX”、“公式”和“cite”，与Skill的核心意图（保留公式/cite的学术翻译）高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "将这篇英文论文做中英双栏对照",
+          "expected": "trigger",
+          "actual": "trigger",
+          "reason": "用户明确提及“英文论文”和“中英双栏对照”，与Skill的核心意图（学术论文中英互译、双栏对照）高度匹配。",
+          "pass": true
+        },
+        {
+          "prompt": "翻译给客户的商务邮件",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求翻译“商务邮件”，这明确落入Skill的“不在范围内”列表中的“通用文本 / 邮件”场景。",
+          "pass": true
+        },
+        {
+          "prompt": "帮我生成演讲 PPT",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“生成演讲 PPT”，这与Skill的学术翻译核心意图完全不符。",
+          "pass": true
+        },
+        {
+          "prompt": "识别扫描收据里的金额",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“识别扫描收据里的金额”，这属于OCR和信息提取任务，与Skill的学术翻译核心意图完全不符。",
+          "pass": true
+        },
+        {
+          "prompt": "修复 Python 的语法错误",
+          "expected": "no-trigger",
+          "actual": "no-trigger",
+          "reason": "用户请求“修复 Python 的语法错误”，这属于代码调试任务，与Skill的学术翻译核心意图完全不符。",
+          "pass": true
+        }
+      ]
+    }
+  ]
+}

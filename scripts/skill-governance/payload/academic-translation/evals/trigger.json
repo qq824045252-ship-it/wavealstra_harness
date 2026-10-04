@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "academic-translation",
+  "cases": [
+    {
+      "prompt": "把这篇论文摘要翻成学术英文",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "润色这段论文的 Chinglish",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "翻译这段 LaTeX，保留公式和 cite",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "将这篇英文论文做中英双栏对照",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "翻译给客户的商务邮件",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "帮我生成演讲 PPT",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "识别扫描收据里的金额",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "修复 Python 的语法错误",
+      "expected": "no-trigger"
+    }
+  ]
+}

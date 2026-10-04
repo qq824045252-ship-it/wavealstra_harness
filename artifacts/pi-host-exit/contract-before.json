@@ -1,0 +1,150 @@
+{
+  "at": "2026-10-01T05:48:41.872Z",
+  "passed": false,
+  "results": [
+    {
+      "name": "delete the MCP lifecycle callback, including its assembler and interface",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: AgentService.ts"
+    },
+    {
+      "name": "delete background search completion wakeups, not just lower their retry count",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert(!/startBackgroundFetch|web-search-content-ready|pendingFetches|sessionActive/.test(s))\n"
+    },
+    {
+      "name": "status and configuration commands never enqueue a model turn",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert(!/pi\\.sendMessage|triggerTurn|deliverAs/.test(s.slice(start, end)))\n"
+    },
+    {
+      "name": "curator timeout does not masquerade as user submission",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert(!/sendFollowUpFromReturn|publishUserSelectedSearch/.test(cancel))\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=drafting in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=drafting",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=awaiting_approval in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=awaiting_approval",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=approved in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=approved",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=executing in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=executing",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=verifying in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=verifying",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=completed in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=completed",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=blocked in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=blocked",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "MCP mutation is independent of product status=cancelled in auto approval mode",
+      "passed": true
+    },
+    {
+      "name": "explicit unapproved request remains protected even when bookkeeping status=cancelled",
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert((await hookResult({ ...context, status, approvalMode: \"user\" }, \"fixture_update_record\"))?.block)\n"
+    },
+    {
+      "name": "readonly permission still blocks an MCP mutation without any plan",
+      "passed": true
+    },
+    {
+      "name": "readonly MCP reads remain available while awaiting explicit approval",
+      "passed": true
+    },
+    {
+      "name": "recording failure cannot turn an authorized MCP call into a tool failure",
+      "passed": true
+    },
+    {
+      "name": "optional step updates do not require a start ritual (approved)",
+      "passed": false,
+      "error": "Error: Plan status=approved; step status updates require executing/verifying."
+    },
+    {
+      "name": "evidence can be recorded without reopening the run (approved)",
+      "passed": false,
+      "error": "Error: Plan status=approved; verification requires executing/verifying."
+    },
+    {
+      "name": "optional step updates do not require a start ritual (completed)",
+      "passed": false,
+      "error": "Error: Plan is terminal (completed)"
+    },
+    {
+      "name": "evidence can be recorded without reopening the run (completed)",
+      "passed": false,
+      "error": "Error: Plan is terminal (completed)"
+    },
+    {
+      "name": "optional step updates do not require a start ritual (blocked)",
+      "passed": false,
+      "error": "Error: Plan status=blocked; step status updates require executing/verifying."
+    },
+    {
+      "name": "evidence can be recorded without reopening the run (blocked)",
+      "passed": false,
+      "error": "Error: Plan status=blocked; verification requires executing/verifying."
+    },
+    {
+      "name": "optional plan can be revised during execution",
+      "passed": false,
+      "error": "Error: Plan status=executing; full plan rewrite is allowed only before execution."
+    },
+    {
+      "name": "model cannot clear an outstanding user approval by rewriting, blocking, or verifying",
+      "passed": false,
+      "error": "Error: Plan status=awaiting_approval; verification requires executing/verifying."
+    }
+  ]
+}

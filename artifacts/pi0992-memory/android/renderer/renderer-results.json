@@ -1,0 +1,102 @@
+{
+  "ok": true,
+  "passed": 24,
+  "results": [
+    {
+      "name": "fenced SVG uses desktop renderer and decodes as a real image",
+      "ok": true
+    },
+    {
+      "name": "SVG is outside pre/code; no invalid nested block wrapper",
+      "ok": true
+    },
+    {
+      "name": "new thinking and running tools do not auto-expand process panel",
+      "ok": true
+    },
+    {
+      "name": "tool details stay folded through running-to-success updates",
+      "ok": true
+    },
+    {
+      "name": "explicit expansion shows output, not mislabeled call arguments",
+      "ok": true
+    },
+    {
+      "name": "user precedes answer; intrinsic row heights prevent overlap and reversed-looking content",
+      "ok": true
+    },
+    {
+      "name": "streamed replies do not steal historical reading scroll position",
+      "ok": true
+    },
+    {
+      "name": "no horizontal overflow at 360 CSS px",
+      "ok": true
+    },
+    {
+      "name": "no horizontal overflow at 412 CSS px",
+      "ok": true
+    },
+    {
+      "name": "mobile tables have bordered readable cells; compact tables fit and wide tables scroll locally",
+      "ok": true
+    },
+    {
+      "name": "standalone raw SVG renders through the same safe preview path",
+      "ok": true
+    },
+    {
+      "name": "executable SVG is blocked without injecting markup into the page",
+      "ok": true
+    },
+    {
+      "name": "network restoration triggers foreground resume synchronization",
+      "ok": true
+    },
+    {
+      "name": "five unchanged snapshot refreshes preserve all 8 SVG DOM nodes and bottom reading position",
+      "ok": true
+    },
+    {
+      "name": "streamed text after SVG keeps historical and same-reply previews mounted",
+      "ok": true
+    },
+    {
+      "name": "SVG source selection survives background snapshots",
+      "ok": true
+    },
+    {
+      "name": "raster inline: registered PNG decodes once without inline/fallback duplicates",
+      "ok": true
+    },
+    {
+      "name": "raster forward: registered PNG decodes once without inline/fallback duplicates",
+      "ok": true
+    },
+    {
+      "name": "raster link: registered PNG decodes once without inline/fallback duplicates",
+      "ok": true
+    },
+    {
+      "name": "raster only: registered PNG decodes once without inline/fallback duplicates",
+      "ok": true
+    },
+    {
+      "name": "raster DOM, decoded blob URL and network request survive five history refreshes",
+      "ok": true
+    },
+    {
+      "name": "original-image viewer uses the same authenticated blob without another download",
+      "ok": true
+    },
+    {
+      "name": "failed version refresh offers a working retry without clearing chat or credentials",
+      "ok": true
+    },
+    {
+      "name": "unregistered local image stays blocked and does not trigger arbitrary file reads",
+      "ok": true
+    }
+  ]
+}

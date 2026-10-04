@@ -1,0 +1,329 @@
+{
+  "kind": "native-pi-real-model-packaged-desktop-composer",
+  "startedAt": "2026-09-30T15:56:54.854Z",
+  "tests": [
+    {
+      "name": "repository-inventory",
+      "status": "passed",
+      "startedAt": "2026-09-30T15:56:57.621Z",
+      "result": {
+        "total": 682,
+        "totalBytes": 7879853,
+        "largest": [
+          {
+            "path": "src/main/agent/AgentService.ts",
+            "bytes": 250388
+          },
+          {
+            "path": "src/renderer/src/store/appStore.ts",
+            "bytes": 248342
+          },
+          {
+            "path": "src/main/db/AppDatabase.ts",
+            "bytes": 167004
+          }
+        ]
+      },
+      "tools": [
+        {
+          "id": "call_00_4c69fu9rciolz2l7m8v2c2if|dbc4921f-3b5f-37a2-95f1-beb9faaaf507",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\nconst text = res.content.filter(c => c.type ==",
+          "status": "error",
+          "output": "Script failed\nWall time 0.2 seconds\nOutput:\n\nScript error:\nTypeError: not a function\n    at <anonymous> (codemode.js:3:52)\n\nTool calls made before the failure (they are not undone): mcp__fixture__get_source_inventory (ok)"
+        },
+        {
+          "id": "call_00_4c69fu9rciolz2l7m8v2c2if|dbc4921f-3b5f-37a2-95f1-beb9faaaf507/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_4c69fu9rciolz2l7m8v2c2if|dbc4921f-3b5f-37a2-95f1-beb9faaaf507",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7879853}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-d208ffb69bc83d86.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_ux8z6etdb0vosje6d0xwwyfa|c678c7ba-07cd-30a0-abd1-69858e7b30d7",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\ntext(\\\"typeof=\\\" + typeof res);\\ntext(JSON.str",
+          "status": "success",
+          "output": "ath\\\":\\\"src/main/agent/ConversationInteractionService.ts\\\",\\\"bytes\\\":7267},{\\\"path\\\":\\\"src/main/agent/ConversationPlanRepository.ts\\\",\\\"bytes\\\":5020},{\\\"path\\\":\\\"src/main/agent/ConversationPlanService.ts\\\",\\\"bytes\\\":13204},{\\\"path\\\":\\\"src/main/agent/ConversationTodoRepository.ts\\\",\\\"bytes\\\":4431},{\\\"path\\\":\\\"src/main/agent/ConversationTodoService.ts\\\",\\\"bytes\\\":4892},{\\\"path\\\":\\\"src/main/agent/delete-parser.ts\\\",\\\"bytes\\\":3030},{\\\"path\\\":\\\"src/main/agent/EphemeralContextProjection.ts\\\",\\\"bytes\\\":9049},{\\\"path\\\":\\\"src/main/agent/EvidenceBudget.ts\\\",\\\"bytes\\\":2608},{\\\"path\\\":\\\"src/main/agent/ExecutionAttemptRepository.ts\\\",\\\"bytes\\\":7136},{\\\"path\\\":\\\"src/main/agent/ExecutionFailureRepository.ts\\\",\\\"bytes\\\":5572},{\\\"path\\\":\\\"src/main/agent/ExecutionRestartRecovery.ts\\\",\\\"bytes\\\":1367},{\\\"path\\\":\\\"src/main/agent/ExecutionVerifierRegistry.ts\\\",\\\"bytes\\\":6850},{\\\"path\\\":\\\"src/main/agent/FileBackupService.ts\\\",\\\"bytes\\\":7931},{\\\"path\\\":\\\"src/main/agent/FileContentVerifier.ts\\\",\\\"bytes\\\":3172},{\\\"path\\\":\\\"src/main/agent/LegacyExecutionControlHistory.ts\\\",\\\"bytes\\\":1416},{\\\"path\\\":\\\"src/main/agent/LegacyMemoryHistoryHygiene.ts\\\",\\\"bytes\\\":8566},{\\\"path\\\":\\\"src/main/agent/LegacyMemorySummaryRecovery.ts\\\",\\\"bytes\\\":11879},{\\\"path\\\":\\\"src/main/agent/LibraryWorkspaceContextService.ts\\\",\\\"bytes\\\":7323},{\\\"path\\\":\\\"src/main/agent/mcp-side-effect-extension.ts\\\",\\\"bytes\\\":10278},{\\\"path\\\":\\\"src/main/agent/MemoryContextProjection.ts\\\",\\\"bytes\\\":5775},{\\\"path\\\":\\\"src/main/agent/mode-defaults.ts\\\",\\\"bytes\\\":28742},{\\\"path\\\":\\\"src/main/agent/ModelInvocationAdmission.ts\\\",\\\"bytes\\\":8478},{\\\"path\\\":\\\"src/main/agent/ModelsConfigStore.ts\\\",\\\"bytes\\\":3868},{\\\"path\\\":\\\"src/main/agent/ModeProfileStore.ts\\\",\\\"bytes\\\":28822},{\\\"path\\\":\\\"src/main/agent/parse-user-prompt.ts\\\",\\\"bytes\\\":3797},{\\\"path\\\""
+        },
+        {
+          "id": "call_00_ux8z6etdb0vosje6d0xwwyfa|c678c7ba-07cd-30a0-abd1-69858e7b30d7/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_ux8z6etdb0vosje6d0xwwyfa|c678c7ba-07cd-30a0-abd1-69858e7b30d7",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7879853}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-0ca383f51a578dc5.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\nconst payload = JSON.parse(res.content[0].text",
+          "status": "success",
+          "output": "Script completed\nWall time 0.2 seconds\nOutput:\n\nsummary={\"total\":682,\"totalBytes\":7879853,\"largest\":[{\"path\":\"src/main/agent/AgentService.ts\",\"bytes\":250388},{\"path\":\"src/renderer/src/store/appStore.ts\",\"bytes\":248342},{\"path\":\"src/main/db/AppDatabase.ts\",\"bytes\":167004}]}\nwrite_ok=\"{\\\"path\\\":\\\"inventory-summary.json\\\",\\\"bytes\\\":311}\"\nreadback_verdict=READBACK_MISMATCH\nreadback_raw={\"text\":\"{\\n  \\\"total\\\": 682,\\n  \\\"totalBytes\\\": 7879853,\\n  \\\"largest\\\": [\\n    {\\n      \\\"path\\\": \\\"src/main/agent/AgentService.ts\\\",\\n      \\\"bytes\\\": 250388\\n    },\\n    {\\n      \\\"path\\\": \\\"src/renderer/src/store/appStore.ts\\\",\\n      \\\"bytes\\\": 248342\\n    },\\n    {\\n      \\\"path\\\": \\\"src/main/db/AppDatabase.ts\\\",\\n      \\\"bytes\\\": 167004\\n    }\\n  ]\\n}\"}"
+        },
+        {
+          "id": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7879853}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-20ca169063b99072.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e/2",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e",
+          "summary": "{\"path\":\"inventory-summary.json\",\"text\":\"{\\n  \\\"total\\\": 682,\\n  \\\"totalBytes\\\": 7879853,\\n  \\\"largest\\\": [\\n    {\\n    ",
+          "status": "success",
+          "output": "{\"path\":\"inventory-summary.json\",\"bytes\":311}"
+        },
+        {
+          "id": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e/3",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_ltw1wl6dmtegr89686xdrpx7|492ecd3b-370b-3baa-a92c-c15418b5594e",
+          "summary": "{\"path\":\"inventory-summary.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\n  \\\"total\\\": 682,\\n  \\\"totalBytes\\\": 7879853,\\n  \\\"largest\\\": [\\n    {\\n      \\\"path\\\": \\\"src/main/agent/AgentService.ts\\\",\\n      \\\"bytes\\\": 250388\\n    },\\n    {\\n      \\\"path\\\": \\\"src/renderer/src/store/appStore.ts\\\",\\n      \\\"bytes\\\": 248342\\n    },\\n    {\\n      \\\"path\\\": \\\"src/main/db/AppDatabase.ts\\\",\\n      \\\"bytes\\\": 167004\\n    }\\n  ]\\n}\"}"
+        },
+        {
+          "id": "call_00_voy2h1g5ae7micssphab1que|372af5a7-14d7-31d1-a6ac-079210f5b44f",
+          "name": "codemode",
+          "summary": "{\"code\":\"const res = await tools.mcp__fixture__get_source_inventory({});\\nconst files = JSON.parse(res.content[0].text).",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nraw_len=363\nlayer1_keys=[\"text\"]\nfile_content={\n  \"total\": 682,\n  \"totalBytes\": 7879853,\n  \"largest\": [\n    {\n      \"path\": \"src/main/agent/AgentService.ts\",\n      \"bytes\": 250388\n    },\n    {\n      \"path\": \"src/renderer/src/store/appStore.ts\",\n      \"bytes\": 248342\n    },\n    {\n      \"path\": \"src/main/db/AppDatabase.ts\",\n      \"bytes\": 167004\n    }\n  ]\n}\nmatches_expected=true\nexpected={\"total\":682,\"totalBytes\":7879853,\"largest\":[{\"path\":\"src/main/agent/AgentService.ts\",\"bytes\":250388},{\"path\":\"src/renderer/src/store/appStore.ts\",\"bytes\":248342},{\"path\":\"src/main/db/AppDatabase.ts\",\"bytes\":167004}]}"
+        },
+        {
+          "id": "call_00_voy2h1g5ae7micssphab1que|372af5a7-14d7-31d1-a6ac-079210f5b44f/1",
+          "name": "mcp__fixture__get_source_inventory",
+          "parent": "call_00_voy2h1g5ae7micssphab1que|372af5a7-14d7-31d1-a6ac-079210f5b44f",
+          "summary": "{}",
+          "status": "success",
+          "output": "8913},{\"path\":\"src/shared/project-template/creation-plan.ts\",\"bytes\":5649},{\"path\":\"src/shared/project-template/index.ts\",\"bytes\":604},{\"path\":\"src/shared/project-template/resolver.ts\",\"bytes\":5468},{\"path\":\"src/shared/project-template/types.ts\",\"bytes\":3159},{\"path\":\"src/shared/prompt-context.ts\",\"bytes\":2827},{\"path\":\"src/shared/prompt-enhance.ts\",\"bytes\":1026},{\"path\":\"src/shared/provider-login.ts\",\"bytes\":2866},{\"path\":\"src/shared/python-runtime.ts\",\"bytes\":10406},{\"path\":\"src/shared/regenerate-hash.ts\",\"bytes\":957},{\"path\":\"src/shared/remote-access.ts\",\"bytes\":50},{\"path\":\"src/shared/request-user-input-fallback.ts\",\"bytes\":5244},{\"path\":\"src/shared/runtime-audit-inspector.ts\",\"bytes\":3636},{\"path\":\"src/shared/runtime-policy.ts\",\"bytes\":12477},{\"path\":\"src/shared/runtime-requirement.ts\",\"bytes\":5280},{\"path\":\"src/shared/selection-display.ts\",\"bytes\":1208},{\"path\":\"src/shared/selection.ts\",\"bytes\":3660},{\"path\":\"src/shared/space-relocate.ts\",\"bytes\":1946},{\"path\":\"src/shared/subagent-model-config.ts\",\"bytes\":5793},{\"path\":\"src/shared/terminal-ipc.ts\",\"bytes\":6715},{\"path\":\"src/shared/thinking-levels.ts\",\"bytes\":3600},{\"path\":\"src/shared/usage-reconciliation.ts\",\"bytes\":8054},{\"path\":\"src/shared/usage-stats.ts\",\"bytes\":20127},{\"path\":\"src/shared/user-prompt-display.ts\",\"bytes\":1599},{\"path\":\"src/shared/work-graph.ts\",\"bytes\":3203},{\"path\":\"src/shared/workspace-library-binding.ts\",\"bytes\":2076},{\"path\":\"src/shared/workspace-resolver.ts\",\"bytes\":17700},{\"path\":\"src/shared/workspace-resource-locator.ts\",\"bytes\":4443},{\"path\":\"src/shared/workspace-shared-context.ts\",\"bytes\":48675},{\"path\":\"src/shared/workspace-tree.ts\",\"bytes\":29562}],\"total\":682,\"totalBytes\":7879853}\n\n[Full output: C:\\Users\\servi\\AppData\\Local\\Temp\\pi-mcp-8039ce51131a0f1c.txt (read it with offset/limit)]"
+        },
+        {
+          "id": "call_00_voy2h1g5ae7micssphab1que|372af5a7-14d7-31d1-a6ac-079210f5b44f/2",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_voy2h1g5ae7micssphab1que|372af5a7-14d7-31d1-a6ac-079210f5b44f",
+          "summary": "{\"path\":\"inventory-summary.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\n  \\\"total\\\": 682,\\n  \\\"totalBytes\\\": 7879853,\\n  \\\"largest\\\": [\\n    {\\n      \\\"path\\\": \\\"src/main/agent/AgentService.ts\\\",\\n      \\\"bytes\\\": 250388\\n    },\\n    {\\n      \\\"path\\\": \\\"src/renderer/src/store/appStore.ts\\\",\\n      \\\"bytes\\\": 248342\\n    },\\n    {\\n      \\\"path\\\": \\\"src/main/db/AppDatabase.ts\\\",\\n      \\\"bytes\\\": 167004\\n    }\\n  ]\\n}\"}"
+        }
+      ],
+      "streaming": {
+        "thinkingEvents": 76,
+        "textEvents": 23
+      },
+      "taskId": "local-1790783817777-0",
+      "finalText": "验收完成，三项字段已写入 fixture 工作区并回读核对一致。\n\n**结论**\n\n| 字段 | 值 |\n|---|---|\n| total | **682**（个文件，来自工具实际返回清单，非估算） |\n| totalBytes | **7,879,853**（约 7.51 MiB） |\n| largest[1] | src/main/agent/AgentService.ts — 250,388 |\n| largest[2] | src/renderer/src/store/appStore.ts — 248,342 |\n| largest[3] | src/main/db/AppDatabase.ts — 167,004 |\n\n写入文件：fixture 临时工作区 `inventory-summary.json`（write_file 回报 311 字节）。\n\n**执行与依据**\n1. `codemode` 调用 `mcp__fixture__get_source_inventory` → 拿到文件清单数组；\n2. 在脚本内对清单实测统计：`total = files.length`、`totalBytes = Σbytes`、`largest = 按 bytes 降序取前 3`；\n3. `mcp__fixture__write_file` 写入 `inventory-summary.json`；\n4. `mcp__fixture__read_file` 回读，逐字段与期望值比对 → `matches_expected=true`。\n\n**一个需要说明的坑（已修正，不是数据错误）**\nfixture 的 `read_file` 返回体是 `{\"text\":\"<文件内容>\"}` 这层包装，首次比对时我按单层 JSON 解析包装体，导致误报 `READBACK_MISMATCH`；解析内层文本后确认与计算值完全一致。核对逻辑本身没问题，是回读解析层级写错了。\n\n**局限**\n- `totalBytes` 是清单中 bytes 字段的算术和，仅代表该清单口径的源码体积；\n- 最大的三个文件存在并列风险未触发（250,388 / 248,342 差距明显），但若清单更新需重算。",
+      "finishedAtMs": 1790783860046,
+      "history": {
+        "found": true,
+        "textChars": 954
+      },
+      "finishedAt": "2026-09-30T15:57:40.664Z"
+    },
+    {
+      "name": "unseen-input-transform",
+      "status": "passed",
+      "startedAt": "2026-09-30T15:57:41.152Z",
+      "result": {
+        "nonce": "fc4a693bef8ab465ed7e2881",
+        "count": 13,
+        "sum": 4112,
+        "min": -478,
+        "max": 993,
+        "sorted": [
+          -478,
+          -402,
+          -313,
+          -81,
+          78,
+          267,
+          419,
+          557,
+          634,
+          747,
+          829,
+          862,
+          993
+        ]
+      },
+      "tools": [
+        {
+          "id": "call_00_0agoks4w8oodehp6ryazt8as|ecc4e6c5-8f1a-3b09-9268-1e0fcb8ecade",
+          "name": "codemode",
+          "summary": "{\"code\":\"const r = await tools.mcp__fixture__read_file({ path: \\\"sample.json\\\" });\\nconst raw = r.content[0].text;\\ntext",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nraw_len=118\nraw={\"text\":\"{\\\"nonce\\\":\\\"fc4a693bef8ab465ed7e2881\\\",\\\"values\\\":[-313,862,-81,993,419,747,634,-402,829,78,557,-478,267]}\"}"
+        },
+        {
+          "id": "call_00_0agoks4w8oodehp6ryazt8as|ecc4e6c5-8f1a-3b09-9268-1e0fcb8ecade/1",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_0agoks4w8oodehp6ryazt8as|ecc4e6c5-8f1a-3b09-9268-1e0fcb8ecade",
+          "summary": "{\"path\":\"sample.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"nonce\\\":\\\"fc4a693bef8ab465ed7e2881\\\",\\\"values\\\":[-313,862,-81,993,419,747,634,-402,829,78,557,-478,267]}\"}"
+        },
+        {
+          "id": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c",
+          "name": "codemode",
+          "summary": "{\"code\":\"const r = await tools.mcp__fixture__read_file({ path: \\\"sample.json\\\" });\\nlet layer = JSON.parse(r.content[0].",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\nresult={\n  \"nonce\": \"fc4a693bef8ab465ed7e2881\",\n  \"count\": 13,\n  \"sum\": 4112,\n  \"min\": -478,\n  \"max\": 993,\n  \"sorted\": [\n    -478,\n    -402,\n    -313,\n    -81,\n    78,\n    267,\n    419,\n    557,\n    634,\n    747,\n    829,\n    862,\n    993\n  ]\n}\nwrite_response=\"{\\\"path\\\":\\\"calculated.json\\\",\\\"bytes\\\":237}\"\nreadback_matches=true"
+        },
+        {
+          "id": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c/1",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c",
+          "summary": "{\"path\":\"sample.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\\"nonce\\\":\\\"fc4a693bef8ab465ed7e2881\\\",\\\"values\\\":[-313,862,-81,993,419,747,634,-402,829,78,557,-478,267]}\"}"
+        },
+        {
+          "id": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c/2",
+          "name": "mcp__fixture__write_file",
+          "parent": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c",
+          "summary": "{\"path\":\"calculated.json\",\"text\":\"{\\n  \\\"nonce\\\": \\\"fc4a693bef8ab465ed7e2881\\\",\\n  \\\"count\\\": 13,\\n  \\\"sum\\\": 4112,\\n  \\",
+          "status": "success",
+          "output": "{\"path\":\"calculated.json\",\"bytes\":237}"
+        },
+        {
+          "id": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c/3",
+          "name": "mcp__fixture__read_file",
+          "parent": "call_00_luvrcij829kvedvr6596gwyn|3766a24f-e408-3671-9db8-1b02b3ef768c",
+          "summary": "{\"path\":\"calculated.json\"}",
+          "status": "success",
+          "output": "{\"text\":\"{\\n  \\\"nonce\\\": \\\"fc4a693bef8ab465ed7e2881\\\",\\n  \\\"count\\\": 13,\\n  \\\"sum\\\": 4112,\\n  \\\"min\\\": -478,\\n  \\\"max\\\": 993,\\n  \\\"sorted\\\": [\\n    -478,\\n    -402,\\n    -313,\\n    -81,\\n    78,\\n    267,\\n    419,\\n    557,\\n    634,\\n    747,\\n    829,\\n    862,\\n    993\\n  ]\\n}\"}"
+        }
+      ],
+      "streaming": {
+        "thinkingEvents": 4,
+        "textEvents": 15
+      },
+      "taskId": "local-1790783817777-0",
+      "finalText": "测试完成，数据来源为 fixture 工作区 `sample.json`，全部数值由脚本实测计算，未沿用上一任务数据。\n\n**结论**\n\n| 字段 | 值 |\n|---|---|\n| nonce | `fc4a693bef8ab465ed7e2881` |\n| count | **13** |\n| sum | **4112** |\n| min | **-478** |\n| max | **993** |\n| sorted | -478, -402, -313, -81, 78, 267, 419, 557, 634, 747, 829, 862, 993 |\n\n写入文件：fixture 工作区 `calculated.json`（write_file 回报 237 字节），`readback_matches=true`。\n\n**执行与依据**\n1. `codemode` 调用 `mcp__fixture__read_file` 读 `sample.json`，实际内容：\n   `nonce=\"fc4a693bef8ab465ed7e2881\"`，`values=[-313,862,-81,993,419,747,634,-402,829,78,557,-478,267]`；\n2. 脚本内计算 count/sum/min/max，sorted 用数值升序排序（非字符串序，保证负数与多位数正确）；\n3. `mcp__fixture__write_file` 写 `calculated.json`；\n4. `mcp__fixture__read_file` 回读，解析后与内存中结果做整串比对 → 一致。\n\n**说明**\n- sorted 求和自检：13 项合计 4112，与 sum 字段自洽；\n- 回读时仍按上次发现的口径处理只能 `read_file` 返回 `{\"text\":\"…\"}` 包装的问题（本次一次解析正确，未再误报）。",
+      "finishedAtMs": 1790783879250,
+      "history": {
+        "found": true,
+        "textChars": 827
+      },
+      "finishedAt": "2026-09-30T15:57:59.668Z"
+    },
+    {
+      "name": "real-shell-failure-and-repair",
+      "status": "passed",
+      "startedAt": "2026-09-30T15:57:59.885Z",
+      "result": {
+        "firstExit": 7,
+        "lastExit": 0,
+        "invocations": 2,
+        "validatorUnchanged": true
+      },
+      "tools": [
+        {
+          "id": "call_00_6ih3xoa0fwdnn0z1c4b4dgzt|d887acde-fd5e-3340-8976-a348b50321e2",
+          "name": "terminal",
+          "summary": "node \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/validate.cjs\"; echo \"EXIT=$?\"",
+          "status": "success",
+          "output": "INPUT_INVALID: repair.json must contain enabled=true and the exact expected nonce documented in validate.cjs. Do not change the validator.\nEXIT=7\n"
+        },
+        {
+          "id": "call_00_qmag0tq92oc1q7zj319u6t41|c581cfa6-1afb-3a42-9c32-d5f3d443a13e",
+          "name": "read",
+          "summary": "C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/validate.cjs",
+          "status": "success",
+          "output": "const fs=require('node:fs'),p=require('node:path');const expected=\"fc4a693bef8ab465ed7e2881\";let input;try{input=JSON.parse(fs.readFileSync(p.join(__dirname,'repair.json'),'utf8'));}catch{}const ok=input?.enabled===true&&input?.nonce===expected;fs.appendFileSync(p.join(__dirname,'validator-audit.jsonl'),JSON.stringify({code:ok?0:7,at:Date.now()})+'\\n');if(!ok){console.error('INPUT_INVALID: repair.json must contain enabled=true and the exact expected nonce documented in validate.cjs. Do not change the validator.');process.exit(7);}fs.writeFileSync(p.join(__dirname,'validated.json'),JSON.stringify({ok:true,nonce:expected,source:'real-node'}));console.log('VALIDATED_OK');"
+        },
+        {
+          "id": "call_00_q7s4p0nxatym0oh2l13kt8j7|dc1cd403-51f6-3422-a8a3-f46fd4c19f9b",
+          "name": "bash",
+          "summary": "cd \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace\" && ls -la && echo \"--- repair.json ---\" && cat repair.json",
+          "status": "error",
+          "output": "total 10\ndrwxr-xr-x 1 servi 197609   0 Sep 30 23:58 .\ndrwxr-xr-x 1 servi 197609   0 Sep 30 23:56 ..\n-rw-r--r-- 1 servi 197609 237 Sep 30 23:57 calculated.json\n-rw-r--r-- 1 servi 197609 311 Sep 30 23:57 inventory-summary.json\ndrwxr-xr-x 1 servi 197609   0 Sep 30 23:56 listing\n-rw-r--r-- 1 servi 197609 101 Sep 30 23:56 sample.json\n-rw-r--r-- 1 servi 197609 231 Sep 30 23:56 slow.cjs\n-rw-r--r-- 1 servi 197609 677 Sep 30 23:56 validate.cjs\n-rw-r--r-- 1 servi 197609  30 Sep 30 23:58 validator-audit.jsonl\n--- repair.json ---\ncat: repair.json: No such file or directory\n\n\nCommand exited with code 1"
+        },
+        {
+          "id": "call_00_bwpmyy1inzywejud5in1tvjv|ea95a61f-4228-31fa-840a-4fe6370134ed",
+          "name": "bash",
+          "summary": "cd \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace\" && ls -la listing | head -30 && echo \"--- find repair* ---\" && find \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC\" -maxdepth 3 -name \"repair*\" 2>/dev/null",
+          "status": "success",
+          "output": "total 6\ndrwxr-xr-x 1 servi 197609  0 Sep 30 23:56 .\ndrwxr-xr-x 1 servi 197609  0 Sep 30 23:58 ..\n-rw-r--r-- 1 servi 197609 21 Sep 30 23:56 alpha-fc4a69.txt\n-rw-r--r-- 1 servi 197609 20 Sep 30 23:56 beta-fc4a69.md\ndrwxr-xr-x 1 servi 197609  0 Sep 30 23:56 nested\n--- find repair* ---\n"
+        },
+        {
+          "id": "call_00_4c2ksetgeaw30uwyk8std4ro|73ce8ecd-10ae-3c69-9cd0-9f0032b88147",
+          "name": "write",
+          "summary": "C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/repair.json",
+          "status": "success",
+          "output": "Wrote and read-back verified 61 UTF-8 bytes to C:\\Users\\servi\\AppData\\Local\\Temp\\native-pi-desktop-9oedMC\\workspace\\repair.json. Evidence: attempt-41468972-86c5-433e-9203-0c0bda24440c. This verifies file content, not overall task correctness."
+        },
+        {
+          "id": "call_00_23mat6spxfepsksg8z7w1g7v|391eb04a-30f7-3ad7-bf66-d17f5b21ea73",
+          "name": "terminal",
+          "summary": "node \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/validate.cjs\"; echo \"EXIT=$?\"",
+          "status": "success",
+          "output": "VALIDATED_OK\nEXIT=0\n"
+        },
+        {
+          "id": "call_00_eqbv3nnuv1rf4hezaq927mjr|79dc42b6-6e87-3a8a-bc64-804a121da37e",
+          "name": "bash",
+          "summary": "cd \"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace\" && echo \"--- validated.json ---\" && cat validated.json && echo && echo \"--- validator-audit.jsonl ---\" && cat validator-audit.jsonl && echo \"--- repair.json ---\" && cat repair.json && echo \"--- mtimes ---\" && ls -l --time-style=full-iso validated.json repair.json validate.cjs",
+          "status": "success",
+          "output": "--- validated.json ---\n{\"ok\":true,\"nonce\":\"fc4a693bef8ab465ed7e2881\",\"source\":\"real-node\"}\n--- validator-audit.jsonl ---\n{\"code\":7,\"at\":1790783884334}\n{\"code\":0,\"at\":1790783906303}\n--- repair.json ---\n{\n  \"enabled\": true,\n  \"nonce\": \"fc4a693bef8ab465ed7e2881\"\n}\n--- mtimes ---\n-rw-r--r-- 1 servi 197609  61 2026-09-30 23:58:21.249298300 +0800 repair.json\n-rw-r--r-- 1 servi 197609 677 2026-09-30 23:56:54.862634300 +0800 validate.cjs\n-rw-r--r-- 1 servi 197609  67 2026-09-30 23:58:26.304833100 +0800 validated.json\n"
+        }
+      ],
+      "streaming": {
+        "thinkingEvents": 26,
+        "textEvents": 27
+      },
+      "taskId": "local-1790783817777-0",
+      "finalText": "真实失败恢复验收通过。失败是真的，修的是输入而不是验证器。\n\n**结论**\n\n| 项 | 结果 |\n|---|---|\n| 第 1 次运行 | 退出码 **7**，`INPUT_INVALID`（真实失败） |\n| 根因 | 该临时目录里**根本不存在** `repair.json`，验证器 `JSON.parse` 抛错被 catch 吞掉，`input` 为 undefined |\n| 修复动作 | 只新建 `repair.json`：`{\"enabled\": true, \"nonce\": \"fc4a693bef8ab465ed7e2881\"}` |\n| 第 2 次运行（同一命令） | 输出 `VALIDATED_OK`，退出码 **0** |\n| 回读 `validated.json` | `{\"ok\":true,\"nonce\":\"fc4a693bef8ab465ed7e2881\",\"source\":\"real-node\"}` |\n\n**证据链（可对账）**\n- `validator-audit.jsonl` 两行：`{\"code\":7,...}` 后接 `{\"code\":0,...}` —— 验证器自己记录的先失败后成功，非人工伪造；\n- `validate.cjs` 未动：677 字节，mtime 仍是 `23:56:54`，早于我任何写操作（repair.json 为 `23:58:21`）；\n- nonce 取值来自 `validate.cjs` 内的 `expected` 常量，与 `sample.json` 中的 nonce 一致，非凭空填写；\n- `validated.json`（67 字节）由验证器写出，我只读取未创建。\n\n**边界与局限**\n- 本轮只写了 `repair.json` 一个测试输入文件，其余文件（`validate.cjs`、`sample.json`、`slow.cjs`、`listing/`）均未改动；\n- `repair.json` 的正确性依赖 nonce 一致：若 `sample.json`/验证器的 expected 常量变更，该文件需同步更新，否则会再次 `INPUT_INVALID`；\n- 该目录位于任务工作区之外（系统临时目录），写入已按授权流程落盘并做了回读校验。",
+      "finishedAtMs": 1790783920540,
+      "history": {
+        "found": true,
+        "textChars": 978
+      },
+      "finishedAt": "2026-09-30T15:58:40.655Z"
+    },
+    {
+      "name": "native-subagent",
+      "status": "passed",
+      "startedAt": "2026-09-30T15:58:40.918Z",
+      "result": {
+        "sum": 4112,
+        "nonce": "fc4a693bef8ab465ed7e2881",
+        "workerSucceeded": true,
+        "externalPiRequired": false
+      },
+      "tools": [
+        {
+          "id": "call_00_59y6hsdglmwv1874e9mjp93g|341af4e6-b997-38ab-8db1-8f8dc7546ffd",
+          "name": "subagent",
+          "summary": "{\"agent\":\"worker\",\"task\":\"用 read 工具读取文件 \\\"C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/sample.js",
+          "status": "success",
+          "output": "RESULT_JSON={\"nonce\":\"fc4a693bef8ab465ed7e2881\",\"sum\":4112}\n已读取 sample.json 并精确求和。\n\n> subagent: worker-l9repe（本次任务内临时实例，已结束）"
+        }
+      ],
+      "streaming": {
+        "thinkingEvents": 2,
+        "textEvents": 15
+      },
+      "taskId": "local-1790783817777-0",
+      "finalText": "子代理迁移验收完成，结果来自 worker 的真实返回。\n\n**结论**\n\n```\nRESULT_JSON={\"nonce\":\"fc4a693bef8ab465ed7e2881\",\"sum\":4112}\n```\n\n**执行记录**\n- 显式调用 `subagent`，`agent=worker`，一次性任务，未复用、未新建第二个 worker；\n- 交给 worker 的原文要求：用 `read` 读 `C:/Users/servi/AppData/Local/Temp/native-pi-desktop-9oedMC/workspace/sample.json`，计算 `values` 的 sum，保留精确 nonce，只返回一行 `RESULT_JSON`，并禁止改文件、禁止编造数值；\n- worker 返回（实例 `worker-l9repe`，已结束）：上面那行 RESULT_JSON，附注「已读取 sample.json 并精确求和」。\n\n**主模型未代算**\n我未对 `values` 做任何求和，也未读取或修改该输入文件；上面数字全部来自 worker 输出。子代理为默认只读分析工具集（read/ls/find/grep），本身无写权限，输入文件不可能被它改动。\n\n**旁证（非本轮计算）**\n该 nonce 与 sum=4112 与前一轮 `calculated.json` 验收中由脚本实测的结果一致，可互为交叉校验；但我没有在本轮重新计算，此条仅说明两次来源独立且吻合。\n\n**局限**\nworker 回执是文本，若需更强的可对账性，可让 worker 同时回传文件字节数或原始 values 数组；本轮按你的格式要求只取了 RESULT_JSON 一行。",
+      "finishedAtMs": 1790783964966,
+      "history": {
+        "found": true,
+        "textChars": 745
+      },
+      "finishedAt": "2026-09-30T15:59:25.701Z"
+    },
+    {
+      "name": "natural-directory-listing",
+      "status": "running",
+      "startedAt": "2026-09-30T15:59:26.069Z"
+    }
+  ],
+  "status": "running",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-native-pi-20260930154746625\\win-unpacked\\MyBuddy.exe",
+  "port": 55824,
+  "pid": 32380
+}

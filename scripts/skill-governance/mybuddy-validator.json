@@ -1,0 +1,306 @@
+[
+  {
+    "id": "academic-translation",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "ansys-simulation",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "archify",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "cheaper-inference-image",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 9,
+    "readCases": 9
+  },
+  {
+    "id": "code-view",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "dim-feature-add",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "dimagent-debug",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "easyeda-agent",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "epro2kicad",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "fastcopy-copy",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "gemini-agent-platform",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "kicad-design",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "loop-agent",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "matlab-r2025b",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": true,
+    "hasEvals": true,
+    "evalCount": 10,
+    "readCases": 10
+  },
+  {
+    "id": "meeting-transcribe",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "npu-ocr",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "officecli",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": true,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "open-kimi-ppt",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": true,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "origin-analysis",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": true,
+    "hasEvals": true,
+    "evalCount": 10,
+    "readCases": 10
+  },
+  {
+    "id": "projectlibre-gen",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "root-cause-debugging",
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "SKILL.md 初始上下文偏大；建议把稳定长知识移入 references/，把确定性逻辑移入 scripts/"
+    ],
+    "hasReferences": true,
+    "hasScripts": true,
+    "hasTemplates": true,
+    "hasEvals": true,
+    "evalCount": 13,
+    "readCases": 13
+  },
+  {
+    "id": "shared-memory",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "wechat-public",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  },
+  {
+    "id": "weekly-report-fill",
+    "valid": true,
+    "errors": [],
+    "warnings": [],
+    "hasReferences": false,
+    "hasScripts": false,
+    "hasTemplates": false,
+    "hasEvals": true,
+    "evalCount": 8,
+    "readCases": 8
+  }
+]

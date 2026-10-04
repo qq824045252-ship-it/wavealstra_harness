@@ -1,0 +1,18 @@
+.plugin-directory-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--fg-muted); min-width: 0; }
+.plugin-directory-bar code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-native-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0 16px; color: var(--fg-muted); font-size: 12px; }
+.mcp-config-error { color: var(--danger, #b42318); background: color-mix(in srgb, var(--danger, #b42318) 7%, transparent); border-radius: 6px; padding: 9px 12px; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; }
+.mcp-config-modal { width: min(620px, calc(100vw - 32px)); max-height: min(860px, calc(100vh - 40px)); display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-panel); box-shadow: var(--shadow-lg); overflow: hidden; }
+.mcp-config-title { padding: 18px 20px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.mcp-config-body { padding: 18px 20px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+.mcp-config-body label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.mcp-config-body input:not([type="checkbox"]), .mcp-config-body select, .mcp-config-body textarea { width: 100%; min-width: 0; box-sizing: border-box; background: var(--bg-input, var(--bg-panel)); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: inherit; }
+.mcp-config-body textarea { font-family: var(--font-mono, monospace); resize: vertical; }
+.mcp-config-row { display: flex; gap: 14px; }
+.mcp-config-row label { flex: 1; min-width: 0; }
+.mcp-config-body .mcp-config-enabled { flex-direction: row; align-items: center; }
+.mcp-config-hint { color: var(--fg-muted); font-size: 11px; line-height: 1.6; margin: 0; }
+.mcp-tool-schema { overflow-x: auto; max-height: 280px; font-size: 11px; }
+.mcp-config-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 14px 20px; }
+.mcp-config-actions .mcp-config-hint { flex: 1; min-width: 150px; }
+@media (max-width: 560px) { .plugin-directory-bar { flex-wrap: wrap; } .plugin-directory-bar code { min-width: 150px; } .mcp-config-row { flex-direction: column; } }

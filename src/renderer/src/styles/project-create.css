@@ -1,0 +1,410 @@
+/* Wave 1C/D/E：Template-first 新建项目对话框专用样式（project-create-* 前缀）
+ * 复用 global.css 的 .modal-overlay / .btn / .icon-btn / .new-project-* 通用类，
+ * 这里只放新建流程特有的布局与组件。 */
+
+.project-create-modal {
+  width: 640px;
+}
+
+/* ---------- 名称校验行内提示 ---------- */
+
+.project-create-name-error {
+  font-size: 12px;
+  color: #b33;
+}
+
+/* ---------- 描述折叠入口 ---------- */
+
+.project-create-add-desc {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  font-size: 12.5px;
+  color: var(--fg-secondary);
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.project-create-add-desc:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* ---------- 模板选择器 ---------- */
+
+.project-create-template-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-create-template-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0 12px;
+  font-size: 13.5px;
+  text-align: left;
+}
+
+.project-create-template-select:hover {
+  border-color: var(--border-strong);
+}
+
+.project-create-template-select:focus-visible {
+  outline: none;
+  border-color: var(--border-strong);
+}
+
+.project-create-template-select-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-secondary);
+}
+
+.project-create-template-select-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-create-template-select-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+
+.project-create-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+
+.project-create-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.project-create-menu-group-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 6px 10px 4px;
+}
+
+.project-create-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.project-create-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.project-create-menu-item.selected {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.project-create-menu-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-secondary);
+  margin-top: 1px;
+}
+
+.project-create-menu-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-create-menu-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.project-create-menu-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+
+.project-create-menu-check {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-secondary);
+  margin-top: 1px;
+}
+
+.project-create-menu-divider {
+  height: 1px;
+  margin: 6px 10px;
+  background: var(--border);
+}
+
+/* ---------- 模板摘要卡片 ---------- */
+
+.project-create-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  padding: 12px 14px;
+}
+
+.project-create-summary-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.project-create-summary-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-secondary);
+  margin-top: 1px;
+}
+
+.project-create-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.project-create-summary-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.project-create-summary-desc {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.project-create-summary-config {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.project-create-summary-config-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  flex-shrink: 0;
+}
+
+.project-create-summary-config-line {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.project-create-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #e8a020 10%, transparent);
+}
+
+.project-create-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8a6d1a;
+  line-height: 1.5;
+}
+
+.project-create-warning svg {
+  flex-shrink: 0;
+}
+
+.project-create-warning-note {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.project-create-customize-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: 12.5px;
+  color: var(--fg-secondary);
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.project-create-customize-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* ---------- 自定义配置区 ---------- */
+
+.project-create-customize {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.project-create-add-select {
+  height: 26px;
+  min-width: 88px;
+  max-width: 180px;
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 12.5px;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.project-create-add-select:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.project-create-add-select:focus {
+  outline: none;
+}
+
+.project-create-add-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-create-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  border-radius: 4px;
+  padding: 1px;
+  flex-shrink: 0;
+}
+
+.project-create-chip-x:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.project-create-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.project-create-advanced-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.project-create-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+}
+
+.project-create-budget-hint {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.project-create-advanced-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---------- 切换模板确认框 ---------- */
+
+.project-create-switch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-create-switch-body p {
+  color: var(--fg-secondary);
+  font-size: 13px;
+}
+
+.project-create-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.project-create-radio input {
+  margin-top: 2px;
+  accent-color: var(--fg);
+}
+
+/* ---------- 项目工作目录 ---------- */
+.project-create-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-create-folder-input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 12px;
+}
+
+.project-create-folder-row .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}

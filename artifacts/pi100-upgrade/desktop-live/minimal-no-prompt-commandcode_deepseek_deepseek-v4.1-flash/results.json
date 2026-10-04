@@ -1,0 +1,169 @@
+{
+  "kind": "pi100-real-model-packaged-desktop",
+  "selectedModel": "commandcode/deepseek/deepseek-v4.1-flash",
+  "harnessPid": 37800,
+  "startedAt": "2026-10-01T20:43:54.933Z",
+  "tests": [
+    {
+      "name": "minimal-no-prompt",
+      "status": "passed",
+      "startedAt": "2026-10-01T20:43:59.096Z",
+      "hero": {
+        "mode": "coding",
+        "statusVisible": false,
+        "tags": [
+          {
+            "label": "最小模式",
+            "pressed": "true"
+          },
+          {
+            "label": "修 Bug",
+            "pressed": "false"
+          },
+          {
+            "label": "新功能",
+            "pressed": "false"
+          },
+          {
+            "label": "重构",
+            "pressed": "false"
+          },
+          {
+            "label": "补测试",
+            "pressed": "false"
+          },
+          {
+            "label": "代码审查",
+            "pressed": "false"
+          },
+          {
+            "label": "方案设计",
+            "pressed": "false"
+          },
+          {
+            "label": "只读解释",
+            "pressed": "false"
+          }
+        ]
+      },
+      "progress": {
+        "elapsedMs": 15908,
+        "started": true,
+        "done": true,
+        "toolCount": 7,
+        "lastTool": "mcp__fixture__save_result",
+        "textEvents": 27
+      },
+      "nativeCodeMode": {
+        "policy": "coding-only",
+        "welcomeMode": "coding",
+        "configured": true,
+        "active": true,
+        "models": true
+      },
+      "persisted": {
+        "welcomeMode": "coding",
+        "modePresetId": "minimal"
+      },
+      "promptEvidence": {
+        "hasModePresetSegment": false
+      },
+      "tools": [
+        {
+          "id": "call_00_dk31yaii2pgcq78a7hnc300c|739f6a59-3c6a-3b6f-9c6f-b0b73de64c9a",
+          "name": "codemode",
+          "summary": "{\"code\":\"const matches = searchTools(\\\"fixture\\\", { limit: 20 });\\ntext(matches);\"}",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{}"
+        },
+        {
+          "id": "call_01_4i7422qf97oie7xpalihgjvs|76943bd2-80ea-3420-bbf4-e6532d6d1b06",
+          "name": "tool_search",
+          "summary": "{\"query\":\"fixture read_seed save_result nonce values\"}",
+          "status": "success",
+          "output": "Loaded 2 tools. They are available from your next call:\n- mcp__fixture__save_result: Save a calculated answer only to the disposable scene-test workspace.\n- mcp__fixture__read_seed: Read the random seed and numbers from the disposable scene-test workspace."
+        },
+        {
+          "id": "call_00_1pyfyjrp25hibk2fzq7scfvc|c74669a5-f175-3ebe-af83-2c8ae9ade4d9",
+          "name": "codemode",
+          "summary": "{\"code\":\"let names = [];\\ntry { names = ALL_TOOLS.filter(t => String(t).toLowerCase().includes(\\\"fixture\\\")); } catch (e",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n[]\n{\n  \"content\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{\\\"nonce\\\":\\\"ca87278125dfac241781\\\",\\\"values\\\":[26,12,199,85,-33,71,187,51,0]}\"\n    }\n  ],\n  \"structuredContent\": {\n    \"nonce\": \"ca87278125dfac241781\",\n    \"values\": [\n      26,\n      12,\n      199,\n      85,\n      -33,\n      71,\n      187,\n      51,\n      0\n    ]\n  }\n}"
+        },
+        {
+          "id": "call_00_1pyfyjrp25hibk2fzq7scfvc|c74669a5-f175-3ebe-af83-2c8ae9ade4d9/1",
+          "name": "mcp__fixture__read_seed",
+          "parent": "call_00_1pyfyjrp25hibk2fzq7scfvc|c74669a5-f175-3ebe-af83-2c8ae9ade4d9",
+          "summary": "{}",
+          "status": "success",
+          "output": "{\"nonce\":\"ca87278125dfac241781\",\"values\":[26,12,199,85,-33,71,187,51,0]}"
+        },
+        {
+          "id": "call_00_hkmdf7xdpnincw6s8ccb0zvr|f6b31227-d097-30e0-9323-81daf5834949",
+          "name": "codemode",
+          "summary": "{\"code\":\"const seedRes = await tools.mcp__fixture__read_seed({});\\nconst seed = seedRes.structuredContent ?? JSON.parse(",
+          "status": "success",
+          "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{\n  \"nonce\": \"ca87278125dfac241781\",\n  \"values\": [\n    26,\n    12,\n    199,\n    85,\n    -33,\n    71,\n    187,\n    51,\n    0\n  ],\n  \"sum\": 598,\n  \"save\": {\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"{\\\"nonce\\\":\\\"ca87278125dfac241781\\\",\\\"sum\\\":598}\"\n      }\n    ],\n    \"structuredContent\": {\n      \"nonce\": \"ca87278125dfac241781\",\n      \"sum\": 598\n    }\n  }\n}"
+        },
+        {
+          "id": "call_00_hkmdf7xdpnincw6s8ccb0zvr|f6b31227-d097-30e0-9323-81daf5834949/1",
+          "name": "mcp__fixture__read_seed",
+          "parent": "call_00_hkmdf7xdpnincw6s8ccb0zvr|f6b31227-d097-30e0-9323-81daf5834949",
+          "summary": "{}",
+          "status": "success",
+          "output": "{\"nonce\":\"ca87278125dfac241781\",\"values\":[26,12,199,85,-33,71,187,51,0]}"
+        },
+        {
+          "id": "call_00_hkmdf7xdpnincw6s8ccb0zvr|f6b31227-d097-30e0-9323-81daf5834949/2",
+          "name": "mcp__fixture__save_result",
+          "parent": "call_00_hkmdf7xdpnincw6s8ccb0zvr|f6b31227-d097-30e0-9323-81daf5834949",
+          "summary": "{\"nonce\":\"ca87278125dfac241781\",\"sum\":598}",
+          "status": "success",
+          "output": "{\"nonce\":\"ca87278125dfac241781\",\"sum\":598}"
+        }
+      ],
+      "planSnapshots": [],
+      "finalText": "验收完成，全部通过 Pi 原生 codemode 执行。\n\n**执行结果**\n- 工具路径：`codemode` → `tools.mcp__fixture__read_seed` / `tools.mcp__fixture__save_result`（fixture MCP，唯一数据源）\n- nonce：`ca87278125dfac241781`\n- values：`[26, 12, 199, 85, -33, 71, 187, 51, 0]`\n- 总和：`598`（脚本内 `reduce` 计算，未人工猜测）\n- 保存内容：`{\"nonce\":\"ca87278125dfac241781\",\"sum\":598}`，save_result 回执与之一致\n\n**验证方式**：单次 codemode 脚本内先读种子、再算和、再写回，`save` 返回的 `structuredContent` 与提交值精确匹配，无中间硬编码。\n\n未经核实之处：save_result 的持久化落盘未做二次读取回查（该写入属一次性测试 workspace，未额外验证）。如需，我可以再调用读接口做回读确认。\n\n另外说明一句：本轮上下文中附带了一条资料库引用（`768d4079-...`「一分钟玩转资料库」），与本轮验收指令无关，未读取其正文，也未因此扩大任何工具权限。",
+      "streaming": {
+        "thinkingEvents": 22,
+        "textEvents": 27
+      },
+      "taskId": "local-1790887439293-0",
+      "result": {
+        "actual": {
+          "nonce": "ca87278125dfac241781",
+          "sum": 598
+        },
+        "codemodeCalls": 3
+      },
+      "finishedAtMs": 1790887454832,
+      "history": {
+        "found": true,
+        "textChars": 580
+      },
+      "finishedAt": "2026-10-01T20:44:15.045Z"
+    }
+  ],
+  "status": "passed",
+  "buildReport": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203630057\\build.json",
+  "asarSha256": "a05ca6eeaa5317e0911b05e82060dfe49834b275b82557605e57e33aaf6de8b0",
+  "sourceFingerprint": "1b2a612855aed66d9a2bc62e2cc9d0070aaa9636ef52667efa7ea8251c18ef6d",
+  "executable": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001203630057\\MyBuddy.exe",
+  "port": 58410,
+  "pid": 34500,
+  "modeFallbackChecks": [],
+  "sessionAudit": [
+    {
+      "file": "2026-10-01T20-43-59-599Z_01a0f935-aced-7726-bdb4-ec1795dc0a79.jsonl",
+      "entries": 16,
+      "userMessages": 1,
+      "retiredControlMessages": 0,
+      "observedModels": [
+        "commandcode/deepseek/deepseek-v4.1-flash"
+      ]
+    }
+  ],
+  "rendererErrors": [],
+  "temporaryCredentialsRemoved": true,
+  "finishedAt": "2026-10-01T20:44:24.545Z"
+}

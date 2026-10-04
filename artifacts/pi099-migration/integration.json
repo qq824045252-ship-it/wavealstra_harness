@@ -1,0 +1,115 @@
+{
+  "startedAt": "2026-10-02T04:19:22.218Z",
+  "tests": [
+    {
+      "name": "native-tool identities and exact server names",
+      "passed": true
+    },
+    {
+      "name": "configuration conversion: timeout, headers, disable and unsupported transports",
+      "passed": true
+    },
+    {
+      "name": "real repository inventory through native stdio and packaged QuickJS",
+      "passed": true,
+      "details": {
+        "total": 679,
+        "totalBytes": 7890440,
+        "largest": [
+          {
+            "path": "src/main/agent/AgentService.ts",
+            "bytes": 252437
+          },
+          {
+            "path": "src/renderer/src/store/appStore.ts",
+            "bytes": 251301
+          },
+          {
+            "path": "src/main/db/AppDatabase.ts",
+            "bytes": 167004
+          }
+        ]
+      }
+    },
+    {
+      "name": "native tool_search declares a deferred MCP tool and direct invocation succeeds",
+      "passed": true
+    },
+    {
+      "name": "deferred MCP tool survives native reload and server reconnect",
+      "passed": true
+    },
+    {
+      "name": "write then read a real temporary file",
+      "passed": true
+    },
+    {
+      "name": "parallel native reads",
+      "passed": true,
+      "details": {
+        "activeReads": 0,
+        "maxReads": 3,
+        "activeWrites": 0,
+        "maxWrites": 0,
+        "writes": 1,
+        "cancelled": 0
+      }
+    },
+    {
+      "name": "concurrent write requests execute serially with no lost update",
+      "passed": true,
+      "details": {
+        "activeReads": 0,
+        "maxReads": 3,
+        "activeWrites": 0,
+        "maxWrites": 1,
+        "writes": 4,
+        "cancelled": 0
+      }
+    },
+    {
+      "name": "readonly allows codemode inspection but rejects nested writes",
+      "passed": true
+    },
+    {
+      "name": "MCP isError preserved in script and direct child outcome",
+      "passed": true
+    },
+    {
+      "name": "parent-child identity survives UI event mapping",
+      "passed": true,
+      "details": {
+        "parent": "file-roundtrip",
+        "child": "file-roundtrip/1"
+      }
+    },
+    {
+      "name": "codemode state persists between successful invocations",
+      "passed": true
+    },
+    {
+      "name": "cancellation prevents pending and queued writes from committing",
+      "passed": true,
+      "details": {
+        "cancelledChildren": 3
+      }
+    },
+    {
+      "name": "manager and task status are native, separately scoped, and no fallback on missing tasks",
+      "passed": true
+    },
+    {
+      "name": "manager reconnect preserves native task operation",
+      "passed": true
+    },
+    {
+      "name": "deferred MCP tool survives reopening an actual persisted Pi session",
+      "passed": true,
+      "details": {
+        "reopened": true,
+        "nativeToolRestored": true
+      }
+    }
+  ],
+  "finishedAt": "2026-10-02T04:19:28.220Z"
+}

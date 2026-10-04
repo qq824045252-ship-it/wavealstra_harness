@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>1G Monaco Spike</title>
+<!-- 模拟 MyBuddy renderer CSP：同源 script/worker；monaco 需要 inline style -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:" />
+<style>
+  body { font-family: sans-serif; margin: 16px; }
+  #editor { width: 90%; height: 300px; border: 1px solid #ccc; margin-bottom: 8px; }
+  #report { white-space: pre-wrap; font-family: monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<h3>Monaco Spike</h3>
+<div id="editor"></div>
+<pre id="report"></pre>
+<script type="module" src="./monaco-spike-app.mjs"></script>
+</body>
+</html>

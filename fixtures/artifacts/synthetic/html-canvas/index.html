@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HTML Canvas (data-* 声明式) Fixture</title>
+<style>
+  body { margin: 16px; font: 13px/1.5 system-ui, sans-serif; color: #334155; }
+  h1 { font-size: 18px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 24px; }
+  .card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; background: #fff; }
+  .card h2 { font-size: 13px; margin: 0 0 8px; color: #64748b; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>声明式 Canvas Fixture（V3.5 §30/§32）</h1>
+<p>data-* 格式与 DetailCard PREVIEW_BOOT_SCRIPT 兼容：
+<code>&lt;canvas&gt;&lt;data&gt;{"dpr","bg","el":[…]}&lt;/data&gt;&lt;/canvas&gt;</code>。
+用于决策 PREVIEW_BOOT_SCRIPT 是产品能力还是历史 workaround。</p>
+
+<div class="grid">
+  <div class="card"><h2>扁平 el：标题 + 圆角矩形 + 文本</h2>
+    <canvas width="480" height="220"><data>{"dpr":2,"bg":"#f8fafc","el":[
+      {"t":"rect","x":0,"y":0,"w":480,"h":220,"r":10,"fill":"#0f172a"},
+      {"t":"text","x":240,"y":36,"text":"Work/Flow 周节奏","size":16,"color":"#f1f5f9","bold":true,"align":"center"},
+      {"t":"rect","x":24,"y":60,"w":200,"h":60,"r":8,"fill":"#2563eb"},
+      {"t":"text","x":34,"y":90,"text":"深度工作 4h","size":13,"color":"#ffffff"},
+      {"t":"rect","x":240,"y":60,"w":216,"h":60,"r":8,"fill":"#10b981"},
+      {"t":"text","x":250,"y":90,"text":"休息 / 散步","size":13,"color":"#ffffff"},
+      {"t":"line","x1":24,"y1":150,"x2":456,"y2":150,"stroke":"#475569","sw":1},
+      {"t":"text","x":24,"y":180,"text":"注：声明式 canvas 由 boot 脚本按 data 渲染，无 eval。","size":12,"color":"#94a3b8"}
+    ]}</data></canvas>
+  </div>
+
+  <div class="card"><h2>嵌套分组 + bar 系列柱图</h2>
+    <canvas width="480" height="260"><data>{"dpr":2,"bg":"#ffffff","el":[
+      {"t":"text","x":20,"y":24,"text":"近 7 日产出","size":14,"bold":true,"color":"#0f172a"},
+      {"t":"bar","x":30,"y":44,"w":420,"h":170,"r":4,"data":[
+        {"label":"周一","value":7,"color":"#2563eb"},
+        {"label":"周二","value":11,"color":"#3b82f6"},
+        {"label":"周三","value":5,"color":"#60a5fa"},
+        {"label":"周四","value":9,"color":"#2563eb"},
+        {"label":"周五","value":13,"color":"#3b82f6"},
+        {"label":"周六","value":3,"color":"#94a3b8"},
+        {"label":"周日","value":2,"color":"#94a3b8"}
+      ]},
+      ["nested-group",
+        {"t":"rect","x":20,"y":222,"w":30,"h":10,"r":2,"fill":"#2563eb"},
+        {"t":"text","x":56,"y":228,"text":"工作","size":11,"color":"#64748b"}
+      ]
+    ]}</data></canvas>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+ * 精简 boot 渲染器 —— 与 DetailCard.tsx PREVIEW_BOOT_SCRIPT 同源逻辑
+ * （roundRect polyfill + readData + flattenEls + bar/rect/text/line）。
+ * 来源：src/renderer/src/components/chat/DetailCard.tsx:108 起。
+ * 目的：fixture 自包含可渲染，供 §32 决策与 golden 截图使用。
+ * ============================================================ */
+(function () {
+  if (typeof CanvasRenderingContext2D !== "undefined" && !CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+      var rad = typeof r === "number" ? { tl: r, tr: r, br: r, bl: r } : Object.assign({ tl: 0, tr: 0, br: 0, bl: 0 }, r || {});
+      this.beginPath();
+      this.moveTo(x + rad.tl, y);
+      this.lineTo(x + w - rad.tr, y);
+      this.quadraticCurveTo(x + w, y, x + w, y + rad.tr);
+      this.lineTo(x + w, y + h - rad.br);
+      this.quadraticCurveTo(x + w, y + h, x + w - rad.br, y + h);
+      this.lineTo(x + rad.bl, y + h);
+      this.quadraticCurveTo(x, y + h, x, y + h - rad.bl);
+      this.lineTo(x, y + rad.tl);
+      this.quadraticCurveTo(x, y, x + rad.tl, y);
+      this.closePath();
+      return this;
+    };
+  }
+  function num(v, d) { var n = Number(v); return isFinite(n) ? n : d; }
+  function flattenEls(input, out) {
+    if (!out) out = [];
+    if (input == null) return out;
+    if (Array.isArray(input)) { for (var i = 0; i < input.length; i++) flattenEls(input[i], out); return out; }
+    if (typeof input === "object") out.push(input);
+    return out;
+  }
+  function readData(canvas) {
+    var node = canvas.querySelector("data");
+    var raw = node && (node.textContent || "").trim();
+    if (!raw) raw = (canvas.getAttribute("data-canvas") || "").trim();
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+  function roundRectPath(ctx, x, y, w, h, r) {
+    var rr = Math.max(0, num(r, 0));
+    if (rr <= 0) { ctx.rect(x, y, w, h); return; }
+    if (typeof ctx.roundRect === "function") { ctx.roundRect(x, y, w, h, rr); return; }
+    var rad = Math.min(rr, Math.abs(w) / 2, Math.abs(h) / 2);
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+  function fillRound(ctx, x, y, w, h, r, color) {
+    if (!(w > 0) || !(h > 0)) return;
+    ctx.beginPath(); roundRectPath(ctx, x, y, w, h, r); ctx.fillStyle = color; ctx.fill();
+  }
+  function drawBarSeries(ctx, el) {
+    var series = el.data || el.series || el.items;
+    if (!Array.isArray(series) || !series.length) return false;
+    var bx = num(el.x, 0), by = num(el.y, 0), bw = num(el.w != null ? el.w : el.width, 0), bh = num(el.h != null ? el.h : el.height, 0);
+    if (!(bw > 0) || !(bh > 0)) return true;
+    var maxV = 0;
+    for (var i = 0; i < series.length; i++) {
+      var it = series[i]; var vv = Array.isArray(it) ? num(it[1], 0) : num(it.value != null ? it.value : it.v, 0);
+      if (vv > maxV) maxV = vv;
+    }
+    if (maxV <= 0) maxV = 1;
+    var labelSpace = 22, valueSpace = 14;
+    var plotH = Math.max(8, bh - labelSpace);
+    var n = series.length, slotW = bw / n;
+    var barW = Math.min(28, Math.max(8, slotW * 0.55));
+    var baseY = by + plotH, radius = el.r != null ? el.r : 3;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (var j = 0; j < n; j++) {
+      var item = series[j], label, val, color;
+      if (Array.isArray(item)) { label = String(item[0] != null ? item[0] : ""); val = num(item[1], 0); color = item[2] || "#38bdf8"; }
+      else { label = String(item.label != null ? item.label : (item.name || "")); val = num(item.value != null ? item.value : item.v, 0); color = item.color || item.fill || "#38bdf8"; }
+      var h = (val / maxV) * Math.max(4, plotH - valueSpace);
+      var x = bx + j * slotW + (slotW - barW) / 2;
+      var y = baseY - h;
+      fillRound(ctx, x, y, barW, h, radius, color);
+      ctx.fillStyle = "#e2e8f0"; ctx.font = "10px system-ui, sans-serif";
+      ctx.fillText(String(val), x + barW / 2, y - 10);
+      ctx.fillStyle = "#64748b"; ctx.font = "11px system-ui, sans-serif";
+      ctx.fillText(label, x + barW / 2, baseY + 12);
+    }
+    return true;
+  }
+  function drawEl(ctx, el) {
+    if (!el || typeof el !== "object" || Array.isArray(el)) return;
+    var t = String(el.t || el.type || "").toLowerCase();
+    if (!t) return;
+    if ((t === "bar" || t === "bars" || t === "barchart") && (el.data || el.series || el.items)) { if (drawBarSeries(ctx, el)) return; }
+    if (t === "rect" || t === "bar" || t === "box") {
+      var x = num(el.x, 0), y = num(el.y, 0), w = num(el.w != null ? el.w : el.width, 0), h = num(el.h != null ? el.h : el.height, 0);
+      var r = el.r != null ? el.r : (el.radius != null ? el.radius : 0);
+      var color = el.color || el.fill;
+      if (color) fillRound(ctx, x, y, w, h, r, color);
+      if (el.stroke || el.border) {
+        ctx.beginPath(); roundRectPath(ctx, x, y, w, h, r);
+        ctx.strokeStyle = el.stroke || el.border; ctx.lineWidth = num(el.sw != null ? el.sw : el.strokeWidth, 1);
+        ctx.stroke();
+      }
+      return;
+    }
+    if (t === "text" || t === "label") {
+      var text = el.text != null ? String(el.text) : (el.label != null ? String(el.label) : "");
+      if (!text) return;
+      var size = num(el.size != null ? el.size : el.fontSize, 14);
+      var bold = el.bold || el.weight === "bold" || el.fontWeight === "bold";
+      ctx.font = (bold ? "bold " : "") + size + "px system-ui, -apple-system, Segoe UI, sans-serif";
+      ctx.fillStyle = el.color || el.fill || "#e2e8f0";
+      ctx.textAlign = el.align || el.textAlign || "left";
+      ctx.textBaseline = el.baseline || el.textBaseline || "middle";
+      ctx.fillText(text, num(el.x, 0), num(el.y, 0));
+      return;
+    }
+    if (t === "line") {
+      ctx.beginPath();
+      ctx.moveTo(num(el.x1 != null ? el.x1 : el.x, 0), num(el.y1 != null ? el.y1 : el.y, 0));
+      ctx.lineTo(num(el.x2 != null ? el.x2 : num(el.x, 0) + num(el.w, 0), 0), num(el.y2 != null ? el.y2 : num(el.y, 0) + num(el.h, 0), 0));
+      ctx.strokeStyle = el.stroke || el.color || "#94a3b8";
+      ctx.lineWidth = num(el.sw != null ? el.sw : el.strokeWidth, 1);
+      ctx.stroke();
+      return;
+    }
+  }
+  function paint(canvas) {
+    if (!canvas || canvas.__wbDataPainted) return;
+    var data = readData(canvas);
+    if (!data) return;
+    var dpr = num(data.dpr, 1), bg = data.bg || "#ffffff";
+    var logicalW = num(canvas.getAttribute("width"), 0) || num(data.w != null ? data.w : data.width, 760);
+    var logicalH = num(canvas.getAttribute("height"), 0) || num(data.h != null ? data.h : data.height, 430);
+    canvas.setAttribute("data-logical-w", String(logicalW));
+    canvas.setAttribute("data-logical-h", String(logicalH));
+    canvas.width = Math.max(1, Math.round(logicalW * dpr));
+    canvas.height = Math.max(1, Math.round(logicalH * dpr));
+    canvas.style.width = "100%"; canvas.style.maxWidth = logicalW + "px";
+    canvas.style.height = "auto"; canvas.style.aspectRatio = logicalW + " / " + logicalH;
+    canvas.style.display = "block"; canvas.style.margin = "0 auto";
+    var ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, logicalW, logicalH); }
+    flattenEls(data.el).forEach(function (el) { drawEl(ctx, el); });
+    canvas.__wbDataPainted = true;
+  }
+  function paintAll() { document.querySelectorAll("canvas").forEach(paint); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", paintAll);
+  else paintAll();
+})();
+</script>
+</body>
+</html>

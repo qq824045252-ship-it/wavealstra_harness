@@ -1,0 +1,208 @@
+/* 扩展栏「终端」（P0）— 独立样式文件，避免与并行改动冲突 */
+
+.terminal-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+}
+
+.terminal-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.terminal-toolbar-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.terminal-toolbar-shell {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.terminal-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.terminal-dot.alive {
+  background: #23d18b;
+}
+
+.terminal-dot.dead {
+  background: #8a8a8a;
+}
+
+.terminal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.terminal-toolbar-actions .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.terminal-herdr-button {
+  height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.terminal-herdr-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.terminal-herdr-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 终止会话按钮：悬停红色提示危险性 */
+.terminal-toolbar-actions .icon-btn.danger:hover:not(:disabled) {
+  color: #cd3131;
+  background: rgba(205, 49, 49, 0.12);
+}
+
+.terminal-error {
+  flex-shrink: 0;
+  margin: 6px 10px 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #cd3131;
+  background: rgba(205, 49, 49, 0.1);
+}
+
+.terminal-exit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 6px 10px 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.terminal-exit-restart {
+  border: none;
+  background: transparent;
+  color: var(--accent, #3b8eea);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.terminal-exit-restart:hover {
+  background: rgba(59, 142, 234, 0.12);
+}
+
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 0 0 10px;
+  overflow: hidden;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}
+
+.terminal-host .xterm-rows {
+  line-height: inherit;
+}
+
+.terminal-host .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.terminal-hint {
+  flex-shrink: 0;
+  padding: 4px 10px 7px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  opacity: 0.85;
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.2));
+}
+
+.terminal-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.terminal-empty-hint {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.terminal-empty-action {
+  margin-top: 4px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.35));
+  background: transparent;
+  color: var(--fg);
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.terminal-empty-action:hover {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.terminal-empty-error {
+  font-size: 12px;
+  color: #cd3131;
+}
+
+/* ChatInput 终端上下文 chip（复用 attach-chip 视觉） */
+.attach-chip.terminal-chip .attach-chip-name {
+  max-width: 220px;
+}

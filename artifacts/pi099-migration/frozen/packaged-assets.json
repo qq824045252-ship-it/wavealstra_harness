@@ -1,0 +1,10 @@
+{
+  "startedAt": "2026-09-30T01:46:58.287Z",
+  "passed": true,
+  "kind": "real Electron loading assets from the generated distribution",
+  "asarEntryPresent": true,
+  "workerAndWasmLoaded": true,
+  "result": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{\"answer\":42,\"sandbox\":\"undefined\"}",
+  "finishedAt": "2026-09-30T01:46:58.524Z",
+  "distribution": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi099-verified-20260930014530105\\win-unpacked"
+}

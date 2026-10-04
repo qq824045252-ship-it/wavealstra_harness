@@ -1,0 +1,357 @@
+{
+  "schemaVersion": 1,
+  "sourceRoot": "C:/Users/servi/.mybuddy/skills",
+  "files": [
+    {
+      "file": "academic-translation/SKILL.md",
+      "before": "1db2ce6958c35b59dddede5ffbafb08f7ec700af0b71b948d426800872dedea0",
+      "after": "b0b196fde4a2eebe0b6e84ce6380b21c6ff15be36c6cf33ab9ae9c583fb97793",
+      "originalBefore": "40f8eb962c2fb50de5e4655ca65236f58f43b2458bf4beafef58f5f00b8233ed"
+    },
+    {
+      "file": "academic-translation/evals/trigger.json",
+      "before": null,
+      "after": "73a68d9d9f5d09627a15b0f0b9d2bf739e0d0293da69c7040a981f26dd112c63"
+    },
+    {
+      "file": "academic-translation/references/failure-handling.md",
+      "before": null,
+      "after": "de69ddd1bbaa0d8dcda34628f2ec301f0e366329791245428bb5dca570e2c281"
+    },
+    {
+      "file": "academic-translation/references/output-contract.md",
+      "before": "d9334012feea5e4a73b98cd25bab020be2ca9fb084b841d64bf358d10390a0e3",
+      "after": "ecac2d4fb5e63c7670a54fff8680b3a2f971faba488d0c581b788c3c2d8d9616",
+      "originalBefore": null
+    },
+    {
+      "file": "academic-translation/references/translation-examples.md",
+      "before": null,
+      "after": "00e1797982ff35f5e5d98c63ad97ef4bc99610c7c67dc2650d74ce5c3dbad369"
+    },
+    {
+      "file": "academic-translation/references/translation-steps.md",
+      "before": null,
+      "after": "76e0b0cf9c396b0ccca4c8a44f57f03103ce61917ea1b4e0cccb27d6b9bc0644"
+    },
+    {
+      "file": "ansys-simulation/SKILL.md",
+      "before": "494bde69457ed2b6252f72bdb990cfd8f1508a5fa58d8e0bd277716800be882c",
+      "after": "09898e3d4d3b33112cd4067bedbaf0f7aae4c494d699a98d75dbe1e2c8525a24"
+    },
+    {
+      "file": "ansys-simulation/evals/trigger.json",
+      "before": null,
+      "after": "a72d7d140dd2055a32e3d58b27880c70e7bf1dfefdf6fdf28eab5420d00703c0"
+    },
+    {
+      "file": "ansys-simulation/references/electrostatic-pitfalls.md",
+      "before": null,
+      "after": "45aae16fe4b4a1b6e1f7ce257820b43d2ff23b3ea394e6b0311c1a426383300f"
+    },
+    {
+      "file": "ansys-simulation/references/python-session.md",
+      "before": null,
+      "after": "9c110e39c674dac56c38e1d13c71d3a60fdcd9c1075e7686ed0a8059e31d162a"
+    },
+    {
+      "file": "archify/SKILL.md",
+      "before": "10094272d6d1b4ad0f2c2e0880cb646fe4991454a2dc3d854aecb27e7407ee1f",
+      "after": "1332607c0bd819de8ed45c09aeb5d6a1d14b278c36c96cc97f879cadfab92e0e"
+    },
+    {
+      "file": "archify/evals/trigger.json",
+      "before": null,
+      "after": "5a2dc6dd949d3314b90411276947cc7a8595857f00336dfbbfe87f3dc6f2d1de"
+    },
+    {
+      "file": "archify/references/entry-authoring-invariants.md",
+      "before": null,
+      "after": "b04e594407bb8caae029877608fe20a5018d85db325452c5691b32ce754ccffb"
+    },
+    {
+      "file": "cheaper-inference-image/SKILL.md",
+      "before": "ce587a2ea947205c1896d45f0cfd53b925fa22fb21421622171d170ee17f2e74",
+      "after": "374d3f5e043edb5fcf45bcd29978bf8ac935d5accf07f5ce9bc3ea62e3dd285c"
+    },
+    {
+      "file": "cheaper-inference-image/evals/trigger.json",
+      "before": null,
+      "after": "3f7e42d6e1184c35bbbba14c83f928a61809069fa00878fedcd538407bc2654d"
+    },
+    {
+      "file": "code-view/SKILL.md",
+      "before": "2803127cc14839722dbc7f904bf9c2a7bf94faf0976e8e194cc27e58bf3bd562",
+      "after": "d0dc34cd32b386a581398c9cd2846af11d66beabcd0f383be1fb724dce32c3df"
+    },
+    {
+      "file": "code-view/evals/trigger.json",
+      "before": null,
+      "after": "6a6d790a9d0411e5fc4e817ac74c9841482af090250091fecdc939287f345e41"
+    },
+    {
+      "file": "dim-feature-add/SKILL.md",
+      "before": "c47e8b9f396ad8e196177c0a62e1e53aebe707a5b6a6963917bbf788609b97bc",
+      "after": "9a0cb1079a93204a789acdf16ee1108974ee6b5d287b0be209f53d310ae9c461"
+    },
+    {
+      "file": "dim-feature-add/evals/trigger.json",
+      "before": null,
+      "after": "0c24a122836eb55968bb7d853cddc7cfc204dd03f5dbf83f3aa1f67ab78d2bd7"
+    },
+    {
+      "file": "dimagent-debug/SKILL.md",
+      "before": "09288418787fcdbc1e2825981e85b61f1b4c491e17b5fdc6e9a331d6c3604efa",
+      "after": "2f35e5d10e4c22786a28f6cb5a7a995b179f0ad492636925e71794e24e83247b"
+    },
+    {
+      "file": "dimagent-debug/evals/trigger.json",
+      "before": null,
+      "after": "a57922d529059902cae1161483453ab37fe8799e03c9957d865a1ce8eeb1910a"
+    },
+    {
+      "file": "easyeda-agent/SKILL.md",
+      "before": "604d23f99541247ee415f23504819d7cd95c0572d15c191999f5ff070ef1babb",
+      "after": "c0aab789e6bb8be392be93d9fc268df773f83da39c8e61d3a54951353957530f"
+    },
+    {
+      "file": "easyeda-agent/evals/trigger.json",
+      "before": null,
+      "after": "dbc9a15176cfe97da0372b2af1d848ee77c3c2c19cd4950527ba178da42feaac"
+    },
+    {
+      "file": "easyeda-agent/references/installation.md",
+      "before": null,
+      "after": "703244b967166fb374a255bb1bf76e35202456aae07554b1cd486439f5c5b5ab"
+    },
+    {
+      "file": "easyeda-agent/references/stage-quick-reference.md",
+      "before": null,
+      "after": "9165dc44884dd7bdcd85cc1a33cd946f1cecc6fe2ee7fc405f90f61e933c794a"
+    },
+    {
+      "file": "easyeda-agent/references/windows-runtime.md",
+      "before": null,
+      "after": "23c2e5af77b04e44b23a8e3040e7b23342dfec09479a0e29b83177b09e0aefc0"
+    },
+    {
+      "file": "epro2kicad/SKILL.md",
+      "before": "ad86fa39832d57ffad06364b2cbdda1b63ba052ee0d4e28fb8ce292db1e12bb9",
+      "after": "066ecd904064ef3c9a3b025c138d8c6a2f2f190fcba17c57209e0690578862f8"
+    },
+    {
+      "file": "epro2kicad/evals/trigger.json",
+      "before": null,
+      "after": "6fd774b02901ef6f087e8e302de6740da63e3889a57bd3e43c71bae903a2af76"
+    },
+    {
+      "file": "fastcopy-copy/SKILL.md",
+      "before": "2a82fb303b2866b1d54ed91cb010753b82a5c07178fa5cd64ec2484522cae5a6",
+      "after": "30b898e2d6bab6e0d856ddffa9cd70c1a7b7af69d3ec42253e0118fbb83ade8f",
+      "originalBefore": "bb341313a87bfb896f3d5c7c8142c23489951d6d6977acfafa33b08a592b459c"
+    },
+    {
+      "file": "fastcopy-copy/evals/trigger.json",
+      "before": null,
+      "after": "776e59c33d12ac0c9063a1b02637ae30cc02756fc4fa176855d68a3487454ab2"
+    },
+    {
+      "file": "fastcopy-copy/references/FastCopy_USAGE.md",
+      "before": "50193a1ed6476ed06c79f6be84672bbaadcb960910d170d8f06197d6458393ef",
+      "after": "be8f211fcab81a3d072b8c5d81746f6a1506c072e80b1e225331ddf22289cea6",
+      "originalBefore": "eb1564e9e18974499a34a74f0a4338f88c081cf99a8acb28a5f9e00a61d8b5a3"
+    },
+    {
+      "file": "fastcopy-copy/scripts/fcopy.mjs",
+      "before": null,
+      "after": "e25897c8b9c328882a2a8081e8ff547ca04c9148f6bf34e822a896f23cd413e5"
+    },
+    {
+      "file": "gemini-agent-platform/SKILL.md",
+      "before": "8077c73c40bca8e38f1d48e54406bd1c8112becfdd326e024cb0c761e3ec5673",
+      "after": "e888d6e65991a361650565d036a60dc7c5af72c7b6241f8a1a5fc0d3d3ec234f"
+    },
+    {
+      "file": "gemini-agent-platform/evals/trigger.json",
+      "before": null,
+      "after": "9c5c40d49d4ae74cb5fb289cf4eae4ffc175ed3dd83feb69a7629c104234abf2"
+    },
+    {
+      "file": "gemini-agent-platform/tools/gemini_ap.mjs",
+      "before": null,
+      "after": "6706a6d96f44ff0d48910e3ffe4a6859ba66601b70dfec2b7b6898f73424261d"
+    },
+    {
+      "file": "kicad-design/SKILL.md",
+      "before": "21cdc4f402fa08f634cf2749968e3fea013e788eb2f09118976055c8090512f3",
+      "after": "7e7aeceaf00b429b3a67194d7d7582ed942d4ecf2d8ef76c2a04990e4eebd1b7"
+    },
+    {
+      "file": "kicad-design/evals/trigger.json",
+      "before": null,
+      "after": "fd49344c24cb970470a79151c49ef60dc8d588ffb2837cf1e26d14d0229135ba"
+    },
+    {
+      "file": "kicad-design/references/capability-routing.md",
+      "before": null,
+      "after": "9eb053a702ee7a7b91c523bbd913e54a266654bd98d05a8e39091a3d8cb5266d"
+    },
+    {
+      "file": "kicad-design/references/ipc-troubleshooting.md",
+      "before": null,
+      "after": "c06cf41e2e586545eecaaee28dcbd9b1ed3423c1f9bc4723f50880582f02f297"
+    },
+    {
+      "file": "loop-agent/SKILL.md",
+      "before": "716c1ec64de32e6969dc895877af022e612b34b1d31755473f5524df8dd823ce",
+      "after": "29fba9814b36d8a35e9d616cbc99dfbbe2c88aa7ccd57a7a2a655ac8be8ced9e"
+    },
+    {
+      "file": "loop-agent/evals/trigger.json",
+      "before": null,
+      "after": "d11daf5484c97404aeb44bde01005503a3182c357a7d52abf55b432a4c6f2f27"
+    },
+    {
+      "file": "matlab-r2025b/SKILL.md",
+      "before": "7606888c82bb728bdc0288be35562285f97d9eb6015ee3b74779a290771d26b1",
+      "after": "a714447bd8c7ec2f7de55965f3d70ad6a850fb26a722d9af4683ac7fbb7385b8",
+      "originalBefore": "36a027b6684601a7434a2b85d539d4fd1fc6e12f3ceeb683c246899302c9bded"
+    },
+    {
+      "file": "matlab-r2025b/references/tooling.md",
+      "before": "592e5cbdeb4d6a8a6595a7eebde3ccc5c5f0a63e49312c991943ef9b49fac249",
+      "after": "2c4ff28dba16db289cc1beab48aadd68f661343efe82f629958e3a25b9284616"
+    },
+    {
+      "file": "matlab-r2025b/scripts/matlab-run.mjs",
+      "before": null,
+      "after": "10a947521fe7eedec72b3223f970a5c21a268f3ac9a6d9817e2652109eb1fc1f"
+    },
+    {
+      "file": "meeting-transcribe/SKILL.md",
+      "before": "79229b7d2a0062f5085dbc06ffa8fdb7b2bd9c97624781964698b01da23f757b",
+      "after": "180304fd07bf3a6b6b2c3bb234ea2e3f7aa45d5c577a6eb55c27038ddde1f3f8",
+      "originalBefore": "a4bda888c063391cae0d898c1f1447e4c6d6833efe457b1b0b0f4fa0d585a31b"
+    },
+    {
+      "file": "meeting-transcribe/evals/trigger.json",
+      "before": null,
+      "after": "e9ca754f4b6897d01a4d6914cd7e3de87be97ab5798d8abaa2dd3dc51b34a48f"
+    },
+    {
+      "file": "npu-ocr/SKILL.md",
+      "before": "18983f89f3de09df670a07f7ad5ddd784b4ce507d3ba697526e32a6df81ae850",
+      "after": "f122806558b4833fc2d1b62a6d45b5ae73583074c09dba9b12d65c0436edd421"
+    },
+    {
+      "file": "npu-ocr/evals/trigger.json",
+      "before": null,
+      "after": "250ed4b10386185c8ad0e2d386cf06bc8a2d08ceced2f762fb50003b625e6287"
+    },
+    {
+      "file": "officecli/SKILL.md",
+      "before": "c950d285ce60021712b4753fb2d9f592308d5622bab776229061dfecb1ce55d4",
+      "after": "7f1eb52d6ab38db719c6737e6248aff6ae14abfb54437d39339d99b084e5615f"
+    },
+    {
+      "file": "officecli/evals/trigger.json",
+      "before": null,
+      "after": "7810f02d03627bb9590c2fbedca8c0e2a7b57b8d4cfab6cf5a14fdad3abf82da"
+    },
+    {
+      "file": "officecli/references/cli-operations.md",
+      "before": null,
+      "after": "5c3e40fe09d2fbad496c7abbea150bba0a169e21a9d2ec5b4992763ae3db9c22"
+    },
+    {
+      "file": "officecli/references/specialized-routing.md",
+      "before": null,
+      "after": "54b4019616054390d64aad01a5e6dcaf99cd077398dcab57cc1ef1daaa4485cb"
+    },
+    {
+      "file": "open-kimi-ppt/SKILL.md",
+      "before": "4ab8be16bed152f83c5b3bb7c66426a33f70cbdd6f6dfb3317b5076349754976",
+      "after": "181e2dac365da30698983f357247a65149942129cc2453fc065379c63cdb1563"
+    },
+    {
+      "file": "open-kimi-ppt/evals/trigger.json",
+      "before": null,
+      "after": "bee0a5da5e90931eb64a5c693f462c3e87d4796c2c12b6cccefa37d4edaf6906"
+    },
+    {
+      "file": "open-kimi-ppt/reference/delivery-workflow.md",
+      "before": null,
+      "after": "3cb43688fe55977c5b0da80e50264eb98a5dc1ce5491830ea57f3beeea5f8754"
+    },
+    {
+      "file": "open-kimi-ppt/reference/production-workflow.md",
+      "before": null,
+      "after": "9a7ee39b9d46cfff26ace57b68c4163a90f207f885733c66a961a1d9900f5af8"
+    },
+    {
+      "file": "origin-analysis/SKILL.md",
+      "before": "b8cd1d6bba5f6eae46e8114ea4cb9239e4d29d0035a5269d50734608e9122aff",
+      "after": "6fc8414c7220d22eb689fc17abe366e6495a9fe7fb2cb82319a50ee00436cf7f"
+    },
+    {
+      "file": "origin-analysis/references/capability-overview.md",
+      "before": null,
+      "after": "c29431dea44407f76fcaa798b51376f14f96650a131d9f630cb6525b55014a80"
+    },
+    {
+      "file": "origin-analysis/references/origin-automation.md",
+      "before": "58c04ef39ab39824992a2e41ea1baab08e7b752dcdafbf820a662075cb064948",
+      "after": "f44753ca0940ea6e348c77a4f4e37deab2fd9c4215112fe94b21d75c075ca181"
+    },
+    {
+      "file": "projectlibre-gen/SKILL.md",
+      "before": "6678c9824d70a3ae86bdbd15fe6df9be4045d7cd8b535a237a62d3f51ee0a91b",
+      "after": "fac5ff6b7d7350b1a8e9017849fd510a3cb0d48ba54d30f80b985a2b114e3981"
+    },
+    {
+      "file": "projectlibre-gen/evals/trigger.json",
+      "before": null,
+      "after": "2e519220e93184ecccbc0260dd1594cca1dd6055446308403e35dd596d8ae028"
+    },
+    {
+      "file": "root-cause-debugging/SKILL.md",
+      "before": "40cb6eb6f6eda0d4a1bd72d2239cdecfd378209d059b3ac4ec1af9d26cba108a",
+      "after": "06180361d5a594224f0d89b279e10c0a447e0f4273d190348291815fd0b80a97"
+    },
+    {
+      "file": "root-cause-debugging/evals/trigger.json",
+      "before": "886ea86c7c4f317f1ba42d09ca3dc70ff766f19832f70370c8bae36c3165d44b",
+      "after": "ae67d39dbafd10b603aba981e821c986b6b9a99e742d76988d9f8d1ac1e5b726"
+    },
+    {
+      "file": "shared-memory/SKILL.md",
+      "before": "e718f644943989b2fc4a68612ba76e6545e0901f9aadf3834975f4f899b5ac07",
+      "after": "cf1fa57416f1310f81f54fc966940f2a8e2ec0bccd27130e459c36e81c6637fe"
+    },
+    {
+      "file": "shared-memory/evals/trigger.json",
+      "before": null,
+      "after": "e2acfbdd47a1245e09073c0ba340b767716869d171e2f5997e7608cfcdb8469f"
+    },
+    {
+      "file": "wechat-public/SKILL.md",
+      "before": "1a19b197cf377fbb2e0208c9c973d4a9789c76ce1f95a9638452a36960bdaa2e",
+      "after": "7f4bc466a1ffa3f6cd02c0ad7b90b59e5ab739de8a0d65d0f1d0a5a6ed9e0536"
+    },
+    {
+      "file": "wechat-public/evals/trigger.json",
+      "before": null,
+      "after": "08a09a3449d536211b2f64ec7852bde33a216cd5d906cc69b7cd9c16c5e431ff"
+    },
+    {
+      "file": "weekly-report-fill/SKILL.md",
+      "before": "7191653434cad3ac3c973d17495164e0cea71abdc8fd340bf4fad811be1faba4",
+      "after": "551661d82a780ead3f362dd6249424a33eba550e1f540844fa37db7be53ab870"
+    },
+    {
+      "file": "weekly-report-fill/evals/trigger.json",
+      "before": null,
+      "after": "012ad84a5e8377ecb8a029f5d03d7611467ec9189d009c88a7429c22e2da11a4"
+    }
+  ]
+}

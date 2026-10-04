@@ -1,0 +1,170 @@
+    async reload(options) {
+        const oldRunner = this._extensionRunner;
+        const previousFlagValues = oldRunner.getFlagValues();
+        await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
+        oldRunner.invalidate();
+        const previousDefaultTools = new Set(this._usesDefaultTools ? (this.settingsManager.getDefaultTools() ?? DEFAULT_TOOL_NAMES) : []);
+        await this.settingsManager.reload();
+        this.syncQueueModesFromSettings();
+        resetApiProviders();
+        await this._resourceLoader.reload();
+        // Activate tools newly added to defaultTools. Removed ones stay active, and tools disabled
+        // during the session stay disabled unless the setting newly adds them.
+        const addedDefaultTools = this._usesDefaultTools
+            ? (this.settingsManager.getDefaultTools() ?? DEFAULT_TOOL_NAMES).filter((name) => !previousDefaultTools.has(name))
+            : [];
+        // Tools the new extensions register later, such as MCP tools, are pending until then.
+        for (const name of this.getActiveToolNames())
+            this._pendingToolNames.add(name);
+        this._buildRuntime({
+            activeToolNames: [...this.getActiveToolNames(), ...addedDefaultTools],
+            flagValues: previousFlagValues,
+            includeAllExtensionTools: true,
+        });
+        const hasBindings = this._extensionUIContext ||
+            this._extensionCommandContextActions ||
+            this._extensionShutdownHandler ||
+            this._extensionErrorListener;
+        if (hasBindings) {
+            await options?.beforeSessionStart?.();
+            await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+            this._extensionRunner.reportUnhandledMcpServers();
+            await this.extendResourcesFromExtensions("reload");
+        }
+    }
+    // =========================================================================
+    // Auto-Retry
+    // =========================================================================
+    /**
+     * Check if an error is retryable (overloaded, rate limit, server errors).
+     * Context overflow errors are NOT retryable (handled by compaction instead).
+     */
+    _isRetryableError(message) {
+        // Context overflow is handled by compaction, not retry.
+        if (isContextOverflow(message, (this._modelForMessage(message) ?? this.model)?.contextWindow ?? 0))
+            return false;
+        return isRetryableAssistantError(message);
+    }
+    /**
+     * Retry policy + callbacks shared by compaction and branch-summary summarization calls.
+     * Uses the same `settings.retry` budget/backoff as agent-turn retries so a single transient
+     * stream drop no longer fails the whole operation. `source` carries the context
+     * the TUI needs to render the retry and recreate the underlying indicator.
+     */
+    _summarizationRetryCallbacks(source) {
+        return {
+            onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+                this._emit({
+                    type: "summarization_retry_scheduled",
+                    attempt,
+                    maxAttempts,
+                    delayMs,
+                    errorMessage,
+                });
+            },
+            onRetryAttemptStart: () => {
+                this._emit({
+                    type: "summarization_retry_attempt_start",
+                    ...source,
+                });
+            },
+            onRetryFinished: () => {
+                this._emit({ type: "summarization_retry_finished" });
+            },
+        };
+    }
+    _finishCancelledRetry() {
+        if (this._retryAttempt === 0)
+            return;
+        const attempt = this._retryAttempt;
+        this._retryAttempt = 0;
+        this._emit({
+            type: "auto_retry_end",
+            success: false,
+            attempt,
+            finalError: "Retry cancelled",
+        });
+    }
+    /**
+     * Prepare a retryable error for continuation with exponential backoff.
+     * @returns true if the caller should continue the agent, false otherwise
+     */
+    async _prepareRetry(message) {
+        const settings = this.settingsManager.getRetrySettings();
+        if (!settings.enabled) {
+            return false;
+        }
+        this._retryAttempt++;
+        if (this._retryAttempt > settings.maxRetries) {
+            // Preserve the completed attempt count so post-run handling can emit the final failure.
+            this._retryAttempt--;
+            return false;
+        }
+        const delayMs = retryDelayMs(settings, this._retryAttempt);
+        this._emit({
+            type: "auto_retry_start",
+            attempt: this._retryAttempt,
+            maxAttempts: settings.maxRetries,
+            delayMs,
+            errorMessage: message.errorMessage || "Unknown error",
+        });
+        // Keep the failed attempt in raw history while durably omitting it from model projection.
+        this._omitRecoveryAttempt(message);
+        // Wait with exponential backoff (abortable)
+        this._retryAbortController = new AbortController();
+        try {
+            await sleep(delayMs, this._retryAbortController.signal);
+        }
+        catch {
+            // Aborted during sleep - emit end event so UI can clean up
+            this._finishCancelledRetry();
+            return false;
+        }
+        finally {
+            this._retryAbortController = undefined;
+        }
+        return true;
+    }
+    /**
+     * Cancel in-progress retry.
+     */
+    abortRetry() {
+        this._retryAbortController?.abort();
+    }
+    /** Whether auto-retry is currently in progress */
+    get isRetrying() {
+        return this._retryAbortController !== undefined;
+    }
+    /** Whether auto-retry is enabled */
+    get autoRetryEnabled() {
+        return this.settingsManager.getRetryEnabled();
+    }
+    /**
+     * Toggle auto-retry setting.
+     */
+    setAutoRetryEnabled(enabled) {
+        this.settingsManager.setRetryEnabled(enabled);
+    }
+    // =========================================================================
+    // Bash Execution
+    // =========================================================================
+    /**
+     * Execute a bash command.
+     * Adds result to agent context and session.
+     * @param command The bash command to execute
+     * @param onChunk Optional streaming callback for output
+     * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
+     * @param options.id Optional identifier included in bash execution update events
+     * @param options.operations Custom BashOperations for remote execution
+     */
+    async executeBash(command, onChunk, options) {
+        const abortController = new AbortController();
+        this._bashAbortControllers.add(abortController);
+        // Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
+        const prefix = this.settingsManager.getShellCommandPrefix();
+        const shellPath = this.settingsManager.getShellPath();
+        const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
+        try {
+            const result = await executeBashWithOperations(resolvedCommand, this.sessionManager.getCwd(), options?.operations ?? createLocalBashOperations({ shellPath }), {
+                onChunk: (delta) => {
+                    onChunk?.(delta);

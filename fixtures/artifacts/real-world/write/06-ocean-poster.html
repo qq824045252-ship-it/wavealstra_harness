@@ -1,0 +1,320 @@
+<!-- __SANITIZED__ 来源: C:\Users\user\.mybuddy\sessions\--C--Users-user-Desktop-mybuddy--\2026-08-07T23-02-44-372Z_019fde76-ef94-7b8f-b4ae-05aa2670c8a2.jsonl | block: call_00_w9ODEPgdLwI2ZRQPoOHZ9447 | 长度: 11214 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>保护海洋 · 别让海洋只剩眼泪</title>
+<style>
+  :root {
+    --ink: #f2f7ff;
+    --muted: #a5c6e8;
+    --accent: #ffd166;
+    --coral: #ff7b5f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", sans-serif;
+    background: #020f24;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  /* ============ 海报画布 1080×1620 (2:3) ============ */
+  .poster {
+    position: relative;
+    width: 1080px;
+    max-width: 100%;
+    aspect-ratio: 2 / 3;
+    overflow: hidden;
+    border-radius: 18px;
+    color: var(--ink);
+    background:
+      radial-gradient(120% 80% at 78% -12%, rgba(30, 120, 220, .55) 0%, transparent 55%),
+      radial-gradient(90% 60% at 12% 26%, rgba(16, 80, 160, .5) 0%, transparent 60%),
+      linear-gradient(180deg, #06305f 0%, #062b57 42%, #031a38 100%);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, .55);
+  }
+
+  /* ============ 气泡 ============ */
+  .bubble {
+    position: absolute;
+    bottom: -60px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, rgba(255, 255, 255, .4), rgba(255, 255, 255, .06) 62%);
+    animation: rise linear infinite;
+    z-index: 1;
+    pointer-events: none;
+  }
+  @keyframes rise {
+    0%   { transform: translateY(0) translateX(0) scale(.9);   opacity: 0; }
+    8%   { opacity: .85; }
+    55%  { transform: translateY(-700px) translateX(18px) scale(1);  opacity: .55; }
+    100% { transform: translateY(-1180px) translateX(-14px) scale(1.35); opacity: 0; }
+  }
+
+  /* ============ 背景鱼群 ============ */
+  .fishes { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
+
+  /* ============ 内容层 ============ */
+  .content {
+    position: relative;
+    z-index: 5;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 60px 80px 190px; /* 底部留白覆盖波浪 */
+  }
+
+  /* 眉标 */
+  .kicker {
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: 8px;
+    color: var(--accent);
+    padding: 10px 26px;
+    border: 1.5px solid rgba(255, 209, 102, .55);
+    border-radius: 999px;
+  }
+
+  /* 主标题 */
+  .title {
+    margin-top: 42px;
+    font-size: clamp(40px, 8.4vw, 94px);
+    line-height: 1.2;
+    font-weight: 900;
+    letter-spacing: 6px;
+    text-shadow: 0 8px 30px rgba(0, 20, 60, .45);
+  }
+  .title .grad {
+    display: block;
+    background: linear-gradient(115deg, #8fd6ff 5%, #5aa8f0 45%, #ffd166 110%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* 副文案 */
+  .sub {
+    margin-top: 28px;
+    max-width: 720px;
+    font-size: 22px;
+    line-height: 1.9;
+    color: var(--muted);
+    letter-spacing: 1px;
+  }
+  .sub b { color: #fff; font-weight: 700; }
+
+  /* 主视觉：鲸鱼 */
+  .hero {
+    margin-top: 24px;
+    width: 58%;
+    animation: floatY 6.5s ease-in-out infinite alternate;
+    filter: drop-shadow(0 20px 40px rgba(0, 30, 80, .5));
+  }
+  @keyframes floatY { from { transform: translateY(0); } to { transform: translateY(-16px); } }
+
+  /* 数据卡片 */
+  .stats {
+    margin-top: auto;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+  .stat {
+    background: rgba(8, 40, 84, .55);
+    border: 1px solid rgba(140, 195, 255, .18);
+    border-radius: 18px;
+    padding: 22px 14px 20px;
+    backdrop-filter: blur(6px);
+    transition: transform .3s ease, border-color .3s ease;
+  }
+  .stat:hover { transform: translateY(-6px); border-color: rgba(255, 209, 102, .5); }
+  .stat b {
+    display: block;
+    font-size: 50px;
+    font-weight: 900;
+    color: var(--accent);
+    line-height: 1.1;
+  }
+  .stat span {
+    display: block;
+    margin-top: 10px;
+    font-size: 17px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* 行动号召 */
+  .actions { margin-top: 32px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .btn {
+    font-size: 25px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--coral), #ffa15e);
+    padding: 17px 54px;
+    border-radius: 999px;
+    cursor: pointer;
+    box-shadow: 0 12px 34px rgba(255, 123, 95, .38);
+    transition: transform .25s ease, box-shadow .25s ease;
+    user-select: none;
+  }
+  .btn:hover  { transform: translateY(-4px) scale(1.04); box-shadow: 0 18px 46px rgba(255, 123, 95, .55); }
+  .btn:active { transform: translateY(-1px) scale(.99); }
+  .tips { font-size: 18px; letter-spacing: 3px; color: var(--muted); }
+  .tips i { font-style: normal; color: var(--accent); }
+
+  /* 页脚 */
+  .footer {
+    margin-top: 24px;
+    font-size: 16px;
+    letter-spacing: 3px;
+    color: rgba(165, 198, 232, .75);
+  }
+
+  /* ============ 底部波浪 ============ */
+  .waves { position: absolute; left: 0; right: 0; bottom: 0; height: 150px; z-index: 2; pointer-events: none; }
+  .wave { position: absolute; left: 0; bottom: 0; width: 200%; height: 150px; animation: slide linear infinite; }
+  .wave.w1 { animation-duration: 16s; }
+  .wave.w2 { animation-duration: 22s; bottom: -30px; }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+  /* ============ 小屏适配 ============ */
+  @media (max-width: 640px) {
+    body { padding: 0; }
+    .poster { border-radius: 0; }
+    .content { padding: 36px 22px 190px; }
+    .kicker { font-size: 15px; letter-spacing: 4px; padding: 8px 16px; }
+    .title { letter-spacing: 2px; margin-top: 30px; }
+    .sub { font-size: 16px; margin-top: 20px; }
+    .hero { width: 76%; }
+    .stats { grid-template-columns: 1fr; gap: 12px; }
+    .stat { padding: 16px; }
+    .stat b { font-size: 38px; }
+    .btn { font-size: 20px; padding: 14px 36px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="poster">
+
+  <!-- 背景气泡 -->
+  <i class="bubble" style="left:6%;  width:14px; height:14px; animation-duration:11s;  animation-delay:-2s;"></i>
+  <i class="bubble" style="left:16%; width:26px; height:26px; animation-duration:17s;  animation-delay:-9s;"></i>
+  <i class="bubble" style="left:28%; width:10px; height:10px; animation-duration:9s;   animation-delay:-4s;"></i>
+  <i class="bubble" style="left:37%; width:20px; height:20px; animation-duration:14s;  animation-delay:-12s;"></i>
+  <i class="bubble" style="left:48%; width:32px; height:32px; animation-duration:19s;  animation-delay:-6s;"></i>
+  <i class="bubble" style="left:60%; width:12px; height:12px; animation-duration:10s;  animation-delay:-15s;"></i>
+  <i class="bubble" style="left:71%; width:24px; height:24px; animation-duration:16s;  animation-delay:-3s;"></i>
+  <i class="bubble" style="left:82%; width:9px;  height:9px;  animation-duration:8s;   animation-delay:-7s;"></i>
+  <i class="bubble" style="left:90%; width:18px; height:18px; animation-duration:13s;  animation-delay:-11s;"></i>
+  <i class="bubble" style="left:94%; width:38px; height:38px; animation-duration:21s;  animation-delay:-1s;"></i>
+
+  <!-- 背景鱼群 -->
+  <svg class="fishes" viewBox="0 0 1080 1620" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <g id="fish">
+        <path d="M0,0 Q10,-7 22,0 Q10,7 0,0 Z" fill="rgba(160,210,255,.45)"/>
+        <path d="M22,0 L30,-5 L30,5 Z" fill="rgba(160,210,255,.3)"/>
+      </g>
+    </defs>
+    <use href="#fish" transform="translate(150,560) scale(.9)  rotate(-6)"/>
+    <use href="#fish" transform="translate(310,630) scale(.6)  rotate(4)"/>
+    <use href="#fish" transform="translate(880,545) scale(.8)  rotate(10)"/>
+    <use href="#fish" transform="translate(755,665) scale(.55) rotate(-12)"/>
+    <use href="#fish" transform="translate(615,605) scale(.45) rotate(6)"/>
+    <use href="#fish" transform="translate(965,705) scale(.7)  rotate(-4)"/>
+    <use href="#fish" transform="translate(88,700)  scale(.65) rotate(8)"/>
+    <use href="#fish" transform="translate(435,565) scale(.5)  rotate(-8)"/>
+  </svg>
+
+  <!-- 内容层 -->
+  <div class="content">
+    <div class="kicker">🌊 WORLD OCEANS DAY · 6月8日 世界海洋日</div>
+
+    <h1 class="title">别让海洋<br><span class="grad">只剩眼泪</span></h1>
+
+    <p class="sub">海洋覆盖地球 <b>71%</b> 的表面，制造了我们呼吸的每一口氧气中超过一半。
+      如今，它正被塑料、污染与过度捕捞推向沉默。</p>
+
+    <!-- 鲸鱼主视觉 -->
+    <svg class="hero" viewBox="0 0 520 300" fill="none">
+      <defs>
+        <linearGradient id="whaleGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="rgba(255,255,255,.95)"/>
+          <stop offset="1" stop-color="rgba(214,233,255,.72)"/>
+        </linearGradient>
+      </defs>
+      <!-- 喷水 -->
+      <path d="M118 96 C 96 74, 84 50, 74 28" stroke="rgba(255,255,255,.85)" stroke-width="7" stroke-linecap="round"/>
+      <path d="M130 88 C 118 60, 112 38, 110 16" stroke="rgba(255,255,255,.6)"  stroke-width="5" stroke-linecap="round"/>
+      <path d="M142 96 C 140 74, 146 54, 154 36" stroke="rgba(255,255,255,.45)" stroke-width="4" stroke-linecap="round"/>
+      <!-- 身体 -->
+      <path d="M470 150
+               C 420 112, 320 92, 240 96
+               C 160 100, 96 118, 70 148
+               C 104 172, 170 182, 240 180
+               C 330 178, 408 168, 470 150 Z"
+            fill="url(#whaleGrad)"/>
+      <!-- 尾鳍 -->
+      <path d="M470 150
+               C 490 128, 508 112, 518 106
+               C 508 130, 498 140, 488 146
+               L 492 156
+               C 504 166, 512 178, 516 192
+               C 500 172, 484 160, 470 150 Z"
+            fill="url(#whaleGrad)"/>
+      <!-- 胸鳍 -->
+      <path d="M240 150
+               C 252 172, 268 188, 288 196
+               C 274 190, 258 178, 244 158
+               C 238 156, 236 152, 240 150 Z"
+            fill="rgba(255,255,255,.35)"/>
+      <!-- 眼睛 -->
+      <circle cx="122" cy="128" r="7" fill="#07305f"/>
+      <!-- 肚皮纹路 -->
+      <path d="M150 160 C 200 172, 280 176, 360 168" stroke="rgba(7,48,95,.22)" stroke-width="5" stroke-linecap="round"/>
+    </svg>
+
+    <!-- 数据卡片 -->
+    <div class="stats">
+      <div class="stat"><b>800万</b><span>吨塑料<br>每年流入海洋</span></div>
+      <div class="stat"><b>30亿</b><span>人依赖海洋<br>获取食物与生计</span></div>
+      <div class="stat"><b>90%</b><span>大型鱼类种群<br>已严重减少</span></div>
+    </div>
+
+    <!-- 行动号召 -->
+    <div class="actions">
+      <div class="btn">保护海洋，从我做起</div>
+      <p class="tips"><i>少用塑料</i> · <i>低碳出行</i> · <i>拒绝过度捕捞</i></p>
+    </div>
+
+    <p class="footer">Make every day World Oceans Day · 让每一天都是世界海洋日</p>
+  </div>
+
+  <!-- 底部波浪 -->
+  <div class="waves">
+    <svg class="wave w1" viewBox="0 0 2880 150" preserveAspectRatio="none">
+      <path d="M0,70 C240,104 480,36 720,52 C960,68 1200,104 1440,70
+               L1440,150 L0,150 Z" fill="rgba(140,200,255,.16)"/>
+      <path d="M1440,70 C1680,104 1920,36 2160,52 C2400,68 2640,104 2880,70
+               L2880,150 L1440,150 Z" fill="rgba(140,200,255,.16)"/>
+    </svg>
+    <svg class="wave w2" viewBox="0 0 2880 150" preserveAspectRatio="none">
+      <path d="M0,80 C240,110 480,50 720,62 C960,74 1200,108 1440,80
+               L1440,150 L0,150 Z" fill="rgba(90,170,240,.18)"/>
+      <path d="M1440,80 C1680,110 1920,50 2160,62 C2400,74 2640,108 2880,80
+               L2880,150 L1440,150 Z" fill="rgba(90,170,240,.18)"/>
+    </svg>
+  </div>
+
+</div>
+
+</body>
+</html>

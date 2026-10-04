@@ -1,0 +1,91 @@
+{
+  "temp": "C:\\Users\\servi\\AppData\\Local\\Temp\\skill-governance-cli-7Ebq3G",
+  "results": [
+    {
+      "name": "easyeda-health",
+      "status": 0,
+      "stdout": "{\n  \"status\": \"found\",\n  \"host\": \"127.0.0.1\",\n  \"ports\": \"60832-60841\",\n  \"found\": {\n    \"port\": 60832,\n    \"service\": \"easyeda-agent\",\n    \"raw\": {\n      \"service\": \"easyeda-agent\",\n      \"version\": \"v1.3.0\",\n      \"status\": \"ok\",\n      \"port\": 60832,\n      \"windows\": []\n    }\n  },\n  \"versionGate\": {\n    \"cli\": \"v1.3.0\",\n    \"daemon\": \"v1.3.0\",\n    \"verdict\": \"ok\",\n    \"findings\": [\n      {\n        \"component\": \"daemon\",\n        \"version\": \"v1.3.0\",\n        \"severity\": \"ok\",\n        \"reason\": \"与 CLI 同版 v1.3.0\"\n      }\n    ]\n  },\n  \"checked\": [\n    {\n      \"port\": 60832,\n      \"status\": \"ok\"\n    }\n  ]\n}\n",
+      "stderr": "✓ 版本一致性:CLI / daemon / connector 对齐 v1.3.0\n"
+    },
+    {
+      "name": "epro2kicad-help",
+      "status": 0,
+      "stdout": "usage: epro2kicad [-h] [-o OUTPUT] [--zip] [--version] epro\r\n\r\nepro2kicad — convert EasyEDA Pro (.epro) projects to a KiCad-ready zip.\r\n\r\npositional arguments:\r\n  epro                  EasyEDA Pro .epro project file\r\n\r\noptions:\r\n  -h, --help            show this help message and exit\r\n  -o OUTPUT, --output OUTPUT\r\n                        output directory\r\n  --zip                 also produce a .zip\r\n  --version             show program's version number and exit\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "officecli-version",
+      "status": 0,
+      "stdout": "1.0.143\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "kicad-cli-version",
+      "status": 0,
+      "stdout": "10.0.6\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "cheaper-image-help",
+      "status": 0,
+      "stdout": "usage: generate_image.py [-h] --model {grok-imagine,nano-banana,gpt-image-2}\r\n                         --prompt PROMPT [--out OUT] [--n N] [--size SIZE]\r\n\r\nGenerate an image via CheaperInference API\r\n\r\noptions:\r\n  -h, --help            show this help message and exit\r\n  --model {grok-imagine,nano-banana,gpt-image-2}\r\n                        image model to use\r\n  --prompt PROMPT       image description\r\n  --out OUT             output file path (default: ./<model>_<timestamp><ext>)\r\n  --n N                 number of images (default 1)\r\n  --size SIZE           size hint, e.g. 1024x1024 (model-dependent)\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "projectlibre-help",
+      "status": 0,
+      "stdout": "usage: generate_project.py [-h] [-o OUTPUT] [-t HOURS_PER_DAY] [--open]\r\n                           [--quiet] [--verify]\r\n                           input\r\n\r\n任务清单 JSON -> ProjectLibre MSPDI XML\r\n\r\npositional arguments:\r\n  input                 任务清单 JSON 文件\r\n\r\noptions:\r\n  -h, --help            show this help message and exit\r\n  -o, --output OUTPUT   输出 XML 路径 (默认: <输入目录>/<项目名>.xml)\r\n  -t, --hours-per-day HOURS_PER_DAY\r\n                        每日工时(默认 8)\r\n  --open                生成后用 ProjectLibre 打开\r\n  --quiet               只输出 XML 到 stdout, 不打印摘要 (配合 -o 仍写文件)\r\n  --verify              生成后用 MPXJ 重新解析校验 (需本机 JDK 8+; MPXJ 路径用环境变量 MPXJ_HOME\r\n                        覆盖)\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "meeting-transcribe-invalid-file-boundary",
+      "status": 1,
+      "stdout": "[跳过] 文件不存在: --help\r\n没有找到有效的音频/视频文件\r\n",
+      "stderr": "",
+      "expectedStatus": 1,
+      "note": "CLI has no --help; rejection of nonexistent file is expected. Actual NPU transcription is recorded in media-smoke.json."
+    },
+    {
+      "name": "npu-ocr-help",
+      "status": 0,
+      "stdout": "usage: OCR_NPU_CLI.exe [-h] [--image_dir IMAGE_DIR]\r\n                       [--det_algorithm DET_ALGORITHM]\r\n                       [--det_model_dir DET_MODEL_DIR]\r\n                       [--det_model_device DET_MODEL_DEVICE]\r\n                       [--det_npu_base_size DET_NPU_BASE_SIZE]\r\n                       [--det_landscape_model_dir DET_LANDSCAPE_MODEL_DIR]\r\n                       [--det_limit_side_len DET_LIMIT_SIDE_LEN]\r\n                       [--det_limit_type DET_LIMIT_TYPE]\r\n                       [--det_box_type DET_BOX_TYPE]\r\n                       [--det_db_thresh DET_DB_THRESH]\r\n                       [--det_db_box_thresh DET_DB_BOX_THRESH]\r\n                       [--det_db_unclip_ratio DET_DB_UNCLIP_RATIO]\r\n                       [--max_batch_size MAX_BATCH_SIZE]\r\n                       [--use_dilation USE_DILATION]\r\n                       [--det_db_score_mode DET_DB_SCORE_MODE]\r\n                       [--enable_columns ENABLE_COLUMNS]\r\n                       [--enable_table ENABLE_TABLE]\r\n                       [--rec_algorithm REC_ALGORITHM]\r\n                       [--rec_model_dir REC_MODEL_DIR]\r\n                       [--rec_model_device REC_MODEL_DEVICE]\r\n                       [--rec_npu_wide_width REC_NPU_WIDE_WIDTH]\r\n                       [--rec_image_inverse REC_IMAGE_INVERSE]\r\n                       [--rec_image_shape REC_IMAGE_SHAPE]\r\n                       [--rec_batch_num REC_BATCH_NUM]\r\n                       [--max_text_length MAX_TEXT_LENGTH]\r\n                       [--rec_char_dict_path REC_CHAR_DICT_PATH]\r\n                       [--use_spa",
+      "stderr": ""
+    },
+    {
+      "name": "archify-doctor",
+      "status": 0,
+      "stdout": "Archify doctor\n\n[ok] Node.js v24.15.0 (requires >=18)\n[ok] Core template\n[ok] Example renderer\n[ok] Live preview runtime\n[ok] Visual-check runtime\n[ok] Output path safety runtime\n[ok] Scenario recipe guide\n[ok] Progressive authoring references\n[ok] Architecture compare runtime and proof fixtures\n[ok] Standalone schema validators\n[ok] architecture renderer, schema, and example\n[ok] workflow renderer, schema, and example\n[ok] sequence renderer, schema, and example\n[ok] dataflow renderer, schema, and example\n[ok] lifecycle renderer, schema, and example\n\nArchify is ready.\n",
+      "stderr": ""
+    },
+    {
+      "name": "code-view-filesystem",
+      "status": 0,
+      "stdout": "515\n",
+      "stderr": ""
+    },
+    {
+      "name": "pptx-export-help",
+      "status": 0,
+      "stdout": "usage: export_pptx.py [-h] [--output OUTPUT] [--transition {fade,none}]\r\n                      [--embed-fonts | --no-embed-fonts] [--browser]\r\n                      [--keep-browser-raw] [--force]\r\n                      input\r\n\r\nExport a PPTD project to PPTX. Default: local patched official WASM (offline).\r\nOptional --browser uses the local neo-ppt mirror (also offline).\r\n\r\npositional arguments:\r\n  input                 .pptd manifest or project directory\r\n\r\noptions:\r\n  -h, --help            show this help message and exit\r\n  --output, -o OUTPUT   output .pptx path\r\n  --transition {fade,none}\r\n                        slide transition written to every slide (default:\r\n                        fade)\r\n  --embed-fonts         embed fonts when available (browser path; default)\r\n  --no-embed-fonts      disable font embedding (browser path)\r\n  --browser             force local neo-ppt browser UI path instead of Node\r\n                        WASM\r\n  --keep-browser-raw    also keep the unpatched browser download beside the\r\n                        output\r\n  --force               replace an existing output file\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "projectlibre-real-xml",
+      "status": 0,
+      "stdout": "项目: Governance smoke    开工: 2026-09-07    每日工时: 8h\r\n输出: C:\\Users\\servi\\AppData\\Local\\Temp\\skill-governance-cli-7Ebq3G\\project.xml\r\n\r\nID  任务                    工期(d)    开始          结束          分配\r\n1   ▸ Migration           2        2026-09-07  2026-09-08  -\r\n2     Prepare             1        2026-09-07  2026-09-07  -\r\n3     Verify              1        2026-09-08  2026-09-08  -\r\n\r\n项目完工: 2026-09-08\r\n[任务数 3(含 1 个概要) | 累计工期(人日) 2 | 关键路径/时差由 ProjectLibre 在 GUI 内计算]\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "academic-latex-real-verify",
+      "status": 0,
+      "stdout": "usage: preserve_latex.py [-h] {mask,restore,verify,check-input} ...\r\n\r\nacademic-translation 公式 / 引用零损伤工具\r\n\r\npositional arguments:\r\n  {mask,restore,verify,check-input}\r\n    mask                掩码原文中的 LaTeX 命令和公式\r\n    restore             还原占位符为原始 token\r\n    verify              校验译文中所有占位符已还原 + 数字保留\r\n    check-input         快速检查 PDF / LaTeX / 文本输入可解析性（Preflight P1）\r\n\r\noptions:\r\n  -h, --help            show this help message and exit\r\n",
+      "stderr": ""
+    },
+    {
+      "name": "gemini-real-cli-text",
+      "status": 0,
+      "stdout": "GOVERNANCE_OK\n",
+      "stderr": "[usage] {\"promptTokenCount\":9,\"candidatesTokenCount\":5,\"totalTokenCount\":39,\"trafficType\":\"ON_DEMAND\",\"promptTokensDetails\":[{\"modality\":\"TEXT\",\"tokenCount\":9}],\"candidatesTokensDetails\":[{\"modality\":\"TEXT\",\"tokenCount\":5}],\"thoughtsTokenCount\":25}\n"
+    }
+  ]
+}

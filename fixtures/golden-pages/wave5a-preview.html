@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wave 5A-5D Preview（Golden / E2E）</title>
+    <link rel="stylesheet" href="../../out/tests/wave5a-preview.css" />
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #root.preview-code {
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+      }
+      #root.preview-md {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-image {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-pdf {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-docx {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-xlsx {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-pptx {
+        display: flex;
+        flex-direction: column;
+      }
+      #root.preview-image > .image-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-pdf > .pdf-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-docx > .docx-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-xlsx > .xlsx-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-pptx > .pptx-viewer {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-code > .code-view {
+        flex: 1;
+        min-height: 0;
+      }
+      #root.preview-md > .md-doc-viewer {
+        flex: 1;
+        min-height: 0;
+        height: auto;
+      }
+      .md-doc-viewer {
+        box-sizing: border-box;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="../../out/tests/wave5a-preview.js"></script>
+  </body>
+</html>

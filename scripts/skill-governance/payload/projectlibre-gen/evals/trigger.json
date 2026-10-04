@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skill": "projectlibre-gen",
+  "cases": [
+    {
+      "prompt": "把任务 JSON 转为 ProjectLibre XML",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "生成可打开的 MSPDI 项目计划",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "把工期和资源依赖排成 ProjectLibre 甘特项目",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "输出 Microsoft Project 兼容 XML",
+      "expected": "trigger"
+    },
+    {
+      "prompt": "列出明天的待办文字清单",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "整理本周完成项摘要",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "创建周报导入 JSON",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "修改 Excel 单元格颜色",
+      "expected": "no-trigger"
+    }
+  ]
+}

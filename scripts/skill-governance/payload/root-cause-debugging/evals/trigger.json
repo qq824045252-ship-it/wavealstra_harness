@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "expected": "trigger",
+      "prompt": "滚动还是会闪，之前修过又出现了，已经加过 flag 还是会跳"
+    },
+    {
+      "expected": "trigger",
+      "prompt": "流式输出时手动向上滚动会被拉回到底部，测试通过但实际不行"
+    },
+    {
+      "expected": "trigger",
+      "prompt": "这个竞态 bug 时好时坏，并发重试来回打补丁越补越乱"
+    },
+    {
+      "expected": "trigger",
+      "prompt": "虚拟列表+Markdown闪烁，怀疑是重复所有权，需要定位根因"
+    },
+    {
+      "expected": "trigger",
+      "prompt": "IPC 缓存偶发不一致，单元测试全绿但线上仍复现"
+    },
+    {
+      "expected": "no-trigger",
+      "prompt": "帮我翻译这篇论文摘要并润色"
+    },
+    {
+      "expected": "no-trigger",
+      "prompt": "生成一张产品海报图"
+    },
+    {
+      "expected": "no-trigger",
+      "prompt": "写一个新功能的 PRD 文档"
+    },
+    {
+      "expected": "no-trigger",
+      "prompt": "单次简单报错，改一行就能修好，不涉及并发或生命周期"
+    },
+    {
+      "prompt": "首次发现登录按钮每次都报 TypeError，请调试",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "上传空文件会稳定报错，第一次排查",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "这个测试用错 fixture，稳定失败，帮我定位",
+      "expected": "no-trigger"
+    },
+    {
+      "prompt": "设置页点击保存每次崩溃，尚未修复过",
+      "expected": "no-trigger"
+    }
+  ],
+  "skill": "root-cause-debugging",
+  "schemaVersion": 1
+}

@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "passed": 6,
+  "results": [
+    {
+      "name": "first pairing starts with actual USB instructions and no misleading automatic LAN connection",
+      "ok": true
+    },
+    {
+      "name": "invalid clipboard contents give an actionable error and leave pairing controls usable",
+      "ok": true
+    },
+    {
+      "name": "a transient pairing failure permits the same URL to be retried successfully",
+      "ok": true
+    },
+    {
+      "name": "58px composer and model/permission toolbar fit a 360px phone viewport",
+      "ok": true
+    },
+    {
+      "name": "permissions have a direct toolbar entry, explicit desktop options and cancellable full-access confirmation",
+      "ok": true
+    },
+    {
+      "name": "model and permission controls show only icons; Android pairing has no QR entry or instructions",
+      "ok": true
+    }
+  ]
+}

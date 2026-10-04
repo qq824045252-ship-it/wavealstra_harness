@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "startedAt": "2026-10-01T20:31:13.793Z",
+  "sourceFingerprint": "cf1e14c38ea8ea1b036bc4d411aad48698381df60318c2d70750818afa209352",
+  "release": "release-pi100-20261001203113789",
+  "output": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\build-20261001203113789",
+  "packed": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-pi100-20261001203113789\\win-unpacked",
+  "cleanReleaseRoot": "C:\\Users\\servi\\AppData\\Local\\Programs\\MyBuddy\\portable\\release-pi100-20261001203113789",
+  "steps": [],
+  "error": "Error: Source changed since prepare; rebuild from a new fingerprint\n    at Object.<anonymous> (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\pi100-package.cjs:12:52)\n    at Module._compile (node:internal/modules/cjs/loader:1872:14)\n    at Object..js (node:internal/modules/cjs/loader:2003:10)\n    at Module.load (node:internal/modules/cjs/loader:1594:32)\n    at Module._load (node:internal/modules/cjs/loader:1396:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n    at node:internal/main/run_main_module:33:47"
+}

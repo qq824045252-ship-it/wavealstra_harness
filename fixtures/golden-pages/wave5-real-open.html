@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wave 5 Real Open（Product Path E2E）</title>
+    <link rel="stylesheet" href="../../out/tests/wave5a-preview.css" />
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #root > div {
+        width: 100vw;
+        height: 100vh;
+      }
+      .artifact-panel {
+        height: 100vh;
+      }
+      .artifact-panel .artifact-body {
+        flex: 1;
+        min-height: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="../../out/tests/wave5-real-open.js"></script>
+  </body>
+</html>

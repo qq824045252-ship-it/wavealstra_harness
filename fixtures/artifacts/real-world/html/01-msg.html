@@ -1,0 +1,507 @@
+<!-- __SANITIZED__ 来源: C:\Users\user\.mybuddy\sessions\--C--Users-user-Desktop-run-plan--\2026-08-07T04-20-12-968Z_019fda73-3c28-76e4-9281-106ebeb3e807.jsonl | block:  | 长度: 25549 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RunMate · 跑步计划</title>
+<style>
+  :root {
+    --primary: #FF6A3D;
+    --primary-dark: #E8501F;
+    --primary-soft: #FFF0E9;
+    --teal: #14B8A6;
+    --teal-soft: #E6F7F5;
+    --ink: #1A1D26;
+    --ink-2: #5A6070;
+    --ink-3: #9AA0B0;
+    --bg: #F6F7F9;
+    --card: #FFFFFF;
+    --line: #ECEEF2;
+    --danger: #E5484D;
+    --danger-soft: #FDECEC;
+    --radius: 16px;
+    --radius-sm: 10px;
+    --shadow: 0 1px 2px rgba(26,29,38,.04), 0 8px 24px rgba(26,29,38,.06);
+    --font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --num: "SF Pro Display", -apple-system, "Segoe UI", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--ink); }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #D5D9E0; border-radius: 3px; }
+
+  /* ========== 布局 ========== */
+  .app { display: flex; min-height: 100vh; }
+
+  /* ========== 侧边栏 ========== */
+  .sidebar {
+    width: 232px; flex-shrink: 0;
+    background: var(--card);
+    border-right: 1px solid var(--line);
+    padding: 24px 16px;
+    display: flex; flex-direction: column; gap: 28px;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; padding: 0 8px; }
+  .logo-mark {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--primary), #FF9A62);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; font-size: 17px;
+    box-shadow: 0 4px 12px rgba(255,106,61,.35);
+  }
+  .logo-name { font-weight: 800; font-size: 17px; letter-spacing: .2px; }
+  .logo-name small { display: block; font-size: 11px; font-weight: 500; color: var(--ink-3); letter-spacing: .5px; }
+
+  .nav { display: flex; flex-direction: column; gap: 4px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; border-radius: var(--radius-sm);
+    color: var(--ink-2); font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: .15s; border: none; background: none; width: 100%; text-align: left;
+  }
+  .nav-item:hover { background: var(--bg); color: var(--ink); }
+  .nav-item.active { background: var(--primary-soft); color: var(--primary-dark); }
+  .nav-icon { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+
+  .sidebar-foot { margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg); border-radius: var(--radius-sm); }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--teal), #5EEAD4); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+  .user-name { font-size: 13px; font-weight: 700; }
+  .user-level { font-size: 11px; color: var(--ink-3); }
+
+  /* ========== 主区 ========== */
+  .main { flex: 1; padding: 28px 36px 48px; max-width: 1180px; }
+
+  /* 顶栏 */
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+  .hello h1 { font-size: 24px; font-weight: 800; }
+  .hello p { color: var(--ink-2); font-size: 13px; margin-top: 4px; }
+
+  .top-actions { display: flex; align-items: center; gap: 10px; }
+  .week-switch { display: flex; align-items: center; gap: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px; box-shadow: var(--shadow); }
+  .week-btn { border: none; background: none; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 15px; color: var(--ink-2); }
+  .week-btn:hover { background: var(--bg); }
+  .week-label { font-size: 13px; font-weight: 700; padding: 0 8px; min-width: 74px; text-align: center; }
+  .demo-btn { border: 1px solid var(--line); background: var(--card); color: var(--ink-2); font-size: 12.5px; font-weight: 600; padding: 9px 14px; border-radius: 12px; cursor: pointer; transition: .15s; box-shadow: var(--shadow); }
+  .demo-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
+  .demo-btn.active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary-dark); }
+
+  /* 错误态 banner */
+  .error-banner {
+    display: none; align-items: center; gap: 12px;
+    background: var(--danger-soft); border: 1px solid #F5C6C8;
+    color: #A32B2F; padding: 14px 18px; border-radius: var(--radius);
+    margin-bottom: 20px; font-size: 14px; font-weight: 600;
+  }
+  .error-banner .retry { margin-left: auto; border: none; background: var(--danger); color: #fff; font-size: 12.5px; font-weight: 700; padding: 8px 14px; border-radius: 9px; cursor: pointer; }
+
+  /* 统计行 */
+  .stats-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px; border: 1px solid var(--line); }
+  .stat-card .label { font-size: 12.5px; color: var(--ink-3); font-weight: 600; }
+  .stat-value { font-family: var(--num); font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -.5px; }
+  .stat-value small { font-size: 14px; font-weight: 600; color: var(--ink-3); margin-left: 2px; }
+  .stat-sub { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
+  .stat-sub .up { color: var(--teal); font-weight: 700; }
+
+  /* 进度环卡 */
+  .progress-card { display: flex; align-items: center; gap: 20px; }
+  .ring-wrap { position: relative; width: 96px; height: 96px; flex-shrink: 0; }
+  .ring-wrap svg { transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: #F1F2F5; stroke-width: 9; }
+  .ring-fg { fill: none; stroke: url(#ringGrad); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset .6s ease; }
+  .ring-num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .ring-num b { font-family: var(--num); font-size: 21px; font-weight: 800; }
+  .ring-num span { font-size: 10px; color: var(--ink-3); }
+  .progress-meta { flex: 1; }
+  .progress-meta .stat-value { margin-top: 2px; }
+  .goal-edit { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--primary-dark); font-weight: 700; cursor: pointer; background: var(--primary-soft); border: none; padding: 7px 12px; border-radius: 9px; }
+
+  /* ========== 周计划 ========== */
+  .plan-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--line); overflow: hidden; }
+  .plan-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 0; }
+  .plan-head h2 { font-size: 17px; font-weight: 800; }
+  .plan-head .hint { font-size: 12.5px; color: var(--ink-3); margin-top: 3px; }
+  .plan-head .add-day { border: 1.5px dashed var(--primary); background: var(--primary-soft); color: var(--primary-dark); font-size: 12.5px; font-weight: 700; padding: 8px 14px; border-radius: 10px; cursor: pointer; }
+
+  .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; padding: 20px 24px 24px; }
+  .day-card {
+    background: var(--bg); border: 1.5px solid transparent; border-radius: 14px;
+    padding: 14px 12px; cursor: pointer; transition: .18s;
+    display: flex; flex-direction: column; gap: 8px; position: relative; text-align: left;
+  }
+  .day-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+  .day-card.selected { border-color: var(--primary); background: var(--primary-soft); }
+  .day-card.rest { opacity: .72; }
+  .day-card .dow { font-size: 11px; font-weight: 800; color: var(--ink-3); letter-spacing: .6px; }
+  .day-card .ddate { font-size: 11px; color: var(--ink-3); }
+  .day-card .type-tag { font-size: 13px; font-weight: 800; line-height: 1.35; }
+  .day-card .dist { font-family: var(--num); font-size: 22px; font-weight: 800; letter-spacing: -.4px; }
+  .day-card .dist small { font-size: 11.5px; color: var(--ink-3); font-weight: 600; }
+  .day-card .pace { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  .day-card .done-btn {
+    margin-top: 2px; border: none; border-radius: 8px; padding: 7px 0;
+    font-size: 12px; font-weight: 700; cursor: pointer; width: 100%;
+    background: var(--card); color: var(--ink-2); border: 1px solid var(--line); transition: .15s;
+  }
+  .day-card .done-btn:hover { border-color: var(--teal); color: var(--teal); }
+  .day-card.done { border-color: var(--teal); background: var(--teal-soft); }
+  .day-card.done .done-btn { background: var(--teal); color: #fff; border-color: var(--teal); }
+  .day-card.rest .done-btn { display: none; }
+
+  /* 加载骨架 */
+  .skeleton { display: none; }
+  .skeleton .sk { border-radius: 12px; background: linear-gradient(90deg,#F1F2F5 25%,#E9EBEF 50%,#F1F2F5 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  /* ========== 详情抽屉 ========== */
+  .drawer { display: none; margin-top: 16px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px 24px; }
+  .drawer.open { display: block; animation: slideIn .22s ease; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .drawer-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+  .drawer-head h3 { font-size: 16px; font-weight: 800; }
+  .drawer-head .meta { font-size: 12.5px; color: var(--ink-2); }
+  .steps { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 14px; }
+  .step { background: var(--bg); border-radius: 12px; padding: 14px 16px; border-left: 4px solid var(--primary); }
+  .step.main { border-left-color: var(--teal); }
+  .step.cool { border-left-color: #8B95A9; }
+  .step .step-label { font-size: 11px; font-weight: 800; color: var(--ink-3); letter-spacing: .6px; }
+  .step h4 { font-size: 14px; font-weight: 800; margin: 5px 0 6px; }
+  .step p { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+  .step .dur { display: inline-block; margin-top: 8px; font-size: 11.5px; font-weight: 700; color: var(--primary-dark); background: var(--primary-soft); padding: 3px 9px; border-radius: 99px; }
+  .step.main .dur { color: #0D8F7E; background: var(--teal-soft); }
+  .step.cool .dur { color: var(--ink-2); background: #EEF0F4; }
+
+  /* ========== 空态 ========== */
+  .empty-state { display: none; background: var(--card); border: 1.5px dashed #D5D9E0; border-radius: var(--radius); padding: 48px 24px; text-align: center; margin-bottom: 24px; }
+  .empty-state .em { font-size: 42px; }
+  .empty-state h3 { font-size: 17px; font-weight: 800; margin: 12px 0 6px; }
+  .empty-state p { color: var(--ink-2); font-size: 13.5px; max-width: 380px; margin: 0 auto; line-height: 1.7; }
+  .empty-cta { margin-top: 18px; display: inline-flex; gap: 10px; }
+  .btn-primary { background: var(--primary); color: #fff; border: none; font-size: 13.5px; font-weight: 700; padding: 11px 22px; border-radius: 12px; cursor: pointer; box-shadow: 0 6px 16px rgba(255,106,61,.35); }
+  .btn-ghost { background: var(--bg); color: var(--ink-2); border: 1px solid var(--line); font-size: 13.5px; font-weight: 700; padding: 11px 22px; border-radius: 12px; cursor: pointer; }
+
+  /* ========== 目标设置弹层 ========== */
+  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(26,29,38,.45); backdrop-filter: blur(2px); z-index: 50; align-items: center; justify-content: center; }
+  .modal-mask.show { display: flex; }
+  .modal { background: var(--card); border-radius: 18px; padding: 26px; width: 340px; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+  .modal h3 { font-size: 17px; font-weight: 800; margin-bottom: 4px; }
+  .modal .sub { font-size: 12.5px; color: var(--ink-3); margin-bottom: 16px; }
+  .modal input[type=number] { width: 100%; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: 11px; font-size: 16px; font-weight: 700; font-family: var(--num); outline: none; }
+  .modal input[type=number]:focus { border-color: var(--primary); }
+  .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .modal-actions button { flex: 1; padding: 11px; border-radius: 11px; font-size: 13.5px; font-weight: 700; cursor: pointer; border: none; }
+  .modal-actions .save { background: var(--primary); color: #fff; }
+  .modal-actions .cancel { background: var(--bg); color: var(--ink-2); }
+
+  /* 响应式 */
+  @media (max-width: 1100px) { .stats-row { grid-template-columns: 1fr 1fr; } .week-grid { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 880px) { .sidebar { display: none; } .main { padding: 20px; } .steps { grid-template-columns: 1fr; } }
+  @media (max-width: 560px) { .week-grid { grid-template-columns: repeat(2, 1fr); } .stats-row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== 侧边导航 ===== -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">R</div>
+      <div class="logo-name">RunMate<small>跑步计划 · 训练营</small></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active"><span class="nav-icon">📊</span> 概览</button>
+      <button class="nav-item"><span class="nav-icon">🗓️</span> 周计划</button>
+      <button class="nav-item"><span class="nav-icon">📈</span> 训练历史</button>
+      <button class="nav-item"><span class="nav-icon">🎯</span> 目标与等级</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="avatar">林</div>
+      <div>
+        <div class="user-name">林小跑</div>
+        <div class="user-level">LV.6 · 进阶跑者</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===== 主区 ===== -->
+  <main class="main">
+
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="hello">
+        <h1>早上好，林小跑 👟</h1>
+        <p>本周还剩 <b style="color:var(--primary-dark)">2 次</b>训练 · 状态很好，继续保持</p>
+      </div>
+      <div class="top-actions">
+        <div class="week-switch">
+          <button class="week-btn" id="prevWeek">‹</button>
+          <span class="week-label" id="weekLabel">本周 · 3/3 ～ 3/9</span>
+          <button class="week-btn" id="nextWeek">›</button>
+        </div>
+        <button class="demo-btn" data-demo="normal">正常态</button>
+        <button class="demo-btn" data-demo="empty">空态演示</button>
+        <button class="demo-btn" data-demo="error">错误态演示</button>
+      </div>
+    </header>
+
+    <!-- 错误态 banner -->
+    <div class="error-banner" id="errorBanner">
+      <span>⚠️</span>
+      <span>训练计划加载失败，请检查网络后重试。</span>
+      <button class="retry" id="retryBtn">重新加载</button>
+    </div>
+
+    <!-- 统计行 -->
+    <section class="stats-row" id="statsRow">
+      <div class="stat-card progress-card">
+        <div class="ring-wrap">
+          <svg width="96" height="96">
+            <defs>
+              <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#FF6A3D"/>
+                <stop offset="100%" stop-color="#FF9A62"/>
+              </linearGradient>
+            </defs>
+            <circle class="ring-bg" cx="48" cy="48" r="40"/>
+            <circle class="ring-fg" id="ringFg" cx="48" cy="48" r="40" stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
+          </svg>
+          <div class="ring-num"><b id="ringPct">0%</b><span>目标完成</span></div>
+        </div>
+        <div class="progress-meta">
+          <div class="label">本周累计里程</div>
+          <div class="stat-value"><span id="doneKm">12</span><small>km</small></div>
+          <div class="stat-sub">目标 <b id="goalKm">30</b> km · 还差 <b class="up" id="remainKm">18</b> km</div>
+          <button class="goal-edit" id="openGoal">🎯 调整目标</button>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">训练次数</div>
+        <div class="stat-value"><span id="doneCount">2</span><small>/ 5</small></div>
+        <div class="stat-sub"><span class="up">▲ 66%</span> 较上周</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">累计时长</div>
+        <div class="stat-value"><span id="doneTime">1h 24m</span></div>
+        <div class="stat-sub">平均 <b>42 min</b> / 次</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">平均配速</div>
+        <div class="stat-value">6′12″<small>/km</small></div>
+        <div class="stat-sub"><span class="up">▲ 8″</span> 较上周提升</div>
+      </div>
+    </section>
+
+    <!-- 加载骨架 -->
+    <section class="plan-card skeleton" id="skeleton">
+      <div style="padding:20px 24px 0"><div class="sk" style="width:160px;height:20px"></div><div class="sk" style="width:220px;height:12px;margin-top:8px"></div></div>
+      <div class="week-grid">
+        <div class="sk" style="height:150px"></div><div class="sk" style="height:150px"></div><div class="sk" style="height:150px"></div>
+        <div class="sk" style="height:150px"></div><div class="sk" style="height:150px"></div><div class="sk" style="height:150px"></div><div class="sk" style="height:150px"></div>
+      </div>
+    </section>
+
+    <!-- 空态 -->
+    <section class="empty-state" id="emptyState">
+      <div class="em">🌱</div>
+      <h3>本周还没有训练计划</h3>
+      <p>给新的一周定个小目标吧。我们会根据你的水平和恢复状态，自动生成合理的训练安排。</p>
+      <div class="empty-cta">
+        <button class="btn-primary" id="genPlan">✨ 生成本周计划</button>
+        <button class="btn-ghost" id="setGoalFirst">先设定周目标</button>
+      </div>
+    </section>
+
+    <!-- 周计划网格 -->
+    <section class="plan-card" id="planCard">
+      <div class="plan-head">
+        <div>
+          <h2>本周训练计划</h2>
+          <div class="hint">点击任意训练日查看详细课表 · 完成训练后勾选打卡</div>
+        </div>
+        <button class="add-day">＋ 补加训练</button>
+      </div>
+      <div class="week-grid" id="weekGrid"><!-- JS 渲染 --></div>
+    </section>
+
+    <!-- 详情抽屉 -->
+    <section class="drawer" id="drawer"></section>
+
+    <!-- 目标弹层 -->
+    <div class="modal-mask" id="goalMask">
+      <div class="modal">
+        <h3>调整本周目标</h3>
+        <div class="sub">设定合理的目标，才能跑得更远更稳。</div>
+        <input type="number" id="goalInput" min="5" max="200" value="30">
+        <div class="modal-actions">
+          <button class="save" id="saveGoal">保存</button>
+          <button class="cancel" id="cancelGoal">取消</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+/* ================= 数据 ================= */
+const TYPE_COLORS = {
+  '轻松跑': '#FF6A3D', '恢复跑': '#14B8A6', '间歇跑': '#6D5DFF',
+  '长距离': '#F59E0B', '休息': '#9AA0B0', '力量训练': '#3B82F6'
+};
+const PLANS = [
+  { dow:'周一', ddate:'3/3', type:'轻松跑', km:5,   pace:'6′30″', done:true,
+    steps:[
+      {label:'热身', name:'动态拉伸 + 慢跑', desc:'高抬腿、开合跳各 2 组，慢跑 800m 唤醒肌肉。', dur:'10 min'},
+      {label:'主课表', name:'轻松跑 5km', desc:'配速 6′30″～7′00″，保持能边跑边聊天的强度。', dur:'32 min', main:true},
+      {label:'冷身', name:'拉伸放松', desc:'小腿、大腿后侧各 30s，补充水分。', dur:'8 min', cool:true}
+    ]},
+  { dow:'周二', ddate:'3/4', type:'休息', km:0, pace:'—', done:false, steps:[] },
+  { dow:'周三', ddate:'3/5', type:'间歇跑', km:8, pace:'5′40″', done:false,
+    steps:[
+      {label:'热身', name:'慢跑 1.5km + 冲刺 3×80m', desc:'让心率逐步上升，为高强度做准备。', dur:'12 min'},
+      {label:'主课表', name:'6×800m 间歇', desc:'800m 快跑（4′50″）＋ 400m 慢跑恢复，共 6 组。', dur:'38 min', main:true},
+      {label:'冷身', name:'慢跑 1km + 拉伸', desc:'充分排酸，注意补水补盐。', dur:'10 min', cool:true}
+    ]},
+  { dow:'周四', ddate:'3/6', type:'轻松跑', km:4, pace:'6′45″', done:false,
+    steps:[
+      {label:'热身', name:'动态热身 5 分钟', desc:'肩绕环、弓步走，激活核心。', dur:'5 min'},
+      {label:'主课表', name:'轻松跑 4km', desc:'恢复日，配速放慢，关注跑姿。', dur:'27 min', main:true},
+      {label:'冷身', name:'走跑结合 800m', desc:'自然降心率，别急着停。', dur:'8 min', cool:true}
+    ]},
+  { dow:'周五', ddate:'3/7', type:'力量训练', km:0, pace:'—', done:false,
+    steps:[
+      {label:'热身', name:'开合跳 + 深蹲徒手', desc:'2 轮，每轮 30s。', dur:'6 min'},
+      {label:'主课表', name:'下肢力量 30 min', desc:'深蹲 3×12、弓步 3×10、提踵 3×15、平板支撑 3×45s。', dur:'30 min', main:true},
+      {label:'冷身', name:'泡沫轴放松', desc:'重点放松股四头肌和臀肌。', dur:'10 min', cool:true}
+    ]},
+  { dow:'周六', ddate:'3/8', type:'长距离', km:12, pace:'6′10″', done:false,
+    steps:[
+      {label:'热身', name:'慢跑 2km + 动态拉伸', desc:'长距离前充分热身，带好补给。', dur:'15 min'},
+      {label:'主课表', name:'LSD 长距离 12km', desc:'有氧耐力跑，配速 6′10″～6′40″，每 4km 补水。', dur:'78 min', main:true},
+      {label:'冷身', name:'慢走 + 全身拉伸', desc:'补充碳水蛋白质，今晚早点休息。', dur:'12 min', cool:true}
+    ]},
+  { dow:'周日', ddate:'3/9', type:'恢复跑', km:3, pace:'7′00″', done:false,
+    steps:[
+      {label:'热身', name:'慢走 5 分钟', desc:'从走路开始，让身体决定配速。', dur:'5 min'},
+      {label:'主课表', name:'恢复跑 3km', desc:'跑得越慢越好，目标只是激活血液循环。', dur:'21 min', main:true},
+      {label:'冷身', name:'拉伸 + 总结', desc:'复盘本周训练，规划下周重点。', dur:'10 min', cool:true}
+    ]}
+];
+const WEEK_LABELS = { '本周':'3/3 ～ 3/9', '上周':'2/24 ～ 3/2', '下周':'3/10 ～ 3/16' };
+
+let state = { week:'本周', goal:30, plans: PLANS, demo:null, selected:0 };
+
+/* ================= 渲染 ================= */
+const $ = id => document.getElementById(id);
+const RING_LEN = 251.3;
+
+function fmtKm(n){ return n % 1 === 0 ? n : n.toFixed(1); }
+function calcDone(){
+  const done = state.plans.filter(p => p.done && p.km > 0);
+  return { km: done.reduce((s,p)=>s+p.km,0), count: done.length, total: state.plans.filter(p=>p.km>0).length };
+}
+function renderStats(){
+  const d = calcDone();
+  $('doneKm').textContent = fmtKm(d.km);
+  $('goalKm').textContent = state.goal;
+  $('remainKm').textContent = fmtKm(Math.max(0, state.goal - d.km));
+  $('doneCount').textContent = d.count;
+  $('doneTime').textContent = Math.floor(d.km*6.5/60) + 'h ' + Math.round(d.km*6.5%60) + 'm';
+  const pct = Math.min(100, Math.round(d.km / state.goal * 100));
+  $('ringPct').textContent = pct + '%';
+  $('ringFg').style.strokeDashoffset = RING_LEN * (1 - pct/100);
+}
+function renderGrid(){
+  const g = $('weekGrid');
+  g.innerHTML = state.plans.map((p,i)=>{
+    const rest = p.type === '休息';
+    return `
+    <div class="day-card ${rest?'rest':''} ${p.done?'done':''} ${state.selected===i?'selected':''}" data-i="${i}">
+      <div class="dow">${p.dow}</div>
+      <div class="ddate">${p.ddate}</div>
+      <div class="type-tag" style="color:${rest?'#9AA0B0':TYPE_COLORS[p.type]}">${p.type}</div>
+      <div class="dist">${p.km>0 ? fmtKm(p.km)+'<small>km</small>' : '—'}</div>
+      <div class="pace">${p.pace}</div>
+      ${rest ? '' : `<button class="done-btn" data-done="${i}">${p.done?'✓ 已完成':'标记完成'}</button>`}
+    </div>`;
+  }).join('');
+}
+function renderDrawer(){
+  const p = state.plans[state.selected];
+  const d = $('drawer');
+  if(!p || p.steps.length === 0){ d.classList.remove('open'); return; }
+  d.innerHTML = `
+    <div class="drawer-head">
+      <h3>${p.dow} · ${p.type}</h3>
+      <span class="meta">${p.km} km · ${p.pace}/km · 点击其他日期切换</span>
+    </div>
+    <div class="steps">
+      ${p.steps.map(s=>`
+        <div class="step ${s.main?'main':''} ${s.cool?'cool':''}">
+          <div class="step-label">${s.label}</div>
+          <h4>${s.name}</h4>
+          <p>${s.desc}</p>
+          <span class="dur">⏱ ${s.dur}</span>
+        </div>`).join('')}
+    </div>`;
+  d.classList.add('open');
+}
+
+/* ================= 演示模式切换 ================= */
+function setDemo(mode){
+  state.demo = mode;
+  document.querySelectorAll('.demo-btn').forEach(b=>b.classList.toggle('active', b.dataset.demo===mode));
+  const normal = !mode;
+  $('statsRow').style.display = normal ? '' : 'none';
+  $('planCard').style.display = normal ? '' : 'none';
+  $('drawer').classList.remove('open');
+  $('emptyState').style.display = mode==='empty' ? 'block' : 'none';
+  $('errorBanner').style.display = mode==='error' ? 'flex' : 'none';
+  $('skeleton').style.display = mode==='loading' ? 'block' : 'none';
+}
+
+/* ================= 事件 ================= */
+$('weekGrid').addEventListener('click', e=>{
+  const card = e.target.closest('.day-card');
+  const doneBtn = e.target.closest('.done-btn');
+  if(doneBtn){
+    const i = +doneBtn.dataset.done;
+    state.plans[i].done = !state.plans[i].done;
+    renderGrid(); renderStats(); renderDrawer();
+    return;
+  }
+  if(card){ state.selected = +card.dataset.i; renderGrid(); renderDrawer(); }
+});
+$('prevWeek').onclick = ()=>{ state.week = state.week==='本周'?'上周':state.week==='上周'?'上周':'下周'; updateWeek(); };
+$('nextWeek').onclick = ()=>{ state.week = state.week==='本周'?'下周':state.week==='下周'?'下周':'本周'; updateWeek(); };
+function updateWeek(){
+  $('weekLabel').textContent = state.week + ' · ' + WEEK_LABELS[state.week];
+  setDemo(null);
+  renderGrid();
+}
+$('openGoal').onclick = ()=> $('goalMask').classList.add('show');
+$('cancelGoal').onclick = ()=> $('goalMask').classList.remove('show');
+$('saveGoal').onclick = ()=>{
+  const v = Math.max(5, Math.min(200, +$('goalInput').value || 30));
+  state.goal = v; $('goalInput').value = v;
+  $('goalMask').classList.remove('show'); renderStats();
+};
+$('goalMask').addEventListener('click', e=>{ if(e.target === $('goalMask')) $('goalMask').classList.remove('show'); });
+$('genPlan').onclick = ()=>{ setDemo(null); renderGrid(); };
+$('setGoalFirst').onclick = ()=>{ setDemo(null); $('goalMask').classList.add('show'); };
+$('retryBtn').onclick = ()=>{
+  setDemo('loading');
+  setTimeout(()=>{ setDemo(null); renderGrid(); renderDrawer(); }, 900);
+};
+document.querySelectorAll('.demo-btn').forEach(b=> b.onclick = ()=> setDemo(b.dataset.demo));
+
+/* ================= 启动 ================= */
+renderGrid(); renderStats(); renderDrawer();
+</script>
+</body>
+</html>
