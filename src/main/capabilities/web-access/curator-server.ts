@@ -21,6 +21,7 @@ export interface CuratorServerOptions {
 }
 
 export interface CuratorSearchEntry {
+	providerRuns?: import("../../../shared/web-search").SearchProviderRun[];
 	answer: string;
 	results: Array<{ title: string; url: string; domain: string; snippet?: string }>;
 	provider: string;

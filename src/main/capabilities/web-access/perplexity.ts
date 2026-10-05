@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { WebSearchSource } from "../../../shared/web-search";
 import { activityMonitor } from "./activity.ts";
 import type { ExtractedContent } from "./extract.ts";
 import { hasCredentialSource, redactCredential, resolveCredential } from "./credential-source.ts";
@@ -14,7 +15,7 @@ const RATE_LIMIT = {
 
 const requestTimestamps: number[] = [];
 
-export interface SearchResult {
+export interface SearchResult extends WebSearchSource {
 	title: string;
 	url: string;
 	snippet: string;

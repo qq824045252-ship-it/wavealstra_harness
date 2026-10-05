@@ -1,3 +1,4 @@
+import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import { useAppStore, type SettingsTab } from "@/store/appStore";
@@ -1612,7 +1613,7 @@ function HelpTab(): React.JSX.Element {
   return (
     <div className="about-block">
       <div>
-        <b>MyBuddy</b> v0.1.0 — MyBuddy 形态的桌面 Agent
+        <b>MyBuddy</b> v{APP_VERSION} — MyBuddy 形态的桌面 Agent
       </div>
       <div>Agent 底座：pi（@earendil-works，阶段 2 接入）</div>
       <div>

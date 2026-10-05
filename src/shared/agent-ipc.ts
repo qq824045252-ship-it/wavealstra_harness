@@ -986,6 +986,7 @@ export type AgentUiPatch =
       status?: "pending_approval" | "running" | "success" | "error" | "denied";
       output?: string;
       consult?: import("./multi-model-consult").MultiModelConsultReport;
+      webSearch?: import("./web-search").WebSearchReport;
       summary?: string;
     }
   | {
@@ -1498,6 +1499,11 @@ export interface ApiKeyPoolStateDto {
 
 /** ~/.mybuddy/web-search.json 内容（pi-web-access 配置） */
 export interface WebSearchConfigDto {
+	searchPolicy?: import("./web-search").WebSearchPolicy;
+	/** Configuration presence only, not a connectivity/quality check. */
+	configuredProviders?: string[];
+	searchProvider?: string | string[];
+	provider?: string | string[];
   tavilyApiKey?: string;
   tinyfishApiKey?: string;
   braveApiKey?: string;
@@ -1916,6 +1922,7 @@ export interface ChatToolCallDto {
   detail?: string;
   output?: string;
   consult?: import("./multi-model-consult").MultiModelConsultReport;
+  webSearch?: import("./web-search").WebSearchReport;
   status: "success" | "error";
 }
 

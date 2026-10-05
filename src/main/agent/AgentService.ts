@@ -1,3 +1,4 @@
+import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
 import { resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
@@ -2696,6 +2697,15 @@ export class AgentService {
         apiKeyPools: readStringRecord(raw.apiKeyPools, "apiKeyPools"),
         apiKeyStates: readKeyPoolStates(raw.apiKeyStates),
         searchRouting: raw.searchRouting as WebSearchConfigDto["searchRouting"],
+        searchPolicy: raw.searchPolicy ? normalizeSearchPolicy(raw.searchPolicy) : undefined,
+        searchProvider: raw.searchProvider as WebSearchConfigDto["searchProvider"],
+        provider: raw.provider as WebSearchConfigDto["provider"],
+        configuredProviders: SEARCH_PROVIDER_IDS.filter(id => {
+          const keys = (raw.apiKeyPools as Record<string, unknown> | undefined)?.[id];
+          const key = raw[`${id}ApiKey`];
+          return (typeof key === "string" && key.trim()) || (Array.isArray(keys) && keys.some(k => typeof k === "string" && k.trim()))
+            || Boolean(process.env[`${id.toUpperCase()}_API_KEY`]) || (id === "searxng" && Boolean(raw.searxngBaseUrl));
+        }),
         workflow: raw.workflow as WebSearchConfigDto["workflow"],
         autoOpenBrowser: typeof raw.autoOpenBrowser === "boolean" ? raw.autoOpenBrowser : undefined,
         browserReuse:
@@ -2725,6 +2735,7 @@ export class AgentService {
     if (config.serperApiKey !== undefined) next.serperApiKey = config.serperApiKey;
     if (config.apiKeyPools !== undefined) next.apiKeyPools = config.apiKeyPools;
     if (config.apiKeyStates !== undefined) next.apiKeyStates = config.apiKeyStates;
+    if (config.searchPolicy !== undefined) next.searchPolicy = normalizeSearchPolicy(config.searchPolicy);
     if (config.searchRouting === null) delete next.searchRouting;
     else if (config.searchRouting !== undefined) next.searchRouting = config.searchRouting;
     if (config.workflow !== undefined) next.workflow = config.workflow;

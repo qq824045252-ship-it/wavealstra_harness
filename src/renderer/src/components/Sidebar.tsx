@@ -1,3 +1,4 @@
+import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -768,7 +769,7 @@ export default function Sidebar(): React.JSX.Element {
           <div className="sidebar-title">
             <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
           </div>
-          <div className="sidebar-version">v0.1.0</div>
+          <div className="sidebar-version">v{APP_VERSION}</div>
         </div>
         <div className="sidebar-header-actions">
           <button className="icon-btn" title="收起侧边栏" onClick={toggleSidebar}><IconPanel size={15} /></button>

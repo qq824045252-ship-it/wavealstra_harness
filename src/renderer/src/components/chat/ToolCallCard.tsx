@@ -1,3 +1,4 @@
+import WebSearchCard from "./WebSearchCard";
 import MultiModelConsultCard from "./MultiModelConsultCard";
 import { useState } from "react";
 import type { ToolCall } from "@/types";
@@ -95,6 +96,8 @@ export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.
     ) : (
       <IconAlert size={13} />
     );
+
+  if (toolCall.webSearch) return <WebSearchCard toolCall={toolCall} />;
 
   if (toolCall.tool === "multi_model_consult") return <MultiModelConsultCard toolCall={toolCall} />;
 

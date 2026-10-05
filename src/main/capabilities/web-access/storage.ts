@@ -10,6 +10,7 @@ export interface QueryResultData {
 	results: SearchResult[];
 	error: string | null;
 	provider?: string;
+	providerRuns?: import("../../../shared/web-search").SearchProviderRun[];
 }
 
 export interface StoredSearchData {

@@ -1001,6 +1001,7 @@ export function applyPatchToMessage(msg: ChatMessage, patch: AgentUiPatch): Chat
                   status: patch.status ?? b.toolCall.status,
                   output: patch.output ?? b.toolCall.output,
                   consult: patch.consult ?? b.toolCall.consult,
+                  webSearch: patch.webSearch ?? b.toolCall.webSearch,
                   summary: patch.summary ?? b.toolCall.summary,
                 },
               }

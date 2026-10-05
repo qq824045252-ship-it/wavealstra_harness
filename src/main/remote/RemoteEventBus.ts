@@ -32,7 +32,7 @@ export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, 
         } : {}),
       };
     case "tool_update":
-      return { type: patch.type, taskId: patch.taskId, messageId: patch.messageId, toolCallId: patch.toolCallId, status: patch.status, summary: patch.summary, output: patch.output, consult: patch.consult };
+      return { type: patch.type, taskId: patch.taskId, messageId: patch.messageId, toolCallId: patch.toolCallId, status: patch.status, summary: patch.summary, output: patch.output, consult: patch.consult, webSearch: patch.webSearch };
     case "artifact_ref":
       return { type: patch.type, taskId: patch.taskId, messageId: patch.messageId, artifactId: patch.artifactId, name: patch.name, kind: patch.kind, change: patch.change };
     case "assistant_end":

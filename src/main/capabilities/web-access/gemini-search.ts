@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import { DEFAULT_SEARCH_POLICY, normalizeSearchPolicy, type SearchProviderRun, type WebSearchPolicy } from "../../../shared/web-search";
+import { mergeSearchSources, runSearchBatch } from "./search-aggregation";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activityMonitor } from "./activity.ts";
 import { CredentialResolutionError } from "./credential-source.ts";
@@ -7,7 +9,7 @@ import { getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable, queryWithCook
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.ts";
 import { isExaAvailable, searchWithExa } from "./exa.ts";
 import { isBraveAvailable, searchWithBrave } from "./brave.ts";
-import { isOpenAISearchAvailable, searchWithOpenAI } from "./openai-search.ts";
+import { isCodexSearchAvailable, isOpenAISearchAvailable, searchWithOpenAI } from "./openai-search.ts";
 import { isParallelAvailable, searchWithParallel } from "./parallel.ts";
 import { isTinyFishAvailable, searchWithTinyFish } from "./tinyfish.ts";
 import { isSearch1APIAvailable, searchWithSearch1API } from "./search1api.ts";
@@ -83,6 +85,7 @@ export interface AttributedSearchResponse extends SearchResponse {
 	provider: ResolvedSearchProvider | "all";
 	providerResponses?: ProviderSearchResponse[];
 	providerErrors?: ProviderSearchFailure[];
+	providerRuns?: SearchProviderRun[];
 }
 
 const CONFIG_PATH = getWebSearchConfigPath();
@@ -97,12 +100,13 @@ type SearchConfig = {
 	searchProviderConfigured: boolean;
 	searchRouting?: SearchRoutingConfig;
 	searchModel?: string;
+	searchPolicy?: WebSearchPolicy;
 };
 
 let cachedSearchConfig: SearchConfig | null = null;
 
 function getSearchConfig(): SearchConfig {
-	if (cachedSearchConfig) return cachedSearchConfig;
+	// Policy changes apply to the next invocation, including existing sessions.
 	if (!existsSync(CONFIG_PATH)) {
 		cachedSearchConfig = { searchProvider: "auto", searchProviderConfigured: false };
 		return cachedSearchConfig;
@@ -128,6 +132,7 @@ function getSearchConfig(): SearchConfig {
 		searchProviderConfigured,
 		...(Object.hasOwn(raw, "searchRouting") ? { searchRouting: normalizeSearchRouting(raw.searchRouting) } : {}),
 		...(searchModel ? { searchModel } : {}),
+		...(raw.searchPolicy ? { searchPolicy: normalizeSearchPolicy(raw.searchPolicy) } : {}),
 	};
 	return cachedSearchConfig;
 }
@@ -155,7 +160,19 @@ function normalizeSearchRouting(value: unknown): SearchRoutingConfig {
 
 export function getConfiguredSearchRouting(): SearchRoutingConfig | undefined {
 	const config = getSearchConfig();
+	if (config.searchPolicy) return config.searchPolicy.mode === "fallback" || config.searchPolicy.mode === "single"
+		? { providers: config.searchPolicy.providers as ResolvedSearchProvider[], fallbackOn: ["transient", "quota", "network"] } : undefined;
 	return config.searchProviderConfigured ? undefined : config.searchRouting;
+}
+
+export function getSearchPolicy(): WebSearchPolicy { return getSearchConfig().searchPolicy ?? { ...DEFAULT_SEARCH_POLICY }; }
+
+export function configuredProviderSelection(): SearchProviderSelection | undefined {
+	const policy = getSearchConfig().searchPolicy;
+	if (!policy) return undefined;
+	if (policy.mode === "parallel") return policy.providers as ResolvedSearchProvider[];
+	if (policy.mode === "single") return policy.providers[0] as ResolvedSearchProvider;
+	return "auto";
 }
 
 function normalizeSearchModel(value: unknown): string | undefined {
@@ -192,6 +209,8 @@ export interface FullSearchOptions extends SearchOptions {
 	provider?: SearchProviderSelection;
 	includeContent?: boolean;
 	extensionContext?: ExtensionContext;
+	onProviderUpdate?: (runs: SearchProviderRun[]) => void;
+	budget?: { remaining: number; deadline: number };
 }
 
 function errorMessage(err: unknown): string {
@@ -332,6 +351,7 @@ async function searchWithResolvedProvider(
 
 async function isResolvedProviderAvailable(provider: ResolvedSearchProvider, options: FullSearchOptions): Promise<boolean> {
 	if (provider === "openai") return isOpenAISearchAvailable(options.extensionContext);
+	if (provider === "codex") return isCodexSearchAvailable(options.extensionContext);
 	if (provider === "brave") return isBraveAvailable();
 	if (provider === "parallel") return isParallelAvailable();
 	if (provider === "tinyfish") return isTinyFishAvailable();
@@ -396,277 +416,91 @@ async function searchWithProviders(
 		throw new Error("No configured search provider available for provider \"all\". AnySearch, xAI, Bright Data, and SerpBase are excluded.");
 	}
 
-	const settled = await Promise.allSettled(
-		providers.map((provider) => selectedProviders
-			? searchWithResolvedProvider(provider, query, options)
-			: searchWithAllProvider(provider, query, options)),
-	);
-	if (options.signal?.aborted) throw new Error("Aborted");
-
-	const successes: AttributedSearchResponse[] = [];
-	const failures: Array<{ provider: ResolvedSearchProvider; error: string }> = [];
-	for (let index = 0; index < settled.length; index++) {
-		const outcome = settled[index];
-		if (outcome.status === "fulfilled") {
-			successes.push(outcome.value);
-		} else {
-			failures.push({ provider: providers[index], error: errorMessage(outcome.reason) });
-		}
-	}
-	if (successes.length === 0) {
-		const label = selectedProviders ? "Selected-provider" : "All-provider";
-		throw new Error(`${label} search failed:\n  - ${failures.map(({ provider, error }) => `${providerLabel(provider)}: ${error}`).join("\n  - ")}`);
-	}
-
-	const results: SearchResult[] = [];
-	const seenResultUrls = new Set<string>();
-	const inlineContent: NonNullable<SearchResponse["inlineContent"]> = [];
-	const seenInlineUrls = new Set<string>();
-	for (const response of successes) {
-		for (const result of response.results) {
-			if (seenResultUrls.has(result.url)) continue;
-			seenResultUrls.add(result.url);
-			results.push(result);
-		}
-		for (const content of response.inlineContent ?? []) {
-			if (seenInlineUrls.has(content.url)) continue;
-			seenInlineUrls.add(content.url);
-			inlineContent.push(content);
-		}
-	}
-
-	const answerSections = successes.map((response) =>
-		`## ${providerLabel(response.provider as ResolvedSearchProvider)}\n\n${response.answer || "(No answer text returned.)"}`
-	);
-	if (failures.length > 0) {
-		answerSections.push(
-			`## Provider errors\n\n${failures.map(({ provider, error }) => `- **${providerLabel(provider)}:** ${error}`).join("\n")}`,
-		);
-	}
-
-	return {
-		provider: "all",
-		answer: answerSections.join("\n\n"),
-		results,
-		providerResponses: successes as ProviderSearchResponse[],
-		...(failures.length > 0 ? { providerErrors: failures } : {}),
-		...(inlineContent.length > 0 ? { inlineContent } : {}),
-	};
+	return runMeasuredSearch(query, providers, options, async (provider, signal) => selectedProviders
+		? searchWithResolvedProvider(provider as ResolvedSearchProvider, query, { ...options, signal })
+		: searchWithAllProvider(provider as ResolvedSearchProvider, query, { ...options, signal }));
 }
 
-async function searchWithConfiguredRouting(
-	query: string,
-	options: FullSearchOptions,
-	routing: SearchRoutingConfig,
+async function runMeasuredSearch(
+	query: string, providers: string[], options: FullSearchOptions,
+	run: (provider: string, signal: AbortSignal) => Promise<AttributedSearchResponse>,
 ): Promise<AttributedSearchResponse> {
-	const diagnostics: string[] = [];
-	for (const provider of routing.providers) {
-		if (!(await isResolvedProviderAvailable(provider, options))) {
-			diagnostics.push(`${provider}: unavailable`);
-			continue;
-		}
-		try {
-			return await searchWithResolvedProvider(provider, query, options);
-		} catch (err) {
-			const classified = classifyProviderError(provider, err);
-			diagnostics.push(`${provider} [${classified.kind}]: ${errorMessage(err)}`);
-			if (!routing.fallbackOn.includes(classified.kind as SearchRoutingConfig["fallbackOn"][number])) {
-				throw classified;
-			}
-		}
+	const policy = getSearchPolicy();
+	if (providers.length > 6) throw new Error("Select at most 6 search providers explicitly.");
+	if (providers.length > (options.budget?.remaining ?? policy.maxRequests)) throw new Error("Search request budget exceeded. Reduce queries or providers.");
+	if (options.budget) options.budget.remaining -= providers.length;
+	const availableMs = options.budget ? options.budget.deadline - Date.now() : policy.totalTimeoutMs;
+	if (availableMs <= 0) throw new Error("Search overall deadline exceeded");
+	const batch = await runSearchBatch(query, providers, {
+		signal: options.signal, providerTimeoutMs: policy.providerTimeoutMs, totalTimeoutMs: availableMs,
+		onUpdate: options.onProviderUpdate,
+		run: async (provider, signal) => {
+			const response = await run(provider, signal);
+			return response;
+		},
+	});
+	for (const item of batch.runs) {
+		const reply = batch.replies.get(item.provider) as AttributedSearchResponse | undefined;
+		if (reply?.provider && reply.provider !== "all") item.provider = reply.provider;
 	}
-	throw new Error(`Configured search routing exhausted:\n  - ${diagnostics.join("\n  - ")}`);
+	const successful = batch.runs.filter(r => r.status === "success" || r.status === "empty");
+	const errors = batch.runs.filter(r => r.error).map(r => ({ provider: r.provider as ResolvedSearchProvider, error: r.error! }));
+	const results = mergeSearchSources(batch.runs);
+	return {
+		provider: providers.length === 1 ? (batch.runs[0].provider as ResolvedSearchProvider) : "all",
+		answer: batch.runs.map(r => `## ${r.provider} (${r.status})\n\n${r.error ?? r.answer}`).join("\n\n"),
+		results, providerRuns: batch.runs,
+		providerResponses: successful.map(r => ({ provider: r.provider as ResolvedSearchProvider, answer: r.answer, results: r.results })),
+		providerErrors: errors,
+		inlineContent: [...batch.replies.values()].flatMap(r => r.inlineContent ?? []),
+	};
 }
 
 export async function search(query: string, options: FullSearchOptions = {}): Promise<AttributedSearchResponse> {
 	const config = getSearchConfig();
-	const provider = options.provider === undefined || options.provider === "auto"
-		? config.searchProvider
-		: options.provider;
-	if (Array.isArray(provider)) {
-		return searchWithProviders(query, options, normalizeResolvedProviderList(provider, "provider"));
-	}
-	if (provider === "all") return searchWithProviders(query, options);
-	if (provider !== "auto") return searchWithResolvedProvider(provider, query, options);
-	if (!config.searchProviderConfigured && config.searchRouting) {
-		return searchWithConfiguredRouting(query, options, config.searchRouting);
-	}
-
-	const fallbackErrors: string[] = [];
-
-	if (isSearXNGAvailable()) {
-		try {
-			const result = await searchWithSearXNG(query, options);
-			return { ...result, provider: "searxng" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`SearXNG: ${errorMessage(err)}`);
+	const policy = config.searchPolicy;
+	const explicit = options.provider !== undefined && options.provider !== "auto";
+	const selection = explicit ? options.provider! : configuredProviderSelection() ?? config.searchProvider;
+	if (Array.isArray(selection)) return searchWithProviders(query, options, normalizeResolvedProviderList(selection, "provider"));
+	if (selection === "all") return searchWithProviders(query, options);
+	if (selection !== "auto") return runMeasuredSearch(query, [selection], options, (p, signal) => searchWithResolvedProvider(p as ResolvedSearchProvider, query, { ...options, signal }));
+	const routing = !explicit && policy?.mode === "fallback"
+		? { providers: policy.providers as ResolvedSearchProvider[], fallbackOn: ["transient", "quota", "network"] as SearchRoutingConfig["fallbackOn"] }
+		: !policy && !config.searchProviderConfigured ? config.searchRouting : undefined;
+	if (routing) {
+		const runs: SearchProviderRun[] = [];
+		const budget = options.budget ?? { remaining: getSearchPolicy().maxRequests, deadline: Date.now() + getSearchPolicy().totalTimeoutMs };
+		for (const candidate of routing.providers) {
+			const result = await runMeasuredSearch(query, [candidate], { ...options, budget, onProviderUpdate: current => options.onProviderUpdate?.([...runs, ...current]) }, (p, signal) => searchWithResolvedProvider(p as ResolvedSearchProvider, query, { ...options, signal }));
+			runs.push(...(result.providerRuns ?? []));
+			if (result.providerRuns?.some(r => r.status === "success" || r.status === "empty")) return { ...result, providerRuns: runs };
+			options.signal?.throwIfAborted();
+			const last = runs[runs.length - 1];
+			const kind = last.status === "timeout" ? "transient" : classifyProviderError(candidate, new Error(last.error)).kind;
+			if (!routing.fallbackOn.includes(kind as SearchRoutingConfig["fallbackOn"][number])) break;
 		}
+		return { provider: "all", answer: "Search failed; see individual provider errors.", results: [], providerRuns: runs };
 	}
+	// Preserve legacy automatic selection, but bound its whole attempt and attribute the actual responder.
+	return searchAutomatically(query, options);
+}
 
-	if (shouldTryOpenAIInAuto(options)) {
+async function searchAutomatically(query: string, options: FullSearchOptions): Promise<AttributedSearchResponse> {
+	const policy = getSearchPolicy();
+	const budget = options.budget ?? { remaining: policy.maxRequests, deadline: Date.now() + policy.totalTimeoutMs };
+	const runs: SearchProviderRun[] = [];
+	for (const candidate of ALL_SEARCH_PROVIDERS) {
+		options.signal?.throwIfAborted();
+		if (candidate === "openai" && !shouldTryOpenAIInAuto(options)) continue;
+		if (budget.remaining < 1 || Date.now() >= budget.deadline) break;
 		try {
-			if (await isOpenAISearchAvailable(options.extensionContext)) {
-				const result = await searchWithOpenAI(query, options, options.extensionContext);
-				return { ...result, provider: "openai" };
-			}
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`OpenAI: ${errorMessage(err)}`);
-		}
+			if (!(await isResolvedProviderAvailable(candidate, options))) continue;
+		} catch { continue; }
+		const result = await runMeasuredSearch(query, [candidate], { ...options, budget, onProviderUpdate: current => options.onProviderUpdate?.([...runs, ...current]) }, (p, signal) => searchWithResolvedProvider(p as ResolvedSearchProvider, query, { ...options, signal }));
+		runs.push(...(result.providerRuns ?? []));
+		if (result.providerRuns?.some(r => r.status === "success" || r.status === "empty")) return { ...result, providerRuns: runs };
 	}
-
-	if (isExaAvailable()) {
-		try {
-			const result = await searchWithExa(query, options);
-			if (result) return { ...result, provider: "exa" };
-		} catch (err) {
-			if (err instanceof CredentialResolutionError || isAbortError(err)) throw err;
-			fallbackErrors.push(`Exa: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isBraveAvailable()) {
-		try {
-			const result = await searchWithBrave(query, options);
-			return { ...result, provider: "brave" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Brave: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isParallelAvailable()) {
-		try {
-			const result = await searchWithParallel(query, options);
-			return { ...result, provider: "parallel" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Parallel: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isTinyFishAvailable()) {
-		try {
-			const result = await searchWithTinyFish(query, options);
-			return { ...result, provider: "tinyfish" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`TinyFish: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isSearch1APIAvailable()) {
-		try {
-			const result = await searchWithSearch1API(query, options);
-			return { ...result, provider: "search1api" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Search1API: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isSearchinfinityAvailable()) {
-		try {
-			const result = await searchWithSearchinfinity(query, options);
-			return { ...result, provider: "searchinfinity" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Searchinfinity: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isQueritAvailable()) {
-		try {
-			const result = await searchWithQuerit(query, options);
-			return { ...result, provider: "querit" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Querit: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isTavilyAvailable()) {
-		try {
-			const result = await searchWithTavily(query, options);
-			return { ...result, provider: "tavily" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Tavily: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isSerperAvailable()) {
-		try {
-			const result = await searchWithSerper(query, options);
-			return { ...result, provider: "serper" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Serper: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isSerpdiveAvailable()) {
-		try {
-			const result = await searchWithSerpdive(query, options);
-			return { ...result, provider: "serpdive" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`SERPdive: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isKagiAvailable()) {
-		try {
-			const result = await searchWithKagi(query, options);
-			return { ...result, provider: "kagi" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Kagi: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isOllamaAvailable()) {
-		try {
-			const result = await searchWithOllama(query, options);
-			return { ...result, provider: "ollama" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Ollama: ${errorMessage(err)}`);
-		}
-	}
-
-	if (isPerplexityAvailable()) {
-		try {
-			const result = await searchWithPerplexity(query, options);
-			return { ...result, provider: "perplexity" };
-		} catch (err) {
-			if (isAbortError(err)) throw err;
-			fallbackErrors.push(`Perplexity: ${errorMessage(err)}`);
-		}
-	}
-
-	try {
-		const geminiResult = await searchWithGemini(query, options, false);
-		if (geminiResult) return { ...geminiResult, provider: "gemini" };
-	} catch (err) {
-		if (isAbortError(err)) throw err;
-		fallbackErrors.push(`Gemini: ${errorMessage(err)}`);
-	}
-
-	if (fallbackErrors.length > 0) {
-		throw new Error(`Auto provider search failed:\n  - ${fallbackErrors.join("\n  - ")}`);
-	}
-
-	throw new Error(
-		"No search provider available. Either:\n" +
-		"  1. Use /login to sign in with a Codex subscription for OpenAI web search\n" +
-		`  2. Set braveApiKey, parallelApiKey, tinyfishApiKey, search1apiApiKey, searchinfinityApiKey, queritApiKey, tavilyApiKey, serperApiKey, serpdiveApiKey, kagiApiKey, ollamaApiKey, searxngBaseUrl, perplexityApiKey, exaApiKey, geminiApiKey, or cloudflareApiKey in ${CONFIG_PATH}\n` +
-		"  3. Set OPENAI_API_KEY, BRAVE_API_KEY, PARALLEL_API_KEY, TINYFISH_API_KEY, SEARCH1API_KEY, SEARCHINFINITY_API_KEY, QUERIT_API_KEY, TAVILY_API_KEY, SERPER_API_KEY, SERPDIVE_API_KEY, KAGI_API_KEY, OLLAMA_API_KEY, SEARXNG_BASE_URL, EXA_API_KEY, PERPLEXITY_API_KEY, GEMINI_API_KEY, or CLOUDFLARE_API_KEY env vars\n" +
-		"  4. Set GOOGLE_GEMINI_BASE_URL with CLOUDFLARE_API_KEY for Cloudflare AI Gateway routing\n" +
-		"  5. Sign into gemini.google.com in a supported Chromium-based browser\n" +
-		"  6. Explicitly select provider: \"anysearch\" for anonymous AnySearch, \"xai\" for Grok, \"brightdata\" with brightdataSerpZone for paid Bright Data SERP, or \"serpbase\" with serpbaseApiKey for paid Google SERP"
-	);
+	return { provider: "all", answer: "No search provider completed within the configured request/time budget. Check provider configuration and individual errors.", results: [], providerRuns: runs };
 }
 
 async function searchWithGeminiApi(query: string, options: SearchOptions = {}): Promise<SearchResponse | null> {

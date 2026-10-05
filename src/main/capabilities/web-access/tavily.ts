@@ -19,6 +19,7 @@ interface TavilyResult {
 	url?: string;
 	content?: string;
 	raw_content?: string | null;
+	published_date?: string;
 }
 
 interface TavilyResponse {
@@ -102,6 +103,7 @@ function mapResults(results: TavilyResult[] | undefined, numResults: number): Se
 		mapped.push({
 			title: item.title || `Source ${mapped.length + 1}`,
 			url: item.url,
+			...(typeof item.published_date === "string" ? { publishedAt: item.published_date } : {}),
 			snippet: typeof item.content === "string" ? item.content.replace(/\s+/g, " ").trim() : "",
 		});
 		if (mapped.length >= numResults) break;

@@ -1,3 +1,6 @@
+import { buildWebSearchReport, formatWebSearchReport } from "./search-report";
+import { mergeSearchSources } from "./search-aggregation";
+import { searchReportSummary, type WebSearchReport, type SearchProviderRun } from "../../../shared/web-search";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { browserBridge } from "../../browser/browser-bridge";
 import { Box, Text, truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
@@ -8,7 +11,7 @@ import { normalizeFetchContentParams } from "./fetch-params.ts";
 import { findContent, type FindMode } from "./content-find.ts";
 import { answerFromPage } from "./page-query.ts";
 import { clearCloneCache } from "./github-extract.ts";
-import { getConfiguredSearchRouting, normalizeSearchProviderSelection, RESOLVED_SEARCH_PROVIDERS, SEARCH_PROVIDERS, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
+import { getSearchPolicy, configuredProviderSelection, getConfiguredSearchRouting, normalizeSearchProviderSelection, RESOLVED_SEARCH_PROVIDERS, SEARCH_PROVIDERS, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
 import type { SearchResult } from "./perplexity.ts";
 import { formatSeconds, getWebSearchConfigDir, getWebSearchConfigPath, resolveCuratorNetworkConfig } from "./utils.ts";
 import {
@@ -63,6 +66,7 @@ import { buildSearchErrorPlan, type SearchErrorDetails, type SearchErrorPlan } f
 import { findModelWithProviderRouting, resolveSummaryModelScope } from "./summary-model-scope.ts";
 import {
 	buildResearchArtifact,
+	assessResearchEvidence,
 	withClaimAssessment,
 	storeResearchArtifact,
 	getResearchArtifact,
@@ -319,7 +323,7 @@ function resolveRequestedProvider(requested: unknown): SearchProviderSelection {
 	const normalizedRequested = normalizeProviderInput(requested);
 	if (normalizedRequested && normalizedRequested !== "auto") return normalizedRequested;
 	const config = loadConfig();
-	return normalizeProviderInput(config.searchProvider ?? config.provider, `provider in ${WEB_SEARCH_CONFIG_PATH}`) ?? "auto";
+	return configuredProviderSelection() ?? normalizeProviderInput(config.searchProvider ?? config.provider, `provider in ${WEB_SEARCH_CONFIG_PATH}`) ?? "auto";
 }
 
 function toCuratorProvider(provider: SearchProviderSelection): CuratorProvider | undefined {
@@ -360,7 +364,7 @@ function normalizeQueryList(queryList: unknown[]): string[] {
 	for (const query of queryList) {
 		if (typeof query !== "string") continue;
 		const trimmed = query.trim();
-		if (trimmed.length > 0) normalized.push(trimmed);
+		if (trimmed.length > 0 && !normalized.includes(trimmed)) normalized.push(trimmed);
 	}
 	return normalized;
 }
@@ -620,7 +624,7 @@ function formatSourceCheckResult(artifact: ResearchArtifact, getSearchContentToo
 	const assessment = artifact.claims?.[0];
 	const lines = [`# Source check: ${artifact.query}`, ""];
 	if (assessment) {
-		lines.push(`**Status:** ${assessment.status} (confidence ${assessment.confidence.toFixed(2)})`);
+		lines.push(`**Status:** ${assessment.status}`);
 		lines.push(`**Rationale:** ${assessment.rationale}`);
 		if (assessment.supporting_passages.length > 0) lines.push(`**Supporting passages:** ${assessment.supporting_passages.join(", ")}`);
 		if (assessment.contradicting_passages.length > 0) lines.push(`**Contradicting passages:** ${assessment.contradicting_passages.join(", ")}`);
@@ -665,7 +669,11 @@ function formatFullResults(queryData: QueryResultData): string {
 		output += `${queryData.answer}\n\n---\n\n`;
 	}
 	for (const r of queryData.results) {
-		output += `### ${r.title}\n${r.url}\n\n`;
+		output += `### ${r.title}\n${r.url}\n${r.snippet}\n\n`;
+	}
+	for (const run of queryData.providerRuns ?? []) {
+		output += `### ${run.provider} (${run.status}, ${run.durationMs}ms)\n${run.error ?? run.answer}\n`;
+		for (const [i, source] of run.results.entries()) output += `${i + 1}. ${source.title}\n${source.url}\n${source.snippet}\n\n`;
 	}
 	return output;
 }
@@ -798,6 +806,7 @@ function toCuratorSearchEntries(response: AttributedSearchResponse): CuratorSear
 		answer: result.answer,
 		results: result.results.map(source => ({ ...source, domain: extractDomain(source.url) })),
 		provider: result.provider,
+		providerRuns: response.providerRuns?.filter(r => r.provider === result.provider),
 	}));
 	for (const failure of response.providerErrors ?? []) {
 		entries.push({
@@ -805,6 +814,7 @@ function toCuratorSearchEntries(response: AttributedSearchResponse): CuratorSear
 			results: [],
 			provider: failure.provider,
 			error: failure.error,
+			providerRuns: response.providerRuns?.filter(r => r.provider === failure.provider),
 		});
 	}
 	return entries;
@@ -814,11 +824,8 @@ function indexedCuratorEntryToQueryResult(entry: IndexedCuratorSearchEntry): Que
 	return {
 		query: entry.query,
 		answer: entry.answer,
-		results: entry.results.map(source => ({
-			title: source.title,
-			url: source.url,
-			snippet: source.snippet ?? "",
-		})),
+		results: entry.results.map(source => ({ ...source, snippet: source.snippet ?? "" })),
+		providerRuns: entry.providerRuns,
 		error: entry.error ?? null,
 		provider: entry.provider,
 	};
@@ -925,6 +932,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 	interface SearchReturnOptions {
 		queryList: string[];
 		results: QueryResultData[];
+		report?: WebSearchReport;
+		context?: Pick<ExtensionContext, "model" | "sessionManager">;
+		onReport?: (report: WebSearchReport) => void;
 		urls: string[];
 		includeContent: boolean;
 		inlineContent?: ExtractedContent[];
@@ -1168,6 +1178,27 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 		};
 	}
 
+	async function fetchEvidencePages(urls: string[], signal?: AbortSignal): Promise<ExtractedContent[]> {
+		const picked: string[] = [], domains = new Set<string>();
+		for (const url of urls) { try { const domain = new URL(url).hostname; if (!domains.has(domain)) { domains.add(domain); picked.push(url); } } catch {} if (picked.length === 5) break; }
+		for (const url of urls) { if (picked.length === 5) break; if (!picked.includes(url)) picked.push(url); }
+		const controller = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let abort: (() => void) | undefined;
+		try {
+			const deadline = new Promise<never>((_, reject) => {
+				abort = () => { controller.abort(); reject(new Error("Aborted")); };
+				signal?.addEventListener("abort", abort, { once: true });
+				if (signal?.aborted) { abort(); return; }
+				timer = setTimeout(() => { controller.abort(); reject(new Error("原文读取超时")); }, 30_000);
+			});
+			return await Promise.race([deadline, fetchAllContent(picked, controller.signal)]);
+		} catch (error) {
+			signal?.throwIfAborted();
+			return picked.map(url => ({ url, title: "", content: "", error: error instanceof Error ? error.message : String(error) }));
+		} finally { clearTimeout(timer); if (abort) signal?.removeEventListener("abort", abort); }
+	}
+
 	async function buildSearchReturn(opts: SearchReturnOptions): Promise<AgentToolResult<Record<string, unknown>>> {
 		// Stay inside the native tool invocation. No post-return callbacks or agent wakeups.
 		opts.signal?.throwIfAborted();
@@ -1178,28 +1209,25 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			opts.signal?.throwIfAborted();
 			opts = { ...opts, inlineContent: [...(opts.inlineContent ?? []), ...stripThumbnails(fetched)] };
 		}
+		const report = opts.report ?? buildWebSearchReport(generateId(), opts.queryList, opts.results);
+		if (getSearchPolicy().verifySources && opts.context && report.sources.length) {
+			opts.onReport?.({ ...report, status: "running", notice: "搜索已完成，正在读取关键原文并核验结论…" });
+			const fetched = await fetchEvidencePages(report.sources.map(s => s.url), opts.signal);
+			const artifact = buildResearchArtifact({ query: opts.queryList.join("；"), results: report.sources, fetched });
+			report.evidence = await assessResearchEvidence(artifact, opts.context, opts.signal);
+			for (const source of report.sources) {
+				const evidenceSource = artifact.sources.find(s => s.url === source.url);
+				if (evidenceSource?.fetched) { source.evidence = "page"; source.fetchedAt = evidenceSource.fetch_timestamp; source.contentHash = evidenceSource.content_hash; }
+				if (evidenceSource?.fetch_error) source.fetchError = evidenceSource.fetch_error;
+				if (evidenceSource?.duplicate_of) source.duplicateOf = evidenceSource.duplicate_of;
+			}
+			storeResearchArtifact(artifact);
+			pi.appendEntry("web-search-results", { id: artifact.id, type: "research", timestamp: artifact.timestamp, artifact });
+		}
 		const sc = opts.results.filter(r => !r.error).length;
 		const tr = opts.results.reduce((sum, r) => sum + r.results.length, 0);
 
 		const hasApprovedSummary = typeof opts.approvedSummary === "string" && opts.approvedSummary.trim().length > 0;
-		let output = "";
-		if (hasApprovedSummary) {
-			output = opts.approvedSummary!.trim();
-		} else {
-			if (opts.curated) {
-				output += "[These results were manually curated by the user in the browser. Use them as-is — do not re-search or discard.]\n\n";
-			}
-			const duplicateQueries = opts.curated ? duplicateQuerySet(opts.results) : new Set<string>();
-			for (const { query, answer, results, error, provider } of opts.results) {
-				if (opts.queryList.length > 1) {
-					output += opts.curated
-						? formatQueryHeader(query, provider, duplicateQueries)
-						: `## Query: "${query}"\n\n`;
-				}
-				if (error) output += `Error: ${error}\n\n`;
-				else output += formatSearchSummary(results, answer) + "\n\n";
-			}
-		}
 
 		const hasInlineReady = (opts.inlineContent?.length ?? 0) > 0;
 		let fetchId: string | null = null;
@@ -1213,16 +1241,22 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			};
 			storeResult(fetchId, data);
 			pi.appendEntry("web-search-results", data);
-			if (!hasApprovedSummary) {
-				output += `---\nContent fetch finished: ${opts.inlineContent.filter(item => !item.error).length}/${opts.inlineContent.length} sources available [${fetchId}].`;
-			}
 		}
 
 		const searchId = storeAndPublishSearch(opts.results);
+		const output = [
+			opts.curated ? "[These results were manually curated by the user in the browser.]" : "",
+			formatWebSearchReport(report),
+			`Stored search responseId: ${searchId}; use ${toolNames.getSearchContent} with queryIndex for further details.`,
+			fetchId ? `Content fetch responseId: ${fetchId}; ${opts.inlineContent!.filter(item => !item.error).length}/${opts.inlineContent!.length} pages available. Use ${toolNames.getSearchContent} with url or urlIndex to read the full page.` : "",
+			hasApprovedSummary ? `Additional summary (verify against the passages above):\n${opts.approvedSummary}` : "",
+		].filter(Boolean).join("\n\n");
 
 		return {
-			content: [{ type: "text", text: output.trim() }],
+			content: [{ type: "text", text: output }],
+			isError: report.status === "error",
 			details: {
+				webSearch: report,
 				queries: opts.queryList,
 				queryCount: opts.queryList.length,
 				successfulQueries: sc,
@@ -1356,6 +1390,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						const base: SearchReturnOptions = {
 							queryList: filtered.results.map(r => r.query),
 							results: filtered.results,
+							context: ctx,
 							urls: filtered.urls,
 							includeContent: pc.includeContent,
 							inlineContent: filteredInline.length > 0 ? filteredInline : undefined,
@@ -1557,9 +1592,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 		name: toolNames.webSearch,
 		label: "Web Search",
 		description:
-			`Search the web using OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
+			`Search the web using OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns attributed provider results and, when enabled, exact-page evidence assessments. Provider summaries and repeated URLs are not independent verification. Cite original passages, retain conflicts, and never infer confidence from provider counts. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
 		promptSnippet:
-			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
+			"Use for web research. Omit provider to honor configured parallel search; only override when the user requests a particular provider. Use up to 4 queries within the total request budget. Base claims on cited original passages, not provider consensus. Report partial failures and conflicting evidence.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
@@ -1582,6 +1617,12 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				? params.queries
 				: (params.query !== undefined ? [params.query] : []);
 			const queryList = normalizeQueryList(rawQueryList);
+			const policy = getSearchPolicy();
+			if (queryList.length > 4) throw new Error("一次搜索最多包含 4 个不同查询，请缩小范围。");
+			const selection = resolveRequestedProvider(params.provider);
+			if (Array.isArray(selection) && selection.length * queryList.length > policy.maxRequests) throw new Error("查询数 × 供应商数超过本次调用上限，请减少查询或提高设置中的上限。");
+			const budget = { remaining: policy.maxRequests, deadline: Date.now() + policy.totalTimeoutMs };
+			const emitReport = (webSearch: WebSearchReport) => onUpdate?.({ content: [{ type: "text", text: searchReportSummary(webSearch) }], details: { webSearch } });
 			const configWorkflow = loadConfigForExtensionInit().workflow;
 			const workflow = resolveWorkflow(params.workflow ?? configWorkflow, ctx?.hasUI !== false);
 			const shouldCurate = workflow === "summary-review";
@@ -1705,6 +1746,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					const requestedProvider = pc.searchProvider;
 					try {
 						const response = await search(queryList[qi], {
+							budget,
+							onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults.values(), { query: queryList[qi], answer: "", results: [], error: null, providerRuns }], true)),
 							provider: requestedProvider,
 							numResults: params.numResults,
 							recencyFilter,
@@ -1800,7 +1843,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				});
 
 				try {
-					const { answer, results, inlineContent, provider } = await search(query, {
+					const response = await search(query, {
+						budget,
+						onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults, { query, answer: "", results: [], error: null, providerRuns }], true)),
 						provider: resolvedProvider,
 						numResults: params.numResults,
 						recencyFilter,
@@ -1810,7 +1855,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						extensionContext: ctx,
 					});
 
-					searchResults.push({ query, answer, results, error: null, provider });
+					const { answer, results, inlineContent, provider, providerRuns } = response;
+					searchResults.push({ query, answer, results, error: null, provider, providerRuns });
 					for (const r of results) {
 						if (!allUrls.includes(r.url)) {
 							allUrls.push(r.url);
@@ -1851,17 +1897,26 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				summaryMeta = generated.meta;
 			}
 
-			return await buildSearchReturn({
+			try { return await buildSearchReturn({
 				signal,
 				queryList,
 				results: searchResults,
+				context: ctx, onReport: emitReport,
+				report: buildWebSearchReport(callId, queryList, searchResults),
 				urls: allUrls,
 				includeContent: params.includeContent ?? false,
 				inlineContent: allInlineContent.length > 0 ? allInlineContent : undefined,
 				workflow: workflow === "auto-summary" ? "auto-summary" : undefined,
 				approvedSummary,
 				summaryMeta,
-			});
+			}); } catch (error) {
+				if (!signal?.aborted) throw error;
+				const webSearch = buildWebSearchReport(callId, queryList, searchResults);
+				webSearch.status = "cancelled";
+				webSearch.notice = "搜索已取消，以下只包含取消前完成的结果；原文核验可能未完成。";
+				storeAndPublishSearch(searchResults);
+				return { isError: true, content: [{ type: "text", text: formatWebSearchReport(webSearch) }], details: { webSearch } };
+			}
 		},
 
 		renderCall(args, theme) {
@@ -2143,7 +2198,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			const requestedQueries = Array.isArray(params.queries)
 				? params.queries.filter((query): query is string => typeof query === "string").map((query) => query.trim()).filter(Boolean)
 				: [];
-			const queries = (requestedQueries.length > 0 ? requestedQueries : [claim]).slice(0, 8);
+			const queries = [...new Set(requestedQueries.length > 0 ? requestedQueries : [claim])];
+			if (queries.length > 4) throw new Error("一次核验最多包含 4 个不同查询");
 			const numResults = typeof params.numResults === "number" && Number.isFinite(params.numResults)
 				? Math.min(20, Math.max(1, Math.floor(params.numResults)))
 				: 5;
@@ -2155,11 +2211,18 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			const summaries: string[] = [];
 			const errors: Array<{ query: string; error: string }> = [];
 			let provider: string | undefined;
+			const searchRows: QueryResultData[] = [];
+			const policy = getSearchPolicy();
+			const selected = resolveRequestedProvider(params.provider);
+			if (Array.isArray(selected) && selected.length * queries.length > policy.maxRequests) throw new Error("查询数 × 供应商数超过本次调用上限");
+			const budget = { remaining: policy.maxRequests, deadline: Date.now() + policy.totalTimeoutMs };
 
 			for (const query of queries) {
 				if (signal?.aborted) break;
 				try {
 					const response = await search(query, {
+						budget,
+						onProviderUpdate: providerRuns => _onUpdate?.({ content: [{ type: "text", text: "正在检索核验来源" }], details: { webSearch: buildWebSearchReport(_callId, queries, [...searchRows, { query, answer: "", results: [], error: null, providerRuns }], true) } }),
 						provider: resolveRequestedProvider(params.provider),
 						numResults,
 						recencyFilter,
@@ -2168,6 +2231,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						extensionContext: ctx,
 					});
 					if (signal?.aborted) break;
+					searchRows.push({ query, answer: response.answer, results: response.results, provider: response.provider, providerRuns: response.providerRuns, error: null });
 					provider ??= response.provider;
 					if (response.answer) summaries.push(`${query}: ${response.answer}`);
 					for (const result of response.results) {
@@ -2175,16 +2239,19 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					}
 				} catch (err) {
 					if (signal?.aborted || isAbortError(err)) break;
-					errors.push({ query, error: err instanceof Error ? err.message : String(err) });
+					const error = err instanceof Error ? err.message : String(err);
+					errors.push({ query, error });
+					searchRows.push({ query, answer: "", results: [], provider: "search", error });
 				}
 			}
 
-			const results = [...resultsByUrl.values()].slice(0, 20).map((result, index) => ({ ...result, rank: index + 1 }));
+			signal?.throwIfAborted();
+			const results = mergeSearchSources(searchRows.flatMap(r => r.providerRuns ?? [])).slice(0, 20).map((result, index) => ({ ...result, rank: index + 1 }));
 			let fetched: ExtractedContent[] = [];
-			if (params.fetchContent && results.length > 0) {
+			if (params.fetchContent !== false && results.length > 0) {
 				const urls = results.slice(0, 5).map((result) => result.url);
 				try {
-					fetched = await fetchAllContent(urls, signal);
+					fetched = await fetchEvidencePages(urls, signal);
 				} catch (err) {
 					if (signal?.aborted || isAbortError(err)) throw err;
 					fetched = urls.map((url) => ({ url, title: "", content: "", error: err instanceof Error ? err.message : String(err) }));
@@ -2200,6 +2267,10 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				domainFilter,
 			}), [claim]);
 			if (errors.length > 0) artifact.errors = errors;
+			const evidence = await assessResearchEvidence(artifact, ctx, signal, true);
+			artifact.claims = evidence.map(e => ({ claim: e.claim, status: e.status, rationale: e.rationale, supporting_passages: e.citations.filter(c => c.stance === "support").map(c => c.passageId), contradicting_passages: e.citations.filter(c => c.stance === "contradict").map(c => c.passageId) }));
+			const webSearch = buildWebSearchReport(_callId, queries, searchRows);
+			webSearch.evidence = evidence;
 			storeResearchArtifact(artifact);
 			pi.appendEntry("web-search-results", {
 				id: artifact.id,
@@ -2208,8 +2279,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				artifact,
 			});
 			return {
-				content: [{ type: "text", text: formatSourceCheckResult(artifact, toolNames.getSearchContent) }],
-				details: { responseId: artifact.id, artifact, sourceCount: artifact.sources.length, passageCount: artifact.passages.length },
+				content: [{ type: "text", text: formatSourceCheckResult(artifact, toolNames.getSearchContent) + "\n\n" + formatWebSearchReport(webSearch) }],
+				isError: webSearch.status === "error",
+				details: { webSearch, responseId: artifact.id, artifact, sourceCount: artifact.sources.length, passageCount: artifact.passages.length },
 			};
 		},
 	});
@@ -2922,6 +2994,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 							const base: SearchReturnOptions = {
 								queryList: filtered.results.map(r => r.query),
 								results: filtered.results,
+							context: ctx,
 								urls: filtered.urls,
 								includeContent: false,
 								curated: true,

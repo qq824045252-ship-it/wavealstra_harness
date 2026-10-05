@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -322,7 +322,10 @@
     "test:shell-arguments": "esbuild scripts/shell-arguments-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/shell-arguments-test.mjs && node scripts/test-guard.mjs out/tests/shell-arguments-test.mjs",
     "test:browser-screenshot-electron": "esbuild scripts/browser-screenshot-electron-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/browser-screenshot-electron-test.cjs --external:electron && electron out/tests/browser-screenshot-electron-test.cjs",
     "test:computer-use-desktop": "node scripts/computer-use-browser-desktop-live.cjs",
-    "test:magpie-desktop": "node scripts/test-guard.mjs scripts/magpie-desktop-test.cjs"
+    "test:magpie-desktop": "node scripts/test-guard.mjs scripts/magpie-desktop-test.cjs",
+    "test:multi-search-desktop": "node scripts/test-guard.mjs scripts/multi-search-desktop-test.cjs",
+    "test:multi-search-live": "esbuild scripts/multi-search-live-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-search-live-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-live-test.mjs",
+    "test:multi-search": "esbuild scripts/multi-search-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/multi-search-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

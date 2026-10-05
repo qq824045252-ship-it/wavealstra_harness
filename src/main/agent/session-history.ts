@@ -1,3 +1,4 @@
+import { searchReportFromDetails, searchReportSummary } from "../../shared/web-search";
 import { consultReportFromDetails, consultSummary } from "../../shared/multi-model-consult";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, isAbsolute, resolve } from "node:path";
@@ -211,6 +212,8 @@ export function loadTaskHistoryFromSession(
           const output = textFromContent(toolResult.content).trim();
           const consult = tool.tool === "multi_model_consult" ? consultReportFromDetails(toolResult.details) : undefined;
           if (consult) { tool.consult = consult; tool.summary = consultSummary(consult); }
+          const webSearch = searchReportFromDetails(toolResult.details);
+          if (webSearch) { tool.webSearch = webSearch; tool.summary = searchReportSummary(webSearch); }
           if (output) tool.output = consult ? output : output.slice(0, 4000);
           // Pi persists child calls on the parent's toolResult, not as independent messages.
           // Restore their identity without inventing unavailable full intermediate results.

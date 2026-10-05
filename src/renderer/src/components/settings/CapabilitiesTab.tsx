@@ -1,3 +1,5 @@
+import SearchSettings from "./SearchSettings";
+import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BUILTIN_CODEX_IMAGE_MODEL, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
@@ -174,32 +176,13 @@ function UnavailableModelControl({ configured }: { configured?: string }): React
   );
 }
 
-function SearchProviderSelect({
-  value,
-  choices,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  choices: Array<{ id: string; label: string }>;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}): React.JSX.Element {
-  return (
-    <select className="capability-model-select" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
-      <option value="auto">自动选择可用搜索源（推荐）</option>
-      {choices.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
-    </select>
-  );
-}
-
 export default function CapabilitiesTab(): React.JSX.Element {
   const models = useAppStore((state) => state.models);
   const [snapshot, setSnapshot] = useState<BuiltinCapabilitiesSnapshotDto | null>(null);
   const [draft, setDraft] = useState<BuiltinCapabilitiesConfigDto | null>(null);
   const [savedWebSearch, setSavedWebSearch] = useState<WebSearchConfigDto | null>(null);
   const [webSearchDraft, setWebSearchDraft] = useState<WebSearchConfigDto | null>(null);
-  const [searchProvider, setSearchProvider] = useState("auto");
+  const [searchPolicy, setSearchPolicy] = useState(DEFAULT_SEARCH_POLICY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<BuiltinCapabilityId | null>(null);
@@ -215,7 +198,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
   ), [models]);
 
   const searchProviderChoices = useMemo(() => {
-    const ready = new Set<string>();
+    const ready = new Set<string>(webSearchDraft?.configuredProviders ?? []);
     if (models.some((model) => model.vendor === "openai-codex" || model.id.startsWith("openai-codex/"))) ready.add("codex");
     const hasSearchKey = (id: string, legacyField: string): boolean => {
       const cfg = webSearchDraft as (WebSearchConfigDto & Record<string, unknown>) | null;
@@ -236,7 +219,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
       .map((provider) => ({ id: provider.id, label: provider.label }));
   }, [models, savedWebSearch, webSearchDraft]);
 
-  const hasCodexSearch = searchProviderChoices.some((provider) => provider.id === "codex");
+
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -252,7 +235,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
       const normalizedWeb = webConfig ?? {};
       setSavedWebSearch(structuredClone(normalizedWeb));
       setWebSearchDraft(structuredClone(normalizedWeb));
-      setSearchProvider(normalizedWeb.searchRouting?.providers?.[0] ?? "auto");
+      setSearchPolicy(searchPolicyFromConfig(normalizedWeb));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -273,13 +256,13 @@ export default function CapabilitiesTab(): React.JSX.Element {
     setMessage(null);
     setError(null);
     try {
+      const policyChanged = JSON.stringify(searchPolicyFromConfig(savedWebSearch ?? {})) !== JSON.stringify(searchPolicy);
+      const validSearchPolicy = policyChanged || savedWebSearch?.searchPolicy ? normalizeSearchPolicy(searchPolicy) : undefined;
       const [next, nextWeb] = await Promise.all([
         window.api?.agent?.saveBuiltinCapabilities?.(draft),
         window.api?.agent?.saveWebSearchConfig?.({
           ...(webSearchDraft ?? {}),
-          searchRouting: searchProvider === "auto"
-            ? null
-            : { providers: [searchProvider], fallbackOn: ["quota", "network", "transient"] },
+          ...(validSearchPolicy ? { searchPolicy: validSearchPolicy } : {}),
         }),
       ]);
       if (!next) throw new Error("保存失败：Main API 无返回");
@@ -288,9 +271,9 @@ export default function CapabilitiesTab(): React.JSX.Element {
       if (nextWeb) {
         setSavedWebSearch(structuredClone(nextWeb));
         setWebSearchDraft(structuredClone(nextWeb));
-        setSearchProvider(nextWeb.searchRouting?.providers?.[0] ?? "auto");
+        setSearchPolicy(searchPolicyFromConfig(nextWeb));
       }
-      setMessage("已保存；工具注册和搜索路由从新会话生效。");
+      setMessage("已保存；搜索方式从下次调用生效，工具开关从新会话生效。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -354,16 +337,12 @@ export default function CapabilitiesTab(): React.JSX.Element {
     onTest: (target: BuiltinCapabilityId) => void test(target),
   });
 
-  const savedSearchProvider = savedWebSearch?.searchRouting?.providers?.[0] ?? "auto";
+  const searchPolicyPending = JSON.stringify(searchPolicyFromConfig(savedWebSearch ?? {})) !== JSON.stringify(searchPolicy);
   const webKeysPending = (savedWebSearch?.tavilyApiKey ?? "") !== (webSearchDraft?.tavilyApiKey ?? "")
     || (savedWebSearch?.tinyfishApiKey ?? "") !== (webSearchDraft?.tinyfishApiKey ?? "")
     || (savedWebSearch?.braveApiKey ?? "") !== (webSearchDraft?.braveApiKey ?? "")
     || (savedWebSearch?.serperApiKey ?? "") !== (webSearchDraft?.serperApiKey ?? "");
-  const searchDescription = hasCodexSearch
-    ? "已检测到 Codex OAuth，可直接搜索；也可选择已配置的其他搜索源"
-    : searchProviderChoices.length
-      ? `已检测到 ${searchProviderChoices.length} 个可用搜索源`
-      : "使用自动模式；如未检测到搜索源，可在下方高级设置添加 API Key";
+  const searchDescription = searchPolicy.mode === "parallel" ? `每次同时搜索 ${searchPolicy.providers.length} 家，逐家显示结果与失败状态` : "选择检索方式；配置凭据不代表已经通过实际搜索验证";
 
   const imageStatus = statusById.get("image-generation");
   const codexImageAvailable = imageStatus?.state === "ready"
@@ -407,15 +386,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
             title="联网搜索"
             description={searchDescription}
             tools={["web_search", "fetch_content", "source_check", "get_search_content"]}
-            configurationPending={savedSearchProvider !== searchProvider || webKeysPending}
+            configurationPending={searchPolicyPending || webKeysPending}
             onToggle={(enabled) => setDraft({ ...draft, web: { ...draft.web, enabled } })}
           >
-            <SearchProviderSelect
-              value={searchProviderChoices.some((provider) => provider.id === searchProvider) ? searchProvider : "auto"}
-              choices={searchProviderChoices}
-              disabled={!draft.web.enabled || saving}
-              onChange={setSearchProvider}
-            />
+            <SearchSettings value={searchPolicy} configured={searchProviderChoices.map(p => p.id)} disabled={!draft.web.enabled || saving} onChange={setSearchPolicy} />
           </CapabilityRow>
 
           <CapabilityRow

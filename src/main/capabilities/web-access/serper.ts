@@ -14,6 +14,7 @@ interface WebSearchConfig {
 }
 
 interface SerperOrganicResult {
+	date?: string;
 	title?: string;
 	link?: string;
 	snippet?: string;
@@ -134,6 +135,7 @@ function mapResults(data: SerperResponse, numResults: number): SearchResponse["r
 		mapped.push({
 			title: item.title || `Source ${mapped.length + 1}`,
 			url: item.link,
+			...(typeof item.date === "string" ? { publishedAt: item.date } : {}),
 			snippet: typeof item.snippet === "string" ? item.snippet.replace(/\s+/g, " ").trim() : "",
 		});
 		if (mapped.length >= numResults) break;

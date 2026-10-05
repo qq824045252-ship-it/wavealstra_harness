@@ -269,8 +269,9 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
   const running = Boolean(message.streaming) && !hasPendingApproval;
   const activeToolNames = message.blocks.flatMap((block) => block.type === "tool" && block.toolCall.status === "running" ? [block.toolCall.tool] : []);
   const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput);
-  const consultBlocks = message.blocks.filter((block) => block.type === "tool" && block.toolCall.tool === "multi_model_consult");
-  const groups = groupTimelineBlocks(message.blocks.filter((block) => !(block.type === "tool" && block.toolCall.tool === "multi_model_consult")));
+  const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch));
+  const resultBlocks = message.blocks.filter(isResultCard);
+  const groups = groupTimelineBlocks(message.blocks.filter(block => !isResultCard(block)));
   const activeThinkingIdx = findActiveThinkingGroupIndex(
     groups,
     Boolean(message.streaming),
@@ -351,8 +352,8 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
         </div>
       )}
     </div>
-    {/* Consultation results are first-class task output, not hidden in collapsed reasoning/tool history. */}
-    {consultBlocks.map((block, index) => <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} streaming={message.streaming} />)}
+    {/* Consultation and search results are first-class task output, not hidden in collapsed reasoning/tool history. */}
+    {resultBlocks.map((block, index) => <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} streaming={message.streaming} />)}
     </>
   );
 }

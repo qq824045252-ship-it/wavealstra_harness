@@ -1,0 +1,13 @@
+.web-search-card { border:1px solid var(--border); border-radius:10px; padding:12px; margin:8px 0; min-width:0; font-size:12px; }
+.web-search-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; border:0; background:none; color:var(--fg); width:100%; text-align:left; padding:0; cursor:pointer; }
+.web-search-heading strong { font-size:12px; line-height:1.6; }.web-search-heading span { flex-shrink:0; color:var(--fg-muted); }
+.web-search-provider-status,.web-search-badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.web-search-provider-status span,.web-search-badges span { background:var(--bg-secondary,var(--bg)); border:1px solid var(--border); border-radius:5px; padding:2px 6px; font-size:11px; }
+.web-search-provider-status .is-success { color:var(--success,#398353); }.web-search-warning,.web-search-provider-status .is-error,.web-search-provider-status .is-timeout { color:var(--warning,#a56822); }
+.web-search-notice { color:var(--fg-muted); font-size:11px; line-height:1.6; margin:8px 0 0; }
+.web-search-tabs { display:flex; flex-wrap:wrap; gap:5px; border-bottom:1px solid var(--border); padding:10px 0; }.web-search-tabs button { padding:5px 9px; border:1px solid var(--border); border-radius:5px; color:var(--fg); background:transparent; cursor:pointer; }.web-search-tabs [aria-selected=true] { border-color:var(--accent); color:var(--accent); }
+.web-search-scroll { max-height:480px; overflow:auto; overscroll-behavior:contain; padding:0 4px; }
+.web-search-source,.web-search-evidence { padding:12px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }.web-search-source a,.web-search-evidence a { color:var(--accent); }.web-search-url { display:block; color:var(--fg-muted); margin-top:3px; }.web-search-source p,.web-search-evidence p { white-space:pre-wrap; line-height:1.65; margin:7px 0; }.web-search-source p { display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }
+.web-search-scroll pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; line-height:1.7; }.web-search-scroll details { padding:8px 0; }.web-search-scroll summary { cursor:pointer; }
+.web-search-evidence blockquote { margin:10px 0; padding:8px 10px; border-left:3px solid var(--border); background:var(--bg-secondary,var(--bg)); }.web-search-evidence small { color:var(--fg-muted); }
+.web-search-followup { margin-top:10px; padding:6px 10px; background:transparent; border:1px solid var(--border); color:var(--fg); border-radius:6px; cursor:pointer; }

@@ -1,3 +1,4 @@
+import { searchReportFromDetails, searchReportSummary } from "./web-search";
 import { consultReportFromDetails, consultSummary } from "./multi-model-consult";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentUiPatch } from "./agent-ipc";
@@ -233,6 +234,8 @@ export function mapPiEventToPatches(
 
     case "tool_execution_update": {
       const partial = event.partialResult;
+      const webSearch = searchReportFromDetails((partial as { details?: unknown })?.details);
+      if (webSearch) return [{ type: "tool_update", taskId, messageId, toolCallId: event.toolCallId, webSearch, summary: searchReportSummary(webSearch) }];
       if (event.toolName === "multi_model_consult") {
         const consult = consultReportFromDetails((partial as { details?: unknown })?.details);
         if (consult) return [{ type: "tool_update", taskId, messageId, toolCallId: event.toolCallId, consult, summary: consultSummary(consult) }];
@@ -258,6 +261,7 @@ export function mapPiEventToPatches(
 
     case "tool_execution_end": {
       const isError = Boolean(event.isError);
+      const webSearch = searchReportFromDetails((event.result as { details?: unknown })?.details);
       const consult = event.toolName === "multi_model_consult" ? consultReportFromDetails((event.result as { details?: unknown })?.details) : undefined;
       let output: string | undefined;
       try {
@@ -287,6 +291,7 @@ export function mapPiEventToPatches(
           status: isError ? "error" : "success",
           output,
           ...(consult ? { consult, summary: consultSummary(consult) } : {}),
+          ...(webSearch ? { webSearch, summary: searchReportSummary(webSearch) } : {}),
         },
       ];
     }
