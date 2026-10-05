@@ -30,6 +30,12 @@ Search-result reference metadata is persisted on the owning Bot conversation, fo
 
 ## Interface and persistence
 
+New Gateway inputs from Feishu, WeCom, WeChat, Telegram and Slack use Bot / Native with an explicit `native` preset. A separate `gw-bot-*` task namespace leaves existing `gw-*` AgentSession tasks and their history untouched. Subsequent inputs from the same channel/chat or Slack thread reuse the new Bot. Desktop/remote configuration writes preserve this mode; other Bot tasks can still switch Tags normally.
+
+Gateway replies await the native submission receipt and read that input's persisted answer. Stable platform-message request IDs prevent duplicate tool effects on redelivery; queued messages, cancellation and model errors follow native outcomes. Transport credentials, sender authorization, event deduplication and reply delivery remain Gateway responsibilities. They do not apply scenario blacklists, approval waits or artifact filters to Bot execution.
+
+Slack journals mark new receipts as Durable and retain the original channel-history context. Restart reacquires the same native input and continues the reply outbox. Legacy running receipts keep their existing interrupted behavior and never replay an old task. Shutdown suspends inbound transport before closing the native Harness, so checkpointing is not converted into a failure reply.
+
 `DurableBotSnapshot` projects complete persisted entries, live partial output, nested tool records, inbox entries, retry state and compaction state. History is read across compaction boundaries. Desktop and remote reconnects replace their display with that snapshot. No speculative assistant shell or old session JSONL is treated as execution truth.
 
 A native `pi.live.run` projects a waiting row before the first token. The generation task identity keeps that row mounted through partial output and entry commit, preserving entry and collapse transitions. Response completion timestamps are stored in a native conversation document by an observational `afterResponse` hook; they supply display-only durations and survive reconnect. Historical replies without recorded timing show their outcome without invented elapsed times.
@@ -47,6 +53,7 @@ Old AgentSession message deletion, regeneration, goal and branch controls are no
 ## Verification
 
 - `pnpm -s typecheck`
+- `pnpm -s test:gateway-durable`, `test:slack-gateway` and `test:gateway`: isolated five-channel routing, legacy task preservation, native tools despite readonly settings, input-specific replies, deduplication, queued inputs, cancellation, failure, delivery retry, native checkpoint/reopen and Slack journal/outbox recovery. All credentials and message transports are fixtures.
 - `pnpm -s remote:typecheck`
 - `pnpm -s test:mode` and `pnpm -s test:mode-preset`
 - `pnpm -s test:durable-bot`: real Durable storage, native tools, QuickJS, interruption recovery, unsafe replay, queues, abort, retry, streaming, compaction, extension metadata recovery and isolated permanent-purge boundaries.

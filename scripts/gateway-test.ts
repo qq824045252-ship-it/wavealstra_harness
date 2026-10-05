@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
+import Database from "better-sqlite3";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { mdToHtml, splitTelegramText, TelegramChannelAdapter } from "../src/main/gateway/channels";
 import {
@@ -86,7 +87,7 @@ function dbTest(): void {
   const bulk = db.listGatewayMessages({ channelId: "telegram-default", chatId: "bulk", limit: 1000 });
   assert(bulk.length === 1000, `查询 limit 上限 1000（实际 ${bulk.length}）`);
   // 容量控制：库内只保留最近 3000 条（直连 SQL 数行，绕开 list 的 limit 上限）
-  const raw = new (require("better-sqlite3") as typeof import("better-sqlite3").default)(dbPath);
+  const raw = new Database(dbPath);
   const row = raw
     .prepare(
       `SELECT COUNT(*) AS c FROM gateway_messages WHERE channel_id = 'telegram-default' AND chat_id = 'bulk'`,

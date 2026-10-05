@@ -345,7 +345,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     if (this.stopped || !this.activated || !this.allows(delivery)) return;
     let current = this.options.journal.get(delivery)!;
     if (current.state === "replied") return;
-    if (current.state === "running") {
+    if (current.state === "running" && current.backend !== "pi-durable") {
       current = this.options.journal.update(current, {
         state: "reply_pending",
         replyText: "上次任务因应用退出中断，执行记录已保留。请在此讨论串发送一条新消息继续原任务；不会自动重复可能已执行的操作。",
@@ -354,9 +354,10 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     if (current.state === "reply_pending") { await this.flushReply(current); return; }
     if (!this.onInbound) throw new Error("Slack 尚未绑定 MyBuddy 任务入口");
     const generation = this.generation;
-    const slackHistory = await this.readChannelHistory(current);
+    const slackHistory = current.state === "running" && current.backend === "pi-durable"
+      ? current.slackHistory : await this.readChannelHistory(current);
     if (this.stopped || generation !== this.generation || !this.allows(current)) return;
-    current = this.options.journal.update(current, { state: "running" });
+    current = this.options.journal.update(current, { state: "running", backend: "pi-durable", slackHistory });
     try {
       await this.onInbound({
         channelId: this.id, chatId: [current.teamId, current.channel, current.threadTs].join(":"),
@@ -371,6 +372,8 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
       });
     } catch (error) {
       const latest = this.options.journal.get(current)!;
+      // A closed native wait does not finish its persisted execution. Reacquire it on reconnect.
+      if (this.stopped || generation !== this.generation) return;
       if (latest.state === "running") {
         const message = safeSlackError(error, [this.config?.botToken ?? "", this.config?.appToken ?? ""]);
         const pending = this.options.journal.update(latest, { state: "reply_pending", replyText: "任务处理失败：" + message });

@@ -8,8 +8,8 @@ import { runGatewayAgentTurn, withSlackChannelHistory, type GatewayAgentPort } f
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "../src/main/gateway/SlackGatewayCredentials";
 import { setEncryptionAvailable } from "./gateway-electron-stub";
-import type { AgentPromptRequest, AgentUiPatch } from "../src/shared/agent-ipc";
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentPromptRequest } from "../src/shared/agent-ipc";
+import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai/compat";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-slack-test-"));
@@ -307,6 +307,43 @@ try {
     assert(f.posts.some(post => String(post.text).includes("不会自动重复")));
     await f.adapter.disconnect();
   });
+  await check("shutdown preserves a native receipt and restart reacquires its exact input/history", async () => {
+    const file = join(root, "native-restart.json");
+    const first = fixture("native-restart", { journalPath: file,
+      history: { ok: true, messages: [{ ts: "1699999999.000001", user: config.allowUsers[0], text: "persisted context" }] } });
+    let rejectWait!: (error: Error) => void;
+    let original: any;
+    first.adapter.setInboundHandler(async message => {
+      original = message;
+      await new Promise<void>((_, reject) => { rejectWait = reject; });
+    });
+    await first.adapter.connect(config);
+    first.sockets[0].emit(event("EvNATIVE_RESTART", undefined, { type: "app_mention", channel_type: undefined,
+      channel: "C01234567", text: "<@U012BOT> continue after restart" }));
+    await until(() => Boolean(original), "native receipt admitted");
+    assert.equal(first.journal.list()[0].backend, "pi-durable");
+    await first.adapter.disconnect();
+    rejectWait(new Error("Harness closed"));
+    await wait(10);
+    assert.equal(first.journal.list()[0].state, "running");
+    assert.equal(first.posts.length, 0);
+    const restored = fixture("native-restarted", { journalPath: file });
+    let calls = 0;
+    restored.adapter.setInboundHandler(async message => {
+      calls++;
+      assert.equal(message.taskId, original.taskId);
+      assert.equal(message.userMessageId, original.userMessageId);
+      assert.equal(message.text, original.text);
+      assert.deepEqual(message.slackHistory, original.slackHistory);
+      await message.reply("native persisted answer");
+    });
+    await restored.adapter.connect(config);
+    await until(() => restored.journal.list()[0].state === "replied", "native answer delivered after restart");
+    assert.equal(calls, 1);
+    assert.equal(restored.historyRequests.length, 0);
+    assert.equal(restored.posts[0].text, "native persisted answer");
+    await restored.adapter.disconnect();
+  });
   await check("journal commit failure never ACKs or executes", async () => {
     const f = fixture("disk-failure"); let calls = 0;
     f.adapter.setInboundHandler(async () => { calls++; });
@@ -329,7 +366,6 @@ try {
   await check("Gateway persists encrypted config before activation; disconnect/restore preserve secrets and Pi policy", async () => {
     let stored: any; let connected = false; let activations = 0; let failSave = false;
     const requests: AgentPromptRequest[] = [];
-    let listener: ((patch: AgentUiPatch) => void) | undefined;
     const db = {
       listGatewayChannels: () => stored ? [stored] : [],
       upsertGatewayChannel: (row: any) => { if (failSave) throw new Error("fixture store failure"); stored = { ...row }; },
@@ -337,12 +373,9 @@ try {
       getTask: () => ({ id: "native-task", welcomeMode: "coding", sessionFile: "fixture-session.jsonl" }),
     };
     const agent: GatewayAgentPort = {
-      onPatch: fn => { listener = fn; return () => { listener = undefined; }; },
-      prompt: async request => {
+      runGatewayTurn: async request => {
         requests.push(request);
-        listener?.({ type: "text_delta", taskId: request.taskId, messageId: request.assistantMessageId, delta: "native-policy-reply" });
-        listener?.({ type: "assistant_end", taskId: request.taskId, messageId: request.assistantMessageId });
-        return { queued: false };
+        return "native-policy-reply";
       },
     };
     const service = new GatewayService(db as any, agent as any);
@@ -367,8 +400,9 @@ try {
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-thread", taskId: "native-task",
       userMessageId: "user-turn", assistantMessageId: "assistant-turn", text: "fixture",
       sender: { id: config.allowUsers[0] }, reply: async (text: string) => { replies.push(text); } });
-    assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, "readonly");
-    assert.equal(requests[0].sessionFile, "fixture-session.jsonl"); assert.equal(requests[0].welcomeMode, "coding");
+    assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, undefined);
+    assert.equal(requests[0].sessionFile, undefined); assert.equal(requests[0].welcomeMode, "bot");
+    assert.equal(requests[0].modePresetId, "native"); assert.equal(requests[0].taskId, "gw-bot-native-task");
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-channel", taskId: "native-channel",
       userMessageId: "channel-user", assistantMessageId: "channel-assistant", text: "总结下内容", sender: { id: config.allowUsers[0] },
       slackHistory: { channelId: "CFIXTURE", beforeTs: "1700000010.000001", status: "loaded", hasMore: false,
@@ -391,22 +425,19 @@ try {
     assert.equal(connected, false); assert.equal(activations, 3, "failed host commit must not release inbound execution");
     failSave = false; await service.stop();
   });
-  await check("queued native admission waits for exact assistant turn; final text excludes other turns", async () => {
-    let listener: ((patch: AgentUiPatch) => void) | undefined; let unsubscribed = false;
+  await check("Gateway awaits its native answer and forces Bot/native without legacy policy", async () => {
+    let finish!: (text: string) => void;
     const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user" };
     const port: GatewayAgentPort = {
-      onPatch: fn => { listener = fn; return () => { unsubscribed = true; }; },
-      prompt: async () => ({ queued: true }),
+      runGatewayTurn: async input => {
+        assert.equal(input.welcomeMode,"bot"); assert.equal(input.modePresetId,"native");
+        return new Promise<string>(resolve => { finish = resolve; });
+      },
     };
     let settled = false; const promise = runGatewayAgentTurn(port, request).then(text => { settled = true; return text; });
     await wait(0); assert.equal(settled, false);
-    listener!({ type: "text_delta", taskId: "task", messageId: "other", delta: "wrong reply" });
-    listener!({ type: "text_delta", taskId: "task", messageId: "assistant", delta: "intermediate explanation" });
-    listener!({ type: "assistant_message_start", taskId: "task", messageId: "assistant" });
-    listener!({ type: "text_delta", taskId: "task", messageId: "assistant", delta: "final answer" });
-    listener!({ type: "assistant_end", taskId: "task", messageId: "assistant" });
-    assert.equal(await promise, "final answer"); assert(unsubscribed);
-    await assert.rejects(runGatewayAgentTurn({ ...port, prompt: async () => ({ queued: false, error: { code: "SESSION_BUSY", message: "busy" } }) }, request), /SESSION_BUSY/);
+    finish("final answer"); assert.equal(await promise, "final answer");
+    await assert.rejects(runGatewayAgentTurn({ runGatewayTurn: async () => { throw new Error("native failure"); } }, request), /native failure/);
   });
   await check("secure config readback has placeholders; missing OS encryption refuses persistence", () => {
     const sealed = sealSlackGatewayConfig(config);
@@ -434,8 +465,6 @@ try {
       baseUrl: "http://invalid.invalid", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };
-    const manager = SessionManager.inMemory(cwd);
-    const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
     let writes = 0;
     const runtime = {
       hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "local-fixture-only" } }), getModel: () => model,
@@ -461,26 +490,14 @@ try {
         stream.push({ type: "start", partial: response }); stream.push({ type: "done", reason: stopReason, message: response }); stream.end();
         return stream;
       },
-    } as unknown as ModelRuntime;
-    const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager: settings, noExtensions: true,
-      noSkills: true, noPromptTemplates: true, noThemes: true });
-    await loader.reload();
-    const { session } = await createAgentSession({ cwd, agentDir: cwd, model, modelRuntime: runtime,
-      sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["read", "write"] });
-    let listener: ((patch: AgentUiPatch) => void) | undefined;
+    } as any;
+    const session = await DurableBotRuntime.open({ directory: join(cwd,"durable"), cwd, models: runtime,
+      model: { provider:model.provider,modelId:model.id }, toolMode:"native", instructions:()=>"fixture", onSnapshot:()=>{} });
     const requests: AgentPromptRequest[] = [];
     const port: GatewayAgentPort = {
-      onPatch: fn => { listener = fn; return () => { listener = undefined; }; },
-      prompt: async request => {
+      runGatewayTurn: async request => {
         requests.push(request);
-        await session.prompt(request.text);
-        const message = session.messages.at(-1);
-        assert(message?.role === "assistant");
-        for (const part of message.content) if (part.type === "text") listener?.({
-          type: "text_delta", taskId: request.taskId, messageId: request.assistantMessageId, delta: part.text,
-        });
-        listener?.({ type: "assistant_end", taskId: request.taskId, messageId: request.assistantMessageId });
-        return { queued: false };
+        return session.reply(await session.submit(request.text,request.userMessageId));
       },
     };
     f.adapter.setInboundHandler(async message => {
@@ -498,8 +515,8 @@ try {
       await until(() => f.posts.length === 2, "same-session read reply");
       assert.equal(requests[0].taskId, requests[1].taskId);
       assert.equal(f.posts[0].text, "NATIVE_PI_WRITE_OK"); assert.equal(f.posts[1].text, "SAME_SESSION_READ_OK");
-      assert.equal(manager.getBranch().filter(entry => entry.type === "message" && entry.message.role === "user").length, 2);
-    } finally { await f.adapter.disconnect(); session.dispose(); }
+      await session.refresh(); assert.equal(session.snapshot.messages.filter(message=>message.role==='user').length,2);
+    } finally { await f.adapter.disconnect(); await session.close(); }
   });
   console.log("SLACK_GATEWAY_TESTS_PASSED " + passed);
 } finally {

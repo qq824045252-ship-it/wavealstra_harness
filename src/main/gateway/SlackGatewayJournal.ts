@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
+import type { SlackChannelHistory } from "./channels";
 
 export interface SlackDelivery {
   eventId: string;
@@ -16,6 +17,9 @@ export interface SlackDelivery {
   state: "pending" | "running" | "reply_pending" | "replied";
   replyText?: string;
   nextChunk?: number;
+  /** Absent on legacy AgentSession receipts; never replay those as new Bot work. */
+  backend?: "pi-durable";
+  slackHistory?: SlackChannelHistory;
 }
 
 export function slackTaskId(delivery: Pick<SlackDelivery, "teamId" | "appId" | "channel" | "threadTs">): string {
@@ -69,7 +73,7 @@ export class SlackGatewayJournal {
     return true;
   }
 
-  update(delivery: SlackDelivery, patch: Partial<Pick<SlackDelivery, "state" | "replyText" | "nextChunk">>): SlackDelivery {
+  update(delivery: SlackDelivery, patch: Partial<Pick<SlackDelivery, "state" | "replyText" | "nextChunk" | "backend" | "slackHistory">>): SlackDelivery {
     const previous = this.get(delivery);
     if (!previous) throw new Error("Slack 消息恢复记录不存在");
     const next = { ...previous, ...patch };

@@ -3366,6 +3366,7 @@ app.on("before-quit", (event) => {
     try { professionalToolService?.stopOwned(); } catch { /* best effort */ }
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
+    try { await gatewayService?.suspend(); } catch { /* best effort */ }
     try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }
     // Gadget 进程必须真正退出后才关闭 DB / 允许 Electron 结束。

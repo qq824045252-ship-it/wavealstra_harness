@@ -9,6 +9,7 @@ import { McpOAuthCredentialStore, type ModelRuntime } from "@earendil-works/pi-c
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentPromptRequest, AgentPromptResult, AgentUiPatch, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
+import { isGatewayBotTaskId } from "../../../shared/gateway-task";
 import type { AppDatabase } from "../../db/AppDatabase";
 import { McpConfigService } from "../../mcp/McpConfigService";
 import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
@@ -82,6 +83,10 @@ export class DurableBotService {
     return this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings WHERE task_id = ?").get(taskId) as BotBinding | undefined;
   }
 
+  private toolMode(task: TaskDto): BotToolMode {
+    return isGatewayBotTaskId(task.id) ? "native" : this.options.toolMode(task);
+  }
+
   async resumePersisted(): Promise<void> {
     const bindings = this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings").all() as BotBinding[];
     await Promise.all(bindings.map(async binding => {
@@ -127,7 +132,7 @@ export class DurableBotService {
       const wasm = base && join(base, "quickjs.wasm");
       const worker = base && join(base, "codemode-worker.cjs");
       const runtime = await DurableBotRuntime.open({ directory, cwd, models,
-        taskId, model: selected, toolMode: this.options.toolMode(task), tools: [...mcp.tools, ...await this.options.tools?.(task, cwd) ?? []],
+        taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...await this.options.tools?.(task, cwd) ?? []],
         onEntries: entries => this.options.onEntries?.(taskId, entries),
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         onTurns: turns => {
@@ -204,7 +209,7 @@ export class DurableBotService {
     const current = this.options.db.getTask(request.taskId)!;
     const open = await this.open(request.taskId);
     const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd);
-    await open.runtime.configure(await this.model(current.modelId), this.options.toolMode(current), this.options.thinking?.(current, request),
+    await open.runtime.configure(await this.model(current.modelId), this.toolMode(current), this.options.thinking?.(current, request),
       [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
     let text = await this.options.prepareInput?.(request) ?? request.text;
     if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
@@ -224,11 +229,25 @@ export class DurableBotService {
     return { submission, open };
   }
 
-  async prompt(request: AgentPromptRequest, admissionOnly = false): Promise<AgentPromptResult> {
+  private async admitTracked(request: AgentPromptRequest) {
     const pending = this.admit(request);
     const admissions = this.admissions.get(request.taskId) ?? new Set();
     admissions.add(pending); this.admissions.set(request.taskId, admissions);
-    const { submission, open } = await pending.finally(() => { admissions.delete(pending); if (!admissions.size) this.admissions.delete(request.taskId); });
+    return pending.finally(() => { admissions.delete(pending); if (!admissions.size) this.admissions.delete(request.taskId); });
+  }
+
+  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
+    if (!isGatewayBotTaskId(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
+    const existing = this.options.db.getTask(request.taskId);
+    this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
+      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
+      welcomeMode: "bot", modePresetId: "native", updatedAt: Date.now() });
+    const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
+    return open.runtime.reply(submission);
+  }
+
+  async prompt(request: AgentPromptRequest, admissionOnly = false): Promise<AgentPromptResult> {
+    const { submission, open } = await this.admitTracked(request);
     const state = await submission.status(context);
     if (admissionOnly) return { queued: state.status !== "done" };
     if (state.status === "queued") return { queued: true };

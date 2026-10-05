@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -163,7 +163,7 @@
     "test:professional-tools": "esbuild scripts/professional-tools-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/professional-tools-test.cjs && node scripts/test-guard.mjs out/tests/professional-tools-test.cjs",
     "test:professional-tools-live": "esbuild scripts/professional-tools-live-check.ts --bundle --platform=node --format=cjs --outfile=out/tests/professional-tools-live-check.cjs && node scripts/test-guard.mjs out/tests/professional-tools-live-check.cjs",
     "test:opendesign-smoke": "esbuild scripts/opendesign-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/opendesign-smoke.cjs && node scripts/test-guard.mjs out/tests/opendesign-smoke.cjs",
-    "test:gateway": "esbuild scripts/gateway-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/gateway-test.cjs --external:better-sqlite3 --alias:electron=./scripts/gateway-electron-stub.ts && node scripts/test-guard.mjs out/tests/gateway-test.cjs",
+    "test:gateway": "esbuild scripts/gateway-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gateway-test.mjs --alias:electron=./scripts/gateway-electron-stub.ts && node scripts/test-guard.mjs out/tests/gateway-test.mjs",
     "test:artifact-char": "esbuild scripts/artifact-characterization-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-characterization-test.cjs && node scripts/test-guard.mjs out/tests/artifact-characterization-test.cjs",
     "test:artifact-domain": "esbuild scripts/artifact-domain-contract-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-domain-contract-test.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/artifact-domain-contract-test.cjs",
     "test:artifact-projection": "esbuild scripts/artifact-projection-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-projection-test.cjs && node scripts/test-guard.mjs out/tests/artifact-projection-test.cjs",
@@ -327,6 +327,8 @@
     "test:search-source-address": "esbuild scripts/search-source-address-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/search-source-address-test.mjs && node scripts/test-guard.mjs out/tests/search-source-address-test.mjs",
     "test:multi-search-live": "esbuild scripts/multi-search-live-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-search-live-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-live-test.mjs",
     "test:multi-search": "esbuild scripts/multi-search-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/multi-search-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-test.mjs",
+    "test:gateway-durable": "esbuild scripts/gateway-durable-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-durable-test.mjs && node scripts/test-guard.mjs out/tests/gateway-durable-test.mjs",
+    "test:slack-gateway": "esbuild scripts/slack-gateway-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/slack-gateway-test.mjs && node scripts/test-guard.mjs out/tests/slack-gateway-test.mjs",
     "test:durable-bot-desktop": "node scripts/test-guard.mjs scripts/durable-bot-desktop-test.cjs",
     "test:durable-bot": "esbuild scripts/durable-bot-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-bot-test.mjs && node scripts/test-guard.mjs out/tests/durable-bot-test.mjs"
   },

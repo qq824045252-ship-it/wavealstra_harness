@@ -190,6 +190,7 @@ type InternalConfiguredModel = NonNullable<ModelsProviderConfig["models"]>[numbe
 
 import { FileBackupService } from "./FileBackupService";
 import { loadTaskHistoryFromSession } from "./session-history";
+import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { loadTaskArtifacts } from "./artifact-index";
 import {
   activateNextAssistantTurn,
@@ -1136,6 +1137,7 @@ export class AgentService {
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       defaultModel: () => this.settingsStore.read().defaultModelId,
       toolMode: task => {
+        if (isGatewayBotTaskId(task.id)) return "native";
         const preset = resolveModePreset(this.modeProfiles.getProfile("bot").policy, task.modePresetId);
         return preset?.botToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
@@ -1266,6 +1268,11 @@ export class AgentService {
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
   async purgeDurableTask(taskId: string): Promise<void> { await this.durableBots?.purge(taskId); }
   async closeDurableBots(): Promise<void> { await this.durableBots?.close(); }
+
+  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
+    if (!this.durableBots) throw new Error("Bot 尚未初始化");
+    return this.durableBots.runGatewayTurn(request);
+  }
 
 
   private async resolvePiModelScope(

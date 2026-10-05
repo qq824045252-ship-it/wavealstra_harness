@@ -1,4 +1,5 @@
-import type { AgentPromptRequest, AgentPromptResult, AgentUiPatch } from "../../shared/agent-ipc";
+import type { AgentPromptRequest } from "../../shared/agent-ipc";
+import { gatewayBotTaskId } from "../../shared/gateway-task";
 import type { SlackChannelHistory } from "./channels";
 
 export function withSlackChannelHistory(instruction: string, history?: SlackChannelHistory): string {
@@ -15,36 +16,12 @@ export function withSlackChannelHistory(instruction: string, history?: SlackChan
 }
 
 export interface GatewayAgentPort {
-  onPatch(listener: (patch: AgentUiPatch) => void): () => void;
-  prompt(request: AgentPromptRequest): Promise<AgentPromptResult>;
+  runGatewayTurn(request: AgentPromptRequest): Promise<string>;
 }
 
-/** Observe one existing AgentService/Pi turn. A queued admission is not a completed reply. */
+/** Await the native submission's own answer, never a task-wide stream or UI message ID. */
 export async function runGatewayAgentTurn(agent: GatewayAgentPort, request: AgentPromptRequest): Promise<string> {
-  let lastText = "";
-  let currentText = "";
-  let terminalError: string | undefined;
-  let ended = false;
-  let finish!: () => void;
-  const terminal = new Promise<void>(resolve => { finish = resolve; });
-  const unsubscribe = agent.onPatch(patch => {
-    if (patch.taskId !== request.taskId || !("messageId" in patch) || patch.messageId !== request.assistantMessageId) return;
-    if (patch.type === "assistant_message_start") {
-      if (currentText.trim()) lastText = currentText;
-      currentText = "";
-    } else if (patch.type === "text_delta") {
-      currentText += patch.delta;
-    } else if (patch.type === "assistant_end") {
-      ended = true;
-      terminalError = patch.error;
-      finish();
-    }
-  });
-  try {
-    const result = await agent.prompt(request);
-    if (result.error) throw new Error(result.error.code + "：" + result.error.message);
-    if (result.queued && !ended) await terminal;
-    if (terminalError) throw new Error(terminalError);
-    return currentText.trim() || lastText.trim() || "任务已处理，但未产生文本回复。";
-  } finally { unsubscribe(); }
+  const { sessionFile: _legacySession, permissionMode: _legacyPermission, ...input } = request;
+  return agent.runGatewayTurn({ ...input, taskId: gatewayBotTaskId(request.taskId),
+    welcomeMode: "bot", modePresetId: "native", streamingBehavior: "followUp" });
 }

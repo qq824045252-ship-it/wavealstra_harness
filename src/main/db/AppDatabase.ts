@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
 import { randomUUID } from "node:crypto";
@@ -2799,6 +2800,7 @@ export class AppDatabase {
   }
 
   upsertTask(task: TaskDto): void {
+    if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "bot", modePresetId: "native" };
     // UI 仍可能带 mock/遗留 spaceId；spaces 表无对应行时先解析占位，避免 FOREIGN KEY 失败
     const hasSpaceId = task.spaceId !== undefined;
     const hasProjectId = task.projectId !== undefined;

@@ -6,7 +6,7 @@ import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
   Harness, createRegistry, defineExtension, section, AgentDoc, hook, GenerationTask, defineDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
-  type LiveState, type InboxState, type Storage, type ToolRegistration, type UserInput, type Cursor, type UsageState,
+  type LiveState, type InboxState, type Storage, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -145,6 +145,22 @@ export class DurableBotRuntime {
     this.projection = projection.catch(() => {});
     await projection;
     return this.latest;
+  }
+
+  /** The answer belongs to this receipt even if another turn has already started or failed. */
+  async reply(submission: Submission): Promise<string> {
+    const settled = await submission.wait(ctx);
+    if (settled.status === "unanswered") {
+      throw new Error(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
+    }
+    if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
+    const record = await this.storage.entry(this.conversation.id, settled.answer, ctx);
+    const message = record?.entry.model?.find(item => item.role === "assistant");
+    if (!message) throw new Error("Durable 回复记录不存在");
+    if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {
+      throw new Error(message.errorMessage || `Durable 回复未完成：${message.stopReason}`);
+    }
+    return contentText(message.content).trim() || "任务已处理，但未产生文本回复。";
   }
 
   async abort(): Promise<void> {

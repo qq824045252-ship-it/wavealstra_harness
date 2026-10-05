@@ -1,4 +1,5 @@
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
+import { isGatewayBotTaskId } from "@shared/gateway-task";
 import { create } from "zustand";
 import { useEffect } from "react";
 import type {
@@ -848,6 +849,7 @@ function hydrateTaskMetadataFromDb(taskId: string): void {
         return {
           tasks: state.tasks.map((task) => task.id === taskId ? {
             ...task,
+            title: row.title || task.title,
             spaceId: row.spaceId ?? undefined,
             projectId: row.projectId ?? undefined,
             status: (row.status as Task["status"]) ?? task.status,
@@ -1455,6 +1457,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setModePreset: (presetId) => {
     const taskId = get().activeTaskId;
+    if (isGatewayBotTaskId(taskId)) return;
     const task = taskId ? get().tasks.find((item) => item.id === taskId) : undefined;
     // 通知主进程：Tag/preset 被选择 → 立即触发 required-runtime prewarm（不等发送消息）
     void window.api?.agent?.selectModePreset?.({

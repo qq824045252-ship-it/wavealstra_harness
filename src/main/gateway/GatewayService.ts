@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
 import {
@@ -59,9 +59,9 @@ function toStrArray(value: unknown): string[] {
 export function createIdempotencyGuard(
   windowMs: number = IDEMPOTENCY_WINDOW_MS,
   maxEntries: number = IDEMPOTENCY_MAX_ENTRIES,
-): (channelId: string, chatId: string, messageId: string) => boolean {
+): ((channelId: string, chatId: string, messageId: string) => boolean) & { forget(channelId: string, chatId: string, messageId: string): void } {
   const processed = new Map<string, number>();
-  return (channelId: string, chatId: string, messageId: string): boolean => {
+  const guard = (channelId: string, chatId: string, messageId: string): boolean => {
     const key = `${channelId}:${chatId}:${messageId}`;
     const now = Date.now();
     const existing = processed.get(key);
@@ -79,6 +79,9 @@ export function createIdempotencyGuard(
     }
     return true;
   };
+  return Object.assign(guard, { forget: (channelId: string, chatId: string, messageId: string) => {
+    processed.delete(`${channelId}:${chatId}:${messageId}`);
+  } });
 }
 
 /** 白名单判断：未配置（空数组）= 不限制 */
@@ -111,6 +114,7 @@ export class GatewayService {
   private webhookServer: Server | null = null;
   private webhookPort = 52140;
   private running = false;
+  private stopping = false;
 
   constructor(
     private readonly db: AppDatabase,
@@ -151,6 +155,7 @@ export class GatewayService {
 
   private createInboundHandler(): GatewayInboundHandler {
     return async (msg) => {
+      if (this.stopping) throw new Error("Gateway 正在关闭，消息将在重连后继续");
       // Slack validates its binding and persists dedupe before acknowledging events.
       if (msg.channelId === this.slack.id) return this.handleSlackInbound(msg);
       // ① 白名单：未授权用户直接忽略（不发系统事件，避免噪音）
@@ -189,27 +194,21 @@ export class GatewayService {
       }
 
       const taskId = `gw-${msg.channelId}-${msg.chatId}`;
-      const assistantMessageId = `asst-${randomUUID()}`;
-      const userMessageId = `user-${randomUUID()}`;
-      let replyBuf = "";
-
-      const unsub = this.agent.onPatch((patch) => {
-        if (patch.taskId !== taskId) return;
-        if (patch.type === "text_delta" && patch.delta) replyBuf += patch.delta;
-      });
-
+      const turnId = msg.messageId
+        ? createHash("sha256").update(JSON.stringify([msg.channelId, msg.chatId, msg.messageId])).digest("hex")
+        : randomUUID();
+      let text: string;
       try {
-        // ③ 权限：不再写死 auto —— 跟随全局设置（default 危险工具弹审批 / readonly 只读 / auto 放行）
-        const permissionMode = this.settingsStore.read().permissionMode;
-        await this.agent.prompt({
-          taskId,
-          text: msg.text,
-          permissionMode,
-          welcomeMode: "working",
-          assistantMessageId,
-          userMessageId,
+        const modelId = this.settingsStore.read().defaultModelId?.trim();
+        text = await runGatewayAgentTurn(this.agent, {
+          taskId, text: msg.text, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
+          ...(modelId ? { modelId } : {}),
         });
-        const text = replyBuf.trim() || "（Agent 已处理，但未产生文本回复）";
+      } catch (err) {
+        if (this.stopping) throw err;
+        text = `处理失败：${err instanceof Error ? err.message : String(err)}`;
+      }
+      try {
         await msg.reply(text);
         this.emitEvent({
           channelId: msg.channelId,
@@ -219,17 +218,16 @@ export class GatewayService {
           chatId: msg.chatId,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await msg.reply(`处理失败：${message}`).catch(() => undefined);
+        // Re-delivery reuses the native receipt, including after process restart.
+        if (msg.messageId) this.processed.forget(msg.channelId, msg.chatId, msg.messageId);
         this.emitEvent({
           channelId: msg.channelId,
           direction: "system",
-          text: message,
+          text: `回复发送失败：${err instanceof Error ? err.message : String(err)}`,
           at: Date.now(),
           chatId: msg.chatId,
         });
-      } finally {
-        unsub();
+        throw err;
       }
     };
   }
@@ -257,14 +255,15 @@ export class GatewayService {
     try {
       const settings = this.settingsStore.read();
       const modelId = settings.defaultModelId?.trim() || undefined;
-      const task = this.db.getTask(msg.taskId);
       text = await runGatewayAgentTurn(this.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
-        assistantMessageId: msg.assistantMessageId, permissionMode: settings.permissionMode,
-        welcomeMode: task?.welcomeMode ?? "working", sessionFile: task?.sessionFile,
+        assistantMessageId: msg.assistantMessageId,
         streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
       });
-    } catch (error) { text = "任务处理失败：" + safeSlackError(error); }
+    } catch (error) {
+      if (this.stopping) throw error;
+      text = "任务处理失败：" + safeSlackError(error);
+    }
     text = redactSlackText(text);
     // Network failure is an outbox failure, not a second native task execution.
     await msg.reply(text);
@@ -272,6 +271,7 @@ export class GatewayService {
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     if (this.webhookServer) return;
     await this.startWebhookServer();
     this.running = true;
@@ -285,6 +285,7 @@ export class GatewayService {
 
   /** 应用启动时恢复上次已连接的通道（配置从 DB 读回，无需重新手输） */
   async restoreChannels(): Promise<void> {
+    this.stopping = false;
     for (const row of this.db.listGatewayChannels()) {
       if (!row.connected) continue;
       const adapter = this.adapters.get(row.id);
@@ -320,10 +321,15 @@ export class GatewayService {
     }
   }
 
-  async stop(): Promise<void> {
+  async suspend(): Promise<void> {
+    this.stopping = true;
     for (const a of this.adapters.values()) {
       if (a.isConnected() || a.type === "slack") await a.disconnect();
     }
+  }
+
+  async stop(): Promise<void> {
+    await this.suspend();
     await new Promise<void>((resolve) => {
       if (!this.webhookServer) return resolve();
       this.webhookServer.close(() => resolve());
@@ -369,6 +375,7 @@ export class GatewayService {
   }
 
   async connect(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
+    this.stopping = false;
     const adapter = this.adapters.get(channelId);
     if (!adapter) throw new Error(`unknown channel: ${channelId}`);
 
