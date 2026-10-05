@@ -5,7 +5,8 @@ const root = path.resolve(__dirname, '..'), temp = fs.mkdtempSync(path.join(os.t
 const profile = path.join(temp, 'profile'), agentDir = path.join(profile, '.mybuddy'), out = path.join(root, 'out/tests/multi-search');
 for (const dir of [agentDir, out, path.join(profile, 'AppData/Roaming'), path.join(profile, 'AppData/Local')]) fs.mkdirSync(dir, { recursive: true });
 const requests = [];
-let dispatchedSearch = false;
+const searchRounds = 16;
+let dispatchedSearch = 0;
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET') {
     const sentence = req.url.startsWith('/update') ? '新版设备不支持离线运行。' : '该设备支持离线运行。';
@@ -27,7 +28,7 @@ const server = http.createServer(async (req, res) => {
     assert(support && contra, 'actual page passages must reach evidence model');
     content = JSON.stringify({ claims: [{ claim: '该设备支持离线运行。', rationale: '旧版与新版的原文说明不同，存在版本限制。', citations: [{ passageId: support.passage_id, quote: support.text, stance: 'support' }, { passageId: contra.passage_id, quote: contra.text, stance: 'contradict' }] }] });
   } else {
-    if (!dispatchedSearch) { dispatchedSearch = true; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行' }) }; }
+    if (dispatchedSearch < searchRounds) { dispatchedSearch++; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行 · 搜索轮次 '+dispatchedSearch }) }; }
     else content = 'MULTI_SEARCH_DESKTOP_COMPLETE';
   }
   const packet = (delta, finish_reason) => ({ id: 'search-fixture-' + requests.length, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'fixture', choices: [{ index: 0, delta, finish_reason }] });
@@ -101,6 +102,13 @@ const report = { tests: [], status: 'running', profile };
   await until(() => evaluate('!document.querySelector(".settings-modal")'), 'close settings');
   await evaluate(`(()=>{const e=document.querySelector('.chat-input textarea')||document.querySelector('textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'请搜索该设备是否支持离线运行');e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await delay(100);
   await rpc('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await until(() => evaluate('Boolean(document.querySelector(".web-search-heading"))'), 'first search card');
+  assert.equal(await evaluate('document.querySelector(".web-search-heading").getAttribute("aria-expanded")'), 'false', 'search is collapsed while streaming');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-provider-status,.web-search-tabs,.web-search-scroll").length'), 0, 'collapsed search has no provider/details rows');
+  await click('.web-search-heading');
+  await until(() => evaluate('document.querySelector(".web-search-heading")?.textContent.includes("2 轮")'), 'second search round');
+  assert.equal(await evaluate('document.querySelector(".web-search-heading").getAttribute("aria-expanded")'), 'true', 'new rounds preserve the user expansion choice');
+  await click('.web-search-heading');
   await until(() => evaluate('document.body.innerText.includes("MULTI_SEARCH_DESKTOP_COMPLETE")'), 'native search with inline evidence', 90000);
   const end = await evaluate('window.__searchEvents.filter(e=>e.type==="tool_update"&&e.webSearch?.evidence).at(-1)');
   assert(end?.webSearch, 'search report must traverse native events'); assert.equal(end.webSearch.sources.length, 2); assert.equal(end.webSearch.evidence[0].status, 'unclear'); assert.equal(end.webSearch.evidence[0].citations.length, 2);
@@ -111,15 +119,29 @@ const report = { tests: [], status: 'running', profile };
   assert(await evaluate('window.__searchEvents.some(e=>e.webSearch?.runs.some(r=>r.status==="success")&&e.webSearch?.runs.some(r=>r.status==="running"))'));
   const toolResultRequest = requests.find(r => JSON.stringify(r.messages).includes('Passage-grounded assessment')); assert(toolResultRequest, 'parent model receives original evidence and provider state');
   report.tests.push('real native Pi tool -> concurrent adapters -> original-page extraction -> bounded inline semantic model -> exact conflicting citations -> parent model');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-card").length'), 1, '16 rounds render one search card');
+  assert(await evaluate('document.querySelector(".web-search-heading").textContent.includes("16 轮")'));
+  assert.equal(await evaluate('document.querySelector(".web-search-heading").getAttribute("aria-expanded")'), 'false');
+  assert(await evaluate('document.querySelector(".web-search-card").getBoundingClientRect().height < 90'), 'collapsed group stays compact');
+  await screenshot('results-16-rounds-collapsed');
+  report.tests.push('16 native search rounds share one compact, default-collapsed card; streaming updates preserve manual expansion');
   await click('.web-search-heading'); await screenshot('results-merged');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-source").length'), 2, 'merged view deduplicates repeated round sources');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-provider-status > span").length'), 2, 'provider statuses are aggregated');
   await evaluate(`([...document.querySelectorAll('.web-search-tabs button')].find(e=>e.textContent==='serper')).click()`);
   assert(await evaluate('document.querySelector(".web-search-scroll").innerText.includes("原始排名")')); await screenshot('results-provider');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-scroll h4").length'), searchRounds, 'every provider round remains inspectable');
   await evaluate(`([...document.querySelectorAll('.web-search-tabs button')].find(e=>e.textContent==='原文核验')).click()`);
   assert(await evaluate('document.querySelectorAll(".web-search-evidence blockquote").length===2')); await screenshot('results-evidence');
   assert.equal((await evaluate('window.__searchErrors')).length, 0); report.tests.push('merged / provider / evidence tabs with rendered exact Chinese quotes and no renderer errors');
-  const history = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(end.taskId)})`); const stored = history.messages.flatMap(m => m.tools || []).find(t => t.webSearch)?.webSearch;
-  assert.deepEqual(stored, end.webSearch); await close(); await launch();
-  const restored = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(end.taskId)})`); assert.deepEqual(restored.messages.flatMap(m => m.tools || []).find(t => t.webSearch)?.webSearch, stored);
+  const history = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(end.taskId)})`); const stored = history.messages.flatMap(m => m.tools || []).filter(t => t.webSearch).map(t => t.webSearch);
+  assert.equal(stored.length, searchRounds); assert.deepEqual(stored.at(-1), end.webSearch); await close(); await launch();
+  const restored = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(end.taskId)})`); assert.deepEqual(restored.messages.flatMap(m => m.tools || []).filter(t => t.webSearch).map(t => t.webSearch), stored);
+  await click('.task-item');
+  await until(() => evaluate('document.querySelector(".web-search-heading")?.textContent.includes("16 轮")'), 'restored search group');
+  assert.equal(await evaluate('document.querySelectorAll(".web-search-card").length'), 1);
+  assert.equal(await evaluate('document.querySelector(".web-search-heading").getAttribute("aria-expanded")'), 'false');
+  await screenshot('results-16-rounds-restored');
   assert.equal((await evaluate('window.api.agent.getWebSearchConfig()')).searchPolicy.mode, 'parallel');
   report.tests.push('full provider details and original evidence survive Electron restart and native history readback'); report.status = 'passed';
 } catch (error) { report.status = 'failed'; report.error = error.stack; try { report.body = await evaluate('document.body.innerText.slice(-5000)'); report.events = await evaluate('window.__searchEvents.slice(-5)'); await screenshot('failure'); } catch {} }

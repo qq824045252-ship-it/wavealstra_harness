@@ -11,3 +11,6 @@
 .web-search-scroll pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; line-height:1.7; }.web-search-scroll details { padding:8px 0; }.web-search-scroll summary { cursor:pointer; }
 .web-search-evidence blockquote { margin:10px 0; padding:8px 10px; border-left:3px solid var(--border); background:var(--bg-secondary,var(--bg)); }.web-search-evidence small { color:var(--fg-muted); }
 .web-search-followup { margin-top:10px; padding:6px 10px; background:transparent; border:1px solid var(--border); color:var(--fg); border-radius:6px; cursor:pointer; }
+.web-search-queries { margin-top:8px; color:var(--fg-muted); }
+.web-search-queries summary { cursor:pointer; }
+.web-search-queries ol { max-height:160px; overflow:auto; padding-left:22px; line-height:1.7; overflow-wrap:anywhere; }

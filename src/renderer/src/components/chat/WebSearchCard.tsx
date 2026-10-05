@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ToolCall } from "@/types";
 import { useAppStore } from "@/store/appStore";
+import { mergeWebSearchReports } from "@/lib/mergeWebSearchReports";
 import { searchReportSummary, type SearchRunStatus, type WebSearchSource } from "@shared/web-search";
 import "./WebSearchCard.css";
 
@@ -16,20 +17,27 @@ function Source({ source }: { source: WebSearchSource }): React.JSX.Element {
     {source.fetchError && <small className="web-search-warning">原文读取失败：{source.fetchError}</small>}
   </article>;
 }
-export default function WebSearchCard({ toolCall }: { toolCall: ToolCall }): React.JSX.Element {
-  const report = toolCall.webSearch!;
+export default function WebSearchCard({ toolCall, toolCalls }: { toolCall: ToolCall; toolCalls?: ToolCall[] }): React.JSX.Element {
+  const calls = toolCalls ?? [toolCall];
+  const report = calls.length > 1 ? mergeWebSearchReports(calls) : toolCall.webSearch!;
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState("merged");
   const appendComposer = useAppStore(s => s.appendComposer);
-  const interrupted = toolCall.status !== "running" && report.status === "running";
+  const interrupted = calls.every(call => call.status !== "running") && report.status === "running";
   const providers = [...new Set(report.runs.map(r => r.provider))];
   const successProviders = new Set(report.runs.filter(r => r.status === "success").map(r => r.provider)).size;
   return <section className="web-search-card" data-testid="web-search-card">
-    <button type="button" className="web-search-heading" aria-expanded={open} onClick={() => setOpen(!open)}><strong>{interrupted ? "联网搜索 · 已中断，保留已收到结果" : searchReportSummary(report)}</strong><span>{open ? "收起" : "查看结果"}</span></button>
-    <div className="web-search-provider-status">{report.runs.map((run, i) => <span key={`${run.provider}-${run.query}-${i}`} className={`is-${run.status}`} title={`${run.query}${run.error ? `：${run.error}` : ""}`}>{run.provider} · {interrupted && ["running", "queued"].includes(run.status) ? "已中断" : STATUS[run.status]}{run.durationMs > 0 ? ` · ${(run.durationMs / 1000).toFixed(1)}s` : ""}</span>)}</div>
+    <button type="button" className="web-search-heading" aria-expanded={open} onClick={() => setOpen(!open)}><strong>{interrupted ? `联网搜索 · ${calls.length} 轮 · 已中断，保留已收到结果` : searchReportSummary(report).replace("联网搜索 · ", `联网搜索 · ${calls.length} 轮 · `)}</strong><span>{open ? "收起" : "查看结果"}</span></button>
+    {open && <>
+    <div className="web-search-provider-status">{providers.map(provider => {
+      const runs = report.runs.filter(run => run.provider === provider);
+      const completed = runs.filter(run => run.status === "success" || run.status === "empty").length;
+      const status = runs.some(run => run.status === "running" || run.status === "queued") ? "running" : completed === runs.length ? "success" : "error";
+      return <span key={provider} className={`is-${status}`} title={runs.map(run => `${run.query}${run.error ? `：${run.error}` : ""}`).join("\n")}>{provider} · {completed}/{runs.length} 次完成{status === "running" ? " · 搜索中" : status === "error" ? " · 部分未完成" : ""}</span>;
+    })}</div>
     {providers.length > 1 && successProviders < 2 && <p className="web-search-warning">{report.status === "running" && !interrupted ? "当前" : "本次"}仅 {successProviders} 家返回网页来源，尚不具备多源检索覆盖。</p>}
     {report.notice && <p className="web-search-notice">{report.notice}</p>}
-    {open && <>
+      {report.queries.length > 1 && <details className="web-search-queries"><summary>搜索问题 · {report.queries.length} 个</summary><ol>{report.queries.map(query => <li key={query}>{query}</li>)}</ol></details>}
       <div className="web-search-tabs" role="tablist" aria-label="搜索结果视图">
         {[{ id: "merged", label: "合并结果" }, ...providers.map(p => ({ id: p, label: p })), { id: "evidence", label: "原文核验" }].map(t => <button key={t.id} role="tab" type="button" aria-selected={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>)}
       </div>

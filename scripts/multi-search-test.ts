@@ -6,11 +6,45 @@ import { normalizeSearchPolicy, searchPolicyFromConfig, DEFAULT_SEARCH_POLICY } 
 import { canonicalSearchUrl, mergeSearchSources, runSearchBatch } from "../src/main/capabilities/web-access/search-aggregation";
 import { buildResearchArtifact, validateEvidenceResponse, assessClaim } from "../src/main/capabilities/web-access/source-check";
 import { buildWebSearchReport } from "../src/main/capabilities/web-access/search-report";
+import { mergeWebSearchReports } from "../src/renderer/src/lib/mergeWebSearchReports";
+import type { ToolCall } from "../src/renderer/src/types";
 
 let count = 0;
 async function test(name: string, action: () => unknown | Promise<unknown>) { await action(); count++; console.log(`PASS ${name}`); }
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const result = (url = "https://example.com/spec") => ({ answer: "unverified summary", results: [{ title: "Spec", url, snippet: "仪器精度为百分之一。" }] });
+
+await test("16 search rounds merge without losing queries, origins, provider traces or conflicting evidence", () => {
+  const calls: ToolCall[] = Array.from({ length: 16 }, (_, i) => {
+    const query = `query-${i + 1}`;
+    const runs = ["tavily", "serper"].map(provider => ({ query, provider, status: "success" as const, durationMs: 1, results: result().results, answer: "provider text" }));
+    const sources = mergeSearchSources(runs);
+    if (i === 0) sources[0] = { ...sources[0], evidence: "page", contentHash: "original" };
+    return { id: String(i), tool: "web_search", summary: query, status: "success", webSearch: {
+      version: 1, id: String(i), status: "complete", queries: [query], runs, sources,
+      evidence: i < 2 ? [{ claim: "claim", status: i === 0 ? "supported" : "contradicted", rationale: "different versions", citations: [{ passageId: String(i), url: sources[0].url, quote: i === 0 ? "supports" : "contradicts", kind: "page", stance: i === 0 ? "support" : "contradict" }] }] : [],
+    } };
+  });
+  const original = JSON.stringify(calls);
+  const merged = mergeWebSearchReports(calls);
+  assert.equal(merged.sources.length, 1);
+  assert.equal(merged.sources[0].origins!.length, 32);
+  assert.equal(merged.sources[0].evidence, "page");
+  assert.equal(merged.sources[0].contentHash, "original");
+  assert.equal(merged.queries.length, 16);
+  assert.equal(merged.runs.length, 32);
+  assert.equal(merged.evidence!.length, 2);
+  assert.equal(merged.status, "complete");
+  assert.equal(JSON.stringify(calls), original, "display aggregation never rewrites stored reports");
+  const last = calls.at(-1)!;
+  last.status = "running"; last.webSearch!.status = "running"; last.webSearch!.runs[0].status = "running";
+  assert.equal(mergeWebSearchReports(calls).status, "running");
+  last.status = "error";
+  const interrupted = mergeWebSearchReports(calls);
+  assert.equal(interrupted.status, "partial");
+  assert.equal(interrupted.runs.at(-2)!.status, "cancelled");
+  assert.equal(interrupted.sources.length, 1);
+});
 
 await test("legacy ordered routing stays fallback; policy validation rejects underconfigured parallel and unknown providers", () => {
   assert.equal(searchPolicyFromConfig({ searchRouting: { providers: ["tavily", "serper"] } }).mode, "fallback");

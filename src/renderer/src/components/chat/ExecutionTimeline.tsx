@@ -2,6 +2,7 @@ import { nativeRunPhaseLabel } from "../../../../shared/generation-stats";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage, MessageBlock } from "@/types";
 import MessageBlockView from "./MessageBlockView";
+import WebSearchCard from "./WebSearchCard";
 import { IconChevronRight } from "@/components/common/icons";
 import {
   computeFocusView,
@@ -271,6 +272,7 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
   const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput);
   const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch));
   const resultBlocks = message.blocks.filter(isResultCard);
+  const searchCalls = resultBlocks.flatMap(block => block.type === "tool" && block.toolCall.webSearch ? [block.toolCall] : []);
   const groups = groupTimelineBlocks(message.blocks.filter(block => !isResultCard(block)));
   const activeThinkingIdx = findActiveThinkingGroupIndex(
     groups,
@@ -352,8 +354,14 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
         </div>
       )}
     </div>
-    {/* Consultation and search results are first-class task output, not hidden in collapsed reasoning/tool history. */}
-    {resultBlocks.map((block, index) => <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} streaming={message.streaming} />)}
+    {/* One stable search card per reply, including rounds separated by other tools or reasoning. */}
+    {resultBlocks.map((block, index) => {
+      if (block.type === "tool" && block.toolCall.webSearch) {
+        return block.toolCall.id === searchCalls[0]?.id
+          ? <WebSearchCard key={block.toolCall.id} toolCall={block.toolCall} toolCalls={searchCalls} /> : null;
+      }
+      return <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} streaming={message.streaming} />;
+    })}
     </>
   );
 }
