@@ -8,6 +8,7 @@ import type { ProjectService } from "../project/ProjectService";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import type { RemoteDeviceSummary } from "../../../shared/src/remote-contract";
 import { mapRemoteHistory, mapRemoteModel, mapRemoteNotification, mapRemoteProject, mapRemoteSpace, mapRemoteTask } from "./RemoteDtoMapper";
+import { WELCOME_MODES } from "../../shared/mode-profile";
 
 /** 模型目录缓存窗口：bootstrap 在每次 SSE/refresh 都会被调用，避免反复 await provider 目录 */
 const MODEL_CACHE_TTL_MS = 30_000;
@@ -63,6 +64,10 @@ export class RemoteAccessService {
       models: await this.listModels(),
       defaultModelId: settings.defaultModelId?.trim() || null,
       defaultPermissionMode: settings.permissionMode,
+      taskModes: WELCOME_MODES.map(id => {
+        const profile = this.agent.getModeProfile(id);
+        return { id, label: profile.labelZh, tags: (profile.policy.presets ?? []).map(({ id, label, description }) => ({ id, label, description })) };
+      }),
     };
   }
 

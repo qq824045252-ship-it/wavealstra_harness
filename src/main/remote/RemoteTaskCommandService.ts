@@ -72,6 +72,11 @@ export class RemoteTaskCommandService {
     const space = request.spaceId ? this.db.getSpace(request.spaceId) : undefined;
     if (request.spaceId && (!space || space.effectiveArchived)) throw new RemoteValidationError("Workspace 不存在或不可用");
     if (request.projectId && !this.projects.get(request.projectId)) throw new RemoteValidationError("Project 不存在");
+    // Validate new-task configuration only; never gate tools or alter existing tasks.
+    const welcomeMode = resolveWelcomeMode(request.welcomeMode);
+    if (request.modePresetId && !this.agent.getModeProfile(welcomeMode).policy.presets?.some(tag => tag.id === request.modePresetId)) {
+      throw new RemoteValidationError("所选 Tag 不属于当前模式或已被删除，请刷新后重新选择");
+    }
 
     const taskId = `remote-${randomUUID()}`;
     const now = Date.now();

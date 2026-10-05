@@ -38,6 +38,18 @@ function compareSpaces(a: RemoteSpaceSummary, b: RemoteSpaceSummary): number {
   return byName !== 0 ? byName : a.id.localeCompare(b.id)
 }
 
+/** Display the destination without exposing a host filesystem path. */
+export function spaceBreadcrumb(spaces: RemoteSpaceSummary[], spaceId: string): string {
+  const byId = new Map(spaces.map(space => [space.id, space]))
+  const names: string[] = [], visited = new Set<string>()
+  let current = byId.get(spaceId)
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id); names.unshift(current.name)
+    current = current.parentId ? byId.get(current.parentId) : undefined
+  }
+  return names.join(' / ') || '空间已不可用'
+}
+
 export function buildSpaceTaskGroups(
   spaces: RemoteSpaceSummary[],
   tasks: RemoteTaskSummary[],

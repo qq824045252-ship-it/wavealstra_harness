@@ -6,11 +6,12 @@ import {
   ThumbsDown, ThumbsUp, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteConversationInteraction, RemoteTaskSummary, RemoteWelcomeMode } from '@mybuddy/shared'
 import { useRemoteStore } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
-import { buildSpaceTaskGroups, type SpaceGroupNode } from './lib/spaceGroups'
+import { buildSpaceTaskGroups, spaceBreadcrumb, type SpaceGroupNode } from './lib/spaceGroups'
+import { taskModeLabel } from './lib/taskModeLabel'
 import { ConnectPage } from './components/ConnectPage'
 import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
@@ -207,6 +208,7 @@ function HomePage() {
                   >
                     <div className="home-recent-info">
                       <span className="home-recent-title">{task.title}</span>
+                      <span className="task-mode-label">{taskModeLabel(task, bootstrap?.taskModes)}</span>
                       <span className="home-recent-time">
                         {formatRelativeTime(task.updatedAt)}
                       </span>
@@ -240,8 +242,8 @@ function HomePage() {
       <ClaudeDrawer
         open={showDrawer}
         onClose={() => setShowDrawer(false)}
-        onNewChat={() => {
-          setShowDrawer(false)
+        onNewChat={(spaceId) => {
+          useRemoteStore.getState().startNewTask(spaceId)
           setText('')
         }}
         tasks={tasks}
@@ -456,7 +458,9 @@ function ChatPage() {
           >
             <Menu size={20} />
           </button>
-          <span className="header-title-chat">{task?.title ?? '对话'}</span>
+          <div className="header-task-info"><span className="header-title-chat">{task?.title ?? '对话'}</span>
+            {task && <span className="task-mode-label">{taskModeLabel(task, bootstrap?.taskModes)}</span>}
+          </div>
         </div>
 
         <div className="header-right">
@@ -643,10 +647,7 @@ function ChatPage() {
       <ClaudeDrawer
         open={showDrawer}
         onClose={() => setShowDrawer(false)}
-        onNewChat={() => {
-          setShowDrawer(false)
-          goHome()
-        }}
+        onNewChat={(spaceId) => useRemoteStore.getState().startNewTask(spaceId)}
         tasks={drawerTasks}
         onSelectTask={(id) => {
           setShowDrawer(false)
@@ -695,7 +696,18 @@ function FloatingComposer({
   const setPermissionSheetOpen = useRemoteStore(s => s.setPermissionSheetOpen)
   const permissionMode = useRemoteStore(s => s.toolAccessMode)
   const activeTaskId = useRemoteStore(s => s.activeTaskId)
-  const isBot = bootstrap?.tasks.find(task => task.id === activeTaskId)?.welcomeMode === 'bot'
+  const selectedSpaceId = useRemoteStore(s => s.selectedSpaceId)
+  const selectedProjectId = useRemoteStore(s => s.selectedProjectId)
+  const selectedWelcomeMode = useRemoteStore(s => s.selectedWelcomeMode)
+  const selectedModePresetId = useRemoteStore(s => s.selectedModePresetId)
+  const setSelectedWelcomeMode = useRemoteStore(s => s.setSelectedWelcomeMode)
+  const setSelectedModePresetId = useRemoteStore(s => s.setSelectedModePresetId)
+  const modes = bootstrap?.taskModes ?? []
+  const selectedMode = modes.find(mode => mode.id === selectedWelcomeMode)
+  const validNewTaskMode = !!selectedMode?.tags.some(tag => tag.id === selectedModePresetId)
+  const destination = [selectedSpaceId ? spaceBreadcrumb(bootstrap?.spaces ?? [], selectedSpaceId) : '独立任务',
+    bootstrap?.projects.find(project => project.id === selectedProjectId)?.name].filter(Boolean).join(' · ')
+  const isBot = (activeTaskId ? bootstrap?.tasks.find(task => task.id === activeTaskId)?.welcomeMode : selectedWelcomeMode) === 'bot'
   const effectivePermission = bootstrap?.tasks.find(task => task.id === activeTaskId)?.permissionMode ?? bootstrap?.defaultPermissionMode
   const permissionLabel = permissionMode === 'follow' ? effectivePermission === 'auto' ? '完全访问' : effectivePermission === 'readonly' ? '只读模式' : '默认权限' : permissionMode === 'auto' ? '完全访问' : PERMISSION_NAMES[permissionMode]
   const attachments = useRemoteStore((s) => s.attachments)
@@ -731,6 +743,25 @@ function FloatingComposer({
 
   return (
     <div className="claude-composer-wrapper">
+      {!activeTaskId && <button type="button" className="new-task-destination" onClick={() => setAddToChatOpen(true)} aria-label="选择新任务位置">
+        <Folder size={14} /><span>{destination}</span><ChevronDown size={13} />
+      </button>}
+      {!activeTaskId && <div className="new-task-mode-picker">
+        <label><span>模式 <span aria-hidden="true">*</span></span>
+          <select aria-label="新任务模式" required value={selectedWelcomeMode ?? ''} disabled={sending || !modes.length}
+            onChange={event => setSelectedWelcomeMode(event.target.value as RemoteWelcomeMode || null)}>
+            <option value="">请选择模式</option>{modes.map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+          </select>
+        </label>
+        <label><span>Tag <span aria-hidden="true">*</span></span>
+          <select aria-label="新任务 Tag" required value={selectedModePresetId ?? ''} disabled={sending || !selectedMode}
+            onChange={event => setSelectedModePresetId(event.target.value || null)}>
+            <option value="">{selectedMode ? '请选择 Tag' : '先选择模式'}</option>{selectedMode?.tags.map(tag => <option key={tag.id} value={tag.id}>{tag.label}</option>)}
+          </select>
+        </label>
+        {!modes.length && <p role="status">电脑端尚未提供模式与 Tag，请更新电脑端并刷新连接。</p>}
+        {selectedMode && !selectedMode.tags.length && <p role="status">此模式暂无 Tag，请先在电脑端配置。</p>}
+      </div>}
       <div
         className="claude-composer-card"
         onClick={() => textareaRef.current?.focus()}
@@ -817,7 +848,7 @@ function FloatingComposer({
               <button
                 type="button"
                 className="composer-main-btn"
-                disabled={sending || !hasContent}
+                disabled={sending || !hasContent || (!activeTaskId && !validNewTaskMode)}
                 onClick={(e) => {
                   e.stopPropagation()
                   onSend()
@@ -848,6 +879,8 @@ function AddToChatSheet() {
   const activeTaskId = useRemoteStore((s) => s.activeTaskId)
   const selectedProjectId = useRemoteStore((s) => s.selectedProjectId)
   const setSelectedProjectId = useRemoteStore((s) => s.setSelectedProjectId)
+  const selectedSpaceId = useRemoteStore((s) => s.selectedSpaceId)
+  const setSelectedSpaceId = useRemoteStore((s) => s.setSelectedSpaceId)
   const addAttachment = useRemoteStore((s) => s.addAttachment)
   const attachments = useRemoteStore((s) => s.attachments)
 
@@ -968,6 +1001,12 @@ function AddToChatSheet() {
 
         {/* List options */}
         <div className="add-to-chat-list">
+          {!inExistingTask && <label className="add-to-chat-row">
+            <div className="add-to-chat-row-left"><div className="add-to-chat-row-icon"><Folder size={18} /></div><div className="add-to-chat-row-info"><span className="add-to-chat-row-title">所属空间</span><span className="add-to-chat-row-subtitle">{selectedSpaceId ? spaceBreadcrumb(bootstrap?.spaces ?? [], selectedSpaceId) : '独立任务'}</span></div></div>
+            <select className="remote-option-select" aria-label="所属空间" value={selectedSpaceId ?? ''} onChange={e => setSelectedSpaceId(e.target.value || null)}>
+              <option value="">独立任务</option>{(bootstrap?.spaces ?? []).filter(space => !space.effectiveArchived && !space.archived).map(space => <option key={space.id} value={space.id} disabled={space.pathMissing}>{spaceBreadcrumb(bootstrap?.spaces ?? [], space.id)}{space.pathMissing ? '（文件夹不可用）' : ''}</option>)}
+            </select>
+          </label>}
           {!inExistingTask && <label className="add-to-chat-row">
             <div className="add-to-chat-row-left"><div className="add-to-chat-row-icon"><Folder size={18} /></div><div className="add-to-chat-row-info"><span className="add-to-chat-row-title">所属项目</span><span className="add-to-chat-row-subtitle">{selectedProject?.name ?? (projects.length ? '不加入项目' : '电脑端暂无项目')}</span></div></div>
             <select className="remote-option-select" aria-label="所属项目" value={selectedProjectId ?? ''} onChange={e => setSelectedProjectId(e.target.value || null)} disabled={!projects.length}>
@@ -1295,10 +1334,11 @@ function ClaudeDrawer({
 }: {
   open: boolean
   onClose: () => void
-  onNewChat: () => void
+  onNewChat: (spaceId?: string) => void
   tasks: RemoteTaskSummary[]
   onSelectTask: (id: string) => void
 }) {
+  const taskModes = useRemoteStore((state) => state.bootstrap?.taskModes)
   const setConnectionSettingsOpen = useRemoteStore((state) => state.setConnectionSettingsOpen)
   const spaces = useRemoteStore((state) => state.bootstrap?.spaces)
   const activeTaskId = useRemoteStore((state) => state.activeTaskId)
@@ -1329,7 +1369,8 @@ function ClaudeDrawer({
       style={{ paddingLeft: 12 + depth * 18 }}
       onClick={() => onSelectTask(task.id)}
     >
-      {task.title}
+      <span className="drawer-task-title">{task.title}</span>
+      <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
     </button>
   )
 
@@ -1337,6 +1378,7 @@ function ClaudeDrawer({
     const isCollapsed = collapsed.has(node.space.id)
     return (
       <div key={node.space.id} className="drawer-space">
+        <div className="drawer-space-row">
         <button
           type="button"
           className="drawer-space-header"
@@ -1349,6 +1391,10 @@ function ClaudeDrawer({
           <span className="drawer-space-name">{node.space.name}</span>
           {node.totalTasks > 0 && <span className="drawer-space-count">{node.totalTasks}</span>}
         </button>
+        <button type="button" className="drawer-space-new-task" aria-label={`在 ${node.space.name} 中新建任务`}
+          title={node.space.pathMissing ? '文件夹不可用，请在电脑端修复' : `在 ${node.space.name} 中新建任务`}
+          disabled={node.space.pathMissing} onClick={() => onNewChat(node.space.id)}><Plus size={18} /></button>
+        </div>
         <AnimatedDisclosure open={!isCollapsed}>
           <div className="drawer-space-children">
             {node.children.map((child) => renderSpace(child, depth + 1))}
@@ -1374,7 +1420,7 @@ function ClaudeDrawer({
             <MyBuddyIcon className="header-brand-icon" size={18} />
             <span>Mybuddy</span>
           </div>
-          <button type="button" className="drawer-new-chat-btn" onClick={onNewChat}>
+          <button type="button" className="drawer-new-chat-btn" onClick={() => onNewChat()}>
             <Plus size={14} /> 新对话
           </button>
         </div>

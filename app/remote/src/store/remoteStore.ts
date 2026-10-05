@@ -6,6 +6,7 @@ import type {
   RemoteAttachmentInput, RemoteBootstrap, RemoteConnectionState, RemoteConversationInteraction,
   RemoteConversationInteractionAnswer, RemoteEventEnvelope, RemoteHistoryMessage,
   RemoteNotification, RemoteRuntimeSnapshot, RemoteTaskHistory,
+  RemoteWelcomeMode,
 } from '@mybuddy/shared'
 import { RemoteClient } from '../api/RemoteClient'
 import { RemoteEventStream } from '../api/RemoteEventStream'
@@ -62,6 +63,12 @@ interface State {
   setToolAccessMode: (mode: 'follow' | 'ask' | 'readonly' | 'auto') => void
   selectedProjectId: string | null
   setSelectedProjectId: (id: string | null) => void
+  selectedSpaceId: string | null
+  setSelectedSpaceId: (id: string | null) => void
+  selectedWelcomeMode: RemoteWelcomeMode | null
+  selectedModePresetId: string | null
+  setSelectedWelcomeMode: (mode: RemoteWelcomeMode | null) => void
+  setSelectedModePresetId: (id: string | null) => void
   attachments: PendingAttachment[]
   addAttachment: (att: PendingAttachment) => void
   removeAttachment: (id: string) => void
@@ -77,6 +84,7 @@ interface State {
   openTask(taskId: string): Promise<void>
   /** 回首页（返回手势 / 左上角返回按钮）；同时丢弃模型/权限的一次性覆盖，避免泄漏到下一个任务 */
   goHome(): void
+  startNewTask(spaceId?: string): void
   send(text: string, attachments?: PendingAttachment[]): Promise<void>
   create(text: string, attachments?: PendingAttachment[]): Promise<void>
   abort(): Promise<void>
@@ -90,11 +98,6 @@ interface State {
 
 const CLEARED_NOTICES_KEY = 'mybuddy_remote_cleared_notices'
 
-const REMOTE_NEW_TASK_DEFAULTS = {
-  welcomeMode: 'working' as const,
-  modePresetId: 'general-office',
-} as const
-
 /**
  * P0 修复：丢弃一次性（transient）的模型/权限/项目覆盖。服务端已把显式选择持久化进任务，
  * 客户端覆盖值在「发送成功 / 切换任务 / 回首页 / 重连」后必须复位为 follow，
@@ -102,7 +105,8 @@ const REMOTE_NEW_TASK_DEFAULTS = {
  * selectedProjectId 同语义：项目归属是「下一条新消息」的一次性选择，随提交/切换清零。
  */
 function resetTransientOverrides(): Partial<State> {
-  return { selectedModelId: null, toolAccessMode: 'follow', selectedProjectId: null }
+  return { selectedModelId: null, toolAccessMode: 'follow', selectedProjectId: null, selectedSpaceId: null,
+    selectedWelcomeMode: null, selectedModePresetId: null }
 }
 function getClearedNoticeIds(): Set<string> {
   try {
@@ -154,6 +158,13 @@ export const useRemoteStore = create<State>((set, get) => ({
   setToolAccessMode: (toolAccessMode) => set({ toolAccessMode }),
   selectedProjectId: null,
   setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+  selectedSpaceId: null,
+  setSelectedSpaceId: (selectedSpaceId) => set({ selectedSpaceId }),
+  selectedWelcomeMode: null,
+  selectedModePresetId: null,
+  setSelectedWelcomeMode: (selectedWelcomeMode) => set({ selectedWelcomeMode, selectedModePresetId: null,
+    ...(selectedWelcomeMode === 'bot' ? { toolAccessMode: 'follow' as const, isPermissionSheetOpen: false } : {}) }),
+  setSelectedModePresetId: (selectedModePresetId) => set({ selectedModePresetId }),
   attachments: [],
   addAttachment: (att) => set((s) => ({ attachments: [...s.attachments, att] })),
   removeAttachment: (id) => set((s) => ({ attachments: s.attachments.filter((a) => a.id !== id) })),
@@ -287,6 +298,12 @@ export const useRemoteStore = create<State>((set, get) => ({
     saveLastActiveTaskId(null)
     set({ activeTaskId: null, ...resetTransientOverrides() })
   },
+  startNewTask(spaceId) {
+    ++navigationRevision
+    saveLastActiveTaskId(null)
+    set({ activeTaskId: null, ...resetTransientOverrides(), selectedSpaceId: spaceId ?? null,
+      attachments: [], isDrawerOpen: false, isAddToChatOpen: false, isModelSheetOpen: false, isPermissionSheetOpen: false })
+  },
   async send(text, pendingAttachments = []) {
     const { client, activeTaskId, sending, selectedModelId, toolAccessMode } = get()
     if (!client || !activeTaskId || sending) return
@@ -345,18 +362,29 @@ export const useRemoteStore = create<State>((set, get) => ({
     }
   },
   async create(text, pendingAttachments = []) {
-    const { client, creating, selectedModelId, toolAccessMode, selectedProjectId } = get()
+    const { client, creating, selectedModelId, toolAccessMode, selectedProjectId, selectedSpaceId, selectedWelcomeMode, selectedModePresetId, bootstrap } = get()
     if (!client || creating) return
+    const mode = bootstrap?.taskModes?.find(mode => mode.id === selectedWelcomeMode)
+    if (!mode || !selectedModePresetId || !mode.tags.some(tag => tag.id === selectedModePresetId)) {
+      throw new Error('请先选择模式和 Tag；若选项不可用，请更新电脑端并刷新连接')
+    }
+    if (selectedSpaceId) {
+      const space = bootstrap?.spaces.find(space => space.id === selectedSpaceId)
+      if (!space || space.effectiveArchived || space.archived || space.pathMissing) throw new Error('所选空间文件夹已不可用，请重新选择或在电脑端修复')
+    }
+    if (selectedProjectId && !bootstrap?.projects.some(project => project.id === selectedProjectId && !project.archived)) {
+      throw new Error('所选项目已不可用，请重新选择')
+    }
     const attachments = pendingAttachments.map(toAttachmentInput).filter(Boolean) as RemoteAttachmentInput[]
     const submittedAt = Date.now() + serverOffsetMs
     set({ creating: true })
     try {
       const result = await client.createTask({
         text,
+        spaceId: selectedSpaceId ?? undefined,
         projectId: selectedProjectId ?? undefined,
-        // Android 新任务默认进入「日常办公 / 通用办公」；已有任务继续沿用自身 mode/tag。
-        welcomeMode: REMOTE_NEW_TASK_DEFAULTS.welcomeMode,
-        modePresetId: REMOTE_NEW_TASK_DEFAULTS.modePresetId,
+        welcomeMode: mode.id,
+        modePresetId: selectedModePresetId,
         modelId: selectedModelId ?? undefined,
         // P0：仅用户显式切换过（ask/auto）才下发；新任务 follow = 跟随电脑端设置
         permissionMode: toolAccessMode === 'follow' ? undefined : toolAccessMode === 'ask' ? 'default' : toolAccessMode,

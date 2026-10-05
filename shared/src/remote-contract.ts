@@ -211,6 +211,15 @@ export interface RemoteModelSummary {
   supportsImages: boolean
 }
 
+export type RemoteWelcomeMode = 'working' | 'coding' | 'bot'
+
+/** Display/configuration metadata only. Execution remains owned by the selected runtime. */
+export interface RemoteTaskMode {
+  id: RemoteWelcomeMode
+  label: string
+  tags: Array<{ id: string; label: string; description?: string }>
+}
+
 export interface RemoteBootstrap {
   apiVersion: typeof REMOTE_API_VERSION
   server: RemoteServerInfo
@@ -225,6 +234,8 @@ export interface RemoteBootstrap {
   defaultModelId: string | null
   /** settings.permissionMode；手机端 Tool access 初始状态 */
   defaultPermissionMode: 'default' | 'readonly' | 'auto'
+  /** Optional for older hosts; new clients require the catalog before creating tasks. */
+  taskModes?: RemoteTaskMode[]
 }
 
 /** 远程附件输入：data 为 base64（不带 dataUrl 前缀） */

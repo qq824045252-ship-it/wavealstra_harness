@@ -16,6 +16,19 @@ import { cleanupRemoteUploads, RemoteConflictError, RemoteTaskCommandService, Re
 import { RemoteClient } from "../app/remote/src/api/RemoteClient";
 import { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory, useRemoteStore } from "../app/remote/src/store/remoteStore";
 
+const modeProfiles = {
+  working: { labelZh: '日常办公', policy: { presets: [{ id: 'general-office', label: '通用办公', promptAddon: 'private prompt' }] } },
+  coding: { labelZh: '代码开发', policy: { presets: [{ id: 'custom-dev', label: '自定义开发', promptAddon: 'private prompt' }] } },
+  bot: { labelZh: 'Bot', policy: { presets: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] } },
+};
+
+const catalogService = new RemoteAccessService({ listSpaces: () => [], listNonTrashedTasks: () => [] } as any,
+  { listModels: async () => [], getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as any,
+  { unreadCount: () => 0 } as any, { list: () => [] } as any, { read: () => ({ permissionMode: 'default' }) } as any);
+const catalogBootstrap = await catalogService.bootstrap({ id: 'test', name: 'Test', createdAt: 1, lastSeenAt: 1, capabilities: [] });
+assert.equal(catalogBootstrap.taskModes?.find(mode => mode.id === 'coding')?.tags[0].label, '自定义开发');
+assert.equal(JSON.stringify(catalogBootstrap).includes('private prompt'), false, 'catalog must only expose display metadata');
+
 /** Node fetch（undici）会按 fetch 规范丢弃 Origin 头，Origin 相关断言必须走原生 http */
 function httpJson(port: number, method: string, path: string, headers: Record<string, string>): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
   return new Promise((resolve, reject) => {
@@ -325,6 +338,7 @@ try {
     ];
     let failNextPrompt = false;
     const agent = {
+      getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id],
       prompt: (req: Record<string, unknown>) => {
         prompts.push(req);
         // 模拟 agent runtime 异步失败（preflight 拒绝 / provider 抛错），detached catch 负责回滚
@@ -337,6 +351,17 @@ try {
     };
     const settings = { read: () => ({ defaultModelId: null, permissionMode: "default" }), getTaskConnectorIds: () => [] };
     const commands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);
+
+    for (const [welcomeMode, modePresetId] of [['working', 'general-office'], ['coding', 'custom-dev'], ['bot', 'native'], ['bot', 'codemode']] as const) {
+      const result = await commands.createAndPrompt({ text: 'selected configuration', welcomeMode, modePresetId });
+      assert.equal(result.task.welcomeMode, welcomeMode);
+      assert.equal(result.task.modePresetId, modePresetId);
+      assert.equal(prompts.at(-1)?.welcomeMode, welcomeMode);
+      assert.equal(prompts.at(-1)?.modePresetId, modePresetId);
+    }
+    const beforeInvalid = savedTasks.size;
+    await assert.rejects(() => commands.createAndPrompt({ text: 'wrong tag', welcomeMode: 'bot', modePresetId: 'general-office' }), RemoteValidationError);
+    assert.equal(savedTasks.size, beforeInvalid, 'invalid mode/tag must not create a task or invoke the runtime');
 
     // P0：readonly 任务、手机端未显式覆盖权限 → 不写回任务（权限保持 readonly），agent 收到 readonly
     savedTasks.set("t-ro", { id: "t-ro", title: "RO", updatedAt: 1, permissionMode: "readonly", modelId: undefined, sessionFile: "s.jsonl", welcomeMode: "coding" });
@@ -469,17 +494,24 @@ try {
       route = (url, init) => {
         if (url.endsWith("/v1/tasks") && init?.method === "POST") {
           const body = JSON.parse(String(init.body));
-          assert.equal(body.welcomeMode, "working", "Android 新任务默认必须是日常办公");
-          assert.equal(body.modePresetId, "general-office", "Android 新任务默认必须是通用办公 Tag");
+          assert.equal(body.welcomeMode, "working", "必须提交用户选择的模式");
+          assert.equal(body.modePresetId, "general-office", "必须提交用户选择的 Tag");
+          assert.equal(body.spaceId, "s1", "文件夹选择必须随创建请求传到服务端");
+          assert.equal(body.projectId, "p1", "空间与项目归属必须同时保留");
           return Promise.resolve(jsonResponse({ task: { id: "created-1" }, userMessageId: "u2", assistantMessageId: "a2", queued: true }, 201));
         }
         return networkFail(); // bootstrap / notifications / history / runtime 全部失败
       };
-      useRemoteStore.setState({ selectedModelId: "m1", toolAccessMode: "auto", selectedProjectId: "p1", activeTaskId: null });
+      useRemoteStore.setState({ selectedModelId: "m1", toolAccessMode: "auto", selectedProjectId: "p1", selectedSpaceId: "s1", activeTaskId: null,
+        selectedWelcomeMode: 'working', selectedModePresetId: 'general-office',
+        bootstrap: { taskModes: catalogBootstrap.taskModes, projects: [{ id: "p1", name: "Project", archived: false }], spaces: [{ id: "s1", name: "Workspace", archived: false, effectiveArchived: false, pathMissing: false }] } as never });
       await useRemoteStore.getState().create("new task"); // 不得 reject
       assert.equal(useRemoteStore.getState().activeTaskId, "created-1", "创建成功后必须进入新任务（同步失败不回滚 activeTaskId）");
       assert.equal(useRemoteStore.getState().live["created-1"]?.u2?.text, "new task");
       assert.equal(useRemoteStore.getState().selectedProjectId, null, "创建成功后 selectedProjectId 必须复位（一次性选择）");
+      assert.equal(useRemoteStore.getState().selectedSpaceId, null, "创建成功后空间必须复位，即使后续同步失败");
+      assert.equal(useRemoteStore.getState().selectedWelcomeMode, null);
+      assert.equal(useRemoteStore.getState().selectedModePresetId, null);
     } finally {
       globalThis.fetch = realFetch;
       useRemoteStore.setState({ client: null, activeTaskId: null, sending: false, creating: false, live: {} });
