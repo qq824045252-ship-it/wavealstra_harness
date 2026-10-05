@@ -42,7 +42,8 @@ import {
   // taskSuggestions.recommendedModeId 与 preset 合法性
   const byId = new Map(ids.map((id, index) => [id, templates[index]]));
   assert.equal(byId.get("software-development")!.taskSuggestions?.recommendedModeId, "coding");
-  assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedModeId, "design");
+  assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedModeId, "working");
+  assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedPresetId, "web-prototype");
   for (const template of templates) {
     if (template.id === "blank") continue;
     assert.ok(template.taskSuggestions?.recommendedModeId, `recommendedModeId present: ${template.id}`);
@@ -97,9 +98,9 @@ import {
   assert.deepEqual(full.resolvedSkills, ["ui-design", "diagram"]);
   assert.deepEqual(full.resolvedMcps, ["penpot"]);
   assert.deepEqual(full.warnings, []);
-  assert.equal(full.taskSuggestion?.recommendedModeId, "design");
-  // 设计创意模板本身不是「AI UI 设计」→ 推荐 general（实施文档 §19），而非 ai-ui
-  assert.equal(full.taskSuggestion?.recommendedPresetId, "general");
+  assert.equal(full.taskSuggestion?.recommendedModeId, "working");
+  // 设计创意模板跟随迁入日常办公的 Penpot，不能推荐已删除的通用设计。
+  assert.equal(full.taskSuggestion?.recommendedPresetId, "web-prototype");
 }
 
 // T4：缺失能力 → missing 列表与 warnings 有值且不 throw；未提供 registries → 不报错

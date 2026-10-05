@@ -5,12 +5,15 @@ import {
   type RemoteEventType,
 } from "../../../shared/src/remote-contract";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
+import { mapRemoteHistoryMessage } from "./RemoteDtoMapper";
 
 const MAX_EVENTS = 1000;
 const MAX_AGE_MS = 5 * 60_000;
 
 export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, unknown> {
   switch (patch.type) {
+    case "durable_snapshot":
+      return { ...patch, snapshot: { ...patch.snapshot, messages: patch.snapshot.messages.map(mapRemoteHistoryMessage) } };
     case "user_message":
       return { type: patch.type, taskId: patch.taskId, messageId: patch.messageId, text: patch.text, createdAt: patch.createdAt };
     case "assistant_start":

@@ -63,7 +63,7 @@ import {
 const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }>; label: string }> = [
   { id: "system", icon: IconSettings, label: "系统设置" },
   { id: "extensions", icon: IconBlocks, label: "工具能力" },
-  { id: "modes", icon: IconPencil, label: "场景模式" },
+  { id: "modes", icon: IconPencil, label: "模式与提示词" },
   { id: "personalize", icon: IconSparkles, label: "个性化" },
   { id: "memory", icon: IconClock, label: "记忆" },
   { id: "archive", icon: IconArchive, label: "归档管理" },
@@ -1630,7 +1630,7 @@ function HelpTab(): React.JSX.Element {
 const TAB_TITLE: Record<SettingsTab, string> = {
   system: "设置",
   extensions: "工具能力",
-  modes: "场景模式",
+  modes: "模式与提示词",
   personalize: "个性化",
   memory: "记忆",
   archive: "归档管理",

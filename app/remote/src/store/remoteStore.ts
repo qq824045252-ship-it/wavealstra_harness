@@ -305,6 +305,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       // P1 修复：SSE 的 user_message 只带 text 不带 attachments——SSE 先到时这里必须 merge
       // 补上附件，否则「拍照直接发送」在 AI 回答的几秒内显示空白用户气泡。
       set((state) => {
+        if (result.task.welcomeMode === 'bot') return resetTransientOverrides()
         const fallback: RemoteHistoryMessage = {
           id: result.userMessageId,
           role: 'user',
@@ -368,6 +369,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       saveLastActiveTaskId(result.task.id)
       // P1 修复：同 send() —— SSE user_message 不带 attachments，这里 merge 补齐而非整体 ?? 覆盖
       set((state) => {
+        if (result.task.welcomeMode === 'bot') return { activeTaskId: result.task.id, ...resetTransientOverrides() }
         const fallback: RemoteHistoryMessage = {
           id: result.userMessageId,
           role: 'user',
@@ -474,6 +476,14 @@ async function syncTaskHistory(taskId: string): Promise<void> {
   if (useRemoteStore.getState().client !== client || taskSyncRevisions.get(taskId) !== revision) return
   useRemoteStore.setState(state => {
     const newer = (taskEventRevisions.get(taskId) ?? 0) !== eventRevision
+    if (history.durable) {
+      if (newer) return state;
+      return {
+        histories: { ...state.histories, [taskId]: history },
+        live: { ...state.live, [taskId]: {} },
+        runtimes: { ...state.runtimes, [taskId]: { ...runtime, busy: history.durable.busy, pendingActions: [] } },
+      };
+    }
     const settled = { ...(state.live[taskId] ?? {}) }
     if (!runtime.busy && !newer) {
       for (const [id, message] of Object.entries(settled)) {
@@ -550,6 +560,19 @@ export function applyEvent(event: RemoteEventEnvelope): void {
   const taskId = String(patch.taskId ?? '')
   if (!taskId) return
   taskEventRevisions.set(taskId, (taskEventRevisions.get(taskId) ?? 0) + 1)
+  if (patch.type === 'durable_snapshot' && patch.snapshot) {
+    const snapshot = patch.snapshot as import('@mybuddy/shared').RemoteDurableSnapshot;
+    useRemoteStore.setState(current => {
+      const previous = current.histories[taskId]?.durable;
+      if (previous?.epoch === snapshot.epoch && previous.revision >= snapshot.revision) return current;
+      return {
+        histories: { ...current.histories, [taskId]: { taskId, messages: snapshot.messages, durable: snapshot } },
+        live: { ...current.live, [taskId]: {} },
+        runtimes: { ...current.runtimes, [taskId]: { taskId, busy: snapshot.busy, pendingActions: [], interactions: [], activeGoal: null } },
+      };
+    });
+    return;
+  }
   if (patch.type === 'conversation_interaction_snapshot' && patch.interaction && typeof patch.interaction === 'object') {
     useRemoteStore.setState(current => projectInteraction(current, taskId, patch.interaction as RemoteConversationInteraction))
     return

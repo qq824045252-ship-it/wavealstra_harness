@@ -423,6 +423,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
     (s) => s.tasks.find((t) => t.id === s.activeTaskId)?.fileChanges?.length ?? 0,
   );
   const selectMode = useAppStore((s) => s.selectMode);
+  const isBot = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "bot");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);
   const continueExternalAgent = useAppStore((s) => s.continueExternalAgent);
   const deleteUserMessage = useAppStore((s) => s.deleteUserMessage);
@@ -433,7 +434,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   );
   /** 对话分支来源 chip：源自本任务（用于「查看分支」入口的 disable 判断；未用于本文件展示） */
   const canBranch = Boolean(
-    conversationBranchEnabled && !btw && !message.streaming && message.createdAt > 0,
+    !isBot && conversationBranchEnabled && !btw && !message.streaming && message.createdAt > 0,
   );
   const onBranchFromMessage = (): void => {
     if (!canBranch || branchCreating) return;
@@ -641,11 +642,11 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                       void navigator.clipboard.writeText(text).catch(() => undefined);
                     },
                   },
-                  {
+                  ...(!isBot ? [{
                     label: "删除此消息",
                     danger: true,
                     onClick: () => setDeleteConfirmOpen(true),
-                  },
+                  }] : []),
                 ]
           }
         />
@@ -687,7 +688,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   const artifactCount = chipIds.length;
 
   return (
-    <div className={`msg-row ${selectMode ? "selectable" : ""}`}>
+    <div className={`msg-row ${selectMode ? "selectable" : ""}${message.presentationKey && message.streaming ? " bot-message-enter" : ""}`}>
       {selectMode && <SelectBox id={message.id} />}
       <ChatImageScope taskId={taskId ?? null}><div className="msg-body">
         <div className="assistant-avatar-row">
@@ -801,7 +802,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                 <button className="icon-btn" title="踩">
                   <IconThumbsDown size={14} />
                 </button>
-                {!message.externalAgent && (
+                {!isBot && !message.externalAgent && (
                   <button
                     type="button"
                     className="icon-btn"

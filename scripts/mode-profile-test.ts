@@ -13,6 +13,7 @@ mkdirSync(sandbox, { recursive: true });
 
 // eslint-disable-next-line import/first
 import { ModeProfileStore } from "../src/main/agent/ModeProfileStore";
+import { LEGACY_DESIGN_BLOCKS, LEGACY_DESIGN_SCENES, MODE_SEEDS } from "../src/main/agent/mode-defaults";
 // eslint-disable-next-line import/first
 import { assemblePrompt, resolveSessionTools } from "../src/main/agent/PromptAssembly";
 // eslint-disable-next-line import/first
@@ -68,19 +69,12 @@ async function main(): Promise<void> {
   assert(codingSeed.policy.mcpPolicy.deny.length === 0, "coding 默认不 deny MCP");
   assert(codingSeed.policy.artifactPolicy.deny.length === 0, "coding 默认不限制产物扩展名");
   assert(codingSeed.policy.artifactPolicy.allow.length === 0, "coding 默认白名单空");
-  const designSeed = store.getProfile("design");
-  assert(designSeed.policy.skillPolicy.prefer.includes("open-kimi-ppt"), "design 默认优先 open-kimi-ppt");
-  assert(
-    designSeed.policy.artifactPolicy.deny.includes("py") &&
-      !designSeed.policy.artifactPolicy.deny.includes("js"),
-    "design 禁 py 但保留 js 等前端交付",
-  );
-  assert(
-    designSeed.policy.artifactPolicy.deny.length !== working.policy.artifactPolicy.deny.length ||
-      designSeed.policy.artifactPolicy.deny.join(",") !==
-        working.policy.artifactPolicy.deny.join(","),
-    "working/design 黑名单各自独立（不共用同一份）",
-  );
+  const bot = store.getProfile("bot");
+  assert(bot.labelZh === "Bot", "Bot 标签");
+  assert(bot.policy.skillPolicy.allow.length === 0 && bot.policy.skillPolicy.hide.length === 0, "Bot 不应用技能名单");
+  assert(bot.policy.mcpPolicy.allow.length === 0 && bot.policy.mcpPolicy.deny.length === 0, "Bot 不应用 MCP 名单");
+  assert(bot.policy.toolPolicy.deny.length === 0, "Bot 不拦截原生工具");
+  assert(bot.policy.artifactPolicy.unfiltered === true, "Bot 不过滤产物显示");
 
   console.log("\n2. 用户覆盖");
   store.saveBlock("working", "goal", "自定义目标：只做周报。");
@@ -101,9 +95,9 @@ async function main(): Promise<void> {
   assert(store.getProfile("working").blocks.find((b) => b.id === "goal")?.source === "seed", "goal 恢复 seed");
   store.resetPolicy("coding");
   assert(!store.getProfile("coding").policy.scenes.some((s) => s.label === "测"), "policy 恢复");
-  store.saveBlock("design", "forbid", "用户禁令测试");
-  store.resetProfile("design");
-  assert(store.getProfile("design").hasUserOverride === false, "design 整模式恢复");
+  store.saveBlock("bot", "forbid", "用户禁令测试");
+  store.resetProfile("bot");
+  assert(store.getProfile("bot").hasUserOverride === false, "Bot 整模式恢复");
 
   console.log("\n5. 非法空内容");
   let threw = false;
@@ -271,6 +265,46 @@ async function main(): Promise<void> {
   );
   assert(allowOnly.visible.length === 1 && allowOnly.visible[0]?.id === "weekly", "技能白名单");
   assert(allowOnly.hidden.some((s) => s.id === "other"), "白名单外隐藏");
+
+  console.log("\nPenpot 迁移：旧配置、办公编辑与保存恢复");
+  for (const [id, content] of Object.entries(LEGACY_DESIGN_BLOCKS)) {
+    writeFileSync(join(sandbox, ".mybuddy", "modes", "bot", `${id}.md`), content);
+  }
+  writeFileSync(bot.policyPath, JSON.stringify({ ...bot.policy, scenes: LEGACY_DESIGN_SCENES }));
+  const upgradedBot = store.getProfile("bot");
+  assert(upgradedBot.blocks.every(block => block.content.trim() === MODE_SEEDS.bot.blocks[block.id].trim()), "旧默认设计提示词全部升级为通用 Bot");
+  assert(!upgradedBot.policy.presets?.some(p => p.id.startsWith("legacy-scene-")), "旧默认设计示例不会复活为自定义 Tag");
+  store.saveBlock("bot", "goal", "自定义用户目标，不能覆盖");
+  assert(new ModeProfileStore().getProfile("bot").blocks.find(b => b.id === "goal")?.content.trim() === "自定义用户目标，不能覆盖", "保留用户自行编辑的 Bot 提示词");
+  const legacyDir = join(sandbox, ".mybuddy", "modes", "design");
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, "policy.json"), JSON.stringify({ presets: [
+    { id: "general", label: "通用设计" },
+    { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：保留我的设计规范", suggestedModelId: "custom-model",
+      providerMcpIds: ["penpot"], mcpPolicy: { mode: "hard", allow: ["penpot"], deny: [] },
+      requiredRuntimes: [{ providerId: "penpot", launchPolicy: "backend", readinessPolicy: "http", openUi: "browser" }],
+    },
+  ] }));
+  // Bot 曾保存过已剥离执行元数据的旧 Tag，不能覆盖丢失的 Penpot 功能。
+  writeFileSync(bot.policyPath, JSON.stringify({ ...bot.policy, presets: [
+    { id: "general", label: "通用设计" },
+    { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：最新提示词" },
+    { id: "custom-bot", label: "自定义 Bot", promptAddon: "保留自定义" },
+  ] }));
+  const existingOffice = store.getProfile("working").policy;
+  writeFileSync(working.policyPath, JSON.stringify({ ...existingOffice, presets: existingOffice.presets?.filter(p => p.id !== "web-prototype") }));
+  const migrated = store.getProfile("working");
+  const penpot = migrated.policy.presets?.find(p => p.id === "web-prototype");
+  assert(penpot?.label === "Penpot" && penpot.promptAddon === "Penpot：最新提示词", "重命名且保留最新旧提示词");
+  assert(penpot?.suggestedModelId === "custom-model", "保留旧模型推荐");
+  assert(penpot?.providerMcpIds?.includes("penpot") && penpot.mcpPolicy?.allow.includes("penpot"), "保留 Penpot MCP 能力");
+  assert(penpot?.requiredRuntimes?.some(r => typeof r !== "string" && r.providerId === "penpot" && r.launchPolicy === "backend" && r.readinessPolicy === "http" && r.openUi === "browser"), "保留后端启动、HTTP 就绪与浏览器打开");
+  const cleanBot = store.getProfile("bot");
+  assert(!cleanBot.policy.presets?.some(p => ["general", "web-prototype"].includes(p.id)), "旧磁盘 Tag 不在 Bot 复活");
+  assert(cleanBot.policy.presets?.some(p => p.id === "custom-bot"), "保留其它自定义 Bot Tag");
+  store.savePolicy("working", { ...migrated.policy, presets: migrated.policy.presets?.map(p => p.id === "web-prototype" ? { ...p, promptAddon: "办公编辑优先" } : p) });
+  const reloadedPenpot = new ModeProfileStore().getProfile("working").policy.presets?.find(p => p.id === "web-prototype");
+  assert(reloadedPenpot?.promptAddon === "办公编辑优先" && reloadedPenpot.label === "Penpot", "重开后办公修改优先于旧配置");
 
   console.log(`\n[mode-profile-test] ${passed} passed, ${failed} failed`);
   try {

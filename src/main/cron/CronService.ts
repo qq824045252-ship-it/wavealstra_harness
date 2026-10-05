@@ -324,7 +324,7 @@ export class CronService {
     const taskId = `cron-${latest.id}-${Date.now()}`;
     const permissionMode: PermissionMode = latest.permissionMode ?? "auto";
     const welcomeMode =
-      latest.welcomeMode === "coding" || latest.welcomeMode === "design"
+      latest.welcomeMode === "coding" || latest.welcomeMode === "bot"
         ? latest.welcomeMode
         : "working";
     // 默认模型：任务未指定时走应用默认，避免空 model 导致秒退空回复
@@ -364,7 +364,7 @@ export class CronService {
     const promptText = this.composePrompt(latest);
 
     try {
-      await this.agent.prompt({
+      const result = await this.agent.prompt({
         taskId,
         text: promptText,
         permissionMode,
@@ -376,8 +376,12 @@ export class CronService {
         userMessageId,
       });
 
+      if (welcomeMode === "bot" && result?.error) throw new Error(result.error.message);
       // 校验是否真有助手产出（空回复 / 秒退 视为失败，避免 UI 显示「已完成 0ms」空白）
       const history = await this.agent.loadTaskHistory(taskId);
+      if (welcomeMode === "bot" && history.durable?.outcome !== "completed") {
+        throw new Error(history.durable?.error ?? "Durable 任务未完成或已取消");
+      }
       const assistantText = (history.messages ?? [])
         .filter((m) => m.role === "assistant")
         .map((m) => (m.text ?? "").trim())

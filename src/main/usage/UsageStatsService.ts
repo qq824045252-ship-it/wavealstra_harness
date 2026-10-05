@@ -54,7 +54,9 @@ export interface RecordLiveInput {
   sessionFile: string | null;
   sourceKind: "main" | "btw" | "subagent";
   sourceDetail?: string | null;
-  sample: PerfSample;
+  sample: Omit<PerfSample, "requestStartedAt"> & { requestStartedAt: number | null };
+  /** Immutable native ledger identity, when the caller projects a persisted backend. */
+  persistedEntryId?: string;
   message: {
     provider?: string | null;
     model?: string | null;
@@ -251,7 +253,7 @@ export class UsageStatsService {
     const sessionFile = input.sessionFile ?? null;
     const usage = message.usage ?? null;
     const attributed = applyMyBuddyModelAttribution(message, input.modelId);
-    const entryId = `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
+    const entryId = input.persistedEntryId ?? `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
     const total =
       usage?.totalTokens ??
       (usage ? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0);

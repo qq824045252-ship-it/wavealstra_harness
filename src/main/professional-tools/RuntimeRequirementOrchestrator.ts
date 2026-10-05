@@ -82,7 +82,7 @@ export class RuntimeRequirementOrchestrator {
   listStates(): RuntimeRequirementStateDto[] {
     if (!this.prewarm) return [];
     const requiredBy = new Map<string, string[]>();
-    for (const mode of ["working", "coding", "design"] as WelcomeMode[]) {
+    for (const mode of ["working", "coding", "bot"] as WelcomeMode[]) {
       const profile = this.modeProfiles.getProfile(mode);
       for (const preset of profile.policy.presets ?? []) {
         for (const entry of preset.requiredRuntimes ?? []) {

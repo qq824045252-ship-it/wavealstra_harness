@@ -299,6 +299,7 @@ function ChatPage() {
   ), [histories, live, activeTaskId])
 
   const runtime = runtimes[activeTaskId]
+  const durable = histories[activeTaskId]?.durable
   const interactionsByMessage = useMemo(() => {
     const map = new Map<string, RemoteConversationInteraction[]>()
     for (const interaction of runtime?.interactions ?? []) {
@@ -558,6 +559,11 @@ function ChatPage() {
             )
           })}
 
+          {durable && <div role="status">
+            {durable.compacting && <p>Pi Durable 正在压缩上下文</p>}
+            {durable.retry && <p>Pi Durable 正在重试：{durable.retry.error}</p>}
+            {durable.pendingInputs.map(input => <p key={input.id}>{input.mode === 'steer' ? '引导' : '接续'}已入队：{input.text}</p>)}
+          </div>}
           {orphanPendingInteractions.map(interaction => (
             <RemoteConversationInteractionCard
               key={interaction.id}
@@ -689,6 +695,7 @@ function FloatingComposer({
   const setPermissionSheetOpen = useRemoteStore(s => s.setPermissionSheetOpen)
   const permissionMode = useRemoteStore(s => s.toolAccessMode)
   const activeTaskId = useRemoteStore(s => s.activeTaskId)
+  const isBot = bootstrap?.tasks.find(task => task.id === activeTaskId)?.welcomeMode === 'bot'
   const effectivePermission = bootstrap?.tasks.find(task => task.id === activeTaskId)?.permissionMode ?? bootstrap?.defaultPermissionMode
   const permissionLabel = permissionMode === 'follow' ? effectivePermission === 'auto' ? '完全访问' : effectivePermission === 'readonly' ? '只读模式' : '默认权限' : permissionMode === 'auto' ? '完全访问' : PERMISSION_NAMES[permissionMode]
   const attachments = useRemoteStore((s) => s.attachments)
@@ -788,9 +795,9 @@ function FloatingComposer({
             >
               <Sparkles size={17} />
             </button>
-            <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
+            {!isBot && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
               <Shield size={17} />
-            </button>
+            </button>}
           </div>
 
           <div className="composer-toolbar-right">

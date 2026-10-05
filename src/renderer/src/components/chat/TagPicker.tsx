@@ -68,9 +68,9 @@ export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX
         presets,
         selectedPresetId,
         availableMcpServerNames,
-        locked: isTaskModeLocked(task),
+        locked: welcomeMode !== "bot" && isTaskModeLocked(task),
       }),
-    [presets, selectedPresetId, availableMcpServerNames, task],
+    [presets, selectedPresetId, availableMcpServerNames, task, welcomeMode],
   );
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();

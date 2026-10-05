@@ -55,6 +55,7 @@ export function normalizePresetDraft(raw: Partial<ModePresetDto> | undefined): M
     label,
     description: optString(raw?.description) ?? undefined,
     promptAddon: optString(raw?.promptAddon) ?? undefined,
+    botToolMode: raw?.botToolMode === "codemode" ? "codemode" : raw?.botToolMode === "native" ? "native" : undefined,
     providerMcpIds: strList(raw?.providerMcpIds),
     suggestedModelId: optString(raw?.suggestedModelId),
     suggestedPermissionMode: PERMISSION_MODES.includes(

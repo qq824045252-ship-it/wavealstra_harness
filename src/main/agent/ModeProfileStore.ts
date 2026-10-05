@@ -16,6 +16,7 @@ import {
   WELCOME_MODES,
   emptyArtifactPolicy,
   emptyModePolicy,
+  botConfiguration,
   normalizeArtifactExtensions,
   type ModeArtifactPolicy,
   type ModeBlockId,
@@ -35,30 +36,7 @@ import {
   type RuntimeRequirementInput,
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
-import { MODE_SEEDS } from "./mode-defaults";
-
-/** 出厂 seed Tag 的展示/策略字段跟随最新 seed，用户建议模型/权限/专家保留。 */
-function refreshSeedPresetCopy(
-  mode: WelcomeMode,
-  seedPresets: ModePresetDto[] | undefined,
-  presets: ModePresetDto[],
-): ModePresetDto[] {
-  if (mode !== "design" || !seedPresets?.length) return presets;
-  return presets.map((preset) => {
-    const seed = seedPresets.find((item) => item.id === preset.id);
-    if (!seed) return preset;
-    return {
-      ...preset,
-      label: seed.label,
-      description: seed.description,
-      promptAddon: seed.promptAddon,
-      skillPolicy: seed.skillPolicy ?? preset.skillPolicy,
-      mcpPolicy: seed.mcpPolicy ?? preset.mcpPolicy,
-      providerMcpIds: seed.providerMcpIds ?? preset.providerMcpIds,
-      requiredRuntimes: seed.requiredRuntimes ?? preset.requiredRuntimes,
-    };
-  });
-}
+import { LEGACY_DESIGN_BLOCKS, LEGACY_DESIGN_SCENES, MODE_SEEDS, PENPOT_PRESET } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
   return (WELCOME_MODES as string[]).includes(id);
@@ -202,6 +180,7 @@ function normalizePresets(raw: unknown, seedPresets?: ModePresetDto[]): ModePres
       return {
         id,
         label,
+        botToolMode: item.botToolMode === "codemode" ? "codemode" : item.botToolMode === "native" ? "native" : undefined,
         description:
           item.description === undefined || item.description === null
             ? undefined
@@ -368,6 +347,23 @@ function policiesEqual(a: ModePolicyDto, b: ModePolicyDto): boolean {
  * source：磁盘内容与出厂一致 → seed；有改动 → user
  */
 export class ModeProfileStore {
+  private penpotPreset(current?: ModePresetDto): ModePresetDto {
+    let preset = { ...PENPOT_PRESET };
+    // Read original configuration before Bot strips execution metadata. Working edits win.
+    for (const source of ["design", "bot"]) {
+      const raw = readText(join(getModesDir(), source, "policy.json"));
+      if (!raw) continue;
+      try {
+        const prior = normalizePresets(JSON.parse(raw).presets).find(item => item.id === PENPOT_PRESET.id);
+        if (prior) preset = { ...preset, ...Object.fromEntries(Object.entries(prior).filter(([, value]) => value !== undefined && value !== null)) };
+      } catch { /* Invalid legacy files do not block the working preset. */ }
+    }
+    if (current) preset = { ...preset, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== undefined)) };
+    return { ...preset, label: "Penpot", botToolMode: undefined,
+      promptAddon: preset.promptAddon?.replaceAll("网页原型 · Penpot", "Penpot"),
+    };
+  }
+
   private modeDir(id: WelcomeMode): string {
     return join(getModesDir(), id);
   }
@@ -390,16 +386,33 @@ export class ModeProfileStore {
       try {
         const seed = MODE_SEEDS[mid];
         ensureDir(this.modeDir(mid));
+        // Copy each missing configuration file once; never overwrite customized Bot files.
+        if (mid === "bot") {
+          for (const name of [...MODE_BLOCK_IDS.map((block) => `${block}.md`), "policy.json"]) {
+            const target = join(this.modeDir(mid), name);
+            const legacy = readText(join(getModesDir(), "design", name));
+            if (!existsSync(target) && legacy !== null) {
+              if (name === "policy.json") {
+                try { writeText(target, JSON.stringify(botConfiguration(normalizePolicy(JSON.parse(legacy))), null, 2)); }
+                catch { /* Preserve the original file; invalid configuration falls back to the seed. */ }
+              } else writeText(target, legacy);
+            }
+          }
+        }
         for (const blockId of MODE_BLOCK_IDS) {
           const path = this.blockPath(mid, blockId);
-          if (!existsSync(path)) {
+          const current = readText(path);
+          // Upgrade only exact former factory text. User-authored blocks remain user configuration.
+          if (current === null || (mid === "bot" && normText(current) === normText(LEGACY_DESIGN_BLOCKS[blockId]))) {
             writeText(path, seed.blocks[blockId]);
             console.log("[ModeProfile] materialized", path);
           }
         }
         const pol = this.policyFilePath(mid);
         if (!existsSync(pol)) {
-          writeText(pol, JSON.stringify(normalizePolicy(seed.policy), null, 2));
+          const policy = normalizePolicy(seed.policy);
+          if (mid === "working") policy.presets = policy.presets?.map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset() : preset);
+          writeText(pol, JSON.stringify(policy, null, 2));
           console.log("[ModeProfile] materialized", pol);
         }
         const readme = join(this.modeDir(mid), "README.md");
@@ -475,6 +488,15 @@ export class ModeProfileStore {
     if (policyUser != null) {
       try {
         let diskRaw = JSON.parse(policyUser) as Record<string, unknown>;
+        if (id === "bot" && scenesEqual(normalizeScenes(diskRaw.scenes), LEGACY_DESIGN_SCENES)) {
+          diskRaw = { ...diskRaw, scenes: [] };
+        }
+        let seedPresets = seedPolicy.presets;
+        if (id === "working") {
+          const current = normalizePresets(diskRaw.presets).find(preset => preset.id === PENPOT_PRESET.id);
+          seedPresets = seedPresets?.map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset(current) : preset);
+          if (current) diskRaw = { ...diskRaw, presets: normalizePresets(diskRaw.presets).map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset(current) : preset) };
+        }
         // 向后兼容：旧 policy.json 无 artifactPolicy 时回退出厂产物黑名单（办公禁 py 等）
         if (diskRaw.artifactPolicy === undefined || diskRaw.artifactPolicy === null) {
           diskRaw = { ...diskRaw, artifactPolicy: seedPolicy.artifactPolicy };
@@ -512,8 +534,8 @@ export class ModeProfileStore {
           const diskScenes = normalizeScenes(diskRaw.scenes);
           const scenesDiffer = diskScenes.length > 0 && !scenesEqual(diskScenes, seedPolicy.scenes);
           fallbackPresets = scenesDiffer
-            ? sanitizeModePresets(id, [...legacyPresetsFromScenes(diskScenes), ...(seedPolicy.presets ?? [])])
-            : seedPolicy.presets;
+            ? sanitizeModePresets(id, [...legacyPresetsFromScenes(diskScenes), ...(seedPresets ?? [])])
+            : seedPresets;
         } else {
           // 升级语义（只增不改）：磁盘已有 presets 数组时，把出厂新增的 seed preset 并入，
           // 保证新出厂 tag（如 working 的 general-office/drawio-ai）在已个性化机器上也可见。
@@ -524,14 +546,14 @@ export class ModeProfileStore {
           const diskPresets = normalizePresets(diskRaw.presets).filter((p) => !retired.has(p.id));
           const diskIds = new Set(diskPresets.map((p) => p.id));
           const merged: ModePresetDto[] = [...diskPresets];
-          for (const seedPreset of seedPolicy.presets ?? []) {
+          for (const seedPreset of seedPresets ?? []) {
             if (!diskIds.has(seedPreset.id)) merged.push(seedPreset);
           }
           // 出厂能力字段补全（只增不改）：磁盘同名 preset 缺 requiredRuntimes 时
           // 从 seed 补回（如 mechanical-cad 的 freecad runtime requirement），
           // 保证旧个性化机器也能获得新出厂能力声明；不覆盖用户显式字段。
           for (let i = 0; i < merged.length; i += 1) {
-            const seedMatch = (seedPolicy.presets ?? []).find((sp) => sp.id === merged[i].id);
+            const seedMatch = (seedPresets ?? []).find((sp) => sp.id === merged[i].id);
             if (seedMatch && !merged[i].requiredRuntimes && seedMatch.requiredRuntimes) {
               merged[i] = { ...merged[i], requiredRuntimes: seedMatch.requiredRuntimes };
             }
@@ -544,13 +566,13 @@ export class ModeProfileStore {
           }
           diskRaw = {
             ...diskRaw,
-            presets: sanitizeModePresets(id, refreshSeedPresetCopy(id, seedPolicy.presets, merged)),
+            presets: sanitizeModePresets(id, merged),
           };
         }
         policy = normalizePolicy(diskRaw, fallbackPresets);
         policy = {
           ...policy,
-          presets: sanitizeModePresets(id, refreshSeedPresetCopy(id, seedPolicy.presets, policy.presets ?? [])),
+          presets: sanitizeModePresets(id, policy.presets ?? []),
         };
         policyUserOverride = !policiesEqual(policy, seedPolicy);
       } catch {
@@ -568,7 +590,7 @@ export class ModeProfileStore {
       labelZh: WELCOME_MODE_LABELS[id],
       version: seed.version,
       blocks,
-      policy,
+      policy: id === "bot" ? botConfiguration(policy) : policy,
       hasUserOverride,
       totalChars,
       userDir: this.modeDir(id),
@@ -628,7 +650,7 @@ export class ModeProfileStore {
   savePolicy(id: WelcomeMode, policy: ModePolicyDto): ModeProfileDto {
     if (!isWelcomeMode(id)) throw new Error(`未知场景模式: ${id}`);
     // 保存时同样兼容：缺 presets 的旧 policy 回退出厂预设
-    const normalized = normalizePolicy(policy, MODE_SEEDS[id].policy.presets);
+    const normalized = id === "bot" ? botConfiguration(normalizePolicy(policy, MODE_SEEDS[id].policy.presets)) : normalizePolicy(policy, MODE_SEEDS[id].policy.presets);
     const err = validatePolicy(normalized);
     if (err) throw new Error(err);
     ensureDir(this.modeDir(id));

@@ -3,7 +3,7 @@ import type { WelcomeMode } from "@shared/agent-ipc";
 export const HERO_SUBTITLE: Record<WelcomeMode, string> = {
   working: "在知识的星空里翱翔",
   coding: "对着仓库问、改、查",
-  design: "从想法收到能给同事看的稿",
+  bot: "交给 Bot，持续执行并随时接续",
 };
 
 const HERO_HEADLINE: Record<string, string> = {
@@ -21,7 +21,6 @@ const HERO_HEADLINE: Record<string, string> = {
   "code-review": "先把风险看清楚",
   "plan-design": "先把方案想清楚再动手",
   "readonly-explain": "先讲清楚这段代码在干什么",
-  general: "先把想法收成能给同事看的",
   "web-prototype": "先把页面结构搭出来",
 };
 
@@ -45,12 +44,12 @@ const HERO_SUBLINE: Record<string, string> = {
   "code-review": "正确性、架构、安全、测试充分性",
   "plan-design": "对比方案、标风险，默认不改代码",
   "readonly-explain": "讲职责、调用链和数据流",
-  general: "结构、方向、取舍先对齐",
   "web-prototype": "页面结构、token、栅格先搭起来",
 };
 
 export function heroSubline(mode: WelcomeMode, presetId: string | null | undefined): string {
   if (presetId && HERO_SUBLINE[presetId]) return HERO_SUBLINE[presetId];
+  if (mode === "bot") return "读取资料、调用工具、验证结果，接着上次的工作继续";
   return HERO_SUBTITLE[mode] ?? HERO_SUBTITLE.working;
 }
 
@@ -67,11 +66,11 @@ const HERO_SUGGESTIONS: Record<WelcomeMode, string[]> = {
     "写一个可运行的最小示例",
     "帮我排查这个报错",
   ],
-  design: [
-    "根据需求出一版界面结构",
-    "把这个想法收成可给同事看的方案",
-    "帮我画一张流程图",
-    "给这个产品想 3 个视觉方向",
+  bot: [
+    "帮我查清这个问题，并给出依据",
+    "整理项目资料，找出下一步要做的事",
+    "处理这些文件，并检查结果",
+    "接着上次的任务继续完成",
   ],
 };
 
@@ -160,12 +159,6 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
     "不要改仓库，只讲清楚",
     "说明职责边界和入口",
   ],
-  general: [
-    "根据需求出一版界面结构",
-    "给一个能开会用的方案页",
-    "给 3 个视觉方向和取舍",
-    "点评这份设计稿的问题",
-  ],
   "web-prototype": [
     "出一版 Web 原型结构",
     "按 token / 栅格排这个页面",
@@ -196,14 +189,13 @@ const HERO_PLACEHOLDER_BY_PRESET: Record<string, string> = {
   "code-review": "拖入或指出要审查的改动",
   "plan-design": "说说方案和约束，先不改代码",
   "readonly-explain": "指出要讲清楚的代码",
-  general: "说说想法，或拖入设计稿",
   "web-prototype": "说说页面结构和要表达的东西",
 };
 
 const HERO_PLACEHOLDER_BY_MODE: Record<WelcomeMode, string> = {
   working: "拖入文件，或输入指令",
   coding: "贴代码、报错，或说你想改什么",
-  design: "说说想法，或拖入设计稿",
+  bot: "告诉 Bot 要完成什么，或拖入文件",
 };
 
 export function heroPlaceholder(mode: WelcomeMode, presetId: string | null | undefined): string {

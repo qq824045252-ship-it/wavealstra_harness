@@ -347,7 +347,7 @@ export default function InputAddMenu({
       (s) =>
         s.installed &&
         isSkillVisibleForMode(s, welcomeMode, effSkillPolicy, {
-          disableFilter: !skillFilterOn,
+          disableFilter: welcomeMode === "bot" || !skillFilterOn,
         }) &&
         (q === "" ||
           s.name.toLowerCase().includes(q) ||
@@ -1307,7 +1307,7 @@ export default function InputAddMenu({
             <IconChevronRight size={14} className="add-menu-chevron" />
           </button>
 
-          <button
+          {welcomeMode !== "bot" && <button
             type="button"
             ref={(el) => {
               itemRefs.current.externalAgent = el;
@@ -1318,7 +1318,7 @@ export default function InputAddMenu({
           >
             <IconBot size={15} className="add-menu-item-icon" /> 外部 Agent
             <IconChevronRight size={14} className="add-menu-chevron" />
-          </button>
+          </button>}
 
           <button
             type="button"

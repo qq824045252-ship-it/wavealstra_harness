@@ -3,6 +3,7 @@ import { Code2 } from "lucide-react";
 import type { McpStatusSnapshotDto, WelcomeMode } from "@shared/agent-ipc";
 import { piCodeModeLabel, type PiCodeModeState } from "@shared/pi-code-mode";
 import "./PiCodeModeChip.css";
+import { useAppStore } from "@/store/appStore";
 
 /** Read-only presentation. Scene selection configures Pi; this component never starts or controls it. */
 export default function PiCodeModeChip({ taskId, welcomeMode }: {
@@ -10,8 +11,13 @@ export default function PiCodeModeChip({ taskId, welcomeMode }: {
   welcomeMode?: WelcomeMode;
 }): React.JSX.Element {
   const [observed, setObserved] = useState<{ taskId: string; state: PiCodeModeState | null } | null>(null);
+  const botMode = useAppStore(s => {
+    const task = s.tasks.find(t => t.id === taskId);
+    const preset = task?.modePresetId ?? s.modePresetId;
+    return task?.durable?.toolMode ?? (preset === "codemode" ? "codemode" : "native");
+  });
   useEffect(() => {
-    if (!taskId) return;
+    if (!taskId || welcomeMode === "bot") return;
     let disposed = false, eventRevision = 0;
     const apply = (snapshot: McpStatusSnapshotDto | null): void => {
       if (!disposed && (!snapshot || snapshot.sessionId === taskId)) {
@@ -30,6 +36,9 @@ export default function PiCodeModeChip({ taskId, welcomeMode }: {
     }).catch(() => { if (revision === eventRevision) apply(null); });
     return () => { disposed = true; unsubscribe?.(); };
   }, [taskId, welcomeMode]);
+  if (welcomeMode === "bot") return <span className="pi-codemode-chip" role="status" data-testid="pi-durable-status">
+    <Code2 size={12} /><span>Pi Durable</span><span>{botMode === "codemode" ? "Code Mode" : "原生模式"}</span>
+  </span>;
   const state = observed && observed.taskId === taskId ? observed.state : null;
   const label = piCodeModeLabel(welcomeMode, state);
   return (

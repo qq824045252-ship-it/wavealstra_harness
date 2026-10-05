@@ -76,7 +76,7 @@ export class RemoteTaskCommandService {
     const taskId = `remote-${randomUUID()}`;
     const now = Date.now();
     const settings = this.settings.read();
-    const modelId = (await this.resolveModelId(request.modelId)) ?? (settings.defaultModelId || undefined);
+    const modelId = (request.welcomeMode === "bot" ? request.modelId : await this.resolveModelId(request.modelId)) ?? (settings.defaultModelId || undefined);
     const permissionMode = request.permissionMode ?? settings.permissionMode;
     this.db.upsertTask({
       id: taskId,
@@ -106,12 +106,13 @@ export class RemoteTaskCommandService {
         attachments,
         userMessageId,
         assistantMessageId,
-      });
+      }, { durableAdmissionOnly: true });
+      if (request.welcomeMode === "bot") await prompt;
       void prompt.catch((error) => {
         const task = this.db.getTask(taskId);
         // P1/P2 修复：HTTP 已 201 返回后 agent 异步失败（preflight/runtime 拒绝）也必须清理，
         // 否则 remote-uploads/<taskId> 成为孤儿目录
-        if (task && !task.sessionFile) {
+        if (task && task.welcomeMode !== "bot" && !task.sessionFile) {
           this.db.deleteTask(taskId);
           void cleanupRemoteUploads(taskId, this.uploadsRoot).catch(() => undefined);
         }
@@ -126,9 +127,9 @@ export class RemoteTaskCommandService {
       };
     } catch (error) {
       const task = this.db.getTask(taskId);
-      if (task && !task.sessionFile) this.db.deleteTask(taskId);
+      if (task && task.welcomeMode !== "bot" && !task.sessionFile) this.db.deleteTask(taskId);
       // P2 修复：新建失败回滚时同步清掉已落盘的附件目录，避免孤儿文件
-      await cleanupRemoteUploads(taskId, this.uploadsRoot).catch(() => undefined);
+      if (task?.welcomeMode !== "bot") await cleanupRemoteUploads(taskId, this.uploadsRoot).catch(() => undefined);
       throw error;
     }
   }
@@ -139,7 +140,7 @@ export class RemoteTaskCommandService {
     const text = request.text.trim();
     // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
     if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
-    const requestedModelId = await this.resolveModelId(request.modelId);
+    const requestedModelId = task.welcomeMode === "bot" ? request.modelId : await this.resolveModelId(request.modelId);
     const modelId = requestedModelId ?? task.modelId;
     const permissionMode = request.permissionMode ?? task.permissionMode;
     // 先写附件再改任务：附件落盘失败（超限/写错误）时抛错返回，任务的模型/权限保持原值，不产生半提交
@@ -157,7 +158,7 @@ export class RemoteTaskCommandService {
       welcomeMode: task.welcomeMode,
       modelId,
       permissionMode,
-      modePresetId: task.modePresetId,
+      modePresetId: task.welcomeMode === "bot" ? request.modePresetId ?? task.modePresetId : task.modePresetId,
       expertId: task.expertId,
       sessionFile: task.sessionFile,
       connectorIds: this.settings.getTaskConnectorIds(taskId),
@@ -165,12 +166,13 @@ export class RemoteTaskCommandService {
       userMessageId,
       assistantMessageId,
       streamingBehavior: this.agent.isTaskBusy(taskId) ? "followUp" : undefined,
-    });
+    }, { durableAdmissionOnly: true });
+    if (task.welcomeMode === "bot") await prompt;
     void prompt.then((result) => {
       if (result.error) console.warn(`[RemoteTaskCommandService] prompt rejected: ${result.error.message}`);
     }).catch((error) => {
       const current = this.db.getTask(taskId);
-      if (current) this.db.upsertTask({ ...current, status: "failed", updatedAt: Date.now() });
+      if (current && current.welcomeMode !== "bot") this.db.upsertTask({ ...current, status: "failed", updatedAt: Date.now() });
       console.warn(`[RemoteTaskCommandService] prompt failed: ${error instanceof Error ? error.message : String(error)}`);
     });
     const current = this.requireTask(taskId);

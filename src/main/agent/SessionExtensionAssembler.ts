@@ -87,6 +87,14 @@ export class SessionExtensionAssembler {
 
   constructor(private readonly deps: SessionExtensionAssemblerDependencies) {}
 
+  /** Data capabilities only. Durable supplies scheduling and tool execution; no session policy hooks. */
+  domainExtensions(taskId: string, memoryEnabled: boolean, gadgetService: GadgetService | null): InlineExtension[] {
+    return this.domainFactories({ taskId, memoryEnabled, gadgetService,
+      getPermissionMode: () => "auto", requestApproval: async () => true,
+    }, () => this.deps.db.getTask(taskId)?.projectId ?? null,
+    () => this.deps.db.getTask(taskId)?.spaceId ?? null);
+  }
+
   async build(input: SessionExtensionAssemblyInput): Promise<InlineExtension[]> {
     const resolveProjectId = () => this.deps.db.getTask(input.taskId)?.projectId ?? null;
     const resolveWorkspaceId = () => this.deps.db.getTask(input.taskId)?.spaceId ?? null;
@@ -149,7 +157,7 @@ export class SessionExtensionAssembler {
   }
 
   private domainFactories(
-    input: SessionExtensionAssemblyInput,
+    input: Pick<SessionExtensionAssemblyInput, "taskId" | "memoryEnabled" | "gadgetService" | "getPermissionMode" | "requestApproval">,
     resolveProjectId: () => string | null,
     resolveWorkspaceId: () => string | null,
   ): InlineExtension[] {
@@ -196,7 +204,7 @@ export class SessionExtensionAssembler {
   }
 
   private projectFactories(
-    input: SessionExtensionAssemblyInput,
+    input: Pick<SessionExtensionAssemblyInput, "taskId" | "getPermissionMode">,
     resolveProjectId: () => string | null,
   ): InlineExtension[] {
     if (!resolveProjectId()) return [];

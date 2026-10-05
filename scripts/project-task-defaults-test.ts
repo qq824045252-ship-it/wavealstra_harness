@@ -75,7 +75,7 @@ function makeTask(overrides: Partial<{ projectId: string; welcomeMode: string; m
   assert.deepEqual(suggestion, { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" });
 
   const design = resolveProjectTemplateTaskSuggestion({ templateId: "design-creative" }, TEMPLATES);
-  assert.deepEqual(design, { recommendedModeId: "design", recommendedPresetId: "general" }, "设计创意推荐 general（§19）");
+  assert.deepEqual(design, { recommendedModeId: "bot", recommendedPresetId: "general" }, "设计创意推荐 general（§19）");
 
   // blank 模板不提供推荐
   assert.equal(resolveProjectTemplateTaskSuggestion({ templateId: "blank" }, TEMPLATES), null);
@@ -145,7 +145,7 @@ function makeTask(overrides: Partial<{ projectId: string; welcomeMode: string; m
   }));
   assert.deepEqual(defaults, {
     welcomeMode: "coding",
-    modePresetId: "bugfix-test",
+    modePresetId: "minimal",
     source: "project-template",
   });
 
@@ -187,17 +187,17 @@ function makeTask(overrides: Partial<{ projectId: string; welcomeMode: string; m
 
   // 不同 Task 不同 Mode：Task A=coding、Task B=design —— 各自独立
   const modeA = makeTask({ welcomeMode: "coding", modePresetId: "code-review", updatedAt: 1000 });
-  const modeB = makeTask({ welcomeMode: "design", modePresetId: "ai-ui", updatedAt: 2000 });
+  const modeB = makeTask({ welcomeMode: "bot", modePresetId: "ai-ui", updatedAt: 2000 });
   const latestMode = resolveProjectTaskDefaults({
     tasks: [modeA, modeB],
     projectId: "p1",
     templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
   });
-  assert.equal(latestMode.welcomeMode, "design", "最近 Task 是 design → 默认 design，不被模板的 coding 限制（§0.2 / Rule 6）");
+  assert.equal(latestMode.welcomeMode, "bot", "最近 Task 是 design → 默认 design，不被模板的 coding 限制（§0.2 / Rule 6）");
 
   // 其它 Project 的任务不参与默认值
   const foreign = pickDefaults(resolveProjectTaskDefaults({
-    tasks: [makeTask({ projectId: "other-project", welcomeMode: "design", modePresetId: "ai-ui", updatedAt: 9999 })],
+    tasks: [makeTask({ projectId: "other-project", welcomeMode: "bot", modePresetId: "ai-ui", updatedAt: 9999 })],
     projectId: "p1",
     templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
   }));

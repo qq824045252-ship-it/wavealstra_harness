@@ -5,7 +5,7 @@
  * - side-effect policy：freecad = task-write 不每步审批；execute_python 强制审批；
  * - 不残留 neka uvx 配置路径（mcp.json 由用户环境管理，此处校验代码侧契约）。
  */
-import { ModeProfileStore } from "../src/main/agent/ModeProfileStore";
+import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MANAGED_TOOL_PROVIDER_IDS, isManagedToolProvider } from "../src/shared/professional-tools";import {
@@ -30,8 +30,7 @@ function assert(cond: boolean, label: string): void {
 
 function main(): void {
   console.log("== 1) mechanical-cad preset 已退役 ==");
-  const store = new ModeProfileStore();
-  const profile = store.getProfile("design") as ModeProfileDto;
+  const profile = MODE_SEEDS.bot;
   const preset = resolveModePreset(profile.policy, "mechanical-cad");
   assert(preset === undefined, "mechanical-cad preset 已退役，不可解析");
   assert(

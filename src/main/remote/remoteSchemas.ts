@@ -8,7 +8,7 @@ export const remotePromptSchema = z.object({
   text: z.string().trim().max(100_000),
   spaceId: z.string().trim().min(1).max(200).optional(),
   projectId: z.string().trim().min(1).max(200).optional(),
-  welcomeMode: z.enum(["working", "coding", "design"]).optional(),
+  welcomeMode: z.enum(["working", "coding", "bot"]).optional(),
   modePresetId: z.string().trim().min(1).max(200).nullable().optional(),
   modelId: z.string().trim().min(1).max(200).optional(),
   permissionMode: z.enum(["default", "readonly", "auto"]).optional(),

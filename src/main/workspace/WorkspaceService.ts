@@ -460,7 +460,7 @@ export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNod
   return walk(resolvedRoot);
 }
 
-export async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
+export async function snapshotWorkspace(root: string, options?: { unfiltered?: boolean }): Promise<Map<string, string>> {
   const snapshot = new Map<string, string>();
   const files: string[] = [];
   const visit = async (dir: string, depth = 0): Promise<void> => {
@@ -469,8 +469,8 @@ export async function snapshotWorkspace(root: string): Promise<Map<string, strin
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       if (files.length >= 5000) break;
-      if (isInternalTaskFile(entry.name)) continue;
-      if (entry.isDirectory() && (entry.name.startsWith(".") || IGNORED_DIRECTORIES.has(entry.name))) continue;
+      if (!options?.unfiltered && isInternalTaskFile(entry.name)) continue;
+      if (!options?.unfiltered && entry.isDirectory() && (entry.name.startsWith(".") || IGNORED_DIRECTORIES.has(entry.name))) continue;
       const fullPath = resolve(dir, entry.name);
       if (entry.isDirectory()) await visit(fullPath, depth + 1);
       else if (entry.isFile()) files.push(fullPath);

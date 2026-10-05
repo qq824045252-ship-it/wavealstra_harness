@@ -18,24 +18,27 @@ export interface McpFilterResult {
   capabilities: ResolvedCapabilityDto[];
 }
 
-function entryModes(entry: McpServerEntry): WelcomeMode[] | null {
+function entryModes(name: string, entry: McpServerEntry): WelcomeMode[] | null {
+  // Penpot moved to office; installed MCP files may still declare the old design/Bot mode.
   const raw = entry.modes;
   if (raw == null) return null;
   if (Array.isArray(raw)) {
     const modes = raw
       .map(String)
-      .map((value) => value.trim())
+      .map((value) => value.trim() === "design" ? "bot" : value.trim())
+      .map((value) => name === "penpot" && value === "bot" ? "working" : value)
       .filter((value): value is WelcomeMode =>
-        value === "working" || value === "coding" || value === "design",
+        value === "working" || value === "coding" || value === "bot",
       );
     return modes.length ? modes : null;
   }
   if (typeof raw === "string") {
     const modes = raw
       .split(/[,\s]+/)
-      .map((value) => value.trim())
+      .map((value) => value.trim() === "design" ? "bot" : value.trim())
+      .map((value) => name === "penpot" && value === "bot" ? "working" : value)
       .filter((value): value is WelcomeMode =>
-        value === "working" || value === "coding" || value === "design",
+        value === "working" || value === "coding" || value === "bot",
       );
     return modes.length ? modes : null;
   }
@@ -91,7 +94,7 @@ export function filterMcpConfigForMode(
 
   for (const [name, entry] of Object.entries(servers)) {
     if (!entry || typeof entry !== "object") continue;
-    const modes = entryModes(entry);
+    const modes = entryModes(name, entry);
     const decision = resolveMcpCapability(
       { id: name, disabled: entry.disabled === true || entry.enabled === false, modes },
       policySources ?? [{ source: "mode", sourceId: welcomeMode, policy }],

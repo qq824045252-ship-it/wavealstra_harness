@@ -2707,6 +2707,7 @@ export class AppDatabase {
       sessionFile: r.session_file ?? undefined,
       cwd: r.cwd ?? undefined,
       welcomeMode: (r.welcome_mode as WelcomeMode | null) ?? undefined,
+      executionBackend: r.welcome_mode === "bot" ? "pi-durable" : "pi",
       modelId: r.model_id ?? undefined,
       permissionMode: (r.permission_mode as TaskDto["permissionMode"] | null) ?? undefined,
       archived: Boolean(r.archived),
@@ -2836,6 +2837,12 @@ export class AppDatabase {
       | undefined;
 
     const projectId = task.projectId ?? null;
+    if (prev?.welcome_mode === "bot" && task.welcomeMode && task.welcomeMode !== "bot") {
+      throw new Error("Bot 任务的 Durable 后端已固定，请创建新任务以选择其他模式");
+    }
+    if (prev?.session_file && task.welcomeMode === "bot") {
+      throw new Error("旧 Pi 会话不能转换为 Durable 会话，请创建 Bot 任务");
+    }
     if (hasProjectId && projectId) {
       const project = this.db
         .prepare("SELECT archived FROM projects WHERE id = ?")
@@ -3713,7 +3720,7 @@ export class AppDatabase {
 }
 
 function parseCronWelcomeMode(raw: unknown): CronJobDto["welcomeMode"] | undefined {
-  if (raw === "working" || raw === "coding" || raw === "design") return raw;
+  if (raw === "working" || raw === "coding" || raw === "bot") return raw;
   return undefined;
 }
 

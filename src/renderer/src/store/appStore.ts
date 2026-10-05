@@ -1461,8 +1461,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       welcomeMode: get().welcomeMode,
       modePresetId: presetId,
     }).catch(() => undefined);
-    // 与 welcomeMode 同语义：已有消息或 session 的任务锁定 preset，只更新全局 selection
-    const locked = Boolean(task && (task.messages.length > 0 || task.sessionFile));
+    // Bot Tags configure the next Durable input; other modes retain their session lock.
+    const locked = task?.welcomeMode !== "bot" && Boolean(task && (task.messages.length > 0 || task.sessionFile));
     if (locked) {
       set({ modePresetId: presetId });
       return;
@@ -1689,7 +1689,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const source = sourceId ? state.tasks.find((t) => t.id === sourceId) : undefined;
     const task: Task = {
       id: uid(),
-      title: source?.title ? `${source.title}（${mode === "working" ? "办公" : mode === "design" ? "设计" : "编码"}）` : "新任务",
+      title: source?.title ? `${source.title}（${mode === "working" ? "办公" : mode === "bot" ? "Bot" : "编码"}）` : "新任务",
       spaceId: source?.spaceId,
       projectId: source?.projectId,
       updatedAt: Date.now(),
@@ -2669,6 +2669,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     // those events must never resurrect the removed task in the renderer projection or upsert it back to DB.
     if (deletedTaskRuntimeTombstones.has(patch.taskId)) return;
 
+    if (patch.type === "durable_snapshot") {
+      const snapshot = patch.snapshot;
+      const known = get().tasks.find(task => task.id === patch.taskId);
+      if (known?.durable?.epoch === snapshot.epoch && known.durable.revision >= snapshot.revision) return;
+      const messages: ChatMessage[] = snapshot.messages.map(message => ({
+        id: message.id, role: message.role, createdAt: message.createdAt,
+        modelName: message.modelName, streaming: message.streaming,
+        presentationKey: message.presentationKey, generationStats: message.generationStats,
+        durationLabel: formatDuration(message.durationMs),
+        attachments: message.attachments,
+        blocks: message.role === "user" ? [{ type: "text", text: message.text }] : [
+          ...(message.thinking ? [{ type: "thinking" as const, text: message.thinking }] : []),
+          ...(message.tools ?? []).map(tool => ({ type: "tool" as const, toolCall: { ...tool } })),
+        ],
+        finalBlocks: message.role === "assistant" && message.text ? [{ type: "text", text: message.text }] : undefined,
+      }));
+      set(state => {
+        const prior = state.tasks.find(task => task.id === patch.taskId);
+        const task: Task = { ...prior, id: patch.taskId, welcomeMode: "bot", durable: snapshot, messages,
+          title: prior?.title ?? taskTitleFromFirstMessage(snapshot.messages.find(m => m.role === "user")?.text ?? "Bot"),
+          updatedAt: snapshot.messages.at(-1)?.createdAt ?? prior?.updatedAt ?? Date.now(),
+          status: snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending",
+        };
+        return { tasks: prior ? state.tasks.map(item => item.id === task.id ? task : item) : [task, ...state.tasks] };
+      });
+      if (!known) hydrateTaskMetadataFromDb(patch.taskId);
+      get().reconcileTaskMessageArtifacts(patch.taskId);
+      return;
+    }
+
     if (patch.type === "user_message") {
       const needsTaskMetadataHydration = !get().tasks.some((task) => task.id === patch.taskId);
       set((s) => {
@@ -3073,8 +3103,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 重启后 messages 为空时，从 session jsonl 恢复聊天记录
     // 3B.1：History 只恢复对话（messages/session/cwd）；Artifact 恢复唯一源 = Artifact Domain
     // （首次 hydrate 时 Main 侧一次性 legacy migration，见 ArtifactDomainSetup.ensureTaskLegacyMigrated）
-    if (!hasMessages) {
+    if (!hasMessages || get().tasks.find(task => task.id === id)?.welcomeMode === "bot") {
       void window.api?.agent?.loadTaskHistory?.(id).then(async (history) => {
+        if (history.durable) {
+          get().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: history.durable });
+          return;
+        }
         const combinedHistoryMessages = history.messages ?? [];
         // 异步结果按目标 taskId 回填；切去其它任务不应丢弃已读出的历史。
         // 当前任务专属 UI 状态仍在下方按 activeTaskId 守卫，避免影响新页面。
@@ -3347,12 +3381,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     } = get();
     const task = tasks.find((x) => x.id === activeTaskId);
     if (!task) return;
+    const isBot = task.welcomeMode === "bot";
 
     // ACP 路由：瞬态选择（+ 菜单/「继续」按钮）优先；任务级 pin 兜底并自动续接
     // 最近一个可恢复 run。「本轮新会话」= 不带 continueFromRunId 的同 agent 瞬态选择，
     // 走瞬态分支，pin 保持不变；新 run 随后自动成为续链新头。
     const pinnedAgent = task.externalAgentPin;
-    const effectiveExternalAgent = externalAgent
+    const effectiveExternalAgent = isBot ? undefined : externalAgent
       ?? (pinnedAgent
         ? {
             id: pinnedAgent.id,
@@ -3478,7 +3513,8 @@ export const useAppStore = create<AppState>((set, get) => ({
               // 同步「已公告专家」：有专家则记下，无则清空（取消后再次引用可再贴）
               lastAnnouncedExpertId: nextAnnouncedExpertId,
               updatedAt: Date.now(),
-              messages: [...x.messages, userMsg, reply],
+              messages: isBot ? x.messages : [...x.messages, userMsg, reply],
+              ...(isBot ? { botInputError: undefined } : {}),
             }
           : x,
       ),
@@ -3608,6 +3644,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         // 主进程明确拒绝（如会话仍在生成但未指定 streamingBehavior）：给出用户可见错误，
         // 不静默吞掉。仅当本地确已插入空 assistant 壳时才以 error 结束它（诚实暴露失败）。
         if (result?.error) {
+          if (isBot) {
+            set(state => ({ tasks: state.tasks.map(item => item.id === activeTaskId ? { ...item, botInputError: result.error!.message } : item) }));
+            return;
+          }
           const currentTask = get().tasks.find((item) => item.id === activeTaskId);
           const replyStillStreaming = currentTask?.messages.some(
             (message) => message.id === assistantMsgId && message.streaming,
@@ -3669,6 +3709,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
+        if (isBot) {
+          set(state => ({ tasks: state.tasks.map(item => item.id === activeTaskId ? { ...item, botInputError: message } : item) }));
+          return;
+        }
         get().applyAgentPatch({
           type: "assistant_end",
           taskId: activeTaskId,
@@ -3876,6 +3920,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   abortActiveTask: async () => {
     const taskId = get().activeTaskId;
     if (!taskId) return;
+    if (get().tasks.find(task => task.id === taskId)?.welcomeMode === "bot") {
+      await window.api?.agent?.abort?.(taskId);
+      const history = await window.api?.agent?.loadTaskHistory?.(taskId);
+      if (history?.durable) get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
+      return;
+    }
 
     // 先本地结束流式，避免按钮卡在「停止」态
     set((s) => ({
@@ -6085,6 +6135,7 @@ export function selectVisibleActiveTaskArtifacts(state: AppState): Artifact[] {
     ? state.tasks.find((t) => t.id === state.activeTaskId)
     : undefined;
   const mode = task?.welcomeMode ?? state.welcomeMode;
+  if (mode === "bot") return base;
   const policy = mode ? state.artifactPolicies[mode] : undefined;
   const taskId = state.activeTaskId;
   const descriptors = state.artifactProjection.artifactsByTask[taskId];

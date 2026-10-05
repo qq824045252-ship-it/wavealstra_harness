@@ -1,6 +1,10 @@
 import { resolveModelScopeWithDiagnostics, type ExtensionContext, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { getSessionModelInvocation } from "../../agent/ModelInvocationAdmission";
 
+const nativeRuntimes = new WeakMap<object, ModelRuntime>();
+/** A Durable data adapter may use the existing search summarizer without AgentSession admission. */
+export function bindNativeSummaryRuntime(reader: object, runtime: ModelRuntime): void { nativeRuntimes.set(reader, runtime); }
+
 export interface ModelLike {
 	provider: string;
 	id: string;
@@ -41,6 +45,8 @@ export function summaryModelValue(model: ModelLike): string {
 
 /** Pi owns effective settings, pattern parsing, catalogue and request-time auth. */
 export async function resolveSummaryModelScope(ctx: Pick<ExtensionContext, "sessionManager">) {
+  const native = nativeRuntimes.get(ctx.sessionManager);
+  if (native) return { models: await native.getAvailable(), isAllowed: () => true, complete: native.complete.bind(native) };
   const invocation = getSessionModelInvocation(ctx.sessionManager);
   await invocation.settings.reload();
   const errors = invocation.settings.drainErrors();

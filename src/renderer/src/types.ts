@@ -161,6 +161,7 @@ export interface ChatMessage {
   changesCount?: number;
   /** 执行耗时标签，如 1m26s */
   durationLabel?: string;
+  presentationKey?: string;
   /** 生成本条消息的模型名 */
   modelName?: string;
   /** 外部 Agent（ACP）来源。存在时该助手消息不是 MyBuddy/Pi 主 Agent。 */
@@ -189,6 +190,9 @@ export interface FileChange {
 }
 
 export interface Task {
+  durable?: import("../../shared/durable-bot").DurableBotSnapshot;
+  /** Transport/configuration errors before Durable accepts an input, not execution state. */
+  botInputError?: string;
   id: string;
   title: string;
   /** 所属空间；无则显示在「任务」分组 */
@@ -338,7 +342,7 @@ export interface ModelConfig {
   metadata?: import("../../shared/model-metadata").ModelMetadataDto;
 }
 
-export type WelcomeMode = "working" | "coding" | "design";
+export type WelcomeMode = "working" | "coding" | "bot";
 
 /** 助理人设（对应数据目录中的 SOUL.md / IDENTITY.md） */
 export interface Soul {

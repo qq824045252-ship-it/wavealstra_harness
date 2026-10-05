@@ -895,6 +895,7 @@ export type RuntimeAuditInstructionDto = import("./mode-profile").AssemblySegmen
 };
 
 export type AgentUiPatch =
+  | { type: "durable_snapshot"; taskId: string; snapshot: import("./durable-bot").DurableBotSnapshot }
   | { type: "compaction_status"; taskId: string; state: import("./compaction").TaskCompactionStatusDto }
   | {
       type: "user_message";
@@ -1840,6 +1841,7 @@ export type DbUpsertResult =
 export type DbRenameResult = { ok: true } | { ok: false; error: string };
 
 export interface TaskDto {
+  executionBackend?: "pi" | "pi-durable";
   id: string;
   title: string;
   /** null 表示明确解除工作空间绑定；undefined 表示调用方未提供该字段。 */
@@ -1923,10 +1925,14 @@ export interface ChatToolCallDto {
   output?: string;
   consult?: import("./multi-model-consult").MultiModelConsultReport;
   webSearch?: import("./web-search").WebSearchReport;
-  status: "success" | "error";
+  status: "success" | "error" | "running";
 }
 
 export interface ChatMessageDto {
+  streaming?: boolean;
+  /** Stable native generation identity across partial and committed snapshots; presentation only. */
+  presentationKey?: string;
+  generationStats?: import("./generation-stats").GenerationStats;
   id: string;
   role: "user" | "assistant";
   text: string;
@@ -1962,6 +1968,7 @@ export interface SessionHistoryRecoveryDto {
 }
 
 export interface TaskHistoryDto {
+  durable?: import("./durable-bot").DurableBotSnapshot;
   messages: ChatMessageDto[];
   artifacts?: ChatArtifactDto[];
   sessionFile?: string;

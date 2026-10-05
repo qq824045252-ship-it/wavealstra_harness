@@ -450,7 +450,7 @@ check("bindTaskExecutionWorkspaceCwd：只更新 cwd/updated_at，不覆盖其�
     sessionFile: join(stageDbRoot, "s.json"),
     modelId: "openai/gpt-x",
     permissionMode: "default",
-    welcomeMode: "design",
+    welcomeMode: "working",
     expertId: "expert-a",
     modePresetId: "preset-1",
   });
@@ -464,7 +464,7 @@ check("bindTaskExecutionWorkspaceCwd：只更新 cwd/updated_at，不覆盖其�
   assert.equal(row.sessionFile, join(stageDbRoot, "s.json"));
   assert.equal(row.modelId, "openai/gpt-x");
   assert.equal(row.permissionMode, "default");
-  assert.equal(row.welcomeMode, "design");
+  assert.equal(row.welcomeMode, "working");
   assert.equal(row.archived, true, "bind 不得清掉 archived");
   assert.equal(row.expertId, "expert-a");
   assert.equal(row.modePresetId, "preset-1");

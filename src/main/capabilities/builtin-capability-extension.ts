@@ -45,6 +45,8 @@ import type { PythonEnvironmentSpec } from "../../shared/python-runtime";
 import type { SkillScriptOwner } from "../skills/SkillsService";
 
 export interface BuiltinCapabilityExtensionBridge {
+  /** Durable owns execution; keep product capabilities without session gates/recovery or execute_code. */
+  nativeExecution?: boolean;
   consult?: (id: string, input: MultiModelConsultInput, signal: AbortSignal | undefined, onUpdate: (report: MultiModelConsultReport) => void) => Promise<MultiModelConsultReport>;
   taskId: string;
   taskRoot: string;
@@ -173,6 +175,10 @@ function assertTaskPath(taskRoot: string, raw: string): string {
   const target = resolve(taskRoot, raw);
   if (!isPathInsideOrEqual(taskRoot, target)) throw new Error(`文件必须位于当前任务目录：${raw}`);
   return target;
+}
+
+function capabilityPath(bridge: BuiltinCapabilityExtensionBridge, raw: string): string {
+  return bridge.nativeExecution ? resolve(bridge.taskRoot, raw) : assertTaskPath(bridge.taskRoot, raw);
 }
 
 function toolContext(
@@ -439,7 +445,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
           try {
             const raw = [...(p.image_paths ?? []), ...(p.image_path ? [p.image_path] : [])];
             if (!raw.length) throw new Error("需要 image_path 或 image_paths");
-            const paths = [...new Set(raw.map((item) => assertTaskPath(bridge.taskRoot, item)))];
+            const paths = [...new Set(raw.map((item) => capabilityPath(bridge, item)))];
             const context = toolContext(bridge, tc, signal);
             const route = await routeVisionForPaths({
               model: ctx?.model,
@@ -487,7 +493,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               model: (p.model as string | undefined) ?? config.imageGeneration.model,
               seed: p.seed as number | undefined,
               inputImagePaths: Array.isArray(p.input_image_paths)
-                ? (p.input_image_paths as string[]).map((item) => assertTaskPath(bridge.taskRoot, item))
+                ? (p.input_image_paths as string[]).map((item) => capabilityPath(bridge, item))
                 : undefined,
             };
             const context = toolContext(bridge, tc, signal);
@@ -516,7 +522,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               resolution: p.resolution as string | undefined,
               model: (p.model as string | undefined) ?? config.videoGeneration.model,
               seed: p.seed as number | undefined,
-              inputImagePath: typeof p.input_image_path === "string" ? assertTaskPath(bridge.taskRoot, p.input_image_path) : undefined,
+              inputImagePath: typeof p.input_image_path === "string" ? capabilityPath(bridge, p.input_image_path) : undefined,
               generateAudio: p.generate_audio as boolean | undefined,
             };
             const context = toolContext(bridge, tc, signal);
@@ -537,7 +543,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         parameters: speechToTextSchema,
         execute: async (tc, p: { audio_path: string; language?: string; prompt?: string }, signal?: AbortSignal) => {
           try {
-            const result = await stt.speechToText!({ audioPath: assertTaskPath(bridge.taskRoot, p.audio_path), language: p.language, prompt: p.prompt }, toolContext(bridge, tc, signal));
+            const result = await stt.speechToText!({ audioPath: capabilityPath(bridge, p.audio_path), language: p.language, prompt: p.prompt }, toolContext(bridge, tc, signal));
             return jsonResult(`转写完成（${result.provider}）`, result);
           } catch (error) { return errorResult("speech_to_text", error); }
         },
@@ -654,7 +660,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "computer_exec",
         label: "Windows Computer Use",
-        description: "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标，screenBoundsPhysical 仅用于诊断。UIA 不可用时使用 screenshot_window（client_only 默认 true）→ click_client，客户区截图像素与 client DIP 坐标直接对齐。显式 client_only=false 会返回含边框的 window-DIP 图像，不能直接作为 click_client 坐标。只有无法绑定窗口的特殊场景才使用 legacy desktop mouse actions。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。screenshot_window 默认会抢焦点并按副作用审批，ensure_foreground=false 仅允许已在前台的只读捕获。任何返回截图的 computer_exec 动作都会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。 Agent calls automatically enforce Observe -> Act -> Verify and bounded recovery. For actions with a concrete expected result, pass expected_outcomes (for example target_closed, new_window, or control_present); semantic failure means re-observe/re-plan instead of treating a successful capture as task success.",
+        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true，其截图像素对应客户区 DIP。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容再决定后续操作。执行顺序、重试与取消由 Durable 决定；请自己观察操作后的实际结果。截图按主模型能力直接返回图片或视觉描述。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标，screenBoundsPhysical 仅用于诊断。UIA 不可用时使用 screenshot_window（client_only 默认 true）→ click_client，客户区截图像素与 client DIP 坐标直接对齐。显式 client_only=false 会返回含边框的 window-DIP 图像，不能直接作为 click_client 坐标。只有无法绑定窗口的特殊场景才使用 legacy desktop mouse actions。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。screenshot_window 默认会抢焦点并按副作用审批，ensure_foreground=false 仅允许已在前台的只读捕获。任何返回截图的 computer_exec 动作都会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。 Agent calls automatically enforce Observe -> Act -> Verify and bounded recovery. For actions with a concrete expected result, pass expected_outcomes (for example target_closed, new_window, or control_present); semantic failure means re-observe/re-plan instead of treating a successful capture as task success.",
         promptSnippet: "computer_exec(action, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, expected_outcomes?)",
         parameters: computerExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -663,7 +669,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
           try {
             input = {
               action: p.action as ComputerExecInput["action"],
-              taskId: bridge.taskId,
+              taskId: bridge.nativeExecution ? undefined : bridge.taskId,
               x: p.x as number | undefined,
               y: p.y as number | undefined,
               x2: p.x2 as number | undefined,
@@ -695,10 +701,10 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               observeAfter: p.observe_after as boolean | undefined,
               captureAfter: p.capture_after as boolean | undefined,
             };
-            operationSignal = computerUseRunCoordinator.scope(bridge.taskId, signal);
-            operationSignal.throwIfAborted();
+            operationSignal = bridge.nativeExecution ? signal : computerUseRunCoordinator.scope(bridge.taskId, signal);
+            operationSignal?.throwIfAborted();
             const result = await computerAutomationService.execute(input, operationSignal);
-            operationSignal.throwIfAborted();
+            operationSignal?.throwIfAborted();
             settleComputerUseResultRecovery(bridge.computerRecovery, input, result);
             if (result.screenshot) {
               const context = toolContext(bridge, tc, operationSignal);
@@ -706,20 +712,20 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
                 provider: "mybuddy-computer",
                 items: [{ bytes: result.screenshot, mimeType: "image/png", fileName: result.artifactFileName ?? "desktop-screenshot.png" }],
               }, context, "桌面截图");
-              operationSignal.throwIfAborted();
+              operationSignal?.throwIfAborted();
               const details = { ...result, screenshot: undefined, path: saved.paths[0], artifactId: saved.artifacts[0]?.id };
               const imageResult = await visionAwareImageResult({
                 summary: "Windows 画面已保存", details, model: ctx?.model, vision, context,
                 images: [{ path: saved.paths[0], bytes: result.screenshot, mimeType: "image/png" }],
                 prompt: "请分析这张 Windows 界面截图，准确描述可见窗口、主要控件、文本、状态、错误提示和与当前任务相关的可交互目标及其相对位置。不要猜测不可见内容。",
               });
-              operationSignal.throwIfAborted();
+              operationSignal?.throwIfAborted();
               return imageResult;
             }
             return jsonResult(`桌面动作完成：${input.action}`, result);
           } catch (error) {
             const failure = operationSignal?.aborted ? operationSignal.reason : error;
-            if (input) {
+            if (input && !bridge.nativeExecution) {
               computerUseRunCoordinator.fail(input, operationSignal);
               recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure);
             }
@@ -759,7 +765,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       spawnHook,
     });
     const powerShellTool = createPowerShellTool(bridge.taskRoot, { spawnHook });
-    if (config.execution.codeExecutionEnabled) {
+    if (config.execution.codeExecutionEnabled && !bridge.nativeExecution) {
       pi.registerTool({
         name: "execute_code",
         label: "代码执行",

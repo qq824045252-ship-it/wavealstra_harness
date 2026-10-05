@@ -292,7 +292,7 @@ function ArtifactPolicyEditor({
       const seed =
         mode === "working"
           ? WORKING_ARTIFACT_DENY_DEFAULT
-          : mode === "design"
+          : mode === "bot"
             ? DESIGN_ARTIFACT_DENY_DEFAULT
             : [];
       const seedSet = new Set(seed);
@@ -600,6 +600,7 @@ function CatalogPickList({
  * promptAddon + skillPolicy + mcpPolicy。所有改动走 onChange 上抛，由父级持有列表草稿。
  */
 function PresetEditor({
+  bot = false,
   preset,
   idLocked,
   onChange,
@@ -610,6 +611,7 @@ function PresetEditor({
   modelCatalog,
   catalogLoading,
 }: {
+  bot?: boolean;
   preset: ModePresetDto;
   /** 出厂 seed preset 的 id 不可改（避免破坏 defaultModePresetId 解析） */
   idLocked: boolean;
@@ -631,6 +633,27 @@ function PresetEditor({
   const modelOptions = useMemo(
     () => buildModelSuggestionOptions(p.suggestedModelId, modelCatalog),
     [p.suggestedModelId, modelCatalog],
+  );
+
+  if (bot) return (
+    <div className="modes-preset-form-body">
+      <label className="modes-preset-field"><span>名称</span><input value={p.label} onChange={e => patch({ label: e.target.value })} /></label>
+      <label className="modes-preset-field"><span>ID</span><input value={p.id} disabled={idLocked} onChange={e => patch({ id: e.target.value.trim() })} /></label>
+      <label className="modes-preset-field"><span>描述</span><input value={p.description ?? ""} onChange={e => patch({ description: e.target.value })} /></label>
+      <label className="modes-preset-field"><span>工具模式</span>
+        <select aria-label="Bot 工具模式" value={p.botToolMode ?? "native"} onChange={e => patch({ botToolMode: e.target.value as "native" | "codemode" })}>
+          <option value="native">原生模式</option><option value="codemode">Code Mode</option>
+        </select>
+      </label>
+      <label className="modes-preset-field"><span>提示词附加段</span><textarea rows={8} value={p.promptAddon ?? ""} onChange={e => patch({ promptAddon: e.target.value })} /></label>
+      <label className="modes-preset-field"><span>建议模型</span>
+        <select value={p.suggestedModelId ?? ""} onChange={e => patch({ suggestedModelId: e.target.value || null })}>
+          {modelOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
+      <CatalogPickList label="推荐专家" items={expertItems} selected={p.recommendedExpertIds ?? []} onChange={next => patch({ recommendedExpertIds: next })} loading={catalogLoading} emptyText="暂无专家" searchPlaceholder="筛选专家…" />
+      <p>两种工具模式均由 Pi Durable 执行、持久化和恢复。Tag 只提供配置与提示词。</p>
+    </div>
   );
 
   return (
@@ -942,6 +965,9 @@ function PresetEditor({
 export default function ModesTab(): React.JSX.Element {
   const [mode, setMode] = useState<WelcomeMode>("working");
   const [pane, setPane] = useState<EditPane>("goal");
+  useEffect(() => {
+    if (mode === "bot" && ["skills", "mcp", "artifacts", "policy"].includes(pane)) setPane("goal");
+  }, [mode, pane]);
   const [profile, setProfile] = useState<ModeProfileDto | null>(null);
   const visiblePresetCount = sanitizeModePresets(mode, profile?.policy.presets ?? []).length;
   const [draft, setDraft] = useState("");
@@ -1110,7 +1136,7 @@ export default function ModesTab(): React.JSX.Element {
     try {
       const p = await window.api?.agent?.getModeProfile?.(id);
       if (!p) {
-        setErrorMsg("无法加载场景模式（主进程未就绪）");
+        setErrorMsg("无法加载模式配置（主进程未就绪）");
         setProfile(null);
         return;
       }
@@ -1534,7 +1560,7 @@ export default function ModesTab(): React.JSX.Element {
         </p>
       </header>
 
-      <div className="modes-switcher" role="tablist" aria-label="场景模式">
+      <div className="modes-switcher" role="tablist" aria-label="模式与提示词">
         {WELCOME_MODES.map((id) => {
           const active = mode === id;
           const fromSummary = summaries.find((s) => s.id === id)?.hasUserOverride;
@@ -1655,6 +1681,7 @@ export default function ModesTab(): React.JSX.Element {
               </div>
               <div className="modes-nav-group">
                 <div className="modes-nav-label">能力面</div>
+                {mode !== "bot" && <>
                 <button
                   type="button"
                   className={`modes-nav-item${pane === "skills" ? " active" : ""}`}
@@ -1686,6 +1713,7 @@ export default function ModesTab(): React.JSX.Element {
                     </span>
                   ) : null}
                 </button>
+                </>}
                 <button
                   type="button"
                   className={`modes-nav-item${pane === "presets" ? " active" : ""}`}
@@ -1696,7 +1724,7 @@ export default function ModesTab(): React.JSX.Element {
                   {visiblePresetCount ? <span className="modes-nav-tag">{visiblePresetCount}</span> : null}
                 </button>
               </div>
-              <div className="modes-nav-group">
+              {mode !== "bot" && <div className="modes-nav-group">
                 <div className="modes-nav-label">高级</div>
                 <button
                   type="button"
@@ -1707,7 +1735,7 @@ export default function ModesTab(): React.JSX.Element {
                   <span className="modes-nav-text">策略</span>
                   <span className="modes-nav-tag">JSON</span>
                 </button>
-              </div>
+              </div>}
             </nav>
 
             <div
@@ -1835,6 +1863,7 @@ export default function ModesTab(): React.JSX.Element {
                           </button>
                         </div>
                         <PresetEditor
+                          bot={mode === "bot"}
                           preset={selectedPreset}
                           idLocked={isSeedPreset(mode, selectedPreset.id)}
                           onChange={updateSelectedPreset}

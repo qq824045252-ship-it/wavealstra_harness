@@ -42,6 +42,7 @@ export function shouldInjectCadExtension(
   welcomeMode: string,
   modePresetId: string | null | undefined,
 ): boolean {
+  // Retained only for legacy callers. Bot never installs this approval-wrapped extension.
   return welcomeMode === "design" && modePresetId === "mechanical-cad";
 }
 

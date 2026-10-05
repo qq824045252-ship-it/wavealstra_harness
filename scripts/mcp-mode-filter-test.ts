@@ -72,7 +72,7 @@ console.log("2. coding 全量（entry.modes 放行）");
 
 console.log("3. design entry.modes  alone");
 {
-  const r = filterMcpConfigForMode(full, "design", {
+  const r = filterMcpConfigForMode(full, "bot", {
     mode: "hard",
     allow: [],
     deny: [],
@@ -107,6 +107,17 @@ console.log("5. soft 不剔除");
       r.capabilities.find((item) => item.id === "serena")?.reason?.endsWith("_soft"),
     "soft MCP trace 解释限制但与真实执行一致保持 enabled",
   );
+}
+
+console.log("6. Penpot 旧模式声明迁入日常办公");
+for (const modes of [["design"], ["bot"], "design", "bot", ["coding", "design"]]) {
+  const config = { mcpServers: { penpot: { url: "http://localhost:9001", modes } } };
+  const allowed = filterMcpConfigForMode(config, "working", { mode: "hard", allow: ["penpot"], deny: [] });
+  assert(allowed.enabled.includes("penpot"), `旧声明 ${JSON.stringify(modes)} 在办公可用`);
+  const denied = filterMcpConfigForMode(config, "working", { mode: "hard", allow: [], deny: ["penpot"] });
+  assert(!denied.enabled.includes("penpot"), "迁移不绕过办公显式禁用");
+  const disabled = filterMcpConfigForMode({ mcpServers: { penpot: { ...config.mcpServers.penpot, disabled: true } } }, "working");
+  assert(!disabled.enabled.includes("penpot"), "迁移不绕过 MCP 全局停用");
 }
 
 console.log(`\n[mcp-mode-filter-test] ${passed} passed, ${failed} failed`);

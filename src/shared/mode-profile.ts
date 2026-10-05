@@ -1,14 +1,14 @@
-/** 欢迎三模式（日常办公 / 代码开发 / 设计创意）资料契约 */
+/** 欢迎三模式（日常办公 / 代码开发 / Bot）资料契约 */
 
 import { composeMcpPolicies, composeSkillPolicies } from "./runtime-policy";
 import type { RuntimeRequirementInput } from "./runtime-requirement";
 
-export type WelcomeMode = "working" | "coding" | "design";
+export type WelcomeMode = "working" | "coding" | "bot";
 
 /** A missing scene is ordinary office work, never implicit coding. Explicit persisted scenes win. */
 export const DEFAULT_WELCOME_MODE: WelcomeMode = "working";
 export function resolveWelcomeMode(...candidates: unknown[]): WelcomeMode {
-  return candidates.find((mode): mode is WelcomeMode => mode === "working" || mode === "coding" || mode === "design") ?? DEFAULT_WELCOME_MODE;
+  return candidates.find((mode): mode is WelcomeMode => mode === "working" || mode === "coding" || mode === "bot") ?? DEFAULT_WELCOME_MODE;
 }
 
 export type ModeBlockId = "goal" | "workflow" | "delivery" | "forbid" | "criteria";
@@ -32,10 +32,10 @@ export const MODE_BLOCK_LABELS: Record<ModeBlockId, string> = {
 export const WELCOME_MODE_LABELS: Record<WelcomeMode, string> = {
   working: "日常办公",
   coding: "代码开发",
-  design: "设计创意",
+  bot: "Bot",
 };
 
-export const WELCOME_MODES: WelcomeMode[] = ["coding", "working", "design"];
+export const WELCOME_MODES: WelcomeMode[] = ["coding", "working", "bot"];
 
 export interface ModeSkillPolicy {
   prefer: string[];
@@ -79,6 +79,8 @@ export interface ModeMcpPolicy {
  * 判定顺序：先 deny，再 allow（白名单外也隐藏）。
  */
 export interface ModeArtifactPolicy {
+  /** Bot displays the complete Durable/workspace projection, including intermediate files. */
+  unfiltered?: boolean;
   mode: "soft" | "hard";
   /** B：白名单扩展名（空 = 不启用白名单） */
   allow: string[];
@@ -193,6 +195,7 @@ export function artifactVisibleForDisplay(
   policy: ModeArtifactPolicy | null | undefined,
   peerArtifactPaths?: readonly string[],
 ): boolean {
+  if (policy?.unfiltered) return true;
   if (isCadScratchArtifact(filePath)) return false;
   if (isPptdProjectInternalArtifact(filePath, peerArtifactPaths)) return false;
   if (!policy) return true;
@@ -356,6 +359,8 @@ export interface ModeSceneChip {
  * 挂载在 ModePolicyDto.presets 上，随 policy.json 一起持久化（向后兼容：旧文件缺 presets 时回退出厂）。
  */
 export interface ModePresetDto {
+  /** Bot Tag selects tool presentation; both options run on Pi Durable. */
+  botToolMode?: "native" | "codemode";
   /** 场景 preset id（如 web-prototype / general），与 provider 解耦 */
   id: string;
   label: string;
@@ -418,7 +423,7 @@ export const OFFICE_PROVIDER_MCP_IDS = ["drawio-ai"] as const;
 export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
   working: "general-office",
   coding: "minimal",
-  design: "general",
+  bot: "native",
 };
 
 /**
@@ -428,7 +433,7 @@ export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
 export const RETIRED_MODE_PRESET_IDS: Record<WelcomeMode, readonly string[]> = {
   working: ["inventory-summary", "documents", "spreadsheets", "presentations"],
   coding: [],
-  design: ["poster", "ai-ui", "3d-blender", "mechanical-cad", "opendesign"],
+  bot: ["general", "web-prototype"],
 };
 
 export function isRetiredModePresetId(
@@ -448,6 +453,7 @@ export const MODE_SEED_PRESET_IDS: Record<WelcomeMode, string[]> = {
     "project-management",
     "data-analysis",
     "drawio-ai",
+    "web-prototype",
   ],
   coding: [
     "minimal",
@@ -459,7 +465,7 @@ export const MODE_SEED_PRESET_IDS: Record<WelcomeMode, string[]> = {
     "plan-design",
     "readonly-explain",
   ],
-  design: ["general", "web-prototype"],
+  bot: ["native", "codemode"],
 };
 
 /** 去掉已退役 Tag，并把出厂 seed 按 MODE_SEED_PRESET_IDS 排到对应位置。 */
@@ -583,6 +589,23 @@ export function emptyModePolicy(): ModePolicyDto {
     recommendedExpertIds: [],
     scenes: [],
     presets: [],
+  };
+}
+
+/** Bot presets supply configuration and prose only; they never restrict execution or display. */
+export function botConfiguration(policy: ModePolicyDto): ModePolicyDto {
+  return {
+    ...emptyModePolicy(),
+    artifactPolicy: { mode: "soft", allow: [], deny: [], unfiltered: true },
+    suggestedModelId: policy.suggestedModelId,
+    recommendedExpertIds: policy.recommendedExpertIds,
+    scenes: policy.scenes,
+    presets: policy.presets?.map(preset => ({
+      id: preset.id, label: preset.label, description: preset.description,
+      promptAddon: preset.promptAddon, suggestedModelId: preset.suggestedModelId,
+      recommendedExpertIds: preset.recommendedExpertIds,
+      botToolMode: preset.botToolMode ?? (preset.id === "codemode" ? "codemode" : "native"),
+    })),
   };
 }
 

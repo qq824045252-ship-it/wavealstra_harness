@@ -1,5 +1,5 @@
 /**
- * Design Mode Preset Bar 单测（轻量，无 Electron）：
+ * Mode Preset 配置和兼容性单测（轻量，无 Electron）：
  *   1. resolver 纯函数：5 个 design preset 的 MCP/Skill 收窄合成（deny 并集 / allow 交集）
  *   2. filterMcpConfigForMode 端到端：有效 allow/deny → 实际 enabled server
  *   3. filterSkillsForMode 端到端：有效 skillPolicy → 可见技能
@@ -66,7 +66,7 @@ function assert(cond: unknown, label: string): void {
   }
 }
 
-/** 与出厂 design 一致的 6 个 preset（测试内联，避免依赖本机 skills 目录） */
+/** 旧情景策略 helper 的 6 个 fixture（Bot 运行时不调用这些过滤器）（测试内联，避免依赖本机 skills 目录） */
 const PRESETS: ModePresetDto[] = [
   {
     id: "ai-ui",
@@ -120,7 +120,7 @@ function basePolicy(over: Partial<ModePolicyDto> = {}): ModePolicyDto {
 /** 专业工具已配置时的用户 design base：允许全部设计 provider，preset 再做硬收窄 */
 const USER_BASE = basePolicy({
   skillPolicy: {
-    prefer: ["design", "ui"],
+    prefer: ["bot", "ui"],
     demote: ["deploy"],
     hide: [],
     allow: ["ardot", "ardot-design-assistant", "image-to-ui", "image-understanding-native"],
@@ -134,7 +134,7 @@ const USER_BASE = basePolicy({
 
 /** 出厂 design base：allow 空 = 白名单未启用（unrestricted） */
 const SEED_BASE = basePolicy({
-  skillPolicy: { prefer: ["design"], demote: ["deploy"], hide: [], allow: [] },
+  skillPolicy: { prefer: ["bot"], demote: ["deploy"], hide: [], allow: [] },
   mcpPolicy: { mode: "hard", allow: [], deny: ["serena", "codegraph"] },
 });
 
@@ -142,10 +142,10 @@ const MCP_FULL: McpConfig = {
   mcpServers: {
     "ardot-local": { url: "http://127.0.0.1:50501/api/v1/mcp" },
     penpot: { url: "https://penpot.example.com/mcp" },
-    blender: { command: "blender-mcp", modes: ["design"] },
-    freecad: { command: "freecad-mcp", modes: ["design"] },
+    blender: { command: "blender-mcp", modes: ["bot"] },
+    freecad: { command: "freecad-mcp", modes: ["bot"] },
     canva: { url: "https://mcp.canva.com/mcp" },
-    opendesign: { command: "od", args: ["mcp"], modes: ["design"] },
+    opendesign: { command: "od", args: ["mcp"], modes: ["bot"] },
     weather: { command: "npx", args: ["weather-mcp"] },
     serena: { command: "serena", args: ["start-mcp-server"], modes: ["coding"] },
   },
@@ -166,11 +166,11 @@ async function main(): Promise<void> {
   {
     const workingPresets = MODE_SEEDS.working.policy.presets ?? [];
     const codingPresets = MODE_SEEDS.coding.policy.presets ?? [];
-    const designPresets = MODE_SEEDS.design.policy.presets ?? [];
-    assert(workingPresets.length === 7, "working 出厂 7 presets（对人交付闭环 + 流程图）");
+    const designPresets = MODE_SEEDS.bot.policy.presets ?? [];
+    assert(workingPresets.length === 8, "working 出厂 8 presets（对人交付闭环 + 流程图）");
     assert(
       workingPresets.map((p) => p.id).join(",") ===
-        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai",
+        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai,web-prototype",
       "working preset ids（通用办公 / 总结 / 周报 / 会议纪要 / 项目管理 / 数据分析 / 流程图）",
     );
     const officeSummary = workingPresets.find((p) => p.id === "summary")!;
@@ -280,25 +280,23 @@ async function main(): Promise<void> {
         readonlyExplain.promptAddon?.includes("先读真实代码再解释") === true,
       "readonly-explain 禁止臆测、强制读代码",
     );
-    assert(designPresets.length === 2, "design 出厂 2 个专业 presets");
+    assert(designPresets.length === 2, "Bot 出厂 2 个 Tags");
     assert(
-      designPresets.map((p) => p.id).join(",") === "general,web-prototype",
-      "design preset ids = general / web-prototype",
+      designPresets.map((p) => p.id).join(",") === "native,codemode",
+      "Bot Tags = native / codemode",
     );
     assert(
       designPresets.find((p) => p.id === "opendesign") === undefined,
       "opendesign Tag 已退役，不再出厂",
     );
-    const designGeneral = designPresets.find((p) => p.id === "general")!;
-    assert(
-      !(DESIGN_PROVIDER_MCP_IDS as readonly string[]).includes("blender") &&
-        !designGeneral.mcpPolicy?.deny.includes("blender"),
-      "blender 是 Hub 普通 MCP 插件：出厂 general 不再 deny",
-    );
+    assert(!designPresets.some((p) => ["general", "web-prototype"].includes(p.id)), "Bot 移除通用设计与 Penpot");
+    assert(isKnownModePresetId("working", "web-prototype"), "Penpot 属于日常办公");
+    assert(resolveModePresetId("bot", "general") === "native", "旧通用设计回落原生 Tag");
+    assert(resolveModePresetId("bot", "web-prototype") === "native", "旧 Bot Penpot 回落原生 Tag");
     // 默认/校验 helper
     assert(defaultModePresetId("working") === "general-office", "working 默认 = general-office（通用办公）");
     assert(defaultModePresetId("coding") === "minimal", "coding 默认 = minimal");
-    assert(defaultModePresetId("design") === "general", "design 默认 = general");
+    assert(defaultModePresetId("bot") === "native", "Bot 默认 = native");
     assert(isKnownModePresetId("working", "meeting-notes"), "working 已知 id 校验（会议纪要）");
     assert(isKnownModePresetId("working", "project-management"), "working 已知 id 校验（项目管理）");
     assert(isKnownModePresetId("working", "drawio-ai"), "working 已知 id 校验（drawio-ai）");
@@ -306,15 +304,15 @@ async function main(): Promise<void> {
     assert(resolveModePresetId("working", "inventory-summary") === "general-office", "旧库存摘要 → 通用办公");
     assert(resolveModePresetId("working", "documents") === "general-office", "旧文档 tag → 通用办公");
     assert(!isKnownModePresetId("coding", "ai-ui"), "跨模式 preset id 非法（ai-ui 不属于 coding）");
-    assert(!isKnownModePresetId("design", "code-review"), "跨模式 preset id 非法（code-review 不属于 design）");
+    assert(!isKnownModePresetId("bot", "code-review"), "跨模式 preset id 非法（code-review 不属于 design）");
     assert(resolveModePresetId("coding", null) === "minimal", "null → 目标模式默认");
-    assert(!isKnownModePresetId("design", "poster"), "旧 poster id 已退出 design seed");
-    assert(resolveModePresetId("design", "poster") === "general", "旧 poster id → design 默认 general");
-    assert(resolveModePresetId("design", "ai-ui") === "general", "旧 ai-ui → general");
-    assert(resolveModePresetId("design", "3d-blender") === "general", "旧 3d-blender → general");
-    assert(resolveModePresetId("design", "mechanical-cad") === "general", "旧 mechanical-cad → general");
-    assert(!isKnownModePresetId("design", "opendesign"), "旧 opendesign id 已退出 design seed");
-    assert(resolveModePresetId("design", "opendesign") === "general", "旧 opendesign → general");
+    assert(!isKnownModePresetId("bot", "poster"), "旧 poster id 已退出 design seed");
+    assert(resolveModePresetId("bot", "poster") === "native", "旧 poster id → design 默认 general");
+    assert(resolveModePresetId("bot", "ai-ui") === "native", "旧 ai-ui → general");
+    assert(resolveModePresetId("bot", "3d-blender") === "native", "旧 3d-blender → general");
+    assert(resolveModePresetId("bot", "mechanical-cad") === "native", "旧 mechanical-cad → general");
+    assert(!isKnownModePresetId("bot", "opendesign"), "旧 opendesign id 已退出 design seed");
+    assert(resolveModePresetId("bot", "opendesign") === "native", "旧 opendesign → general");
     assert(
       resolveModePresetId("working", "ai-ui") === "general-office",
       "非法跨模式 id → 目标模式默认（不带到别的模式）",
@@ -329,8 +327,9 @@ async function main(): Promise<void> {
           "project-management",
           "data-analysis",
           "drawio-ai",
+          "web-prototype",
         ]),
-      "MODE_SEED_PRESET_IDS.working 与出厂一致（7 个）",
+      "MODE_SEED_PRESET_IDS.working 与出厂一致（8 个）",
     );
   }
 
@@ -366,7 +365,7 @@ async function main(): Promise<void> {
     // drawio-ai 条目 modes:["working"] → coding/design 会话自动隐藏
     const rCoding = filterMcpConfigForMode(workingMcp, "coding", workingBase.mcpPolicy);
     assert(!rCoding.enabled.includes("drawio-ai"), "drawio-ai 不泄漏到 coding（modes: working）");
-    const rDesign = filterMcpConfigForMode(workingMcp, "design", workingBase.mcpPolicy);
+    const rDesign = filterMcpConfigForMode(workingMcp, "bot", workingBase.mcpPolicy);
     assert(!rDesign.enabled.includes("drawio-ai"), "drawio-ai 不泄漏到 design（modes: working）");
     // 非流程图办公 tag => deny drawio-ai
     for (const id of [
@@ -409,7 +408,7 @@ async function main(): Promise<void> {
       JSON.stringify(eff.mcpPolicy.allow) === JSON.stringify(["ardot-local"]),
       "design(用户 base) + ai-ui => allow 交集 = 仅 ardot-local",
     );
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       r.enabled.includes("ardot-local") &&
         !r.enabled.includes("penpot") &&
@@ -419,7 +418,7 @@ async function main(): Promise<void> {
   }
   {
     const eff = resolveEffectiveModePolicy(USER_BASE, resolveModePreset(USER_BASE, "web-prototype"));
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       r.enabled.includes("penpot") &&
         !r.enabled.includes("ardot-local") &&
@@ -431,7 +430,7 @@ async function main(): Promise<void> {
     );
     // 出厂 base（unrestricted）=> 可收窄到 penpot
     const effSeed = resolveEffectiveModePolicy(SEED_BASE, resolveModePreset(SEED_BASE, "web-prototype"));
-    const rSeed = filterMcpConfigForMode(MCP_FULL, "design", effSeed.mcpPolicy);
+    const rSeed = filterMcpConfigForMode(MCP_FULL, "bot", effSeed.mcpPolicy);
     assert(
       rSeed.enabled.includes("penpot") &&
         !rSeed.enabled.includes("ardot-local") &&
@@ -443,7 +442,7 @@ async function main(): Promise<void> {
   }
   {
     const eff = resolveEffectiveModePolicy(USER_BASE, resolveModePreset(USER_BASE, "3d-blender"));
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       r.enabled.includes("blender") &&
         !r.enabled.includes("ardot-local") &&
@@ -461,7 +460,7 @@ async function main(): Promise<void> {
   }
   {
     const eff = resolveEffectiveModePolicy(USER_BASE, resolveModePreset(USER_BASE, "mechanical-cad"));
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       r.enabled.includes("freecad") &&
         !r.enabled.includes("ardot-local") &&
@@ -488,7 +487,7 @@ async function main(): Promise<void> {
         eff.mcpPolicy.deny.includes("opendesign"),
       "general => deny 受管设计 provider；blender 作为普通 MCP 插件保留",
     );
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       !r.enabled.includes("ardot-local") &&
         !r.enabled.includes("penpot") &&
@@ -499,7 +498,7 @@ async function main(): Promise<void> {
       "general（用户 base）=> 排除受管设计 provider，已装 blender 仍可用",
     );
     const effSeed = resolveEffectiveModePolicy(SEED_BASE, resolveModePreset(SEED_BASE, "general"));
-    const rSeed = filterMcpConfigForMode(MCP_FULL, "design", effSeed.mcpPolicy);
+    const rSeed = filterMcpConfigForMode(MCP_FULL, "bot", effSeed.mcpPolicy);
     assert(
       !rSeed.enabled.includes("ardot-local") &&
         !rSeed.enabled.includes("penpot") &&
@@ -519,7 +518,7 @@ async function main(): Promise<void> {
         eff.mcpPolicy.mode === "hard",
       "opendesign => effective allow 仅 opendesign（base 白名单交集）",
     );
-    const r = filterMcpConfigForMode(MCP_FULL, "design", eff.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", eff.mcpPolicy);
     assert(
       r.enabled.includes("opendesign") &&
         !r.enabled.includes("ardot-local") &&
@@ -568,7 +567,7 @@ async function main(): Promise<void> {
       JSON.stringify(partial.mcpPolicy.allow) === JSON.stringify(["ardot-local"]),
       "部分交集 => allow 取交集（ardot-local）",
     );
-    const r = filterMcpConfigForMode(MCP_FULL, "design", partial.mcpPolicy);
+    const r = filterMcpConfigForMode(MCP_FULL, "bot", partial.mcpPolicy);
     assert(
       r.enabled.includes("ardot-local") && !r.enabled.includes("canva") && !r.enabled.includes("penpot"),
       "部分交集实际加载：仅 ardot-local",
@@ -594,7 +593,7 @@ async function main(): Promise<void> {
   console.log("\n== 2. resolver：Skill 收窄合成 ==");
   {
     const eff = resolveEffectiveModePolicy(USER_BASE, resolveModePreset(USER_BASE, "ai-ui"));
-    const filt = filterSkillsForMode(SKILLS, "design", eff.skillPolicy);
+    const filt = filterSkillsForMode(SKILLS, "bot", eff.skillPolicy);
     assert(
       filt.visible.some((s) => s.id === "ardot") &&
         filt.visible.some((s) => s.id === "ardot-design-generator") &&
@@ -602,7 +601,7 @@ async function main(): Promise<void> {
       "ai-ui + base allow(ardot 系列) => 交集后仅 ardot 技能可见",
     );
     const effSeed = resolveEffectiveModePolicy(SEED_BASE, resolveModePreset(SEED_BASE, "ai-ui"));
-    const filtSeed = filterSkillsForMode(SKILLS, "design", effSeed.skillPolicy);
+    const filtSeed = filterSkillsForMode(SKILLS, "bot", effSeed.skillPolicy);
     assert(
       filtSeed.visible.length === 2 && !filtSeed.visible.some((s) => s.id === "weekly-report"),
       "ai-ui（base 无白名单）=> 收窄到 ardot 技能",
@@ -617,7 +616,7 @@ async function main(): Promise<void> {
       basePolicy({ skillPolicy: { prefer: [], demote: [], hide: [], allow: ["ardot", "weekly-report"] } }),
       { id: "sk", label: "技能", skillPolicy: { prefer: [], demote: [], hide: [], allow: ["weekly-report"] } },
     );
-    const skFilt = filterSkillsForMode(SKILLS, "design", sk.skillPolicy);
+    const skFilt = filterSkillsForMode(SKILLS, "bot", sk.skillPolicy);
     assert(
       skFilt.visible.some((s) => s.id === "weekly-report") &&
         !skFilt.visible.some((s) => s.id === "ardot"),
@@ -628,7 +627,7 @@ async function main(): Promise<void> {
       basePolicy({ skillPolicy: { prefer: [], demote: [], hide: [], allow: ["ardot", "weekly-report"] } }),
       { id: "sk2", label: "技能2", skillPolicy: { prefer: [], demote: [], hide: [], allow: ["none-skill"] } },
     );
-    const skEmptyFilt = filterSkillsForMode(SKILLS, "design", skEmpty.skillPolicy);
+    const skEmptyFilt = filterSkillsForMode(SKILLS, "bot", skEmpty.skillPolicy);
     assert(skEmptyFilt.visible.length === 0, "skill 空交集 => 可见为空（不扩大）");
   }
 
@@ -638,7 +637,7 @@ async function main(): Promise<void> {
     const effective = resolveEffectiveModePolicy(USER_BASE, preset);
     const effProfile = withEffectiveModePolicy(
       {
-        id: "design",
+        id: "bot",
         labelZh: "设计创意",
         version: "1.0.0",
         blocks: [],
@@ -650,9 +649,9 @@ async function main(): Promise<void> {
       },
       effective,
     );
-    const mcpPreview = filterMcpConfigForMode(MCP_FULL, "design", effective.mcpPolicy);
+    const mcpPreview = filterMcpConfigForMode(MCP_FULL, "bot", effective.mcpPolicy);
     const assembly = assemblePrompt({
-      welcomeMode: "design",
+      welcomeMode: "bot",
       profile: effProfile,
       soul: { name: "Buddy", alias: "你", persona: "务实" },
       permissionMode: "default",
@@ -776,13 +775,13 @@ async function main(): Promise<void> {
   const store = new ModeProfileStore();
   {
     // 模拟本机现状：design/policy.json 存在但无 presets 字段（用户 Ardot 配置）
-    const designPolicyFile = join(sandbox, ".mybuddy", "modes", "design", "policy.json");
-    mkdirSync(join(sandbox, ".mybuddy", "modes", "design"), { recursive: true });
+    const designPolicyFile = join(sandbox, ".mybuddy", "modes", "bot", "policy.json");
+    mkdirSync(join(sandbox, ".mybuddy", "modes", "bot"), { recursive: true });
     writeFileSync(
       designPolicyFile,
       JSON.stringify({
         skillPolicy: {
-          prefer: ["design", "ui"],
+          prefer: ["bot", "ui"],
           demote: ["deploy"],
           hide: [],
           allow: ["ardot", "ardot-design-assistant", "image-to-ui", "image-understanding-native"],
@@ -796,34 +795,30 @@ async function main(): Promise<void> {
       }),
       "utf-8",
     );
-    const p = store.getProfile("design");
+    const p = store.getProfile("bot");
     assert(
       p.policy.presets?.length === 3 && p.policy.presets[0]?.id === "legacy-scene-1",
-      "旧 policy.json（无 presets，自定义 scenes）=> legacy 场景 + 回退出厂 2 个 seed preset",
+      "旧 policy.json（无 presets，自定义 scenes）=> legacy 场景 + 回退出厂 2 个 seed Tags",
     );
     assert(
-      JSON.stringify(p.policy.mcpPolicy.allow) === JSON.stringify(["canva", "ardot-local"]),
-      "base mcpPolicy 仍为用户覆盖（canva + ardot-local 未被重写）",
+      p.policy.mcpPolicy.allow.length === 0 && p.policy.mcpPolicy.deny.length === 0,
+      "Bot 去除旧 MCP 黑白名单",
     );
     assert(p.hasUserOverride === true, "hasUserOverride 仍为 true（用户 base 覆盖）");
     assert(
-      p.policy.skillPolicy.allow.includes("ardot"),
-      "用户 skillPolicy.allow 未被覆盖",
+      p.policy.skillPolicy.allow.length === 0,
+      "Bot 不保留技能白名单",
     );
-    const webPreset = resolveModePreset(p.policy, "web-prototype");
-    assert(webPreset?.id === "web-prototype", "回退出厂含 web-prototype");
-    const eff = resolveEffectiveModePolicy(p.policy, webPreset);
-    assert(
-      !(eff.mcpPolicy.allow ?? []).includes("penpot"),
-      "用户 base 未放行 penpot → web-prototype 合成后不含 penpot",
-    );
+    assert(!resolveModePreset(p.policy, "web-prototype"), "Bot 不再补入 Penpot");
+    const officePenpot = resolveModePreset(store.getProfile("working").policy, "web-prototype");
+    assert(officePenpot?.label === "Penpot", "办公补入 Penpot");
     // 保存 round-trip：presets 随保存落盘
-    store.savePolicy("design", p.policy);
-    const after = store.getProfile("design");
+    store.savePolicy("bot", p.policy);
+    const after = store.getProfile("bot");
     assert(after.policy.presets?.length === 3, "savePolicy 后 presets 保留（legacy + seed）");
     const disk = JSON.parse(readFileSync(designPolicyFile, "utf-8"));
     assert(Array.isArray(disk.presets) && disk.presets.length === 3, "policy.json 落盘含 presets");
-    assert(disk.mcpPolicy.allow.length === 2, "保存后用户 base allow 仍为 2 项（未被 preset 覆盖）");
+    assert(disk.mcpPolicy.allow.length === 0, "保存后的 Bot 不包含旧名单");
   }
 
   // working/coding：旧 policy.json（无 presets）向后兼容
@@ -847,8 +842,8 @@ async function main(): Promise<void> {
     const working = store.getProfile("working");
     assert(
       (working.policy.presets ?? []).map((p) => p.id).join(",") ===
-        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai",
-      "working 旧 policy（无 presets，scenes=出厂）=> 回退出厂 presets（7 个）",
+        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai,web-prototype",
+      "working 旧 policy（无 presets，scenes=出厂）=> 回退出厂 presets（8 个）",
     );
     assert(working.policy.scenes.length === 3, "scenes 字段仍保留（兼容）");
     const wDisk = JSON.parse(readFileSync(wFile, "utf-8"));
@@ -876,7 +871,7 @@ async function main(): Promise<void> {
     );
     const merged = store.getProfile("working");
     const ids = (merged.policy.presets ?? []).map((p) => p.id);
-    assert(ids.length === 7, `seed 并入：磁盘 3 个 + 新增 4 个 = 7（实际=${ids.length}）`);
+    assert(ids.length === 8, `seed 并入：磁盘 3 个 + 新增 5 个 = 8（实际=${ids.length}）`);
     assert(
       JSON.stringify(merged.policy.skillPolicy.allow) === JSON.stringify(["fastcopy-copy", "officecli"]),
       "seed 并入不覆盖用户 base 个性化（skillPolicy.allow 保留）",
@@ -987,12 +982,12 @@ async function main(): Promise<void> {
   console.log("\n== 4.1 出厂技能 base allow 回补（旧配置迁移，P2-1）==");
   {
     // 旧配置迁移：design base allow 非空但缺新出厂技能（blender-* / freecad）
-    const dFile = join(sandbox, ".mybuddy", "modes", "design", "policy.json");
+    const dFile = join(sandbox, ".mybuddy", "modes", "bot", "policy.json");
     writeFileSync(
       dFile,
       JSON.stringify({
         skillPolicy: {
-          prefer: ["design", "ui"],
+          prefer: ["bot", "ui"],
           demote: ["deploy"],
           hide: [],
           allow: ["ardot", "ardot-design-assistant", "image-to-ui", "image-understanding-native", "simplecadapi"],
@@ -1006,10 +1001,10 @@ async function main(): Promise<void> {
       }),
       "utf-8",
     );
-    const migrated = store.getProfile("design");
+    const migrated = store.getProfile("bot");
     const baseAllow = migrated.policy.skillPolicy.allow;
     for (const name of ["ardot", "ardot-design-assistant", "image-to-ui", "image-understanding-native", "simplecadapi"]) {
-      assert(baseAllow.includes(name), `用户显式条目保留 ${name}`);
+      assert(!baseAllow.includes(name), `Bot 去除旧技能白名单 ${name}`);
     }
     assert(
       !baseAllow.includes("blender-core") && !baseAllow.includes("freecad"),
@@ -1022,11 +1017,11 @@ async function main(): Promise<void> {
   }
   {
     // 新安装 / 删除 policy 重建：base allow 为空 → 不凭空创建白名单
-    const dFile = join(sandbox, ".mybuddy", "modes", "design", "policy.json");
+    const dFile = join(sandbox, ".mybuddy", "modes", "bot", "policy.json");
     writeFileSync(
       dFile,
       JSON.stringify({
-        skillPolicy: { prefer: ["design"], demote: [], hide: [], allow: [] },
+        skillPolicy: { prefer: ["bot"], demote: [], hide: [], allow: [] },
         toolPolicy: { mode: "soft", prefer: [], demote: [], deny: [] },
         mcpPolicy: { mode: "hard", allow: [], deny: [] },
         suggestedModelId: null,
@@ -1036,17 +1031,17 @@ async function main(): Promise<void> {
       }),
       "utf-8",
     );
-    const emptyAllow = store.getProfile("design");
+    const emptyAllow = store.getProfile("bot");
     assert(emptyAllow.policy.skillPolicy.allow.length === 0, "base allow 为空时不补全（不创建白名单）");
   }
 
   console.log("\n== 4.2 preset skillPolicy 字段级回补（P3-3 repo 断言）==");
   {
-    const dFile = join(sandbox, ".mybuddy", "modes", "design", "policy.json");
+    const dFile = join(sandbox, ".mybuddy", "modes", "bot", "policy.json");
     writeFileSync(
       dFile,
       JSON.stringify({
-        skillPolicy: { prefer: ["design"], demote: [], hide: [], allow: [] },
+        skillPolicy: { prefer: ["bot"], demote: [], hide: [], allow: [] },
         toolPolicy: { mode: "soft", prefer: [], demote: [], deny: [] },
         mcpPolicy: { mode: "hard", allow: [], deny: [] },
         suggestedModelId: null,
@@ -1080,14 +1075,14 @@ async function main(): Promise<void> {
       }),
       "utf-8",
     );
-    const p2 = store.getProfile("design");
+    const p2 = store.getProfile("bot");
     assert(
-      !p2.policy.presets?.some((x) => x.id === "3d-blender" || x.id === "ai-ui" || x.id === "opendesign"),
-      "磁盘上的已退役 Tag 读盘时剔除",
+      ["3d-blender", "ai-ui", "opendesign"].every(id => p2.policy.presets?.some(x => x.id === id && !x.mcpPolicy && !x.skillPolicy && !x.providerMcpIds)),
+      "Bot 保留原 Tag 并去除其门禁策略",
     );
     assert(
-      p2.policy.presets?.some((x) => x.id === "web-prototype"),
-      "出厂 web-prototype 仍会并入",
+      !p2.policy.presets?.some((x) => x.id === "web-prototype"),
+      "Bot 不再并入 Penpot",
     );
   }
 
@@ -1100,12 +1095,12 @@ async function main(): Promise<void> {
       id: "t1",
       title: "设计任务",
       updatedAt: 1,
-      welcomeMode: "design",
+      welcomeMode: "bot",
       modePresetId: "ai-ui",
     });
     const loaded = db.listTasks().find((t) => t.id === "t1");
     assert(loaded?.modePresetId === "ai-ui", "upsert → load round-trip：modePresetId=ai-ui");
-    assert(loaded?.welcomeMode === "design", "welcomeMode 同步");
+    assert(loaded?.welcomeMode === "bot", "welcomeMode 同步");
     // 未传字段 → 保留旧值（rename 等路径不清 preset）
     db.upsertTask({ id: "t1", title: "改名", updatedAt: 2 });
     assert(db.listTasks().find((t) => t.id === "t1")?.modePresetId === "ai-ui", "未传 modePresetId 保留旧值");
@@ -1126,22 +1121,22 @@ async function main(): Promise<void> {
   console.log("\n== 6. buildPresetBarChips: current UI gate ==");
   {
     // This gate follows current design seeds; retired tags must not become a second source of truth.
-    const designPresets = MODE_SEEDS.design.policy.presets ?? [];
+    const designPresets = MODE_SEEDS.bot.policy.presets ?? [];
     const chips = buildPresetBarChips({
       presets: designPresets,
-      selectedPresetId: "general",
+      selectedPresetId: "native",
       availableMcpServerNames: new Set(),
       locked: false,
     });
-    assert(chips.length === 2, "current design renders only general/web-prototype");
-    assert(chips.find((c) => c.id === "general")?.selected === true, "general selected");
-    assert(chips.find((c) => c.id === "general")?.disabled === false, "general always enabled");
-    assert(chips.find((c) => c.id === "web-prototype")?.disabled === true, "web-prototype disabled without penpot");
-    assert(chips.find((c) => c.id === "web-prototype")?.title?.includes("Penpot MCP"), "web-prototype explains missing Penpot MCP");
+    assert(chips.length === 2, "Bot renders native/codemode");
+    assert(chips.find((c) => c.id === "native")?.selected === true, "native selected");
+    assert(chips.find((c) => c.id === "native")?.disabled === false, "native always enabled");
+    assert(chips.find((c) => c.id === "codemode")?.disabled === false, "Bot Tags do not depend on MCP installation");
+    assert(!chips.find((c) => c.id === "codemode")?.title?.includes("缺少"), "Bot has no provider gate");
     assert(!chips.some((c) => ["ai-ui", "3d-blender", "mechanical-cad", "opendesign"].includes(c.id)), "retired design tags stay absent from current UI");
     const lockedChips = buildPresetBarChips({
       presets: designPresets,
-      selectedPresetId: "general",
+      selectedPresetId: "native",
       availableMcpServerNames: new Set(["penpot"]),
       locked: true,
     });
@@ -1149,7 +1144,7 @@ async function main(): Promise<void> {
     assert(Boolean(lockedChips[0]?.title), "locked chip keeps an explanatory title");
     const allAvail = buildPresetBarChips({
       presets: designPresets,
-      selectedPresetId: "general",
+      selectedPresetId: "native",
       availableMcpServerNames: new Set(["penpot"]),
       locked: false,
     });
@@ -1163,10 +1158,10 @@ async function main(): Promise<void> {
       locked: false,
     });
     assert(
-      workingChips.length === 7 &&
+      workingChips.length === 8 &&
         workingChips.filter((c) => !c.disabled).length === 6 &&
         workingChips.find((c) => c.id === "weekly-report")?.selected === true,
-      "working chips：7 个，非 provider 的 6 个始终可选 + 选中态",
+      "working chips：8 个，非 provider 的 6 个始终可选 + 选中态",
     );
     const drawioChip = workingChips.find((c) => c.id === "drawio-ai");
     assert(
@@ -1287,40 +1282,37 @@ async function main(): Promise<void> {
       title: "空设计任务",
       updatedAt: Date.now(),
       messages: [],
-      welcomeMode: "design",
-      modePresetId: "general",
+      welcomeMode: "bot",
+      modePresetId: "native",
     };
-    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "design", modePresetId: "general" });
-    useAppStore.getState().setModePreset("web-prototype");
+    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "bot", modePresetId: "native" });
+    useAppStore.getState().setModePreset("codemode");
     const t = useAppStore.getState().tasks.find((x) => x.id === "t-empty");
-    assert(t?.modePresetId === "web-prototype", "空任务 setModePreset 更新任务");
-    assert(useAppStore.getState().modePresetId === "web-prototype", "全局 selection 同步");
+    assert(t?.modePresetId === "codemode", "空任务 setModePreset 更新任务");
+    assert(useAppStore.getState().modePresetId === "codemode", "全局 selection 同步");
     assert(
-      upserts.some((u) => u.id === "t-empty" && u.modePresetId === "web-prototype"),
+      upserts.some((u) => u.id === "t-empty" && u.modePresetId === "codemode"),
       "setModePreset 持久化 upsertTask.modePresetId",
     );
 
-    // 锁定任务：只更新全局，不改任务
+    // Bot can change tool mode after messages; ordinary coding keeps its existing lock.
     upserts.length = 0;
-    const lockedTask = {
-      id: "t-locked",
-      title: "有会话任务",
-      updatedAt: Date.now(),
-      messages: [{ id: "m1" }],
-      welcomeMode: "design",
-      modePresetId: "general",
-      sessionFile: "/tmp/s.jsonl",
-    };
+    const startedBot = { ...emptyTask, messages: [{ id: "m1" }] };
+    useAppStore.setState({ tasks: [startedBot as never], activeTaskId: "t-empty" });
+    useAppStore.getState().setModePreset("codemode");
+    assert(useAppStore.getState().tasks[0]?.modePresetId === "codemode", "已开始的 Bot 可切 Code Mode");
+    assert(upserts.some(u => u.id === "t-empty" && u.modePresetId === "codemode"), "Bot Tag 切换持久化");
+    const lockedTask = { id: "t-locked", title: "有会话任务", updatedAt: Date.now(),
+      messages: [{ id: "m1" }], welcomeMode: "coding", modePresetId: "minimal", sessionFile: "/tmp/s.jsonl" };
+    upserts.length = 0;
     useAppStore.setState({ tasks: [lockedTask as never], activeTaskId: "t-locked" });
-    useAppStore.getState().setModePreset("general");
-    const lt = useAppStore.getState().tasks.find((x) => x.id === "t-locked");
-    assert(lt?.modePresetId === "general", "锁定任务 preset 不被修改（冻结）");
-    assert(useAppStore.getState().modePresetId === "general", "锁定任务只更新全局 selection");
-    assert(upserts.length === 0, "锁定任务不写库");
+    useAppStore.getState().setModePreset("code-review");
+    assert(useAppStore.getState().tasks[0]?.modePresetId === "minimal", "代码开发任务仍锁定 preset");
+    assert(upserts.length === 0, "锁定的代码开发任务不写库");
 
     // 跨模式切换（空任务）：目标模式始终拿到合法默认 preset
     upserts.length = 0;
-    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "design", modePresetId: "web-prototype" });
+    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "bot", modePresetId: "codemode" });
     useAppStore.getState().setWelcomeMode("working");
     const wt = useAppStore.getState().tasks.find((x) => x.id === "t-empty");
     assert(
@@ -1338,17 +1330,17 @@ async function main(): Promise<void> {
         isKnownModePresetId("coding", useAppStore.getState().modePresetId),
       "working → coding：全局 = coding 默认（minimal），不带 weekly-report",
     );
-    useAppStore.getState().setWelcomeMode("design");
+    useAppStore.getState().setWelcomeMode("bot");
     assert(
-      useAppStore.getState().modePresetId === "general" &&
-        isKnownModePresetId("design", useAppStore.getState().modePresetId),
+      useAppStore.getState().modePresetId === "native" &&
+        isKnownModePresetId("bot", useAppStore.getState().modePresetId),
       "coding → design：全局 = design 默认（general）",
     );
     // 重选当前模式：保留 selection
-    useAppStore.getState().setModePreset("web-prototype");
-    useAppStore.getState().setWelcomeMode("design");
+    useAppStore.getState().setModePreset("codemode");
+    useAppStore.getState().setWelcomeMode("bot");
     assert(
-      useAppStore.getState().modePresetId === "web-prototype",
+      useAppStore.getState().modePresetId === "codemode",
       "重选当前模式 => 保留已有 selection（web-prototype）",
     );
 
@@ -1356,7 +1348,7 @@ async function main(): Promise<void> {
     useAppStore.setState({ tasks: [lockedTask as never], activeTaskId: "t-locked" });
     useAppStore.getState().setWelcomeMode("coding");
     const lt2 = useAppStore.getState().tasks.find((x) => x.id === "t-locked");
-    assert(lt2?.modePresetId === "general" && lt2?.welcomeMode === "design", "锁定任务上切模式：任务不变");
+    assert(lt2?.modePresetId === "minimal" && lt2?.welcomeMode === "coding", "锁定任务上切模式：任务不变");
     assert(
       useAppStore.getState().welcomeMode === "coding" &&
         useAppStore.getState().modePresetId === "minimal",
@@ -1364,10 +1356,10 @@ async function main(): Promise<void> {
     );
 
     // duplicateTaskWithMode：同模式带 selection；跨模式取目标模式默认
-    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "design", modePresetId: "web-prototype" });
-    useAppStore.getState().duplicateTaskWithMode("design");
+    useAppStore.setState({ tasks: [emptyTask as never], activeTaskId: "t-empty", welcomeMode: "bot", modePresetId: "codemode" });
+    useAppStore.getState().duplicateTaskWithMode("bot");
     const dup = useAppStore.getState().tasks[0];
-    assert(dup?.modePresetId === "web-prototype" && dup?.id !== "t-empty", "复制为 design 任务携带当前 selection");
+    assert(dup?.modePresetId === "codemode" && dup?.id !== "t-empty", "复制为 design 任务携带当前 selection");
     useAppStore.getState().duplicateTaskWithMode("coding");
     const dupCoding = useAppStore.getState().tasks[0];
     assert(dupCoding?.modePresetId === "minimal", "复制为 coding 任务 preset = coding 默认（合法）");
@@ -1382,8 +1374,8 @@ async function main(): Promise<void> {
     useAppStore.setState({ tasks: [lockedTask as never], activeTaskId: null, welcomeMode: "coding", modePresetId: "bugfix-test" });
     useAppStore.getState().setActiveTask("t-locked");
     assert(
-      useAppStore.getState().modePresetId === "general",
-      "setActiveTask：全局跟随任务 preset（design -> general）",
+      useAppStore.getState().modePresetId === "minimal",
+      "setActiveTask：全局跟随任务 preset（coding -> minimal）",
     );
     const oldTask = {
       id: "t-old",
@@ -1393,7 +1385,7 @@ async function main(): Promise<void> {
       welcomeMode: "coding",
       // 无 modePresetId（旧任务）
     };
-    useAppStore.setState({ tasks: [oldTask as never], activeTaskId: null, welcomeMode: "design", modePresetId: "web-prototype" });
+    useAppStore.setState({ tasks: [oldTask as never], activeTaskId: null, welcomeMode: "bot", modePresetId: "codemode" });
     useAppStore.getState().setActiveTask("t-old");
     assert(
       useAppStore.getState().modePresetId === "minimal",
@@ -1460,14 +1452,14 @@ async function main(): Promise<void> {
       tasks: [],
       activeTaskId: null,
       draft: null,
-      welcomeMode: "design",
-      modePresetId: "general",
+      welcomeMode: "bot",
+      modePresetId: "native",
       homeSpaceId: null,
       spaces: [],
     });
     useAppStore.getState().sendMessage("帮我设计一张海报", [], undefined);
     assert(
-      capturedReq?.modePresetId === "general",
+      capturedReq?.modePresetId === "native",
       "sendMessage（design）→ agent.prompt req.modePresetId = general",
     );
   }

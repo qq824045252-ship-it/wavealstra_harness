@@ -44,7 +44,7 @@ function parseContext(value: string): AgentLoadoutObservationContextDto {
     const parsed = JSON.parse(value) as Partial<AgentLoadoutObservationContextDto> | null;
     if (!parsed || typeof parsed !== "object") throw new Error("invalid context");
     return {
-      mode: parsed.mode === "working" || parsed.mode === "design" ? parsed.mode : "coding",
+      mode: parsed.mode === "working" || parsed.mode === "bot" ? parsed.mode : "coding",
       projectId: typeof parsed.projectId === "string" && parsed.projectId ? parsed.projectId : undefined,
       workspaceId: typeof parsed.workspaceId === "string" && parsed.workspaceId ? parsed.workspaceId : undefined,
       tagId: typeof parsed.tagId === "string" && parsed.tagId ? parsed.tagId : undefined,

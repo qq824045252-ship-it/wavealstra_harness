@@ -50,6 +50,7 @@ export function matchesTaskFilter(
 
 export function taskHasActiveExecution(task: Task | null): boolean {
   if (!task) return false;
+  if (task.durable) return task.durable.busy;
   if (hasActiveExecutionMessages(task.messages)) return true;
   if (task.status === "in_progress") return true;
   if (task.status === "completed" || task.status === "failed") return false;

@@ -3,8 +3,10 @@ import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
 import { RuntimeRequirementOrchestrator } from "../src/main/professional-tools/RuntimeRequirementOrchestrator";
 import type { ManagedToolProviderId, ProfessionalToolStatusDto } from "../src/shared/professional-tools";
 
+// Exercise readiness with the real Penpot preset after its move to office.
+const officePreset = MODE_SEEDS.working.policy.presets!.find(preset => preset.id === "web-prototype")!;
 const profileStore = {
-  getProfile(mode: "working" | "coding" | "design") {
+  getProfile(mode: "working" | "coding" | "bot") {
     return MODE_SEEDS[mode];
   },
 };
@@ -55,15 +57,18 @@ async function main(): Promise<void> {
   assert(penpot.requiredBy?.includes("web-prototype"), "requiredBy should point to declaring preset");
   assert.equal(penpot.launch, "backend", "idle state should expose requirement default launch policy");
 
-  orchestrator.onModePresetSelected("design", "web-prototype");
+  orchestrator.onModePresetSelected("bot", "web-prototype");
+  await orchestrator.ensurePresetReady(MODE_SEEDS.bot.policy.presets?.find(item => item.id === "web-prototype"));
+  assert.equal(calls.starts, 0, "Bot Tags never prewarm or wait for MyBuddy managed runtimes");
+  orchestrator.onModePresetSelected("working", "web-prototype");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(calls.starts, 1, "preset selection should prewarm declared backend runtime");
 
-  await orchestrator.ensurePresetReady(MODE_SEEDS.design.policy.presets?.find((item) => item.id === "web-prototype"));
+  await orchestrator.ensurePresetReady(officePreset);
   assert.equal(penpotReady, true, "send-time preset gate should leave runtime ready");
 
   const warnings = orchestrator.previewManagedProviderWarnings(
-    MODE_SEEDS.design.policy.presets?.find((item) => item.id === "web-prototype"),
+    officePreset,
     "web-prototype",
     [],
   );
@@ -71,7 +76,7 @@ async function main(): Promise<void> {
 
   await assert.rejects(
     orchestrator.prepareManagedProviders(
-      MODE_SEEDS.design.policy.presets?.find((item) => item.id === "web-prototype"),
+      officePreset,
       "web-prototype",
       [],
     ),
@@ -80,7 +85,7 @@ async function main(): Promise<void> {
   );
 
   await orchestrator.prepareManagedProviders(
-    MODE_SEEDS.design.policy.presets?.find((item) => item.id === "web-prototype"),
+    officePreset,
     "web-prototype",
     ["penpot"],
   );
@@ -94,7 +99,7 @@ async function main(): Promise<void> {
 
   const noRuntime = new RuntimeRequirementOrchestrator(profileStore);
   const missingWarnings = noRuntime.previewManagedProviderWarnings(
-    MODE_SEEDS.design.policy.presets?.find((item) => item.id === "web-prototype"),
+    officePreset,
     "web-prototype",
     ["penpot"],
   );

@@ -39,7 +39,7 @@ async function main(): Promise<void> {
 
   console.log("== 2) 服务类 Tag：backend + http ==");
   {
-    const penpot = requirementsFor("web-prototype", DESIGN_MODE_PRESETS).requirements.find((x) => x.providerId === "penpot");
+    const penpot = requirementsFor("web-prototype", WORKING_MODE_PRESETS).requirements.find((x) => x.providerId === "penpot");
     assert(penpot !== undefined, "web-prototype 声明 requiredRuntimes[penpot]");
     assert(penpot?.launchPolicy === "backend", "web-prototype → launchPolicy=backend（只起服务）");
     assert(penpot?.readinessPolicy === "http", "web-prototype → readinessPolicy=http");
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   console.log("== 3) 零自动启动：general / drawio-ai / 其它 preset ==");
   {
     const general = requirementsFor("general", DESIGN_MODE_PRESETS);
-    assert(general.preset !== undefined && general.requirements.length === 0, "general 零自动启动");
+    assert(general.preset === undefined, "通用设计 Tag 已删除");
     const drawio = requirementsFor("drawio-ai", WORKING_MODE_PRESETS);
     assert(drawio.preset !== undefined && drawio.requirements.length === 0, "drawio-ai（流程图）零自动启动（进程由会话 adapter 托管）");
     for (const p of DESIGN_MODE_PRESETS) {
@@ -66,9 +66,10 @@ async function main(): Promise<void> {
     assert(penpot?.providerId === "penpot" && penpot.launchPolicy === "backend", "penpot string → provider 默认");
   }
 
-  console.log("== 5) working/coding 全部 preset 不声明 runtime（drawio 除外零声明）==");
+  console.log("== 5) working/coding 除 Penpot 外不声明 runtime ==");
   {
     for (const p of [...WORKING_MODE_PRESETS, ...CODING_MODE_PRESETS]) {
+      if (p.id === "web-prototype") continue;
       assert((p.requiredRuntimes ?? []).length === 0, `${p.id} 未声明 requiredRuntimes`);
     }
   }

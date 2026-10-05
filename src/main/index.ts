@@ -2847,6 +2847,7 @@ app.whenReady().then(async () => {
     beforeTrash: async (taskId) => {
       try {
         await agentService.abort(taskId);
+        await agentService.releaseDurableTask(taskId);
       } catch {
         /* 无活跃 session 时 abort 可忽略 */
       }
@@ -2867,6 +2868,9 @@ app.whenReady().then(async () => {
       artifactDomainService?.removeByTask(taskId);
     },
     onPurge: async (taskId) => {
+      // Durable history shares the task's trash/restore lifecycle, then goes away only on permanent deletion.
+      try { await agentService.purgeDurableTask(taskId); }
+      catch (err) { console.warn("[index] purge Durable storage failed", err); }
       // 永久删除时清理任务级配置（settings.json taskConnectorIds）；trash/restore 阶段保留
       try {
         agentService.clearTaskConnectorIds(taskId);
@@ -2929,6 +2933,10 @@ app.whenReady().then(async () => {
     }
   });
   await agentService.init();
+  // User-requested design retirement: use the same recoverable deletion as the task UI.
+  for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
+    if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
+  }
   // Draw.io AI：启动自愈（npx 可解析且条目缺失/过期时写入，用户停用不覆盖）
   void professionalToolService
     .drawioMcpPayload()
@@ -3358,6 +3366,7 @@ app.on("before-quit", (event) => {
     try { professionalToolService?.stopOwned(); } catch { /* best effort */ }
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
+    try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }
     // Gadget 进程必须真正退出后才关闭 DB / 允许 Electron 结束。
     await Promise.allSettled([

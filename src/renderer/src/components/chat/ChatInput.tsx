@@ -40,6 +40,7 @@ import TagPicker from "./TagPicker";
 import HomePermissionPicker from "./HomePermissionPicker";
 import FullAccessConfirmModal from "./FullAccessConfirmModal";
 import ContextUsageControl from "./ContextUsageControl";
+import PiCodeModeChip from "./PiCodeModeChip";
 import { isManualCompactionRunning } from "@shared/compaction";
 import GenerationSpeed from "./GenerationSpeed";
 import { FileBadge } from "@/components/common/FileBadge";
@@ -637,7 +638,7 @@ export default function ChatInput({
   const fullAccess = permissionMode === "auto";
   // 已允许完全访问时，无需在执行过程中重复显示开关条
   const showExecPermBar =
-    executing && Boolean(execLabel) && !fullAccess && !execPermDismissed;
+    welcomeMode !== "bot" && executing && Boolean(execLabel) && !fullAccess && !execPermDismissed;
 
   useEffect(() => {
     if (!executing) setExecPermDismissed(false);
@@ -653,7 +654,7 @@ export default function ChatInput({
         s.enabled &&
         s.command &&
         isSkillVisibleForMode(s, welcomeMode, skillPolicy, {
-          disableFilter: !skillFilterOn,
+          disableFilter: welcomeMode === "bot" || !skillFilterOn,
         }) &&
         (slashQuery === "" || s.command.startsWith(slashQuery) || s.name.includes(slashQuery)),
     );
@@ -1808,7 +1809,7 @@ export default function ChatInput({
               </button>
             </span>
           )}
-          {variant !== "home" && (
+          {variant !== "home" && welcomeMode !== "bot" && (
             <HomePermissionPicker
               compact
               quiet
@@ -1831,7 +1832,8 @@ export default function ChatInput({
           {variant !== "home" && activeTaskId && (
             <GenerationSpeed taskId={activeTaskId} btw={btwActive} />
           )}
-          {variant !== "home" && <ContextUsageControl executing={executing} />}
+          {welcomeMode === "bot" && variant === "chat" && <TagPicker open={tagOpen} onToggle={() => setTagOpen(!tagOpen)} onClose={() => setTagOpen(false)} />}
+          {welcomeMode === "bot" ? <PiCodeModeChip taskId={activeTaskId ?? undefined} welcomeMode="bot" /> : variant !== "home" && <ContextUsageControl executing={executing} />}
           <div className="input-popup-anchor" ref={modelAnchorRef}>
 
             <button
@@ -2187,7 +2189,7 @@ export default function ChatInput({
               }}
               onClose={() => setProjectOpen(false)}
             />
-            <HomePermissionPicker
+            {welcomeMode !== "bot" && <HomePermissionPicker
               quiet
               open={homePermOpen}
               onToggle={() => {
@@ -2196,7 +2198,7 @@ export default function ChatInput({
                 setProjectOpen(false);
               }}
               onClose={() => setHomePermOpen(false)}
-            />
+            />}
           </div>
         )}
       </div>

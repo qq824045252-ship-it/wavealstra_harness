@@ -40,7 +40,7 @@ export interface BlueprintTaskDefinition {
   key: string;
   title: string;
   status?: string;
-  welcomeMode?: "working" | "coding" | "design";
+  welcomeMode?: "working" | "coding" | "bot";
 }
 
 export interface BlueprintGadgetDefinition {
@@ -311,14 +311,14 @@ function validateWorkspaceNode(
         if (seen.has(taskKey)) throw new Error(`Blueprint key 重复：${taskKey}`);
         seen.add(taskKey);
         if (task.status !== undefined && typeof task.status !== "string") throw new Error("Blueprint task status 必须是字符串");
-        if (task.welcomeMode !== undefined && task.welcomeMode !== "working" && task.welcomeMode !== "coding" && task.welcomeMode !== "design") {
+        if (task.welcomeMode !== undefined && task.welcomeMode !== "working" && task.welcomeMode !== "coding" && task.welcomeMode !== "bot") {
           throw new Error("Blueprint task welcomeMode 无效");
         }
         return {
           key: taskKey,
           title: requireString(task.title, "Blueprint task title", 240),
           ...(typeof task.status === "string" ? { status: task.status } : {}),
-          ...(task.welcomeMode === "working" || task.welcomeMode === "coding" || task.welcomeMode === "design"
+          ...(task.welcomeMode === "working" || task.welcomeMode === "coding" || task.welcomeMode === "bot"
             ? { welcomeMode: task.welcomeMode as BlueprintTaskDefinition["welcomeMode"] }
             : {}),
         };

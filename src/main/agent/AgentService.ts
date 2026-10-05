@@ -1,6 +1,10 @@
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
-import { resolveTaskMemoryScope } from "./MemoryContextProjection";
+import { DurableBotService } from "./durable/DurableBotService";
+import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
+import { durableDomainTools } from "./durable/DurableDomainTools";
+import { durableText } from "./durable/DurableTurnProjection";
+import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
 import { resolveConversationBranchSourceRoots } from "./session-branch";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
@@ -8,7 +12,7 @@ import { createPiConsultSession, runMultiModelConsult } from "../capabilities/Mu
 import { ExecutionFailureRepository } from "./ExecutionFailureRepository";
 import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionRequestGuard, withModelInvocationSettings } from "./ModelInvocationAdmission";
 import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralContextProjection";
-import { isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
+import { EvidenceBudget, isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
 import { bindLegacyMemoryHistory } from "./LegacyMemorySummaryRecovery";
 import { attachSubagentModelRuntime, stopSubagentsForModelScopeChange } from "../capabilities/subagent/index";
 import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
@@ -99,6 +103,7 @@ import {
   type SkillDto,
   type SoulDto,
   type TaskHistoryDto,
+  type TaskDto,
   type WelcomeMode,
   type FileBackupInfoDto,
   type ModeBlockId,
@@ -140,7 +145,7 @@ import { AppDatabase } from "../db/AppDatabase";
 import { ProjectRepository } from "../project/ProjectRepository";
 import { ProjectContextResolver } from "../project/ProjectContextResolver";
 import type { ResolvedProjectContext } from "../../shared/project-domain";
-import { getAuthPath, getModelsPath, getMyBuddyDir, getSkillsDir, getPromptsDir } from "../paths";
+import { getAuthPath, getModelsPath, getMyBuddyDir, getSkillsDir, getPromptsDir, getMcpDir } from "../paths";
 import { pickDefaultModelAfterLogin } from "../../shared/provider-login";
 import {
   assertPathInsideTask,
@@ -541,6 +546,8 @@ export class AgentService {
   private readonly libraryWorkspaceContext: LibraryWorkspaceContextService;
   private readonly sessionExtensions: SessionExtensionAssembler;
   private readonly createAgentSessionFactory: typeof createAgentSession;
+  private durableBots: DurableBotService | undefined;
+  private durableModels: ModelRuntime | undefined;
   private readonly emittedArtifactPaths = new Map<string, Set<string>>();
   /** 3C：Artifact Domain 注入（Main 装配时传入；Agent 只负责 ingest 与消息关联） */
   private artifactService: ArtifactService | null = null;
@@ -1032,8 +1039,9 @@ export class AgentService {
   private emitTaskLifecycle(event: AgentTaskLifecycleEvent): void {
     if (event.kind === "completed" || event.kind === "failed") {
       if (this.notificationSuppressedAssistantIds.has(event.assistantMessageId)) return;
-      if (this.lifecycleTerminalAssistantIds.has(event.assistantMessageId)) return;
-      this.lifecycleTerminalAssistantIds.add(event.assistantMessageId);
+      const key = `${event.taskId}:${event.assistantMessageId}`;
+      if (this.lifecycleTerminalAssistantIds.has(key)) return;
+      this.lifecycleTerminalAssistantIds.add(key);
       if (this.lifecycleTerminalAssistantIds.size > 1200) {
         const oldest = this.lifecycleTerminalAssistantIds.values().next().value as string | undefined;
         if (oldest) this.lifecycleTerminalAssistantIds.delete(oldest);
@@ -1118,7 +1126,146 @@ export class AgentService {
     attachSubagentModelRuntime(this.modelRuntime);
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();
+    // Same Pi models/auth files, with no MyBuddy request-admission wrappers on Bot execution.
+    this.durableModels = await ModelRuntime.create({ authPath: getAuthPath(), modelsPath: getModelsPath(), refreshOnCreate: false });
+    registerMyBuddyProviders(this.durableModels);
+    await this.durableModels.refresh({ allowNetwork: false });
+    this.durableBots = new DurableBotService({
+      db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
+      assetsDir: typeof __dirname === "string" ? __dirname : undefined,
+      resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
+      defaultModel: () => this.settingsStore.read().defaultModelId,
+      toolMode: task => {
+        const preset = resolveModePreset(this.modeProfiles.getProfile("bot").policy, task.modePresetId);
+        return preset?.botToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
+      },
+      instructions: task => this.botInstructions(task),
+      onSettled: (taskId, snapshot) => {
+        if (!snapshot.outcome || snapshot.outcome === "aborted") return;
+        const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
+        if (!message) return;
+        this.emitTaskLifecycle(snapshot.outcome === "failed" ? { kind: "failed", taskId, assistantMessageId: message.id, error: snapshot.error ?? "Durable 执行未完成" }
+          : { kind: "completed", taskId, assistantMessageId: message.id });
+      },
+      onEntries: (taskId, entries) => {
+        let turn = 0, index = 0;
+        for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
+          if (entry.kind === "pi.user") turn++;
+          for (const message of entry.model ?? []) {
+            if (message.role !== "assistant") continue;
+            this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${entry.conversationId}`,
+              persistedEntryId: `durable:${taskId}:${entry.conversationId}:${entry.id}`, sourceKind: "main", sourceDetail: "pi-durable",
+              userTurn: turn, message,
+              sample: { turnIndex: ++index, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
+                ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null },
+            });
+          }
+        }
+      },
+      tools: async (task, cwd) => durableDomainTools([
+        ...this.sessionExtensions.domainExtensions(task.id, this.settingsStore.read().memoryEnabled, this.gadgetService),
+        createBuiltinCapabilityExtension({ taskId: task.id, taskRoot: cwd, nativeExecution: true,
+          runtime: this.builtinCapabilities, browser: this.browserAutomation,
+          artifactService: () => this.artifactService, getProducerMessageId: () => this.durableBots?.lastAssistantId(task.id),
+          getIsolationLevel: () => "none",
+        }),
+      ], { cwd, models: this.durableModels! }),
+      evidence: (task, messages) => {
+        const query = durableText([...messages].reverse().find(message => message.role === "user")?.content);
+        const modelId = task.modelId ?? this.settingsStore.read().defaultModelId ?? "";
+        const model = this.durableModels?.getModel(modelId.slice(0, modelId.indexOf("/")), modelId.slice(modelId.indexOf("/") + 1));
+        const budget = model ? new EvidenceBudget(model, 0) : undefined;
+        const memory = this.settingsStore.read().memoryEnabled
+          ? projectMemoryContext(this.memoryService, { ...resolveTaskMemoryScope(task.id, task), query,
+            includeInherited: true, statuses: ["active"], trackRecall: false, budgetChars: budget?.memoryCap }).text : "";
+        const memoryText = budget ? budget.takeInitial("memory", memory, budget.memoryCap) : memory;
+        const materials = this.libraryWorkspaceContext.projectionSources(task.id).map(source => budget ? budget.takeInitial(source.id, source.text, 4500) : source.text);
+        return [memoryText, ...materials].filter(Boolean).join("\n\n");
+      },
+      onTurns: (taskId, turns) => {
+        if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled) return;
+        let extract = false;
+        for (const turn of turns) extract = this.memoryPipeline.capture(turn).shouldExtractL1 || extract;
+        if (!extract) return;
+        this.notifyMemoryChanged({ scope: "settings" });
+        // A separate background consumer of committed evidence. It never steers or blocks Bot execution.
+        void this.queuePendingMemoryExtraction([taskId]).catch(error => console.warn("[Durable] Memory extraction failed", error));
+      },
+      prepareInput: request => {
+        if (request.connectorIds) this.settingsStore.setTaskConnectorIds(request.taskId, request.connectorIds);
+        return this.appendSelectionContexts(this.appendTerminalContext(request.text, request.terminalContext), request.selections, request.selection);
+      },
+      prepareImages: async request => {
+        const attachments = request.attachments?.filter(item => isImageAttachment(item.name, item.path)) ?? [];
+        if (!attachments.length) return { images: [] };
+        const id = request.modelId ?? this.db.getTask(request.taskId)?.modelId ?? this.settingsStore.read().defaultModelId ?? "";
+        const model = this.durableModels?.getModel(id.slice(0, id.indexOf("/")), id.slice(id.indexOf("/") + 1));
+        if (modelSupportsImageInput(model)) return { images: await loadAttachmentImages(attachments) };
+        const vision = await routeVisionForPaths({ model, provider: this.builtinCapabilities.visionProvider(),
+          imagePaths: attachments.map(item => item.path), prompt: "准确描述用户附带图片中的可见内容及文字。",
+          context: { taskId: request.taskId, taskRoot: this.resolveTaskExecutionWorkspaceCwd(request.taskId), toolCallId: `attachment-${request.userMessageId}` } });
+        return { images: [], text: vision.route === "delegated-vision"
+          ? `图片识别结果：\n${vision.descriptions?.map(item => `${item.imagePath}\n${item.text}`).join("\n")}`
+          : `当前模型未接收图片，图片识别不可用：${vision.error ?? "未配置识别模型"}。请勿声称看到了图片内容。` };
+      },
+      thinking: (task, request) => {
+        const id = request.modelId ?? task.modelId ?? this.settingsStore.read().defaultModelId;
+        if (!id) return undefined;
+        const slash = id.indexOf("/");
+        const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
+        if (!model) return undefined;
+        if (request.reasoningPreference && request.reasoningPreferenceModelId === id) return this.nativeReasoningLevel(model, request.reasoningPreference);
+        return SettingsManager.create(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
+      },
+      projectArtifacts: async (taskId, snapshot, before) => {
+        const messageId = snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id;
+        if (!messageId) return;
+        await this.emitExternalAgentWorkspaceChanges(taskId, messageId, before);
+        // Native tool records also expose outputs outside the workspace or beyond scan limits.
+        // Their containing directory is display metadata, never an execution permission grant.
+        const cwd = this.resolveTaskExecutionWorkspaceCwd(taskId);
+        for (const message of snapshot.messages) for (const tool of message.tools ?? []) {
+          if (tool.status !== "success" || !["write", "edit"].includes(tool.tool)) continue;
+          try {
+            const args = JSON.parse(tool.summary);
+            if (typeof args.path !== "string") continue;
+            const file = resolve(cwd, args.path);
+            if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file, tool.id);
+          } catch { /* Non-file results remain visible verbatim in the Durable transcript. */ }
+        }
+      },
+      emit: patch => this.emitPatch(patch),
+    });
+    await this.durableBots.resumePersisted();
   }
+
+  private botInstructions(task: TaskDto): string {
+    const profile = this.modeProfiles.getProfile("bot");
+    const preset = resolveModePreset(profile.policy, task.modePresetId);
+    const project = this.projectContextResolver.resolveTask(task.id);
+    const soul = this.db.getSoul();
+    const connectors = this.settingsStore.read().taskConnectorIds?.[task.id] ?? [];
+    const paths = collectSessionSkillPaths(task.expertId, connectors, {
+      expertSkillDir: id => this.expertsService.getPrivateSkillsDir(id),
+      connectorSkillDirs: ids => this.connectorsService.getPrivateSkillDirs(ids),
+    });
+    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
+    return [
+      `You are ${soul.name || "MyBuddy"}, operating in Bot mode on Pi Durable. Assist with the user's current task across research, office work, programming and tool use.`, soul.persona,
+      ...profile.blocks.map(block => `## ${block.label}\n${block.content}`),
+      preset?.promptAddon,
+      project?.instructions ? `## Project instructions\n${project.instructions}` : "",
+      project?.sharedContext ? `## Project context\n${JSON.stringify(project.sharedContext)}` : "",
+      task.expertId ? this.expertsService.getRolePrompt(task.expertId).prompt : "",
+      `## Working directory\n${task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id)}`,
+      "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
+        .map(s => `- ${s.name}: ${s.description} (${s.filePath})`).join("\n"),
+    ].filter(Boolean).join("\n\n");
+  }
+
+  async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
+  async purgeDurableTask(taskId: string): Promise<void> { await this.durableBots?.purge(taskId); }
+  async closeDurableBots(): Promise<void> { await this.durableBots?.close(); }
 
 
   private async resolvePiModelScope(
@@ -3289,6 +3436,10 @@ export class AgentService {
   }
 
   async compactTask(taskId: string): Promise<TaskCompactionResultDto> {
+    if (this.durableBots?.owns(taskId)) {
+      try { await this.durableBots.compact(taskId); return { ok: true, state: { taskId, status: "completed", reason: "manual" } }; }
+      catch (error) { return { ok: false, code: "COMPACTION_FAILED", state: { taskId, status: "failed", message: String(error) } }; }
+    }
     if (typeof taskId !== "string" || !taskId.trim()) throw new Error("taskId 非法");
     if (this.isTaskBusy(taskId)) return { ok: false, code: "TASK_BUSY",
       state: { taskId, status: "skipped", message: "任务正在执行或整理上下文，请结束后再压缩。" } };
@@ -3346,6 +3497,7 @@ export class AgentService {
   }
 
   getContextUsage(taskId: string): ContextUsageDto | null {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.contextUsage(taskId);
     const entry = this.registry.get(taskId);
     try {
       if (entry) {
@@ -3388,6 +3540,7 @@ export class AgentService {
    * 挂起的工具审批 / 挂起的外部写授权任一存在即视为忙。
    */
   isTaskBusy(taskId: string): boolean {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.busy(taskId);
     if (this.manualCompactions.has(taskId) || this.promptExecution.isBusy(taskId)) return true;
     const entry = this.registry.get(taskId);
     if (!entry) return false;
@@ -3400,6 +3553,7 @@ export class AgentService {
   }
 
   async loadTaskHistory(taskId: string): Promise<TaskHistoryDto> {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId);
     const row = this.db.listTasks().find((t) => t.id === taskId);
     if (!row?.sessionFile) return { messages: [] };
     try {
@@ -3418,7 +3572,10 @@ export class AgentService {
   private readonly promptExecution = new PromptExecutionCoordinator();
   private readonly promptSubmission = new PromptSubmissionCoordinator();
 
-  async prompt(req: AgentPromptRequest): Promise<AgentPromptResult> {
+  async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean }): Promise<AgentPromptResult> {
+    if (this.durableBots?.owns(req.taskId)) {
+      return this.durableBots.prompt(req, options?.durableAdmissionOnly);
+    }
     if (this.manualCompactions.has(req.taskId)) return { queued: false, error: { code: "SESSION_COMPACTING", message: "正在手动压缩，请完成或取消压缩后再发送。" } };
     const streamingBehavior = resolvePromptCompactionBehavior(req.streamingBehavior,
       this.registry.get(req.taskId)?.session.isCompacting);
@@ -3925,6 +4082,7 @@ export class AgentService {
    * 因而被删消息及其后的 assistant/tool 内容不会再次进入模型上下文。
    */
   async deleteUserMessage(req: AgentDeleteUserMessageRequest): Promise<void> {
+    if (this.durableBots?.owns(req.taskId)) throw new Error("Durable 会话保留持久执行记录，请新建 Bot 对话以重新开始。");
     await this.memoryWriteQueue;
     const live = this.registry.get(req.taskId);
     if (this.isTaskBusy(req.taskId)) {
@@ -3974,6 +4132,7 @@ export class AgentService {
       };
     };
     const taskId = req.taskId;
+    if (this.durableBots?.owns(taskId)) return fail("SESSION_BUSY", "Durable 会话请直接发送新的指令；原执行记录会保留。");
     if (this.manualCompactions.has(taskId) || this.registry.get(taskId)?.session.isCompacting) return fail("SESSION_BUSY", "正在整理上下文，请结束后再重新生成。");
     const replayUnsubmitted = async (): Promise<AgentRegenerateResult | null> => {
       const original = this.promptExecution.retryRequest(req.sourceAssistantMessageId);
@@ -4324,6 +4483,7 @@ export class AgentService {
    * 避免「当前正在生成回复」永久挡 regenerate/发消息。
    */
   async abort(taskId: string): Promise<void> {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.abort(taskId);
     if (this.manualCompactions.has(taskId)) { this.abortCompaction(taskId); return; }
     return this.abortTask(taskId);
   }
@@ -5360,12 +5520,13 @@ export class AgentService {
     before: Map<string, string>,
   ): Promise<void> {
     // P0 §10.1：before/after 都只扫描 canonical taskRoot；manifest/内部临时文件忽略
-    const after = await snapshotWorkspace(taskRoot);
+    const bot = this.db.getTask(taskId)?.welcomeMode === "bot";
+    const after = await snapshotWorkspace(taskRoot, { unfiltered: bot });
     const changed: string[] = [];
     for (const [filePath, signature] of after) {
       if (before.get(filePath) === signature) continue;
       if (this.emittedArtifactPaths.get(taskId)?.has(filePath.toLowerCase())) continue;
-      if (isInternalTaskPath(filePath)) continue;
+      if (!bot && isInternalTaskPath(filePath)) continue;
       changed.push(filePath);
     }
     // 3C：已注册 artifact 的版本刷新（RefreshCoordinator → markFilesChanged → version++ → artifact:updated）
@@ -5407,7 +5568,7 @@ export class AgentService {
       );
       return;
     }
-    if (isInternalTaskPath(filePath)) return;
+    if (this.db.getTask(taskId)?.welcomeMode !== "bot" && isInternalTaskPath(filePath)) return;
     try {
       let preview: Awaited<ReturnType<typeof previewWorkspaceFile>>;
       try {

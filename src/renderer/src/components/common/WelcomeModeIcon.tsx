@@ -1,6 +1,6 @@
 import type { WelcomeMode } from "@shared/agent-ipc";
 import { WELCOME_MODE_LABELS, resolveWelcomeMode } from "@shared/mode-profile";
-import { Code2, FileText, Palette } from "lucide-react";
+import { Code2, FileText, Bot } from "lucide-react";
 
 type Props = {
   mode?: WelcomeMode | null;
@@ -21,7 +21,7 @@ export default function WelcomeModeIcon({
   const label = WELCOME_MODE_LABELS[m];
   const title = mode ? label : `${label}（默认）`;
 
-  const ModeIcon = m === "working" ? FileText : m === "design" ? Palette : Code2;
+  const ModeIcon = m === "working" ? FileText : m === "bot" ? Bot : Code2;
 
   return (
     <span

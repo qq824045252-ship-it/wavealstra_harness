@@ -115,12 +115,12 @@ function HomeHero(): React.JSX.Element {
   const categoryToMode: Record<string, WelcomeMode> = {
     日常办公: "working",
     代码开发: "coding",
-    设计创意: "design",
+    Bot: "bot",
   };
   const modeToCategory: Record<string, string> = {
     working: "日常办公",
     coding: "代码开发",
-    design: "设计创意",
+    bot: "Bot",
   };
   const category = modeToCategory[welcomeMode] ?? heroCategories[0];
 
@@ -459,7 +459,7 @@ function MessageList({
     return (
       <div className={`message-list${needsTurnAnchorSpace ? " message-list--turn-anchor" : ""}`}>
         {messages.map((msg) => (
-          <div key={msg.id} id={`msg-${msg.id}`}>
+          <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
             <MessageItem message={msg} taskId={taskId} artifacts={artifacts} visibleArtifacts={visibleArtifacts} />
           </div>
         ))}
@@ -482,7 +482,7 @@ function MessageList({
         const msg = messages[item.index];
         return (
           <div
-            key={msg.id}
+            key={msg.presentationKey ?? msg.id}
             id={`msg-${msg.id}`}
             data-index={item.index}
             ref={virtualizer.measureElement}
@@ -848,7 +848,7 @@ export default function ChatView(): React.JSX.Element {
   }
 
   const taskMode: WelcomeMode =
-    task.welcomeMode === "working" || task.welcomeMode === "design" || task.welcomeMode === "coding"
+    task.welcomeMode === "working" || task.welcomeMode === "bot" || task.welcomeMode === "coding"
       ? task.welcomeMode
       : "coding";
 
@@ -860,7 +860,7 @@ export default function ChatView(): React.JSX.Element {
           {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
           <WorkspaceCrumb spaceId={task.spaceId ?? null} />
           <div className="chat-header-title">{task.title || "任务"}</div>
-          <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />
+          {task.welcomeMode !== "bot" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
           <ConversationBranchChip />
           <span
             className="chat-mode-chip"
@@ -881,12 +881,13 @@ export default function ChatView(): React.JSX.Element {
         </div>
         <div className="chat-scroll">
           <div className="empty-block" style={{ margin: "48px auto" }}>
-            <div className="empty-block-title">正在加载历史对话…</div>
-            <div style={{ fontSize: 12.5 }}>正在从会话文件恢复消息</div>
+            <div className="empty-block-title">{task.welcomeMode === "bot" ? "Bot 会话" : "正在加载历史对话…"}</div>
+            <div style={{ fontSize: 12.5 }}>{task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
           </div>
         </div>
+        {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
-        <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />
+        {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
         <ChatInput variant="chat" />
       </div>
     );
@@ -927,7 +928,7 @@ export default function ChatView(): React.JSX.Element {
           )}
         </div>
         <div className="chat-header-sub" />
-        <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />
+        {task.welcomeMode !== "bot" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
         <ConversationBranchChip />
         <span
           className="chat-mode-chip"
@@ -977,7 +978,7 @@ export default function ChatView(): React.JSX.Element {
             />
           )}
         </div>
-        <div className="history-anchor" ref={taskMenuAnchorRef}>
+        {task.welcomeMode !== "bot" && <div className="history-anchor" ref={taskMenuAnchorRef}>
           <button
             className={`icon-btn ${taskMenuOpen ? "toggled" : ""}`}
             title="任务菜单"
@@ -990,7 +991,7 @@ export default function ChatView(): React.JSX.Element {
           {taskMenuOpen && (
             <TaskWriteGrantsMenu taskId={task.id} onClose={() => setTaskMenuOpen(false)} />
           )}
-        </div>
+        </div>}
         {task.messages.length > 0 && (
           <button
             className={`icon-btn ${panelOpen ? "toggled" : ""}`}
@@ -1071,7 +1072,13 @@ export default function ChatView(): React.JSX.Element {
       </div>
 
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
-      <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />
+      {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
+      {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
+      {task.durable && <div className="durable-bot-state" role="status">
+        {task.durable.compacting && <div>Pi Durable 正在压缩上下文</div>}
+        {task.durable.retry && <div>Pi Durable 正在重试：{task.durable.retry.error}</div>}
+        {task.durable.pendingInputs.map(input => <div key={input.id}>{input.mode === "steer" ? "引导" : "接续"}已入队：{input.text}</div>)}
+      </div>}
       {selectMode ? (
         <ShareBar />
       ) : (

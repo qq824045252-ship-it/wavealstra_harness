@@ -351,15 +351,15 @@ void (async () => {
 {
   const lateA = applyModeProfileResponse({
     requestedMode: "working",
-    currentMode: "design",
+    currentMode: "bot",
     presets: [{ id: "general-office" }],
     currentPresetId: "general-office",
     fallbackPresetId: "ai-ui",
   });
   assert.equal(lateA.ignore, true, "stale Mode A response is ignored");
   const currentB = applyModeProfileResponse({
-    requestedMode: "design",
-    currentMode: "design",
+    requestedMode: "bot",
+    currentMode: "bot",
     presets: [{ id: "ai-ui" }, { id: "web-prototype" }],
     currentPresetId: "general-office",
     fallbackPresetId: "ai-ui",

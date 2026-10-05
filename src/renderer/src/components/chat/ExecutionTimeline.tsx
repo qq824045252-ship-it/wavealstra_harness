@@ -233,6 +233,8 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
   }, [visibleOpen, bodyMounted]);
 
   const hasFinalOutput = messageHasFinalOutput(message);
+  const completionLabel = message.generationStats?.outcome === "aborted" ? "已停止"
+    : message.generationStats?.outcome === "error" ? "执行失败" : "已完成";
 
   if (message.streaming && message.pendingBehavior) {
     return (
@@ -248,6 +250,15 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
   // finished first-turn setup. Render a stable status immediately instead of a
   // blank assistant card that looks as if the send was missed.
   if (message.blocks.length === 0) {
+    if (message.generationStats) {
+      return <div className="execution-timeline timeline-preparing" role="status" aria-live="polite">
+        <div className="timeline-header timeline-header-static">
+          {message.streaming && <span className="streaming-dot" />}
+          <span>{message.streaming ? nativeRunPhaseLabel(message.generationStats.phase, [], hasFinalOutput)
+            : `${completionLabel}${message.durationLabel ? ` ${message.durationLabel}` : ""}`}</span>
+        </div>
+      </div>;
+    }
     // 正文一出现，准备态立即退出；没有过程块时正文自身就是唯一进度反馈。
     if (!message.streaming || hasFinalOutput) return null;
     return (
@@ -294,7 +305,7 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
             ? runningLabel
             : hasPendingApproval
               ? "等待授权"
-              : `已完成${message.durationLabel ? ` ${message.durationLabel}` : ""}`}
+              : `${completionLabel}${message.durationLabel ? ` ${message.durationLabel}` : ""}`}
         </span>
         <span className={`chev ${visibleOpen ? "open" : ""}`}>
           <IconChevronRight size={12} />

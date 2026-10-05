@@ -39,7 +39,7 @@ export interface RemoteTaskSummary {
   projectId: string | null
   status?: string
   updatedAt: number
-  welcomeMode?: 'working' | 'coding' | 'design'
+  welcomeMode?: 'working' | 'coding' | 'bot'
   modelId?: string
   permissionMode?: 'default' | 'readonly' | 'auto'
   archived: boolean
@@ -78,6 +78,7 @@ export interface RemoteImageArtifact extends RemoteArtifactMetadata {
 }
 
 export interface RemoteHistoryMessage {
+  streaming?: boolean
   id: string
   role: 'user' | 'assistant'
   text: string
@@ -91,9 +92,25 @@ export interface RemoteHistoryMessage {
 }
 
 export interface RemoteTaskHistory {
+  durable?: RemoteDurableSnapshot
   taskId: string
   messages: RemoteHistoryMessage[]
   imageArtifacts?: RemoteImageArtifact[]
+}
+
+export interface RemoteDurableSnapshot {
+  backend: 'pi-durable'
+  epoch: string
+  revision: number
+  conversationId: string
+  toolMode: 'native' | 'codemode'
+  busy: boolean
+  queued: number
+  pendingInputs: Array<{ id: string; mode: 'steer' | 'followUp'; text: string }>
+  retry?: { at: number; error: string }
+  compacting: boolean
+  messages: RemoteHistoryMessage[]
+  error?: string
 }
 
 export interface RemotePendingAction {
@@ -221,7 +238,7 @@ export interface RemotePromptRequest {
   text: string
   spaceId?: string
   projectId?: string
-  welcomeMode?: 'working' | 'coding' | 'design'
+  welcomeMode?: 'working' | 'coding' | 'bot'
   modePresetId?: string | null
   /** 显式指定模型（须在服务端 models 目录内）；缺省跟随任务/服务端默认 */
   modelId?: string

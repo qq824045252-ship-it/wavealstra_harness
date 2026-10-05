@@ -164,7 +164,8 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
     shareNotice,
     visibleSpaces.length,
     shareTargets.length,
-    reviewExperts.length,  ]);
+    reviewExperts.length,
+  ]);
 
   useEffect(() => {
     if (!menuOpen) {
@@ -514,10 +515,10 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
         className="task-context-item"
         onClick={() => {
           closeMenu();
-          duplicateTaskWithMode("design", task.id);
+          duplicateTaskWithMode("bot", task.id);
         }}
       >
-        <WelcomeModeIcon mode="design" size={14} /> 复制为设计任务
+        <WelcomeModeIcon mode="bot" size={14} /> 复制为 Bot 任务
       </button>
       <div className="task-context-sep" />
       <div className={`task-context-item-wrap ${subMenu === "share" ? "open" : ""}`}>

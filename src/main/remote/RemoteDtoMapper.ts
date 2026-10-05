@@ -79,6 +79,7 @@ function mapArtifact(artifact: NonNullable<ChatMessageDto["artifacts"]>[number])
 export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryMessage {
   return {
     id: message.id,
+    streaming: message.streaming,
     role: message.role,
     text: message.text,
     thinking: message.thinking,
@@ -99,7 +100,8 @@ export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryM
 }
 
 export function mapRemoteHistory(taskId: string, history: TaskHistoryDto): RemoteTaskHistory {
-  return { taskId, messages: history.messages.map(mapRemoteHistoryMessage) };
+  return { taskId, messages: history.messages.map(mapRemoteHistoryMessage),
+    durable: history.durable ? { ...history.durable, messages: history.durable.messages.map(mapRemoteHistoryMessage) } : undefined };
 }
 
 export function mapRemoteNotification(notification: NotificationDto): RemoteNotification {

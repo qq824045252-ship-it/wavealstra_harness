@@ -223,9 +223,9 @@ async function main(): Promise<void> {
     );
     // 未知/非法字段被安全归一化（不会破坏读取）
     const dirty = { ...customPolicy, presets: [{ id: "bad", label: "坏", suggestedPermissionMode: "banana" }] };
-    write(join(sandbox, ".mybuddy", "modes", "design", "policy.json"), JSON.stringify(dirty));
-    const pd = store.getProfile("design");
-    assert(pd.policy.presets?.[0]?.suggestedPermissionMode === null, "非法权限值归一化为 null（不炸）");
+    write(join(sandbox, ".mybuddy", "modes", "bot", "policy.json"), JSON.stringify(dirty));
+    const pd = store.getProfile("bot");
+    assert(pd.policy.presets?.[0]?.suggestedPermissionMode === undefined, "Bot 不继承旧权限字段");
   }
 
   /* ================= B. model precedence ================= */
@@ -335,7 +335,7 @@ async function main(): Promise<void> {
     // 卸载：私有技能随专家目录消失
     svc.uninstall("demo-expert");
     assert(svc.getPrivateSkillsDir("demo-expert") === null, "卸载后私有技能目录消失");
-    assert(!existsSync(join(sandbox, ".mybuddy", "experts", "demo-expert")), "卸载后专家目录消失");
+    assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "demo-expert")), "卸载后专家目录消失");
 
     // Local market fixture: do not depend on a removed external market package.
     const marketPkgDir = join(sandbox, "fixture-market-expert");
@@ -375,7 +375,7 @@ async function main(): Promise<void> {
   /* ================= E. Connector Private Skills ================= */
   console.log("\nE. Connector Private Skills 生命周期");
   {
-    const connDir = join(sandbox, ".mybuddy", "connector-market", "connectors", "demo");
+    const connDir = join(sandbox, ".mybuddy", "plugins", "connector-market", "connectors", "demo");
     write(join(connDir, "connector-meta.json"), JSON.stringify({ name: "演示连接器" }));
     write(join(connDir, "skills", "alpha", "SKILL.md"), skillMd("alpha"));
     write(join(connDir, "skills", "beta", "SKILL.md"), skillMd("beta"));
@@ -386,45 +386,45 @@ async function main(): Promise<void> {
     assert(!!listed && listed.skillCount === 2, "市场扫描识别连接器私有技能");
     const names = svc.install("demo");
     assert(names.length === 2, "安装返回技能名");
-    const regSkills = join(sandbox, ".mybuddy", "connectors", "demo", "skills");
+    const regSkills = join(sandbox, ".mybuddy", "plugins", "connectors", "demo", "skills");
     assert(existsSync(join(regSkills, "alpha", "SKILL.md")), "私有技能存于连接器注册目录");
-    assert(!existsSync(join(sandbox, ".mybuddy", "skills", "alpha")), "不污染全局技能目录");
+    assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "alpha")), "不污染全局技能目录");
     assert(JSON.stringify(svc.getPrivateSkillDirs(["demo"])) === JSON.stringify([regSkills]), "激活连接器技能目录可读");
     assert(svc.getPrivateSkillDirs(["nope", "../evil"]).length === 0, "未安装/非法 id → 空");
 
     // 旧版全局副本迁移：meta 校验为 connector:demo 的全局技能（与包内同名 alpha）被移入连接器目录
-    write(join(sandbox, ".mybuddy", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
     write(
-      join(sandbox, ".mybuddy", "skills", "alpha", "_skillhub_meta.json"),
+      join(sandbox, ".mybuddy", "plugins", "skills", "alpha", "_skillhub_meta.json"),
       JSON.stringify({ name: "alpha", source: "connector:demo" }),
     );
     // 共享技能（无归属 meta）不得被动
-    write(join(sandbox, ".mybuddy", "skills", "shared", "SKILL.md"), skillMd("shared"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "shared", "SKILL.md"), skillMd("shared"));
     svc.install("demo");
     assert(existsSync(join(regSkills, "alpha", "SKILL.md")), "旧全局副本迁移进连接器私有目录");
-    assert(!existsSync(join(sandbox, ".mybuddy", "skills", "alpha")), "迁移后全局副本移除");
-    assert(existsSync(join(sandbox, ".mybuddy", "skills", "shared")), "共享技能不受迁移影响");
+    assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "alpha")), "迁移后全局副本移除");
+    assert(existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "shared")), "共享技能不受迁移影响");
 
     // 卸载：注册目录（含私有技能）消失；共享技能保留
     svc.uninstall("demo");
     assert(!existsSync(regSkills), "卸载后私有技能随连接器消失");
-    assert(existsSync(join(sandbox, ".mybuddy", "skills", "shared")), "卸载不影响共享技能");
+    assert(existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "shared")), "卸载不影响共享技能");
   }
 
   /* ================= F. Skill Resolver 三来源 ================= */
   console.log("\nF. Skill Resolver：Global + Expert + Connector 统一过滤");
   {
     const skills = new SkillsService();
-    write(join(sandbox, ".mybuddy", "skills", "global-skill", "SKILL.md"), skillMd("global-skill"));
-    const expertDir = join(sandbox, ".mybuddy", "experts", "resolver-expert", "skills");
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "global-skill", "SKILL.md"), skillMd("global-skill"));
+    const expertDir = join(sandbox, ".mybuddy", "plugins", "experts", "resolver-expert", "skills");
     write(join(expertDir, "alpha", "SKILL.md"), skillMd("alpha"));
-    const connDir = join(sandbox, ".mybuddy", "connectors", "c1", "skills");
+    const connDir = join(sandbox, ".mybuddy", "plugins", "connectors", "c1", "skills");
     write(join(connDir, "gamma", "SKILL.md"), skillMd("gamma"));
 
     const all = skills.listInstalled(undefined, [expertDir, connDir]).map((s) => s.name);
     assert(all.includes("global-skill") && all.includes("alpha") && all.includes("gamma"), "三来源候选技能齐备");
     // 全局重名优先（loadSkills 首胜）
-    write(join(sandbox, ".mybuddy", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
     const withGlobalAlpha = skills.listInstalled(undefined, [expertDir]).map((s) => s.name);
     assert(withGlobalAlpha.includes("alpha"), "全局重名技能共存（首胜）");
 
@@ -442,16 +442,16 @@ async function main(): Promise<void> {
     const full: McpConfig = {
       mcpServers: {
         "drawio-ai": { command: "npx", args: [], modes: ["working"], disabled: false },
-        penpot: { url: "http://x", modes: ["design"], disabled: false },
+        penpot: { url: "http://x", modes: ["bot"], disabled: false },
         serena: { command: "serena", args: [], modes: ["coding"], disabled: false },
         plain: { command: "echo", args: [], disabled: false },
       },
     };
     const w = filterMcpConfigForMode(full, "working", { mode: "hard", allow: [], deny: ["serena"] });
     assert(w.enabled.includes("drawio-ai") && w.enabled.includes("plain"), "working 启用 drawio-ai（modes）");
-    assert(!w.enabled.includes("penpot") && !w.enabled.includes("serena"), "working 隐藏 design/coding 服务器");
-    const d = filterMcpConfigForMode(full, "design", { mode: "hard", allow: ["penpot"], deny: [] });
-    assert(d.enabled.includes("penpot") && !d.enabled.includes("plain"), "design allow 白名单只放行 penpot");
+    assert(w.enabled.includes("penpot") && !w.enabled.includes("serena"), "working 加载迁入的 Penpot，隐藏 coding 服务器");
+    const d = filterMcpConfigForMode(full, "working", { mode: "hard", allow: ["penpot"], deny: [] });
+    assert(d.enabled.includes("penpot") && !d.enabled.includes("plain"), "办公 Penpot 白名单只放行 penpot");
     const c = filterMcpConfigForMode(full, "coding", { mode: "hard", allow: [], deny: [] });
     assert(c.enabled.includes("serena") && c.enabled.includes("plain"), "coding 启用 serena（modes）");
     assert(!c.enabled.includes("drawio-ai") && !c.enabled.includes("penpot"), "coding 隐藏 working/design 服务器");
@@ -965,13 +965,13 @@ async function main(): Promise<void> {
   /* ================= K. Connector enabled 生命周期（安装 ≠ active） ================= */
   console.log("\nK. Connector enabled 生命周期（安装≠active）");
   {
-    const connDir = join(sandbox, ".mybuddy", "connector-market", "connectors", "demo2");
+    const connDir = join(sandbox, ".mybuddy", "plugins", "connector-market", "connectors", "demo2");
     write(join(connDir, "connector-meta.json"), JSON.stringify({ name: "演示连接器2" }));
     write(join(connDir, "skills", "alpha", "SKILL.md"), skillMd("alpha"));
     const svc = new ConnectorService();
     const skills = new SkillsService();
     svc.install("demo2");
-    const regSkills = join(sandbox, ".mybuddy", "connectors", "demo2", "skills");
+    const regSkills = join(sandbox, ".mybuddy", "plugins", "connectors", "demo2", "skills");
     assert(
       JSON.stringify(svc.getPrivateSkillDirs(["demo2"])) === JSON.stringify([regSkills]),
       "安装后默认 enabled → 私有技能进入候选",
@@ -1121,52 +1121,52 @@ async function main(): Promise<void> {
   {
     const svc = new ConnectorService();
     // 已注册连接器 demo3（旧安装可能无配套技能副本，或包技能已变化）
-    const regDir = join(sandbox, ".mybuddy", "connectors", "demo3");
+    const regDir = join(sandbox, ".mybuddy", "plugins", "connectors", "demo3");
     mkdirSync(regDir, { recursive: true });
     writeFileSync(
       join(regDir, "meta.json"),
       JSON.stringify({ id: "demo3", installedAt: Date.now(), installedSkillNames: [] }),
     );
     // 其旧全局副本（meta source=connector:demo3）→ 应迁入连接器私有目录
-    write(join(sandbox, ".mybuddy", "skills", "beta", "SKILL.md"), skillMd("beta"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "beta", "SKILL.md"), skillMd("beta"));
     write(
-      join(sandbox, ".mybuddy", "skills", "beta", "_skillhub_meta.json"),
+      join(sandbox, ".mybuddy", "plugins", "skills", "beta", "_skillhub_meta.json"),
       JSON.stringify({ source: "connector:demo3" }),
     );
     // 无归属共享技能 → 绝不触碰
-    write(join(sandbox, ".mybuddy", "skills", "shared", "SKILL.md"), skillMd("shared"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "shared", "SKILL.md"), skillMd("shared"));
     // 注册缺失（连接器已删/从未安装）的旧副本 → 保留（不误删）
-    write(join(sandbox, ".mybuddy", "skills", "orphan", "SKILL.md"), skillMd("orphan"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "orphan", "SKILL.md"), skillMd("orphan"));
     write(
-      join(sandbox, ".mybuddy", "skills", "orphan", "_skillhub_meta.json"),
+      join(sandbox, ".mybuddy", "plugins", "skills", "orphan", "_skillhub_meta.json"),
       JSON.stringify({ source: "connector:gone" }),
     );
 
     const r = svc.migrateLegacyGlobalSkills();
     assert(r.migrated === 1 && r.removed === 0, "旧全局副本迁入连接器私有目录");
-    assert(!existsSync(join(sandbox, ".mybuddy", "skills", "beta")), "迁移后全局副本移除");
+    assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "beta")), "迁移后全局副本移除");
     assert(
-      existsSync(join(sandbox, ".mybuddy", "connectors", "demo3", "skills", "beta", "SKILL.md")),
+      existsSync(join(sandbox, ".mybuddy", "plugins", "connectors", "demo3", "skills", "beta", "SKILL.md")),
       "迁移目标位于连接器私有目录",
     );
-    assert(existsSync(join(sandbox, ".mybuddy", "skills", "shared")), "共享技能不受影响");
-    assert(existsSync(join(sandbox, ".mybuddy", "skills", "orphan")), "注册缺失的旧副本保留（不误删）");
+    assert(existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "shared")), "共享技能不受影响");
+    assert(existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "orphan")), "注册缺失的旧副本保留（不误删）");
 
     // 幂等：二次运行零迁移
     const r2 = svc.migrateLegacyGlobalSkills();
     assert(r2.migrated === 0 && r2.removed === 0, "迁移幂等：二次运行无操作");
 
     // 新安装已复制同名目标（大小写变体）→ 仅清理旧全局副本（removed 路径）
-    write(join(sandbox, ".mybuddy", "skills", "BETA", "SKILL.md"), skillMd("beta"));
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "BETA", "SKILL.md"), skillMd("beta"));
     write(
-      join(sandbox, ".mybuddy", "skills", "BETA", "_skillhub_meta.json"),
+      join(sandbox, ".mybuddy", "plugins", "skills", "BETA", "_skillhub_meta.json"),
       JSON.stringify({ source: "connector:demo3" }),
     );
     const r3 = svc.migrateLegacyGlobalSkills();
     assert(r3.removed === 1 && r3.migrated === 0, "同名目标已存在（大小写变体）→ 仅清旧副本");
-    assert(!existsSync(join(sandbox, ".mybuddy", "skills", "BETA")), "大小写变体旧副本已清理");
+    assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "skills", "BETA")), "大小写变体旧副本已清理");
     assert(
-      existsSync(join(sandbox, ".mybuddy", "connectors", "demo3", "skills", "beta", "SKILL.md")),
+      existsSync(join(sandbox, ".mybuddy", "plugins", "connectors", "demo3", "skills", "beta", "SKILL.md")),
       "连接器私有目录同名副本保留",
     );
     svc.uninstall("demo3");
@@ -1191,8 +1191,8 @@ async function main(): Promise<void> {
     const skillsSvc = new SkillsService();
 
     // 全局技能 alpha（重名诊断用）；连接器 demoX（F3/预览用）；专家 demo-expert（私有 alpha/beta）
-    write(join(sandbox, ".mybuddy", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
-    const connDir = join(sandbox, ".mybuddy", "connector-market", "connectors", "demoX");
+    write(join(sandbox, ".mybuddy", "plugins", "skills", "alpha", "SKILL.md"), skillMd("alpha"));
+    const connDir = join(sandbox, ".mybuddy", "plugins", "connector-market", "connectors", "demoX");
     write(join(connDir, "connector-meta.json"), JSON.stringify({ name: "演示X" }));
     write(join(connDir, "skills", "gamma", "SKILL.md"), skillMd("gamma"));
     new ConnectorService().install("demoX");
@@ -2124,7 +2124,7 @@ async function main(): Promise<void> {
     // ---- N6. 三 Mode + 5+1 受管 provider 回归；私有技能不污染 Global Skill Center ----
     const modeStoreN = new ModeProfileStore();
     const working = modeStoreN.getProfile("working");
-    const design = modeStoreN.getProfile("design");
+    const design = modeStoreN.getProfile("bot");
     const coding = modeStoreN.getProfile("coding");
     const workingPreset = resolveModePreset(working.policy, "drawio-ai");
     assert(workingPreset != null, "N6：working/drawio-ai 预设存在");
@@ -2137,27 +2137,11 @@ async function main(): Promise<void> {
       (workingPreset!.mcpPolicy?.allow ?? []).includes("drawio-ai"),
       "N6：drawio-ai 预设 mcpPolicy allow",
     );
-    const designPresets = ["web-prototype", "general"];
-    const expectedManaged: Record<string, string[]> = {
-      "web-prototype": ["penpot"],
-      general: [],
-    };
-    for (const id of designPresets) {
-      const p = resolveModePreset(design.policy, id);
-      assert(p != null, `N6：design/${id} 预设存在`);
-      assert(
-        JSON.stringify((p!.providerMcpIds ?? []).filter(isManagedToolProvider)) ===
-          JSON.stringify(expectedManaged[id] ?? []),
-        `N6：design/${id} 受管 provider 声明正确`,
-      );
-      const firstManaged = expectedManaged[id]?.[0];
-      if (firstManaged) {
-        assert(
-          (p!.mcpPolicy?.allow ?? []).includes(firstManaged),
-          `N6：design/${id} mcpPolicy allow`,
-        );
-      }
-    }
+    const penpotPreset = resolveModePreset(working.policy, "web-prototype");
+    assert(penpotPreset?.label === "Penpot", "N6：working/Penpot 预设存在");
+    assert(penpotPreset?.providerMcpIds?.includes("penpot"), "N6：办公 Penpot 保留 provider 声明");
+    assert(penpotPreset?.mcpPolicy?.allow.includes("penpot"), "N6：办公 Penpot MCP allow");
+    assert(!resolveModePreset(design.policy, "web-prototype") && !resolveModePreset(design.policy, "general"), "N6：Bot 不再保留通用设计和 Penpot");
     assert(resolveModePreset(coding.policy, "code-review") != null, "N6：coding/code-review 预设存在");
     for (const id of ["drawio-ai", "penpot"]) {
       assert(
@@ -2227,8 +2211,13 @@ async function main(): Promise<void> {
       "createWorkGraphAgentExtension",
       "createProjectKnowledgeExtension",
     ];
+    // Durable registers the native capability extension separately; this contract covers ordinary sessions.
+    const ordinarySessionSource = agentSource.slice(
+      agentSource.indexOf("private async createSession("),
+      agentSource.indexOf("private async maybeEmitArtifact("),
+    );
     assert(
-      movedFactories.every((factory) => !agentSource.includes(`${factory}(`)),
+      movedFactories.every((factory) => !(factory === "createBuiltinCapabilityExtension" ? ordinarySessionSource : agentSource).includes(`${factory}(`)),
       "N8：Main Session factory 构造细节不回流 AgentService",
     );
     assert(

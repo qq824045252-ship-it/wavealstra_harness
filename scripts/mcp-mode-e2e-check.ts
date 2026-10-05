@@ -3,7 +3,7 @@
  *（不启 pi session / 不真连 MCP，验证「种子策略 → filter → 会话 config」）
  */
 import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
-import { filterMcpConfigForMode } from "../src/main/mcp/McpModeFilter";
+import { emptyMcpFilterResult, filterMcpConfigForMode } from "../src/main/mcp/McpModeFilter";
 import type { McpConfig } from "../src/main/mcp/McpConfigService";
 import { WELCOME_MODES } from "../src/shared/mode-profile";
 
@@ -44,7 +44,7 @@ console.log("=== 出厂种子 mcpPolicy × 已装 MCP ===\n");
 
 for (const mode of WELCOME_MODES) {
   const policy = MODE_SEEDS[mode].policy.mcpPolicy;
-  const r = filterMcpConfigForMode(installed, mode, policy);
+  const r = mode === "bot" ? emptyMcpFilterResult(installed) : filterMcpConfigForMode(installed, mode, policy);
   console.log(`\n[${mode}] policy=`, JSON.stringify(policy));
   console.log(`  enabled: [${r.enabled.join(", ")}]`);
   console.log(`  hidden:  [${r.hidden.join(", ")}]`);
@@ -52,12 +52,12 @@ for (const mode of WELCOME_MODES) {
     console.log(`    - ${name}: ${reason}`);
   }
 
-  if (mode === "working" || mode === "design") {
+  if (mode === "working") {
     assert(!r.config.mcpServers.serena, `${mode}: serena 被硬禁`);
     assert(!r.config.mcpServers.codegraph, `${mode}: codegraph 被硬禁`);
     assert(!!r.config.mcpServers.filesystem, `${mode}: 通用 filesystem 仍可用`);
   }
-  if (mode === "coding") {
+  if (mode === "coding" || mode === "bot") {
     assert(!!r.config.mcpServers.serena, "coding: serena 可用");
     assert(!!r.config.mcpServers.codegraph, "coding: codegraph 可用");
     assert(!!r.config.mcpServers.filesystem, "coding: filesystem 可用");

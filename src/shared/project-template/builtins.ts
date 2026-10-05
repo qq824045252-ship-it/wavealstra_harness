@@ -119,8 +119,7 @@ export const PROJECT_TEMPLATES: readonly ProjectTemplateDefinition[] = [
     name: "设计创意",
     description: "UI、网页、流程图与视觉设计",
     icon: "🎨",
-    // 设计创意模板本身不是「AI UI 设计」，推荐 general 而非 ai-ui（见实施文档 §19）
-    taskSuggestions: { recommendedModeId: "design", recommendedPresetId: "general" },
+    taskSuggestions: { recommendedModeId: "working", recommendedPresetId: "web-prototype" },
     instructions: `# 设计创意模式
 
 ## 角色
