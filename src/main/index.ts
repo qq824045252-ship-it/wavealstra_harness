@@ -1,3 +1,4 @@
+import "./agent-environment";
 import { ExecutionFailureRepository } from "./agent/ExecutionFailureRepository";
 import { HtmlEditService } from "./html-edit/HtmlEditService";
 import { HtmlEditIpc, type HtmlEditStart } from "../shared/html-edit";
@@ -360,10 +361,6 @@ let promptContextService: PromptContextService | null = null;
 let workspaceSharedContextService: WorkspaceSharedContextService | null = null;
 /** Legacy artifact 数据源（3B.2）：session jsonl + artifact-index.json，由 AgentService 提供 */
 let artifactLegacySource: LegacyArtifactSource | null = null;
-// Pi 扩展(pi-web-access 等)的配置/缓存读写必须落到 ~/.mybuddy(而非默认 ~/.pi)
-if (!process.env.PI_CODING_AGENT_DIR) {
-  process.env.PI_CODING_AGENT_DIR = getMyBuddyDir();
-}
 installSubagentInvocationEnv();
 const mcpService = new McpConfigService();
 let professionalToolService: ProfessionalToolRuntimeService;

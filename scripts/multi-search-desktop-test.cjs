@@ -21,7 +21,7 @@ const server = http.createServer(async (req, res) => {
     assert(support && contra, 'actual page passages must reach evidence model');
     content = JSON.stringify({ claims: [{ claim: '该设备支持离线运行。', rationale: '旧版与新版的原文说明不同，存在版本限制。', citations: [{ passageId: support.passage_id, quote: support.text, stance: 'support' }, { passageId: contra.passage_id, quote: contra.text, stance: 'contradict' }] }] });
   } else {
-    if (!dispatchedSearch) { dispatchedSearch = true; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行', workflow: 'none' }) }; }
+    if (!dispatchedSearch) { dispatchedSearch = true; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行' }) }; }
     else content = 'MULTI_SEARCH_DESKTOP_COMPLETE';
   }
   const packet = (delta, finish_reason) => ({ id: 'search-fixture-' + requests.length, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'fixture', choices: [{ index: 0, delta, finish_reason }] });
@@ -58,7 +58,8 @@ function rpc(method, params = {}) { return new Promise((resolve, reject) => { co
 async function evaluate(expression) { const r = await rpc('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result?.value; }
 async function launch() {
   const port = await new Promise(r => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
-  const env = { ...process.env, HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, 'AppData/Roaming'), LOCALAPPDATA: path.join(profile, 'AppData/Local'), PI_CODING_AGENT_DIR: agentDir }; delete env.ELECTRON_RUN_AS_NODE;
+  // Match a normal desktop launch without the test supplying the Pi directory.
+  const env = { ...process.env, HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, 'AppData/Roaming'), LOCALAPPDATA: path.join(profile, 'AppData/Local') }; delete env.ELECTRON_RUN_AS_NODE; delete env.PI_CODING_AGENT_DIR;
   fd = fs.openSync(path.join(out, 'desktop.log'), 'a');
   proc = cp.spawn(require('electron'), [bootstrap, '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port], { cwd: root, env, stdio: ['ignore', fd, fd], windowsHide: true });
   const page = await until(async () => { if (proc.exitCode !== null) throw Error('Electron exited ' + proc.exitCode); try { return (await fetch('http://127.0.0.1:' + port + '/json/list').then(r => r.json())).find(t => t.type === 'page' && t.url.includes('index.html')); } catch {} }, 'renderer');
@@ -78,6 +79,9 @@ const report = { tests: [], status: 'running', profile };
   fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { 'search-fixture': { baseUrl, api: 'openai-completions', apiKey: 'fixture', models: [{ id: 'fixture', name: 'Search Fixture', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
   fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'search-fixture', defaultModel: 'fixture', enabledModels: ['search-fixture/fixture'], memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light' }));
   fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({ tavilyApiKey: 'fixture', serperApiKey: 'fixture', workflow: 'none', searchRouting: { providers: ['tavily'], fallbackOn: ['network', 'quota', 'transient'] }, ssrf: { allowRanges: ['198.18.0.0/15'] } }));
+  // A conflicting legacy Pi profile must not control the product's search UI.
+  fs.mkdirSync(path.join(profile, '.pi'), { recursive: true });
+  fs.writeFileSync(path.join(profile, '.pi/web-search.json'), JSON.stringify({ provider: 'exa', workflow: 'summary-review', autoOpenBrowser: true }));
   await launch();
   await click('button[title="设置"]');
   await evaluate(`([...document.querySelectorAll('.settings-nav-btn')].find(e=>e.textContent.trim()==='工具能力')).click()`);
@@ -96,6 +100,8 @@ const report = { tests: [], status: 'running', profile };
   await until(() => evaluate('document.body.innerText.includes("MULTI_SEARCH_DESKTOP_COMPLETE")'), 'native search with inline evidence', 90000);
   const end = await evaluate('window.__searchEvents.filter(e=>e.type==="tool_update"&&e.webSearch?.evidence).at(-1)');
   assert(end?.webSearch, 'search report must traverse native events'); assert.equal(end.webSearch.sources.length, 2); assert.equal(end.webSearch.evidence[0].status, 'unclear'); assert.equal(end.webSearch.evidence[0].citations.length, 2);
+  assert.deepEqual(end.webSearch.runs.map(run => run.provider), ['tavily', 'serper'], 'native search must read the product profile, not the legacy Pi profile');
+  report.tests.push('normal desktop startup without PI_CODING_AGENT_DIR honors saved workflow:none and parallel providers despite conflicting legacy Pi configuration');
   assert(await evaluate('window.__searchEvents.some(e=>e.webSearch?.runs.some(r=>r.status==="success")&&e.webSearch?.runs.some(r=>r.status==="running"))'));
   const toolResultRequest = requests.find(r => JSON.stringify(r.messages).includes('Passage-grounded assessment')); assert(toolResultRequest, 'parent model receives original evidence and provider state');
   report.tests.push('real native Pi tool -> concurrent adapters -> original-page extraction -> bounded inline semantic model -> exact conflicting citations -> parent model');
