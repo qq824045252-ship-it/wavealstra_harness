@@ -13,6 +13,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const ZONE_PATTERN = /^[a-z0-9_-]+$/i;
 
 export interface BrightDataSsrfOptions {
+	enabled?: boolean;
 	allowRanges: string[];
 	trustEnvProxy: boolean;
 }
@@ -144,8 +145,9 @@ function isAbortError(err: unknown): boolean {
 	return errorMessage(err).toLowerCase().includes("abort");
 }
 
-function ssrfOptions(options?: BrightDataExtractOptions): { lookup?: Lookup; allowRanges: string[]; trustEnvProxy: boolean } {
+function ssrfOptions(options?: BrightDataExtractOptions): { enabled?: boolean; lookup?: Lookup; allowRanges: string[]; trustEnvProxy: boolean } {
 	return {
+		enabled: options?.ssrf?.enabled,
 		allowRanges: options?.ssrf?.allowRanges ?? [],
 		trustEnvProxy: options?.ssrf?.trustEnvProxy ?? false,
 		...(options?.lookup ? { lookup: options.lookup } : {}),

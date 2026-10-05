@@ -14,6 +14,7 @@ const SUPPORTED_API_VERSIONS = ["v1", "v2"] as const;
 type FirecrawlApiVersion = (typeof SUPPORTED_API_VERSIONS)[number];
 
 export interface FirecrawlSsrfOptions {
+	enabled?: boolean;
 	allowRanges: string[];
 	trustEnvProxy: boolean;
 }
@@ -149,8 +150,9 @@ function isAbortError(err: unknown): boolean {
 	return errorMessage(err).toLowerCase().includes("abort");
 }
 
-function ssrfOptions(options?: FirecrawlExtractOptions): { lookup?: Lookup; allowRanges: string[]; trustEnvProxy: boolean } {
+function ssrfOptions(options?: FirecrawlExtractOptions): { enabled?: boolean; lookup?: Lookup; allowRanges: string[]; trustEnvProxy: boolean } {
 	return {
+		enabled: options?.ssrf?.enabled,
 		allowRanges: options?.ssrf?.allowRanges ?? [],
 		trustEnvProxy: options?.ssrf?.trustEnvProxy ?? false,
 		...(options?.lookup ? { lookup: options.lookup } : {}),

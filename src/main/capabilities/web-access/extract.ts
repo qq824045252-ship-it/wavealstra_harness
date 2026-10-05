@@ -120,8 +120,7 @@ async function extractWithJinaReader(
 		const ssrf = loadSsrfConfig();
 		const domainPolicy = loadFetchContentDomainPolicy();
 		await validateRemoteUrl(url, {
-			allowRanges: ssrf.allowRanges,
-			trustEnvProxy: ssrf.trustEnvProxy,
+			...ssrf,
 			domainPolicy,
 			...(lookup ? { lookup } : {}),
 		});
@@ -270,8 +269,7 @@ export async function extractContent(
 			const ssrf = loadSsrfConfig();
 			const domainPolicy = loadFetchContentDomainPolicy();
 			await validateRemoteUrl(remoteUrl, {
-				allowRanges: ssrf.allowRanges,
-				trustEnvProxy: ssrf.trustEnvProxy,
+				...ssrf,
 				domainPolicy,
 				...(options?.lookup ? { lookup: options.lookup } : {}),
 			});
@@ -804,8 +802,7 @@ async function extractViaHttp(
 				},
 			},
 			{
-				allowRanges: ssrf.allowRanges,
-				trustEnvProxy: ssrf.trustEnvProxy,
+				...ssrf,
 				domainPolicy,
 				...(options?.lookup ? { lookup: options.lookup } : {}),
 			},

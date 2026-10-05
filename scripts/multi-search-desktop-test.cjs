@@ -7,6 +7,12 @@ for (const dir of [agentDir, out, path.join(profile, 'AppData/Roaming'), path.jo
 const requests = [];
 let dispatchedSearch = false;
 const server = http.createServer(async (req, res) => {
+  if (req.method === 'GET') {
+    const sentence = req.url.startsWith('/update') ? '新版设备不支持离线运行。' : '该设备支持离线运行。';
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<html lang="zh"><head><title>产品规格说明</title></head><body><article><h1>设备运行说明</h1><p>'+sentence+'本文记录相应版本的实际运行条件，测试日期为 2026 年 9 月。'+('请核对产品型号与软件版本，以本文具体说明为准。'.repeat(20))+'</p></article></body></html>');
+    return;
+  }
   let raw = ''; for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw); requests.push(body);
   const stringify = c => typeof c === 'string' ? c : JSON.stringify(c);
@@ -40,12 +46,9 @@ globalThis.fetch = async (input, init) => {
   if (url.includes('api.tavily.com/search') || url.includes('google.serper.dev/search')) {
     fs.appendFileSync(log, JSON.stringify({url,at:Date.now()})+'\\n');
     await new Promise(r=>setTimeout(r,url.includes('tavily')?450:100));
-    const a = {title:'旧版产品说明',url:'https://example.com/spec?utm_source=tavily',content:'该设备支持离线运行。'};
-    return Response.json(url.includes('tavily')?{answer:'供应商摘要未经独立核验',results:[a]}:{organic:[{title:a.title,link:'https://example.com/spec?utm_source=serper',snippet:a.content},{title:'新版产品说明',link:'https://example.org/update',snippet:'新版设备不支持离线运行。'}]});
-  }
-  if (url.includes('example.com') || url.includes('example.org')) {
-    const sentence=url.includes('example.org')?'新版设备不支持离线运行。':'该设备支持离线运行。';
-    return new Response('<html lang="zh"><head><title>产品规格说明</title></head><body><article><h1>设备运行说明</h1><p>'+sentence+'本文记录相应版本的实际运行条件，测试日期为 2026 年 9 月。'+('请核对产品型号与软件版本，以本文具体说明为准。'.repeat(20))+'</p></article></body></html>',{headers:{'content-type':'text/html; charset=utf-8'}});
+    const base = process.env.MYBUDDY_SEARCH_TEST_ORIGIN;
+    const a = {title:'旧版产品说明',url:base+'/spec?utm_source=tavily',content:'该设备支持离线运行。'};
+    return Response.json(url.includes('tavily')?{answer:'供应商摘要未经独立核验',results:[a]}:{organic:[{title:a.title,link:base+'/spec?utm_source=serper',snippet:a.content},{title:'新版产品说明',link:base.replace('localhost','127.0.0.1')+'/update',snippet:'新版设备不支持离线运行。'}]});
   }
   return original(input,init);
 };
@@ -59,7 +62,7 @@ async function evaluate(expression) { const r = await rpc('Runtime.evaluate', { 
 async function launch() {
   const port = await new Promise(r => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
   // Match a normal desktop launch without the test supplying the Pi directory.
-  const env = { ...process.env, HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, 'AppData/Roaming'), LOCALAPPDATA: path.join(profile, 'AppData/Local') }; delete env.ELECTRON_RUN_AS_NODE; delete env.PI_CODING_AGENT_DIR;
+  const env = { ...process.env, HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, 'AppData/Roaming'), LOCALAPPDATA: path.join(profile, 'AppData/Local'), MYBUDDY_SEARCH_TEST_ORIGIN: 'http://localhost:'+server.address().port }; delete env.ELECTRON_RUN_AS_NODE; delete env.PI_CODING_AGENT_DIR;
   fd = fs.openSync(path.join(out, 'desktop.log'), 'a');
   proc = cp.spawn(require('electron'), [bootstrap, '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port], { cwd: root, env, stdio: ['ignore', fd, fd], windowsHide: true });
   const page = await until(async () => { if (proc.exitCode !== null) throw Error('Electron exited ' + proc.exitCode); try { return (await fetch('http://127.0.0.1:' + port + '/json/list').then(r => r.json())).find(t => t.type === 'page' && t.url.includes('index.html')); } catch {} }, 'renderer');
@@ -78,7 +81,7 @@ const report = { tests: [], status: 'running', profile };
   const baseUrl = 'http://127.0.0.1:' + server.address().port + '/v1';
   fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { 'search-fixture': { baseUrl, api: 'openai-completions', apiKey: 'fixture', models: [{ id: 'fixture', name: 'Search Fixture', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
   fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'search-fixture', defaultModel: 'fixture', enabledModels: ['search-fixture/fixture'], memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light' }));
-  fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({ tavilyApiKey: 'fixture', serperApiKey: 'fixture', workflow: 'none', searchRouting: { providers: ['tavily'], fallbackOn: ['network', 'quota', 'transient'] }, ssrf: { allowRanges: ['198.18.0.0/15'] } }));
+  fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({ tavilyApiKey: 'fixture', serperApiKey: 'fixture', workflow: 'none', searchRouting: { providers: ['tavily'], fallbackOn: ['network', 'quota', 'transient'] }, ssrf: { enabled: false } }));
   // A conflicting legacy Pi profile must not control the product's search UI.
   fs.mkdirSync(path.join(profile, '.pi'), { recursive: true });
   fs.writeFileSync(path.join(profile, '.pi/web-search.json'), JSON.stringify({ provider: 'exa', workflow: 'summary-review', autoOpenBrowser: true }));
@@ -93,6 +96,7 @@ const report = { tests: [], status: 'running', profile };
   await click('.capabilities-footer .btn.primary');
   const saved = await until(() => evaluate('window.api.agent.getWebSearchConfig().then(c=>c.searchPolicy?.mode==="parallel"?c.searchPolicy:false)'), 'saved policy');
   assert.deepEqual(saved.providers, ['tavily', 'serper']); assert.equal(saved.verifySources, true); report.tests.push('settings checkbox -> IPC -> file readback: two providers and evidence enabled');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, 'web-search.json'), 'utf8')).ssrf.enabled, false, 'settings save preserves the unrestricted address policy');
   await click('.settings-content-head .icon-btn');
   await until(() => evaluate('!document.querySelector(".settings-modal")'), 'close settings');
   await evaluate(`(()=>{const e=document.querySelector('.chat-input textarea')||document.querySelector('textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'请搜索该设备是否支持离线运行');e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await delay(100);
@@ -101,6 +105,8 @@ const report = { tests: [], status: 'running', profile };
   const end = await evaluate('window.__searchEvents.filter(e=>e.type==="tool_update"&&e.webSearch?.evidence).at(-1)');
   assert(end?.webSearch, 'search report must traverse native events'); assert.equal(end.webSearch.sources.length, 2); assert.equal(end.webSearch.evidence[0].status, 'unclear'); assert.equal(end.webSearch.evidence[0].citations.length, 2);
   assert.deepEqual(end.webSearch.runs.map(run => run.provider), ['tavily', 'serper'], 'native search must read the product profile, not the legacy Pi profile');
+  assert(end.webSearch.sources.some(source => source.url.includes('localhost')) && end.webSearch.sources.some(source => source.url.includes('127.0.0.1')), 'local source addresses must survive merging and evidence extraction');
+  report.tests.push('localhost and loopback sources survive native search and real HTTP body extraction with address restrictions disabled');
   report.tests.push('normal desktop startup without PI_CODING_AGENT_DIR honors saved workflow:none and parallel providers despite conflicting legacy Pi configuration');
   assert(await evaluate('window.__searchEvents.some(e=>e.webSearch?.runs.some(r=>r.status==="success")&&e.webSearch?.runs.some(r=>r.status==="running"))'));
   const toolResultRequest = requests.find(r => JSON.stringify(r.messages).includes('Passage-grounded assessment')); assert(toolResultRequest, 'parent model receives original evidence and provider state');

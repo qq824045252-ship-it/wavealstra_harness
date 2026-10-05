@@ -179,6 +179,8 @@ interface WebSearchConfig {
 		activity?: KeyId;
 	};
 	ssrf?: {
+		/** Set false to allow every HTTP(S) source address, including local and proxy addresses. */
+		enabled?: boolean;
 		/** CIDR ranges exempted from the SSRF guard (e.g. fake-IP proxy ranges). */
 		allowRanges?: string[];
 		/** Skip local hostname DNS preflight when an HTTP(S)_PROXY env var applies. */

@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -324,6 +324,7 @@
     "test:computer-use-desktop": "node scripts/computer-use-browser-desktop-live.cjs",
     "test:magpie-desktop": "node scripts/test-guard.mjs scripts/magpie-desktop-test.cjs",
     "test:multi-search-desktop": "node scripts/test-guard.mjs scripts/multi-search-desktop-test.cjs",
+    "test:search-source-address": "esbuild scripts/search-source-address-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/search-source-address-test.mjs && node scripts/test-guard.mjs out/tests/search-source-address-test.mjs",
     "test:multi-search-live": "esbuild scripts/multi-search-live-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-search-live-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-live-test.mjs",
     "test:multi-search": "esbuild scripts/multi-search-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/multi-search-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-test.mjs"
   },

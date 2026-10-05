@@ -52,6 +52,7 @@ function loadConfigRoot(): Record<string, unknown> | null {
 }
 
 export interface SsrfConfig {
+	enabled?: boolean;
 	allowRanges: string[];
 	trustEnvProxy: boolean;
 }
@@ -110,13 +111,16 @@ function normalizeDomainEntry(entry: string): string | null {
 
 export function loadSsrfConfig(): SsrfConfig {
 	const parsed = loadConfigRoot();
-	if (!parsed) return { allowRanges: [], trustEnvProxy: false };
+	if (!parsed) return { enabled: true, allowRanges: [], trustEnvProxy: false };
 	const ssrf = parsed.ssrf;
-	if (ssrf === undefined || ssrf === null) return { allowRanges: [], trustEnvProxy: false };
+	if (ssrf === undefined || ssrf === null) return { enabled: true, allowRanges: [], trustEnvProxy: false };
 	if (typeof ssrf !== "object" || Array.isArray(ssrf)) {
 		throw new Error(`ssrf in ${WEB_SEARCH_CONFIG_PATH} must be an object`);
 	}
-	const config = ssrf as { allowRanges?: unknown; trustEnvProxy?: unknown };
+	const config = ssrf as { enabled?: unknown; allowRanges?: unknown; trustEnvProxy?: unknown };
+	if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
+		throw new Error(`ssrf.enabled in ${WEB_SEARCH_CONFIG_PATH} must be a boolean`);
+	}
 	if (config.allowRanges !== undefined && config.allowRanges !== null && !Array.isArray(config.allowRanges)) {
 		throw new Error(`ssrf.allowRanges in ${WEB_SEARCH_CONFIG_PATH} must be an array of CIDR strings`);
 	}
@@ -131,10 +135,12 @@ export function loadSsrfConfig(): SsrfConfig {
 		return entry.trim();
 	}).filter(Boolean);
 	parseAllowRanges(allowRanges);
-	return { allowRanges, trustEnvProxy: config.trustEnvProxy === true };
+	return { enabled: config.enabled !== false, allowRanges, trustEnvProxy: config.trustEnvProxy === true };
 }
 
 interface ValidationOptions {
+	/** Disable address-range and local-hostname restrictions when the owner allows all sources. */
+	enabled?: boolean;
 	lookup?: Lookup;
 	/** Optional hostname policy for fetch_content target URLs. */
 	domainPolicy?: DomainPolicy;
@@ -185,12 +191,13 @@ export async function validateRemoteUrl(rawUrl: string | URL, options: Validatio
 
 	const hostname = normalizeHostname(url.hostname);
 	if (!hostname) throw new Error("URL must include a hostname");
+	assertDomainPolicy(hostname, options.domainPolicy);
+	if (options.enabled === false) return url;
 	if (hostname === "localhost" || hostname.endsWith(".localhost")) {
 		throw new Error(`Blocked internal hostname: ${hostname}`);
 	}
 
 	const allowRanges = parseAllowRanges(options.allowRanges);
-	assertDomainPolicy(hostname, options.domainPolicy);
 
 	if (net.isIP(hostname)) {
 		assertPublicAddress(hostname, hostname, allowRanges);

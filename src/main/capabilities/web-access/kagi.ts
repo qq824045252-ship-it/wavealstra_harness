@@ -217,8 +217,7 @@ export async function extractWithKagi(url: string, signal?: AbortSignal, options
 	const ssrf = options.ssrf ?? loadSsrfConfig();
 	const domainPolicy = loadFetchContentDomainPolicy();
 	await validateRemoteUrl(url, {
-		allowRanges: ssrf.allowRanges,
-		trustEnvProxy: ssrf.trustEnvProxy,
+		...ssrf,
 		domainPolicy,
 		...(options.lookup ? { lookup: options.lookup } : {}),
 	});
@@ -232,8 +231,7 @@ export async function extractWithKagi(url: string, signal?: AbortSignal, options
 			body: JSON.stringify({ urls: [url] }),
 			signal: signal ? AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? SEARCH_TIMEOUT_MS), signal]) : AbortSignal.timeout(options.timeoutMs ?? SEARCH_TIMEOUT_MS),
 		}, {
-			allowRanges: ssrf.allowRanges,
-			trustEnvProxy: ssrf.trustEnvProxy,
+			...ssrf,
 			onRedirect: ({ from, to, init }) => to.origin === from.origin ? init : { ...init, headers: { "Content-Type": "application/json", Accept: "application/json" } },
 			...(options.lookup ? { lookup: options.lookup } : {}),
 		});
