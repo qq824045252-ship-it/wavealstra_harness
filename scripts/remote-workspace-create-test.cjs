@@ -12,7 +12,13 @@ const evaluate=async code=>{const r=await win.webContents.executeJavaScript(`(as
 async function until(code){const end=Date.now()+6000;while(!await evaluate(code)){if(Date.now()>end)throw Error('Timeout '+code);await wait(25);}}
 async function click(selector){const p=await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing '+${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect(),x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2),hit=document.elementFromPoint(x,y);if(!e.contains(hit))throw Error('Not clickable '+${JSON.stringify(selector)}+' hit '+hit?.outerHTML.slice(0,160));return {x,y}})()`);win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...p});win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...p});await wait(60);}
 async function type(text){await evaluate(`(()=>{const e=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await wait(30);}
-async function select(label,value){await evaluate(`(()=>{const e=document.querySelector('[aria-label="'+${JSON.stringify(label)}+'"]');e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('change',{bubbles:true}));})()`);await wait(40);}
+async function select(label,value){
+  const modeLabels={working:'日常办公',coding:'代码开发',bot:'Bot'},tagLabels={'general-office':'通用办公',native:'原生模式',codemode:'Code Mode','custom-dev':'自定义开发'};
+  if(label==='新任务模式'){
+    if(await evaluate('!!document.querySelector(".task-setup-sheet.open")')){await click('[aria-label="关闭任务设置"]');await wait(300);}
+    await click('[aria-label="新任务模式"]');await wait(300);await click('[aria-label="模式：'+modeLabels[value]+'"]');
+  } else {await click('[aria-label="Tag：'+tagLabels[value]+'"]');await wait(300);}
+}
 async function choose(mode='working',tag='general-office'){await select('新任务模式',mode);await select('新任务 Tag',tag);}
 function pass(name){checks.push(name);fs.writeSync(1,'PASS '+name+'\n');}
 app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useContentSize:true,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});win.webContents.setFrameRate(30);win.webContents.on('paint',()=>{});win.webContents.startPainting();await win.loadFile(path.join(out,'index.html'));
@@ -23,11 +29,11 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   fs.writeFileSync(path.join(out,'folder-actions.png'),(await win.webContents.capturePage()).toPNG());
   await click('[aria-label="在 项目文件夹 中新建任务"]');await until('!document.querySelector(".claude-drawer").classList.contains("open")');
   assert.equal((await evaluate('workspaceFixture.inspect()')).selectedSpaceId,'child');
-  assert.match(await evaluate('document.querySelector(".new-task-destination").textContent'),/公司空间 \/ 项目文件夹/);
+  assert.match(await evaluate('document.querySelector(".task-setup-location").textContent'),/项目文件夹/);
   pass('nested and empty folders have touch targets; archived/invalid destinations cannot be selected');
   await type('必须先选择');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   assert.match(await evaluate('workspaceFixture.submit().catch(e=>e.message)'),/选择模式和 Tag/);
-  await select('新任务模式','working');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
+  await select('新任务模式','working');fs.writeFileSync(path.join(out,'tag-sheet.png'),(await win.webContents.capturePage()).toPNG());assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   await select('新任务 Tag','general-office');await select('新任务模式','bot');
   assert.equal((await evaluate('workspaceFixture.inspect()')).selectedModePresetId,null);
   assert.equal(await evaluate('!!document.querySelector("[aria-label=权限控制]")'),false);
@@ -37,8 +43,10 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   pass('mode and tag require explicit choices; changing mode clears tag; Bot hides MyBuddy permission control');
   await choose();
   await click('[aria-label="选择新任务位置"]');await wait(250);
-  await evaluate(`(()=>{const e=document.querySelector('[aria-label="所属项目"]');e.value='project';e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-  await click('.claude-sheet-close-btn');
+  assert(await evaluate(`!!document.querySelector('[aria-label="位置：公司空间 / 项目文件夹"]')`));
+  fs.writeFileSync(path.join(out,'location-sheet.png'),(await win.webContents.capturePage()).toPNG());
+  await click('[aria-label="选择关联项目"]');await click('[aria-label="项目：共享项目记忆"]');
+  await click('[aria-label="关闭任务设置"]');await wait(300);
   await type('手机文件夹测试');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().activeTaskId!==null');
   let state=await evaluate('workspaceFixture.inspect()');assert.equal(state.requests[0].spaceId,'child');assert.equal(state.requests[0].projectId,'project');assert.equal(state.tasks[0].spaceId,'child');assert.equal(state.selectedSpaceId,null);assert.equal(state.selectedProjectId,null);
   assert.equal(state.requests[0].welcomeMode,'working');assert.equal(state.requests[0].modePresetId,'general-office');
@@ -63,7 +71,7 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   pass('deleted destination is rejected without silently creating in another location');
   await evaluate('workspaceFixture.removeTag()');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   assert.match(await evaluate('workspaceFixture.submit().catch(e=>e.message)'),/选择模式和 Tag/);
-  await evaluate('workspaceFixture.oldHost()');assert.match(await evaluate('document.querySelector(".new-task-mode-picker").innerText'),/更新电脑端/);
+  await evaluate('workspaceFixture.oldHost()');await click('[aria-label="新任务模式"]');await wait(300);assert.match(await evaluate('document.querySelector(".task-setup-sheet").innerText'),/更新电脑端/);
   assert.equal((await evaluate('workspaceFixture.inspect()')).requests.length,4);
   pass('removed tags and older hosts cannot silently fall back to the wrong mode');
   fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({passed:true,checks},null,2));app.exit(0);

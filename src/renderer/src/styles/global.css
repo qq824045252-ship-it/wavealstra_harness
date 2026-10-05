@@ -23710,3 +23710,10 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
 .context-usage-popup { max-height: min(640px, 78vh); overflow-y: auto; }
 
 .durable-bot-state { padding: 0 24px; color: var(--text-secondary); font-size: 12px; }
+.bot-submission-preview { width: min(860px, calc(100% - 48px)); margin: 28px auto; }
+.bot-submission-input { width: fit-content; max-width: 85%; margin-left: auto; padding: 14px 18px; border-radius: 18px; background: var(--bg-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bot-submission-attachment { display: block; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+.bot-submission-status { display: flex; align-items: center; gap: 9px; margin-top: 28px; color: var(--text-secondary); font-size: 13px; }
+.bot-submission-spinner { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: bot-submission-spin .8s linear infinite; }
+@keyframes bot-submission-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .bot-submission-spinner { animation: none; } }

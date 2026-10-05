@@ -830,7 +830,9 @@ export default function ChatView(): React.JSX.Element {
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
   const boundProjectId = task?.projectId ?? draftProjectId;
 
-  if (!task || (task.messages.length === 0 && !task.sessionFile)) {
+  // Bot tasks are materialized on submission. Their first durable snapshot may
+  // arrive after runtime startup; an empty projection is already a conversation.
+  if (!task || (task.welcomeMode !== "bot" && task.messages.length === 0 && !task.sessionFile)) {
     const showHeroHeader = Boolean(sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
@@ -880,10 +882,17 @@ export default function ChatView(): React.JSX.Element {
           <div className="input-spacer" />
         </div>
         <div className="chat-scroll">
+          {task.botPendingSubmission && <div className="bot-submission-preview">
+            <div className="bot-submission-input">{task.botPendingSubmission.text}
+              {task.botPendingSubmission.attachmentNames.map((name, index) => <span className="bot-submission-attachment" key={index}>{name}</span>)}
+            </div>
+            <div className="bot-submission-status" role="status"><span className="bot-submission-spinner" aria-hidden="true" />正在提交给 Bot…</div>
+          </div>}
+          {!task.botPendingSubmission &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
             <div className="empty-block-title">{task.welcomeMode === "bot" ? "Bot 会话" : "正在加载历史对话…"}</div>
             <div style={{ fontSize: 12.5 }}>{task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
-          </div>
+          </div>}
         </div>
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />

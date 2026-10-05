@@ -69,6 +69,8 @@ interface State {
   selectedModePresetId: string | null
   setSelectedWelcomeMode: (mode: RemoteWelcomeMode | null) => void
   setSelectedModePresetId: (id: string | null) => void
+  taskSetupSection: 'location' | 'project' | 'mode' | 'tag' | null
+  setTaskSetupSection: (section: State['taskSetupSection']) => void
   attachments: PendingAttachment[]
   addAttachment: (att: PendingAttachment) => void
   removeAttachment: (id: string) => void
@@ -106,7 +108,7 @@ const CLEARED_NOTICES_KEY = 'mybuddy_remote_cleared_notices'
  */
 function resetTransientOverrides(): Partial<State> {
   return { selectedModelId: null, toolAccessMode: 'follow', selectedProjectId: null, selectedSpaceId: null,
-    selectedWelcomeMode: null, selectedModePresetId: null }
+    selectedWelcomeMode: null, selectedModePresetId: null, taskSetupSection: null }
 }
 function getClearedNoticeIds(): Set<string> {
   try {
@@ -165,6 +167,8 @@ export const useRemoteStore = create<State>((set, get) => ({
   setSelectedWelcomeMode: (selectedWelcomeMode) => set({ selectedWelcomeMode, selectedModePresetId: null,
     ...(selectedWelcomeMode === 'bot' ? { toolAccessMode: 'follow' as const, isPermissionSheetOpen: false } : {}) }),
   setSelectedModePresetId: (selectedModePresetId) => set({ selectedModePresetId }),
+  taskSetupSection: null,
+  setTaskSetupSection: (taskSetupSection) => set({ taskSetupSection }),
   attachments: [],
   addAttachment: (att) => set((s) => ({ attachments: [...s.attachments, att] })),
   removeAttachment: (id) => set((s) => ({ attachments: s.attachments.filter((a) => a.id !== id) })),

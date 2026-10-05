@@ -193,6 +193,8 @@ export interface Task {
   durable?: import("../../shared/durable-bot").DurableBotSnapshot;
   /** Transport/configuration errors before Durable accepts an input, not execution state. */
   botInputError?: string;
+  /** Local transport feedback only, never persisted as a message or execution state. */
+  botPendingSubmission?: { id: string; text: string; attachmentNames: string[] };
   id: string;
   title: string;
   /** 所属空间；无则显示在「任务」分组 */

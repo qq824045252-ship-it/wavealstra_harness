@@ -11,6 +11,9 @@ const {app,BrowserWindow}=require('electron');
 app.setPath('userData',path.join(root,'out/remote-tests/profile'));
 const results=[];const delay=ms=>new Promise(r=>setTimeout(r,ms));
 let win;
+// Consume the offscreen compositor frame directly. capturePage() may reject with
+// UnknownVizError on a newly opened hidden Windows surface before its first frame.
+async function capture(){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{win.webContents.removeListener('paint',onPaint);reject(Error('Offscreen paint timeout'));},5000);function onPaint(_event,_rect,image){clearTimeout(timer);resolve(image);}win.webContents.once('paint',onPaint);win.webContents.invalidate();});}
 async function evaluate(expr){return win.webContents.executeJavaScript(expr,true)}
 async function until(expr,timeout=5000){const started=Date.now();while(Date.now()-started<timeout){if(await evaluate(expr))return;await delay(50)}throw Error('Timed out: '+expr)}
 // A broken log pipe must reject the running test, not emit an uncaught stream error later.
@@ -30,10 +33,10 @@ app.whenReady().then(async()=>{
   await evaluate('window.remoteFixture.event("thinking_delta", {delta:"再确认实时渲染。"})');
   await until('document.querySelector(".process-thinking-preview")?.textContent.includes("再确认实时渲染")');
   assert.equal(await evaluate('document.querySelector(".process-panel-title").textContent'),'正在思考…');
-  await win.webContents.capturePage();
+  await capture();
   const animationTime=await evaluate('document.querySelector(".process-spinner").getAnimations()[0]?.currentTime');
   await delay(120);
-  await win.webContents.capturePage();
+  await capture();
   const animationProbe=await evaluate('(()=>{const n=document.querySelector(".process-spinner");return {time:n.getAnimations()[0]?.currentTime,name:getComputedStyle(n).animationName,reduced:matchMedia("(prefers-reduced-motion: reduce)").matches}})()');
   assert.ok(animationProbe.time>Number(animationTime),JSON.stringify({before:animationTime,...animationProbe}));
   pass('thinking deltas appear immediately in the folded panel and the activity animation advances');
@@ -53,7 +56,7 @@ app.whenReady().then(async()=>{
   assert.ok(await evaluate('document.querySelector(".process-thinking-preview").textContent.includes("保留手动阅读位置")'));
   await delay(250);
   fs.mkdirSync(artifactDir,{recursive:true});
-  fs.writeFileSync(path.join(artifactDir,'thinking-live.png'),(await win.webContents.capturePage()).toPNG());
+  fs.writeFileSync(path.join(artifactDir,'thinking-live.png'),(await capture()).toPNG());
   await evaluate('window.remoteFixture.event("text_delta", {delta:"流式回复。", final:true})');
   await until('!!document.querySelector(".response-streaming-caret")');
   assert.equal(await evaluate('!!document.querySelector(".process-thinking-preview")'),false);
@@ -129,7 +132,7 @@ app.whenReady().then(async()=>{
     assert.ok(interactionBounds.optionHeights.every(h=>h>=52),JSON.stringify(interactionBounds));
   }
   fs.mkdirSync(artifactDir,{recursive:true});
-  fs.writeFileSync(path.join(artifactDir,'interaction-options.png'),(await win.webContents.capturePage()).toPNG());
+  fs.writeFileSync(path.join(artifactDir,'interaction-options.png'),(await capture()).toPNG());
   await evaluate('document.querySelectorAll(".remote-interaction-option")[1].click()');
   assert.equal(await evaluate('document.querySelectorAll(".remote-interaction-option")[1].getAttribute("aria-checked")'),'true');
   await evaluate('[...document.querySelectorAll(".remote-interaction-btn")].find(b=>b.textContent.includes("提交回答")).click()');
@@ -283,7 +286,7 @@ app.whenReady().then(async()=>{
   await until('!!document.querySelector(".notifications-card")');await delay(220);
   const noticeBounds=await evaluate('(()=>{const n=document.querySelector(".notifications-card").getBoundingClientRect();return {height:n.height,top:n.top,bottom:n.bottom,viewport:innerHeight}})()');
   assert.ok(noticeBounds.height>30&&noticeBounds.top>=0&&noticeBounds.bottom<noticeBounds.viewport,JSON.stringify(noticeBounds));
-  fs.writeFileSync(path.join(artifactDir,'navigation-notifications.png'),(await win.webContents.capturePage()).toPNG());
+  fs.writeFileSync(path.join(artifactDir,'navigation-notifications.png'),(await capture()).toPNG());
   await evaluate('window.remoteFixture.panel("notifications",false)');
   assert.equal(await evaluate('document.querySelector(".remote-popover").inert'),true);
   await delay(50);await evaluate('window.remoteFixture.panel("notifications",true)');await delay(220);
@@ -309,7 +312,7 @@ app.whenReady().then(async()=>{
 
   fs.mkdirSync(artifactDir,{recursive:true});
   fs.writeFileSync(path.join(artifactDir,'renderer-results.json'),JSON.stringify({ok:true,passed:results.length,results},null,2));
-  fs.writeFileSync(path.join(artifactDir,'renderer.png'),(await win.webContents.capturePage()).toPNG());
+  fs.writeFileSync(path.join(artifactDir,'renderer.png'),(await capture()).toPNG());
   log(JSON.stringify({ok:true,passed:results.length}));win.destroy();app.exit(0);
 }).catch(error=>{
   try {

@@ -3517,7 +3517,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               lastAnnouncedExpertId: nextAnnouncedExpertId,
               updatedAt: Date.now(),
               messages: isBot ? x.messages : [...x.messages, userMsg, reply],
-              ...(isBot ? { botInputError: undefined } : {}),
+              ...(isBot ? { botInputError: undefined, botPendingSubmission: { id: userMsgId, text: visibleText, attachmentNames: displayAttachments.map(a => a.name) } } : {}),
             }
           : x,
       ),
@@ -3606,6 +3606,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     if (!api?.agent) {
+      if (isBot) {
+        set(state => ({ tasks: state.tasks.map(item => item.id === activeTaskId ? { ...item, botInputError: "主进程 Agent API 未就绪", botPendingSubmission: undefined } : item) }));
+        return;
+      }
       get().applyAgentPatch({
         type: "text_delta",
         taskId: activeTaskId,
@@ -3722,6 +3726,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           messageId: assistantMsgId,
           error: message,
         });
+      })
+      .finally(() => {
+        if (isBot) set(state => ({ tasks: state.tasks.map(item => item.id === activeTaskId && item.botPendingSubmission?.id === userMsgId
+          ? { ...item, botPendingSubmission: undefined } : item) }));
       });
   },
 
