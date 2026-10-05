@@ -173,7 +173,9 @@ const report={temp,tests:[],status:'running'};
     const cronHistory=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(run.taskId)})`);assert.equal(cronHistory.durable.outcome,expected==='success'?'completed':'failed');
   }
   report.tests.push('real scheduled Bot calls use native project tools and reflect native failure instead of reporting success');
-  await send('BOT_HOLD: checkpoint during nested Bash');
+  // Recovery belongs to this Code Mode task, regardless of which conversation the UI now shows.
+  // Native/Code Mode composer submission is already exercised above; target the owner explicitly here.
+  await evaluate(`window.__holdRequest=window.api.agent.prompt({taskId:${JSON.stringify(taskId)},text:'BOT_HOLD: checkpoint during nested Bash',userMessageId:'desktop-hold',assistantMessageId:'desktop-hold-placeholder',modePresetId:'codemode'});true`);
   await until(()=>fs.existsSync(path.join(task.cwd,'resume-marker.txt')),'nested Bash started');
   const queued=await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(taskId)},text:'AFTER_RESTART',userMessageId:'desktop-queued',assistantMessageId:'desktop-placeholder',streamingBehavior:'followUp',modePresetId:'codemode'})`);
   assert.equal(queued.queued,true);
