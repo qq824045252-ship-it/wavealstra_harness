@@ -185,10 +185,12 @@ export function FileBadge({
 export function LocalFileChip({ path }: { path: string }): React.JSX.Element {
   const openArtifact = useAppStore((s) => s.openArtifact);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
-  const artifacts = useAppStore((s) => s.artifactProjection.artifactsByTask[s.activeTaskId ?? ""] ?? []);
+  // useSyncExternalStore must see the same snapshot when the store is unchanged.
+  // Allocating a fallback [] inside this selector causes React update-depth loops.
+  const artifacts = useAppStore((s) => s.artifactProjection.artifactsByTask[s.activeTaskId ?? ""]);
   const name = path.replace(/[\\/]+$/, "").split(/[/\\]/).pop() || path;
   const norm = path.replace(/\\/g, "/").toLowerCase();
-  const match = artifacts.find((d) => {
+  const match = artifacts?.find((d) => {
     if (d.source.type === "workspace-file") {
       return d.source.entryFile.replace(/\\/g, "/").toLowerCase() === norm;
     }
