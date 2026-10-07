@@ -28,6 +28,8 @@ import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutoma
 import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
 import { computerAutomationService, type ComputerExecInput } from "./ComputerAutomationService";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
+import { getAgentBashShellPath } from "../agent-shell-settings";
+import { getMyBuddyDir } from "../paths";
 import { runtimeProbeService, type RuntimeProbeInput } from "./RuntimeProbeService";
 import { MediaArtifactMaterializer } from "./MediaArtifactMaterializer";
 import { routeVisionForPaths, type VisionRouteResult } from "./VisionRouting";
@@ -763,6 +765,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       applyShellIsolationSpawnContext(normalizeIsolationLevel(bridge.getIsolationLevel()), bridge.taskRoot, ctx);
     const bashTool = createBashTool(bridge.taskRoot, {
       spawnHook,
+      shellPath: getAgentBashShellPath(bridge.taskRoot, getMyBuddyDir()),
     });
     const powerShellTool = createPowerShellTool(bridge.taskRoot, { spawnHook });
     if (config.execution.codeExecutionEnabled && !bridge.nativeExecution) {

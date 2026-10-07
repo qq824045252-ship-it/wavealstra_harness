@@ -19,6 +19,7 @@ import {
 } from "../shared/external-agent";
 import { normalizeModelPreferences, type ModelPreferencesDto } from "../shared/model-metadata";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { migrateLegacyShellPreferences, normalizeTerminalShellPath } from "./agent-shell-settings";
 import { DEFAULT_CODE_THEME, normalizeCodeTheme, type CodeThemeId } from "../shared/code-theme";
 import {
   DEFAULT_ISOLATION_LEVEL,
@@ -95,6 +96,8 @@ export interface AppSettings {
    * 默认 guarded；os-sandbox 为实验性加固，须显式开启，不得默认打开。
    */
   shellIsolationLevel: IsolationLevel;
+  /** Interactive terminal only; empty uses the platform default. Pi shellPath is reserved for Bash. */
+  terminalShellPath: string;
   /**
    * 任务级 Active Connector 持久化（F3：无新 DB schema，复用 settings.json 可扩展字段）。
    * taskId → 激活连接器 id 列表。
@@ -187,6 +190,7 @@ const DEFAULTS: AppSettings = {
   codeFontFamily: "",
   codeTheme: DEFAULT_CODE_THEME,
   shellIsolationLevel: DEFAULT_ISOLATION_LEVEL,
+  terminalShellPath: "",
   compactionTriggerRatio: DEFAULT_COMPACTION_TRIGGER_RATIO,
   compactionTriggerTokens: DEFAULT_COMPACTION_TRIGGER_TOKENS,
   conversationBranchEnabled: false,
@@ -235,7 +239,7 @@ export class AppSettingsStore {
     if (!existsSync(path)) return { ...DEFAULTS };
     try {
       const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppSettings> & Record<string, unknown>;
-      const merged = { ...DEFAULTS, ...raw };
+      const merged = { ...DEFAULTS, ...migrateLegacyShellPreferences(raw).settings } as AppSettings;
       delete (merged as AppSettings & Record<string, unknown>).backupFiles;
       const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());
       const piDefaultProvider = piSettings.getDefaultProvider();
@@ -278,6 +282,7 @@ export class AppSettingsStore {
       // Legacy global thinkingLevel is intentionally dropped: it cannot be safely mapped without model-native reasoning metadata.
       delete (merged as AppSettings & Record<string, unknown>).thinkingLevel;
       merged.shellIsolationLevel = normalizeIsolationLevel(merged.shellIsolationLevel);
+      merged.terminalShellPath = normalizeTerminalShellPath(merged.terminalShellPath);
       merged.compactionTriggerRatio = normalizeCompactionTriggerRatio(merged.compactionTriggerRatio);
       merged.compactionTriggerTokens = normalizeCompactionTriggerTokens(merged.compactionTriggerTokens);
       merged.conversationBranchEnabled = merged.conversationBranchEnabled === true;
@@ -360,6 +365,9 @@ export class AppSettingsStore {
     if (partial.shellIsolationLevel !== undefined) {
       next.shellIsolationLevel = normalizeIsolationLevel(partial.shellIsolationLevel);
     }
+    if (partial.terminalShellPath !== undefined) {
+      next.terminalShellPath = normalizeTerminalShellPath(partial.terminalShellPath);
+    }
     if (partial.compactionTriggerRatio !== undefined) {
       next.compactionTriggerRatio = normalizeCompactionTriggerRatio(partial.compactionTriggerRatio);
     }
@@ -382,6 +390,17 @@ export class AppSettingsStore {
       const raw = JSON.parse(readFileSync(getSettingsPath(), "utf8"));
       return normalizeModelPreferences(raw.modelPreferences);
     } catch { return {}; }
+  }
+
+  /** Run before Pi sessions/subagent workers read the shared settings file. */
+  migrateShellPreferences(path = getSettingsPath()): void {
+    this.recoverStaleTmp(path);
+    if (!existsSync(path)) return;
+    let raw: Record<string, unknown>;
+    try { raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>; }
+    catch { return; } // The existing read/recovery path handles corrupt settings without losing the source.
+    const migration = migrateLegacyShellPreferences(raw);
+    if (migration.changed) writeSettingsAtomic(path, `${JSON.stringify(migration.settings, null, 2)}\n`);
   }
 
   archiveLegacyModelPreferences(): void {

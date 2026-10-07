@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { createBashToolDefinition, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentBashShellPath } from "../agent-shell-settings";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../../shared/builtin-capabilities";
 import type { PythonRuntimeService } from "../runtime/PythonRuntimeService";
 import { executePython } from "../runtime/PythonExecutor";
@@ -32,7 +33,7 @@ export async function checkLocalExecution(kind: "terminal" | "code-execution", p
     const api = { registerTool: (tool: RegisteredTool) => tools.set(tool.name, tool), on: () => undefined } as unknown as ExtensionAPI;
     const marker = `MYBUDDY_CHECK_${randomUUID().replaceAll("-", "")}`;
     if (kind === "terminal") {
-      const tool = createBashToolDefinition(root, { shellPath: SettingsManager.create(root, getMyBuddyDir()).getShellPath() });
+      const tool = createBashToolDefinition(root, { shellPath: getAgentBashShellPath(root, getMyBuddyDir()) });
       const result = await tool.execute(marker, { command: `printf '%s' '${marker}'`, timeout: 5 }, undefined, undefined, undefined as never);
       if (result.isError || !output(result).includes(marker)) throw new Error(`命令执行实测失败：${output(result)}`);
       return { state: "ready", detail: "已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。" };

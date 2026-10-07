@@ -17,6 +17,8 @@ import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bo
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { withDurableImageRead } from "./DurableImages";
+import { getAgentBashShellPath } from "../../agent-shell-settings";
+import { getMyBuddyDir } from "../../paths";
 
 type BotInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }> };
 const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current",
@@ -75,7 +77,7 @@ export class DurableBotRuntime {
         env: ({ cwd }) => {
           // Never fall back to process.cwd() after a workspace disappears or changes.
           if (!cwd || resolve(cwd) !== resolve(options.cwd) || !statSync(cwd).isDirectory()) throw new Error("Bot 工作目录失效，请修复项目目录后继续");
-          return new NodeExecutionEnv({ cwd });
+          return new NodeExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
         },
       }, ctx);
       const conversation = await harness.root(ctx, { agent: { cwd: options.cwd, model: options.model } });

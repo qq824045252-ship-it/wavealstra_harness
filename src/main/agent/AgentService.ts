@@ -1,6 +1,7 @@
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
 import { DurableBotService } from "./durable/DurableBotService";
+import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
 import { durableText } from "./durable/DurableTurnProjection";
@@ -1116,6 +1117,7 @@ export class AgentService {
   }
 
   async init(): Promise<void> {
+    this.settingsStore.migrateShellPreferences();
     const azureMigration = migratePiAzureProvider(getMyBuddyDir(), this.db.connection);
     if (azureMigration.files || azureMigration.selections) console.log("[AgentService] Pi Azure provider migrated", azureMigration);
     this.modelRuntime = await ModelRuntime.create({
@@ -1126,7 +1128,7 @@ export class AgentService {
     });
     registerMyBuddyProviders(this.modelRuntime);
     await this.modelRuntime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
-    installModelInvocationAdmission(this.modelRuntime, () => SettingsManager.create(process.cwd(), getMyBuddyDir()));
+    installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
     attachSubagentModelRuntime(this.modelRuntime);
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();
@@ -1220,7 +1222,7 @@ export class AgentService {
         const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
         if (!model) return undefined;
         if (request.reasoningPreference && request.reasoningPreferenceModelId === id) return this.nativeReasoningLevel(model, request.reasoningPreference);
-        return SettingsManager.create(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
+        return createAgentSettingsManager(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
       },
       projectArtifacts: async (taskId, snapshot, before) => {
         const messageId = snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id;
@@ -1291,7 +1293,7 @@ export class AgentService {
 
 
   private async resolvePiModelScope(
-    settingsManager: SettingsManager = SettingsManager.create(process.cwd(), getMyBuddyDir()),
+    settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
   ): Promise<ScopedModel[]> {
     if (!this.modelRuntime) return [];
     const patterns = settingsManager.getEnabledModels();
@@ -1308,7 +1310,7 @@ export class AgentService {
 
   private async resolvePiModelSelection(
     preferredModelId?: string,
-    settingsManager: SettingsManager = SettingsManager.create(process.cwd(), getMyBuddyDir()),
+    settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
   ): Promise<{ model?: ScopedModel["model"]; scopedModels?: ScopedModel[] }> {
     if (!this.modelRuntime) return {};
     const patterns = settingsManager.getEnabledModels();
@@ -1401,7 +1403,7 @@ export class AgentService {
     await this.refreshExternalModelConfig();
 
     const configured = this.modelsStore.read();
-    const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());
+    const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     const patterns = piSettings.getEnabledModels();
     const enabledScope = patterns !== undefined ? await this.resolvePiModelScope(piSettings) : [];
     const enabledKeys = patterns !== undefined
@@ -1887,7 +1889,7 @@ export class AgentService {
     if (!this.modelRuntime) throw new Error("模型运行时尚未初始化");
     const cwd = process.cwd();
     const agentDir = getMyBuddyDir();
-    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const settingsManager = createAgentSettingsManager(cwd, agentDir);
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir,
@@ -2714,7 +2716,7 @@ export class AgentService {
 
   getAppSettings(): AppSettingsDto {
     const app = this.settingsStore.read();
-    const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());
+    const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     const defaultProvider = piSettings.getDefaultProvider();
     const defaultModel = piSettings.getDefaultModel();
     return {
@@ -2729,7 +2731,7 @@ export class AgentService {
   async updateAppSettings(partial: Partial<AppSettingsDto>): Promise<AppSettingsDto> {
     const previous = this.getAppSettings();
     const { enabledModels, defaultModelId, modelPreferences, ...productPartial } = partial;
-    const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());
+    const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
 
     if (modelPreferences !== undefined) {
       const previousLevels = piSettings.getAllModelThinkingLevels();
@@ -3231,7 +3233,7 @@ export class AgentService {
           this.memoryPipeline.beginL1(pendingTurns);
           this.notifyMemoryChanged({ scope: "settings" });
           try {
-            const settings = SettingsManager.create(this.resolveTaskExecutionWorkspaceCwd(taskId), getMyBuddyDir());
+            const settings = createAgentSettingsManager(this.resolveTaskExecutionWorkspaceCwd(taskId), getMyBuddyDir());
             const provider = settings.getDefaultProvider();
             const id = settings.getDefaultModel();
             const defaultModelId = provider && id ? `${provider}/${id}` : this.settingsStore.read().defaultModelId;
@@ -4347,7 +4349,7 @@ export class AgentService {
     evidenceContext?: { scope: () => ProjectionScope; sources: () => SupplementalEvidence[] },
   ): Promise<{ session: AgentSession; resolvedInstructions: AssemblyTraceDto["segments"] }> {
     const agentDir = getMyBuddyDir();
-    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const settingsManager = createAgentSettingsManager(cwd, agentDir);
     const projectSegments = assembleProjectContextSegments(projectContext, {
       planReadOnly: Boolean(sharedContextReadOnly),
       // 团队/BTW 瞬时会话不注册 library_* 工具：pinned 文案不提示不存在的工具
@@ -4845,7 +4847,7 @@ export class AgentService {
   private async migrateLegacyModelPreferences(): Promise<void> {
     const legacy = this.settingsStore.readLegacyModelPreferences();
     if (!Object.keys(legacy).length) return;
-    const settings = SettingsManager.create(process.cwd(), getMyBuddyDir());
+    const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     let migrated = 0;
     for (const [key, value] of Object.entries(legacy)) {
       const model = this.resolveModel(key);
@@ -4886,7 +4888,7 @@ export class AgentService {
 
   private async resolveEnabledModel(
     modelId: string,
-    settingsManager: SettingsManager = SettingsManager.create(process.cwd(), getMyBuddyDir()),
+    settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
   ) {
     await this.refreshExternalModelConfig();
     const model = this.resolveModel(modelId);
@@ -5075,7 +5077,7 @@ export class AgentService {
     // P0 §7.2 修订：cwd 必须与权威 root 一致（隔离 task-workspaces 或 Space.path）
     this.assertSessionCwd(opts.taskId, opts.cwd);
     const agentDir = getMyBuddyDir();
-    const settingsManager = SettingsManager.create(opts.cwd, agentDir);
+    const settingsManager = createAgentSettingsManager(opts.cwd, agentDir);
     const soul = this.db.getSoul();
     const memoryEnabled = this.settingsStore.read().memoryEnabled;
     const libraryWorkspaceContext = this.libraryWorkspaceContext.resolveTask(opts.taskId, true, opts.projectContext);

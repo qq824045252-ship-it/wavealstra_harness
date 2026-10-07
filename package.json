@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -242,6 +242,7 @@
     "spike:shiki": "node scripts/shiki-spike.mjs",
     "spike:monaco": "electron scripts/monaco-spike.cjs",
     "spike:office": "electron scripts/office-spike.cjs",
+    "test:shell-preferences": "esbuild scripts/shell-preferences-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/shell-preferences-test.mjs && node scripts/test-guard.mjs out/tests/shell-preferences-test.mjs",
     "test:terminal": "esbuild scripts/terminal-host-test.ts --bundle --platform=node --format=cjs --external:node-pty --outfile=out/tests/terminal-host-test.cjs && node scripts/test-guard.mjs out/tests/terminal-host-test.cjs && esbuild scripts/terminal-bridge-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/terminal-bridge-test.cjs && node scripts/test-guard.mjs out/tests/terminal-bridge-test.cjs && esbuild scripts/terminal-store-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/terminal-store-test.cjs && node scripts/test-guard.mjs out/tests/terminal-store-test.cjs && esbuild scripts/terminal-herdr-launcher-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/terminal-herdr-launcher-test.cjs && node scripts/test-guard.mjs out/tests/terminal-herdr-launcher-test.cjs",
     "rebuild:node-pty": "electron-rebuild -f -w node-pty",
     "postinstall": "install-electron --no && electron-rebuild -f -w better-sqlite3,node-pty",

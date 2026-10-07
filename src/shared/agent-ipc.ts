@@ -1424,6 +1424,8 @@ export interface AppSettingsDto {
    * 默认 guarded；os-sandbox 为实验性、默认关闭，需用户显式选择。
    */
   shellIsolationLevel?: "cwd-only" | "guarded" | "os-sandbox";
+  /** Interactive terminal preference, independent of Pi's Bash shellPath. */
+  terminalShellPath?: string;
   /**
    * 任务级 Active Connector 持久化（无新 DB schema，复用 settings.json 可扩展字段）。
    * taskId → 激活连接器 id 列表；删除任务时由 clearTaskConnectorIds 清理。

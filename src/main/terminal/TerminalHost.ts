@@ -13,7 +13,7 @@
  *    Renderer 只传 taskId，绝不接收任意路径
  *  - workspace 终端 cwd 唯一权威 = deps.resolveWorkspaceCwd（工作空间绑定的真实文件夹）：
  *    未绑定/文件夹不可用时抛错，绝不静默回退到任意目录
- *  - shell 优先 pi SettingsManager shellPath 语义（deps.getShellPath），失败平台默认
+ *  - shell 优先 terminalShellPath 终端偏好（deps.getShellPath），失败平台默认
  *  - env 复用 applyShellIsolationSpawnContext 的「任务根注入 + os-sandbox env 清理」，
  *    但不把用户终端纳入 Agent 写路径限制（两者执行通道独立）
  *  - node-pty 惰性加载；ptyFactory 可注入（单测用 fake pty，不依赖真实 shell）
@@ -139,7 +139,7 @@ export interface TerminalHostDeps {
    * 未绑定文件夹必须抛错 —— workspace 终端绝不静默回退到隔离目录/home/C:\。
    */
   resolveWorkspaceCwd?: (workspaceId: string) => string;
-  /** pi SettingsManager shellPath 语义；返回 undefined 时用平台默认 */
+  /** Interactive terminal preference; undefined uses the platform default. */
   getShellPath?: (cwd: string) => string | undefined;
   /** 当前 Shell 隔离等级（默认 cwd-only 语义：仅注入任务根标记，不做写路径限制） */
   getIsolationLevel?: () => unknown;
@@ -335,7 +335,7 @@ export class TerminalHost {
   private spawn(owner: TerminalOwner, cols: number, rows: number, resolvedCwd?: string): TerminalSession {
     // 1) 权威 cwd：失败（任务不存在 / 空间未绑定文件夹）→ 抛错，不降级
     const cwd = resolvedCwd ?? this.resolveOwnerCwd(owner);
-    // 2) shell：pi settings shellPath 语义 → 平台默认
+    // 2) shell：terminalShellPath 终端偏好 → 平台默认
     let shell: string;
     try {
       shell = this.deps.getShellPath?.(cwd)?.trim() || defaultShellForPlatform();

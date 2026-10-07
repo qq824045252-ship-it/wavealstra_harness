@@ -105,7 +105,6 @@ import {
 import { BROWSER_CAPTURE_ARTIFACT_ID, browserHost } from "./browser/BrowserHost";
 import { uiAutomationService } from "./capabilities/UiAutomationService";
 import { bindBrowserBridge } from "./browser/browser-bridge";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   TerminalIpc,
   type TerminalCloseRequest,
@@ -2823,7 +2822,7 @@ app.whenReady().then(async () => {
   // 终端宿主：renderer 无目录决定权。
   // · 任务终端 cwd = agentService.resolveTaskExecutionWorkspaceCwd（独立任务 / 隔离目录）
   // · 空间终端 cwd = 空间绑定的真实文件夹（未绑定/不可用直接抛错，不静默回退）
-  // shell 复用 pi SettingsManager shellPath 语义（失败平台默认）；env 复用任务根注入。
+  // Interactive terminal preferences are independent of Pi's Bash shellPath.
   terminalHost = new TerminalHost({
     resolveCwd: (taskId) => agentService.resolveTaskExecutionWorkspaceCwd(taskId),
     resolveWorkspaceCwd: (workspaceId) => {
@@ -2837,13 +2836,7 @@ app.whenReady().then(async () => {
         }
       });
     },
-    getShellPath: (cwd) => {
-      try {
-        return SettingsManager.create(cwd, getMyBuddyDir()).getShellPath() ?? undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    getShellPath: () => agentService.getAppSettings().terminalShellPath || undefined,
     getIsolationLevel: () => agentService.getShellIsolationLevel(),
     getPathEntries: () => [getMyBuddyBinDir()],
   });
