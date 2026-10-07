@@ -10,6 +10,14 @@ Pi Durable owns input admission, steering/follow-up queues, retries, compaction,
 
 Native mode uses Pi Durable's CodingTools. MCP clients use Pi's native transports and authentication store, and register tools/resources as Durable tools. Installed plugin enable/disable and exposure settings still select which capabilities are configured; scenario blacklists and provider-dependent Tag gates do not apply.
 
+With Pi Durable 1.0.4, Windows Bot also registers the native `powershell` tool in Native mode and Code Mode's nested tool catalog. Durable starts `pwsh`, falling back to Windows PowerShell, directly as argv and returns UTF-8 output. Tool configuration refreshes retain it. Bash remains available for existing calls and unfinished checkpoints.
+
+Durable's persisted provider session UUID supplies prompt-cache and provider-session affinity across retry and reopening; different Bot conversations have distinct identities. The host uses the upstream `NodeExecutionEnv`, so the 1.0.3 binary-reader, paged-directory-reader, watch and argv-execution API changes are handled by that implementation. Windows watches use polling, which allows parent directory renames. The 1.0.4 read tool supports growing logs. Generation partials and tool output retain Durable's default 100 ms commit interval.
+
+Legacy Durable agent selections and running checkpoints that name `azure-openai-responses` resolve to the new native `azure` provider at the model lookup boundary. Immutable transcript entries and persisted checkpoint selections are retained; reopening does not require a new configuration write to recover the run or its queued inputs.
+
+Bot uses Pi's native MCP authentication provider with the shared credential store, proactive token-expiry refresh, cross-process refresh locks and rotated-token persistence. OAuth `clientRegistration` (`dcr` or `cimd`), metadata URL and callback settings reach that provider. Sign-in stays in plugin management, including when a server requests additional scope.
+
 Existing memory, project context/plans/events/knowledge, library, resource locator, work graph and gadget operations are registered as Durable tools. Enabled browser/search/media/diagnostic capabilities use the same adapter. The adapter only accepts tool registration and presentation metadata; it cannot register AgentSession execution hooks. Native Bash/Code Mode replace the legacy `execute_code` controller, and computer actions do not enter MyBuddy's approval or recovery coordinator. Changing MCP configuration refreshes it on the next input without closing clients still owned by in-flight native calls.
 
 ## Memory and project continuity
@@ -26,7 +34,11 @@ Each Bot preset has `botToolMode: "native" | "codemode"`. Tags remain editable a
 
 Code Mode uses `pi-codemode`'s QuickJS sandbox. Its nested calls are actual Durable `ToolTask`s in a private, task-owned child conversation. Cancellation and child cleanup use Durable ownership. `store`/`load` values are conversation documents. Code Mode and external MCP side effects are registered as unsafe to replay: after interruption Durable records their interruption rather than executing them twice. Model continuation and queued inputs resume through Durable.
 
+Bot's sandbox exposes its registered tools and output/store helpers. The AgentSession Code Mode `pi.models` classifier helper is currently available in office/coding conversations; Pi Durable 1.0.4 has no models accessor on its tool execution API, and Bot does not install that helper.
+
 Search-result reference metadata is persisted on the owning Bot conversation, following Durable's ownership chain. A later Code Mode child can restore those references after process restart.
+
+The host adds image content to native `read` results using the same Durable environment's binary reader and Pi's image resizing. Text reads retain upstream behavior. Code Mode can call `tools.read()` and pass its returned image block to `image()`. Code Mode image outputs are saved under the task's Durable `images` directory, deduplicated by content, and returned with an absolute path before each image block. The paths are persisted in native result details and restored as image artifacts on reopening. Save failures preserve the script's output and produce a diagnostic. Stored images follow the existing trash/permanent-purge lifecycle.
 
 ## Interface and persistence
 
@@ -56,7 +68,7 @@ Old AgentSession message deletion, regeneration, goal and branch controls are no
 - `pnpm -s test:gateway-durable`, `test:slack-gateway` and `test:gateway`: isolated five-channel routing, legacy task preservation, native tools despite readonly settings, input-specific replies, deduplication, queued inputs, cancellation, failure, delivery retry, native checkpoint/reopen and Slack journal/outbox recovery. All credentials and message transports are fixtures.
 - `pnpm -s remote:typecheck`
 - `pnpm -s test:mode` and `pnpm -s test:mode-preset`
-- `pnpm -s test:durable-bot`: real Durable storage, native tools, QuickJS, interruption recovery, unsafe replay, queues, abort, retry, streaming, compaction, extension metadata recovery and isolated permanent-purge boundaries.
+- `pnpm -s test:durable-bot`: real Durable storage, frozen 1.0.0 JSONL upgrade/recovery (including legacy Azure selections/checkpoints), native tools, QuickJS, Windows PowerShell argv/UTF-8 execution in both Tags after configuration refresh, provider session UUID persistence/isolation, image input/read/output persistence and reopening, image-save failure, native MCP OAuth refresh against an isolated HTTP fixture, interruption recovery, unsafe replay, queues, abort, retry, streaming, compaction, extension metadata recovery and isolated permanent-purge boundaries.
 - `pnpm -s build` then `pnpm -s test:durable-bot-desktop`: real Electron renderer/IPC, local scripted model server, real MCP process and isolated profile. Covers inherited deny/readonly settings, Tag switching, artifacts, memory recall/extraction, project resources/plans, cross-Bot project memory, attachment restoration, usage deduplication, MCP config refresh, scheduled success/failure, active app restart and retirement of an old design task. Reports and screenshots: `out/tests/durable-bot-desktop/`.
 - `pnpm -s test:memory`, `test:project-memory-extraction`, `test:project-domain`, `test:builtin-capabilities`, `test:usage-stats`, `test:usage-recon` and `test:remote-access` cover the reused product domains.
 

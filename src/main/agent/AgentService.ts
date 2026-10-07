@@ -181,6 +181,7 @@ import {
 import { ModelsConfigStore, mergeModelConfig, projectModelConfig, type ModelsFileConfig, type ModelsProviderConfig } from "./ModelsConfigStore";
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
+import { migratePiAzureProvider } from "./PiAzureProviderMigration";
 import {
   type ModelMetadataDto,
   type ModelReasoningPreferenceDto,
@@ -1115,6 +1116,8 @@ export class AgentService {
   }
 
   async init(): Promise<void> {
+    const azureMigration = migratePiAzureProvider(getMyBuddyDir(), this.db.connection);
+    if (azureMigration.files || azureMigration.selections) console.log("[AgentService] Pi Azure provider migrated", azureMigration);
     this.modelRuntime = await ModelRuntime.create({
       authPath: getAuthPath(),
       modelsPath: getModelsPath(),
@@ -1234,6 +1237,13 @@ export class AgentService {
             const file = resolve(cwd, args.path);
             if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file, tool.id);
           } catch { /* Non-file results remain visible verbatim in the Durable transcript. */ }
+        }
+        for (const message of snapshot.messages) for (const artifact of message.artifacts ?? []) {
+          try {
+            if (artifact.kind !== "image" || !artifact.path) continue;
+            const file = resolve(artifact.path);
+            if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file);
+          } catch { /* Image-save diagnostics stay in the native tool result. */ }
         }
       },
       emit: patch => this.emitPatch(patch),

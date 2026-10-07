@@ -1,0 +1,83 @@
+{
+  "at": "2026-10-07T07:05:35.830Z",
+  "kind": "native-protocol-and-QuickJS-fixtures",
+  "paidProviderCalls": 0,
+  "results": [
+    {
+      "name": "all nine installed Pi packages and worker pin are 1.0.4",
+      "status": "passed"
+    },
+    {
+      "name": "MCP authServerMetadataUrl survives projection; malformed or insecure values are rejected",
+      "status": "passed"
+    },
+    {
+      "name": "same URL credentials and MyBuddy logout remain isolated by server name",
+      "status": "passed"
+    },
+    {
+      "name": "legacy URL credentials migrate once, never to a second account",
+      "status": "passed"
+    },
+    {
+      "name": "OAuth step-up retains previously granted scopes",
+      "status": "passed"
+    },
+    {
+      "name": "OAuth empty and null optional token fields are accepted by native exchange",
+      "status": "passed"
+    },
+    {
+      "name": "OAuth mismatched RFC9207 issuer is rejected before token exchange",
+      "status": "passed"
+    },
+    {
+      "name": "Code Mode models namespace enabled only for coding, with no chat completion method",
+      "status": "passed"
+    },
+    {
+      "name": "native typed-model lookup and explicit image generation emit an image block and cost",
+      "status": "passed"
+    },
+    {
+      "name": "native explicit classifier keeps answers and billing in the tool result",
+      "status": "passed"
+    },
+    {
+      "name": "malformed image arguments fail before invoking a provider and explain required shape",
+      "status": "passed"
+    },
+    {
+      "name": "unknown model recommends native model discovery",
+      "status": "passed"
+    },
+    {
+      "name": "unknown tool error suggests correct case and in-operator probes remain safe",
+      "status": "passed"
+    },
+    {
+      "name": "store is not committed on failed scripts; successful state survives another call",
+      "status": "passed"
+    },
+    {
+      "name": "oversized state explains the small-state store boundary",
+      "status": "passed"
+    },
+    {
+      "name": "generated image not displayed produces the native recovery note",
+      "status": "passed"
+    },
+    {
+      "name": "native tools.read image remains an image block that Code Mode can display and persist",
+      "status": "passed"
+    },
+    {
+      "name": "native images are available by file path in a later turn",
+      "status": "passed"
+    },
+    {
+      "name": "native session statistics include explicit image and classifier costs",
+      "status": "passed"
+    }
+  ]
+}

@@ -36,7 +36,7 @@ import {
   parseFrontmatterCompat,
 } from "./compat.ts";
 import { computeChildTools, type ToolPolicyResult } from "./policy.ts";
-import { resolveSubagentModelThinking } from "./config.ts";
+import { canonicalSubagentModelReference, resolveSubagentModelThinking } from "./config.ts";
 import {
   buildContextBlock,
   buildSystemPromptContent,
@@ -668,7 +668,7 @@ async function resolveForRecord(
   const scopedSelection = await resolveScopedSubagentModel(resolved.model ?? undefined, record.project || process.cwd());
   const resolvedModel = scopedSelection.model;
   const resolvedThinking =
-    resolvedModel && config.transportThinkingModelId?.trim() === resolvedModel
+    resolvedModel && canonicalSubagentModelReference(config.transportThinkingModelId?.trim() ?? "") === resolvedModel
       ? resolved.thinking ?? undefined
       : undefined;
   return {
@@ -777,7 +777,7 @@ async function runDelegatedStep(params: {
   const resolvedModel = scopedSelection.model;
   const resolvedDiagnostics = [...resolved.diagnostics, ...scopedSelection.diagnostics];
   const resolvedThinking =
-    resolvedModel && config.transportThinkingModelId?.trim() === resolvedModel
+    resolvedModel && canonicalSubagentModelReference(config.transportThinkingModelId?.trim() ?? "") === resolvedModel
       ? resolved.thinking ?? undefined
       : undefined;
 

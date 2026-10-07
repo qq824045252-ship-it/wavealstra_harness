@@ -11,6 +11,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createConversationRuntimeExtension } from "../src/main/agent/conversation-runtime-extension";
 import { createMcpSideEffectExtension } from "../src/main/agent/mcp-side-effect-extension";
+import { buildWebSearchReport, formatWebSearchReport } from "../src/main/capabilities/web-access/search-report";
 
 // Actual installed Pi lifecycle/tool hooks, scripted provider and real disposable file writes.
 const root = await mkdtemp(join(tmpdir(), "mybuddy-host-native-"));
@@ -93,10 +94,11 @@ function builderFixture(fetch:(urls:string[],signal?:AbortSignal)=>Promise<any[]
   const build=runInNewContext(js+"\nbuildSearchReturn;",{Set,Date,fetchAllContent:async(urls:string[],signal?:AbortSignal)=>{requests++;return fetch(urls,signal);},
     hasFullInlineCoverage:(urls:string[],content:any[])=>urls.every(url=>(content??[]).some(c=>c.url===url)),
     stripThumbnails:(c:any[])=>c,generateId:()=>String(++id),storeResult:()=>{stores++;},storeAndPublishSearch:()=>"search-fixture",
-    pi:{appendEntry(){},sendMessage(){throw Error("background model wakeup forbidden");}},duplicateQuerySet:()=>new Set(),formatQueryHeader:()=>"query",formatSearchSummary:()=>"sources",
+    buildWebSearchReport,formatWebSearchReport,getSearchPolicy:()=>({verifySources:false}),toolNames:{getSearchContent:"get_search_content"},
+    pi:{appendEntry(){},sendMessage(){throw Error("background model wakeup forbidden");}},
   });return {build,requests:()=>requests,stores:()=>stores};
 }
-const options={queryList:["fixture"],results:[{query:"fixture",results:[{url:"https://fixture.invalid/page"}]}],urls:["https://fixture.invalid/page"],includeContent:true};
+const options={queryList:["fixture"],results:[{query:"fixture",provider:"fixture",answer:"",results:[{title:"Fixture page",url:"https://fixture.invalid/page",snippet:"Disposable search evidence"}]}],urls:["https://fixture.invalid/page"],includeContent:true};
 await test("search tool waits for requested content and never wakes a second model turn",async()=>{
   let release:(v:any[])=>void=()=>{};const h=builderFixture(async()=>new Promise(r=>{release=r;}));let finished=false;
   const p=h.build(options).then((x:any)=>{finished=true;return x;});await delay(10);assert(!finished);assert.equal(h.stores(),0);

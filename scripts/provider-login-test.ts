@@ -28,19 +28,19 @@ function check(cond: boolean, label: string): void {
 console.log("== pickDefaultModelAfterLogin ==");
 {
   const models = [
-    { id: "opencode-go/kimi-k2.6", vendor: "opencode-go" },
+    { id: "opencode-go/kimi-k3", vendor: "opencode-go" },
     { id: "opencode-go/mimo-v2.5", vendor: "opencode-go" },
-    { id: "xai/grok-4.6", vendor: "xai" },
+    { id: "xai/grok-4.7", vendor: "xai" },
     { id: "xai/grok-3", vendor: "xai" },
     { id: "anthropic/claude-opus-4-8", vendor: "anthropic" },
   ];
   check(
-    pickDefaultModelAfterLogin("xai", models) === "xai/grok-4.6",
-    "xAI 登录后选用 grok-4.6",
+    pickDefaultModelAfterLogin("xai", models) === "xai/grok-4.7",
+    "xAI 登录后选用 grok-4.7",
   );
   check(
-    pickDefaultModelAfterLogin("opencode-go", models) === "opencode-go/kimi-k2.6",
-    "opencode-go 登录后选用 kimi-k2.6",
+    pickDefaultModelAfterLogin("opencode-go", models) === "opencode-go/kimi-k3",
+    "opencode-go 登录后选用 kimi-k3",
   );
   check(
     pickDefaultModelAfterLogin("anthropic", models) === "anthropic/claude-opus-4-8",
@@ -57,7 +57,7 @@ console.log("== pickDefaultModelAfterLogin ==");
     ]) === "unknown-provider/custom-1",
     "无默认表的 provider 回退到该 provider 第一项",
   );
-  check(DEFAULT_MODEL_PER_PROVIDER.xai === "grok-4.6", "默认表含 xai/grok-4.6");
+  check(DEFAULT_MODEL_PER_PROVIDER.xai === "grok-4.7", "默认表含 xai/grok-4.7");
 }
 
 console.log("== isLoginCancelledMessage ==");

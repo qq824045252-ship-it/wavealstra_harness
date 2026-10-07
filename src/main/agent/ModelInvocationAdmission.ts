@@ -89,7 +89,7 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
           if (!current) throw new Error(`Pi 模型目录中已无 ${model.provider}/${model.id}`);
           const requestFacts = (entry: Model<Api>) => JSON.stringify([
             entry.api, entry.baseUrl, entry.contextWindow, entry.maxTokens, entry.input, entry.inputLimits,
-            entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams,
+            entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams, entry.samplingParamsByThinkingLevel,
           ]);
           if (requestFacts(model) !== requestFacts(current)) throw new Error("模型配置已变化，请在新轮次重新选择模型");
           assertImageCounts(current, context);

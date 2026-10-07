@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-01T20:33:21.886Z",
+  "at": "2026-10-07T05:21:56.527Z",
   "passed": true,
   "results": [
     {
@@ -7,7 +7,7 @@
       "passed": true
     },
     {
-      "name": "explicit and persisted coding/design scenes are preserved",
+      "name": "explicit and persisted coding/Bot scenes are preserved",
       "passed": true
     },
     {
@@ -19,7 +19,7 @@
       "passed": true
     },
     {
-      "name": "automatic Code Mode rule design",
+      "name": "automatic Code Mode rule bot",
       "passed": true
     },
     {
@@ -43,7 +43,7 @@
       "passed": true
     },
     {
-      "name": "MCP stays reachable and hidden tools stay hidden in design",
+      "name": "MCP stays reachable and hidden tools stay hidden in bot",
       "passed": true
     },
     {

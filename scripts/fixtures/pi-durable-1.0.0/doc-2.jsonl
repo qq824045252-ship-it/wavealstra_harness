@@ -1,0 +1,2 @@
+{"format":1,"type":"record","seq":11,"ordinal":2,"payload":{"type":"document","id":2,"content":{"version":1,"kind":"base","value":{"run":{"taskId":13,"inputs":[12]},"tools":[{"callId":"legacy-side-effect","name":"legacy_hold","taskId":15,"status":"pending"}]}}}}
+{"format":1,"type":"record","seq":13,"ordinal":1,"payload":{"type":"document","id":2,"content":{"version":1,"kind":"delta","ops":[["s",["tools",0,"status"],"running"]]}}}

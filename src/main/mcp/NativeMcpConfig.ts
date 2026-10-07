@@ -81,6 +81,10 @@ export function toNativeMcpConfig(filtered: McpFilterResult, source = 'mybuddy:r
           if (raw[key] != null && typeof raw[key] !== 'string') throw new Error('invalid OAuth setting: ' + key);
           if (typeof raw[key] === 'string') oauth[key] = configValue(raw[key]);
         }
+        if (raw.clientRegistration != null) {
+          if (raw.clientRegistration !== 'dcr' && raw.clientRegistration !== 'cimd') throw new Error('invalid OAuth clientRegistration');
+          oauth.clientRegistration = raw.clientRegistration;
+        }
         if (oauth.authServerMetadataUrl != null) {
           const metadata = new URL(oauth.authServerMetadataUrl);
           if (metadata.protocol !== 'https:' && !(metadata.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(metadata.hostname)))
@@ -98,7 +102,7 @@ export function toNativeMcpConfig(filtered: McpFilterResult, source = 'mybuddy:r
             || !rawAuth.provider.trim() || Object.keys(rawAuth).some(key => key !== 'provider')) throw new Error('invalid provider authentication');
           if (entry.oauth != null || hasAuthorization || entry.bearerToken || entry.bearerTokenEnv) throw new Error('provider auth cannot be combined with OAuth or bearer headers');
           if (url.protocol !== 'https:' && !['localhost','127.0.0.1','[::1]'].includes(url.hostname)) throw new Error('provider auth requires HTTPS except on loopback');
-          auth = { provider: rawAuth.provider };
+          auth = { provider: rawAuth.provider === 'azure-openai-responses' ? 'azure' : rawAuth.provider };
         }
         config = { ...common, type: 'http', url: entry.url, headers, ...(auth ? { auth } : {}), ...(Object.keys(oauth).length ? { oauth } : {}) };
       } else if (typeof entry.command === 'string' && entry.command.trim()) {

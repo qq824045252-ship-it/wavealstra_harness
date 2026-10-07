@@ -6,6 +6,7 @@ import {
   AssistantEntry, ToolTask, ToolResultEntry, configure, defineDoc, defineTool,
   type ToolRegistration, type JsonObject,
 } from "@earendil-works/pi-durable";
+import { persistDurableImages } from "./DurableImages";
 
 const Store = defineDoc({ kind: "mybuddy.codemode-store", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ values: {} as JsonObject }) });
 
@@ -13,6 +14,7 @@ const Store = defineDoc({ kind: "mybuddy.codemode-store", version: 1, scope: "co
 export function createDurableCodeMode(
   tools: () => readonly ToolRegistration[],
   assets: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl"> = {},
+  imageDirectory?: string,
 ): ToolRegistration {
   return defineTool({
     name: "codemode",
@@ -66,7 +68,9 @@ export function createDurableCodeMode(
           for (const key of result.storeWrites.delete) delete state.values[key];
           Object.assign(state.values, result.storeWrites.set);
         }, context);
-        const content = [...result.output];
+        const persistedOutput = imageDirectory ? await persistDurableImages(result.output, imageDirectory) : { content: [...result.output], paths: [] };
+        if (persistedOutput.paths.length) await api.details({ conversationId: child, imagePaths: persistedOutput.paths }, context);
+        const content = persistedOutput.content;
         if (result.ok && result.value !== undefined) content.push({ type: "text", text: JSON.stringify(result.value) });
         if (!result.ok) content.push({ type: "text", text: result.error.stack ?? result.error.message });
         return { content, isError: !result.ok };

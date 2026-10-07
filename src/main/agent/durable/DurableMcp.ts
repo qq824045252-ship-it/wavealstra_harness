@@ -1,7 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
-import type { ModelRuntime, McpServerConfig, LoadedMcpConfig, McpOAuthCredentialStore } from "@earendil-works/pi-coding-agent";
+import { createMcpAuthProvider, type ModelRuntime, type McpServerConfig, type LoadedMcpConfig, type McpOAuthCredentialStore } from "@earendil-works/pi-coding-agent";
 import { McpClient, StdioTransport, StreamableHttpTransport, toLlmContent, type AuthProvider, type Tool } from "@earendil-works/pi-mcp";
-import { McpOAuthProvider, adaptOAuthProvider } from "@earendil-works/pi-mcp/oauth";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 
 function expand(value: string): string {
@@ -78,20 +77,17 @@ export class DurableMcp {
     if (server.auth) return { token: async () => (await models.getAuth(server.auth!.provider))?.auth.apiKey };
     if (Object.keys(server.headers ?? {}).some(key => key.toLowerCase() === "authorization")) return undefined;
     const store = credentials.forServer(name, server.url);
-    const settings = server.oauth;
-    const provider = new McpOAuthProvider({
-      serverUrl: server.url, redirectUrl: settings?.callbackUrl ?? "http://127.0.0.1:0/callback",
-      clientMetadata: { client_name: settings?.clientName ?? "MyBuddy", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] },
-      clientId: settings?.clientId, clientSecret: settings?.clientSecret ? expand(settings.clientSecret) : undefined,
-      store, onRedirect: () => { throw new Error(`请在插件管理中登录 MCP：${name}`); },
+    const provider = createMcpAuthProvider({
+      serverUrl: server.url, store,
+      settings: () => ({ ...server.oauth, clientName: server.oauth?.clientName ?? "MyBuddy",
+        clientSecret: server.oauth?.clientSecret ? expand(server.oauth.clientSecret) : undefined,
+        authServerMetadataUrl: server.oauth?.authServerMetadataUrl ? new URL(server.oauth.authServerMetadataUrl) : undefined,
+      }),
+      // Sign-in remains in plugin management; native refresh never opens a browser.
+      onChallenge: () => {},
     });
-    const native = adaptOAuthProvider(provider);
-    let pending = Promise.resolve();
-    this.credentialsSettled.push(() => pending);
-    return { token: () => native.token(), onUnauthorized: challenge => {
-      pending = pending.catch(() => {}).then(() => store.withRefreshLock(() => native.onUnauthorized!(challenge)));
-      return pending;
-    } };
+    this.credentialsSettled.push(() => provider.settled());
+    return provider;
   }
 
   async close(): Promise<void> {

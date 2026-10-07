@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -8,7 +8,7 @@ import {
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
   type LiveState, type InboxState, type Storage, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
 } from "@earendil-works/pi-durable";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
@@ -16,6 +16,7 @@ import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { durableCompletedTurns } from "./DurableTurnProjection";
+import { withDurableImageRead } from "./DurableImages";
 
 type BotInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }> };
 const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current",
@@ -60,9 +61,10 @@ export class DurableBotRuntime {
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {}
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
+    options = { ...options, models: legacyCompatibleModels(options.models) };
     const registry = createRegistry();
-    const native = [...(CodingTools.tools ?? []), ...(options.tools ?? [])];
-    const codemode = createDurableCodeMode(() => native, options.assets);
+    const native = [...codingTools(), ...(options.tools ?? [])];
+    const codemode = createDurableCodeMode(() => native, options.assets, join(options.directory, "images"));
     let runtime: DurableBotRuntime | undefined;
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message)));
     const storage = options.storage ?? await openNodeJsonlStorage(options.directory, ctx, { fsync: true });
@@ -100,9 +102,9 @@ export class DurableBotRuntime {
 
   async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel, extensions?: readonly ToolRegistration[]): Promise<void> {
     if (extensions) {
-      this.nativeTools = [...CodingTools.tools ?? [], ...extensions];
+      this.nativeTools = [...codingTools(), ...extensions];
       const available = this.nativeTools;
-      this.codemode = createDurableCodeMode(() => available, this.options.assets);
+      this.codemode = createDurableCodeMode(() => available, this.options.assets, join(this.options.directory, "images"));
       this.registry.install(botExtension(this.options, available, this.codemode, (id, message) => this.recordResponse(id, message)));
     }
     this.options.toolMode = toolMode;
@@ -253,6 +255,11 @@ export class DurableBotRuntime {
           if (tool) { tool.status = message.isError ? "error" : "success"; tool.output = contentText(message.content); }
           const child = (message.details as { conversationId?: number } | undefined)?.conversationId;
           if (child && tool?.tool === "codemode") childIds.set(message.toolCallId, child);
+          const images = (message.details as { imagePaths?: string[] } | undefined)?.imagePaths;
+          const owner = messages.find(row => row.tools?.some(call => call.id === message.toolCallId));
+          if (images?.length && owner) owner.artifacts = [...owner.artifacts ?? [], ...images.map(path => ({
+            id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "",
+          }))];
         }
       }
     };
@@ -341,6 +348,20 @@ export class DurableBotRuntime {
       catch (error) { console.warn("[Durable] Memory projection failed; committed entries remain recoverable", error); }
     }
   }
+}
+
+/** Durable leaves PowerShell opt-in; expose its native argv execution on Windows in both Tags. */
+function codingTools(): ToolRegistration[] {
+  return [...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : tool), ...(process.platform === "win32" ? [createPowerShellTool()] : [])];
+}
+
+/** Resolve old persisted agent/checkpoint selections without rewriting immutable transcripts. */
+function legacyCompatibleModels(models: Models): Models {
+  return new Proxy(models, { get(target, key) {
+    if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
 }
 
 function botExtension(options: DurableBotOptions, native: readonly ToolRegistration[], codemode: ToolRegistration, recordResponse: (taskId: number, message: AssistantMessage) => void | Promise<void>) {

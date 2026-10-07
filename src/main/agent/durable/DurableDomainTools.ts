@@ -82,7 +82,7 @@ async function capabilityContext(native: NativeApi, context: NativeContext, opti
   const reader = { getBranch: () => branch, getSessionId: () => String(conversationId), getCwd: () => options.cwd };
   bindNativeSummaryRuntime(reader, options.models);
   return { cwd: options.cwd, hasUI: false,
-    model: agent.model ? options.models.getModel(agent.model.provider, agent.model.modelId) : undefined,
+    model: agent.model ? options.models.getModel(agent.model.provider === "azure-openai-responses" ? "azure" : agent.model.provider, agent.model.modelId) : undefined,
     modelRegistry: new ModelRegistry(options.models), sessionManager: reader,
     isProjectTrusted: () => true,
     ui: { notify: (message: string) => native.output(message), setWidget: () => {} },

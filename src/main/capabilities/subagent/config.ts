@@ -19,6 +19,12 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+/** Pi 1.0.3 renamed the Azure provider; role files keep their original contents. */
+export function canonicalSubagentModelReference(reference: string): string {
+  const legacyPrefix = "azure-openai-responses/";
+  return reference.startsWith(legacyPrefix) ? `azure/${reference.slice(legacyPrefix.length)}` : reference;
+}
+
 /** 严格校验思考强度；非法返回 null（调用方给出诊断）。 */
 export function normalizeThinking(value: unknown): ThinkingLevel | null {
   if (typeof value !== "string") return null;
@@ -58,9 +64,9 @@ export function resolveBareModel(
   defaultProvider: string | undefined,
   diagnostics: string[],
 ): string | null {
-  if (name.includes("/")) return name; // provider/id 显式
+  if (name.includes("/")) return canonicalSubagentModelReference(name); // provider/id 显式
   if (defaultProvider) {
-    const resolved = `${defaultProvider}/${name}`;
+    const resolved = canonicalSubagentModelReference(`${defaultProvider}/${name}`);
     diagnostics.push(`角色模型「${name}」为裸名，已按 settings.defaultProvider 解析为 ${resolved}`);
     return resolved;
   }
@@ -97,16 +103,15 @@ export function resolveSubagentModelThinking(
   }
   if (!model && globalModel) {
     modelSource = "global";
-    model = globalModel.includes("/")
-      ? globalModel
-      : resolveBareModel(globalModel, input.globalDefaultProvider, diagnostics);
+    model = resolveBareModel(globalModel, input.globalDefaultProvider, diagnostics);
     if (!model) modelSource = null;
   }
 
   // ---- Pi thinking transport ----
   let thinking: string | null = null;
   let thinkingSource: SubagentModelThinkingResult["thinkingSource"] = null;
-  const transportModelId = input.transportThinkingModelId?.trim();
+  const transportModelId = input.transportThinkingModelId?.trim()
+    ? canonicalSubagentModelReference(input.transportThinkingModelId.trim()) : undefined;
   const transportValue = input.transportThinking?.trim();
   if (transportValue && model && transportModelId === model) {
     const normalized = normalizeThinking(transportValue);

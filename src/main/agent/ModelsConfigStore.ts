@@ -32,6 +32,7 @@ export interface ModelsModelConfig {
   contextWindow?: number;
   maxTokens?: number;
   samplingParams?: Record<string, unknown>;
+  samplingParamsByThinkingLevel?: ModelsModelConfigDto["samplingParamsByThinkingLevel"];
   headers?: Record<string, string>;
   compat?: Record<string, unknown>;
 }
@@ -57,7 +58,7 @@ export interface ModelsFileConfig {
 // This is an editor boundary, not a model catalog. Pi validates these fields.
 const EDITABLE_MODEL_FIELDS = [
   "name", "api", "baseUrl", "reasoning", "thinkingLevelMap", "input", "inputLimits",
-  "cost", "promptCache", "contextWindow", "maxTokens", "samplingParams", "compat",
+  "cost", "promptCache", "contextWindow", "maxTokens", "samplingParams", "samplingParamsByThinkingLevel", "compat",
 ] as const;
 
 export function projectModelConfig(model: ModelsModelConfig): ModelsModelConfigDto {

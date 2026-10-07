@@ -1348,6 +1348,7 @@ export interface ModelsModelConfigDto {
   cost?: import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>["cost"];
   promptCache?: { short?: number; long?: number };
   samplingParams?: Record<string, unknown>;
+  samplingParamsByThinkingLevel?: import("@earendil-works/pi-ai").SamplingParamsByThinkingLevel;
   compat?: Record<string, unknown>;
 }
 

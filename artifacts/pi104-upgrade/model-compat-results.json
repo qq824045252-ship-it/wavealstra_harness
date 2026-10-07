@@ -1,0 +1,38 @@
+{
+  "at": "2026-10-07T07:05:35.246Z",
+  "paidProviderCalls": 0,
+  "results": [
+    {
+      "name": "Azure provider rename preserves the Azure API ID, unknown fields and unrelated references",
+      "passed": true
+    },
+    {
+      "name": "startup migration uses native auth storage, backs up exact originals and resumes task/cron selections idempotently",
+      "passed": true
+    },
+    {
+      "name": "conflicting Azure configs fail before any file, credential or selection is changed",
+      "passed": true
+    },
+    {
+      "name": "legacy Azure role/default/global selections and thinking bindings canonicalize at the subagent boundary",
+      "passed": true
+    },
+    {
+      "name": "native model editor projection and save retain per-level sampling without exposing headers",
+      "passed": true
+    },
+    {
+      "name": "Pi native completions applies model, effective thinking level and request sampling in order",
+      "passed": true
+    },
+    {
+      "name": "live sampling changes invalidate an admitted request before dispatch",
+      "passed": true
+    },
+    {
+      "name": "login defaults match the installed Pi provider defaults",
+      "passed": true
+    }
+  ]
+}

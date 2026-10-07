@@ -10,6 +10,13 @@ assert.deepEqual(parseMcpToolIdentity('mcp__dev_radius__read_file',['dev-radius'
 const oauth=convert({fixture:{url:'https://example.invalid/mcp',auth:'oauth',oauth:{clientName:'MyBuddy',clientId:'fixture-public-client'}}});
 assert.equal(oauth.errors.length,0);assert.equal((oauth.servers[0].config as any).oauth.clientName,'MyBuddy');
 const auth=convert({fixture:{url:'https://example.invalid/mcp',auth:{provider:'fixture'}}});assert.equal(auth.errors.length,0);assert.deepEqual((auth.servers[0].config as any).auth,{provider:'fixture'});
+const cimd=convert({fixture:{url:'https://example.invalid/mcp',oauth:{clientRegistration:'cimd'}}});
+assert.equal(cimd.errors.length,0);assert.equal((cimd.servers[0].config as any).oauth.clientRegistration,'cimd');
+assert.equal(convert({fixture:{url:'https://example.invalid/mcp',oauth:{clientRegistration:'invalid'}}}).servers.length,0);
+const azureAuth=convert({fixture:{url:'https://example.invalid/mcp',auth:{provider:'azure-openai-responses'}}});
+assert.deepEqual((azureAuth.servers[0].config as any).auth,{provider:'azure'});
+const patterns=convert({fixture:{command:'node',exposure:'hidden',toolExposure:{'read_*':'direct','*':'hidden'}}});
+assert.equal(patterns.errors.length,0);assert.deepEqual(patterns.servers[0].config.toolExposure,{'read_*':'direct','*':'hidden'});
 assert.equal(convert({fixture:{url:'http://example.invalid/mcp',auth:{provider:'fixture'}}}).servers.length,0);
 assert.equal(convert({fixture:{url:'http://127.0.0.1:9000/mcp',auth:{provider:'fixture'}}}).errors.length,0);
 assert.equal(convert({fixture:{url:'https://example.invalid/mcp',auth:{provider:'fixture'},oauth:{clientName:'x'}}}).servers.length,0);

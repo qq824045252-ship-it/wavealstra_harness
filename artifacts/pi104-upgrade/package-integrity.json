@@ -1,0 +1,55 @@
+{
+  "at": "2026-10-07T05:28:28.884Z",
+  "status": "passed",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-pi104-20261007-132656\\win-unpacked\\MyBuddy.exe",
+  "appVersion": "0.1.8",
+  "electronVersion": "44.5.1",
+  "asarSha256": "3037dda6dcd48b1e54d2d01df2e1ad631b36af6f63a63b3b6d7b657e2bf51755",
+  "executableSha256": "1da316479c2c7085d5ad98521439684a6f0a2b46d81e7fa1a5763def9a912ed5",
+  "sourceFingerprint": "20b2dc69bfd13ad26381514c19f71611f4696a3b46bb85c651a2df35781e66ff",
+  "packages": [
+    {
+      "name": "@earendil-works/chord",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-agent-core",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-ai",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-codemode",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-durable",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-mcp",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-telemetry",
+      "version": "1.0.4"
+    },
+    {
+      "name": "@earendil-works/pi-tui",
+      "version": "1.0.4"
+    }
+  ],
+  "mainAssetsCompared": 224,
+  "workerVersion": "1.0.4",
+  "runtime": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-pi104-20261007-132656\\win-unpacked\\resources\\app.asar.unpacked\\out\\main\\capabilities\\subagent\\runtime",
+  "codemodeWorkerSha256": "166c4216d5c9d741e3a8445e6d82d5578369afe3c4a655761f9cf93b5090b0e2",
+  "quickjsWasmSha256": "d4c9375f2b1ca4dc95f72c8aa2982a7a9951ac8011490d79c6582df732b4bbd9",
+  "originalUserProcessId": 27864,
+  "userApplicationTerminatedByThisTask": false
+}

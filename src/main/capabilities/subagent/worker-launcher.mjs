@@ -8,7 +8,7 @@ import { createRequestTransport } from "../../agent/request-transport.mjs";
 import { EphemeralContextProjection } from "./vendor/context-projection.mjs";
 import { commandCodeProvider } from "./vendor/command-code.mjs";
 
-const EXPECTED_PI_VERSION = "1.0.0";
+const EXPECTED_PI_VERSION = "1.0.4";
 
 const requestedCli = realpathSync(resolve(process.argv[2] ?? ""));
 const bundled = requestedCli.endsWith('/pi-runtime.mjs') || requestedCli.endsWith('\\pi-runtime.mjs');
@@ -133,7 +133,7 @@ pi.ModelRuntime.create = async (...args) => {
             }
             const current = runtime.getModel(model.provider, model.id);
             const facts = (entry) => JSON.stringify([entry.api, entry.baseUrl, entry.contextWindow, entry.maxTokens, entry.input, entry.inputLimits,
-              entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams]);
+              entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams, entry.samplingParamsByThinkingLevel]);
             if (!current || facts(current) !== facts(model)) throw new Error("子代理模型配置已变化，请重新发起任务");
             const limits = current.inputLimits?.images;
             let total = 0;

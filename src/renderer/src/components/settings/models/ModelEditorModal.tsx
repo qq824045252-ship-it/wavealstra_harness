@@ -31,7 +31,7 @@ export default function ModelEditorModal({
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("模型参数必须是 JSON 对象");
     const allowed = new Set([
       "name", "reasoning", "thinkingLevelMap", "input", "inputLimits", "cost",
-      "promptCache", "contextWindow", "maxTokens", "samplingParams", "compat",
+      "promptCache", "contextWindow", "maxTokens", "samplingParams", "samplingParamsByThinkingLevel", "compat",
       ...(!editingOverride ? ["api", "baseUrl"] : []),
     ]);
     for (const key of Object.keys(value)) {
@@ -171,7 +171,7 @@ export default function ModelEditorModal({
               <span>{editingOverride ? "modelOverrides" : "models"} 参数 JSON</span>
               <textarea rows={8} value={nativeJson} disabled={busy} spellCheck={false}
                 onChange={(event) => { setNativeJson(event.target.value); setSaveError(""); }} />
-              <small>可编辑 inputLimits、thinkingLevelMap、cost 等 Pi 字段；已有的其他字段和请求头会保留。</small>
+              <small>可编辑 inputLimits、thinkingLevelMap、cost，以及按思考级别设置采样参数的 samplingParamsByThinkingLevel；已有的其他字段和请求头会保留。</small>
             </label>
           </details>
         </div>

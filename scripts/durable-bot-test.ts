@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, access, cp, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { getCurrentTools, Type } from "@earendil-works/pi-ai";
+import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-durable";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
+import { DurableMcp } from "../src/main/agent/durable/DurableMcp";
+import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
+import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
@@ -69,6 +73,209 @@ for (const mode of ["native", "codemode"] as const) {
   assert.equal(reopened.snapshot.messages.at(-1)?.text,"complete");
   await reopened.close();
   console.log("PASS",mode,"real native tools, no artifact blacklist, deduplication and reopen");
+}
+if (process.platform === "win32") for (const mode of ["native", "codemode"] as const) {
+  const cwd = join(root, mode + "-powershell"); await mkdir(cwd);
+  const fileName = "argv 空格 & [x].txt", proof = "中文 durable $ & argv";
+  const command = [
+    `$file = Join-Path (Get-Location) '${fileName}'`,
+    `[IO.File]::WriteAllText($file, '${proof}', [Text.UTF8Encoding]::new($false))`,
+    "[Console]::WriteLine('POWERSHELL_UTF8_中文')",
+    "[Console]::WriteLine((Get-Location).Path)",
+  ].join("\n");
+  let requests = 0;
+  const runtime = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref, toolMode: mode,
+    instructions: () => "fixture", onSnapshot: () => {}, models: models(context => {
+      const offered = getCurrentTools(context.messages);
+      assert(mode === "native" ? offered.some(tool => tool.name === "powershell")
+        : offered.find(tool => tool.name === "codemode")?.description.includes("powershell"), "PowerShell must remain offered after configuration refresh");
+      if (++requests === 1) return mode === "native" ? call("powershell", { command })
+        : call("codemode", { code: `text(await tools.powershell(${JSON.stringify({ command })}));` });
+      const results = context.messages.filter((message: any) => message.role === "toolResult");
+      assert(results.some((message: any) => !message.isError && JSON.stringify(message.content).includes("POWERSHELL_UTF8_中文")), JSON.stringify(results));
+      return text("powershell complete");
+    }) });
+  try {
+    await runtime.configure(ref, mode, undefined, []);
+    assert.equal((await (await runtime.submit("use PowerShell", `powershell-${mode}`)).wait(ctx)).status, "done");
+    assert.equal(await readFile(join(cwd, fileName), "utf8"), proof, "argv execution preserves UTF-8, spaces and shell metacharacters");
+    await runtime.refresh();
+    assert(runtime.snapshot.messages.some(message => message.tools?.some(tool => tool.tool === "powershell" && tool.status === "success")));
+  } finally { await runtime.close(); }
+  console.log("PASS", mode, "native PowerShell argv execution, UTF-8, workspace cwd and refreshed tool configuration");
+}
+{
+  const cwd = join(root, "legacy-1.0.0"); await mkdir(cwd);
+  const directory = join(cwd, "state");
+  await cp(join(process.cwd(), "scripts/fixtures/pi-durable-1.0.0"), directory, { recursive: true });
+  let effects = 0;
+  const sessionIds: string[] = [];
+  const hold = defineTool({ name: "legacy_hold", description: "legacy unsafe effect", parameters: Type.Object({}), replay: "unsafe",
+    execute: async () => { effects++; return { content: text("must not replay") }; } });
+  const runtime = await DurableBotRuntime.open({ directory, cwd, model: ref, toolMode: "native", tools: [hold],
+    instructions: () => "fixture", onSnapshot: () => {}, models: models((_context, options) => {
+      sessionIds.push(options.sessionId); return text("upgraded completion");
+    }) });
+  try {
+    assert(runtime.snapshot.messages.some(message => message.text === "legacy completed reply"), "1.0.0 committed history is preserved");
+    assert.equal(runtime.snapshot.pendingInputs.at(-1)?.text, "legacy queued");
+    const interrupted = await runtime.submit("legacy hold", "legacy-interrupted");
+    const queued = await runtime.submit("legacy queued", "legacy-queued");
+    assert.equal((await interrupted.wait(ctx)).status, "done");
+    assert.equal((await queued.wait(ctx)).status, "done");
+    assert.equal(effects, 0, "1.0.0 interrupted unsafe side effects must not replay on upgrade");
+    assert(sessionIds[0], "legacy conversations acquire native provider session identity");
+    assert(sessionIds.every(id => id === sessionIds[0]), "legacy resumed and queued requests share the new provider identity");
+    await runtime.refresh();
+    assert(runtime.snapshot.messages.some(message => message.tools?.some(tool => tool.tool === "legacy_hold" && tool.status === "error")));
+    assert.equal(runtime.snapshot.busy, false); assert.equal(runtime.snapshot.queued, 0);
+  } finally { await runtime.close(); }
+  console.log("PASS real 1.0.0 JSONL upgrade retains history, resumes queued input, never replays unsafe effects and provisions provider UUID");
+}
+{
+  const cwd = join(root, "provider-session"); await mkdir(cwd);
+  const sessionIds: string[] = [];
+  const api = models((_context, options) => { sessionIds.push(options.sessionId); return text("session affinity"); });
+  const options = { directory: join(cwd, "state"), cwd, model: ref, toolMode: "native" as const,
+    instructions: () => "fixture", models: api, onSnapshot: () => {} };
+  let runtime = await DurableBotRuntime.open(options);
+  try { await (await runtime.submit("first", "provider-first")).wait(ctx); }
+  finally { await runtime.close(); }
+  runtime = await DurableBotRuntime.open(options);
+  try { await (await runtime.submit("after reopen", "provider-reopen")).wait(ctx); }
+  finally { await runtime.close(); }
+  const sibling = await DurableBotRuntime.open({ ...options, directory: join(cwd, "sibling-state") });
+  try { await (await sibling.submit("sibling", "provider-sibling")).wait(ctx); }
+  finally { await sibling.close(); }
+  assert(sessionIds[0] && /^[0-9a-f-]{36}$/i.test(sessionIds[0]), "Durable forwards its native provider session UUID");
+  assert.equal(sessionIds[1], sessionIds[0], "provider session identity survives JSONL reopen");
+  assert.notEqual(sessionIds[2], sessionIds[0], "separate Bot conversations have separate provider cache affinity");
+  console.log("PASS native provider session UUID persists on reopen and isolates conversations");
+}
+{
+  const cwd = join(root, "legacy-azure-1.0.0"); await mkdir(cwd);
+  const directory = join(cwd, "state");
+  await cp(join(process.cwd(), "scripts/fixtures/pi-durable-1.0.0"), directory, { recursive: true });
+  // Only copied execution references change. Historical assistant provider metadata remains fixture.
+  const migrateFixture = (value: any): any => {
+    if (Array.isArray(value)) return value.map(migrateFixture);
+    if (!value || typeof value !== "object") return value;
+    if (value.provider === "fixture" && value.modelId === "fixture") return { ...value, provider: "azure-openai-responses" };
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, migrateFixture(item)]));
+  };
+  for (const name of await readdir(directory)) if (name.endsWith(".jsonl")) {
+    const file = join(directory, name), original = await readFile(file, "utf8");
+    await writeFile(file, original.trimEnd().split("\n").map(line => JSON.stringify(migrateFixture(JSON.parse(line)))).join("\n") + "\n");
+  }
+  let effects = 0, lookups = 0;
+  const api = models(() => text("azure upgraded completion"));
+  api.getModel = (provider: string, id: string) => {
+    assert.equal(provider, "azure", "only the new Azure provider is registered"); assert.equal(id, "fixture"); lookups++;
+    return { ...model, provider: "azure" };
+  };
+  const stream = api.streamSimple;
+  api.streamSimple = (selected: any, context: any, options: any) => { assert.equal(selected.provider, "azure"); return stream(selected, context, options); };
+  const runtime = await DurableBotRuntime.open({ directory, cwd, model: { provider: "azure", modelId: "fixture" }, toolMode: "native",
+    models: api, instructions: () => "fixture", onSnapshot: () => {}, tools: [defineTool({ name: "legacy_hold", description: "legacy effect",
+      parameters: Type.Object({}), replay: "unsafe", execute: async () => { effects++; return {}; } })] });
+  try {
+    assert.equal((await (await runtime.submit("legacy hold", "legacy-interrupted")).wait(ctx)).status, "done");
+    assert.equal((await (await runtime.submit("legacy queued", "legacy-queued")).wait(ctx)).status, "done");
+    assert.equal(effects, 0); assert(lookups > 0);
+    assert.equal((await runtime.conversation.agent(ctx)).model?.provider, "azure-openai-responses", "adapter never rewrites persisted selections or historical entries");
+  } finally { await runtime.close(); }
+  console.log("PASS 1.0.0 legacy Azure agent/checkpoint resumes with only native azure provider registered");
+}
+// Generated and decoded successfully by Pi's Photon runtime, including its strict PNG decoder.
+const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AACA//8EggJ/LF23YQAAAABJRU5ErkJggg==";
+const decodedPng = await resizeImage(Buffer.from(tinyPng, "base64"), "image/png");
+assert(decodedPng?.width === 1 && decodedPng.height === 1, "image fixture must pass Pi's real decoder rather than the raw-byte fallback");
+for (const mode of ["native", "codemode"] as const) {
+  const cwd = join(root, mode + "-image"); await mkdir(cwd);
+  await writeFile(join(cwd, "input.png"), Buffer.from(tinyPng, "base64"));
+  let requests = 0, restored = false;
+  let outputImages: any[] = [];
+  const api = models(context => {
+    const input = context.messages.find((message: any) => message.role === "user" && Array.isArray(message.content) && message.content.some((part: any) => part.type === "image"));
+    assert(input, "persisted user image reaches provider context before and after reopen");
+    if (restored) return text("image reopen complete");
+    if (++requests === 1) return mode === "native" ? call("read", { path: "input.png" })
+      : call("codemode", { code: 'const r=await tools.read({path:"input.png"}); const img=r.content.find(c=>c.type==="image"); if(!img)throw Error("Image missing"); image(img); image(img);' });
+    outputImages = context.messages.filter((message: any) => message.role === "toolResult").flatMap((message: any) => message.content.filter((part: any) => part.type === "image"));
+    assert(outputImages.length >= (mode === "codemode" ? 2 : 1), "native read and Code Mode forward actual image blocks");
+    return text("image complete");
+  });
+  api.getModel = () => ({ ...model, input: ["text", "image"] });
+  const options = { directory: join(cwd, "state"), cwd, model: ref, toolMode: mode, instructions: () => "fixture", models: api, onSnapshot: () => {} };
+  let runtime = await DurableBotRuntime.open(options);
+  let imagePath: string | undefined;
+  try {
+    assert.equal((await (await runtime.submit([{ type: "text", text: "read image" }, { type: "image", data: tinyPng, mimeType: "image/png" }], `image-${mode}`)).wait(ctx)).status, "done");
+    await runtime.refresh();
+    if (mode === "codemode") {
+      const artifacts = runtime.snapshot.messages.flatMap(message => message.artifacts ?? []);
+      assert.equal(artifacts.length, 1, "duplicate image outputs share one persisted file/artifact");
+      imagePath = artifacts[0].path;
+      assert(imagePath && imagePath.startsWith(join(options.directory, "images")));
+      assert((await readFile(imagePath)).equals(Buffer.from(outputImages[0].data, "base64")));
+      assert(runtime.snapshot.messages.some(message => message.tools?.some(tool => tool.output?.includes(`Image saved to ${imagePath}`))), "model and transcript receive the real image file path");
+    }
+  } finally { await runtime.close(); }
+  restored = true;
+  runtime = await DurableBotRuntime.open(options);
+  try {
+    if (imagePath) assert(runtime.snapshot.messages.some(message => message.artifacts?.some(artifact => artifact.path === imagePath)), "saved image artifact restores from native results");
+    assert.equal((await (await runtime.submit("after image reopen", `image-reopen-${mode}`)).wait(ctx)).status, "done");
+  } finally { await runtime.close(); }
+  console.log("PASS", mode, "native image read, provider image content, persistence, deduplication and reopen");
+}
+{
+  const blocked = join(root, "blocked-image-directory"); await writeFile(blocked, "file prevents mkdir");
+  const result = await persistDurableImages([{ type: "image", mimeType: "image/png", data: tinyPng }], join(blocked, "images"));
+  assert.equal(result.paths.length, 0);
+  assert(result.content.some(item => item.type === "image"));
+  assert(result.content.some(item => item.type === "text" && item.text.includes("could not be saved")), "persistence errors remain diagnostic and keep the completed image output");
+  console.log("PASS Code Mode image persistence failure retains model image content and a visible diagnostic");
+}
+{
+  let refreshes = 0, locks = 0, baseUrl = "";
+  const server = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/metadata") {
+      response.end(JSON.stringify({ issuer: baseUrl, authorization_endpoint: baseUrl + "/authorize", token_endpoint: baseUrl + "/token",
+        response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
+        token_endpoint_auth_methods_supported: ["none"], code_challenge_methods_supported: ["S256"], client_id_metadata_document_supported: true }));
+    } else if (request.url === "/token") {
+      refreshes++; let body = ""; for await (const chunk of request) body += chunk;
+      const params = new URLSearchParams(body);
+      assert.equal(params.get("grant_type"), "refresh_token"); assert.equal(params.get("refresh_token"), "fixture-refresh");
+      response.end(JSON.stringify({ access_token: "fixture-fresh", refresh_token: "fixture-rotated", token_type: "Bearer", expires_in: 3600 }));
+    } else if (request.url?.startsWith("/.well-known/oauth-protected-resource")) {
+      response.end(JSON.stringify({ resource: baseUrl + "/mcp", authorization_servers: [baseUrl] }));
+    } else { response.statusCode = 404; response.end("{}"); }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const serverUrl = baseUrl + "/mcp";
+  let state: any = { serverUrl, clientInformation: { client_id: "fixture-client" },
+    tokens: { access_token: "fixture-expired", refresh_token: "fixture-refresh", token_type: "Bearer" }, tokensExpireAt: 0 };
+  const credentials: any = { forServer: (name: string, url: string) => {
+    assert.equal(name, "fixture"); assert.equal(url, serverUrl);
+    return { load: () => structuredClone(state), save: (next: any) => { state = structuredClone(next); },
+      withRefreshLock: async (run: () => Promise<unknown>) => { locks++; return run(); } };
+  } };
+  const host = new DurableMcp();
+  try {
+    const auth = await (host as any).auth("fixture", { url: serverUrl, oauth: { clientRegistration: "cimd", clientId: "fixture-client", authServerMetadataUrl: baseUrl + "/metadata" } }, credentials, {});
+    assert.deepEqual(await Promise.all(Array.from({ length: 4 }, () => auth.token())), Array(4).fill("fixture-fresh"));
+    assert.equal(refreshes, 1); assert.equal(locks, 1, "concurrent requests share the native cross-process refresh lock");
+    assert.equal(state.tokens.refresh_token, "fixture-rotated", "rotated tokens are durably saved before use");
+    await assert.rejects(auth.onUnauthorized({ token: "fixture-fresh", response: new Response(null, { status: 401,
+      headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="additional"' } }), fetch: globalThis.fetch }), (error: any) => error.name === "McpOAuthAuthorizationRequiredError");
+    assert.equal(refreshes, 1, "additional scope requires plugin sign-in instead of repeated refresh");
+    assert.equal(await (host as any).auth("fixture", { url: serverUrl, headers: { Authorization: "fixture-explicit" } }, credentials, {}), undefined);
+  } finally { await host.close(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  console.log("PASS Bot native MCP OAuth: CIMD settings, metadata URL, proactive refresh, shared lock, rotated-token persistence and required sign-in for more scope");
 }
 async function until(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 10000;
@@ -138,9 +345,11 @@ for (const mode of ["native", "codemode"] as const) {
 {
   const cwd=join(root,"stream-retry"); await mkdir(cwd);
   let attempts=0, sawRetry=false, sawStreaming=false;
+  const sessionIds: string[] = [];
   const api=models(()=>text("stream complete"));
   const real=api.streamSimple;
   api.streamSimple=(model:any,context:any,options:any)=>{
+    sessionIds.push(options.sessionId);
     const stream=createAssistantMessageEventStream();
     if(++attempts===1) {
       void real(model,context,options).result().then((base:any)=>{
@@ -161,6 +370,7 @@ for (const mode of ["native", "codemode"] as const) {
     onSnapshot:s=>{sawRetry ||= !!s.retry;sawStreaming ||= s.messages.some(m=>m.streaming&&m.text==="stream");}});
   await (await runtime.submit("retry and stream","retry-stream")).wait(ctx);await runtime.refresh();
   assert.equal(attempts,2);assert(sawRetry,"native retry status projected");assert(sawStreaming,"native streaming partial projected");
+  assert(sessionIds[0]); assert.equal(sessionIds[1],sessionIds[0],"native retry keeps provider session affinity");
   assert.equal(runtime.snapshot.messages.at(-1)?.text,"stream complete");await runtime.close();
   console.log("PASS native retry and streaming snapshot");
 }
