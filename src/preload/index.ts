@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { ArchivedContentDeletionIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
 import type { McpServerConfigDto, McpSaveServerRequest } from "../shared/agent-ipc";
 import type { AgentLoadoutObservationDto, RuntimeAuditClearResultDto } from "../shared/agent-loadout";
@@ -868,6 +869,8 @@ const api = {
       ipcRenderer.invoke(DbIpc.renameSpace, id, name),
     upsertTask: (task: TaskDto): Promise<void> => ipcRenderer.invoke(DbIpc.upsertTask, task),
     deleteTask: (id: string): Promise<void> => ipcRenderer.invoke(DbIpc.deleteTask, id),
+    purgeArchivedContent: (request: ArchivedContentDeletionRequest): Promise<ArchivedContentDeletionResult> =>
+      ipcRenderer.invoke(ArchivedContentDeletionIpc.purge, request),
     archiveTask: (id: string, archived: boolean): Promise<void> =>
       ipcRenderer.invoke(DbIpc.archiveTask, id, archived),
     listTaskWriteGrants: (taskId: string): Promise<import("../shared/external-write").TaskWriteGrantRow[]> =>

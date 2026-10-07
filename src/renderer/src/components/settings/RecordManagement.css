@@ -129,11 +129,39 @@
 .security-setting-card input { flex-shrink: 0; margin-top: 3px; }
 .record-status { font-size: 12px; line-height: 1.5; color: var(--fg-secondary); max-height: 64px; overflow: auto; }
 
+.archive-selection-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  font-size: 12px;
+}
+
+.archive-selection-toolbar .btn { padding: 5px 8px; font-size: 12px; }
+.archive-page-selection { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; }
+.archive-record-checkbox, .archive-page-selection input { flex-shrink: 0; width: 14px; height: 14px; margin: 0; accent-color: var(--fg); cursor: pointer; }
+.archive-selection-count { margin-left: auto; color: var(--fg-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.archive-management button:disabled, .archive-management input:disabled { opacity: .45; cursor: default; }
+.archive-management .archive-card.selected { border-color: var(--fg-secondary); background: var(--bg-active); }
+.archive-operation-status { padding: 7px 10px; border-radius: 6px; background: var(--bg-active); overflow-wrap: anywhere; }
+.archive-operation-status.error { color: var(--danger, #c0392b); }
+
+@container (max-width: 580px) {
+  .archive-management .archive-card-head { flex-wrap: wrap; }
+  .archive-management .archive-card-title { flex: 1; width: auto; }
+  .archive-management .archive-card-actions { width: 100%; justify-content: flex-end; }
+}
+
 @container (max-width: 450px) {
   .record-toolbar { flex-wrap: wrap; }
   .archive-management .record-toolbar .record-search, .record-toolbar .record-select { flex-basis: 100%; }
   .record-management .archive-card-head { flex-wrap: wrap; }
   .record-management .archive-card-title { width: calc(100% - 26px); flex: auto; }
+  .archive-management .archive-card-title { flex: 1; width: auto; }
   .record-management .archive-card-actions { width: 100%; justify-content: flex-end; }
   .record-pager { flex-wrap: wrap; gap: 6px; }
   .record-pager > div { margin-left: auto; }

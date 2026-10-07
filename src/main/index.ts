@@ -216,6 +216,8 @@ import {
   migrateLegacyTaskWorkspacesDirs,
 } from "./paths";
 import { TaskExecutionWorkspaceLifecycle } from "./task/TaskExecutionWorkspaceLifecycle";
+import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "./task/ArchivedContentDeletion";
+import { ArchivedContentDeletionIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
 import { TaskExecutionWorkspace } from "./task/TaskExecutionWorkspace";
 import { McpConfigService } from "./mcp/McpConfigService";
 import { PluginStorageIpc } from "../shared/plugin-storage";
@@ -316,6 +318,7 @@ let remoteAccessController: RemoteAccessController | null = null;
 let trayService: TrayService;
 let notificationService: NotificationService;
 let taskLifecycle: TaskExecutionWorkspaceLifecycle;
+let archivedContentDeletion: ArchivedContentDeletion;
 let artifactDomainService: ReturnType<typeof createArtifactDomain>["service"];
 let artifactDomain: ReturnType<typeof createArtifactDomain> | null = null;
 let gadgetService: GadgetService;
@@ -1872,6 +1875,15 @@ function registerIpc(): void {
     if (archived) taskLifecycle.archive(id);
     else taskLifecycle.unarchive(id);
   });
+  ipcMain.handle(ArchivedContentDeletionIpc.purge, async (_e, request: ArchivedContentDeletionRequest) => {
+    const projects = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
+    const result = await archivedContentDeletion.purge(request);
+    for (const projectId of new Set(result.deletedTaskIds.map((id) => projects.get(id)).filter(Boolean) as string[])) {
+      broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
+      notifyProjectAttention(projectId);
+    }
+    return result;
+  });
   ipcMain.handle(DbIpc.deleteSpace, async (_e, id: string) => {
     try {
       // 先复用现有空叶子约束做只读 gate，避免 DB 删除会失败时提前清理 Gadget。
@@ -2841,56 +2853,69 @@ app.whenReady().then(async () => {
     }
   });
   // P1.5 生命周期：与 Agent/Artifact 解耦的 task-workspaces 目录回收；停 session 后 trash
+  const artifactPurgeWarnings = new Map<string, string>();
   taskLifecycle = new TaskExecutionWorkspaceLifecycle({
     db,
     workspace: new TaskExecutionWorkspace(),
-    beforeTrash: async (taskId) => {
-      try {
-        await agentService.abort(taskId);
-        await agentService.releaseDurableTask(taskId);
-      } catch {
-        /* 无活跃 session 时 abort 可忽略 */
+    beforeTrash: async (taskId, options) => {
+      if (options?.strict && externalAgentRuntime?.hasLiveTaskRun(taskId)) {
+        throw new Error("外部 Agent 正在运行，请先停止后再彻底删除");
       }
+      // Ordinary trash retains lifecycle's best-effort handling; explicit archive purge uses strict shutdown.
+      const errors: string[] = [];
+      try { await agentService.releaseTaskForDeletion(taskId); }
+      catch (error) { errors.push(`任务会话：${error instanceof Error ? error.message : String(error)}`); }
       // 终端：任务删除/归档 → kill 该任务 PTY（cwd 即将移入回收区）
-      try {
-        terminalHost?.close({ taskId });
-      } catch {
-        /* best effort */
-      }
+      try { terminalHost?.close({ taskId }); }
+      catch (error) { errors.push(`任务终端：${error instanceof Error ? error.message : String(error)}`); }
       // Mechanical CAD：任务删除/归档 → 回收（无 worker；保留幂等契约）
-      try {
-        await cadRuntimeService?.releaseTask(taskId);
-      } catch {
-        /* best effort */
-      }
+      try { await cadRuntimeService?.releaseTask(taskId); }
+      catch (error) { errors.push(`CAD 运行时：${error instanceof Error ? error.message : String(error)}`); }
+      if (errors.length) throw new Error(errors.join("；"));
     },
-    onPurgeArtifacts: (taskId) => {
-      artifactDomainService?.removeByTask(taskId);
+    onPurgeArtifacts: async (taskId) => {
+      const warning = artifactPurgeCleanupWarning(await artifactDomainService?.removeByTask(taskId));
+      artifactPurgeWarnings.delete(taskId);
+      if (warning) artifactPurgeWarnings.set(taskId, warning);
     },
     onPurge: async (taskId) => {
+      const artifactWarning = artifactPurgeWarnings.get(taskId);
+      artifactPurgeWarnings.delete(taskId);
+      const errors: string[] = artifactWarning ? [artifactWarning] : [];
+      const cleanup = async (label: string, operation: () => unknown | Promise<unknown>) => {
+        try { await operation(); }
+        catch (error) { errors.push(`${label}：${error instanceof Error ? error.message : String(error)}`); }
+      };
       // Durable history shares the task's trash/restore lifecycle, then goes away only on permanent deletion.
-      try { await agentService.purgeDurableTask(taskId); }
-      catch (err) { console.warn("[index] purge Durable storage failed", err); }
+      await cleanup("Durable 历史", () => agentService.purgeDurableTask(taskId));
       // 永久删除时清理任务级配置（settings.json taskConnectorIds）；trash/restore 阶段保留
-      try {
-        agentService.clearTaskConnectorIds(taskId);
-      } catch (err) {
-        console.warn("[index] purge 清理 taskConnectorIds 失败", err);
-      }
+      await cleanup("任务连接器配置", () => agentService.clearTaskConnectorIds(taskId));
       // Skill readiness uses distinct completed-task support. Purge has already removed the task/L0 evidence,
       // so recalculate candidates now; installed learned Skills remain untouched and require explicit re-approval.
-      try {
-        agentService.refreshKernelMemorySkillCandidates();
-      } catch (err) {
-        console.warn("[index] purge 刷新 Memory Skill Candidate 失败", err);
-      }
+      await cleanup("记忆技能候选", () => agentService.refreshKernelMemorySkillCandidates());
       // Task Gadget 与回收/恢复同寿命：只在永久 purge 后清理，不在 trash 时误删。
-      await gadgetService?.deleteByTask(taskId);
+      await cleanup("任务 Gadget", () => gadgetService?.deleteByTask(taskId));
       // 远程上传附件目录（userData/remote-uploads/<taskId>）与任务同寿命
-      try {
-        await cleanupRemoteUploads(taskId);
-      } catch (err) {
-        console.warn("[index] purge 清理 remote-uploads 失败", err);
+      await cleanup("远程上传附件", () => cleanupRemoteUploads(taskId));
+      await cleanup("任务关联", () => workGraphService.cleanupByNode("task", taskId));
+      if (errors.length) throw new Error(errors.join("；"));
+    },
+  });
+  archivedContentDeletion = new ArchivedContentDeletion({
+    db,
+    lifecycle: taskLifecycle,
+    beforeDeleteSpace: async (spaceId) => {
+      terminalHost?.close({ workspaceId: spaceId });
+      await gadgetService.deleteByWorkspace(spaceId);
+    },
+    afterDeleteSpace: (spaceId) => {
+      memoryKernel.detachAllInScope("workspace", spaceId);
+      workGraphService.cleanupByNode("workspace", spaceId);
+    },
+    afterDeleteTask: (task, sessionFiles) => {
+      memoryKernel.detachAllInScope("task", task.id);
+      for (const sessionFile of sessionFiles) {
+        removeManagedTaskSession(db, { ...task, sessionFile }, join(process.env.PI_CODING_AGENT_DIR || getMyBuddyDir(), "sessions"));
       }
     },
   });

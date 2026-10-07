@@ -451,6 +451,11 @@ export class ExternalAgentRuntime {
       .map((run) => ({ ...run }));
   }
 
+  /** Cancellation marks the UI finished before its process has actually closed. */
+  hasLiveTaskRun(taskId: string): boolean {
+    return [...this.activeRuns.values()].some((run) => run.dto.taskId === taskId);
+  }
+
   prompt(request: ExternalAgentPromptRequest): ExternalAgentPromptResult {
     const manifest = MANIFESTS.find((item) => item.id === request.agentId);
     if (!manifest) throw new Error(`不支持的外部 Agent：${request.agentId}`);
@@ -1232,8 +1237,14 @@ export class ExternalAgentRuntime {
         this.permissions.delete(key);
         pending.resolve({ outcome: { outcome: "cancelled" } });
       }
-      try { run.process?.kill(); } catch { /* best effort */ }
-      this.activeRuns.delete(run.dto.runId);
+      const child = run.process;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        // Retain ownership while kill is pending, including cancelled runs hidden by active().
+        child.once("close", () => this.activeRuns.delete(run.dto.runId));
+        try { child.kill(); } catch { /* keep ownership until the process closes */ }
+      } else {
+        this.activeRuns.delete(run.dto.runId);
+      }
     }
   }
 

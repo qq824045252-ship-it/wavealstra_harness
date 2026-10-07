@@ -44,12 +44,19 @@ try {
     detail: "mock",
   }];
   let currentBehavior = "default";
-  (runtime as any).launch = (_manifest: unknown, runCwd: string) => spawn(process.execPath, [fixture], {
-    cwd: runCwd,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    env: { ...process.env, MOCK_ACP_BEHAVIOR: currentBehavior },
-  });
+  (runtime as any).launch = (_manifest: unknown, runCwd: string) => {
+    const child = spawn(process.execPath, [fixture], {
+      cwd: runCwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, MOCK_ACP_BEHAVIOR: currentBehavior },
+    });
+    if (currentBehavior === "hang") {
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => { setTimeout(() => kill(signal), 250).unref(); return true; };
+    }
+    return child;
+  };
 
   const first = runtime.prompt({
     taskId: "task-1",
@@ -183,11 +190,14 @@ try {
   );
   const cancelResult = await runtime.cancel(hangRun.runId);
   assert.equal(cancelResult.ok, true);
+  assert.equal(runtime.active("task-1").some((run) => run.runId === hangRun.runId), false, "cancelled run is hidden immediately");
+  assert.equal(runtime.hasLiveTaskRun("task-1"), true, "permanent delete remains blocked until cancelled process closes");
   const hangDone = await waitFor(
     () => runtime.history("task-1").runs.find((run) => run.runId === hangRun.runId && run.status === "cancelled"),
     "cancelled run settling",
   );
   assert.equal(hangDone.capabilities.cancelSupported, false);
+  await waitFor(() => !runtime.hasLiveTaskRun("task-1") ? true : undefined, "cancelled process ownership released after close");
 
   // --- process crash becomes a failed run with recovery state -----------------
   currentBehavior = "crash";

@@ -81,7 +81,7 @@ export interface TaskExecutionWorkspaceLifecycleOptions {
    * 删除前停止 session / detach MCP（可选注入，测试可不传）。
    * 失败只 log，不阻断 trash（目录隔离优先完成）。
    */
-  beforeTrash?: (taskId: string) => void | Promise<void>;
+  beforeTrash?: (taskId: string, options?: { strict?: boolean }) => void | Promise<void>;
   /**
    * 永久清理时删除 Artifact Domain 数据（可选）。
    * 未注入则 purge 只清目录 + task 行 + execution workspace state。
@@ -186,18 +186,22 @@ export class TaskExecutionWorkspaceLifecycle {
    *
    * move 成功但 DB 失败 → 尝试移回；仍失败 → RepairRequiredError
    */
-  async trash(taskId: string): Promise<TrashResult> {
+  async trash(taskId: string, options?: { strict?: boolean; assertAllowed?: () => void }): Promise<TrashResult> {
     this.assertTaskId(taskId);
     if (this.beforeTrash) {
       try {
-        await this.beforeTrash(taskId);
+        await this.beforeTrash(taskId, options);
       } catch (err) {
+        if (options?.strict) throw err;
         console.warn(
           `[TaskExecutionWorkspaceLifecycle] beforeTrash 失败（继续回收）：taskId=${taskId}`,
           err instanceof Error ? err.message : err,
         );
       }
     }
+
+    // Explicit archive purge rechecks authorization after asynchronous session shutdown.
+    options?.assertAllowed?.();
 
     const directoryName = getTaskDirectoryName(taskId);
     const workspaceDir = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
@@ -392,8 +396,9 @@ export class TaskExecutionWorkspaceLifecycle {
    * 永久清理回收区任务。默认仅当 purge_after 已过或 force=true。
    * 顺序：校验 trash 路径安全 → 删 trash 目录 → onPurgeArtifacts → 删 task 行 + state。
    */
-  async purge(taskId: string, options?: { force?: boolean }): Promise<PurgeResult> {
+  async purge(taskId: string, options?: { force?: boolean; strict?: boolean; assertAllowed?: () => void }): Promise<PurgeResult> {
     this.assertTaskId(taskId);
+    options?.assertAllowed?.();
     const state = this.db.getTaskExecutionWorkspaceState(taskId);
     if (!state || state.state !== "trashed") {
       throw new TaskLifecycleError(`仅可 purge 回收区任务：${taskId} state=${state?.state ?? "none"}`);
@@ -430,11 +435,18 @@ export class TaskExecutionWorkspaceLifecycle {
       try {
         await this.onPurgeArtifacts(taskId);
       } catch (err) {
+        if (options?.strict) throw err;
         console.warn(
           `[TaskExecutionWorkspaceLifecycle] onPurgeArtifacts 失败：taskId=${taskId}`,
           err instanceof Error ? err.message : err,
         );
       }
+    }
+
+    // A restore/archive toggle may arrive while artifact cleanup is awaiting I/O.
+    options?.assertAllowed?.();
+    if (this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed") {
+      throw new TaskLifecycleError(`purge 中止：任务已离开回收区：${taskId}`);
     }
 
     this.db.transaction(() => {
@@ -447,6 +459,7 @@ export class TaskExecutionWorkspaceLifecycle {
       try {
         await this.onPurge(taskId);
       } catch (err) {
+        if (options?.strict) throw err;
         console.warn(
           `[TaskExecutionWorkspaceLifecycle] onPurge 失败：taskId=${taskId}`,
           err instanceof Error ? err.message : err,

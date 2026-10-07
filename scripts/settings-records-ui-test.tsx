@@ -51,6 +51,48 @@ export function layout() {
   return { width: innerWidth, height: innerHeight, listHeight: list.clientHeight, pagerBottom: p.bottom };
 }
 export async function showSettings() { await click('安全设置'); }
+async function archiveDeletionFailures() {
+  await preview('archive');
+  await click('任务 17');
+  let calls = 0;
+  let finish: (result: any) => void = () => {};
+  (window as any).api.db = {
+    purgeArchivedContent: async () => {
+      calls++;
+      return await new Promise((resolve) => { finish = resolve; });
+    },
+  };
+  const select = async (index: number) => {
+    flushSync(() => (document.querySelectorAll('.archive-record-checkbox')[index] as HTMLInputElement).click());
+    await settle();
+  };
+  const confirm = async () => {
+    const button = [...document.querySelectorAll('.full-access-dialog button')].find((button) => button.textContent?.trim() === '彻底删除') as HTMLButtonElement;
+    check(button, 'Permanent delete requires the confirmation dialog');
+    flushSync(() => button.click());
+    await settle();
+  };
+  await select(0); await select(1);
+  await click('批量彻底删除');
+  check(calls === 0 && useAppStore.getState().tasks.length === 17, 'No deletion before confirmation');
+  await click('取消');
+  check(calls === 0 && document.querySelectorAll('.archive-record-checkbox:checked').length === 2, 'Cancel preserves records and selection');
+  await click('批量彻底删除'); await confirm();
+  check(calls === 1 && !document.querySelector('.full-access-dialog'), 'Submit closes confirmation and starts once');
+  check([...document.querySelectorAll('.archive-management button, .archive-management input')].every((element) => (element as HTMLButtonElement).disabled), 'All archive controls disabled while deletion waits');
+  finish({ deletedTaskIds: ['t0'], deletedSpaceIds: [], failures: [{ kind: 'task', id: 't1', error: '模拟清理失败' }] });
+  await settle();
+  check(!useAppStore.getState().tasks.some((task) => task.id === 't0') && useAppStore.getState().tasks.some((task) => task.id === 't1'), 'Store removes only Main acknowledged ids');
+  check(document.querySelector('.archive-selection-count')?.textContent === '已选 1 项', 'Remaining failed item stays selected');
+  check(document.querySelector('[role="alert"]')?.textContent?.includes('模拟清理失败'), 'Partial failure is visible');
+  (window as any).api.db.purgeArchivedContent = async () => { calls++; throw new Error('模拟连接失败'); };
+  await click('批量彻底删除'); await confirm();
+  check(document.querySelector('[role="alert"]')?.textContent?.includes('模拟连接失败') && useAppStore.getState().tasks.length === 16, 'Rejected IPC preserves records and reports error');
+  (window as any).api.db.purgeArchivedContent = async () => ({ deletedTaskIds: ['t1'], deletedSpaceIds: [], failures: [{ kind: 'task', id: 't1', error: '模拟关联内容清理失败' }] });
+  await click('批量彻底删除'); await confirm();
+  check(!useAppStore.getState().tasks.some((task) => task.id === 't1'), 'Deleted row remains removed when post-delete cleanup warns');
+  check(document.querySelector('[role="alert"]')?.textContent?.includes('关联内容清理失败') && document.querySelector('.archive-selection-count')?.textContent === '已选 0 项', 'Cleanup warning remains visible without offering deleted record retry');
+}
 export async function run() {
   await preview('archive');
   check(document.querySelectorAll('.archive-card').length === 8, 'Archive page size');
@@ -79,5 +121,6 @@ export async function run() {
   check(document.querySelector('.record-pager')?.textContent?.includes('共 102 条'), 'Space filtering');
   await click('任务'); await change('筛选任务', 't0');
   check(document.querySelector('.record-pager')?.textContent?.includes('共 13 条'), 'Task filtering');
-  return ['archive/task pagination and removal clamping', 'search and empty states', '217 backups reachable', 'space/task filters and exact restore target'];
+  await archiveDeletionFailures();
+  return ['archive/task pagination and removal clamping', 'search and empty states', '217 backups reachable', 'space/task filters and exact restore target', 'archive confirmation, pending lock, partial deletion, IPC failure and cleanup warnings'];
 }

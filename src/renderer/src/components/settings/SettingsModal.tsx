@@ -6,7 +6,6 @@ import type {
   FileBackupInfoDto,
   ModelInfoDto,
 } from "@shared/agent-ipc";
-import type { Space } from "@/types";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import {
   IconArchive,
@@ -24,12 +23,10 @@ import {
   IconPlus,
   IconPuzzle,
   IconRefresh,
-  IconRotate,
   IconSettings,
   IconShare,
   IconShield,
   IconSparkles,
-  IconTrash,
   IconX,
 } from "@/components/common/icons";
 import "./RecordManagement.css";
@@ -38,6 +35,7 @@ import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
 import CapabilitiesTab from "./CapabilitiesTab";
 import RemoteAccessTab from "./RemoteAccessTab";
+import ArchivesTab from "./ArchivesTab";
 import PythonRuntimeTab from "./PythonRuntimeTab";
 import AcpTab from "./AcpTab";
 import type { UserFontDto } from "@shared/agent-ipc";
@@ -1046,189 +1044,6 @@ function RecordPager({ page, total, onChange }: { page: number; total: number; o
         <button type="button" className="btn" disabled={page >= pages} onClick={() => onChange(page + 1)}>下一页</button>
       </div>
     </nav>
-  );
-}
-
-function ArchivesTab(): React.JSX.Element {
-  const spaces = useAppStore((s) => s.spaces);
-  const tasks = useAppStore((s) => s.tasks);
-  const restoreSpace = useAppStore((s) => s.restoreSpace);
-  const deleteSpace = useAppStore((s) => s.deleteSpace);
-  const restoreTask = useAppStore((s) => s.restoreTask);
-  const deleteTask = useAppStore((s) => s.deleteTask);
-  const archived = spaces.filter((s) => s.archived);
-  const archivedTasks = tasks.filter((t) => t.archived);
-  const [category, setCategory] = useState<"spaces" | "tasks">("spaces");
-  const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
-  const listRef = useRef<HTMLDivElement>(null);
-  const needle = query.trim().toLocaleLowerCase();
-  const filteredSpaces = archived.filter((s) => `${s.name} ${s.path ?? ""}`.toLocaleLowerCase().includes(needle));
-  const filteredTasks = archivedTasks.filter((t) => `${t.title} ${spaces.find((s) => s.id === t.spaceId)?.name ?? ""}`.toLocaleLowerCase().includes(needle));
-  const total = category === "spaces" ? filteredSpaces.length : filteredTasks.length;
-  const currentPage = Math.min(page, Math.max(1, Math.ceil(total / RECORD_PAGE_SIZE)));
-  const offset = (currentPage - 1) * RECORD_PAGE_SIZE;
-  useEffect(() => { setPage(currentPage); }, [currentPage]);
-  useEffect(() => { listRef.current?.scrollTo(0, 0); }, [currentPage, category, query]);
-  const [confirmDelete, setConfirmDelete] = useState<Space | null>(null);
-  const [confirmDeleteTask, setConfirmDeleteTask] = useState<{ id: string; title: string } | null>(null);
-
-  const formatTime = (timestamp: number): string =>
-    new Intl.DateTimeFormat("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(timestamp);
-
-  return (
-    <div className="record-management archive-management">
-      <div className="record-intro">归档内容完整保留，恢复后回到侧栏。恢复空间会同时恢复其任务。</div>
-      <div className="record-toolbar">
-        <div className="record-tabs" role="group" aria-label="归档分类">
-          <button type="button" aria-pressed={category === "spaces"} onClick={() => { setCategory("spaces"); setPage(1); }}>空间 <span>{archived.length}</span></button>
-          <button type="button" aria-pressed={category === "tasks"} onClick={() => { setCategory("tasks"); setPage(1); }}>任务 <span>{archivedTasks.length}</span></button>
-        </div>
-        <input className="record-search" type="search" aria-label="搜索归档" placeholder={category === "spaces" ? "搜索空间名称或路径" : "搜索任务或所属空间"} value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} />
-      </div>
-      <div className="record-list" ref={listRef}>
-      {total === 0 && <div className="record-empty"><IconArchive size={28} /><b>{needle ? "没有匹配的归档" : category === "spaces" ? "暂无归档空间" : "暂无归档任务"}</b><span>{needle ? "试试其他关键词，或清空搜索。" : "在侧栏归档的内容会显示在这里。"}</span></div>}
-      {category === "spaces" && filteredSpaces.slice(offset, offset + RECORD_PAGE_SIZE).map((space) => {
-        const taskCount = tasks.filter((t) => t.spaceId === space.id).length;
-        return (
-          <div key={space.id} className="archive-card">
-            <div className="archive-card-head">
-              <span className="archive-card-icon">
-                <IconFolder size={15} />
-              </span>
-              <div className="archive-card-title">
-                <span className="archive-card-name" title={space.name}>
-                  {space.name}
-                </span>
-                <span className="archive-card-badge">已归档</span>
-              </div>
-              <div className="archive-card-actions">
-                <button
-                  type="button"
-                  className="btn"
-                  title="恢复后重新出现在空间列表，其全部任务一并恢复"
-                  onClick={() => void restoreSpace(space.id)}
-                >
-                  <IconRotate size={13} /> 恢复
-                </button>
-                <button
-                  type="button"
-                  className="btn danger"
-                  title="彻底删除该空间及其记忆，不可恢复"
-                  onClick={() => setConfirmDelete(space)}
-                >
-                  <IconTrash size={13} /> 彻底删除
-                </button>
-              </div>
-            </div>
-            {space.path && (
-              <div className="archive-card-path" title={space.path}>
-                <IconFolder size={12} /> {space.path}
-              </div>
-            )}
-            <div className="archive-card-meta">
-              {taskCount > 0 ? `${taskCount} 个任务，随空间归档` : "无任务"}
-            </div>
-          </div>
-        );
-      })}
-
-      {category === "tasks" && filteredTasks.slice(offset, offset + RECORD_PAGE_SIZE).map((task) => {
-        const spaceName = spaces.find((s) => s.id === task.spaceId)?.name;
-        return (
-          <div key={task.id} className="archive-card">
-            <div className="archive-card-head">
-              <span className="archive-card-icon">
-                <IconFile size={15} />
-              </span>
-              <div className="archive-card-title">
-                <span className="archive-card-name" title={task.title}>
-                  {task.title}
-                </span>
-                <span className="archive-card-badge">已归档</span>
-              </div>
-              <div className="archive-card-actions">
-                <button
-                  type="button"
-                  className="btn"
-                  title="恢复后重新出现在侧栏任务列表"
-                  onClick={() => void restoreTask(task.id)}
-                >
-                  <IconRotate size={13} /> 恢复
-                </button>
-                <button
-                  type="button"
-                  className="btn danger"
-                  title="彻底删除该任务，不可恢复"
-                  onClick={() => setConfirmDeleteTask({ id: task.id, title: task.title })}
-                >
-                  <IconTrash size={13} /> 彻底删除
-                </button>
-              </div>
-            </div>
-            <div className="archive-card-meta">
-              {spaceName ? `所属空间：${spaceName}` : "普通任务"} · {formatTime(task.updatedAt)}
-            </div>
-          </div>
-        );
-      })}
-
-      </div>
-      <RecordPager page={currentPage} total={total} onChange={setPage} />
-      <ConfirmDialog
-        open={confirmDelete !== null}
-        title="删除空间？"
-        body={
-          confirmDelete ? (
-            <>
-              确定要删除已归档空间「{confirmDelete.name}」吗？
-              <br />
-              仅空空间可删除：该空间下不能有子空间或任务，请先移走子空间和任务后再删除。空空间的记忆会被一并清理，操作不可恢复。
-            </>
-          ) : null
-        }
-        confirmLabel="删除"
-        danger
-        onCancel={() => setConfirmDelete(null)}
-        onConfirm={async () => {
-          const target = confirmDelete;
-          setConfirmDelete(null);
-          if (!target) return;
-          try {
-            await deleteSpace(target.id);
-          } catch (err) {
-            // 归档页删除失败时静默提示（可扩展为 toast）
-            console.warn("[ArchivesTab] deleteSpace failed", err);
-          }
-        }}
-      />
-      <ConfirmDialog
-        open={confirmDeleteTask !== null}
-        title="彻底删除任务？"
-        body={
-          confirmDeleteTask ? (
-            <>
-              确定要彻底删除已归档任务「{confirmDeleteTask.title}」吗？
-              <br />
-              会话记录与产物将一并清除，此操作不可恢复。
-            </>
-          ) : null
-        }
-        confirmLabel="彻底删除"
-        danger
-        onCancel={() => setConfirmDeleteTask(null)}
-        onConfirm={() => {
-          const target = confirmDeleteTask;
-          setConfirmDeleteTask(null);
-          if (target) deleteTask(target.id);
-        }}
-      />
-    </div>
   );
 }
 

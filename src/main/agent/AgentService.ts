@@ -1266,6 +1266,11 @@ export class AgentService {
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
+  async releaseTaskForDeletion(taskId: string): Promise<void> {
+    await this.abort(taskId);
+    this.sessionLifecycle.release(taskId);
+    await this.releaseDurableTask(taskId);
+  }
   async purgeDurableTask(taskId: string): Promise<void> { await this.durableBots?.purge(taskId); }
   async closeDurableBots(): Promise<void> { await this.durableBots?.close(); }
 

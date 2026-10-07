@@ -26,6 +26,7 @@ import type {
 } from "@/types";
 import type { AgentUiPatch, LocalConnectorDto, ModeProfileDto, SpaceDto, TaskDto } from "../../../shared/agent-ipc";
 import type { AgentRegenerateResult } from "../../../shared/agent-ipc";
+import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult } from "../../../shared/archive-deletion";
 import type { ConversationBranchInfoDto } from "../../../shared/conversation-branch";
 import type { ExternalAgentDescriptorDto, ExternalAgentId, ExternalAgentPinDto, ExternalAgentUiEvent } from "../../../shared/external-agent";
 import { resolveExternalAgentContinuationRunId } from "../../../shared/external-agent";
@@ -565,6 +566,7 @@ interface AppState {
   setActiveTask: (id: string) => void;
   newTask: (spaceId?: string, projectId?: string) => void;
   deleteTask: (id: string) => void;
+  purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;
   renameTask: (id: string, title: string) => void;
   toggleTaskSection: () => void;
   toggleSpaceCollapsed: (id: string) => void;
@@ -3288,6 +3290,52 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 主进程 TaskExecutionWorkspaceLifecycle.purge 会在永久删除时清理对应 settings key。
     // projection 是 renderer 侧缓存：UI 隐藏即可；数据仍在 Domain 供恢复
     get().clearArtifactTask(id);
+  },
+
+  purgeArchivedContent: async (request) => {
+    const api = window.api?.db?.purgeArchivedContent;
+    if (!api) throw new Error("永久删除接口不可用，请重启到最新版本");
+    // Only remove records acknowledged by Main; failed items remain available for retry.
+    const result = await api(request);
+    const taskIds = new Set(result.deletedTaskIds);
+    const spaceIds = new Set(result.deletedSpaceIds);
+    for (const id of taskIds) deletedTaskRuntimeTombstones.add(id);
+    const deletingActive = taskIds.has(get().activeTaskId ?? "");
+    set((state) => {
+      const tasks = state.tasks.filter((task) => !taskIds.has(task.id));
+      const spaces = recomputeEffectiveArchived(state.spaces.filter((space) => !spaceIds.has(space.id)));
+      const archivedSpaceIds = new Set(spaces.filter((space) => space.effectiveArchived ?? space.archived).map((space) => space.id));
+      const collapsedSpaceIds = state.collapsedSpaceIds.filter((id) => !spaceIds.has(id));
+      if (collapsedSpaceIds.length !== state.collapsedSpaceIds.length) saveSidebarCollapsed(collapsedSpaceIds);
+      const reset = deletingActive
+        ? resetTaskScopedUiState(state, {
+            nextTaskId: tasks.find((task) => !task.archived && !archivedSpaceIds.has(task.spaceId ?? ""))?.id ?? null,
+            deletedTaskId: state.activeTaskId!,
+            clearBrowserUrl: true,
+          })
+        : {};
+      return {
+        ...reset,
+        tasks,
+        spaces,
+        pinnedTaskIds: state.pinnedTaskIds.filter((id) => !taskIds.has(id)),
+        collapsedSpaceIds,
+        homeSpaceId: spaceIds.has(state.homeSpaceId ?? "") ? null : state.homeSpaceId,
+        draft: spaceIds.has(state.draft?.spaceId ?? "") ? null : state.draft,
+        browserUrlByTask: Object.fromEntries(Object.entries(state.browserUrlByTask ?? {}).filter(([id]) => !taskIds.has(id))),
+      };
+    });
+    for (const id of taskIds) get().clearArtifactTask(id);
+    if (deletingActive) {
+      try {
+        await window.api?.artifact?.close?.();
+        await window.api?.browser?.close?.();
+      } catch (error) {
+        console.warn("[purgeArchivedContent] close native panel failed", error);
+      }
+    }
+    if (get().activeTaskId && taskIds.size) void get().refreshBranchLineage(get().activeTaskId!);
+    return result;
   },
 
   setTaskStatus: (id, status) => {
