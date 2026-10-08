@@ -12,6 +12,7 @@ export type { RefFileItem } from "@/lib/refTaskArtifacts";
 export type { RefTaskItem, RefTaskMessage } from "@/lib/taskReference";
 import type { LocalConnectorDto, McpServerDto, ModeMcpPolicy, ModeProfileDto, ModeSkillPolicy } from "@shared/agent-ipc";
 import type { ExternalAgentDescriptorDto } from "@shared/external-agent";
+import { loadExternalAgentCatalog, useExternalAgentCatalog } from "@/lib/externalAgentCatalog";
 import {
   isMcpVisibleForMode,
   isSkillVisibleForMode,
@@ -321,8 +322,9 @@ export default function InputAddMenu({
   const [mcpServers, setMcpServers] = useState<McpServerDto[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
-  const [externalAgents, setExternalAgents] = useState<ExternalAgentDescriptorDto[]>([]);
-  const [externalAgentsLoading, setExternalAgentsLoading] = useState(false);
+  const catalogAgents = useExternalAgentCatalog((state) => state.agents);
+  const externalAgents = useMemo(() => catalogAgents.filter((item) => item.enabled !== false), [catalogAgents]);
+  const externalAgentsLoading = useExternalAgentCatalog((state) => state.loading || (!state.loaded && !state.error));
   const [refTaskBusy, setRefTaskBusy] = useState<string | null>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
@@ -449,19 +451,10 @@ export default function InputAddMenu({
 
   useEffect(() => {
     if (activeSub !== "externalAgent") return;
-    const list = window.api?.externalAgent?.listAgents;
-    if (!list) {
-      setExternalAgents([]);
-      return;
-    }
-    setExternalAgentsLoading(true);
-    void list()
-      .then((items) => setExternalAgents((items ?? []).filter((item) => item.enabled !== false)))
+    void loadExternalAgentCatalog()
       .catch((err) => {
         console.warn("[InputAddMenu] list External Agents failed", err);
-        setExternalAgents([]);
-      })
-      .finally(() => setExternalAgentsLoading(false));
+      });
   }, [activeSub]);
 
   /**

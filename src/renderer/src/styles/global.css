@@ -10372,6 +10372,26 @@ html[data-theme="dark"] .switch.on {
   font-weight: 500;
 }
 
+.user-attachment-file {
+  border: 0;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.user-attachment-file:hover:not(:disabled) {
+  background: var(--surface-active, var(--surface-hover));
+}
+
+.user-attachment-file:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.user-attachment-file:disabled {
+  cursor: default;
+}
+
 /* 用户气泡内：专家 / 技能 / MCP / 连接器 / 终端 / 抓取元素（与输入框 chip 语义对齐，不展开全文） */
 .user-attachment.user-terminal-ref,
 .user-attachment.user-selection-ref,

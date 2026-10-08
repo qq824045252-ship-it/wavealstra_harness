@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -41,6 +41,8 @@
     "test:session-history-recovery": "esbuild scripts/session-history-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/session-history-recovery-test.mjs && node scripts/test-guard.mjs out/tests/session-history-recovery-test.mjs",
     "test:delegated-run": "esbuild scripts/delegated-run-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/delegated-run-test.mjs && node scripts/test-guard.mjs out/tests/delegated-run-test.mjs",
     "test:acp-runtime": "esbuild scripts/acp-runtime-integration-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-runtime-integration-test.mjs && node scripts/test-guard.mjs out/tests/acp-runtime-integration-test.mjs",
+    "test:acp-catalog": "esbuild scripts/external-agent-catalog-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/external-agent-catalog-test.mjs && node scripts/test-guard.mjs out/tests/external-agent-catalog-test.mjs",
+    "test:chat-attachment-acp-desktop": "node scripts/chat-attachment-acp-desktop-test.cjs",
     "test:runtime-requirement-recovery": "esbuild scripts/runtime-requirement-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/runtime-requirement-recovery-test.mjs && node scripts/test-guard.mjs out/tests/runtime-requirement-recovery-test.mjs",
     "test:prompt-failure-recovery": "esbuild scripts/prompt-failure-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/prompt-failure-recovery-test.mjs && node scripts/test-guard.mjs out/tests/prompt-failure-recovery-test.mjs",
     "test:computer-use-recovery": "esbuild scripts/computer-use-recovery-evidence-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/computer-use-recovery-evidence-test.mjs && node scripts/test-guard.mjs out/tests/computer-use-recovery-evidence-test.mjs",

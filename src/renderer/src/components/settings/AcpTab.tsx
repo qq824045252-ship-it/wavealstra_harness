@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconBot, IconCheck, IconRefresh, IconX } from "@/components/common/icons";
+import { loadExternalAgentCatalog, updateExternalAgentCatalog, useExternalAgentCatalog } from "@/lib/externalAgentCatalog";
 import type {
   ExternalAgentConfigOptionDto,
   ExternalAgentDescriptorDto,
@@ -194,8 +195,8 @@ function AgentRow({
 }
 
 export default function AcpTab(): React.JSX.Element {
-  const [agents, setAgents] = useState<ExternalAgentDescriptorDto[]>([]);
-  const [loading, setLoading] = useState(true);
+  const agents = useExternalAgentCatalog((state) => state.agents);
+  const loading = useExternalAgentCatalog((state) => state.loading || (!state.loaded && !state.error));
   const [refreshing, setRefreshing] = useState(false);
   const [busyId, setBusyId] = useState<ExternalAgentId | null>(null);
   const [testingId, setTestingId] = useState<ExternalAgentId | null>(null);
@@ -203,22 +204,13 @@ export default function AcpTab(): React.JSX.Element {
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
 
   const load = useCallback(async (refresh = false): Promise<void> => {
-    const list = window.api?.externalAgent?.listAgents;
-    if (!list) {
-      setAgents([]);
-      setNotice({ text: "外部 Agent API 未就绪，请完整重启应用", error: true });
-      setLoading(false);
-      return;
-    }
     if (refresh) setRefreshing(true);
     try {
-      const items = await list(refresh);
-      setAgents(items ?? []);
+      await loadExternalAgentCatalog(refresh);
       setNotice(null);
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : String(error), error: true });
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   }, []);
@@ -237,7 +229,7 @@ export default function AcpTab(): React.JSX.Element {
     setNotice(null);
     try {
       const items = await setEnabled(agent.id, enabled);
-      setAgents(items ?? []);
+      updateExternalAgentCatalog(items ?? []);
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : String(error), error: true });
     } finally {
@@ -259,7 +251,7 @@ export default function AcpTab(): React.JSX.Element {
     setNotice(null);
     try {
       const items = await setter({ agentId: agent.id, configId, value });
-      setAgents(items ?? []);
+      updateExternalAgentCatalog(items ?? []);
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : String(error), error: true });
     } finally {
@@ -279,7 +271,12 @@ export default function AcpTab(): React.JSX.Element {
       const result = await testFn(agent.id);
       setResults((current) => ({ ...current, [agent.id]: result }));
       if (!result.ok) setNotice({ text: `${agent.name} 测试未通过`, error: true });
-      else if (result.configOptions?.length) void load();
+      else if (result.configOptions?.length) {
+        const current = useExternalAgentCatalog.getState().agents;
+        updateExternalAgentCatalog(current.map((item) => item.id === agent.id
+          ? { ...item, configOptions: result.configOptions }
+          : item));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setResults((current) => ({

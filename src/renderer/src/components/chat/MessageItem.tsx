@@ -417,6 +417,8 @@ function TaskReferenceNotice({
 
 function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false }: Props): React.JSX.Element {
   const showAllArtifacts = useAppStore((s) => s.showAllArtifacts);
+  const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
+  const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const showAllChanges = useAppStore((s) => s.showAllChanges);
   /** 任务级变更数：每条消息继承，不依赖本条 changesCount */
   const taskChangesCount = useAppStore(
@@ -601,14 +603,22 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
               {attachments.map((att) => {
                 const label = attachmentLabel(att);
                 return (
-                  <span
+                  <button
+                    type="button"
                     key={att.path ?? att.name}
-                    className="user-attachment"
+                    className="user-attachment user-attachment-file"
                     title={att.path ?? att.name}
+                    disabled={!att.path?.trim() || btw}
+                    onClick={() => {
+                      const path = att.path?.trim();
+                      if (!path || btw) return;
+                      if (/^(?:[a-zA-Z]:[\\/]|[/\\]|file:)/.test(path)) void openLocalAbsoluteFile(path);
+                      else void openWorkspaceFile(path, label);
+                    }}
                   >
                     <FileBadge name={label} size={16} />
                     <span className="user-attachment-name">{label}</span>
-                  </span>
+                  </button>
                 );
               })}
             </div>

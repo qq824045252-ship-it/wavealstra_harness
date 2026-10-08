@@ -51,7 +51,6 @@ const MANIFESTS: Manifest[] = [
 ];
 
 const DEFAULT_DEVIN_WINDSURF_VERSION = "1.110.1";
-const DESCRIPTOR_CACHE_TTL_MS = 5_000;
 const TEST_TIMEOUT_MS = 60_000;
 
 function isTerminalAuthMethod(method: acp.AuthMethod): boolean {
@@ -279,7 +278,7 @@ function mapToolStatus(status: acp.ToolCallStatus | null | undefined): StoredToo
 export class ExternalAgentRuntime {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly permissions = new Map<string, PendingPermission>();
-  private descriptorsCache: { at: number; value: ExternalAgentDescriptorDto[] } | null = null;
+  private descriptorsCache: ExternalAgentDescriptorDto[] | null = null;
   private send: ((event: ExternalAgentUiEvent) => void) | null = null;
 
   constructor(
@@ -379,14 +378,13 @@ export class ExternalAgentRuntime {
     }
   }
 
-  /** enabled 标记在读取时合并（probe 结果有 5s 缓存），停用开关因此即时生效。 */
+  /** Runtime detection lasts until explicit refresh; settings are merged on every read. */
   listAgents(refresh = false): ExternalAgentDescriptorDto[] {
-    const now = Date.now();
-    if (refresh || !this.descriptorsCache || now - this.descriptorsCache.at >= DESCRIPTOR_CACHE_TTL_MS) {
-      this.descriptorsCache = { at: now, value: this.probeAgents() };
+    if (refresh || !this.descriptorsCache) {
+      this.descriptorsCache = this.probeAgents();
     }
     const disabled = new Set(this.readDisabledAgentIds());
-    return this.descriptorsCache.value.map((descriptor) => {
+    return this.descriptorsCache.map((descriptor) => {
       const configOptions = this.sessionConfig?.readOptions(descriptor.id);
       const configSelections = this.sessionConfig?.readSelections(descriptor.id);
       return {

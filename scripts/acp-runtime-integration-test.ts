@@ -240,7 +240,21 @@ try {
       }),
       /停用/,
     );
+    let probeCount = 0;
+    const originalProbe = (disabledRuntime as any).probeAgents.bind(disabledRuntime);
+    (disabledRuntime as any).probeAgents = () => { probeCount += 1; return originalProbe(); };
     const managed = disabledRuntime.listAgents();
+    const originalNow = Date.now;
+    const detectedAt = Date.now();
+    try {
+      Date.now = () => detectedAt + 60_000;
+      disabledRuntime.listAgents();
+      assert.equal(probeCount, 1, "normal catalog reads must not expire and re-probe CLIs");
+      disabledRuntime.listAgents(true);
+      assert.equal(probeCount, 2, "explicit re-detection must re-probe CLIs");
+    } finally {
+      Date.now = originalNow;
+    }
     assert.equal(managed.find((item) => item.id === "devin")?.enabled, false);
     assert.ok(managed.filter((item) => item.id !== "devin").every((item) => item.enabled === true));
 

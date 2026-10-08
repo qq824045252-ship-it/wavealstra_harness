@@ -497,6 +497,17 @@ function createWindow(initialTheme: AppTheme = "light"): void {
       : {}),
   });
 
+  if (process.platform === "win32") {
+    // Shell taskbar identity can otherwise resolve to a development Electron shortcut.
+    win.setAppDetails({
+      appId: app.isPackaged ? "com.mybuddy.app" : "com.mybuddy.app.dev",
+      appIconPath: app.isPackaged ? process.execPath : appIconPath,
+      appIconIndex: 0,
+      relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
+      relaunchDisplayName: "MyBuddy",
+    });
+  }
+
   runtimeProbeService.attach("app", win.webContents);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -2600,7 +2611,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   if (process.platform === "win32") {
-    app.setAppUserModelId("com.mybuddy.app");
+    app.setAppUserModelId(app.isPackaged ? "com.mybuddy.app" : "com.mybuddy.app.dev");
   }
 
   getMyBuddyDir();
