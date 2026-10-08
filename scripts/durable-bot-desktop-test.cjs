@@ -6,7 +6,7 @@ const { DatabaseSync } = require('node:sqlite');
 const root = path.resolve(__dirname, '..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-durable-desktop-'));
 const home = path.join(temp, 'profile'), agentDir = path.join(home, '.mybuddy'), workspace = path.join(temp, 'workspace');
-const out = path.join(root, 'out/tests/durable-bot-desktop'); fs.mkdirSync(out, {recursive:true});
+const out = process.env.MYBUDDY_DESKTOP_OUT || path.join(root, 'out/tests/durable-bot-desktop'); fs.mkdirSync(out, {recursive:true});
 fs.writeFileSync(path.join(out,'desktop.log'),'');
 for (const dir of [agentDir,workspace,path.join(home,'AppData/Roaming'),path.join(home,'AppData/Local'),path.join(agentDir,'plugins/mcp'),path.join(agentDir,'modes/design')]) fs.mkdirSync(dir,{recursive:true});
 fs.writeFileSync(path.join(workspace,'seed.json'),JSON.stringify({nonce:'durable-fixture',values:[8,13]}));
@@ -48,6 +48,7 @@ const server=http.createServer(async(req,res)=>{
   const modeBound=body.messages.some(message=>message.role==='user'&&/^MODE_BOUND_(?:CONTINUE_|BOT_CONTINUE)/.test((typeof message.content==='string'?message.content:message.content?.filter(part=>part.type==='text').map(part=>part.text).join('\n')??'').trim()));
   if(modeBound)tool=undefined;
   if(body.messages.some(message=>message.role==='user'&&/^BOT_GREETING/.test((typeof message.content==='string'?message.content:message.content?.filter(part=>part.type==='text').map(part=>part.text).join('\n')??'').trim())))tool=undefined;
+  if(JSON.stringify(body.messages[lastUser]).includes('BOT_MOVED_GREETING'))tool=undefined;
   if(extraction)tool=undefined;
   const extracted=JSON.stringify(body.messages).includes('项目介质确定为乙腈')?{candidates:[{kind:'constraint',title:'BOT_EXTRACTED_MEDIUM',content:'项目介质为乙腈',scopeType:'project',confidence:0.99,importance:2,explicit:true,operationHint:'create',userEvidence:'项目介质确定为乙腈'}]}:{candidates:[]};
   const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:tool}]}:{role:'assistant',content:extraction?JSON.stringify(extracted):'DURABLE_DESKTOP_COMPLETE'};
@@ -89,6 +90,39 @@ async function launch(){
 async function close(){if(socket){try{await rpc('Browser.close');}catch{}socket.close();socket=null;}if(proc){await wait(500);if(proc.exitCode===null)cp.execFileSync('C:/Windows/System32/taskkill.exe',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});proc=null;}if(log!==undefined){fs.closeSync(log);log=undefined;}}
 async function click(selector,text){return evaluate(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!e)throw Error('Missing '+${JSON.stringify(text)});e.click();return true})()`);}
 async function send(text){await evaluate(`(()=>{const e=document.querySelector('.chat-input textarea')||document.querySelector('textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);await wait(120);await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});}
+async function selectProse() {
+  // Wait for the timeline collapse animation before computing native mouse coordinates.
+  await wait(350);
+  const rect=await evaluate(`(()=>{const p=[...document.querySelectorAll('.assistant-card p')].find(e=>e.textContent.includes('DURABLE_DESKTOP_COMPLETE'));if(!p)throw Error('Missing assistant prose');p.scrollIntoView({block:'center',behavior:'instant'});window.getSelection().removeAllRanges();const walker=document.createTreeWalker(p,NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode()){if(node.textContent.includes('DURABLE_DESKTOP_COMPLETE'))break;}if(!node)throw Error('Missing text node');const r=document.createRange();r.selectNodeContents(node);return r.getBoundingClientRect().toJSON();})()`);
+  const y=rect.y+rect.height/2;
+  await rpc('Input.dispatchMouseEvent',{type:'mousePressed',x:rect.x+1,y,button:'left',buttons:1,clickCount:1});
+  for(let i=1;i<=5;i++)await rpc('Input.dispatchMouseEvent',{type:'mouseMoved',x:rect.x+rect.width*i/5,y,button:'left',buttons:1});
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',x:rect.x+rect.width,y,button:'left',buttons:0,clickCount:1});
+  return evaluate('window.getSelection().toString()');
+}
+async function key(key,code,virtualKey,modifiers=0) {
+  await rpc('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode:virtualKey,modifiers});
+  await rpc('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:virtualKey,modifiers});
+}
+async function draft(value) {
+  await evaluate(`(()=>{const e=document.querySelector('.input-area textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);await wait(80);
+}
+async function dropText(text,selector='.input-area textarea') {
+  const rect=await evaluate(`document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().toJSON()`);
+  const point={x:rect.x+10,y:rect.y+10},data={items:[{mimeType:'text/plain',data:text}],dragOperationsMask:1};
+  for(const type of ['dragEnter','dragOver','drop'])await rpc('Input.dispatchDragEvent',{type,...point,data});
+  await wait(100);
+  return evaluate('document.querySelector(".input-area textarea").value');
+}
+async function beginPanelResize() {
+  if(!await evaluate('Boolean(document.querySelector(".panel-resize-handle"))'))await evaluate('document.querySelector("button[title=打开概览]").click()');
+  await until(()=>evaluate('Boolean(document.querySelector(".panel-resize-handle"))'),'resize handle');
+  await wait(350);
+  const r=await evaluate('document.querySelector(".panel-resize-handle").getBoundingClientRect().toJSON()');
+  await rpc('Input.dispatchMouseEvent',{type:'mousePressed',x:r.x+r.width/2,y:r.y+100,button:'left',buttons:1,clickCount:1});
+  await rpc('Input.dispatchMouseEvent',{type:'mouseMoved',x:r.x-30,y:r.y+100,button:'left',buttons:1});
+  return {x:r.x-30,y:r.y+100};
+}
 const report={temp,tests:[],status:'running'};
 (async()=>{try{
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
@@ -146,11 +180,90 @@ const report={temp,tests:[],status:'running'};
   await evaluate('document.querySelector("button.timeline-header").click()');
   report.tests.push('native tool loop renders one assistant avatar, one completion header and one final answer with all tools in the timeline');
   const history=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(history.durable.messages.some(m=>m.tools?.some(t=>t.tool==='mcp_call_tool'&&t.status==='success')));assert.equal(blockedMcpRequests,0,'healthy native tool must not wait for another MCP');
+  await rpc('Page.bringToFront');
+  await evaluate(`window.__textEvents=[];for(const type of ['pointerdown','pointerup','mousedown','mouseup','dragstart','dragenter','dragover','drop','lostpointercapture'])document.addEventListener(type,e=>{window.__textEvents.push({type,target:e.target.className,isPrimary:e.isPrimary,pointerId:e.pointerId,button:e.button,buttons:e.buttons,text:window.getSelection().toString(),types:e.dataTransfer?.types,selected:document.body.style.userSelect});},true);true`);
+  const selected=await selectProse();
+  fs.writeFileSync(path.join(out,'prose-selection.png'),Buffer.from((await rpc('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  // Clone available clipboard payloads before native copy; restore text, HTML and images.
+  await evaluate(`(async()=>{window.__savedClipboard=await Promise.all((await navigator.clipboard.read()).map(async item=>new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type=>[type,await item.getType(type)]))))));return true;})()`);
+  let pasted;
+  try {
+    await key('c','KeyC',67,2);
+    await draft('');await key('v','KeyV',86,2);await wait(100);
+    pasted=await evaluate('document.querySelector(".input-area textarea").value');
+  } finally {await evaluate('window.__savedClipboard.length?navigator.clipboard.write(window.__savedClipboard):navigator.clipboard.writeText("")');}
+  await draft('');
+  const dropped=await dropText('正文拖入\n第二行');
+  const resize=await beginPanelResize();
+  const resizing=await evaluate('({userSelect:document.body.style.userSelect,cursor:document.body.style.cursor})');
+  await evaluate('window.dispatchEvent(new Event("blur"));true');
+  const afterBlur=await evaluate('({userSelect:document.body.style.userSelect,cursor:document.body.style.cursor,resizing:document.body.classList.contains("panel-resizing")})');
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...resize,button:'left',buttons:0,clickCount:1});
+  const resizeAgain=await beginPanelResize();
+  await evaluate('document.querySelector(".extension-top-actions button[title=关闭侧栏]").click();true');
+  await until(()=>evaluate('!document.querySelector(".panel-resize-handle")'),'resize handle unmount');
+  const afterUnmount=await evaluate('({userSelect:document.body.style.userSelect,cursor:document.body.style.cursor,resizing:document.body.classList.contains("panel-resizing")})');
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...resizeAgain,button:'left',buttons:0,clickCount:1});
+  report.textInteraction={selected,pasted,dropped,resizing,afterBlur,afterUnmount,events:await evaluate('window.__textEvents')};
+  assert.equal(selected,'DURABLE_DESKTOP_COMPLETE','assistant prose must support actual mouse selection');
+  assert.equal(pasted,selected,'Ctrl+C selection must paste through the actual native clipboard');
+  assert.equal(dropped,'正文拖入\n第二行','a text drop must populate the controlled composer');
+  assert.equal(resizing.userSelect,'none','selection is suppressed only during the resize');
+  assert.deepEqual(afterBlur,{userSelect:'',cursor:'',resizing:false},'blur must release resize ownership');
+  assert.deepEqual(afterUnmount,{userSelect:'',cursor:'',resizing:false},'closing the panel during resize must release ownership');
+  assert.equal(await selectProse(),selected,'prose remains selectable after interrupted resizing');
+  const normalResize=await beginPanelResize();
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...normalResize,button:'left',buttons:0,clickCount:1});
+  assert.equal(await evaluate('document.body.style.userSelect'),'','normal pointerup restores selection');
+  await evaluate('document.body.style.cursor="help";document.body.style.userSelect="text";true');
+  const cancelResize=await beginPanelResize();
+  await evaluate('window.dispatchEvent(new PointerEvent("pointercancel",{pointerId:1}));true');
+  assert.deepEqual(await evaluate('({cursor:document.body.style.cursor,userSelect:document.body.style.userSelect})'),{cursor:'help',userSelect:'text'},'pointer cancellation must restore previous styles');
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...cancelResize,button:'left',buttons:0,clickCount:1});
+  await evaluate('document.body.style.cursor="";document.body.style.userSelect="";document.querySelector(".extension-top-actions button[title=关闭侧栏]").click();true');
+  await draft('前缀替换后缀');
+  await evaluate('document.querySelector(".input-area textarea").setSelectionRange(2,4);true');
+  assert.equal(await dropText('正文\n第二行','.input-area'),'前缀正文\n第二行后缀','dropping on composer padding replaces the selected draft portion without losing the rest');
+  assert.deepEqual(await evaluate('(()=>{const e=document.querySelector(".input-area textarea");return {focused:document.activeElement===e,start:e.selectionStart,end:e.selectionEnd}})()'),{focused:true,start:8,end:8});
+  await draft('保留草稿');
+  const nativeMixed=await dropText('插入文字');
+  assert.equal(nativeMixed.replace('插入文字',''),'保留草稿','native drop preserves existing draft');
+  assert.equal(nativeMixed.split('插入文字').length,2,'native text must be inserted only once');
+  await draft('保留附件草稿');
+  const fileRect=await evaluate('document.querySelector(".input-area textarea").getBoundingClientRect().toJSON()');
+  const fileDrop={x:fileRect.x+10,y:fileRect.y+10,data:{items:[{mimeType:'application/x-mybuddy-workspace-file',data:JSON.stringify({paths:[imageInput]})},{mimeType:'text/plain',data:imageInput}],dragOperationsMask:1}};
+  for(const type of ['dragEnter','dragOver','drop'])await rpc('Input.dispatchDragEvent',{type,...fileDrop});
+  await until(()=>evaluate('Boolean(document.querySelector(".attach-chip.file-chip"))'),'workspace file attachment after text drop');
+  assert.equal(await evaluate('document.querySelector(".input-area textarea").value'),'保留附件草稿','files with text/plain must remain attachments');
+  await evaluate('document.querySelector(".attach-chip.file-chip .attach-chip-x").click();true');
+  fs.writeFileSync(path.join(out,'prose-drop.png'),Buffer.from((await rpc('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  await draft('');
+  report.tests.push('actual mouse selection and native Ctrl+C/Ctrl+V; multiline text drop; resize blur and unmount restore selection');
+  report.tests.push('resize pointerup and pointercancel restore previous styles; native and padding text drops preserve drafts and caret; mixed file/text drops remain attachments');
+  // Move the existing standalone Bot into a populated bound space through its actual IPC.
+  // Old code compares the original runtime baseline against this unrelated target directory.
+  const moveRoot=path.join(temp,'populated-space');fs.mkdirSync(moveRoot);
+  for(const name of ['proof.py','existing.md','old-record.json'])fs.writeFileSync(path.join(moveRoot,name),'EXISTING_SPACE_FILE_SENTINEL');
+  const moveSpace={id:'desktop-bot-move-space',name:'Bot move regression',path:moveRoot};
+  await evaluate(`window.api.db.upsertSpace(${JSON.stringify(moveSpace)})`);
+  const moveResult=await evaluate(`window.api.db.moveTaskInWorkspaceTree({taskId:${JSON.stringify(taskId)},targetSpaceId:${JSON.stringify(moveSpace.id)}})`);
+  assert.equal(moveResult.ok,true);
+  const moveReply=await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(taskId)},text:'BOT_MOVED_GREETING: 你好',userMessageId:'desktop-move-user',assistantMessageId:'desktop-move-assistant'})`);
+  assert(!moveReply.error,JSON.stringify(moveReply));
+  await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`); // Await its artifact projection.
+  const movedArtifacts=await evaluate(`window.api.artifactDomain.list({taskId:${JSON.stringify(taskId)}})`);
+  const movedTask=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===taskId);
+  report.workspaceMove={runtimeCwd:task.cwd,persistedCwd:movedTask.cwd,spaceId:movedTask.spaceId,artifacts:movedArtifacts.artifacts.map(a=>({path:a.source?.entryFile,producer:a.createdByToolCallId})),targetFiles:fs.readdirSync(moveRoot)};
+  assert.equal(movedTask.cwd,task.cwd,'moving an existing Bot must preserve its native execution binding');
+  assert(movedArtifacts.artifacts.some(a=>a.source?.entryFile===path.join(task.cwd,'proof.py')),'the original output must remain');
+  assert(!movedArtifacts.artifacts.some(a=>a.source?.entryFile?.startsWith(moveRoot+path.sep)),'preexisting space files must not be scanned or projected as Bot outputs');
+  const unmove=await evaluate(`window.api.db.moveTaskInWorkspaceTree({taskId:${JSON.stringify(taskId)},targetSpaceId:null})`);assert.equal(unmove.ok,true);
+  report.tests.push('standalone Bot moved to a populated space preserves native cwd and original artifacts; preexisting files and same-name files are not new outputs');
   await click('.workspace-trigger','原生模式');await evaluate(`(()=>{const e=[...document.querySelectorAll('.workspace-popup-item')].find(e=>e.querySelector('.workspace-popup-name')?.textContent==='Code Mode');if(!e)throw Error('Code Mode Tag missing');e.click();return true;})()`);
   await send('BOT_CODEMODE: run deterministic verification');
-  await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return h.durable.toolMode==='codemode'&&!h.durable.busy&&h.messages.filter(m=>m.role==='user').length===2;},'Code Mode result',45000);
+  await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return h.durable.toolMode==='codemode'&&!h.durable.busy&&h.messages.filter(m=>m.role==='user').length===3;},'Code Mode result',45000);
   const second=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(second.messages.some(m=>m.tools?.some(t=>t.tool==='bash'&&t.parentToolCallId&&t.status==='success')),JSON.stringify(second.messages));report.tests.push('same Bot switches Tag to Code Mode; real QuickJS worker, MCP, write and Bash child tasks');
-  await until(()=>evaluate('document.querySelectorAll(".assistant-avatar-row").length===2'),'one displayed assistant per user turn in Code Mode');
+  await until(()=>evaluate('document.querySelectorAll(".assistant-avatar-row").length===3'),'one displayed assistant per user turn in Code Mode');
   const cards=await evaluate(`window.api.artifactDomain.list({taskId:${JSON.stringify(taskId)}})`);
   assert(cards.artifacts.some(a=>a.source?.entryFile===path.join(temp,'outside.py')),'native absolute output must appear as artifact');
   assert(cards.artifacts.some(a=>a.source?.entryFile===path.join(task.cwd,'.scratch/visible.py')),'hidden-directory output must appear as artifact');
@@ -169,6 +282,13 @@ const report={temp,tests:[],status:'running'};
   const imageUserId=imageHistory.messages.findLast(message=>message.role==='user').id;
   const displayedImage=`(()=>{const row=document.getElementById(${JSON.stringify('msg-'+imageUserId)})?.nextElementSibling;const img=row?.querySelector('img.chat-inline-image');img?.scrollIntoView({behavior:'instant',block:'center'});return {exists:Boolean(row?.querySelector('.assistant-avatar-row')&&img),decoded:Boolean(img?.complete&&img.naturalWidth===1),visibility:document.visibilityState,rect:img?.getBoundingClientRect().toJSON()};})()`;
   async function verifyDisplayedImage(label) {
+    await rpc('Page.bringToFront');
+    // Additional regression turns can enable virtualization: scroll the historical turn into DOM.
+    for(let attempt=0;attempt<40&&!(await evaluate(displayedImage))?.exists;attempt++) {
+      const r=await evaluate('document.querySelector(".message-scroll").getBoundingClientRect().toJSON()');
+      await rpc('Input.dispatchMouseEvent',{type:'mouseWheel',x:r.x+r.width/2,y:r.y+r.height/2,deltaX:0,deltaY:-450});
+      await wait(100);
+    }
     await until(async()=>Boolean((await evaluate(displayedImage))?.exists),label+' element');
     const before=await evaluate(displayedImage);
     await rpc('Page.bringToFront');
@@ -248,7 +368,9 @@ const report={temp,tests:[],status:'running'};
   assert.equal(queued.queued,true);
   const pending=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
   assert(pending.durable.pendingInputs.some(input=>input.text==='AFTER_RESTART'));
-  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(taskId)},title:'recovery test',updatedAt:Date.now(),status:'failed'})`);
+  assert.equal((await evaluate(`window.api.db.moveTaskInWorkspaceTree({taskId:${JSON.stringify(taskId)},targetSpaceId:${JSON.stringify(moveSpace.id)}})`)).ok,true);
+  // Reproduce the stale Task.cwd left by older artifact projection without altering native state.
+  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(taskId)},cwd:${JSON.stringify(moveRoot)},title:'recovery test',updatedAt:Date.now(),status:'failed'})`);
   console.log('closing active app');await close();console.log('active app closed; seed legacy');
   const legacyModeCwd=path.join(agentDir,'task-workspaces','mode-bound-legacy');fs.mkdirSync(legacyModeCwd,{recursive:true});
   const legacyModeFile=path.join(temp,'mode-bound-legacy.jsonl'),legacyTimestamp=new Date().toISOString();
@@ -263,6 +385,12 @@ const report={temp,tests:[],status:'running'};
   console.log('restarted; read recovery');
   let restored;
   await until(async()=>{restored=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return !restored.durable.busy&&restored.messages.some(m=>m.role==='user'&&m.text==='AFTER_RESTART')&&restored.messages.at(-1)?.text==='DURABLE_DESKTOP_COMPLETE';},'durable queue resumes after whole app restart',45000);
+  const repairedTask=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===taskId);
+  assert.equal(repairedTask.spaceId,moveSpace.id);assert.equal(repairedTask.cwd,task.cwd,'old stale Task.cwd must repair from the native binding on recovery');
+  const recoveredArtifacts=await evaluate(`window.api.artifactDomain.list({taskId:${JSON.stringify(taskId)}})`);
+  assert(!recoveredArtifacts.artifacts.some(a=>a.source?.entryFile?.startsWith(moveRoot+path.sep)),'recovery must not ingest the new space files');
+  for(const name of ['proof.py','existing.md','old-record.json'])assert.equal(fs.readFileSync(path.join(moveRoot,name),'utf8'),'EXISTING_SPACE_FILE_SENTINEL');
+  report.tests.push('moving an active Bot and recovering old mismatched Task.cwd preserves its queue, native directory and target-space files');
   assert.deepEqual(restored.messages.slice(0,second.messages.length),second.messages);
   assert.equal(restored.messages.find(m=>m.id===completedPresentation.id).durationMs,completedPresentation.durationMs,'completed duration must survive restart');
   assert.deepEqual(restored.messages.find(m=>m.id===displayed.id),displayed,'attachment and display text lost after restart');

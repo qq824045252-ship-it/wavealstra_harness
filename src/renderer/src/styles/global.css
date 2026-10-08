@@ -13713,6 +13713,7 @@ button.font-picker-item {
   width: 3px;
   flex-shrink: 0;
   cursor: col-resize;
+  touch-action: none;
   background: transparent;
   position: relative;
   z-index: 5;

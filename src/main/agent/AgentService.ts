@@ -899,6 +899,12 @@ export class AgentService {
    * 但回合末 snapshot 在共享目录下可能互相看见——这是「能干活」与「强隔离」的权衡，无 Space path 时仍强隔离。
    */
   resolveTaskExecutionWorkspaceCwd(taskId: string): string {
+    // A Bot's native checkpoint owns cwd. Moving its sidebar entry does not migrate execution.
+    const bound = this.durableBots?.cwd(taskId);
+    if (bound) {
+      if (this.db.getTask(taskId)?.cwd !== bound) this.db.bindTaskExecutionWorkspaceCwd(taskId, bound);
+      return bound;
+    }
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
@@ -1224,13 +1230,12 @@ export class AgentService {
         if (request.reasoningPreference && request.reasoningPreferenceModelId === id) return this.nativeReasoningLevel(model, request.reasoningPreference);
         return createAgentSettingsManager(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
       },
-      projectArtifacts: async (taskId, snapshot, before) => {
+      projectArtifacts: async (taskId, snapshot, before, cwd) => {
         const messageId = snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id;
         if (!messageId) return;
-        await this.emitExternalAgentWorkspaceChanges(taskId, messageId, before);
+        await this.emitChangedArtifacts(taskId, messageId, cwd, before);
         // Native tool records also expose outputs outside the workspace or beyond scan limits.
         // Their containing directory is display metadata, never an execution permission grant.
-        const cwd = this.resolveTaskExecutionWorkspaceCwd(taskId);
         for (const message of snapshot.messages) for (const tool of message.tools ?? []) {
           if (tool.status !== "success" || !["write", "edit"].includes(tool.tool)) continue;
           try {

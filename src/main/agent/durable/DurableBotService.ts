@@ -44,7 +44,7 @@ export interface DurableBotServiceOptions {
   toolMode: (task: TaskDto) => BotToolMode;
   defaultModel: () => string | undefined;
   emit: (patch: AgentUiPatch) => void;
-  projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>) => Promise<void>;
+  projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string>;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
@@ -74,6 +74,7 @@ export class DurableBotService {
     return this.options.db.getTask(taskId)?.welcomeMode === "bot" || Boolean(this.binding(taskId));
   }
   busy(taskId: string): boolean { return this.opened.get(taskId)?.runtime.snapshot.busy ?? this.opening.has(taskId); }
+  cwd(taskId: string): string | undefined { return this.binding(taskId)?.cwd; }
   lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id; }
   contextUsage(taskId: string) {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
@@ -116,7 +117,9 @@ export class DurableBotService {
     const prior = this.binding(taskId);
     const cwd = prior?.cwd ?? this.options.resolveCwd(taskId);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
-    if (prior && task.cwd && resolve(task.cwd) !== resolve(cwd)) throw new Error("Bot 工作目录已变化，请恢复原绑定目录");
+    // Sidebar moves change task organization; native checkpoints keep their execution directory.
+    // Repair old projections which incorrectly overwrote Task.cwd with the new space's path.
+    if (task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
     const directory = prior?.directory ?? join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
     db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
     const config = toNativeMcpConfig(emptyMcpFilterResult(this.config.loadRuntimeConfig()), this.config.getAppGlobalConfigPath(), false);
@@ -161,7 +164,7 @@ export class DurableBotService {
           if (!snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
             const projection = (this.projections.get(taskId) ?? Promise.resolve()).then(async () => {
-              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore);
+              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd);
               workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
             }).catch(error => console.warn("[Durable] Artifact projection failed", taskId, error));
             this.projections.set(taskId, projection);

@@ -44,7 +44,7 @@ import PiCodeModeChip from "./PiCodeModeChip";
 import { isManualCompactionRunning } from "@shared/compaction";
 import GenerationSpeed from "./GenerationSpeed";
 import { FileBadge } from "@/components/common/FileBadge";
-import { fileNameFromPath, isFileLikeDrag, pathsFromWorkspaceDrop } from "@/lib/workspaceFileDrag";
+import { fileNameFromPath, isFileLikeDrag, isTaskDrag, pathsFromWorkspaceDrop } from "@/lib/workspaceFileDrag";
 import {
   IconArrowUp,
   IconAt,
@@ -239,6 +239,17 @@ export default function ChatInput({
       : null);
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const droppedTextCaret = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const caret = droppedTextCaret.current;
+    const el = textareaRef.current;
+    if (caret === null || !el) return;
+    droppedTextCaret.current = null;
+    el.focus();
+    el.setSelectionRange(caret, caret);
+    autoResize(el);
+  }, [text, btwText]);
 
   useEffect(() => {
     if (externalDraft == null || externalDraft === "") return;
@@ -1196,17 +1207,24 @@ export default function ChatInput({
     <div
       className={`input-area ${variant === "home" ? "hero-input" : ""} ${dragOver ? "drag-over" : ""}`}
       onDragEnter={(e) => {
-        if (!isFileLikeDrag(e.dataTransfer.types)) return;
+        const fileLike = isFileLikeDrag(e.dataTransfer.types);
+        if (!fileLike
+          && (!e.dataTransfer.types.includes("text/plain") || isTaskDrag(e.dataTransfer.types))) return;
+        setDragOver(true);
+        if (!fileLike && e.target === textareaRef.current) return;
         e.preventDefault();
         e.stopPropagation();
-        setDragOver(true);
       }}
       onDragOver={(e) => {
-        if (!isFileLikeDrag(e.dataTransfer.types)) return;
-        e.preventDefault();
-        e.stopPropagation();
+        const fileLike = isFileLikeDrag(e.dataTransfer.types);
+        if (!fileLike
+          && (!e.dataTransfer.types.includes("text/plain") || isTaskDrag(e.dataTransfer.types))) return;
         e.dataTransfer.dropEffect = "copy";
         setDragOver(true);
+        // Native dragover positions the textarea caret for the subsequent drop.
+        if (!fileLike && e.target === textareaRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
       }}
       onDragLeave={(e) => {
         e.preventDefault();
@@ -1214,9 +1232,29 @@ export default function ChatInput({
         setDragOver(false);
       }}
       onDrop={(e) => {
-        e.preventDefault();
         e.stopPropagation();
         setDragOver(false);
+        if (!isFileLikeDrag(e.dataTransfer.types)
+          && e.dataTransfer.types.includes("text/plain") && !isTaskDrag(e.dataTransfer.types)) {
+          // Textarea native drop inserts at the mouse caret and fires onChange.
+          if (e.target === textareaRef.current) return;
+          e.preventDefault();
+          const dropped = e.dataTransfer.getData("text/plain");
+          const el = textareaRef.current;
+          if (!dropped || !el) return;
+          const { value, selectionStart, selectionEnd } = el;
+          const next = value.slice(0, selectionStart) + dropped + value.slice(selectionEnd);
+          if (next === value) {
+            el.focus();
+            el.setSelectionRange(selectionStart + dropped.length, selectionStart + dropped.length);
+            return;
+          }
+          droppedTextCaret.current = selectionStart + dropped.length;
+          if (btwActive) setBtwText(next);
+          else setText(next);
+          return;
+        }
+        e.preventDefault();
         // BTW 临时对话仅文本：拖入文件不挂载到主 composer（避免静默忽略）
         if (btwActive) return;
         const workspacePaths = pathsFromWorkspaceDrop(e);
