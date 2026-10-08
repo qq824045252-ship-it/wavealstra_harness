@@ -28,6 +28,7 @@ export function botMessagePresentation(messages: readonly ChatMessage[]): ChatMe
     }
     const artifactIds = [...new Set(replies.flatMap(reply => reply.artifactIds ?? []))];
     result.push({ ...last, blocks,
+      sourceMessageIds: [...new Set(replies.flatMap(reply => [reply.id, ...reply.sourceMessageIds ?? []]))],
       presentationKey: `durable-turn-${userId ?? first.presentationKey ?? first.id}`,
       createdAt: first.createdAt,
       modelName: [...replies].reverse().find(reply => reply.modelName)?.modelName,

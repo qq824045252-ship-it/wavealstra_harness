@@ -118,6 +118,6 @@ export function messageImageArtifacts(
     if (d.taskId !== taskId || !isChatVisualArtifact(d)) return false;
     const tool = d.createdByToolCallId ? tools.get(d.createdByToolCallId) : undefined;
     if (tool && INTERNAL_IMAGE_TOOLS.has(tool)) return false;
-    return d.createdByMessageId === message.id || Boolean(tool);
+    return d.createdByMessageId === message.id || Boolean(d.createdByMessageId && message.sourceMessageIds?.includes(d.createdByMessageId)) || Boolean(tool);
   });
 }

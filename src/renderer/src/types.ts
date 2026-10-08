@@ -120,6 +120,8 @@ export interface MessageTerminalContext {
 
 export interface ChatMessage {
   id: string;
+  /** Native message provenance retained by a merged display row; never changes persisted history. */
+  sourceMessageIds?: string[];
   role: "user" | "assistant";
   /** 用户消息附带的文件 */
   attachments?: Attachment[];
