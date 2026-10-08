@@ -192,6 +192,7 @@ export interface FileChange {
 }
 
 export interface Task {
+  expertBinding?: import("../../shared/expert-binding").TaskExpertBindingDto;
   durable?: import("../../shared/durable-bot").DurableBotSnapshot;
   /** Transport/configuration errors before Durable accepts an input, not execution state. */
   botInputError?: string;

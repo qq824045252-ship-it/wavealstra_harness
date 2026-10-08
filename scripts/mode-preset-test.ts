@@ -1436,7 +1436,7 @@ async function main(): Promise<void> {
       homeSpaceId: null,
       spaces: [],
     });
-    useAppStore.getState().sendMessage("帮我写周报", [], undefined);
+    await useAppStore.getState().sendMessage("帮我写周报", [], undefined);
     assert(
       capturedReq?.modePresetId === "weekly-report",
       "sendMessage（working）→ agent.prompt req.modePresetId = weekly-report",
@@ -1457,10 +1457,10 @@ async function main(): Promise<void> {
       homeSpaceId: null,
       spaces: [],
     });
-    useAppStore.getState().sendMessage("帮我设计一张海报", [], undefined);
+    await useAppStore.getState().sendMessage("帮我设计一张海报", [], undefined);
     assert(
       capturedReq?.modePresetId === "native",
-      "sendMessage（design）→ agent.prompt req.modePresetId = general",
+      "sendMessage（bot）→ agent.prompt req.modePresetId = native",
     );
   }
 

@@ -527,6 +527,8 @@ interface AppState {
   refreshSkills: () => Promise<void>;
   refreshModelConfiguration: () => Promise<void>;
   refreshExperts: () => Promise<void>;
+  refreshTaskExpertBinding: (taskId: string) => Promise<import("../../../shared/expert-binding").TaskExpertBindingDto>;
+  saveTaskExpertBinding: (input: import("../../../shared/expert-binding").TaskExpertBindingSaveRequest) => Promise<import("../../../shared/expert-binding").TaskExpertBindingDto>;
   installExpert: (id: string) => Promise<void>;
   installExpertByPath: (path: string) => Promise<Expert | null>;
   importExpertZip: (zipPath: string) => Promise<Expert | null>;
@@ -863,6 +865,7 @@ function hydrateTaskMetadataFromDb(taskId: string): void {
             welcomeMode,
             archived: row.archived,
             expertId: normalizeSingleExpertId(row.expertId),
+            expertBinding: row.expertBinding,
             modePresetId: row.modePresetId,
             startAt: row.startAt ?? undefined,
             dueAt: row.dueAt ?? undefined,
@@ -2147,6 +2150,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             welcomeMode: row.welcomeMode,
             archived: row.archived,
             expertId: normalizeSingleExpertId(row.expertId),
+            expertBinding: row.expertBinding,
             modePresetId: row.modePresetId,
             startAt: row.startAt ?? undefined,
             dueAt: row.dueAt ?? undefined,
@@ -2350,6 +2354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           welcomeMode: row.welcomeMode ?? DEFAULT_WELCOME_MODE,
           archived: row.archived,
           expertId: normalizeSingleExpertId(row.expertId),
+          expertBinding: row.expertBinding,
           modePresetId: row.modePresetId,
           startAt: row.startAt ?? undefined,
           dueAt: row.dueAt ?? undefined,
@@ -2673,6 +2678,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // deleteTask is an explicit lifecycle boundary. Main may still emit queued/terminal events while aborting;
     // those events must never resurrect the removed task in the renderer projection or upsert it back to DB.
     if (deletedTaskRuntimeTombstones.has(patch.taskId)) return;
+
+    if (patch.type === "expert_binding") {
+      set(state => ({ tasks: state.tasks.map(task => task.id === patch.taskId
+        ? { ...task, expertBinding: patch.binding, expertId: patch.binding.desired?.sourceExpertId } : task) }));
+      return;
+    }
 
     if (patch.type === "durable_snapshot") {
       const snapshot = patch.snapshot;
@@ -4147,6 +4158,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  refreshTaskExpertBinding: async (taskId) => {
+    const api = window.api?.agent;
+    if (!api?.getTaskExpertBinding) throw new Error("专家绑定 API 不可用，请重启更新后的应用");
+    const task = get().tasks.find(item => item.id === taskId);
+    const persisted = await window.api?.db?.listTasks?.();
+    if (task && !persisted?.some(item => item.id === taskId)) await window.api?.db?.upsertTask?.({ id: task.id, title: task.title, updatedAt: task.updatedAt,
+      spaceId: task.spaceId, projectId: task.projectId, welcomeMode: task.welcomeMode, cwd: task.cwd, expertId: task.expertId });
+    const binding = await api.getTaskExpertBinding(taskId);
+    set(state => ({ tasks: state.tasks.map(task => task.id === taskId
+      ? { ...task, expertBinding: binding, expertId: binding.desired?.sourceExpertId } : task) }));
+    return binding;
+  },
+
+  saveTaskExpertBinding: async (input) => {
+    const api = window.api?.agent;
+    if (!api?.saveTaskExpertBinding) throw new Error("专家绑定 API 不可用，请重启更新后的应用");
+    const task = get().tasks.find(item => item.id === input.taskId);
+    if (!task) throw new Error("任务不存在");
+    // Some sidebar tasks have not sent their first message yet; materialize before binding.
+    const persisted = await window.api?.db?.listTasks?.();
+    if (!persisted?.some(item => item.id === input.taskId)) await window.api?.db?.upsertTask?.({ id: task.id, title: task.title, updatedAt: task.updatedAt,
+      spaceId: task.spaceId, projectId: task.projectId, welcomeMode: task.welcomeMode,
+      cwd: task.cwd, expertId: task.expertId });
+    const binding = await api.saveTaskExpertBinding(input);
+    set(state => ({ tasks: state.tasks.map(item => item.id === input.taskId
+      ? { ...item, expertBinding: binding, expertId: binding.desired?.sourceExpertId,
+          ...(binding.desired ? {} : { lastAnnouncedExpertId: undefined }) } : item) }));
+    return binding;
+  },
+
   installExpert: async (id) => {
     const agentApi = window.api?.agent;
     const fn = agentApi?.installExpert;
@@ -4246,24 +4287,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
       return;
     }
-    set((s) => ({
-      tasks: s.tasks.map((t) =>
-        t.id === taskId
-          ? {
-              ...t,
-              expertId: next ?? undefined,
-              // 取消专家时清空公告态，再次挂上同一专家时气泡可再贴一次
-              ...(next ? {} : { lastAnnouncedExpertId: undefined }),
-            }
-          : t,
-      ),
-    }));
-    const task = get().tasks.find((t) => t.id === taskId);
-    // 已有会话/消息才需要主进程热替换 + 落库；纯草稿任务等首次发消息时再带上
-    if (task && (task.messages.length > 0 || task.sessionFile)) {
-      void window.api?.agent?.switchExpert?.({ taskId, expertId: next });
-      void window.api?.db?.upsertTask?.({ id: taskId, title: task.title, updatedAt: Date.now(), expertId: next ?? undefined });
-    }
+    void get().saveTaskExpertBinding({ taskId, expertId: next })
+      .catch(error => {
+        console.error("[switchExpert]", error);
+        set(state => ({ tasks: state.tasks.map(task => task.id === taskId
+          ? { ...task, botInputError: error instanceof Error ? error.message : String(error) } : task) }));
+      });
   },
 
   setExternalAgentPin: (pin) => {

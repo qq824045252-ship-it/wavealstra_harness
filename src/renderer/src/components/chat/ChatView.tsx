@@ -527,7 +527,8 @@ export default function ChatView(): React.JSX.Element {
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const taskExpert = task?.expertId ? experts.find((e) => e.id === task.expertId) : undefined;
+  const expertSnapshot = task?.expertBinding?.desired ?? (task?.expertBinding?.pending ? task.expertBinding.active : null);
+  const taskExpert = expertSnapshot ? { name: expertSnapshot.name, emoji: experts.find((e) => e.id === expertSnapshot.sourceExpertId)?.emoji } : task?.expertId ? experts.find((e) => e.id === task.expertId) ?? { name: task.expertId, emoji: undefined } : undefined;
   const capabilityNotices = task?.capabilityNotices ?? [];
   const capabilityName = (kind: "expert" | "connector" | "mcp", id: string): string => {
     if (kind === "mcp") return id;

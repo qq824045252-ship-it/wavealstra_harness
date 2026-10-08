@@ -3,9 +3,16 @@ import { IconCheck, IconCopy } from "./icons";
 
 const MAX_SVG_SOURCE_BYTES = 512 * 1024;
 
-export function isSvgFenceLanguage(language: string | undefined): boolean {
+export function isSvgFenceLanguage(language: string | undefined, code?: string): boolean {
   const lang = (language ?? "").toLowerCase().trim();
-  return lang === "svg" || lang === "image/svg+xml";
+  if (lang === "svg" || lang === "image/svg+xml") return true;
+  // Models often label SVG as XML/HTML or omit the fence language. Only
+  // promote a document whose root is SVG; ordinary markup/code stays source.
+  // Safety and completeness remain the preview component's responsibility.
+  if (!["", "xml", "html"].includes(lang) || code === undefined) return false;
+  const body = code.replace(/^\uFEFF/, "").trimStart()
+    .replace(/^<\?xml\s+[\s\S]*?\?>\s*/i, "");
+  return /^<svg[\s>]/i.test(body);
 }
 
 /**

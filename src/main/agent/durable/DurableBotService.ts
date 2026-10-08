@@ -21,6 +21,7 @@ import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import type { ToolRegistration, EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
+import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 interface OpenBot {
@@ -48,6 +49,7 @@ export interface DurableBotServiceOptions {
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string>;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
+  expertBindings?: TaskExpertBindingService;
 }
 
 /** One process owns each store. SQLite only binds product IDs; all execution state is in Durable. */
@@ -58,6 +60,7 @@ export class DurableBotService {
   private readonly credentials: McpOAuthCredentialStore;
   private closing = false;
   private readonly admissions = new Map<string, Set<Promise<unknown>>>();
+  private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly projections = new Map<string, Promise<void>>();
   constructor(private readonly options: DurableBotServiceOptions) {
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
@@ -73,7 +76,10 @@ export class DurableBotService {
   owns(taskId: string): boolean {
     return this.options.db.getTask(taskId)?.welcomeMode === "bot" || Boolean(this.binding(taskId));
   }
-  busy(taskId: string): boolean { return this.opened.get(taskId)?.runtime.snapshot.busy ?? this.opening.has(taskId); }
+  busy(taskId: string): boolean {
+    const snapshot = this.opened.get(taskId)?.runtime.snapshot;
+    return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
+  }
   cwd(taskId: string): string | undefined { return this.binding(taskId)?.cwd; }
   lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id; }
   contextUsage(taskId: string) {
@@ -111,6 +117,7 @@ export class DurableBotService {
 
   private async openInternal(taskId: string): Promise<OpenBot> {
     const { db, agentDir, models } = this.options;
+    this.options.expertBindings?.ensureLegacy(taskId);
     const task = db.getTask(taskId);
     if (!task || task.welcomeMode !== "bot") throw new Error("任务不是 Bot，不能切换其执行后端");
     if (task.sessionFile) throw new Error("旧 Pi 会话不能作为 Durable 检查点，请创建 Bot 任务");
@@ -122,7 +129,7 @@ export class DurableBotService {
     if (task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
     const directory = prior?.directory ?? join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
     db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
-    const config = toNativeMcpConfig(emptyMcpFilterResult(this.config.loadRuntimeConfig()), this.config.getAppGlobalConfigPath(), false);
+    const config = this.mcpConfiguration(taskId);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
     try {
       // Existing project files are not newly produced artifacts on reconnect. Persisted native
@@ -175,8 +182,18 @@ export class DurableBotService {
     } catch (error) { await mcp.close(); throw error; }
   }
 
-  private async configuredMcp(open: OpenBot, cwd: string): Promise<DurableMcp> {
-    const config = toNativeMcpConfig(emptyMcpFilterResult(this.config.loadRuntimeConfig()), this.config.getAppGlobalConfigPath(), false);
+  private mcpConfiguration(taskId: string) {
+    const config = this.config.loadRuntimeConfig();
+    const selected = this.options.expertBindings?.active(taskId)?.mcpIds;
+    const selectedConfig = selected === undefined ? config : {
+      ...config, mcpServers: Object.fromEntries(Object.entries(config.mcpServers ?? {}).filter(([id]) => selected.includes(id))),
+    };
+    // Project the existing entries unchanged: a selected disabled service stays disabled.
+    return toNativeMcpConfig(emptyMcpFilterResult(selectedConfig), this.config.getAppGlobalConfigPath(), false);
+  }
+
+  private async configuredMcp(open: OpenBot, cwd: string, taskId: string): Promise<DurableMcp> {
+    const config = this.mcpConfiguration(taskId);
     const key = JSON.stringify(config);
     if (key === open.mcpConfigKey) return open.mcp;
     if (open.refreshingMcp?.key === key) return open.refreshingMcp.promise;
@@ -206,14 +223,23 @@ export class DurableBotService {
 
   private async admit(request: AgentPromptRequest) {
     await this.options.models.refresh({ allowNetwork: false });
+    this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("Bot 任务不存在");
     // Product selections are durable task configuration, never global scene state.
-    this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId, expertId: request.expertId ?? task.expertId,
+    this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId,
+      expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
       modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() });
-    const current = this.options.db.getTask(request.taskId)!;
     const open = await this.open(request.taskId);
-    const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd);
+    // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
+    // only a newly admitted input after native idle can adopt a saved desired revision.
+    if (await open.runtime.isIdle()) {
+      const before = this.options.expertBindings?.get(request.taskId);
+      const binding = this.options.expertBindings?.promote(request.taskId);
+      if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
+    }
+    const current = this.options.db.getTask(request.taskId)!;
+    const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
     await open.runtime.configure(await this.model(current.modelId), this.toolMode(current), this.options.thinking?.(current, request),
       [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
     let text = await this.options.prepareInput?.(request) ?? request.text;
@@ -235,10 +261,16 @@ export class DurableBotService {
   }
 
   private async admitTracked(request: AgentPromptRequest) {
-    const pending = this.admit(request);
+    const prior = this.admissionTails.get(request.taskId) ?? Promise.resolve();
+    const pending = prior.catch(() => {}).then(() => this.admit(request));
+    this.admissionTails.set(request.taskId, pending);
     const admissions = this.admissions.get(request.taskId) ?? new Set();
     admissions.add(pending); this.admissions.set(request.taskId, admissions);
-    return pending.finally(() => { admissions.delete(pending); if (!admissions.size) this.admissions.delete(request.taskId); });
+    return pending.finally(() => {
+      admissions.delete(pending);
+      if (!admissions.size) this.admissions.delete(request.taskId);
+      if (this.admissionTails.get(request.taskId) === pending) this.admissionTails.delete(request.taskId);
+    });
   }
 
   async runGatewayTurn(request: AgentPromptRequest): Promise<string> {

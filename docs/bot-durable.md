@@ -20,6 +20,14 @@ Bot uses Pi's native MCP authentication provider with the shared credential stor
 
 Existing memory, project context/plans/events/knowledge, library, resource locator, work graph and gadget operations are registered as Durable tools. Enabled browser/search/media/diagnostic capabilities use the same adapter. The adapter only accepts tool registration and presentation metadata; it cannot register AgentSession execution hooks. Native Bash/Code Mode replace the legacy `execute_code` controller, and computer actions do not enter MyBuddy's approval or recovery coordinator. Changing MCP configuration refreshes it on the next input without closing clients still owned by in-flight native calls.
 
+## Persistent task identity
+
+Experts are reusable templates. Binding one from the chat's plus menu or task context menu saves a task-owned snapshot of its name, instructions, private skills and capability references. The editor separates saving to the current task from editing the shared template. Updating, disabling or uninstalling a template does not silently rewrite an existing task; explicitly synchronizing adopts the new template. Imported replacements are staged before the installed package is exchanged, and template edits reject stale revisions.
+
+SQLite `task_expert_bindings` stores the desired and active revisions. Save changes only the desired revision. A newly admitted input after the runtime is idle promotes it; current tool loops, already queued inputs and restart recovery retain the active revision. Compaction rebuilds the identity section from the active snapshot. Task-owned skill packages live under `.mybuddy/task-expert-bindings/<task-id-hash>/<revision>` and follow permanent task deletion.
+
+Selected MCP servers and connectors remain references to installed configuration and credentials. They cannot enable a globally disabled service. A bound expert narrows MCP selection to its saved list; an unbound task retains normal global MCP selection. Manually attached connectors stay separate and survive unbinding. Office and coding use the same snapshot storage while retaining their existing project and mode policies.
+
 ## Memory and project continuity
 
 Current project instructions, project resources, plans, pinned library items and scoped memory are supplied to the native generation request. Retrieved evidence is request-only: it does not become another persisted user instruction. Global/project/workspace scope rules still identify the data belonging to the conversation; they do not gate Bot execution.
@@ -65,6 +73,7 @@ Old AgentSession message deletion, regeneration, goal and branch controls are no
 ## Verification
 
 - `pnpm -s typecheck`
+- `pnpm -s test:expert`, `test:task-expert-binding`, `test:expert-ui` and `test:expert-binding-desktop`: template replacement, editing and revision conflicts; task-owned skills; idle/queue/restart/compaction identity boundaries; cancellation and UI scope; real Electron IPC, HTTP model and MCP fixtures. The desktop test accepts `MYBUDDY_DESKTOP_EXECUTABLE` for packaged acceptance.
 - `pnpm -s test:gateway-durable`, `test:slack-gateway` and `test:gateway`: isolated five-channel routing, legacy task preservation, native tools despite readonly settings, input-specific replies, deduplication, queued inputs, cancellation, failure, delivery retry, native checkpoint/reopen and Slack journal/outbox recovery. All credentials and message transports are fixtures.
 - `pnpm -s remote:typecheck`
 - `pnpm -s test:mode` and `pnpm -s test:mode-preset`

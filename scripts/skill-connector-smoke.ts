@@ -1,50 +1,74 @@
-/**
- * 本地技能/连接器冒烟：真实安装 mybuddyskills-main 的技能与连接器。
- * 用法：pnpm test:skill-connector
- */
-import { SkillsService } from "../src/main/skills/SkillsService";
-import { ConnectorService } from "../src/main/connectors/ConnectorService";
+/** Skill / connector installation smoke test. All fixtures and writes stay in a temporary profile. */
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-function main(): void {
-  // 1. 技能市场（只读源，按需安装）
+const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-skill-connector-"));
+const originalCwd = process.cwd();
+const previousProfile = process.env.USERPROFILE;
+const previousHome = process.env.HOME;
+process.env.USERPROFILE = sandbox;
+process.env.HOME = sandbox;
+// Services also discover development markets under cwd. Do not read the real repository market.
+process.chdir(sandbox);
+
+function assertInSandbox(path: string): void {
+  const rel = relative(resolve(sandbox), resolve(path));
+  assert.ok(rel && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(rel), `path escaped isolated profile: ${path}`);
+}
+function put(path: string, content: string): void {
+  assertInSandbox(path); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content, "utf8");
+}
+const skillMarkdown = (name: string): string => `---\nname: ${name}\ndescription: Isolated fixture for installation smoke checks.\n---\n\n# ${name}\n\nOnly inspect fixture data.\n`;
+
+async function main(): Promise<void> {
+  assert.equal(resolve(homedir()), resolve(sandbox), "HOME must be isolated before importing services");
+  const plugins = join(sandbox, ".mybuddy", "plugins");
+  const skillSource = join(plugins, "expert-market", "skills", "fixture-market-skill", "SKILL.md");
+  put(skillSource, skillMarkdown("fixture-market-skill"));
+  const connectorSource = join(plugins, "connector-market", "connectors", "fixture-connector");
+  put(join(connectorSource, "connector-meta.json"), JSON.stringify({ name: "Fixture connector", description: "Local isolated connector", type: "cli", version: "1.0.0" }));
+  put(join(connectorSource, "cli.json"), JSON.stringify({ runtime: { type: "node" } }));
+  put(join(connectorSource, "skills", "fixture-connector-skill", "SKILL.md"), skillMarkdown("fixture-connector-skill"));
+
+  // Dynamic imports are intentional: modules must not capture the real profile before isolation.
+  const { SkillsService } = await import("../src/main/skills/SkillsService");
+  const { ConnectorService } = await import("../src/main/connectors/ConnectorService");
+  const { getSkillsDir, getConnectorsDir } = await import("../src/main/paths");
+  assertInSandbox(getSkillsDir()); assertInSandbox(getConnectorsDir());
   const skills = new SkillsService();
-  const market = skills.listMarket();
-  console.log(`[skills] 市场技能总数: ${market.length}`);
-  const localCount = market.filter((s) => s.author === "MyBuddy 官方").length;
-  console.log(`[skills] MyBuddy 官方源: ${localCount}`);
-  const sample = market.find((s) => s.id === "12306") ?? market.find((s) => s.author === "MyBuddy 官方");
-  console.log(`[skills] 示例: ${sample?.id} | ${sample?.name} | ${sample?.description?.slice(0, 40)}`);
-  // 按需安装一个
-  if (sample) {
-    const installed = skills.installFromMarket(sample.id);
-    console.log(`[skills] 安装「${sample.id}」→ ${installed.name} @ ${installed.filePath}`);
-    const again = skills.installFromMarket(sample.id);
-    console.log(`[skills] 重复安装（覆盖）→ ${again.name}`);
-  }
-  console.log(`[skills] 当前已安装总数: ${skills.listInstalled().length}`);
+  assert.equal(skills.listInstalled().length, 0, "fixture must start with an empty installed skill list");
+  const marketSkill = skills.listMarket().find((item) => item.id === "fixture-market-skill");
+  assert.ok(marketSkill, "local fixture must be discoverable in the skill market");
+  const installed = skills.installFromMarket(marketSkill.id);
+  assert.ok(installed.filePath); assertInSandbox(installed.filePath!);
+  assert.equal(readFileSync(installed.filePath!, "utf8"), readFileSync(skillSource, "utf8"));
+  const again = skills.installFromMarket(marketSkill.id);
+  assert.equal(again.filePath, installed.filePath);
+  assert.equal(skills.listInstalled().length, 1, "reinstall must not duplicate skills");
+  console.log("PASS isolated local skill discovery, install and reinstall");
 
-  // 2. 连接器
   const connectors = new ConnectorService();
-  const list = connectors.list();
-  console.log(`\n[connectors] 市场连接器: ${list.length}，已安装: ${list.filter((c) => c.installed).length}`);
-  console.log("[connectors] 前 12 个:");
-  for (const c of list.slice(0, 12)) {
-    console.log(`  ${c.id} | ${c.name} | ${c.type ?? "?"} | 技能=${c.skillCount} | init=${c.initCommand ?? "-"}`);
-  }
-
-  // 安装示例连接器：anydev（1 技能）+ feishu（28 技能）
-  for (const id of ["anydev", "feishu"]) {
-    try {
-      const names = connectors.install(id);
-      console.log(`\n[connectors] 安装 ${id} → 技能 ${names.length} 个: ${names.slice(0, 6).join(", ")}${names.length > 6 ? "…" : ""}`);
-    } catch (err) {
-      console.log(`[connectors] 安装 ${id} 失败: ${err instanceof Error ? err.message : err}`);
-    }
-  }
-  const after = connectors.list();
-  console.log(`\n[connectors] 安装后已装: ${after.filter((c) => c.installed).map((c) => c.id).join(", ")}`);
-  const skills2 = new SkillsService();
-  console.log(`[skills] 安装连接器后技能总数: ${skills2.listInstalled().length}`);
+  const before = connectors.list();
+  assert.deepEqual(before.map((item) => item.id), ["fixture-connector"]);
+  assert.equal(before[0].installed, false);
+  assert.deepEqual(connectors.install("fixture-connector"), ["fixture-connector-skill"]);
+  const after = connectors.list().find((item) => item.id === "fixture-connector")!;
+  assert.equal(after.installed, true); assert.equal(after.enabled, true);
+  const privateSkill = join(getConnectorsDir(), "fixture-connector", "skills", "fixture-connector-skill", "SKILL.md");
+  assertInSandbox(privateSkill);
+  assert.equal(readFileSync(privateSkill, "utf8"), skillMarkdown("fixture-connector-skill"));
+  assert.equal(existsSync(join(getSkillsDir(), "fixture-connector-skill")), false, "connector private skills must not pollute global skills");
+  assert.deepEqual(connectors.install("fixture-connector"), ["fixture-connector-skill"]);
+  assert.equal(skills.listInstalled().length, 1);
+  assert.throws(() => connectors.install("fixture-missing"), /未找到连接器/);
+  console.log("PASS isolated connector install, private skills, reinstall and missing-id error");
+  console.log(`Fixture retained for diagnosis: ${sandbox}`);
 }
 
-main();
+main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {
+  process.chdir(originalCwd);
+  if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+  if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+});

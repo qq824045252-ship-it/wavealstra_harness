@@ -6,17 +6,21 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import JSZip from "jszip";
 import type {
   ExpertDto,
   MarketExpertDto,
   PrivateSkillDto,
 } from "../../shared/agent-ipc";
+import type { ExpertDetailDto, ExpertUpdateRequest } from "../../shared/expert-binding";
 import { getExpertExportsDir, getExpertsDir, getExpertMarketDir, getPluginsDir, getSkillsDir } from "../paths";
 import { assertSingleExpertId } from "../../shared/expert-id";
 import { sanitizePrivateSkillPackage } from "../skills/SkillAuthoringService";
@@ -68,12 +72,96 @@ interface StoredExpert {
   avatarFile?: string;
   /** 专家包自带 Private Skills 目录名（~/.mybuddy/plugins/experts/<id>/skills/，随专家生命周期） */
   skills?: string[];
+  mcpIds?: string[];
+  connectorIds?: string[];
   /** 单专家条目标记。 */
   kind?: "expert";
 }
 
 function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
+}
+
+function capabilityIds(values: unknown): string[] {
+  if (values == null) return [];
+  if (!Array.isArray(values) || values.some(value => typeof value !== "string" || /[\u0000-\u001f]/.test(value))) {
+    throw new Error("专家能力引用必须是 id 列表");
+  }
+  return [...new Set(values.map(value => (value as string).trim()).filter(Boolean))];
+}
+
+/** Stage on the same volume; failed preparation/swap never destroys the accepted package. */
+function stageExpertDirectory(target: string): { stage: string; commit: () => void; discard: () => void } {
+  const root = resolve(getExpertsDir());
+  const dest = resolve(target);
+  if (dirname(dest) !== root) throw new Error("专家目标目录超出安装目录");
+  if (existsSync(dest) && lstatSync(dest).isSymbolicLink()) throw new Error("拒绝覆盖符号链接专家目录");
+  const token = randomUUID();
+  const stage = join(root, `.stage-${basename(dest)}-${token}`);
+  const backup = join(root, `.backup-${basename(dest)}-${token}`);
+  ensureDir(stage);
+  return {
+    stage,
+    discard: () => { if (existsSync(stage)) rmSync(stage, { recursive: true, force: true }); },
+    commit: () => {
+      let backedUp = false;
+      try {
+        if (existsSync(dest)) { renameSync(dest, backup); backedUp = true; }
+        renameSync(stage, dest);
+      } catch (error) {
+        if (backedUp && !existsSync(dest)) renameSync(backup, dest);
+        throw error;
+      }
+      // The accepted package is already committed. A locked backup must not report a false save failure.
+      if (backedUp) {
+        try { rmSync(backup, { recursive: true, force: true }); }
+        catch (error) { console.warn("[ExpertService] Retained previous expert package backup", backup, error); }
+      }
+    },
+  };
+}
+
+function replaceExpertDirectory<T>(target: string, writer: (stage: string) => T): T {
+  const staged = stageExpertDirectory(target);
+  try { const result = writer(staged.stage); staged.commit(); return result; }
+  finally { staged.discard(); }
+}
+
+function packageRevision(dir: string): string {
+  const hash = createHash("sha256");
+  const visit = (path: string, relative: string): void => {
+    const stat = lstatSync(path);
+    hash.update(JSON.stringify(relative));
+    if (stat.isSymbolicLink()) { hash.update("link:").update(readlinkSync(path)); return; }
+    if (stat.isDirectory()) {
+      hash.update("directory:");
+      for (const name of readdirSync(path).sort()) visit(join(path, name), `${relative}/${name}`);
+    } else if (stat.isFile()) hash.update(`file:${stat.size}:`).update(readFileSync(path));
+  };
+  visit(dir, "");
+  return hash.digest("hex");
+}
+
+function privateSkillPath(root: string, id: string): string {
+  if (!id || id === "." || id === ".." || /[<>:"/\\|?*\u0000-\u001f]/.test(id)) throw new Error(`无效的 Private Skill id: ${id}`);
+  const result = resolve(root, id);
+  if (dirname(result) !== resolve(root)) throw new Error(`Private Skill 路径超出专家目录: ${id}`);
+  return result;
+}
+
+function editablePrompt(original: string, stored: StoredExpert, instructions: string): string {
+  const fields: Record<string, string> = { name: stored.id, displayName: stored.name,
+    description: stored.description, version: stored.version ?? "1.0.0" };
+  const header = original.replace(/^\uFEFF/, "").match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  const preserved: string[] = [];
+  let replacing = false;
+  for (const line of header?.[1].split(/\r?\n/) ?? []) {
+    const key = line.match(/^([\w-]+)\s*:/)?.[1];
+    if (key) replacing = Object.prototype.hasOwnProperty.call(fields, key);
+    if (!replacing) preserved.push(line);
+  }
+  const metadata = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+  return `---\n${[...metadata, ...preserved].join("\n")}\n---\n\n${instructions.trim()}\n`;
 }
 
 /** 将目录内容递归写入 zip，保留相对路径；用于导出专家 Private Skills。 */
@@ -322,6 +410,8 @@ function toExpertDto(dir: string, stored: StoredExpert): ExpertDto {
     installedAt: stored.installedAt,
     filePath: join(dir, stored.promptFile ?? "prompt.md"),
     skills: stored.skills,
+    mcpIds: capabilityIds(stored.mcpIds),
+    connectorIds: capabilityIds(stored.connectorIds),
   };
 }
 
@@ -361,7 +451,7 @@ function parseAgentMd(
 /** 解析 .codebuddy-plugin/plugin.json（官方可选元数据，字段缺失时回退 agents/*.md） */
 function parsePluginJson(
   content: string,
-): Partial<Pick<StoredExpert, "id" | "name" | "description" | "author" | "emoji" | "tags" | "category" | "version">> {
+): Partial<Pick<StoredExpert, "id" | "name" | "description" | "author" | "emoji" | "tags" | "category" | "version" | "mcpIds" | "connectorIds">> {
   try {
     const j = JSON.parse(content) as Record<string, unknown>;
     return {
@@ -373,6 +463,8 @@ function parsePluginJson(
       tags: Array.isArray(j.tags) ? j.tags.map(String) : undefined,
       category: j.category ? String(j.category) : undefined,
       version: j.version ? String(j.version) : undefined,
+      mcpIds: capabilityIds(j.mcpIds),
+      connectorIds: capabilityIds(j.connectorIds),
     };
   } catch {
     return {};
@@ -385,6 +477,8 @@ function parsePluginJson(
 
 /** 官方专家包 plugin.json 的完整结构（MyBuddy 专家中心导出格式） */
 interface LocalPluginJson {
+  mcpIds?: string[];
+  connectorIds?: string[];
   name: string;
   version?: string;
   displayName?: { en?: string; zh?: string };
@@ -578,6 +672,8 @@ function packageToMarketExpert(pkg: LocalMarketPackage): MarketExpertDto {
     tags: p.categoryId && CATEGORY_ZH[p.categoryId] ? [CATEGORY_ZH[p.categoryId]] : [],
     category: p.categoryId ? CATEGORY_ZH[p.categoryId] : undefined,
     version: p.version,
+    mcpIds: capabilityIds(p.mcpIds),
+    connectorIds: capabilityIds(p.connectorIds),
     sourcePath: pkg.dir,
   };
 }
@@ -598,8 +694,9 @@ function parsePluginDir(srcDir: string): Omit<StoredExpert, "enabled" | "source"
   const pluginMeta = pluginContent ? parsePluginJson(pluginContent) : {};
 
   const agentsDir = join(srcDir, "agents");
-  let agentMdPath: string | null = null;
-  if (existsSync(agentsDir) && statSync(agentsDir).isDirectory()) {
+  const installedPrompt = join(srcDir, "prompt.md");
+  let agentMdPath: string | null = existsSync(join(srcDir, "expert.json")) && existsSync(installedPrompt) ? installedPrompt : null;
+  if (!agentMdPath && existsSync(agentsDir) && statSync(agentsDir).isDirectory()) {
     agentMdPath =
       readdirSync(agentsDir)
         .filter((f) => f.toLowerCase().endsWith(".md"))
@@ -753,6 +850,8 @@ export class ExpertService {
           category: installed.category,
           version: installed.version,
           examples: installed.examples,
+          mcpIds: installed.mcpIds,
+          connectorIds: installed.connectorIds,
           sourcePath: installed.filePath ? join(installed.filePath, "..") : undefined,
         });
       }
@@ -815,6 +914,7 @@ export class ExpertService {
     const root = getExpertsDir();
     const out: ExpertDto[] = [];
     for (const name of readdirSync(root)) {
+      if (name.startsWith(".")) continue; // Pending swaps and recovery backups are not installed templates.
       const dir = join(root, name);
       try {
         if (!statSync(dir).isDirectory()) continue;
@@ -826,6 +926,78 @@ export class ExpertService {
       out.push(toExpertDto(dir, stored));
     }
     return out.sort((a, b) => (b.installedAt ?? 0) - (a.installedAt ?? 0));
+  }
+
+  getDetail(id: string): ExpertDetailDto {
+    assertSingleExpertId(id);
+    const expert = this.findExpertById(id.trim());
+    if (!expert?.filePath) throw new Error(`未找到已安装专家: ${id}`);
+    const dir = dirname(expert.filePath);
+    const stored = readStored(dir)!;
+    return {
+      ...expert,
+      instructions: readFrontmatter(readFileSync(expert.filePath, "utf-8")).body.trim(),
+      skills: listPackageSkillDirs(join(dir, "skills"), expert.id),
+      revision: packageRevision(dir),
+      mcpIds: capabilityIds(stored.mcpIds),
+      connectorIds: capabilityIds(stored.connectorIds),
+    };
+  }
+
+  /** Edits only this reusable template. Task-owned snapshots are stored independently. */
+  update(input: ExpertUpdateRequest, skillSourceDirs: Record<string, string> = {}): ExpertDetailDto {
+    const detail = this.getDetail(input.id);
+    const name = input.name?.trim();
+    const description = input.description?.trim();
+    const instructions = input.instructions?.trim();
+    if (!name || !description || !instructions) throw new Error("专家名称、描述和角色说明不能为空");
+    if (!input.expectedRevision || input.expectedRevision !== detail.revision) throw new Error("专家已发生变化，请重新加载后再保存");
+    const dir = dirname(detail.filePath!);
+    const stored = readStored(dir)!;
+    const skillIds = input.skillIds === undefined ? undefined : capabilityIds(input.skillIds);
+    const next: StoredExpert = { ...stored, name, description, promptFile: "prompt.md",
+      mcpIds: capabilityIds(input.mcpIds), connectorIds: capabilityIds(input.connectorIds) };
+    replaceExpertDirectory(dir, stage => {
+      cpSync(dir, stage, { recursive: true, filter: path => !lstatSync(path).isSymbolicLink() });
+      if (skillIds !== undefined) {
+        const root = join(stage, "skills");
+        if (existsSync(root)) rmSync(root, { recursive: true, force: true });
+        for (const id of skillIds) {
+          const target = privateSkillPath(root, id);
+          const existingRoot = join(dir, "skills");
+          const existing = privateSkillPath(existingRoot, id);
+          const singleSkill = id === stored.id && (existsSync(join(existingRoot, "SKILL.md")) || existsSync(join(existingRoot, "skill.md")));
+          const source = detail.skills?.includes(id) ? (singleSkill ? existingRoot : existing) : skillSourceDirs[id];
+          if (!source || !existsSync(source) || lstatSync(source).isSymbolicLink() ||
+              !(existsSync(join(source, "SKILL.md")) || existsSync(join(source, "skill.md")))) {
+            throw new Error(`Private Skill 未安装或缺少 SKILL.md: ${id}`);
+          }
+          ensureDir(root);
+          cpSync(source, target, { recursive: true });
+          sanitizePrivateSkillPackage(target);
+        }
+      }
+      next.skills = listPackageSkillDirs(join(stage, "skills"), next.id);
+      writeFileSync(join(stage, "prompt.md"), editablePrompt(readFileSync(detail.filePath!, "utf-8"), next, instructions), "utf-8");
+      writeFileSync(join(stage, "expert.json"), JSON.stringify(next, null, 2), "utf-8");
+      const pluginDir = join(stage, ".codebuddy-plugin");
+      let plugin: Record<string, unknown> = {};
+      try { plugin = JSON.parse(readFileSync(join(pluginDir, "plugin.json"), "utf-8")); } catch { /* optional import metadata */ }
+      ensureDir(pluginDir);
+      writeFileSync(join(pluginDir, "plugin.json"), JSON.stringify({ ...plugin, id: next.id, name: next.id,
+        displayName: { zh: next.name, en: next.name }, description: next.description, version: next.version ?? "1.0.0",
+        mcpIds: next.mcpIds, connectorIds: next.connectorIds }, null, 2), "utf-8");
+      if (packageRevision(dir) !== input.expectedRevision) throw new Error("专家已发生变化，请重新加载后再保存");
+    });
+    return this.getDetail(detail.id);
+  }
+
+  /** Internal task snapshot copy source; enabled state is checked separately when admitting a new binding. */
+  getPrivateSkillsDirectoryForSnapshot(id: string): string | null {
+    const expert = this.getDetail(id);
+    const skills = join(dirname(expert.filePath!), "skills");
+    if (!existsSync(skills) || lstatSync(skills).isSymbolicLink() || !statSync(skills).isDirectory()) return null;
+    return skills;
   }
 
   /* ---------- 安装 / 卸载 / 启停 ---------- */
@@ -849,43 +1021,44 @@ export class ExpertService {
       if (pkg) return this.installLocalAgent(pkg);
     }
 
-    const dest = expertDirOf(def.id);
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    ensureDir(dest);
+    const installedDest = expertDirOf(def.id);
+    return replaceExpertDirectory(installedDest, dest => {
+      let packageSkills: string[] | undefined;
+      if (builtin) {
+        writeFileSync(join(dest, "prompt.md"), builtin.promptMd, "utf-8");
+      } else if (def.sourcePath && existsSync(def.sourcePath)) {
+        cpSync(def.sourcePath, dest, { recursive: true });
+        const privateSkillsRoot = join(dest, "skills");
+        if (existsSync(privateSkillsRoot)) sanitizePrivateSkillPackage(privateSkillsRoot);
+        // 目录里若有原始插件文件（agents/、.codebuddy-plugin/），保留无妨；
+        // 归一化元信息统一写入 expert.json；自带 skills/ 记录为 Private Skills
+        const skills = listPackageSkillDirs(join(dest, "skills"), def.id);
+        packageSkills = skills.length ? skills : undefined;
+      } else {
+        throw new Error(`专家 ${def.id} 缺少可安装内容`);
+      }
 
-    let packageSkills: string[] | undefined;
-    if (builtin) {
-      writeFileSync(join(dest, "prompt.md"), builtin.promptMd, "utf-8");
-    } else if (def.sourcePath && existsSync(def.sourcePath)) {
-      cpSync(def.sourcePath, dest, { recursive: true });
-      const privateSkillsRoot = join(dest, "skills");
-      if (existsSync(privateSkillsRoot)) sanitizePrivateSkillPackage(privateSkillsRoot);
-      // 目录里若有原始插件文件（agents/、.codebuddy-plugin/），保留无妨；
-      // 归一化元信息统一写入 expert.json；自带 skills/ 记录为 Private Skills
-      const skills = listPackageSkillDirs(join(dest, "skills"), def.id);
-      packageSkills = skills.length ? skills : undefined;
-    } else {
-      throw new Error(`专家 ${def.id} 缺少可安装内容`);
-    }
-
-    const stored: StoredExpert = {
-      id: def.id,
-      name: def.name,
-      description: def.description,
-      author: def.author,
-      emoji: def.emoji,
-      tags: def.tags ?? [],
-      category: def.category,
-      version: def.version,
-      examples: def.examples,
-      enabled: true,
-      source: builtin ? "builtin-market" : "local-market",
-      installedAt: Date.now(),
-      promptFile: "prompt.md",
-      skills: packageSkills,
-    };
-    writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-    return toExpertDto(dest, stored);
+      const stored: StoredExpert = {
+        id: def.id,
+        name: def.name,
+        description: def.description,
+        author: def.author,
+        emoji: def.emoji,
+        tags: def.tags ?? [],
+        category: def.category,
+        version: def.version,
+        examples: def.examples,
+        enabled: true,
+        source: builtin ? "builtin-market" : "local-market",
+        installedAt: Date.now(),
+        promptFile: "prompt.md",
+        skills: packageSkills,
+        mcpIds: capabilityIds(def.mcpIds),
+        connectorIds: capabilityIds(def.connectorIds),
+      };
+      writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
+      return toExpertDto(installedDest, stored);
+    });
   }
 
   /** 安装本地市场 agent 型包：主角色 md + 头像，不复制 skills/大文件 */
@@ -895,40 +1068,41 @@ export class ExpertService {
       (p.agentName && pkg.agentMds.get(p.agentName.toLowerCase())) ?? pkg.firstAgentMd;
     if (!targetMd) throw new Error(`专家包 ${pkg.slug} 缺少 agents/*.md`);
 
-    const dest = expertDirOf(pkg.slug);
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    ensureDir(dest);
-
-    const mdContent = readFileSync(targetMd, "utf-8");
-    writeFileSync(join(dest, "prompt.md"), mdContent, "utf-8");
-    let avatarFile: string | undefined;
-    if (pkg.avatarPath) {
-      const ext = (pkg.avatarPath.split(".").pop() ?? "png").toLowerCase();
-      avatarFile = `avatar.${ext}`;
-      copyFileSync(pkg.avatarPath, join(dest, avatarFile));
-    }
-    const category = p.categoryId ? CATEGORY_ZH[p.categoryId] : undefined;
-    // 专家包自带 skills/ → 专家私有目录（不进入全局 Skill Center）
-    const skills = copyPackageSkills(join(pkg.dir, "skills"), dest, pkg.slug);
-    const stored: StoredExpert = {
-      id: pkg.slug,
-      name: pickLocalZh(p.displayName, p.name),
-      description:
-        pickLocalZh(p.displayDescription) || p.description || `来自 MyBuddy 专家市场的「${p.name}」`,
-      author: authorName(p.author),
-      emoji: "🧙",
-      tags: category ? [category] : [],
-      category,
-      version: p.version,
-      enabled: true,
-      source: "local-market",
-      installedAt: Date.now(),
-      promptFile: "prompt.md",
-      avatarFile,
-      skills: skills.length ? skills : undefined,
-    };
-    writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-    return toExpertDto(dest, stored);
+    const installedDest = expertDirOf(pkg.slug);
+    return replaceExpertDirectory(installedDest, dest => {
+      const mdContent = readFileSync(targetMd, "utf-8");
+      writeFileSync(join(dest, "prompt.md"), mdContent, "utf-8");
+      let avatarFile: string | undefined;
+      if (pkg.avatarPath) {
+        const ext = (pkg.avatarPath.split(".").pop() ?? "png").toLowerCase();
+        avatarFile = `avatar.${ext}`;
+        copyFileSync(pkg.avatarPath, join(dest, avatarFile));
+      }
+      const category = p.categoryId ? CATEGORY_ZH[p.categoryId] : undefined;
+      // 专家包自带 skills/ → 专家私有目录（不进入全局 Skill Center）
+      const skills = copyPackageSkills(join(pkg.dir, "skills"), dest, pkg.slug);
+      const stored: StoredExpert = {
+        id: pkg.slug,
+        name: pickLocalZh(p.displayName, p.name),
+        description:
+          pickLocalZh(p.displayDescription) || p.description || `来自 MyBuddy 专家市场的「${p.name}」`,
+        author: authorName(p.author),
+        emoji: "🧙",
+        tags: category ? [category] : [],
+        category,
+        version: p.version,
+        enabled: true,
+        source: "local-market",
+        installedAt: Date.now(),
+        promptFile: "prompt.md",
+        avatarFile,
+        skills: skills.length ? skills : undefined,
+        mcpIds: capabilityIds(p.mcpIds),
+        connectorIds: capabilityIds(p.connectorIds),
+      };
+      writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
+      return toExpertDto(installedDest, stored);
+    });
   }
 
   /** 从目录安装（官方插件结构：.codebuddy-plugin + agents/*.md + avatars/） */
@@ -938,39 +1112,38 @@ export class ExpertService {
     if (!statSync(src).isDirectory()) throw new Error("专家导入需要目录或 zip 包");
 
     const meta = parsePluginDir(src);
-    const dest = expertDirOf(meta.id);
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    ensureDir(dest);
+    const installedDest = expertDirOf(meta.id);
+    return replaceExpertDirectory(installedDest, dest => {
+      // 复制角色提示词与原始结构
+      if (meta.promptFile) {
+        copyFileSync(join(src, "prompt.md"), join(dest, "prompt.md"));
+      } else {
+        const agentsDir = join(src, "agents");
+        cpSync(agentsDir, join(dest, "agents"), { recursive: true });
+        const mdFiles = readdirSync(join(dest, "agents")).filter((f) =>
+          f.toLowerCase().endsWith(".md"),
+        );
+        if (mdFiles.length === 0) throw new Error("专家目录缺少 agents/*.md");
+        // 归一化：以第一个 md 作为 prompt.md 入口
+        copyFileSync(join(dest, "agents", mdFiles[0]), join(dest, "prompt.md"));
+      }
+      const avatarFile = copyAvatar(src, dest);
+      // 目录导入同样保留包内 skills/ 为专家私有技能
+      const skills = copyPackageSkills(join(src, "skills"), dest, meta.id);
 
-    // 复制角色提示词与原始结构
-    if (meta.promptFile) {
-      copyFileSync(join(src, "prompt.md"), join(dest, "prompt.md"));
-    } else {
-      const agentsDir = join(src, "agents");
-      cpSync(agentsDir, join(dest, "agents"), { recursive: true });
-      const mdFiles = readdirSync(join(dest, "agents")).filter((f) =>
-        f.toLowerCase().endsWith(".md"),
-      );
-      if (mdFiles.length === 0) throw new Error("专家目录缺少 agents/*.md");
-      // 归一化：以第一个 md 作为 prompt.md 入口
-      copyFileSync(join(dest, "agents", mdFiles[0]), join(dest, "prompt.md"));
-    }
-    const avatarFile = copyAvatar(src, dest);
-    // 目录导入同样保留包内 skills/ 为专家私有技能
-    const skills = copyPackageSkills(join(src, "skills"), dest, meta.id);
-
-    const stored: StoredExpert = {
-      ...meta,
-      emoji: meta.emoji ?? "🧙",
-      enabled: true,
-      source: "folder",
-      installedAt: Date.now(),
-      promptFile: "prompt.md",
-      avatarFile,
-      skills: skills.length ? skills : undefined,
-    };
-    writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-    return toExpertDto(dest, stored);
+      const stored: StoredExpert = {
+        ...meta,
+        emoji: meta.emoji ?? "🧙",
+        enabled: true,
+        source: "folder",
+        installedAt: Date.now(),
+        promptFile: "prompt.md",
+        avatarFile,
+        skills: skills.length ? skills : undefined,
+      };
+      writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
+      return toExpertDto(installedDest, stored);
+    });
   }
 
   /** 从 zip 导入（官方「导入专家」：解包后按目录安装） */
@@ -990,7 +1163,7 @@ export class ExpertService {
           .sort((a, b) => a.length - b.length)[0];
     const pluginJsonEntry = findEntry(".codebuddy-plugin/plugin.json");
     const avatarEntry = entries.find((k) => k.replace(/\\/g, "/").match(/avatars\/[^/]+\.(png|jpg|jpeg|webp|gif)$/i));
-    const promptMdEntry = findEntry("/prompt.md");
+    const promptMdEntry = entries.find(key => key.replace(/\\/g, "/").toLowerCase() === "prompt.md") ?? findEntry("/prompt.md");
 
     const agentMdPath = agentMdEntry ?? promptMdEntry;
     if (!agentMdPath) throw new Error("zip 中未找到 agents/*.md 或 prompt.md，不是有效的专家包");
@@ -1022,59 +1195,62 @@ export class ExpertService {
       version: pluginMeta.version ?? agent.meta.version,
     };
 
-    const dest = expertDirOf(meta.id);
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    ensureDir(dest);
-    writeFileSync(join(dest, "prompt.md"), agentMdContent, "utf-8");
-    let avatarFile: string | undefined;
-    if (avatarEntry) {
-      const ext = (avatarEntry.split(".").pop() ?? "png").toLowerCase();
-      avatarFile = `avatar.${ext}`;
-      writeFileSync(join(dest, avatarFile), await zip.files[avatarEntry].async("nodebuffer"));
-    }
-
-    // zip 包内 skills/ 目录 → 专家私有技能（路径分段校验防穿越）
-    const installedSkills: string[] = [];
-    let skillsPrefix: string | null = null;
-    const skillRelFiles: Array<{ rel: string; entry: string }> = [];
-    for (const key of entries) {
-      const norm = key.replace(/\\/g, "/");
-      const m = /^(.*\/)?skills\/(.+)$/.exec(norm);
-      if (!m) continue;
-      const prefix = m[1] ?? "";
-      const rel = m[2];
-      // 防穿越：拒绝 .. / 空段 / 绝对路径
-      if (rel.split("/").some((s) => s === ".." || s === "")) continue;
-      if (skillsPrefix === null) skillsPrefix = prefix;
-      if (prefix !== skillsPrefix) continue;
-      skillRelFiles.push({ rel, entry: key });
-    }
-    if (skillRelFiles.length > 0) {
-      const skillsRoot = join(dest, "skills");
-      ensureDir(skillsRoot);
-      for (const { rel, entry } of skillRelFiles) {
-        const target = join(skillsRoot, rel);
-        ensureDir(dirname(target));
-        writeFileSync(target, await zip.files[entry].async("nodebuffer"));
+    const installedDest = expertDirOf(meta.id);
+    const transaction = stageExpertDirectory(installedDest);
+    const dest = transaction.stage;
+    try {
+      writeFileSync(join(dest, "prompt.md"), agentMdContent, "utf-8");
+      let avatarFile: string | undefined;
+      if (avatarEntry) {
+        const ext = (avatarEntry.split(".").pop() ?? "png").toLowerCase();
+        avatarFile = `avatar.${ext}`;
+        writeFileSync(join(dest, avatarFile), await zip.files[avatarEntry].async("nodebuffer"));
       }
-      sanitizePrivateSkillPackage(skillsRoot);
-      const top = skillRelFiles
-        .map((f) => f.rel.split("/")[0])
-        .filter((s, i, a) => a.indexOf(s) === i);
-      installedSkills.push(...top.map((s) => s.toLowerCase()));
-    }
 
-    const stored: StoredExpert = {
-      ...meta,
-      enabled: true,
-      source: "zip",
-      installedAt: Date.now(),
-      promptFile: "prompt.md",
-      avatarFile,
-      skills: installedSkills.length ? installedSkills : undefined,
-    };
-    writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-    return toExpertDto(dest, stored);
+      // zip 包内 skills/ 目录 → 专家私有技能（路径分段校验防穿越）
+      const installedSkills: string[] = [];
+      let skillsPrefix: string | null = null;
+      const skillRelFiles: Array<{ rel: string; entry: string }> = [];
+      for (const key of entries) {
+        const norm = key.replace(/\\/g, "/");
+        const m = /^(.*\/)?skills\/(.+)$/.exec(norm);
+        if (!m) continue;
+        const prefix = m[1] ?? "";
+        const rel = m[2];
+        // 防穿越：拒绝 .. / 空段 / 绝对路径
+        if (rel.split("/").some((s) => s === ".." || s === "")) continue;
+        if (skillsPrefix === null) skillsPrefix = prefix;
+        if (prefix !== skillsPrefix) continue;
+        skillRelFiles.push({ rel, entry: key });
+      }
+      if (skillRelFiles.length > 0) {
+        const skillsRoot = join(dest, "skills");
+        ensureDir(skillsRoot);
+        for (const { rel, entry } of skillRelFiles) {
+          const target = join(skillsRoot, rel);
+          ensureDir(dirname(target));
+          writeFileSync(target, await zip.files[entry].async("nodebuffer"));
+        }
+        sanitizePrivateSkillPackage(skillsRoot);
+        const top = skillRelFiles
+          .map((f) => f.rel.split("/")[0])
+          .filter((s, i, a) => a.indexOf(s) === i);
+        installedSkills.push(...top.map((s) => s.toLowerCase()));
+      }
+
+      const stored: StoredExpert = {
+        ...meta,
+        enabled: true,
+        source: "zip",
+        installedAt: Date.now(),
+        promptFile: "prompt.md",
+        avatarFile,
+        skills: installedSkills.length ? installedSkills : undefined,
+      };
+      writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
+      transaction.commit();
+      return toExpertDto(installedDest, stored);
+    } finally { transaction.discard(); }
   }
 
   /** 导出为官方兼容 zip（metadata + agent prompt + avatar + Private Skills），返回 zip 路径 */
@@ -1099,6 +1275,8 @@ export class ExpertService {
           tags: stored.tags ?? [],
           category: stored.category,
           author: stored.author,
+          mcpIds: capabilityIds(stored.mcpIds),
+          connectorIds: capabilityIds(stored.connectorIds),
         },
         null,
         2,

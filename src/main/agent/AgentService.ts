@@ -165,8 +165,10 @@ import { McpRuntimeService } from "../mcp/McpRuntimeService";
 import { applyMcpLoadoutSelection } from "../mcp/McpModeFilter";
 import { ConnectorService } from "../connectors/ConnectorService";
 import { ExpertService } from "../experts/ExpertService";
+import { TaskExpertBindingService } from "../experts/TaskExpertBindingService";
+import type { ExpertUpdateRequest, TaskExpertBindingDto, TaskExpertBindingSaveRequest, TaskExpertSnapshot } from "../../shared/expert-binding";
 import { SkillsService } from "../skills/SkillsService";
-import { SkillAuthoringPartialStateError, SkillAuthoringService, skillAuthoringIdFromName } from "../skills/SkillAuthoringService";
+import { SkillAuthoringPartialStateError, SkillAuthoringService, skillAuthoringIdFromName, expertAuthoringIdFromName } from "../skills/SkillAuthoringService";
 import {
   EXPERT_AUTHORING_META_PROMPT,
   SKILL_AUTHORING_META_PROMPT,
@@ -518,6 +520,7 @@ export class AgentService {
   private readonly lifecycleTerminalAssistantIds = new Set<string>();
   private readonly skillsService = new SkillsService();
   private readonly expertsService = new ExpertService();
+  private readonly expertBindings: TaskExpertBindingService;
   private readonly skillAuthoringService = new SkillAuthoringService();
   private readonly connectorsService = new ConnectorService();
   private readonly modelsStore = new ModelsConfigStore();
@@ -654,6 +657,13 @@ export class AgentService {
     taskWorkspace?: TaskExecutionWorkspace,
     dependencies: AgentServiceDependencies = {},
   ) {
+    this.expertBindings = new TaskExpertBindingService(db, this.expertsService, {
+      resolveSkillDirectory: (id) => {
+        const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
+        return skill?.filePath ? dirname(skill.filePath) : undefined;
+      },
+      isSkillEnabled: (id) => this.skillsService.listInstalled().some(item => (item.id === id || item.name === id) && item.enabled),
+    });
     this.usageStats = new UsageStatsService(db.connection);
     // P0：任务执行工作区唯一解析器（可注入测试 root；默认 ~/.mybuddy/task-workspaces）
     this.taskWorkspace = taskWorkspace ?? new TaskExecutionWorkspace();
@@ -1111,10 +1121,11 @@ export class AgentService {
   private runtimeCapabilityAvailability(
     expertId?: string | null,
     connectorIds?: string[],
+    taskId?: string | null,
   ): Pick<RuntimeContextPolicyInput, "expertGloballyEnabled" | "connectorGloballyEnabled"> {
     return {
       expertGloballyEnabled: expertId
-        ? this.expertsService.isRuntimeAvailable(expertId)
+        ? Boolean(taskId && this.expertBindings.active(taskId)) || this.expertsService.isRuntimeAvailable(expertId)
         : undefined,
       connectorGloballyEnabled: Object.fromEntries(
         (connectorIds ?? []).map((id) => [id, this.connectorsService.isActive(id)]),
@@ -1143,6 +1154,7 @@ export class AgentService {
     registerMyBuddyProviders(this.durableModels);
     await this.durableModels.refresh({ allowNetwork: false });
     this.durableBots = new DurableBotService({
+      expertBindings: this.expertBindings,
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
@@ -1258,24 +1270,45 @@ export class AgentService {
     await this.durableBots.resumePersisted();
   }
 
+  private boundExpertPrompt(identity: TaskExpertSnapshot): string {
+    return `## 当前任务的专家身份\n名称：${identity.name}\n以下身份与职责持续用于当前任务：\n${identity.instructions}`;
+  }
+
+  private expertConnectorIds(taskId?: string | null, manual?: string[]): string[] {
+    return [...new Set([...(manual ?? (taskId ? this.settingsStore.read().taskConnectorIds?.[taskId] : []) ?? []),
+      ...(taskId ? this.expertBindings.active(taskId)?.connectorIds ?? [] : [])])];
+  }
+
+  private expertSkillPaths(taskId: string | null | undefined, expertId: string | null | undefined, connectorIds: string[], expertAllowed = true): string[] {
+    const binding = taskId ? this.expertBindings.get(taskId) : null;
+    const paths = !expertAllowed ? [] : binding
+      ? this.expertBindings.activeSkillDirectories(taskId!)
+      : collectSessionSkillPaths(expertId, [], { expertSkillDir: id => this.expertsService.getPrivateSkillsDir(id), connectorSkillDirs: () => [] });
+    return [...paths, ...this.connectorsService.getPrivateSkillDirs(connectorIds)];
+  }
+
+  private boundMcpSelection(taskId?: string | null, selected?: string[]): string[] | undefined {
+    const binding = taskId ? this.expertBindings.active(taskId) : null;
+    if (!binding) return selected;
+    return selected ? binding.mcpIds.filter(id => selected.some(item => item.toLowerCase() === id.toLowerCase())) : binding.mcpIds;
+  }
+
   private botInstructions(task: TaskDto): string {
     const profile = this.modeProfiles.getProfile("bot");
     const preset = resolveModePreset(profile.policy, task.modePresetId);
     const project = this.projectContextResolver.resolveTask(task.id);
     const soul = this.db.getSoul();
-    const connectors = this.settingsStore.read().taskConnectorIds?.[task.id] ?? [];
-    const paths = collectSessionSkillPaths(task.expertId, connectors, {
-      expertSkillDir: id => this.expertsService.getPrivateSkillsDir(id),
-      connectorSkillDirs: ids => this.connectorsService.getPrivateSkillDirs(ids),
-    });
+    const identity = this.expertBindings.active(task.id);
+    const connectors = this.expertConnectorIds(task.id);
+    const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
     return [
-      `You are ${soul.name || "MyBuddy"}, operating in Bot mode on Pi Durable. Assist with the user's current task across research, office work, programming and tool use.`, soul.persona,
+      `You are ${identity?.name || soul.name || "MyBuddy"}, operating in Bot mode on Pi Durable. Assist with the user's current task across research, office work, programming and tool use.`, identity ? "" : soul.persona,
       ...profile.blocks.map(block => `## ${block.label}\n${block.content}`),
       preset?.promptAddon,
       project?.instructions ? `## Project instructions\n${project.instructions}` : "",
       project?.sharedContext ? `## Project context\n${JSON.stringify(project.sharedContext)}` : "",
-      task.expertId ? this.expertsService.getRolePrompt(task.expertId).prompt : "",
+      identity ? this.boundExpertPrompt(identity) : "",
       `## Working directory\n${task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id)}`,
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .map(s => `- ${s.name}: ${s.description} (${s.filePath})`).join("\n"),
@@ -1288,7 +1321,10 @@ export class AgentService {
     this.sessionLifecycle.release(taskId);
     await this.releaseDurableTask(taskId);
   }
-  async purgeDurableTask(taskId: string): Promise<void> { await this.durableBots?.purge(taskId); }
+  async purgeDurableTask(taskId: string): Promise<void> {
+    await this.durableBots?.purge(taskId);
+    this.expertBindings.purge(taskId);
+  }
   async closeDurableBots(): Promise<void> { await this.durableBots?.close(); }
 
   async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
@@ -1928,35 +1964,58 @@ export class AgentService {
 
   private static readonly AUTHORING_GENERATE_MAX_CONCURRENT = 1;
   private authoringGenerateInflight = 0;
+  private readonly authoringRequests = new Map<string, (reason: string) => void>();
 
-  private async runAuthoringGenerator(systemPrompt: string, userPrompt: string, modelId?: string): Promise<string> {
+  cancelExpertAuthoring(requestId: string): void {
+    this.authoringRequests.get(requestId)?.("专家草稿生成已取消");
+  }
+
+  private async runAuthoringGenerator(systemPrompt: string, userPrompt: string, modelId?: string, requestId?: string): Promise<string> {
     if (this.authoringGenerateInflight >= AgentService.AUTHORING_GENERATE_MAX_CONCURRENT) {
       throw new Error("Authoring 生成任务正在进行，请稍后再试");
     }
     if (!this.modelRuntime) throw new Error("模型运行时尚未初始化");
     this.authoringGenerateInflight += 1;
+    let session: AgentSession | undefined;
+    let cancelled = false;
+    let stop!: (reason: string) => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      stop = reason => {
+        cancelled = true;
+        void session?.abort().catch(() => {});
+        reject(new Error(reason));
+      };
+    });
+    if (requestId) this.authoringRequests.set(requestId, stop);
+    const timer = setTimeout(() => stop("草稿生成超时，已释放生成任务；可以重试或手动填写"), 120_000);
     try {
-      const session = await this.createAuthoringSession(systemPrompt);
-      try {
-        if (modelId) {
-          const model = await this.resolveEnabledModel(modelId, session.settingsManager);
-          if (!model) throw new Error(`模型 ${modelId} 不在当前 Pi 启用范围内`);
-          await session.setModel(model);
-        }
+      const work = (async () => {
+        session = await this.createAuthoringSession(systemPrompt);
         try {
-          const levels = session.getAvailableThinkingLevels();
-          const preferred = levels.includes("low") ? "low" : levels[0];
-          if (preferred) session.setThinkingLevel(preferred);
-        } catch { /* model default */ }
-        await session.prompt(userPrompt);
-        const raw = (session.getLastAssistantText() ?? "").trim();
-        if (!raw) throw new Error("Meta Skill 未返回草稿");
-        return raw;
-      } finally {
-        try { session.clearQueue(); } catch { /* noop */ }
-        try { void session.dispose(); } catch { /* noop */ }
-      }
+          if (cancelled) throw new Error("草稿生成已取消");
+          if (modelId) {
+            const model = await this.resolveEnabledModel(modelId, session.settingsManager);
+            if (!model) throw new Error(`模型 ${modelId} 不在当前 Pi 启用范围内`);
+            await session.setModel(model);
+          }
+          try {
+            const levels = session.getAvailableThinkingLevels();
+            await session.setThinkingLevel(levels.includes("low") ? "low" : levels[0]);
+          } catch { /* model default */ }
+          if (cancelled) throw new Error("草稿生成已取消");
+          await session.prompt(userPrompt);
+          const raw = (session.getLastAssistantText() ?? "").trim();
+          if (!raw) throw new Error("Meta Skill 未返回草稿");
+          return raw;
+        } finally {
+          try { session.clearQueue(); } catch { /* best effort */ }
+          try { void session.dispose(); } catch { /* best effort */ }
+        }
+      })();
+      return await Promise.race([work, cancellation]);
     } finally {
+      clearTimeout(timer);
+      if (requestId && this.authoringRequests.get(requestId) === stop) this.authoringRequests.delete(requestId);
       this.authoringGenerateInflight -= 1;
     }
   }
@@ -2038,6 +2097,7 @@ export class AgentService {
       EXPERT_AUTHORING_META_PROMPT,
       `## 用户需求\n${intent.slice(0, 8000)}\n\n## 可选的已安装 Skills\n${JSON.stringify(skills, null, 2)}`,
       input.modelId,
+      input.requestId,
     );
     const draft = parseExpertAuthoringDraft(raw, allowed);
     return {
@@ -2228,14 +2288,20 @@ export class AgentService {
   }
 
   installExpert(id: string): ExpertDto {
+    this.preserveExpertBindings(id);
     return this.expertsService.installFromMarket(id);
   }
 
   installExpertByPath(path: string): ExpertDto {
+    for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
     return this.expertsService.installByPath(path);
   }
 
   authorExpert(input: ExpertAuthoringCreateRequest): ExpertAuthoringCreateResult {
+    const expectedId = expertAuthoringIdFromName(input.name);
+    if (this.expertsService.listInstalled().some(expert => expert.id === expectedId || expert.name === input.name.trim())) {
+      throw new Error("同名专家已存在，请使用编辑专家模板");
+    }
     const installedSkills = this.skillsService.listInstalled();
     const requestedIds = [...new Set((input.skillIds ?? []).map((id) => id.trim()).filter(Boolean))];
     const skillSourceDirs = requestedIds.map((id) => {
@@ -2253,6 +2319,7 @@ export class AgentService {
   }
 
   importExpertZip(zipPath: string): Promise<ExpertDto> {
+    for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
     return this.expertsService.importZip(zipPath);
   }
 
@@ -2261,15 +2328,68 @@ export class AgentService {
   }
 
   uninstallExpert(id: string): void {
+    this.preserveExpertBindings(id);
     this.expertsService.uninstall(id);
   }
 
   deleteMarketExpert(id: string): void {
+    this.preserveExpertBindings(id);
     this.expertsService.deleteFromMarket(id);
   }
 
   setExpertEnabled(id: string, enabled: boolean): ExpertDto {
+    if (!enabled) this.preserveExpertBindings(id);
     return this.expertsService.setEnabled(id, enabled);
+  }
+
+  getExpertDetail(id: string) { return this.expertsService.getDetail(id); }
+
+  updateExpert(input: ExpertUpdateRequest) {
+    this.preserveExpertBindings(input.id);
+    const directories: Record<string, string> = {};
+    for (const skill of this.skillsService.listInstalled()) {
+      if (skill.filePath) { directories[skill.id] = dirname(skill.filePath); directories[skill.name] = dirname(skill.filePath); }
+    }
+    return this.expertsService.update(input, directories);
+  }
+
+  private preserveExpertBindings(expertId: string): void {
+    for (const task of this.db.listTasks()) {
+      if (task.expertId === expertId) this.expertBindings.ensureLegacy(task.id);
+    }
+  }
+
+  getTaskExpertBinding(taskId: string): TaskExpertBindingDto {
+    const task = this.db.getTask(taskId);
+    if (!task) throw new Error("任务不存在");
+    const binding = this.expertBindings.ensureLegacy(taskId) ?? { taskId, desired: null, active: null, pending: false };
+    const warnings = [...binding.warnings ?? []];
+    if (binding.desired?.sourceExpertId) {
+      const source = this.expertsService.listInstalled().find(item => item.id === binding.desired!.sourceExpertId);
+      if (!source) warnings.push("来源专家已卸载；当前任务保存的身份与私有技能仍然保留。");
+      else if (!source.enabled) warnings.push("来源专家模板已停用；当前任务的独立身份仍然保留。");
+    }
+    const connectors = this.connectorsService.list();
+    for (const id of binding.desired?.connectorIds ?? []) {
+      if (!connectors.some(item => item.id === id && item.installed && item.enabled !== false)) warnings.push(`连接器不可用：${id}`);
+    }
+    const mode = task.welcomeMode ?? "working";
+    const availableMcp = new Set(this.mcpRuntime.previewMcpFilter(mode, this.modeProfiles.getProfile(mode).policy.mcpPolicy).enabled);
+    for (const id of binding.desired?.mcpIds ?? []) if (!availableMcp.has(id)) warnings.push(`MCP 未安装、已停用或被当前模式限制：${id}`);
+    return { ...binding, warnings };
+  }
+
+  saveTaskExpertBinding(input: TaskExpertBindingSaveRequest): TaskExpertBindingDto {
+    if (!this.db.getTask(input.taskId)) throw new Error("任务不存在");
+    this.expertBindings.ensureLegacy(input.taskId);
+    const binding = this.expertBindings.save(input);
+    this.db.setTaskExpertId(input.taskId, binding.desired?.sourceExpertId ?? null);
+    // Every backend adopts desired only at the next idle input, never in a UI save or recovery.
+    // Pi can still report idle while an admitted request prepares attachments. Do not dispose
+    // that session here; the next safe promotion changes its assembly fingerprint and rebuilds it.
+    const result = this.getTaskExpertBinding(input.taskId);
+    this.emitPatch({ type: "expert_binding", taskId: input.taskId, binding: result });
+    return result;
   }
 
   /* ---------- 连接器（ConnectorService 委托） ---------- */
@@ -2361,6 +2481,8 @@ export class AgentService {
 
   /** 装配预览（不创建 session、不调模型）；与 createSession 同一技能/MCP/权限解析路径 */
   assembleModePreview(req: AssembleModePreviewRequest, loadoutSelection?: AgentLoadoutEffectiveSelectionDto): AssemblyTraceDto {
+    const identity = req.taskId ? this.expertBindings.active(req.taskId) : null;
+    req = { ...req, connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds) };
     const welcomeMode = resolveWelcomeMode(req.welcomeMode);
     const profile = this.modeProfiles.getProfile(welcomeMode);
     // 预览同样走 preset 合成，保证与 createSession 一致
@@ -2375,7 +2497,7 @@ export class AgentService {
       preset,
       expertId: req.expertId?.trim(),
       connectorIds: req.connectorIds,
-      ...this.runtimeCapabilityAvailability(req.expertId?.trim(), req.connectorIds),
+      ...this.runtimeCapabilityAvailability(req.expertId?.trim(), req.connectorIds, req.taskId),
     });
     const effProfile = resolvedContext.effectiveProfile;
     const settings = this.settingsStore.read();
@@ -2408,19 +2530,16 @@ export class AgentService {
         : item,
     );
     const effectiveExpertId = expertDecision?.enabled ? req.expertId?.trim() : undefined;
-    if (effectiveExpertId) {
+    if ((identity && expertDecision?.enabled !== false) || effectiveExpertId) {
       try {
-        expertPrompt = this.expertsService.getRolePrompt(effectiveExpertId).prompt;
+        expertPrompt = identity ? this.boundExpertPrompt(identity) : this.expertsService.getRolePrompt(effectiveExpertId!).prompt;
       } catch {
         expertPrompt = null;
       }
     }
     // 与 createSession 同一规则：Global + 当前 Expert + Active Connector（不扫描其它）
     const effectiveConnectorIds = effectiveConnectorDecisions.filter((item) => item.enabled).map((item) => item.id);
-    const sessionSkillPaths = collectSessionSkillPaths(effectiveExpertId, effectiveConnectorIds, {
-      expertSkillDir: (id) => this.expertsService.getPrivateSkillsDir(id),
-      connectorSkillDirs: (ids) => this.connectorsService.getPrivateSkillDirs(ids),
-    });
+    const sessionSkillPaths = this.expertSkillPaths(req.taskId, effectiveExpertId, effectiveConnectorIds, expertDecision?.enabled !== false);
     const runtimeSkills = this.resolveSkillsForContext(
       req.cwd, sessionSkillPaths, { projectId: req.projectId, workspaceId: req.spaceId },
     );
@@ -2442,7 +2561,7 @@ export class AgentService {
       effProfile.policy.mcpPolicy,
       resolvedContext.mcpPolicySources,
     );
-    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, loadoutSelection?.mcpIds);
+    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, this.boundMcpSelection(req.taskId, loadoutSelection?.mcpIds));
     const capabilityTrace: ResolvedCapabilityDto[] = [
       ...(expertDecision ? [expertDecision] : []),
       ...effectiveConnectorDecisions,
@@ -2639,11 +2758,7 @@ export class AgentService {
    */
   async switchExpert(req: AgentSwitchExpertRequest): Promise<void> {
     const expertId = assertSingleExpertId(req.expertId) ?? null;
-    this.db.setTaskExpertId(req.taskId, expertId);
-    const entry = this.registry.get(req.taskId);
-    if (!entry) return;
-    entry.expertId = expertId ?? undefined;
-    this.sessionLifecycle.releaseIfIdle(req.taskId);
+    this.saveTaskExpertBinding({ taskId: req.taskId, expertId });
   }
 
   getModelsConfig(): ModelsFileConfigDto {
@@ -3629,7 +3744,17 @@ export class AgentService {
     await this.refreshExternalModelConfig();
     // P0 §7.1：先建立并绑定 canonical cwd。之后只使用该局部变量；req.cwd 被忽略（Renderer 无目录决定权）。
     const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, req.taskId, req.assistantMessageId);
+    this.expertBindings.ensureLegacy(req.taskId);
+    const priorSession = this.registry.get(req.taskId);
+    if (!priorSession || (!priorSession.session.isStreaming && priorSession.session.isIdle !== false && priorSession.pendingAssistantTurns.length === 0)) {
+      const binding = this.expertBindings.promote(req.taskId);
+      if (binding) this.emitPatch({ type: "expert_binding", taskId: req.taskId, binding });
+    }
     const taskConfig = this.db.getTask(req.taskId);
+    const taskBinding = this.expertBindings.get(req.taskId);
+    const activeIdentity = taskBinding?.active;
+    req = { ...req, expertId: taskBinding ? activeIdentity?.sourceExpertId : req.expertId,
+      connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds) };
     const welcomeMode = resolveWelcomeMode(req.welcomeMode, taskConfig?.welcomeMode);
     const projectContext = this.projectContextResolver.resolveTask(req.taskId);
     const gatingProfile = this.modeProfiles.getProfile(welcomeMode);
@@ -3645,11 +3770,11 @@ export class AgentService {
       preset: gatingPreset,
       expertId: requestedExpertId,
       connectorIds: req.connectorIds,
-      ...this.runtimeCapabilityAvailability(requestedExpertId, req.connectorIds),
+      ...this.runtimeCapabilityAvailability(requestedExpertId, req.connectorIds, req.taskId),
     });
     const { expertDecision, connectorDecisions } = gatingContext;
     const effectiveExpertId = expertDecision?.enabled === false ? null : requestedExpertId;
-    const requiredMcpIds = new Set(gatingPreset?.providerMcpIds ?? []);
+    const requiredMcpIds = new Set([...(gatingPreset?.providerMcpIds ?? []), ...(activeIdentity?.mcpIds ?? [])]);
     const requiredMcpDecisions = requiredMcpIds.size
       ? this.mcpRuntime
           .previewMcpFilter(
@@ -3707,6 +3832,7 @@ export class AgentService {
     const explicitSkillName = req.text.trim().match(/^\/skill:([^\s]+)(?:\s|$)/i)?.[1];
     // Baseline = full capability set that already passed Runtime Policy and explicit user scope.
     const baselineAssembly = this.assembleModePreview({
+      taskId: req.taskId,
       welcomeMode,
       projectId: taskConfig?.projectId,
       modePresetId: req.modePresetId ?? taskConfig?.modePresetId,
@@ -3724,6 +3850,7 @@ export class AgentService {
       requestedExpertId,
     );
     const effectiveLoadout = resolveEffectiveLoadoutSelection(loadoutRecommendation, {
+      enableNarrowing: activeIdentity ? false : undefined,
       explicitSkillId: explicitSkillName,
       requiredMcpIds: [...requiredMcpIds],
     });
@@ -3737,6 +3864,7 @@ export class AgentService {
     );
     const currentAssembly = entry
       ? this.assembleModePreview({
+          taskId: req.taskId,
           welcomeMode,
           projectId: taskConfig?.projectId,
           modePresetId: req.modePresetId ?? taskConfig?.modePresetId,
@@ -5081,6 +5209,8 @@ export class AgentService {
   }) {
     // P0 §7.2 修订：cwd 必须与权威 root 一致（隔离 task-workspaces 或 Space.path）
     this.assertSessionCwd(opts.taskId, opts.cwd);
+    const identity = this.expertBindings.active(opts.taskId);
+    opts = { ...opts, connectorIds: this.expertConnectorIds(opts.taskId, opts.connectorIds) };
     const agentDir = getMyBuddyDir();
     const settingsManager = createAgentSettingsManager(opts.cwd, agentDir);
     const soul = this.db.getSoul();
@@ -5101,7 +5231,7 @@ export class AgentService {
       preset,
       expertId: opts.expertId,
       connectorIds: opts.connectorIds,
-      ...this.runtimeCapabilityAvailability(opts.expertId, opts.connectorIds),
+      ...this.runtimeCapabilityAvailability(opts.expertId, opts.connectorIds, opts.taskId),
     });
     const effProfile = resolvedContext.effectiveProfile;
     const { expertDecision, connectorDecisions } = resolvedContext;
@@ -5120,7 +5250,7 @@ export class AgentService {
       effProfile.policy.mcpPolicy,
       resolvedContext.mcpPolicySources,
     );
-    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, opts.loadoutSelection?.mcpIds);
+    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, this.boundMcpSelection(opts.taskId, opts.loadoutSelection?.mcpIds));
     // 权限解析：显式 > Tag/Preset 建议 > Mode/base 建议 > 系统默认。
     // 建议值只作兜底，绝不覆盖调用方显式传入的权限。
     const settingsSnapshot = this.settingsStore.read();
@@ -5168,19 +5298,16 @@ export class AgentService {
       mcpPreview.enabled,
     );
     let expertPrompt: string | null = null;
-    if (effectiveExpertId) {
+    if ((identity && expertDecision?.enabled !== false) || effectiveExpertId) {
       try {
-        expertPrompt = this.expertsService.getRolePrompt(effectiveExpertId).prompt;
+        expertPrompt = identity ? this.boundExpertPrompt(identity) : this.expertsService.getRolePrompt(effectiveExpertId!).prompt;
       } catch (error) {
         console.warn("[AgentService] expert role injection failed", error);
       }
     }
     // 候选技能 = 全局 + 当前专家 Private Skills + 激活连接器 Private Skills（统一经 skillPolicy 过滤）。
     // 只读取当前选中专家 / 当前激活连接器的私有技能，不扫描其它已安装专家的。
-    const sessionSkillPaths = collectSessionSkillPaths(effectiveExpertId, effectiveConnectorIds, {
-      expertSkillDir: (id) => this.expertsService.getPrivateSkillsDir(id),
-      connectorSkillDirs: (ids) => this.connectorsService.getPrivateSkillDirs(ids),
-    });
+    const sessionSkillPaths = this.expertSkillPaths(opts.taskId, effectiveExpertId, effectiveConnectorIds, expertDecision?.enabled !== false);
     const taskScope = this.db.getTask(opts.taskId);
     const runtimeSkills = this.resolveSkillsForContext(
       opts.cwd,

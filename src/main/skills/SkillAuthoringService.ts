@@ -41,6 +41,10 @@ export function skillAuthoringIdFromName(value: string): string {
   return slugify(value, "skill");
 }
 
+export function expertAuthoringIdFromName(value: string): string {
+  return slugify(value, "expert");
+}
+
 export type SkillAuthoringPartialStage = "validation" | "install";
 export class SkillAuthoringPartialStateError extends Error {
   constructor(
@@ -465,10 +469,14 @@ export class SkillAuthoringService {
     if (!name) throw new Error("专家名称不能为空");
     if (!description) throw new Error("专家描述不能为空");
     if (!instructions) throw new Error("专家角色说明不能为空");
-    const id = slugify(name, "expert");
+    const id = expertAuthoringIdFromName(name);
     const target = join(authoringRoot("experts"), id);
     replaceDirectory(target, (stage) => {
       writeFileSync(join(stage, "prompt.md"), `---\nname: ${id}\ndescription: ${yamlString(description)}\ndisplayName: ${yamlString(name)}\nversion: 1.0.0\n---\n\n# ${name}\n\n${instructions}\n\n## Operating principles\n\n- Use bundled private skills when they match the task.\n- Do not invent facts, files, tool results, or measurements.\n- State uncertainty explicitly and separate judgement from tool execution.\n`, "utf-8");
+      const pluginDir = join(stage, ".codebuddy-plugin");
+      ensureDir(pluginDir);
+      writeFileSync(join(pluginDir, "plugin.json"), JSON.stringify({ id, name: id, displayName: { zh: name, en: name },
+        description, version: "1.0.0", mcpIds: [...new Set(input.mcpIds ?? [])], connectorIds: [...new Set(input.connectorIds ?? [])] }, null, 2), "utf-8");
       const skillsRoot = join(stage, "skills");
       ensureDir(skillsRoot);
       for (const sourceDirRaw of skillSourceDirs) {

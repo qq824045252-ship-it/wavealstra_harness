@@ -165,6 +165,12 @@ export class DurableBotRuntime {
   }
   get snapshot(): DurableBotSnapshot { return this.latest; }
 
+  /** Query native state before changing a task identity; UI idle alone is not a boundary. */
+  async isIdle(): Promise<boolean> {
+    const snapshot = await this.refresh();
+    return !snapshot.busy && snapshot.queued === 0;
+  }
+
   private async recordResponse(taskId: number, message: AssistantMessage): Promise<void> {
     const completedAt = Date.now();
     await this.conversation.commit(async tx => {

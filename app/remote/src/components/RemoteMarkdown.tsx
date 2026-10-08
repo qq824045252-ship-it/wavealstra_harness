@@ -26,7 +26,7 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
   if (!isValidElement<{ className?: string; children?: ReactNode }>(child)) return <pre>{children}</pre>
   const language = /language-([^\s]+)/.exec(child.props.className ?? '')?.[1] ?? ''
   const code = String(child.props.children ?? '').replace(/\n$/, '')
-  if (isSvgFenceLanguage(language)) return <SvgFencePreview code={code} />
+  if (isSvgFenceLanguage(language, code)) return <SvgFencePreview code={code} />
   return <CodeFence language={language} code={code} />
 }
 

@@ -31,6 +31,7 @@ import { resolveStreamingSendPlan } from "@/utils/streamingSend";
 import { heroPlaceholder } from "./heroCopy";
 import { isHeroSuggestion } from "./heroSuggest";
 import InputAddMenu, { type RefFileItem, type RefTaskItem } from "./InputAddMenu";
+import { ExpertBindingModal } from "@/components/hub/ExpertBindingModal";
 import BtwPanel from "./BtwPanel";
 import { btwComposerSendInput, useBtwStore } from "@/store/btwStore";
 import WorkspacePicker from "./WorkspacePicker";
@@ -510,25 +511,37 @@ export default function ChatInput({
   const [pendingExpertId, setPendingExpertId] = useState<string | null>(
     () => activeTask?.expertId ?? draft?.expertId ?? null,
   );
+  const [expertManagerTaskId, setExpertManagerTaskId] = useState<string | null>(null);
+  const [expertError, setExpertError] = useState("");
 
   useEffect(() => {
     setPendingExpertId(activeTask?.expertId ?? draft?.expertId ?? null);
   }, [activeTask?.id, activeTask?.expertId, draft?.expertId]);
 
-  const selectedExpert =
-    (pendingExpertId && experts.find((e) => e.id === pendingExpertId)) || null;
+  const taskExpertSnapshot = activeTask?.expertBinding?.desired ?? (activeTask?.expertBinding?.pending ? activeTask.expertBinding.active : null);
+  const selectedExpert = taskExpertSnapshot
+    ? { name: taskExpertSnapshot.name, emoji: experts.find((e) => e.id === taskExpertSnapshot.sourceExpertId)?.emoji }
+    : (pendingExpertId && experts.find((e) => e.id === pendingExpertId)) || (pendingExpertId ? { name: pendingExpertId, emoji: undefined } : null);
 
   const attachExpert = (expertId: string): void => {
-    setPendingExpertId(expertId);
-    // 有任务写 task.expertId；无任务写 draft.expertId（发送 materialize 时带上）
-    switchExpert(expertId);
+    setExpertError("");
+    if (activeTask) {
+      void useAppStore.getState().saveTaskExpertBinding({ taskId: activeTask.id, expertId, ...(activeTask.expertBinding ? { expectedRevision: activeTask.expertBinding.desired?.revision ?? null } : {}) }).catch((err) => setExpertError(String(err)));
+    } else {
+      setPendingExpertId(expertId);
+      switchExpert(expertId);
+    }
     textareaRef.current?.focus();
   };
 
   const clearExpert = (): void => {
-    setPendingExpertId(null);
-    // 已有任务写入任务；首页/草稿态清 draft.expertId
-    switchExpert(null);
+    setExpertError("");
+    if (activeTask) {
+      void useAppStore.getState().saveTaskExpertBinding({ taskId: activeTask.id, expertId: null, ...(activeTask.expertBinding ? { expectedRevision: activeTask.expertBinding.desired?.revision ?? null } : {}) }).catch((err) => setExpertError(String(err)));
+    } else {
+      setPendingExpertId(null);
+      switchExpert(null);
+    }
     textareaRef.current?.focus();
   };
 
@@ -1742,6 +1755,7 @@ export default function ChatInput({
                 rootRef={addMenuRootRef}
                 onClose={() => setAddOpen(false)}
                 selectedExpertId={pendingExpertId}
+                onManageExpert={activeTask ? () => setExpertManagerTaskId(activeTask.id) : undefined}
                 onAttachFile={() => {
                   setAddOpen(false);
                   void pickAttachment();
@@ -1830,12 +1844,15 @@ export default function ChatInput({
           {selectedExpert && (
             <span
               className="input-expert-chip"
-              title={`专家：${selectedExpert.name}（点击 × 取消）`}
+              title={`专家：${selectedExpert.name}${activeTask ? "（点击名称管理）" : ""}（点击 × 取消）`}
             >
+              <button type="button" className="expert-editor-chip-button" disabled={!activeTask} onClick={() => activeTask && setExpertManagerTaskId(activeTask.id)}>
               <span className="input-expert-chip-emoji" aria-hidden>
                 {selectedExpert.emoji || "🧙"}
               </span>
               <span className="input-expert-chip-name">{selectedExpert.name}</span>
+              {activeTask?.expertBinding?.pending && <span className="expert-editor-notice">待生效</span>}
+              </button>
               <button
                 type="button"
                 className="attach-chip-x"
@@ -2286,6 +2303,8 @@ export default function ChatInput({
           setExecPermDismissed(true);
         }}
       />
+      {expertError && <div className="mcp-auth-error" role="alert">{expertError}</div>}
+      {expertManagerTaskId && <ExpertBindingModal taskId={expertManagerTaskId} onClose={() => setExpertManagerTaskId(null)} />}
     </div>
   );
 }

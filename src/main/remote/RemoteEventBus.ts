@@ -12,6 +12,8 @@ const MAX_AGE_MS = 5 * 60_000;
 
 export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, unknown> {
   switch (patch.type) {
+    case "expert_binding":
+      return { ...patch };
     case "durable_snapshot":
       return { ...patch, snapshot: { ...patch.snapshot, messages: patch.snapshot.messages.map(mapRemoteHistoryMessage) } };
     case "user_message":

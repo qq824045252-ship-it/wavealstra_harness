@@ -457,6 +457,16 @@ const api = {
       ipcRenderer.invoke(AgentIpc.installExpertByPath, path),
     authorExpert: (input: ExpertAuthoringCreateRequest): Promise<ExpertAuthoringCreateResult> =>
       ipcRenderer.invoke(AgentIpc.authorExpert, input),
+    getExpertDetail: (id: string): Promise<import("../shared/expert-binding").ExpertDetailDto> =>
+      ipcRenderer.invoke(AgentIpc.getExpertDetail, id),
+    updateExpert: (input: import("../shared/expert-binding").ExpertUpdateRequest): Promise<import("../shared/expert-binding").ExpertDetailDto> =>
+      ipcRenderer.invoke(AgentIpc.updateExpert, input),
+    getTaskExpertBinding: (taskId: string): Promise<import("../shared/expert-binding").TaskExpertBindingDto> =>
+      ipcRenderer.invoke(AgentIpc.getTaskExpertBinding, taskId),
+    saveTaskExpertBinding: (input: import("../shared/expert-binding").SaveTaskExpertBindingRequest): Promise<import("../shared/expert-binding").TaskExpertBindingDto> =>
+      ipcRenderer.invoke(AgentIpc.saveTaskExpertBinding, input),
+    cancelExpertAuthoring: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke(AgentIpc.cancelExpertAuthoring, requestId),
     importExpertZip: (zipPath: string): Promise<ExpertDto> =>
       ipcRenderer.invoke(AgentIpc.importExpertZip, zipPath),
     exportExpert: (id: string): Promise<string> =>

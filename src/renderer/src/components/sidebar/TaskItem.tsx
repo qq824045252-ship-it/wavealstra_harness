@@ -19,6 +19,7 @@ import {
   IconSparkles,
 } from "@/components/common/icons";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
+import { ExpertBindingModal } from "@/components/hub/ExpertBindingModal";
 import { layoutRect, layoutViewportSize, placeFixedMenu } from "@/lib/placeFixedMenu";
 import {
   fileNameFromPath,
@@ -71,6 +72,7 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
     "";
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [expertManagerOpen, setExpertManagerOpen] = useState(false);
   const [subMenu, setSubMenu] = useState<SubMenu>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
@@ -106,7 +108,8 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
   const awaitingInput = hasPendingConversationInteraction(task);
   // Phase 2：pin 以 DB isFavorited 为真相（pinnedTaskIds 仅过渡兼容）
   const pinned = Boolean(task.isFavorited) || pinnedTaskIds.includes(task.id);
-  const taskExpert = task.expertId ? experts.find((e) => e.id === task.expertId) : undefined;
+  const expertSnapshot = task.expertBinding?.desired ?? (task.expertBinding?.pending ? task.expertBinding.active : null);
+  const taskExpert = expertSnapshot ? { name: expertSnapshot.name, emoji: experts.find((e) => e.id === expertSnapshot.sourceExpertId)?.emoji } : task.expertId ? experts.find((e) => e.id === task.expertId) ?? { name: task.expertId, emoji: undefined } : undefined;
 
   const visibleSpaces = useMemo(
     () => spaces.filter((s) => !(s.effectiveArchived ?? s.archived)).sort((a, b) => a.name.localeCompare(b.name, "zh-CN")),
@@ -489,6 +492,7 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
         )}
       </div>
       {relatedNotice && <div className="task-context-notice">{relatedNotice}</div>}
+      <button type="button" className="task-context-item" onClick={() => { closeMenu(); setExpertManagerOpen(true); }}><IconSparkles size={14} />{taskExpert ? "管理当前任务专家" : "绑定专家到此任务"}</button>
       <div className="task-context-sep" />
       <button
         type="button"
@@ -714,6 +718,7 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
 
       {dropNotice && <span className="task-drop-notice">{dropNotice}</span>}
       {menuContent && createPortal(menuContent, document.body)}
+      {expertManagerOpen && <ExpertBindingModal taskId={task.id} onClose={() => setExpertManagerOpen(false)} />}
     </div>
   );
 }

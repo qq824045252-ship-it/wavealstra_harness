@@ -71,6 +71,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
   const installedSkills = useAppStore((s) => s.skills);
   const refreshSkills = useAppStore((s) => s.refreshSkills);
   const [authoringOpen, setAuthoringOpen] = useState(false);
+  const [editingExpertId, setEditingExpertId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToast] = useState<HubToastState | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -135,6 +136,17 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
     if (msg.includes("路径不存在")) return `${msg} · 请检查文件是否被移动或删除`;
     if (msg.includes("zip")) return msg;
     return msg;
+  };
+
+  const toggleExpert = async (id: string, enabled: boolean): Promise<void> => {
+    setBusyId(`enable-${id}`);
+    try {
+      if (!window.api?.agent) throw new Error("专家 API 不可用，请重新启动应用");
+      await window.api.agent.setExpertEnabled(id, enabled);
+      await refreshExperts();
+      setToast({ kind: "ok", text: enabled ? "专家模板已启用" : "专家模板已停用；已绑定任务保留自己的身份配置" });
+    } catch (err) { setToast({ kind: "err", text: expertErrText(err) }); }
+    finally { setBusyId(null); }
   };
 
   const handleImportZip = async (): Promise<void> => {
@@ -276,6 +288,8 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
               </button>
             }
             actions={[
+              { label: "查看 / 编辑模板", onClick: () => { void refreshSkills(); setEditingExpertId(installed.id); } },
+              { label: installed.enabled ? "停用模板" : "启用模板", onClick: () => void toggleExpert(installed.id, !installed.enabled), disabled: busyId === `enable-${installed.id}` },
               { label: busyId === `export-${installed.id}` ? "导出中…" : "导出", onClick: () => void exportExpert(installed.id), disabled: busyId === `export-${installed.id}` },
               { label: busyId === `un-${installed.id}` ? "卸载中…" : "卸载", onClick: () => void (async () => { setBusyId(`un-${installed.id}`); try { await uninstallExpert(installed.id); setToast({ kind: "ok", text: `已卸载「${expert.name}」` }); } catch (err) { setToast({ kind: "err", text: `卸载失败：${expertErrText(err)}` }); } finally { setBusyId(null); } })(), disabled: busyId === `un-${installed.id}` },
             ]}
@@ -288,6 +302,8 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
               </button>
             }
             actions={[
+              { label: "查看 / 编辑模板", onClick: () => { void refreshSkills(); setEditingExpertId(installed.id); } },
+              { label: installed.enabled ? "停用模板" : "启用模板", onClick: () => void toggleExpert(installed.id, !installed.enabled), disabled: busyId === `enable-${installed.id}` },
               { label: busyId === `un-${installed.id}` ? "卸载中…" : "卸载", onClick: () => void (async () => { setBusyId(`un-${installed.id}`); try { await uninstallExpert(installed.id); setToast({ kind: "ok", text: `已卸载「${expert.name}」` }); } catch (err) { setToast({ kind: "err", text: `卸载失败：${expertErrText(err)}` }); } finally { setBusyId(null); } })() },
               { label: busyId === `mkt-${expert.id}` ? "删除中…" : "永久删除", danger: true, dividerBefore: true, onClick: () => void (async () => { setBusyId(`mkt-${expert.id}`); try { await deleteMarketExpert(expert.id); setToast({ kind: "ok", text: `已从市场删除「${expert.name}」` }); } catch (err) { setToast({ kind: "err", text: `删除失败：${err instanceof Error ? err.message : String(err)}` }); } finally { setBusyId(null); } })() },
             ]}
@@ -353,6 +369,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
           onCreated={async (message) => { await refreshExperts(); setToast({ kind: "ok", text: message }); }}
         />
       )}
+      {editingExpertId && <HubAuthoringModal mode="expert" expertId={editingExpertId} skills={installedSkills} onClose={() => setEditingExpertId(null)} onCreated={async (message) => { await refreshExperts(); setToast({ kind: "ok", text: message }); }} />}
       <HubDropOverlay visible={dragOver} text="松开以导入（ZIP 自动走 ZIP 导入，文件夹走本地目录导入）" />
 
       {(() => {

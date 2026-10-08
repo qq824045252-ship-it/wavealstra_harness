@@ -59,6 +59,7 @@ interface Props {
   onSelectRefTask?: (task: RefTaskItem) => void;
   /** 选择专家 */
   onSelectExpert?: (expertId: string) => void;
+  onManageExpert?: () => void;
   /** 当前已选中的专家 id，用于高亮 */
   selectedExpertId?: string | null;
   /** 选中已安装连接器（挂到输入芯片 / 注入配套技能） */
@@ -226,6 +227,7 @@ export default function InputAddMenu({
   onSelectRefFile,
   onSelectRefTask,
   onSelectExpert,
+  onManageExpert,
   selectedExpertId,
   onSelectConnector,
   onSelectExternalAgent,
@@ -916,6 +918,7 @@ export default function InputAddMenu({
             </>
           )}
         </div>
+        {onManageExpert && <button type="button" className="add-menu-flyout-footer" onClick={() => { onManageExpert(); onClose(); }}>绑定 / 管理当前任务专家</button>}
         <button
           type="button"
           className="add-menu-flyout-footer"

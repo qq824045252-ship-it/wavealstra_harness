@@ -279,6 +279,11 @@ export interface PreloadApi {
     installExpert: (id: string) => Promise<ExpertDto>;
     installExpertByPath: (path: string) => Promise<ExpertDto>;
     authorExpert: (input: ExpertAuthoringCreateRequest) => Promise<ExpertAuthoringCreateResult>;
+    getExpertDetail: (id: string) => Promise<import("../shared/expert-binding").ExpertDetailDto>;
+    updateExpert: (input: import("../shared/expert-binding").ExpertUpdateRequest) => Promise<import("../shared/expert-binding").ExpertDetailDto>;
+    getTaskExpertBinding: (taskId: string) => Promise<import("../shared/expert-binding").TaskExpertBindingDto>;
+    saveTaskExpertBinding: (input: import("../shared/expert-binding").SaveTaskExpertBindingRequest) => Promise<import("../shared/expert-binding").TaskExpertBindingDto>;
+    cancelExpertAuthoring: (requestId: string) => Promise<void>;
     importExpertZip: (zipPath: string) => Promise<ExpertDto>;
     exportExpert: (id: string) => Promise<string>;
     uninstallExpert: (id: string) => Promise<void>;

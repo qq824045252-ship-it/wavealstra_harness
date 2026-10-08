@@ -5,7 +5,7 @@
  * 导出回读 / 卸载 / 单专家包过滤。
  * 测试使用临时 USERPROFILE，不触碰真实 ~/.mybuddy。
  */
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
@@ -17,6 +17,7 @@ process.env.HOME = sandbox;
 
 // eslint-disable-next-line import/first
 import { ExpertService } from "../src/main/experts/ExpertService";
+import { SkillAuthoringService } from "../src/main/skills/SkillAuthoringService";
 
 let passed = 0;
 let failed = 0;
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
   const installed = svc.installFromMarket("weekly-report");
   assert(installed.installed && installed.enabled, "安装后 installed/enabled=true");
   assert(installed.source === "builtin-market", "来源 = builtin-market");
-  const promptPath = join(sandbox, ".mybuddy", "experts", "weekly-report", "prompt.md");
+  const promptPath = join(sandbox, ".mybuddy", "plugins", "experts", "weekly-report", "prompt.md");
   assert(existsSync(promptPath), "prompt.md 已写入");
   const promptMd = readFileSync(promptPath, "utf-8");
   assert(promptMd.startsWith("---\nname: weekly-report"), "prompt.md 保留官方 frontmatter 格式");
@@ -134,13 +135,13 @@ description: 审查 Agent 架构
   assert(imported.description === "来自市场的描述", "plugin.json description 覆盖 agents frontmatter");
   assert(imported.tags.includes("RAG"), "tags 来自 plugin.json");
   assert(imported.source === "folder", "来源 = folder");
-  assert(existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "avatar.png")), "头像已拷贝");
+  assert(existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "avatar.png")), "头像已拷贝");
   assert(
-    existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review", "SKILL.md")),
+    existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review", "SKILL.md")),
     "目录导入保留 Private Skill",
   );
-  assert(!existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review", "_user_meta.json")), "目录导入剔除 Private Skill 本机 user metadata");
-  assert(!existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review", "_skillhub_meta.json")), "目录导入剔除 Private Skill 本机 market metadata");
+  assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review", "_user_meta.json")), "目录导入剔除 Private Skill 本机 user metadata");
+  assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review", "_skillhub_meta.json")), "目录导入剔除 Private Skill 本机 market metadata");
   const dirRole = svc.getRolePrompt("senior-ai-agent");
   assert(dirRole.prompt.includes("RAG 工程化"), "导入专家角色可注入");
 
@@ -171,13 +172,13 @@ displayName:
   const zipImported = await svc.importZip(zipPath);
   assert(zipImported.id === "weekly-report" && zipImported.source === "zip", "zip 导入覆盖安装（id/source 正确）");
   assert(zipImported.version === "1.2.0", "zip 版本来自 plugin.json");
-  assert(existsSync(join(sandbox, ".mybuddy", "experts", "weekly-report", "avatar.png")), "zip 头像已解出");
+  assert(existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "weekly-report", "avatar.png")), "zip 头像已解出");
   const zipRole = svc.getRolePrompt("weekly-report");
   assert(zipRole.prompt.includes("zip 版"), "zip 导入的角色提示词生效");
 
   // ---------- 6. 导出 → 回读（格式兼容） ----------
   console.log("\n6. 导出回读");
-  const installedPrivateDir = join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review");
+  const installedPrivateDir = join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review");
   writeFileSync(join(installedPrivateDir, "_user_meta.json"), JSON.stringify({ sourcePath: "C:/Users/private/legacy" }));
   writeFileSync(join(installedPrivateDir, "_skillhub_meta.json"), JSON.stringify({ sourcePath: "C:/Users/private/legacy-market" }));
   const outsideSecret = join(sandbox, "outside-private-skill-secret.txt");
@@ -212,11 +213,11 @@ displayName:
   const reimport = await svc.importZip(exportPath);
   assert(reimport.id === "senior-ai-agent" && reimport.source === "zip", "导出的包可被再次导入");
   assert(
-    existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review", "SKILL.md")),
+    existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review", "SKILL.md")),
     "导出包重导入后 Private Skill 仍存在",
   );
   assert(
-    existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent", "skills", "architecture-review", "references", "checklist.md")),
+    existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent", "skills", "architecture-review", "references", "checklist.md")),
     "导出包重导入后 Private Skill 附属文件仍存在",
   );
   assert(
@@ -245,7 +246,7 @@ displayName:
   // ---------- 8. Uninstall expert ----------
   console.log("\n8. Uninstall expert");
   svc.uninstall("senior-ai-agent");
-  assert(!existsSync(join(sandbox, ".mybuddy", "experts", "senior-ai-agent")), "expert directory removed");
+  assert(!existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "senior-ai-agent")), "expert directory removed");
   assert(svc.listInstalled().every((e) => e.id !== "senior-ai-agent"), "uninstalled expert absent from list");
   let uninstallErr = "";
   try {
@@ -257,7 +258,7 @@ displayName:
 
   // ---------- 9. Local market: single experts only ----------
   console.log("\n9. Local market expert-only filtering");
-  const marketRoot = join(sandbox, ".mybuddy", "expert-market", "experts");
+  const marketRoot = join(sandbox, ".mybuddy", "plugins", "expert-market", "experts");
   const agentPkg = join(marketRoot, "demo-agent");
   const teamPkg = join(marketRoot, "demo-team");
   for (const dir of [agentPkg, teamPkg]) {
@@ -308,8 +309,83 @@ displayName:
 
   const demoInstalled = svc.installFromMarket("demo-agent");
   assert(demoInstalled.source === "local-market", "local single expert installs normally");
-  assert(existsSync(join(sandbox, ".mybuddy", "experts", "demo-agent", "avatar.png")), "local expert avatar copied");
+  assert(existsSync(join(sandbox, ".mybuddy", "plugins", "experts", "demo-agent", "avatar.png")), "local expert avatar copied");
   svc.uninstall("demo-agent");
+
+  // ---------- 10. Editable templates and immutable binding copy source ----------
+  console.log("\n10. 模板编辑 / revision 冲突 / 能力与私有技能保存");
+  const authoring = new SkillAuthoringService();
+  const authored = authoring.createExpertPackage({ name: "Persistent Expert", description: "Editable role",
+    instructions: "Keep the original task role.", skillIds: ["architecture-review"],
+    mcpIds: ["research-server"], connectorIds: ["research-cli"] }, [join(pluginDir, "skills", "architecture-review")]);
+  writeFileSync(join(authored.path, "prompt.md"), readFileSync(join(authored.path, "prompt.md"), "utf-8").replace("version: 1.0.0", "version: 1.0.0\ncustom-field: preserved"));
+  const authoredInstalled = svc.installByPath(authored.path);
+  const first = svc.getDetail(authoredInstalled.id);
+  assert(first.instructions.includes("Keep the original task role."), "模板详情返回可编辑角色正文");
+  assert(first.mcpIds[0] === "research-server" && first.connectorIds[0] === "research-cli", "创建专家保留 MCP 与连接器引用");
+  assert(first.skills?.includes("architecture-review"), "模板详情返回实际私有技能 id");
+  const snapshotDir = join(sandbox, "task-bound-private-skills");
+  cpSync(svc.getPrivateSkillsDirectoryForSnapshot(first.id)!, snapshotDir, { recursive: true });
+  svc.setEnabled(first.id, false);
+  const disabledDetail = svc.getDetail(first.id);
+  const edited = svc.update({ id: first.id, name: "Renamed Expert", description: "Revised description",
+    instructions: "Use this revised role.", mcpIds: ["tools", "tools"], connectorIds: [], expectedRevision: disabledDetail.revision });
+  assert(edited.id === first.id && edited.name === "Renamed Expert", "改名保持专家稳定 id");
+  assert(edited.instructions === "Use this revised role." && edited.revision !== disabledDetail.revision, "编辑正文保存并更新 revision");
+  assert(readFileSync(edited.filePath!, "utf-8").includes("custom-field: preserved"), "编辑保留未修改的 frontmatter 扩展字段");
+  assert(!edited.enabled && edited.installedAt === first.installedAt && edited.source === first.source, "编辑停用模板不启用、不重置安装信息");
+  assert(edited.skills?.includes("architecture-review") && existsSync(join(svc.getPrivateSkillsDirectoryForSnapshot(first.id)!, "architecture-review", "references", "checklist.md")), "省略 skillIds 保留完整私有技能及附属文件");
+  assert(edited.mcpIds.length === 1 && edited.mcpIds[0] === "tools" && edited.connectorIds.length === 0, "能力引用去重并支持清空");
+  let staleError = "";
+  try { svc.update({ id: first.id, name: "Stale", description: "stale", instructions: "stale", mcpIds: [], connectorIds: [], expectedRevision: disabledDetail.revision }); }
+  catch (error) { staleError = String(error); }
+  assert(staleError.includes("已发生变化") && svc.getDetail(first.id).revision === edited.revision, "旧 revision 保存被拒绝且不影响已保存内容");
+  let skillError = "";
+  try { svc.update({ id: first.id, name: edited.name, description: edited.description, instructions: "must not replace accepted role", skillIds: ["not-installed"], mcpIds: [], connectorIds: [], expectedRevision: edited.revision }); }
+  catch (error) { skillError = String(error); }
+  assert(skillError.includes("Private Skill") && svc.getDetail(first.id).revision === edited.revision, "缺失技能导致保存失败时保留完整原模板");
+  const newSkillDir = join(sandbox, "new-global-skill");
+  mkdirSync(join(newSkillDir, "references"), { recursive: true });
+  writeFileSync(join(newSkillDir, "SKILL.md"), "---\nname: new-skill\ndescription: New skill\ndisable-model-invocation: true\n---\n\nNew skill body.\n");
+  writeFileSync(join(newSkillDir, "references", "guide.txt"), "retained guide");
+  writeFileSync(join(newSkillDir, "_user_meta.json"), "{}");
+  const withSkill = svc.update({ id: first.id, name: edited.name, description: edited.description, instructions: edited.instructions,
+    skillIds: ["architecture-review", "new-skill"], mcpIds: edited.mcpIds, connectorIds: ["research-cli"], expectedRevision: edited.revision }, { "new-skill": newSkillDir });
+  const privateRoot = svc.getPrivateSkillsDirectoryForSnapshot(first.id)!;
+  assert(withSkill.skills?.length === 2 && existsSync(join(privateRoot, "architecture-review", "references", "checklist.md")), "加新技能时保留原私有技能包");
+  assert(existsSync(join(privateRoot, "new-skill", "references", "guide.txt")) && !existsSync(join(privateRoot, "new-skill", "_user_meta.json")), "新增私有技能保留资源且清理本机元信息");
+  assert(!readFileSync(join(privateRoot, "new-skill", "SKILL.md"), "utf-8").includes("disable-model-invocation"), "新增私有技能不继承全局停用状态");
+  const removedSkill = svc.update({ id: first.id, name: withSkill.name, description: withSkill.description, instructions: withSkill.instructions,
+    skillIds: ["new-skill"], mcpIds: withSkill.mcpIds, connectorIds: withSkill.connectorIds, expectedRevision: withSkill.revision });
+  assert(!existsSync(join(privateRoot, "architecture-review")) && removedSkill.skills?.join() === "new-skill", "显式取消技能仅删除模板中的对应副本");
+  assert(existsSync(join(snapshotDir, "architecture-review", "references", "checklist.md")), "模板修改不改变既有任务私有技能快照");
+
+  // ---------- 11. Failed imports preserve accepted templates ----------
+  console.log("\n11. 导入失败回滚 / 原目录重导入 / 能力导出回读");
+  const brokenFolder = join(sandbox, "broken-import");
+  mkdirSync(join(brokenFolder, "avatars", "broken.png"), { recursive: true });
+  writeFileSync(join(brokenFolder, "prompt.md"), `---\nname: ${first.id}\n---\n\nMust never replace accepted template.\n`);
+  let folderError = "";
+  try { svc.installByPath(brokenFolder); } catch (error) { folderError = String(error); }
+  assert(Boolean(folderError) && svc.getDetail(first.id).revision === removedSkill.revision, "头像复制失败不删除或覆盖旧专家");
+  const brokenZip = new JSZip();
+  brokenZip.file("prompt.md", `---\nname: ${first.id}\n---\n\nMust never replace accepted template.\n`);
+  brokenZip.file("skills/collision", "file blocks nested directory");
+  brokenZip.file("skills/collision/SKILL.md", "blocked nested file");
+  const brokenZipPath = join(sandbox, "broken.zip");
+  writeFileSync(brokenZipPath, await brokenZip.generateAsync({ type: "nodebuffer" }));
+  let zipError = "";
+  try { await svc.importZip(brokenZipPath); } catch (error) { zipError = String(error); }
+  assert(Boolean(zipError) && svc.getDetail(first.id).revision === removedSkill.revision, "解压中途失败保留旧专家与 revision");
+  assert(!readdirSync(join(sandbox, ".mybuddy", "plugins", "experts")).some(name => name.startsWith(".stage-")), "失败后清理所有暂存目录");
+  const installedFolder = join(removedSkill.filePath!, "..");
+  const selfImport = svc.installByPath(installedFolder);
+  assert(svc.getDetail(selfImport.id).instructions === removedSkill.instructions && selfImport.skills?.includes("new-skill"), "从已安装目录重导入不会先删掉来源且使用编辑后的正文");
+  const capabilityExport = await svc.exportZip(first.id);
+  await svc.importZip(capabilityExport);
+  const roundTrip = svc.getDetail(first.id);
+  assert(roundTrip.mcpIds.join() === "tools" && roundTrip.connectorIds.join() === "research-cli", "导出再导入保留 MCP 与连接器引用");
+  assert(roundTrip.name === removedSkill.name && roundTrip.instructions === removedSkill.instructions, "导出再导入保留编辑后的名称和正文");
 
   // ---------- 汇总 ----------
   console.log(`\n[expert-test] ${passed} passed, ${failed} failed`);

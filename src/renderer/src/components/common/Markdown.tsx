@@ -154,7 +154,7 @@ function PlainPre(props: React.HTMLAttributes<HTMLPreElement>): React.JSX.Elemen
   const [copied, setCopied] = useState(false);
   const extracted = extractCodeFromPre(props.children);
 
-  if (extracted && isSvgFenceLanguage(extracted.language)) {
+  if (extracted && isSvgFenceLanguage(extracted.language, extracted.code)) {
     return <SvgFencePreview code={extracted.code} />;
   }
 
@@ -187,7 +187,7 @@ function Pre({
     return <MarkdownFencePreview code={extracted.code} />;
   }
 
-  if (extracted && isSvgFenceLanguage(extracted.language)) {
+  if (extracted && isSvgFenceLanguage(extracted.language, extracted.code)) {
     return <SvgFencePreview code={extracted.code} />;
   }
 

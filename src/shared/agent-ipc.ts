@@ -148,6 +148,11 @@ export const AgentIpc = {
   installExpertByPath: "agent:installExpertByPath",
   /** Authoring/Factory: create one Expert package with optional Private Skills. */
   authorExpert: "agent:authorExpert",
+  getExpertDetail: "agent:getExpertDetail",
+  updateExpert: "agent:updateExpert",
+  getTaskExpertBinding: "agent:getTaskExpertBinding",
+  saveTaskExpertBinding: "agent:saveTaskExpertBinding",
+  cancelExpertAuthoring: "agent:cancelExpertAuthoring",
   importExpertZip: "agent:importExpertZip",
   exportExpert: "agent:exportExpert",
   uninstallExpert: "agent:uninstallExpert",
@@ -896,6 +901,7 @@ export type RuntimeAuditInstructionDto = import("./mode-profile").AssemblySegmen
 
 export type AgentUiPatch =
   | { type: "durable_snapshot"; taskId: string; snapshot: import("./durable-bot").DurableBotSnapshot }
+  | { type: "expert_binding"; taskId: string; binding: import("./expert-binding").TaskExpertBindingDto }
   | { type: "compaction_status"; taskId: string; state: import("./compaction").TaskCompactionStatusDto }
   | {
       type: "user_message";
@@ -1214,6 +1220,7 @@ export interface SkillAuthoringDraft {
 }
 
 export interface ExpertAuthoringGenerateRequest {
+  requestId?: string;
   intent: string;
   modelId?: string;
 }
@@ -1245,6 +1252,8 @@ export interface ExpertAuthoringCreateRequest {
   instructions: string;
   /** Installed Skill ids copied into the Expert package as Private Skills. */
   skillIds?: string[];
+  mcpIds?: string[];
+  connectorIds?: string[];
 }
 
 export interface ExpertAuthoringCreateResult {
@@ -1284,6 +1293,8 @@ export interface ExpertDto {
   filePath?: string;
   /** 专家包自带 Private Skills 目录名列表（~/.mybuddy/plugins/experts/<id>/skills/ 下，不进入全局 Skill Center） */
   skills?: string[];
+  mcpIds?: string[];
+  connectorIds?: string[];
 }
 
 /** 市场中的专家（只读源；安装=复制到 ~/.mybuddy/plugins/experts/） */
@@ -1844,6 +1855,8 @@ export type DbUpsertResult =
 export type DbRenameResult = { ok: true } | { ok: false; error: string };
 
 export interface TaskDto {
+  /** Read-only projection of the task-owned expert configuration. */
+  expertBinding?: import("./expert-binding").TaskExpertBindingDto;
   executionBackend?: "pi" | "pi-durable";
   id: string;
   title: string;

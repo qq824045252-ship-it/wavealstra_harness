@@ -1111,6 +1111,11 @@ function registerIpc(): void {
     agentService.installExpertByPath(path),
   );
   ipcMain.handle(AgentIpc.authorExpert, (_e, input) => agentService.authorExpert(input));
+  ipcMain.handle(AgentIpc.getExpertDetail, (_e, id: string) => agentService.getExpertDetail(id));
+  ipcMain.handle(AgentIpc.updateExpert, (_e, input) => agentService.updateExpert(input));
+  ipcMain.handle(AgentIpc.getTaskExpertBinding, (_e, taskId: string) => agentService.getTaskExpertBinding(taskId));
+  ipcMain.handle(AgentIpc.saveTaskExpertBinding, (_e, input) => agentService.saveTaskExpertBinding(input));
+  ipcMain.handle(AgentIpc.cancelExpertAuthoring, (_e, requestId: string) => agentService.cancelExpertAuthoring(requestId));
   ipcMain.handle(AgentIpc.importExpertZip, (_e, zipPath: string) =>
     agentService.importExpertZip(zipPath),
   );

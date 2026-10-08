@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.15",
+  "version": "0.1.17",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -57,6 +57,9 @@
     "dist": "pnpm run remote:build && electron-vite build && electron-builder --win",
     "test:backup": "esbuild scripts/backup-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/backup-test.cjs && node scripts/test-guard.mjs out/tests/backup-test.cjs",
     "test:tray": "node scripts/build-tray-test.mjs && electron scripts/tray-service-test.cjs",
+    "test:task-expert-binding": "esbuild scripts/task-expert-binding-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/task-expert-binding-test.mjs && node scripts/test-guard.mjs out/tests/task-expert-binding-test.mjs",
+    "test:expert-ui": "esbuild scripts/expert-ui-test.tsx --bundle --platform=browser --format=iife --global-name=ExpertUITest --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.png=dataurl --loader:.svg=dataurl --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/expert-ui.js && electron scripts/expert-ui-test.cjs",
+    "test:expert-binding-desktop": "node scripts/expert-binding-desktop-test.cjs",
     "test:expert": "esbuild scripts/expert-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/expert-test.cjs && node scripts/test-guard.mjs out/tests/expert-test.cjs",
     "test:expert-market": "esbuild scripts/expert-market-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/expert-market-smoke.cjs && node scripts/test-guard.mjs out/tests/expert-market-smoke.cjs",
     "test:skill-connector": "esbuild scripts/skill-connector-smoke.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/skill-connector-smoke.mjs && node scripts/test-guard.mjs out/tests/skill-connector-smoke.mjs",

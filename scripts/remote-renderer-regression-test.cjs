@@ -173,6 +173,26 @@ app.whenReady().then(async()=>{
   await evaluate('window.dispatchEvent(new Event("online"))');await delay(50);
   assert.ok((await evaluate('window.remoteFixture.counters()')).resumes>=1);
   pass('network restoration triggers foreground resume synchronization');
+  for (const language of ['xml', 'html', '']) {
+    await evaluate(`window.remoteFixture.markupFence(${JSON.stringify(language)})`);
+    await until('document.querySelector(".md-svg-image")?.naturalWidth > 0');
+    assert.equal(await evaluate('!!document.querySelector(".code-block-container")'), false);
+    if (language === 'xml') {
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(path.join(artifactDir, 'xml-svg-preview.png'), (await capture()).toPNG());
+    }
+  }
+  pass('XML, HTML and unlabelled SVG fences decode as images at Android width');
+  await evaluate('window.remoteFixture.markupFence("xml", "<?xml version=\\"1.0\\"?>\\n" + window.remoteFixture.svg)');
+  await until('document.querySelector(".md-svg-image")?.naturalWidth > 0');
+  await evaluate('window.remoteFixture.markupFence("xml", "<settings><svg>example</svg></settings>")');
+  await until('!!document.querySelector(".code-block-container") && !document.querySelector(".md-svg-card")');
+  await evaluate('window.remoteFixture.markupFence("javascript", window.remoteFixture.svg)');
+  await until('!!document.querySelector(".code-block-container") && !document.querySelector(".md-svg-card")');
+  await evaluate('window.remoteFixture.markupFence("xml", "<svg xmlns=\\"http://www.w3.org/2000/svg\\"><script>window.bad=true</script></svg>")');
+  await until('!!document.querySelector(".md-svg-error")');
+  assert.equal(await evaluate('!!window.bad'), false);
+  pass('content detection preserves ordinary code and applies SVG safety validation');
   // Reproduce the actual SSH thread: decoded historical SVGs ABOVE a reader near
   // the bottom. A mid-page text-only test cannot detect browser scroll clamping.
   await evaluate('window.remoteFixture.longSvgHistory()');

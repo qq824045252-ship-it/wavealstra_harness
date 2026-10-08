@@ -153,6 +153,11 @@ const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120"><rect
   },
   svgReply() { event('assistant_start'); event('thinking_delta', { delta: 'Visible reasoning details.' }); event('text_delta', { delta: 'BEFORE_SVG\n\n```svg\n' + svg + '\n```\n\nAFTER_SVG', final: true }) },
   rawSvg() { event('assistant_message_start'); event('text_delta', { delta: '\n' + svg + '\n', final: true }) },
+  markupFence(language: string, code = svg) {
+    useRemoteStore.setState({ live: {}, histories: { [task.id]: { taskId: task.id, messages: [
+      { id: 'markup-answer', role: 'assistant', text: '```' + language + '\n' + code + '\n```', createdAt: 1 },
+    ] } } })
+  },
   toolStart() { event('tool_start', { toolCallId: 'tool-1', tool: 'read', summary: 'fixture.txt', detail: '{"path":"fixture.txt"}', status: 'running' }) },
   toolUpdate() { event('tool_update', { toolCallId: 'tool-1', status: 'success', output: 'ACTUAL_TOOL_OUTPUT' }) },
   tail() { event('text_delta', { delta: '\n\nLIVE_TAIL: new visible reply.', final: true }) },

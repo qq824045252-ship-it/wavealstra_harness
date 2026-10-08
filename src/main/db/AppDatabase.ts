@@ -241,6 +241,11 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
 
 export class AppDatabase {
   private readonly db: Database.Database;
+  private expertBindingReader?: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null;
+
+  setTaskExpertBindingReader(reader: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null): void {
+    this.expertBindingReader = reader;
+  }
 
   constructor(dbPath = getDbPath()) {
     resetIncompatibleDatabaseFile(dbPath);
@@ -2699,6 +2704,7 @@ export class AppDatabase {
 
   private mapTaskRow(r: TaskRow): TaskDto {
     return {
+      expertBinding: this.expertBindingReader?.(r.id) ?? undefined,
       id: r.id,
       title: r.title,
       spaceId: r.space_id ?? undefined,
