@@ -39,7 +39,10 @@ const server=http.createServer(async(req,res)=>{
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_MCP_REFRESH'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'mcp__added__read_seed',arguments:'{}'};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'codemode',arguments:JSON.stringify({code:'const r=await tools.read({path:'+JSON.stringify(imageInput)+'}); const img=r.content.find(c=>c.type==="image"); if(!img)throw Error("Image missing"); image(img); image(img);'})};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE_REOPEN'))tool=undefined;
-  if(JSON.stringify(body.messages[lastUser]).includes('MODE_BOUND_'))tool=undefined;
+  // Pi may append a user-role evidence message after the actual input; fixture selection
+  // must still recognize the real continuation instead of markers inside injected memory.
+  const modeBound=body.messages.some(message=>message.role==='user'&&/^MODE_BOUND_(?:CONTINUE_|BOT_CONTINUE)/.test((typeof message.content==='string'?message.content:message.content?.filter(part=>part.type==='text').map(part=>part.text).join('\n')??'').trim()));
+  if(modeBound)tool=undefined;
   if(extraction)tool=undefined;
   const extracted=JSON.stringify(body.messages).includes('项目介质确定为乙腈')?{candidates:[{kind:'constraint',title:'BOT_EXTRACTED_MEDIUM',content:'项目介质为乙腈',scopeType:'project',confidence:0.99,importance:2,explicit:true,operationHint:'create',userEvidence:'项目介质确定为乙腈'}]}:{candidates:[]};
   const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:tool}]}:{role:'assistant',content:extraction?JSON.stringify(extracted):'DURABLE_DESKTOP_COMPLETE'};
@@ -69,7 +72,8 @@ async function launch(){
   const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local')};delete env.ELECTRON_RUN_AS_NODE;
   log=fs.openSync(path.join(out,'desktop.log'),'a');
   const executable=process.env.MYBUDDY_DESKTOP_EXECUTABLE||require('electron');
-  proc=cp.spawn(executable,[...(process.env.MYBUDDY_DESKTOP_EXECUTABLE?[]:[root]),'--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port,'--disable-background-timer-throttling'],{cwd:root,env,stdio:['ignore',log,log],windowsHide:true});
+  // Keep lazy image decoding active when the user's foreground window covers this isolated app.
+  proc=cp.spawn(executable,[...(process.env.MYBUDDY_DESKTOP_EXECUTABLE?[]:[root]),'--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port,'--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-features=CalculateNativeWinOcclusion'],{cwd:root,env,stdio:['ignore',log,log],windowsHide:true});
   let target;await until(async()=>{if(proc.exitCode!==null)throw Error('Electron exited '+proc.exitCode);try{target=(await fetch('http://127.0.0.1:'+port+'/json/list').then(r=>r.json())).find(t=>t.type==='page'&&t.url.includes('index.html'));return !!target;}catch{return false;}},'Electron renderer');
   socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((r,j)=>{socket.addEventListener('open',r,{once:true});socket.addEventListener('error',j,{once:true});});
   socket.addEventListener('message',e=>{const r=JSON.parse(e.data),p=pending.get(r.id);if(!p)return;pending.delete(r.id);clearTimeout(p.timer);r.error?p.reject(Error(JSON.stringify(r.error))):p.resolve(r.result);});
@@ -143,9 +147,18 @@ const report={temp,tests:[],status:'running'};
   const savedImage=imageArtifacts[0];assert(fs.readFileSync(savedImage.path).equals(tinyPng));
   assert(imageHistory.messages.some(m=>m.tools?.some(t=>t.tool==='read'&&t.parentToolCallId&&t.status==='success')),'native image read must execute through a Durable child');
   assert(requests.some(r=>JSON.stringify(r.messages).includes('Attached image(s) from tool result:')),'real provider must receive native tool image blocks');
-  // The artifact's native record is retained; the displayed turn uses its final assistant id.
-  const imageMessage=imageHistory.messages.at(-1);
-  await until(()=>evaluate(`(()=>{const img=document.getElementById(${JSON.stringify('msg-'+imageMessage.id)})?.querySelector('img.chat-inline-image');img?.scrollIntoView();return Boolean(img?.complete&&img.naturalWidth===1)})()`),'saved Code Mode image displays in actual renderer');
+  // Locate the displayed turn through its stable user row: native assistant IDs change on commit.
+  const imageUserId=imageHistory.messages.findLast(message=>message.role==='user').id;
+  const displayedImage=`(()=>{const row=document.getElementById(${JSON.stringify('msg-'+imageUserId)})?.nextElementSibling;const img=row?.querySelector('img.chat-inline-image');img?.scrollIntoView({behavior:'instant',block:'center'});return {exists:Boolean(row?.querySelector('.assistant-avatar-row')&&img),decoded:Boolean(img?.complete&&img.naturalWidth===1),visibility:document.visibilityState,rect:img?.getBoundingClientRect().toJSON()};})()`;
+  async function verifyDisplayedImage(label) {
+    await until(async()=>Boolean((await evaluate(displayedImage))?.exists),label+' element');
+    const before=await evaluate(displayedImage);
+    await rpc('Page.bringToFront');
+    await rpc('Page.captureScreenshot',{format:'png'});
+    await until(async()=>Boolean((await evaluate(displayedImage))?.decoded),label);
+    return {before,after:await evaluate(displayedImage)};
+  }
+  report.imageDisplay=await verifyDisplayedImage('saved Code Mode image displays in actual renderer');
   const imageShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-image.png'),Buffer.from(imageShot.data,'base64'));
   report.image={path:savedImage.path,bytes:tinyPng.length,duplicateOutputs:2,artifacts:1};
   report.tests.push('native image read reaches the HTTP provider; Code Mode saves and displays one artifact for duplicate image outputs');
@@ -243,7 +256,7 @@ const report={temp,tests:[],status:'running'};
   assert(JSON.stringify(reopenedImageRequest.messages).includes('data:image/png;base64,'+tinyPng.toString('base64')),'stored input and tool images reach provider after original file deletion');
   restored=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
   await click('.task-item-title','recovery test');
-  await until(()=>evaluate(`(()=>{const img=document.getElementById(${JSON.stringify('msg-'+imageMessage.id)})?.querySelector('img.chat-inline-image');img?.scrollIntoView();return Boolean(img?.complete&&img.naturalWidth===1)})()`),'saved image displays after restart');
+  report.restoredImageDisplay=await verifyDisplayedImage('saved image displays after restart');
   report.tests.push('image artifact and provider image context survive whole app restart and deletion of the original attachment');
   assert(restored.messages.some(m=>m.tools?.some(t=>t.parentToolCallId&&t.status==='error')),'interrupted nested tool projected');
   assert.equal(fs.readFileSync(path.join(task.cwd,'resume-marker.txt'),'utf8'),'X','unsafe shell must not replay');
@@ -308,5 +321,8 @@ const report={temp,tests:[],status:'running'};
   report.executable=process.env.MYBUDDY_DESKTOP_EXECUTABLE||require('electron');
   if(process.env.MYBUDDY_DESKTOP_EXECUTABLE)report.buildSha256=require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(path.dirname(report.executable),'resources/app.asar'))).digest('hex');
   report.requests=requests.length;report.taskId=taskId;report.status='passed';
-}catch(error){report.status='failed';report.error=error.stack;try{report.body=await evaluate('document.body.innerText.slice(-5000)');report.events=await evaluate('window.__botEvents.slice(-4)');}catch{}}
+}catch(error){report.status='failed';report.error=error.stack;try{
+  report.body=await evaluate('document.body.innerText.slice(-5000)');report.events=await evaluate('window.__botEvents.slice(-4)');
+  report.presentation=await evaluate(`(async()=>{const event=window.__botEvents.findLast(e=>e.type==='durable_snapshot');const rows=[...document.querySelectorAll('[id^="msg-"]')].map(row=>{const key=Object.keys(row).find(k=>k.startsWith('__reactFiber$'));const pending=[row[key]];let message;while(pending.length){const fiber=pending.shift();if(!fiber)continue;if(fiber.memoizedProps?.message?.role){message=fiber.memoizedProps.message;break;}pending.push(fiber.child,fiber.sibling);}return {id:row.id,message,images:[...row.querySelectorAll('img')].map(img=>({src:img.src.slice(0,100),complete:img.complete,width:img.naturalWidth})),status:row.querySelector('.chat-image-status')?.textContent};});return {native:event?.snapshot.messages,rows,artifacts:event&&await window.api.artifactDomain.list({taskId:event.taskId})};})()`);
+}catch{}}
 finally{await close();server.close();fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));process.exitCode=report.status==='passed'?0:1;}})();
