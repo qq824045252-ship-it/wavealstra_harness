@@ -17,6 +17,8 @@ fs.writeFileSync(path.join(agentDir,'modes/design/policy.json'),JSON.stringify({
 fs.writeFileSync(path.join(agentDir,'plugins/mcp/mcp.json'),JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[path.join(root,'scripts/pi-codemode-auto-fixture.mjs'),workspace],modes:['working'],exposure:'direct',timeout:15}}}));
 const requests=[];
 let releasePresentationStart, releasePresentationFinish;
+let blockedMcpRequests=0;
+const blockedMcp=http.createServer(()=>{blockedMcpRequests++;});
 const server=http.createServer(async(req,res)=>{
   let raw='';for await(const part of req)raw+=part;
   let body;try{body=JSON.parse(raw);}catch{res.writeHead(400);res.end();return;}
@@ -29,20 +31,23 @@ const server=http.createServer(async(req,res)=>{
   const native=body.tools?.some(t=>t.function?.name==='write');
   let tool;
   if(!recent.some(m=>m.role==='tool')) tool = native
-    ? {name:'mcp__fixture__read_seed',arguments:'{}'}
-    : {name:'codemode',arguments:JSON.stringify({code:'const r=await tools.mcp__fixture__read_seed({}); text(r); await tools.write({path:"proof.py",content:"DURABLE_PROOF"}); await tools.write({path:".scratch/visible.py",content:"HIDDEN_DIRECTORY_PROOF"}); await tools.write({path:' + JSON.stringify(path.join(temp,'outside.py')) + ',content:"OUTSIDE_PROOF"}); await tools.bash({command:"printf DURABLE_SHELL"});'})};
+    ? {name:'mcp_list_tools',arguments:JSON.stringify({server:'fixture'})}
+    : {name:'codemode',arguments:JSON.stringify({code:'text(await tools.mcp_list_tools({server:"fixture"})); const r=await tools.mcp_call_tool({server:"fixture",tool:"read_seed",arguments:{}}); text(r); await tools.write({path:"proof.py",content:"DURABLE_PROOF"}); await tools.write({path:".scratch/visible.py",content:"HIDDEN_DIRECTORY_PROOF"}); await tools.write({path:' + JSON.stringify(path.join(temp,'outside.py')) + ',content:"OUTSIDE_PROOF"}); await tools.bash({command:"printf DURABLE_SHELL"});'})};
+  else if(native && !recent.some(m=>m.role==='assistant'&&m.tool_calls?.some(t=>t.function.name==='mcp_call_tool')))tool={name:'mcp_call_tool',arguments:JSON.stringify({server:'fixture',tool:'read_seed',arguments:{}})};
   else if(native && !recent.some(m=>m.role==='assistant'&&m.tool_calls?.some(t=>t.function.name==='write')))tool={name:'write',arguments:JSON.stringify({path:'proof.py',content:'DURABLE_PROOF'})};
   if (String(JSON.stringify(body.messages[lastUser])).includes('BOT_HOLD') && !recent.some(m=>m.role==='tool')) tool={name:'codemode',arguments:JSON.stringify({code:'await tools.bash({command:"printf X >> resume-marker.txt; sleep 30"});'})};
   const contextTest=String(JSON.stringify(body.messages[lastUser])).includes('BOT_CONTEXT');
   if(contextTest) tool=recent.some(m=>m.role==='tool')?undefined:{name:'codemode',arguments:JSON.stringify({code:'const memories=await tools.memory_search({}); if(!JSON.stringify(memories).includes("PROJECT_MEMORY_SENTINEL"))throw Error("Project memory missing"); text(memories); text(await tools.project_context_get({})); text(await tools.project_plan_create({title:"BOT_CREATED_TODO"})); text(await tools.library_list({})); text(await tools.runtime_probe({action:"read"}));'})};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_MEMORY_NATIVE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'memory_search',arguments:'{}'};
-  if(JSON.stringify(body.messages[lastUser]).includes('BOT_MCP_REFRESH'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'mcp__added__read_seed',arguments:'{}'};
+  if(JSON.stringify(body.messages[lastUser]).includes('BOT_MCP_REFRESH'))tool=!recent.some(m=>m.role==='tool')?{name:'mcp_list_tools',arguments:JSON.stringify({server:'added'})}
+    :!recent.some(m=>m.role==='assistant'&&m.tool_calls?.some(t=>t.function.name==='mcp_call_tool'))?{name:'mcp_call_tool',arguments:JSON.stringify({server:'added',tool:'read_seed',arguments:{}})}:undefined;
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'codemode',arguments:JSON.stringify({code:'const r=await tools.read({path:'+JSON.stringify(imageInput)+'}); const img=r.content.find(c=>c.type==="image"); if(!img)throw Error("Image missing"); image(img); image(img);'})};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE_REOPEN'))tool=undefined;
   // Pi may append a user-role evidence message after the actual input; fixture selection
   // must still recognize the real continuation instead of markers inside injected memory.
   const modeBound=body.messages.some(message=>message.role==='user'&&/^MODE_BOUND_(?:CONTINUE_|BOT_CONTINUE)/.test((typeof message.content==='string'?message.content:message.content?.filter(part=>part.type==='text').map(part=>part.text).join('\n')??'').trim()));
   if(modeBound)tool=undefined;
+  if(body.messages.some(message=>message.role==='user'&&/^BOT_GREETING/.test((typeof message.content==='string'?message.content:message.content?.filter(part=>part.type==='text').map(part=>part.text).join('\n')??'').trim())))tool=undefined;
   if(extraction)tool=undefined;
   const extracted=JSON.stringify(body.messages).includes('项目介质确定为乙腈')?{candidates:[{kind:'constraint',title:'BOT_EXTRACTED_MEDIUM',content:'项目介质为乙腈',scopeType:'project',confidence:0.99,importance:2,explicit:true,operationHint:'create',userEvidence:'项目介质确定为乙腈'}]}:{candidates:[]};
   const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:tool}]}:{role:'assistant',content:extraction?JSON.stringify(extracted):'DURABLE_DESKTOP_COMPLETE'};
@@ -87,6 +92,9 @@ async function send(text){await evaluate(`(()=>{const e=document.querySelector('
 const report={temp,tests:[],status:'running'};
 (async()=>{try{
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  await new Promise(r=>blockedMcp.listen(0,'127.0.0.1',r));
+  const startupMcpFile=path.join(agentDir,'plugins/mcp/mcp.json'),startupMcpConfig=JSON.parse(fs.readFileSync(startupMcpFile,'utf8'));
+  startupMcpConfig.mcpServers.blocked={url:'http://127.0.0.1:'+blockedMcp.address().port,headers:{Authorization:'fixture'},timeout:30};fs.writeFileSync(startupMcpFile,JSON.stringify(startupMcpConfig));
   const url='http://127.0.0.1:'+server.address().port+'/v1';
   const fixtureModel={id:'fixture',name:'Durable Fixture',reasoning:false,input:['text','image'],contextWindow:128000,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
   fs.writeFileSync(path.join(agentDir,'models.json'),JSON.stringify({providers:{'durable-fixture':{baseUrl:url,api:'openai-completions',apiKey:'fixture-only',models:[fixtureModel,{...fixtureModel,id:'alternate',name:'Durable Alternate'}]}}}));
@@ -107,6 +115,16 @@ const report={temp,tests:[],status:'running'};
   const officeShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'office-penpot.png'),Buffer.from(officeShot.data,'base64'));
   report.tests.push('Penpot appears in office with preserved prompt, MCP and runtime; general design and old Penpot removed from Bot');
   await click('.hero-categories button','Bot');await until(()=>evaluate('document.querySelector(".hero")?.dataset.mode==="bot"'),'Bot mode');
+  const greetingStart=Date.now();
+  await send('BOT_GREETING: 你好');
+  await until(()=>evaluate('window.__botEvents.some(e=>e.type==="durable_snapshot"&&!e.snapshot.busy&&e.snapshot.messages.at(-1)?.text==="DURABLE_DESKTOP_COMPLETE")'),'plain greeting with an unused 30-second MCP',5000);
+  report.mcpStartup={greetingMs:Date.now()-greetingStart,unusedServerTimeoutMs:30000,unusedServerRequests:blockedMcpRequests};
+  assert(report.mcpStartup.greetingMs<2000,JSON.stringify(report.mcpStartup));assert.equal(blockedMcpRequests,0,'a plain greeting must not contact unused MCP');
+  assert(!fs.existsSync(path.join(workspace,'mcp-audit.jsonl')),'plain greeting must not call the healthy MCP either');
+  report.tests.push('plain greeting reaches the real provider within 2s while an unused MCP would block for 30s; no MCP contacts');
+  await click('.sidebar-cta-btn','新建任务');await until(()=>evaluate('Boolean(document.querySelector(".hero"))'),'new task after greeting');
+  await click('.hero-categories button','Bot');
+  await evaluate('window.__botEvents=[];true');
   await evaluate('window.__entryTiming={};document.addEventListener("keydown",e=>{if(e.key==="Enter"&&!window.__entryTiming.sent)window.__entryTiming.sent=performance.now()},true);new MutationObserver(()=>{if(window.__entryTiming.sent&&!window.__entryTiming.chat&&document.querySelector(".task-chat-header"))window.__entryTiming.chat=performance.now()}).observe(document.body,{childList:true,subtree:true});true');
   await send('BOT_NATIVE: run deterministic verification');
   assert(await evaluate('!!document.querySelector(".task-chat-header")&&!document.querySelector(".hero")'),'Bot must enter chat immediately, before runtime startup');
@@ -122,12 +140,12 @@ const report={temp,tests:[],status:'running'};
   await until(()=>evaluate('document.querySelectorAll(".assistant-avatar-row").length===1'),'one displayed assistant for the native tool loop');
   await evaluate('document.querySelector("button.timeline-header").click()');
   const nativeToolIds=(await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`)).messages.flatMap(m=>(m.tools??[]).map(t=>t.id));
-  assert.equal(nativeToolIds.length,2);
+  assert.equal(nativeToolIds.length,3);
   await until(()=>evaluate(`(()=>{const ids=[...document.querySelectorAll('.timeline-body [data-tool-call-id]')].map(e=>e.dataset.toolCallId);return ${JSON.stringify(nativeToolIds)}.every(id=>ids.includes(id));})()`),'grouped timeline retains the native MCP and write tool records');
   const groupedNativeShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-grouped-native.png'),Buffer.from(groupedNativeShot.data,'base64'));
   await evaluate('document.querySelector("button.timeline-header").click()');
   report.tests.push('native tool loop renders one assistant avatar, one completion header and one final answer with all tools in the timeline');
-  const history=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(history.durable.messages.some(m=>m.tools?.some(t=>t.tool==='mcp__fixture__read_seed'&&t.status==='success')));
+  const history=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(history.durable.messages.some(m=>m.tools?.some(t=>t.tool==='mcp_call_tool'&&t.status==='success')));assert.equal(blockedMcpRequests,0,'healthy native tool must not wait for another MCP');
   await click('.workspace-trigger','原生模式');await evaluate(`(()=>{const e=[...document.querySelectorAll('.workspace-popup-item')].find(e=>e.querySelector('.workspace-popup-name')?.textContent==='Code Mode');if(!e)throw Error('Code Mode Tag missing');e.click();return true;})()`);
   await send('BOT_CODEMODE: run deterministic verification');
   await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return h.durable.toolMode==='codemode'&&!h.durable.busy&&h.messages.filter(m=>m.role==='user').length===2;},'Code Mode result',45000);
@@ -164,7 +182,7 @@ const report={temp,tests:[],status:'running'};
   report.tests.push('native image read reaches the HTTP provider; Code Mode saves and displays one artifact for duplicate image outputs');
   await send('BOT_PRESENTATION: verify waiting, streaming and completion');
   await until(()=>Boolean(releasePresentationStart),'provider waiting for first token');
-  await until(()=>evaluate('document.body.innerText.includes("等待模型响应")'),'waiting feedback before first token');
+  await until(()=>evaluate('document.body.innerText.includes("正在准备回复…")'),'waiting feedback before first token');
   const pendingUi=await evaluate(`(()=>{const m=window.__botEvents.filter(e=>e.type==='durable_snapshot').at(-1).snapshot.messages.at(-1);const row=document.getElementById('msg-'+m.id);window.__presentationRow=row;return {key:m.presentationKey,phase:m.generationStats?.phase,animation:getComputedStyle(row.querySelector('.msg-row')).animationName};})()`);
   assert.equal(pendingUi.phase,'waiting');assert.equal(pendingUi.animation,'bot-message-enter');
   const waitingShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-waiting.png'),Buffer.from(waitingShot.data,'base64'));
@@ -212,7 +230,7 @@ const report={temp,tests:[],status:'running'};
   const mcpFile=path.join(agentDir,'plugins/mcp/mcp.json'),mcpConfig=JSON.parse(fs.readFileSync(mcpFile,'utf8'));
   mcpConfig.mcpServers.added={...mcpConfig.mcpServers.fixture};fs.writeFileSync(mcpFile,JSON.stringify(mcpConfig));
   await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(nativeTaskId)},text:'BOT_MCP_REFRESH',userMessageId:'mcp-refresh-user',assistantMessageId:'mcp-refresh-placeholder'})`);
-  const refreshed=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(nativeTaskId)})`);assert(refreshed.messages.some(m=>m.tools?.some(t=>t.tool==='mcp__added__read_seed'&&t.status==='success')),'existing Bot did not use changed MCP config');
+  const refreshed=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(nativeTaskId)})`);assert(refreshed.messages.some(m=>m.tools?.some(t=>t.tool==='mcp_call_tool'&&t.summary.includes('added')&&t.status==='success')),'existing Bot did not use changed MCP config');
   report.tests.push('an existing Bot refreshes MCP configuration on its next input');
   for(const [id,prompt,expected] of [['bot-cron-ok','BOT_MEMORY_NATIVE','success'],['bot-cron-failed','BOT_FAIL','error']]){
     await evaluate(`window.api.cron.upsert({id:${JSON.stringify(id)},name:'Bot scheduled fixture',prompt:${JSON.stringify(prompt)},welcomeMode:'bot',projectId:${JSON.stringify(projectId)},permissionMode:'readonly',scheduleType:'every',scheduleExpr:'1h',timezone:'Asia/Shanghai',enabled:false,createdAt:Date.now(),updatedAt:Date.now()})`);
@@ -325,4 +343,4 @@ const report={temp,tests:[],status:'running'};
   report.body=await evaluate('document.body.innerText.slice(-5000)');report.events=await evaluate('window.__botEvents.slice(-4)');
   report.presentation=await evaluate(`(async()=>{const event=window.__botEvents.findLast(e=>e.type==='durable_snapshot');const rows=[...document.querySelectorAll('[id^="msg-"]')].map(row=>{const key=Object.keys(row).find(k=>k.startsWith('__reactFiber$'));const pending=[row[key]];let message;while(pending.length){const fiber=pending.shift();if(!fiber)continue;if(fiber.memoizedProps?.message?.role){message=fiber.memoizedProps.message;break;}pending.push(fiber.child,fiber.sibling);}return {id:row.id,message,images:[...row.querySelectorAll('img')].map(img=>({src:img.src.slice(0,100),complete:img.complete,width:img.naturalWidth})),status:row.querySelector('.chat-image-status')?.textContent};});return {native:event?.snapshot.messages,rows,artifacts:event&&await window.api.artifactDomain.list({taskId:event.taskId})};})()`);
 }catch{}}
-finally{await close();server.close();fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));process.exitCode=report.status==='passed'?0:1;}})();
+finally{await close();server.close();blockedMcp.closeAllConnections();blockedMcp.close();fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));process.exitCode=report.status==='passed'?0:1;}})();

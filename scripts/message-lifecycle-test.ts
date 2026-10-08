@@ -311,7 +311,7 @@ console.log("== 场景⑧：首轮反馈与结束收束结构 ==");
   );
   assert(
     timeline.includes('message.blocks.length === 0') &&
-      timeline.includes("正在准备回答…") &&
+      timeline.includes("正在准备回复…") &&
       timeline.includes("!message.streaming || hasFinalOutput"),
     "空 streaming shell 显示准备状态，正文出现后立即退出",
   );

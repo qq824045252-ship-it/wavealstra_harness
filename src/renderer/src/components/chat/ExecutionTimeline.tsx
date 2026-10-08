@@ -266,11 +266,11 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
         className="execution-timeline timeline-preparing"
         role="status"
         aria-live="polite"
-        aria-label="正在准备回答"
+        aria-label="正在准备回复"
       >
         <div className="timeline-header timeline-header-static">
           <span className="streaming-dot" />
-          <span>正在准备回答…</span>
+          <span>正在准备回复…</span>
         </div>
       </div>
     );

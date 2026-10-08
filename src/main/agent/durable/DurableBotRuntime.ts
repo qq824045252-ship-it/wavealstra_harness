@@ -41,6 +41,9 @@ export interface DurableBotOptions {
   onEntries?: (entries: readonly EntryRecord[]) => void;
   taskId?: string;
   tools?: readonly ToolRegistration[];
+  /** Task-scoped compatibility registrations for stored names, without transport startup. */
+  restoreTools?: (names: readonly string[]) => readonly ToolRegistration[];
+  prepareCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<readonly ToolRegistration[]>;
   assets?: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl">;
   onSnapshot: (snapshot: DurableBotSnapshot) => void;
   /** Only for isolated tests; production always opens its own durable JSONL directory. */
@@ -56,6 +59,7 @@ export class DurableBotRuntime {
   private closed = false;
   private projection: Promise<void> = Promise.resolve();
   private nativeTools: ToolRegistration[] = [];
+  private compatibilityTools: ToolRegistration[] = [];
   private codemode!: ToolRegistration;
   private registry!: ReturnType<typeof createRegistry>;
   private storage!: Storage;
@@ -64,12 +68,35 @@ export class DurableBotRuntime {
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
     options = { ...options, models: legacyCompatibleModels(options.models) };
+    const storage = options.storage ?? await openNodeJsonlStorage(options.directory, ctx, { fsync: true });
     const registry = createRegistry();
     const native = [...codingTools(), ...(options.tools ?? [])];
-    const codemode = createDurableCodeMode(() => native, options.assets, join(options.directory, "images"));
+    let compatibility: ToolRegistration[] = [];
+    try {
+      if (options.restoreTools) {
+        const names = new Set<string>();
+        let cursor: Cursor | undefined;
+        do {
+          const page = await storage.scanConversations({}, 500, cursor, ctx);
+          for (const conversation of page.items) {
+            const record = await storage.findDocument({ kind: AgentDoc.definition.kind, scope: { kind: "conversation", conversationId: conversation.id } }, "current", ctx);
+            const state = record && await storage.document(record.id, "current", ctx);
+            if (Array.isArray(state?.value.tools)) for (const name of state.value.tools) if (typeof name === "string") names.add(name);
+          }
+          cursor = page.next;
+        } while (cursor);
+        const installed = new Set(native.map(tool => tool.name));
+        compatibility = [...options.restoreTools([...names])].filter(tool => !installed.has(tool.name));
+        native.push(...compatibility);
+      }
+    } catch (error) { await storage.close(ctx); throw error; }
+    const codemode = createDurableCodeMode(() => native, options.assets, join(options.directory, "images"), async (code, context) => {
+      const tools = await options.prepareCodeMode?.(code, context) ?? [];
+      runtime?.installCompatibility(tools);
+      return tools;
+    });
     let runtime: DurableBotRuntime | undefined;
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message)));
-    const storage = options.storage ?? await openNodeJsonlStorage(options.directory, ctx, { fsync: true });
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
@@ -85,6 +112,7 @@ export class DurableBotRuntime {
       runtime.storage = storage;
       runtime.registry = registry;
       runtime.nativeTools = native;
+      runtime.compatibilityTools = compatibility;
       runtime.codemode = codemode;
       const bound = await conversation.agent(ctx);
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
@@ -106,8 +134,16 @@ export class DurableBotRuntime {
     if (extensions) {
       this.nativeTools = [...codingTools(), ...extensions];
       const available = this.nativeTools;
-      this.codemode = createDurableCodeMode(() => available, this.options.assets, join(this.options.directory, "images"));
-      this.registry.install(botExtension(this.options, available, this.codemode, (id, message) => this.recordResponse(id, message)));
+      this.codemode = createDurableCodeMode(() => available, this.options.assets, join(this.options.directory, "images"), async (code, context) => {
+        const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
+        this.installCompatibility(tools);
+        return tools;
+      });
+      // Retain implementations referenced by old in-flight phase agents, without declaring them
+      // to new turns. Durable still decides whether an interrupted external call may replay.
+      const names = new Set(available.map(tool => tool.name));
+      const registered = [...available, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
+      this.registry.install(botExtension(this.options, registered, this.codemode, (id, message) => this.recordResponse(id, message)));
     }
     this.options.toolMode = toolMode;
     const tools = toolMode === "codemode" ? [this.codemode] : this.nativeTools;
@@ -118,6 +154,15 @@ export class DurableBotRuntime {
   }
 
   resume(): void { this.harness.resume(); }
+  private installCompatibility(tools: readonly ToolRegistration[]): void {
+    if (!tools.length) return;
+    const compatibility = new Map(this.compatibilityTools.map(tool => [tool.name, tool]));
+    for (const tool of tools) compatibility.set(tool.name, tool);
+    this.compatibilityTools = [...compatibility.values()];
+    const names = new Set(this.nativeTools.map(tool => tool.name));
+    this.registry.install(botExtension(this.options, [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))], this.codemode,
+      (id, message) => this.recordResponse(id, message)));
+  }
   get snapshot(): DurableBotSnapshot { return this.latest; }
 
   private async recordResponse(taskId: number, message: AssistantMessage): Promise<void> {

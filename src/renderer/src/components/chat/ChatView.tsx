@@ -889,7 +889,7 @@ export default function ChatView(): React.JSX.Element {
             <div className="bot-submission-input">{task.botPendingSubmission.text}
               {task.botPendingSubmission.attachmentNames.map((name, index) => <span className="bot-submission-attachment" key={index}>{name}</span>)}
             </div>
-            <div className="bot-submission-status" role="status"><span className="bot-submission-spinner" aria-hidden="true" />正在提交给 Bot…</div>
+            <div className="bot-submission-status" role="status"><span className="bot-submission-spinner" aria-hidden="true" />正在准备回复…</div>
           </div>}
           {!task.botPendingSubmission &&
           <div className="empty-block" style={{ margin: "48px auto" }}>

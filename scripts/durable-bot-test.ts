@@ -281,6 +281,101 @@ async function until(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 10000;
   while (!check()) { if (Date.now() > deadline) throw new Error("Durable test timed out"); await new Promise(r => setTimeout(r, 10)); }
 }
+// An MCP which never answers initialize must not delay a greeting or a different healthy tool.
+{
+  let blockedRequests = 0;
+  const blocked = createServer(request => { assert.equal(request.headers.authorization, "fixture"); blockedRequests++; });
+  await new Promise<void>(resolve => blocked.listen(0, "127.0.0.1", resolve));
+  const config: any = { errors: [], servers: [
+    { name: "fixture", config: { command: process.execPath, args: [join(process.cwd(), "scripts/durable-mcp-lazy-fixture.mjs"), join(root, "lazy-audit.jsonl")], toolExposure: { hidden_tool: "hidden" } } },
+    { name: "blocked", config: { url: `http://127.0.0.1:${(blocked.address() as any).port}`, headers: { Authorization: "fixture" }, timeout: 0.2 } },
+  ] };
+  const audit = async () => { try { return (await readFile(join(root, "lazy-audit.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)); } catch { return []; } };
+  try {
+    for (const mode of ["native", "codemode"] as const) {
+      const cwd = join(root, "lazy-" + mode); await mkdir(cwd);
+      const host = await DurableMcp.open(config, {} as any, {} as any, cwd);
+      let phase = "greet", step = 0;
+      const runtime = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref, toolMode: mode, instructions: () => "fixture", onSnapshot: () => {},
+        tools: host.tools, restoreTools: names => host.restoreTools(names), prepareCodeMode: (code, context) => host.codeModeTools(code, context),
+        models: models(context => {
+          if (phase === "greet") return text("hello without MCP");
+          const last = context.messages.at(-1);
+          if (last?.role === "toolResult") assert(!last.isError, JSON.stringify(last));
+          if (phase === "legacy") return ++step === 1 ? call("codemode", { code: 'text(await tools.mcp__fixture__read_cwd({label:"legacy"}));' }) : text("legacy works");
+          if (phase === "enumerate") return ++step === 1 ? call("codemode", { code: 'const t=ALL_TOOLS.find(t=>t.name==="mcp__fixture__read_cwd"); if(!t)throw Error("missing"); text(await tools[t.name]({label:"enumerated"}));' }) : text("enumeration works");
+          if (++step === 1) return mode === "native" ? call("mcp_list_tools", { server: "fixture" })
+            : call("codemode", { code: 'const list=await tools.mcp_list_tools({server:"fixture"}); text(list); text(await tools.mcp_call_tool({server:"fixture",tool:"read_cwd",arguments:{label:"codemode"}}));' });
+          if (mode === "native" && step === 2) return call("mcp_call_tool", { server: "fixture", tool: "read_cwd", arguments: { label: "native" } });
+          return text("tool complete");
+        }) });
+      try {
+        const before = (await audit()).length;
+        const start = performance.now();
+        await (await runtime.submit("hello", "greeting")).wait(ctx);
+        assert(performance.now() - start < 1500, "greeting must not wait for MCP timeout");
+        assert.equal((await audit()).length, before, "unused stdio server must not start");
+        assert.equal(blockedRequests, 0, "unused HTTP server must not connect");
+        phase = "tool";
+        await (await runtime.submit("use fixture", "tool")).wait(ctx);
+        await runtime.refresh(); assert.equal(runtime.snapshot.messages.at(-1)?.text, "tool complete");
+        const events = await audit();
+        assert.equal(events.filter(event => event.event === "start" && event.cwd === cwd).length, 1);
+        assert(events.some(event => event.event === "call" && event.cwd === cwd && event.label === mode), JSON.stringify(events));
+        assert.equal(blockedRequests, 0, "one tool must not connect another server");
+        const list = host.tools.find(tool => tool.name === "mcp_list_tools")!;
+        const results = await Promise.all([list.execute({server:"fixture"}, {} as any, ctx), list.execute({server:"fixture"}, {} as any, ctx)]);
+        for (const result of results) assert(!JSON.parse((result.content[0] as any).text).tools.some((tool: any) => tool.name === "hidden_tool"));
+        const caller = host.tools.find(tool => tool.name === "mcp_call_tool")!;
+        await assert.rejects(caller.execute({server:"fixture",tool:"hidden_tool",arguments:{}}, {} as any, ctx), /hidden/);
+        await assert.rejects(caller.execute({server:"fixture",tool:"read_cwd",arguments:{}}, {} as any, ctx), /label/);
+        const resources = await host.tools.find(tool => tool.name === "mcp_list_resources")!.execute({server:"fixture"}, {} as any, ctx);
+        assert(JSON.stringify(resources).includes("fixture://cwd"));
+        if (mode === "codemode") for (const legacy of ["legacy", "enumerate"]) {
+          phase = legacy; step = 0;
+          await (await runtime.submit(legacy, legacy)).wait(ctx);
+          assert.equal(runtime.snapshot.error, undefined);
+        }
+        const state = await host.tools.find(tool => tool.name === "mcp_status")!.execute({}, {} as any, ctx);
+        assert.equal(JSON.parse((state.content[0] as any).text).servers.find((server: any) => server.name === "blocked").state, "idle");
+        assert.equal(caller.replay, "unsafe");
+        await assert.rejects(list.execute({server:"blocked"}, {} as any, ctx), /timed out|timeout/i);
+        const again = await caller.execute({server:"fixture",tool:"read_cwd",arguments:{label:"after-failure"}}, {} as any, ctx);
+        assert(JSON.stringify(again).includes("after-failure"), "failed server must not break healthy calls");
+        blockedRequests = 0;
+      } finally { await runtime.close(); await host.close(); }
+      const reopenedHost = await DurableMcp.open(config, {} as any, {} as any, cwd);
+      const reopened = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref, toolMode: mode, instructions: () => "fixture", onSnapshot: () => {}, tools: reopenedHost.tools,
+        restoreTools: names => reopenedHost.restoreTools(names), prepareCodeMode: (code, context) => reopenedHost.codeModeTools(code, context), models: models(() => text("reopened greeting")) });
+      try {
+        const before = (await audit()).length;
+        await (await reopened.submit("hello again", "reopened")).wait(ctx);
+        assert.equal((await audit()).length, before, "restoring history must not reconnect MCP");
+      } finally { await reopened.close(); await reopenedHost.close(); }
+      console.log("PASS", mode, "lazy MCP: no startup gate, task CWD, discovery/call/resources, hidden/schema checks, reuse, failure isolation and history reopening");
+    }
+    const cwd = join(root, "legacy-mcp-native"); await mkdir(cwd);
+    const oldHost = await DurableMcp.open(config, {} as any, {} as any, cwd);
+    const old = await DurableBotRuntime.open({ directory: join(cwd,"state"), cwd, model: ref, toolMode: "native", instructions: () => "fixture", onSnapshot: () => {},
+      tools: oldHost.restoreTools(["mcp__fixture__read_cwd"]), models: models(() => text("old history")) });
+    await (await old.submit("old input", "old-input")).wait(ctx); await old.close(); await oldHost.close();
+    const startCount = (await audit()).filter(event => event.event === "start").length;
+    const host = await DurableMcp.open(config, {} as any, {} as any, cwd);
+    let steps = 0;
+    const resumed = await DurableBotRuntime.open({ directory: join(cwd,"state"), cwd, model: ref, toolMode: "native", instructions: () => "fixture", onSnapshot: () => {},
+      tools: host.tools, restoreTools: names => host.restoreTools(names), models: models(context => {
+        assert(getCurrentTools(context.messages).some(tool => tool.name === "mcp__fixture__read_cwd"), "stored native selections must resolve before reconfiguration");
+        return ++steps === 1 ? call("mcp__fixture__read_cwd", { label: "legacy-native" }) : text("legacy native complete");
+      }) });
+    try {
+      assert.equal((await audit()).filter(event => event.event === "start").length, startCount);
+      await (await resumed.submit("continue old native selection", "legacy-native")).wait(ctx); await resumed.refresh();
+      assert.equal(resumed.snapshot.messages.at(-1)?.text, "legacy native complete");
+      assert((await audit()).some(event => event.cwd === cwd && event.label === "legacy-native"));
+      console.log("PASS old persisted MCP names resolve and execute through native Durable after reopen");
+    } finally { await resumed.close(); await host.close(); }
+  } finally { blocked.closeAllConnections(); await new Promise<void>(resolve => blocked.close(() => resolve())); }
+}
 for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode + "-recovery"); await mkdir(cwd);
   let calls = 0, started = 0;

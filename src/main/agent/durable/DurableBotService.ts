@@ -133,6 +133,8 @@ export class DurableBotService {
       const worker = base && join(base, "codemode-worker.cjs");
       const runtime = await DurableBotRuntime.open({ directory, cwd, models,
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...await this.options.tools?.(task, cwd) ?? []],
+        restoreTools: names => mcp.restoreTools(names),
+        prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
         onEntries: entries => this.options.onEntries?.(taskId, entries),
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         onTurns: turns => {

@@ -21,5 +21,5 @@ export function nativeRunPhaseLabel(phase: GenerationStats["phase"] | undefined,
   if (phase === "compacting") return "压缩上下文中…";
   if (phase === "tools") return "等待工具完成…";
   if (phase === "generating") return answering ? "生成回复中…" : "模型生成中…";
-  return "等待模型响应…";
+  return "正在准备回复…";
 }

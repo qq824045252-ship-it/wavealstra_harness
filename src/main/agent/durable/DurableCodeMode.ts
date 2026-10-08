@@ -15,6 +15,7 @@ export function createDurableCodeMode(
   tools: () => readonly ToolRegistration[],
   assets: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl"> = {},
   imageDirectory?: string,
+  prepareTools?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<readonly ToolRegistration[]>,
 ): ToolRegistration {
   return defineTool({
     name: "codemode",
@@ -25,7 +26,9 @@ export function createDurableCodeMode(
     replay: "unsafe",
     executionMode: "sequential",
     execute: async ({ code }, api, context) => {
-      const available = tools();
+      const declared = tools();
+      const names = new Set(declared.map(tool => tool.name));
+      const available = [...declared, ...(await prepareTools?.(code, context) ?? []).filter(tool => !names.has(tool.name))];
       const child = await api.commit(async tx => {
         const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
         await configure(tx, conversation.id, { tools: available });
