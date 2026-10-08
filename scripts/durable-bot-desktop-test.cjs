@@ -16,7 +16,8 @@ fs.writeFileSync(path.join(agentDir,'modes/design/goal.md'),'PRESERVED_USER_BOT_
 fs.writeFileSync(path.join(agentDir,'modes/design/policy.json'),JSON.stringify({toolPolicy:{mode:'hard',deny:['write','bash','mcp__fixture__read_seed']},mcpPolicy:{mode:'hard',deny:['fixture']},artifactPolicy:{mode:'hard',deny:['py'],allow:['pdf']},presets:[{id:'kept',label:'保留的预设',promptAddon:'PRESERVED_TAG',providerMcpIds:['nonexistent'] },{id:'general',label:'通用设计'},{id:'web-prototype',label:'网页原型 · Penpot',promptAddon:'PRESERVED_PENPOT_PROMPT'}]}));
 fs.writeFileSync(path.join(agentDir,'plugins/mcp/mcp.json'),JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[path.join(root,'scripts/pi-codemode-auto-fixture.mjs'),workspace],modes:['working'],exposure:'direct',timeout:15}}}));
 const requests=[];
-let releasePresentationStart, releasePresentationFinish;
+let releasePresentationStart, releasePresentationFinish, releaseQueueHold;
+let queueHoldReleased = false;
 let blockedMcpRequests=0;
 const blockedMcp=http.createServer(()=>{blockedMcpRequests++;});
 const server=http.createServer(async(req,res)=>{
@@ -51,6 +52,12 @@ const server=http.createServer(async(req,res)=>{
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_MOVED_GREETING'))tool=undefined;
   if(extraction)tool=undefined;
   const extracted=JSON.stringify(body.messages).includes('项目介质确定为乙腈')?{candidates:[{kind:'constraint',title:'BOT_EXTRACTED_MEDIUM',content:'项目介质为乙腈',scopeType:'project',confidence:0.99,importance:2,explicit:true,operationHint:'create',userEvidence:'项目介质确定为乙腈'}]}:{candidates:[]};
+  if(!extraction&&JSON.stringify(body.messages[lastUser]).includes('BOT_QUEUE_')) {
+    tool=undefined;
+    if(JSON.stringify(body.messages[lastUser]).includes('BOT_QUEUE_HOLD')&&!queueHoldReleased) {
+      await new Promise(resolve=>{releaseQueueHold=()=>{queueHoldReleased=true;resolve();};});
+    }
+  }
   const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:tool}]}:{role:'assistant',content:extraction?JSON.stringify(extracted):'DURABLE_DESKTOP_COMPLETE'};
   const packet=(delta,finish_reason)=>({id:'chatcmpl-'+requests.length,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason}]});
   if(!extraction&&JSON.stringify(body.messages[lastUser]).includes('BOT_PRESENTATION')) {
@@ -90,6 +97,11 @@ async function launch(){
 async function close(){if(socket){try{await rpc('Browser.close');}catch{}socket.close();socket=null;}if(proc){await wait(500);if(proc.exitCode===null)cp.execFileSync('C:/Windows/System32/taskkill.exe',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});proc=null;}if(log!==undefined){fs.closeSync(log);log=undefined;}}
 async function click(selector,text){return evaluate(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!e)throw Error('Missing '+${JSON.stringify(text)});e.click();return true})()`);}
 async function send(text){await evaluate(`(()=>{const e=document.querySelector('.chat-input textarea')||document.querySelector('textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);await wait(120);await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});}
+async function streamingMode(label) {
+  await evaluate('document.querySelector(".streaming-mode-trigger").click();true');
+  await until(()=>evaluate('Boolean(document.querySelector(".streaming-mode-menu"))'),'streaming mode menu');
+  await evaluate(`[...document.querySelectorAll('.streaming-mode-item')].find(e=>e.querySelector('span').textContent===${JSON.stringify(label)}).click();true`);
+}
 async function selectProse() {
   // Wait for the timeline collapse animation before computing native mouse coordinates.
   await wait(350);
@@ -319,6 +331,30 @@ const report={temp,tests:[],status:'running'};
   assert(requests.some(r=>r.messages.some(m=>JSON.stringify(m).includes('operating in Bot mode'))));
   assert(!requests.some(r=>r.messages.some(m=>m.role==='system'&&JSON.stringify(m).includes('你当前处于「设计创意」场景'))));
   report.tests.push('native waiting animation, stable DOM through streaming/commit, plain-text completion duration and generic Bot instructions');
+  // Queue via the actual composer while the native provider is still answering.
+  await send('BOT_QUEUE_HOLD: keep the current reply active');
+  await until(()=>Boolean(releaseQueueHold),'queue fixture provider hold');
+  await draft('BOT_QUEUE_STEER: 先核对来源\n再解释区别');
+  await until(()=>evaluate('Boolean(document.querySelector(".streaming-mode-trigger"))'),'streaming send mode');
+  await streamingMode('引导');
+  await send('BOT_QUEUE_STEER: 先核对来源\n再解释区别');
+  await draft('BOT_QUEUE_FOLLOW: 最后给出结论');
+  await streamingMode('继续');
+  await send('BOT_QUEUE_FOLLOW: 最后给出结论');
+  await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return h.durable.pendingInputs.length===2;},'native steer and follow-up queue');
+  const queueUi=await evaluate(`({outside:[...document.querySelectorAll('.durable-bot-state')].map(e=>e.textContent),users:[...document.querySelectorAll('.user-bubble-text')].map(e=>e.textContent),statuses:[...document.querySelectorAll('.timeline-preparing')].map(e=>e.textContent)})`);
+  report.queueUi=queueUi;
+  fs.writeFileSync(path.join(out,'bot-queued.png'),Buffer.from((await rpc('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  assert(queueUi.users.includes('BOT_QUEUE_STEER: 先核对来源\n再解释区别'),'queued steer must use the normal user bubble');
+  assert(queueUi.users.includes('BOT_QUEUE_FOLLOW: 最后给出结论'),'queued follow-up must use the normal user bubble');
+  assert(queueUi.statuses.includes('引导已提交，等待当前步骤结束'),'steer must use the office/code reply status');
+  assert(queueUi.statuses.includes('已排队，等待当前执行结束'),'follow-up must use the office/code reply status');
+  assert(!queueUi.outside.some(text=>text.includes('已入队')||text.includes('BOT_QUEUE_')),'queue text must not sit outside the conversation');
+  releaseQueueHold();
+  await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return !h.durable.busy&&h.durable.pendingInputs.length===0;},'native queued inputs consumed');
+  await until(()=>evaluate('![...document.querySelectorAll(".timeline-preparing")].some(e=>/引导已提交|已排队/.test(e.textContent))'),'queued status removed after delivery');
+  assert.equal(await evaluate('[...document.querySelectorAll(".user-bubble-text")].filter(e=>e.textContent.includes("BOT_QUEUE_FOLLOW:")).length'),1,'consumed follow-up must not duplicate its pending preview');
+  report.tests.push('Bot steer and follow-up use office/code user bubbles and reply statuses; native consumption removes queue previews without duplicates');
   const project=await evaluate('window.api.db.createProject({name:"Bot integration",instructions:"PROJECT_INSTRUCTIONS_SENTINEL",goal:"PROJECT_GOAL_SENTINEL"})');assert(project.ok,JSON.stringify(project));
   const projectId=project.project.id;
   await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(taskId)},title:'Bot integration',projectId:${JSON.stringify(projectId)},updatedAt:Date.now()})`);

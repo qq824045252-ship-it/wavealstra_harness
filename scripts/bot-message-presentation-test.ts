@@ -32,4 +32,20 @@ for(const partial of [reply("waiting",{streaming:true}), ...records.slice(1,4)])
 }
 assert.equal(botMessagePresentation([]).length,0);
 assert.equal(botMessagePresentation([reply("orphan")])[0].presentationKey,"durable-turn-orphan");
+const queue = [{ id:"steer-1", mode:"steer" as const, text:"相同内容\n第二行" },
+  { id:"follow-1", mode:"followUp" as const, text:"相同内容\n第二行" }];
+const queueBefore = JSON.stringify(queue);
+const queued = botMessagePresentation(records,queue);
+assert.deepEqual(queued.slice(0,projected.length),projected,"Queue previews cannot change the active reply or native history");
+assert.deepEqual(queued.slice(-4).map(message=>message.role),["user","assistant","user","assistant"]);
+assert.deepEqual(queued.slice(-4).filter(message=>message.role==="user").map(message=>message.blocks),queue.map(input=>[{type:"text",text:input.text}]));
+assert.deepEqual(queued.slice(-4).filter(message=>message.role==="assistant").map(message=>message.pendingBehavior),["steer","followUp"]);
+assert(queued.slice(-4).filter(message=>message.role==="assistant").every(message=>message.streaming));
+assert.equal(new Set(queued.map(message=>message.id)).size,queued.length,"Identical queued texts must retain separate identities");
+assert.deepEqual(botMessagePresentation(records,queue).map(message=>message.id),queued.map(message=>message.id),"Queue row identities are stable across snapshots");
+assert.equal(JSON.stringify(queue),queueBefore,"The native inbox cannot be mutated by display projection");
+assert.equal(JSON.stringify(records),before,"Pending rows cannot be persisted into native history");
+const consumed = botMessagePresentation([...records,user("native-delivered"),reply("native-answer")],[]);
+assert(!consumed.some(message=>message.pendingBehavior),"A consumed native inbox leaves no pending reply rows");
+assert.equal(consumed.length,projected.length+2);
 console.log("PASS: Bot reply grouping, ordered process, tool deduplication, artifacts, turn boundaries and stable row identity");

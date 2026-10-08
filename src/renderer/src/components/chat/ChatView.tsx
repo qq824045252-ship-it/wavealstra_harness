@@ -558,7 +558,8 @@ export default function ChatView(): React.JSX.Element {
   useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
 
   const displayMessages = useMemo(() => task?.welcomeMode === "bot"
-    ? botMessagePresentation(task.messages) : task?.messages ?? [], [task?.messages, task?.welcomeMode]);
+    ? botMessagePresentation(task.messages, task.durable?.pendingInputs) : task?.messages ?? [],
+    [task?.messages, task?.welcomeMode, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
   const lastMessage = displayMessages[messageCount - 1];
@@ -1089,7 +1090,6 @@ export default function ChatView(): React.JSX.Element {
       {task.durable && <div className="durable-bot-state" role="status">
         {task.durable.compacting && <div>Pi Durable 正在压缩上下文</div>}
         {task.durable.retry && <div>Pi Durable 正在重试：{task.durable.retry.error}</div>}
-        {task.durable.pendingInputs.map(input => <div key={input.id}>{input.mode === "steer" ? "引导" : "接续"}已入队：{input.text}</div>)}
       </div>}
       {selectMode ? (
         <ShareBar />

@@ -1,7 +1,11 @@
 import type { ChatMessage, MessageBlock } from "@/types";
+import type { DurableBotSnapshot } from "@shared/durable-bot";
 
 /** Render one Bot reply per user turn while retaining the native Durable records in the store. */
-export function botMessagePresentation(messages: readonly ChatMessage[]): ChatMessage[] {
+export function botMessagePresentation(
+  messages: readonly ChatMessage[],
+  pendingInputs: readonly DurableBotSnapshot["pendingInputs"][number][] = [],
+): ChatMessage[] {
   const result: ChatMessage[] = [];
   let userId: string | undefined;
   let replies: ChatMessage[] = [];
@@ -42,5 +46,15 @@ export function botMessagePresentation(messages: readonly ChatMessage[]): ChatMe
     else replies.push(message);
   }
   flush();
+  // Queue previews belong only to this display projection. The next native
+  // snapshot removes them when it consumes the input and adds the real records.
+  for (const input of pendingInputs) {
+    result.push(
+      { id: `durable-queued-user-${input.id}`, role: "user", createdAt: 0,
+        blocks: [{ type: "text", text: input.text }] },
+      { id: `durable-queued-reply-${input.id}`, role: "assistant", createdAt: 0,
+        blocks: [], streaming: true, pendingBehavior: input.mode },
+    );
+  }
   return result;
 }
