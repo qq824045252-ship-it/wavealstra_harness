@@ -1424,8 +1424,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWelcomeMode: (mode) => {
     const taskId = get().activeTaskId;
     const task = taskId ? get().tasks.find((item) => item.id === taskId) : undefined;
-    // D1：已有消息或 session 的任务锁定 welcomeMode，只更新全局 store（影响下次新建）
-    const locked = Boolean(task && (task.messages.length > 0 || task.sessionFile));
+    // A submitted Bot already owns its backend before its first history snapshot arrives.
+    const locked = Boolean(task && (task.messages.length > 0 || task.sessionFile || task.botPendingSubmission || task.durable));
     if (locked) {
       // 全局 selection 必须对新模式合法（不能把 design preset 带到 coding）
       set({ welcomeMode: mode, modePresetId: defaultModePresetId(mode) });
@@ -3428,10 +3428,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelExplicit,
       permissionMode,
       permissionExplicit,
-      welcomeMode,
+      welcomeMode: defaultWelcomeMode,
     } = get();
     const task = tasks.find((x) => x.id === activeTaskId);
     if (!task) return;
+    const welcomeMode = task.welcomeMode ?? defaultWelcomeMode;
     const isBot = task.welcomeMode === "bot";
 
     // ACP 路由：瞬态选择（+ 菜单/「继续」按钮）优先；任务级 pin 兜底并自动续接
@@ -3571,6 +3572,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
     }));
 
+    let taskPersistence: Promise<unknown> | undefined;
     const updated = get().tasks.find((x) => x.id === activeTaskId);
     if (updated) {
       const persisted = window.api?.db?.upsertTask({
@@ -3589,6 +3591,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // undefined → 保留 DB 值：发送途中的 unpin 不会被本次 upsert 盖回
         externalAgentPin: updated.externalAgentPin,
       });
+      taskPersistence = persisted;
       if (materializedPlanId && persisted) {
         void persisted
           .then(async () => {
@@ -3673,8 +3676,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    return api.agent
-      .prompt({
+    return Promise.resolve(taskPersistence)
+      .then(() => api.agent.prompt({
         taskId: activeTaskId,
         text,
         modelId: reqModelId,
@@ -3694,7 +3697,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         modePresetId: task.modePresetId,
         // 任务级 Active 连接器（与 task.connectorIds 同步；主进程据此装配私有技能并在变更时重建会话）
         connectorIds: connectorIds ?? task.connectorIds,
-      })
+      }))
       .then(async (result) => {
         // 主进程明确拒绝（如会话仍在生成但未指定 streamingBehavior）：给出用户可见错误，
         // 不静默吞掉。仅当本地确已插入空 assistant 壳时才以 error 结束它（诚实暴露失败）。
@@ -3860,8 +3863,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelExplicit,
       permissionMode,
       permissionExplicit,
-      welcomeMode,
+      welcomeMode: defaultWelcomeMode,
     } = get();
+    const welcomeMode = task.welcomeMode ?? defaultWelcomeMode;
     const newAssistantMsgId = uid();
     const requestId = uid();
 

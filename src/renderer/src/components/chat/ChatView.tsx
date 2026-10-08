@@ -8,6 +8,7 @@ import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppS
 import type { Artifact, Space } from "@/types";
 import { heroCategories } from "@/mock/data";
 import MessageItem from "./MessageItem";
+import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
@@ -326,7 +327,7 @@ function ShareBar(): React.JSX.Element {
   const selectAll = useAppStore((s) => s.selectAllMessages);
   const setSelectMode = useAppStore((s) => s.setSelectMode);
 
-  const allIds = (task?.messages ?? []).map((m) => m.id);
+  const allIds = (task?.welcomeMode === "bot" ? botMessagePresentation(task.messages) : task?.messages ?? []).map((m) => m.id);
   const allSelected = allIds.length > 0 && selectedIds.length === allIds.length;
 
   return (
@@ -556,19 +557,21 @@ export default function ChatView(): React.JSX.Element {
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
   useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
 
-  const messageCount = task?.messages.length ?? 0;
+  const displayMessages = useMemo(() => task?.welcomeMode === "bot"
+    ? botMessagePresentation(task.messages) : task?.messages ?? [], [task?.messages, task?.welcomeMode]);
+  const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
-  const lastMessage = task?.messages[messageCount - 1];
+  const lastMessage = displayMessages[messageCount - 1];
 
   /** 找到最近一条用户消息 id（新一轮对话的锚点） */
   const latestUserMessageId = useCallback((): string | null => {
-    const messages = task?.messages;
+    const messages = displayMessages;
     if (!messages?.length) return null;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].role === "user") return messages[i].id;
     }
     return null;
-  }, [task?.messages]);
+  }, [displayMessages]);
 
   /* ------------------------------------------------------------------
    * 滚动意图状态机（单一真源 lib/scrollFollow）：
@@ -668,7 +671,7 @@ export default function ChatView(): React.JSX.Element {
     // 时视为新一轮（与 user 分支幂等，覆盖 user+assistant 同批入列）。
     // 工具循环/tool-loop 的后续 assistant turn（前一条是 assistant）不得
     // 重置滚动——新一轮只做一次置顶；之后布局变化不再拥有滚动写权限。
-    const prevMessage = messageCount >= 2 ? task?.messages[messageCount - 2] : undefined;
+    const prevMessage = messageCount >= 2 ? displayMessages[messageCount - 2] : undefined;
     const isAssistantTurnStart =
       lastMessage?.role === "assistant" &&
       Boolean(lastMessage.streaming) &&
@@ -1050,7 +1053,7 @@ export default function ChatView(): React.JSX.Element {
           <MessageList
             taskId={task.id}
             key={task.id}
-            messages={task.messages}
+            messages={displayMessages}
             artifacts={artifacts}
             visibleArtifacts={visibleArtifacts}
             scrollRef={scrollRef}
