@@ -40,7 +40,6 @@ import TagPicker from "./TagPicker";
 import HomePermissionPicker from "./HomePermissionPicker";
 import FullAccessConfirmModal from "./FullAccessConfirmModal";
 import ContextUsageControl from "./ContextUsageControl";
-import PiCodeModeChip from "./PiCodeModeChip";
 import { isManualCompactionRunning } from "@shared/compaction";
 import GenerationSpeed from "./GenerationSpeed";
 import { FileBadge } from "@/components/common/FileBadge";
@@ -1870,8 +1869,7 @@ export default function ChatInput({
           {variant !== "home" && activeTaskId && (
             <GenerationSpeed taskId={activeTaskId} btw={btwActive} />
           )}
-          {welcomeMode === "bot" && variant === "chat" && <TagPicker open={tagOpen} onToggle={() => setTagOpen(!tagOpen)} onClose={() => setTagOpen(false)} />}
-          {welcomeMode === "bot" ? <PiCodeModeChip taskId={activeTaskId ?? undefined} welcomeMode="bot" /> : variant !== "home" && <ContextUsageControl executing={executing} />}
+          {variant !== "home" && <ContextUsageControl executing={executing} />}
           <div className="input-popup-anchor" ref={modelAnchorRef}>
 
             <button

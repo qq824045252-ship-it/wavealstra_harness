@@ -59,7 +59,7 @@ const server=http.createServer(async(req,res)=>{
     }
   }
   const delta=tool?{role:'assistant',tool_calls:[{index:0,id:'call-'+requests.length,type:'function',function:tool}]}:{role:'assistant',content:extraction?JSON.stringify(extracted):'DURABLE_DESKTOP_COMPLETE'};
-  const packet=(delta,finish_reason)=>({id:'chatcmpl-'+requests.length,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason}]});
+  const packet=(delta,finish_reason)=>({id:'chatcmpl-'+requests.length,object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason}],...(finish_reason?{usage:{prompt_tokens:2400,completion_tokens:80,total_tokens:2480,prompt_tokens_details:{cached_tokens:1800}}}:{})});
   if(!extraction&&JSON.stringify(body.messages[lastUser]).includes('BOT_PRESENTATION')) {
     await new Promise(resolve=>{releasePresentationStart=resolve;});
     res.writeHead(200,{'Content-Type':'text/event-stream'});
@@ -101,6 +101,12 @@ async function streamingMode(label) {
   await evaluate('document.querySelector(".streaming-mode-trigger").click();true');
   await until(()=>evaluate('Boolean(document.querySelector(".streaming-mode-menu"))'),'streaming mode menu');
   await evaluate(`[...document.querySelectorAll('.streaming-mode-item')].find(e=>e.querySelector('span').textContent===${JSON.stringify(label)}).click();true`);
+}
+async function mouseClick(selector) {
+  const r=await evaluate(`document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().toJSON()`);
+  const point={x:r.x+r.width/2,y:r.y+r.height/2,button:'left',clickCount:1};
+  await rpc('Input.dispatchMouseEvent',{type:'mousePressed',...point,buttons:1});
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',...point,buttons:0});
 }
 async function selectProse() {
   // Wait for the timeline collapse animation before computing native mouse coordinates.
@@ -168,6 +174,23 @@ const report={temp,tests:[],status:'running'};
   assert(report.mcpStartup.greetingMs<2000,JSON.stringify(report.mcpStartup));assert.equal(blockedMcpRequests,0,'a plain greeting must not contact unused MCP');
   assert(!fs.existsSync(path.join(workspace,'mcp-audit.jsonl')),'plain greeting must not call the healthy MCP either');
   report.tests.push('plain greeting reaches the real provider within 2s while an unused MCP would block for 30s; no MCP contacts');
+  report.botComposer=await evaluate(`({modeSelector:Boolean(document.querySelector('.input-area .workspace-trigger')),runtimeLabel:document.querySelector('[data-testid="pi-durable-status"]')?.textContent,context:Boolean(document.querySelector('.context-usage-ring-btn'))})`);
+  assert(report.botComposer.context,'Bot composer must expose the office/code context usage control');
+  assert(!report.botComposer.modeSelector,'Bot chat must not show a mode selector');
+  assert(!report.botComposer.runtimeLabel,'Bot chat must not show a Pi Durable mode label');
+  await mouseClick('.context-usage-ring-btn');
+  await until(()=>evaluate('Boolean(document.querySelector(".context-usage-popup"))'),'Bot context popup');
+  const contextUi=await evaluate(`({summary:document.querySelector('.context-usage-popup-used').textContent,cache:document.querySelector('.context-usage-popup-cache-val').textContent,categories:[...document.querySelectorAll('.context-usage-popup-label')].map(e=>e.textContent),button:document.querySelector('.manual-compaction-control button').textContent,disabled:document.querySelector('.manual-compaction-control button').disabled,usage:window.__botEvents.filter(e=>e.type==='durable_snapshot').at(-1).snapshot.contextUsage})`);
+  assert.match(contextUi.summary,/约 2\.5K\/128\.0K/);assert.equal(contextUi.cache,'75%');
+  assert.deepEqual(contextUi.categories,['系统提示词','工具及子智能体','对话消息','技能','MCP','连接器']);
+  assert.equal(contextUi.button,'立即压缩');assert(!contextUi.disabled);
+  assert.equal(contextUi.usage.usedTokens,2480);assert.equal(contextUi.usage.cacheHitRate,0.75);
+  report.contextUi=contextUi;
+  await rpc('Page.bringToFront');
+  fs.writeFileSync(path.join(out,'bot-context-usage.png'),Buffer.from((await rpc('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  await mouseClick('.context-usage-popup-close');
+  await until(()=>evaluate('!document.querySelector(".context-usage-popup")'),'context popup close');
+  report.tests.push('Bot composer replaces mode controls with the office/code context ring and popup; native token use, cache rate and manual compaction control are shown');
   await click('.sidebar-cta-btn','新建任务');await until(()=>evaluate('Boolean(document.querySelector(".hero"))'),'new task after greeting');
   await click('.hero-categories button','Bot');
   await evaluate('window.__botEvents=[];true');
@@ -271,10 +294,10 @@ const report={temp,tests:[],status:'running'};
   assert(!movedArtifacts.artifacts.some(a=>a.source?.entryFile?.startsWith(moveRoot+path.sep)),'preexisting space files must not be scanned or projected as Bot outputs');
   const unmove=await evaluate(`window.api.db.moveTaskInWorkspaceTree({taskId:${JSON.stringify(taskId)},targetSpaceId:null})`);assert.equal(unmove.ok,true);
   report.tests.push('standalone Bot moved to a populated space preserves native cwd and original artifacts; preexisting files and same-name files are not new outputs');
-  await click('.workspace-trigger','原生模式');await evaluate(`(()=>{const e=[...document.querySelectorAll('.workspace-popup-item')].find(e=>e.querySelector('.workspace-popup-name')?.textContent==='Code Mode');if(!e)throw Error('Code Mode Tag missing');e.click();return true;})()`);
-  await send('BOT_CODEMODE: run deterministic verification');
+  // Existing configured Code Mode Bots remain supported without a chat mode picker.
+  await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(taskId)},text:'BOT_CODEMODE: run deterministic verification',userMessageId:'desktop-codemode',assistantMessageId:'desktop-codemode-placeholder',modePresetId:'codemode'})`);
   await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return h.durable.toolMode==='codemode'&&!h.durable.busy&&h.messages.filter(m=>m.role==='user').length===3;},'Code Mode result',45000);
-  const second=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(second.messages.some(m=>m.tools?.some(t=>t.tool==='bash'&&t.parentToolCallId&&t.status==='success')),JSON.stringify(second.messages));report.tests.push('same Bot switches Tag to Code Mode; real QuickJS worker, MCP, write and Bash child tasks');
+  const second=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);assert(second.messages.some(m=>m.tools?.some(t=>t.tool==='bash'&&t.parentToolCallId&&t.status==='success')),JSON.stringify(second.messages));report.tests.push('configured Code Mode Bot still uses real QuickJS worker, MCP, write and Bash child tasks');
   await until(()=>evaluate('document.querySelectorAll(".assistant-avatar-row").length===3'),'one displayed assistant per user turn in Code Mode');
   const cards=await evaluate(`window.api.artifactDomain.list({taskId:${JSON.stringify(taskId)}})`);
   assert(cards.artifacts.some(a=>a.source?.entryFile===path.join(temp,'outside.py')),'native absolute output must appear as artifact');
@@ -334,6 +357,10 @@ const report={temp,tests:[],status:'running'};
   // Queue via the actual composer while the native provider is still answering.
   await send('BOT_QUEUE_HOLD: keep the current reply active');
   await until(()=>Boolean(releaseQueueHold),'queue fixture provider hold');
+  await mouseClick('.context-usage-ring-btn');
+  await until(()=>evaluate('Boolean(document.querySelector(".context-usage-popup"))'),'context popup while Bot is running');
+  assert(await evaluate('document.querySelector(".manual-compaction-control button").disabled'),'manual compaction is disabled during a reply');
+  await mouseClick('.context-usage-popup-close');
   await draft('BOT_QUEUE_STEER: 先核对来源\n再解释区别');
   await until(()=>evaluate('Boolean(document.querySelector(".streaming-mode-trigger"))'),'streaming send mode');
   await streamingMode('引导');
@@ -494,8 +521,8 @@ const report={temp,tests:[],status:'running'};
   assert.equal(fs.readFileSync(path.join(gatewayTask.cwd,'proof.py'),'utf8'),'DURABLE_PROOF');
   await until(()=>evaluate('[...document.querySelectorAll(".task-item-title")].some(e=>e.textContent==="Gateway Bot fixture")'),'Gateway sidebar task');
   await click('.task-item-title','Gateway Bot fixture');
-  await until(()=>evaluate('document.querySelector(".workspace-trigger")?.textContent.trim()==="原生模式"'),'Gateway native Tag');
-  assert(await evaluate('document.querySelector(".workspace-trigger").disabled'));
+  await until(()=>evaluate('Boolean(document.querySelector(".context-usage-ring-btn"))'),'Gateway context control');
+  assert(await evaluate('!document.querySelector(".input-area .workspace-trigger")&&!document.querySelector("[data-testid=pi-durable-status]")'));
   assert(await evaluate('document.body.innerText.includes("DURABLE_DESKTOP_COMPLETE")'));
   const gatewayShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'gateway-bot-native.png'),Buffer.from(gatewayShot.data,'base64'));
   assert.deepEqual((await evaluate('window.api.db.listTasks()')).find(t=>t.id===legacyGateway.id),legacyBefore);
