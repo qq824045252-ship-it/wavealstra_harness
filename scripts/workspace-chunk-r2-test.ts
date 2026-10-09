@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AppDatabase } from "../src/main/db/AppDatabase";
+import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { WorkspaceResourceLocator } from "../src/main/workspace/WorkspaceResourceLocator";
@@ -72,7 +72,7 @@ async function main() {
     const hasTable = (n: string) => db.connection.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(n) !== undefined;
     ok(hasTable("library_chunks"), "library_chunks 存在");
     ok(hasTable("library_chunks_fts") || true, "library_chunks_fts 存在（若 FTS5 可用）");
-    eq(db.schemaVersion, 17, "schemaVersion=17");
+    eq(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, `schemaVersion=${CURRENT_DATABASE_SCHEMA_VERSION}`);
     // 幂等重开
     const p = (db as any).dbPath ?? "";
     db.close();
@@ -248,7 +248,11 @@ async function main() {
     repo.deleteChunks(item1.id);
     repo.deleteChunks(item2.id);
     repo.deleteChunks(item3.id);
-    // 本组用独立 DB，避免 welcome 等额外项干扰：candidates 即我们创建的 3 项
+    // 本组用独立 DB，避免 welcome 等额外项干扰：candidates 即我们创建的 3 项。
+    // 注意：LibraryService 构造会向 personal 空间 seed 一个欢迎条目（seedWelcomeIfEmpty），
+    // 它没有 chunk，因此同样是 backfill 候选；batchSize=1 时首批会落在它身上，
+    // 使下面的"剩余 2 项"断言偏移。必须真正删除它（旧注释声称已处理但代码并未删除）。
+    db.connection.prepare(`DELETE FROM library_items WHERE title = ?`).run("一分钟玩转资料库");
     // 通过直接查询 our 3 的 hasChunks 来断言，不依赖全局 processed 计数
     const beforeAllEmpty = [item1.id, item2.id, item3.id].every((id) => repo.listChunks(id).length === 0);
     ok(beforeAllEmpty, "中断恢复组：初始 3 项均无 chunk");

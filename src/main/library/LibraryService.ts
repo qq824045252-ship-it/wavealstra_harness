@@ -1220,22 +1220,30 @@ export class LibraryService {
     try {
       const prev = this.repo.listChunks(itemId);
       for (const c of prev) { oldChunkIds.add(c.id); oldHashes.set(c.id, c.hash); }
-    } catch {}
+    } catch (err) {
+      // Non-fatal: without the previous chunk snapshot we can only do a full stale sweep.
+      console.warn(`[Library] 读取旧 chunk 快照失败 ${itemId}（退化为全量 stale 清扫）：`, err);
+    }
     try {
       if (!text || text.trim().length === 0) {
-        try { this.invalidateEmbeddingsForChangedChunks(itemId, new Set<string>(), oldChunkIds, oldHashes); } catch {}
+        try { this.deleteStaleEmbeddingsForItem(itemId); } catch (err) {
+          console.warn(`[Library] embedding 失效失败（空正文）${itemId}：`, err);
+        }
         this.repo.deleteChunks(itemId);
         return;
       }
       const chunks = chunkText(itemId, text);
       const newIds = new Set(chunks.map((c) => c.id));
-      const newHashById = new Map(chunks.map((c) => [c.id, c.hash] as const));
-      try { this.invalidateEmbeddingsForChangedChunks(itemId, newIds, oldChunkIds, new Map([...oldHashes].filter(([k]) => newIds.has(k)))); } catch {}
-      // Handle removed set separately (invalidateEmbeddingsForChangedChunks handles removed+changed)
+      try { this.deleteStaleEmbeddingsForItem(itemId); } catch (err) {
+        console.warn(`[Library] embedding 失效失败 ${itemId}：`, err);
+      }
+      // Removed chunks are handled by the stale sweep above (their embeddings no longer join to library_chunks).
       try {
         const removedIds = [...oldChunkIds].filter((id) => !newIds.has(id));
         if (removedIds.length > 0) this.deleteEmbeddingsForChunkIds(removedIds);
-      } catch {}
+      } catch (err) {
+        console.warn(`[Library] 移除 chunk 的 embedding 清理失败 ${itemId}：`, err);
+      }
       this.repo.upsertChunks(itemId, chunks as any);
     } catch (err) {
       console.warn(`[Library] chunk 写入失败 ${itemId}：`, err);
@@ -1244,31 +1252,33 @@ export class LibraryService {
 
   /** Unified lifecycle API — explicit, no scattered copies */
   private deleteEmbeddingsForItem(itemId: string): void {
-    try { (this.db as any).deleteChunkEmbeddings?.(itemId); } catch {}
+    try { (this.db as any).deleteChunkEmbeddings?.(itemId); } catch (err) {
+      console.warn(`[Library] deleteChunkEmbeddings 失败 ${itemId}：`, err);
+    }
     try {
       const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
       conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id=?)`).run(itemId);
-    } catch {}
+    } catch (err) {
+      console.warn(`[Library] 删除条目 embedding 失败 ${itemId}：`, err);
+    }
   }
   private deleteEmbeddingsForChunkIds(chunkIds: string[]): void {
     if (chunkIds.length === 0) return;
-    try {
-      const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
-      const ph = chunkIds.map(() => "?").join(",");
-      conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (${ph})`).run(...chunkIds);
-    } catch {}
+    const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
+    const ph = chunkIds.map(() => "?").join(",");
+    conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (${ph})`).run(...chunkIds);
   }
-  private invalidateEmbeddingsForChangedChunks(itemId: string, _newIds: Set<string>, oldIds: Set<string>, oldHashesForKept: Map<string, string>): void {
-    // For kept chunks where hash changed vs new hash, embeddings with old chunk_hash are stale; delete them.
-    // Called before upsertChunks, so we compare oldHashesForKept (id->oldHash) vs new hash (looked up via chunkText again would be expensive).
-    // Simpler: delete embeddings where chunk_hash != current chunk's hash after upsert is handled by backfill skip; but explicitly delete stale now:
-    // We enumerate current chunks' hashes via a snapshot precomputed by caller; if caller passed filtered oldHashesForKept, those are kept ids only.
-    // Stale = kept id but oldHash != newHash. We resolve newHash from the fresh chunkText set held by caller scope via closure? Instead, do DB-level stale sweep:
-    // After upsert, any embedding whose chunk_hash != library_chunks.hash is stale — delete via join.
-    try {
-      const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
-      conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?) AND chunk_hash != (SELECT hash FROM library_chunks WHERE library_chunks.id = library_chunk_embeddings.chunk_id)`).run(itemId);
-    } catch {}
+  /**
+   * Delete every embedding for `itemId` whose `chunk_hash` no longer matches its chunk's current hash.
+   *
+   * NOTE: this is a DB-level sweep, not a per-chunk diff. It intentionally takes no chunk-id inputs —
+   * an earlier signature accepted (newIds, oldIds, oldHashes) but ignored all three, which made the
+   * caller look like it was doing a precise incremental invalidation when it was not. Keep it honest:
+   * call it BEFORE upsertChunks to drop embeddings for still-joined chunks whose text changed.
+   */
+  private deleteStaleEmbeddingsForItem(itemId: string): void {
+    const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
+    conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?) AND chunk_hash != (SELECT hash FROM library_chunks WHERE library_chunks.id = library_chunk_embeddings.chunk_id)`).run(itemId);
   }
 
   /** 文本 body 读取（复用 refreshFts/refreshChunksForItem 的读取路径）：文本类→文件；office/pdf→抽取正文 */

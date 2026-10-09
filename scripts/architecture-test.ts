@@ -1581,24 +1581,35 @@ async function main(): Promise<void> {
       agent.prompt = originalPrompt;
     }
 
-    // ---- P3-3：switchExpert 空闲释放 registry + 同步 detach MCP session 引用 ----
+    // ---- P3-3：switchExpert 记录 desired，交由下一轮空闲输入的“安全提升”重建 ----
+    // 契约变更（0.1.17）：switchExpert 改为 saveTaskExpertBinding，不再立即 releaseIfIdle。
+    // 理由见 AgentService.saveTaskExpertBinding：Pi 可能在已受理请求仍在准备附件时报 idle，
+    // 此处 dispose 会撕掉正在使用的会话；改为下一轮装配指纹变化时重建。
     const mcpSessions = (agent.mcpRuntime as unknown as { sessions: Map<string, { extensions: unknown[]; bus: { clear(): void } }> }).sessions;
     mcpSessions.set("reg-task", { extensions: [], bus: { clear: () => {} } });
-    await agent.switchExpert({ taskId: "reg-task", expertId: null });
-    assert(agent.registry.get("reg-task") === undefined, "P3-3：空闲切换专家 → registry 释放");
-    assert(!mcpSessions.has("reg-task"), "P3-3：MCP session 扩展引用同步清理（无残留）");
+    // 新实现经 ExpertService 校验来源专家存在，并强制任务行存在；补齐 fixture。
+    db.upsertTask({ id: "reg-task", title: "Reg task", updatedAt: 2, spaceId: null, welcomeMode: "coding" });
+    db.upsertTask({ id: "busy-task", title: "Busy task", updatedAt: 3, spaceId: null, welcomeMode: "coding" });
+    const e1Dir = join(sandbox, "expert-pkg-e1");
+    write(join(e1Dir, ".codebuddy-plugin", "plugin.json"), JSON.stringify({ name: "e1", displayName: { zh: "E1" } }));
+    write(join(e1Dir, "agents", "e1.md"), "---\nname: e1\ndescription: e1\n---\n# E1\n");
+    expertSvc.installByPath(e1Dir);
 
-    // 忙（流式）会话：切换专家只标 dirty，不释放；下一轮空闲 prompt 重建
+    await agent.switchExpert({ taskId: "reg-task", expertId: null });
+    assert(agent.getTaskExpertBinding("reg-task").desired?.sourceExpertId == null, "P3-3：切换专家记录 desired=null");
+    assert(agent.registry.get("reg-task") !== undefined, "P3-3：空闲切换专家不再立即释放会话（延迟到下一轮安全提升）");
+
+    // 忙（流式）会话：切换专家同样只更新 binding，不打断流式会话；下一轮空闲 prompt 重建
     const busy = makeFakeSession();
     const busyCwd = agent.resolveTaskExecutionWorkspaceCwd("busy-task");
     const busyEntry = makeEntry("busy-task", busyCwd, [], busy.session);
     busy.session.isStreaming = true;
     agent.registry.set(busyEntry);
     await agent.switchExpert({ taskId: "busy-task", expertId: "e1" });
+    assert(agent.getTaskExpertBinding("busy-task").desired?.sourceExpertId === "e1", "忙时切换专家 → 记录 desired=e1");
     assert(
-      agent.registry.get("busy-task")?.assemblyDirty === true &&
-        agent.registry.get("busy-task")?.expertId === "e1",
-      "忙时切换专家 → 标记 dirty + 更新 entry.expertId（延迟到空闲后重建）",
+      agent.registry.get("busy-task")?.session.isStreaming === true,
+      "忙时切换专家不打断流式会话（延迟到空闲后重建）",
     );
 
     // ---- Problem Two 4.5：流式会话未显式指定 streamingBehavior → 主进程明确拒绝 ----

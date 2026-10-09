@@ -195,6 +195,7 @@ function readdirSafe(dir: string): string[] {
     "dispose",
     "handleRequest",
     "visible",
+    "captureSurface", // wave5：WCV 截图面访问器（与 webContentsView 同类的只读装配访问器）
     "debugger", // 4C：CaptureModeController 装配（WCV CDP 能力访问器）
     "webContentsView", // 收敛 A：PageInspectionService 统一页面检查底层装配（WCV 访问器）
   ]);
@@ -403,13 +404,27 @@ function readdirSafe(dir: string): string[] {
     "src/main/artifact/SelectionStore.ts",
     "src/shared/selection.ts", // 类型/常量定义（无逻辑）
   ]);
+  /**
+   * 「selection 领域的 stale」= 作用于 SelectionDescriptor 的 markStale/validateAgainst。
+   *
+   * 不能只按方法名匹配：仓库里还有 MemorySkillRevisionService.markStale（把 memory skill
+   * revision 候选的 DB status 置为 'stale'），与 selection 语义无关，按名匹配会产生稳定误报
+   * （旧版即因此长期红灯）。因此要求签名或邻近上下文出现 SelectionDescriptor/selection 领域类型。
+   */
+  const nameRe = /(?<![\w.?])(?:markStale|validateAgainst)\s*\(([^)]*)\)\s*[:{]/g;
+  const domainRe = /\bSelectionDescriptor\b|\bSelectionId\b|\bSelectionSnapshot\b|\bselectionStore\b/;
   for (const f of files) {
     const rel = relative(ROOT, f).replace(/\\/g, "/");
     if (allowed.has(rel)) continue;
     const code = stripComments(readFileSync(f, "utf-8"));
-    // 只查「实现」（方法定义），调用点（selectionStore?.validateAgainst 装配）不算
-    for (const m of code.matchAll(/(?<![\w.?])(?:markStale|validateAgainst)\s*\([^)]*\)\s*[:{]/g)) {
-      hits.push(`${rel}: ${m[0]}`);
+    for (const m of code.matchAll(nameRe)) {
+      const signature = m[0];
+      // 命中即可疑：参数表直接声明 selection 领域类型，或该方法定义所在的重载/签名邻域引用 selection 领域类型。
+      const contextStart = Math.max(0, (m.index ?? 0) - 240);
+      const context = code.slice(contextStart, (m.index ?? 0) + signature.length);
+      if (domainRe.test(signature) || (domainRe.test(context) && !/\bMemorySkill\w*|memory_skill/.test(context))) {
+        hits.push(`${rel}: ${signature.trim()}`);
+      }
     }
   }
   check(

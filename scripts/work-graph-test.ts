@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AppDatabase } from "../src/main/db/AppDatabase";
+import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { WorkGraphService } from "../src/main/workgraph/WorkGraphService";
 import type { SpaceDto } from "../src/shared/agent-ipc";
 
@@ -47,7 +47,7 @@ async function main() {
   await withTmpDb(async (db) => {
     const hasTable = (n: string) => (db.connection as unknown as { prepare: (s: string) => { get: (...a: unknown[]) => unknown } }).prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(n) !== undefined;
     ok(hasTable("work_graph_edges"), "work_graph_edges 存在");
-    eq(db.schemaVersion, 17, "schemaVersion=17");
+    eq(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, `schemaVersion=${CURRENT_DATABASE_SCHEMA_VERSION}`);
     const idx = (name: string) => (db.connection as unknown as { prepare: (s: string) => { get: (...a: unknown[]) => unknown } }).prepare(`SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`).get(name) !== undefined;
     ok(idx("idx_wge_from"), "idx_wge_from 存在");
     ok(idx("idx_wge_to"), "idx_wge_to 存在");

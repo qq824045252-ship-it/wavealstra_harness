@@ -1,0 +1,28 @@
+{
+  "$comment": "已知失败基线（棘轮）。新增失败会让 test:all 失败；修复后请移除对应条目。每条应附简短原因。",
+  "generatedAt": "2026-10-09T03:16:18.250Z",
+  "knownFailing": [
+    "test:architecture",
+    "test:blender-skill",
+    "test:capability-packaging",
+    "test:chat-selection",
+    "test:dimagent-debug",
+    "test:external-cli-memory",
+    "test:memory-procedure-learning",
+    "test:memory-skill-learning",
+    "test:pi-codemode-native",
+    "test:pi-native-control",
+    "test:pi099-closeout",
+    "test:pi099-migration",
+    "test:project-agent",
+    "test:project-task-defaults",
+    "test:runtime-skill-loader",
+    "test:skill-authoring-recovery",
+    "test:skill-root-guard",
+    "test:subagent-mapper",
+    "test:workspace-chunk-benchmark",
+    "test:workspace-navigation-ux",
+    "test:workspace-runtime-integration",
+    "test:workspace-tree"
+  ]
+}

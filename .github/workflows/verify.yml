@@ -1,0 +1,50 @@
+name: verify
+
+# 仓库此前的核心问题不是"测试挂了"，而是没有任何机制会让任何人发现测试挂了：
+# 290+ 个 test:* 脚本没有聚合入口、没有 CI，于是"过期常量"（断言 Pi 1.0.0 而实际 1.0.4）
+# 与"源码文本断言"可以长期腐烂。本工作流把 test:all 作为门禁接进回路。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # 只跑无头可判定部分；GUI/CDP/GPU 用例由 test:all 的 EXCLUDE_PATTERNS 排除，
+    # 需要真实桌面会话时用 `pnpm -s test:all:live` 在自托管 runner 上验证。
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        continue-on-error: true
+
+      - name: Typecheck
+        run: pnpm -s typecheck
+
+      - name: Harness quality gate
+        run: pnpm -s test:harness-quality
+
+      - name: Artifact machine gate
+        run: pnpm -s test:artifact-gate
+
+      # 棘轮门禁：新增回归 → 失败；scripts/test-baseline.json 中的已知失败
+      # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
+      - name: Full default suite (ratchet gate)
+        run: pnpm -s test:all

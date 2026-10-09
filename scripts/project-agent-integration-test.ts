@@ -23,6 +23,9 @@ const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionW
 const { ProjectRepository } = await import("../src/main/project/ProjectRepository");
 const { ProjectService } = await import("../src/main/project/ProjectService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");
+// 真实 SessionManager/SettingsManager：bindSessionModelAdmission 与 legacy memory 重建会直接使用
+// session.sessionManager / session.settingsManager 的完整接口，手写最小 fake 会随实现演进而漏方法。
+const { SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
 type AgentUiPatch = import("../src/shared/agent-ipc").AgentUiPatch;
 type CreateAgentSessionOptions = import("@earendil-works/pi-coding-agent").CreateAgentSessionOptions;
 type CreateAgentSessionResult = import("@earendil-works/pi-coding-agent").CreateAgentSessionResult;
@@ -69,6 +72,19 @@ const fakeSession = {
   model: undefined,
   messages: [],
   sessionFile: join(root, "runtime-session.jsonl"),
+  // bindSessionModelAdmission(session) 需要这些成员：
+  //   sessionManager 作为 WeakMap 键（未定义会抛 "Invalid value used as weak map key"）且被 legacy
+  //   memory 重建调用 getBranch/getEntry/...；settingsManager 作为默认 admissionSettings。
+  // 用真实实现而非手写 fake，避免实现演进后漏方法。
+  sessionManager: SessionManager.inMemory(root),
+  settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+  agent: { streamFunction: () => {} },
+  compact: async () => {},
+  navigateTree: async () => {},
+  // bindLegacyMemoryHistory 还会包装 abort / abortCompaction / refreshContext。
+  abort: async () => {},
+  abortCompaction: () => {},
+  refreshContext: () => {},
   prompt: async (text: string) => {
     submittedPrompt = text;
   },

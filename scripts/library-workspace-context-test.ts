@@ -106,10 +106,39 @@ try {
     confidence: 1,
     importance: 1,
   });
-  const digest = context.memoryDigest("workspace-context", "task-context", "workspace context baseline");
-  assert(digest?.includes("Workspace context baseline") || digest?.includes("workspace-context-marker"), "enabled memory resolves query-aware workspace capsule");
-  memoryEnabled = false;
-  assert.equal(context.memoryDigest("workspace-context", "task-context", "workspace context baseline"), null, "memory master switch prevents workspace memory injection");
+  // Memory 注入已收敛到 PromptAssembly 的 memoryRules 段（LibraryWorkspaceContextService 不再暴露
+  // memoryDigest）。断言真实 seam：master switch 决定是否注入长期记忆规则段。
+  const memoryOn = assemblePrompt({
+    welcomeMode: "working",
+    profile,
+    soul: { name: "Buddy", alias: "Buddy", persona: "" },
+    projectContext: first.projectContext,
+    permissionMode: "default",
+    platform: process.platform,
+    memoryEnabled: true,
+    libraryCatalog: first.libraryCatalog,
+    libraryAttachments: first.libraryAttachments,
+    libraryAttachedItemIds: first.libraryAttachedItemIds,
+  });
+  const memoryOnRules = memoryOn.segments.find((segment) => segment.id === "memoryRules");
+  assert(memoryOnRules, "memoryEnabled=true 时注入 memoryRules 段");
+  assert(memoryOnRules!.content.includes("内置长期记忆"), "启用记忆时注入长期记忆规则");
+
+  const memoryOff = assemblePrompt({
+    welcomeMode: "working",
+    profile,
+    soul: { name: "Buddy", alias: "Buddy", persona: "" },
+    projectContext: first.projectContext,
+    permissionMode: "default",
+    platform: process.platform,
+    memoryEnabled: false,
+    libraryCatalog: first.libraryCatalog,
+    libraryAttachments: first.libraryAttachments,
+    libraryAttachedItemIds: first.libraryAttachedItemIds,
+  });
+  const memoryOffRules = memoryOff.segments.find((segment) => segment.id === "memoryRules");
+  assert(memoryOffRules, "memoryEnabled=false 时仍注入 memoryRules 段（用于显式禁止）");
+  assert(memoryOffRules!.content.includes("长期记忆已关闭"), "记忆 master switch 关闭时明确禁止加载长期记忆");
   memoryEnabled = true;
 
   const oldSegments = [
@@ -130,9 +159,13 @@ try {
     welcomeMode: "working",
   });
   const btw = context.renderBtwProjectContextSegments(oldSegments, "task-context");
-  assert(!btw.some((part) => part.includes("STALE A") || part.includes("STALE WORKSPACE")), "BTW rebuild removes stale project/library/workspace assembly");
-  assert(btw.some((part) => part.includes("B goal is current")), "BTW rebuild follows current project binding");
-  assert(btw.some((part) => part.includes("B current catalog document")), "BTW rebuild recalculates current project Library catalog");
+  // 契约（现行）：evidence 段（projectSharedContext/projectPinnedRefs/projectResources/projectPlan/
+  // library/libraryAttachments，见 EvidenceBudget.EVIDENCE_SEGMENTS）不再由 BTW 重渲染——它们由瞬态会话
+  // 自己的请求投影提供（AgentService 将其转为 supplementalEvidence）。此处只保留并重算非 evidence 段，
+  // 同时必须确保陈旧 evidence 不被残留。
+  assert(!btw.some((part) => part.includes("STALE A") || part.includes("STALE WORKSPACE")), "BTW rebuild drops stale project/library/workspace evidence");
+  assert(!btw.some((part) => part.includes("B goal is current")), "BTW 不重渲染 evidence（改由瞬态会话请求投影提供）");
+  assert(!btw.some((part) => part.includes("B current catalog document")), "BTW 不重算 Library catalog（evidence 由请求投影提供）");
   assert(btw.some((part) => part.includes("Keep expert role")), "BTW rebuild preserves non-project context segments");
 
   const second = context.resolveTask("task-context", false);

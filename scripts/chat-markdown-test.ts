@@ -264,7 +264,9 @@ console.log("== 2) 结构断言：无 renderer 类型切换（正文区） + thi
     "utf8",
   );
   assert(
-    commonMarkdown.includes("isSvgFenceLanguage(extracted.language)") &&
+    // 只断言「调用了 isSvgFenceLanguage 判定 + 路由到 SvgFencePreview」，不锁死参数个数：
+    // 实现从 (language) 演进为 (language, code) 后，按精确文本匹配会误报（功能本身正确）。
+    commonMarkdown.includes("isSvgFenceLanguage(extracted.language") &&
       commonMarkdown.includes("<SvgFencePreview code={extracted.code} />"),
     "右侧 Markdown 文档预览支持 SVG 围栏",
   );
