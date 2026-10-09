@@ -100,3 +100,16 @@ RECT narrow  {"left":20,"top":16.39,"right":400,"bottom":618.73,"width":380,"hei
 - **未**运行 `test:multi-model-consult:live`（需要真实供应商认证、产生真实用量）。所以「真实模型陷入死循环时点终止立刻结束」没有在真实供应商上端到端验证；已验证的是运行时逻辑（对抗性探针）与渲染层到 IPC 的载荷（真实渲染测试）。
 - 拖动手感只在真实 Chromium 中用合成指针事件验证，没有真人评估。
 - 新增的 `test:consult-card-ui` 依赖本机桌面会话（隐藏窗口）；它已进入 default 门禁，Gate 会删除 `ELECTRON_RUN_AS_NODE`，因此可无头运行；但无桌面会话的 CI 上仍会失败，属于本仓库既有的 GUI 用例类别。
+- 打包版本里「会诊卡片详情」无法在无真实模型的情况下被驱动（卡片只有真实 `multi_model_consult` 调用后才出现），因此打包验收覆盖的是：asar 内含本次改动的构建产物 + 打包应用的会诊入口/设置/输入框全链路。真实模型下的浮窗外观仍需用户实机确认。
+
+## 发布记录（0.1.21）
+
+- 提交与推送：`9f246fb fix(consult): floating detail panel, per-participant terminate, working follow-up` → `origin/main`（`cb2887a..9f246fb`）。同分支另外两个提交 `d86d455`（清理 0.99.x 遗留产物与该一次性升级工具链）与 `3042de8`（另一位贡献者把所有工作树内容一次性提交，其中包含本次改动的中间版本）不是本次任务产生的，已一并随分支推送。
+- 打包：`pnpm -s dist` 的 **NSIS 目标失败**（`release\MyBuddy Setup 0.1.21.exe` exit 2），因此沿用 0.1.20 已接受的约定改用 unpacked 产物：
+  `npx electron-builder --win --dir --config.directories.output=release-mybuddy-0.1.21` → 成功。
+- 接受的产物：`release-mybuddy-0.1.21\win-unpacked\MyBuddy.exe`，`FileVersion 0.1.21` / `ProductVersion 0.1.21.0`，SHA256 `6229E27E534D8B7552BBA80BE756E2EA6AE008645E82567816F825AF4D4D5C9F`；`resources\app.asar` SHA256 `F1CA54312E5C3757875E4F416122FBE58DBC1B0C8D48AB38E58C5CDB8DFC8A69`（175 486 126 字节）。记录写入 `artifacts/mybuddy-0.1.21-release/accepted-build.json`。
+- asar 内容核验（`utf8` 读取）：`stopConsultWorker`、`requestWorkerStop`、`CONSULT_CLEANUP_GRACE_MS`、`用户终止该模型`、`consult-followup`、`基于这一发现…`（实际为 `基于此发现继续调查`）、`height: fit-content` 全部 FOUND。
+- 打包应用实机验证：`CONSULT_ENTRY_TEST_EXE=release-mybuddy-0.1.21\win-unpacked\MyBuddy.exe pnpm -s test:consult-entry:desktop` → 8/8 通过（隔离 profile，真实窗口 + 渲染进程 + IPC）。清理旧版本目录后再次运行仍 8/8，exe 哈希不变。
+- 快捷方式：开始菜单 `MyBuddy.lnk` 就地更新；桌面新增 `MyBuddy 0.1.21.lnk` 并删除会悬空的 `MyBuddy 0.1.20.lnk`。备份在 `artifacts/mybuddy-0.1.21-release/shortcut-backups-20261009-161649/`。回读确认 Target/WorkingDirectory/Icon 均指向 0.1.21 且目标存在。
+- 只保留一个已接受发布：确认无进程占用、无快捷方式引用后，删除 `release-mybuddy-0.1.20` 与失败的 `release`（含 353 MB 中间产物）。
+

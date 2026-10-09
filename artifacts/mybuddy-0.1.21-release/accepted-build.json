@@ -1,0 +1,19 @@
+{
+  "version": "0.1.21",
+  "productVersion": "0.1.21.0",
+  "fileDescription": "MyBuddy",
+  "appId": "com.mybuddy.app",
+  "acceptedAt": "2026-10-09T16:17:11.4173829+08:00",
+  "packageRoot": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.21\\win-unpacked",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.21\\win-unpacked\\MyBuddy.exe",
+  "executableSha256": "6229E27E534D8B7552BBA80BE756E2EA6AE008645E82567816F825AF4D4D5C9F",
+  "appAsarSha256": "F1CA54312E5C3757875E4F416122FBE58DBC1B0C8D48AB38E58C5CDB8DFC8A69",
+  "appAsarBytes": 175486126,
+  "validatedBy": [
+    "pnpm -s test:consult-entry:desktop with CONSULT_ENTRY_TEST_EXE (packaged, isolated profile): 8/8 PASS",
+    "pnpm -s test:all: 241 pass / 0 new regressions",
+    "pnpm -s test:consult-card-ui: 20/20"
+  ],
+  "knownPackagingFailure": "electron-builder nsis target failed (release\\MyBuddy Setup 0.1.21.exe exit 2); accepted build uses --dir win-unpacked like the previous accepted 0.1.20 release",
+  "gitCommit": "9f246fb617ca121025f9d1580077c9eadb6ae7da"
+}
