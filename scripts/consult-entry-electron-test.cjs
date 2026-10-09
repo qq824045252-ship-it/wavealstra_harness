@@ -45,6 +45,16 @@ report.initial=await evaluate('(async()=>{const s=await window.api.agent.getBuil
 await test('saved configuration selects this-message chip without opening settings',async()=>{const s=await selectConsult();await screenshot('configured-selection');assert(s.chip,JSON.stringify(s));assert(!s.settings,JSON.stringify(s));return s;});
 await test('reselecting consult stays in composer',async()=>{if(await evaluate('Boolean(document.querySelector("button[aria-label=\\"移除多模型会诊\\"]"))'))await click('button[aria-label="移除多模型会诊"]');const s=await selectConsult();assert(s.chip,JSON.stringify(s));assert(!s.settings,JSON.stringify(s));return s;});
 
+// The single-participant terminate switch must be reachable end to end in the real app:
+// preload exposes it and main actually answers the channel (false = nothing running to stop).
+await test('single-participant terminate channel is wired in the real app',async()=>{
+ const probe=await evaluate('(async()=>{const fn=window.api?.agent?.stopConsultWorker;if(typeof fn!=="function")return {type:typeof fn};try{return {type:"function",result:await fn({taskId:"__none__",consultId:"__none__",workerIndex:0})};}catch(e){return {type:"function",error:String((e&&e.message)||e)}}})()');
+ assert.equal(probe.type,'function','preload does not expose agent.stopConsultWorker: '+JSON.stringify(probe));
+ assert.equal(probe.error,undefined,'the channel is not handled in main: '+probe.error);
+ assert.equal(probe.result,false,'a consultation that is not running must report false, got '+JSON.stringify(probe.result));
+ return probe;
+});
+
 await test('missing configuration stays in chat instead of redirecting',async()=>{
  if(await evaluate('Boolean(document.querySelector("[data-testid=consult-chip]"))'))await click('button[aria-label="移除多模型会诊"]');
  await evaluate('(async()=>{const s=await window.api.agent.getBuiltinCapabilities();window.__consultOriginalConfig=s.config;await window.api.agent.saveBuiltinCapabilities({...s.config,multiModelConsult:{...s.config.multiModelConsult,enabled:false,participants:[]}});})()');
