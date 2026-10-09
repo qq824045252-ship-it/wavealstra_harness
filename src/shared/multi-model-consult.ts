@@ -1,7 +1,12 @@
 /** Product-owned, one-shot consultation. No scheduler, judge or persistent child sessions. */
 export const MULTI_MODEL_CONSULT_TOOL = "multi_model_consult";
-export const CONSULT_MAX_PARTICIPANTS = 6;
-export const CONSULT_MAX_TOOL_CALLS = 24;
+/** Default read-only tool budget per participant. The user can change it; 0 means no budget. */
+export const CONSULT_DEFAULT_TOOL_CALLS = 24;
+/** Accepted upper bounds for user-editable resource fields. Participants have no product count limit. */
+export const CONSULT_MAX_PARALLEL = 64;
+export const CONSULT_MIN_TIMEOUT_SECONDS = 10;
+export const CONSULT_MAX_TIMEOUT_SECONDS = 86_400;
+export const CONSULT_MAX_TOOL_BUDGET = 100_000;
 
 export interface ConsultParticipant {
   /** Exact Pi provider/model identity; never automatically substituted. */
@@ -16,6 +21,8 @@ export interface MultiModelConsultConfig {
   maxParallel: number;
   readProjectFiles: boolean;
   timeoutSeconds: number;
+  /** Per-participant read-only tool budget; 0 disables the budget instead of stopping the model. */
+  maxToolCalls: number;
 }
 
 export const DEFAULT_MULTI_MODEL_CONSULT_CONFIG: MultiModelConsultConfig = {
@@ -24,6 +31,7 @@ export const DEFAULT_MULTI_MODEL_CONSULT_CONFIG: MultiModelConsultConfig = {
   maxParallel: 3,
   readProjectFiles: true,
   timeoutSeconds: 300,
+  maxToolCalls: CONSULT_DEFAULT_TOOL_CALLS,
 };
 
 export interface MultiModelConsultInput {
@@ -74,20 +82,22 @@ export function normalizeConsultConfig(raw: unknown): MultiModelConsultConfig {
     typeof value === "number" && Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
   const seen = new Set<string>();
   const participants: ConsultParticipant[] = [];
+  // Every explicitly chosen participant is kept: the product sets no count limit, and
+  // silently dropping the tail would discard a saved selection without telling the user.
   for (const item of Array.isArray(v.participants) ? v.participants : []) {
     const modelId = typeof item?.modelId === "string" ? item.modelId.trim().slice(0, 300) : "";
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
     const thinkingLevel = typeof item.thinkingLevel === "string" ? item.thinkingLevel.trim().slice(0, 32) || undefined : undefined;
     participants.push({ modelId, ...(thinkingLevel ? { thinkingLevel } : {}) });
-    if (participants.length === CONSULT_MAX_PARTICIPANTS) break;
   }
   return {
     enabled: v.enabled === true,
     participants,
-    maxParallel: integer(v.maxParallel, 3, 1, CONSULT_MAX_PARTICIPANTS),
+    maxParallel: integer(v.maxParallel, 3, 1, CONSULT_MAX_PARALLEL),
     readProjectFiles: v.readProjectFiles !== false,
-    timeoutSeconds: integer(v.timeoutSeconds, 300, 10, 1800),
+    timeoutSeconds: integer(v.timeoutSeconds, 300, CONSULT_MIN_TIMEOUT_SECONDS, CONSULT_MAX_TIMEOUT_SECONDS),
+    maxToolCalls: v.maxToolCalls === 0 ? 0 : integer(v.maxToolCalls, CONSULT_DEFAULT_TOOL_CALLS, 1, CONSULT_MAX_TOOL_BUDGET),
   };
 }
 

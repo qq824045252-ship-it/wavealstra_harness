@@ -329,7 +329,7 @@ export class BuiltinCapabilityRuntime {
           state: !config.multiModelConsult.enabled ? "disabled" : config.multiModelConsult.participants.length < 2 ? "needs-configuration" : "ready",
           detail: !config.multiModelConsult.enabled ? "未启用；不会自动触发。"
             : config.multiModelConsult.participants.length < 2 ? "请明确选择至少两个不同模型；不会自动选模。"
-            : "配置已就绪；调用时由 Pi 校验登录与模型范围。检查配置不会产生模型费用。",
+            : `已配置 ${config.multiModelConsult.participants.length} 个模型；只读工具预算 ${config.multiModelConsult.maxToolCalls > 0 ? `${config.multiModelConsult.maxToolCalls} 次` : "不限制"}，单模型超时 ${config.multiModelConsult.timeoutSeconds} 秒。调用时由 Pi 校验登录与模型范围。检查配置不会产生模型费用。`,
         },
       ],
       checkedAt: Date.now(),

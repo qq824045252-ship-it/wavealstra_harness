@@ -5450,7 +5450,8 @@ export class AgentService {
             createSession: (participant, workerSignal, onToolLimit) => createPiConsultSession({
               participant, cwd: opts.cwd, agentDir, runtime: this.modelRuntime!,
               parentSettings: settingsManager, policy: sessionPolicy,
-              readProjectFiles: config.readProjectFiles, signal: workerSignal, onToolLimit,
+              readProjectFiles: config.readProjectFiles, maxToolCalls: config.maxToolCalls,
+              signal: workerSignal, onToolLimit,
               isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled,
             }),
           });

@@ -11,7 +11,7 @@ import { mapPiEventToPatches } from "../src/shared/pi-event-mapper";
 import { loadTaskHistoryFromSession } from "../src/main/agent/session-history";
 import { BuiltinCapabilityStore } from "../src/main/capabilities/BuiltinCapabilityStore";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
-import { CONSULT_MAX_TOOL_CALLS, DEFAULT_MULTI_MODEL_CONSULT_CONFIG, normalizeConsultConfig, requestConsultForMessage, type MultiModelConsultConfig, type MultiModelConsultReport } from "../src/shared/multi-model-consult";
+import { CONSULT_MAX_PARALLEL, CONSULT_MAX_TOOL_BUDGET, CONSULT_DEFAULT_TOOL_CALLS, DEFAULT_MULTI_MODEL_CONSULT_CONFIG, normalizeConsultConfig, requestConsultForMessage, type MultiModelConsultConfig, type MultiModelConsultReport } from "../src/shared/multi-model-consult";
 
 const checks: string[] = [];
 const check = (name: string, fn: () => void) => { fn(); checks.push(name); };
@@ -52,7 +52,13 @@ try {
   check("legacy config defaults to disabled and no auto-selected models", () => assert.deepEqual(normalizeConsultConfig(undefined), DEFAULT_MULTI_MODEL_CONSULT_CONFIG));
   check("normalization deduplicates identities and bounds resource settings", () => {
     const normalized = normalizeConsultConfig({ enabled: true, participants: [{ modelId: " p/a " }, { modelId: "p/a" }], maxParallel: 999, timeoutSeconds: -3 });
-    assert.equal(normalized.participants.length, 1); assert.equal(normalized.maxParallel, 6); assert.equal(normalized.timeoutSeconds, 10);
+    assert.equal(normalized.participants.length, 1); assert.equal(normalized.maxParallel, CONSULT_MAX_PARALLEL); assert.equal(normalized.timeoutSeconds, 10);
+    assert.equal(normalized.maxToolCalls, CONSULT_DEFAULT_TOOL_CALLS);
+  });
+  check("participant count has no product limit and the tail is never dropped", () => {
+    const many = normalizeConsultConfig({ enabled: true, participants: Array.from({ length: 12 }, (_, i) => ({ modelId: `p/m${i}` })) });
+    assert.equal(many.participants.length, 12);
+    assert.equal(normalizeConsultConfig({ enabled: true, participants: [{ modelId: "p/a" }], maxToolCalls: 0 }).maxToolCalls, 0);
   });
   const storePath = join(root, "capabilities.json");
   const store = new BuiltinCapabilityStore(storePath);
@@ -64,10 +70,13 @@ try {
   check("participant configuration persists without changing other capabilities", () => { assert.deepEqual(store.read().multiModelConsult, config); assert.equal(store.read().vision.enabled, true); });
   const run = (overrides: Partial<Parameters<typeof runMultiModelConsult>[0]> = {}) => runMultiModelConsult({ id: "unit", taskId: "task", input: { task: "Analyze the same problem", context: "Shared facts, no model opinions." }, config, createSession: async (p) => sessionFixture(p.modelId), ...overrides });
   await assert.rejects(run({ config: { ...config, enabled: false } }), /关闭/);
-  await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!] } }), /2–6/);
-  await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!, config.participants[0]!] } }), /2–6/);
+  await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!] } }), /至少 2 个/);
+  await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!, config.participants[0]!] } }), /至少 2 个/);
   await assert.rejects(run({ config: { ...config, maxParallel: 0 } }), /配置无效/);
   await assert.rejects(run({ config: { ...config, timeoutSeconds: Number.NaN } }), /配置无效/);
+  await assert.rejects(run({ config: { ...config, maxToolCalls: -1 } }), /配置无效/);
+  await assert.rejects(run({ config: { ...config, maxToolCalls: 1.5 } }), /配置无效/);
+  await assert.rejects(run({ config: { ...config, maxToolCalls: CONSULT_MAX_TOOL_BUDGET + 1 } }), /配置无效/);
   check("disabled/invalid consultations make zero model calls", () => assert.equal(created, 0));
 
   const snapshots: MultiModelConsultReport[] = [];
@@ -85,6 +94,12 @@ try {
   check("provider failures with partial prose are still failures", () => { assert.equal(failed.status, "failed"); assert.equal(consultToolResult(failed).isError, true); });
   const partial = await run({ config: { ...config, participants: [...config.participants, { modelId: "provider/c" }] }, createSession: async (p) => { if (p.modelId.endsWith("/c")) throw Error("offline"); return sessionFixture(p.modelId); } });
   check("two of three is explicitly partial", () => assert.equal(partial.status, "partial"));
+  const wideConfig = { ...config, participants: Array.from({ length: 9 }, (_, i) => ({ modelId: `provider/w${i}` })) };
+  const wide = await run({ config: wideConfig });
+  check("more than six configured models all run without a count cap", () => {
+    assert.equal(wide.expected, 9); assert.equal(wide.succeeded, 9); assert.equal(wide.status, "complete");
+    assert.equal(new Set(wide.workers.map((w) => w.modelId)).size, 9);
+  });
 
   const cancelled = new AbortController();
   const beforeCancel = created;
@@ -125,7 +140,7 @@ try {
   writeFileSync(join(root, "outside.txt"), "must not read");
   const controller = new AbortController(); let limited = false;
   const policy = new TaskFileAccessPolicy({ taskId: "task", taskRoot: workspace });
-  const tools = createConsultReadTools({ cwd: workspace, policy, signal: controller.signal, onToolLimit: () => { limited = true; controller.abort(); }, isEnabled: () => true });
+  const tools = createConsultReadTools({ cwd: workspace, policy, signal: controller.signal, onToolLimit: () => { limited = true; controller.abort(); }, isEnabled: () => true, maxToolCalls: CONSULT_DEFAULT_TOOL_CALLS });
   check("native child surface is exactly read/grep/find/ls", () => assert.deepEqual(tools.map((t) => t.name), ["read", "grep", "find", "ls"]));
   const read = tools[0]!;
   const readResult = await read.execute("read", { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never);
@@ -136,14 +151,27 @@ try {
   symlinkSync(outsideDir, join(workspace, "escape"), "junction");
   await assert.rejects(read.execute("link", { path: "escape/secret.txt" }, undefined, undefined, { cwd: workspace } as never), /taskRoot|路径/);
   checks.push("junction escape outside task is rejected");
-  for (let i = 0; i < CONSULT_MAX_TOOL_CALLS; i++) {
+  for (let i = 0; i < CONSULT_DEFAULT_TOOL_CALLS; i++) {
     try { await read.execute(String(i), { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never); } catch { break; }
   }
   check("native read budget stops instead of recurring forever", () => assert.equal(limited, true));
+  // The budget is a user setting now: a smaller value stops earlier, and 0 removes the budget entirely.
+  let smallBudgetHit = false;
+  const smallBudget = createConsultReadTools({ cwd: workspace, policy, signal: new AbortController().signal, onToolLimit: () => { smallBudgetHit = true; }, isEnabled: () => true, maxToolCalls: 2 });
+  const smallRead = smallBudget[0]!;
+  await smallRead.execute("b1", { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never);
+  await smallRead.execute("b2", { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never);
+  await assert.rejects(smallRead.execute("b3", { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never), /2 次只读工具预算/);
+  check("a configured tool budget stops the model exactly at the user value", () => assert.equal(smallBudgetHit, true));
+  let unlimitedHit = false;
+  const unlimited = createConsultReadTools({ cwd: workspace, policy, signal: new AbortController().signal, onToolLimit: () => { unlimitedHit = true; }, isEnabled: () => true, maxToolCalls: 0 });
+  const unlimitedRead = unlimited[0]!;
+  for (let i = 0; i < CONSULT_DEFAULT_TOOL_CALLS + 6; i++) await unlimitedRead.execute(String(i), { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never);
+  check("budget 0 means no call limit instead of stopping the model", () => assert.equal(unlimitedHit, false));
 
   const readCancellation = new AbortController();
   const sdkCancellation = new AbortController();
-  const cancellingTools = createConsultReadTools({ cwd: workspace, policy, signal: readCancellation.signal, onToolLimit: () => undefined, isEnabled: () => true });
+  const cancellingTools = createConsultReadTools({ cwd: workspace, policy, signal: readCancellation.signal, onToolLimit: () => undefined, isEnabled: () => true, maxToolCalls: CONSULT_DEFAULT_TOOL_CALLS });
   const inFlightGrep = cancellingTools.find((tool) => tool.name === "grep")!.execute("cancel-grep", { pattern: "nonexistent", path: "sample.txt" }, sdkCancellation.signal, undefined, { cwd: workspace } as never);
   readCancellation.abort();
   await assert.rejects(inFlightGrep);

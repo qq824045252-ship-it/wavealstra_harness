@@ -95,3 +95,38 @@ typecheck=0
 remote:typecheck=0
 git-diff-check=0
 ```
+
+## 2026-10-09 变更：限制改为可配置、参与模型不设数量上限
+
+上文的 2026-09-25 结论保持原样不改写；本节记录之后的一次变更。
+
+### 改动内容
+
+1. 参与模型数量不再有上限（原为 6）。`normalizeConsultConfig` 不再静默丢弃第 7 个及之后的参与者（旧行为在每次读盘/写盘都会丢，且没有任何提示）；运行时仍要求「至少 2 个不同模型」并继续拒绝重复 modelId。
+2. 设置页「添加模型」下拉不再隐藏已选中的模型：候选为全部已启用模型，已添加项标为「（已添加）」并置灰；达到 6 个以上时下拉不再消失。重复选择由下拉 disabled 与 onChange 双重拦截，去重语义不变。
+3. 每个参与模型的只读工具调用预算（原写死 24 次）改为设置项 `maxToolCalls`：可填 `1`–`100000`，填 `0` 表示不限制（此时只有超时或用户取消会停止该模型）。运行时校验、工具层错误与 worker 错误文案均使用该配置值。
+4. 单模型超时上限由 1800 秒放宽到 86400 秒；并发上限独立为 `CONSULT_MAX_PARALLEL`（64），不再等同于参与模型数量上限。
+5. 能力面板状态详情显示「已配置 N 个模型；只读工具预算 X；单模型超时 Y 秒」。
+6. 兼容性：`schemaVersion` 保持 1（升版会让既有配置整体回落默认值）；旧配置缺少 `maxToolCalls` 时按默认 24 处理，行为与旧硬上限完全一致；`maxToolCalls: 0` 有专门分支，不会被钳制成 1。
+
+### 本轮实际运行结果
+
+- 会诊离线契约/安全/取消/持久化套件：**39/39 PASS**（`test:multi-model-consult`）。新增检查包括「参与者无上限且不丢尾部」「工具预算按用户值提前停止」「预算 0 不限制」「maxToolCalls 越界判为配置无效」「9 个模型全部完成」。
+- `test:consult-selection`、`test:builtin-capabilities`、`pnpm -s typecheck`：通过。
+- 真实 Electron 设置页/输入框回归（`test:consult-entry:desktop`，隔离配置、不发送模型消息）：**8/8 PASS**。新增用例实测 `candidates=8, added=8, selectableAfterRemove=1`：加满全部候选后下拉仍存在、已添加项全部置灰并带「（已添加）」，移除一个后该项重新可选。
+  - 证据：`out/tests/consult-entry/built/results.json`。
+  - 构建产物核验：`out/renderer` 与 `out/main` 均包含 `consult-tool-budget`、`（已添加）`、`maxToolCalls` 等新标记。
+
+### 未包含 / 已知风险
+
+- 本次**未**运行需要真实供应商的 `test:multi-model-consult:live`（产生真实用量与费用），因此没有 7 个以上模型的真实账单/限流验证。
+- 参与模型无上限后，主模型会收到 N 份完整未截断答案，且 UI 进度快照每次整体克隆；建议单次会诊控制在 8 个模型以内，更大组合分两轮。`degraded`（仅一个成功）在时间线上仍显示为成功状态，需要看卡片文案区分。
+- worker 会话仍关闭 compaction 与重试：把只读工具预算提到 100+ 时更可能先撞到模型上下文窗口，表现为「模型输出达到长度上限，答案不完整」。
+- 同时运行的真实并发 session 数 = `min(最大并发, 参与模型数)`，目前没有跨调用的全局闸门。
+- `pnpm -s test:all` 仍存在与本功能无关的既有失败（如 `test:subagent-mapper` 的 bash 危险命令判定、`test:memory-*`、`test:pi-*` 以及 `wave*-e2e` 300 秒超时，来自工作树中其它未提交改动）；本功能的 `test:multi-model-consult`、`test:consult-selection`、`test:consult-entry:desktop` 三项均通过。
+
+### 本轮源码 SHA-256
+
+- `src/main/capabilities/MultiModelConsult.ts`：`4464e597a249cd10d725b589cb7dd86b87fbd7ca0092b33d149e3252f0a09434`。
+- `src/shared/multi-model-consult.ts`：`fe6b34e52e9f6807bf03a0b693f304bedd566797d974f959cd7878b5de7811b7`。
+- `src/renderer/src/components/settings/MultiModelConsultSettings.tsx`：`4217bc2f77dbec5736f0bc4581036bc963c75e071df14f02a9bb9f159a8fab27`。

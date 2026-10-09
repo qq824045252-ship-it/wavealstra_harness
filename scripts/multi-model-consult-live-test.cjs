@@ -258,13 +258,13 @@ async function setConsultConfig(next) {
     await waitFor('document.querySelectorAll(".consult-settings-member").length===2');
     await evaluate(`(()=>{const e=document.querySelector('[data-testid=consult-thinking-1]');e.value=${JSON.stringify(initialConfig.participants[1].thinkingLevel || '')};e.dispatchEvent(new Event('change',{bubbles:true}));return true})()`);
     check('settings can remove and explicitly re-add the selected model', await evaluate('document.querySelectorAll(".consult-settings-member").length===2'));
-    await evaluate('(()=>{const e=document.querySelectorAll(".consult-settings-options input")[1];e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,"6");e.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+    await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-timeout]");e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,"6");e.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
     await sleep(50);
-    check('timeout field permits entering a multi-digit value', await evaluate('document.querySelectorAll(".consult-settings-options input")[1].value') === '6');
-    await evaluate('(()=>{const e=document.querySelectorAll(".consult-settings-options input")[1];Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,"60");e.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
+    check('timeout field permits entering a multi-digit value', await evaluate('document.querySelector("[data-testid=consult-timeout]").value') === '6');
+    await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-timeout]");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,"60");e.dispatchEvent(new Event("input",{bubbles:true}));return true})()');
     await sleep(50);
-    await evaluate('document.querySelectorAll(".consult-settings-options input")[1].blur()');
-    check('timeout field retains 60 seconds after blur', await evaluate('document.querySelectorAll(".consult-settings-options input")[1].value') === '60');
+    await evaluate('document.querySelector("[data-testid=consult-timeout]").blur()');
+    check('timeout field retains 60 seconds after blur', await evaluate('document.querySelector("[data-testid=consult-timeout]").value') === '60');
     await evaluate('(()=>{const button=[...document.querySelectorAll(".capabilities-page button")].find(b=>/保存/.test(b.textContent)&&!b.disabled);if(!button)throw Error("No save button");button.click();})()');
     await waitFor('(async()=>!!(await window.api.agent.getBuiltinCapabilities()).config.multiModelConsult.enabled)()');
     const savedConfig = await evaluate('(async()=>(await window.api.agent.getBuiltinCapabilities()).config.multiModelConsult)()');
