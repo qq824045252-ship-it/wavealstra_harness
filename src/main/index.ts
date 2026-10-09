@@ -216,7 +216,7 @@ import {
 } from "./paths";
 import { TaskExecutionWorkspaceLifecycle } from "./task/TaskExecutionWorkspaceLifecycle";
 import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "./task/ArchivedContentDeletion";
-import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
+import { ArchivedContentDeletionIpc, TRASH_RETENTION_DAYS, TrashIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
 import { TaskExecutionWorkspace } from "./task/TaskExecutionWorkspace";
 import { McpConfigService } from "./mcp/McpConfigService";
 import { PluginStorageIpc } from "../shared/plugin-storage";
@@ -2946,6 +2946,11 @@ app.whenReady().then(async () => {
   const purgeExpiredTrash = async (trigger: string): Promise<void> => {
     if (!taskLifecycle) return;
     try {
+      // 策略变更后先对齐存量保留期（只缩短），否则旧的 30 天期限会让存量继续滞留。
+      if (trigger === "startup") {
+        const aligned = taskLifecycle.alignTrashRetention();
+        if (aligned > 0) console.log(`[trash] 已按 ${TRASH_RETENTION_DAYS} 天保留期对齐 ${aligned} 个存量回收条目`);
+      }
       const projectIds = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
       const results = await taskLifecycle.purgeExpired();
       const purged = results.filter((result) => result.removedTaskRow).map((result) => result.taskId);

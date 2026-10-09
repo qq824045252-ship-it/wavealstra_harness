@@ -150,6 +150,25 @@ export class TaskExecutionWorkspaceLifecycle {
       .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
   }
 
+  /**
+   * 对齐既有回收条目的保留期（策略从 30 天改为 7 天后，存量不能继续按旧期限拖着）。
+   * 只缩短、不延长：purgeAfter 取 min(现值, trashedAt + purgeAfterMs)，因此幂等且不会延长任何条目。
+   * 返回被改写的条目数。
+   */
+  alignTrashRetention(): number {
+    let changed = 0;
+    for (const state of this.db.listTaskExecutionWorkspaceStates({ state: "trashed" })) {
+      const trashedAt = state.trashedAt ?? state.updatedAt;
+      if (!Number.isFinite(trashedAt)) continue;
+      const deadline = (trashedAt as number) + this.purgeAfterMs;
+      if (state.purgeAfter === undefined || state.purgeAfter > deadline) {
+        this.db.upsertTaskExecutionWorkspaceState({ ...state, purgeAfter: deadline });
+        changed += 1;
+      }
+    }
+    return changed;
+  }
+
   /* ---------------------------------------------------------------- */
   /* 归档（不移动）                                                      */
   /* ---------------------------------------------------------------- */

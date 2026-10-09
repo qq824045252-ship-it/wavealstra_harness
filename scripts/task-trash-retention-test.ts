@@ -199,6 +199,42 @@ async function main(): Promise<void> {
     }
   });
 
+  await check("存量对齐：只缩短旧的 30 天期限，不延长", async () => {
+    const env = makeEnv();
+    try {
+      const legacyId = "trash-legacy";
+      const freshId = "trash-fresh-align";
+      for (const id of [legacyId, freshId]) {
+        const dir = env.workspace.ensureTaskExecutionWorkspace(id);
+        env.db.upsertTask({ id, title: id, updatedAt: Date.now(), cwd: dir });
+        await env.lifecycle.trash(id);
+      }
+      // 旧策略存量：到期时间仍是 trashedAt + 30 天
+      const legacy = env.db.getTaskExecutionWorkspaceState(legacyId)!;
+      const legacyTrashedAt = legacy.trashedAt!;
+      env.db.upsertTaskExecutionWorkspaceState({ ...legacy, purgeAfter: legacyTrashedAt + 30 * 24 * 60 * 60 * 1000 });
+      // 已过期的条目：对齐不得把它往后推
+      const fresh = env.db.getTaskExecutionWorkspaceState(freshId)!;
+      const pastDeadline = Date.now() - 60_000;
+      env.db.upsertTaskExecutionWorkspaceState({ ...fresh, purgeAfter: pastDeadline });
+
+      const changed = env.lifecycle.alignTrashRetention();
+      assert.equal(changed, 1, "只有被延长的旧条目需要改写");
+      assert.equal(
+        env.db.getTaskExecutionWorkspaceState(legacyId)?.purgeAfter,
+        legacyTrashedAt + TRASH_RETENTION_MS,
+        "存量必须收敛到 trashedAt + 7 天",
+      );
+      assert.equal(
+        env.db.getTaskExecutionWorkspaceState(freshId)?.purgeAfter,
+        pastDeadline,
+        "已过期的条目不得被延长",
+      );
+    } finally {
+      env.close();
+    }
+  });
+
   const failed = results.filter((result) => !result.ok);
   console.log("");
   console.log("------------------------------------------------------------------------");
