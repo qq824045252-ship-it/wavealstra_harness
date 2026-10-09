@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ensureExternalCliMemoryAssets } from "../src/main/memory/ExternalCliMemoryAssets";
 import { projectMyBuddySkillsToCliRoots } from "../src/main/terminal/HerdrLauncher";
+// 技能聚合根现为 <mybuddyDir>/plugins/skills（PluginStorage v1）；ensureExternalCliMemoryAssets 亦写入此处。
+import { getPluginDirectory } from "../src/main/plugins/PluginStorage";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-external-cli-share-"));
 try {
-  ensureExternalCliMemoryAssets(join(sandbox, ".mybuddy"));
-  const sourceRoot = join(sandbox, ".mybuddy", "skills");
+  const mybuddyDir = join(sandbox, ".mybuddy");
+  ensureExternalCliMemoryAssets(mybuddyDir);
+  const sourceRoot = getPluginDirectory("skills", mybuddyDir);
   const source = join(sourceRoot, "shared-memory");
   const roots = [join(sandbox, ".agents", "skills"), join(sandbox, ".claude", "skills"), join(sandbox, ".hermes", "skills")];
   assert(existsSync(join(source, "SKILL.md")), "fresh install must materialize shared-memory Skill");

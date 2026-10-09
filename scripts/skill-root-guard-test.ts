@@ -24,6 +24,8 @@ import {
   SkillsService,
   STRAY_ROOT_SKILL_QUARANTINE_NAME,
 } from "../src/main/skills/SkillsService";
+// eslint-disable-next-line import/first
+import { getSkillsDir } from "../src/main/paths";
 
 let passed = 0;
 let failed = 0;
@@ -43,7 +45,9 @@ function write(path: string, content: string): void {
 }
 
 async function main(): Promise<void> {
-  const skillsRoot = join(sandbox, ".mybuddy", "skills");
+  // 聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）。旧断言写死迁移前路径，
+  // 导致隔离产物被写到 plugins/ 下而测试在旧路径上查找 → 必然失败（且迁移让旧路径断言空转通过）。
+  const skillsRoot = getSkillsDir();
 
   console.log("== [1] 顶层 stray SKILL.md + 子技能并存 ==");
   write(join(skillsRoot, "SKILL.md"), "---\nname: stray-root\ndescription: 非法扁平安装\n---\n# stray\n");

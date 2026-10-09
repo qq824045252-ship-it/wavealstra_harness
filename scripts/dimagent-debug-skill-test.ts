@@ -8,11 +8,12 @@ async function main(): Promise<void> {
   const previousProfile = process.env.USERPROFILE;
   process.env.USERPROFILE = root;
   try {
-    const [{ SkillsService }, { CODING_MODE_PRESETS }, { BUILTIN_CAPABILITY_TOOLS }, { NATIVE_CAPABILITY_TOOL_NAMES }] = await Promise.all([
+    const [{ SkillsService }, { CODING_MODE_PRESETS }, { BUILTIN_CAPABILITY_TOOLS }, { NATIVE_CAPABILITY_TOOL_NAMES }, { getSkillsDir }] = await Promise.all([
       import("../src/main/skills/SkillsService"),
       import("../src/main/agent/mode-defaults"),
       import("../src/shared/builtin-capabilities"),
       import("../src/main/agent/PromptAssembly"),
+      import("../src/main/paths"),
     ]);
 
     const service = new SkillsService();
@@ -22,7 +23,9 @@ async function main(): Promise<void> {
 
     const installed = service.installFromMarket("dimagent-debug");
     assert.equal(installed.name, "dimagent-debug");
-    const skillPath = join(root, ".mybuddy", "skills", "dimagent-debug", "SKILL.md");
+    // 技能安装目录已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）。
+    // 旧断言写死 ~/.mybuddy/skills（迁移前路径），必然失败；改为读取真实路径 getter。
+    const skillPath = join(getSkillsDir(), "dimagent-debug", "SKILL.md");
     assert(existsSync(skillPath), "installed SKILL.md should exist");
     const content = readFileSync(skillPath, "utf8");
     assert(content.includes("Reproduce first"), "skill should enforce reproduce-first debugging");
@@ -39,7 +42,9 @@ async function main(): Promise<void> {
     assert(preset.promptAddon?.includes("ui_exec"), "bugfix preset should require actual UI reproduction when available");
     assert(BUILTIN_CAPABILITY_TOOLS.browser.includes("ui_exec"));
     assert(BUILTIN_CAPABILITY_TOOLS.browser.includes("computer_exec"));
-    assert(BUILTIN_CAPABILITY_TOOLS.browser.includes("runtime_probe"));
+    // runtime_probe 归属 runtime-diagnostics，而非 browser（自初始提交起即如此，
+    // 旧断言 BUILTIN_CAPABILITY_TOOLS.browser.includes("runtime_probe") 从未成立）。
+    assert(BUILTIN_CAPABILITY_TOOLS["runtime-diagnostics"].includes("runtime_probe"));
     for (const tool of ["ui_exec", "computer_exec", "runtime_probe"]) {
       assert(NATIVE_CAPABILITY_TOOL_NAMES.includes(tool as (typeof NATIVE_CAPABILITY_TOOL_NAMES)[number]), `native activation list missing ${tool}`);
     }

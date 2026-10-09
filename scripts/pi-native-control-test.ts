@@ -122,7 +122,10 @@ test("tool wait, native retry and user input are not mislabeled as thinking", ()
   assert.match(nativeRunPhaseLabel("tools", ["request_user_input"]), /用户/);
   assert.match(nativeRunPhaseLabel("retrying", []), /重试/);
   assert.match(nativeRunPhaseLabel("compacting", []), /压缩/);
-  assert.match(nativeRunPhaseLabel("waiting", []), /等待模型/);
+  // "waiting" 阶段的兜底文案在 41c7ebf（unify reply status）由「等待模型响应…」改为
+  // 「正在准备回复…」，测试未同步。断言改为现行文案，并确认它不是「思考」标签。
+  assert.match(nativeRunPhaseLabel("waiting", []), /正在准备回复/);
+  assert.doesNotMatch(nativeRunPhaseLabel("waiting", []), /思考|thinking/i);
 });
 mkdirSync("artifacts/pi-native-control", { recursive: true });
 writeFileSync("artifacts/pi-native-control/contract-results.json", JSON.stringify({ at: new Date().toISOString(), results, passed: results.every(r => r.passed) }, null, 2));

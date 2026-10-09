@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     applySelectionMirror(makeActive({ backendNodeId: 999 }));
     useAppStore.getState().attachSelectionToChat("移到右侧");
     capturedReq = null;
-    useAppStore.getState().sendMessage("按备注修改");
+    await useAppStore.getState().sendMessage("按备注修改");
     check("多个元素的备注随各自指纹发送", capturedReq?.selections?.[0]?.comment === "改成蓝色" && capturedReq?.selections?.[1]?.comment === "移到右侧");
     check("发送后备注随引用一起消费", useAppStore.getState().chatSelections.length === 0);
   }
@@ -170,7 +170,7 @@ async function main(): Promise<void> {
     applySelectionMirror(makeActive({ backendNodeId: 999 }));
     useAppStore.getState().attachSelectionToChat();
     capturedReq = null;
-    useAppStore.getState().sendMessage("把这个按钮改成蓝色");
+    await useAppStore.getState().sendMessage("把这个按钮改成蓝色");
     check(
       "T7 发送：多个 pending → req.selections + 发送即消费",
       capturedReq?.selections?.length === 2 &&
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
   {
     // 上一条已消费：第二条消息不带 selections（不无限复用）
     capturedReq = null;
-    useAppStore.getState().sendMessage("再帮我看一下布局");
+    await useAppStore.getState().sendMessage("再帮我看一下布局");
     check(
       "T8 第二条消息 → req.selections 缺省（不无限复用旧 selections）",
       capturedReq?.selections === undefined,
@@ -197,7 +197,7 @@ async function main(): Promise<void> {
     useAppStore.getState().attachSelectionToChat();
     applySelectionMirror({ ...EMPTY_SELECTION, status: "empty", updatedAt: 1 });
     capturedReq = null;
-    useAppStore.getState().sendMessage("这个元素还能改吗");
+    await useAppStore.getState().sendMessage("这个元素还能改吗");
     check(
       "T9 stale 后发送 → req.selections 缺省 + chatSelections 已清",
       capturedReq?.selections === undefined && useAppStore.getState().chatSelections.length === 0,

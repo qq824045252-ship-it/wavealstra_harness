@@ -56,7 +56,10 @@ try {
   assert.equal(installFailure.sideEffects, "known");
   assert.equal(installFailure.target, skillAuthoringRecoveryTarget(installIntent));
 
-  const agent = await readFile("src/main/agent/AgentService.ts", "utf8");
+  // 断言源码文本前先归一化行尾：仓库工作副本中相当一部分文件是 CRLF（与 .gitattributes
+  // 的 eol=lf 不一致，属于既有状态），直接匹配带 \n 的字面量会假失败。
+  const readSrc = async (path: string): Promise<string> => (await readFile(path, "utf8")).split("\r\n").join("\n");
+  const agent = await readSrc("src/main/agent/AgentService.ts");
   const methodStart = agent.indexOf("authorSkill(input: SkillAuthoringCreateRequest)");
   const methodEnd = agent.indexOf("validateSkillPackage", methodStart);
   const method = agent.slice(methodStart, methodEnd);
@@ -68,8 +71,8 @@ try {
   assert(method.includes('new SkillAuthoringPartialStateError(\n        "validation"'));
   assert(method.includes('new SkillAuthoringPartialStateError(\n        "install"'));
 
-  const builtin = await readFile("src/main/capabilities/builtin-capability-extension.ts", "utf8");
-  const assembler = await readFile("src/main/agent/SessionExtensionAssembler.ts", "utf8");
+  const builtin = await readSrc("src/main/capabilities/builtin-capability-extension.ts");
+  const assembler = await readSrc("src/main/agent/SessionExtensionAssembler.ts");
   assert(builtin.includes("recordSkillAuthoringFailureRecovery(bridge.skillAuthoringRecovery, p.intent, error)"));
   assert(builtin.includes("settleSkillAuthoringRecovery(bridge.skillAuthoringRecovery, p.intent, result)"));
   assert(assembler.includes("skillAuthoringRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures }"));

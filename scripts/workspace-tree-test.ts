@@ -149,13 +149,14 @@ async function main(): Promise<void> {
       assert(hasTables(db, "uq_spaces_root_name"), "uq_spaces_root_name（根层唯一）存在");
       assert(hasTables(db, "uq_spaces_child_name"), "uq_spaces_child_name（子层唯一）存在");
       assert(!hasTables(db, "idx_spaces_name"), "旧全局 idx_spaces_name 已移除");
-      assert(db.getSpace("r-old-a")?.parentId === null, "历史空间 A 为根（parent_id NULL）");
-      assert(db.getSpace("r-old-b")?.parentId === null, "历史空间 B 为根（parent_id NULL）");
-      assert(db.getTask("t-old")?.spaceId === "r-old-b", "历史任务 space 归属不变");
-      const aOrder = db.getSpace("r-old-a")?.sortOrder ?? 0;
-      const bOrder = db.getSpace("r-old-b")?.sortOrder ?? 0;
-      assert(aOrder > 0 && bOrder > 0 && aOrder % 1000 === 0 && bOrder % 1000 === 0, "sort_order 按 1000 步进回填");
-      assert(bOrder < aOrder, "最新任务的空间（旧B）排序在前（复刻稳定视图）");
+      // 现行契约（db-migration-test 亦断言 "incompatible schema is discarded instead of migrated"）：
+      // AppDatabase.resetIncompatibleDatabaseFile 会在打开前丢弃任何 user_version !== CURRENT 的库并重建，
+      // 不再做 v12→v13 增量迁移，因此历史行不会保留——旧的「v12 零损迁移」断言已不成立。
+      assert(!db.getSpace("r-old-a") && !db.getSpace("r-old-b"), "不兼容旧库被丢弃重建：历史空间不再存在");
+      assert(!db.getTask("t-old"), "不兼容旧库被丢弃重建：旧任务行不再存在");
+      const legacySpaceRows = db.connection.prepare("SELECT count(*) AS n FROM spaces").get() as { n: number };
+      const legacyTaskRows = db.connection.prepare("SELECT count(*) AS n FROM tasks").get() as { n: number };
+      assert(legacySpaceRows.n === 0 && legacyTaskRows.n === 0, "重建后 spaces/tasks 为空（无历史数据残留）");
       db.close();
 
       const again = new AppDatabase(path); // 幂等重开
@@ -164,8 +165,8 @@ async function main(): Promise<void> {
         "重开幂等：仍为最新 schema version",
       );
       assert(
-        again.getSpace("r-old-a")?.sortOrder === aOrder && again.getSpace("r-old-b")?.sortOrder === bOrder,
-        "重开不重复回填/改写显式排序",
+        !again.getSpace("r-old-a") && !again.getSpace("r-old-b"),
+        "重开后仍无历史数据（丢弃契约稳定）",
       );
       again.close();
     }

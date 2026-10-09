@@ -55,7 +55,9 @@ async function scenario(mode:WelcomeMode,withMcp:boolean,historyFile?:string,exe
   }finally{service.detachSession(id);session.dispose();}
 }
 try{
-  for(const mode of ['working','coding','design'] as const){await test(mode+' without any MCP server',()=>scenario(mode,false));await test(mode+' with real stdio MCP and native tool discovery',()=>scenario(mode,true));}
+  // WelcomeMode 现为 working | coding | bot；旧的 "design" 模式已不存在
+  // （resolveWelcomeMode 会把未知值回落为 working，导致原断言拿到 'working'）。
+  for(const mode of ['working','coding','bot'] as const){await test(mode+' without any MCP server',()=>scenario(mode,false));await test(mode+' with real stdio MCP and native tool discovery',()=>scenario(mode,true));}
   await test('coding stays active with a configured but disabled MCP server after settings reload',()=>scenario('coding',false,undefined,true,true));
   await test('reopen coding history as office without stale Code Mode',async()=>{const a=await scenario('coding',false);const b=await scenario('working',false,a.sessionFile);assert(!b.active.includes('codemode'));return {from:'coding',to:'working'};});
   await test('reopen office history as coding activates Code Mode',async()=>{const a=await scenario('working',false);const b=await scenario('coding',false,a.sessionFile);assert(b.active.includes('codemode'));return {from:'working',to:'coding'};});

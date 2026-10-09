@@ -416,8 +416,11 @@ async function main(): Promise<void> {
     const ids = trace.segments.map((segment) => segment.id);
     ok(!ids.includes("globalMemory") && !ids.includes("spaceMemory") && !ids.includes("workspaceSharedContext"), "legacy duplicated memory system segments are absent");
     const idxRules = ids.indexOf("memoryRules");
-    const idxPerm = ids.indexOf("permission");
-    ok(idxRules >= 0 && idxPerm > idxRules, "system assembly keeps only memory rules before permission");
+    // 说明：assemblePrompt 自初始提交起就**从不**产出 id="permission" 的 system 段——
+    // 权限由 resolveSessionTools（按 permissionMode 裁剪可用工具）+ 审批链承担，不占 system 段。
+    // 旧断言的 `idxPerm > idxRules` 恒不成立（idxPerm === -1），属于从未通过的失效断言。
+    ok(idxRules >= 0, "system assembly keeps a single memory rules segment");
+    ok(!ids.some((id) => id.toLowerCase().includes("permission")), "no separate permission system segment (权限走 session tools/审批，不占 system 段)");
     ok(trace.appendParts.every((part) => !part.includes("Relevant Memory")), "query-aware L1 memory is not frozen into session prefix");
   }
 

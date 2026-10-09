@@ -6,6 +6,8 @@ import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/App
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { SkillsService } from "../src/main/skills/SkillsService";
+// 技能聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）；旧测试写死迁移前路径。
+import { getSkillsDir } from "../src/main/paths";
 
 async function main(): Promise<void> {
   const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-memory-skill-"));
@@ -205,7 +207,7 @@ async function main(): Promise<void> {
     const materialized = memory.learning.markMaterialized(approved.id, installed.id);
     assert.equal(materialized.status, "materialized");
     assert.equal(memory.learning.isInstalledSkillRunnable(installed.id, approved.sourceMemoryIds), true, "grounded materialized Skill is runtime-eligible");
-    const skillDir = join(sandbox, ".mybuddy", "skills", approved.slug);
+    const skillDir = join(getSkillsDir(), approved.slug);
     const skillPath = join(skillDir, "SKILL.md");
     assert.ok(existsSync(skillPath), "approval materializes a real SKILL.md through SkillsService");
     const originalSkill = readFileSync(skillPath, "utf-8");
@@ -214,14 +216,14 @@ async function main(): Promise<void> {
     const discovered = skills.listInstalled().find((item) => item.name === approved.slug);
     assert.equal(discovered?.enabled, false, "learned Skill is installed disabled by default");
     assert.equal(
-      (await import("node:fs")).readdirSync(join(sandbox, ".mybuddy", "skills")).some((name) => name.includes(".learned-") && (name.endsWith(".tmp") || name.endsWith(".bak"))),
+      (await import("node:fs")).readdirSync(getSkillsDir()).some((name) => name.includes(".learned-") && (name.endsWith(".tmp") || name.endsWith(".bak"))),
       false,
       "successful learned Skill materialization leaves no swap temp/backup directories",
     );
 
     // Existing non-learned Skill with the same slug must never be overwritten.
     const collisionSlug = globalCandidate!.slug;
-    const collisionDir = join(sandbox, ".mybuddy", "skills", collisionSlug);
+    const collisionDir = join(getSkillsDir(), collisionSlug);
     mkdirSync(collisionDir, { recursive: true });
     writeFileSync(join(collisionDir, "SKILL.md"), `---\nname: ${collisionSlug}\ndescription: user owned\n---\n# user skill\n`, "utf-8");
     assert.throws(() => skills.installLearnedSkill({

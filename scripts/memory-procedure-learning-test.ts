@@ -8,6 +8,8 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { captureProcedureExecution } from "../src/main/memory/MemoryProcedureEvidence";
 import { SkillsService } from "../src/main/skills/SkillsService";
+// 技能聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）；旧断言写死迁移前路径。
+import { getSkillsDir } from "../src/main/paths";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-procedure-learning-"));
 process.env.USERPROFILE = sandbox;
@@ -80,7 +82,7 @@ try {
   Object.assign(agent, { db, memoryService: memory, memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {} });
   const approved = agent.approveKernelMemorySkillCandidate(candidate.id);
   assert.equal(approved.status, "materialized");
-  const skillPath = join(sandbox, ".mybuddy", "skills", candidate.slug, "SKILL.md");
+  const skillPath = join(getSkillsDir(), candidate.slug, "SKILL.md");
   assert(existsSync(skillPath));
   assert.match(readFileSync(skillPath, "utf8"), /disable-model-invocation: true/);
   assert(agent.kernelSkillLearningStatus().blockedSkills.some((item: any) => item.reason.includes("尚未启用")));

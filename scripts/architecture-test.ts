@@ -678,7 +678,9 @@ async function main(): Promise<void> {
       modePresetId: "code-review",
       homeSpaceId: null,
     });
-    useAppStore.getState().sendMessage("普通新任务首条消息");
+    // sendMessage 是 async：prompt 在 Promise.resolve(taskPersistence).then(...) 之后才调用；
+    // 不 await 会读到空 promptCalls（旧断言因此空转通过）。
+    await useAppStore.getState().sendMessage("普通新任务首条消息");
     const first = promptCalls[promptCalls.length - 1];
     assert(first?.modelId === undefined, "sendMessage 主路径：未显式 → modelId 不传");
     assert(first?.permissionMode === undefined, "sendMessage 主路径：未显式 → permissionMode 不传");
@@ -693,7 +695,7 @@ async function main(): Promise<void> {
     useAppStore.getState().setActiveModel("gpt-5");
     useAppStore.getState().setPermissionMode("readonly");
     useAppStore.getState().setActiveConnectors(["c1"]);
-    useAppStore.getState().sendMessage("第二条");
+    await useAppStore.getState().sendMessage("第二条");
     const second = promptCalls[promptCalls.length - 1];
     assert(second?.modelId === "gpt-5", "显式模型进入主路径 payload");
     assert(second?.permissionMode === "readonly", "显式权限进入主路径 payload");
@@ -710,7 +712,7 @@ async function main(): Promise<void> {
     );
     // 草稿期挂载的连接器随首条消息写入新任务
     useAppStore.setState({ activeTaskId: null, draft: { spaceId: "s1" }, activeConnectorIds: ["c2"] });
-    useAppStore.getState().sendMessage("草稿消息");
+    await useAppStore.getState().sendMessage("草稿消息");
     const draftTask = useAppStore.getState().tasks.find(
       (t) => t.id === useAppStore.getState().activeTaskId,
     );
@@ -844,7 +846,7 @@ async function main(): Promise<void> {
         useAppStore.getState().permissionExplicit === false,
       "F2：切到未显式任务 → explicit 标记不泄漏",
     );
-    useAppStore.getState().sendMessage("B 首条消息");
+    await useAppStore.getState().sendMessage("B 首条消息");
     const bPayload = promptCalls[promptCalls.length - 1];
     assert(
       bPayload?.modelId === undefined && bPayload?.permissionMode === undefined,
@@ -858,7 +860,7 @@ async function main(): Promise<void> {
         useAppStore.getState().permissionExplicit === true,
       "F2：切回显式任务 → 标记恢复",
     );
-    useAppStore.getState().sendMessage("A 继续");
+    await useAppStore.getState().sendMessage("A 继续");
     const aPayload = promptCalls[promptCalls.length - 1];
     assert(
       aPayload?.modelId === "gpt-5" && aPayload?.permissionMode === "readonly",

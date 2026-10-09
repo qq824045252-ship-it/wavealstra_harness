@@ -44,6 +44,9 @@ const { SkillsService } = await import("../src/main/skills/SkillsService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");
 const { matchesSkillPolicyNeedles } = await import("../src/shared/runtime-policy");
 const { skillMatchesPolicy, nameMatchesPolicy } = await import("../src/shared/mode-access-filter");
+// 插件目录已迁移到 ~/.mybuddy/plugins/**（PluginStorage v1）。测试必须写入真实目录 getter，
+// 否则文件落在迁移前的旧路径上，ConnectorService/SkillsService 永远找不到。
+const { getSkillsDir, getConnectorMarketDir } = await import("../src/main/paths");
 
 let passed = 0;
 let failed = 0;
@@ -109,9 +112,9 @@ async function main(): Promise<void> {
   };
 
   /* ---------- 磁盘 fixture ---------- */
-  // Global skills（~/.mybuddy/skills）：g-ok 允许，g-deny 被 Tag 拒绝
-  write(join(root, ".mybuddy", "skills", "g-ok", "SKILL.md"), skillMd("g-ok"));
-  write(join(root, ".mybuddy", "skills", "g-deny", "SKILL.md"), skillMd("g-deny"));
+  // Global skills（~/.mybuddy/plugins/skills）：g-ok 允许，g-deny 被 Tag 拒绝
+  write(join(getSkillsDir(), "g-ok", "SKILL.md"), skillMd("g-ok"));
+  write(join(getSkillsDir(), "g-deny", "SKILL.md"), skillMd("g-deny"));
   const learnedInstalled = installGovernedLearnedSkill({
     slug: "learned-runtime-ok",
     title: "Learned Runtime OK",
@@ -132,7 +135,7 @@ async function main(): Promise<void> {
   new ExpertService().installByPath(pkgDir);
 
   // Connector demo-connector：private skills c-ok（允许）/ c-deny（拒绝）
-  const connDir = join(root, ".mybuddy", "connector-market", "connectors", "demo-connector");
+  const connDir = join(getConnectorMarketDir(), "connectors", "demo-connector");
   write(join(connDir, "connector-meta.json"), JSON.stringify({ name: "演示连接器" }));
   write(join(connDir, "skills", "c-ok", "SKILL.md"), skillMd("c-ok"));
   write(join(connDir, "skills", "c-deny", "SKILL.md"), skillMd("c-deny"));

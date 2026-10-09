@@ -20,13 +20,18 @@ const summary = summarizeBlueprintDefinition({
 assert.deepEqual(summary, { workspaces: 2, tasks: 1, gadgets: 2, files: 1, hasContext: true });
 assert.deepEqual(blueprintSummaryParts({ schemaVersion: 1, kind: "workspace", workspace: { key: "root", name: "Root" } }), ["1 个工作空间"]);
 
-contains("src/renderer/src/components/Sidebar.tsx", ">WORK<", "sidebar must expose WORK hierarchy");
-contains("src/renderer/src/components/Sidebar.tsx", ">WORKSPACES<", "sidebar must expose WORKSPACES hierarchy");
-contains("src/renderer/src/components/Sidebar.tsx", ">RESOURCES<", "sidebar must expose RESOURCES hierarchy");
+// Sidebar 现行分区标题为中文（独立任务 / 工作空间），并复用 buildWorkspaceTree 渲染层级；
+// 旧的 >WORK< / >WORKSPACES< / >RESOURCES< 英文标签在现行 UI 中不存在（RESOURCES 概念已移除）。
+contains("src/renderer/src/components/Sidebar.tsx", "独立任务", "sidebar must expose the standalone-task section");
+contains("src/renderer/src/components/Sidebar.tsx", "工作空间", "sidebar must expose the workspace section");
+contains("src/renderer/src/components/Sidebar.tsx", "buildWorkspaceTree", "sidebar must render the workspace tree hierarchy");
 contains("src/renderer/src/components/Sidebar.tsx", "CreateWorkspaceDialog", "new workspace must use the creation flow");
-contains("src/renderer/src/components/workspace/CreateWorkspaceDialog.tsx", "From Blueprint", "creation flow must offer Blueprint");
-contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", "Save as Blueprint", "workspace menu must expose Blueprint capture");
-for (const label of ["Overview", "Context", "Library", "Files", "Gadgets", "Active Work", "Recent Artifacts"]) contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", label, `workspace UI must include ${label}`);
+contains("src/renderer/src/components/workspace/CreateWorkspaceDialog.tsx", "从 Blueprint 创建", "creation flow must offer Blueprint");
+contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", "保存为 Blueprint", "workspace menu must expose Blueprint capture");
+// WorkspaceDetail 的分区标签现由 TAB_LABELS 提供（中文 + Gadgets）；旧断言的
+// Overview/Context/Library/Files/Active Work/Recent Artifacts 只在 CSS 类名里出现，
+// 或（Active Work / Recent Artifacts）已被移除。改为断言现行的全部页签标签。
+for (const label of ["概览", "记忆", "上下文", "资料库", "文件", "Gadgets", "终端"]) contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", label, `workspace UI must include ${label}`);
 
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "Save to Workspace", "task Gadget must save to workspace");
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "Save to My Gadgets", "task Gadget must save to My Gadgets");

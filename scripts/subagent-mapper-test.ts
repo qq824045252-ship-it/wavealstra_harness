@@ -8,7 +8,7 @@
  * 另验证危险工具标记 / tool_call 详情摘要函数对 subagent 参数形态的鲁棒性。
  * 必须经 scripts/test-guard.mjs 执行。
  */
-import { mapPiEventToPatches, summarizeToolInput, isDangerousTool } from "../src/shared/pi-event-mapper";
+import { mapPiEventToPatches, summarizeToolInput, isDangerousTool, isSideEffectTool } from "../src/shared/pi-event-mapper";
 
 let passed = 0;
 let failed = 0;
@@ -78,7 +78,11 @@ console.log("== subagent 完成/错误 → renderer patch ==");
 console.log("== 危险工具判定（subagent 自身不是危险工具；内部 bash 由子进程策略约束） ==");
 {
   assert(isDangerousTool("subagent", {}) === false, "subagent 工具本身不标记危险（审批面在主会话保持现状）");
-  assert(isDangerousTool("bash", { command: "rm -rf x" }) === true, "bash 危险命令仍标记");
+  // bash 属于「写类工具」（MUTATING_BUILTIN_TOOLS），由 isSideEffectTool 判定并要求审批；
+  // isDangerousTool 是另一类（execute_code/browser_exec/ui_exec/computer_exec/cad_freecad_run）。
+  // 旧断言查错了函数：isDangerousTool 自初始提交起就没有 bash 分支，因此该断言从未成立。
+  assert(isSideEffectTool("bash", { command: "rm -rf x" }) === true, "bash 仍按写类工具要求审批（isSideEffectTool）");
+  assert(isDangerousTool("bash", { command: "rm -rf x" }) === false, "bash 不属于 isDangerousTool 类别（职责分离）");
   assert(isDangerousTool("cad_freecad_run", {}) === true, "cad_freecad_run 恒危险（既有行为不回归）");
 }
 

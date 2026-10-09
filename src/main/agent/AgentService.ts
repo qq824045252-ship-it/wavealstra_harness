@@ -3753,6 +3753,10 @@ export class AgentService {
     const taskConfig = this.db.getTask(req.taskId);
     const taskBinding = this.expertBindings.get(req.taskId);
     const activeIdentity = taskBinding?.active;
+    // 调用方显式传入的 expertId 必须先过「已移除的 Expert Team 命名空间」边界校验，再被任务级
+    // binding 覆盖。0.1.17 引入 binding 覆盖后，team:* 会被静默吸收而不再是显式拒绝
+    // （新增于 3261a43，导致 runtime-skill-loader-test T1 由通过转为失败）；这里恢复该边界。
+    assertSingleExpertId(req.expertId);
     req = { ...req, expertId: taskBinding ? activeIdentity?.sourceExpertId : req.expertId,
       connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds) };
     const welcomeMode = resolveWelcomeMode(req.welcomeMode, taskConfig?.welcomeMode);

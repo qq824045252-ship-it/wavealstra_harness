@@ -1,28 +1,13 @@
 {
-  "$comment": "已知失败基线（棘轮）。新增失败会让 test:all 失败；修复后请移除对应条目。每条应附简短原因。",
-  "generatedAt": "2026-10-09T03:16:18.250Z",
+  "$comment": "已知失败基线（棘轮 / ratchet）。test:all 允许这些用例失败但会打印出来，任何*新增*失败会让门禁失败。修复后请用 `pnpm -s test:all:update-baseline` 重写本文件（或手动删除已修复条目）。切勿为掩盖真实回归而新增条目。",
+  "$basis": "来源：2026-10-09 无沙箱干净环境下对 default 套件（248 个用例，已排除 GUI/CDP/e2e/live 与依赖外部数据集的用例）的运行结果。本轮已修复并逐个验证通过的用例（22 → 3）：work-graph、workspace-chunk-r2、pi100-features、chat-markdown、library-workspace-context、architecture、chat-selection、subagent-mapper、workspace-runtime-integration、dimagent-debug、runtime-skill-loader、capability-packaging、project-task-defaults、pi-codemode-native、skill-root-guard、memory-skill-learning、external-cli-memory、memory-procedure-learning、pi-native-control、skill-authoring-recovery、workspace-tree、workspace-chunk-benchmark。",
   "knownFailing": [
-    "test:architecture",
-    "test:blender-skill",
-    "test:capability-packaging",
-    "test:chat-selection",
-    "test:dimagent-debug",
-    "test:external-cli-memory",
-    "test:memory-procedure-learning",
-    "test:memory-skill-learning",
-    "test:pi-codemode-native",
-    "test:pi-native-control",
     "test:pi099-closeout",
     "test:pi099-migration",
-    "test:project-agent",
-    "test:project-task-defaults",
-    "test:runtime-skill-loader",
-    "test:skill-authoring-recovery",
-    "test:skill-root-guard",
-    "test:subagent-mapper",
-    "test:workspace-chunk-benchmark",
-    "test:workspace-navigation-ux",
-    "test:workspace-runtime-integration",
-    "test:workspace-tree"
-  ]
+    "test:project-agent"
+  ],
+  "$remaining": {
+    "test:pi099-migration": "Pi 1.0.x 下 MCP 会话启用语义变化：fixture MCP 服务器被判定为 'not enabled in this session'（2 条断言）。test:pi099-closeout 直接串联该用例，故一并失败。需要按当前 Pi 的 MCP 启用方式重写夹具。",
+    "test:project-agent": "执行审计快照 resolvedCapabilities 未保留「被项目策略拒绝的 Expert」（expertId='blocked-expert' 确有传入，执行前 inspection 正确包含）。这是产品行为问题，需产品决策：审计快照是否应保留被拒的 Expert；不宜由测试擅自迁就。"
+  }
 }
