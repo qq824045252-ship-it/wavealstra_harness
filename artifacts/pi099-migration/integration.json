@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-10-02T04:19:22.218Z",
+  "startedAt": "2026-10-09T05:30:23.543Z",
   "tests": [
     {
       "name": "native-tool identities and exact server names",
@@ -13,20 +13,20 @@
       "name": "real repository inventory through native stdio and packaged QuickJS",
       "passed": true,
       "details": {
-        "total": 679,
-        "totalBytes": 7890440,
+        "total": 705,
+        "totalBytes": 8132329,
         "largest": [
           {
             "path": "src/main/agent/AgentService.ts",
-            "bytes": 252437
+            "bytes": 274198
           },
           {
             "path": "src/renderer/src/store/appStore.ts",
-            "bytes": 251301
+            "bytes": 259363
           },
           {
-            "path": "src/main/db/AppDatabase.ts",
-            "bytes": 167004
+            "path": "src/main/index.ts",
+            "bytes": 170087
           }
         ]
       }
@@ -96,7 +96,8 @@
     },
     {
       "name": "manager and task status are native, separately scoped, and no fallback on missing tasks",
-      "passed": true
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: MCP server is not enabled in this session: fixture\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3560:5\n    at async test (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3298:21)\n    at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3556:3"
     },
     {
       "name": "manager reconnect preserves native task operation",
@@ -104,12 +105,9 @@
     },
     {
       "name": "deferred MCP tool survives reopening an actual persisted Pi session",
-      "passed": true,
-      "details": {
-        "reopened": true,
-        "nativeToolRestored": true
-      }
+      "passed": false,
+      "error": "AssertionError [ERR_ASSERTION]: MCP server is not enabled in this session: fixture\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3587:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async test (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3298:21)\n    at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pi099-migration-integration.mjs:3575:3"
     }
   ],
-  "finishedAt": "2026-10-02T04:19:28.220Z"
+  "finishedAt": "2026-10-09T05:30:28.053Z"
 }

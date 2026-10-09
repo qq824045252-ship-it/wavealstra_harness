@@ -384,6 +384,8 @@ const api = {
     deleteUserMessage: (req: AgentDeleteUserMessageRequest): Promise<void> =>
       ipcRenderer.invoke(AgentIpc.deleteUserMessage, req),
     abort: (taskId: string): Promise<void> => ipcRenderer.invoke(AgentIpc.abort, taskId),
+    stopConsultWorker: (req: import("../shared/agent-ipc").AgentStopConsultWorkerRequest): Promise<boolean> =>
+      ipcRenderer.invoke(AgentIpc.stopConsultWorker, req),
     compact: (taskId: string): Promise<import("../shared/compaction").TaskCompactionResultDto> => ipcRenderer.invoke(AgentIpc.compact, taskId),
     abortCompaction: (taskId: string): Promise<boolean> => ipcRenderer.invoke(AgentIpc.abortCompaction, taskId),
     getCompactionStatus: (taskId: string): Promise<import("../shared/compaction").TaskCompactionStatusDto> => ipcRenderer.invoke(AgentIpc.getCompactionStatus, taskId),

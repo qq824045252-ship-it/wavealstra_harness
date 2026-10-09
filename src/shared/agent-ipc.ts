@@ -114,6 +114,8 @@ export const AgentIpc = {
   /** 删除用户消息：从该消息前建立新分支，确保其及后续内容不再进入上下文 */
   deleteUserMessage: "agent:deleteUserMessage",
   abort: "agent:abort",
+  /** 终止多模型会诊中的单个参与者；不结束整场会诊，也不影响其它模型。 */
+  stopConsultWorker: "agent:stopConsultWorker",
   compact: "agent:compact",
   abortCompaction: "agent:abortCompaction",
   getCompactionStatus: "agent:getCompactionStatus",
@@ -726,6 +728,15 @@ export interface AgentApproveToolRequest {
   approved: boolean;
   /** 外部写授权决策（tool_start 带 approvalKind=external-write 时使用） */
   externalWrite?: import("./external-write").ExternalWriteApprovalChoice;
+}
+
+/** 终止多模型会诊的单个参与者：只结束该模型，保留其它模型与已收到的结果。 */
+export interface AgentStopConsultWorkerRequest {
+  taskId: string;
+  /** Pi tool call id，等于 MultiModelConsultReport.id。 */
+  consultId: string;
+  /** 报告 workers 数组下标（与 UI 的参与者行一一对应）。 */
+  workerIndex: number;
 }
 
 export interface AgentRegenerateRequest {

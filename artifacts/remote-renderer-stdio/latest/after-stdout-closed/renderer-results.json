@@ -1,0 +1,15 @@
+{
+  "ok": false,
+  "error": "Error: EPIPE: broken pipe, write",
+  "errorCode": "EPIPE",
+  "results": [
+    {
+      "name": "thinking deltas appear immediately in the folded panel and the activity animation advances",
+      "ok": true
+    },
+    {
+      "name": "expanded thinking follows new text until the reader scrolls up",
+      "ok": true
+    }
+  ]
+}

@@ -1,11 +1,11 @@
 {
-  "startedAt": "2026-10-02T03:57:10.012Z",
+  "startedAt": "2026-10-09T00:47:08.964Z",
   "tests": [
     {
       "name": "local tools start unverified and show only canonical bash",
       "status": "passed",
       "details": {
-        "terminal": "命令执行\n待检查\n统一使用 Pi bash，保留任务隔离、审批和执行证据；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
+        "terminal": "命令执行\n待检查\n直接使用 Pi 原生 bash；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
         "code": "代码执行\n待检查\n执行 JavaScript、PowerShell 和受管 Python；检查不下载环境，缺少 Python 会显示部分可用\nexecute_code\n代码执行 · 受管 Python\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
         "browser": "界面与桌面操作\n待检查\n读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标\nbrowser_exec · ui_exec · computer_exec\n浏览器 · 应用界面 · Windows 桌面\n检查\n已接入 3 项界面能力；点击检查验证实际读取。",
         "diagnostics": "开发诊断"
@@ -15,8 +15,8 @@
       "name": "command check actually executes and updates badge",
       "status": "passed",
       "details": {
-        "text": "命令执行\n已就绪\n统一使用 Pi bash，保留任务隔离、审批和执行证据；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n最近检查：已实际执行 Bash 探测命令；任务隔离与执行证据继续由同一 bash 工具提供。",
-        "message": "已实际执行 Bash 探测命令；任务隔离与执行证据继续由同一 bash 工具提供。"
+        "text": "命令执行\n已就绪\n直接使用 Pi 原生 bash；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n最近检查：已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。",
+        "message": "已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。"
       }
     },
     {
@@ -47,8 +47,8 @@
       "name": "subagent check starts trusted worker entry without model inference",
       "status": "passed",
       "details": {
-        "text": "子代理\n已就绪\n委派独立子任务；检查实际启动子代理入口，模型登录在委派时验证\nsubagent · subagent_list · subagent_steer\nSubagent Runtime\n检查\n最近检查：子代理入口已实际启动并返回版本 1.0.0；未调用模型，模型登录在委派时验证。",
-        "message": "子代理入口已实际启动并返回版本 1.0.0；未调用模型，模型登录在委派时验证。"
+        "text": "子代理\n已就绪\n委派独立子任务；检查实际启动子代理入口，模型登录在委派时验证\nsubagent · subagent_list · subagent_steer\nSubagent Runtime\n检查\n最近检查：子代理入口已实际启动并返回版本 1.0.4；未调用模型，模型登录在委派时验证。",
+        "message": "子代理入口已实际启动并返回版本 1.0.4；未调用模型，模型登录在委派时验证。"
       }
     },
     {

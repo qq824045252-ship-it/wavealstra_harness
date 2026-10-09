@@ -1,225 +1,216 @@
 {
   "stage": "regression",
-  "startedAt": "2026-09-30T01:35:04.339Z",
-  "pid": 25604,
-  "status": "passed",
+  "startedAt": "2026-10-09T05:29:33.187Z",
+  "pid": 27556,
+  "status": "failed",
   "tests": [
     {
       "name": "test:pi099-worker-invocation",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:04.340Z",
-      "childPid": 34716,
+      "startedAt": "2026-10-09T05:29:33.188Z",
+      "childPid": 16208,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:05.536Z"
+      "finishedAt": "2026-10-09T05:29:34.056Z"
     },
     {
       "name": "test:pi099-manager",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:05.537Z",
-      "childPid": 2560,
+      "startedAt": "2026-10-09T05:29:34.057Z",
+      "childPid": 32444,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:08.027Z"
+      "finishedAt": "2026-10-09T05:29:35.809Z"
     },
     {
       "name": "test:pi099-migration",
-      "status": "passed",
-      "startedAt": "2026-09-30T01:35:08.028Z",
-      "childPid": 27184,
-      "code": 0,
+      "status": "failed",
+      "startedAt": "2026-10-09T05:29:35.809Z",
+      "childPid": 32176,
+      "code": 1,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:15.639Z"
-    },
-    {
-      "name": "test:verified-shell",
-      "status": "passed",
-      "startedAt": "2026-09-30T01:35:15.641Z",
-      "childPid": 36044,
-      "code": 0,
-      "signal": null,
-      "finishedAt": "2026-09-30T01:35:19.698Z"
-    },
-    {
-      "name": "test:pi-shell-output",
-      "status": "passed",
-      "startedAt": "2026-09-30T01:35:19.700Z",
-      "childPid": 34568,
-      "code": 0,
-      "signal": null,
-      "finishedAt": "2026-09-30T01:35:23.558Z"
+      "finishedAt": "2026-10-09T05:29:42.074Z"
     },
     {
       "name": "test:mcp-config-parse",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:23.560Z",
-      "childPid": 27892,
+      "startedAt": "2026-10-09T05:29:42.074Z",
+      "childPid": 32152,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:25.261Z"
+      "finishedAt": "2026-10-09T05:29:43.017Z"
     },
     {
       "name": "test:mcp-mode",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:25.262Z",
-      "childPid": 30096,
+      "startedAt": "2026-10-09T05:29:43.019Z",
+      "childPid": 10504,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:27.232Z"
+      "finishedAt": "2026-10-09T05:29:44.267Z"
     },
     {
       "name": "test:mcp",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:27.233Z",
-      "childPid": 29268,
+      "startedAt": "2026-10-09T05:29:44.268Z",
+      "childPid": 22828,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:28.798Z"
+      "finishedAt": "2026-10-09T05:29:45.254Z"
     },
     {
       "name": "test:agent-loadout",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:28.799Z",
-      "childPid": 15620,
+      "startedAt": "2026-10-09T05:29:45.255Z",
+      "childPid": 15040,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:30.526Z"
+      "finishedAt": "2026-10-09T05:29:46.440Z"
     },
     {
       "name": "test:session-lifecycle",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:30.527Z",
-      "childPid": 21060,
+      "startedAt": "2026-10-09T05:29:46.442Z",
+      "childPid": 27236,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:31.942Z"
+      "finishedAt": "2026-10-09T05:29:47.346Z"
     },
     {
       "name": "test:mcp-execution-evidence",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:31.944Z",
-      "childPid": 25420,
+      "startedAt": "2026-10-09T05:29:47.347Z",
+      "childPid": 13056,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:33.159Z"
+      "finishedAt": "2026-10-09T05:29:48.276Z"
     },
     {
       "name": "test:pi-autonomous-execution",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:33.160Z",
-      "childPid": 2524,
+      "startedAt": "2026-10-09T05:29:48.277Z",
+      "childPid": 22092,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:36.474Z"
+      "finishedAt": "2026-10-09T05:29:51.201Z"
+    },
+    {
+      "name": "test:pi-native-core-tools",
+      "status": "passed",
+      "startedAt": "2026-10-09T05:29:51.203Z",
+      "childPid": 32304,
+      "code": 0,
+      "signal": null,
+      "finishedAt": "2026-10-09T05:29:54.781Z"
     },
     {
       "name": "test:compaction",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:36.475Z",
-      "childPid": 13652,
+      "startedAt": "2026-10-09T05:29:54.782Z",
+      "childPid": 30716,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:39.721Z"
+      "finishedAt": "2026-10-09T05:29:57.026Z"
     },
     {
       "name": "test:compaction-policy-history",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:39.722Z",
-      "childPid": 27544,
+      "startedAt": "2026-10-09T05:29:57.026Z",
+      "childPid": 26716,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:42.170Z"
+      "finishedAt": "2026-10-09T05:29:58.933Z"
     },
     {
       "name": "test:conversation-branch:native",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:42.171Z",
-      "childPid": 4852,
+      "startedAt": "2026-10-09T05:29:58.934Z",
+      "childPid": 6840,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:44.849Z"
+      "finishedAt": "2026-10-09T05:30:00.821Z"
     },
     {
       "name": "test:pi-reasoning-stream",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:44.850Z",
-      "childPid": 13856,
+      "startedAt": "2026-10-09T05:30:00.823Z",
+      "childPid": 17320,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:46.767Z"
+      "finishedAt": "2026-10-09T05:30:02.463Z"
     },
     {
       "name": "test:command-code-request",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:46.768Z",
-      "childPid": 4760,
+      "startedAt": "2026-10-09T05:30:02.464Z",
+      "childPid": 5008,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:48.615Z"
+      "finishedAt": "2026-10-09T05:30:03.861Z"
     },
     {
       "name": "test:session-history-recovery",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:48.616Z",
-      "childPid": 31992,
+      "startedAt": "2026-10-09T05:30:03.862Z",
+      "childPid": 22552,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:55.626Z"
+      "finishedAt": "2026-10-09T05:30:09.167Z"
     },
     {
       "name": "test:oauth-bundle",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:55.627Z",
-      "childPid": 27936,
+      "startedAt": "2026-10-09T05:30:09.167Z",
+      "childPid": 31268,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:58.431Z"
+      "finishedAt": "2026-10-09T05:30:11.391Z"
     },
     {
       "name": "test:delegated-run",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:58.432Z",
-      "childPid": 18520,
+      "startedAt": "2026-10-09T05:30:11.392Z",
+      "childPid": 9288,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:35:59.987Z"
+      "finishedAt": "2026-10-09T05:30:12.474Z"
     },
     {
       "name": "test:multi-model-consult",
       "status": "passed",
-      "startedAt": "2026-09-30T01:35:59.988Z",
-      "childPid": 30572,
+      "startedAt": "2026-10-09T05:30:12.475Z",
+      "childPid": 4796,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:36:03.770Z"
+      "finishedAt": "2026-10-09T05:30:15.460Z"
     },
     {
       "name": "test:subagent-ipc-host",
       "status": "passed",
-      "startedAt": "2026-09-30T01:36:03.771Z",
-      "childPid": 32140,
+      "startedAt": "2026-10-09T05:30:15.461Z",
+      "childPid": 29088,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:36:05.129Z"
+      "finishedAt": "2026-10-09T05:30:16.362Z"
     },
     {
       "name": "test:subagent-model-ui",
       "status": "passed",
-      "startedAt": "2026-09-30T01:36:05.129Z",
-      "childPid": 16604,
+      "startedAt": "2026-10-09T05:30:16.363Z",
+      "childPid": 23488,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:36:06.594Z"
+      "finishedAt": "2026-10-09T05:30:17.301Z"
     },
     {
       "name": "typecheck",
       "status": "passed",
-      "startedAt": "2026-09-30T01:36:06.595Z",
-      "childPid": 4744,
+      "startedAt": "2026-10-09T05:30:17.303Z",
+      "childPid": 11020,
       "code": 0,
       "signal": null,
-      "finishedAt": "2026-09-30T01:36:33.976Z"
+      "finishedAt": "2026-10-09T05:30:20.371Z"
     }
   ],
-  "finishedAt": "2026-09-30T01:36:33.978Z"
+  "finishedAt": "2026-10-09T05:30:20.373Z"
 }

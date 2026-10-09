@@ -9,7 +9,7 @@ import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capabi
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
 import { resolveConversationBranchSourceRoots } from "./session-branch";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
-import { createPiConsultSession, runMultiModelConsult } from "../capabilities/MultiModelConsult";
+import { createPiConsultSession, runMultiModelConsult, type ConsultWorkerControls } from "../capabilities/MultiModelConsult";
 import { ExecutionFailureRepository } from "./ExecutionFailureRepository";
 import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionRequestGuard, withModelInvocationSettings } from "./ModelInvocationAdmission";
 import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralContextProjection";
@@ -511,6 +511,8 @@ export type AgentTaskLifecycleEvent =
 export class AgentService {
   readonly registry = new SessionRegistry();
   private readonly pendingActions = new PendingActionRegistry();
+  /** Live multi-model-consult terminate switches, keyed by `${taskId}:${consultId}`. */
+  private readonly consultWorkers = new Map<string, ConsultWorkerControls>();
   private modelRuntime: ModelRuntime | null = null;
   private modelConfigFingerprint: string | undefined;
   private modelConfigReload: Promise<void> | undefined;
@@ -611,6 +613,20 @@ export class AgentService {
 
   restartRuntimeRequirement(providerId: string): Promise<void> {
     return this.runtimeRequirements.restart(providerId);
+  }
+
+  /**
+   * Terminate ONE participant of a still-running multi-model consultation.
+   * Returns false when that consultation is no longer running or the participant already settled.
+   */
+  stopConsultWorker(req: { taskId: string; consultId: string; workerIndex: number }): boolean {
+    const controls = this.consultWorkers.get(`${req.taskId}:${req.consultId}`);
+    if (!controls) return false;
+    return controls.stopWorker(req.workerIndex);
+  }
+  /** 正在运行的会诊实例数量（诊断/测试用，不暴露给渲染层）。 */
+  runningConsultCount(): number {
+    return this.consultWorkers.size;
   }
   /** Mechanical CAD runtime 装配（Main 侧单例；仅 mechanical-cad preset 消费） */
   setCadDomain(
@@ -5449,8 +5465,12 @@ export class AgentService {
         runtime: this.builtinCapabilities,
         consult: (id, input, signal, onUpdate) => {
           const config = this.builtinCapabilities.config().multiModelConsult;
+          const controlKey = `${opts.taskId}:${id}`;
           return runMultiModelConsult({
             id, taskId: opts.taskId, input, config, signal, onUpdate,
+            // Live per-participant terminate switch: exposed to the UI so one stuck model can be
+            // ended directly instead of holding the whole consultation until its timeout.
+            onControls: (controls) => { this.consultWorkers.set(controlKey, controls); },
             createSession: (participant, workerSignal, onToolLimit) => createPiConsultSession({
               participant, cwd: opts.cwd, agentDir, runtime: this.modelRuntime!,
               parentSettings: settingsManager, policy: sessionPolicy,
@@ -5458,7 +5478,7 @@ export class AgentService {
               signal: workerSignal, onToolLimit,
               isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled,
             }),
-          });
+          }).finally(() => { this.consultWorkers.delete(controlKey); });
         },
         browser: this.browserAutomation,
         artifactService: () => this.artifactService,

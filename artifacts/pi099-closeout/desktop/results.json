@@ -1,18 +1,18 @@
 {
   "stage": "desktop",
-  "startedAt": "2026-09-30T01:49:08.564Z",
-  "pid": 29852,
-  "status": "passed",
+  "startedAt": "2026-10-09T01:07:24.196Z",
+  "pid": 73664,
+  "status": "failed",
   "tests": [
     {
       "name": "@desktop",
-      "status": "passed",
-      "startedAt": "2026-09-30T01:49:08.568Z",
-      "childPid": 32380,
-      "code": 0,
+      "status": "failed",
+      "startedAt": "2026-10-09T01:07:24.198Z",
+      "childPid": 66544,
+      "code": 1,
       "signal": null,
-      "finishedAt": "2026-09-30T01:53:01.074Z"
+      "finishedAt": "2026-10-09T01:07:24.370Z"
     }
   ],
-  "finishedAt": "2026-09-30T01:53:01.079Z"
+  "finishedAt": "2026-10-09T01:07:24.372Z"
 }

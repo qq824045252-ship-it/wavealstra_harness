@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-10-01T20:21:17.316Z",
+  "startedAt": "2026-10-09T05:30:21.982Z",
   "tests": [
     {
       "name": "duplicate sign-in requests share an in-flight exclusion before manager readiness",
@@ -18,5 +18,5 @@
       "passed": true
     }
   ],
-  "finishedAt": "2026-10-01T20:21:17.323Z"
+  "finishedAt": "2026-10-09T05:30:21.992Z"
 }

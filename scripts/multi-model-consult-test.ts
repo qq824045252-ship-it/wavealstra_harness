@@ -139,6 +139,88 @@ try {
     const value = sessionFixture(p.modelId); value.prompt = async () => new Promise<void>(() => {}); return value;
   } });
   check("a prompt ignoring abort cannot trap the fan-in", () => { assert.equal(stubborn.status, "failed"); assert(Date.now() - stubbornStarted < 1000); assert.equal(created, disposed); });
+
+  // --- Direct per-participant terminate: one stuck/looping model must not force an idle wait. ---
+  const loopingStops: Array<Parameters<NonNullable<Parameters<typeof runMultiModelConsult>[0]["onControls"]>>[0]> = [];
+  const loopingStarted = Date.now();
+  const looping = run({
+    config: { ...config, timeoutSeconds: 600 },
+    onControls: (controls) => loopingStops.push(controls),
+    createSession: async (p) => {
+      if (!p.modelId.endsWith("/b")) return sessionFixture(p.modelId, { delayed: 30 });
+      const value = sessionFixture(p.modelId);
+      value.prompt = async () => new Promise<void>(() => {}); // ignores abort: an unbounded model loop
+      return value;
+    },
+  });
+  // Controls must exist before any participant starts, otherwise the UI cannot reach a live worker.
+  check("live terminate controls exist before the first participant starts", () => assert.equal(loopingStops.length, 1));
+  setTimeout(() => loopingStops[0]!.stopWorker(1), 40);
+  const loopingStopped = await looping;
+  check("a looping participant is terminated directly without waiting for its timeout", () => {
+    assert.equal(loopingStopped.workers[1]!.status, "cancelled");
+    assert.match(loopingStopped.workers[1]!.error ?? "", /用户终止/);
+    assert.equal(Date.now() - loopingStarted < 1000, true, "terminate must not wait for the 600s timeout");
+  });
+  check("terminating one participant keeps its siblings and the report usable", () => {
+    assert.equal(loopingStopped.workers[0]!.status, "complete");
+    assert.equal(loopingStopped.succeeded, 1);
+    assert.equal(loopingStopped.status, "degraded");
+    assert.equal(loopingStops[0]!.stopWorker(1), false, "an already terminated participant cannot be terminated twice");
+    assert.equal(created, disposed);
+  });
+
+  const queuedStops: typeof loopingStops = [];
+  const queuedStarted: string[] = [];
+  const queuedRun = run({
+    config: { ...config, participants: [{ modelId: "provider/q1" }, { modelId: "provider/q2" }], maxParallel: 1, timeoutSeconds: 600 },
+    onControls: (controls) => queuedStops.push(controls),
+    createSession: async (p) => {
+      queuedStarted.push(p.modelId);
+      const value = sessionFixture(p.modelId);
+      value.prompt = async () => new Promise<void>(() => {});
+      return value;
+    },
+  });
+  setTimeout(() => queuedStops[0]!.stopWorker(1), 40);
+  setTimeout(() => queuedStops[0]!.stopWorker(0), 90);
+  const queuedStopped = await queuedRun;
+  check("a terminate request on a still-queued participant prevents it from ever starting", () => {
+    assert.deepEqual(queuedStarted, ["provider/q1"]);
+    assert.equal(queuedStopped.workers[1]!.status, "cancelled");
+    assert.match(queuedStopped.workers[1]!.error ?? "", /用户终止/);
+    assert.equal(queuedStopped.status, "failed");
+    assert.equal(created, disposed);
+  });
+
+  const settledStops: typeof loopingStops = [];
+  const settled = await run({ onControls: (controls) => settledStops.push(controls) });
+  const settledSnapshot = JSON.stringify(settled.workers);
+  check("terminating an already settled participant is a no-op and never rewrites the report", () => {
+    assert.equal(settledStops[0]!.stopWorker(0), false);
+    assert.equal(settledStops[0]!.stopWorker(99), false);
+    assert.equal(JSON.stringify(settled.workers), settledSnapshot);
+    assert.equal(settled.status, "complete");
+  });
+
+  const hangingDisposeStarted = Date.now();
+  const hangingDispose = await run({
+    config: { ...config, timeoutSeconds: 0.02 },
+    createSession: async (p) => {
+      const value = sessionFixture(p.modelId);
+      value.prompt = async () => new Promise<void>(() => {});
+      const dispose = value.dispose.bind(value);
+      // Disposal counts as attempted but never converges: the fan-in must still return.
+      value.dispose = () => { dispose(); return new Promise<void>(() => {}); };
+      return value;
+    },
+  });
+  check("a cleanup that never converges is bounded and reported instead of holding the UI", () => {
+    assert.equal(hangingDispose.status, "failed");
+    assert(hangingDispose.workers.every((w) => w.endedAt && /清理异常/.test(w.error ?? "")));
+    assert(Date.now() - hangingDisposeStarted < 6000, "bounded cleanup must return quickly");
+    assert.equal(created, disposed);
+  });
   const observer = await run({ onUpdate: () => { throw Error("detached renderer"); } });
   check("observer failure cannot break collection or session disposal", () => { assert.equal(observer.status, "complete"); assert.equal(created, disposed); });
   const badCleanup = await run({ createSession: async (p) => { const value = sessionFixture(p.modelId); const dispose = value.dispose.bind(value); value.dispose = () => { dispose(); throw Error("disposal failed"); }; return value; } });

@@ -153,23 +153,76 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** A transport that ignores abort must not hold the UI or its siblings forever. */
-async function closeConsultSession(session: AgentSession): Promise<string | undefined> {
-  let issue: string | undefined;
+/** Bounded cleanup budget: a transport that ignores abort/dispose must not hold the UI forever. */
+const CONSULT_ABORT_TIMEOUT_MS = 2000;
+const CONSULT_DISPOSE_TIMEOUT_MS = 2000;
+/**
+ * Hard per-worker cap for the WHOLE terminal cleanup phase (unsubscribe + abort + dispose). It sits
+ * between one bounded step (2s) and two (4s) on purpose: a single hung step is still reported with
+ * its precise reason, while a cleanup that never converges is abandoned here so `Promise.all`, the
+ * final report and the caller's UI can always finish. The abandoned cleanup keeps running detached.
+ */
+const CONSULT_CLEANUP_GRACE_MS = 3000;
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Run one cleanup step under its own deadline. A step that misses the deadline is reported as a
+ * timeout (it keeps running detached); a step that fails is reported with its own message. This
+ * never rejects, so the caller can always record a terminal error instead of hanging.
+ */
+async function cleanupStep(operation: string, run: () => Promise<unknown> | unknown, ms: number): Promise<string | undefined> {
+  const deadline = AbortSignal.timeout(ms);
   try {
-    await abortable(Promise.resolve().then(() => session.abort()), AbortSignal.timeout(2000));
+    await abortable(Promise.resolve().then(() => run()), deadline);
+    return undefined;
   } catch (error) {
-    issue = error instanceof Error ? error.message : String(error);
+    return deadline.aborted ? `${operation}超时（超过 ${ms} 毫秒未收敛）` : `${operation}失败：${describeError(error)}`;
   }
-  try { session.dispose(); } catch (error) {
-    issue = [issue, error instanceof Error ? error.message : String(error)].filter(Boolean).join("；");
+}
+
+/** Await `operation`, but never longer than `ms`; when the deadline expires it keeps running detached. */
+async function settleWithin<T>(operation: Promise<T>, ms: number): Promise<{ timedOut: boolean; value?: T }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const expired = new Promise<{ timedOut: true }>((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), ms); });
+    return await Promise.race([operation.then((value) => ({ timedOut: false as const, value })), expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return issue;
+}
+
+/**
+ * A transport that ignores abort must not hold the UI or its siblings forever. Both steps are
+ * bounded. Issues are also pushed into `observed`, so a watchdog that fires while this is still
+ * running can still report the precise per-step reason instead of a bare "still cleaning".
+ */
+async function closeConsultSession(session: AgentSession, observed?: string[]): Promise<string | undefined> {
+  const issues: string[] = [];
+  const record = (issue: string | undefined) => { if (issue) { issues.push(issue); observed?.push(issue); } };
+  record(await cleanupStep("会话中止", () => session.abort(), CONSULT_ABORT_TIMEOUT_MS));
+  record(await cleanupStep("会话释放", () => session.dispose(), CONSULT_DISPOSE_TIMEOUT_MS));
+  return issues.join("；") || undefined;
 }
 
 function textContent(content: unknown): string {
   if (typeof content === "string") return content;
   return Array.isArray(content) ? content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n") : "";
+}
+
+/**
+ * Live per-participant controls handed to the caller while the consultation is still running.
+ * The caller (main process) exposes this to the UI so one stuck/looping model can be terminated
+ * immediately instead of blocking the whole fan-in until its timeout.
+ */
+export interface ConsultWorkerControls {
+  /**
+   * Terminate exactly one queued/running participant now. Returns false when that participant
+   * already reached a terminal state (then nothing is changed and the report is not mutated).
+   */
+  stopWorker: (index: number, reason?: string) => boolean;
 }
 
 export interface RunConsultOptions {
@@ -180,6 +233,8 @@ export interface RunConsultOptions {
   signal?: AbortSignal;
   onUpdate?: (report: MultiModelConsultReport) => void;
   createSession: (participant: ConsultParticipant, signal: AbortSignal, onToolLimit: () => void) => Promise<AgentSession>;
+  /** Invoked synchronously with the live controls before the first participant starts. */
+  onControls?: (controls: ConsultWorkerControls) => void;
 }
 
 /** Fixed fan-out/fan-in. This function is called ONLY by the main agent's explicit tool call. */
@@ -216,10 +271,28 @@ export async function runMultiModelConsult(options: RunConsultOptions): Promise<
   };
   const scheduleUpdate = () => { updateTimer ??= setTimeout(emit, 150); };
   const prompt = JSON.stringify({ task: input.task, ...(input.context ? { suppliedEvidence: input.context } : {}) });
+  // One direct terminate switch per participant. `stopReasons` records a request that arrived while
+  // the participant was still queued, so it is never started afterwards; `liveStops` reaches the
+  // running participant's own controller (which also aborts its session).
+  const stopReasons = new Map<number, string>();
+  const liveStops = new Map<number, () => void>();
+  const requestWorkerStop = (index: number, reason = "用户终止该模型（未完成）"): boolean => {
+    const worker = report.workers[index];
+    if (!worker || (worker.status !== "queued" && worker.status !== "running")) return false;
+    stopReasons.set(index, reason);
+    liveStops.get(index)?.();
+    emit();
+    return true;
+  };
+  options.onControls?.({ stopWorker: requestWorkerStop });
   emit();
   let next = 0;
   const runWorker = async (index: number): Promise<void> => {
     const worker = report.workers[index]!;
+    // A terminate request that arrived while this participant was still queued must never be
+    // undone by starting it later.
+    const earlyStop = stopReasons.get(index);
+    if (earlyStop) { worker.status = "cancelled"; worker.error = earlyStop; worker.endedAt = Date.now(); emit(); return; }
     if (options.signal?.aborted) { worker.status = "cancelled"; worker.error = "用户取消会诊（尚未启动）"; worker.endedAt = Date.now(); emit(); return; }
     worker.status = "running";
     worker.startedAt = Date.now();
@@ -229,20 +302,36 @@ export async function runMultiModelConsult(options: RunConsultOptions): Promise<
     let session: AgentSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let closed = false;
-    const abortSession = () => { if (session) void Promise.resolve().then(() => session!.abort()).catch(() => undefined); };
+    /** Set once this worker's report entry is frozen; nothing late may rewrite a terminal result. */
+    let settled = false;
+    // Exactly one session is created per worker; closing it twice would double-count disposal.
+    const closedSessions = new WeakSet<AgentSession>();
+    const closeSessionOnce = (target: AgentSession, observed?: string[]): Promise<string | undefined> => {
+      if (closedSessions.has(target)) return Promise.resolve(undefined);
+      closedSessions.add(target);
+      return closeConsultSession(target, observed);
+    };
+    // Never abort a session whose cleanup already started (dispose may already have released it).
+    const abortSession = () => { if (!session || closed) return; void Promise.resolve().then(() => session!.abort()).catch(() => undefined); };
     const stop = () => { controller.abort(); abortSession(); };
+    // A user terminate must be distinguishable from a timeout/parent cancel in the final report.
+    const stopRequestedByUser = () => stopReasons.has(index);
+    liveStops.set(index, stop);
     const parentAbort = () => stop();
     options.signal?.addEventListener("abort", parentAbort, { once: true });
     const timeout = setTimeout(() => { timedOut = true; stop(); }, config.timeoutSeconds * 1000);
     emit();
     try {
       const creating = options.createSession(config.participants[index]!, controller.signal, () => { toolLimit = true; stop(); }).then(async (created) => {
+        // Publish the session the instant it exists: a stop() landing right after creation must
+        // still reach it, and a caller that already returned on cancel/timeout must be able to
+        // abort+dispose it here instead of leaking a live session.
+        if (!session) session = created;
         if (closed || controller.signal.aborted) {
-          const issue = await closeConsultSession(created);
+          const issue = await closeSessionOnce(created);
           if (issue) console.warn("[multi-model-consult] late session cleanup failed", issue);
           throw controller.signal.reason ?? new Error("已取消");
         }
-        session = created;
         return created;
       });
       session = await abortable(creating, controller.signal);
@@ -252,7 +341,8 @@ export async function runMultiModelConsult(options: RunConsultOptions): Promise<
       let finalAnswer = "";
       let failure: string | undefined;
       unsubscribe = session.subscribe((event) => {
-        if (controller.signal.aborted) return;
+        // A late event must never rewrite a terminal worker entry (status/answer/tools/endedAt).
+        if (closed || settled || controller.signal.aborted) return;
         if (event.type === "message_start" && event.message.role === "assistant") worker.answer = "";
         if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
           worker.answer += event.assistantMessageEvent.delta;
@@ -290,21 +380,36 @@ export async function runMultiModelConsult(options: RunConsultOptions): Promise<
       worker.status = "complete";
       report.succeeded += 1;
     } catch (error) {
-      worker.status = timedOut ? "timeout" : options.signal?.aborted ? "cancelled" : "error";
-      worker.error = timedOut ? `超过 ${config.timeoutSeconds} 秒，已停止该模型` : toolLimit ? `超过 ${config.maxToolCalls} 次只读工具预算，已停止该模型` : options.signal?.aborted ? "用户取消会诊" : error instanceof Error ? error.message : String(error);
+      const userStop = stopRequestedByUser();
+      worker.status = userStop ? "cancelled" : timedOut ? "timeout" : options.signal?.aborted ? "cancelled" : "error";
+      worker.error = userStop ? stopReasons.get(index)! : timedOut ? `超过 ${config.timeoutSeconds} 秒，已停止该模型` : toolLimit ? `超过 ${config.maxToolCalls} 次只读工具预算，已停止该模型` : options.signal?.aborted ? "用户取消会诊" : error instanceof Error ? error.message : String(error);
     } finally {
       clearTimeout(timeout);
+      liveStops.delete(index);
       options.signal?.removeEventListener("abort", parentAbort);
       closed = true;
-      let cleanupIssue: string | undefined;
-      try { unsubscribe?.(); } catch (error) { cleanupIssue = String(error); }
-      if (session) cleanupIssue = [cleanupIssue, await closeConsultSession(session)].filter(Boolean).join("；") || undefined;
+      const observed: string[] = [];
+      const cleanup = (async (): Promise<string | undefined> => {
+        let cleanupIssue: string | undefined;
+        try { unsubscribe?.(); } catch (error) { cleanupIssue = describeError(error); }
+        if (session) cleanupIssue = [cleanupIssue, await closeSessionOnce(session, observed)].filter(Boolean).join("；") || undefined;
+        return cleanupIssue;
+      })().catch(describeError);
+      // Bounded fan-in: a worker that already reached a terminal status must not hold Promise.all,
+      // the final report or the caller's UI hostage because its transport never finishes cleanup.
+      // Once the grace expires this worker counts as settled; the detached cleanup keeps converging
+      // in the background but can no longer touch this already terminal report entry.
+      const bounded = await settleWithin(cleanup, CONSULT_CLEANUP_GRACE_MS);
+      const cleanupIssue = bounded.timedOut
+        ? [...observed, `会话清理超过 ${CONSULT_CLEANUP_GRACE_MS} 毫秒仍未收敛，已停止等待`].join("；")
+        : bounded.value;
       if (cleanupIssue) {
         worker.error = [worker.error, `会话清理异常：${cleanupIssue}`].filter(Boolean).join("；");
         if (worker.status === "complete") { worker.status = "error"; report.succeeded -= 1; }
       }
       for (const trace of worker.tools) if (trace.status === "running") trace.status = "cancelled";
       worker.endedAt = Date.now();
+      settled = true;
       emit();
     }
   };

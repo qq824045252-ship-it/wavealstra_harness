@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-02T00:21:42.287Z",
+  "at": "2026-10-09T06:12:20.315Z",
   "passed": true,
   "results": [
     {
@@ -15,8 +15,8 @@
         "tool_search"
       ],
       "requests": 1,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\633e303e-1e9e-45cc-bfa4-bebc9afb85ff\\2026-10-02T00-21-38-776Z_01a0f9fc-f157-77b9-8ced-91feb1f0d37e.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\633e303e-1e9e-45cc-bfa4-bebc9afb85ff"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\d953ba23-864e-4230-afec-8a46a3cc49b3\\2026-10-09T06-12-18-276Z_01a11f4a-7ee4-7345-bfae-26488fbf841c.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\d953ba23-864e-4230-afec-8a46a3cc49b3"
     },
     {
       "name": "working with real stdio MCP and native tool discovery",
@@ -31,8 +31,8 @@
         "tool_search"
       ],
       "requests": 3,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d2e608da-efd0-40fc-9f8b-61b3d73f8935\\2026-10-02T00-21-38-835Z_01a0f9fc-f193-77b9-8ced-92008ac27c27.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d2e608da-efd0-40fc-9f8b-61b3d73f8935"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\de395123-f790-4d3c-a891-72bf56cc5fff\\2026-10-09T06-12-18-311Z_01a11f4a-7f07-7345-bfae-264a49ca968a.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\de395123-f790-4d3c-a891-72bf56cc5fff"
     },
     {
       "name": "coding without any MCP server",
@@ -48,8 +48,8 @@
         "tool_search"
       ],
       "requests": 2,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\71422a4d-6693-43cd-ab0c-af06e1d7ed81\\2026-10-02T00-21-39-801Z_01a0f9fc-f559-77b9-8ced-920340de4a45.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\71422a4d-6693-43cd-ab0c-af06e1d7ed81"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\fca9c537-70c0-4350-89c6-ae4fd698316c\\2026-10-09T06-12-18-815Z_01a11f4a-80ff-7345-bfae-264c7916136b.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\fca9c537-70c0-4350-89c6-ae4fd698316c"
     },
     {
       "name": "coding with real stdio MCP and native tool discovery",
@@ -65,13 +65,13 @@
         "tool_search"
       ],
       "requests": 2,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\6e31d2f8-7a5c-4ef9-a759-de5655969122\\2026-10-02T00-21-39-918Z_01a0f9fc-f5ce-77b9-8ced-920598ff0e35.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\6e31d2f8-7a5c-4ef9-a759-de5655969122"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\bb65e66f-eafa-456d-aca7-4c19feba0438\\2026-10-09T06-12-18-920Z_01a11f4a-8168-7345-bfae-264e5e679fc5.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\bb65e66f-eafa-456d-aca7-4c19feba0438"
     },
     {
-      "name": "design without any MCP server",
+      "name": "bot without any MCP server",
       "passed": true,
-      "mode": "design",
+      "mode": "bot",
       "withMcp": false,
       "active": [
         "read",
@@ -81,13 +81,13 @@
         "tool_search"
       ],
       "requests": 1,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\1de101af-1552-4a71-9bd5-815c06fba932\\2026-10-02T00-21-40-742Z_01a0f9fc-f906-77b9-8ced-920707f35404.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\1de101af-1552-4a71-9bd5-815c06fba932"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\559c73e0-98fd-4dd2-af8c-c95a1dc57819\\2026-10-09T06-12-19-500Z_01a11f4a-83ac-7345-bfae-2651bb862649.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\559c73e0-98fd-4dd2-af8c-c95a1dc57819"
     },
     {
-      "name": "design with real stdio MCP and native tool discovery",
+      "name": "bot with real stdio MCP and native tool discovery",
       "passed": true,
-      "mode": "design",
+      "mode": "bot",
       "withMcp": true,
       "active": [
         "read",
@@ -97,8 +97,8 @@
         "tool_search"
       ],
       "requests": 3,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\5d2e7981-19ba-4f88-969f-af5e76894dc5\\2026-10-02T00-21-40-813Z_01a0f9fc-f94d-77b9-8ced-9208fa4c65d5.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\5d2e7981-19ba-4f88-969f-af5e76894dc5"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\0cc4f4f3-3e35-4ef0-850a-35493df976ac\\2026-10-09T06-12-19-531Z_01a11f4a-83cb-7345-bfae-2653a9c21266.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\0cc4f4f3-3e35-4ef0-850a-35493df976ac"
     },
     {
       "name": "coding stays active with a configured but disabled MCP server after settings reload",
@@ -114,8 +114,8 @@
         "tool_search"
       ],
       "requests": 2,
-      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d666113f-a7e8-4fc7-86df-18b8c32813d5\\2026-10-02T00-21-41-837Z_01a0f9fc-fd4d-77b9-8ced-920b753f1f95.jsonl",
-      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-qpHx6h\\d666113f-a7e8-4fc7-86df-18b8c32813d5"
+      "sessionFile": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\72ed4f81-14e6-4b82-9f40-649003aa98b1\\2026-10-09T06-12-20-060Z_01a11f4a-85dc-7345-bfae-2655df82c2bd.jsonl",
+      "workingDirectory": "C:\\Users\\servi\\AppData\\Local\\Temp\\pi-codemode-auto-1CoVpo\\72ed4f81-14e6-4b82-9f40-649003aa98b1"
     },
     {
       "name": "reopen coding history as office without stale Code Mode",

@@ -33,6 +33,7 @@ import type {
   AgentDeleteUserMessageRequest,
   AgentRestoreBackupRequest,
   AgentSelectModePresetRequest,
+  AgentStopConsultWorkerRequest,
   AgentSwitchExpertRequest,
   ArtifactPreviewRequest,
   ArtifactSurfaceBlockerRequest,
@@ -1046,6 +1047,10 @@ function registerIpc(): void {
     notificationService.markReadByDedupeKey(`task:${req.taskId}:tool:${req.toolCallId}:action`);
     return result;
   });
+  // 单个会诊参与者的直接终结：不结束整场会诊，其它模型继续。
+  ipcMain.handle(AgentIpc.stopConsultWorker, (_e, req: AgentStopConsultWorkerRequest) =>
+    agentService.stopConsultWorker(req),
+  );
   ipcMain.handle(AgentIpc.setPermissionMode, (_e, req) => {
     return agentService.setPermissionMode(req);
   });
