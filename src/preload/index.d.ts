@@ -1,5 +1,5 @@
 import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleTarget } from "../shared/browser-console";
-import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult } from "../shared/archive-deletion";
+import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../shared/archive-deletion";
 import type { MemoryCandidateDto, MemoryCoreProfileDto, MemoryCreateRequest, MemoryDismissedProjectionDto, MemoryKernelStats, MemoryListRequest, MemoryProjectionProposalDto, MemoryRecordDto, MemoryRevisionDto, MemoryScenarioDto, MemoryScopeType, MemorySearchHit, MemorySearchRequest, MemoryTurnDto, MemoryTurnListRequest, MemorySkillCandidateDto, MemorySkillCandidateStatus, MemorySkillEffectivenessDto, MemorySkillEffectivenessSummaryDto, MemorySkillFeedbackKind, MemorySkillRevisionCandidateDto, MemorySkillRevisionStatus, MemoryUpdateRequest } from "../shared/memory-kernel";
 import type { MemoryGatewayAccessGrantDto, MemoryGatewayConfigureRequest, MemoryGatewayCreateGrantRequest, MemoryGatewayIssuedGrantDto, MemoryGatewayStatusDto, MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
 import type { RemoteConfigureRequest, RemoteDeviceSummary, RemotePairingSession, RemoteStatus, RemoteUsbPairingResult, RemoteUsbStatus } from "../shared/remote-access";
@@ -552,6 +552,8 @@ export interface PreloadApi {
     deleteTask: (id: string) => Promise<void>;
     purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;
     archiveTask: (id: string, archived: boolean) => Promise<void>;
+    listTrashedTasks: () => Promise<TrashedTaskDto[]>;
+    restoreTrashedTask: (id: string) => Promise<TaskDto | null>;
     listTaskWriteGrants: (taskId: string) => Promise<import("../shared/external-write").TaskWriteGrantRow[]>;
     deleteTaskWriteGrant: (taskId: string, path: string) => Promise<boolean>;
     deleteSpace: (id: string) => Promise<{ ok: true } | { ok: false; reason: string; error: string }>;

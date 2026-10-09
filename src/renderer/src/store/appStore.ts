@@ -26,7 +26,7 @@ import type {
 } from "@/types";
 import type { AgentUiPatch, LocalConnectorDto, ModeProfileDto, SpaceDto, TaskDto } from "../../../shared/agent-ipc";
 import type { AgentRegenerateResult } from "../../../shared/agent-ipc";
-import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult } from "../../../shared/archive-deletion";
+import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../../../shared/archive-deletion";
 import type { ConversationBranchInfoDto } from "../../../shared/conversation-branch";
 import type { ExternalAgentDescriptorDto, ExternalAgentId, ExternalAgentPinDto, ExternalAgentUiEvent } from "../../../shared/external-agent";
 import { resolveExternalAgentContinuationRunId } from "../../../shared/external-agent";
@@ -143,6 +143,47 @@ const pendingMoveTaskIds = new Set<string>();
 const deletedTaskRuntimeTombstones = new Set<string>();
 /** 外部创建任务（Android/Cron/Gateway）首次 patch 到达时，补齐 DB 权威元数据。 */
 const pendingTaskMetadataHydrations = new Set<string>();
+/**
+ * TaskDto → renderer Task 的唯一映射源：初始加载与回收站恢复共用，
+ * 避免恢复出来的任务缺字段（messages/默认模型/权限等）。
+ */
+function mapTaskRowToTask(
+  row: TaskDto,
+  context: {
+    enabledModelIds: ReadonlySet<string>;
+    defaultModelId: string;
+    permissionModeDefault: PermissionMode;
+    taskConnectorIds?: Record<string, string[]>;
+  },
+): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    spaceId: row.spaceId ?? undefined,
+    projectId: row.projectId ?? undefined,
+    status: row.status as Task["status"],
+    updatedAt: row.updatedAt,
+    messages: [],
+    sessionFile: row.sessionFile,
+    cwd: row.cwd,
+    modelId: row.modelId && context.enabledModelIds.has(row.modelId) ? row.modelId : context.defaultModelId,
+    permissionMode: row.permissionMode ?? context.permissionModeDefault ?? "default",
+    welcomeMode: row.welcomeMode ?? DEFAULT_WELCOME_MODE,
+    archived: row.archived,
+    expertId: normalizeSingleExpertId(row.expertId),
+    expertBinding: row.expertBinding,
+    modePresetId: row.modePresetId,
+    startAt: row.startAt ?? undefined,
+    dueAt: row.dueAt ?? undefined,
+    // Phase 2：isFavorited / spaceSortOrder 复用已冻结列，重启后持久（单一真相，直接来自 DB）
+    isFavorited: Boolean(row.isFavorited),
+    spaceSortOrder: row.spaceSortOrder ?? 0,
+    // ACP pin：任务级固定，重启后恢复逐轮续链路由
+    externalAgentPin: row.externalAgentPin ?? undefined,
+    // F3：任务级 Active Connector（settings.json 持久化；无新 DB schema）
+    connectorIds: context.taskConnectorIds?.[row.id],
+  };
+}
 // P2-3 统一串行：space/task 共享单一 moveChain，避免跨 kind 并发时 collapsed 乐观/回滚覆盖；与精确函数式回退双保险
 let moveChain: Promise<void> = Promise.resolve();
 
@@ -569,6 +610,10 @@ interface AppState {
   newTask: (spaceId?: string, projectId?: string) => void;
   deleteTask: (id: string) => void;
   purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;
+  /** 回收站：删除的任务不在 tasks 里，必须单独拉取，否则既恢复不了也清不掉。 */
+  trashedTasks: TrashedTaskDto[];
+  refreshTrashedTasks: () => Promise<void>;
+  restoreTrashedTask: (id: string) => Promise<void>;
   renameTask: (id: string, title: string) => void;
   toggleTaskSection: () => void;
   toggleSpaceCollapsed: (id: string) => void;
@@ -1197,6 +1242,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: getInitialTheme(),
   sidebarCollapsed: false,
   tasks: [],
+  trashedTasks: [],
   spaces: [],
   projects: [],
   activeProjectId: null,
@@ -2339,32 +2385,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             createdAt: (s as SpaceDto).createdAt,
             effectiveArchived: s.effectiveArchived ?? Boolean(s.archived),
           })));
-        const mappedTasks: Task[] = (taskRows as TaskDto[]).map((row) => ({
-          id: row.id,
-          title: row.title,
-          spaceId: row.spaceId ?? undefined,
-          projectId: row.projectId ?? undefined,
-          status: row.status as Task["status"],
-          updatedAt: row.updatedAt,
-          messages: [],
-          sessionFile: row.sessionFile,
-          cwd: row.cwd,
-          modelId: row.modelId && enabledModels.some((m) => m.id === row.modelId) ? row.modelId : defaultModelId,
-          permissionMode: row.permissionMode ?? appSettings?.permissionMode ?? "default",
-          welcomeMode: row.welcomeMode ?? DEFAULT_WELCOME_MODE,
-          archived: row.archived,
-          expertId: normalizeSingleExpertId(row.expertId),
-          expertBinding: row.expertBinding,
-          modePresetId: row.modePresetId,
-          startAt: row.startAt ?? undefined,
-          dueAt: row.dueAt ?? undefined,
-          // Phase 2：isFavorited / spaceSortOrder 复用已冻结列，重启后持久（单一真相，直接来自 DB）
-          isFavorited: Boolean(row.isFavorited),
-          spaceSortOrder: row.spaceSortOrder ?? 0,
-          // ACP pin：任务级固定，重启后恢复逐轮续链路由
-          externalAgentPin: row.externalAgentPin ?? undefined,
-          // F3：重启恢复任务级 Active Connector（settings.json 持久化；无新 DB schema）
-          connectorIds: appSettings?.taskConnectorIds?.[row.id],
+        const mappedTasks: Task[] = (taskRows as TaskDto[]).map((row) => mapTaskRowToTask(row, {
+          enabledModelIds: new Set(enabledModels.map((model) => model.id)),
+          defaultModelId,
+          permissionModeDefault: appSettings?.permissionMode ?? "default",
+          taskConnectorIds: appSettings?.taskConnectorIds,
         }));
         set({
           spaces: mappedSpaces,
@@ -3347,6 +3372,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     if (get().activeTaskId && taskIds.size) void get().refreshBranchLineage(get().activeTaskId!);
     return result;
+  },
+
+  refreshTrashedTasks: async () => {
+    const api = window.api?.db?.listTrashedTasks;
+    if (!api) return;
+    try {
+      set({ trashedTasks: await api() });
+    } catch (error) {
+      console.warn("[refreshTrashedTasks]", error);
+    }
+  },
+
+  restoreTrashedTask: async (id) => {
+    const api = window.api?.db?.restoreTrashedTask;
+    if (!api) throw new Error("回收站接口不可用，请重启到最新版本");
+    const restored = await api(id);
+    // 恢复后任务回到侧栏；回收站里不再列出它。
+    deletedTaskRuntimeTombstones.delete(id);
+    const state = get();
+    const task = restored
+      ? mapTaskRowToTask(restored, {
+          enabledModelIds: new Set(state.models.filter((model) => model.enabled !== false).map((model) => model.id)),
+          defaultModelId: state.defaultModelId,
+          permissionModeDefault: state.permissionMode,
+        })
+      : null;
+    set((current) => ({
+      trashedTasks: current.trashedTasks.filter((item) => item.id !== id),
+      tasks: task && !current.tasks.some((item) => item.id === task.id) ? [task, ...current.tasks] : current.tasks,
+    }));
   },
 
   setTaskStatus: (id, status) => {

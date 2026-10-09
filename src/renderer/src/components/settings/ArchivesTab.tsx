@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildSpaceEffectiveMap, isTaskEffectiveArchived, isSpaceDescendant } from "@shared/workspace-tree";
+import { TRASH_RETENTION_DAYS } from "@shared/archive-deletion";
 import { useAppStore } from "@/store/appStore";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { IconArchive, IconFile, IconFolder, IconRotate, IconTrash } from "@/components/common/icons";
 import "./RecordManagement.css";
 
 const PAGE_SIZE = 8;
-type Category = "spaces" | "tasks";
+type Category = "spaces" | "tasks" | "trash";
 type DeleteTarget = { spaceIds: string[]; taskIds: string[] };
 type Status = { tone: "pending" | "success" | "error"; text: string };
 
@@ -26,6 +27,10 @@ export function ArchivesTab(): React.JSX.Element {
   const restoreSpace = useAppStore((s) => s.restoreSpace);
   const restoreTask = useAppStore((s) => s.restoreTask);
   const purgeArchivedContent = useAppStore((s) => s.purgeArchivedContent);
+  const trashedTasks = useAppStore((s) => s.trashedTasks);
+  const refreshTrashedTasks = useAppStore((s) => s.refreshTrashedTasks);
+  const restoreTrashedTask = useAppStore((s) => s.restoreTrashedTask);
+  useEffect(() => { void refreshTrashedTasks(); }, [refreshTrashedTasks]);
   const effectiveSpaceArchiveMap = useMemo(() => buildSpaceEffectiveMap(spaces), [spaces]);
   const archivedSpaces = useMemo(() => spaces.filter((space) => space.archived), [spaces]);
   const archivedTasks = useMemo(
@@ -52,7 +57,11 @@ export function ArchivesTab(): React.JSX.Element {
     () => archivedTasks.filter((task) => `${task.title} ${spaceById.get(task.spaceId ?? "")?.name ?? ""}`.toLocaleLowerCase().includes(needle)),
     [archivedTasks, spaceById, needle],
   );
-  const filteredRecords = category === "spaces" ? filteredSpaces : filteredTasks;
+  const filteredTrash = useMemo(
+    () => trashedTasks.filter((task) => `${task.title} ${spaceById.get(task.spaceId ?? "")?.name ?? ""}`.toLocaleLowerCase().includes(needle)),
+    [trashedTasks, spaceById, needle],
+  );
+  const filteredRecords = category === "spaces" ? filteredSpaces : category === "tasks" ? filteredTasks : filteredTrash;
   const total = filteredRecords.length;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, pages);
@@ -68,12 +77,12 @@ export function ArchivesTab(): React.JSX.Element {
     if (pageSelectionRef.current) pageSelectionRef.current.indeterminate = pageSelectedCount > 0 && !allPageSelected;
   }, [pageSelectedCount, allPageSelected]);
   useEffect(() => {
-    const eligibleIds = new Set((category === "spaces" ? archivedSpaces : archivedTasks).map((record) => record.id));
+    const eligibleIds = new Set((category === "spaces" ? archivedSpaces : category === "tasks" ? archivedTasks : trashedTasks).map((record) => record.id));
     setSelectedIds((previous) => {
       const next = new Set([...previous].filter((id) => eligibleIds.has(id)));
       return next.size === previous.size ? previous : next;
     });
-  }, [category, archivedSpaces, archivedTasks]);
+  }, [category, archivedSpaces, archivedTasks, trashedTasks]);
 
   const changeCategory = (next: Category): void => {
     if (pendingRef.current || next === category) return;
@@ -126,6 +135,23 @@ export function ArchivesTab(): React.JSX.Element {
       setPending(false);
     }
   };
+  const restoreFromTrash = async (id: string): Promise<void> => {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    setStatus({ tone: "pending", text: "正在从回收站恢复…" });
+    try {
+      await restoreTrashedTask(id);
+      setSelectedIds((previous) => new Set([...previous].filter((selectedId) => selectedId !== id)));
+      void refreshTrashedTasks();
+      setStatus({ tone: "success", text: "已恢复到侧栏任务列表。" });
+    } catch (error) {
+      setStatus({ tone: "error", text: `恢复失败：${errorMessage(error)}` });
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  };
   const deleteConfirmed = async (): Promise<void> => {
     if (pendingRef.current || !confirmDelete) return;
     const target = confirmDelete;
@@ -159,6 +185,7 @@ export function ArchivesTab(): React.JSX.Element {
     } finally {
       pendingRef.current = false;
       setPending(false);
+      void refreshTrashedTasks();
     }
   };
 
@@ -167,20 +194,21 @@ export function ArchivesTab(): React.JSX.Element {
     const subtreeIds = new Set(spaces.filter((space) => confirmDelete.spaceIds.some((id) => isSpaceDescendant(spaces, id, space.id))).map((space) => space.id));
     const taskIds = new Set([...confirmDelete.taskIds, ...tasks.filter((task) => task.spaceId && subtreeIds.has(task.spaceId)).map((task) => task.id)]);
     const singleName = confirmDelete.spaceIds.length + confirmDelete.taskIds.length === 1
-      ? (spaceById.get(confirmDelete.spaceIds[0] ?? "")?.name ?? tasks.find((task) => task.id === confirmDelete.taskIds[0])?.title)
+      ? (spaceById.get(confirmDelete.spaceIds[0] ?? "")?.name ?? tasks.find((task) => task.id === confirmDelete.taskIds[0])?.title ?? trashedTasks.find((task) => task.id === confirmDelete.taskIds[0])?.title)
       : null;
     return { spaceCount: subtreeIds.size, taskCount: taskIds.size, singleName };
-  }, [confirmDelete, spaces, tasks, spaceById]);
+  }, [confirmDelete, spaces, tasks, trashedTasks, spaceById]);
 
   return (
     <div className="record-management archive-management" aria-busy={pending}>
-      <div className="record-intro">归档内容完整保留，恢复后回到侧栏。选择可跨页保留，切换分类或搜索会清空选择。</div>
+      <div className="record-intro">归档内容完整保留，恢复后回到侧栏。选择可跨页保留，切换分类或搜索会清空选择。删除的任务进入回收站，{TRASH_RETENTION_DAYS} 天内可随时恢复，到期自动永久清理。</div>
       <div className="record-toolbar">
         <div className="record-tabs" role="group" aria-label="归档分类">
           <button type="button" disabled={pending} aria-pressed={category === "spaces"} onClick={() => changeCategory("spaces")}>空间 <span>{archivedSpaces.length}</span></button>
           <button type="button" disabled={pending} aria-pressed={category === "tasks"} onClick={() => changeCategory("tasks")}>任务 <span>{archivedTasks.length}</span></button>
+          <button type="button" disabled={pending} aria-pressed={category === "trash"} onClick={() => { changeCategory("trash"); void refreshTrashedTasks(); }}>回收站 <span>{trashedTasks.length}</span></button>
         </div>
-        <input className="record-search" type="search" disabled={pending} aria-label="搜索归档" placeholder={category === "spaces" ? "搜索空间名称或路径" : "搜索任务或所属空间"} value={query} onChange={(event) => changeQuery(event.target.value)} />
+        <input className="record-search" type="search" disabled={pending} aria-label="搜索归档" placeholder={category === "spaces" ? "搜索空间名称或路径" : category === "tasks" ? "搜索任务或所属空间" : "搜索回收站任务或所属空间"} value={query} onChange={(event) => changeQuery(event.target.value)} />
       </div>
       <div className="archive-selection-toolbar" role="group" aria-label="归档批量操作">
         <label className="archive-page-selection">
@@ -190,13 +218,13 @@ export function ArchivesTab(): React.JSX.Element {
         <button type="button" className="btn" disabled={pending || total === 0 || allFilteredSelected} onClick={() => setSelectedIds(new Set(filteredRecords.map((record) => record.id)))}>选择全部匹配项（{total}）</button>
         <button type="button" className="btn" disabled={pending || selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>清空选择</button>
         <span className="archive-selection-count" aria-live="polite">已选 {selectedIds.size} 项</span>
-        <button type="button" className="btn danger" disabled={pending || selectedIds.size === 0} onClick={() => beginDelete({ spaceIds: category === "spaces" ? [...selectedIds] : [], taskIds: category === "tasks" ? [...selectedIds] : [] })}>
+        <button type="button" className="btn danger" disabled={pending || selectedIds.size === 0} onClick={() => beginDelete({ spaceIds: category === "spaces" ? [...selectedIds] : [], taskIds: category === "spaces" ? [] : [...selectedIds] })}>
           <IconTrash size={13} /> {pending ? "处理中…" : "批量彻底删除"}
         </button>
       </div>
       {status && <div className={`record-status archive-operation-status ${status.tone}`} role={status.tone === "error" ? "alert" : "status"}>{status.text}</div>}
       <div className="record-list" ref={listRef}>
-        {total === 0 && <div className="record-empty"><IconArchive size={28} /><b>{needle ? "没有匹配的归档" : category === "spaces" ? "暂无归档空间" : "暂无归档任务"}</b><span>{needle ? "试试其他关键词，或清空搜索。" : "在侧栏归档的内容会显示在这里。"}</span></div>}
+        {total === 0 && <div className="record-empty"><IconArchive size={28} /><b>{needle ? "没有匹配的归档" : category === "spaces" ? "暂无归档空间" : category === "tasks" ? "暂无归档任务" : "回收站是空的"}</b><span>{needle ? "试试其他关键词，或清空搜索。" : category === "trash" ? `在侧栏删除的任务会在这里保留 ${TRASH_RETENTION_DAYS} 天，可随时恢复。` : "在侧栏归档的内容会显示在这里。"}</span></div>}
         {category === "spaces" && filteredSpaces.slice(offset, offset + PAGE_SIZE).map((space) => {
           const subtreeIds = new Set(spaces.filter((candidate) => isSpaceDescendant(spaces, space.id, candidate.id)).map((candidate) => candidate.id));
           const taskCount = tasks.filter((task) => task.spaceId && subtreeIds.has(task.spaceId)).length;
@@ -234,6 +262,30 @@ export function ArchivesTab(): React.JSX.Element {
             </div>
           );
         })}
+        {category === "trash" && filteredTrash.slice(offset, offset + PAGE_SIZE).map((task) => {
+          const spaceName = spaceById.get(task.spaceId ?? "")?.name;
+          const remainingMs = task.purgeAfter ? task.purgeAfter - Date.now() : undefined;
+          const expired = remainingMs !== undefined && remainingMs <= 0;
+          const retention = expired
+            ? "已过保留期，将在下次自动清理时永久删除"
+            : remainingMs !== undefined
+              ? `剩余 ${Math.max(1, Math.ceil(remainingMs / 86_400_000))} 天`
+              : `保留 ${TRASH_RETENTION_DAYS} 天`;
+          return (
+            <div key={task.id} className={`archive-card${selectedIds.has(task.id) ? " selected" : ""}`}>
+              <div className="archive-card-head">
+                <input className="archive-record-checkbox" type="checkbox" aria-label={`选择任务「${task.title}」`} checked={selectedIds.has(task.id)} disabled={pending} onChange={() => toggleSelection(task.id)} />
+                <span className="archive-card-icon"><IconTrash size={15} /></span>
+                <div className="archive-card-title"><span className="archive-card-name" title={task.title}>{task.title}</span><span className="archive-card-badge">可恢复</span></div>
+                <div className="archive-card-actions">
+                  <button type="button" className="btn" disabled={pending} title="恢复到侧栏任务列表，保留原会话与产物" onClick={() => void restoreFromTrash(task.id)}><IconRotate size={13} /> 恢复</button>
+                  <button type="button" className="btn danger" disabled={pending} title="立即永久删除该任务及其应用管理的产物，不可恢复" onClick={() => beginDelete({ spaceIds: [], taskIds: [task.id] })}><IconTrash size={13} /> 彻底删除</button>
+                </div>
+              </div>
+              <div className="archive-card-meta">{spaceName ? `所属空间：${spaceName}` : "普通任务"} · 删除于 {task.trashedAt ? formatTime(task.trashedAt) : "未知"} · {retention}{task.directoryMissing ? " · 工作目录已缺失（仅剩记录）" : ""}</div>
+            </div>
+          );
+        })}
       </div>
       <nav className="record-pager" aria-label="归档分页">
         <span>{total ? `共 ${total} 条 · ${offset + 1}–${Math.min(offset + PAGE_SIZE, total)} 条` : "共 0 条"}</span>
@@ -249,7 +301,7 @@ export function ArchivesTab(): React.JSX.Element {
         body={confirmDelete && deleteSummary ? <>
           {deleteSummary.singleName ? `确定要彻底删除「${deleteSummary.singleName}」吗？` : `确定要彻底删除已选择的 ${confirmDelete.spaceIds.length + confirmDelete.taskIds.length} 项归档内容吗？`}
           <br />
-          {confirmDelete.spaceIds.length > 0 ? `将删除所选空间及其全部子空间（共 ${deleteSummary.spaceCount} 个空间）、${deleteSummary.taskCount} 个任务，以及空间记忆。` : `将删除 ${deleteSummary.taskCount} 个任务。`}
+          {confirmDelete.spaceIds.length > 0 ? `将删除所选空间及其全部子空间（共 ${deleteSummary.spaceCount} 个空间）、${deleteSummary.taskCount} 个任务，以及空间记忆。` : category === "trash" ? `将永久删除回收站中的 ${deleteSummary.taskCount} 个任务。` : `将删除 ${deleteSummary.taskCount} 个任务。`}
           <br />会话记录和应用管理的产物将一并清理。关联的本地文件夹及其中用户文件会保留，此操作不可恢复。
         </> : null}
         confirmLabel="彻底删除"

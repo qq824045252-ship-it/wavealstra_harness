@@ -216,7 +216,7 @@ import {
 } from "./paths";
 import { TaskExecutionWorkspaceLifecycle } from "./task/TaskExecutionWorkspaceLifecycle";
 import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "./task/ArchivedContentDeletion";
-import { ArchivedContentDeletionIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
+import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
 import { TaskExecutionWorkspace } from "./task/TaskExecutionWorkspace";
 import { McpConfigService } from "./mcp/McpConfigService";
 import { PluginStorageIpc } from "../shared/plugin-storage";
@@ -1890,6 +1890,19 @@ function registerIpc(): void {
     if (archived) taskLifecycle.archive(id);
     else taskLifecycle.unarchive(id);
   });
+  // 回收站：删除 = 可恢复回收（保留期见 shared/archive-deletion.ts 的 TRASH_RETENTION_DAYS），
+  // 必须可见可恢复，否则被删除的数据既回不来也清不掉。
+  ipcMain.handle(TrashIpc.list, () => taskLifecycle?.listTrashedTasks() ?? []);
+  ipcMain.handle(TrashIpc.restore, async (_e, id: string) => {
+    if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
+    taskLifecycle.restore(id);
+    const restored = db.getTask(id) ?? null;
+    if (restored?.projectId) {
+      broadcastToWindows(DbIpc.projectTaskChanged, { projectId: restored.projectId });
+      notifyProjectAttention(restored.projectId);
+    }
+    return restored;
+  });
   ipcMain.handle(ArchivedContentDeletionIpc.purge, async (_e, request: ArchivedContentDeletionRequest) => {
     const projects = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
     const result = await archivedContentDeletion.purge(request);
@@ -2928,6 +2941,26 @@ app.whenReady().then(async () => {
       }
     },
   });
+  // 回收区超期清理：启动后延迟一次 + 每 6 小时一次。此前 purgeAfter 只写不读（purgeExpired 无调用者），
+  // 删除的任务会永久留在磁盘上。保留期见 shared/archive-deletion.ts 的 TRASH_RETENTION_DAYS。
+  const purgeExpiredTrash = async (trigger: string): Promise<void> => {
+    if (!taskLifecycle) return;
+    try {
+      const projectIds = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
+      const results = await taskLifecycle.purgeExpired();
+      const purged = results.filter((result) => result.removedTaskRow).map((result) => result.taskId);
+      if (purged.length === 0) return;
+      console.log(`[trash] purgeExpired(${trigger}): 永久清理 ${purged.length} 个超期任务`);
+      for (const projectId of new Set(purged.map((id) => projectIds.get(id)).filter(Boolean) as string[])) {
+        broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
+        notifyProjectAttention(projectId);
+      }
+    } catch (error) {
+      console.warn(`[trash] purgeExpired(${trigger}) 失败`, error);
+    }
+  };
+  setInterval(() => void purgeExpiredTrash("interval"), 6 * 60 * 60 * 1000).unref();
+  setTimeout(() => void purgeExpiredTrash("startup"), 5_000).unref();
   professionalToolService = new ProfessionalToolRuntimeService({
     providerEnabled: (providerId) =>
       mcpService

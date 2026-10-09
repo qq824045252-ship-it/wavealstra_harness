@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.18",
+  "version": "0.1.20",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -192,6 +192,7 @@
     "test:task-isolation-audit": "esbuild scripts/task-isolation-audit-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-isolation-audit-test.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/task-isolation-audit-test.cjs",
     "audit:task-isolation": "esbuild scripts/task-isolation-audit.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-isolation-audit.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/task-isolation-audit.cjs",
     "test:task-workspace-lifecycle": "esbuild scripts/task-workspace-lifecycle-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-workspace-lifecycle-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/task-workspace-lifecycle-test.cjs",
+    "test:task-trash-retention": "esbuild scripts/task-trash-retention-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-trash-retention-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/task-trash-retention-test.cjs",
     "test:task-workspace-migration": "esbuild scripts/task-workspace-migration-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-workspace-migration-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/task-workspace-migration-test.cjs",
     "test:task-isolation-p2": "esbuild scripts/task-isolation-p2-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/task-isolation-p2-test.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/task-isolation-p2-test.cjs",
     "test:artifact-gate": "esbuild scripts/artifact-machine-gate.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-machine-gate.cjs && node scripts/test-guard.mjs out/tests/artifact-machine-gate.cjs",

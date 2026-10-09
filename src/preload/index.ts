@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import { ArchivedContentDeletionIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
+import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
 import type { McpServerConfigDto, McpSaveServerRequest } from "../shared/agent-ipc";
 import type { AgentLoadoutObservationDto, RuntimeAuditClearResultDto } from "../shared/agent-loadout";
@@ -883,6 +883,10 @@ const api = {
       ipcRenderer.invoke(ArchivedContentDeletionIpc.purge, request),
     archiveTask: (id: string, archived: boolean): Promise<void> =>
       ipcRenderer.invoke(DbIpc.archiveTask, id, archived),
+    listTrashedTasks: (): Promise<import("../shared/archive-deletion").TrashedTaskDto[]> =>
+      ipcRenderer.invoke(TrashIpc.list),
+    restoreTrashedTask: (id: string): Promise<TaskDto | null> =>
+      ipcRenderer.invoke(TrashIpc.restore, id),
     listTaskWriteGrants: (taskId: string): Promise<import("../shared/external-write").TaskWriteGrantRow[]> =>
       ipcRenderer.invoke(DbIpc.listTaskWriteGrants, taskId),
     deleteTaskWriteGrant: (taskId: string, path: string): Promise<boolean> =>

@@ -21,6 +21,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { TRASH_RETENTION_MS, type TrashedTaskDto } from "../../shared/archive-deletion";
 import type { AppDatabase, TaskExecutionWorkspaceStateRow } from "../db/AppDatabase";
 import { getTaskExecutionWorkspacesTrashDir } from "../paths";
 import {
@@ -36,8 +37,8 @@ import {
   type TaskExecutionWorkspaceManifest,
 } from "./TaskExecutionWorkspace";
 
-/** 默认回收保留期（30 天） */
-export const DEFAULT_PURGE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+/** 回收保留期：7 天（TRASH_RETENTION_DAYS），超期由 purgeExpired 永久清理 */
+export const DEFAULT_PURGE_AFTER_MS = TRASH_RETENTION_MS;
 
 export class TaskLifecycleError extends TaskExecutionWorkspaceError {}
 export class TaskLifecycleConflictError extends TaskLifecycleError {}
@@ -123,6 +124,30 @@ export class TaskExecutionWorkspaceLifecycle {
 
   getTaskExecutionWorkspacesRoot(): string {
     return this.workspace.getTaskExecutionWorkspacesRoot();
+  }
+
+  /**
+   * 回收站可见列表（只读，不做任何 move/purge）。
+   * 与 AppDatabase.listNonTrashedTasks 互补：回收区任务不出现在任务/归档列表里，
+   * 因此必须在这里可见，否则用户既恢复不了也清不掉（"删除黑洞"）。
+   */
+  listTrashedTasks(): TrashedTaskDto[] {
+    return this.db
+      .listTaskExecutionWorkspaceStates({ state: "trashed" })
+      .flatMap((state): TrashedTaskDto[] => {
+        const task = this.db.getTask(state.taskId);
+        if (!task) return [];
+        return [{
+          id: task.id,
+          title: task.title,
+          spaceId: task.spaceId ?? undefined,
+          projectId: task.projectId ?? undefined,
+          trashedAt: state.trashedAt,
+          purgeAfter: state.purgeAfter,
+          directoryMissing: this.resolveTrashPath(state.trashPath) === undefined,
+        }];
+      })
+      .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
   }
 
   /* ---------------------------------------------------------------- */
