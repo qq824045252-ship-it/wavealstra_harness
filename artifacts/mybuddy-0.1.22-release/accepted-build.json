@@ -40,7 +40,7 @@
       "no script or config references the 0.1.21 path"
     ],
     "startupAfterRemoval": "CONSULT_ENTRY_TEST_EXE=release-mybuddy-0.1.22\\win-unpacked\\MyBuddy.exe pnpm -s test:consult-entry:desktop -> 8/8 PASS",
-    "evidence": "artifacts/release-cleanup/20261009-remove-0.1.21/summary.json"
+    "evidence": "artifacts/mybuddy-0.1.22-release/obsolete-0.1.21-removal.json"
   },
   "gitCommit": "cf473bd"
 }

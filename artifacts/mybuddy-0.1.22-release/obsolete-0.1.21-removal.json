@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-09T21:34:00+08:00",
+  "action": "removed obsolete packaged release 0.1.21 after 0.1.22 was accepted",
+  "removed": [
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.21",
+      "kind": "generated packaged release directory (win-unpacked)",
+      "sizeMiB": 1283.6,
+      "gitIgnored": true
+    }
+  ],
+  "retained": [
+    {
+      "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.22",
+      "executable": "release-mybuddy-0.1.22\\win-unpacked\\MyBuddy.exe",
+      "fileVersion": "0.1.22",
+      "executableSha256": "9FD4D47996756B1A7397B3FDA3EA345B98323C87472C277BF6130E94196F9452",
+      "appAsarSha256": "CA59C388224A22A75172E55B5DE2636B7F739A56CBEB7FE9C1E99B3320854433",
+      "record": "artifacts/mybuddy-0.1.22-release/accepted-build.json"
+    }
+  ],
+  "preconditionsVerified": [
+    "resolved target path equals the intended absolute path and is a real directory (not a junction/symlink)",
+    "all 4 running MyBuddy.exe processes execute from release-mybuddy-0.1.22\\win-unpacked (0 from 0.1.21)",
+    "Desktop shortcut MyBuddy 0.1.22.lnk and Start Menu MyBuddy.lnk both target release-mybuddy-0.1.22\\win-unpacked\\MyBuddy.exe with matching cwd and icon",
+    "retained 0.1.22 executable SHA256 matches artifacts/mybuddy-0.1.22-release/accepted-build.json",
+    "no script or config references the 0.1.21 path; remaining mentions are historical release records only"
+  ],
+  "startupAfterRemoval": {
+    "command": "CONSULT_ENTRY_TEST_EXE=release-mybuddy-0.1.22\\win-unpacked\\MyBuddy.exe pnpm -s test:consult-entry:desktop",
+    "result": "8/8 PASS (isolated profile, real window + renderer + IPC)"
+  },
+  "historyKept": "artifacts/mybuddy-0.1.21-release/accepted-build.json (build hashes) is kept as the historical record of the shipped 0.1.21 build; the package itself is gone",
+  "freeSpaceAfterGB": 323.3
+}
