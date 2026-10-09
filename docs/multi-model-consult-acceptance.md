@@ -130,3 +130,34 @@ git-diff-check=0
 - `src/main/capabilities/MultiModelConsult.ts`：`4464e597a249cd10d725b589cb7dd86b87fbd7ca0092b33d149e3252f0a09434`。
 - `src/shared/multi-model-consult.ts`：`fe6b34e52e9f6807bf03a0b693f304bedd566797d974f959cd7878b5de7811b7`。
 - `src/renderer/src/components/settings/MultiModelConsultSettings.tsx`：`4217bc2f77dbec5736f0bc4581036bc963c75e071df14f02a9bb9f159a8fab27`。
+
+## 2026-10-09 追加：同一模型可用不同思考等级多次参与
+
+### 改动内容
+
+1. 参与者身份从「modelId」改为「modelId + 思考等级」：同一个模型可以加入多次，只要思考等级不同（用于推理强度对照）；只有「模型 + 思考等级」完全相同的重复项仍被拒绝——它只会把同一个 worker 跑两遍。
+2. 设置页候选下拉不再对已添加模型置灰：再次选择同一模型时，自动落到该模型尚未使用的思考等级；每个已用等级在行内下拉里标注「（该模型已用）」并置灰，避免在草稿里造出会被静默去重的重复项。全部等级用完的模型才置灰并标注「（等级已全部使用）」。
+3. 会诊卡片、详情 Tab、返回主模型的结果文本都会显示思考等级；当参与者全部来自同一个模型时，结果里明确写出「同一模型的不同思考等级是同一模型的两个样本，不构成跨模型交叉验证」。设置页与能力状态同样提示「只有 1 个模型，属于同模型等级对照」。
+4. 就绪判定与提示文案由「至少两个不同模型」改为「至少两个参与者（不同模型，或同一模型的不同思考等级）」。
+
+### 本轮实际运行结果
+
+- 会诊离线契约套件：**41/41 PASS**（`test:multi-model-consult`）。新增检查：同一模型两个思考等级全部派发且只算 1 个模型、结果文本带同模型样本提示、「模型+等级」完全重复仍被拒绝。
+- `test:consult-selection`、`test:builtin-capabilities`：通过。
+- 真实 Electron 回归（`test:consult-entry:desktop`，构建产物与打包程序各跑一遍）：**8/8 PASS**。新增用例实测 `candidates=12, added=12`，随后把 `google-vertex/gemini-3.1-pro-preview` 第二次加入，两个条目的思考等级分别为「遵循 Pi 模型设置」与 `low`。
+  - 证据：`out/tests/consult-entry/built/results.json`、`out/tests/consult-entry/packaged/results.json`。
+- 打包程序：`release-mybuddy-0.1.20/win-unpacked/MyBuddy.exe`，`ProductVersion 0.1.20.0`，SHA-256 `b184b9f2d5fa92d551d641ec7a18ff8dc897f449453075e692a0afe4b0165d2d`；开始菜单与桌面快捷方式已指向该包，回读目标/工作目录/图标/`AppUserModelID=com.mybuddy.app` 均正确。
+- 版本说明：打包时工作树版本为 `0.1.20`（同工作树内其它已提交工作推进的版本），因此发布目录按实际版本命名为 `release-mybuddy-0.1.20`。
+
+### 未包含 / 已知风险
+
+- 未运行需要真实供应商的 `test:multi-model-consult:live`；同一模型两个等级的真实并发行为没有做真实计费验证。
+- `pnpm -s typecheck` 本轮报 2 个错误，全部位于 `src/main/task/TaskExecutionWorkspaceLifecycle.ts`（并发进行的其它未提交改动，12:41:50 被改动），与本次会诊改动无关；本次改动的文件没有类型错误。
+
+### 本轮源码 SHA-256
+
+- `src/main/capabilities/MultiModelConsult.ts`：`60206ce3c09922dbe9f04fbed5935f565f6bcea1841648f4b0f654dcb51d518e`。
+- `src/shared/multi-model-consult.ts`：`671ab53bb548c95dfce13c3224cbd255d0c46c1ee91f56330056ef85202da4f3`。
+- `src/shared/consult-entry.ts`：`aba7d7ee0faccea45ca80d39dd29b7301257b951e1b1724e0739319bde19e14b`。
+- `src/renderer/src/components/settings/MultiModelConsultSettings.tsx`：`b84104b1960afed382cd34fc2625eedc530de16aad7959e661b1b6318c07b66b`。
+- `src/renderer/src/components/chat/MultiModelConsultCard.tsx`：`7d6fc1326e91c84a4a330d4678b17f0c5f087ffb54d82999c9a5389a8e3afe58`。

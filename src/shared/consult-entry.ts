@@ -18,7 +18,7 @@ export function consultEntryReadiness(raw: unknown): ConsultEntryReadiness {
     return { ready: false, notice: "多模型会诊尚未启用。可打开配置启用，并保存后返回本条消息。" };
   }
   if (config.participants.length < 2) {
-    return { ready: false, notice: "多模型会诊需要至少两个不同模型。请选择模型并点击“保存能力配置”。" };
+    return { ready: false, notice: "多模型会诊需要至少两个参与者（不同模型，或同一模型的不同思考等级）。请选择后点击“保存能力配置”。" };
   }
   return { ready: true };
 }

@@ -70,7 +70,7 @@ if(!installed){
   await click('.settings-content-head .icon-btn');await wait(600);assert(!(await evaluate('Boolean(document.querySelector(".settings-modal"))')));assert(!(await evaluate('Boolean(document.querySelector("[data-testid=consult-chip]"))')));assert.equal(await evaluate('window.api.agent.getBuiltinCapabilities().then(s=>s.config.multiModelConsult.enabled)'),false);return {unsavedDraftIgnored:true,noRedirect:true};
  });
  await test('restored saved configuration is read freshly on next click',async()=>{await evaluate('window.api.agent.saveBuiltinCapabilities(window.__consultOriginalConfig)');const state=await selectConsult();assert(state.chip&&!state.settings,JSON.stringify(state));return {originalSavedModelsRestored:true};});
- await test('added models stay listed and the candidate dropdown has no count cap',async()=>{
+ await test('candidates stay listed, have no count cap, and one model can run two thinking levels',async()=>{
   if(await evaluate('Boolean(document.querySelector("button[aria-label=\\"移除多模型会诊\\"]"))'))await click('button[aria-label="移除多模型会诊"]');
   await evaluate('(async()=>{const s=await window.api.agent.getBuiltinCapabilities();await window.api.agent.saveBuiltinCapabilities({...s.config,multiModelConsult:{...s.config.multiModelConsult,enabled:false,participants:[]}});})()');
   await selectConsult();await click('[data-testid="consult-configure"]');await until('Boolean(document.querySelector("[data-testid=consult-settings]"))');
@@ -78,16 +78,24 @@ if(!installed){
   await until('[...document.querySelector("[data-testid=consult-add-model]").options].filter(o=>o.value).length >= 2',30000);
   const candidates=await evaluate('[...document.querySelector("[data-testid=consult-add-model]").options].filter(o=>o.value).map(o=>o.value)');
   for(const id of candidates){await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-add-model]");Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value").set.call(e,'+JSON.stringify(id)+');e.dispatchEvent(new Event("change",{bubbles:true}));return true})()');await wait(60);}
-  const added=await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-add-model]");return {exists:Boolean(e),members:document.querySelectorAll(".consult-settings-member").length,options:[...e.options].filter(o=>o.value).map(o=>({id:o.value,disabled:o.disabled,label:o.textContent}))}})()');
+  const added=await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-add-model]");return {exists:Boolean(e),members:document.querySelectorAll(".consult-settings-member").length,ids:[...e.options].filter(o=>o.value).map(o=>o.value)}})()');
   assert(added.exists,'Candidate dropdown disappeared after adding every enabled model');
   assert.equal(added.members,candidates.length,'Not every added model became a participant: '+JSON.stringify(added));
-  for(const option of added.options)assert(option.disabled&&/（已添加）/.test(option.label),'Added model left the list or stayed selectable: '+JSON.stringify(option));
+  assert.deepEqual(added.ids.slice().sort(),candidates.slice().sort(),'An added model vanished from the candidate list: '+JSON.stringify(added.ids));
   await screenshot('candidates-with-added-models');
+  const twoLevel=await evaluate('(async()=>{const ms=await window.api.agent.listModels();const byId=new Map(ms.map(m=>[m.id,(m.thinkingLevels||[]).length]));return '+JSON.stringify(candidates)+'.find(id=>(byId.get(id)||0)>=1)||null})()');
+  assert(twoLevel,'No enabled model exposes a thinking level, so the level A/B cannot be exercised');
+  const addAgain='(()=>{const e=document.querySelector("[data-testid=consult-add-model]");Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value").set.call(e,'+JSON.stringify(twoLevel)+');e.dispatchEvent(new Event("change",{bubbles:true}));return true})()';
+  await evaluate(addAgain);await wait(150);
+  const twice=await evaluate('(()=>{const rows=[...document.querySelectorAll(".consult-settings-member")];const mine=rows.filter(r=>r.querySelector(".consult-settings-model small").textContent.startsWith('+JSON.stringify(twoLevel)+'));return {members:rows.length,levels:mine.map(r=>r.querySelector("select").value)}})()');
+  assert.equal(twice.members,candidates.length+1,'The same model could not be added a second time: '+JSON.stringify(twice));
+  assert.equal(new Set(twice.levels).size,2,'The second entry reused the same thinking level: '+JSON.stringify(twice));
+  await screenshot('same-model-two-levels');
   await click('[aria-label="移除模型 1"]');await wait(200);
-  const afterRemove=await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-add-model]");return {exists:Boolean(e),selectable:[...e.options].filter(o=>o.value&&!o.disabled).length,members:document.querySelectorAll(".consult-settings-member").length}})()');
-  assert(afterRemove.exists&&afterRemove.selectable>0,'Removed model did not return to the candidate list: '+JSON.stringify(afterRemove));
-  assert.equal(afterRemove.members,candidates.length-1,JSON.stringify(afterRemove));
-  return {candidates:candidates.length,added:added.members,selectableAfterRemove:afterRemove.selectable};
+  const afterRemove=await evaluate('(()=>{const e=document.querySelector("[data-testid=consult-add-model]");return {exists:Boolean(e),members:document.querySelectorAll(".consult-settings-member").length}})()');
+  assert(afterRemove.exists,'Candidate dropdown disappeared after removing a participant');
+  assert.equal(afterRemove.members,candidates.length,JSON.stringify(afterRemove));
+  return {candidates:candidates.length,added:added.members,twoLevelModel:twoLevel,levels:twice.levels};
  });
 }
 

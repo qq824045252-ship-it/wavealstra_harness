@@ -11,7 +11,7 @@ import { mapPiEventToPatches } from "../src/shared/pi-event-mapper";
 import { loadTaskHistoryFromSession } from "../src/main/agent/session-history";
 import { BuiltinCapabilityStore } from "../src/main/capabilities/BuiltinCapabilityStore";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
-import { CONSULT_MAX_PARALLEL, CONSULT_MAX_TOOL_BUDGET, CONSULT_DEFAULT_TOOL_CALLS, DEFAULT_MULTI_MODEL_CONSULT_CONFIG, normalizeConsultConfig, requestConsultForMessage, type MultiModelConsultConfig, type MultiModelConsultReport } from "../src/shared/multi-model-consult";
+import { CONSULT_MAX_PARALLEL, CONSULT_MAX_TOOL_BUDGET, CONSULT_DEFAULT_TOOL_CALLS, DEFAULT_MULTI_MODEL_CONSULT_CONFIG, consultDistinctModelCount, consultParticipantKey, normalizeConsultConfig, requestConsultForMessage, type MultiModelConsultConfig, type MultiModelConsultReport } from "../src/shared/multi-model-consult";
 
 const checks: string[] = [];
 const check = (name: string, fn: () => void) => { fn(); checks.push(name); };
@@ -60,6 +60,12 @@ try {
     assert.equal(many.participants.length, 12);
     assert.equal(normalizeConsultConfig({ enabled: true, participants: [{ modelId: "p/a" }], maxToolCalls: 0 }).maxToolCalls, 0);
   });
+  check("one model may take part at several thinking levels, exact duplicates still collapse", () => {
+    const levels = normalizeConsultConfig({ enabled: true, participants: [{ modelId: "p/a", thinkingLevel: "high" }, { modelId: "p/a", thinkingLevel: "max" }, { modelId: "p/a", thinkingLevel: "max" }] });
+    assert.equal(levels.participants.length, 2);
+    assert.equal(consultDistinctModelCount(levels.participants), 1);
+    assert.deepEqual(levels.participants.map((p) => consultParticipantKey(p)), ["p/a::high", "p/a::max"]);
+  });
   const storePath = join(root, "capabilities.json");
   const store = new BuiltinCapabilityStore(storePath);
   const legacy = structuredClone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG) as Partial<typeof DEFAULT_BUILTIN_CAPABILITIES_CONFIG>;
@@ -72,6 +78,7 @@ try {
   await assert.rejects(run({ config: { ...config, enabled: false } }), /关闭/);
   await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!] } }), /至少 2 个/);
   await assert.rejects(run({ config: { ...config, participants: [config.participants[0]!, config.participants[0]!] } }), /至少 2 个/);
+  await assert.rejects(run({ config: { ...config, participants: [{ modelId: "p/a", thinkingLevel: "high" }, { modelId: "p/a", thinkingLevel: "high" }] } }), /至少 2 个/);
   await assert.rejects(run({ config: { ...config, maxParallel: 0 } }), /配置无效/);
   await assert.rejects(run({ config: { ...config, timeoutSeconds: Number.NaN } }), /配置无效/);
   await assert.rejects(run({ config: { ...config, maxToolCalls: -1 } }), /配置无效/);
@@ -99,6 +106,17 @@ try {
   check("more than six configured models all run without a count cap", () => {
     assert.equal(wide.expected, 9); assert.equal(wide.succeeded, 9); assert.equal(wide.status, "complete");
     assert.equal(new Set(wide.workers.map((w) => w.modelId)).size, 9);
+  });
+  const sameModelConfig = { ...config, participants: [{ modelId: "provider/a", thinkingLevel: "high" }, { modelId: "provider/a", thinkingLevel: "max" }] };
+  const dispatched: Array<{ modelId: string; thinkingLevel?: string }> = [];
+  const sameModel = await run({ config: sameModelConfig, createSession: async (p) => { dispatched.push({ modelId: p.modelId, thinkingLevel: p.thinkingLevel }); return sessionFixture(p.modelId); } });
+  check("one model at two thinking levels runs twice and is labelled as such", () => {
+    assert.equal(sameModel.status, "complete"); assert.equal(sameModel.expected, 2); assert.equal(sameModel.succeeded, 2);
+    assert.deepEqual(dispatched.map((p) => p.thinkingLevel), ["high", "max"]);
+    assert.deepEqual(sameModel.workers.map((w) => w.modelId), ["provider/a", "provider/a"]);
+    assert.equal(consultDistinctModelCount(sameModel.workers), 1);
+    const text = consultToolResult(sameModel).content[0]!.text;
+    assert.match(text, /同一模型的不同思考等级是同一模型的两个样本/);
   });
 
   const cancelled = new AbortController();

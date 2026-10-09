@@ -15,6 +15,20 @@ export interface ConsultParticipant {
   thinkingLevel?: string;
 }
 
+/**
+ * A participant is identified by model AND thinking level. The same model may therefore take
+ * part more than once with different levels (an A/B of reasoning effort), while an exact
+ * duplicate remains a configuration error instead of a silent no-op.
+ */
+export function consultParticipantKey(participant: ConsultParticipant): string {
+  return `${participant.modelId}::${participant.thinkingLevel ?? ""}`;
+}
+
+/** Distinct model count; one model at several thinking levels is not cross-model verification. */
+export function consultDistinctModelCount(participants: ConsultParticipant[]): number {
+  return new Set(participants.map((participant) => participant.modelId)).size;
+}
+
 export interface MultiModelConsultConfig {
   enabled: boolean;
   participants: ConsultParticipant[];
@@ -84,11 +98,14 @@ export function normalizeConsultConfig(raw: unknown): MultiModelConsultConfig {
   const participants: ConsultParticipant[] = [];
   // Every explicitly chosen participant is kept: the product sets no count limit, and
   // silently dropping the tail would discard a saved selection without telling the user.
+  // Only an exact model+level duplicate is collapsed, because it would run the same worker twice.
   for (const item of Array.isArray(v.participants) ? v.participants : []) {
     const modelId = typeof item?.modelId === "string" ? item.modelId.trim().slice(0, 300) : "";
-    if (!modelId || seen.has(modelId)) continue;
-    seen.add(modelId);
+    if (!modelId) continue;
     const thinkingLevel = typeof item.thinkingLevel === "string" ? item.thinkingLevel.trim().slice(0, 32) || undefined : undefined;
+    const key = consultParticipantKey({ modelId, thinkingLevel });
+    if (seen.has(key)) continue;
+    seen.add(key);
     participants.push({ modelId, ...(thinkingLevel ? { thinkingLevel } : {}) });
   }
   return {
