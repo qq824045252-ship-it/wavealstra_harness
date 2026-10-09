@@ -89,9 +89,57 @@ pnpm -s test:all             → 240 通过 / 1 已知失败 / 0 新增回归 �
 
 ---
 
+## 第二批：历史 artifacts 与一次性升级工具链（同日追加）
+
+用户追加要求清理旧版本 artifacts，已执行。
+
+### 删除的历史验收产物（564 个受控文件）
+
+| 目录 | 内容 | 受控文件 |
+|---|---|---|
+| `artifacts/pi0992-memory/` | 0.99.2 记忆验收产物 | 251 |
+| `artifacts/pi100-upgrade/` | 1.0.0 升级产物（含**重复的上游 pi-coding-agent 包树**、桌面截图、检查结果） | 295 |
+| `artifacts/pi104-upgrade/` | 1.0.4 升级产物（含打包审计、快捷方式备份 `.lnk`） | 18 |
+
+**安全性验证**：现行 `pi100-*` / `pi104-*` 测试会往这些目录写结果文件，但它们写之前都会
+`mkdirSync(..., { recursive: true })`——所以删掉目录**不影响**测试。已实测这 5 个用例全部通过：
+
+```
+pi100-features / pi100-model-admission / pi100-context-boundary / pi104-features / pi104-model-compat  → 全部 exit 0
+```
+
+并在 `.gitignore` 里加了这 3 个目录，避免测试输出（如 `features-results.json`）被重新纳入版本库
+（已复核：测试重建的文件不会出现在 `git status`）。
+
+### 一并删除的一次性升级工具链（12 个脚本）
+
+它们只服务已完成的 1.0.0 升级，**无人引用**（package.json 与其它脚本都不引用），
+其中几个会**直接改写源码**或用已删路径，留着有误用风险：
+
+`pi100-adapt-host.cjs`、`pi100-complete-assets.cjs`、`pi100-complete-model-admission.cjs`、
+`pi100-desktop-live.cjs`、`pi100-inspect-upstream.cjs`、`pi100-integrity-audit.cjs`、
+`pi100-package.cjs`、`pi100-promote-shortcut.ps1`、`pi100-rebase-host-patch.cjs`、
+`pi100-run-checks.cjs`、`pi100-upgrade.cjs`、`pi100-write-acceptance.cjs`
+
+> 例：`pi100-complete-model-admission.cjs` 会去编辑 `src/main/agent/ModelInvocationAdmission.ts`；
+> `pi100-rebase-host-patch.cjs` 读取被删掉的 `artifacts/pi100-upgrade/upstream/...`。
+
+保留的是 5 个**在 package.json 里注册、当前仍在跑的**用例：`pi100-context-mode-boundary-test.ts`、
+`pi100-features-test.ts`、`pi100-model-admission-test.ts`、`pi104-features-test.ts`、`pi104-model-compat-test.ts`。
+
+### 验证
+
+```
+pnpm -s typecheck   → exit 0
+pnpm -s test:all    → 240 通过 / 1 已知失败 / 0 新增回归 → exit 0
+```
+
+---
+
 ## 仍未处理（供你决定）
 
-1. **`test:project-agent`**：执行审计快照 `resolvedCapabilities` 未保留被项目策略拒绝的 Expert。需产品决策。
-2. **旧版本 artifacts**：`artifacts/pi0992-memory/`、`artifacts/pi100-upgrade/`、`artifacts/pi104-upgrade/`
-   仍留在版本库里（含重复的上游包的树与历史验收产物）。它们是记录而非代码，本次未动；若要一并清掉可以减少仓库体积。
-3. **CRLF 与 `.gitattributes`（`eol=lf`）不一致**：105+ 个文件在磁盘上是 CRLF。建议单独一次提交专门处理。
+1. **`test:project-agent`**：执行审计快照 `resolvedCapabilities` 未保留被项目策略拒绝的 Expert。
+   根因已查明（见 `diagrams/project-agent-audit-gap.svg`）：执行路径在 `AgentService.ts:3756`
+   先用任务专家绑定覆盖了 `expertId`，被拒的专家因此从未进入策略解析，也就不会被记录。
+   两种自洽的修法见该图，需你选一个。
+2. **CRLF 与 `.gitattributes`（`eol=lf`）不一致**：105+ 个文件在磁盘上是 CRLF。建议单独一次提交专门处理。

@@ -1,8 +1,0 @@
-{
-  "name": "test:memory-lifecycle",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:31:56.472Z",
-  "durationMs": 5012,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-memory-lifecycle.log"
-}

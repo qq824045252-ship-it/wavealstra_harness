@@ -1,8 +1,0 @@
-{
-  "name": "remote:build",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:41:38.658Z",
-  "durationMs": 9177,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\remote-build.log"
-}

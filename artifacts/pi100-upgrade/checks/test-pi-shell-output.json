@@ -1,8 +1,0 @@
-{
-  "name": "test:pi-shell-output",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:16:42.312Z",
-  "durationMs": 4266,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi-shell-output.log"
-}

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 700" width="980" height="700" role="img" aria-label="project-agent 审计快照缺少被拒专家的成因">
+  <rect x="0" y="0" width="980" height="700" fill="#f7f8fa"/>
+
+  <text x="32" y="42" font-family="Segoe UI, system-ui, sans-serif" font-size="21" font-weight="700" fill="#14181f">test:project-agent —— 为什么审计快照少了「被拒绝的专家」</text>
+  <text x="32" y="66" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#5a6472">场景：用户请求用一个被项目策略禁止的专家 blocked-expert</text>
+
+  <!-- 共同起点 -->
+  <rect x="330" y="88" width="320" height="46" rx="9" fill="#eef2f7" stroke="#c3cad6" stroke-width="1.5"/>
+  <text x="490" y="108" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="600" fill="#14181f">调用方传入 expertId = "blocked-expert"</text>
+  <text x="490" y="126" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="12" fill="#5a6472">（该项目策略 deny: ["blocked-expert"]）</text>
+
+  <line x1="490" y1="134" x2="490" y2="158" stroke="#8a94a3" stroke-width="2"/>
+  <line x1="270" y1="158" x2="710" y2="158" stroke="#8a94a3" stroke-width="2"/>
+  <line x1="270" y1="158" x2="270" y2="182" stroke="#8a94a3" stroke-width="2"/>
+  <line x1="710" y1="158" x2="710" y2="182" stroke="#8a94a3" stroke-width="2"/>
+
+  <!-- 左：执行前 inspection -->
+  <rect x="40" y="182" width="460" height="228" rx="11" fill="#ffffff" stroke="#a9d5bd" stroke-width="2"/>
+  <rect x="40" y="182" width="460" height="38" rx="11" fill="#e8f6ee"/>
+  <rect x="40" y="208" width="460" height="12" fill="#e8f6ee"/>
+  <text x="60" y="208" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#1e8e5a">执行前 · inspectRuntimeContext（结果正确）</text>
+
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="60" y="246">直接使用调用方传来的 expertId</text>
+    <text x="60" y="266" fill="#5a6472">AgentService.ts 约 2523 行取 resolvedContext</text>
+    <rect x="60" y="282" width="420" height="52" rx="7" fill="#f4faf7" stroke="#a9d5bd" stroke-width="1"/>
+    <text x="74" y="302" font-family="Consolas, monospace" font-size="11.5" fill="#1e8e5a">["expert", "blocked-expert", "project_policy_denied"]</text>
+    <text x="74" y="322" font-family="Consolas, monospace" font-size="11.5" fill="#5a6472">["connector", "blocked-connector", "project_policy_denied"]</text>
+    <text x="60" y="358" font-weight="600" fill="#1e8e5a">→ 能告诉用户「这个专家被项目策略拒绝了」</text>
+    <text x="60" y="382" fill="#5a6472">这也是用例里那条断言通过的原因</text>
+  </g>
+
+  <!-- 右：执行后快照 -->
+  <rect x="520" y="182" width="420" height="228" rx="11" fill="#ffffff" stroke="#e6b0aa" stroke-width="2"/>
+  <rect x="520" y="182" width="420" height="38" rx="11" fill="#fdecea"/>
+  <rect x="520" y="208" width="420" height="12" fill="#fdecea"/>
+  <text x="540" y="208" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#a93226">执行后 · 审计快照（缺了一条）</text>
+
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="540" y="246">执行路径先被「任务专家绑定」覆盖了 expertId</text>
+    <text x="540" y="266" fill="#5a6472">AgentService.ts 约 3756 行</text>
+    <rect x="540" y="282" width="380" height="52" rx="7" fill="#fdf6f5" stroke="#e6b0aa" stroke-width="1"/>
+    <text x="554" y="302" font-family="Consolas, monospace" font-size="11.5" fill="#a93226">["connector", "blocked-connector", ...]</text>
+    <text x="554" y="322" font-family="Consolas, monospace" font-size="11.5" fill="#5a6472">["mcp", "serena", ...]　←— 没有 expert 项</text>
+    <text x="540" y="358" font-weight="600" fill="#a93226">→ 事后查不到「曾经请求过被拒的专家」</text>
+    <text x="540" y="382" fill="#5a6472">这就是用例失败的那条断言</text>
+  </g>
+
+  <!-- 中间：关键代码 -->
+  <rect x="40" y="430" width="900" height="118" rx="11" fill="#fffaf0" stroke="#e0b070" stroke-width="1.5"/>
+  <text x="60" y="456" font-family="Segoe UI, system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#8a5a08">关键那一行（AgentService.ts:3756）</text>
+  <rect x="60" y="468" width="860" height="30" rx="6" fill="#ffffff" stroke="#e0b070" stroke-width="1"/>
+  <text x="74" y="488" font-family="Consolas, monospace" font-size="12" fill="#8a5a08">req = { ...req, expertId: taskBinding ? activeIdentity?.sourceExpertId : req.expertId, ... }</text>
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="60" y="518">只要该任务存在「专家绑定」行，调用方传的 expertId 就被替换成绑定里的专家；</text>
+    <text x="60" y="538">被项目策略拒绝的专家永远不会「生效」，于是绑定侧是空的 → expertId 变成 undefined → 策略解析看不到它 → 不记录拒绝。</text>
+  </g>
+
+  <!-- 结论 -->
+  <rect x="40" y="566" width="900" height="112" rx="11" fill="#ffffff" stroke="#c3cad6" stroke-width="1.5"/>
+  <text x="60" y="592" font-family="Segoe UI, system-ui, sans-serif" font-size="13.5" font-weight="700" fill="#14181f">所以这不是「谁写错了代码」，而是两条路径的语义不一致</text>
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="60" y="618">A. 让审计快照改用「调用方请求的专家」做策略解析（保留拒绝原因）—— 与执行前 inspection 一致，测试即可通过。</text>
+    <text x="60" y="640">B. 认为绑定优先是设计意图，调用方的 expertId 本就不该被审计 —— 那就改测试的期望。</text>
+    <text x="60" y="664" fill="#7b8794">两种都自洽，取决于「审计快照的用途」：事后追溯被拒的决策，还是只记录实际生效的能力。</text>
+  </g>
+</svg>

@@ -89,5 +89,12 @@ electron.vite.config.*.mjs
 /app/remote/android/app/build-*/
 /app/remote/android/app/*.mybuddy-tmp
 
+# 旧 Pi 版本（0.99.x / 0.99.2 / 1.0.0）历史验收产物：已清出仓库。
+# 注意 pi100-*/pi104-* 的现行测试仍会往这些目录写结果文件（会自行 mkdir），
+# 因此在此忽略，避免测试输出被重新纳入版本库。
+/artifacts/pi0992-memory/
+/artifacts/pi100-upgrade/
+/artifacts/pi104-upgrade/
+
 # IDE 本地配置
 /app/remote/android/.idea/

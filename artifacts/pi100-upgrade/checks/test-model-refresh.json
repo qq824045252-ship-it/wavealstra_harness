@@ -1,8 +1,0 @@
-{
-  "name": "test:model-refresh",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:52:26.260Z",
-  "durationMs": 4235,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-model-refresh.log"
-}

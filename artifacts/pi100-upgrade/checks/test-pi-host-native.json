@@ -1,8 +1,0 @@
-{
-  "name": "test:pi-host-native",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:33:33.225Z",
-  "durationMs": 6175,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi-host-native.log"
-}

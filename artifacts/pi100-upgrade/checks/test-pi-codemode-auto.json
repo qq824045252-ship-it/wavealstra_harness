@@ -1,8 +1,0 @@
-{
-  "name": "test:pi-codemode-auto",
-  "status": "passed",
-  "exitCode": 0,
-  "at": "2026-10-01T20:33:20.197Z",
-  "durationMs": 1780,
-  "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\pi100-upgrade\\checks\\test-pi-codemode-auto.log"
-}
