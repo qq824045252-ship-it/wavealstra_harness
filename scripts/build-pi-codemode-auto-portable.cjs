@@ -44,9 +44,6 @@ async function run(name, command) {
         await run('host-native', 'pnpm run test:pi-host-native');
         await run('native-control-contract', 'pnpm run test:pi-native-control');
         await run('native-lifecycle', 'pnpm run test:pi-native-lifecycle');
-        await run('memory-races', 'pnpm run test:pi0992-memory-race');
-        await run('memory-capsules', 'pnpm run test:pi0992-memory-capsule');
-        await run('mcp-compat', 'pnpm run test:pi0992-mcp-config');
         await run('remote-build', 'pnpm run remote:build');
         await run('desktop-build', 'pnpm run build');
         if (fingerprint() !== report.sourceFingerprint)

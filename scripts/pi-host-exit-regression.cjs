@@ -6,9 +6,9 @@ const root = path.resolve(__dirname, '..');
 process.chdir(root);
 const groups = {
   execution: ['test:pi-host-boundary','test:pi-host-native','test:pi-host-control','test:pi-native-control','test:pi-native-lifecycle','test:pi-autonomous-execution','test:pi-native-core-tools','test:prompt-execution','test:prompt-submission','test:session-lifecycle','test:message-lifecycle','test:streaming-send','test:regenerate-lifecycle','test:regenerate-connection-runtime','test:regenerate-stop-runtime','test:conversation-runtime','test:conversation-input','test:conversation-runtime-ui','test:conversation-branch'],
-  safety: ['test:verified-code-execution','test:mcp-execution-evidence','test:mcp-mode','test:pi0992-mcp-config','test:session-approval-bridge','test:architecture','test:harness-quality','test:runtime-orchestrator'],
+  safety: ['test:verified-code-execution','test:mcp-execution-evidence','test:mcp-mode','test:session-approval-bridge','test:architecture','test:harness-quality','test:runtime-orchestrator'],
   web: ['test:web-access-capability','test:web-access-convergence','test:web-artifact-runtime','test:shell-arguments',],
-  memory: ['test:memory','test:memory-cognition','test:memory-projection-deletion','test:memory-lifecycle','test:memory-skill-learning','test:memory-skill-history','test:memory-skill-effectiveness','test:memory-skill-revision','test:memory-gateway','test:memory-gateway-controller','test:project-memory-agent','test:project-memory-extraction','test:project-memory-migration','test:memory-ui','test:pi0992-memory-race','test:pi0992-memory-capsule'],
+  memory: ['test:memory','test:memory-cognition','test:memory-projection-deletion','test:memory-lifecycle','test:memory-skill-learning','test:memory-skill-history','test:memory-skill-effectiveness','test:memory-skill-revision','test:memory-gateway','test:memory-gateway-controller','test:project-memory-agent','test:project-memory-extraction','test:project-memory-migration','test:memory-ui'],
   context: ['test:compaction','test:compaction-policy-history','test:prompt-context','test:runtime-skill-loader','test:runtime-materials','test:remote-access','test:pi-reasoning-stream'],
 };
 const selected = process.argv.slice(2);

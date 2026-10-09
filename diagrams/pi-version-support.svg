@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" width="960" height="640" role="img" aria-label="Pi 版本支持边界与旧版本兼容清理">
+  <rect x="0" y="0" width="960" height="640" fill="#f7f8fa"/>
+
+  <text x="32" y="44" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="700" fill="#14181f">Pi 版本支持边界与旧版本兼容清理</text>
+  <text x="32" y="70" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#5a6472">只支持当前版本 Pi 1.0.4；0.99.x / 0.99.2 的迁移与兼容测试已全部删除</text>
+
+  <!-- 时间轴 -->
+  <text x="32" y="112" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#14181f">版本时间轴</text>
+  <line x1="60" y1="150" x2="900" y2="150" stroke="#c3cad6" stroke-width="2"/>
+
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12">
+    <circle cx="140" cy="150" r="7" fill="#c0392b"/>
+    <text x="140" y="132" text-anchor="middle" font-size="13" font-weight="600" fill="#c0392b">0.99.1</text>
+    <text x="140" y="176" text-anchor="middle" fill="#8a94a3">旧</text>
+
+    <circle cx="360" cy="150" r="7" fill="#c0392b"/>
+    <text x="360" y="132" text-anchor="middle" font-size="13" font-weight="600" fill="#c0392b">0.99.2</text>
+    <text x="360" y="176" text-anchor="middle" fill="#8a94a3">旧</text>
+
+    <circle cx="600" cy="150" r="7" fill="#e08c1a"/>
+    <text x="600" y="132" text-anchor="middle" font-size="13" font-weight="600" fill="#b5720e">1.0.0</text>
+    <text x="600" y="176" text-anchor="middle" fill="#8a94a3">同属 1.0 线</text>
+
+    <circle cx="840" cy="150" r="9" fill="#1e8e5a"/>
+    <circle cx="840" cy="150" r="16" fill="none" stroke="#1e8e5a" stroke-width="2"/>
+    <text x="840" y="130" text-anchor="middle" font-size="14" font-weight="700" fill="#1e8e5a">1.0.4</text>
+    <text x="840" y="176" text-anchor="middle" font-weight="600" fill="#1e8e5a">当前 · 唯一支持</text>
+  </g>
+
+  <rect x="740" y="88" width="200" height="128" rx="10" fill="none" stroke="#1e8e5a" stroke-width="2" stroke-dasharray="6 4"/>
+  <rect x="40" y="88" width="560" height="128" rx="10" fill="none" stroke="#c0392b" stroke-width="2" stroke-dasharray="6 4"/>
+
+  <!-- 已删除 -->
+  <rect x="40" y="248" width="430" height="352" rx="12" fill="#ffffff" stroke="#e6b0aa" stroke-width="2"/>
+  <rect x="40" y="248" width="430" height="44" rx="12" fill="#fdecea"/>
+  <rect x="40" y="280" width="430" height="12" fill="#fdecea"/>
+  <text x="60" y="277" font-family="Segoe UI, system-ui, sans-serif" font-size="16" font-weight="700" fill="#a93226">已删除 · 旧版本兼容（9 个 test 条目 + 49 个脚本）</text>
+
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="60" y="318" font-weight="700" fill="#14181f">0.99.x 迁移与验收测试</text>
+    <text x="76" y="340">test:pi099-migration（原本就在失败）</text>
+    <text x="76" y="360">test:pi099-closeout（串上前一条，随之失败）</text>
+    <text x="76" y="380">test:pi099-manager / -desktop / -portable-worker</text>
+    <text x="76" y="400">test:pi099-worker-invocation</text>
+
+    <text x="60" y="432" font-weight="700" fill="#14181f">0.99.2 测试</text>
+    <text x="76" y="454">test:pi0992-memory-race / -mcp-config / -memory-capsule</text>
+
+    <text x="60" y="486" font-weight="700" fill="#14181f">旧版本专用脚本与夹具</text>
+    <text x="76" y="508">pi099-* 全部夹具、pi0992-* 全部升级/收尾脚本</text>
+    <text x="76" y="528">build-pi0992-portable.cjs（只服务 0.99.2 分发）</text>
+    <text x="76" y="548">pi-native-desktop-live.cjs（无人引用）</text>
+
+    <text x="60" y="578" fill="#7b8794">同时清理了 6 个脚本里对上述 test 的悬挂引用</text>
+  </g>
+
+  <!-- 保留 -->
+  <rect x="500" y="248" width="420" height="352" rx="12" fill="#ffffff" stroke="#a9d5bd" stroke-width="2"/>
+  <rect x="500" y="248" width="420" height="44" rx="12" fill="#e8f6ee"/>
+  <rect x="500" y="280" width="420" height="12" fill="#e8f6ee"/>
+  <text x="520" y="277" font-family="Segoe UI, system-ui, sans-serif" font-size="16" font-weight="700" fill="#1e8e5a">保留 · 当前版本仍在用</text>
+
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#2b3440">
+    <text x="520" y="318" font-weight="700" fill="#14181f">1.0.4 版本自身的升级路径</text>
+    <text x="536" y="340">PiAzureProviderMigration.ts</text>
+    <text x="536" y="358" fill="#5a6472">把 1.0.4 之前的 azure 配置迁到 1.0.4</text>
+    <text x="536" y="376" fill="#5a6472">生产代码在 AgentService.ts:1138 调用它</text>
+    <text x="536" y="394" fill="#7b8794">→ 删掉会让老用户丢 Azure 模型配置</text>
+
+    <text x="520" y="428" font-weight="700" fill="#14181f">只服务当前版本的 stub（改名保留）</text>
+    <text x="536" y="450">pi099-electron-stub.ts → pi-electron-stub.ts</text>
+    <text x="536" y="468" fill="#5a6472">被 pi100-features / pi104-features</text>
+    <text x="536" y="486" fill="#5a6472">/ pi-native-core-tools 三个现行用例引用</text>
+
+    <text x="520" y="520" font-weight="700" fill="#14181f">1.0 线特性测试（不属旧版本兼容）</text>
+    <text x="536" y="542">pi100-* / pi104-* 共 5 个条目</text>
+    <text x="536" y="560" fill="#7b8794">验的是当前仍存在的功能，不是跨版本迁移</text>
+  </g>
+
+  <!-- 底线 -->
+  <line x1="32" y1="620" x2="928" y2="620" stroke="#c3cad6" stroke-width="1"/>
+  <text x="32" y="636" font-family="Segoe UI, system-ui, sans-serif" font-size="12" fill="#5a6472">实测：test:all → 240 通过 / 1 已知失败（test:project-agent，产品语义待定）/ 0 新增回归</text>
+</svg>

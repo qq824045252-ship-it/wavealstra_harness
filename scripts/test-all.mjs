@@ -51,7 +51,6 @@ const EXCLUDE_PATTERNS = [
   /^test:streaming-live$/,
   /^test:durable-bot$/,
   /^test:multi-search-live$/,
-  /^test:pi099-desktop$/,
   /^test:workspace-files-ui$/, // 需 GUI 文件面板
   /^test:models-settings-overlay$/,
   /^test:terminal$/, // 需 node-pty 原生模块

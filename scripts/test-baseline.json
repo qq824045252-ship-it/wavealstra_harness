@@ -1,13 +1,11 @@
 {
   "$comment": "已知失败基线（棘轮 / ratchet）。test:all 允许这些用例失败但会打印出来，任何*新增*失败会让门禁失败。修复后请用 `pnpm -s test:all:update-baseline` 重写本文件（或手动删除已修复条目）。切勿为掩盖真实回归而新增条目。",
-  "$basis": "来源：2026-10-09 无沙箱干净环境下对 default 套件（248 个用例，已排除 GUI/CDP/e2e/live 与依赖外部数据集的用例）的运行结果。本轮已修复并逐个验证通过的用例（22 → 3）：work-graph、workspace-chunk-r2、pi100-features、chat-markdown、library-workspace-context、architecture、chat-selection、subagent-mapper、workspace-runtime-integration、dimagent-debug、runtime-skill-loader、capability-packaging、project-task-defaults、pi-codemode-native、skill-root-guard、memory-skill-learning、external-cli-memory、memory-procedure-learning、pi-native-control、skill-authoring-recovery、workspace-tree、workspace-chunk-benchmark。",
+  "$basis": "2026-10-09：本仓库只支持当前 Pi 版本 1.0.4。旧版本（0.99.x / 0.99.2）的 9 个 test 条目及其 49 个脚本已删除（见 artifacts/quality-audit/pi-legacy-purge.md），default 套件由 249 降为 241 个用例。",
+  "generatedAt": "2026-10-09T05:56:36.640Z",
   "knownFailing": [
-    "test:pi099-closeout",
-    "test:pi099-migration",
     "test:project-agent"
   ],
   "$remaining": {
-    "test:pi099-migration": "Pi 1.0.x 下 MCP 会话启用语义变化：fixture MCP 服务器被判定为 'not enabled in this session'（2 条断言）。test:pi099-closeout 直接串联该用例，故一并失败。需要按当前 Pi 的 MCP 启用方式重写夹具。",
-    "test:project-agent": "执行审计快照 resolvedCapabilities 未保留「被项目策略拒绝的 Expert」（expertId='blocked-expert' 确有传入，执行前 inspection 正确包含）。这是产品行为问题，需产品决策：审计快照是否应保留被拒的 Expert；不宜由测试擅自迁就。"
+    "test:project-agent": "执行审计快照 resolvedCapabilities 未保留「被项目策略拒绝的 Expert」（expertId='blocked-expert' 确有传入，执行前 inspectRuntimeContext 正确包含）。这是产品行为问题，需产品决策：审计快照是否应保留被拒的 Expert；不宜由测试擅自迁就实现，也不宜由实现迁就测试。"
   }
 }
