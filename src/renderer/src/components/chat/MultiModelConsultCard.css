@@ -17,17 +17,21 @@
 .consult-followup-notice { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border-subtle, var(--border, #ddd)); border-radius: var(--radius-sm, 8px); background: var(--surface-elevated, var(--bg-panel, transparent)); color: var(--fg-secondary, var(--fg-muted, #666)); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 
 /* Floating detail panel.
-   `position/inset/margin` are re-declared at author level so the layout no longer depends on the
-   UA `dialog:modal` centring: the panel is a floating card offset from the top and capped well
-   inside the viewport instead of filling it. */
+   `position/inset/margin/height` are re-declared at author level so the layout no longer depends on
+   the UA `dialog:modal` centring (which pinned the old panel to the top-left with a global
+   `* { margin: 0 }` reset). It is a content-sized floating card: centred, capped inside the
+   viewport, and movable by its heading (double-click the heading re-centres it). */
 .consult-dialog {
   position: fixed;
-  inset: 0;
-  margin: min(4vh, 48px) auto auto;
+  inset: auto;
+  top: min(4vh, 48px);
+  left: 50%;
+  transform: translateX(-50%);
   width: min(720px, calc(100vw - 40px));
   max-width: calc(100vw - 40px);
-  height: auto;
+  height: fit-content;
   max-height: min(calc(100dvh - 96px), 760px);
+  margin: 0;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle, var(--border, #ddd));
@@ -38,7 +42,8 @@
 }
 .consult-dialog::backdrop { background: var(--overlay, #0005); }
 .consult-dialog[open] { display: flex; flex-direction: column; }
-.consult-dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-shrink: 0; padding: 16px 18px 12px; border-bottom: 1px solid var(--border-subtle, var(--border, #ddd)); }
+.consult-dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-shrink: 0; padding: 16px 18px 12px; border-bottom: 1px solid var(--border-subtle, var(--border, #ddd)); cursor: grab; user-select: none; touch-action: none; }
+.consult-dialog-heading:active { cursor: grabbing; }
 .consult-dialog-heading > div { display: grid; gap: 5px; min-width: 0; }
 .consult-dialog-heading strong { font-size: 14px; }
 .consult-dialog-heading small, .consult-muted, .consult-worker-meta { color: var(--fg-muted, #777); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -86,7 +91,7 @@
 
 /* Narrow viewport: the same participant list becomes a horizontal tab strip; nothing is removed. */
 @media (max-width: 720px) {
-  .consult-dialog { margin-top: min(2vh, 20px); }
+  .consult-dialog { top: min(2vh, 20px); }
   .consult-dialog-body { flex-direction: column; }
   .consult-tabs {
     flex: 0 0 auto;

@@ -80,13 +80,54 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Drag offset from the centred position; a free-floating window the user can move. */
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ pointerX: number; pointerY: number; originX: number; originY: number; left: number; top: number } | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const activeTaskId = useAppStore((state) => state.activeTaskId);
   useEffect(() => {
     if (!open) return;
+    setOffset({ x: 0, y: 0 });
     dialog.current?.showModal();
     return () => { dialog.current?.close(); };
   }, [open]);
+  // Window-level listeners: the panel is in the top layer, and pointer capture would also swallow
+  // clicks on the buttons inside the heading/footer.
+  useEffect(() => {
+    if (!dragging) return;
+    const move = (event: PointerEvent) => {
+      const start = drag.current;
+      const element = dialog.current;
+      if (!start || !element) return;
+      const rect = element.getBoundingClientRect();
+      const wantedX = start.originX + (event.clientX - start.pointerX);
+      const wantedY = start.originY + (event.clientY - start.pointerY);
+      // Keep 120px of the panel on screen horizontally and its heading reachable vertically.
+      const left = start.left + (wantedX - start.originX);
+      const top = start.top + (wantedY - start.originY);
+      const clampedLeft = Math.min(Math.max(left, 120 - rect.width), window.innerWidth - 120);
+      const clampedTop = Math.min(Math.max(top, 0), Math.max(0, window.innerHeight - 56));
+      setOffset({ x: wantedX + (clampedLeft - left), y: wantedY + (clampedTop - top) });
+    };
+    const stop = () => { drag.current = null; setDragging(false); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [dragging]);
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    const element = dialog.current;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    drag.current = { pointerX: event.clientX, pointerY: event.clientY, originX: offset.x, originY: offset.y, left: rect.left, top: rect.top };
+    setDragging(true);
+  };
   const workers = report?.workers ?? [];
   const activeIndex = Math.min(Math.max(selected, 0), Math.max(workers.length - 1, 0));
   const worker = workers[activeIndex];
@@ -157,8 +198,19 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
       {report && <button className="consult-card-details" type="button" data-testid="consult-open-details" onClick={() => setOpen(true)}>查看各模型原始答案与工具记录</button>}
       {notice && <div className="consult-followup-notice" role="status">{notice}</div>}
       {open && report && typeof document !== "undefined" && createPortal(
-        <dialog ref={dialog} className="consult-dialog" aria-labelledby={`consult-title-${report.id}`} onCancel={() => setOpen(false)}>
-          <div className="consult-dialog-heading">
+        <dialog
+          ref={dialog}
+          className="consult-dialog"
+          style={offset.x || offset.y ? { translate: `${offset.x}px ${offset.y}px` } : undefined}
+          aria-labelledby={`consult-title-${report.id}`}
+          onCancel={() => setOpen(false)}
+        >
+          <div
+            className="consult-dialog-heading"
+            onPointerDown={beginDrag}
+            onDoubleClick={() => setOffset({ x: 0, y: 0 })}
+            title="按住拖动可移动面板；双击标题回到居中位置"
+          >
             <div><strong id={`consult-title-${report.id}`}>多模型会诊详情</strong><small>{title}</small></div>
             <button type="button" className="btn consult-dialog-close" aria-label="关闭会诊详情" data-testid="consult-close-details" onClick={() => setOpen(false)}><IconX size={16} /></button>
           </div>

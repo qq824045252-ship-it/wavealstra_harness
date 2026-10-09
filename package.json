@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -90,6 +90,7 @@
     "test:hero-suggest": "esbuild scripts/hero-suggest-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/hero-suggest-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/hero-suggest-test.cjs",
     "test:multi-model-consult:live": "node scripts/multi-model-consult-live-test.cjs",
     "test:multi-model-consult": "esbuild scripts/multi-model-consult-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-model-consult-test.mjs && node scripts/test-guard.mjs out/tests/multi-model-consult-test.mjs",
+    "test:consult-card-ui": "esbuild scripts/consult-card-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=ConsultCardUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/consult-card-store-stub.ts --outfile=out/tests/consult-card-ui.js --loader:.png=dataurl --loader:.svg=dataurl --loader:.woff=empty --loader:.woff2=empty --loader:.ttf=empty && electron scripts/consult-card-ui-test.cjs",
     "test:builtin-capabilities": "esbuild scripts/builtin-capabilities-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/builtin-capabilities-test.mjs --external:electron --external:@napi-rs/keyring && node scripts/test-guard.mjs out/tests/builtin-capabilities-test.mjs",
     "test:local-capability-checks": "esbuild scripts/local-capability-checks-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/local-capability-checks-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/local-capability-checks-test.mjs",
     "test:local-capabilities-electron": "node scripts/local-capabilities-electron-test.cjs",

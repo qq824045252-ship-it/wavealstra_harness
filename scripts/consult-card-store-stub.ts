@@ -8,7 +8,8 @@ export const state = {
 export const appendCalls = appended;
 
 const api = {
-  ...state,
+  // Live read: a test may switch the active task and re-render the same card.
+  get activeTaskId(): string | null { return state.activeTaskId; },
   appendComposer: (text: string): void => { appended.push(text); },
 };
 

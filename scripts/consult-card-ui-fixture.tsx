@@ -111,6 +111,21 @@ const rect = (selector: string) => {
     return { present: Boolean(button), disabled: button?.disabled ?? null, label: button?.textContent ?? null };
   },
   clickFollowup: () => (document.querySelector("[data-testid=consult-followup]") as HTMLButtonElement).click(),
+  dragBy: async (dx: number, dy: number) => {
+    const heading = document.querySelector(".consult-dialog-heading") as HTMLElement;
+    const box = heading.getBoundingClientRect();
+    const startX = box.left + 20;
+    const startY = box.top + 10;
+    heading.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: startX, clientY: startY, pointerId: 1, isPrimary: true }));
+    // React commits the drag state (and installs its window listeners) on the next frame.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (const step of [0.5, 1]) {
+      window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: startX + dx * step, clientY: startY + dy * step, pointerId: 1, isPrimary: true }));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: startX + dx, clientY: startY + dy, pointerId: 1, isPrimary: true }));
+  },
+  recenter: () => document.querySelector(".consult-dialog-heading")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
   appended: () => appendCalls,
   notice: () => document.querySelector(".consult-followup-notice")?.textContent ?? null,
   setActiveTask: (taskId: string | null) => { storeState.activeTaskId = taskId; },
