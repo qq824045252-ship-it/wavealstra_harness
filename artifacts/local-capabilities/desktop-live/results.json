@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-10-09T00:47:08.964Z",
+  "startedAt": "2026-10-09T08:54:25.248Z",
   "tests": [
     {
       "name": "local tools start unverified and show only canonical bash",

@@ -328,9 +328,9 @@ export class BuiltinCapabilityRuntime {
           description: "多个参与者独立分析同一个任务，再由当前主模型综合；同一模型可用不同思考等级多次参与。",
           enabled: config.multiModelConsult.enabled, tools: ["multi_model_consult"],
           state: !config.multiModelConsult.enabled ? "disabled" : config.multiModelConsult.participants.length < 2 ? "needs-configuration" : "ready",
-          detail: !config.multiModelConsult.enabled ? "未启用；不会自动触发。"
-            : config.multiModelConsult.participants.length < 2 ? "请明确选择至少两个参与者（不同模型，或同一模型的不同思考等级）；不会自动选模。"
-            : `已配置 ${config.multiModelConsult.participants.length} 个参与者${consultDistinctModelCount(config.multiModelConsult.participants) < 2 ? "（只有 1 个模型，属于同模型等级对照）" : `，来自 ${consultDistinctModelCount(config.multiModelConsult.participants)} 个模型`}；只读工具预算 ${config.multiModelConsult.maxToolCalls > 0 ? `${config.multiModelConsult.maxToolCalls} 次` : "不限制"}，单模型超时 ${config.multiModelConsult.timeoutSeconds} 秒。调用时由 Pi 校验登录与模型范围。检查配置不会产生模型费用。`,
+          detail: !config.multiModelConsult.enabled ? "未启用。"
+            : config.multiModelConsult.participants.length < 2 ? "至少选择两个参与者。"
+            : `${config.multiModelConsult.participants.length} 个参与者 · ${consultDistinctModelCount(config.multiModelConsult.participants)} 个模型。`,
         },
       ],
       checkedAt: Date.now(),
@@ -361,7 +361,7 @@ export class BuiltinCapabilityRuntime {
     }
     if (status.state !== "ready") return { ok: false, state: status.state, detail: status.detail ?? "能力未就绪", checkedAt: Date.now() };
     if (id === "multi-model-consult") {
-      return { ok: true, state: "ready", detail: "配置检查通过；尚未调用模型，也未验证登录与服务可用性。真实会诊请在新对话输入框 + 中选择多模型会诊。", checkedAt: Date.now() };
+      return { ok: true, state: "ready", detail: "配置检查通过；未调用模型。", checkedAt: Date.now() };
     }
     const provider = id === "vision" ? this.visionProvider()
         : id === "image-generation" ? this.imageProvider()

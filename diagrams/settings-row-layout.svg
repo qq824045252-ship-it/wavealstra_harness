@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="740" viewBox="0 0 1200 740" role="img" aria-label="工具能力设置行：联网搜索控件布局改前改后对比，以及多模型会诊文案裁剪">
+  <rect x="0" y="0" width="1200" height="740" fill="#ffffff"/>
+  <text x="24" y="36" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700" fill="#1f2328">工具能力 · 设置行布局：联网搜索控件（改前 → 改后）</text>
+  <text x="24" y="58" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#57606a">实现位置：CapabilitiesTab.css（.capability-config-row[data-capability-id="web"]）、SearchSettings.tsx / SearchSettings.css、MultiModelConsultSettings.tsx</text>
+
+  <!-- Panel A: before -->
+  <rect x="24" y="76" width="372" height="560" rx="10" fill="#ffffff" stroke="#d8dee6"/>
+  <text x="40" y="102" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#b42318">改前</text>
+  <text x="82" y="102" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#57606a">控件落在中间列（实测 ≈365px）</text>
+
+  <rect x="40" y="118" width="92" height="40" rx="6" fill="#eef2f7" stroke="#cbd5e1"/>
+  <text x="48" y="135" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">标题 + 说明</text>
+  <text x="48" y="150" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">已就绪</text>
+
+  <rect x="140" y="118" width="200" height="40" rx="6" fill="#fff4d6" stroke="#d4a72c"/>
+  <text x="148" y="143" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#7a4d00">.capability-config-control</text>
+
+  <rect x="348" y="118" width="32" height="40" rx="6" fill="#eef2f7" stroke="#cbd5e1"/>
+  <text x="352" y="143" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">开关</text>
+
+  <text x="40" y="184" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600" fill="#1f2328">控件内部（.search-settings）</text>
+  <rect x="140" y="196" width="6" height="34" rx="3" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="40" y="213" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">搜索方式</text>
+  <text x="40" y="228" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">多源同时搜索</text>
+  <rect x="40" y="196" width="330" height="36" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="140" y="219" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">多源同时搜索 ▾（拉满这一列）</text>
+
+  <text x="40" y="252" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">供应商</text>
+  <text x="250" y="252" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">已配置 · 待实际调用</text>
+
+  <!-- provider cards, cramped, with inner scrollbar -->
+  <rect x="40" y="262" width="152" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="48" y="279" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☐ Codex OAuth</text>
+  <text x="48" y="292" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">（ChatGPT 订阅）</text>
+  <text x="48" y="305" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#9a6700">已配置 · 待实际调用</text>
+
+  <rect x="198" y="262" width="152" height="50" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="206" y="279" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ TinyFish</text>
+  <text x="206" y="292" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#9a6700">已配置 · 待实际调用</text>
+
+  <rect x="40" y="318" width="152" height="50" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="48" y="335" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ Tavily</text>
+  <text x="48" y="348" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#9a6700">已配置 · 待实际调用</text>
+
+  <rect x="198" y="318" width="152" height="50" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="206" y="335" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ Serper</text>
+  <text x="206" y="348" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#9a6700">已配置 · 待实际调用</text>
+
+  <rect x="40" y="374" width="152" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="48" y="391" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☐ OpenAI Responses</text>
+  <text x="48" y="404" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#57606a">未检测到配置</text>
+
+  <rect x="198" y="374" width="152" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="206" y="391" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☐ Brave</text>
+  <text x="206" y="404" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#57606a">未检测到配置</text>
+
+  <rect x="356" y="262" width="14" height="162" rx="7" fill="#eef2f7" stroke="#cbd5e1"/>
+  <rect x="359" y="266" width="8" height="60" rx="4" fill="#9aa4b2"/>
+  <text x="40" y="440" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#b42318">网格自带滚动条：max-height:224px + overflow:auto</text>
+
+  <text x="40" y="462" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">读取关键原文并核验结论</text>
+  <text x="40" y="480" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">最多读取 5 个网页；引用原文、保留分歧，会增加等待时间和模型用量。</text>
+  <text x="40" y="502" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">▸ 等待与调用上限</text>
+  <text x="40" y="524" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">症状：卡片文字换行、内嵌滚动条、右侧大片空白。</text>
+  <text x="40" y="542" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">19 家供应商全部平铺，未配置项与已配置项同样抢眼。</text>
+  <text x="40" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">文案过长：每张卡片两行「已配置 · 待实际调用」。</text>
+
+  <!-- arrow -->
+  <path d="M404 356 L420 356" stroke="#57606a" stroke-width="2" fill="none"/>
+  <path d="M414 350 L422 356 L414 362" stroke="#57606a" stroke-width="2" fill="none"/>
+
+  <!-- Panel B: after -->
+  <rect x="428" y="76" width="380" height="560" rx="10" fill="#ffffff" stroke="#d8dee6"/>
+  <text x="444" y="102" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#157347">改后</text>
+  <text x="486" y="102" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#57606a">控件占满整行（实测 682px）</text>
+
+  <rect x="444" y="118" width="240" height="40" rx="6" fill="#eef2f7" stroke="#cbd5e1"/>
+  <text x="452" y="135" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">联网搜索 · 同时搜索 3 家供应商</text>
+  <text x="452" y="150" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">已就绪 · web_search · fetch_content …</text>
+
+  <rect x="692" y="118" width="100" height="40" rx="6" fill="#eef2f7" stroke="#cbd5e1"/>
+  <text x="700" y="143" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">检查 / 开关</text>
+
+  <rect x="444" y="166" width="348" height="330" rx="8" fill="#f2f9ff" stroke="#7cb8e8"/>
+  <text x="456" y="184" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">搜索方式</text>
+  <rect x="522" y="172" width="258" height="26" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="532" y="190" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">多源同时搜索 ▾</text>
+
+  <text x="456" y="220" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">供应商</text>
+  <text x="672" y="220" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">已选 3 / 6 · 至少 2 家</text>
+
+  <rect x="456" y="230" width="166" height="28" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="464" y="249" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ TinyFish</text>
+  <text x="600" y="249" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#157347">已配置</text>
+
+  <rect x="630" y="230" width="150" height="28" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="638" y="249" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ Tavily</text>
+  <text x="752" y="249" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#157347">已配置</text>
+
+  <rect x="456" y="264" width="166" height="28" rx="6" fill="#e8f1fd" stroke="#7cb8e8"/>
+  <text x="464" y="283" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#1f2328">☑ Serper</text>
+  <text x="600" y="283" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10.5" fill="#157347">已配置</text>
+
+  <text x="456" y="314" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#0969da">显示未配置的 18 家供应商</text>
+  <text x="456" y="336" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">默认只列已配置 ∪ 已选中；展开后 21 家全部可点</text>
+
+  <text x="456" y="362" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#1f2328">☑ 读取关键原文并核验结论</text>
+  <text x="672" y="362" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">最多 5 页 · 更慢更贵</text>
+  <text x="456" y="386" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">▸ 等待与调用上限（单家超时 / 总等待 / 最多请求）</text>
+
+  <text x="456" y="414" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#157347">grid-template-areas: "copy actions" / "control control" / "detail detail"</text>
+  <text x="456" y="434" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#157347">.search-provider-grid: repeat(auto-fit, minmax(232px, 1fr))，无内嵌滚动</text>
+  <text x="456" y="454" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">实测：control 682×236，grid scrollHeight = clientHeight = 412</text>
+  <text x="456" y="478" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#57606a">长句移入 title 提示（核验成本、工具预算 0 = 不限制）</text>
+
+  <text x="444" y="518" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">detail：配置尚未保存；保存后新会话按新状态注册工具。</text>
+
+  <!-- Panel C: copy trim -->
+  <rect x="824" y="76" width="352" height="560" rx="10" fill="#ffffff" stroke="#d8dee6"/>
+  <text x="840" y="102" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#1f2328">多模型会诊：删掉的说明</text>
+  <text x="840" y="122" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">设置菜单只留控件与状态，删掉以下成段说明</text>
+
+  <text x="840" y="150" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 仅通过主模型显式工具调用。输入框「+」可指定…</text>
+  <text x="840" y="170" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 不同模型独立处理同一任务…没有 Judge 或多层调度。</text>
+  <text x="840" y="190" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 限制都是可调的：预算填 0 表示不限制…独立计费。</text>
+  <text x="840" y="210" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 任务、补充材料及读取到的文件内容会发送给供应商…</text>
+  <text x="840" y="230" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 已配置 5 个参与者…检查配置不会产生模型费用。</text>
+  <text x="840" y="250" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 添加模型（由你明确选择；同一模型可加不同等级）</text>
+  <text x="840" y="270" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b42318">✕ 当前不可用或已停用；调用时会报错，不会自动替换</text>
+
+  <line x1="840" y1="288" x2="1160" y2="288" stroke="#d8dee6"/>
+
+  <text x="840" y="312" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600" fill="#1f2328">保留（可操作 / 状态 / 悬停）</text>
+  <text x="840" y="338" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#157347">✓ 至少选择两个参与者（模型或思考等级不同）</text>
+  <text x="840" y="358" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#157347">✓ 同一模型的不同思考等级不是跨模型验证</text>
+  <text x="840" y="378" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#157347">✓ 状态行：5 个参与者 · 4 个模型。</text>
+  <text x="840" y="398" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#157347">✓ title：预算 0 = 不限制；每个参与者独立计费</text>
+  <text x="840" y="418" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#157347">✓ title：文件内容会发送给所选模型供应商</text>
+
+  <line x1="840" y1="438" x2="1160" y2="438" stroke="#d8dee6"/>
+
+  <text x="840" y="462" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600" fill="#1f2328">未改动（本轮范围之外）</text>
+  <text x="840" y="486" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">· 工具能力页 hero 与各组副标题</text>
+  <text x="840" y="506" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">· 聊天内会诊卡片与输入框「+」入口</text>
+  <text x="840" y="526" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#57606a">· 高级配置里的搜索 API Key 输入</text>
+
+  <text x="840" y="560" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#0969da">已验证：pnpm -s typecheck；test:builtin-capabilities</text>
+  <text x="840" y="578" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#0969da">test:multi-search；test:multi-model-consult</text>
+  <text x="840" y="596" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#0969da">test:multi-search-desktop；test:local-capabilities-electron</text>
+  <text x="840" y="614" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#0969da">打包 0.1.22 实机截图 + asar 文案核验 + test:all（0 新增回归）</text>
+
+  <text x="24" y="668" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#57606a">图例：红色 = 问题或已删除文案；绿色 = 新布局 / 保留的可操作项；蓝色 = 实测数据与验证入口。</text>
+  <text x="24" y="690" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#57606a">尺寸均为 1280×900 / 1280×960 真实渲染窗口下 getBoundingClientRect 读数，不是估算。</text>
+</svg>

@@ -60,7 +60,7 @@ function CapabilityRow({
 }: {
   id: BuiltinCapabilityId;
   title: string;
-  description: string;
+  description?: string;
   tools: string[];
   enabled: boolean;
   savedEnabled?: boolean;
@@ -83,7 +83,7 @@ function CapabilityRow({
           <strong>{title}</strong>
           <StatusBadge status={status} pending={pending} />
         </div>
-        <div className="capability-config-description">{description}</div>
+        {description && <div className="capability-config-description">{description}</div>}
         <div className="capability-config-tools">{tools.join(" · ")}</div>
       </div>
       <div className="capability-config-control">{children}</div>
@@ -342,7 +342,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
     || (savedWebSearch?.tinyfishApiKey ?? "") !== (webSearchDraft?.tinyfishApiKey ?? "")
     || (savedWebSearch?.braveApiKey ?? "") !== (webSearchDraft?.braveApiKey ?? "")
     || (savedWebSearch?.serperApiKey ?? "") !== (webSearchDraft?.serperApiKey ?? "");
-  const searchDescription = searchPolicy.mode === "parallel" ? `每次同时搜索 ${searchPolicy.providers.length} 家，逐家显示结果与失败状态` : "选择检索方式；配置凭据不代表已经通过实际搜索验证";
+  const searchDescription = searchPolicy.mode === "parallel" ? `同时搜索 ${searchPolicy.providers.length} 家供应商` : "选择检索方式与供应商";
 
   const imageStatus = statusById.get("image-generation");
   const codexImageAvailable = imageStatus?.state === "ready"
@@ -361,10 +361,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
       </div>
 
       <section className="capability-group consult-settings-group" data-testid="consult-capability">
-        <div className="capability-group-head"><div><h3>多模型会诊</h3><p>仅通过主模型显式工具调用。输入框「+」可为当前消息指定会诊，不自动触发或持续开启。</p></div></div>
+        <div className="capability-group-head"><div><h3>多模型会诊</h3></div></div>
         <CapabilityRow
           {...rowCommon("multi-model-consult", draft.multiModelConsult.enabled)}
-          title="多模型会诊" description="不同模型独立处理同一任务，当前主模型综合。没有 Judge 或多层调度。"
+          title="多模型会诊"
           tools={["multi_model_consult"]}
           configurationPending={JSON.stringify(snapshot?.config.multiModelConsult) !== JSON.stringify(draft.multiModelConsult)}
           onToggle={(enabled) => setDraft({ ...draft, multiModelConsult: { ...draft.multiModelConsult, enabled } })}

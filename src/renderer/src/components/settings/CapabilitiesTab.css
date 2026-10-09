@@ -208,6 +208,19 @@
   min-width: 0;
 }
 
+/* Rows whose control is a settings form (not a single field) get the full width. */
+.capability-config-row[data-capability-id="web"] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "copy actions"
+    "control control"
+    "detail detail";
+}
+
+.capability-config-row[data-capability-id="web"] .capability-config-control {
+  padding-top: 12px;
+}
+
 .capability-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
