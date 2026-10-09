@@ -29,6 +29,18 @@
     "backups": "artifacts/mybuddy-0.1.22-release/shortcut-backups-20261009-170813/"
   },
   "knownPackagingFailure": "electron-builder nsis target is not used; accepted build uses --dir win-unpacked like the previous accepted 0.1.21 release",
-  "retainedOldRelease": "release-mybuddy-0.1.21 kept because 4 running MyBuddy.exe processes (user's live session) lock it; delete after the next restart",
+  "obsoleteReleaseRemoved": {
+    "path": "release-mybuddy-0.1.21",
+    "removedAt": "2026-10-09T21:34:00+08:00",
+    "sizeMiB": 1283.6,
+    "checkedBeforeRemoval": [
+      "all running MyBuddy.exe processes execute from release-mybuddy-0.1.22\\win-unpacked",
+      "Desktop MyBuddy 0.1.22.lnk and Start Menu MyBuddy.lnk both target release-mybuddy-0.1.22",
+      "retained executable SHA256 still matches this record",
+      "no script or config references the 0.1.21 path"
+    ],
+    "startupAfterRemoval": "CONSULT_ENTRY_TEST_EXE=release-mybuddy-0.1.22\\win-unpacked\\MyBuddy.exe pnpm -s test:consult-entry:desktop -> 8/8 PASS",
+    "evidence": "artifacts/release-cleanup/20261009-remove-0.1.21/summary.json"
+  },
   "gitCommit": "cf473bd"
 }

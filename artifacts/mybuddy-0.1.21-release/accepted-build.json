@@ -15,5 +15,8 @@
     "pnpm -s test:consult-card-ui: 20/20"
   ],
   "knownPackagingFailure": "electron-builder nsis target failed (release\\MyBuddy Setup 0.1.21.exe exit 2); accepted build uses --dir win-unpacked like the previous accepted 0.1.20 release",
-  "gitCommit": "9f246fb617ca121025f9d1580077c9eadb6ae7da"
+  "gitCommit": "9f246fb617ca121025f9d1580077c9eadb6ae7da",
+  "supersededBy": "0.1.22",
+  "packageRemovedAt": "2026-10-09T21:34:00+08:00",
+  "packageRemovalNote": "release-mybuddy-0.1.21 (1283.6 MiB) deleted after every shortcut and running process had moved to release-mybuddy-0.1.22; this JSON stays as the historical build record. Cleanup evidence: artifacts/release-cleanup/20261009-remove-0.1.21/summary.json"
 }
