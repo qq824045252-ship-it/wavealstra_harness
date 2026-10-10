@@ -1531,6 +1531,8 @@ button:disabled {
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.28s;
   display: flex;
   flex-direction: column;
+  /* 限制 sheet 最大高度，内容超出时由内部滚动区消化（如长模型列表） */
+  max-height: 82dvh;
 }
 
 .claude-sheet.open {
@@ -1719,8 +1721,14 @@ button:disabled {
 .select-model-group {
   border: 1px solid var(--border-default);
   border-radius: 18px;
-  overflow: hidden;
   background-color: var(--bg-surface);
+  /* 模型目录较长时内部滚动：min-height:0 允许 flex 子项收缩，
+     overscroll-behavior 防止滚动链穿透到背景页 */
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .select-model-item {

@@ -39,15 +39,21 @@ export function AnimatedDisclosure({ open, children, floating = false }: { open:
     const start = node.style.height ? height : open ? 0 : height
     node.style.overflow = 'hidden'
     let active = true
+    // 关闭时必须 fill:'forwards' 保持 0 高度终态：否则动画一结束（fill:none）
+    // 元素立即回弹到 auto 全高，而 React 还没卸载子树 → 折叠瞬间「闪一下」。
     const animation = node.animate([
       { height: `${start}px`, opacity: open ? 0.4 : 1 },
       { height: `${open ? node.scrollHeight : 0}px`, opacity: open ? 1 : 0 },
-    ], { duration: 180, easing })
+    ], { duration: 180, easing, fill: open ? 'none' : 'forwards' })
     void animation.finished.then(() => {
       if (!active) return
-      node.style.height = ''
-      node.style.overflow = ''
-      if (!open) setPresent(false)
+      if (open) {
+        node.style.height = ''
+        node.style.overflow = ''
+      } else {
+        // 保持 fill 终态直接卸载，不再清内联样式，杜绝卸载前的闪回帧
+        setPresent(false)
+      }
     }).catch(() => undefined)
     return () => {
       active = false
