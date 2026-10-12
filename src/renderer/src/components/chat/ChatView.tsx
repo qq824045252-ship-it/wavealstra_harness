@@ -893,10 +893,15 @@ export default function ChatView(): React.JSX.Element {
             </div>
             <div className="bot-submission-status" role="status"><span className="bot-submission-spinner" aria-hidden="true" />正在准备回复…</div>
           </div>}
-          {!task.botPendingSubmission &&
+          {!task.botPendingSubmission && !task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
             <div className="empty-block-title">{task.welcomeMode === "bot" ? "Bot 会话" : "正在加载历史对话…"}</div>
             <div style={{ fontSize: 12.5 }}>{task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
+          </div>}
+          {task.historyError &&
+          <div className="empty-block" style={{ margin: "48px auto" }} role="alert" data-testid="history-error">
+            <div className="empty-block-title">会话记录打不开</div>
+            <div style={{ fontSize: 12.5 }}>{task.historyError}</div>
           </div>}
         </div>
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}

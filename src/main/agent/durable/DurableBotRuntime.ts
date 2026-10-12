@@ -10,11 +10,13 @@ import {
 } from "@earendil-works/pi-durable";
 import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
+import type { DurableLogRepairReport } from "./DurableLogRepair";
+import { openDurableStorage } from "./DurableStorage";
+import type { DurableStorageLease } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { withDurableImageRead } from "./DurableImages";
 import { getAgentBashShellPath } from "../../agent-shell-settings";
@@ -63,12 +65,19 @@ export class DurableBotRuntime {
   private codemode!: ToolRegistration;
   private registry!: ReturnType<typeof createRegistry>;
   private storage!: Storage;
+  /** Cross-process single-writer lease; only present when the runtime opened its own directory. */
+  private lease?: DurableStorageLease;
+  private repaired?: DurableLogRepairReport;
   private readonly children = new Map<number, ConversationWatch>();
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {}
 
+  /** Deterministic recovery of a log that a second writer corrupted; surfaced to the conversation UI. */
+  get repairReport(): DurableLogRepairReport | undefined { return this.repaired; }
+
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
     options = { ...options, models: legacyCompatibleModels(options.models) };
-    const storage = options.storage ?? await openNodeJsonlStorage(options.directory, ctx, { fsync: true });
+    const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx);
+    const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
     const native = [...codingTools(), ...(options.tools ?? [])];
     let compatibility: ToolRegistration[] = [];
@@ -89,7 +98,7 @@ export class DurableBotRuntime {
         compatibility = [...options.restoreTools([...names])].filter(tool => !installed.has(tool.name));
         native.push(...compatibility);
       }
-    } catch (error) { await storage.close(ctx); throw error; }
+    } catch (error) { await storage.close(ctx); handle?.lease.release(); throw error; }
     const codemode = createDurableCodeMode(() => native, options.assets, join(options.directory, "images"), async (code, context) => {
       const tools = await options.prepareCodeMode?.(code, context) ?? [];
       runtime?.installCompatibility(tools);
@@ -110,6 +119,8 @@ export class DurableBotRuntime {
       const conversation = await harness.root(ctx, { agent: { cwd: options.cwd, model: options.model } });
       runtime = new DurableBotRuntime(harness, conversation, options);
       runtime.storage = storage;
+      runtime.lease = handle?.lease;
+      runtime.repaired = handle?.repair;
       runtime.registry = registry;
       runtime.nativeTools = native;
       runtime.compatibilityTools = compatibility;
@@ -126,6 +137,7 @@ export class DurableBotRuntime {
       return runtime;
     } catch (error) {
       if (harness) await harness.close(ctx); else await storage.close(ctx);
+      handle?.lease.release();
       throw error;
     }
   }
@@ -190,6 +202,8 @@ export class DurableBotRuntime {
   }
 
   async refresh(): Promise<DurableBotSnapshot> {
+    // Keep the single-writer lease fresh; a stale lease only matters after an unclean shutdown.
+    this.lease?.heartbeat();
     // Serialize presentation reads only. Durable alone schedules execution.
     const projection = this.projection.then(async () => {
       if (this.closed) return;
@@ -240,6 +254,7 @@ export class DurableBotRuntime {
     await this.projection;
     // close checkpoints pending work; abort would permanently cancel it.
     await this.harness.close(ctx);
+    this.lease?.release();
   }
 
   private async project(value: ConversationView): Promise<void> {

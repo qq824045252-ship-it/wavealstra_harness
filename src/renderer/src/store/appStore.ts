@@ -3158,6 +3158,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       void window.api?.agent?.loadTaskHistory?.(id).then(async (history) => {
         if (history.durable) {
           get().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: history.durable });
+          set((s) => ({
+            tasks: s.tasks.map((t) => (t.id === id
+              ? { ...t, sessionRecovery: history.sessionRecovery, historyError: history.historyError }
+              : t)),
+          }));
           return;
         }
         const combinedHistoryMessages = history.messages ?? [];
@@ -3236,6 +3241,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                   sessionFile: history.sessionFile ?? t.sessionFile,
                   cwd: history.cwd ?? t.cwd,
                   sessionRecovery: history.sessionRecovery,
+                  historyError: history.historyError,
                 }
               : t,
           ),
@@ -3244,6 +3250,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         hydrateConversationRuntime();
         // Domain 若已 ready（hydrate 先完成）立刻对账；否则等 hydrate 回调
         get().reconcileTaskMessageArtifacts(id);
+      }).catch((error: unknown) => {
+        // 历史加载失败必须可见：空 projection 会渲染成「等待第一条消息」，
+        // 把真实的存储损坏/占用伪装成正常空会话（真实事故：用户看到空白 Bot 会话）。
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[appStore] loadTaskHistory failed", id, error);
+        set((s) => ({
+          tasks: s.tasks.map((t) => (t.id === id ? { ...t, historyError: message } : t)),
+        }));
       });
     }
   },

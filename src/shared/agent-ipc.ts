@@ -2011,6 +2011,11 @@ export interface TaskHistoryDto {
   cwd?: string;
   /** Read-only recovery diagnostic. History loading never rewrites the source JSONL. */
   sessionRecovery?: SessionHistoryRecoveryDto;
+  /**
+   * 历史记录**完全打不开**时的人类可读原因（例如存储被另一个实例占用、日志损坏且修复失败）。
+   * 渲染层必须显式展示，不能退化成「等待第一条消息」的空白会话。
+   */
+  historyError?: string;
 }
 
 /* ------------------------------ MCP 配置 ------------------------------ */

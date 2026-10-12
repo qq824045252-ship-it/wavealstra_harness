@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { McpOAuthCredentialStore, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentPromptRequest, AgentPromptResult, AgentUiPatch, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
+import type { AgentPromptRequest, AgentPromptResult, AgentUiPatch, SessionHistoryRecoveryDto, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { isGatewayBotTaskId } from "../../../shared/gateway-task";
 import type { AppDatabase } from "../../db/AppDatabase";
@@ -17,6 +17,8 @@ import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
 import { DurableMcp } from "./DurableMcp";
+import type { DurableLogRepairReport } from "./DurableLogRepair";
+import { DurableStorageOwnedError } from "./DurableStorageLease";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import type { ToolRegistration, EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
@@ -297,10 +299,18 @@ export class DurableBotService {
 
   async history(taskId: string): Promise<TaskHistoryDto> {
     if (!this.binding(taskId)) return { messages: [] };
-    const { runtime } = await this.open(taskId);
-    const durable = await runtime.refresh();
-    await this.projections.get(taskId);
-    return { messages: durable.messages, durable, cwd: this.binding(taskId)?.cwd };
+    try {
+      const { runtime } = await this.open(taskId);
+      const durable = await runtime.refresh();
+      await this.projections.get(taskId);
+      const recovery = durableHistoryRecovery(runtime.repairReport);
+      return { messages: durable.messages, durable, cwd: this.binding(taskId)?.cwd, ...(recovery ? { sessionRecovery: recovery } : {}) };
+    } catch (error) {
+      // A Bot conversation that cannot be opened must say so: an empty projection renders as the
+      // product's "waiting for the first message" state, which hides real damage from the user.
+      console.warn("[Durable] Cannot open history", taskId, error);
+      return { messages: [], cwd: this.binding(taskId)?.cwd, historyError: describeDurableHistoryFailure(error) };
+    }
   }
   async abort(taskId: string): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.
@@ -330,4 +340,27 @@ export class DurableBotService {
     this.closing = true;
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
+}
+
+/** 修复过损坏日志时，把「已恢复 + 已备份」的事实告诉用户，而不是静默继续。 */
+function durableHistoryRecovery(report: DurableLogRepairReport | undefined): SessionHistoryRecoveryDto | undefined {
+  if (!report) return undefined;
+  const dropped = report.droppedMainCommits + report.droppedSidecarRecords;
+  return {
+    kind: "corrupt-records",
+    invalidRecords: dropped,
+    tailOnly: false,
+    message: `检测到 ${report.droppedMainCommits} 条重复提交记录（两个 MyBuddy 实例同时写入了同一个 Bot 会话）。已保留 ${report.keptMainCommits} 条有效提交并恢复会话；原始日志备份在 ${report.backupDirectory}。`,
+  };
+}
+
+function describeDurableHistoryFailure(error: unknown): string {
+  if (error instanceof DurableStorageOwnedError) {
+    return `该 Bot 会话正被另一个 MyBuddy 实例占用（PID ${error.owner.pid}）。请只保留一个 MyBuddy 实例，稍后重新打开本会话。`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("JsonlCorruptionError")) {
+    return `Bot 会话日志损坏，自动修复未成功：${message}。原始日志未被删除，可先复制出来再做诊断。`;
+  }
+  return message;
 }

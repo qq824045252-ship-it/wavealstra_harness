@@ -218,6 +218,8 @@ export interface Task {
   sessionFile?: string;
   /** 会话 JSONL 只读恢复告警；原文件不会被历史加载逻辑修改。 */
   sessionRecovery?: import("../../shared/agent-ipc").SessionHistoryRecoveryDto;
+  /** 历史记录完全打不开时的原因（必须显式展示，不能显示成空白会话）。 */
+  historyError?: string;
   cwd?: string;
   modelId?: string;
   permissionMode?: import("../../shared/agent-ipc").PermissionMode;
