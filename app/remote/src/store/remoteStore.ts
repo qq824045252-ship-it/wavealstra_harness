@@ -84,6 +84,11 @@ interface State {
   pair(input: { baseUrl: string; pairingId: string; secret: string; deviceName: string }): Promise<void>
   disconnect(): Promise<void>
   openTask(taskId: string): Promise<void>
+  /**
+   * 「已结束」绿点确认（打开任务即已查看）：本机乐观清除 + POST /v1/tasks/:id/ackDone。
+   * 电脑端不可用（旧版本/请求失败）时退回本机 localStorage 水位，保证「点开就消失、刷新不复活」。
+   */
+  markTaskDoneSeen(taskId: string): Promise<void>
   /** 回首页（返回手势 / 左上角返回按钮）；同时丢弃模型/权限的一次性覆盖，避免泄漏到下一个任务 */
   goHome(): void
   startNewTask(spaceId?: string): void
@@ -99,6 +104,37 @@ interface State {
 }
 
 const CLEARED_NOTICES_KEY = 'mybuddy_remote_cleared_notices'
+/** 本机「已结束绿点」确认水位：电脑端 ack 不可用时的兜底（键 = taskId，值 = 电脑端时间轴 ms） */
+const DONE_ACK_OVERRIDES_KEY = 'mybuddy_remote_done_acks'
+
+function readDoneAckOverrides(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(DONE_ACK_OVERRIDES_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, number> : {}
+  } catch {
+    return {}
+  }
+}
+
+let doneAckOverrides: Record<string, number> = readDoneAckOverrides()
+
+/** 任务的本机确认水位（0 = 本机没确认过）；UI 用 max(服务端水位, 本机水位) 判定绿点 */
+export function localDoneAckAt(taskId: string): number {
+  return doneAckOverrides[taskId] ?? 0
+}
+
+function recordLocalDoneAck(taskId: string, at: number): void {
+  if ((doneAckOverrides[taskId] ?? 0) >= at) return
+  doneAckOverrides = { ...doneAckOverrides, [taskId]: at }
+  try {
+    const entries = Object.entries(doneAckOverrides).sort((a, b) => b[1] - a[1]).slice(0, 500)
+    doneAckOverrides = Object.fromEntries(entries)
+    localStorage.setItem(DONE_ACK_OVERRIDES_KEY, JSON.stringify(doneAckOverrides))
+  } catch {
+    // ignore：本地兜底写不进去也不影响服务端已确认的情况
+  }
+}
 
 /**
  * P0 修复：丢弃一次性（transient）的模型/权限/项目覆盖。服务端已把显式选择持久化进任务，
@@ -295,7 +331,30 @@ export const useRemoteStore = create<State>((set, get) => ({
     ++navigationRevision
     saveLastActiveTaskId(taskId)
     set(state => ({ activeTaskId: taskId, ...(state.activeTaskId !== taskId ? resetTransientOverrides() : {}) }))
+    // 打开任务 = 已查看结果：先清绿点（本地即时生效），再落库给所有设备共享
+    void get().markTaskDoneSeen(taskId)
     await syncTaskHistory(taskId)
+  },
+  async markTaskDoneSeen(taskId) {
+    const at = Date.now() + serverOffsetMs // 用电脑端时间轴，和 task.updatedAt 可比
+    recordLocalDoneAck(taskId, at)
+    set(state => state.bootstrap ? {
+      bootstrap: {
+        ...state.bootstrap,
+        // bootstrap.tasks 可能缺失（部分测试夹具/裁剪快照）：此时只保留本机水位，不构造残缺状态
+        tasks: Array.isArray(state.bootstrap.tasks)
+          ? state.bootstrap.tasks.map(task => task.id === taskId ? { ...task, doneAckedAt: Math.max(task.doneAckedAt ?? 0, at) } : task)
+          : state.bootstrap.tasks,
+      },
+    } : {})
+    const client = get().client
+    if (!client) return
+    try {
+      await client.ackDone(taskId)
+    } catch (error) {
+      // 旧版本电脑端没有该路由（404）或临时失败：本机水位已生效，不打扰用户
+      console.warn('ackDone failed; kept local done-ack watermark', error)
+    }
   },
   goHome() {
     ++navigationRevision

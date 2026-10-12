@@ -7,11 +7,12 @@ import {
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
 import type { RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
-import { useRemoteStore } from './store/remoteStore'
+import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
 import { buildSpaceTaskGroups, spaceBreadcrumb, type SpaceGroupNode } from './lib/spaceGroups'
 import { taskModeLabel } from './lib/taskModeLabel'
+import { taskDotLabel, taskStatusDot } from './lib/taskStatusDot'
 import { ConnectPage } from './components/ConnectPage'
 import { NewTaskSetupChips, NewTaskSetupSheet } from './components/NewTaskSetup'
 import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
@@ -72,6 +73,15 @@ export function App() {
   }, [])
 
   useEffect(() => { void initialize() }, [initialize])
+  // 正看着它跑完 → 不需要再点一次：当前任务已结束且未查看、且屏幕在前台时自动确认绿点
+  // （与桌面端 TaskItem 的自动确认同语义；在后台完成则保留绿点，等用户回来点开）
+  useEffect(() => {
+    if (!activeTaskId || !bootstrap) return
+    const task = bootstrap.tasks.find(candidate => candidate.id === activeTaskId)
+    if (!task || document.visibilityState !== 'visible') return
+    if (taskStatusDot(task, localDoneAckAt(task.id)) !== 'done-unread') return
+    void useRemoteStore.getState().markTaskDoneSeen(activeTaskId)
+  }, [activeTaskId, bootstrap])
   useEffect(() => {
     let alive = true
     let syncing = false
@@ -202,7 +212,10 @@ function HomePage() {
             <section className="home-recents-section">
               <div className="home-section-header">最近对话</div>
               <div className="home-recents-list">
-                {recents.map((task) => (
+                {recents.map((task) => {
+                  // 状态点与桌面侧栏同一语义：蓝点=执行中，绿点=已结束未查看（点开即清除）
+                  const dot = taskStatusDot(task, localDoneAckAt(task.id))
+                  return (
                   <button
                     key={task.id}
                     type="button"
@@ -216,15 +229,21 @@ function HomePage() {
                         {formatRelativeTime(task.updatedAt)}
                       </span>
                     </div>
-                    {task.busy ? (
-                      <span className="home-recent-badge busy">执行中</span>
-                    ) : task.pendingActionCount > 0 ? (
+                    {task.pendingActionCount > 0 ? (
                       <span className="home-recent-badge pending">
                         {task.pendingActionCount} 个审批
                       </span>
+                    ) : dot ? (
+                      <span
+                        className={`task-status-dot task-status-dot--${dot}`}
+                        role="img"
+                        aria-label={taskDotLabel(dot)}
+                        title={taskDotLabel(dot)}
+                      />
                     ) : null}
                   </button>
-                ))}
+                  )
+                })}
               </div>
             </section>
           )}
@@ -1335,18 +1354,31 @@ function ClaudeDrawer({
     })
   }
 
-  const renderTask = (task: RemoteTaskSummary, depth: number) => (
-    <button
-      key={task.id}
-      type="button"
-      className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
-      style={{ paddingLeft: 12 + depth * 18 }}
-      onClick={() => onSelectTask(task.id)}
-    >
-      <span className="drawer-task-title">{task.title}</span>
-      <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
-    </button>
-  )
+  const renderTask = (task: RemoteTaskSummary, depth: number) => {
+    const dot = taskStatusDot(task, localDoneAckAt(task.id))
+    return (
+      <button
+        key={task.id}
+        type="button"
+        className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
+        style={{ paddingLeft: 12 + depth * 18 }}
+        onClick={() => onSelectTask(task.id)}
+      >
+        <span className="drawer-task-row">
+          <span className="drawer-task-title">{task.title}</span>
+          {dot && (
+            <span
+              className={`task-status-dot task-status-dot--${dot}`}
+              role="img"
+              aria-label={taskDotLabel(dot)}
+              title={taskDotLabel(dot)}
+            />
+          )}
+        </span>
+        <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
+      </button>
+    )
+  }
 
   const renderSpace = (node: SpaceGroupNode, depth: number): React.ReactNode => {
     const isCollapsed = collapsed.has(node.space.id)

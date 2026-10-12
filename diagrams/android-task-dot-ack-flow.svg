@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1020 700" width="1020" height="700" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect width="1020" height="700" fill="#f7f9fc"/>
+  <text x="28" y="34" font-size="20" font-weight="700" fill="#1a2433">手机端（安卓）状态点：一次确认，所有设备同步</text>
+  <text x="28" y="56" font-size="12.5" fill="#5a6b82">绿点 = 已结束 且 done_acked_at &lt; 完成标记；手机点开任务 → POST /v1/tasks/:id/ackDone → 写同一张 tasks 表的同一列，PC 侧栏与手机下一次同步即同时熄灭。</text>
+
+  <!-- 链路 -->
+  <text x="28" y="92" font-size="14" font-weight="700" fill="#1a2433">真实链路（已验证：真机 AAK-AN00 + 打包 0.1.24 桌面端）</text>
+
+  <rect x="28" y="106" width="150" height="66" rx="8" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="103" y="128" font-size="12" text-anchor="middle" fill="#1a2433">手机 抽屉/最近对话</text>
+  <text x="103" y="146" font-size="10.5" text-anchor="middle" fill="#9a3412">点开任务行</text>
+  <text x="103" y="162" font-size="10.5" text-anchor="middle" fill="#9a3412">store.openTask(id)</text>
+
+  <rect x="218" y="106" width="170" height="66" rx="8" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="303" y="126" font-size="11.5" text-anchor="middle" fill="#1a2433">markTaskDoneSeen(id)</text>
+  <text x="303" y="144" font-size="10.5" text-anchor="middle" fill="#9a3412">① 本机水位 localStorage</text>
+  <text x="303" y="160" font-size="10.5" text-anchor="middle" fill="#9a3412">② 乐观改 bootstrap.tasks</text>
+
+  <rect x="428" y="106" width="176" height="66" rx="8" fill="#eff6ff" stroke="#3b82f6"/>
+  <text x="516" y="126" font-size="11.5" text-anchor="middle" fill="#1a2433">POST /v1/tasks/:id/ackDone</text>
+  <text x="516" y="144" font-size="10.5" text-anchor="middle" fill="#1d4ed8">RemoteClient.ackDone</text>
+  <text x="516" y="160" font-size="10.5" text-anchor="middle" fill="#1d4ed8">Bearer 设备 token</text>
+
+  <rect x="644" y="106" width="170" height="66" rx="8" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="729" y="126" font-size="11.5" text-anchor="middle" fill="#1a2433">RemoteAccessServer</text>
+  <text x="729" y="144" font-size="10.5" text-anchor="middle" fill="#4338ca">commands.ackTaskDone</text>
+  <text x="729" y="160" font-size="10.5" text-anchor="middle" fill="#4338ca">+ publish task.changed</text>
+
+  <rect x="854" y="106" width="138" height="66" rx="8" fill="#f0fdf4" stroke="#16a34a"/>
+  <text x="923" y="126" font-size="11.5" text-anchor="middle" fill="#1a2433">tasks.done_acked_at</text>
+  <text x="923" y="144" font-size="10.5" text-anchor="middle" fill="#166534">单一真相</text>
+  <text x="923" y="160" font-size="10.5" text-anchor="middle" fill="#166534">不碰 updated_at</text>
+
+  <line x1="178" y1="139" x2="218" y2="139" stroke="#ea580c" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="388" y1="139" x2="428" y2="139" stroke="#3b82f6" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="604" y1="139" x2="644" y2="139" stroke="#6366f1" stroke-width="2" marker-end="url(#c)"/>
+  <line x1="814" y1="139" x2="854" y2="139" stroke="#16a34a" stroke-width="2" marker-end="url(#d)"/>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#ea580c"/></marker>
+    <marker id="b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#3b82f6"/></marker>
+    <marker id="c" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#6366f1"/></marker>
+    <marker id="d" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#16a34a"/></marker>
+    <marker id="e" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#94a3b8"/></marker>
+  </defs>
+
+  <!-- 判定 -->
+  <text x="28" y="212" font-size="14" font-weight="700" fill="#1a2433">手机端判定（app/remote/src/lib/taskStatusDot.ts）</text>
+  <rect x="28" y="226" width="476" height="104" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="44" y="250" font-size="12" font-weight="700" fill="#1a2433">taskStatusDot(task, localAckAt)</text>
+  <text x="44" y="272" font-size="11.5" fill="#1d4ed8">busy → 蓝点 #3B82F6（带呼吸动画）</text>
+  <text x="44" y="292" font-size="11.5" fill="#166534">status ∈ completed/failed 且 max(doneAckedAt, localAckAt) &lt; updatedAt → 绿点 #22C55E</text>
+  <text x="44" y="312" font-size="11.5" fill="#475569">其余 → 无点；待审批仍优先显示「N 个审批」徽标（与桌面 pending 语义一致）</text>
+
+  <rect x="520" y="226" width="472" height="104" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="536" y="250" font-size="12" font-weight="700" fill="#1a2433">两层兜底（旧电脑端 / 断网也不回弹）</text>
+  <text x="536" y="272" font-size="11.5" fill="#1a2433">① 服务端：tasks.done_acked_at（多设备共享，0.1.24 起提供）</text>
+  <text x="536" y="292" font-size="11.5" fill="#1a2433">② 本机：localStorage mybuddy_remote_done_acks（PC 是旧版本 → 404 也不回弹）</text>
+  <text x="536" y="312" font-size="11.5" fill="#5a6b82">判定取两者的较大值 → 「点了就消失」在任何组合下都成立</text>
+
+  <!-- 状态迁移 -->
+  <text x="28" y="362" font-size="14" font-weight="700" fill="#1a2433">手机任务行的状态迁移</text>
+  <rect x="28" y="376" width="132" height="54" rx="26" fill="#eff6ff" stroke="#3b82f6"/>
+  <text x="94" y="400" font-size="12" text-anchor="middle" fill="#1a2433">蓝点（执行中）</text>
+  <text x="94" y="417" font-size="10" text-anchor="middle" fill="#1d4ed8">busy=true</text>
+
+  <rect x="222" y="376" width="150" height="54" rx="26" fill="#f0fdf4" stroke="#16a34a"/>
+  <text x="297" y="400" font-size="12" text-anchor="middle" fill="#1a2433">绿点（已结束未查看）</text>
+  <text x="297" y="417" font-size="10" text-anchor="middle" fill="#166534">ack < 完成标记</text>
+
+  <rect x="434" y="376" width="150" height="54" rx="26" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="509" y="400" font-size="12" text-anchor="middle" fill="#1a2433">无点（已结束已看）</text>
+  <text x="509" y="417" font-size="10" text-anchor="middle" fill="#475569">水位追平</text>
+
+  <rect x="646" y="376" width="160" height="54" rx="26" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="726" y="400" font-size="12" text-anchor="middle" fill="#1a2433">「N 个审批」徽标</text>
+  <text x="726" y="417" font-size="10" text-anchor="middle" fill="#b91c1c">pendingActionCount &gt; 0</text>
+
+  <line x1="160" y1="403" x2="222" y2="403" stroke="#16a34a" stroke-width="2" marker-end="url(#d)"/>
+  <line x1="372" y1="403" x2="434" y2="403" stroke="#94a3b8" stroke-width="2" marker-end="url(#e)"/>
+  <line x1="584" y1="403" x2="646" y2="403" stroke="#dc2626" stroke-width="2" marker-end="url(#e)"/>
+  <text x="191" y="394" font-size="10" text-anchor="middle" fill="#166534">结束</text>
+  <text x="403" y="394" font-size="10" text-anchor="middle" fill="#475569">点开任务</text>
+  <text x="615" y="394" font-size="10" text-anchor="middle" fill="#b91c1c">等待用户</text>
+  <path d="M 509 430 C 509 462 297 462 297 430" fill="none" stroke="#16a34a" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#d)"/>
+  <text x="403" y="476" font-size="10.5" text-anchor="middle" fill="#166534">PC 上再次运行并结束（updatedAt 超过水位）→ 手机绿点回来</text>
+
+  <!-- 同步 -->
+  <text x="28" y="520" font-size="14" font-weight="700" fill="#1a2433">跨设备同步（已验证）</text>
+  <rect x="28" y="534" width="964" height="60" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="44" y="556" font-size="11.5" fill="#1a2433">手机确认后：服务端执行 UPDATE tasks SET done_acked_at=… 并 publish("task.changed") → 手机端 scheduleRemoteSync() 重新拉 bootstrap；</text>
+  <text x="44" y="576" font-size="11.5" fill="#1a2433">PC 侧栏读同一列（TaskDto.doneAckedAt）→ 同一任务的绿点在两端同时熄灭；PC 侧栏点击亦然（第 1 轮已修）。</text>
+
+  <rect x="28" y="608" width="964" height="72" rx="8" fill="#ecfdf5" stroke="#16a34a"/>
+  <text x="44" y="630" font-size="12" font-weight="700" fill="#166534">真机证据（AK-AN00，调试包 + adb reverse tcp:3352）</text>
+  <text x="44" y="650" font-size="11.5" fill="#1a2433">冷启动：抽屉 21 行 = 18 绿点 / 1 蓝点 / 2 无点；点击「帮我补充9.28-9.30周报…」→ 该行变 none，其余绿点不变；localStorage 水位落盘。</text>
+  <text x="44" y="670" font-size="11.5" fill="#5a6b82">自动化：scripts/android-webview-dot-check.cjs（WebView devtools 真 DOM）+ test:remote-done-ack（HTTP/DB 18 项）+ test:remote-task-dot-ui-desktop（组件 5 项）。</text>
+</svg>

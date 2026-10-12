@@ -256,6 +256,15 @@ export class RemoteTaskCommandService {
     throw new RemoteConflictError(result.message);
   }
 
+  /**
+   * 「已结束」绿点确认（手机端打开任务时调用）：写 tasks.done_acked_at，与桌面端同一条链路。
+   * 只写该列、不碰 updated_at —— 读事件不得改变任务时间戳/排序。
+   */
+  ackTaskDone(taskId: string): void {
+    this.requireTask(taskId);
+    this.db.ackTaskDone(taskId, Date.now());
+  }
+
   respondToAction(taskId: string, toolCallId: string, request: RemoteApprovalRequest): void {
     const action = this.agent.listPendingActions(taskId).find((candidate) => candidate.toolCallId === toolCallId);
     if (!action) throw new RemoteConflictError("审批已失效，请刷新任务状态");

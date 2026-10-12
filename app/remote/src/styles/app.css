@@ -414,6 +414,33 @@ button:disabled {
   color: var(--status-warning);
 }
 
+/* 任务状态点（与桌面侧栏同一语义）：蓝点 = 执行中，绿点 = 已结束未查看（点开即清除） */
+.task-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.task-status-dot--running {
+  background-color: #3B82F6;
+  animation: task-status-pulse 1.4s ease-in-out infinite;
+}
+
+.task-status-dot--done-unread {
+  background-color: #22C55E;
+}
+
+@keyframes task-status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-status-dot--running { animation: none; }
+}
+
 /* ==========================================================================
    Chat Timeline (Conversation Stream)
    ========================================================================== */
@@ -1944,6 +1971,10 @@ button:disabled {
 .setup-tag small { flex-basis: 100%; color: var(--fg-muted); line-height: 1.5; font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .setup-empty { padding: 12px 0; color: var(--fg-muted); font-size: 13px; line-height: 1.6; }
 .task-mode-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 400; line-height: 1.5; color: var(--fg-muted); }
+
+/* 标题 + 状态点同一行；标题占满剩余宽度并省略号截断，点永远可见 */
+.drawer-task-row { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
+.drawer-task-title { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-task-info { display: flex; flex-direction: column; min-width: 0; }
 .header-task-info .header-title-chat { max-width: 100%; }
 .drawer-task-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

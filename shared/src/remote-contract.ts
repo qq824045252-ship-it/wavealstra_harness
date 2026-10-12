@@ -48,6 +48,12 @@ export interface RemoteTaskSummary {
   startAt: number | null
   dueAt: number | null
   isFavorited: boolean
+  /**
+   * 「已结束」绿点的确认水位（tasks.done_acked_at，unix ms；null = 从未查看过结果）。
+   * 手机端规则与桌面一致：已结束 且 doneAckedAt(或本机确认水位) < updatedAt → 绿点；
+   * 打开任务时 POST /v1/tasks/:id/ackDone 推进该值 → 绿点消失并持久到同一张 tasks 表。
+   */
+  doneAckedAt: number | null
   busy: boolean
   pendingActionCount: number
 }

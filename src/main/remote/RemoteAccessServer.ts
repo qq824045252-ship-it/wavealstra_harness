@@ -223,7 +223,7 @@ export class RemoteAccessServer {
         response.end(request.method === 'HEAD' ? undefined : image.bytes);
         return;
       }
-      const taskMatch = /^\/v1\/tasks\/([^/]+)(?:\/(history|runtime|prompt|abort))?$/.exec(path);
+      const taskMatch = /^\/v1\/tasks\/([^/]+)(?:\/(history|runtime|prompt|abort|ackDone))?$/.exec(path);
       if (taskMatch) {
         const taskId = decodeURIComponent(taskMatch[1]);
         const action = taskMatch[2];
@@ -241,6 +241,12 @@ export class RemoteAccessServer {
         }
         if (request.method === "POST" && action === "abort") {
           await this.options.commands.abort(taskId);
+          return replyJson(200, { ok: true });
+        }
+        // 「已结束」绿点确认：手机端打开任务即已查看；广播 task.changed 让其它设备同步刷新
+        if (request.method === "POST" && action === "ackDone") {
+          this.options.commands.ackTaskDone(taskId);
+          this.options.events.publish("task.changed", { taskId });
           return replyJson(200, { ok: true });
         }
       }

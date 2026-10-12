@@ -3,28 +3,35 @@
   "productVersion": "0.1.24.0",
   "fileDescription": "MyBuddy",
   "appId": "com.mybuddy.app",
-  "acceptedAt": "2026-10-12T13:20:38.9211059+08:00",
+  "acceptedAt": "2026-10-12T16:01:00+08:00",
   "packageRoot": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked",
   "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe",
   "executableSha256": "DE70EE6CA249659D53EE802C831790B8323D29AABB9F33162E4D7300A35AA32C",
-  "appAsarSha256": "7CC296C26B1F67A31679FDE61FC1E996B62C7A496E2A03C3D54BA43F38EF4DE8",
+  "appAsarSha256": "0DECF3C5224FD1B2C7FADF90C132D3E6B88C1A5CB3B84A79208EA578EE48C340",
   "appAsarBytes": 175492615,
-  "feature": "侧栏任务状态点：进行中 = 蓝点；已结束且未查看 = 绿点；点击/打开任务即写 tasks.done_acked_at 清除绿点并持久化（原 bug：绿点 = displayStatus==='done'，结束即常亮、点击无效）",
+  "feature": "侧栏/手机任务状态点：进行中 = 蓝点；已结束且未查看 = 绿点；点击/打开任务即写 tasks.done_acked_at 清除绿点并持久化，桌面与安卓共享同一水位（原 bug：绿点 = displayStatus==='done'，结束即常亮、点击无效）",
   "validatedBy": [
-    "pnpm -s typecheck: passed (exit 0)",
-    "pnpm -s test:all: 243 pass / 1 known baseline failure (test:project-agent) / 0 new regressions (exit 0)",
+    "pnpm -s typecheck: passed (exit 0); pnpm remote:typecheck: passed (exit 0)",
+    "pnpm -s test:all: 242 pass / 2 failures — 1 known baseline (test:project-agent) + 1 pre-existing working-tree Slack change (test:slack-gateway; passes on a clean HEAD stash, unrelated to this work)",
     "pnpm -s test:task-status-dot: 33/33 — 蓝点/绿点判定、点击清除、重命名噪声不复活、骨架任务不崩、DB 持久化与老库回填",
     "MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> pnpm -s test:task-status-dot-desktop: 4/4 PASS（真实打包窗口：绿点→点击消失→写库→重启不复活，蓝点不受影响）",
-    "MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> MYBUDDY_STATUS_DOT_LIVE_DB=~/.mybuddy/app.db pnpm -s test:task-status-dot:live: 线上库副本 48/48 行回填 done_acked_at；侧栏 21 行 0 绿点 / 1 蓝点（升级后不再集体亮绿点）",
+    "MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> MYBUDDY_STATUS_DOT_LIVE_DB=~/.mybuddy/app.db pnpm -s test:task-status-dot:live: 线上库副本 51/51 行回填；侧栏 24 行 3 绿点（真实未查看）/ 1 蓝点；点击「你好」→ 绿点消失",
+    "pnpm -s test:remote-done-ack: 18/18 — bootstrap 透出 doneAckedAt、POST ackDone 写库、不改 updated_at、404/401/GET 拒绝、RemoteClient 命中同一路由、本机水位兜底",
+    "pnpm -s test:remote-task-dot-ui-desktop: 5/5 PASS（offscreen Electron + 真实 App 组件：最近对话与抽屉的蓝/绿/无点、点开→ackDone→绿点消失、重开不复活）",
+    "真机（AAK-AN00，debug APK + adb reverse tcp:3352）pnpm -s test:remote-task-dot-android:live: 抽屉 21 行 = 18 绿点 / 1 蓝点，点击「帮我补充9.28-9.30周报…」→ 该行变 none，本机水位落盘；截图 out/tests/android-dot-cold.png / android-dot-verified.png",
     "CONSULT_ENTRY_TEST_EXE=<abs path> pnpm -s test:consult-entry:desktop: 8/8 PASS（真实打包窗口 + renderer + IPC，隔离 profile）",
-    "shortcut read-back: Desktop MyBuddy 0.1.24.lnk + Start Menu MyBuddy.lnk both target release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe with matching cwd, icon and appUserModelId com.mybuddy.app"
+    "shortcut read-back: Desktop MyBuddy 0.1.24.lnk + Start Menu MyBuddy.lnk both target release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe with matching cwd, icon, description 0.1.24 and appUserModelId com.mybuddy.app"
   ],
   "artifacts": {
     "unitAndDbEvidence": "out/tests/task-status-dot-test.cjs (pnpm -s test:task-status-dot)",
     "packagedAcceptance": "out/tests/task-status-dot-desktop/results.json + before-click.png + after-restart.png",
     "liveDbMigrationCheck": "out/tests/task-status-dot-live/results.json + live-db-sidebar.png",
+    "androidApiTest": "out/tests/remote-done-ack-test.mjs (pnpm -s test:remote-done-ack)",
+    "androidUiTest": "out/remote-tests/task-dot-ui/{before-open.png,after-open.png} (pnpm -s test:remote-task-dot-ui-desktop)",
+    "androidRealDevice": "out/tests/android-dot-cold.png, android-dot-verified.png (scripts/android-webview-dot-check.cjs)",
+    "androidApk": "app/remote/android/app/build/outputs/apk/debug/app-debug.apk (assets/public 已 cap sync)",
     "consultAcceptance": "out/tests/consult-entry/packaged/results.json",
-    "fullGateLog": "out/tests/test-all-0.1.24.log",
+    "fullGateLog": "out/tests/test-all-android.log",
     "shortcutReport": "out/tests/chat-attachment-acp/deployment/0.1.24/shortcuts.json"
   },
   "shortcuts": {
@@ -41,21 +48,33 @@
     "column": "tasks.done_acked_at INTEGER",
     "idempotent": "仅当列不存在时 ALTER；同一分支内一次性把既有行回填为 updated_at（历史视为已读）",
     "schemaVersionUnchanged": 27,
-    "liveDbAfterCopy": "48/48 rows acked, 0 unacked; sidebar 21 rows / 0 green dots / 1 blue dot"
+    "liveDbAfterCopy": "51/51 rows acked, 0 unacked; sidebar 24 rows / 3 green dots (genuinely unseen) / 1 blue dot; clicking 你好 cleared its dot"
+  },
+  "android": {
+    "webClient": "app/remote（Capacitor）→ app/remote/dist 经 cap sync 打进 app/remote/android/app/src/main/assets/public",
+    "apk": "app/remote/android/app/build/outputs/apk/debug/app-debug.apk",
+    "api": "POST /v1/tasks/:id/ackDone（Bearer 设备 token）→ RemoteTaskCommandService.ackTaskDone → tasks.done_acked_at + publish task.changed",
+    "contract": "RemoteTaskSummary.doneAckedAt（bootstrap/listTasks 均透出）",
+    "clientRule": "app/remote/src/lib/taskStatusDot.ts：busy→蓝点；completed/failed 且 max(doneAckedAt, 本机水位) < updatedAt→绿点",
+    "offlineFallback": "localStorage mybuddy_remote_done_acks（电脑端为旧版本、ackDone 404 时仍保证点开即消失）",
+    "realDevice": "AAK-AN00 / Android，adb reverse tcp:3352；实测 21 行抽屉 = 18 绿点 + 1 蓝点，点开后该行变 none"
   },
   "knownPackagingFailure": "electron-builder nsis target is not used; accepted build uses `pnpm run pack` (--dir win-unpacked) like the previous accepted 0.1.23 release",
+  "unrelatedWorkingTreeFailures": {
+    "test:slack-gateway": "工作区里既有的未提交 Slack 改动（SlackSocketModeAdapter.ts 把频道 @ 授权从固定 owner 改成 config.allowUsers；SettingsModal.tsx 改了默认 appId/teamId/allowUsers）导致 'channel mention reply' 超时。该改动不是本次工作的一部分；同一命令在 stash 掉全部改动后 21/21 PASS。已在原文件保留未动，等待用户确认。",
+    "note": "同批 artifacts/pi-*/**.json 的改动同样来自他人/早前会话，本次提交未纳入。"
+  },
   "obsoleteReleaseRemoval": {
-    "status": "deferred",
-    "path": "release-mybuddy-0.1.23",
-    "sizeMiB": 1283.6,
-    "checkedBeforeDecision": [
-      "resolved target path equals the intended absolute path and is a real directory",
-      "4 running MyBuddy.exe processes are all from release-mybuddy-0.1.23\\win-unpacked (user's live session, started 12:31)",
-      "Desktop shortcut is already MyBuddy 0.1.24.lnk; Start Menu MyBuddy.lnk now targets 0.1.24",
-      "retained 0.1.24 executable SHA256 re-read from disk and matches this record"
-    ],
-    "reason": "Do not interrupt an active user session: the running instance still maps 0.1.23 files. Removal deferred until that instance is closed.",
-    "plannedDeletion": "fcp.exe (fastcopy-copy skill) delete release-mybuddy-0.1.23 after the user closes the 0.1.23 window, then re-run MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> pnpm -s test:task-status-dot-desktop as the post-removal startup check"
+    "status": "deferred-both",
+    "paths": ["release-mybuddy-0.1.23", "release-mybuddy-0.1.24-old-cycle (已在本轮清理: 误建的同名嵌套树)"],
+    "release_mybuddy_0_1_23": {
+      "sizeMiB": 1283.6,
+      "reason": "用户当前运行的 4 个 MyBuddy 进程仍映射该目录（15:29 启动的 0.1.24 之前那批已于 12:31 起运行过；删除会破坏活跃会话）",
+      "plannedDeletion": "用户关闭窗口后用 fcp.exe 删除，并复跑 MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> pnpm -s test:task-status-dot-desktop 作为删除后启动校验"
+    },
+    "release_mybuddy_0_1_24_prev_snapshot": {
+      "note": "本轮 pack 后误把新构建放进了 release-mybuddy-0.1.24\\release\\win-unpacked，已用 FastCopy 删除该 1283.6 MiB 冗余树；当前 release-mybuddy-0.1.24\\win-unpacked 的 exe/asar 哈希已按新构建复核（见上）"
+    }
   },
   "gitCommit": "7e86ddc"
 }

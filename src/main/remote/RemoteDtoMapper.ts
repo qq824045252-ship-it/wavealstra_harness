@@ -34,6 +34,7 @@ export function mapRemoteTask(task: TaskDto, runtime: TaskRuntimeFacts): RemoteT
     startAt: task.startAt ?? null,
     dueAt: task.dueAt ?? null,
     isFavorited: task.isFavorited === true,
+    doneAckedAt: task.doneAckedAt ?? null,
     busy: runtime.busy,
     pendingActionCount: runtime.pendingActionCount,
   };

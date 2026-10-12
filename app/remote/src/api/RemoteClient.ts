@@ -39,6 +39,8 @@ export class RemoteClient {
   createTask(request: RemotePromptRequest) { return this.post<RemotePromptResponse>('/v1/tasks', request) }
   prompt(taskId: string, request: RemotePromptRequest) { return this.post<RemotePromptResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/prompt`, request) }
   abort(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/abort`, {}) }
+  /** 「已结束」绿点确认：打开任务 = 已查看。电脑端写 tasks.done_acked_at，多设备共享同一状态。 */
+  ackDone(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/ackDone`, {}) }
   approve(taskId: string, toolCallId: string, request: RemoteApprovalRequest) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/actions/${encodeURIComponent(toolCallId)}/respond`, request) }
   respondInteraction(taskId: string, interactionId: string, answer: RemoteConversationInteractionAnswer) {
     return this.post<RemoteConversationInteractionMutationResult>(
