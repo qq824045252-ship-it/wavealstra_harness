@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { relativeTime, useAppStore } from "@/store/appStore";
 import { getWorkspaceDisplayPath } from "@/lib/workspaceDisplay";
-import { getTaskDisplayStatus, hasPendingConversationInteraction } from "@/utils/taskFilters";
+import { getTaskDisplayStatus, hasPendingConversationInteraction, isTaskDoneUnread } from "@/utils/taskFilters";
 import type { Task } from "@/types";
 import {
   IconArchive,
@@ -105,6 +105,20 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
 
   const active = page === "chat" && task.id === activeTaskId;
   const displayStatus = getTaskDisplayStatus(task);
+  // 绿点 = 已结束且未查看（点了任务就清）；蓝点 = 进行中。见 utils/taskFilters.isTaskDoneUnread
+  const doneUnread = isTaskDoneUnread(task);
+  const ackTaskDone = useAppStore((s) => s.ackTaskDone);
+
+  // 正看着它跑完 → 不需要再让用户点一次。仅当它是当前打开的任务、停在聊天页、
+  // 且窗口在前台（用户确实在看）时自动确认；在后台跑完则保留绿点，等用户回来点。
+  useEffect(() => {
+    if (!doneUnread || !active) return;
+    if (typeof document !== "undefined") {
+      if (document.visibilityState !== "visible") return;
+      if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
+    }
+    void ackTaskDone(task.id);
+  }, [doneUnread, active, task.id, ackTaskDone]);
   const awaitingInput = hasPendingConversationInteraction(task);
   // Phase 2：pin 以 DB isFavorited 为真相（pinnedTaskIds 仅过渡兼容）
   const pinned = Boolean(task.isFavorited) || pinnedTaskIds.includes(task.id);
@@ -657,13 +671,18 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
         )}
         {displayStatus === "running" && (
           <span className="task-status-running" title="进行中">
-            <span className="task-status-dot" />
+            <span className="task-status-dot task-status-dot--running" />
+          </span>
+        )}
+        {doneUnread && (
+          <span className="task-status-done" title="已结束 · 未查看（点击任务即清除）">
+            <span className="task-status-dot task-status-dot--done" />
           </span>
         )}
         {displayStatus === "idle" && (
           <span className="task-item-time">{relativeTime(task.updatedAt)}</span>
         )}
-        {displayStatus === "running" && (
+        {(displayStatus === "running" || displayStatus === "done") && (
           <span className="task-item-time dim">{relativeTime(task.updatedAt)}</span>
         )}
       </div>

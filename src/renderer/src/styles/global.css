@@ -846,7 +846,8 @@ html[data-theme="dark"] .task-item.menu-open {
   transition: opacity 0.12s;
 }
 
-.task-status-running {
+.task-status-running,
+.task-status-done {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -856,9 +857,16 @@ html[data-theme="dark"] .task-item.menu-open {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
   flex-shrink: 0;
+}
+
+.task-status-dot--running {
+  background: #3b82f6;
   animation: task-pulse 1.4s ease-in-out infinite;
+}
+
+.task-status-dot--done {
+  background: #22c55e;
 }
 
 .task-status-sparkle {
@@ -16204,7 +16212,8 @@ html[data-theme="dark"] .input-expert-chip {
   border-radius: 999px;
 }
 
-.search-status-running {
+.search-status-running,
+.search-status-done {
   display: inline-flex;
   align-items: center;
   gap: 3px;

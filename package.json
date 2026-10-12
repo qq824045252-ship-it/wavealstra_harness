@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -341,7 +341,10 @@
     "test:pi104-features": "esbuild scripts/pi104-features-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/pi-electron-stub.ts --outfile=out/tests/pi104-features-test.mjs && node scripts/test-guard.mjs out/tests/pi104-features-test.mjs",
     "test:all": "node scripts/test-all.mjs",
     "test:all:live": "node scripts/test-all.mjs --include-live",
-    "test:all:update-baseline": "node scripts/test-all.mjs --update-baseline"
+    "test:all:update-baseline": "node scripts/test-all.mjs --update-baseline",
+    "test:task-status-dot": "esbuild scripts/task-status-dot-test.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/task-status-dot-test.cjs && node scripts/test-guard.mjs out/tests/task-status-dot-test.cjs",
+    "test:task-status-dot-desktop": "esbuild scripts/task-status-dot-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/task-status-dot-seed.cjs && node scripts/test-guard.mjs scripts/task-status-dot-desktop-test.cjs",
+    "test:task-status-dot:live": "node scripts/test-guard.mjs scripts/task-status-dot-live-db-check.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

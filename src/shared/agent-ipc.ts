@@ -535,6 +535,7 @@ export const DbIpc = {
   deleteSpace: "db:deleteSpace",
   archiveSpace: "db:archiveSpace",
   archiveTask: "db:archiveTask",
+  ackTaskDone: "db:ackTaskDone",
   // Phase 2 Tree V2：同父混排重排与重挂（strict targetIndex 契约，不发明第二套排序）
   moveSpace: "db:moveSpace",
   moveTaskInWorkspaceTree: "db:moveTaskInWorkspaceTree",
@@ -1896,6 +1897,14 @@ export interface TaskDto {
   spaceSortOrder?: number;
   /** 固定/收藏（is_favorited 持久化列，Phase 2 presentation priority）；未提供 = 保留旧值。仅作展示层置顶（selector compareMixed 置顶），不改写 sortOrder/spaceSortOrder 持久排序键，不改变结构顺序值。 */
   isFavorited?: boolean;
+  /**
+   * 侧栏「已结束」绿点的确认水位（done_acked_at 持久化列，unix ms）。
+   * 语义：用户最后一次查看该任务结束结果的时间；null = 从未确认。
+   * 判定在渲染层（utils/taskFilters.isTaskDoneUnread）：完成标记（最后一条消息时间）晚于该值 =
+   * 有尚未查看的新结果 → 绿点；点击任务即写新值 → 绿点消失且重启后保持消失。
+   * 未提供 = 保留旧值（与 is_favorited 一致），只有 ackTaskDone 会推进它。
+   */
+  doneAckedAt?: number | null;
   /** ACP 外部 Agent 任务级固定：undefined = 未提供（保留旧值），null = 明确解除固定。 */
   externalAgentPin?: import("./external-agent").ExternalAgentPinDto | null;
 }

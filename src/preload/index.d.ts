@@ -554,6 +554,8 @@ export interface PreloadApi {
     deleteTask: (id: string) => Promise<void>;
     purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;
     archiveTask: (id: string, archived: boolean) => Promise<void>;
+    /** 侧栏「已结束」绿点确认：写 done_acked_at（unix ms），点击任务即视为已查看 */
+    ackTaskDone: (id: string, ackedAt?: number) => Promise<void>;
     listTrashedTasks: () => Promise<TrashedTaskDto[]>;
     restoreTrashedTask: (id: string) => Promise<TaskDto | null>;
     listTaskWriteGrants: (taskId: string) => Promise<import("../shared/external-write").TaskWriteGrantRow[]>;

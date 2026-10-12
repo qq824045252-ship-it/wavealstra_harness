@@ -31,7 +31,7 @@ app.whenReady().then(() => {
     if (!fs.existsSync(backup)) fs.copyFileSync(file, backup);
     const details = path.basename(file) === 'Electron.lnk'
       ? { ...before, appUserModelId: 'com.mybuddy.app.dev' }
-      : { ...before, target: exe, cwd: path.dirname(exe), icon: exe, iconIndex: 0, appUserModelId: 'com.mybuddy.app' };
+      : { ...before, target: exe, cwd: path.dirname(exe), icon: exe, iconIndex: 0, description: `MyBuddy ${version}`, appUserModelId: 'com.mybuddy.app' };
     assert(shell.writeShortcutLink(file, 'update', details), 'update shortcut failed: ' + file);
     const after = shell.readShortcutLink(file);
     assert.equal(after.appUserModelId, details.appUserModelId);

@@ -1895,6 +1895,10 @@ function registerIpc(): void {
     if (archived) taskLifecycle.archive(id);
     else taskLifecycle.unarchive(id);
   });
+  // 侧栏绿点确认：只写 done_acked_at（不碰 updated_at），无需经过生命周期回收流程。
+  ipcMain.handle(DbIpc.ackTaskDone, (_e, id: string, ackedAt?: number) => {
+    db.ackTaskDone(id, ackedAt);
+  });
   // 回收站：删除 = 可恢复回收（保留期见 shared/archive-deletion.ts 的 TRASH_RETENTION_DAYS），
   // 必须可见可恢复，否则被删除的数据既回不来也清不掉。
   ipcMain.handle(TrashIpc.list, () => taskLifecycle?.listTrashedTasks() ?? []);

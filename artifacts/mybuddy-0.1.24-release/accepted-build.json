@@ -1,0 +1,61 @@
+{
+  "version": "0.1.24",
+  "productVersion": "0.1.24.0",
+  "fileDescription": "MyBuddy",
+  "appId": "com.mybuddy.app",
+  "acceptedAt": "2026-10-12T13:20:38.9211059+08:00",
+  "packageRoot": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe",
+  "executableSha256": "DE70EE6CA249659D53EE802C831790B8323D29AABB9F33162E4D7300A35AA32C",
+  "appAsarSha256": "7CC296C26B1F67A31679FDE61FC1E996B62C7A496E2A03C3D54BA43F38EF4DE8",
+  "appAsarBytes": 175492615,
+  "feature": "侧栏任务状态点：进行中 = 蓝点；已结束且未查看 = 绿点；点击/打开任务即写 tasks.done_acked_at 清除绿点并持久化（原 bug：绿点 = displayStatus==='done'，结束即常亮、点击无效）",
+  "validatedBy": [
+    "pnpm -s typecheck: passed (exit 0)",
+    "pnpm -s test:all: 243 pass / 1 known baseline failure (test:project-agent) / 0 new regressions (exit 0)",
+    "pnpm -s test:task-status-dot: 33/33 — 蓝点/绿点判定、点击清除、重命名噪声不复活、骨架任务不崩、DB 持久化与老库回填",
+    "MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> pnpm -s test:task-status-dot-desktop: 4/4 PASS（真实打包窗口：绿点→点击消失→写库→重启不复活，蓝点不受影响）",
+    "MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> MYBUDDY_STATUS_DOT_LIVE_DB=~/.mybuddy/app.db pnpm -s test:task-status-dot:live: 线上库副本 48/48 行回填 done_acked_at；侧栏 21 行 0 绿点 / 1 蓝点（升级后不再集体亮绿点）",
+    "CONSULT_ENTRY_TEST_EXE=<abs path> pnpm -s test:consult-entry:desktop: 8/8 PASS（真实打包窗口 + renderer + IPC，隔离 profile）",
+    "shortcut read-back: Desktop MyBuddy 0.1.24.lnk + Start Menu MyBuddy.lnk both target release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe with matching cwd, icon and appUserModelId com.mybuddy.app"
+  ],
+  "artifacts": {
+    "unitAndDbEvidence": "out/tests/task-status-dot-test.cjs (pnpm -s test:task-status-dot)",
+    "packagedAcceptance": "out/tests/task-status-dot-desktop/results.json + before-click.png + after-restart.png",
+    "liveDbMigrationCheck": "out/tests/task-status-dot-live/results.json + live-db-sidebar.png",
+    "consultAcceptance": "out/tests/consult-entry/packaged/results.json",
+    "fullGateLog": "out/tests/test-all-0.1.24.log",
+    "shortcutReport": "out/tests/chat-attachment-acp/deployment/0.1.24/shortcuts.json"
+  },
+  "shortcuts": {
+    "desktop": "C:\\Users\\servi\\Desktop\\MyBuddy 0.1.24.lnk",
+    "startMenu": "C:\\Users\\servi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\MyBuddy.lnk",
+    "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe",
+    "workingDirectory": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked",
+    "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.24\\win-unpacked\\MyBuddy.exe,0",
+    "description": "MyBuddy 0.1.24",
+    "appUserModelId": "com.mybuddy.app",
+    "backups": "out/tests/chat-attachment-acp/deployment/0.1.24/"
+  },
+  "dbMigration": {
+    "column": "tasks.done_acked_at INTEGER",
+    "idempotent": "仅当列不存在时 ALTER；同一分支内一次性把既有行回填为 updated_at（历史视为已读）",
+    "schemaVersionUnchanged": 27,
+    "liveDbAfterCopy": "48/48 rows acked, 0 unacked; sidebar 21 rows / 0 green dots / 1 blue dot"
+  },
+  "knownPackagingFailure": "electron-builder nsis target is not used; accepted build uses `pnpm run pack` (--dir win-unpacked) like the previous accepted 0.1.23 release",
+  "obsoleteReleaseRemoval": {
+    "status": "deferred",
+    "path": "release-mybuddy-0.1.23",
+    "sizeMiB": 1283.6,
+    "checkedBeforeDecision": [
+      "resolved target path equals the intended absolute path and is a real directory",
+      "4 running MyBuddy.exe processes are all from release-mybuddy-0.1.23\\win-unpacked (user's live session, started 12:31)",
+      "Desktop shortcut is already MyBuddy 0.1.24.lnk; Start Menu MyBuddy.lnk now targets 0.1.24",
+      "retained 0.1.24 executable SHA256 re-read from disk and matches this record"
+    ],
+    "reason": "Do not interrupt an active user session: the running instance still maps 0.1.23 files. Removal deferred until that instance is closed.",
+    "plannedDeletion": "fcp.exe (fastcopy-copy skill) delete release-mybuddy-0.1.23 after the user closes the 0.1.23 window, then re-run MYBUDDY_DESKTOP_EXECUTABLE=<0.1.24> pnpm -s test:task-status-dot-desktop as the post-removal startup check"
+  },
+  "gitCommit": "7e86ddc"
+}

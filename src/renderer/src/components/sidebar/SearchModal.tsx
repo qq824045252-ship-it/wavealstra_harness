@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { computeEffectiveArchived } from "../../../../shared/workspace-tree";
-import { getTaskDisplayStatus } from "@/utils/taskFilters";
+import { getTaskDisplayStatus, isTaskDoneUnread } from "@/utils/taskFilters";
 import type { Task } from "@/types";
 import { IconFolder, IconSearch, IconX } from "@/components/common/icons";
 
@@ -19,7 +19,14 @@ function TaskStatusMark({ task }: { task: Task }): React.JSX.Element | null {
   if (status === "running") {
     return (
       <span className="search-status-running">
-        <span className="task-status-dot" />
+        <span className="task-status-dot task-status-dot--running" />
+      </span>
+    );
+  }
+  if (isTaskDoneUnread(task)) {
+    return (
+      <span className="search-status-done" title="已结束 · 未查看">
+        <span className="task-status-dot task-status-dot--done" />
       </span>
     );
   }

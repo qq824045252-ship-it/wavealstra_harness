@@ -243,6 +243,12 @@ export interface Task {
   spaceSortOrder?: number;
   /** 固定/收藏：复用 DB is_favorited 冻结列，重启后持久；仅作展示层置顶（selector compareMixed 置顶），不改写 spaceSortOrder/sortOrder 持久排序键 */
   isFavorited?: boolean;
+  /**
+   * 侧栏「已结束」绿点的确认水位（DB done_acked_at，unix ms；null = 从未查看过结果）。
+   * 绿点 = 已结束 且 完成标记（最后一条消息时间）晚于该值，见 utils/taskFilters.isTaskDoneUnread。
+   * 点击任务 → ackTaskDone 推进该值 → 绿点消失且重启后保持消失。
+   */
+  doneAckedAt?: number | null;
   /** 当前一次运行被统一策略拒绝的显式能力选择；仅 UI 态，不落库。 */
   capabilityNotices?: import("../../shared/agent-ipc").CapabilityPolicyNoticeDto[];
   /** 用户是否在本任务内显式选择过模型（setActiveModel 置 true；「跟随场景建议」复位） */

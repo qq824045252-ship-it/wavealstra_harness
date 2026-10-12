@@ -885,6 +885,8 @@ const api = {
       ipcRenderer.invoke(ArchivedContentDeletionIpc.purge, request),
     archiveTask: (id: string, archived: boolean): Promise<void> =>
       ipcRenderer.invoke(DbIpc.archiveTask, id, archived),
+    ackTaskDone: (id: string, ackedAt?: number): Promise<void> =>
+      ipcRenderer.invoke(DbIpc.ackTaskDone, id, ackedAt),
     listTrashedTasks: (): Promise<import("../shared/archive-deletion").TrashedTaskDto[]> =>
       ipcRenderer.invoke(TrashIpc.list),
     restoreTrashedTask: (id: string): Promise<TaskDto | null> =>

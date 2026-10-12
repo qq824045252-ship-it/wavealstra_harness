@@ -103,6 +103,7 @@ interface TaskRow {
   space_sort_order: number;
   is_favorited: number;
   external_agent_pin_json: string | null;
+  done_acked_at: number | null;
 }
 
 /** conversation_branches 查询行（含 parent_exists 派生列） */
@@ -1585,6 +1586,7 @@ export class AppDatabase {
         space_sort_order INTEGER NOT NULL DEFAULT 0,
         is_favorited INTEGER NOT NULL DEFAULT 0,
         external_agent_pin_json TEXT,
+        done_acked_at INTEGER,
         FOREIGN KEY (space_id) REFERENCES spaces(id),
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
       );
@@ -1950,6 +1952,13 @@ export class AppDatabase {
     );
     if (!taskColumnsAfterRebuild.has("external_agent_pin_json")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN external_agent_pin_json TEXT");
+    }
+    // 侧栏「已结束」绿点的确认水位：只由 ackTaskDone 推进（点击任务 = 已查看）。
+    // 首次加列时把既有任务一律回填为 updated_at（= 视为历史已读）：否则升级后所有历史完成任务
+    // 会同时亮绿点，等于把「未读」变成噪声。回填只在此分支发生一次，之后新任务保持 NULL（未读）。
+    if (!taskColumnsAfterRebuild.has("done_acked_at")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN done_acked_at INTEGER");
+      this.db.exec("UPDATE tasks SET done_acked_at = updated_at");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)");
 
@@ -2670,7 +2679,7 @@ export class AppDatabase {
       .prepare(
         `SELECT id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json
+                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at
          FROM tasks ORDER BY updated_at DESC`,
       )
       .all() as TaskRow[];
@@ -2695,7 +2704,7 @@ export class AppDatabase {
       .prepare(
         `SELECT id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json
+                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at
          FROM tasks WHERE id = ?`,
       )
       .get(taskId) as TaskRow | undefined;
@@ -2725,6 +2734,7 @@ export class AppDatabase {
       spaceSortOrder: r.space_sort_order,
       isFavorited: Boolean(r.is_favorited),
       externalAgentPin: parseExternalAgentPin(r.external_agent_pin_json),
+      doneAckedAt: r.done_acked_at ?? null,
     };
   }
 
@@ -2821,7 +2831,7 @@ export class AppDatabase {
       .prepare(
         `SELECT title, space_id, project_id, status, session_file, cwd, welcome_mode, model_id,
                 permission_mode, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json FROM tasks WHERE id = ?`,
+                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at FROM tasks WHERE id = ?`,
       )
       .get(task.id) as
       | {
@@ -2841,6 +2851,7 @@ export class AppDatabase {
           space_sort_order: number;
           is_favorited: number;
           external_agent_pin_json: string | null;
+          done_acked_at: number | null;
         }
       | undefined;
 
@@ -2867,10 +2878,10 @@ export class AppDatabase {
       .prepare(
         `INSERT INTO tasks (id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                             model_id, permission_mode, expert_id, mode_preset_id, start_at, due_at,
-                            space_sort_order, is_favorited, external_agent_pin_json)
+                            space_sort_order, is_favorited, external_agent_pin_json, done_acked_at)
          VALUES (@id, @title, @spaceId, @projectId, @status, @updatedAt, @sessionFile, @cwd, @welcomeMode,
                  @modelId, @permissionMode, @expertId, @modePresetId, @startAt, @dueAt,
-                 @spaceSortOrder, @isFavorited, @externalAgentPinJson)
+                 @spaceSortOrder, @isFavorited, @externalAgentPinJson, @doneAckedAt)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            space_id = excluded.space_id,
@@ -2888,7 +2899,8 @@ export class AppDatabase {
            due_at = excluded.due_at,
            space_sort_order = excluded.space_sort_order,
            is_favorited = excluded.is_favorited,
-           external_agent_pin_json = excluded.external_agent_pin_json`,
+           external_agent_pin_json = excluded.external_agent_pin_json,
+           done_acked_at = excluded.done_acked_at`,
       )
       .run({
         id: task.id,
@@ -2919,6 +2931,9 @@ export class AppDatabase {
         externalAgentPinJson: task.externalAgentPin !== undefined
           ? (task.externalAgentPin ? JSON.stringify(task.externalAgentPin) : null)
           : (prev?.external_agent_pin_json ?? null),
+        // 绿点确认水位：null = 明确重置为未确认；未提供字段时保留旧值
+        // （普通 upsert 不得把已确认状态退回未确认，否则重启/发消息会让绿点复活）。
+        doneAckedAt: task.doneAckedAt !== undefined ? task.doneAckedAt : (prev?.done_acked_at ?? null),
       });
   }
 
@@ -3149,6 +3164,17 @@ export class AppDatabase {
     this.db
       .prepare("UPDATE tasks SET archived = ?, updated_at = ? WHERE id = ?")
       .run(archived ? 1 : 0, Date.now(), id);
+  }
+
+  /**
+   * 侧栏「已结束」绿点的确认水位：用户查看过该任务的结果 → 关闭绿点。
+   * 只写 done_acked_at，**不触碰 updated_at**（读事件不是任务活动，不得让侧栏顺序/时间戳抖动）。
+   * ackedAt 由渲染层给出（同一 now，便于乐观更新与持久化同戳）；缺省取当前时间。
+   */
+  ackTaskDone(id: string, ackedAt?: number): void {
+    this.db
+      .prepare("UPDATE tasks SET done_acked_at = ? WHERE id = ?")
+      .run(ackedAt ?? Date.now(), id);
   }
 
   // ---------- P1.5 task_execution_workspace_state ----------

@@ -106,7 +106,7 @@ import {
   normalizeUiFontSize,
 } from "@/lib/fontSettings";
 import { normalizeCodeTheme } from "@shared/code-theme";
-import { getTaskDisplayStatus, hasActiveExecutionMessages } from "@/utils/taskFilters";
+import { getTaskDisplayStatus, hasActiveExecutionMessages, isTaskDoneUnread } from "@/utils/taskFilters";
 import {
   buildRelatedTaskPrompt,
   resolveRelatedTaskSpec,
@@ -180,6 +180,8 @@ function mapTaskRowToTask(
     spaceSortOrder: row.spaceSortOrder ?? 0,
     // ACP pin：任务级固定，重启后恢复逐轮续链路由
     externalAgentPin: row.externalAgentPin ?? undefined,
+    // 侧栏绿点水位：DB 是唯一真相（重启后绿点仍按查看历史显示/隐藏）
+    doneAckedAt: row.doneAckedAt ?? null,
     // F3：任务级 Active Connector（settings.json 持久化；无新 DB schema）
     connectorIds: context.taskConnectorIds?.[row.id],
   };
@@ -710,6 +712,11 @@ interface AppState {
   togglePinTask: (id: string) => Promise<void>;
   /** 归档任务：从侧栏隐藏，数据与会话保留；可在设置「归档管理」页恢复 */
   archiveTask: (id: string) => Promise<void>;
+  /**
+   * 确认「已结束」绿点：点击/打开任务即视为已查看结果，写 done_acked_at 后绿点消失且重启保持消失。
+   * 仅对「已结束且未确认」的任务生效（进行中的任务不需要确认）。
+   */
+  ackTaskDone: (id: string) => Promise<void>;
   /** 恢复已归档任务 */
   restoreTask: (id: string) => Promise<void>;
   /** 空间：归档空间从空间列表隐藏 */
@@ -917,6 +924,7 @@ function hydrateTaskMetadataFromDb(taskId: string): void {
             isFavorited: Boolean(row.isFavorited),
             spaceSortOrder: row.spaceSortOrder ?? task.spaceSortOrder ?? 0,
             externalAgentPin: row.externalAgentPin ?? task.externalAgentPin,
+            doneAckedAt: row.doneAckedAt ?? task.doneAckedAt ?? null,
           } : task),
           ...(state.activeTaskId === taskId ? {
             welcomeMode,
@@ -3089,6 +3097,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 全局 selection 跟随任务模式：任务已有 preset 用之，否则该模式默认（保证合法）
       modePresetId: task?.modePresetId ?? defaultModePresetId(task?.welcomeMode ?? get().welcomeMode),
     });
+    // 打开任务 = 看过结果：清掉「已结束」绿点（持久化，重启不再亮）。仅对已结束未确认的任务写库。
+    void get().ackTaskDone(id);
     const hydrateConversationRuntime = (): void => {
       void window.api?.conversationRuntime?.snapshot(id).then((snapshot) => {
         set((state) => ({
@@ -5397,6 +5407,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     await window.api?.db?.archiveTask?.(id, true);
   },
+  ackTaskDone: async (id) => {
+    const task = get().tasks.find((t) => t.id === id);
+    // 只处理「已结束且未确认」：进行中/空闲/已确认都不写库，避免每次切换任务产生无意义 IPC
+    if (!task || !isTaskDoneUnread(task)) return;
+    const ackedAt = Date.now();
+    // 乐观更新：本地先关绿点（渲染层同帧生效），持久化失败也不回滚——
+    // 绿点是「看过」的弱提示，误清比常亮代价小；下次点击会重试写库。
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === id ? { ...t, doneAckedAt: ackedAt } : t)),
+    }));
+    try {
+      await window.api?.db?.ackTaskDone?.(id, ackedAt);
+    } catch (error) {
+      console.warn("[appStore] ackTaskDone 持久化失败（绿点会在重启后重现）:", error);
+    }
+  },
   restoreTask: async (id) => {
     set((s) => ({
       tasks: s.tasks.map((x) => (x.id === id ? { ...x, archived: false } : x)),
@@ -6143,6 +6169,7 @@ function sameSidebarTask(previous: Task, current: Task): boolean {
     previous.updatedAt === current.updatedAt &&
     previous.status === current.status &&
     previous.archived === current.archived &&
+    previous.doneAckedAt === current.doneAckedAt &&
     getTaskDisplayStatus(previous) === getTaskDisplayStatus(current)
   );
 }
