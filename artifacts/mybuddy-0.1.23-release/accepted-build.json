@@ -1,0 +1,47 @@
+{
+  "version": "0.1.23",
+  "productVersion": "0.1.23.0",
+  "fileDescription": "MyBuddy",
+  "appId": "com.mybuddy.app",
+  "acceptedAt": "2026-10-12T12:20:42.9188921+08:00",
+  "packageRoot": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.23\\win-unpacked",
+  "executable": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.23\\win-unpacked\\MyBuddy.exe",
+  "executableSha256": "109D3D035BC50FD2F26F0C6C79804599D325D1F6D2E687231BE8093DF73B7297",
+  "appAsarSha256": "1D7FA7F82D41FB0774130781B0A1A5347432CAEC99B6DECBF1C13E9C09FD5F2B",
+  "appAsarBytes": 175489230,
+  "validatedBy": [
+    "pnpm -s typecheck: passed (exit 0)",
+    "pnpm -s test:all: 242 pass / 1 known baseline failure (test:project-agent) / 0 new regressions",
+    "pnpm -s test:subagent-ipc-host: 15/15 (was 14 pass + 1 fail before the reset() fix)",
+    "pnpm -s test:subagent-ipc-transaction: 13/13",
+    "pnpm -s test:ipc-channel-inventory: baseline consistent (449 channels, 0 real duplicates)",
+    "app.asar content check: originalHandle / initializedConnections / reapedDatabases all present (167.4 MiB asar)",
+    "CONSULT_ENTRY_TEST_EXE=<abs path> pnpm -s test:consult-entry:desktop: 8/8 PASS (real packaged window + renderer + IPC, isolated profile)"
+  ],
+  "shortcuts": {
+    "desktop": "C:\\Users\\servi\\Desktop\\MyBuddy 0.1.23.lnk",
+    "startMenu": "C:\\Users\\servi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\MyBuddy.lnk",
+    "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.23\\win-unpacked\\MyBuddy.exe",
+    "workingDirectory": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.23\\win-unpacked",
+    "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release-mybuddy-0.1.23\\win-unpacked\\MyBuddy.exe,0",
+    "description": "MyBuddy 0.1.23",
+    "appUserModelId": "com.mybuddy.app",
+    "backups": "out/tests/chat-attachment-acp/deployment/0.1.23/"
+  },
+  "knownPackagingFailure": "electron-builder nsis target is not used; accepted build uses --dir win-unpacked like the previous accepted 0.1.22 release",
+  "obsoleteReleaseRemoved": {
+    "path": "release-mybuddy-0.1.22",
+    "removedAt": "2026-10-12T12:23:00+08:00",
+    "sizeMiB": 1283.6,
+    "checkedBeforeRemoval": [
+      "resolved target path equals the intended absolute path and is a real directory",
+      "0 running MyBuddy.exe processes at removal time",
+      "Desktop MyBuddy 0.1.23.lnk and Start Menu MyBuddy.lnk both target release-mybuddy-0.1.23",
+      "retained executable SHA256 still matches this record",
+      "no script or config references the 0.1.22 path"
+    ],
+    "startupAfterRemoval": "CONSULT_ENTRY_TEST_EXE=<abs path to 0.1.23 MyBuddy.exe> pnpm -s test:consult-entry:desktop -> 8/8 PASS",
+    "evidence": "artifacts/mybuddy-0.1.23-release/obsolete-0.1.22-removal.json"
+  },
+  "gitCommit": "562d01e"
+}
