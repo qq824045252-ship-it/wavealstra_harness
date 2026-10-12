@@ -231,6 +231,9 @@ function tokenSimilarity(a: string, b: string): number {
   return hit / Math.max(1, ga.size + gb.size - hit);
 }
 
+/** 已完成启动期遗留候选清理的 AppDatabase：冷启动有 4 个 MemoryService 构造点，只允许清理一次。 */
+const reapedDatabases = new WeakSet<AppDatabase>();
+
 export class MemoryService {
   readonly repository: MemoryRepository;
   readonly cognition: MemoryCognitionService;
@@ -243,11 +246,15 @@ export class MemoryService {
     this.learning = new MemorySkillLearningService(db, this.repository);
     this.semantic = opts?.semantic === false ? null : new MemorySemanticProvider(db);
     // Candidates stuck 'pending' from an interrupted extraction become reviewable instead of invisible.
-    try {
-      const reaped = this.repository.reapStalePendingCandidates(Date.now() - 10 * 60_000);
-      if (reaped > 0) console.info(`[MemoryKernel] reaped ${reaped} stale pending candidates → needs_review`);
-    } catch (error) {
-      console.warn("[MemoryKernel] stale candidate reap failed", error);
+    // 每个 AppDatabase 只跑一次：同一进程有 4 个构造点，重放会反复改判在飞候选。
+    if (!reapedDatabases.has(db)) {
+      reapedDatabases.add(db);
+      try {
+        const reaped = this.repository.reapStalePendingCandidates(Date.now() - 10 * 60_000);
+        if (reaped > 0) console.info(`[MemoryKernel] reaped ${reaped} stale pending candidates → needs_review`);
+      } catch (error) {
+        console.warn("[MemoryKernel] stale candidate reap failed", error);
+      }
     }
   }
 

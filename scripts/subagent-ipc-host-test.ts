@@ -91,6 +91,23 @@ async function main(): Promise<void> {
   const adopted = handleSubagentActive() as Array<{ subagentId: string }>;
   assert(adopted[0]?.subagentId === "legacy-1", "吸收的旧 handler 生效");
 
+  console.log("== reset 后复用同一 mock 必须仍真实注册 ==");
+  resetSubagentIpcHostForTests();
+  const reusedChannels: string[] = [];
+  const reused = {
+    handle(channel: string): void {
+      reusedChannels.push(channel);
+    },
+  };
+  registerSubagentIpcHost(reused);
+  const firstRound = reusedChannels.length;
+  resetSubagentIpcHostForTests();
+  registerSubagentIpcHost(reused);
+  assert(
+    firstRound === 4 && reusedChannels.length === 8,
+    `reset 后复用同一 mock 仍注册 4 次（first=${firstRound} total=${reusedChannels.length}）`,
+  );
+
   resetSubagentIpcHostForTests();
   console.log(`\n结果: passed=${passed} failed=${failed}`);
   process.exit(failed > 0 ? 1 : 0);

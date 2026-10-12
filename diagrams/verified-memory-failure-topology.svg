@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="640" viewBox="0 0 1020 640">
+<rect x="0" y="0" width="1020" height="640" fill="#f8fafc"/>
+<text x="24" y="34" font-size="18" font-weight="bold" fill="#0f172a">Verified topology — Memory / ExecutionFailure instances (row-cited)</text>
+<text x="24" y="56" font-size="12" fill="#475569">single AppDatabase → single better-sqlite3 connection → stateless repos + DB-level dedup</text>
+
+<!-- AppDatabase -->
+<rect x="24" y="80" width="280" height="118" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="1.5"/>
+<text x="38" y="104" font-size="13" font-weight="bold" fill="#0f172a">AppDatabase (1 instance)</text>
+<text x="38" y="124" font-size="12" fill="#0f172a">index.ts L2654: db = new AppDatabase()</text>
+<text x="38" y="142" font-size="12" fill="#0f172a">L252: this.db = new Database(path)</text>
+<text x="38" y="160" font-size="12" fill="#0f172a">L267-268: get connection() → this.db</text>
+<text x="38" y="178" font-size="12" fill="#166534">same object ref, WAL mode</text>
+
+<!-- Single connection -->
+<rect x="360" y="100" width="220" height="70" rx="8" fill="#dcfce7" stroke="#166534" stroke-width="1.5"/>
+<text x="376" y="126" font-size="13" font-weight="bold" fill="#0f172a">single connection</text>
+<text x="376" y="146" font-size="12" fill="#0f172a">better-sqlite3 Database</text>
+
+<!-- Tables -->
+<rect x="640" y="80" width="356" height="118" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="1.5"/>
+<text x="654" y="104" font-size="13" font-weight="bold" fill="#0f172a">SQLite tables (single truth)</text>
+<text x="654" y="124" font-size="12" fill="#0f172a">execution_failures (L7-10 DDL)</text>
+<text x="654" y="142" font-size="12" fill="#0f172a">memory_records + memory_embeddings</text>
+<text x="654" y="160" font-size="12" fill="#0f172a">PK (memory_id, model_id, version)</text>
+<text x="654" y="178" font-size="12" fill="#166534">ON CONFLICT upsert + hash short-circuit</text>
+
+<!-- Arrows top row -->
+<line x1="304" y1="130" x2="360" y2="130" stroke="#0f172a" stroke-width="2"/>
+<polygon points="360,130 350,125 350,135" fill="#0f172a"/>
+<line x1="580" y1="130" x2="640" y2="130" stroke="#0f172a" stroke-width="2"/>
+<polygon points="640,130 630,125 630,135" fill="#0f172a"/>
+
+<!-- MemoryService boxes -->
+<rect x="24" y="230" width="300" height="132" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.5"/>
+<text x="38" y="254" font-size="13" font-weight="bold" fill="#0f172a">memoryKernel — index.ts L2692</text>
+<text x="38" y="274" font-size="12" fill="#0f172a">new MemoryService(db), semantic ON</text>
+<text x="38" y="292" font-size="12" fill="#0f172a">→ GatewayCtrl L2693, ProjectSvc L2695</text>
+<text x="38" y="310" font-size="12" fill="#0f172a">→ Resolver L2720, Blueprint L3191</text>
+<text x="38" y="328" font-size="12" fill="#0f172a">→ detach L2939 / L2943</text>
+
+<rect x="360" y="230" width="300" height="132" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.5"/>
+<text x="374" y="254" font-size="13" font-weight="bold" fill="#0f172a">AgentService.memory L696</text>
+<text x="374" y="274" font-size="12" fill="#0f172a">new MemoryService(db), semantic ON</text>
+<text x="374" y="292" font-size="12" fill="#0f172a">field L550 private readonly</text>
+<text x="374" y="310" font-size="12" fill="#0f172a">→ own Resolver L700 / ProjectSvc L707</text>
+<text x="374" y="328" font-size="12" fill="#0f172a">L3238-3559 dozens of methods</text>
+
+<rect x="696" y="230" width="300" height="132" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.5"/>
+<text x="710" y="254" font-size="13" font-weight="bold" fill="#0f172a">WSC.memory — L52</text>
+<text x="710" y="274" font-size="12" fill="#0f172a">new MemoryService(db), semantic ON</text>
+<text x="710" y="292" font-size="12" fill="#0f172a">WorkspaceSharedContextService</text>
+<text x="710" y="310" font-size="12" fill="#0f172a">instantiated index.ts L3082</text>
+<text x="710" y="328" font-size="12" fill="#0f172a">3rd semantic-ON instance</text>
+
+<!-- Shared runtime -->
+<rect x="200" y="390" width="620" height="112" rx="8" fill="#fef9c3" stroke="#a16207" stroke-width="1.5"/>
+<text x="216" y="414" font-size="13" font-weight="bold" fill="#0f172a">shared SemanticRuntime singleton (SemanticRuntime.ts L177-184)</text>
+<text x="216" y="434" font-size="12" fill="#0f172a">MemorySemanticProvider L34-39: only runtime + db, NO embedding cache / checkpoint</text>
+<text x="216" y="452" font-size="12" fill="#0f172a">index() L45-48: same content_hash → return; L57-62: INSERT … ON CONFLICT DO UPDATE</text>
+<text x="216" y="470" font-size="12" fill="#166534">result: same row upserted to same value — no fork, no tear</text>
+<text x="216" y="488" font-size="12" fill="#92400e">worst cost: 2× embed() + redundant upsert, not divergence</text>
+
+<!-- connectors from memory boxes to runtime -->
+<line x1="170" y1="362" x2="300" y2="390" stroke="#1d4ed8" stroke-width="1.5"/>
+<line x1="510" y1="362" x2="510" y2="390" stroke="#1d4ed8" stroke-width="1.5"/>
+<line x1="850" y1="362" x2="700" y2="390" stroke="#1d4ed8" stroke-width="1.5"/>
+
+<!-- ExecutionFailure -->
+<rect x="24" y="524" width="470" height="96" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="38" y="548" font-size="13" font-weight="bold" fill="#0f172a">ExecutionFailure ×2 — stateless, same connection</text>
+<text x="38" y="568" font-size="12" fill="#0f172a">index L1854 (list L1855 / dismiss L1856) + AgentService L717 (record / resolveMatching)</text>
+<text x="38" y="586" font-size="12" fill="#0f172a">class 75 lines: only field = db (L6); prepare-on-call; ctor DDL idempotent</text>
+<text x="38" y="604" font-size="12" fill="#166534">verdict: equivalent, NOT a bug — duplicate init only</text>
+
+<rect x="530" y="524" width="466" height="96" rx="8" fill="#ffffff" stroke="#0f172a" stroke-width="1.5"/>
+<text x="544" y="548" font-size="13" font-weight="bold" fill="#0f172a">BlueprintService — already injected</text>
+<text x="544" y="568" font-size="12" fill="#0f172a">L56: deps.memoryService ?? new(..., semantic:false)</text>
+<text x="544" y="586" font-size="12" fill="#0f172a">production L3191 passes memoryKernel (ON)</text>
+<text x="544" y="604" font-size="12" fill="#0f172a">semantic:false = test fallback only, not prod fork</text>
+</svg>

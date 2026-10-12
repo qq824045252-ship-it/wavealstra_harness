@@ -39,6 +39,12 @@ let backend: SubagentIpcBackend | null = null;
 const adopted = new Map<string, (...args: unknown[]) => unknown>();
 let registered = false;
 let handlePatched = false;
+/** 被补丁覆写的目标与其原始 handle：reset 时必须还原，否则同一 ipcMain 对象二次 register 会静默零注册。 */
+type IpcMainHandleLike = {
+  handle: (channel: string, listener: (...args: unknown[]) => unknown) => void;
+};
+let patchedTarget: IpcMainHandleLike | null = null;
+let originalHandle: IpcMainHandleLike["handle"] | null = null;
 
 export function setSubagentIpcBackend(next: SubagentIpcBackend | null): void {
   backend = next;
@@ -110,11 +116,11 @@ function exposeGlobalHost(): void {
   (globalThis as Record<string, unknown>)[SUBAGENT_IPC_HOST_KEY] = slot;
 }
 
-function patchHandleToAdoptLegacy(
-  ipcMain: { handle: (channel: string, listener: (...args: unknown[]) => unknown) => void },
-): void {
+function patchHandleToAdoptLegacy(ipcMain: IpcMainHandleLike): void {
   if (handlePatched) return;
   handlePatched = true;
+  patchedTarget = ipcMain;
+  originalHandle = ipcMain.handle;
   const original = ipcMain.handle.bind(ipcMain);
   ipcMain.handle = (channel: string, listener: (...args: unknown[]) => unknown) => {
     if (HOSTED_CHANNELS.has(channel)) {
@@ -151,6 +157,11 @@ export function resetSubagentIpcHostForTests(): void {
   adopted.clear();
   registered = false;
   handlePatched = false;
+  // 还原被覆写的 handle：否则同一 ipcMain 对象再次 register 时，补丁会基于已包装的 handle
+  // 再包一层，四个宿主通道被吞进 adopted，真实注册数静默变成 0（用例串扰型假绿）。
+  if (patchedTarget && originalHandle) patchedTarget.handle = originalHandle;
+  patchedTarget = null;
+  originalHandle = null;
   try {
     delete (globalThis as Record<string, unknown>)[SUBAGENT_IPC_HOST_KEY];
   } catch {

@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ExecutionFailureDto } from "../../shared/execution-recovery";
 
+/**
+ * 已完成 schema 保障与一次性遗留清理的连接。
+ * 同一连接重复构造（组合根与 AgentService 各持一份）不得重放构造副作用：下面那条遗留清理
+ * 是按「构造时刻」生效的数据写，重放会得到两个不同的影响行集合。
+ */
+const initializedConnections = new WeakSet<Database.Database>();
+
 export class ExecutionFailureRepository {
   constructor(private readonly db: Database.Database) {
+    if (initializedConnections.has(db)) return;
     db.exec(`CREATE TABLE IF NOT EXISTS execution_failures (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, cause_code TEXT NOT NULL,
       record_json TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER
@@ -12,6 +20,7 @@ export class ExecutionFailureRepository {
     if (!columns.some((column) => column.name === "dismissed_at")) db.exec("ALTER TABLE execution_failures ADD COLUMN dismissed_at INTEGER");
     // Legacy MyBuddy versions persisted every shell non-zero exit as a Recovery card. Those are ordinary tool failures, not unresolved recovery state.
     db.prepare("UPDATE execution_failures SET dismissed_at = COALESCE(dismissed_at, ?) WHERE cause_code = 'shell-exit-nonzero' AND resolved_at IS NULL AND dismissed_at IS NULL").run(Date.now());
+    initializedConnections.add(db);
   }
 
   record(input: Omit<ExecutionFailureDto, "id" | "createdAt" | "resolvedAt" | "dismissedAt">): ExecutionFailureDto {

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="512" viewBox="0 0 1200 512">
+<rect x="0" y="0" width="1200" height="512" fill="#f8fafc"/>
+<text x="20" y="30" font-size="18" font-weight="bold" fill="#0f172a">Consolidated verdict: claimed benefit vs measured net benefit</text>
+<text x="20" y="50" font-size="12" fill="#475569">10/10 verifiers returned; 7 refuted. Rows marked CUT lose their stated justification.</text>
+
+<rect x="20" y="62" width="1160" height="30" fill="#e2e8f0"/>
+<text x="30" y="82" font-size="13" font-weight="bold" fill="#0f172a">Phase</text>
+<text x="230" y="82" font-size="13" font-weight="bold" fill="#0f172a">Claimed benefit</text>
+<text x="600" y="82" font-size="13" font-weight="bold" fill="#0f172a">Measured net benefit</text>
+<text x="1080" y="82" font-size="13" font-weight="bold" fill="#0f172a">Call</text>
+
+<rect x="20" y="92" width="1160" height="50" fill="#ffffff"/>
+<text x="30" y="112" font-size="12" fill="#0f172a">0.1 instance convergence</text>
+<text x="30" y="130" font-size="12" fill="#64748b">fixes a confirmed bug</text>
+<text x="230" y="112" font-size="12" fill="#0f172a">"real bug, do first"</text>
+<text x="600" y="112" font-size="12" fill="#0f172a">no reproducible failure; ctor side effects drop 4 to 1 (reap)</text>
+<text x="600" y="130" font-size="12" fill="#0f172a">and 2 to 1 (dismiss backfill at ExecutionFailureRepository:14)</text>
+<text x="1080" y="112" font-size="12" font-weight="bold" fill="#b45309">downgrade</text>
+
+<rect x="20" y="142" width="1160" height="50" fill="#f1f5f9"/>
+<text x="30" y="162" font-size="12" fill="#0f172a">0.2 IPC inventory script</text>
+<text x="30" y="180" font-size="12" fill="#64748b">safety net for every later step</text>
+<text x="230" y="162" font-size="12" fill="#0f172a">"must build first"</text>
+<text x="600" y="162" font-size="12" fill="#0f172a">feasible; needs 4 models; today's true duplicate set is EMPTY</text>
+<text x="600" y="180" font-size="12" fill="#0f172a">so its value = freeze baseline, not cleanup</text>
+<text x="1080" y="162" font-size="12" font-weight="bold" fill="#166534">keep</text>
+
+<rect x="20" y="192" width="1160" height="50" fill="#ffffff"/>
+<text x="30" y="212" font-size="12" fill="#0f172a">0.3 assertion census</text>
+<text x="30" y="230" font-size="12" fill="#64748b">migration checklist</text>
+<text x="230" y="212" font-size="12" fill="#0f172a">"index.ts: 1 script"</text>
+<text x="600" y="212" font-size="12" fill="#0f172a">12 scripts reference index.ts (main 6 / preload 7 / web 3)</text>
+<text x="600" y="230" font-size="12" fill="#0f172a">only 2 true false-green sites; 30% risk is really 13.1%</text>
+<text x="1080" y="212" font-size="12" font-weight="bold" fill="#166534">keep*</text>
+
+<rect x="20" y="242" width="1160" height="50" fill="#f1f5f9"/>
+<text x="30" y="262" font-size="12" fill="#0f172a">1 dbSync gateway</text>
+<text x="30" y="280" font-size="12" fill="#64748b">"highest ROI"</text>
+<text x="230" y="262" font-size="12" fill="#0f172a">"126 sites, -400 to -600 lines"</text>
+<text x="600" y="262" font-size="12" fill="#0f172a">46-48 sites in appStore; 105 renderer-wide (59 in 25 components)</text>
+<text x="600" y="280" font-size="12" fill="#b91c1c">rename only: about -3 lines (0.05%) - a wash, not a reduction</text>
+<text x="1080" y="262" font-size="12" font-weight="bold" fill="#b91c1c">CUT as ROI</text>
+
+<rect x="20" y="292" width="1160" height="50" fill="#ffffff"/>
+<text x="30" y="312" font-size="12" fill="#0f172a">2.1 fail-loud context</text>
+<text x="30" y="330" font-size="12" fill="#64748b">"uninitialized services vanish"</text>
+<text x="230" y="312" font-size="12" fill="#0f172a">"33 lets, silent undefined()"</text>
+<text x="600" y="312" font-size="12" fill="#0f172a">47 lets; IPC handlers register at L3364, renderer exists at L3405</text>
+<text x="600" y="330" font-size="12" fill="#b91c1c">so the IPC silent-failure path is unreachable; only 4 truly nullable</text>
+<text x="1080" y="312" font-size="12" font-weight="bold" fill="#b91c1c">CUT motive</text>
+
+<rect x="20" y="342" width="1160" height="50" fill="#f1f5f9"/>
+<text x="30" y="362" font-size="12" fill="#0f172a">2.2 timing contract</text>
+<text x="30" y="380" font-size="12" fill="#64748b">protect future edits</text>
+<text x="230" y="362" font-size="12" fill="#0f172a">"add an inventory test"</text>
+<text x="600" y="362" font-size="12" fill="#0f172a">test already exists (subagent-ipc-host-test 14/14 passing)</text>
+<text x="600" y="380" font-size="12" fill="#b45309">real defect: reset() does not restore ipcMain.handle</text>
+<text x="1080" y="362" font-size="12" font-weight="bold" fill="#166534">keep, retarget</text>
+
+<rect x="20" y="392" width="1160" height="50" fill="#ffffff"/>
+<text x="30" y="412" font-size="12" fill="#0f172a">3 delete pass-throughs</text>
+<text x="30" y="430" font-size="12" fill="#64748b">only real deletion</text>
+<text x="230" y="412" font-size="12" fill="#0f172a">"100-140 of 286 methods"</text>
+<text x="600" y="412" font-size="12" fill="#0f172a">65-84 of 256 methods; about -243 lines = 4.6% of class body</text>
+<text x="600" y="430" font-size="12" fill="#0f172a">prereq list misses memoryService (15 sites, the biggest)</text>
+<text x="1080" y="412" font-size="12" font-weight="bold" fill="#166534">keep, down-scale</text>
+
+<rect x="20" y="442" width="1160" height="50" fill="#f1f5f9"/>
+<text x="30" y="462" font-size="12" fill="#0f172a">4 freeze increment</text>
+<text x="30" y="480" font-size="12" fill="#64748b">stop debt compounding</text>
+<text x="230" y="462" font-size="12" fill="#0f172a">"ipc/ dir + DomainService.ts + dbSync"</text>
+<text x="600" y="462" font-size="12" fill="#0f172a">all 3 paths do not exist; constants live in src/shared/*.ts</text>
+<text x="600" y="480" font-size="12" fill="#0f172a">convention is src/main/&lt;domain&gt;/&lt;Domain&gt;Service.ts</text>
+<text x="1080" y="462" font-size="12" font-weight="bold" fill="#b45309">rewrite</text>
+
+<text x="20" y="506" font-size="12" fill="#475569">* 0.3 keeps its value only after the checklist is corrected from 1 to 12 scripts referencing index.ts.</text>
+</svg>

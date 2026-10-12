@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="574" viewBox="0 0 1180 574">
+<rect x="0" y="0" width="1180" height="574" fill="#f8fafc"/>
+<text x="20" y="30" font-size="18" font-weight="bold" fill="#0f172a">10-way review verdict: plan claim vs measured (7 of 10 refuted)</text>
+<text x="20" y="50" font-size="12" fill="#475569">every row cited to file:line in out/plan-review/*.md — red = refuted, amber = corrected, green = holds</text>
+
+<rect x="20" y="62" width="1140" height="30" fill="#e2e8f0"/>
+<text x="30" y="82" font-size="13" font-weight="bold" fill="#0f172a">Item</text>
+<text x="320" y="82" font-size="13" font-weight="bold" fill="#0f172a">Plan claim</text>
+<text x="470" y="82" font-size="13" font-weight="bold" fill="#0f172a">Measured</text>
+<text x="1010" y="82" font-size="13" font-weight="bold" fill="#0f172a">Verdict</text>
+
+<rect x="20" y="92" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="115" font-size="12" fill="#0f172a">0.1 dual ExecutionFailureRepo</text>
+<text x="320" y="115" font-size="12" fill="#0f172a">"real bug"</text>
+<text x="470" y="115" font-size="12" fill="#0f172a">not a bug; ctor L14 writes DB; two sides not equivalent</text>
+<text x="1010" y="115" font-size="12" font-weight="bold" fill="#b45309">fix wording</text>
+
+<rect x="20" y="128" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="151" font-size="12" fill="#0f172a">0.1 acceptance gate</text>
+<text x="320" y="151" font-size="12" fill="#0f172a">repo-wide hits &lt;= 2</text>
+<text x="470" y="151" font-size="12" fill="#0f172a">87 hits (src 6 / scripts 78 / diagrams 3)</text>
+<text x="1010" y="151" font-size="12" font-weight="bold" fill="#b91c1c">unreachable</text>
+
+<rect x="20" y="164" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="187" font-size="12" fill="#0f172a">0.2 IPC inventory script</text>
+<text x="320" y="187" font-size="12" fill="#0f172a">green-lit as described</text>
+<text x="470" y="187" font-size="12" fill="#0f172a">feasible; needs 4 models (constants, mutex, runtime, tiers)</text>
+<text x="1010" y="187" font-size="12" font-weight="bold" fill="#166534">holds*</text>
+
+<rect x="20" y="200" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="223" font-size="12" fill="#0f172a">0.3 assertion census</text>
+<text x="320" y="223" font-size="12" fill="#0f172a">index.ts: 1 script</text>
+<text x="470" y="223" font-size="12" fill="#0f172a">12 (main 6 / preload 7 / web-access 3)</text>
+<text x="1010" y="223" font-size="12" font-weight="bold" fill="#b91c1c">misses 11</text>
+
+<rect x="20" y="236" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="259" font-size="12" fill="#0f172a">0.3 false-green risk</text>
+<text x="320" y="259" font-size="12" fill="#0f172a">30% of tests</text>
+<text x="470" y="259" font-size="12" fill="#0f172a">strict 13.1%; only 2 true false-green sites</text>
+<text x="1010" y="259" font-size="12" font-weight="bold" fill="#b45309">overstated</text>
+
+<rect x="20" y="272" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="295" font-size="12" fill="#0f172a">1 db write surface</text>
+<text x="320" y="295" font-size="12" fill="#0f172a">126 in appStore</text>
+<text x="470" y="295" font-size="12" fill="#0f172a">46 appStore + 59 in 25 components = 105</text>
+<text x="1010" y="295" font-size="12" font-weight="bold" fill="#b91c1c">wrong</text>
+
+<rect x="20" y="308" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="331" font-size="12" fill="#0f172a">1 lines removed</text>
+<text x="320" y="331" font-size="12" fill="#0f172a">400-600 lines</text>
+<text x="470" y="331" font-size="12" fill="#0f172a">0-128; gateway itself adds 150-300</text>
+<text x="1010" y="331" font-size="12" font-weight="bold" fill="#b91c1c">wrong</text>
+
+<rect x="20" y="344" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="367" font-size="12" fill="#0f172a">2.1 module-level lets</text>
+<text x="320" y="367" font-size="12" fill="#0f172a">~33</text>
+<text x="470" y="367" font-size="12" fill="#0f172a">47; fail-loud breaks trayService legit early read</text>
+<text x="1010" y="367" font-size="12" font-weight="bold" fill="#b91c1c">refuted</text>
+
+<rect x="20" y="380" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="403" font-size="12" fill="#0f172a">2.2 new inventory test</text>
+<text x="320" y="403" font-size="12" fill="#0f172a">add a contract test</text>
+<text x="470" y="403" font-size="12" fill="#0f172a">already exists (subagent-ipc-host-test 14/14)</text>
+<text x="1010" y="403" font-size="12" font-weight="bold" fill="#b45309">real gap elsewhere</text>
+
+<rect x="20" y="416" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="439" font-size="12" fill="#0f172a">3 pass-through methods</text>
+<text x="320" y="439" font-size="12" fill="#0f172a">100-140 of 286</text>
+<text x="470" y="439" font-size="12" fill="#0f172a">65-84 of 256; top source memoryService (15)</text>
+<text x="1010" y="439" font-size="12" font-weight="bold" fill="#b91c1c">down 1.5x</text>
+
+<rect x="20" y="452" width="1140" height="36" fill="#ffffff"/>
+<text x="30" y="475" font-size="12" fill="#0f172a">4 freeze rules 2/3/4</text>
+<text x="320" y="475" font-size="12" fill="#0f172a">ipc/ dir + DomainService.ts + dbSync</text>
+<text x="470" y="475" font-size="12" fill="#0f172a">all three do not exist; constants live in src/shared</text>
+<text x="1010" y="475" font-size="12" font-weight="bold" fill="#b91c1c">rewrite</text>
+
+<rect x="20" y="488" width="1140" height="36" fill="#f1f5f9"/>
+<text x="30" y="511" font-size="12" fill="#0f172a">Do nothing now?</text>
+<text x="320" y="511" font-size="12" fill="#0f172a">fear of latent bug</text>
+<text x="470" y="511" font-size="12" fill="#0f172a">A/B are latent or edge-only; no reproducible failure</text>
+<text x="1010" y="511" font-size="12" font-weight="bold" fill="#166534">safe to defer</text>
+
+<text x="20" y="548" font-size="12" fill="#475569">* 0.2 holds only if scoped to src/main/** AND Ipc constant objects are parsed; today's true simultaneously-active duplicate set is EMPTY (0).</text>
+<text x="20" y="566" font-size="12" fill="#475569">Gates 253-style note: test:project-materials-ui needs env -u ELECTRON_RUN_AS_NODE; test:all already strips it (test-all.mjs:108-109).</text>
+</svg>

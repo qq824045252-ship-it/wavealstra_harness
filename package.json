@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -261,6 +261,7 @@
     "test:usage-recon": "esbuild scripts/usage-reconciliation-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/usage-reconciliation-test.cjs --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/usage-reconciliation-test.cjs",
     "test:subagent-ipc-transaction": "esbuild scripts/subagent-ipc-transaction-test.ts --bundle --platform=node --format=esm --outfile=out/tests/subagent-ipc-transaction-test.mjs --external:jiti && node scripts/test-guard.mjs out/tests/subagent-ipc-transaction-test.mjs",
     "test:subagent-ipc-host": "esbuild scripts/subagent-ipc-host-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/subagent-ipc-host-test.cjs && node scripts/test-guard.mjs out/tests/subagent-ipc-host-test.cjs",
+    "test:ipc-channel-inventory": "node scripts/ipc-channel-inventory.mjs --check",
     "test:subagent-execute-smoke": "esbuild scripts/subagent-execute-smoke.ts --bundle --platform=node --format=esm --outfile=out/tests/subagent-execute-smoke.mjs --external:jiti && node scripts/test-guard.mjs out/tests/subagent-execute-smoke.mjs",
     "test:mcp-config-parse": "esbuild scripts/mcp-config-parse-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/mcp-config-parse-test.cjs && node scripts/test-guard.mjs out/tests/mcp-config-parse-test.cjs",
     "test:mcp-composer-focus": "esbuild scripts/mcp-composer-focus-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/mcp-composer-focus-test.cjs && node scripts/test-guard.mjs out/tests/mcp-composer-focus-test.cjs",

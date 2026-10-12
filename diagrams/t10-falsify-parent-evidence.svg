@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 700" width="1180" height="700" font-family="sans-serif">
+  <rect x="0" y="0" width="1180" height="700" fill="#f8fafc"/>
+  <text x="24" y="30" font-size="19" font-weight="bold" fill="#0f172a">T10 证伪复核：组合根真实执行顺序 + 四个「双实例」反例</text>
+  <text x="24" y="52" font-size="13" fill="#334155">全部行号来自 src/main/index.ts 与 src/main/agent/AgentService.ts（实测，2026-10-12 工作副本 git 9f90f4e）。红色 = 被证伪/需修正；绿色 = 实测一致。</text>
+
+  <!-- timeline -->
+  <rect x="24" y="70" width="1132" height="228" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="40" y="94" font-size="15" font-weight="bold" fill="#0f172a">一、app.whenReady() 单回调内的时间线（L2635 起，同一 async 回调，顺序确定）</text>
+  <line x1="70" y1="150" x2="1120" y2="150" stroke="#475569" stroke-width="2"/>
+  <g font-size="12" fill="#0f172a">
+    <line x1="110" y1="140" x2="110" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="80" y="180">L2654</text><text x="70" y="196">db = new</text><text x="70" y="211">AppDatabase()</text>
+    <line x1="300" y1="140" x2="300" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="238" y="180">L2692</text><text x="228" y="196">MemoryService #1</text><text x="252" y="211">memoryKernel</text>
+    <line x1="500" y1="140" x2="500" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="440" y="180">L2732</text><text x="420" y="196">new AgentService(db)</text>
+    <line x1="700" y1="140" x2="700" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="628" y="180">L3012</text><text x="620" y="196">await agentService</text><text x="648" y="211">.init()</text>
+    <line x1="880" y1="140" x2="880" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="800" y="180">L3082</text><text x="784" y="196">WorkspaceShared</text><text x="800" y="211">ContextService</text>
+    <line x1="1050" y1="140" x2="1050" y2="160" stroke="#475569" stroke-width="2"/>
+    <text x="988" y="180">L3364</text><text x="966" y="196">registerIpc()</text><text x="982" y="211">（L644 定义）</text>
+  </g>
+  <rect x="60" y="230" width="240" height="52" rx="8" fill="#ecfdf5" stroke="#059669"/>
+  <text x="74" y="250" font-size="12" fill="#0f172a">L2654→L2692 之间【实测】无 await、</text>
+  <text x="74" y="268" font-size="12" fill="#0f172a">无 IPC 注册：memory 可正向注入（定论 D 成立半）</text>
+  <rect x="320" y="230" width="360" height="52" rx="8" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="334" y="250" font-size="12" fill="#0f172a">L1854 的 ExecutionFailureRepository 在 registerIpc 体内，</text>
+  <text x="334" y="268" font-size="12" fill="#0f172a">只有 3364 才执行 → 索引序必须晚于 2732（【实测】）</text>
+  <rect x="700" y="230" width="420" height="52" rx="8" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="714" y="250" font-size="12" fill="#0f172a">但 AgentService 自己的实例在 L717 已存在，字段 L536 是</text>
+  <text x="714" y="268" font-size="12" fill="#0f172a">private readonly → 阻力是封装可见性，不是时序</text>
+
+  <!-- A lane -->
+  <rect x="24" y="314" width="366" height="360" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="40" y="338" font-size="15" font-weight="bold" fill="#0f172a">A · ExecutionFailureRepository 双实例</text>
+  <text x="40" y="360" font-size="12" fill="#15803d">实测一致：无子类/无包装；两处 db.connection 同一对象；</text>
+  <text x="40" y="377" font-size="12" fill="#15803d">全仓 new 仅 2 处（index.ts:1854 / AgentService.ts:717）</text>
+  <rect x="40" y="390" width="334" height="2" fill="#e2e8f0"/>
+  <text x="40" y="412" font-size="12" font-weight="bold" fill="#b91c1c">反例：「仅构造器幂等 DDL 跑两遍」不成立</text>
+  <text x="40" y="432" font-size="12" fill="#0f172a">ExecutionFailureRepository.ts:14 是数据写：</text>
+  <text x="40" y="449" font-size="12" fill="#0f172a">UPDATE ... SET dismissed_at ... WHERE</text>
+  <text x="40" y="466" font-size="12" fill="#0f172a">cause_code='shell-exit-nonzero' AND resolved_at IS NULL</text>
+  <text x="40" y="487" font-size="12" fill="#0f172a">它在「构造时刻」把当时未决行标为已忽略 →</text>
+  <text x="40" y="504" font-size="12" fill="#0f172a">影响行集合随构造时间变化，不是时间无关幂等。</text>
+  <text x="40" y="528" font-size="12" fill="#0f172a">止爆条件【实测】：全仓唯一出现该 causeCode 的</text>
+  <text x="40" y="545" font-size="12" fill="#0f172a">地方就是这条 SQL 自己（src/scripts/shared 均无写入方），</text>
+  <text x="40" y="562" font-size="12" fill="#0f172a">故当前无真实可复现数据损失 → 属潜在缺陷。</text>
+  <text x="40" y="588" font-size="12" fill="#b91c1c">另一分叉【实测】：recoverInterruptedExecutions</text>
+  <text x="40" y="605" font-size="12" fill="#0f172a">只在 AgentService.ts:719 执行一次，index.ts 侧实例</text>
+  <text x="40" y="622" font-size="12" fill="#0f172a">不参与重启恢复 → 两实例能力并不等价。</text>
+  <text x="40" y="648" font-size="12" font-weight="bold" fill="#0f172a">结论：未证伪「当前无功能 bug」，</text>
+  <text x="40" y="665" font-size="12" font-weight="bold" fill="#b91c1c">但证伪了「只是幂等 DDL 跑两遍」的机制描述。</text>
+
+  <!-- B lane -->
+  <rect x="404" y="314" width="366" height="360" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="420" y="338" font-size="15" font-weight="bold" fill="#0f172a">B · MemoryService 实例数与 reap</text>
+  <text x="420" y="360" font-size="12" fill="#15803d">实测一致：生产路径 0 处 semantic:false；</text>
+  <text x="420" y="377" font-size="12" fill="#15803d">唯一 semantic:false 在 BlueprintService.ts:56 的 ?? 回退，</text>
+  <text x="420" y="394" font-size="12" fill="#15803d">index.ts:3191 memoryService: memoryKernel 已正向注入。</text>
+  <rect x="420" y="404" width="334" height="2" fill="#e2e8f0"/>
+  <text x="420" y="426" font-size="12" font-weight="bold" fill="#b91c1c">反例 1：实例不是 3 个，是 ≥4 个（且服务 2 份）</text>
+  <text x="420" y="446" font-size="12" fill="#0f172a">AgentService.ts:696  #1</text>
+  <text x="420" y="463" font-size="12" fill="#0f172a">WorkspaceSharedContextService.ts:52 经</text>
+  <text x="420" y="480" font-size="12" fill="#0f172a">LibraryWorkspaceContextService.ts:42  → #2</text>
+  <text x="420" y="497" font-size="12" fill="#0f172a">index.ts:2692 → #3 ；index.ts:3082（第二个</text>
+  <text x="420" y="514" font-size="12" fill="#0f172a">WorkspaceSharedContextService）→ #4</text>
+  <text x="420" y="538" font-size="12" font-weight="bold" fill="#b91c1c">反例 2：构造器不是只跑三遍，且有真实写副作用</text>
+  <text x="420" y="558" font-size="12" fill="#0f172a">MemoryService.ts:247 → MemoryRepository.ts:421</text>
+  <text x="420" y="575" font-size="12" fill="#0f172a">UPDATE memory_candidates SET status='needs_review'</text>
+  <text x="420" y="592" font-size="12" fill="#0f172a">WHERE status='pending' AND created_at &lt; now-10min</text>
+  <text x="420" y="615" font-size="12" fill="#0f172a">MemoryService.ts:896 又按 status==='pending' 跳过 →</text>
+  <text x="420" y="632" font-size="12" fill="#0f172a">单批提炼 &gt;10 分钟的早期候选会被改判、丢自动落库。</text>
+  <text x="420" y="658" font-size="12" fill="#0f172a">（第 4 个实例在 L701 构造，晚于 #3 → 确实存在窗口）</text>
+
+  <!-- C/D lane -->
+  <rect x="784" y="314" width="372" height="360" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="800" y="338" font-size="15" font-weight="bold" fill="#0f172a">C · db 直写面 与 D · 统一前置注入</text>
+  <text x="800" y="360" font-size="12" font-weight="bold" fill="#b91c1c">C 反例：分母选错，47/48 只数了 appStore</text>
+  <text x="800" y="380" font-size="12" fill="#0f172a">全 renderer 实测：api.db 方法引用 105 次 / 105 行</text>
+  <text x="800" y="397" font-size="12" fill="#0f172a">appStore.ts 46 行 46 次；components 24 文件 59 次</text>
+  <text x="800" y="414" font-size="12" fill="#0f172a">非读取调用：appStore 33 + components 33 = 66</text>
+  <text x="800" y="431" font-size="12" fill="#0f172a">根绑定 3 处：ProjectFolderRelocation.tsx:18</text>
+  <text x="800" y="448" font-size="12" fill="#0f172a">ProjectMaterials.tsx:124  NewProjectTodoModal.tsx:92</text>
+  <text x="800" y="465" font-size="12" fill="#0f172a">裸写（无 ?.）：ProjectMaterials.tsx:100 一处</text>
+  <text x="800" y="486" font-size="12" fill="#0f172a">绕过 store 的写：TaskRecoveryNotice.tsx:27</text>
+  <text x="800" y="503" font-size="12" fill="#0f172a">ProjectActivity.tsx:95/111/128/130/172/187/202</text>
+  <text x="800" y="520" font-size="12" fill="#0f172a">ProjectAssets.tsx:146/242、ProjectSettings.tsx:112 …</text>
+  <rect x="800" y="536" width="340" height="2" fill="#e2e8f0"/>
+  <text x="800" y="558" font-size="12" font-weight="bold" fill="#b91c1c">D 反例：「不成立」的理由是错的</text>
+  <text x="800" y="578" font-size="12" fill="#0f172a">方向性约束【实测】成立；但 L536 private readonly 使</text>
+  <text x="800" y="595" font-size="12" fill="#0f172a">index.ts 无法反向复用 —— 这是可改的封装，不是时序。</text>
+  <text x="800" y="615" font-size="12" fill="#0f172a">AgentServiceDependencies(L420) 只有 createAgentSession，</text>
+  <text x="800" y="632" font-size="12" fill="#0f172a">加一个注入点即可：L2670 建 1 个实例 → 传给 L2732。</text>
+  <text x="800" y="655" font-size="12" fill="#15803d">→ Phase 0.1「统一前置注入」可行，理由是依赖图，不是行号。</text>
+</svg>

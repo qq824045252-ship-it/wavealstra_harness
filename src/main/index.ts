@@ -3447,14 +3447,17 @@ app.on("before-quit", (event) => {
     try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }
     // Gadget 进程必须真正退出后才关闭 DB / 允许 Electron 结束。
-    await Promise.allSettled([
-      gatewayService?.stop(),
-      memoryGatewayController?.stop(),
-      remoteAccessController?.dispose(),
-      gadgetService?.disposeAll(),
-      cadRuntimeService?.shutdownAll(),
-      computerAutomationService.shutdown(),
-    ].filter((pending): pending is Promise<void> => Boolean(pending)));
+    // 退出路径不得因参数列表求值失败产生未处理 rejection（同函数其余 cleanup 均已包 try/catch）。
+    try {
+      await Promise.allSettled([
+        gatewayService?.stop(),
+        memoryGatewayController?.stop(),
+        remoteAccessController?.dispose(),
+        gadgetService?.disposeAll(),
+        cadRuntimeService?.shutdownAll(),
+        computerAutomationService.shutdown(),
+      ].filter((pending): pending is Promise<void> => Boolean(pending)));
+    } catch { /* best effort */ }
     try { db?.close(); } catch { /* best effort */ }
   })().finally(() => {
     quitCleanupComplete = true;
