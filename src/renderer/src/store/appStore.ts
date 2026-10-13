@@ -896,6 +896,9 @@ function hydrateTaskMetadataFromDb(taskId: string): void {
       const rows = await window.api?.db?.listTasks?.();
       const row = rows?.find((candidate) => candidate.id === taskId);
       if (!row) return;
+      if (row.spaceId && !useAppStore.getState().spaces.some((space) => space.id === row.spaceId)) {
+        void useAppStore.getState().refreshSpaces();
+      }
       useAppStore.setState((state) => {
         const current = state.tasks.find((task) => task.id === taskId);
         if (!current) return state;

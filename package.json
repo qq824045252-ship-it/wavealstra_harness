@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -331,6 +331,7 @@
     "test:multi-search-live": "esbuild scripts/multi-search-live-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-search-live-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-live-test.mjs",
     "test:multi-search": "esbuild scripts/multi-search-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/multi-search-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-test.mjs",
     "test:gateway-durable": "esbuild scripts/gateway-durable-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-durable-test.mjs && node scripts/test-guard.mjs out/tests/gateway-durable-test.mjs",
+    "test:gateway-task-space": "esbuild scripts/gateway-task-space-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-task-space-test.mjs && node scripts/test-guard.mjs out/tests/gateway-task-space-test.mjs",
     "test:slack-gateway": "esbuild scripts/slack-gateway-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/slack-gateway-test.mjs && node scripts/test-guard.mjs out/tests/slack-gateway-test.mjs",
     "test:durable-bot-desktop": "node scripts/test-guard.mjs scripts/durable-bot-desktop-test.cjs",
     "test:durable-bot": "esbuild scripts/durable-bot-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-bot-test.mjs && node scripts/test-guard.mjs out/tests/durable-bot-test.mjs",

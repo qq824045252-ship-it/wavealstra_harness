@@ -10,6 +10,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { gatewayBotTaskId } from "../src/shared/gateway-task";
+import { GATEWAY_ROOT_SPACE_ID, GATEWAY_ROOT_SPACE_NAME, gatewayChannelSpaceId } from "../src/main/gateway/gateway-task-space";
 
 const root=mkdtempSync(join(tmpdir(),"mybuddy-gateway-durable-"));
 process.env.HOME=root;process.env.USERPROFILE=root;process.env.PI_CODING_AGENT_DIR=join(root,".mybuddy");
@@ -48,6 +49,7 @@ const inbound=(gateway as any).createInboundHandler();
 const until=async(check:()=>boolean|Promise<boolean>)=>{const end=Date.now()+15000;while(!await check()){if(Date.now()>end)throw Error("fixture timeout");await new Promise(r=>setTimeout(r,10));}};
 const request=(text:string,userMessageId=text)=>({taskId:"gw-bot-receipts",text,userMessageId,assistantMessageId:"ignored-"+userMessageId});
 try{
+  const channelNames: Record<string, string> = { feishu: "飞书", wecom: "企微", wechat: "微信", telegram: "Telegram", slack: "Slack" };
   for(const channel of ["feishu","wecom","wechat","telegram","slack"]){
     const replies:string[]=[];const source=channel==="slack"?"gw-slack-fixture":`gw-${channel}-default-chat`;
     const input={channelId:channel+"-default",chatId:"chat",messageId:"message-1",text:channel,
@@ -55,11 +57,22 @@ try{
       reply:async(text:string)=>{replies.push(text);}};
     await inbound(input);assert.deepEqual(replies,["ANSWER:"+channel]);
     const task=db.getTask(gatewayBotTaskId(source))!;assert.equal(task.welcomeMode,"bot");assert.equal(task.modePresetId,"native");assert.equal(task.sessionFile,undefined);
+    assert.equal(task.spaceId, gatewayChannelSpaceId(channel+"-default")); assert.equal(task.title, channel);
+    const folder=db.getSpace(task.spaceId!)!; assert.equal(folder.name, channelNames[channel]); assert.equal(folder.parentId, GATEWAY_ROOT_SPACE_ID); assert.equal(folder.path, undefined);
+    const gatewayRoot=db.getSpace(GATEWAY_ROOT_SPACE_ID)!; assert.equal(gatewayRoot.name, GATEWAY_ROOT_SPACE_NAME); assert.equal(gatewayRoot.parentId, null); assert.equal(gatewayRoot.path, undefined);
     const history=await durable.history(task.id);assert.equal(history.durable?.toolMode,"native");assert.equal(readFileSync(join(history.cwd!,"proof.txt"),"utf8"),channel);
     db.upsertTask({...task,modePresetId:"codemode"});assert.equal(db.getTask(task.id)?.modePresetId,"native");
     if(channel!=="slack"){await inbound(input);assert.equal(replies.length,1);}
   }
-  assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; legacy task unchanged; UI edits cannot change Gateway tag");
+  const feishuId=gatewayBotTaskId("gw-feishu-default-chat"); const created=db.getTask(feishuId)!;
+  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-2",text:"第二条不应当覆盖标题和文件夹",reply:async()=>{}});
+  const followed=db.getTask(feishuId)!; assert.equal(followed.title, created.title); assert.equal(followed.spaceId, created.spaceId);
+  const keptId=gatewayBotTaskId("gw-custom-default-kept");
+  db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
+  await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-1",text:"后来的消息",reply:async()=>{}});
+  assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, undefined);
+  assert.equal(db.getSpace(gatewayChannelSpaceId("custom-default")), undefined);
+  assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; new chats land in channel folders; existing rows and legacy tasks stay put");
 
   (gateway as any).channelPolicies.set("telegram-default",{allowUsers:["owner"]});
   const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});

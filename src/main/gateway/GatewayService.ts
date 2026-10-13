@@ -18,6 +18,8 @@ import { SlackSocketModeAdapter, safeSlackError, redactSlackText } from "./Slack
 import { SlackGatewayJournal } from "./SlackGatewayJournal";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "./SlackGatewayCredentials";
 import { runGatewayAgentTurn, withSlackChannelHistory } from "./GatewayAgentTurn";
+import { ensureGatewayChannelSpace } from "./gateway-task-space";
+import { gatewayBotTaskId } from "../../shared/gateway-task";
 import {
   FeishuChannelAdapter,
   TelegramChannelAdapter,
@@ -153,6 +155,17 @@ export class GatewayService {
     return this.processed(channelId, chatId, messageId);
   }
 
+  /** 只给尚无任务行的会话准备文件夹。已有任务保持原归属，失败也不挡住这条消息。 */
+  private spaceIdForNewGatewayTask(channelId: string, sourceTaskId: string): string | undefined {
+    if (this.db.getTask(gatewayBotTaskId(sourceTaskId))) return undefined;
+    try {
+      return ensureGatewayChannelSpace(this.db, channelId, this.adapters.get(channelId)?.name ?? channelId);
+    } catch (error) {
+      console.warn(`[Gateway] 未能为 ${channelId} 建立渠道文件夹：`, error);
+      return undefined;
+    }
+  }
+
   private createInboundHandler(): GatewayInboundHandler {
     return async (msg) => {
       if (this.stopping) throw new Error("Gateway 正在关闭，消息将在重连后继续");
@@ -194,6 +207,7 @@ export class GatewayService {
       }
 
       const taskId = `gw-${msg.channelId}-${msg.chatId}`;
+      const spaceId = this.spaceIdForNewGatewayTask(msg.channelId, taskId);
       const turnId = msg.messageId
         ? createHash("sha256").update(JSON.stringify([msg.channelId, msg.chatId, msg.messageId])).digest("hex")
         : randomUUID();
@@ -203,6 +217,7 @@ export class GatewayService {
         text = await runGatewayAgentTurn(this.agent, {
           taskId, text: msg.text, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
           ...(modelId ? { modelId } : {}),
+          ...(spaceId ? { spaceId } : {}),
         });
       } catch (err) {
         if (this.stopping) throw err;
@@ -255,10 +270,12 @@ export class GatewayService {
     try {
       const settings = this.settingsStore.read();
       const modelId = settings.defaultModelId?.trim() || undefined;
+      const spaceId = this.spaceIdForNewGatewayTask(msg.channelId, msg.taskId);
       text = await runGatewayAgentTurn(this.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
         assistantMessageId: msg.assistantMessageId,
         streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
+        ...(spaceId ? { spaceId } : {}),
       });
     } catch (error) {
       if (this.stopping) throw error;
