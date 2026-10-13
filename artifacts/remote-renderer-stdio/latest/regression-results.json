@@ -1,7 +1,7 @@
 [
   {
     "name": "normal",
-    "pid": 70052,
+    "pid": 15232,
     "code": 0,
     "signal": null,
     "timedOut": false,
@@ -9,7 +9,7 @@
     "stdout": "\r\nPASS thinking deltas appear immediately in the folded panel and the activity animation advances\nPASS expanded thinking follows new text until the reader scrolls up\nPASS reply and completion transition stop the thinking preview and animations while retaining the full record\nPASS fenced SVG uses desktop renderer and decodes as a real image\nPASS SVG is outside pre/code; no invalid nested block wrapper\nPASS new thinking and running tools do not auto-expand process panel\nPASS tool details stay folded through running-to-success updates\nPASS explicit expansion shows output, not mislabeled call arguments\nPASS user precedes answer; intrinsic row heights prevent overlap and reversed-looking content\nPASS streamed replies do not steal historical reading scroll position\nPASS no horizontal overflow at 360 CSS px\nPASS no horizontal overflow at 412 CSS px\nPASS mobile tables have bordered readable cells; compact tables fit and wide tables scroll locally\nPASS Android confirm interaction submits a boolean answer and immediately renders resolved state\nPASS Android single-select interaction is touch sized, accessible and submits the selected option id\nPASS Android multi-select enforces maxSelections and submits the selected ids as one answer\nPASS Android short-text and long-text interactions both submit controlled input correctly\nPASS standalone raw SVG renders through the same safe preview path\nPASS executable SVG is blocked without injecting markup into the page\nPASS network restoration triggers foreground resume synchronization\nPASS XML, HTML and unlabelled SVG fences decode as images at Android width\nPASS content detection preserves ordinary code and applies SVG safety validation\nPASS five unchanged snapshot refreshes preserve all 8 SVG DOM nodes and bottom reading position\nPASS streamed text after SVG keeps historical and same-reply previews mounted\nPASS SVG source selection survives background snapshots\nPASS raster inline: registered PNG decodes once without inline/fallback duplicates\nPASS raster forward: registered PNG decodes once without inline/fallback duplicates\nPASS raster link: registered PNG decodes once without inline/fallback duplicates\nPASS raster only: registered PNG decodes once without inline/fallback duplicates\nPASS raster DOM, decoded blob URL and network request survive five history refreshes\nPASS original-image viewer uses the same authenticated blob without another download\nPASS failed version refresh offers a working retry without clearing chat or credentials\nPASS unregistered local image stays blocked and does not trigger arbitrary file reads\nPASS home-to-chat slides forward while the fixed composer stays anchored to the viewport\nPASS Android back navigation returns home with a reverse slide\nPASS rapid task switches leave only the latest conversation; background refresh does not replay navigation\nPASS drawer and both sheets animate in and out; back immediately disables closed controls\nPASS notification expansion and close survive rapid reversal without duplicate or invisible controls\nPASS system reduced-motion setting disables page, sheet and disclosure animation\n{\"ok\":true,\"passed\":39}\n",
     "stderr": "",
     "meta": {
-      "pid": 70052,
+      "pid": 15232,
       "electron": "44.5.1",
       "dialogCount": 0,
       "uncaught": []
@@ -179,7 +179,7 @@
   },
   {
     "name": "stdout-closed",
-    "pid": 87480,
+    "pid": 40460,
     "code": 1,
     "signal": null,
     "timedOut": false,
@@ -187,7 +187,7 @@
     "stdout": "\r\nPASS thinking deltas appear immediately in the folded panel and the activity animation advances\n",
     "stderr": "Error: EPIPE: broken pipe, write\n    at Object.writeSync (node:fs:977:3)\n    at log (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\remote-renderer-regression-test.cjs:20:23)\n    at pass (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\remote-renderer-regression-test.cjs:21:50)\n    at C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\remote-renderer-regression-test.cjs:52:3\n",
     "meta": {
-      "pid": 87480,
+      "pid": 40460,
       "electron": "44.5.1",
       "dialogCount": 0,
       "uncaught": []
@@ -210,7 +210,7 @@
   },
   {
     "name": "both-closed",
-    "pid": 76676,
+    "pid": 36852,
     "code": 1,
     "signal": null,
     "timedOut": false,
@@ -218,7 +218,7 @@
     "stdout": "\r\nPASS thinking deltas appear immediately in the folded panel and the activity animation advances\n",
     "stderr": "",
     "meta": {
-      "pid": 76676,
+      "pid": 36852,
       "electron": "44.5.1",
       "dialogCount": 0,
       "uncaught": []
@@ -241,7 +241,7 @@
   },
   {
     "name": "stderr-closed-on-assertion",
-    "pid": 93148,
+    "pid": 1472,
     "code": 1,
     "signal": null,
     "timedOut": false,
@@ -249,7 +249,7 @@
     "stdout": "\r\n",
     "stderr": "",
     "meta": {
-      "pid": 93148,
+      "pid": 1472,
       "electron": "44.5.1",
       "dialogCount": 0,
       "uncaught": []

@@ -1340,13 +1340,16 @@ function ClaudeDrawer({
   const showNotifications = useRemoteStore((state) => state.isNotificationsOpen)
   const setShowNotifications = useRemoteStore((state) => state.setNotificationsOpen)
   const unreadCount = notifications.filter((notice) => !notice.readAt).length
-  // 折叠集合：默认全部展开，记录被收起的 spaceId
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  /**
+   * 展开集合：默认全部收起（与桌面侧栏一致），只记录用户显式展开过的 spaceId。
+   * 不用「收起集合」：那样无法区分「用户主动收起」和「默认未展开」，默认值会随历史状态漂移。
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
 
   const groups = useMemo(() => buildSpaceTaskGroups(spaces ?? [], tasks), [spaces, tasks])
 
   const toggleSpace = (id: string) => {
-    setCollapsed((prev) => {
+    setExpanded((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -1381,7 +1384,8 @@ function ClaudeDrawer({
   }
 
   const renderSpace = (node: SpaceGroupNode, depth: number): React.ReactNode => {
-    const isCollapsed = collapsed.has(node.space.id)
+    // 默认收起：只有用户在本次会话里显式展开过的空间才展开
+    const isCollapsed = !expanded.has(node.space.id)
     return (
       <div key={node.space.id} className="drawer-space">
         <div className="drawer-space-row">

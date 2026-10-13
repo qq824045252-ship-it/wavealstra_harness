@@ -870,8 +870,8 @@ function GatewayBlock({
     void window.api?.gateway?.getChannelConfig(channelId).then((c) => {
       if (!c?.hasConfig) {
         if (isSlack) {
-          setValues({ appId: "A0C6PPDAB1S", teamId: "T0C5V7WTE8P" });
-          setAllowUsers("U0C750DCY4Q");
+          setValues({ appId: "A0C8GCD53CJ", teamId: "T0C854NS7CK" });
+          setAllowUsers("U0C8F24C8Q4");
         }
         return;
       }

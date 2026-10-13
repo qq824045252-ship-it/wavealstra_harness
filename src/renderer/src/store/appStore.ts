@@ -315,7 +315,8 @@ interface AppState {
   closeWorkspaceDetail: () => void;
   /** 侧边栏折叠状态 */
   taskSectionCollapsed: boolean;
-  collapsedSpaceIds: string[];
+  /** 用户显式展开的空间 id（默认 = 空 = 全部收起；见 loadSidebarExpanded 的存储语义） */
+  expandedSpaceIds: string[];
   skills: Skill[];
   models: ModelConfig[];
   activeModelId: string;
@@ -619,6 +620,8 @@ interface AppState {
   renameTask: (id: string, title: string) => void;
   toggleTaskSection: () => void;
   toggleSpaceCollapsed: (id: string) => void;
+  /** 全部展开/收起空间（不受控于持久化；用于「展开全部」这类显式操作） */
+  setAllSpacesExpanded: (expanded: boolean) => void;
   sendMessage: (
     text: string,
     attachments?: Attachment[],
@@ -811,12 +814,19 @@ function recomputeEffectiveArchived(spaces: Space[]): Space[] {
   return spaces.map((s) => ({ ...s, effectiveArchived: m.get(s.id) ?? false }));
 }
 
-/** Sidebar Tree V2：展开状态持久（稳定 id，renderer/store 层 localStorage，防刷新整树全展开） */
-const SIDEBAR_COLLAPSED_KEY = "mybuddy:sidebar-collapsed";
-function loadSidebarCollapsed(): string[] {
+/**
+ * Sidebar Tree V2：空间展开状态持久（稳定 id，renderer/store 层 localStorage）。
+ *
+ * 默认值 = **全部收起**（产品决策：空间树的默认形态是折叠，展开是用户当次的选择）。
+ * 存储语义是「用户显式展开过哪些空间」（展开集合），不再存「收起集合」：
+ * 旧键存的是收起集合，无法区分「用户主动收起」与「默认未展开」，所以新键首次读取时
+ * 忽略旧值并从空集合开始 —— 历史键保留不动，不回写、不删除，避免误清用户数据。
+ */
+const SIDEBAR_EXPANDED_KEY = "mybuddy:sidebar-expanded";
+function loadSidebarExpanded(): string[] {
   try {
     if (typeof window === "undefined" || !window.localStorage) return [];
-    const raw = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    const raw = window.localStorage.getItem(SIDEBAR_EXPANDED_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
@@ -824,10 +834,10 @@ function loadSidebarCollapsed(): string[] {
     return [];
   }
 }
-function saveSidebarCollapsed(ids: string[]): void {
+function saveSidebarExpanded(ids: string[]): void {
   try {
     if (typeof window === "undefined" || !window.localStorage) return;
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, JSON.stringify(ids));
+    window.localStorage.setItem(SIDEBAR_EXPANDED_KEY, JSON.stringify(ids));
   } catch {
     /* ignore storage errors */
   }
@@ -1263,7 +1273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeTaskId: null,
   draft: null,
   taskSectionCollapsed: false,
-  collapsedSpaceIds: loadSidebarCollapsed(),
+  expandedSpaceIds: loadSidebarExpanded(),
   skills: [],
   marketSkills: [],
   experts: [],
@@ -3368,8 +3378,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const tasks = state.tasks.filter((task) => !taskIds.has(task.id));
       const spaces = recomputeEffectiveArchived(state.spaces.filter((space) => !spaceIds.has(space.id)));
       const archivedSpaceIds = new Set(spaces.filter((space) => space.effectiveArchived ?? space.archived).map((space) => space.id));
-      const collapsedSpaceIds = state.collapsedSpaceIds.filter((id) => !spaceIds.has(id));
-      if (collapsedSpaceIds.length !== state.collapsedSpaceIds.length) saveSidebarCollapsed(collapsedSpaceIds);
+      const expandedSpaceIds = state.expandedSpaceIds.filter((id) => !spaceIds.has(id));
+      if (expandedSpaceIds.length !== state.expandedSpaceIds.length) saveSidebarExpanded(expandedSpaceIds);
       const reset = deletingActive
         ? resetTaskScopedUiState(state, {
             nextTaskId: tasks.find((task) => !task.archived && !archivedSpaceIds.has(task.spaceId ?? ""))?.id ?? null,
@@ -3382,7 +3392,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         tasks,
         spaces,
         pinnedTaskIds: state.pinnedTaskIds.filter((id) => !taskIds.has(id)),
-        collapsedSpaceIds,
+        expandedSpaceIds,
         homeSpaceId: spaceIds.has(state.homeSpaceId ?? "") ? null : state.homeSpaceId,
         draft: spaceIds.has(state.draft?.spaceId ?? "") ? null : state.draft,
         browserUrlByTask: Object.fromEntries(Object.entries(state.browserUrlByTask ?? {}).filter(([id]) => !taskIds.has(id))),
@@ -3467,11 +3477,21 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   toggleSpaceCollapsed: (id) => {
     set((s) => {
-      const next = s.collapsedSpaceIds.includes(id)
-        ? s.collapsedSpaceIds.filter((x) => x !== id)
-        : [...s.collapsedSpaceIds, id];
-      saveSidebarCollapsed(next);
-      return { collapsedSpaceIds: next };
+      // 存储即「展开集合」：收起 = 从集合移除，展开 = 加入集合。
+      // 默认（空集合）= 全部收起，所以新空间、新识别到的空间都从收起开始。
+      const next = s.expandedSpaceIds.includes(id)
+        ? s.expandedSpaceIds.filter((x) => x !== id)
+        : [...s.expandedSpaceIds, id];
+      saveSidebarExpanded(next);
+      return { expandedSpaceIds: next };
+    });
+  },
+
+  setAllSpacesExpanded: (expanded) => {
+    set((s) => {
+      const next = expanded ? s.spaces.map((space) => space.id) : [];
+      saveSidebarExpanded(next);
+      return { expandedSpaceIds: next };
     });
   },
 
@@ -5470,14 +5490,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       throw new Error(res.error || "删除空间失败");
     }
-    // P2-1 清理 collapsed stale id（删除后不再残留 localStorage）
+    // P2-1 清理 stale id（删除后不再残留 localStorage；存储语义为「已展开集合」）
     set((s) => {
-      const nextCollapsed = s.collapsedSpaceIds.filter((x) => x !== id);
-      if (nextCollapsed.length !== s.collapsedSpaceIds.length) saveSidebarCollapsed(nextCollapsed);
+      const nextExpanded = s.expandedSpaceIds.filter((x) => x !== id);
+      if (nextExpanded.length !== s.expandedSpaceIds.length) saveSidebarExpanded(nextExpanded);
       return {
         spaces: s.spaces.filter((x) => x.id !== id),
         homeSpaceId: s.homeSpaceId === id ? null : s.homeSpaceId,
-        collapsedSpaceIds: nextCollapsed,
+        expandedSpaceIds: nextExpanded,
         // 主进程已把任务 space_id 置 NULL，内存同步解绑，任务归入「任务」分组
         tasks: s.tasks.map((t) => (t.spaceId === id ? { ...t, spaceId: undefined } : t)),
       };
@@ -5704,10 +5724,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, spaceId: targetSpaceId ?? undefined, updatedAt: now } : t)),
       };
       if (s.activeTaskId === taskId) next.homeSpaceId = targetSpaceId;
-      if (targetSpaceId && s.collapsedSpaceIds.includes(targetSpaceId)) {
-        const expanded = s.collapsedSpaceIds.filter((id) => id !== targetSpaceId);
-        saveSidebarCollapsed(expanded);
-        next.collapsedSpaceIds = expanded;
+      // 把任务挂进某个空间时自动展开它，否则用户看不见刚落进去的任务
+      if (targetSpaceId && !s.expandedSpaceIds.includes(targetSpaceId)) {
+        const expanded = [...s.expandedSpaceIds, targetSpaceId];
+        saveSidebarExpanded(expanded);
+        next.expandedSpaceIds = expanded;
       }
       return next;
     });
@@ -5730,7 +5751,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     moveChain = new Promise<void>((res) => (releaseChain = res));
     await prevChain;
     let prevSpaces: Space[] = [];
-    let prevCollapsed: string[] = [];
+    let prevExpanded: string[] = [];
     let prevById = new Map<string, Space>();
     let newSiblingIds = new Set<string>();
     let oldSiblingIds = new Set<string>();
@@ -5738,7 +5759,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     let result: { ok: true } | { ok: false; error: string } = { ok: true as const };
     try {
       prevSpaces = get().spaces.map((s) => ({ ...s }));
-      prevCollapsed = get().collapsedSpaceIds.slice();
+      prevExpanded = get().expandedSpaceIds.slice();
       prevById = new Map(prevSpaces.map((s) => [s.id, s]));
       const moving = prevById.get(spaceId);
       if (!moving) {
@@ -5856,12 +5877,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       nextSpaces = recomputeEffectiveArchived(nextSpaces);
-      let nextCollapsed = prevCollapsed.slice();
-      if (targetParentId && nextCollapsed.includes(targetParentId)) {
-        nextCollapsed = nextCollapsed.filter((id) => id !== targetParentId);
-        saveSidebarCollapsed(nextCollapsed);
+      // 移动进某个空间时自动展开它（否则用户看不到移动结果）；存储语义为「已展开集合」
+      let nextExpanded = prevExpanded.slice();
+      if (targetParentId && !nextExpanded.includes(targetParentId)) {
+        nextExpanded = [...nextExpanded, targetParentId];
+        saveSidebarExpanded(nextExpanded);
       }
-      set({ spaces: nextSpaces, collapsedSpaceIds: nextCollapsed });
+      set({ spaces: nextSpaces, expandedSpaceIds: nextExpanded });
       hasOptimistic = true;
       const res: any = await (window.api as any)?.db?.moveSpace?.({ spaceId, targetParentId, targetIndex });
       if (res && res.ok === false) {
@@ -5878,16 +5900,16 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
             return cur;
           });
-          // P2-3 collapsed 精确回退：仅当本次乐观展开了 targetParentId 时才将其重新折叠
-          const curCollapsed = s.collapsedSpaceIds;
-          const wasCollapsed = targetParentId ? prevCollapsed.includes(targetParentId) : false;
-          const isNowExpanded = targetParentId ? !curCollapsed.includes(targetParentId) : false;
-          let nextCollapsed = curCollapsed;
-          if (targetParentId && wasCollapsed && isNowExpanded) {
-            nextCollapsed = [...curCollapsed, targetParentId];
-            saveSidebarCollapsed(nextCollapsed);
+          // P2-3 精确回退：仅当本次乐观展开了 targetParentId 时才把它移出展开集合
+          const curExpanded = s.expandedSpaceIds;
+          const wasExpanded = targetParentId ? prevExpanded.includes(targetParentId) : false;
+          const isNowExpanded = targetParentId ? curExpanded.includes(targetParentId) : false;
+          let nextExpanded = curExpanded;
+          if (targetParentId && !wasExpanded && isNowExpanded) {
+            nextExpanded = curExpanded.filter((id) => id !== targetParentId);
+            saveSidebarExpanded(nextExpanded);
           }
-          return { spaces: recomputeEffectiveArchived(restored), collapsedSpaceIds: nextCollapsed };
+          return { spaces: recomputeEffectiveArchived(restored), expandedSpaceIds: nextExpanded };
         });
         result = { ok: false as const, error: res.error || "移动空间失败" };
         return result;
@@ -5908,15 +5930,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
             return cur;
           });
-          const curCollapsed = s.collapsedSpaceIds;
-          const wasCollapsed = targetParentId ? prevCollapsed.includes(targetParentId) : false;
-          const isNowExpanded = targetParentId ? !curCollapsed.includes(targetParentId) : false;
-          let nextCollapsed = curCollapsed;
-          if (targetParentId && wasCollapsed && isNowExpanded) {
-            nextCollapsed = [...curCollapsed, targetParentId];
-            saveSidebarCollapsed(nextCollapsed);
+          const curExpanded = s.expandedSpaceIds;
+          const wasExpanded = targetParentId ? prevExpanded.includes(targetParentId) : false;
+          const isNowExpanded = targetParentId ? curExpanded.includes(targetParentId) : false;
+          let nextExpanded = curExpanded;
+          if (targetParentId && !wasExpanded && isNowExpanded) {
+            nextExpanded = curExpanded.filter((id) => id !== targetParentId);
+            saveSidebarExpanded(nextExpanded);
           }
-          return { spaces: recomputeEffectiveArchived(restored), collapsedSpaceIds: nextCollapsed };
+          return { spaces: recomputeEffectiveArchived(restored), expandedSpaceIds: nextExpanded };
         });
       }
       result = { ok: false as const, error: err instanceof Error ? err.message : String(err) };
@@ -5935,7 +5957,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await prevChain;
     let prevTasks: Task[] = [];
     let prevSpaces: Space[] = [];
-    let prevCollapsed: string[] = [];
+    let prevExpanded: string[] = [];
     let prevHomeSpaceId: string | null = null;
     let isActiveTask = false;
     let prevById = new Map<string, Task>();
@@ -5946,7 +5968,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       prevTasks = get().tasks.map((t) => ({ ...t }));
       prevSpaces = get().spaces;
-      prevCollapsed = get().collapsedSpaceIds.slice();
+      prevExpanded = get().expandedSpaceIds.slice();
       prevHomeSpaceId = get().homeSpaceId;
       isActiveTask = get().activeTaskId === taskId;
       prevById = new Map(prevTasks.map((t) => [t.id, t]));
@@ -6076,14 +6098,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       const nextPinned = nextTasks.filter((t) => t.isFavorited).map((t) => t.id);
-      let nextCollapsed = prevCollapsed.slice();
-      if (targetSpaceId && nextCollapsed.includes(targetSpaceId)) {
-        nextCollapsed = nextCollapsed.filter((id) => id !== targetSpaceId);
-        saveSidebarCollapsed(nextCollapsed);
+      // 任务被移进某空间时自动展开它（否则移动结果不可见）
+      let nextExpanded = prevExpanded.slice();
+      if (targetSpaceId && !nextExpanded.includes(targetSpaceId)) {
+        nextExpanded = [...nextExpanded, targetSpaceId];
+        saveSidebarExpanded(nextExpanded);
       }
       // P2-1 单一真相：homeSpaceId 由 moveTask 统一处理，activeTask 同步 targetSpaceId，失败回滚恢复旧值
       const nextHomeSpaceId = isActiveTask ? targetSpaceId : prevHomeSpaceId;
-      set({ tasks: nextTasks, pinnedTaskIds: nextPinned, collapsedSpaceIds: nextCollapsed, homeSpaceId: nextHomeSpaceId });
+      set({ tasks: nextTasks, pinnedTaskIds: nextPinned, expandedSpaceIds: nextExpanded, homeSpaceId: nextHomeSpaceId });
       hasOptimistic = true;
       const res: any = await (window.api as any)?.db?.moveTaskInWorkspaceTree?.({ taskId, targetSpaceId, targetIndex });
       if (res && res.ok === false) {
@@ -6099,17 +6122,17 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
             return cur;
           });
-          // P2-3 collapsed 精确回退 + P2-1 homeSpaceId 回滚
-          const curCollapsed = s.collapsedSpaceIds;
-          const wasCollapsed = targetSpaceId ? prevCollapsed.includes(targetSpaceId) : false;
-          const isNowExpanded = targetSpaceId ? !curCollapsed.includes(targetSpaceId) : false;
-          let restoredCollapsed = curCollapsed;
-          if (targetSpaceId && wasCollapsed && isNowExpanded) {
-            restoredCollapsed = [...curCollapsed, targetSpaceId];
-            saveSidebarCollapsed(restoredCollapsed);
+          // P2-3 精确回退（展开集合）+ P2-1 homeSpaceId 回滚
+          const curExpanded = s.expandedSpaceIds;
+          const wasExpanded = targetSpaceId ? prevExpanded.includes(targetSpaceId) : false;
+          const isNowExpanded = targetSpaceId ? curExpanded.includes(targetSpaceId) : false;
+          let restoredExpanded = curExpanded;
+          if (targetSpaceId && !wasExpanded && isNowExpanded) {
+            restoredExpanded = curExpanded.filter((id) => id !== targetSpaceId);
+            saveSidebarExpanded(restoredExpanded);
           }
           const restoredHomeSpaceId = isActiveTask ? prevHomeSpaceId : s.homeSpaceId;
-          return { tasks: restored, pinnedTaskIds: restored.filter((t) => t.isFavorited).map((t) => t.id), collapsedSpaceIds: restoredCollapsed, homeSpaceId: restoredHomeSpaceId };
+          return { tasks: restored, pinnedTaskIds: restored.filter((t) => t.isFavorited).map((t) => t.id), expandedSpaceIds: restoredExpanded, homeSpaceId: restoredHomeSpaceId };
         });
         result = { ok: false as const, error: res.error || "移动任务失败" };
         return result;
@@ -6130,16 +6153,16 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
             return cur;
           });
-          const curCollapsed = s.collapsedSpaceIds;
-          const wasCollapsed = targetSpaceId ? prevCollapsed.includes(targetSpaceId) : false;
-          const isNowExpanded = targetSpaceId ? !curCollapsed.includes(targetSpaceId) : false;
-          let restoredCollapsed = curCollapsed;
-          if (targetSpaceId && wasCollapsed && isNowExpanded) {
-            restoredCollapsed = [...curCollapsed, targetSpaceId];
-            saveSidebarCollapsed(restoredCollapsed);
+          const curExpanded = s.expandedSpaceIds;
+          const wasExpanded = targetSpaceId ? prevExpanded.includes(targetSpaceId) : false;
+          const isNowExpanded = targetSpaceId ? curExpanded.includes(targetSpaceId) : false;
+          let restoredExpanded = curExpanded;
+          if (targetSpaceId && !wasExpanded && isNowExpanded) {
+            restoredExpanded = curExpanded.filter((id) => id !== targetSpaceId);
+            saveSidebarExpanded(restoredExpanded);
           }
           const restoredHomeSpaceId = isActiveTask ? prevHomeSpaceId : s.homeSpaceId;
-          return { tasks: restored, pinnedTaskIds: restored.filter((t) => t.isFavorited).map((t) => t.id), collapsedSpaceIds: restoredCollapsed, homeSpaceId: restoredHomeSpaceId };
+          return { tasks: restored, pinnedTaskIds: restored.filter((t) => t.isFavorited).map((t) => t.id), expandedSpaceIds: restoredExpanded, homeSpaceId: restoredHomeSpaceId };
         });
       }
       result = { ok: false as const, error: err instanceof Error ? err.message : String(err) };

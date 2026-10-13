@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -349,7 +349,9 @@
     "test:task-status-dot:live": "node scripts/test-guard.mjs scripts/task-status-dot-live-db-check.cjs",
     "test:remote-done-ack": "esbuild scripts/remote-done-ack-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-done-ack-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-done-ack-test.mjs",
     "test:remote-task-dot-ui-desktop": "node scripts/test-guard.mjs scripts/remote-task-dot-ui-test.cjs",
-    "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs"
+    "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs",
+    "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",
+    "test:sidebar-space-collapse-desktop": "esbuild scripts/sidebar-space-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/sidebar-space-seed.cjs && node scripts/test-guard.mjs scripts/sidebar-space-collapse-desktop-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

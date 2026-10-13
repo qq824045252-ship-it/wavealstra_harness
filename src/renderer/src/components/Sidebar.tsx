@@ -83,7 +83,7 @@ export default function Sidebar(): React.JSX.Element {
   const draft = useAppStore((s) => s.draft);
   const openUsageStats = useAppStore((s) => s.openUsageStats);
   const openApiAggregation = useAppStore((s) => s.openApiAggregation);
-  const collapsedSpaceIds = useAppStore((s) => s.collapsedSpaceIds);
+  const expandedSpaceIds = useAppStore((s) => s.expandedSpaceIds);
   const taskFilterStatus = useAppStore((s) => s.taskFilterStatus);
   const taskFilterTime = useAppStore((s) => s.taskFilterTime);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
@@ -176,13 +176,14 @@ export default function Sidebar(): React.JSX.Element {
 
   const visibleRows = useMemo((): VisibleRow[] => {
     const rows: VisibleRow[] = [];
-    const collapsedSet = new Set(collapsedSpaceIds);
+    // 默认全部收起：只有用户显式展开过（expandedSpaceIds）的空间才展开
+    const expandedSet = new Set(expandedSpaceIds);
     const walk = (nodes: WorkspaceTreeNode[], depth: number): void => {
       for (const n of nodes) {
         if (n.kind === "space") {
           const space = spaces.find((s) => s.id === n.id);
           if (!space) continue;
-          const collapsed = collapsedSet.has(n.id);
+          const collapsed = !expandedSet.has(n.id);
           const hasChildren = n.children.length > 0;
           rows.push({ key: `space-${n.id}`, kind: "space", space, depth, collapsed, node: n, hasChildren });
           if (!collapsed && n.children.length) walk(n.children, depth + 1);
@@ -195,7 +196,7 @@ export default function Sidebar(): React.JSX.Element {
     };
     walk(tree, 0);
     return rows;
-  }, [tree, spaces, tasks, collapsedSpaceIds]);
+  }, [tree, spaces, tasks, expandedSpaceIds]);
 
   const [popup, setPopup] = useState<"more" | "account" | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
