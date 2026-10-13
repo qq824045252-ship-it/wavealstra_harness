@@ -3343,6 +3343,9 @@ app.whenReady().then(async () => {
       console.warn(`[index] 项目事件投递失败 ${project.id}：`, err);
     }
   });
+  gatewayService.setTrashedWorkspaceRestorer((taskId) => {
+    taskLifecycle.restore(taskId);
+  });
   cronService.start();
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels();

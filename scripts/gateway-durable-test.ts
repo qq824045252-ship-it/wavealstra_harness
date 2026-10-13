@@ -74,6 +74,18 @@ try{
   assert.equal(db.getSpace(gatewayChannelSpaceId("custom-default")), undefined);
   assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; new chats land in channel folders; existing rows and legacy tasks stay put");
 
+  const revived:string[]=[];
+  gateway.setTrashedWorkspaceRestorer((taskId)=>{
+    revived.push(taskId);
+    db.upsertTaskExecutionWorkspaceState({taskId,directoryName:"restored",state:"active",createdAt:1,updatedAt:Date.now()});
+  });
+  db.upsertTaskExecutionWorkspaceState({taskId:feishuId,directoryName:"trashed-fixture",state:"trashed",createdAt:1,updatedAt:1,trashPath:"unused"});
+  const reviveReplies:string[]=[];
+  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-revive",text:"revive-me",reply:async(text:string)=>{reviveReplies.push(text);}});
+  assert.deepEqual(revived,[feishuId]);
+  assert.deepEqual(reviveReplies,["ANSWER:revive-me"]);
+  console.log("PASS a trashed gateway chat is restored before the next turn");
+
   (gateway as any).channelPolicies.set("telegram-default",{allowUsers:["owner"]});
   const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});
   assert.equal(requests,beforeDenied);(gateway as any).channelPolicies.clear();

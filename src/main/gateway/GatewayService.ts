@@ -117,6 +117,8 @@ export class GatewayService {
   private webhookPort = 52140;
   private running = false;
   private stopping = false;
+  /** 侧栏删除会把目录移进回收区，绑定仍指向原路径。下一条外部消息到来时移回。 */
+  private restoreTrashedWorkspace?: (taskId: string) => void;
 
   constructor(
     private readonly db: AppDatabase,
@@ -153,6 +155,18 @@ export class GatewayService {
 
   private markProcessed(channelId: string, chatId: string, messageId: string): boolean {
     return this.processed(channelId, chatId, messageId);
+  }
+
+  setTrashedWorkspaceRestorer(restore: (taskId: string) => void): void {
+    this.restoreTrashedWorkspace = restore;
+  }
+
+  /** 已删除的网关会话还有同一条外部聊天。执行前把工作目录从回收区移回，避免「目录不存在」。 */
+  private reviveTrashedGatewayTask(sourceTaskId: string): void {
+    if (!this.restoreTrashedWorkspace) return;
+    const taskId = gatewayBotTaskId(sourceTaskId);
+    if (this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed") return;
+    this.restoreTrashedWorkspace(taskId);
   }
 
   /** 只给尚无任务行的会话准备文件夹。已有任务保持原归属，失败也不挡住这条消息。 */
@@ -213,6 +227,7 @@ export class GatewayService {
         : randomUUID();
       let text: string;
       try {
+        this.reviveTrashedGatewayTask(taskId);
         const modelId = this.settingsStore.read().defaultModelId?.trim();
         text = await runGatewayAgentTurn(this.agent, {
           taskId, text: msg.text, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
@@ -268,6 +283,7 @@ export class GatewayService {
     }
     let text: string;
     try {
+      this.reviveTrashedGatewayTask(msg.taskId);
       const settings = this.settingsStore.read();
       const modelId = settings.defaultModelId?.trim() || undefined;
       const spaceId = this.spaceIdForNewGatewayTask(msg.channelId, msg.taskId);
