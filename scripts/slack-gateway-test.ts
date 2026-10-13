@@ -252,6 +252,19 @@ try {
     assert.equal(f.sockets[0].sent.length, frames.length);
     await f.adapter.disconnect();
   });
+  await check("channel mentions follow the configured allowlist instead of a previous owner id", async () => {
+    const f = fixture("configured-owner"); const received: string[] = [];
+    f.adapter.setInboundHandler(async message => { received.push(message.text); await message.reply("ok"); });
+    await f.adapter.connect({ ...config, allowUsers: ["U0C8F24C8Q4"] });
+    const mention = { type: "app_mention", channel_type: undefined, channel: "CCHANNEL", text: "<@U012BOT> 帮我看看有什么更新" };
+    f.sockets[0].emit(event("EvCONFIGURED", "1700000003.000001", { ...mention, user: "U0C8F24C8Q4" }));
+    f.sockets[0].emit(event("EvPREVIOUS", "1700000004.000001", { ...mention, user: "U0C750DCY4Q" }));
+    await until(() => f.posts.length === 1, "configured owner mention replies");
+    assert.deepEqual(received, ["帮我看看有什么更新"]);
+    await wait(15);
+    assert.equal(f.posts.length, 1);
+    await f.adapter.disconnect();
+  });
   await check("same thread serializes and reuses task; independent threads remain independent", async () => {
     const f = fixture("ordering"); const tasks: string[] = [];
     let finish!: () => void; const blocked = new Promise<void>(resolve => { finish = resolve; });

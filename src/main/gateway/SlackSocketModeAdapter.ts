@@ -9,9 +9,6 @@ export interface SlackSocket {
   send(data: string): void;
   close(): void;
 }
-// Channel mentions are authorized for this owner only, across joined channels.
-const SLACK_MENTION_OWNER_ID = "U0C750DCY4Q";
-
 interface SlackConfig { botToken: string; appToken: string; teamId: string; appId: string; allowUsers: string[] }
 type SlackApiResult = Record<string, unknown> & { ok?: boolean; error?: string };
 export interface SlackSocketOptions {
@@ -103,11 +100,12 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.lastError || (this.connected ? "已连接（Socket Mode，限定工作区和用户）" : "未连接"); }
   private report(text: string): void { this.lastError = text; this.options.onStatus?.(text); }
+  private ownerUserId(): string { return this.config?.allowUsers[0] ?? ""; }
   private deliveryKey(delivery: SlackDelivery): string { return [delivery.teamId, delivery.appId, delivery.eventId].join(":"); }
   private allows(delivery: Pick<SlackDelivery, "appId" | "teamId" | "userId" | "channel">): boolean {
     return Boolean(this.config && delivery.appId === this.config.appId && delivery.teamId === this.config.teamId
       && this.config.allowUsers.includes(delivery.userId)
-      && (!/^[CG]/.test(delivery.channel) || delivery.userId === SLACK_MENTION_OWNER_ID));
+      && (!/^[CG]/.test(delivery.channel) || delivery.userId === this.ownerUserId()));
   }
 
   async connect(rawConfig: ChannelConfig): Promise<void> {
@@ -263,7 +261,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     const isChannelMention = event.type === "app_mention" && /^[CG][A-Z0-9]+$/.test(event.channel);
     if (!isDirectMessage && !isChannelMention) { ack(); return; }
     const botMention = "<@" + this.botUserId + ">";
-    if (isChannelMention && (event.user !== SLACK_MENTION_OWNER_ID || !event.text.includes(botMention))) { ack(); return; }
+    if (isChannelMention && (event.user !== this.ownerUserId() || !event.text.includes(botMention))) { ack(); return; }
     const instruction = isChannelMention ? event.text.split(botMention).join("").trim() : event.text;
     // A bare ping is not an instruction; ordinary channel messages never start tasks.
     if (!instruction.trim()) { ack(); return; }
