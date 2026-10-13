@@ -169,9 +169,9 @@ export class GatewayService {
     this.restoreTrashedWorkspace(taskId);
   }
 
-  /** 只给尚无任务行的会话准备文件夹。已有任务保持原归属，失败也不挡住这条消息。 */
-  private spaceIdForNewGatewayTask(channelId: string, sourceTaskId: string): string | undefined {
-    if (this.db.getTask(gatewayBotTaskId(sourceTaskId))) return undefined;
+  /** 还没有文件夹的会话归入渠道空间。已经有归属的不搬走，失败也不挡住这条消息。 */
+  private spaceIdForUnfiledGatewayTask(channelId: string, sourceTaskId: string): string | undefined {
+    if (this.db.getTask(gatewayBotTaskId(sourceTaskId))?.spaceId) return undefined;
     try {
       return ensureGatewayChannelSpace(this.db, channelId, this.adapters.get(channelId)?.name ?? channelId);
     } catch (error) {
@@ -221,7 +221,7 @@ export class GatewayService {
       }
 
       const taskId = `gw-${msg.channelId}-${msg.chatId}`;
-      const spaceId = this.spaceIdForNewGatewayTask(msg.channelId, taskId);
+      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, taskId);
       const turnId = msg.messageId
         ? createHash("sha256").update(JSON.stringify([msg.channelId, msg.chatId, msg.messageId])).digest("hex")
         : randomUUID();
@@ -286,7 +286,7 @@ export class GatewayService {
       this.reviveTrashedGatewayTask(msg.taskId);
       const settings = this.settingsStore.read();
       const modelId = settings.defaultModelId?.trim() || undefined;
-      const spaceId = this.spaceIdForNewGatewayTask(msg.channelId, msg.taskId);
+      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, msg.taskId);
       text = await runGatewayAgentTurn(this.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
         assistantMessageId: msg.assistantMessageId,

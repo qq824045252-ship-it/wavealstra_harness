@@ -70,9 +70,18 @@ try{
   const keptId=gatewayBotTaskId("gw-custom-default-kept");
   db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
   await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-1",text:"后来的消息",reply:async()=>{}});
-  assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, undefined);
-  assert.equal(db.getSpace(gatewayChannelSpaceId("custom-default")), undefined);
-  assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; new chats land in channel folders; existing rows and legacy tasks stay put");
+  assert.equal(db.getTask(keptId)?.title,"已有会话");
+  assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
+  const customFolder=db.getSpace(gatewayChannelSpaceId("custom-default"))!;
+  assert.equal(customFolder.name, "custom-default"); assert.equal(customFolder.parentId, GATEWAY_ROOT_SPACE_ID); assert.equal(customFolder.path, undefined);
+  await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-2",text:"第二条仍不改标题和文件夹",reply:async()=>{}});
+  assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
+  db.createSpace({id:"user-folder",name:"用户自己的"});
+  const parkedId=gatewayBotTaskId("gw-custom-default-parked");
+  db.upsertTask({id:parkedId,title:"已归类",spaceId:"user-folder",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
+  await inbound({channelId:"custom-default",chatId:"parked",messageId:"parked-1",text:"不要搬走",reply:async()=>{}});
+  assert.equal(db.getTask(parkedId)?.title,"已归类"); assert.equal(db.getTask(parkedId)?.spaceId,"user-folder");
+  assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; unfiled chats join channel folders; filed chats and legacy tasks stay put");
 
   const revived:string[]=[];
   gateway.setTrashedWorkspaceRestorer((taskId)=>{

@@ -279,8 +279,8 @@ export class DurableBotService {
     if (!isGatewayBotTaskId(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
     const existing = this.options.db.getTask(request.taskId);
     this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
-      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理",
-      ...(request.spaceId ? { spaceId: request.spaceId } : {}) }),
+      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
+      ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
       welcomeMode: "bot", modePresetId: "native", updatedAt: Date.now() });
     const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
     return open.runtime.reply(submission);
