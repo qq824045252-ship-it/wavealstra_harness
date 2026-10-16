@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1240" height="820" viewBox="0 0 1240 820">
   <rect x="0" y="0" width="1240" height="820" fill="#f7f8fa"/>
   <text x="30" y="40" font-family="Segoe UI, sans-serif" font-size="21" font-weight="bold" fill="#111827">magpie 模型目录刷新边界（Pi 1.0.4 / MyBuddy 0.1.29 / magpie codex/mybuddy）</text>
-  <text x="30" y="64" font-family="Segoe UI, sans-serif" font-size="13" fill="#4b5563">实线 = 已用源码与实测验证；虚线 = 建议新增的改动点。图内字段名均为真实字段。</text>
+  <text x="30" y="64" font-family="Segoe UI, sans-serif" font-size="13" fill="#4b5563">实线 = 已用源码与实测验证；虚线 = 本次改动点（① ② 已实施，③ 未做）。图内字段名均为真实字段。</text>
 
   <!-- Column 1: magpie -->
   <rect x="30" y="90" width="350" height="430" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
@@ -95,15 +95,15 @@
 
   <!-- bottom band: renderer flow -->
   <rect x="30" y="545" width="1180" height="120" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
-  <text x="48" y="572" font-family="Segoe UI, sans-serif" font-size="15" font-weight="bold" fill="#111827">设置 → 模型：点「刷新模型」后的真实路径（已实测源码路径）</text>
-  <text x="48" y="598" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">ModelsTab.reloadModels() → agent.reloadModels("magpie") → refreshExternalModelConfig()（磁盘重载，成功）→ 无 refreshable Provider → 提示：</text>
-  <text x="48" y="620" font-family="Segoe UI, sans-serif" font-size="13" font-weight="bold" fill="#b91c1c">「magpie 由 Pi 读取本地配置，未声明远端刷新；修改模型参数请编辑 models.json 配置。」（ModelsTab.tsx:205）</text>
-  <text x="48" y="644" font-family="Segoe UI, sans-serif" font-size="12" fill="#92400e">其中"编辑 models.json"对 magpie 是坏建议：models 段归 magpie 独占，手加条目会在下一次 SyncCatalog 时被删掉。</text>
+  <text x="48" y="572" font-family="Segoe UI, sans-serif" font-size="15" font-weight="bold" fill="#111827">设置 → 模型：点「刷新模型」后的路径（② 已实施并用 test:magpie-catalog 与真实网关实测）</text>
+  <text x="48" y="598" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">ModelsTab.reloadModels() → agent.reloadModels("magpie") → refreshExternalModelConfig()（先按 models.json 重载）→ requestedProviderIds 含 "magpie"</text>
+  <text x="48" y="620" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46">→ Pi 调 composeProvider 的 refreshModels → providers/magpie.ts fetchModels → GET &lt;baseUrl&gt;/models（Bearer 网关密钥 + User-Agent: MyBuddy）</text>
+  <text x="48" y="644" font-family="Segoe UI, sans-serif" font-size="12" fill="#92400e">→ 结果并入 Provider 目录：models.json 的 providers.magpie.models 覆盖同名条目，只补 Magpie 未写入的模型；③ 陈旧条目仍由 magpie SyncCatalog 删除</text>
 
   <!-- change points -->
   <rect x="30" y="680" width="1180" height="115" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.4" stroke-dasharray="6 4"/>
-  <text x="48" y="706" font-family="Segoe UI, sans-serif" font-size="15" font-weight="bold" fill="#4c1d95">可选改动点（虚线）：</text>
-  <text x="48" y="730" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">① MyBuddy：改 ModelsTab.tsx:205 与 217-218 的文案/判定（区分"已本地重载""无远端能力""未认证"），并撤掉会误导的手改建议。</text>
-  <text x="48" y="752" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">② MyBuddy：照 providers/command-code.ts 的 fetchModels 先例，registerNativeProvider 注册 "magpie"（GET &lt;baseUrl&gt;/models）→ 刷新按钮才真正联网。</text>
-  <text x="48" y="774" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">③ magpie：加显式"立即同步目录"入口 / 让写入按 keyAllowed 过滤；MyBuddy 侧已自动重载，无需再改。</text>
+  <text x="48" y="706" font-family="Segoe UI, sans-serif" font-size="15" font-weight="bold" fill="#4c1d95">本次改动（虚线区；① ② 已实施，③ 未做）：</text>
+  <text x="48" y="730" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">① MyBuddy 已完成：ModelsTab.tsx 文案/判定区分"已按本地配置重载"与"尚未配置凭证"，并撤掉会误导的手改建议（models 段归 magpie 独占）。</text>
+  <text x="48" y="752" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">② MyBuddy 已完成：providers/magpie.ts 注册 native provider + fetchModels（照 command-code 先例），刷新按钮对网关真正联网；无 magpie 配置时不产生幽灵 Provider。</text>
+  <text x="48" y="774" font-family="Segoe UI, sans-serif" font-size="13" fill="#1f2937">③ magpie 未做：加显式"立即同步目录"入口 / 让写入按 keyAllowed 过滤；MyBuddy 侧已自动重载，无需再改。</text>
 </svg>

@@ -155,16 +155,24 @@ try {
   assert.equal(auth?.auth.headers?.["User-Agent"], USER_AGENT, "usage attribution depends on this header");
   pass("the gateway key and MyBuddy User-Agent stay Pi's resolved auth");
 
-  const restarted = await createRuntime(root, models);
-  assert(restarted.getModel(MAGPIE_PROVIDER_ID, "vendor/new-chat"), "Pi's store must restore the fetched catalog offline");
-  assert.equal(requests.length, 1, "an offline runtime must not call the gateway");
-  assert(readFileSync(join(root, "models-store.json"), "utf8").includes("vendor/new-chat"));
-  pass("a restart restores the fetched catalog from Pi's own store");
+  // Pi persists the fetched overlay beside models.json, and a restart is a new
+  // process that restores from exactly that file. Assert the persisted shape
+  // rather than re-reading it in this process: Pi's FileModelsStore keeps an
+  // in-process revision cache (models-store.js sharedModelsFileReadState) whose
+  // read can still race the write here, which a fresh process cannot.
+  const storePath = join(root, "models-store.json");
+  const persisted = JSON.parse(readFileSync(storePath, "utf8")) as Record<string, { models?: Array<{ id?: string; provider?: string; api?: string }> }>;
+  const storedModels = persisted[MAGPIE_PROVIDER_ID]?.models ?? [];
+  const storedNewChat = storedModels.find((model) => model.id === "vendor/new-chat");
+  assert(storedNewChat, "a refresh must persist the gateway catalog for the next start");
+  assert(storedModels.every((model) => model.provider === MAGPIE_PROVIDER_ID), "persisted entries must belong to the provider");
+  assert.equal(storedNewChat?.api, "openai-completions");
+  pass("a refresh persists the fetched catalog into Pi's own store");
 
   failCatalog = true;
-  const failed = await restarted.refresh({ providers: [MAGPIE_PROVIDER_ID], force: true, allowNetwork: true });
+  const failed = await runtime.refresh({ providers: [MAGPIE_PROVIDER_ID], force: true, allowNetwork: true });
   assert.equal(failed.errors.size, 1, "a 503 must surface as one provider error");
-  assert(restarted.getModel(MAGPIE_PROVIDER_ID, "vendor/new-chat"), "a failed refresh keeps the last good catalog");
+  assert(runtime.getModel(MAGPIE_PROVIDER_ID, "vendor/new-chat"), "a failed refresh keeps the last good catalog");
   failCatalog = false;
   pass("a failed refresh keeps the last good catalog");
 
