@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-16T02:42:35.923Z",
+  "at": "2026-10-16T03:22:56.937Z",
   "scope": [
     "src",
     "app",
@@ -261,8 +261,8 @@
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "lines": 5844,
-      "sha256": "a423e081d464958e8b757a0b2c5401bcdffb0ddeafc00960a936d1abbbd06f90",
+      "lines": 5876,
+      "sha256": "89f33ff73cc5ca29ed354f41193d654bda98d6225b80f5c00b23d5cf44fb4b9c",
       "test": false
     },
     {
@@ -687,8 +687,8 @@
     },
     {
       "file": "src/main/agent/providers/magpie.ts",
-      "lines": 190,
-      "sha256": "08ddfddb325e94113aeb0de4ca5dd66dd46dc8304146d78d752aef1a88ce621a",
+      "lines": 250,
+      "sha256": "cf897bae04e571e5d9c8b1ef3a1e209152cca0db86bc477af175a8b6ec8e091c",
       "test": false
     },
     {
@@ -4699,115 +4699,115 @@
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 1337,
+      "line": 1339,
       "method": "abort",
       "expression": "this.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 1879,
+      "line": 1911,
       "method": "abort",
       "expression": "this.loginAbort?.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2014,
+      "line": 2046,
       "method": "abort",
       "expression": "session?.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2035,
+      "line": 2067,
       "method": "prompt",
       "expression": "session.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2040,
+      "line": 2072,
       "method": "clearQueue",
       "expression": "session.clearQueue"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3613,
+      "line": 3645,
       "method": "compact",
       "expression": "this.durableBots.compact"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3650,
+      "line": 3682,
       "method": "compact",
       "expression": "session.compact"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3750,
+      "line": 3782,
       "method": "prompt",
       "expression": "this.durableBots.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4190,
+      "line": 4222,
       "method": "prompt",
       "expression": "entry.session.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4330,
+      "line": 4362,
       "method": "prompt",
       "expression": "this.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4367,
+      "line": 4399,
       "method": "abort",
       "expression": "this.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4378,
+      "line": 4410,
       "method": "abort",
       "expression": "this.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4445,
+      "line": 4477,
       "method": "navigateTree",
       "expression": "entry.session.navigateTree"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4463,
+      "line": 4495,
       "method": "prompt",
       "expression": "this.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4676,
+      "line": 4708,
       "method": "abort",
       "expression": "this.durableBots.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4710,
+      "line": 4742,
       "method": "clearQueue",
       "expression": "entry.session.clearQueue"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4715,
+      "line": 4747,
       "method": "abort",
       "expression": "entry.session.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4862,
+      "line": 4894,
       "method": "prompt",
       "expression": "this.btwService.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4866,
+      "line": 4898,
       "method": "abort",
       "expression": "this.btwService.abort"
     },
@@ -5210,5 +5210,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "2fe5c1a20abb5ebf12a71f242a1c0131daa92501162af1dee057d66eac295624"
+  "sourceSha256": "eb08beda52f4d8f7b9680e46c81f19cfdb1bcc86d7792b3ba4a28313377a78ff"
 }
