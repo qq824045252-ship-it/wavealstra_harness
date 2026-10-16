@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { registerMyBuddyProviders } from "../src/main/agent/providers";
-import { MAGPIE_PROVIDER_ID } from "../src/main/agent/providers/magpie";
+import { MAGPIE_PROVIDER_ID, magpieCatalogRevision, magpieCatalogSnapshot, reconcileMagpieModels } from "../src/main/agent/providers/magpie";
 
 const GATEWAY_KEY = "fixture-gateway-key";
 const USER_AGENT = "MyBuddy";
@@ -103,6 +103,14 @@ try {
         thinkingLevelMap: { low: "low", high: "high" },
         contextWindow: 200000,
         maxTokens: 8192,
+      }, {
+        // Still in models.json although the gateway no longer serves it: a
+        // refresh has to drop it, or the dead entry stays in every list.
+        id: "vendor/gone",
+        name: "Gone",
+        api: "openai-completions",
+        contextWindow: 1000,
+        maxTokens: 100,
       }],
     },
   };
@@ -150,6 +158,28 @@ try {
   assert.equal(kept?.contextWindow, 200000);
   pass("a refresh only adds models Magpie has not written yet");
 
+  // The gateway decides which Magpie models exist: the refresh must also drop
+  // what Magpie no longer serves, keeping Magpie's own definition for survivors.
+  const snapshot = magpieCatalogSnapshot();
+  assert(magpieCatalogRevision() >= 1, "a successful fetch must advance the catalog revision");
+  assert.deepEqual(
+    snapshot?.models.map((model) => model.id),
+    liveRows.map((row) => row.id),
+    "the snapshot must be the fetched catalog",
+  );
+  const reconciled = reconcileMagpieModels(models.magpie.models, snapshot!.models)!;
+  assert.deepEqual(reconciled.map((model) => model.id), liveRows.map((row) => row.id), "gateway order decides the list");
+  assert(!reconciled.some((model) => model.id === "vendor/gone"), "an id the gateway no longer serves must go");
+  const keptWritten = reconciled.find((model) => model.id === "written")!;
+  assert.equal(keptWritten.api, "anthropic-messages", "a surviving id keeps Magpie's own definition");
+  assert.equal(keptWritten.baseUrl, gatewayRoot);
+  assert.equal(
+    reconcileMagpieModels(reconciled, snapshot!.models),
+    undefined,
+    "a repeated refresh must not rewrite the file",
+  );
+  pass("a refresh converges models.json's Magpie list on the gateway catalog");
+
   const auth = await runtime.getAuth(MAGPIE_PROVIDER_ID);
   assert.equal(auth?.auth.apiKey, GATEWAY_KEY);
   assert.equal(auth?.auth.headers?.["User-Agent"], USER_AGENT, "usage attribution depends on this header");
@@ -175,6 +205,17 @@ try {
   assert(runtime.getModel(MAGPIE_PROVIDER_ID, "vendor/new-chat"), "a failed refresh keeps the last good catalog");
   failCatalog = false;
   pass("a failed refresh keeps the last good catalog");
+
+  // The wiring itself: the refresh path must align models.json on the way out,
+  // and must still reach the gateway only through Pi (no fetch in AgentService).
+  const agentSource = readFileSync(join("src", "main", "agent", "AgentService.ts"), "utf8");
+  const reloadStart = agentSource.indexOf("async reloadModels(");
+  const alignAt = agentSource.indexOf("private alignMagpieModelsWithGateway()", reloadStart);
+  assert(reloadStart >= 0 && alignAt > reloadStart, "reloadModels and the alignment must both exist");
+  const reloadBody = agentSource.slice(reloadStart, alignAt);
+  assert(reloadBody.includes("alignMagpieModelsWithGateway("), "reloadModels must align the Magpie block after a successful refresh");
+  assert(!reloadBody.includes("fetch("), "the refresh must reach the gateway only through Pi");
+  pass("the refresh path aligns models.json and fetches only through Pi");
 
   const bareDir = mkdtempSync(join(tmpdir(), "mybuddy-magpie-bare-"));
   try {

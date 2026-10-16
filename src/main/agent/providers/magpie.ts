@@ -1,4 +1,5 @@
 import type { ApiKeyAuth, Model, ModelThinkingLevel, Provider, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { ModelsModelConfig } from "../ModelsConfigStore";
 
 export const MAGPIE_PROVIDER_ID = "magpie";
 
@@ -105,9 +106,68 @@ export function magpieProvider(
       if (new Set(models.map((model) => model.id)).size !== models.length) {
         throw new Error("Magpie 网关模型目录包含重复 ID");
       }
+      // Recorded only for a complete, successful fetch: an empty or failed
+      // response must never be able to prune models.json.
+      catalogRevision += 1;
+      catalogSnapshot = { revision: catalogRevision, baseUrl, models };
       return models;
     },
   });
+}
+
+/** The last complete catalog a successful gateway fetch returned in this process. */
+export interface MagpieCatalogSnapshot {
+  revision: number;
+  baseUrl: string;
+  models: MagpieModel[];
+}
+
+let catalogRevision = 0;
+let catalogSnapshot: MagpieCatalogSnapshot | undefined;
+
+/** Monotonic revision of the last successful gateway catalog; 0 before any. */
+export function magpieCatalogRevision(): number {
+  return catalogRevision;
+}
+
+/** What the last successful gateway fetch returned; undefined before any. */
+export function magpieCatalogSnapshot(): MagpieCatalogSnapshot | undefined {
+  return catalogSnapshot;
+}
+
+/** models.json definition for a gateway-only model: the fields Magpie's own
+ * writer fills (magpie/internal/agent/agents.go piModelJSON), nothing invented. */
+export function magpieModelDefinition(model: MagpieModel): ModelsModelConfig {
+  return {
+    id: model.id,
+    name: model.name,
+    api: model.api,
+    baseUrl: model.baseUrl,
+    reasoning: model.reasoning,
+    thinkingLevelMap: model.thinkingLevelMap,
+    input: model.input,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
+}
+
+/**
+ * Align the Magpie block's model list with what the gateway serves now: an id
+ * still served keeps the definition Magpie wrote (its cost, promptCache and
+ * per-model native API are richer than a catalog row), an id the gateway no
+ * longer serves is dropped, a new id is added. Returns undefined when the id
+ * set is unchanged, so a repeated refresh never rewrites the file.
+ */
+export function reconcileMagpieModels(
+  existing: readonly ModelsModelConfig[] | undefined,
+  catalog: readonly MagpieModel[],
+): ModelsModelConfig[] | undefined {
+  const current = existing ?? [];
+  const currentIds = new Set(current.map((model) => model.id));
+  const servedIds = new Set(catalog.map((model) => model.id));
+  if (currentIds.size === servedIds.size && [...servedIds].every((id) => currentIds.has(id))) return undefined;
+  const written = new Map(current.map((model) => [model.id, model]));
+  return catalog.map((model) => written.get(model.id) ?? magpieModelDefinition(model));
 }
 
 /** One gateway row as a Pi model: fields Magpie's own block does not carry yet. */

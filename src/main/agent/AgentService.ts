@@ -184,7 +184,7 @@ import {
 import { ModelsConfigStore, mergeModelConfig, projectModelConfig, type ModelsFileConfig, type ModelsProviderConfig } from "./ModelsConfigStore";
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
-import type { MagpieGatewayConfig } from "./providers/magpie";
+import { MAGPIE_PROVIDER_ID, magpieCatalogSnapshot, reconcileMagpieModels, type MagpieGatewayConfig } from "./providers/magpie";
 import { migratePiAzureProvider } from "./PiAzureProviderMigration";
 import {
   type ModelMetadataDto,
@@ -527,6 +527,8 @@ export class AgentService {
   private readonly skillAuthoringService = new SkillAuthoringService();
   private readonly connectorsService = new ConnectorService();
   private readonly modelsStore = new ModelsConfigStore();
+  /** Gateway catalog revision already written into models.json's Magpie block. */
+  private appliedMagpieCatalogRevision = 0;
   private readonly settingsStore = new AppSettingsStore();
   private readonly modeProfiles = new ModeProfileStore();
   private readonly projectContextResolver: ProjectContextResolver;
@@ -1555,11 +1557,41 @@ export class AgentService {
       });
     }
 
+    // Pi layers models.json over a refresh result, so a model Magpie removed
+    // from its catalog stays listed until Magpie rewrites its block. A
+    // successful gateway refresh aligns that block with what the gateway serves.
+    if (requestedProviderIds.includes(MAGPIE_PROVIDER_ID)
+      && !errors.some((error) => error.providerId === MAGPIE_PROVIDER_ID)) {
+      try {
+        this.alignMagpieModelsWithGateway();
+      } catch (error) {
+        console.error("[AgentService] Magpie 模型列表对齐失败", error);
+      }
+    }
+
     return {
       models: await this.listModels(),
       requestedProviderIds,
       errors,
     };
+  }
+
+  /** After a successful gateway refresh, make models.json's Magpie model list the
+   * list the gateway serves: the id set decides, so surviving entries keep the
+   * definition Magpie wrote and only additions/removals touch the file. */
+  private alignMagpieModelsWithGateway(): void {
+    const snapshot = magpieCatalogSnapshot();
+    if (!snapshot || snapshot.revision <= this.appliedMagpieCatalogRevision) return;
+    const file = this.modelsStore.read();
+    const provider = file.providers[MAGPIE_PROVIDER_ID];
+    if (!provider) return;
+    this.appliedMagpieCatalogRevision = snapshot.revision;
+    const models = reconcileMagpieModels(provider.models, snapshot.models);
+    if (!models) return;
+    this.modelsStore.write({
+      ...file,
+      providers: { ...file.providers, [MAGPIE_PROVIDER_ID]: { ...provider, models } },
+    });
   }
 
   /** Live models.json `providers.magpie` for the native Magpie provider: Magpie
