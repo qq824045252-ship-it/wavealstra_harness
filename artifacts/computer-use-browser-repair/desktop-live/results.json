@@ -1,127 +1,127 @@
 {
   "kind": "computer-use-real-provider-source-electron",
   "artifactDir": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live",
-  "model": "google-vertex/gemini-3.8-flash",
-  "nonce": "b2a9e7ae38304bf5",
-  "startedAt": "2026-10-09T01:00:13.662Z",
+  "model": "magpie/commandcode/z-ai/glm-5.3-flash",
+  "nonce": "fe95ee6ba529ca93",
+  "startedAt": "2026-10-16T00:22:22.521Z",
   "tests": [
     {
       "name": "hidden-browser-screenshot-and-action",
-      "startedAt": "2026-10-09T01:00:14.802Z",
+      "startedAt": "2026-10-16T00:22:25.043Z",
       "status": "passed",
       "tools": [
         {
-          "id": "call_1955452",
+          "id": "chatcmpl-tool-869eb695bd7c412d",
           "name": "browser_exec",
-          "summary": "navigate: http://127.0.0.1:53070",
+          "summary": "navigate: http://127.0.0.1:52501",
           "status": "success",
-          "taskId": "local-1791507615059-0",
-          "startSeq": 14,
+          "taskId": "local-1792110145332-0",
+          "startSeq": 16,
           "approval": false,
-          "endSeq": 16,
-          "output": "浏览器动作完成：navigate\n\n{\n  \"action\": \"navigate\",\n  \"url\": \"http://127.0.0.1:53070/\",\n  \"title\": \"Screenshot acceptance fixture\"\n}"
+          "endSeq": 18,
+          "output": "浏览器动作完成：navigate\n\n{\n  \"action\": \"navigate\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\"\n}"
         },
         {
-          "id": "call_3222078",
+          "id": "chatcmpl-tool-b8ac22b67bd5b0a0",
           "name": "browser_exec",
           "summary": "screenshot",
           "status": "success",
-          "taskId": "local-1791507615059-0",
-          "startSeq": 26,
+          "taskId": "local-1792110145332-0",
+          "startSeq": 31,
           "approval": false,
-          "endSeq": 28,
-          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:53070/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-kV3DjT\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1791507615059-0--6f2afc12a222b699\\\\generated\\\\image\\\\c59d7813-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MTUwNzYxNTA1OS0wOjE3OTE1MDc2MjE1Mjk6em01ZjZr\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"google-vertex/gemini-3.8-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
+          "endSeq": 33,
+          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-cC7dc6\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1792110145332-0--0746b444dc3a6cad\\\\generated\\\\image\\\\88e42182-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MjExMDE0NTMzMi0wOjE3OTIxMTAxNDkyOTM6ejd4OGk0\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/commandcode/z-ai/glm-5.3-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
         },
         {
-          "id": "call_3012404",
+          "id": "chatcmpl-tool-9a10af45c14ee931",
           "name": "browser_exec",
           "summary": "click: #fixtureButton",
           "status": "success",
-          "taskId": "local-1791507615059-0",
-          "startSeq": 38,
+          "taskId": "local-1792110145332-0",
+          "startSeq": 46,
           "approval": false,
-          "endSeq": 40,
-          "output": "浏览器动作完成：click\n\n{\n  \"action\": \"click\",\n  \"url\": \"http://127.0.0.1:53070/\",\n  \"detail\": \"BUTTON: Run fixture action\"\n}"
+          "endSeq": 48,
+          "output": "浏览器动作完成：click\n\n{\n  \"action\": \"click\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"detail\": \"BUTTON: Run fixture action\"\n}"
         },
         {
-          "id": "call_3350334",
+          "id": "chatcmpl-tool-b901d3d500603f30",
           "name": "browser_exec",
           "summary": "screenshot",
           "status": "success",
-          "taskId": "local-1791507615059-0",
-          "startSeq": 50,
+          "taskId": "local-1792110145332-0",
+          "startSeq": 58,
           "approval": false,
-          "endSeq": 52,
-          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:53070/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-kV3DjT\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1791507615059-0--6f2afc12a222b699\\\\generated\\\\image\\\\85febb06-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MTUwNzYxNTA1OS0wOjE3OTE1MDc2MzM3MDI6c2Vyb21o\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"google-vertex/gemini-3.8-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
+          "endSeq": 60,
+          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-cC7dc6\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1792110145332-0--0746b444dc3a6cad\\\\generated\\\\image\\\\8ae25bae-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MjExMDE0NTMzMi0wOjE3OTIxMTAxNTUzNjk6ejlmczcz\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/commandcode/z-ai/glm-5.3-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
         }
       ],
-      "finalText": "老板，已按要求严格通过 `browser_exec` 顺序完成页面导航、截图观察、点击交互与再次截图观察。根据真实截图报告如下：\n\n- **未知 VISUAL 标记完整文字**：`VISUAL-b2a9e7ae38304bf5`\n- **操作前的状态**：按钮下方绿色状态栏文字为 `READY`\n- **操作后（点击 `#fixtureButton` 按钮）的状态**：绿色状态栏文字变为 `CLICKED`",
-      "taskId": "local-1791507615059-0",
+      "finalText": "老板，按指定顺序完成，未使用任何被禁止的工具：\n\n- **VISUAL 标记完整文字**：`VISUAL-fe95ee6ba529ca93`（页面标题为 \"Screenshot acceptance fixture\"，蓝色背景白色大字）\n- **初始状态**：黄色按钮 \"Run fixture action\"，下方绿色状态条显示 `READY`\n- **操作后状态**：点击 `#fixtureButton`（按钮文字确认为 \"Run fixture action\"）后，绿色状态条变为 `CLICKED`，标记文字不变\n\n全部依据真实截图观察，浏览器侧栏未打开。",
+      "taskId": "local-1792110145332-0",
       "result": {
         "nativeImageResults": 2,
         "nativeImages": [
           {
             "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live\\browser-native-0.png",
-            "sha256": "d07f9df687ebf44ad9ce1bd214015e306d8558ae3f4c4cefb50490fc231f6de1"
+            "sha256": "ff15aaddcc6f98d10d37bd2c3c4f0ca33e91d4ab604b99982dcc36783e35b1fe"
           },
           {
             "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live\\browser-native-1.png",
-            "sha256": "a22cf27fa9258a2722a5b320c10e10cb69ccc4a5cdaf0b14143155dbcc232c5a"
+            "sha256": "c8e515e5a2cc3414b55e64f87400544e293af8d7288bf84037e61f529dbc04ef"
           }
         ],
         "visualNonceRead": true,
         "actualFixtureClicks": 1
       },
-      "finishedAt": "2026-10-09T01:00:37.653Z"
+      "finishedAt": "2026-10-16T00:22:40.160Z"
     },
     {
       "name": "computer-stop-preserves-agent-task",
-      "startedAt": "2026-10-09T01:00:37.802Z",
+      "startedAt": "2026-10-16T00:22:40.584Z",
       "status": "passed",
       "stoppedViaRealOverlay": true,
-      "cancelledAt": 1791507640737,
+      "cancelledAt": 1792110163636,
       "tools": [
         {
-          "id": "call_1168455",
+          "id": "chatcmpl-tool-afb7bfad68c9057f",
           "name": "computer_exec",
-          "summary": "wait_for_window: Missing acceptance window b2a9e7ae38304bf5",
+          "summary": "wait_for_window: Missing acceptance window fe95ee6ba529ca93",
           "status": "error",
-          "taskId": "local-1791507638075-3",
-          "startSeq": 14,
+          "taskId": "local-1792110160918-3",
+          "startSeq": 17,
           "approval": false,
-          "endSeq": 16,
+          "endSeq": 19,
           "output": "[computer_exec] 用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。"
         },
         {
-          "id": "call_2871341",
+          "id": "chatcmpl-tool-819795cc12dbfebe",
           "name": "write",
-          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-kV3DjT/workspace/continued-after-computer-stop.txt",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt",
           "status": "success",
-          "taskId": "local-1791507638075-3",
-          "startSeq": 26,
+          "taskId": "local-1792110160918-3",
+          "startSeq": 33,
           "approval": false,
-          "endSeq": 28,
-          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-kV3DjT/workspace/continued-after-computer-stop.txt"
+          "endSeq": 35,
+          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt"
         }
       ],
-      "finalText": "老板，任务已继续。已按要求写入文件 `C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-kV3DjT/workspace/continued-after-computer-stop.txt`，内容为 `CONTINUED-b2a9e7ae38304bf5`。",
-      "taskId": "local-1791507638075-3",
+      "finalText": "已确认：`computer_exec(wait_for_window)` 收到取消结果后未重试，且已通过原生 `write` 创建文件 `C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt`，内容为 `CONTINUED-fe95ee6ba529ca93`。\n\n任务已继续。",
+      "taskId": "local-1792110160918-3",
       "result": {
         "computerUseCancelled": true,
         "parentTaskContinued": true,
         "nativeWriteAfterStop": true
       },
-      "finishedAt": "2026-10-09T01:00:44.956Z"
+      "finishedAt": "2026-10-16T00:22:48.650Z"
     }
   ],
   "status": "passed",
-  "mainBuildSha256": "7a1b2bb54f8ff8d5089972de07f4842ccbce7a87577f9ec05a0eada5055cfae0",
-  "pid": 56516,
+  "mainBuildSha256": "b1be70f4bbad93450cd4aa0c1eac7d35956407c36c0f569b25cfaa3473813ff8",
+  "pid": 13356,
   "permissionMode": "auto (isolated localhost fixtures only)",
   "rendererErrors": [],
   "observedModels": [
-    "google-vertex/gemini-3.8-flash"
+    "magpie/commandcode/z-ai/glm-5.3-flash"
   ],
   "temporaryCredentialsRemoved": true,
-  "finishedAt": "2026-10-09T01:01:05.936Z"
+  "finishedAt": "2026-10-16T00:23:09.616Z"
 }
