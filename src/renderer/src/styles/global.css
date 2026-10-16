@@ -20161,9 +20161,7 @@ summary:focus-visible {
   background: var(--bg-sidebar);
 }
 
-.task-item-time {
-  display: none;
-}
+/* 常驻显示每行右侧的相对时间（紧凑格式）；悬停时 meta 整体让位给操作按钮，无需再隐藏 */
 
 .task-item:hover,
 .task-item.menu-open {

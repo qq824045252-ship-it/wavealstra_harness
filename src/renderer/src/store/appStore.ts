@@ -6401,13 +6401,15 @@ function findActiveTaskArtifact(state: AppState, id: string | null): Artifact | 
   return toRendererArtifact(descriptor, state.artifactRenderCache[descriptor.id]);
 }
 
-export function relativeTime(ts: number): string {
+export function relativeTime(ts: number, opts?: { compact?: boolean }): string {
   const diff = Date.now() - ts;
   const MIN = 60_000;
+  // compact：去掉「前」字的短格式（侧栏任务行右侧标签），完整格式用于表格/tooltip
+  const suffix = opts?.compact ? "" : "前";
   if (diff < MIN) return "刚刚";
-  if (diff < 60 * MIN) return `${Math.floor(diff / MIN)}分钟前`;
-  if (diff < 24 * 60 * MIN) return `${Math.floor(diff / (60 * MIN))}小时前`;
-  return `${Math.floor(diff / (24 * 60 * MIN))}天前`;
+  if (diff < 60 * MIN) return `${Math.floor(diff / MIN)}分钟${suffix}`;
+  if (diff < 24 * 60 * MIN) return `${Math.floor(diff / (60 * MIN))}小时${suffix}`;
+  return `${Math.floor(diff / (24 * 60 * MIN))}天${suffix}`;
 }
 
 export function clockTime(ts: number): string {

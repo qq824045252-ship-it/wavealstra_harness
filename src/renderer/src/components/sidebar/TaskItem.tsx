@@ -680,10 +680,10 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
           </span>
         )}
         {displayStatus === "idle" && (
-          <span className="task-item-time">{relativeTime(task.updatedAt)}</span>
+          <span className="task-item-time">{relativeTime(task.updatedAt, { compact: true })}</span>
         )}
         {(displayStatus === "running" || displayStatus === "done") && (
-          <span className="task-item-time dim">{relativeTime(task.updatedAt)}</span>
+          <span className="task-item-time dim">{relativeTime(task.updatedAt, { compact: true })}</span>
         )}
       </div>
 
