@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-16T03:22:56.937Z",
+  "at": "2026-10-16T03:37:02.022Z",
   "scope": [
     "src",
     "app",
@@ -603,20 +603,20 @@
     },
     {
       "file": "src/main/agent/durable/DurableCodeMode.ts",
-      "lines": 88,
-      "sha256": "9309523c17bb25d1fb4ef4e0e29adfe6183bc7323a1fd185d99f2963007d3c0d",
+      "lines": 90,
+      "sha256": "29a3f0da7ee15d8c6e6386a86cd401ee55996da36865e3dff10a1081ca0e385d",
       "test": false
     },
     {
       "file": "src/main/agent/durable/DurableDomainTools.ts",
       "lines": 91,
-      "sha256": "e372d649529432104522bb3806989c2dee57e1c05bb7fbc951d789075a3db92e",
+      "sha256": "c80445f90446b6704b3d718fda5f5ac8a5e2576a201f779e793343ed0b61a47c",
       "test": false
     },
     {
       "file": "src/main/agent/durable/DurableImages.ts",
       "lines": 76,
-      "sha256": "69c1c0feb7682e08d2535e5f573563794616b938e8e602103f91454311b1e6bb",
+      "sha256": "3c4506b2ea13b3f987ad7aa14942e5cf3d0b1a13267185df2ca08e921e54e25e",
       "test": false
     },
     {
@@ -628,7 +628,7 @@
     {
       "file": "src/main/agent/durable/DurableMcp.ts",
       "lines": 210,
-      "sha256": "efcbe9ced54f6847f7b12c7569a96b1e3796bce72c5a54baeb9c1ede2950bdf7",
+      "sha256": "f1091c0abf039ef97d3d5a79c9449cbabdb171fb521d6066b99f97b81df59610",
       "test": false
     },
     {
@@ -1168,7 +1168,7 @@
     {
       "file": "src/main/capabilities/subagent/worker-launcher.mjs",
       "lines": 187,
-      "sha256": "6a2703bcd8b65c271482cb10a6a1b367a076980d5fc3daba9ef707bca8674c82",
+      "sha256": "873fd5b023db78409f8222eacaac27c5e95fdd3bb57ede056a888fbd1fd0fd40",
       "test": false
     },
     {
@@ -4903,7 +4903,7 @@
     },
     {
       "file": "src/main/agent/durable/DurableCodeMode.ts",
-      "line": 83,
+      "line": 85,
       "method": "abort",
       "expression": "(await api.conversation(child, context))?.abort"
     },
@@ -5210,5 +5210,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "eb08beda52f4d8f7b9680e46c81f19cfdb1bcc86d7792b3ba4a28313377a78ff"
+  "sourceSha256": "9a8eba08bb18d2945f04107c15e0c5cd8cb711eded62089fb9663873b60d0b33"
 }
