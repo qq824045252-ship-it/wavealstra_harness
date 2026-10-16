@@ -4,9 +4,9 @@ import { basename, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  Harness, SessionFailed, StorageRequestError, createRegistry, defineExtension, section, AgentDoc, hook, GenerationTask, defineDoc,
+  Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, hook, GenerationTask, defineDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
-  type LiveState, type InboxState, type Storage, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
+  type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
 } from "@earendil-works/pi-durable";
 import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -352,6 +352,64 @@ export class DurableBotRuntime {
     }
   }
 
+  /**
+   * Recovered nested calls of an interrupted Code Mode run have no details.calls and no live slot: read the caller
+   * task's NestedCallDoc members and project the ones without a result as interrupted errors.
+   */
+  private async projectInterruptedNested(
+    owner: ChatMessageDto,
+    message: Extract<Message, { role: "toolResult" }>,
+    toolTaskId: TaskId,
+    tools: Map<string, NonNullable<ChatMessageDto["tools"]>[number]>,
+  ): Promise<void> {
+    let found = false;
+    for (let index = 1; index <= 32; index++) {
+      const key = String(index);
+      let state;
+      try { state = await this.harness.snapshot(NestedCallDoc, toolTaskId, key, ctx); }
+      catch { break; }
+      if (!state) break;
+      found = true;
+      if (state.result) continue;
+      let name = "nested";
+      let args: unknown = {};
+      const nestedTaskId = state.taskId;
+      if (nestedTaskId !== undefined) {
+        try {
+          const task = await this.harness.getTask(nestedTaskId, ctx);
+          const input = task?.input as { kind?: string; call?: { name?: string; arguments?: unknown } } | undefined;
+          if (input?.kind === "nested" && input.call) {
+            name = input.call.name ?? name;
+            args = input.call.arguments ?? {};
+          }
+        } catch { /* A retired or unreadable task still projects as interrupted. */ }
+      }
+      this.pushInterruptedRow(owner, message, tools, key, name, args);
+    }
+    // The caller's NestedCallDoc retires with its task, so an interrupted call may leave only its error result.
+    if (!found) this.pushInterruptedRow(owner, message, tools, undefined, "nested", {});
+  }
+
+  private pushInterruptedRow(
+    owner: ChatMessageDto,
+    message: Extract<Message, { role: "toolResult" }>,
+    tools: Map<string, NonNullable<ChatMessageDto["tools"]>[number]>,
+    key: string | undefined,
+    name: string,
+    args: unknown,
+  ): void {
+    const row: NonNullable<ChatMessageDto["tools"]>[number] = {
+      id: `${message.toolCallId}:nested:interrupted${key ? ":" + key : ""}`,
+      parentToolCallId: message.toolCallId,
+      tool: name,
+      summary: JSON.stringify(args),
+      status: "error",
+      output: "",
+    };
+    tools.set(row.id, row);
+    if (!owner.tools?.some(item => item.id === row.id)) (owner.tools ??= []).push(row);
+  }
+
   private async project(value: ConversationView): Promise<void> {
     if (this.closed || this.failed) return;
     // Include full history across compactions/resets. These are immutable entries, not model context.
@@ -385,6 +443,7 @@ export class DurableBotRuntime {
     let error: string | undefined;
     let outcome: DurableBotSnapshot["outcome"];
     let turnStartedAt: number | undefined;
+    const interruptedNested: Array<{ owner: ChatMessageDto; message: Extract<Message, { role: "toolResult" }>; toolTaskId: TaskId }> = [];
     const append = (entry: Pick<EntryRecord, "id" | "kind" | "model" | "byTaskId">, streaming = false, id = `durable-${entry.id}`) => {
       for (const message of entry.model ?? []) {
         if (message.role === "user" && entry.kind === "pi.user") {
@@ -424,6 +483,9 @@ export class DurableBotRuntime {
             tools.set(row.id, row);
             owner?.tools!.push(row);
           }
+          if (tool?.tool === "codemode" && message.isError && !details?.calls?.length && entry.byTaskId !== undefined && owner) {
+            interruptedNested.push({ owner, message, toolTaskId: entry.byTaskId });
+          }
           const images = details?.imagePaths;
           if (images?.length && owner) owner.artifacts = [...owner.artifacts ?? [], ...images.map(path => ({
             id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "",
@@ -432,6 +494,7 @@ export class DurableBotRuntime {
       }
     };
     for (const entry of entries.sort((a,b) => a.id - b.id)) append(entry);
+    for (const item of interruptedNested) await this.projectInterruptedNested(item.owner, item.message, item.toolTaskId, tools);
     if (live.run && live.generation?.message) append({ id: live.run.taskId as unknown as EntryRecord["id"], byTaskId: live.run.taskId, kind: "pi.assistant", model: [live.generation.message] }, true, `durable-live-${live.run.taskId}`);
     if (live.run) {
       const key = `durable-generation-${live.run.taskId}`;
