@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  Harness, createRegistry, defineExtension, section, AgentDoc, hook, GenerationTask, defineDoc,
+  Harness, SessionFailed, StorageRequestError, createRegistry, defineExtension, section, AgentDoc, hook, GenerationTask, defineDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
   type LiveState, type InboxState, type Storage, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
 } from "@earendil-works/pi-durable";
@@ -59,6 +59,10 @@ export class DurableBotRuntime {
   private readonly epoch = randomUUID();
   private latest!: DurableBotSnapshot;
   private closed = false;
+  private failure: unknown = undefined;
+  private failed = false;
+  private closeBegun = false;
+  private readonly failureListeners = new Set<(error: unknown) => void>();
   private projection: Promise<void> = Promise.resolve();
   private nativeTools: ToolRegistration[] = [];
   private compatibilityTools: ToolRegistration[] = [];
@@ -69,10 +73,57 @@ export class DurableBotRuntime {
   private lease?: DurableStorageLease;
   private repaired?: DurableLogRepairReport;
   private readonly children = new Map<number, ConversationWatch>();
-  private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {}
+  private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {
+    this.observeSession();
+  }
 
   /** Deterministic recovery of a log that a second writer corrupted; surfaced to the conversation UI. */
   get repairReport(): DurableLogRepairReport | undefined { return this.repaired; }
+
+  /** Whether the underlying Session failed and this runtime must be reopened. */
+  isSessionFailed(): boolean { return this.failed; }
+  /** The first error that failed the Session, or undefined while healthy. */
+  sessionFailure(): unknown { return this.failure; }
+  /** Observe the first Session failure; returns an unsubscribe function. */
+  onSessionFailed(listener: (error: unknown) => void): () => void {
+    if (this.failed) { listener(this.failure); return () => {}; }
+    this.failureListeners.add(listener);
+    return () => { this.failureListeners.delete(listener); };
+  }
+  private observeSession(): void {
+    this.harness.subscribeClose(() => {
+      this.closeBegun = true;
+      void this.harness.closed.then(end => { if (end.reason === "failed") this.markFailure(end.error); });
+    });
+  }
+  private markFailure(error: unknown): void {
+    if (this.failed || this.closed) return;
+    this.failed = true;
+    this.failure = error;
+    console.warn("[Durable] Session failed; reopening recovers committed content", error);
+    for (const listener of [...this.failureListeners]) {
+      try { listener(error); }
+      catch (listenerError) { console.warn("[Durable] Session failure listener failed", listenerError); }
+    }
+    this.failureListeners.clear();
+  }
+  private assertSessionHealthy(): void {
+    if (this.failed) throw new SessionFailed(this.failure);
+  }
+  /** Convert a failed call into the recognizable SessionFailed, preserving the original cause. */
+  private async normalizeFailure(error: unknown): Promise<never> {
+    if (error instanceof StorageRequestError) throw error;
+    if (error instanceof SessionFailed) { this.markFailure(error.cause); throw error; }
+    if (this.failed) throw new SessionFailed(this.failure);
+    // The first fatal Storage call rethrows its raw error; the Session closes at once.
+    // Wait for that close so the failure is recorded and callers always see SessionFailed.
+    if (this.closeBegun) {
+      const end = await this.harness.closed;
+      if (end.reason === "failed") this.markFailure(end.error);
+    }
+    if (this.failed) throw new SessionFailed(this.failure);
+    throw error;
+  }
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
     options = { ...options, models: legacyCompatibleModels(options.models) };
@@ -105,7 +156,8 @@ export class DurableBotRuntime {
       return tools;
     });
     let runtime: DurableBotRuntime | undefined;
-    registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message)));
+    registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
+      (code, context) => runtime?.prewarmCodeMode(code, context)));
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
@@ -129,8 +181,12 @@ export class DurableBotRuntime {
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
       // Stored agent choices win on reopen, including an unfinished Code Mode call.
       const configured = await conversation.commit(async tx => Boolean((await tx.doc(AgentDoc, conversation.id)).tools), ctx);
-      if (configured) options.toolMode = bound.tools.some(tool => tool.name === "codemode") ? "codemode" : "native";
-      else await runtime.configure(options.model, options.toolMode);
+      if (configured) {
+        options.toolMode = bound.tools.some(tool => tool.name === "codemode") ? "codemode" : "native";
+        // Normalize Code Mode sessions persisted before executeTool: scripts may call every registered tool,
+        // while the model is still offered only codemode.
+        if (options.toolMode === "codemode") await runtime.configure(undefined, "codemode");
+      } else await runtime.configure(options.model, options.toolMode);
       runtime.watch = await conversation.watch(ctx);
       await runtime.refresh();
       runtime.watch.start(async () => { await runtime!.refresh(); });
@@ -143,6 +199,7 @@ export class DurableBotRuntime {
   }
 
   async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel, extensions?: readonly ToolRegistration[]): Promise<void> {
+    this.assertSessionHealthy();
     if (extensions) {
       this.nativeTools = [...codingTools(), ...extensions];
       const available = this.nativeTools;
@@ -155,17 +212,18 @@ export class DurableBotRuntime {
       // to new turns. Durable still decides whether an interrupted external call may replay.
       const names = new Set(available.map(tool => tool.name));
       const registered = [...available, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
-      this.registry.install(botExtension(this.options, registered, this.codemode, (id, message) => this.recordResponse(id, message)));
+      this.registry.install(botExtension(this.options, registered, this.codemode, (id, message) => this.recordResponse(id, message),
+        (code, context) => this.prewarmCodeMode(code, context)));
     }
     this.options.toolMode = toolMode;
-    const tools = toolMode === "codemode" ? [this.codemode] : this.nativeTools;
     await this.conversation.configure({
       ...(model ? { model } : {}), ...(thinkingLevel ? { thinkingLevel } : {}),
-      tools,
+      tools: toolMode === "codemode" ? { remove: [] } : this.nativeTools,
+      modelTools: toolMode === "codemode" ? [this.codemode] : null,
     }, ctx);
   }
 
-  resume(): void { this.harness.resume(); }
+  resume(): void { this.assertSessionHealthy(); this.harness.resume(); }
   private installCompatibility(tools: readonly ToolRegistration[]): void {
     if (!tools.length) return;
     const compatibility = new Map(this.compatibilityTools.map(tool => [tool.name, tool]));
@@ -173,8 +231,15 @@ export class DurableBotRuntime {
     this.compatibilityTools = [...compatibility.values()];
     const names = new Set(this.nativeTools.map(tool => tool.name));
     this.registry.install(botExtension(this.options, [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))], this.codemode,
-      (id, message) => this.recordResponse(id, message)));
+      (id, message) => this.recordResponse(id, message),
+      (code, context) => this.prewarmCodeMode(code, context)));
   }
+  /** Install Code Mode's dynamically discovered tools before the nested ToolTask freezes its registry snapshot. */
+  private async prewarmCodeMode(code: string, context: Parameters<ToolRegistration["execute"]>[2]): Promise<void> {
+    const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
+    if (tools.length) this.installCompatibility(tools);
+  }
+
   get snapshot(): DurableBotSnapshot { return this.latest; }
 
   /** Query native state before changing a task identity; UI idle alone is not a boundary. */
@@ -192,73 +257,103 @@ export class DurableBotRuntime {
   }
 
   async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata) {
-    if (metadata) await this.conversation.commit(async tx => {
-      const doc = await tx.doc(InputMetadata, this.conversation.id);
-      doc.requests[requestId] ??= metadata;
-    }, ctx);
-    const submission = await this.conversation.submit({ type: "input", content, requestId, whenBusy }, ctx);
-    await this.refresh();
-    return submission;
+    this.assertSessionHealthy();
+    try {
+      if (metadata) await this.conversation.commit(async tx => {
+        const doc = await tx.doc(InputMetadata, this.conversation.id);
+        doc.requests[requestId] ??= metadata;
+      }, ctx);
+      const submission = await this.conversation.submit({ type: "input", content, requestId, whenBusy }, ctx);
+      await this.refresh();
+      return submission;
+    } catch (error) {
+      return await this.normalizeFailure(error);
+    }
   }
 
   async refresh(): Promise<DurableBotSnapshot> {
+    this.assertSessionHealthy();
     // Keep the single-writer lease fresh; a stale lease only matters after an unclean shutdown.
     this.lease?.heartbeat();
     // Serialize presentation reads only. Durable alone schedules execution.
     const projection = this.projection.then(async () => {
-      if (this.closed) return;
+      if (this.closed || this.failed) return;
       const view = await this.conversation.watch(ctx);
       try { await this.project(view.value); }
       finally { await view.stop(); }
     });
     this.projection = projection.catch(() => {});
-    await projection;
+    try {
+      await projection;
+    } catch (error) {
+      return await this.normalizeFailure(error);
+    }
     return this.latest;
   }
 
   /** The answer belongs to this receipt even if another turn has already started or failed. */
   async reply(submission: Submission): Promise<string> {
-    const settled = await submission.wait(ctx);
-    if (settled.status === "unanswered") {
-      throw new Error(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
+    this.assertSessionHealthy();
+    try {
+      const settled = await submission.wait(ctx);
+      if (settled.status === "unanswered") {
+        throw new Error(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
+      }
+      if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
+      const record = await this.storage.entry(this.conversation.id, settled.answer, ctx);
+      const message = record?.entry.model?.find(item => item.role === "assistant");
+      if (!message) throw new Error("Durable 回复记录不存在");
+      if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {
+        throw new Error(message.errorMessage || `Durable 回复未完成：${message.stopReason}`);
+      }
+      return contentText(message.content).trim() || "任务已处理，但未产生文本回复。";
+    } catch (error) {
+      return await this.normalizeFailure(error);
     }
-    if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
-    const record = await this.storage.entry(this.conversation.id, settled.answer, ctx);
-    const message = record?.entry.model?.find(item => item.role === "assistant");
-    if (!message) throw new Error("Durable 回复记录不存在");
-    if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {
-      throw new Error(message.errorMessage || `Durable 回复未完成：${message.stopReason}`);
-    }
-    return contentText(message.content).trim() || "任务已处理，但未产生文本回复。";
   }
 
   async abort(): Promise<void> {
-    await this.conversation.abort(ctx, { background: true });
-    await this.refresh();
+    this.assertSessionHealthy();
+    try {
+      await this.conversation.abort(ctx, { background: true });
+      await this.refresh();
+    } catch (error) {
+      return await this.normalizeFailure(error);
+    }
   }
 
   async compact(): Promise<void> {
-    const id = await this.conversation.compact(undefined, ctx);
-    const result = await this.harness.waitForTask(id, ctx);
-    if (result.state.outcome.status !== "completed") throw new Error(`Durable 压缩${result.state.outcome.status}`);
-    const submissionId = result.state.outcome.result.submissionId;
-    if (submissionId) await (await this.harness.submission(submissionId, ctx))?.wait(ctx);
-    await this.refresh();
+    this.assertSessionHealthy();
+    try {
+      const id = await this.conversation.compact(undefined, ctx);
+      const result = await this.harness.waitForTask(id, ctx);
+      if (result.state.outcome.status !== "completed") throw new Error(`Durable 压缩${result.state.outcome.status}`);
+      const submissionId = result.state.outcome.result.submissionId;
+      if (submissionId) await (await this.harness.submission(submissionId, ctx))?.wait(ctx);
+      await this.refresh();
+    } catch (error) {
+      return await this.normalizeFailure(error);
+    }
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.watch?.stop();
-    await Promise.all([...this.children.values()].map(watch => watch.stop()));
-    await this.projection;
-    // close checkpoints pending work; abort would permanently cancel it.
-    await this.harness.close(ctx);
-    this.lease?.release();
+    try {
+      try { await this.watch?.stop(); }
+      catch (error) { if (!this.failed) throw error; }
+      await Promise.allSettled([...this.children.values()].map(watch => watch.stop()));
+      await this.projection.catch(() => {});
+      // close checkpoints pending work; abort would permanently cancel it.
+      try { await this.harness.close(ctx); }
+      catch (error) { if (!(error instanceof SessionFailed) && !this.failed) throw error; }
+    } finally {
+      this.lease?.release();
+    }
   }
 
   private async project(value: ConversationView): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.failed) return;
     // Include full history across compactions/resets. These are immutable entries, not model context.
     let cursor: Cursor | undefined;
     const entries: EntryRecord[] = [];
@@ -321,10 +416,15 @@ export class DurableBotRuntime {
         } else if (message.role === "toolResult") {
           const tool = tools.get(message.toolCallId);
           if (tool) { tool.status = message.isError ? "error" : "success"; tool.output = contentText(message.content); }
-          const child = (message.details as { conversationId?: number } | undefined)?.conversationId;
-          if (child && tool?.tool === "codemode") childIds.set(message.toolCallId, child);
-          const images = (message.details as { imagePaths?: string[] } | undefined)?.imagePaths;
+          const details = message.details as { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined;
+          if (details?.conversationId && tool?.tool === "codemode") childIds.set(message.toolCallId, details.conversationId);
           const owner = messages.find(row => row.tools?.some(call => call.id === message.toolCallId));
+          if (tool?.tool === "codemode" && details?.calls) for (const [index, call] of details.calls.entries()) {
+            const row = nestedToolRow(message.toolCallId, call, index);
+            tools.set(row.id, row);
+            owner?.tools!.push(row);
+          }
+          const images = details?.imagePaths;
           if (images?.length && owner) owner.artifacts = [...owner.artifacts ?? [], ...images.map(path => ({
             id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "",
           }))];
@@ -348,8 +448,23 @@ export class DurableBotRuntime {
     for (const slot of live.tools ?? []) {
       const tool = tools.get(slot.callId);
       if (tool) { tool.output = slot.output ?? tool.output; if (slot.status !== "done") tool.status = "running"; }
-      const child = (slot.details as { conversationId?: number } | undefined)?.conversationId;
-      if (child && slot.name === "codemode") childIds.set(slot.callId, child);
+      const details = slot.details as { conversationId?: number; calls?: readonly NestedCallDetail[] } | undefined;
+      if (details?.conversationId && slot.name === "codemode") childIds.set(slot.callId, details.conversationId);
+      const owner = messages.find(message => message.tools?.some(item => item.id === slot.callId));
+      if (slot.name === "codemode" && details?.calls && owner) for (const [index, call] of details.calls.entries()) {
+        const row = nestedToolRow(slot.callId, call, index);
+        tools.set(row.id, row);
+        if (!owner.tools!.some(item => item.id === row.id)) owner.tools!.push(row);
+      }
+    }
+    for (const slot of live.nestedTools ?? []) {
+      const owner = messages.find(message => message.tools?.some(item => item.id === slot.parentCallId));
+      if (!owner) continue;
+      const status = slot.status === "done" ? (slot.summary?.isError ? "error" as const : "success" as const) : "running" as const;
+      const row: NonNullable<ChatMessageDto["tools"]>[number] = { id: slot.callId, parentToolCallId: slot.parentCallId, tool: slot.name,
+        summary: JSON.stringify(slot.arguments), status, output: slot.output ?? slot.summary?.error ?? "" };
+      tools.set(row.id, row);
+      if (!owner.tools!.some(item => item.id === row.id)) owner.tools!.push(row);
     }
     for (const [parentId, childId] of childIds) {
       const owner = messages.find(message => message.tools?.some(tool => tool.id === parentId));
@@ -432,15 +547,50 @@ function legacyCompatibleModels(models: Models): Models {
   } });
 }
 
-function botExtension(options: DurableBotOptions, native: readonly ToolRegistration[], codemode: ToolRegistration, recordResponse: (taskId: number, message: AssistantMessage) => void | Promise<void>) {
+function botExtension(
+  options: DurableBotOptions,
+  native: readonly ToolRegistration[],
+  codemode: ToolRegistration,
+  recordResponse: (taskId: number, message: AssistantMessage) => void | Promise<void>,
+  prewarmCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<void> | void,
+) {
   return defineExtension({ name: "mybuddy.bot", tools: [...native, codemode],
     sections: [section("mybuddy", () => options.instructions(), { tag: false })],
     // Request-only evidence; no policy hooks, scheduler or continuation loop.
     hooks: [hook(GenerationTask, { beforeRequest: request => {
       const text = options.evidence?.(request.messages);
       return text ? { messages: [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...request.messages] } : undefined;
-    }, afterResponse: (message, api) => recordResponse(api.taskId, message) })],
+    }, afterResponse: async (message, api, context) => {
+      await recordResponse(api.taskId, message);
+      // Code Mode discovers MCP tools from the script. Install them during the generation task so the nested
+      // ToolTask's registry snapshot already contains them when executeTool() resolves a name.
+      const codes = message.content.flatMap(content => content.type === "toolCall" && content.name === "codemode"
+        ? [(content.arguments as { code?: unknown }).code].filter((code): code is string => typeof code === "string")
+        : []);
+      for (const code of codes) await prewarmCodeMode?.(code, context);
+    } })],
   });
+}
+
+type NestedCallDetail = {
+  readonly id?: string;
+  readonly name: string;
+  readonly args?: unknown;
+  readonly status?: string;
+  readonly output?: string;
+  readonly durationMs?: number;
+  readonly error?: string;
+};
+
+function nestedToolRow(parentCallId: string, call: NestedCallDetail, index: number): NonNullable<ChatMessageDto["tools"]>[number] {
+  return {
+    id: `${parentCallId}:nested:${call.id ?? String(index)}`,
+    parentToolCallId: parentCallId,
+    tool: call.name,
+    summary: JSON.stringify(call.args ?? {}),
+    status: call.status === "error" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success",
+    output: call.output ?? call.error ?? "",
+  };
 }
 
 function contentText(content: unknown): string {

@@ -1,16 +1,63 @@
-import { randomUUID } from "node:crypto";
-import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
-import { CodemodeSandbox, renderDeclarations, type CodemodeTool, type CodemodeSandboxOptions, type CodemodeJsonSchema } from "@earendil-works/pi-codemode";
+import { Type } from "@earendil-works/pi-ai";
+import {
+  CodemodeSandbox, renderDeclarations,
+  type CodemodeJsonSchema, type CodemodeOutputItem, type CodemodeSandboxOptions, type CodemodeTool,
+} from "@earendil-works/pi-codemode";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import {
-  AssistantEntry, ToolTask, ToolResultEntry, configure, defineDoc, defineTool,
-  type ToolRegistration, type JsonObject,
+  defineDoc, defineTool,
+  type JsonObject, type NestedToolExecutionResult, type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { persistDurableImages } from "./DurableImages";
 
 const Store = defineDoc({ kind: "mybuddy.codemode-store", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ values: {} as JsonObject }) });
 
-/** Code is never replayed wholesale. Every nested call is a real Pi ToolTask with its own intent and hooks. */
+/** One nested call the UI projects from the Code Mode result details. */
+export type CodemodeCallDetail = {
+  readonly id: string;
+  readonly name: string;
+  readonly args: JsonObject;
+  readonly status: "ok" | "error";
+  readonly output?: string;
+  readonly durationMs?: number;
+  readonly error?: string;
+};
+
+type MutableCallDetail = { -readonly [K in keyof CodemodeCallDetail]: CodemodeCallDetail[K] };
+
+/** The program-visible value pi-durable returns for a schema-less tool: text, one image, `""`, or a content list. */
+function contentItems(value: unknown): CodemodeOutputItem[] {
+  if (value === undefined || value === null || value === "") return [];
+  if (typeof value === "string") return [{ type: "text", text: value }];
+  if (Array.isArray(value)) return value.flatMap(item => contentItems(item));
+  if (typeof value === "object") {
+    const item = value as Record<string, unknown>;
+    if (item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string") {
+      return [{ type: "image", data: item.data, mimeType: item.mimeType }];
+    }
+    if (item.type === "text" && typeof item.text === "string") return [{ type: "text", text: item.text }];
+    return [{ type: "text", text: JSON.stringify(value) }];
+  }
+  return [{ type: "text", text: String(value) }];
+}
+
+function outputText(value: unknown): string {
+  return contentItems(value)
+    .filter((item): item is Extract<CodemodeOutputItem, { type: "text" }> => item.type === "text")
+    .map(item => item.text).join("\n");
+}
+
+function failureText(result: NestedToolExecutionResult, name: string): string {
+  const diagnostics = result.diagnostics.filter(item => item.severity === "error").map(item => item.message).join("\n");
+  return diagnostics || outputText(result.structuredOutput) || `Nested tool ${name} failed`;
+}
+
+/**
+ * Code Mode runs model-written JavaScript and gives each `tools.<name>(args)` call a real, durable nested task
+ * through the official `api.executeTool()`. Durable then owns validation, ToolTask hooks, output limits, replay
+ * policy, `pi.live.nestedTools` progress and restart abandonment; this tool only maps the nested value to what the
+ * script sees and records the call rows the UI projects.
+ */
 export function createDurableCodeMode(
   tools: () => readonly ToolRegistration[],
   assets: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl"> = {},
@@ -25,43 +72,38 @@ export function createDurableCodeMode(
     parameters: Type.Object({ code: Type.String() }),
     replay: "unsafe",
     executionMode: "sequential",
+    callers: ["model"],
     execute: async ({ code }, api, context) => {
       const declared = tools();
       const names = new Set(declared.map(tool => tool.name));
       const available = [...declared, ...(await prepareTools?.(code, context) ?? []).filter(tool => !names.has(tool.name))];
-      const child = await api.commit(async tx => {
-        const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
-        await configure(tx, conversation.id, { tools: available });
-        return conversation.id;
-      }, context);
-      await api.details({ conversationId: child }, context);
+      const calls: MutableCallDetail[] = [];
       const nested: CodemodeTool[] = available.map(tool => ({
         name: tool.name, description: tool.description, inputSchema: tool.parameters as CodemodeJsonSchema,
         execute: async (args, { signal }) => {
           const callContext = withAbortSignal(signal, context);
-          const callId = randomUUID();
-          const taskId = await api.commit(async tx => {
-            // This private task-owned transcript is not part of the parent model context.
-            const message: AssistantMessage = {
-              role: "assistant", provider: "mybuddy", model: "codemode", api: "openai-completions",
-              content: [{ type: "toolCall", id: callId, name: tool.name, arguments: args as JsonObject }],
-              stopReason: "toolUse", timestamp: Date.now(),
-              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            };
-            const entry = await tx.appendEntry(AssistantEntry, child, { model: [message] });
-            // The conversation belongs to this Code Mode task; its tasks belong to that conversation.
-            return tx.createTask(ToolTask, { kind: "model", assistant: entry.id, callId }, { conversationId: child, ownership: { kind: "conversation" } });
-          }, callContext);
-          const settled = await api.waitForTask(taskId, callContext);
-          if (settled.state.outcome.status !== "completed") throw new Error(`Nested tool ${tool.name}: ${settled.state.outcome.status}`);
-          const taskResult = settled.state.outcome.result;
-          if (taskResult.kind !== "model") throw new Error(`Nested tool ${tool.name}: unexpected task result`);
-          const resultId = taskResult.entryId;
-          const entry = await api.commit(tx => tx.entry(ToolResultEntry, resultId), callContext);
-          const result = entry?.model?.[0];
-          if (!result || result.role !== "toolResult") throw new Error(`Missing durable result: ${tool.name}`);
-          if (result.isError) throw new Error(result.content.filter(x => x.type === "text").map(x => x.text).join("\n"));
-          return { content: result.content };
+          const detail: MutableCallDetail = { id: `${tool.name}:${calls.length}`, name: tool.name, args: (args ?? {}) as JsonObject, status: "ok" };
+          calls.push(detail);
+          let nestedResult: NestedToolExecutionResult;
+          try {
+            nestedResult = await api.executeTool(tool.name, (args ?? {}) as JsonObject, callContext);
+          } catch (error) {
+            detail.status = "error";
+            detail.error = error instanceof Error ? error.message : String(error);
+            throw error;
+          }
+          detail.status = nestedResult.isError ? "error" : "ok";
+          detail.durationMs = nestedResult.durationMs;
+          detail.output = outputText(nestedResult.structuredOutput);
+          if (nestedResult.isError) {
+            const message = failureText(nestedResult, tool.name);
+            detail.error = message;
+            throw new Error(message);
+          }
+          // A schema tool resolves with its validated value; without one the program gets the bounded output as content.
+          return tool.structuredOutputSchema === undefined
+            ? { content: contentItems(nestedResult.structuredOutput) }
+            : { content: nestedResult.structuredOutput };
         },
       }));
       const saved = await api.snapshot(Store, api.conversationId, context);
@@ -74,15 +116,16 @@ export function createDurableCodeMode(
           Object.assign(state.values, result.storeWrites.set);
         }, context);
         const persistedOutput = imageDirectory ? await persistDurableImages(result.output, imageDirectory) : { content: [...result.output], paths: [] };
-        if (persistedOutput.paths.length) await api.details({ conversationId: child, imagePaths: persistedOutput.paths }, context);
+        await api.details({
+          ...(persistedOutput.paths.length ? { imagePaths: persistedOutput.paths } : {}),
+          calls,
+        }, context);
         const content = persistedOutput.content;
         if (result.ok && result.value !== undefined) content.push({ type: "text", text: JSON.stringify(result.value) });
         if (!result.ok) content.push({ type: "text", text: result.error.stack ?? result.error.message });
         return { output: content, isError: !result.ok };
       } finally {
         await sandbox.close();
-        // End unawaited calls through Durable. Shutdown itself leaves recovery to the owner task.
-        if (!context.abortSignal?.aborted) await (await api.conversation(child, context))?.abort(context, { background: true });
       }
     },
   });

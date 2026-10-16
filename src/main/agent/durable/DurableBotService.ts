@@ -20,7 +20,7 @@ import { DurableMcp } from "./DurableMcp";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
-import type { ToolRegistration, EntryRecord } from "@earendil-works/pi-durable";
+import { SessionFailed, type ToolRegistration, type EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
@@ -30,6 +30,8 @@ interface OpenBot {
   runtime: DurableBotRuntime; mcp: DurableMcp; mcpConfigKey: string;
   retiredMcp: Set<DurableMcp>;
   refreshingMcp?: { key: string; promise: Promise<DurableMcp> };
+  /** Set while this runtime and its MCP clients are being torn down after a Session failure. */
+  closing?: Promise<void>;
 }
 export interface DurableBotServiceOptions {
   db: AppDatabase;
@@ -61,6 +63,7 @@ export class DurableBotService {
   private readonly config: McpConfigService;
   private readonly credentials: McpOAuthCredentialStore;
   private closing = false;
+  private readonly invalidations = new Map<string, Promise<void>>();
   private readonly admissions = new Map<string, Set<Promise<unknown>>>();
   private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly projections = new Map<string, Promise<void>>();
@@ -107,14 +110,61 @@ export class DurableBotService {
 
   private open(taskId: string): Promise<OpenBot> {
     if (this.closing) return Promise.reject(new Error("Bot runtime is closing"));
+    // A failed Session is being torn down; reopen only after its lease/MCP are released.
+    const invalidating = this.invalidations.get(taskId);
+    if (invalidating) return invalidating.then(() => this.open(taskId));
     const existing = this.opened.get(taskId);
-    if (existing) return Promise.resolve(existing);
+    if (existing) {
+      if (!existing.runtime.isSessionFailed()) return Promise.resolve(existing);
+      this.opened.delete(taskId);
+      return this.invalidate(taskId, existing).then(() => this.open(taskId));
+    }
     const opening = this.opening.get(taskId);
     if (opening) return opening;
-    const pending = this.openInternal(taskId).then(open => { this.opened.set(taskId, open); return open; })
-      .finally(() => this.opening.delete(taskId));
+    const pending = this.openInternal(taskId).then(open => {
+      this.opened.set(taskId, open);
+      this.observeFailure(taskId, open);
+      return open;
+    }).finally(() => this.opening.delete(taskId));
     this.opening.set(taskId, pending);
     return pending;
+  }
+
+  /** A failed Session must leave routing so the next open() constructs a fresh Harness over committed content. */
+  private observeFailure(taskId: string, open: OpenBot): void {
+    open.runtime.onSessionFailed(error => {
+      if (this.opened.get(taskId) !== open) return;
+      console.warn(`[Durable] Session failed for ${taskId}; reopening on next access`, error);
+      void this.invalidate(taskId, open).catch(closeError => console.warn(`[Durable] Failed runtime cleanup failed for ${taskId}`, closeError));
+    });
+  }
+
+  /** Idempotently evict one OpenBot and release its runtime lease plus MCP clients. */
+  private invalidate(taskId: string, open: OpenBot): Promise<void> {
+    if (open.closing) return open.closing;
+    if (this.opened.get(taskId) === open) this.opened.delete(taskId);
+    const closing = (async () => {
+      await open.runtime.close();
+      await open.refreshingMcp?.promise.catch(() => {});
+      await Promise.allSettled([open.mcp, ...open.retiredMcp].map(mcp => mcp.close()));
+    })().catch(error => { console.warn(`[Durable] Failed to close failed session ${taskId}`, error); });
+    open.closing = closing;
+    this.invalidations.set(taskId, closing);
+    void closing.finally(() => { if (this.invalidations.get(taskId) === closing) this.invalidations.delete(taskId); });
+    return closing;
+  }
+
+  /** Reopen exactly once on SessionFailed; StorageRequestError and ordinary errors propagate unchanged. */
+  private async withRecovery<T>(taskId: string, operation: (open: OpenBot) => Promise<T>): Promise<T> {
+    const open = await this.open(taskId);
+    try {
+      return await operation(open);
+    } catch (error) {
+      if (!(error instanceof SessionFailed)) throw error;
+      await this.invalidate(taskId, open);
+      const reopened = await this.open(taskId);
+      return operation(reopened);
+    }
   }
 
   private async openInternal(taskId: string): Promise<OpenBot> {
@@ -232,34 +282,35 @@ export class DurableBotService {
     this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId,
       expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
       modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() });
-    const open = await this.open(request.taskId);
-    // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
-    // only a newly admitted input after native idle can adopt a saved desired revision.
-    if (await open.runtime.isIdle()) {
-      const before = this.options.expertBindings?.get(request.taskId);
-      const binding = this.options.expertBindings?.promote(request.taskId);
-      if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
-    }
-    const current = this.options.db.getTask(request.taskId)!;
-    const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
-    await open.runtime.configure(await this.model(current.modelId), this.toolMode(current), this.options.thinking?.(current, request),
-      [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
-    let text = await this.options.prepareInput?.(request) ?? request.text;
-    if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
-    const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];
-    if (this.options.prepareImages) {
-      const images = await this.options.prepareImages(request);
-      content.push(...images.images);
-      if (images.text) content.push({ type: "text", text: images.text });
-    }
-    for (const attachment of request.attachments ?? []) {
-      const mime = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" } as Record<string,string>)[extname(attachment.path).toLowerCase()];
-      if (mime && !this.options.prepareImages) content.push({ type: "image", mimeType: mime, data: readFileSync(attachment.path).toString("base64") });
-      content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
-    }
-    const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
-      { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [] });
-    return { submission, open };
+    return this.withRecovery(request.taskId, async open => {
+      // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
+      // only a newly admitted input after native idle can adopt a saved desired revision.
+      if (await open.runtime.isIdle()) {
+        const before = this.options.expertBindings?.get(request.taskId);
+        const binding = this.options.expertBindings?.promote(request.taskId);
+        if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
+      }
+      const current = this.options.db.getTask(request.taskId)!;
+      const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
+      await open.runtime.configure(await this.model(current.modelId), this.toolMode(current), this.options.thinking?.(current, request),
+        [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
+      let text = await this.options.prepareInput?.(request) ?? request.text;
+      if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
+      const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];
+      if (this.options.prepareImages) {
+        const images = await this.options.prepareImages(request);
+        content.push(...images.images);
+        if (images.text) content.push({ type: "text", text: images.text });
+      }
+      for (const attachment of request.attachments ?? []) {
+        const mime = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" } as Record<string,string>)[extname(attachment.path).toLowerCase()];
+        if (mime && !this.options.prepareImages) content.push({ type: "image", mimeType: mime, data: readFileSync(attachment.path).toString("base64") });
+        content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
+      }
+      const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
+        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [] });
+      return { submission, open };
+    });
   }
 
   private async admitTracked(request: AgentPromptRequest) {
@@ -283,7 +334,16 @@ export class DurableBotService {
       ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
       welcomeMode: "bot", modePresetId: "native", updatedAt: Date.now() });
     const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
-    return open.runtime.reply(submission);
+    try {
+      return await open.runtime.reply(submission);
+    } catch (error) {
+      if (!(error instanceof SessionFailed)) throw error;
+      await this.invalidate(request.taskId, open);
+      const reopened = await this.open(request.taskId);
+      const recovered = await reopened.runtime.harness.submission(submission.id, context);
+      if (!recovered) throw error;
+      return reopened.runtime.reply(recovered);
+    }
   }
 
   async prompt(request: AgentPromptRequest, admissionOnly = false): Promise<AgentPromptResult> {
@@ -301,11 +361,13 @@ export class DurableBotService {
   async history(taskId: string): Promise<TaskHistoryDto> {
     if (!this.binding(taskId)) return { messages: [] };
     try {
-      const { runtime } = await this.open(taskId);
-      const durable = await runtime.refresh();
+      const recovered = await this.withRecovery(taskId, async open => {
+        const snapshot = await open.runtime.refresh();
+        return { runtime: open.runtime, snapshot };
+      });
       await this.projections.get(taskId);
-      const recovery = durableHistoryRecovery(runtime.repairReport);
-      return { messages: durable.messages, durable, cwd: this.binding(taskId)?.cwd, ...(recovery ? { sessionRecovery: recovery } : {}) };
+      const recovery = durableHistoryRecovery(recovered.runtime.repairReport);
+      return { messages: recovered.snapshot.messages, durable: recovered.snapshot, cwd: this.binding(taskId)?.cwd, ...(recovery ? { sessionRecovery: recovery } : {}) };
     } catch (error) {
       // A Bot conversation that cannot be opened must say so: an empty projection renders as the
       // product's "waiting for the first message" state, which hides real damage from the user.
@@ -316,9 +378,9 @@ export class DurableBotService {
   async abort(taskId: string): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.
     await Promise.allSettled([...(this.admissions.get(taskId) ?? [])]);
-    if (this.binding(taskId)) await (await this.open(taskId)).runtime.abort();
+    if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort());
   }
-  async compact(taskId: string): Promise<void> { await (await this.open(taskId)).runtime.compact(); }
+  async compact(taskId: string): Promise<void> { await this.withRecovery(taskId, open => open.runtime.compact()); }
   async purge(taskId: string): Promise<void> {
     if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");
     await this.release(taskId);
@@ -330,12 +392,10 @@ export class DurableBotService {
   }
   async release(taskId: string): Promise<void> {
     const open = this.opened.get(taskId) ?? await this.opening.get(taskId);
-    if (!open) return;
-    await open.runtime.close();
+    const invalidating = this.invalidations.get(taskId);
+    if (!open) { await invalidating; return; }
+    await this.invalidate(taskId, open);
     await this.projections.get(taskId);
-    await open.refreshingMcp?.promise.catch(() => {});
-    await Promise.allSettled([open.mcp, ...open.retiredMcp].map(mcp => mcp.close()));
-    this.opened.delete(taskId);
   }
   async close(): Promise<void> {
     this.closing = true;
@@ -355,7 +415,16 @@ function durableHistoryRecovery(report: DurableLogRepairReport | undefined): Ses
   };
 }
 
+function failureText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  try { return String(error); }
+  catch { return Object.prototype.toString.call(error); }
+}
+
 function describeDurableHistoryFailure(error: unknown): string {
+  if (error instanceof SessionFailed) {
+    return `Bot 会话已失败（storage error）：${failureText(error.cause)}。已尝试自动重开，但恢复未成功。`;
+  }
   if (error instanceof DurableStorageOwnedError) {
     return `该 Bot 会话正被另一个 MyBuddy 实例占用（PID ${error.owner.pid}）。请只保留一个 MyBuddy 实例，稍后重新打开本会话。`;
   }
