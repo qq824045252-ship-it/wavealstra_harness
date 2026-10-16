@@ -1,0 +1,15 @@
+diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
+index 3e3b48a9ebea2c4af2fdac58b860380118be73bd..7438e187f16789507f8d7234d6c04ede0b81072b 100644
+--- a/dist/api/openai-responses-shared.js
++++ b/dist/api/openai-responses-shared.js
+@@ -506,7 +506,9 @@ export async function processResponsesStream(openaiStream, output, stream, model
+                 partial: output,
+             });
+         }
+-        else if (event.type === "response.reasoning_text.delta") {
++        // CommandCode emits response.reasoning.delta with the same indexed text-delta shape.
++        // Route the alias through Pi's native thinking stream, not a completion-time UI replay.
++        else if (event.type === "response.reasoning_text.delta" || event.type === "response.reasoning.delta") {
+             const slot = getSlot(event.output_index, "thinking");
+             if (!slot)
+                 continue;

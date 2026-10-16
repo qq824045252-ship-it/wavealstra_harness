@@ -8,7 +8,7 @@ import { createRequestTransport } from "../../agent/request-transport.mjs";
 import { EphemeralContextProjection } from "./vendor/context-projection.mjs";
 import { commandCodeProvider } from "./vendor/command-code.mjs";
 
-const EXPECTED_PI_VERSION = "1.0.4";
+const EXPECTED_PI_VERSION = "1.3.0";
 
 const requestedCli = realpathSync(resolve(process.argv[2] ?? ""));
 const bundled = requestedCli.endsWith('/pi-runtime.mjs') || requestedCli.endsWith('\\pi-runtime.mjs');

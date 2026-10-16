@@ -55,7 +55,7 @@ export class DurableMcp {
       execute: async ({ server }, _api, context) => {
         const tools = await awaitWithContext(host.catalog(server), context);
         const client = host.servers.get(server)!.client!;
-        return { content: [{ type: "text", text: JSON.stringify({ server, instructions: client.instructions,
+        return { output: [{ type: "text", text: JSON.stringify({ server, instructions: client.instructions,
           tools, callWith: "mcp_call_tool", resources: Boolean(client.serverCapabilities?.resources) }) }] };
       } }));
     host.tools.push(defineTool({ name: "mcp_call_tool", description: "Call an MCP tool discovered with mcp_list_tools. Use the exact server, tool name and arguments matching its input schema. Works in native mode and Code Mode.",
@@ -65,16 +65,16 @@ export class DurableMcp {
       parameters: Type.Object({ server: Type.String() }), replay: "safe",
       execute: async ({ server }, _api, context) => {
         const client = await awaitWithContext(host.client(server), context);
-        return { content: [{ type: "text", text: JSON.stringify({ resources: await client.listResources({ signal: context.abortSignal }), templates: await client.listResourceTemplates({ signal: context.abortSignal }) }) }] };
+        return { output: [{ type: "text", text: JSON.stringify({ resources: await client.listResources({ signal: context.abortSignal }), templates: await client.listResourceTemplates({ signal: context.abortSignal }) }) }] };
       } }));
     host.tools.push(defineTool({ name: "mcp_read_resource", description: "Read a resource on ONE configured MCP server.",
       parameters: Type.Object({ server: Type.String(), uri: Type.String() }), replay: "safe",
       execute: async ({ server, uri }, _api, context) => {
         const client = await awaitWithContext(host.client(server), context);
-        return { content: [{ type: "text", text: JSON.stringify(await client.readResource(uri, { signal: context.abortSignal })) }] };
+        return { output: [{ type: "text", text: JSON.stringify(await client.readResource(uri, { signal: context.abortSignal })) }] };
       } }));
     host.tools.push(defineTool({ name: "mcp_status", description: "Inspect configured MCP connections, discovery timings and errors without connecting unused servers.", parameters: Type.Object({}), replay: "safe",
-      execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ servers: [...host.servers].map(([name, server]) => ({ name,
+      execute: async () => ({ output: [{ type: "text", text: JSON.stringify({ servers: [...host.servers].map(([name, server]) => ({ name,
         state: server.error ? "failed" : server.client?.connectionState ?? "idle", instructions: server.client?.instructions,
         connectMs: server.connectMs, listToolsMs: server.listToolsMs, error: server.error })), errors: host.errors }) }] }) }));
     return host;
@@ -180,7 +180,7 @@ export class DurableMcp {
     const validated = validateToolArguments({ name: tool.name, description: tool.description ?? "", parameters: Type.Unsafe(tool.inputSchema) },
       { type: "toolCall", id: "mcp", name: tool.name, arguments: args as JsonObject });
     const result = await this.servers.get(server)!.client!.callTool(tool.name, validated, { signal: context.abortSignal });
-    return { content: toLlmContent(result), isError: result.isError === true };
+    return { output: toLlmContent(result), isError: result.isError === true };
   }
 
   private async auth(name: string, server: Extract<McpServerConfig, { url: string }>, credentials: McpOAuthCredentialStore, models: ModelRuntime): Promise<AuthProvider | undefined> {

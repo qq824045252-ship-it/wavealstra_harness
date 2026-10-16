@@ -68,7 +68,7 @@ export function withDurableImageRead(tool: ToolRegistration): ToolRegistration {
         if (!resized && mimeType === "image/bmp") throw new Error("BMP image could not be converted for model input");
         const image = resized ?? { data: Buffer.from(bytes).toString("base64"), mimeType };
         const note = resized && formatDimensionNote(resized);
-        return { content: [{ type: "text", text: `Read image file [${image.mimeType}]${note ? `\n${note}` : ""}` }, { type: "image", data: image.data, mimeType: image.mimeType }] };
+        return { output: [{ type: "text", text: `Read image file [${image.mimeType}]${note ? `\n${note}` : ""}` }, { type: "image", data: image.data, mimeType: image.mimeType }] };
       } finally { await reader.close(context); }
     },
   };

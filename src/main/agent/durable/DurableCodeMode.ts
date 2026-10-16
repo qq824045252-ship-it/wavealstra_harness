@@ -50,11 +50,13 @@ export function createDurableCodeMode(
             };
             const entry = await tx.appendEntry(AssistantEntry, child, { model: [message] });
             // The conversation belongs to this Code Mode task; its tasks belong to that conversation.
-            return tx.createTask(ToolTask, { assistant: entry.id, callId }, { conversationId: child, ownership: { kind: "conversation" } });
+            return tx.createTask(ToolTask, { kind: "model", assistant: entry.id, callId }, { conversationId: child, ownership: { kind: "conversation" } });
           }, callContext);
           const settled = await api.waitForTask(taskId, callContext);
           if (settled.state.outcome.status !== "completed") throw new Error(`Nested tool ${tool.name}: ${settled.state.outcome.status}`);
-          const resultId = settled.state.outcome.result.entryId;
+          const taskResult = settled.state.outcome.result;
+          if (taskResult.kind !== "model") throw new Error(`Nested tool ${tool.name}: unexpected task result`);
+          const resultId = taskResult.entryId;
           const entry = await api.commit(tx => tx.entry(ToolResultEntry, resultId), callContext);
           const result = entry?.model?.[0];
           if (!result || result.role !== "toolResult") throw new Error(`Missing durable result: ${tool.name}`);
@@ -76,7 +78,7 @@ export function createDurableCodeMode(
         const content = persistedOutput.content;
         if (result.ok && result.value !== undefined) content.push({ type: "text", text: JSON.stringify(result.value) });
         if (!result.ok) content.push({ type: "text", text: result.error.stack ?? result.error.message });
-        return { content, isError: !result.ok };
+        return { output: content, isError: !result.ok };
       } finally {
         await sandbox.close();
         // End unawaited calls through Durable. Shutdown itself leaves recovery to the owner task.

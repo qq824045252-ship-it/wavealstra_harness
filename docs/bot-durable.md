@@ -10,9 +10,9 @@ Pi Durable owns input admission, steering/follow-up queues, retries, compaction,
 
 Native mode uses Pi Durable's CodingTools. MCP clients use Pi's native transports and authentication store, and register tools/resources as Durable tools. Installed plugin enable/disable and exposure settings still select which capabilities are configured; scenario blacklists and provider-dependent Tag gates do not apply.
 
-With Pi Durable 1.0.4, Windows Bot also registers the native `powershell` tool in Native mode and Code Mode's nested tool catalog. Durable starts `pwsh`, falling back to Windows PowerShell, directly as argv and returns UTF-8 output. Tool configuration refreshes retain it. Bash remains available for existing calls and unfinished checkpoints.
+With Pi Durable 1.3.0, Windows Bot also registers the native `powershell` tool in Native mode and Code Mode's nested tool catalog. Durable starts `pwsh`, falling back to Windows PowerShell, directly as argv and returns UTF-8 output. Tool configuration refreshes retain it. Bash remains available for existing calls and unfinished checkpoints.
 
-Durable's persisted provider session UUID supplies prompt-cache and provider-session affinity across retry and reopening; different Bot conversations have distinct identities. The host uses the upstream `NodeExecutionEnv`, so the 1.0.3 binary-reader, paged-directory-reader, watch and argv-execution API changes are handled by that implementation. Windows watches use polling, which allows parent directory renames. The 1.0.4 read tool supports growing logs. Generation partials and tool output retain Durable's default 100 ms commit interval.
+Durable's persisted provider session UUID supplies prompt-cache and provider-session affinity across retry and reopening; different Bot conversations have distinct identities. The host uses the upstream `NodeExecutionEnv`, so the 1.0.3 binary-reader, paged-directory-reader, watch and argv-execution API changes are handled by that implementation. Windows watches use polling, which allows parent directory renames. The 1.3.0 read tool supports growing logs. Generation partials and tool output retain Durable's default 100 ms commit interval.
 
 Legacy Durable agent selections and running checkpoints that name `azure-openai-responses` resolve to the new native `azure` provider at the model lookup boundary. Immutable transcript entries and persisted checkpoint selections are retained; reopening does not require a new configuration write to recover the run or its queued inputs.
 
@@ -42,7 +42,7 @@ Each Bot preset has `botToolMode: "native" | "codemode"`. Tags remain editable a
 
 Code Mode uses `pi-codemode`'s QuickJS sandbox. Its nested calls are actual Durable `ToolTask`s in a private, task-owned child conversation. Cancellation and child cleanup use Durable ownership. `store`/`load` values are conversation documents. Code Mode and external MCP side effects are registered as unsafe to replay: after interruption Durable records their interruption rather than executing them twice. Model continuation and queued inputs resume through Durable.
 
-Bot's sandbox exposes its registered tools and output/store helpers. The AgentSession Code Mode `pi.models` classifier helper is currently available in office/coding conversations; Pi Durable 1.0.4 has no models accessor on its tool execution API, and Bot does not install that helper.
+Bot's sandbox exposes its registered tools and output/store helpers. The AgentSession Code Mode `pi.models` classifier helper is currently available in office/coding conversations; Pi Durable 1.3.0 exposes `ToolExecutionApi.models`, but Bot keeps its capability-scoped model runtime and does not install that helper.
 
 Search-result reference metadata is persisted on the owning Bot conversation, following Durable's ownership chain. A later Code Mode child can restore those references after process restart.
 

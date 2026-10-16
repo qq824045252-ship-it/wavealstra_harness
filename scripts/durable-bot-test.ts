@@ -111,7 +111,7 @@ if (process.platform === "win32") for (const mode of ["native", "codemode"] as c
   let effects = 0;
   const sessionIds: string[] = [];
   const hold = defineTool({ name: "legacy_hold", description: "legacy unsafe effect", parameters: Type.Object({}), replay: "unsafe",
-    execute: async () => { effects++; return { content: text("must not replay") }; } });
+    execute: async () => { effects++; return { output: text("must not replay") }; } });
   const runtime = await DurableBotRuntime.open({ directory, cwd, model: ref, toolMode: "native", tools: [hold],
     instructions: () => "fixture", onSnapshot: () => {}, models: models((_context, options) => {
       sessionIds.push(options.sessionId); return text("upgraded completion");
@@ -325,7 +325,7 @@ async function until(check: () => boolean): Promise<void> {
         assert.equal(blockedRequests, 0, "one tool must not connect another server");
         const list = host.tools.find(tool => tool.name === "mcp_list_tools")!;
         const results = await Promise.all([list.execute({server:"fixture"}, {} as any, ctx), list.execute({server:"fixture"}, {} as any, ctx)]);
-        for (const result of results) assert(!JSON.parse((result.content[0] as any).text).tools.some((tool: any) => tool.name === "hidden_tool"));
+        for (const result of results) assert(!JSON.parse((result.output[0] as any).text).tools.some((tool: any) => tool.name === "hidden_tool"));
         const caller = host.tools.find(tool => tool.name === "mcp_call_tool")!;
         await assert.rejects(caller.execute({server:"fixture",tool:"hidden_tool",arguments:{}}, {} as any, ctx), /hidden/);
         await assert.rejects(caller.execute({server:"fixture",tool:"read_cwd",arguments:{}}, {} as any, ctx), /label/);
@@ -337,7 +337,7 @@ async function until(check: () => boolean): Promise<void> {
           assert.equal(runtime.snapshot.error, undefined);
         }
         const state = await host.tools.find(tool => tool.name === "mcp_status")!.execute({}, {} as any, ctx);
-        assert.equal(JSON.parse((state.content[0] as any).text).servers.find((server: any) => server.name === "blocked").state, "idle");
+        assert.equal(JSON.parse((state.output[0] as any).text).servers.find((server: any) => server.name === "blocked").state, "idle");
         assert.equal(caller.replay, "unsafe");
         await assert.rejects(list.execute({server:"blocked"}, {} as any, ctx), /timed out|timeout/i);
         const again = await caller.execute({server:"fixture",tool:"read_cwd",arguments:{label:"after-failure"}}, {} as any, ctx);
@@ -382,7 +382,7 @@ for (const mode of ["native", "codemode"] as const) {
   const hold = defineTool({ name: "hold", description: "hold for cancellation", parameters: Type.Object({}), replay: "unsafe",
     execute: async (_args, _api, context) => { started++;
       await new Promise<void>((_resolve,reject) => { if(context.abortSignal.aborted) reject(Error("aborted")); else context.abortSignal.addEventListener("abort",()=>reject(Error("aborted")),{once:true}); });
-      return {content:text("unreachable")};
+      return {output:text("unreachable")};
     } });
   const options = { directory:join(cwd,"state"), cwd, model:ref, toolMode:mode, instructions:()=>"fixture", tools:[hold],onSnapshot:()=>{},
     models:models(()=> ++calls === 1 ? mode === "native" ? call("hold",{}) : call("codemode",{code:"await tools.hold({});"}) : text("recovered")) };

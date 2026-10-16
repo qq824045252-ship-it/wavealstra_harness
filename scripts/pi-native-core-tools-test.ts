@@ -103,7 +103,7 @@ let native: AgentSession | undefined;
 let production: AgentSession | undefined;
 try {
   native = await makeSession([]); production = await makeSession(factories);
-  await test("restored session uses native settings.defaultTools rather than a host-patched historical loadout", async () => {
+  await test("restored session keeps native persisted active tools over settings.defaultTools (Pi 1.3.0 semantics)", async () => {
     const sessionDir = join(root, "restore-sessions");
     const manager = SessionManager.create(cwd, sessionDir);
     const historicalTools = [createReadToolDefinition(cwd), createWriteToolDefinition(cwd), createEditToolDefinition(cwd), createBashToolDefinition(cwd)]
@@ -130,7 +130,7 @@ try {
     const { session: restored } = await createAgentSession(options);
     try {
       await restored.bindExtensions({ mode: "rpc" });
-      assert.deepEqual(restored.getActiveToolNames(), ["read"], "native defaultTools must win over the historical read/write/edit/bash loadout");
+      assert.deepEqual(restored.getActiveToolNames(), [...names], "Pi 1.3.0 restores the session-level active tools instead of taking settings.defaultTools");
       assert.deepEqual(getCurrentTools(restoredManager.buildSessionContext().messages).map((tool) => tool.name), [...names],
         "the assertion does not erase history to manufacture the selected tool set");
       return { historicalTools: historicalNames, defaultTools: settings.getDefaultTools(),

@@ -1,0 +1,190 @@
+diff --git a/dist/config.d.ts b/dist/config.d.ts
+index a1f218a..1073f74 100644
+--- a/dist/config.d.ts
++++ b/dist/config.d.ts
+@@ -123,4 +123,6 @@ export declare function getSessionsDir(): string;
+ /** Get path to debug log file */
+ export declare function getDebugLogPath(): string;
+ export {};
+-//# sourceMappingURL=config.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=config.d.ts.map
++/** Host-supplied URL of the original bundled Codemode worker. */
++export declare function setCodemodeWorkerUrl(url: URL): void;
+diff --git a/dist/config.js b/dist/config.js
+index 62eb303..15e3d5a 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -363,7 +363,9 @@ export function getReadmePath() {
+ }
+ /** Get path to docs directory */
+ export function getDocsPath() {
+-    return resolve(join(getPackageDir(), "docs"));
++    // Embedded desktop bundles keep upstream reference docs beside their generated assets.
++    const embedded = join(getPackageDir(), "out", "main", "pi-docs");
++    return resolve(existsSync(join(embedded, "codemode.md")) ? embedded : join(getPackageDir(), "docs"));
+ }
+ /** Get path to examples directory */
+ export function getExamplesPath() {
+@@ -392,6 +394,10 @@ export function getBundledInteractiveAssetPath(name) {
+     return join(getInteractiveAssetsDir(), name);
+ }
+ let quickJSWasmPath;
++let embeddedCodemodeWorkerUrl;
++/** Embedding host override; upstream worker selection is otherwise unchanged. */
++export function setCodemodeWorkerUrl(url) { embeddedCodemodeWorkerUrl = url; }
++
+ /** Called by the Bun entry with the path of the QuickJS wasm file embedded in the compiled executable. */
+ export function setEmbeddedQuickJSWasmPath(path) {
+     quickJSWasmPath = path;
+@@ -421,6 +427,7 @@ let codemodeWorkerDataUrl;
+  * The Bun and Node release builds both pass the worker as an extra entrypoint.
+  */
+ export function getCodemodeWorkerSpecifier() {
++    if (embeddedCodemodeWorkerUrl) return embeddedCodemodeWorkerUrl;
+     const runtime = isBunBinary ? "bun-binary" : isBundledNode ? "bundled-node" : "unbundled";
+     const specifier = resolveCodemodeWorkerSpecifier(runtime, import.meta.url);
+     if (runtime !== "bundled-node" || !(specifier instanceof URL))
+diff --git a/dist/extensions/mcp/index.d.ts b/dist/extensions/mcp/index.d.ts
+index 2ee96fa..11a53ac 100644
+--- a/dist/extensions/mcp/index.d.ts
++++ b/dist/extensions/mcp/index.d.ts
+@@ -30,7 +30,34 @@ import { type LoadedMcpConfig, type McpServerConfigPatch, type McpServerEntry }
+ import type { McpOAuthCredentialStore } from "./oauth.ts";
+ import type { McpTransportFactory } from "./runtime.ts";
+ export type { McpTransportFactory } from "./runtime.ts";
++
++/** Host-side desktop integration; never exported to model tools or codemode. */
++export interface McpHostServerStatus {
++    name: string;
++    state: string;
++    enabled: boolean;
++    toolCount: number;
++    resourceCount: number;
++    hasResources?: boolean;
++    exposure: string;
++    error?: string;
++    oauth: boolean;
++    hasCredentials: boolean;
++}
++export interface McpHostSnapshot { servers: McpHostServerStatus[]; errors: string[]; }
++export interface McpHostController {
++    getStatus(): McpHostSnapshot;
++    close(): Promise<void>;
++    reconnect(name: string): Promise<void>;
++    signIn(name: string, prompt: import('./oauth.ts').McpSignInPrompt, cancel?: AbortSignal): Promise<void>;
++    signOut(name: string): Promise<boolean>;
++}
++
+ export interface McpExtensionOptions {
++    /** Observe this session only. Snapshot contains no configuration secrets. */
++    onStateChange?: (snapshot: McpHostSnapshot) => void;
++    /** Native manager actions for an embedding host. */
++    onController?: (controller: McpHostController) => void;
+     /** Defaults to reading `mcp.json` from the agent directory and the trusted project. */
+     loadConfig?: (ctx: ExtensionContext) => LoadedMcpConfig;
+     /** Defaults to stdio and streamable HTTP transports built from the server config. */
+diff --git a/dist/extensions/mcp/index.js b/dist/extensions/mcp/index.js
+index 8ebc6df..ed3ea8b 100644
+--- a/dist/extensions/mcp/index.js
++++ b/dist/extensions/mcp/index.js
+@@ -232,7 +232,21 @@ export function createMcpExtension(options = {}) {
+             return work;
+         };
+         const listeners = new Set();
++        let hostContext;
++        const hostSnapshot = () => ({
++            servers: servers.map((server) => {
++                const c = server.connection;
++                const url = c?.oauthUrl;
++                return { name: server.entry.name, state: !isEnabled(server) ? 'disabled' : c?.state ?? 'connecting',
++                    enabled: isEnabled(server), toolCount: c?.tools.length ?? 0,
++                    hasResources: !!c?.hasResources, resourceCount: c?.hasResources ? 1 : 0,
++                    exposure: exposureOf(server.entry), error: c?.error, oauth: !!url,
++                    hasCredentials: !!(url && credentials?.tokens(server.entry.name, url)) };
++            }), errors: [...configErrors],
++        });
++
+         const emitChange = () => {
++            options.onStateChange?.(hostSnapshot());
+             for (const listener of listeners)
+                 listener();
+         };
+@@ -968,7 +982,40 @@ export function createMcpExtension(options = {}) {
+             ensureDiscoveryActive(ctx);
+             ctx.ui.notify(`Signed in to MCP server "${name}" (${server.connection?.tools.length ?? 0} tools).`, "info");
+         };
+-        pi.on("session_start", (_event, ctx) => {
++        const hostServer = async (name) => {
++            if (session.signal.aborted) throw new Error('MCP session is closed');
++            await pending;
++            if (session.signal.aborted) throw new Error('MCP session is closed');
++            const server = findServer(name);
++            if (!server) throw new Error('MCP server is not enabled in this session: ' + name);
++            if (!isEnabled(server)) throw new Error('MCP server is disabled: ' + name);
++            return server;
++        };
++        options.onController?.({
++            getStatus: hostSnapshot,
++            close: async () => {
++                session.abort(); hostContext = undefined;
++                const closing = connections(); servers = []; emitChange();
++                await Promise.all([...backgroundActions, ...closing.map(connection => connection.close())]);
++            },
++            reconnect: async (name) => {
++                const failure = await reconnect(await hostServer(name));
++                if (failure) throw new Error(failure);
++                if (hostContext) ensureDiscoveryActive(hostContext);
++            },
++            signIn: async (name, prompt, cancel) => {
++                const failure = await signIn(await hostServer(name), prompt, cancel);
++                if (failure) throw new Error(failure);
++                if (hostContext) ensureDiscoveryActive(hostContext);
++                emitChange();
++            },
++            signOut: async (name) => {
++                const result = await signOut(await hostServer(name));
++                emitChange();
++                return result;
++            },
++        });        pi.on("session_start", (_event, ctx) => {
++            hostContext = ctx;
+             const loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
+             configErrors = loaded.errors;
+             projectConfig = loaded.projectConfig;
+@@ -1202,4 +1249,4 @@ function defaultLoadConfig(ctx) {
+     return loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+ }
+ export default createMcpExtension();
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 3821d9f..566392c 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -42,4 +42,8 @@ export { convertToPng } from "./utils/image-convert.ts";
+ export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
+ export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+ export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
+-//# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=index.d.ts.map
++export { setEmbeddedQuickJSWasmPath, setCodemodeWorkerUrl } from "./config.ts";
++export { McpOAuthCredentialStore, createMcpAuthProvider, type McpOAuthSettings, type McpSignInPrompt } from "./extensions/mcp/oauth.ts";
++export { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./core/auth-storage.ts";
++export type { McpHostController, McpHostSnapshot, McpHostServerStatus } from "./extensions/mcp/index.ts";
+diff --git a/dist/index.js b/dist/index.js
+index ab5cfcc..366971a 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -51,4 +51,7 @@ export { formatDimensionNote, resizeImage } from "./utils/image-resize.js";
+ export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.js";
+ // Shell utilities
+ export { getPowerShellConfig, getShellConfig } from "./utils/shell.js";
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map
++export { setEmbeddedQuickJSWasmPath, setCodemodeWorkerUrl } from "./config.js";
++export { McpOAuthCredentialStore, createMcpAuthProvider } from "./extensions/mcp/oauth.js";
++export { FileAuthStorageBackend, InMemoryAuthStorageBackend } from "./core/auth-storage.js";

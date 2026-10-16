@@ -25,7 +25,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
               const result = await tool.execute(native.callId, args, context.abortSignal,
                 update => { for (const block of update.content ?? []) if (block.type === "text") native.output(block.text); },
                 extensionContext as Parameters<typeof tool.execute>[4]);
-              return { ...result, details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
+              return { output: result.content, isError: result.isError, details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
             } finally { await Promise.all(invocation.getStore()!.writes); }
           });
         },
