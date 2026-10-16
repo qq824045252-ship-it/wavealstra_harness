@@ -96,6 +96,8 @@ async function launch(){
 }
 async function close(){if(socket){try{await rpc('Browser.close');}catch{}socket.close();socket=null;}if(proc){await wait(500);if(proc.exitCode===null)cp.execFileSync('C:/Windows/System32/taskkill.exe',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});proc=null;}if(log!==undefined){fs.closeSync(log);log=undefined;}}
 async function click(selector,text){const end=Date.now()+15000;for(;;){const ok=await evaluate(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!e)return false;e.click();return true})()`);if(ok)return true;if(Date.now()>end){const available=await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map(e=>e.textContent.trim())`);throw Error('Missing '+text+' available='+JSON.stringify(available));}await wait(200);}}
+
+async function revealSpace(name){return evaluate(`(()=>{const h=[...document.querySelectorAll('.space-header')].find(h=>h.querySelector('.space-name')?.textContent.trim()===${JSON.stringify(name)});if(!h)return false;const icon=h.querySelector('.space-icon svg');const closed=!!icon&&icon.classList.contains('lucide-folder');if(closed)h.querySelector('.space-chevron')?.click();return true})()`);}
 async function send(text){await evaluate(`(()=>{const e=document.querySelector('.chat-input textarea')||document.querySelector('textarea');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);await wait(120);await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});}
 async function streamingMode(label) {
   await evaluate('document.querySelector(".streaming-mode-trigger").click();true');
@@ -464,7 +466,7 @@ const report={temp,tests:[],status:'running'};
   const reopenedImageRequest=requests.findLast(r=>JSON.stringify(r.messages.at(-1)).includes('BOT_IMAGE_REOPEN'));
   assert(JSON.stringify(reopenedImageRequest.messages).includes('data:image/png;base64,'+tinyPng.toString('base64')),'stored input and tool images reach provider after original file deletion');
   restored=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
-  await click('.task-item-title','recovery test');
+  await revealSpace('Bot move regression');await wait(300);await click('.task-item-title','recovery test');
   report.restoredImageDisplay=await verifyDisplayedImage('saved image displays after restart');
   report.tests.push('image artifact and provider image context survive whole app restart and deletion of the original attachment');
   assert(restored.messages.some(m=>m.tools?.some(t=>t.parentToolCallId&&t.status==='error')),'interrupted nested tool projected');
@@ -497,7 +499,7 @@ const report={temp,tests:[],status:'running'};
   const legacyModeShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'legacy-mode-continue.png'),Buffer.from(legacyModeShot.data,'base64'));
   assert.equal(legacyModeTask.modelId,'durable-fixture/alternate');
   report.tests.push('restored Pi coding task keeps its mode, original history and session through two real composer submissions with a model switch');
-  await click('.task-item-title','recovery test');
+  await revealSpace('Bot move regression');await wait(300);await click('.task-item-title','recovery test');
   await evaluate('document.querySelector(".model-trigger").click()');
   await until(()=>evaluate('[...document.querySelectorAll(".model-option-name")].some(e=>e.textContent==="Durable Alternate")'),'Bot alternate model picker');
   await evaluate('[...document.querySelectorAll(".model-option-name")].find(e=>e.textContent==="Durable Alternate").closest("button").click()');
