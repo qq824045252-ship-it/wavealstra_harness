@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 860" width="1180" height="860">
+  <rect x="0" y="0" width="1180" height="860" fill="#f7f8fa"/>
+  <text x="40" y="38" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="bold" fill="#1a1f2e">MyBuddy 视觉路由（VisionRouting）决策树 — 4 个入口</text>
+  <text x="40" y="62" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#5a6272">能力判定唯一依据：model.input 数组含 "image"（src/main/capabilities/VisionRouting.ts:20-24 modelSupportsImageInput）</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#8892a8"/></marker>
+    <marker id="arrowR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#c0392b"/></marker>
+    <marker id="arrowG" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#1e7d43"/></marker>
+  </defs>
+
+  <!-- Entry A -->
+  <rect x="30" y="95" width="255" height="58" rx="8" fill="#ffffff" stroke="#8892a8" stroke-width="1.5"/>
+  <text x="42" y="116" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#1a1f2e">A 聊天附件（交互会话）</text>
+  <text x="42" y="134" font-family="Segoe UI" font-size="11.5" fill="#5a6272">AgentService.ts:4006 → entry.session.model</text>
+
+  <!-- Entry B -->
+  <rect x="310" y="95" width="255" height="58" rx="8" fill="#ffffff" stroke="#8892a8" stroke-width="1.5"/>
+  <text x="322" y="116" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#1a1f2e">B Durable Bot 准备输入</text>
+  <text x="322" y="134" font-family="Segoe UI" font-size="11.5" fill="#5a6272">AgentService.ts:1239 prepareImages</text>
+
+  <!-- Entry C -->
+  <rect x="590" y="95" width="270" height="58" rx="8" fill="#ffffff" stroke="#8892a8" stroke-width="1.5"/>
+  <text x="602" y="116" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#1a1f2e">C 内建工具（describe_image 等）</text>
+  <text x="602" y="134" font-family="Segoe UI" font-size="11.5" fill="#5a6272">builtin-capability-extension.ts:452/597/646/719</text>
+  <text x="602" y="149" font-family="Segoe UI" font-size="11.5" fill="#c0392b">用 ctx?.model，可能为 undefined</text>
+
+  <!-- Entry D -->
+  <rect x="885" y="95" width="265" height="58" rx="8" fill="#fdecea" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="897" y="116" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#c0392b">D durable read 工具（无路由!）</text>
+  <text x="897" y="134" font-family="Segoe UI" font-size="11.5" fill="#5a6272">DurableImages.ts:47 withDurableImageRead</text>
+  <text x="897" y="149" font-family="Segoe UI" font-size="11.5" fill="#c0392b">不查能力，恒返 image 块</text>
+
+  <!-- Decision node -->
+  <polygon points="590,215 685,245 590,275 495,245" fill="#fff8e6" stroke="#b8860b" stroke-width="1.5"/>
+  <text x="590" y="240" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#1a1f2e" text-anchor="middle">modelSupportsImage</text>
+  <text x="590" y="256" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#1a1f2e" text-anchor="middle">Input(model)?</text>
+
+  <!-- arrows into decision -->
+  <path d="M157,153 L157,300 L480,300" fill="none" stroke="#8892a8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M437,153 L437,290 L480,290" fill="none" stroke="#8892a8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M725,153 L725,280 L690,268" fill="none" stroke="#8892a8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M1017,153 L1017,240 L700,242" fill="none" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <text x="1025" y="220" font-family="Segoe UI" font-size="11.5" fill="#c0392b">绕过决策，直接注入图片块</text>
+
+  <!-- YES branch -->
+  <text x="470" y="228" font-family="Segoe UI" font-size="12" font-weight="bold" fill="#1e7d43">input 含 image</text>
+  <path d="M495,245 L400,320" fill="none" stroke="#1e7d43" stroke-width="1.6" marker-end="url(#arrowG)"/>
+  <rect x="180" y="322" width="260" height="86" rx="8" fill="#eef8f1" stroke="#1e7d43" stroke-width="1.5"/>
+  <text x="192" y="343" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#1e7d43">Route: native-multimodal</text>
+  <text x="192" y="361" font-family="Segoe UI" font-size="11.5" fill="#2f4a38">A/B: loadAttachmentImages 读 base64</text>
+  <text x="192" y="377" font-family="Segoe UI" font-size="11.5" fill="#c0392b">!&gt;12MB 文件缺失→静默丢弃(console.warn)</text>
+  <text x="192" y="393" font-family="Segoe UI" font-size="11.5" fill="#2f4a38">C: 图片作为 Tool Result 附在回复里</text>
+
+  <!-- NO branch -->
+  <text x="700" y="292" font-family="Segoe UI" font-size="12" font-weight="bold" fill="#8892a8">否（或 model=undefined）</text>
+  <path d="M630,275 L700,330" fill="none" stroke="#8892a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <polygon points="730,332 830,362 730,392 630,362" fill="#eef1f7" stroke="#5a6272" stroke-width="1.5"/>
+  <text x="730" y="357" font-family="Segoe UI" font-size="12" font-weight="bold" fill="#1a1f2e" text-anchor="middle">visionProvider 非空?</text>
+  <text x="730" y="374" font-family="Segoe UI" font-size="10.5" fill="#5a6272" text-anchor="middle">vision.enabled + 已注册 default</text>
+
+  <path d="M830,362 L1010,362" fill="none" stroke="#c0392b" stroke-width="1.6" marker-end="url(#arrowR)"/>
+  <text x="920" y="350" font-family="Segoe UI" font-size="12" font-weight="bold" fill="#c0392b">null</text>
+  <rect x="1013" y="312" width="160" height="100" rx="8" fill="#fdecea" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="1025" y="333" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#c0392b">vision-unavailable</text>
+  <text x="1025" y="351" font-family="Segoe UI" font-size="11" fill="#5a2c26">"当前主模型不支持图片</text>
+  <text x="1025" y="367" font-family="Segoe UI" font-size="11" fill="#5a2c26">输入，且未启用可用的</text>
+  <text x="1025" y="383" font-family="Segoe UI" font-size="11" fill="#5a2c26">委托 Vision 模型。"</text>
+  <text x="1025" y="401" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">A:4046 / B:1250 文字降级</text>
+
+  <path d="M730,392 L730,440" fill="none" stroke="#8892a8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="740" y="425" font-family="Segoe UI" font-size="12" font-weight="bold" fill="#1e7d43">有委托</text>
+
+  <!-- delegated call -->
+  <rect x="540" y="442" width="380" height="118" rx="8" fill="#ffffff" stroke="#8892a8" stroke-width="1.5"/>
+  <text x="555" y="463" font-family="Segoe UI" font-size="13" font-weight="bold" fill="#1a1f2e">provider.describe() = VisionModelCapabilityProvider</text>
+  <text x="555" y="482" font-family="Segoe US" font-size="11.5" fill="#5a6272">VisionModelCapabilityProvider.ts:39-50 resolveModel:</text>
+  <text x="562" y="498" font-family="Segoe UI" font-size="11" fill="#5a6272">runtime null / 未选模型 / 目录无此模型 → throw</text>
+  <text x="562" y="514" font-family="Segoe UI" font-size="11" fill="#5a6272">目录 input 不含 image → throw（正向误判被拦）</text>
+  <text x="555" y="533" font-family="Segoe UI" font-size="11.5" fill="#5a6272">resizeImage(autoResize 默认 true, inputLimits.images.resize)</text>
+  <text x="562" y="549" font-family="Segoe UI" font-size="11" fill="#c0392b">null → throw "图片无法按 Pi 模型限制预处理：{path}"</text>
+
+  <!-- describe OK -->
+  <path d="M730,560 L730,600" fill="none" stroke="#1e7d43" stroke-width="1.6" marker-end="url(#arrowG)"/>
+  <text x="740" y="588" font-family="Segoe UI" font-size="11.5" font-weight="bold" fill="#1e7d43">成功</text>
+  <rect x="540" y="603" width="180" height="80" rx="8" fill="#eef8f1" stroke="#1e7d43" stroke-width="1.5"/>
+  <text x="552" y="624" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#1e7d43">delegated-vision</text>
+  <text x="552" y="641" font-family="Segoe UI" font-size="10.5" fill="#2f4a38">图片仅以文字描述进对话</text>
+  <text x="552" y="657" font-family="Segoe UI" font-size="10.5" fill="#2f4a38">C: imageBytes 被丢弃，只剩文本</text>
+  <text x="552" y="673" font-family="Segoe UI" font-size="10.5" fill="#2f4a38">B/A: "### 图片 N: {描述}"</text>
+
+  <!-- describe fail -->
+  <path d="M540,540 L420,620" fill="none" stroke="#c0392b" stroke-width="1.6" marker-end="url(#arrowR)"/>
+  <text x="440" y="596" font-family="Segoe UI" font-size="11.5" font-weight="bold" fill="#c0392b">throw → catch（VisionRouting.ts:70）</text>
+  <rect x="180" y="605" width="230" height="120" rx="8" fill="#fdecea" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="192" y="627" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#c0392b">vision-unavailable（含原错误）</text>
+  <text x="192" y="646" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">"模型不支持图片输入：x"</text>
+  <text x="192" y="662" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">"图像理解失败：x" / "图像理解已取消"</text>
+  <text x="192" y="678" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">"图像理解模型没有返回文本：x"</text>
+  <text x="192" y="694" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">"图像理解模型当前不可用：x"</text>
+  <text x="192" y="710" font-family="Segoe UI" font-size="10.5" fill="#5a2c26">"请先在工具能力中选择一个图像理解模型"</text>
+
+  <path d="M400,665 L335,760" fill="none" stroke="#c0392b" stroke-width="1.4" marker-end="url(#arrowR)"/>
+  <path d="M730,683 L700,760" fill="none" stroke="#c0392b" stroke-width="0"/>
+
+  <!-- downstream handling -->
+  <rect x="60" y="762" width="1060" height="70" rx="8" fill="#ffffff" stroke="#8892a8" stroke-width="1.5"/>
+  <text x="74" y="784" font-family="Segoe UI" font-size="12.5" font-weight="bold" fill="#1a1f2e">vision-unavailable 的三种落地方式（同一失败，不同后果）</text>
+  <text x="74" y="802" font-family="Segoe UI" font-size="11" fill="#5a6272">• A/B（附件）：写入提示文本「当前模型未接收图片…请勿声称看到了图片内容」(AgentService.ts:1250 / 4046)</text>
+  <text x="74" y="818" font-family="Segoe UI" font-size="11" fill="#c0392b">• C describe_image：errorResult（显式报错）473；C 截图三工具 visionAwareImageResult：jsonResult 成功态，错误只藏在 details.vision.error — 静默降级 [缺陷]</text>
+</svg>

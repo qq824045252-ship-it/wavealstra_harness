@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 760" width="1180" height="760" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1180" height="760" fill="#f6f8fa"/>
+  <text x="590" y="34" font-size="20" font-weight="bold" text-anchor="middle" fill="#1f2430">图片显示链路（界面显示线，只读探索结论）</text>
+  <text x="590" y="56" font-size="13" text-anchor="middle" fill="#57606a">实线 = 已验证代码路径；虚线 = 推断的边界情况</text>
+
+  <!-- Lane B: backend generation -->
+  <rect x="20" y="80" width="1140" height="150" rx="10" fill="#eef6ff" stroke="#9cc3ea"/>
+  <text x="40" y="104" font-size="15" font-weight="bold" fill="#144b7d">A. 后端产出/落库（识别线共用的存储层）</text>
+
+  <rect x="45" y="120" width="215" height="80" rx="8" fill="#ffffff" stroke="#7aa7d4"/>
+  <text x="152" y="145" font-size="13" text-anchor="middle" fill="#1f2430">image_generate</text>
+  <text x="152" y="165" font-size="12" text-anchor="middle" fill="#57606a">MediaArtifactMaterializer.ts:103</text>
+  <text x="152" y="184" font-size="12" text-anchor="middle" fill="#57606a">bytes空文件拦截 L218</text>
+
+  <rect x="320" y="120" width="230" height="80" rx="8" fill="#ffffff" stroke="#7aa7d4"/>
+  <text x="435" y="145" font-size="13" text-anchor="middle" fill="#1f2430">register(workspaceFile)</text>
+  <text x="435" y="165" font-size="12" text-anchor="middle" fill="#57606a">taskRoot/generated/image/*.png</text>
+  <text x="435" y="184" font-size="12" text-anchor="middle" fill="#57606a">MediaArtifactMaterializer.ts:149</text>
+
+  <rect x="610" y="120" width="250" height="80" rx="8" fill="#ffffff" stroke="#7aa7d4"/>
+  <text x="735" y="143" font-size="13" text-anchor="middle" fill="#1f2430">Bot codemode image()</text>
+  <text x="735" y="162" font-size="12" text-anchor="middle" fill="#57606a">DurableImages.ts:25 sha256 文件名去重</text>
+  <text x="735" y="180" font-size="12" text-anchor="middle" fill="#57606a">wx 写盘=同字节同文件=L14 行注释</text>
+  <text x="735" y="196" font-size="12" text-anchor="middle" fill="#57606a">→ 消息 artifacts（DurableBotRuntime.ts:328）</text>
+
+  <rect x="920" y="120" width="225" height="80" rx="8" fill="#ffffff" stroke="#7aa7d4"/>
+  <text x="1032" y="145" font-size="13" text-anchor="middle" fill="#1f2430">Artifact Domain</text>
+  <text x="1032" y="165" font-size="12" text-anchor="middle" fill="#57606a">ArtifactService.readContent :622</text>
+  <text x="1032" y="184" font-size="12" text-anchor="middle" fill="#57606a">存在性检查 L638</text>
+
+  <line x1="260" y1="160" x2="318" y2="160" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="550" y1="160" x2="608" y2="160" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="860" y1="160" x2="918" y2="160" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Lane B: panel -->
+  <rect x="20" y="250" width="555" height="300" rx="10" fill="#f2fff4" stroke="#8fce9f"/>
+  <text x="40" y="274" font-size="15" font-weight="bold" fill="#1c6b32">B. Artifact 面板查看器（Wave 5B）</text>
+
+  <rect x="45" y="290" width="200" height="66" rx="8" fill="#ffffff" stroke="#9fd4a8"/>
+  <text x="145" y="313" font-size="13" text-anchor="middle" fill="#1f2430">openArtifact / tab 恢复</text>
+  <text x="145" y="333" font-size="12" text-anchor="middle" fill="#57606a">ArtifactPanel.tsx:145</text>
+
+  <rect x="310" y="290" width="240" height="66" rx="8" fill="#ffffff" stroke="#9fd4a8"/>
+  <text x="430" y="313" font-size="13" text-anchor="middle" fill="#1f2430">ensureArtifactRenderPayload</text>
+  <text x="430" y="331" font-size="12" text-anchor="middle" fill="#57606a">renderHydration.ts ensure:139</text>
+  <text x="430" y="348" font-size="12" text-anchor="middle" fill="#57606a">version 绑定 + single-flight</text>
+
+  <rect x="45" y="395" width="200" height="66" rx="8" fill="#ffffff" stroke="#9fd4a8"/>
+  <text x="145" y="418" font-size="13" text-anchor="middle" fill="#1f2430">ArtifactBody kind=image</text>
+  <text x="145" y="438" font-size="12" text-anchor="middle" fill="#57606a">ArtifactPanel.tsx:72 该行</text>
+
+  <rect x="310" y="395" width="240" height="66" rx="8" fill="#ffffff" stroke="#9fd4a8"/>
+  <text x="430" y="418" font-size="13" text-anchor="middle" fill="#1f2430">ImageArtifactView</text>
+  <text x="430" y="438" font-size="12" text-anchor="middle" fill="#57606a">new Image() 解码 :84-102</text>
+  <text x="430" y="455" font-size="12" text-anchor="middle" fill="#57606a">解码失败→error 态+重试按钮</text>
+
+  <rect x="45" y="492" width="505" height="48" rx="8" fill="#fdfff0" stroke="#d9c96a"/>
+  <text x="297" y="512" font-size="12.5" text-anchor="middle" fill="#5a5312">EXIF 方向 / ≥100MP 缩放降级 3x / 透明棋盘格（imageView.ts:60-68）</text>
+  <text x="297" y="530" font-size="12.5" text-anchor="middle" fill="#5a5312">错误显式提示「图片解码失败/解析失败」，不静默破损</text>
+
+  <line x1="245" y1="323" x2="308" y2="323" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="430" y1="356" x2="430" y2="393" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Lane C: chat -->
+  <rect x="605" y="250" width="555" height="300" rx="10" fill="#fdf2ff" stroke="#d9a8e8"/>
+  <text x="625" y="274" font-size="15" font-weight="bold" fill="#7a2b8f">C. Chat 气泡内嵌图（ChatImage）</text>
+
+  <rect x="630" y="290" width="220" height="66" rx="8" fill="#ffffff" stroke="#dcb5e6"/>
+  <text x="740" y="313" font-size="13" text-anchor="middle" fill="#1f2430">Markdown img 节点</text>
+  <text x="740" y="331" font-size="12" text-anchor="middle" fill="#57606a">ChatMarkdown.tsx:207</text>
+  <text x="740" y="348" font-size="12" text-anchor="middle" fill="#57606a">MessageImages 兜底 :133</text>
+
+  <rect x="905" y="290" width="230" height="66" rx="8" fill="#ffffff" stroke="#dcb5e6"/>
+  <text x="1020" y="313" font-size="13" text-anchor="middle" fill="#1f2430">resolveChatImageArtifact</text>
+  <text x="1020" y="331" font-size="12" text-anchor="middle" fill="#57606a">chatImages.ts:76 精确路径匹配</text>
+  <text x="1020" y="348" font-size="12" text-anchor="middle" fill="#57606a">taskId 绑定，不猜 basename</text>
+
+  <rect x="630" y="395" width="220" height="66" rx="8" fill="#ffffff" stroke="#dcb5e6"/>
+  <text x="740" y="418" font-size="13" text-anchor="middle" fill="#1f2430">directChatImageSource :5</text>
+  <text x="740" y="436" font-size="12" text-anchor="middle" fill="#57606a">放行 data:image(png/jpeg/gif/</text>
+  <text x="740" y="453" font-size="12" text-anchor="middle" fill="#57606a">webp/avif/bmp;base64) + https:</text>
+
+  <rect x="905" y="395" width="230" height="66" rx="8" fill="#ffffff" stroke="#dcb5e6"/>
+  <text x="1020" y="418" font-size="13" text-anchor="middle" fill="#1f2430">SVG 分支 :16/:42</text>
+  <text x="1020" y="436" font-size="12" text-anchor="middle" fill="#57606a">kind=image 的 .svg 文件修正</text>
+  <text x="1020" y="453" font-size="12" text-anchor="middle" fill="#57606a">→ Blob objectURL（脚本不执行）</text>
+
+  <rect x="630" y="492" width="505" height="48" rx="8" fill="#fdfff0" stroke="#d9c96a"/>
+  <text x="882" y="512" font-size="12.5" text-anchor="middle" fill="#5a5312">不安全源/未命中产物 → 不渲染破损 img，显示「图片无法显示…」+「打开产物」</text>
+  <text x="882" y="530" font-size="12.5" text-anchor="middle" fill="#5a5312">http:/blob:/相对路径在 chat 内不直接放行（仅 SVG 经受控 Blob）</text>
+
+  <line x1="850" y1="323" x2="903" y2="323" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="1020" y1="356" x2="1020" y2="393" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="850" y1="428" x2="903" y2="428" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <!-- Failure lane -->
+  <rect x="20" y="575" width="1140" height="160" rx="10" fill="#fff3f2" stroke="#e8a19a"/>
+  <text x="40" y="599" font-size="15" font-weight="bold" fill="#8f2b20">D. 缺失/损坏分支（重启恢复、原图被删）</text>
+
+  <rect x="45" y="615" width="250" height="95" rx="8" fill="#ffffff" stroke="#e8a19a"/>
+  <text x="170" y="638" font-size="13" text-anchor="middle" fill="#1f2430">原文件被删/移动</text>
+  <text x="170" y="658" font-size="12" text-anchor="middle" fill="#57606a">readContent !existsSync → null</text>
+  <text x="170" y="676" font-size="12" text-anchor="middle" fill="#57606a">renderHydration.ts:97-111</text>
+  <text x="170" y="696" font-size="12" text-anchor="middle" fill="#57606a">error:「文件为空或正在被其他</text>
+  <text x="170" y="708" font-size="12" text-anchor="middle" fill="#57606a">程序占用」（文案与真因有偏差）</text>
+
+  <rect x="340" y="615" width="260" height="95" rx="8" fill="#ffffff" stroke="#e8a19a"/>
+  <text x="470" y="638" font-size="13" text-anchor="middle" fill="#1f2430">面板显示</text>
+  <text x="470" y="658" font-size="12" text-anchor="middle" fill="#57606a">ArtifactPanel.tsx:35-64</text>
+  <text x="470" y="678" font-size="12" text-anchor="middle" fill="#57606a">「加载失败 + 错误文案」，</text>
+  <text x="470" y="696" font-size="12" text-anchor="middle" fill="#57606a">有 path 仍可拖出文件</text>
+
+  <rect x="640" y="615" width="240" height="95" rx="8" fill="#ffffff" stroke="#e8a19a"/>
+  <text x="760" y="638" font-size="13" text-anchor="middle" fill="#1f2430">Chat 显示</text>
+  <text x="760" y="658" font-size="12" text-anchor="middle" fill="#57606a">ChatImage.tsx:102-109</text>
+  <text x="760" y="678" font-size="12" text-anchor="middle" fill="#57606a">「图片无法显示：alt」</text>
+  <text x="760" y="696" font-size="12" text-anchor="middle" fill="#57606a">+「打开产物」按钮</text>
+
+  <rect x="920" y="615" width="225" height="95" rx="8" fill="#ffffff" stroke="#e8a19a"/>
+  <text x="1032" y="638" font-size="13" text-anchor="middle" fill="#1f2430">Bot 镜像恢复</text>
+  <text x="1032" y="658" font-size="12" text-anchor="middle" fill="#57606a">durable-bot-desktop-test:462-468</text>
+  <text x="1032" y="676" font-size="12" text-anchor="middle" fill="#57606a">删原图+整应用重启后</text>
+  <text x="1032" y="696" font-size="12" text-anchor="middle" fill="#57606a">naturalWidth===1 断言通过</text>
+
+  <line x1="295" y1="662" x2="338" y2="662" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="600" y1="662" x2="638" y2="662" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+  <line x1="880" y1="662" x2="918" y2="662" stroke="#57606a" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <defs>
+    <marker id="a1" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L9,4 L0,8 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+</svg>

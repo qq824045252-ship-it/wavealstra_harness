@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 620" width="1180" height="620">
+  <rect x="0" y="0" width="1180" height="620" fill="#f6f7fb"/>
+  <rect x="0" y="0" width="1180" height="44" fill="#e9ecf4"/>
+  <text x="22" y="29" font-size="18" font-weight="bold" fill="#1a2333" font-family="sans-serif">为什么"走 pi 工作流"仍会识图失败：同一套代码，dev 与打包形态的命运不同</text>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#556077"/></marker>
+    <marker id="r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#c0392b"/></marker>
+  </defs>
+
+  <!-- premise box -->
+  <rect x="22" y="58" width="1136" height="52" rx="8" fill="#eef2f8" stroke="#5b7f9d"/>
+  <text x="38" y="80" font-size="12" fill="#1a2333" font-family="sans-serif" font-weight="bold">前提（已实测）：pi 的图片管线 = resizeImage() → Worker 线程 + Photon WASM 引擎（解码→EXIF 旋转→缩放→压到 4.5MB）</text>
+  <text x="38" y="100" font-size="11" fill="#556077" font-family="sans-serif">这两个文件平时待在 node_modules 里；Electron 打包时 node_modules 不进安装包，主进程 main.js 被打成 bundle。</text>
+
+  <!-- dev lane -->
+  <text x="22" y="146" font-size="14" font-weight="bold" fill="#1a6b3a" font-family="sans-serif">dev 形态（esbuild 直跑 node_modules）——验收全绿</text>
+  <rect x="22" y="160" width="200" height="64" rx="8" fill="#fff" stroke="#3a7a3a"/>
+  <text x="34" y="184" font-size="12" fill="#1a2333" font-family="sans-serif">resizeImage() 调起</text>
+  <text x="34" y="204" font-size="11" fill="#556077" font-family="sans-serif">pi dist/utils</text>
+  <rect x="252" y="160" width="220" height="64" rx="8" fill="#d9f0e1" stroke="#2f7d47"/>
+  <text x="264" y="184" font-size="12" fill="#1a6b3a" font-family="sans-serif">worker.js ✓（node_modules 原位）</text>
+  <text x="264" y="204" font-size="11" fill="#1a6b3a" font-family="sans-serif">photon_rs_bg.wasm ✓（1.88MB 原位）</text>
+  <rect x="502" y="160" width="240" height="64" rx="8" fill="#d9f0e1" stroke="#2f7d47"/>
+  <text x="514" y="184" font-size="12" fill="#1a6b3a" font-family="sans-serif">解码→旋转→缩放→压缩 正常</text>
+  <text x="514" y="204" font-size="11" fill="#556077" font-family="sans-serif">≤2000×2000 / ≤4.5MB base64</text>
+  <rect x="772" y="160" width="200" height="64" rx="8" fill="#fff" stroke="#3a7a3a"/>
+  <text x="784" y="184" font-size="12" fill="#1a6b3a" font-family="sans-serif">provider 收到真图块</text>
+  <text x="784" y="204" font-size="11" fill="#556077" font-family="sans-serif">识别正常</text>
+  <line x1="222" y1="192" x2="252" y2="192" stroke="#3a7a3a" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="472" y1="192" x2="502" y2="192" stroke="#3a7a3a" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="742" y1="192" x2="772" y2="192" stroke="#3a7a3a" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- packaged lane -->
+  <text x="22" y="262" font-size="14" font-weight="bold" fill="#8e2b20" font-family="sans-serif">打包形态（Electron 安装包，问题所在）</text>
+  <rect x="22" y="276" width="200" height="64" rx="8" fill="#fff" stroke="#b04a4a"/>
+  <text x="34" y="300" font-size="12" fill="#1a2333" font-family="sans-serif">resizeImage() 被调起</text>
+  <text x="34" y="320" font-size="11" fill="#556077" font-family="sans-serif">代码在 bundle 里，完好</text>
+  <rect x="252" y="276" width="220" height="64" rx="8" fill="#fbdede" stroke="#c0392b" stroke-width="2"/>
+  <text x="264" y="300" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">worker.js ✗ 未 emit</text>
+  <text x="264" y="320" font-size="11" fill="#8e2b20" font-family="sans-serif">photon_rs_bg.wasm ✗ 未 emit</text>
+  <rect x="502" y="276" width="240" height="64" rx="8" fill="#fbdede" stroke="#c0392b"/>
+  <text x="514" y="300" font-size="12" fill="#8e2b20" font-family="sans-serif">loadPhoton → readFileSync 落空</text>
+  <text x="514" y="320" font-size="11" fill="#8e2b20" font-family="sans-serif">返回 null（不报错、不重试）</text>
+  <rect x="772" y="276" width="200" height="64" rx="8" fill="#fbdede" stroke="#c0392b"/>
+  <text x="784" y="300" font-size="12" fill="#8e2b20" font-family="sans-serif">图片块被替换成文本</text>
+  <text x="784" y="320" font-size="11" fill="#8e2b20" font-family="sans-serif">或整轮报"识别不可用"</text>
+  <line x1="222" y1="308" x2="252" y2="308" stroke="#c0392b" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="472" y1="308" x2="502" y2="308" stroke="#c0392b" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="742" y1="308" x2="772" y2="308" stroke="#c0392b" stroke-width="2" marker-end="url(#r)"/>
+
+  <!-- failure surfacing -->
+  <rect x="22" y="360" width="1136" height="88" rx="8" fill="#fff0f0" stroke="#c0392b"/>
+  <text x="38" y="384" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">为什么表现为"识别出问题"而不是报错（全部已验证的设计行为）：</text>
+  <text x="38" y="406" font-size="11" fill="#8e2b20" font-family="sans-serif">① pi：resize 失败 → "[Image omitted: could not be converted...] 文本注释替换图片块 → 模型看不到像素，只能瞎编/说看不到</text>
+  <text x="38" y="426" font-size="11" fill="#8e2b20" font-family="sans-serif">② 委托 Vision 分支：resized===null → throw → "当前模型未接收图片，图片识别不可用"（AgentService.ts:1248-1250）</text>
+  <text x="38" y="446" font-size="11" fill="#8e2b20" font-family="sans-serif">③ 截图工具： visionAwareImageResult 非 native 一律返回"成功" JSON，错误只藏 details.vision.error → agent 以为看过图</text>
+
+  <!-- intermittent -->
+  <rect x="22" y="470" width="1136" height="70" rx="8" fill="#fdf6d9" stroke="#b8942f"/>
+  <text x="38" y="494" font-size="12" font-weight="bold" fill="#7a631a" font-family="sans-serif">偏偏不是 100% 复现（这最迷惑）：</text>
+  <text x="38" y="514" font-size="11" fill="#7a631a" font-family="sans-serif">小图（≤2000px 且 ≤4.5MB）走 wasResized:false 快路，不碰 wasm，直进 provider → 能看 ✓</text>
+  <text x="38" y="532" font-size="11" fill="#7a631a" font-family="sans-serif">大图/超压（截图、4K、二维码高清图）必须走 wasm 降障,返 null → 挂 ✗ —— 所以"有的任务好好的，有的任务识图就出问题"</text>
+
+  <!-- closing -->
+  <rect x="22" y="562" width="1136" height="40" rx="8" fill="#e8f0e8" stroke="#3a7a3a"/>
+  <text x="38" y="586" font-size="12" fill="#1a6b3a" font-family="sans-serif" font-weight="bold">一句话总结：不是 pi 工作流有 bug，是打包工艺把 pi 工作流的两个零件丢了；F1+ 恢复后工作流即完整修复。</text>
+</svg>

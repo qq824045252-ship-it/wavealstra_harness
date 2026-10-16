@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640">
+  <rect x="0" y="0" width="900" height="640" fill="#f4f6f8"/>
+  <text x="450" y="36" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="bold" fill="#1a2233">图片/vision 相关测试实跑结果（2026-10-16）</text>
+
+  <!-- Group: 通过 -->
+  <rect x="30" y="70" width="380" height="240" rx="10" fill="#e8f5ec" stroke="#3a8f52" stroke-width="1.5"/>
+  <text x="220" y="98" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="bold" fill="#1d5e33">通过（9 项，exit 0）</text>
+  <text x="50" y="128" font-family="Segoe UI, sans-serif" font-size="13" fill="#20332a">
+    <tspan x="50" dy="0">codex-image / computer-automation / computer-use-run</tspan>
+    <tspan x="50" dy="22">capture-mode / media-artifact-transaction</tspan>
+    <tspan x="50" dy="22">browser-screenshot-electron / computer-use-overlay</tspan>
+    <tspan x="50" dy="22">computer-use-desktop（live 桌面）</tspan>
+    <tspan x="50" dy="22">chat-attachment-acp-desktop（未注册 test:*）</tspan>
+    <tspan x="50" dy="22">run-remote-image-tests（23 项图片字节/权限检查）</tspan>
+  </text>
+
+  <!-- Group: 失败 -->
+  <rect x="490" y="70" width="380" height="240" rx="10" fill="#faeceb" stroke="#c25444" stroke-width="1.5"/>
+  <text x="680" y="98" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="bold" fill="#8f3026">失败（2 项，均已确认 exit 1）</text>
+  <text x="510" y="128" font-family="Segoe UI, sans-serif" font-size="13" fill="#4a211a">
+    <tspan x="510" dy="0" font-weight="bold">computer-automation-windows（可复现）</tspan>
+    <tspan x="510" dy="22">物理 click_client 按截图坐标未命中冒烟按钮：</tspan>
+    <tspan x="510" dy="22">"physical client click must hit the smoke button"</tspan>
+    <tspan x="510" dy="22" font-weight="bold">magpie-desktop（非代码缺陷）</tspan>
+    <tspan x="510" dy="22">MAGPIE_TEST_EXE 环境变量缺失（需已构建</tspan>
+    <tspan x="510" dy="22">的 Magpie 可执行文件）</tspan>
+  </text>
+
+  <!-- 跳过 -->
+  <rect x="30" y="330" width="840" height="52" rx="10" fill="#f0eefa" stroke="#8f7bc9" stroke-width="1.5"/>
+  <text x="450" y="362" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="13" fill="#33255c">跳过：remote-phone-image-acceptance（需真实手机 ADB 设备，本机未连接）</text>
+
+  <!-- Failing chain -->
+  <rect x="30" y="404" width="840" height="150" rx="10" fill="#ffffff" stroke="#6b7a8f" stroke-width="1.5"/>
+  <text x="50" y="432" font-family="Segoe UI, sans-serif" font-size="15" font-weight="bold" fill="#1a2233">computer-automation-windows 失败链路（视觉→坐标→物理点击）</text>
+  <text x="50" y="458" font-family="Segoe UI, sans-serif" font-size="12" fill="#33404f">前面断言已全部通过：语义 invoke ✓ 截图 PNG 尺寸=DIP 尺寸 ✓ coordinateSpace=client-dip-aligned-pixels ✓ UIA clientBoundsDip 存在 ✓</text>
+
+  <rect x="50" y="478" width="180" height="46" rx="8" fill="#dcecf6" stroke="#487ea3" stroke-width="1.5"/>
+  <text x="140" y="498" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#173a4d">screenshot_window</text>
+  <text x="140" y="515" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" fill="#173a4d">（截图字节断言通过）</text>
+
+  <rect x="290" y="478" width="200" height="46" rx="8" fill="#dcecf6" stroke="#487ea3" stroke-width="1.5"/>
+  <text x="390" y="498" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#173a4d">UIA clientBoundsDip 取中心</text>
+  <text x="390" y="515" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" fill="#173a4d">（bounds 断言通过）</text>
+
+  <rect x="540" y="478" width="160" height="46" rx="8" fill="#faeceb" stroke="#c25444" stroke-width="2"/>
+  <text x="620" y="498" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#6d211a">click_client(x,y)</text>
+  <text x="620" y="515" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" fill="#6d211a">执行成功但未命中</text>
+
+  <rect x="740" y="478" width="120" height="46" rx="8" fill="#faeceb" stroke="#c25444" stroke-width="2"/>
+  <text x="800" y="498" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#6d211a">inspect_controls</text>
+  <text x="800" y="515" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" fill="#6d211a">未记录 clicked</text>
+
+  <line x1="230" y1="501" x2="290" y2="501" stroke="#5a6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="490" y1="501" x2="540" y2="501" stroke="#5a6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="700" y1="501" x2="740" y2="501" stroke="#c25444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="450" y="546" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="13" fill="#8f3026">确定性失败（复跑一致）→ 测试内已通过的坐标断言与实际命中结果矛盾，疑似物理点击映射/DPI 问题</text>
+
+  <!-- baseline note -->
+  <text x="450" y="600" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#33404f">baseline 仅容许 test:project-agent；两个失败项均被 test:all EXCLUDE_PATTERNS 排除（/^test:computer-/ 与 /-desktop$/），不进 default 门禁</text>
+  <text x="450" y="622" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#33404f">几乎所有 desktop/live 脚本显式 vision:{enabled:false} → vision 路由无注册测试覆盖 [推断]</text>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#5a6b80"/>
+    </marker>
+  </defs>
+</svg>

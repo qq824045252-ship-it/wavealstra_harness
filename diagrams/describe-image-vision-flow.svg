@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="860" viewBox="0 0 1240 860">
+  <rect x="0" y="0" width="1240" height="860" fill="#f5f7fa"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#34506b"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#b03a2e"/>
+    </marker>
+  </defs>
+
+  <text x="40" y="42" font-family="Segoe UI, sans-serif" font-size="22" font-weight="bold" fill="#1a2b3c">describe_image / 截图视觉路由（VisionRouting）真实链路</text>
+  <text x="40" y="68" font-family="Segoe UI, sans-serif" font-size="13" fill="#5a6b7b">wavealstra_harness · 只读探索 · 已验证 = 逐行读过源码；推断 = 依据类型与调用方推定</text>
+
+  <!-- 模型侧 -->
+  <rect x="40" y="100" width="300" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="58" y="128" font-size="16" font-weight="bold" fill="#1a2b3c">入口 ① describe_image 工具</text>
+  <text x="58" y="152" font-size="13" fill="#33475b">builtin-capability-extension.ts:441</text>
+  <text x="58" y="174" font-size="13" fill="#33475b">仅当 vision != null 时注册 (439/378)</text>
+  <text x="58" y="200" font-size="13" fill="#33475b">config.vision.enabled=false → 工具不存在 →</text>
+  <text x="58" y="218" font-size="13" fill="#33475b">模型调用即报 unknown tool</text>
+
+  <rect x="420" y="100" width="340" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="438" y="128" font-size="16" font-weight="bold" fill="#1a2b3c">入口 ② 截图类工具自动路由</text>
+  <text x="438" y="152" font-size="13" fill="#33475b">browser_exec/browser-ui/computer_exec</text>
+  <text x="438" y="174" font-size="13" fill="#33475b">visionAwareImageResult → 同一判路函数</text>
+  <text x="438" y="196" font-size="13" fill="#33475b">:597 / :646 / :719 同一轮 vision 闭包</text>
+
+  <rect x="840" y="100" width="360" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="858" y="128" font-size="16" font-weight="bold" fill="#1a2b3c">入口 ③ 用户附件图片</text>
+  <text x="858" y="152" font-size="13" fill="#33475b">AgentService.ts:1245 / :4011</text>
+  <text x="858" y="174" font-size="13" fill="#33475b">routeVisionForPaths 提前转文本</text>
+  <text x="858" y="196" font-size="13" fill="#33475b">结果注入 system/prompt 文本，而非工具结果</text>
+
+  <!-- 路由判路 -->
+  <rect x="430" y="270" width="320" height="86" rx="10" fill="#fdf6e3" stroke="#c9a227" stroke-width="2"/>
+  <text x="448" y="296" font-size="15" font-weight="bold" fill="#6b5310">routeVisionForPaths (VisionRouting.ts:37)</text>
+  <text x="448" y="318" font-size="13" fill="#6b5310">modelSupportsImageInput(ctx?.model)</text>
+  <text x="448" y="340" font-size="13" fill="#6b5310">判定依据：model.input 数组含 "image"</text>
+
+  <!-- 三个分支 -->
+  <rect x="60" y="400" width="340" height="150" rx="10" fill="#e8f5ec" stroke="#2e7d43" stroke-width="2"/>
+  <text x="78" y="428" font-size="15" font-weight="bold" fill="#1b5e20">route=native-multimodal</text>
+  <text x="78" y="450" font-size="12.5" fill="#2e5d3a">describe_image:459 → nativeImageContent(460)</text>
+  <text x="78" y="470" font-size="12.5" fill="#2e5d3a">readFile 全量读 → base64 直塞 Tool Result</text>
+  <text x="78" y="490" font-size="12.5" fill="#b03a2e">失败：ENOENT→errorResult(474)</text>
+  <text x="78" y="508" font-size="12.5" fill="#b03a2e">0 字节→"图片为空"；&gt;12MB→"图片过大"</text>
+  <text x="78" y="530" font-size="12.5" fill="#b03a2e">Promise.all 一张坏→整批全失败；无 resize</text>
+
+  <rect x="450" y="400" width="340" height="150" rx="10" fill="#e7eefb" stroke="#2c5fa8" stroke-width="2"/>
+  <text x="468" y="428" font-size="15" font-weight="bold" fill="#173a6b">route=delegated-vision</text>
+  <text x="468" y="450" font-size="12.5" fill="#2c4a76">provider.describe() → VisionModelCapabilityProvider</text>
+  <text x="468" y="470" font-size="12.5" fill="#2c4a76">readFileSync(L63) → resizeImage →</text>
+  <text x="468" y="490" font-size="12.5" fill="#2c4a76">runtime.completeSimple(model,{text+image})</text>
+  <text x="468" y="510" font-size="12.5" fill="#2c4a76">回填：jsonResult 描述文本 JSON(:471)</text>
+  <text x="468" y="534" font-size="12.5" fill="#b03a2e">内部异常被吞→route=vision-unavailable</text>
+
+  <rect x="840" y="400" width="360" height="150" rx="10" fill="#fdecea" stroke="#b03a2e" stroke-width="2"/>
+  <text x="858" y="428" font-size="15" font-weight="bold" fill="#7a1206">route=vision-unavailable</text>
+  <text x="858" y="450" font-size="12.5" fill="#7a3b32">路由函数异常捕获 (70-77) 或无 provider (51)</text>
+  <text x="858" y="470" font-size="12.5" fill="#7a3b32">真实提示："主模型不支持图片输入，且未启用</text>
+  <text x="858" y="488" font-size="12.5" fill="#7a3b32">可用的委托 Vision 模型。"(VisionRouting:55)</text>
+  <text x="858" y="512" font-size="12.5" fill="#7a3b32">"当前没有可用的图片理解路径"(:473) 仅作</text>
+  <text x="858" y="530" font-size="12.5" fill="#b03a2e">兜底字符串，实际是死代码[已验证]</text>
+
+  <!-- provider -->
+  <rect x="450" y="590" width="340" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="468" y="616" font-size="15" font-weight="bold" fill="#1a2b3c">vision:default provider</text>
+  <text x="468" y="640" font-size="12.5" fill="#33475b">创建 agent/builtin 无参数判断「主模型」判定依据（AgentService:862）</text>
+  <text x="468" y="660" font-size="12.5" fill="#33475b">getSelectedModel = config().vision.model（工具能力里单独选）</text>
+  <text x="468" y="684" font-size="12.5" fill="#b03a2e">未选 → "请先在工具能力中选择一个图像理解模型"</text>
+
+  <rect x="450" y="592" width="0" height="0" fill="none"/>
+  <rect x="840" y="590" width="360" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="858" y="616" font-size="15" font-weight="bold" fill="#1a2b3c">Durable 包装桥（可疑点）</text>
+  <text x="858" y="640" font-size="12.5" fill="#33475b">DurableDomainTools.ts:20-31 重拼 execute ctx</text>
+  <text x="858" y="660" font-size="12.5" fill="#33475b">capabilityContext:85 → getModel(provider,modelId)</text>
+  <text x="858" y="682" font-size="12.5" fill="#b03a2e">provider 串不匹配→model=undefined→只走委托</text>
+  <text x="858" y="702" font-size="12.5" fill="#b03a2e">仅特判 azure-openai-responses→azure</text>
+
+  <rect x="40" y="590" width="360" height="120" rx="10" fill="#ffffff" stroke="#34506b" stroke-width="2"/>
+  <text x="58" y="616" font-size="15" font-weight="bold" fill="#1a2b3c">capabilityPath 双语义(:182)</text>
+  <text x="58" y="640" font-size="12.5" fill="#33475b">nativeExecution=true（主 Bot,:1208）→ 任意盘符</text>
+  <text x="58" y="660" font-size="12.5" fill="#33475b">false → assertTaskPath：必须落在 taskRoot，</text>
+  <text x="58" y="680" font-size="12.5" fill="#33475b">越界→"文件必须位于当前任务目录"(178)</text>
+  <text x="58" y="702" font-size="12.5" fill="#33475b">win32 小写比较（TaskExecutionWorkspace:60）→</text>
+  <text x="58" y="724" font-size="12.5" fill="#33475b">盘符大小写 / 反斜杠本身不是坑[已验证]</text>
+
+  <!-- LocalCapabilityChecks -->
+  <rect x="40" y="740" width="760" height="90" rx="10" fill="#ffffff" stroke="#7a7a7a" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="58" y="766" font-size="15" font-weight="bold" fill="#33475b">LocalCapabilityChecks.ts:43 的强制关闭</text>
+  <text x="58" y="790" font-size="12.5" fill="#33475b">仅存在于“code-execution 本地检查”的一次性假运行时：structuredClone(默认配置) 后把 web/vision/image/video/speech/browser 全部置 false，</text>
+  <text x="58" y="810" font-size="12.5" fill="#33475b">让该 harness 不需要装配 Vision provider 就能跑 execute_code 探测。对真实会话无影响[已验证]。工具注册捕获时间点：vision 在扩展创建时取一次</text>
+
+  <text x="40" y="852" font-size="12" font-weight="bold" fill="#b03a2e">三种入口共用同一路由函数；描述均为已验证（源码逐行），运行时行为标注为推断处见报告正文</text>
+</svg>

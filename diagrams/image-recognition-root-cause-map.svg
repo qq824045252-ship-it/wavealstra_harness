@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 860" width="1440" height="860">
+  <rect x="0" y="0" width="1440" height="860" fill="#f6f7fb"/>
+  <rect x="0" y="0" width="1440" height="46" fill="#e9ecf4"/>
+  <text x="24" y="30" font-size="20" font-weight="bold" fill="#1a2333" font-family="sans-serif">MyBuddy 图片识别全链路与断点总图（10 子智能体探索汇总 · 2026-10-16）</text>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#556077"/></marker>
+    <marker id="r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#c0392b"/></marker>
+  </defs>
+
+  <!-- Row 1: user input paths -->
+  <text x="24" y="78" font-size="14" font-weight="bold" fill="#1a2333" font-family="sans-serif">A. 用户图片上行（附件/粘贴）</text>
+  <rect x="24" y="92" width="210" height="86" rx="8" fill="#ffffff" stroke="#5b7f9d"/>
+  <text x="36" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">① ChatInput 粘贴/拖入/选择</text>
+  <text x="36" y="136" font-size="11" fill="#556077" font-family="sans-serif">ChatInput.tsx:1094-1157</text>
+  <text x="36" y="156" font-size="11" fill="#c0392b" font-family="sans-serif">★ JPEG 字节可能被存成 .png</text>
+
+  <rect x="264" y="92" width="230" height="86" rx="8" fill="#ffffff" stroke="#5b7f9d"/>
+  <text x="276" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">② saveTempFile 落盘 uploads/</text>
+  <text x="276" y="136" font-size="11" fill="#556077" font-family="sans-serif">index.ts:793-840</text>
+  <text x="276" y="156" font-size="11" fill="#c0392b" font-family="sans-serif">★ &gt;25MB 静默返 null（无提示）</text>
+
+  <rect x="524" y="92" width="220" height="86" rx="8" fill="#ffffff" stroke="#5b7f9d"/>
+  <text x="536" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">③ 发送组装/剥离</text>
+  <text x="536" y="136" font-size="11" fill="#556077" font-family="sans-serif">appStore.ts:3793-3807</text>
+  <text x="536" y="156" font-size="11" fill="#c0392b" font-family="sans-serif">★ name-only 附件静默剥离</text>
+
+  <rect x="774" y="92" width="250" height="86" rx="8" fill="#ffffff" stroke="#5b7f9d"/>
+  <text x="786" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">④ loadAttachmentImages</text>
+  <text x="786" y="136" font-size="11" fill="#556077" font-family="sans-serif">AgentService.ts:319-345</text>
+  <text x="786" y="156" font-size="11" fill="#c0392b" font-family="sans-serif">★ &gt;12MB/缺失 静默跳过仅 warn</text>
+
+  <rect x="1054" y="92" width="200" height="86" rx="8" fill="#ffffff" stroke="#5b7f9d"/>
+  <text x="1066" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">⑤ PromptOptions.images</text>
+  <text x="1066" y="136" font-size="11" fill="#556077" font-family="sans-serif">AgentService.ts:4077/4177</text>
+  <text x="1066" y="156" font-size="11" fill="#c0392b" font-family="sans-serif">★ prompt 仍断言"已直读图"</text>
+
+  <rect x="1284" y="92" width="136" height="86" rx="8" fill="#ffffff" stroke="#3a7a3a"/>
+  <text x="1296" y="116" font-size="12" fill="#1a2333" font-family="sans-serif">⑥ pi session.prompt</text>
+  <text x="1296" y="136" font-size="11" fill="#556077" font-family="sans-serif">会话链路有归一化/</text>
+  <text x="1296" y="156" font-size="11" fill="#556077" font-family="sans-serif">resize（依赖 Photon）</text>
+
+  <line x1="234" y1="135" x2="264" y2="135" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="494" y1="135" x2="524" y2="135" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="744" y1="135" x2="774" y2="135" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="1024" y1="135" x2="1054" y2="135" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="1254" y1="135" x2="1284" y2="135" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+
+  <rect x="524" y="196" width="470" height="56" rx="8" fill="#fdf0ee" stroke="#c0392b"/>
+  <text x="536" y="218" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">Bot/durable 链路完全绕过 pi 图片归一化（DurableBotService.admit:249-261）</text>
+  <text x="536" y="238" font-size="11" fill="#8e2b20" font-family="sans-serif">无 resize / 无 EXIF 方向修正 / 无格式转换；BMP 直发必 400（[已验证]代码，[推断]影响面）</text>
+
+  <!-- Row 2: vision routing -->
+  <text x="24" y="304" font-size="14" font-weight="bold" fill="#1a2333" font-family="sans-serif">B. 视觉路由（attachment / describe_image / 截图三工具）</text>
+  <rect x="24" y="318" width="330" height="100" rx="8" fill="#ffffff" stroke="#7a4bb5"/>
+  <text x="36" y="342" font-size="12" fill="#1a2333" font-family="sans-serif">modelSupportsImageInput 唯一判据：</text>
+  <text x="36" y="362" font-size="11" fill="#556077" font-family="sans-serif">VisionRouting.ts:20-24，只看目录元数据 model.input</text>
+  <text x="36" y="382" font-size="11" fill="#c0392b" font-family="sans-serif">★ commandcode 用 10-30 静态快照，缺 input 默认 ["text"]</text>
+  <text x="36" y="402" font-size="11" fill="#c0392b" font-family="sans-serif">★ Durable ctx.model(DurableDomainTools:85) miss → model=undefined</text>
+
+  <rect x="394" y="318" width="250" height="100" rx="8" fill="#d9f0e1" stroke="#2f7d47"/>
+  <text x="406" y="342" font-size="12" font-weight="bold" fill="#1a6b3a" font-family="sans-serif">native-multimodal</text>
+  <text x="406" y="362" font-size="11" fill="#2f5e3c" font-family="sans-serif">bytes 原样注入 image block</text>
+  <text x="406" y="382" font-size="11" fill="#c0392b" font-family="sans-serif">★ 无 resize/闸门；截图像素由此进 provider</text>
+  <text x="406" y="402" font-size="11" fill="#556077" font-family="sans-serif">extension.ts:153-163</text>
+
+  <rect x="674" y="318" width="250" height="100" rx="8" fill="#fdf6d9" stroke="#b8942f"/>
+  <text x="686" y="342" font-size="12" font-weight="bold" fill="#7a631a" font-family="sans-serif">delegated-vision（委托）</text>
+  <text x="686" y="362" font-size="11" fill="#6f5c17" font-family="sans-serif">VisionModelCapabilityProvider 逐图 resize→描述</text>
+  <text x="686" y="382" font-size="11" fill="#c0392b" font-family="sans-serif">★ resize 失败即整批 throw；单图坏=全单亡</text>
+  <text x="686" y="402" font-size="11" fill="#556077" font-family="sans-serif">:65-67 / VisionRouting.ts:59-69</text>
+
+  <rect x="954" y="318" width="250" height="100" rx="8" fill="#fbdede" stroke="#b04a4a"/>
+  <text x="966" y="342" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">vision-unavailable</text>
+  <text x="966" y="362" font-size="11" fill="#7a2e2e" font-family="sans-serif">无图无描述，仅 error 文本</text>
+  <text x="966" y="382" font-size="11" fill="#c0392b" font-family="sans-serif">★ vision.enabled=false 时 describe_image 不注册</text>
+  <text x="966" y="402" font-size="11" fill="#556077" font-family="sans-serif">VisionRouting.ts:51-57</text>
+
+  <rect x="1234" y="318" width="186" height="100" rx="8" fill="#eef2f8" stroke="#5b7f9d"/>
+  <text x="1246" y="342" font-size="12" fill="#1a2333" font-family="sans-serif">截图工具结果</text>
+  <text x="1246" y="362" font-size="11" fill="#c0392b" font-family="sans-serif">★ 非 native 一律 jsonResult 成功态（</text>
+  <text x="1246" y="380" font-size="11" fill="#c0392b" font-family="sans-serif">extension.ts:152）；capture_after 失败</text>
+  <text x="1246" y="398" font-size="11" fill="#c0392b" font-family="sans-serif">只藏进 JSON（isError=false）</text>
+
+  <line x1="354" y1="368" x2="394" y2="368" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="644" y1="368" x2="674" y2="368" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="924" y1="368" x2="954" y2="368" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="1204" y1="368" x2="1234" y2="368" stroke="#556" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Row 3: photon dependency -->
+  <text x="24" y="472" font-size="14" font-weight="bold" fill="#1a2333" font-family="sans-serif">C. Photon resize 依赖（三条链路共用）</text>
+  <rect x="24" y="486" width="1392" height="96" rx="8" fill="#fff0f0" stroke="#c0392b" stroke-width="2"/>
+  <text x="40" y="510" font-size="13" font-weight="bold" fill="#8e2b20" font-family="sans-serif">头号嫌疑：打包产物缺 image-resize-worker.js 与 photon_rs_bg.wasm → resizeImage() 恒返回 null（esbuild dev 验收未覆盖打包环境）</text>
+  <text x="40" y="532" font-size="12" fill="#8e2b20" font-family="sans-serif">后果① DurableImages.ts:68 报错/超限；② 委托 Vision 硬失败 → "当前模型未接收图片，图片识别不可用"（AgentService.ts:1248-1250）；③ &gt;~3.4MB 截图超 provider 内联限制</text>
+  <text x="40" y="554" font-size="11" fill="#556077" font-family="sans-serif">electron.vite.config.ts:45-56 只 emit quickjs/codemode 资产；photon.js:33-40 fallback 路径同样没有 wasm —— 待打包 app 实测复核【静态已验证/运行待验证】</text>
+
+  <!-- Row 4: config & incidents -->
+  <text x="24" y="626" font-size="14" font-weight="bold" fill="#1a2333" font-family="sans-serif">D. 环境与事故（本机已验证）</text>
+  <rect x="24" y="640" width="420" height="120" rx="8" fill="#ffffff" stroke="#b04a4a"/>
+  <text x="36" y="664" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">用户真实配置（~/.mybuddy/capabilities.json）</text>
+  <text x="36" y="686" font-size="11" fill="#556077" font-family="sans-serif">2026-10-15 12:38:05 被批量保存改写：</text>
+  <text x="36" y="706" font-size="11" fill="#c0392b" font-family="sans-serif">vision.enabled=false（model 仍指 gemini-3.8-flash）</text>
+  <text x="36" y="726" font-size="11" fill="#c0392b" font-family="sans-serif">imageGeneration 等亦 disabled → fallback 全断</text>
+  <text x="36" y="746" font-size="11" fill="#556077" font-family="sans-serif">设置页可见，聊天中无任何提示</text>
+
+  <rect x="474" y="640" width="450" height="120" rx="8" fill="#ffffff" stroke="#b04a4a"/>
+  <text x="486" y="664" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">实跑测试（12 项：9 过 / 2 败 / 1 跳过）</text>
+  <text x="486" y="686" font-size="11" fill="#556077" font-family="sans-serif">截图采集/远程图片字节链路全过（可排除采不到图）</text>
+  <text x="486" y="706" font-size="11" fill="#c0392b" font-family="sans-serif">test:computer-automation-windows 确定性失败：</text>
+  <text x="486" y="726" font-size="11" fill="#c0392b" font-family="sans-serif">截图✓→clientBoundsDip✓→click_client 物理未命中（DPI/坐标映射）</text>
+  <text x="486" y="746" font-size="11" fill="#556077" font-family="sans-serif">两项失败均被 EXCLUDE_PATTERNS 排除、不进棘轮门禁</text>
+
+  <rect x="954" y="640" width="462" height="120" rx="8" fill="#ffffff" stroke="#b04a4a"/>
+  <text x="966" y="664" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">git 时间线（识图链路的真实改动只有两次）</text>
+  <text x="966" y="686" font-size="11" fill="#556077" font-family="sans-serif">10-05 95dbe28：Bot 切 Pi Durable；ctx.model 重建（:85）</text>
+  <text x="966" y="706" font-size="11" fill="#556077" font-family="sans-serif">10-07 e4ba11e ★★：Pi 1.0.4 升级，read 看图链路整体重写</text>
+  <text x="966" y="726" font-size="11" fill="#c0392b" font-family="sans-serif">升级验收只测"解码显示/去重/重启"，无识别质量实测</text>
+  <text x="966" y="746" font-size="11" fill="#c0392b" font-family="sans-serif">pi 1.0.4 检测器拒 APNG → 二进制当文本读出乱码</text>
+
+  <!-- Footer -->
+  <rect x="24" y="780" width="1392" height="60" rx="8" fill="#eef2f8" stroke="#5b7f9d"/>
+  <text x="40" y="803" font-size="12" font-weight="bold" fill="#1a2333" font-family="sans-serif">根因排序：① 打包缺 Photon 资产（resizes 全灭，静态已验证/待运行确认） ② vision.enabled=false（fallback 全断） ③ ctx.model/静态快照误判多模态 ④ MIME 声明链不一致（.png 存 JPEG、APNG、native 无 resize） ⑤ 截图坐标→物理点击 DPI 失败</text>
+  <text x="40" y="825" font-size="11" fill="#556077" font-family="sans-serif">红字=已验证缺陷点；绿色框=健康路径。全图仅含逐行验证的文件:行号；唯一待运行验证项是打包环境下 resizeImage 是否恒 null。</text>
+</svg>

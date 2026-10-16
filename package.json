@@ -1,11 +1,12 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
   "scripts": {
     "test:command-code-request": "esbuild scripts/command-code-request-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/command-code-request-test.mjs && node scripts/test-guard.mjs out/tests/command-code-request-test.mjs",
+    "test:image-resize-assets": "esbuild scripts/image-resize-assets-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/image-resize-assets-test.cjs && node scripts/test-guard.mjs out/tests/image-resize-assets-test.cjs",
     "test:html-edit-source": "esbuild scripts/html-edit-source-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/html-edit-source.cjs && node out/tests/html-edit-source.cjs",
     "test:html-edit-electron": "esbuild scripts/html-edit-electron-test.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --outfile=out/tests/html-edit-electron.cjs && electron out/tests/html-edit-electron.cjs",
     "remote:build": "pnpm --filter @mybuddy/remote build",
@@ -471,6 +472,8 @@
       "**/node_modules/onnxruntime-node/**",
       "out/main/codemode-worker.cjs",
       "out/main/quickjs.wasm",
+      "out/main/image-resize-worker.js",
+      "out/main/photon_rs_bg.wasm",
       "out/main/capabilities/subagent/runtime/**/*"
     ],
     "win": {
