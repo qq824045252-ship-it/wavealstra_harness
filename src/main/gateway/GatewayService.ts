@@ -331,6 +331,7 @@ export class GatewayService {
         continue;
       }
       try {
+        if (adapter.type !== "slack") await this.start();
         await adapter.connect(adapter.type === "slack" ? openSlackGatewayConfig(config) : config);
         if (adapter.type === "slack") this.running = true;
         this.channelPolicies.set(row.id, { allowUsers: toStrArray(config.allowUsers) });

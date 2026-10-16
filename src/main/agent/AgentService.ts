@@ -184,6 +184,7 @@ import {
 import { ModelsConfigStore, mergeModelConfig, projectModelConfig, type ModelsFileConfig, type ModelsProviderConfig } from "./ModelsConfigStore";
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
+import type { MagpieGatewayConfig } from "./providers/magpie";
 import { migratePiAzureProvider } from "./PiAzureProviderMigration";
 import {
   type ModelMetadataDto,
@@ -1159,7 +1160,7 @@ export class AgentService {
       allowModelNetwork: true,
       refreshOnCreate: false,
     });
-    registerMyBuddyProviders(this.modelRuntime);
+    registerMyBuddyProviders(this.modelRuntime, { magpieConfig: () => this.readMagpieGatewayConfig() });
     await this.modelRuntime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
     installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
     attachSubagentModelRuntime(this.modelRuntime);
@@ -1167,7 +1168,7 @@ export class AgentService {
     await this.migrateLegacyModelPreferences();
     // Same Pi models/auth files, with no MyBuddy request-admission wrappers on Bot execution.
     this.durableModels = await ModelRuntime.create({ authPath: getAuthPath(), modelsPath: getModelsPath(), refreshOnCreate: false });
-    registerMyBuddyProviders(this.durableModels);
+    registerMyBuddyProviders(this.durableModels, { magpieConfig: () => this.readMagpieGatewayConfig() });
     await this.durableModels.refresh({ allowNetwork: false });
     this.durableBots = new DurableBotService({
       expertBindings: this.expertBindings,
@@ -1559,6 +1560,18 @@ export class AgentService {
       requestedProviderIds,
       errors,
     };
+  }
+
+  /** Live models.json `providers.magpie` for the native Magpie provider: Magpie
+   * writes it (address, gateway key, User-Agent) while MyBuddy runs, and a write
+   * caught mid-flight must not break a model refresh — Pi keeps the last good
+   * catalog and this returns undefined for that round. */
+  private readMagpieGatewayConfig(): MagpieGatewayConfig | undefined {
+    try {
+      return this.modelsStore.read().providers.magpie;
+    } catch {
+      return undefined;
+    }
   }
 
   /** External editors (including Magpie) own their file writes; Pi owns the live catalog.

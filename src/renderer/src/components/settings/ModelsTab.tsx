@@ -202,7 +202,9 @@ export default function ModelsTab(): React.JSX.Element {
         if (providerError) {
           setHint(`${providerName} 模型目录更新失败，已保留现有目录：${providerError.message}`);
         } else if (!result?.requestedProviderIds?.includes(providerId)) {
-          setHint(`${providerName} 由 Pi 读取本地配置，未声明远端刷新；修改模型参数请编辑 models.json 配置。`);
+          setHint(refreshedProvider?.loggedIn
+            ? `${providerName} 没有可拉取的上游模型目录；已按本地配置重新加载。模型列表由它的写入方维护，手改 models.json 的 models 段会被覆盖。`
+            : `${providerName} 尚未配置凭证；Pi 只能读取本地配置，无法刷新模型目录。`);
         } else {
           const otherFailures = result?.errors.length ?? 0;
           const providerSuffix = otherFailures > 0 ? `；另有 ${otherFailures} 个 Provider 更新失败` : "";
@@ -215,7 +217,7 @@ export default function ModelsTab(): React.JSX.Element {
         const failures = result?.errors.length ?? 0;
         const requested = result?.requestedProviderIds?.length ?? 0;
         setHint(requested === 0
-          ? "没有可从上游刷新的 Provider；请先完成认证"
+          ? "没有可拉取上游目录的 Provider；已按本地 models.json 重新加载"
           : failures > 0
           ? `上游刷新完成，${failures} 个 Provider 失败；已保留其本地模型`
           : (list.length ? `已从上游刷新全部 Provider：${list.length} 个可用模型` : "已从上游刷新，当前没有可用模型"));

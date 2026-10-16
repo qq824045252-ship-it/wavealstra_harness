@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 720" width="1240" height="720">
+  <rect x="0" y="0" width="1240" height="720" fill="#f6f7fb"/>
+  <rect x="0" y="0" width="1240" height="46" fill="#e9ecf4"/>
+  <text x="22" y="30" font-size="19" font-weight="bold" fill="#1a2333" font-family="sans-serif">图片识图路由的真实判定流程：先判模型能力，原生直读优先，委托 Vision 仅兜底</text>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#556077"/></marker>
+  </defs>
+
+  <!-- entries -->
+  <text x="22" y="76" font-size="13" font-weight="bold" fill="#1a2333" font-family="sans-serif">① 三个入口（都调用同一个 routeVisionForPaths）</text>
+  <rect x="22" y="88" width="290" height="96" rx="8" fill="#fff" stroke="#5b7f9d"/>
+  <text x="34" y="112" font-size="12" fill="#1a2333" font-family="sans-serif">用户附件 / 粘贴图（交互会话）</text>
+  <text x="34" y="132" font-size="11" fill="#556077" font-family="sans-serif">AgentService.ts:4003-4009 → :4077</text>
+  <text x="34" y="150" font-size="11" fill="#556077" font-family="sans-serif">判据用 entry.session.model</text>
+  <text x="34" y="170" font-size="11" fill="#8e2b20" font-family="sans-serif">per-entry: 图片块进 PromptOptions.images</text>
+
+  <rect x="332" y="88" width="290" height="96" rx="8" fill="#fff" stroke="#5b7f9d"/>
+  <text x="344" y="112" font-size="12" fill="#1a2333" font-family="sans-serif">Bot/durable 附件</text>
+  <text x="344" y="132" font-size="11" fill="#556077" font-family="sans-serif">AgentService.ts:1239-1251 prepareImages</text>
+  <text x="344" y="150" font-size="11" fill="#556077" font-family="sans-serif">判据用 durableModels.getModel(...)</text>
+  <text x="344" y="170" font-size="11" fill="#8e2b20" font-family="sans-serif">per-entry: 委托结果拼成 markdown 注入</text>
+
+  <rect x="642" y="88" width="290" height="96" rx="8" fill="#fff" stroke="#5b7f9d"/>
+  <text x="654" y="112" font-size="12" fill="#1a2333" font-family="sans-serif">describe_image / 三种截图工具</text>
+  <text x="654" y="132" font-size="11" fill="#556077" font-family="sans-serif">builtin-capability-extension.ts:452 / :597 / :646 / :719</text>
+  <text x="654" y="150" font-size="11" fill="#556077" font-family="sans-serif">判据用 ctx?.model（可能 undefined）</text>
+  <text x="654" y="170" font-size="11" fill="#8e2b20" font-family="sans-serif">per-entry: 图片块进 tool result</text>
+
+  <line x1="167" y1="184" x2="167" y2="214" stroke="#556077" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="477" y1="184" x2="477" y2="214" stroke="#556077" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="787" y1="184" x2="787" y2="214" stroke="#556077" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- decision -->
+  <rect x="22" y="216" width="910" height="88" rx="8" fill="#f3e8fd" stroke="#7a4bb5" stroke-width="2"/>
+  <text x="38" y="242" font-size="13" font-weight="bold" fill="#5b2d8e" font-family="sans-serif">② 唯一判据：model.input 数组是否含 "image"（元数据，不实测）</text>
+  <text x="38" y="264" font-size="11" fill="#5b2d8e" font-family="sans-serif">VisionRouting.ts:20-24 modelSupportsImageInput() → 只看目录元数据；VisionModelCapabilityProvider.ts:48 委托侧再校验一次同字段</text>
+  <text x="38" y="284" font-size="11" fill="#8e2b20" font-family="sans-serif">风险：commandcode 用 9-30 静态快照且刷新不取 input（缺省 ["text"]）；Durable 桥 ctx.model 键不匹配→undefined ⇒ 多模态模型被误判纯文本</text>
+  <text x="38" y="300" font-size="11" fill="#556077" font-family="sans-serif">⇒ 误判的后果是"静默转委托"，不是报错</text>
+
+  <!-- branch native -->
+  <rect x="22" y="336" width="380" height="150" rx="8" fill="#d9f0e1" stroke="#2f7d47" stroke-width="2"/>
+  <text x="38" y="362" font-size="13" font-weight="bold" fill="#1a6b3a" font-family="sans-serif">A. native-multimodal（首选，当前主模型走这条）</text>
+  <text x="38" y="384" font-size="11" fill="#2f5e3c" font-family="sans-serif">图片块（base64 + mimeType）直接进模型上下文</text>
+  <text x="38" y="404" font-size="11" fill="#2f5e3c" font-family="sans-serif">主模型自己看像素：布局、小字、坐标、视觉推理全保留</text>
+  <text x="38" y="426" font-size="11" fill="#8e2b20" font-family="sans-serif">前提：Photon resize 可用（0.1.29 已修）+ 元数据判对</text>
+  <text x="38" y="448" font-size="11" fill="#556077" font-family="sans-serif">缺口：native 若被 provider 拒（400/超限）无自动转委托</text>
+  <text x="38" y="470" font-size="11" fill="#556077" font-family="sans-serif">VisionRouting.ts:44-49 → extension.ts:153-163</text>
+
+  <!-- branch delegate -->
+  <rect x="422" y="336" width="380" height="150" rx="8" fill="#fdf6d9" stroke="#b8942f"/>
+  <text x="438" y="362" font-size="13" font-weight="bold" fill="#7a631a" font-family="sans-serif">B. delegated-vision（仅当 A 判不成立）</text>
+  <text x="438" y="384" font-size="11" fill="#6f5c17" font-family="sans-serif">调设置里选的 vision.model（当前 gemini-3.8-flash）</text>
+  <text x="438" y="404" font-size="11" fill="#6f5c17" font-family="sans-serif">逐图 resize → 生成文字描述 → 主模型只拿到文字</text>
+  <text x="438" y="426" font-size="11" fill="#8e2b20" font-family="sans-serif">主模型永远看不到像素（有损：读不了小字/精确坐标）</text>
+  <text x="438" y="448" font-size="11" fill="#556077" font-family="sans-serif">VisionRouting.ts:59-69 → VisionModelCapabilityProvider:55-92</text>
+  <text x="438" y="470" font-size="11" fill="#556077" font-family="sans-serif">需 config.vision.enabled=true（今天已恢复）</text>
+
+  <!-- branch unavailable -->
+  <rect x="822" y="336" width="396" height="150" rx="8" fill="#fbdede" stroke="#b04a4a"/>
+  <text x="838" y="362" font-size="13" font-weight="bold" fill="#8e2b20" font-family="sans-serif">C. vision-unavailable（两条都不成立）</text>
+  <text x="838" y="384" font-size="11" fill="#7a2e2e" font-family="sans-serif">图片丢弃，只剩 error 文本：</text>
+  <text x="838" y="404" font-size="11" fill="#7a2e2e" font-family="sans-serif">"当前模型未接收图片，图片识别不可用：…"</text>
+  <text x="838" y="426" font-size="11" fill="#8e2b20" font-family="sans-serif">且 describe_image 在 vision 关闭时根本不注册</text>
+  <text x="838" y="448" font-size="11" fill="#556077" font-family="sans-serif">VisionRouting.ts:51-57 / :70-77</text>
+  <text x="838" y="470" font-size="11" fill="#556077" font-family="sans-serif">这是"关掉委托"会立刻踩到的分支</text>
+
+  <line x1="240" y1="304" x2="212" y2="334" stroke="#2f7d47" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="520" y1="304" x2="612" y2="334" stroke="#b8942f" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="860" y1="304" x2="1020" y2="334" stroke="#b04a4a" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- answer -->
+  <rect x="22" y="512" width="1196" height="90" rx="8" fill="#eef2f8" stroke="#5b7f9d"/>
+  <text x="38" y="536" font-size="12" font-weight="bold" fill="#1a2333" font-family="sans-serif">所以"要不要委托"的真实答案：不是"直接走委托"，而是"能原生就原生，不能才委托"</text>
+  <text x="38" y="558" font-size="11" fill="#556077" font-family="sans-serif">"现在都是多模态"目前不成立：commandcode 86 个模型的 input 来自 9-30 静态快照，缺字段默认 ["text"]；工具路径的 ctx.model 还可能 undefined</text>
+  <text x="38" y="578" font-size="11" fill="#556077" font-family="sans-serif">委托的价值只在"元数据误判/真纯文本/工具上下文拿不到模型"这三种情况兜底——关掉它＝遇到这三种情况直接落到 C（图片全丢）</text>
+  <text x="38" y="596" font-size="11" fill="#1a6b3a" font-family="sans-serif">建议保留委托当安全网，同时补：native 失败自动转委托 + 结果里标出 route + 元数据来源修正（而不是改成"永远委托"）</text>
+
+  <rect x="22" y="618" width="1196" height="80" rx="8" fill="#fff0f0" stroke="#c0392b"/>
+  <text x="38" y="642" font-size="12" font-weight="bold" fill="#8e2b20" font-family="sans-serif">为什么不建议"不判断、永远走委托"：</text>
+  <text x="38" y="664" font-size="11" fill="#8e2b20" font-family="sans-serif">① 主模型看不到像素 → 截图小字、UI 细节、精确坐标、图表趋势都只能靠另一个模型的转述；② 多一跳延迟与费用；③ 质量绑定在 gemini-3.8-flash 上，换模型/该模型不可用即整链降级；④ 有损不可逆，无法追问细节</text>
+  <text x="38" y="684" font-size="11" fill="#556077" font-family="sans-serif">（pi-durable 的 read 图片路径 DurableImages.ts:47-75 更是完全不判路由，恒返 image 块，属另一条待收口的分支）</text>
+</svg>
