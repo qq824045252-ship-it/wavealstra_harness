@@ -37,7 +37,7 @@ import {
 } from "../paths";
 
 /** 钉死版本：升级是一次显式的代码变更，不做「拉最新」。 */
-export const UV_PINNED_VERSION = "0.12.13";
+export const UV_PINNED_VERSION = "0.13.1";
 
 const UV_OVERRIDE_ENV = "MYBUDDY_UV_PATH";
 const RELEASE_BASE = "https://github.com/astral-sh/uv/releases/download";
@@ -348,10 +348,11 @@ export class UvToolchain implements UvExecutor {
     if (found.available) {
       const probe = await this.exec(found.path!, ["--version"], { signal, timeoutMs: 30_000 });
       if (probe.cancelled) throw new Error("Preparation cancelled");
-      if (probe.code !== 0 || parseUvVersion(probe.stdout) !== UV_PINNED_VERSION) {
-        throw new Error(`uv version must be ${UV_PINNED_VERSION}`);
+      // 不认版本：上游版本号变动不应阻塞环境准备，只要 uv 可执行就放行
+      if (probe.code !== 0) {
+        throw new Error(`uv 不可用：--version 探测失败（退出码 ${probe.code}）`);
       }
-      return { ...found, version: UV_PINNED_VERSION };
+      return { ...found, version: parseUvVersion(probe.stdout) ?? UV_PINNED_VERSION };
     }
     if (this.installing?.stopping) {
       try { await this.installing.promise; } catch { /* previous owner stopped */ }

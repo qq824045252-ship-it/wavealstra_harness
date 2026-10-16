@@ -54,8 +54,6 @@ const EXCLUDE_PATTERNS = [
   /^test:workspace-files-ui$/, // 需 GUI 文件面板
   /^test:models-settings-overlay$/,
   /^test:terminal$/, // 需 node-pty 原生模块
-  /^test:python-runtime-live$/, // 需真实 Python 运行时下载
-  /^test:python-runtime-electron$/,
   // 依赖 gitignore 的官方市场归档 `mybuddyskills-main/`（约 294 技能）：该用例从市场安装真实
   // blender-* 技能，归档不存在时**无法**通过（不是代码缺陷）。需在具备该数据集的机器上单独跑。
   /^test:blender-skill$/,
