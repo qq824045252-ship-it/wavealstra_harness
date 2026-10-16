@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-16T04:44:01.593Z",
+  "at": "2026-10-16T06:46:34.721Z",
   "scope": [
     "src",
     "app",
@@ -591,20 +591,20 @@
     },
     {
       "file": "src/main/agent/durable/DurableBotRuntime.ts",
-      "lines": 451,
-      "sha256": "d4185e30673e8af712ba5828adb1b35c5a582c801ae9b152a6f2594a226b7796",
+      "lines": 664,
+      "sha256": "60e5a3cab9cff4593b9cf990fc47ff6937f2d15571277a4b64a16479c95d85a5",
       "test": false
     },
     {
       "file": "src/main/agent/durable/DurableBotService.ts",
-      "lines": 368,
-      "sha256": "ba42a9fbccb868ea2c7f042c1067fac928cd258bdc8b4996fe9cc9bbb0fe8078",
+      "lines": 437,
+      "sha256": "132a6296a8e0293137f72aed2feb8370ca9bd8477968b019ec625519ecad85d0",
       "test": false
     },
     {
       "file": "src/main/agent/durable/DurableCodeMode.ts",
-      "lines": 90,
-      "sha256": "29a3f0da7ee15d8c6e6386a86cd401ee55996da36865e3dff10a1081ca0e385d",
+      "lines": 133,
+      "sha256": "332151b6b21e92edb32f7dd9417d5deaad746ae6920106500c7572957c3ee9d4",
       "test": false
     },
     {
@@ -645,8 +645,8 @@
     },
     {
       "file": "src/main/agent/durable/DurableTurnProjection.ts",
-      "lines": 44,
-      "sha256": "46fde6f07231371af446e3be7c005833c236708ef7b2a6bf5449944f32e3202a",
+      "lines": 73,
+      "sha256": "500eb12bac8c037f0ebb31583e7b17d338042ee17b2627606f258e6b95810f4a",
       "test": false
     },
     {
@@ -4879,33 +4879,27 @@
     },
     {
       "file": "src/main/agent/durable/DurableBotRuntime.ts",
-      "line": 236,
+      "line": 318,
       "method": "abort",
       "expression": "this.conversation.abort"
     },
     {
       "file": "src/main/agent/durable/DurableBotRuntime.ts",
-      "line": 241,
+      "line": 328,
       "method": "compact",
       "expression": "this.conversation.compact"
     },
     {
       "file": "src/main/agent/durable/DurableBotService.ts",
-      "line": 319,
+      "line": 381,
       "method": "abort",
-      "expression": "(await this.open(taskId)).runtime.abort"
+      "expression": "open.runtime.abort"
     },
     {
       "file": "src/main/agent/durable/DurableBotService.ts",
-      "line": 321,
+      "line": 383,
       "method": "compact",
-      "expression": "(await this.open(taskId)).runtime.compact"
-    },
-    {
-      "file": "src/main/agent/durable/DurableCodeMode.ts",
-      "line": 85,
-      "method": "abort",
-      "expression": "(await api.conversation(child, context))?.abort"
+      "expression": "open.runtime.compact"
     },
     {
       "file": "src/main/agent/subagent-ipc-host.ts",
@@ -5210,5 +5204,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "f44cfdb20ba034918015c807685b72e400e7b2b3ff6a1317ab5600221516ff0f"
+  "sourceSha256": "5cd40d376181c94c76b0119a57d56c67092c1aaab72f88b6807723ad77a6bae1"
 }
