@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { registerMyBuddyProviders } from "../src/main/agent/providers";
-import { MAGPIE_PROVIDER_ID, magpieCatalogRevision, magpieCatalogSnapshot, reconcileMagpieModels } from "../src/main/agent/providers/magpie";
+import { MAGPIE_PROVIDER_ID, magpieCatalogRevision, magpieCatalogSnapshot, magpieScopeReferencesToDrop, reconcileMagpieModels } from "../src/main/agent/providers/magpie";
 
 const GATEWAY_KEY = "fixture-gateway-key";
 const USER_AGENT = "MyBuddy";
@@ -180,6 +180,23 @@ try {
   );
   pass("a refresh converges models.json's Magpie list on the gateway catalog");
 
+  // A dropped model must not stay selected: its enabledModels entry and its
+  // thinking preference go with it (wildcards and other providers stay).
+  assert.deepEqual(
+    magpieScopeReferencesToDrop(
+      [
+        "magpie/vendor/gone",
+        "magpie/vendor/gone:high",
+        "magpie/vendor/new-chat",
+        "magpie/*",
+        "google-vertex/gemini-3.1-pro-preview",
+      ],
+      ["vendor/gone"],
+    ),
+    ["magpie/vendor/gone", "magpie/vendor/gone:high"],
+  );
+  pass("scope references to a dropped model are identified, wildcards untouched");
+
   const auth = await runtime.getAuth(MAGPIE_PROVIDER_ID);
   assert.equal(auth?.auth.apiKey, GATEWAY_KEY);
   assert.equal(auth?.auth.headers?.["User-Agent"], USER_AGENT, "usage attribution depends on this header");
@@ -210,11 +227,16 @@ try {
   // and must still reach the gateway only through Pi (no fetch in AgentService).
   const agentSource = readFileSync(join("src", "main", "agent", "AgentService.ts"), "utf8");
   const reloadStart = agentSource.indexOf("async reloadModels(");
-  const alignAt = agentSource.indexOf("private alignMagpieModelsWithGateway()", reloadStart);
+  const alignAt = agentSource.indexOf("private async alignMagpieModelsWithGateway()", reloadStart);
   assert(reloadStart >= 0 && alignAt > reloadStart, "reloadModels and the alignment must both exist");
   const reloadBody = agentSource.slice(reloadStart, alignAt);
   assert(reloadBody.includes("alignMagpieModelsWithGateway("), "reloadModels must align the Magpie block after a successful refresh");
   assert(!reloadBody.includes("fetch("), "the refresh must reach the gateway only through Pi");
+  const alignBody = agentSource.slice(alignAt, agentSource.indexOf("private readMagpieGatewayConfig", alignAt));
+  assert(alignBody.includes("reconcileMagpieModels("), "the alignment must converge the model list");
+  assert(alignBody.includes("magpieScopeReferencesToDrop("), "the alignment must prune dropped models from the scope");
+  assert(alignBody.includes("removeModelThinkingLevel("), "a dropped model's thinking preference must go too");
+  assert(alignBody.includes("setEnabledModels("), "a dropped model's enabledModels entry must go too");
   pass("the refresh path aligns models.json and fetches only through Pi");
 
   const bareDir = mkdtempSync(join(tmpdir(), "mybuddy-magpie-bare-"));

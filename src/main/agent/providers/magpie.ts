@@ -170,6 +170,17 @@ export function reconcileMagpieModels(
   return catalog.map((model) => written.get(model.id) ?? magpieModelDefinition(model));
 }
 
+/** enabledModels / model-thinking patterns that name one of these dropped ids,
+ * with an optional ":level" suffix. Wildcards are never matched: they resolve
+ * to whatever the catalog holds. */
+export function magpieScopeReferencesToDrop(
+  patterns: readonly string[],
+  droppedModelIds: readonly string[],
+): string[] {
+  const refs = new Set(droppedModelIds.map((id) => `${MAGPIE_PROVIDER_ID}/${id}`));
+  return patterns.filter((pattern) => refs.has(pattern.replace(/:(off|minimal|low|medium|high|xhigh|max)$/u, "")));
+}
+
 /** One gateway row as a Pi model: fields Magpie's own block does not carry yet. */
 export function modelFromGatewayEntry(value: unknown, baseUrl: string): MagpieModel {
   if (!value || typeof value !== "object") throw new Error("Magpie 网关返回了无效模型条目");

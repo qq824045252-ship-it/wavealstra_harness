@@ -184,7 +184,7 @@ import {
 import { ModelsConfigStore, mergeModelConfig, projectModelConfig, type ModelsFileConfig, type ModelsProviderConfig } from "./ModelsConfigStore";
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
-import { MAGPIE_PROVIDER_ID, magpieCatalogSnapshot, reconcileMagpieModels, type MagpieGatewayConfig } from "./providers/magpie";
+import { MAGPIE_PROVIDER_ID, magpieCatalogSnapshot, magpieScopeReferencesToDrop, reconcileMagpieModels, type MagpieGatewayConfig } from "./providers/magpie";
 import { migratePiAzureProvider } from "./PiAzureProviderMigration";
 import {
   type ModelMetadataDto,
@@ -1563,7 +1563,7 @@ export class AgentService {
     if (requestedProviderIds.includes(MAGPIE_PROVIDER_ID)
       && !errors.some((error) => error.providerId === MAGPIE_PROVIDER_ID)) {
       try {
-        this.alignMagpieModelsWithGateway();
+        await this.alignMagpieModelsWithGateway();
       } catch (error) {
         console.error("[AgentService] Magpie 模型列表对齐失败", error);
       }
@@ -1577,9 +1577,10 @@ export class AgentService {
   }
 
   /** After a successful gateway refresh, make models.json's Magpie model list the
-   * list the gateway serves: the id set decides, so surviving entries keep the
-   * definition Magpie wrote and only additions/removals touch the file. */
-  private alignMagpieModelsWithGateway(): void {
+   * list the gateway serves, and drop scope references to models that left it:
+   * the id set decides, so surviving entries keep the definition Magpie wrote and
+   * only additions/removals touch the file. */
+  private async alignMagpieModelsWithGateway(): Promise<void> {
     const snapshot = magpieCatalogSnapshot();
     if (!snapshot || snapshot.revision <= this.appliedMagpieCatalogRevision) return;
     const file = this.modelsStore.read();
@@ -1587,11 +1588,46 @@ export class AgentService {
     if (!provider) return;
     this.appliedMagpieCatalogRevision = snapshot.revision;
     const models = reconcileMagpieModels(provider.models, snapshot.models);
-    if (!models) return;
-    this.modelsStore.write({
-      ...file,
-      providers: { ...file.providers, [MAGPIE_PROVIDER_ID]: { ...provider, models } },
-    });
+    const previous = provider.models ?? [];
+    if (models) {
+      this.modelsStore.write({
+        ...file,
+        providers: { ...file.providers, [MAGPIE_PROVIDER_ID]: { ...provider, models } },
+      });
+    }
+    const served = new Set((models ?? previous).map((model) => model.id));
+    const dropped = previous.map((model) => model.id).filter((id) => !served.has(id));
+    if (dropped.length) await this.dropMagpieScopeReferences(dropped);
+  }
+
+  /** A model the gateway no longer serves must not stay selected: remove its
+   * enabledModels entry and its thinking preference. enabledModels is left
+   * untouched when pruning would empty it — MyBuddy reads [] as "all disabled". */
+  private async dropMagpieScopeReferences(droppedModelIds: readonly string[]): Promise<void> {
+    const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
+    const patterns = piSettings.getEnabledModels();
+    const levelKeys = Object.keys(piSettings.getAllModelThinkingLevels());
+    const stale = new Set(magpieScopeReferencesToDrop([...(patterns ?? []), ...levelKeys], droppedModelIds));
+    if (stale.size === 0) return;
+    let pruned = 0;
+    if (patterns) {
+      const next = patterns.filter((pattern) => !stale.has(pattern));
+      if (next.length > 0 && next.length !== patterns.length) {
+        piSettings.setEnabledModels(next);
+        pruned = patterns.length - next.length;
+      } else if (next.length === 0) {
+        console.warn("[AgentService] 已下线模型的启用项即是全部启用项，保留列表以免变成「全部禁用」");
+      }
+    }
+    for (const key of levelKeys) {
+      if (!stale.has(key)) continue;
+      const parsed = splitProviderModelId(key);
+      if (parsed) piSettings.removeModelThinkingLevel(parsed.provider, parsed.model);
+    }
+    await piSettings.flush();
+    const errors = piSettings.drainErrors();
+    if (errors.length > 0) throw errors[0]!.error;
+    if (pruned) console.log(`[AgentService] 已清理 ${pruned} 条指向已下线 Magpie 模型的启用项`);
   }
 
   /** Live models.json `providers.magpie` for the native Magpie provider: Magpie
