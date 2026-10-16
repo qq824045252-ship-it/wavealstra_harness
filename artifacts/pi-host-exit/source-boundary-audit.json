@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-16T03:37:02.022Z",
+  "at": "2026-10-16T04:44:01.593Z",
   "scope": [
     "src",
     "app",
@@ -261,8 +261,8 @@
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "lines": 5876,
-      "sha256": "89f33ff73cc5ca29ed354f41193d654bda98d6225b80f5c00b23d5cf44fb4b9c",
+      "lines": 5912,
+      "sha256": "0bb085a46014fbd3581217e1bfa79733508840df4df54220bb21f0c4e5ca6d1f",
       "test": false
     },
     {
@@ -687,8 +687,8 @@
     },
     {
       "file": "src/main/agent/providers/magpie.ts",
-      "lines": 250,
-      "sha256": "cf897bae04e571e5d9c8b1ef3a1e209152cca0db86bc477af175a8b6ec8e091c",
+      "lines": 261,
+      "sha256": "3043d614b69c9cc5bb094ee378d87eccf0b8a5e49812d20c61e7340983ad9444",
       "test": false
     },
     {
@@ -1161,8 +1161,8 @@
     },
     {
       "file": "src/main/capabilities/subagent/vendor/context-projection.mjs",
-      "lines": 303,
-      "sha256": "ff6b7586a1dd1950d5da9f630ccf108c5a6290c2d9f245880416e4c00e23d17d",
+      "lines": 302,
+      "sha256": "b35a1e3aab7aefb4abf42db14c0688667a51c0d363bfa1538a862b6b8c57fffd",
       "test": false
     },
     {
@@ -4571,19 +4571,19 @@
     },
     {
       "file": "src/main/capabilities/subagent/vendor/context-projection.mjs",
-      "line": 168,
+      "line": 167,
       "event": "context",
       "receiver": "pi"
     },
     {
       "file": "src/main/capabilities/subagent/vendor/context-projection.mjs",
-      "line": 190,
+      "line": 189,
       "event": "agent_settled",
       "receiver": "pi"
     },
     {
       "file": "src/main/capabilities/subagent/vendor/context-projection.mjs",
-      "line": 191,
+      "line": 190,
       "event": "session_shutdown",
       "receiver": "pi"
     },
@@ -4705,109 +4705,109 @@
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 1911,
+      "line": 1947,
       "method": "abort",
       "expression": "this.loginAbort?.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2046,
+      "line": 2082,
       "method": "abort",
       "expression": "session?.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2067,
+      "line": 2103,
       "method": "prompt",
       "expression": "session.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 2072,
+      "line": 2108,
       "method": "clearQueue",
       "expression": "session.clearQueue"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3645,
+      "line": 3681,
       "method": "compact",
       "expression": "this.durableBots.compact"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3682,
+      "line": 3718,
       "method": "compact",
       "expression": "session.compact"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 3782,
+      "line": 3818,
       "method": "prompt",
       "expression": "this.durableBots.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4222,
+      "line": 4258,
       "method": "prompt",
       "expression": "entry.session.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4362,
+      "line": 4398,
       "method": "prompt",
       "expression": "this.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4399,
+      "line": 4435,
       "method": "abort",
       "expression": "this.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4410,
+      "line": 4446,
       "method": "abort",
       "expression": "this.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4477,
+      "line": 4513,
       "method": "navigateTree",
       "expression": "entry.session.navigateTree"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4495,
+      "line": 4531,
       "method": "prompt",
       "expression": "this.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4708,
+      "line": 4744,
       "method": "abort",
       "expression": "this.durableBots.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4742,
+      "line": 4778,
       "method": "clearQueue",
       "expression": "entry.session.clearQueue"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4747,
+      "line": 4783,
       "method": "abort",
       "expression": "entry.session.abort"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4894,
+      "line": 4930,
       "method": "prompt",
       "expression": "this.btwService.prompt"
     },
     {
       "file": "src/main/agent/AgentService.ts",
-      "line": 4898,
+      "line": 4934,
       "method": "abort",
       "expression": "this.btwService.abort"
     },
@@ -5210,5 +5210,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "9a8eba08bb18d2945f04107c15e0c5cd8cb711eded62089fb9663873b60d0b33"
+  "sourceSha256": "f44cfdb20ba034918015c807685b72e400e7b2b3ff6a1317ab5600221516ff0f"
 }
