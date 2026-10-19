@@ -149,6 +149,15 @@ button:disabled {
   gap: 4px;
 }
 
+/*
+ * 窄屏护栏：标题最多 200px，右侧还有 停止/删除/新对话 三个 40px 按钮。
+ * 之前 header-left 不收缩，长标题会把 header-right 直接挤出视口（删除按钮因此"看不见"）。
+ */
+.header-left { flex: 1 1 auto; min-width: 0; }
+.header-right { flex: 0 0 auto; }
+.header-left .header-icon-btn { flex: 0 0 auto; }
+.header-task-info { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+
 .header-icon-btn {
   width: 40px;
   height: 40px;
@@ -1904,8 +1913,41 @@ button:disabled {
   padding: 12px 10px 4px;
 }
 
+/* 抽屉任务行：主按钮 + 右侧删除按钮（不再只有进任务后才能删） */
+.drawer-item-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 10px;
+}
+
+.drawer-item-row:active { background-color: var(--bg-hover); }
+
+.drawer-item-delete {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  margin-right: 4px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--fg-muted);
+}
+
+.drawer-item-delete:hover, .drawer-item-delete:active {
+  color: var(--status-danger);
+  background-color: color-mix(in srgb, var(--status-danger) 12%, transparent);
+}
+
+.remote-confirm-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--status-warning, #b45309);
+}
+
 .drawer-item-btn {
   width: 100%;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   flex-direction: column;
@@ -1976,8 +2018,7 @@ button:disabled {
 .drawer-task-row { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
 .drawer-task-title { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-task-info { display: flex; flex-direction: column; min-width: 0; }
-.header-task-info .header-title-chat { max-width: 100%; }
-.drawer-task-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-task-info .header-title-chat { max-width: 100%; }.drawer-task-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .drawer-space-header {
   width: 100%;

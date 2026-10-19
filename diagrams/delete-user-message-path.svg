@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1000" viewBox="0 0 1180 1000" font-family="'Microsoft YaHei','Noto Sans SC',sans-serif">
+  <defs>
+    <marker id="a2" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#374151"/>
+    </marker>
+    <marker id="a2g" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1180" height="1000" fill="#f7f8fa"/>
+  <text x="60" y="50" font-size="26" font-weight="700" fill="#111827">「删除此消息」链路与可能失败点（2026-10-19 静态核对 + 用例盘点）</text>
+  <text x="60" y="78" font-size="14" fill="#4b5563">文件：src/renderer/src/components/chat/MessageItem.tsx、src/renderer/src/store/appStore.ts、src/main/agent/AgentService.ts、src/preload/index.ts</text>
+
+  <rect x="700" y="24" width="420" height="62" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="714" y="38" width="16" height="16" rx="3" fill="#e8f5ee" stroke="#1f7a4d"/>
+  <text x="738" y="51" font-size="13" fill="#111827">已有用例覆盖</text>
+  <rect x="836" y="38" width="16" height="16" rx="3" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="3 3"/>
+  <text x="860" y="51" font-size="13" fill="#111827">仅代码确认/无服务层单测</text>
+  <text x="714" y="74" font-size="12" fill="#6b7280">无「实测失败」标记：本链路的拒绝分支未被任何自动化用例触发</text>
+
+  <!-- steps -->
+  <g>
+    <rect x="120" y="110" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="138" y="140" font-size="15" font-weight="700" fill="#111827">① 用户消息「更多」→ 删除此消息</text>
+    <text x="138" y="166" font-size="12.5" fill="#4b5563">MessageItem.tsx:655 → ConfirmDialog「删除这条消息？」</text>
+
+    <rect x="120" y="218" width="470" height="86" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="138" y="248" font-size="15" font-weight="700" fill="#111827">② appStore.deleteUserMessage（appStore.ts:3971）</text>
+    <text x="138" y="272" font-size="12.5" fill="#4b5563">守卫：role 必须是 user；任务内任何消息 streaming 即抛</text>
+    <text x="138" y="292" font-size="12.5" fill="#b3261e">「任务仍在运行，请先停止生成后再删除消息」（renderer 先拒）</text>
+
+    <rect x="120" y="340" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="138" y="370" font-size="15" font-weight="700" fill="#111827">③ IPC agent.deleteUserMessage</text>
+    <text x="138" y="396" font-size="12.5" fill="#4b5563">携带 taskId + userMessageIndex + entryId（主锚点）</text>
+
+    <rect x="120" y="448" width="470" height="118" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="138" y="478" font-size="15" font-weight="700" fill="#111827">④ AgentService.deleteUserMessage（:4374）</text>
+    <text x="138" y="502" font-size="12.5" fill="#4b5563">durableBots.owns → 拒绝；await memoryWriteQueue</text>
+    <text x="138" y="522" font-size="12.5" fill="#b3261e">isTaskBusy →「任务仍在运行，请先停止生成后再删除消息」</text>
+    <text x="138" y="542" font-size="12.5" fill="#4b5563">sessionFile 缺失 → 直接 return，仅 renderer 本地删除</text>
+
+    <rect x="120" y="602" width="470" height="86" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="138" y="632" font-size="15" font-weight="700" fill="#111827">⑤ 锚点定位（getVisibleSessionUserMessages）</text>
+    <text x="138" y="656" font-size="12.5" fill="#b3261e">entryId 在可见 user 列表里找不到 →「找不到要删除的用户消息」</text>
+    <text x="138" y="676" font-size="12.5" fill="#4b5563">entryId 为空 → 回退「过滤后 userMessageIndex」</text>
+
+    <rect x="120" y="724" width="470" height="100" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="754" font-size="15" font-weight="700" fill="#111827">⑥ 改 leaf（branch 到 parent / resetLeaf）+ 写 marker</text>
+    <text x="138" y="778" font-size="12.5" fill="#4b5563">appendCustomEntry("mybuddy_deleted_user_message", …)</text>
+    <text x="138" y="798" font-size="12.5" fill="#4b5563">conversationInteractions.deleteFrom；释放 live session 待重建</text>
+    <text x="138" y="816" font-size="12" fill="#1f7a4d">marker 语义已被 conversation-branch-test ⑱（73/73 通过）覆盖</text>
+
+    <rect x="120" y="860" width="470" height="86" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="138" y="890" font-size="15" font-weight="700" fill="#111827">⑦ renderer 截断本地 messages / status</text>
+    <text x="138" y="914" font-size="12.5" fill="#4b5563">下一轮会话从新 leaf 重建，被删内容不再进入模型上下文</text>
+
+    <line x1="355" y1="182" x2="355" y2="214" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+    <line x1="355" y1="304" x2="355" y2="336" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+    <line x1="355" y1="412" x2="355" y2="444" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+    <line x1="355" y1="566" x2="355" y2="598" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+    <line x1="355" y1="688" x2="355" y2="720" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+    <line x1="355" y1="824" x2="355" y2="856" stroke="#374151" stroke-width="1.6" marker-end="url(#a2)"/>
+  </g>
+
+  <!-- right side notes -->
+  <g>
+    <rect x="700" y="110" width="420" height="180" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+    <text x="716" y="140" font-size="15" font-weight="700" fill="#111827">覆盖盘点（本次实际跑的用例）</text>
+    <text x="716" y="168" font-size="12.5" fill="#1f7a4d">✓ 删除 marker 语义：conversation-branch ⑱ 通过</text>
+    <text x="716" y="192" font-size="12.5" fill="#b3261e">✗ 无 AgentService.deleteUserMessage 的单测</text>
+    <text x="716" y="214" font-size="12.5" fill="#4b5563">（scripts/ 里只有 live 验收会真正调用它）</text>
+    <text x="716" y="240" font-size="12.5" fill="#4b5563">✗ busy / durable / 锚点失配 三条拒绝分支无用例</text>
+    <text x="716" y="264" font-size="12" fill="#6b7280">→ 「消息删除可能失败」目前无回归测试可证伪</text>
+
+    <rect x="700" y="340" width="420" height="130" rx="10" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="716" y="368" font-size="14" font-weight="700" fill="#111827">最可能的「失败」场景（代码路径）</text>
+    <text x="716" y="392" font-size="12.5" fill="#4b5563">1. 任务仍在跑：renderer + 主进程双重守卫，直接抛错</text>
+    <text x="716" y="414" font-size="12.5" fill="#4b5563">2. 刚 abort、streaming 尾部未收尾：仍被判 busy</text>
+    <text x="716" y="436" font-size="12.5" fill="#4b5563">3. entryId 在 active branch 中失配：报找不到消息</text>
+    <text x="716" y="458" font-size="12.5" fill="#4b5563">4. Durable Bot 会话：直接拒绝（设计如此）</text>
+
+    <rect x="700" y="500" width="420" height="120" rx="10" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="716" y="528" font-size="14" font-weight="700" fill="#111827">与「工作空间 / 分支」的交叉点</text>
+    <text x="716" y="552" font-size="12.5" fill="#4b5563">删除消息后源序号变化，但 renderer 仍以 entryId 为</text>
+    <text x="716" y="572" font-size="12.5" fill="#4b5563">主锚点 → 分支定位不受影响（用例 K 通过）。</text>
+    <text x="716" y="594" font-size="12.5" fill="#4b5563">风险在删除后立刻分支：leaf 刚被改写，live session 已释放，</text>
+    <text x="716" y="614" font-size="12.5" fill="#4b5563">尚无并发用例覆盖「删→立刻分支」。</text>
+  </g>
+</svg>

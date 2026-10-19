@@ -20,9 +20,21 @@ async function select(label,value){
   } else {await click('[aria-label="Tag：'+tagLabels[value]+'"]');await wait(300);}
 }
 async function choose(mode='working',tag='general-office'){await select('新任务模式',mode);await select('新任务 Tag',tag);}
+/** 抽屉默认收起（且 Home/聊天页是两个独立抽屉实例）：需要嵌套目的地时先逐层展开。 */
+async function expandAllSpaces(){
+  for(let i=0;i<8;i++){
+    const opened=await evaluate('(()=>{const h=document.querySelector(".drawer-space-header[aria-expanded=\\"false\\"]");if(!h)return false;h.click();return true})()');
+    if(!opened)return;
+    await wait(350);
+  }
+}
 function pass(name){checks.push(name);fs.writeSync(1,'PASS '+name+'\n');}
 app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useContentSize:true,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,offscreen:true}});win.webContents.setFrameRate(30);win.webContents.on('paint',()=>{});win.webContents.startPainting();await win.loadFile(path.join(out,'index.html'));
   await until('!!document.querySelector("textarea")');await click('[aria-label="菜单"]');await wait(250);
+  // 默认收起：root 折叠时只渲染顶层空间（公司空间 / 路径失效）；展开后才出现嵌套目的地
+  assert.equal(await evaluate('document.querySelectorAll(".drawer-space-new-task").length'),2);
+  await evaluate('(()=>{const h=[...document.querySelectorAll(".drawer-space-header")].find(n=>n.textContent.includes("公司空间"));h?.click();return true})()');
+  await wait(450);
   assert.equal(await evaluate('document.querySelectorAll(".drawer-space-new-task").length'),4);
   assert(await evaluate('document.querySelector("[aria-label=\\"在 路径失效 中新建任务\\"]").disabled'));
   assert.equal(await evaluate('document.querySelector(".claude-drawer").innerText.includes("已归档")'),false);
@@ -53,13 +65,14 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'日常办公 · 通用办公');
   pass('first send carries both folder and project, then clears one-shot selections');
   await click('[aria-label="菜单"]');await wait(250);
+  await expandAllSpaces();
   assert.equal(await evaluate('document.querySelector(".drawer-item-btn .task-mode-label").textContent'),'日常办公 · 通用办公');
   await click('.drawer-new-chat-btn');assert.equal((await evaluate('workspaceFixture.inspect()')).selectedWelcomeMode,null);await choose('bot','codemode');await type('独立任务测试');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().requests.length===2');
   state=await evaluate('workspaceFixture.inspect()');assert.equal(state.requests[1].spaceId,undefined);assert.equal(state.requests[1].projectId,undefined);
   assert.equal(state.requests[1].welcomeMode,'bot');assert.equal(state.requests[1].modePresetId,'codemode');assert.equal(state.requests[1].permissionMode,undefined);
   assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'Bot · Code Mode');
   pass('ordinary new conversation does not inherit the previous folder or project');
-  await click('[aria-label="菜单"]');await wait(250);await click('[aria-label="在 空文件夹 中新建任务"]');await choose('coding','custom-dev');await evaluate('workspaceFixture.failNext()');await type('保留输入和位置');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===1');
+  await click('[aria-label="菜单"]');await wait(250);await expandAllSpaces();await click('[aria-label="在 空文件夹 中新建任务"]');await choose('coding','custom-dev');await evaluate('workspaceFixture.failNext()');await type('保留输入和位置');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===1');
   assert.equal(await evaluate('document.querySelector("textarea").value'),'保留输入和位置');assert.equal((await evaluate('workspaceFixture.inspect()')).selectedSpaceId,'empty');
   assert.equal((await evaluate('workspaceFixture.inspect()')).selectedModePresetId,'custom-dev');
   await click('[aria-label="发送"]');await until('workspaceFixture.inspect().tasks.length===3');assert.equal((await evaluate('workspaceFixture.inspect()')).requests[3].spaceId,'empty');
@@ -67,7 +80,7 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   assert.equal((await evaluate('workspaceFixture.inspect()')).requests[3].welcomeMode,'coding');
   assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'代码开发 · 自定义开发');
   pass('office, Bot Code Mode and custom coding tags reach requests and task labels unchanged');
-  await click('[aria-label="菜单"]');await wait(250);await click('[aria-label="在 项目文件夹 中新建任务"]');await choose();await evaluate('workspaceFixture.invalidate()');await type('不能静默落到独立任务');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===2');assert.equal((await evaluate('workspaceFixture.inspect()')).requests.length,4);
+  await click('[aria-label="菜单"]');await wait(250);await expandAllSpaces();await click('[aria-label="在 项目文件夹 中新建任务"]');await choose();await evaluate('workspaceFixture.invalidate()');await type('不能静默落到独立任务');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===2');assert.equal((await evaluate('workspaceFixture.inspect()')).requests.length,4);
   pass('deleted destination is rejected without silently creating in another location');
   await evaluate('workspaceFixture.removeTag()');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   assert.match(await evaluate('workspaceFixture.submit().catch(e=>e.message)'),/选择模式和 Tag/);

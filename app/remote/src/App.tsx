@@ -188,6 +188,8 @@ function HomePage() {
 
   const [text, setText] = useState('')
   const [isInputFocused, setIsInputFocused] = useState(false)
+  // 首页/抽屉删除：与聊天页共用同一个 DeleteTaskDialog（含「停止并删除」）
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const tasks = useMemo(() => {
     return [...(bootstrap?.tasks ?? [])]
@@ -309,12 +311,14 @@ function HomePage() {
           setShowDrawer(false)
           void openTask(id)
         }}
+        onRequestDelete={(id) => setDeleteTarget(id)}
       />
 
       <AddToChatSheet />
       <PermissionSheet />
       <SelectModelSheet />
       <AcpAgentSheet />
+      <DeleteTaskDialog taskId={deleteTarget} onClose={() => setDeleteTarget(null)} />
     </>
   )
 }
@@ -357,24 +361,8 @@ function ChatPage() {
   const setShowDrawer = useRemoteStore((state) => state.setDrawerOpen)
   const openTask = useRemoteStore((state) => state.openTask)
   const goHome = useRemoteStore((state) => state.goHome)
-  const deleteTask = useRemoteStore((state) => state.deleteTask)
-
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-
-  const runDelete = async () => {
-    if (deleting) return
-    setDeleting(true); setDeleteError(null)
-    try {
-      await deleteTask(activeTaskId)
-      setConfirmDelete(false)
-    } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : '删除失败，请重试')
-    } finally {
-      setDeleting(false)
-    }
-  }
+  // 删除：统一走 DeleteTaskDialog（抽屉/顶部共用，含「停止并删除」重试）
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const task = bootstrap?.tasks.find((item) => item.id === activeTaskId)
   // 只订阅当前任务的切片：其它任务的 patch 会让 histories/live 整对象换引用，
@@ -567,7 +555,7 @@ function ChatPage() {
             className="header-icon-btn"
             aria-label="删除任务"
             title="删除任务"
-            onClick={() => { setDeleteError(null); setConfirmDelete(true) }}
+            onClick={() => setDeleteTarget(activeTaskId)}
           >
             <Trash2 size={18} />
           </button>
@@ -782,6 +770,7 @@ function ChatPage() {
           setShowDrawer(false)
           void openTask(id)
         }}
+        onRequestDelete={(id) => setDeleteTarget(id)}
       />
 
       <AddToChatSheet />
@@ -789,22 +778,86 @@ function ChatPage() {
       <SelectModelSheet />
       <AcpAgentSheet />
 
-      {confirmDelete && (
-        <div className="remote-confirm-overlay" role="dialog" aria-modal="true" aria-label="删除任务" onClick={() => { if (!deleting) setConfirmDelete(false) }}>
-          <div className="remote-confirm-card" onClick={(event) => event.stopPropagation()}>
-            <div className="remote-confirm-title">删除这个任务？</div>
-            <div className="remote-confirm-body">「{task?.title ?? '对话'}」会进入电脑端的回收站，可在那里恢复。</div>
-            {deleteError && <div className="remote-confirm-error" role="status">{deleteError}</div>}
-            <div className="remote-confirm-actions">
-              <button type="button" className="remote-confirm-cancel" disabled={deleting} onClick={() => setConfirmDelete(false)}>取消</button>
-              <button type="button" className="remote-confirm-danger" disabled={deleting} onClick={() => void runDelete()}>
-                {deleting ? '删除中…' : '删除'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteTaskDialog taskId={deleteTarget} onClose={() => setDeleteTarget(null)} />
     </>
+  )
+}
+
+/* ==========================================================================
+   删除任务确认框（抽屉与聊天页共用）
+   - 任务正在执行时电脑端会 409，这里提供「停止并删除」：
+     先 abort（ACP/内置两条链一起停），再短暂重试删除。
+   ========================================================================== */
+function DeleteTaskDialog({ taskId, onClose }: { taskId: string | null; onClose: () => void }) {
+  const task = useRemoteStore((s) => (taskId ? s.bootstrap?.tasks.find((item) => item.id === taskId) : undefined))
+  const deleteTask = useRemoteStore((s) => s.deleteTask)
+  const abort = useRemoteStore((s) => s.abort)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [needsStop, setNeedsStop] = useState(false)
+
+  useEffect(() => {
+    setDeleting(false)
+    setError(null)
+    setNeedsStop(task?.busy === true)
+  }, [taskId, task?.busy])
+
+  if (!taskId) return null
+  const close = () => { if (!deleting) onClose() }
+  const busyMessage = /执行|停止|busy|conflict/i
+
+  const run = async (stopFirst: boolean) => {
+    if (deleting) return
+    setDeleting(true)
+    setError(null)
+    try {
+      if (stopFirst) {
+        await abort().catch(() => undefined)
+        // abort 是异步的（ACP 子进程要 ~1s 收尾），删除可能仍撞 409：短暂重试
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 700))
+          try {
+            await deleteTask(taskId)
+            onClose()
+            return
+          } catch (retryError) {
+            const message = retryError instanceof Error ? retryError.message : ''
+            if (!busyMessage.test(message)) throw retryError
+          }
+        }
+      }
+      await deleteTask(taskId)
+      onClose()
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : '删除失败，请重试'
+      setError(message)
+      if (busyMessage.test(message)) setNeedsStop(true)
+      setDeleting(false)
+      return
+    }
+    setDeleting(false)
+  }
+
+  return (
+    <div className="remote-confirm-overlay" role="dialog" aria-modal="true" aria-label="删除任务" onClick={close}>
+      <div className="remote-confirm-card" onClick={(event) => event.stopPropagation()}>
+        <div className="remote-confirm-title">删除这个任务？</div>
+        <div className="remote-confirm-body">「{task?.title ?? '对话'}」会进入电脑端的回收站，可在那里恢复。</div>
+        {needsStop && !error && <div className="remote-confirm-hint">该任务正在执行，删除会先停止当前运行。</div>}
+        {error && <div className="remote-confirm-error" role="status">{error}</div>}
+        <div className="remote-confirm-actions">
+          <button type="button" className="remote-confirm-cancel" disabled={deleting} onClick={close}>取消</button>
+          <button
+            type="button"
+            className="remote-confirm-danger"
+            disabled={deleting}
+            onClick={() => void run(needsStop || task?.busy === true)}
+          >
+            {deleting ? '删除中…' : needsStop || task?.busy ? '停止并删除' : '删除'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1063,7 +1116,7 @@ function AddToChatSheet() {
         className={`claude-sheet-backdrop ${open ? 'open' : ''}`}
         onClick={() => setOpen(false)}
       />
-      <div className={`claude-sheet ${open ? 'open' : ''}`} aria-hidden={!open} inert={!open}>
+      <div className={`claude-sheet ${open ? 'open' : ''}`} data-sheet="add-to-chat" aria-hidden={!open} inert={!open}>
         <div className="claude-sheet-grabber" />
         <div className="claude-sheet-header">
           <button
@@ -1164,7 +1217,7 @@ function PermissionSheet() {
   const descriptions = { follow: '新对话使用电脑端默认权限，已有对话沿用任务权限。', ask: '敏感操作在执行前请求确认。', readonly: '仅允许读取与分析，不修改文件或执行命令。', auto: '允许直接执行更多操作，包括文件修改或外部执行。' }
   return <>
     <div className={`claude-sheet-backdrop ${open ? 'open' : ''}`} onClick={() => setOpen(false)} />
-    <div className={`claude-sheet remote-permission-sheet ${open ? 'open' : ''}`} aria-hidden={!open} inert={!open}>
+    <div className={`claude-sheet remote-permission-sheet ${open ? 'open' : ''}`} data-sheet="permission" aria-hidden={!open} inert={!open}>
       <div className="claude-sheet-grabber" />
       <div className="claude-sheet-header"><button className="claude-sheet-close-btn" onClick={() => setOpen(false)} aria-label="关闭权限控制"><X size={20} /></button><span className="claude-sheet-title">权限控制</span></div>
       <div className="permission-options" role="radiogroup" aria-label="权限模式">
@@ -1219,7 +1272,7 @@ function SelectModelSheet() {
         className={`claude-sheet-backdrop ${open ? 'open' : ''}`}
         onClick={() => setOpen(false)}
       />
-      <div className={`claude-sheet ${open ? 'open' : ''}`} aria-hidden={!open} inert={!open}>
+      <div className={`claude-sheet ${open ? 'open' : ''}`} data-sheet="model" aria-hidden={!open} inert={!open}>
         <div className="claude-sheet-grabber" />
         <div className="claude-sheet-header">
           <button
@@ -1312,7 +1365,7 @@ function AcpAgentSheet() {
   return (
     <>
       <div className={`claude-sheet-backdrop ${open ? 'open' : ''}`} onClick={() => setOpen(false)} />
-      <div className={`claude-sheet ${open ? 'open' : ''}`} aria-hidden={!open} inert={!open}>
+      <div className={`claude-sheet ${open ? 'open' : ''}`} data-sheet="acp" aria-hidden={!open} inert={!open}>
         <div className="claude-sheet-grabber" />
         <div className="claude-sheet-header">
           <button type="button" className="claude-sheet-close-btn" onClick={() => setOpen(false)} aria-label="关闭">
@@ -1644,12 +1697,14 @@ function ClaudeDrawer({
   onNewChat,
   tasks,
   onSelectTask,
+  onRequestDelete,
 }: {
   open: boolean
   onClose: () => void
   onNewChat: (spaceId?: string) => void
   tasks: RemoteTaskSummary[]
   onSelectTask: (id: string) => void
+  onRequestDelete: (id: string) => void
 }) {
   const taskModes = useRemoteStore((state) => state.bootstrap?.taskModes)
   const setConnectionSettingsOpen = useRemoteStore((state) => state.setConnectionSettingsOpen)
@@ -1680,26 +1735,39 @@ function ClaudeDrawer({
   const renderTask = (task: RemoteTaskSummary, depth: number) => {
     const dot = taskStatusDot(task, localDoneAckAt(task.id))
     return (
-      <button
-        key={task.id}
-        type="button"
-        className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
-        style={{ paddingLeft: 12 + depth * 18 }}
-        onClick={() => onSelectTask(task.id)}
-      >
-        <span className="drawer-task-row">
-          <span className="drawer-task-title">{task.title}</span>
-          {dot && (
-            <span
-              className={`task-status-dot task-status-dot--${dot}`}
-              role="img"
-              aria-label={taskDotLabel(dot)}
-              title={taskDotLabel(dot)}
-            />
-          )}
-        </span>
-        <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
-      </button>
+      <div key={task.id} className="drawer-item-row" style={{ paddingLeft: 12 + depth * 18 }}>
+        <button
+          type="button"
+          className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
+          style={{ paddingLeft: 0 }}
+          onClick={() => onSelectTask(task.id)}
+        >
+          <span className="drawer-task-row">
+            <span className="drawer-task-title">{task.title}</span>
+            {dot && (
+              <span
+                className={`task-status-dot task-status-dot--${dot}`}
+                role="img"
+                aria-label={taskDotLabel(dot)}
+                title={taskDotLabel(dot)}
+              />
+            )}
+          </span>
+          <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
+        </button>
+        <button
+          type="button"
+          className="drawer-item-delete"
+          aria-label={`删除任务：${task.title}`}
+          title="删除任务"
+          onClick={(event) => {
+            event.stopPropagation()
+            onRequestDelete(task.id)
+          }}
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
     )
   }
 

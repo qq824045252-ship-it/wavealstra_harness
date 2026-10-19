@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="880" viewBox="0 0 1240 880" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1240" height="880" fill="#f7f8fb"/>
+  <text x="40" y="46" font-size="24" font-weight="700" fill="#1f2430">鼠标 / 键盘能力缺口：22 个 action，缺的都是“连续输入”原语</text>
+  <text x="40" y="72" font-size="13" fill="#5b6472">依据：windowsAutomationHostScript.ts 的 SendInput 封装与 schema（builtin-capability-extension.ts:291-332）；坐标均为客户区 DIP，越界即失败</text>
+
+  <!-- header -->
+  <rect x="40" y="92" width="1160" height="42" rx="6" fill="#2b3446"/>
+  <text x="60" y="119" font-size="14" font-weight="700" fill="#ffffff">能力</text>
+  <text x="320" y="119" font-size="14" font-weight="700" fill="#ffffff">当前实现</text>
+  <text x="760" y="119" font-size="14" font-weight="700" fill="#ffffff">实际影响</text>
+
+  <!-- rows -->
+  <g font-size="12">
+    <rect x="40" y="134" width="1160" height="60" fill="#ffffff" stroke="#dfe4ee"/>
+    <text x="60" y="160" font-size="13" font-weight="700" fill="#1f2430">后台点击</text>
+    <text x="60" y="180" fill="#7a8496">不抢焦点地操作窗口</text>
+    <text x="320" y="160" fill="#3b4556">无：click_client 先把目标置前，</text>
+    <text x="320" y="180" fill="#3b4556">Confirm-InputTarget 校验 GetForegroundWindow</text>
+    <text x="760" y="160" fill="#8a2f22">只能抢焦点；用户无法边用边让 Agent 操作</text>
+    <text x="760" y="180" fill="#7a8496">Host: Get-ClientPoint / Confirm-InputTarget</text>
+
+    <rect x="40" y="194" width="1160" height="60" fill="#fbfcfe" stroke="#dfe4ee"/>
+    <text x="60" y="220" font-size="13" font-weight="700" fill="#1f2430">双击 / 三击</text>
+    <text x="60" y="240" fill="#7a8496">打开文件、进入重命名</text>
+    <text x="320" y="220" fill="#3b4556">无 click_count；只能发两次独立 click_client</text>
+    <text x="320" y="240" fill="#3b4556">（两次之间是一整轮模型，约 10s）</text>
+    <text x="760" y="220" fill="#8a2f22">双击间隔过长 → 被系统当两次单击</text>
+    <text x="760" y="240" fill="#7a8496">schema 里没有 click_count / interval</text>
+
+    <rect x="40" y="254" width="1160" height="60" fill="#ffffff" stroke="#dfe4ee"/>
+    <text x="60" y="280" font-size="13" font-weight="700" fill="#1f2430">修饰键 + 点击</text>
+    <text x="60" y="300" fill="#7a8496">Ctrl / Shift / Alt 组合</text>
+    <text x="320" y="280" fill="#3b4556">无 modifiers；只有 key_press 的键盘组合键</text>
+    <text x="320" y="300" fill="#3b4556">SendMouseClickAt 不接受按键状态</text>
+    <text x="760" y="280" fill="#8a2f22">多选、范围选择、Ctrl+点击开新标签不可用</text>
+    <text x="760" y="300" fill="#7a8496">文件列表/表格类操作几乎做不了</text>
+
+    <rect x="40" y="314" width="1160" height="60" fill="#fbfcfe" stroke="#dfe4ee"/>
+    <text x="60" y="340" font-size="13" font-weight="700" fill="#1f2430">按住 / 松开</text>
+    <text x="60" y="360" fill="#7a8496">mouse down / up 原语</text>
+    <text x="320" y="340" fill="#3b4556">无独立 down/up；down 与 up 总在同一批 SendInput</text>
+    <text x="320" y="360" fill="#3b4556">key_press 也不支持单独 key_down / key_up</text>
+    <text x="760" y="340" fill="#8a2f22">长按、画布拖选、自定义控件与游戏类交互不可用</text>
+    <text x="760" y="360" fill="#7a8496">无法“按住 Shift 再点第二个元素”</text>
+
+    <rect x="40" y="374" width="1160" height="60" fill="#ffffff" stroke="#dfe4ee"/>
+    <text x="60" y="400" font-size="13" font-weight="700" fill="#1f2430">拖拽过程</text>
+    <text x="60" y="420" fill="#7a8496">速度、步数、悬停</text>
+    <text x="320" y="400" fill="#3b4556">固定 12 个绝对移动 + down + up，一次性发送</text>
+    <text x="320" y="420" fill="#3b4556">无 duration / steps / 中间停顿参数</text>
+    <text x="760" y="400" fill="#8a2f22">HTML5 拖放、滑块、画布常退化成一次点击</text>
+    <text x="760" y="420" fill="#7a8496">Host: SendMouseDrag 12 步硬编码</text>
+
+    <rect x="40" y="434" width="1160" height="60" fill="#fbfcfe" stroke="#dfe4ee"/>
+    <text x="60" y="460" font-size="13" font-weight="700" fill="#1f2430">跨窗口拖拽</text>
+    <text x="60" y="480" fill="#7a8496">拖到桌面 / 另一应用</text>
+    <text x="320" y="460" fill="#3b4556">禁止：起终点必须落在同一客户区，</text>
+    <text x="320" y="480" fill="#3b4556">否则 POINT_OUTSIDE_CLIENT</text>
+    <text x="760" y="460" fill="#8a2f22">把文件拖到资源管理器/桌面这类操作不可行</text>
+    <text x="760" y="480" fill="#7a8496">客户区校验在 host: Get-ClientPoint</text>
+
+    <rect x="40" y="494" width="1160" height="60" fill="#ffffff" stroke="#dfe4ee"/>
+    <text x="60" y="520" font-size="13" font-weight="700" fill="#1f2430">滚轮</text>
+    <text x="60" y="540" fill="#7a8496">滚动量与平滑</text>
+    <text x="320" y="520" fill="#3b4556">单次 wheel 事件，mouseData 原始 120 单位，</text>
+    <text x="320" y="540" fill="#3b4556">无“行/页”语义、无 duration</text>
+    <text x="760" y="520" fill="#8a2f22">长页面要反复调用；每次约 1s 工具 + 一轮模型</text>
+    <text x="760" y="540" fill="#7a8496">模型按“几行”传数会几乎不动（3/120 格）</text>
+
+    <rect x="40" y="554" width="1160" height="60" fill="#fbfcfe" stroke="#dfe4ee"/>
+    <text x="60" y="580" font-size="13" font-weight="700" fill="#1f2430">键盘</text>
+    <text x="60" y="600" fill="#7a8496">键集与按住状态</text>
+    <text x="320" y="580" fill="#3b4556">normalizeKeyToken 白名单：无 Win / Insert /</text>
+    <text x="320" y="600" fill="#3b4556">PrintScreen / 媒体键；无 key_down / key_up</text>
+    <text x="760" y="580" fill="#8a2f22">Win 快捷键、部分系统对话框操作不可用</text>
+    <text x="760" y="600" fill="#7a8496">“+”被当作组合键分隔符，无法输入字面 +</text>
+
+    <rect x="40" y="614" width="1160" height="60" fill="#ffffff" stroke="#dfe4ee"/>
+    <text x="60" y="640" font-size="13" font-weight="700" fill="#1f2430">长文本输入</text>
+    <text x="60" y="660" fill="#7a8496">粘贴、输入法</text>
+    <text x="320" y="640" fill="#3b4556">逐字符 SendInput，每个字符前后各查一次前台，</text>
+    <text x="320" y="660" fill="#3b4556">无剪贴板粘贴通道；上限 20000 字符</text>
+    <text x="760" y="640" fill="#8a2f22">1 万字约 10s+；代理对（emoji/扩展汉字）不稳</text>
+    <text x="760" y="660" fill="#7a8496">Host: type_text 逐字符 Confirm-InputTarget</text>
+
+    <rect x="40" y="674" width="1160" height="60" fill="#fbfcfe" stroke="#dfe4ee"/>
+    <text x="60" y="700" font-size="13" font-weight="700" fill="#1f2430">坐标与目标</text>
+    <text x="60" y="720" fill="#7a8496">观察 → 点击之间的一致性</text>
+    <text x="320" y="700" fill="#3b4556">客户区 DIP，越界报 POINT_OUTSIDE_CLIENT；</text>
+    <text x="320" y="720" fill="#3b4556">窗口尺寸变化即 STALE_OBSERVATION</text>
+    <text x="760" y="700" fill="#8a2f22">用户挪一下窗口，整个观察结果作废重来</text>
+    <text x="760" y="720" fill="#7a8496">恢复策略最多重试一次</text>
+  </g>
+
+  <rect x="40" y="752" width="1160" height="96" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
+  <text x="58" y="780" font-size="14" font-weight="700" fill="#1d4f9c">为什么这是“限制大”而不是“难用”</text>
+  <text x="58" y="806" font-size="12" fill="#33496e">这些缺口不是参数没调好，而是缺少原语：一次点击、一次拖拽、一次滚动都必须由模型单独发起一次工具调用，而每次调用平均要再等一轮模型（中位 3.7–9.1s，取决于会话上下文）。</text>
+  <text x="58" y="828" font-size="12" fill="#33496e">因此“多选 10 个文件”= 10 次点击 + 10 轮模型 ≈ 50–100s；这正是用户感知到的“鼠标限制大”。</text>
+</svg>

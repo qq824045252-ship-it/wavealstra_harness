@@ -14,7 +14,7 @@ let win;
 // Consume the offscreen compositor frame directly. capturePage() may reject with
 // UnknownVizError on a newly opened hidden Windows surface before its first frame.
 async function capture(){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{win.webContents.removeListener('paint',onPaint);reject(Error('Offscreen paint timeout'));},5000);function onPaint(_event,_rect,image){clearTimeout(timer);resolve(image);}win.webContents.once('paint',onPaint);win.webContents.invalidate();});}
-async function evaluate(expr){return win.webContents.executeJavaScript(expr,true)}
+async function evaluate(expr){try{return await win.webContents.executeJavaScript(expr,true)}catch(error){console.error('EVAL FAILED:',String(expr).slice(0,240));throw error}}
 async function until(expr,timeout=5000){const started=Date.now();while(Date.now()-started<timeout){if(await evaluate(expr))return;await delay(50)}throw Error('Timed out: '+expr)}
 // A broken log pipe must reject the running test, not emit an uncaught stream error later.
 function log(line){fs.writeSync(1,line+'\n')}
@@ -99,6 +99,21 @@ app.whenReady().then(async()=>{
     const bounds=await evaluate(`(()=>{const t=document.querySelector('.chat-timeline');return {width:t.clientWidth,scroll:t.scrollWidth,negative:[...t.children].some(x=>x.getBoundingClientRect().height<0)}})()`);
     assert.ok(bounds.scroll<=bounds.width+1,JSON.stringify(bounds));pass('no horizontal overflow at '+width+' CSS px');
   }
+  // 删除入口必须真的可点：头部按钮不能被长标题挤出视口，抽屉每行都要有删除按钮
+  win.setContentSize(360,800);await delay(120);
+  const deleteUi=await evaluate(`(()=>{
+    const btn=document.querySelector('button[aria-label="删除任务"]');
+    const r=btn?.getBoundingClientRect();
+    return {
+      headerVisible:!!btn&&!!r&&r.width>0&&r.left>=0&&r.right<=innerWidth,
+      headerRect:r?{left:Math.round(r.left),right:Math.round(r.right),width:Math.round(r.width)}:null,
+      viewport:innerWidth,
+      drawerDeleteButtons:document.querySelectorAll('.drawer-item-delete').length,
+    };
+  })()`);
+  assert.equal(deleteUi.headerVisible,true,'delete button must stay inside the viewport at 360px: '+JSON.stringify(deleteUi));
+  assert.ok(deleteUi.drawerDeleteButtons>0,'drawer task rows must expose a delete button');
+  pass('delete stays reachable at 360px and every drawer row has its own delete affordance');
   await evaluate('window.remoteFixture.tableHistory()');await until('document.querySelectorAll(".markdown-table-scroll").length===2');
   win.setContentSize(360,800);await delay(100);
   const tableLayout=await evaluate(`(()=>{const timeline=document.querySelector('.chat-timeline');const wraps=[...document.querySelectorAll('.markdown-table-scroll')];return {
@@ -292,7 +307,7 @@ app.whenReady().then(async()=>{
   assert.equal(await evaluate('window.navigationTimeline===document.querySelector(".chat-timeline") && window.navigationTimeline.getAnimations().length===0'),true);
   pass('rapid task switches leave only the latest conversation; background refresh does not replay navigation');
   for(const panel of ['drawer','model','add']) {
-    const selector=panel==='drawer'?'.claude-drawer':panel==='model'?'.claude-sheet:last-child':'.claude-sheet';
+    const selector=panel==='drawer'?'.claude-drawer':panel==='model'?'[data-sheet="model"]':'[data-sheet="add-to-chat"]';
     await evaluate('window.remoteFixture.panel('+JSON.stringify(panel)+',true)');
     await until('document.querySelector('+JSON.stringify(selector)+').classList.contains("open")');await delay(40);
     assert.ok(await evaluate('document.querySelector('+JSON.stringify(selector)+').getAnimations().length>0'));

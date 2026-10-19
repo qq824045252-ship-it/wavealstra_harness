@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="800" viewBox="0 0 1240 800" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1240" height="800" fill="#f7f8fb"/>
+  <text x="40" y="46" font-size="24" font-weight="700" fill="#1f2430">为什么“聚焦不了某个应用、像全屏扫描”</text>
+  <text x="40" y="72" font-size="13" fill="#5b6472">结论：桌面应用没有可用的语义树 → 只能退回“整屏截图 + 坐标点击”，而截图、叠加框、窗口身份三处都是显示器级的</text>
+
+  <!-- semantic layer -->
+  <text x="40" y="106" font-size="15" font-weight="700" fill="#1f2430">① 语义层实测：UI Automation 控件数（ControlViewWalker，depth 6 / 300 节点）</text>
+
+  <g>
+    <rect x="40" y="118" width="220" height="112" rx="10" fill="#ffffff" stroke="#e2b6b6"/>
+    <text x="56" y="144" font-size="14" font-weight="700" fill="#1f2430">MyBuddy</text>
+    <text x="56" y="164" font-size="12" fill="#7a8496">Chrome_WidgetWin_1 · Electron</text>
+    <text x="56" y="200" font-size="26" font-weight="700" fill="#c0392b">1</text>
+    <text x="84" y="199" font-size="12" fill="#c0392b">个控件 · 无语义可用</text>
+  </g>
+  <g>
+    <rect x="280" y="118" width="220" height="112" rx="10" fill="#ffffff" stroke="#e2b6b6"/>
+    <text x="296" y="144" font-size="14" font-weight="700" fill="#1f2430">腾讯会议</text>
+    <text x="296" y="164" font-size="12" fill="#7a8496">Qt680QWindowIcon · Qt</text>
+    <text x="296" y="200" font-size="26" font-weight="700" fill="#c0392b">0</text>
+    <text x="324" y="199" font-size="12" fill="#c0392b">个控件 · 无语义可用</text>
+  </g>
+  <g>
+    <rect x="520" y="118" width="220" height="112" rx="10" fill="#ffffff" stroke="#e2b6b6"/>
+    <text x="536" y="144" font-size="14" font-weight="700" fill="#1f2430">粉尘仪确认窗口</text>
+    <text x="536" y="164" font-size="12" fill="#7a8496">Qt680QWindowIcon · Qt</text>
+    <text x="536" y="200" font-size="26" font-weight="700" fill="#c0392b">0</text>
+    <text x="564" y="199" font-size="12" fill="#c0392b">个控件 · 无语义可用</text>
+  </g>
+  <g>
+    <rect x="760" y="118" width="220" height="112" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
+    <text x="776" y="144" font-size="14" font-weight="700" fill="#1f2430">WinPet</text>
+    <text x="776" y="164" font-size="12" fill="#7a8496">Tauri Window · WebView2</text>
+    <text x="776" y="200" font-size="26" font-weight="700" fill="#b47a1f">3</text>
+    <text x="804" y="199" font-size="12" fill="#b47a1f">个控件 · 仅窗口外壳</text>
+  </g>
+  <g>
+    <rect x="1000" y="118" width="200" height="112" rx="10" fill="#ffffff" stroke="#e2b6b6"/>
+    <text x="1016" y="144" font-size="14" font-weight="700" fill="#1f2430">DSH Shell</text>
+    <text x="1016" y="164" font-size="12" fill="#7a8496">MyGoWindow · 原生</text>
+    <text x="1016" y="200" font-size="26" font-weight="700" fill="#c0392b">0</text>
+    <text x="1044" y="199" font-size="12" fill="#c0392b">个控件 · 无语义可用</text>
+  </g>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8b96a9"/>
+    </marker>
+  </defs>
+
+  <!-- fork -->
+  <text x="40" y="272" font-size="15" font-weight="700" fill="#1f2430">② 两条路径：语义路径基本走不通，只剩像素路径</text>
+
+  <g>
+    <rect x="40" y="286" width="360" height="150" rx="10" fill="#fdf3f2" stroke="#d9a3a3"/>
+    <text x="58" y="314" font-size="14" font-weight="700" fill="#8a2f22">语义路径（inspect / find / invoke）</text>
+    <text x="58" y="340" font-size="12" fill="#6b4b46">· 目标窗口控件数 0~3，找不到按钮与输入框</text>
+    <text x="58" y="362" font-size="12" fill="#6b4b46">· Electron/Qt/Tauri 默认不向 UIA 暴露内容树</text>
+    <text x="58" y="384" font-size="12" fill="#6b4b46">· invoke_control 无对象可调用</text>
+    <text x="58" y="408" font-size="12" fill="#8a2f22" font-weight="700">→ 语义动作几乎全部落空</text>
+  </g>
+
+  <g>
+    <rect x="440" y="286" width="760" height="150" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
+    <text x="458" y="314" font-size="14" font-weight="700" fill="#1d4f9c">像素路径（screenshot + click_client）—— 实际发生的事</text>
+    <text x="458" y="340" font-size="12" fill="#33496e">· 观察：screenshot 固定截“主显示器”整屏 2560×1440，不能只给应用</text>
+    <text x="458" y="362" font-size="12" fill="#33496e">· 窗口截图：先截整块显示器再按窗口矩形裁剪，且必须目标在前台（会抢焦点）</text>
+    <text x="458" y="384" font-size="12" fill="#33496e">· 窗口身份：只有标题字符串 / HWND；标题是可变状态，重名直接 WINDOW_AMBIGUOUS</text>
+    <text x="458" y="406" font-size="12" fill="#33496e">· 屏幕叠加框：按 monitorRect 画整块显示器，不是应用窗口（OverlayService.dipBounds）</text>
+    <text x="458" y="428" font-size="12" fill="#33496e">· 没有任何“应用会话”：每次调用都要重新传 window_title / window_handle</text>
+  </g>
+  <g stroke="#8b96a9" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="400" y1="361" x2="436" y2="361"/>
+  </g>
+  <g stroke="#8b96a9" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="620" y1="230" x2="620" y2="282"/>
+  </g>
+  <text x="628" y="258" font-size="12" fill="#5b6472">没有语义 → 只能看像素</text>
+
+  <!-- consequences -->
+  <text x="40" y="478" font-size="15" font-weight="700" fill="#1f2430">③ 用户体验上的四个直接后果</text>
+
+  <g>
+    <rect x="40" y="492" width="280" height="150" rx="10" fill="#ffffff" stroke="#c9d2e3"/>
+    <text x="58" y="520" font-size="14" font-weight="700" fill="#1f2430">每次都要扫描整屏</text>
+    <text x="58" y="546" font-size="12" fill="#3b4556">模型拿到的是整张桌面，</text>
+    <text x="58" y="568" font-size="12" fill="#3b4556">得自己在里面找目标应用，</text>
+    <text x="58" y="590" font-size="12" fill="#3b4556">无法“只盯住这个窗口”。</text>
+    <text x="58" y="618" font-size="12" fill="#7a8496">全屏图 1.9M base64 字符</text>
+  </g>
+  <g>
+    <rect x="340" y="492" width="280" height="150" rx="10" fill="#ffffff" stroke="#c9d2e3"/>
+    <text x="358" y="520" font-size="14" font-weight="700" fill="#1f2430">每个动作都抢焦点</text>
+    <text x="358" y="546" font-size="12" fill="#3b4556">点击/拖拽/滚轮/键入都要求</text>
+    <text x="358" y="568" font-size="12" fill="#3b4556">目标处于前台；无法后台观察</text>
+    <text x="358" y="590" font-size="12" fill="#3b4556">或后台操作，用户被打断。</text>
+    <text x="358" y="618" font-size="12" fill="#7a8496">host: Confirm-InputTarget</text>
+  </g>
+  <g>
+    <rect x="640" y="492" width="280" height="150" rx="10" fill="#ffffff" stroke="#c9d2e3"/>
+    <text x="658" y="520" font-size="14" font-weight="700" fill="#1f2430">标题一变化就失效</text>
+    <text x="658" y="546" font-size="12" fill="#3b4556">浏览器标签页、文档名、进度</text>
+    <text x="658" y="568" font-size="12" fill="#3b4556">都会改标题；窗口尺寸一变就</text>
+    <text x="658" y="590" font-size="12" fill="#3b4556">STALE_OBSERVATION 重来。</text>
+    <text x="658" y="618" font-size="12" fill="#7a8496">有界恢复只重试一次</text>
+  </g>
+  <g>
+    <rect x="940" y="492" width="260" height="150" rx="10" fill="#ffffff" stroke="#c9d2e3"/>
+    <text x="958" y="520" font-size="14" font-weight="700" fill="#1f2430">UI 里没有“选应用”</text>
+    <text x="958" y="546" font-size="12" fill="#3b4556">设置页只有能力开关，没有</text>
+    <text x="958" y="568" font-size="12" fill="#3b4556">目标应用选择、没有会话范围，</text>
+    <text x="958" y="590" font-size="12" fill="#3b4556">用户无法指定“就操作它”。</text>
+    <text x="958" y="618" font-size="12" fill="#7a8496">renderer 无 computer 组件</text>
+  </g>
+
+  <!-- footer evidence -->
+  <rect x="40" y="664" width="1160" height="100" rx="10" fill="#fffaf0" stroke="#e8d1a8"/>
+  <text x="58" y="692" font-size="14" font-weight="700" fill="#7a5214">补充证据</text>
+  <text x="58" y="718" font-size="12" fill="#6b5a3a">list_windows 忽略调用方传入的 window_title 过滤（host 只做全量 EnumWindows）；本机 10–12 个顶层窗口返回约 400 行 JSON，每次动作返回 2~4 次。</text>
+  <text x="58" y="740" font-size="12" fill="#6b5a3a">screenshot 只截主显示器（getPrimaryDisplay），没有 list_displays，screen_id 无从得知；多显示器时可能截错屏。</text>
+</svg>
