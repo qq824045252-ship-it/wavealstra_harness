@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 640" width="1100" height="640" role="img" aria-label="subagent 的四个硬编码上限">
+  <rect width="1100" height="640" fill="#f7f8fa"/>
+  <text x="28" y="38" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="20" font-weight="700" fill="#111827">subagent 的四个上限：各在哪、卡什么</text>
+  <text x="28" y="62" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">全部是源码常量，subagent.json 里没有任何并发/数量字段可覆盖（只有 agentScope / timeoutMs / 工具策略 / 模型）</text>
+
+  <!-- 1. parallel tasks -->
+  <rect x="28" y="84" width="520" height="176" rx="10" fill="#ffffff" stroke="#dc2626"/>
+  <text x="48" y="112" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#991b1b">① 一次 parallel 的 tasks 数量 ≤ 8</text>
+  <rect x="48" y="124" width="480" height="30" rx="6" fill="#fef2f2"/>
+  <text x="60" y="144" font-family="Consolas, monospace" font-size="12.5" fill="#7f1d1d">index.ts:55   const MAX_PARALLEL_TASKS = 8;</text>
+  <rect x="48" y="160" width="480" height="46" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="60" y="179" font-family="Consolas, monospace" font-size="12" fill="#7c2d12">index.ts:1033-1034  超过即整体拒绝</text>
+  <text x="60" y="197" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#c2410c">「Too many parallel tasks (N). Max is 8.」→ 一个都不跑，不是截断到 8</text>
+  <text x="48" y="228" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#991b1b">这是「单次调用里并行任务条数」，不是总 subagent 数；chain 模式没有条数上限。</text>
+  <text x="48" y="248" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#991b1b">要 9 个并行 → 只能拆成 8 + 1 两次调用（第二次要等第一次返回）。</text>
+
+  <!-- 2. concurrency -->
+  <rect x="28" y="276" width="520" height="150" rx="10" fill="#ffffff" stroke="#f59e0b"/>
+  <text x="48" y="304" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#92400e">② 真正同时跑的只有 4 个</text>
+  <rect x="48" y="316" width="480" height="30" rx="6" fill="#fffbeb"/>
+  <text x="60" y="336" font-family="Consolas, monospace" font-size="12.5" fill="#78350f">index.ts:56   const MAX_CONCURRENCY = 4;</text>
+  <text x="48" y="368" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#78350f">index.ts:1048 mapWithConcurrencyLimit(tasks, 4, …)</text>
+  <text x="48" y="392" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#92400e">8 个任务 = 4 个在跑 + 4 个排队；也意味着 8 个不会同时挤爆内存。</text>
+  <text x="48" y="414" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#92400e">排队任务在 UI 上显示为 running/未完成，按数组顺序补位。</text>
+
+  <!-- 3. depth -->
+  <rect x="572" y="84" width="500" height="150" rx="10" fill="#ffffff" stroke="#6366f1"/>
+  <text x="592" y="112" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#312e81">③ 递归深度 ≤ 2</text>
+  <rect x="592" y="124" width="460" height="30" rx="6" fill="#eef2ff"/>
+  <text x="604" y="144" font-family="Consolas, monospace" font-size="12.5" fill="#312e81">runtime.ts:31   MAX_SUBAGENT_DEPTH = 2;</text>
+  <text x="592" y="176" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#3730a3">index.ts:932 parentDepth ≥ 2 → 直接返回「递归深度已达上限」</text>
+  <text x="592" y="200" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#4338ca">子代理里 subagent 工具本来就被排除（policy.ts），所以深度 2 是双保险。</text>
+  <text x="592" y="220" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#4338ca">这一条不影响你 « 一次派 8 个 »，只禁止「子代理再派子代理」。</text>
+
+  <!-- 4. idle workers -->
+  <rect x="572" y="252" width="500" height="174" rx="10" fill="#ffffff" stroke="#10b981"/>
+  <text x="592" y="280" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#065f46">④ 空闲 worker 进程池只留 3 个</text>
+  <rect x="592" y="292" width="460" height="30" rx="6" fill="#ecfdf5"/>
+  <text x="604" y="312" font-family="Consolas, monospace" font-size="12.5" fill="#065f46">runtime.ts:32   MAX_IDLE_WORKERS = 3;</text>
+  <text x="592" y="344" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#047857">runtime.ts:400 while (idle.length &gt;= 3) 关掉最久未用的那个</text>
+  <text x="592" y="368" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#047857">这是「复用池」大小，不是任务数上限：被关掉只是下次要冷启动。</text>
+  <text x="592" y="390" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#047857">IDLE_WORKER_TIMEOUT_MS = 30min 到期也会回收。</text>
+  <text x="592" y="412" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#047857">subagentId 持久化的 session 不受影响，重启后仍可续聊。</text>
+
+  <!-- footer: why 8 -->
+  <rect x="28" y="452" width="1044" height="160" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="48" y="478" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700" fill="#111827">为什么是 8 / 4（设计意图，不是能力上限）</text>
+  <text x="48" y="502" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 每个 subagent 是真实 Pi RPC 子进程 + 独立 session：8 个峰值约 8 份上下文，4 并发是内存/CPU 的折中。</text>
+  <text x="48" y="524" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 主模型要读回每份结果：8 份 × 单份 50KB 上限（PER_TASK_OUTPUT_CAP，index.ts:58）已经足够塞爆一次上下文，再多收益递减。</text>
+  <text x="48" y="546" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 需要更多并行时：拆多次 parallel 调用，或改用 chain 串行（无条数上限，但不并发）。</text>
+  <text x="48" y="574" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#991b1b">可配置性：无。subagent.json 的字段里没有 maxTasks / concurrency，改上限必须改源码并重新打包。</text>
+  <text x="48" y="596" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#6b7280">行号对应桌面 0.1.39（commit 384bfe2 / d25b134）。</text>
+</svg>
