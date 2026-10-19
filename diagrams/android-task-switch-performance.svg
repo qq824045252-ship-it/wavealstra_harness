@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 860" width="1180" height="860" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1180" height="860" fill="#f7f9fc"/>
+
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#111827">安卓端切换任务卡顿 — 事实、根因与修复</text>
+  <text x="40" y="72" font-size="13" fill="#4b5563">手机端没有本地数据库：任务列表、历史消息、运行态全部每次向电脑端请求</text>
+
+  <!-- Storage facts -->
+  <rect x="40" y="96" width="1100" height="118" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="122" font-size="14" font-weight="700" fill="#111827">存储事实</text>
+  <rect x="58" y="134" width="250" height="66" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+  <text x="74" y="156" font-size="12.5" font-weight="700" fill="#78350f">localStorage 只存 4 样</text>
+  <text x="74" y="175" font-size="12" fill="#78350f">凭据 / 上次任务 / 绿点水位 / 已清通知</text>
+  <text x="74" y="192" font-size="12" fill="#78350f">没有 IndexedDB、没有 SQLite</text>
+
+  <rect x="330" y="134" width="250" height="66" rx="8" fill="#fee2e2" stroke="#ef4444"/>
+  <text x="346" y="156" font-size="12.5" font-weight="700" fill="#7f1d1d">任务与消息不持久化</text>
+  <text x="346" y="175" font-size="12" fill="#7f1d1d">每次进任务都是网络请求</text>
+  <text x="346" y="192" font-size="12" fill="#7f1d1d">离线时整屏空白</text>
+
+  <rect x="602" y="134" width="250" height="66" rx="8" fill="#fee2e2" stroke="#ef4444"/>
+  <text x="618" y="156" font-size="12.5" font-weight="700" fill="#7f1d1d">histories 只增不减</text>
+  <text x="618" y="175" font-size="12" fill="#7f1d1d">切走的任务历史一直留在内存</text>
+  <text x="618" y="192" font-size="12" fill="#7f1d1d">用得越久越卡</text>
+
+  <rect x="874" y="134" width="248" height="66" rx="8" fill="#fee2e2" stroke="#ef4444"/>
+  <text x="890" y="156" font-size="12.5" font-weight="700" fill="#7f1d1d">时间轴依赖整对象</text>
+  <text x="890" y="175" font-size="12" fill="#7f1d1d">看 A 时 B 的流式增量</text>
+  <text x="890" y="192" font-size="12" fill="#7f1d1d">也会全量重建 A 的时间轴</text>
+
+  <!-- Before -->
+  <text x="40" y="252" font-size="15" font-weight="700" fill="#b91c1c">修复前：每次切换 = 全量往返</text>
+
+  <rect x="40" y="268" width="210" height="72" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="56" y="292" font-size="13" font-weight="700" fill="#111827">点击任务</text>
+  <text x="56" y="312" font-size="12" fill="#374151">openTask(taskId)</text>
+  <text x="56" y="329" font-size="12" fill="#b91c1c">无条件 syncTaskHistory</text>
+
+  <rect x="292" y="268" width="230" height="72" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="308" y="292" font-size="13" font-weight="700" fill="#7f1d1d">GET /history</text>
+  <text x="308" y="312" font-size="12" fill="#7f1d1d">解析整份会话 JSONL</text>
+  <text x="308" y="329" font-size="12" fill="#7f1d1d">+ 扫描产物索引</text>
+
+  <rect x="564" y="268" width="200" height="72" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="580" y="292" font-size="13" font-weight="700" fill="#7f1d1d">GET /runtime</text>
+  <text x="580" y="312" font-size="12" fill="#7f1d1d">busy / 交互 / 审批</text>
+  <text x="580" y="329" font-size="12" fill="#7f1d1d">串行等待</text>
+
+  <rect x="806" y="268" width="316" height="72" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="822" y="292" font-size="13" font-weight="700" fill="#7f1d1d">用户可见结果</text>
+  <text x="822" y="312" font-size="12" fill="#7f1d1d">白屏 / 「正在加载」直到两个请求都回来</text>
+  <text x="822" y="329" font-size="12" fill="#7f1d1d">长会话尤其明显</text>
+
+  <line x1="250" y1="304" x2="286" y2="304" stroke="#ef4444" stroke-width="2" marker-end="url(#arrRed)"/>
+  <line x1="522" y1="304" x2="558" y2="304" stroke="#ef4444" stroke-width="2" marker-end="url(#arrRed)"/>
+  <line x1="764" y1="304" x2="800" y2="304" stroke="#ef4444" stroke-width="2" marker-end="url(#arrRed)"/>
+  <text x="40" y="364" font-size="12.5" fill="#b91c1c">且两个请求都完成后才 setState —— 期间界面没有任何内容可显示</text>
+
+  <!-- After -->
+  <text x="40" y="404" font-size="15" font-weight="700" fill="#065f46">修复后：缓存命中直接出内容</text>
+
+  <rect x="40" y="420" width="210" height="86" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="56" y="444" font-size="13" font-weight="700" fill="#111827">点击任务</text>
+  <text x="56" y="464" font-size="12" fill="#374151">查 histories[taskId]</text>
+  <text x="56" y="482" font-size="12" fill="#374151">+ 事件序号未推进</text>
+  <text x="56" y="499" font-size="12" fill="#374151">+ 距上次 &lt; 30s</text>
+
+  <rect x="292" y="420" width="230" height="86" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="308" y="444" font-size="13" font-weight="700" fill="#065f46">命中 → 立即渲染</text>
+  <text x="308" y="464" font-size="12" fill="#065f46">不发阻塞请求</text>
+  <text x="308" y="482" font-size="12" fill="#065f46">实测切回 0ms</text>
+  <text x="308" y="499" font-size="12" fill="#065f46">内容立刻可见</text>
+
+  <rect x="564" y="420" width="200" height="86" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="580" y="444" font-size="13" font-weight="700" fill="#065f46">后台静默刷新</text>
+  <text x="580" y="464" font-size="12" fill="#065f46">仅当缓存 &gt; 10s</text>
+  <text x="580" y="482" font-size="12" fill="#065f46">失败不回滚界面</text>
+  <text x="580" y="499" font-size="12" fill="#065f46">纠正潜在漂移</text>
+
+  <rect x="806" y="420" width="316" height="86" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="822" y="444" font-size="13" font-weight="700" fill="#065f46">未命中 → 才走网络</text>
+  <text x="822" y="464" font-size="12" fill="#065f46">首次进入 / 被修剪 / 有新事件</text>
+  <text x="822" y="482" font-size="12" fill="#065f46">电脑端也加了文件指纹缓存</text>
+  <text x="822" y="499" font-size="12" fill="#065f46">mtime+size 未变则不重解析</text>
+
+  <line x1="250" y1="460" x2="286" y2="460" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+  <line x1="522" y1="460" x2="558" y2="460" stroke="#16a34a" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrGreen)"/>
+  <line x1="764" y1="460" x2="800" y2="460" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+
+  <!-- Three fixes -->
+  <text x="40" y="556" font-size="15" font-weight="700" fill="#111827">三处改动</text>
+
+  <rect x="40" y="572" width="356" height="112" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="596" font-size="13" font-weight="700" fill="#1d4ed8">① 历史缓存 + LRU 修剪</text>
+  <text x="58" y="618" font-size="12" fill="#374151">remoteStore.openTask 命中缓存直接返回</text>
+  <text x="58" y="637" font-size="12" fill="#374151">HISTORY_FRESH_MS = 30s 窗口</text>
+  <text x="58" y="656" font-size="12" fill="#374151">historyLru 超 5 个即丢弃最久未用</text>
+  <text x="58" y="675" font-size="12" fill="#b45309">活跃任务永不被修剪</text>
+
+  <rect x="412" y="572" width="356" height="112" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="430" y="596" font-size="13" font-weight="700" fill="#1d4ed8">② 时间轴只订阅当前任务</text>
+  <text x="430" y="618" font-size="12" fill="#374151">原来依赖 [histories, live, activeTaskId]</text>
+  <text x="430" y="637" font-size="12" fill="#374151">改为 histories[id].messages 与 live[id]</text>
+  <text x="430" y="656" font-size="12" fill="#374151">别的任务的 patch 不再触发重建</text>
+  <text x="430" y="675" font-size="12" fill="#065f46">流式输出时界面不再卡</text>
+
+  <rect x="784" y="572" width="356" height="112" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="802" y="596" font-size="13" font-weight="700" fill="#1d4ed8">③ 电脑端解析结果按文件指纹缓存</text>
+  <text x="802" y="618" font-size="12" fill="#374151">AgentService.loadTaskHistory 加 Map</text>
+  <text x="802" y="637" font-size="12" fill="#374151">key = sessionFile + cwd，指纹 = mtime:size</text>
+  <text x="802" y="656" font-size="12" fill="#374151">上限 32 条，命中返回副本防篡改</text>
+  <text x="802" y="675" font-size="12" fill="#b45309">有产物索引的结果不缓存（会单独变化）</text>
+
+  <!-- verification -->
+  <rect x="40" y="704" width="1100" height="120" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="730" font-size="14" font-weight="700" fill="#111827">验证</text>
+  <text x="58" y="754" font-size="12.5" fill="#059669">test:remote-task-cache 13/13｜首次拉取 1 次、窗口内切回 0 请求、切回耗时 0ms、修剪到 5 条、活跃任务保留、被修剪后重新拉取</text>
+  <text x="58" y="776" font-size="12.5" fill="#059669">test:remote-access｜test:remote-delete 18/18｜test:remote-done-ack 18/18｜typecheck（web+node+remote）｜remote:build</text>
+  <text x="58" y="798" font-size="12.5" fill="#059669">test:all：通过 250，新增回归 0（1 项为 baseline 已知失败）</text>
+  <text x="58" y="818" font-size="12.5" fill="#b45309">未做：真正的本地数据库（IndexedDB）持久化——当前方案是内存缓存，重启应用仍需重新拉取</text>
+
+  <defs>
+    <marker id="arrRed" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrGreen" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+</svg>

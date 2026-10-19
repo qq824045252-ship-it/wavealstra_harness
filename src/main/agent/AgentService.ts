@@ -518,6 +518,8 @@ export class AgentService {
   private modelConfigFingerprint: string | undefined;
   private modelConfigReload: Promise<void> | undefined;
   private readonly patchListeners = new Set<(patch: AgentUiPatch) => void>();
+  /** 会话文件历史解析缓存：key = sessionFile + cwd，value = 文件指纹 + 解析结果 */
+  private readonly historyCache = new Map<string, { stamp: string; history: TaskHistoryDto }>();
   private taskLifecycleListener: ((event: AgentTaskLifecycleEvent) => void) | null = null;
   private readonly notificationSuppressedAssistantIds = new Set<string>();
   private readonly lifecycleTerminalAssistantIds = new Set<string>();
@@ -3800,12 +3802,42 @@ export class AgentService {
     try {
       // §7.3：以数据库中的 canonical cwd 覆盖会话 header cwd，child 分支会话的
       // artifact/tool 相对路径一律按 child root 解析。
+      const cacheKey = `${row.sessionFile}\u0000${row.cwd ?? ""}`;
+      const stamp = this.sessionStatStamp(row.sessionFile);
+      const cached = this.historyCache.get(cacheKey);
+      if (cached && stamp && cached.stamp === stamp) {
+        // 命中：返回副本，避免调用方（如远端 enrichHistory）改写缓存对象
+        return { ...cached.history, messages: [...cached.history.messages] };
+      }
       const history = loadTaskHistoryFromSession(row.sessionFile, row.cwd);
       history.artifacts = await loadTaskArtifacts(taskId);
+      // artifacts 来自独立的 legacy 索引，可能在会话文件不变时新增，
+      // 因此只有「无产物索引」的结果才可按文件指纹缓存。
+      if (stamp && history.artifacts.length === 0) {
+        this.historyCache.set(cacheKey, { stamp, history });
+        // 简单的容量上限：避免长期运行后缓存无界增长
+        if (this.historyCache.size > 32) {
+          const oldest = this.historyCache.keys().next().value;
+          if (oldest !== undefined) this.historyCache.delete(oldest);
+        }
+      }
       return history;
     } catch (err) {
       console.warn("[AgentService] loadTaskHistory failed", err);
       return { messages: [], sessionFile: row.sessionFile, cwd: row.cwd };
+    }
+  }
+
+  /**
+   * 会话文件的指纹（mtime + size）。文件未变时历史必然不变，
+   * 所以可安全复用解析结果：手机端每次切任务都会请求历史，重解析整份 JSONL 是主要耗时。
+   */
+  private sessionStatStamp(sessionFile: string): string | null {
+    try {
+      const info = statSync(sessionFile);
+      return `${info.mtimeMs}:${info.size}`;
+    } catch {
+      return null;
     }
   }
 
