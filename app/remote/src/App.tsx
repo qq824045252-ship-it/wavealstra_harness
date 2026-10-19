@@ -3,7 +3,7 @@ import {
   ArrowDown, ArrowUp, Bell, Briefcase, Camera, Check,
   ChevronDown, ChevronRight, Copy, FileUp, Folder, Image,
   LoaderCircle, Settings, Menu, Plus, Redo2, RotateCcw, Sparkles, Square, Terminal,
-  ThumbsDown, ThumbsUp, Wrench, X, Shield,
+  ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
 import type { RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
@@ -316,11 +316,33 @@ function ChatPage() {
   const setShowDrawer = useRemoteStore((state) => state.setDrawerOpen)
   const openTask = useRemoteStore((state) => state.openTask)
   const goHome = useRemoteStore((state) => state.goHome)
+  const deleteTask = useRemoteStore((state) => state.deleteTask)
+
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const runDelete = async () => {
+    if (deleting) return
+    setDeleting(true); setDeleteError(null)
+    try {
+      await deleteTask(activeTaskId)
+      setConfirmDelete(false)
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : '删除失败，请重试')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const task = bootstrap?.tasks.find((item) => item.id === activeTaskId)
+  // 只订阅当前任务的切片：其它任务的 patch 会让 histories/live 整对象换引用，
+  // 若直接依赖整对象，看 A 时 B 的流式增量也会触发这里全量重建时间轴。
+  const activeHistoryMessages = histories[activeTaskId]?.messages
+  const activeLive = live[activeTaskId]
   const messages = useMemo(() => buildRemoteTimeline(
-    histories[activeTaskId]?.messages ?? [], live[activeTaskId] ?? {},
-  ), [histories, live, activeTaskId])
+    activeHistoryMessages ?? [], activeLive ?? {},
+  ), [activeHistoryMessages, activeLive])
 
   const runtime = runtimes[activeTaskId]
   const durable = histories[activeTaskId]?.durable
@@ -497,6 +519,15 @@ function ChatPage() {
               <Square size={16} />
             </button>
           )}
+          <button
+            type="button"
+            className="header-icon-btn"
+            aria-label="删除任务"
+            title="删除任务"
+            onClick={() => { setDeleteError(null); setConfirmDelete(true) }}
+          >
+            <Trash2 size={18} />
+          </button>
           <button
             type="button"
             className="header-icon-btn"
@@ -680,6 +711,22 @@ function ChatPage() {
       <AddToChatSheet />
       <PermissionSheet />
       <SelectModelSheet />
+
+      {confirmDelete && (
+        <div className="remote-confirm-overlay" role="dialog" aria-modal="true" aria-label="删除任务" onClick={() => { if (!deleting) setConfirmDelete(false) }}>
+          <div className="remote-confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="remote-confirm-title">删除这个任务？</div>
+            <div className="remote-confirm-body">「{task?.title ?? '对话'}」会进入电脑端的回收站，可在那里恢复。</div>
+            {deleteError && <div className="remote-confirm-error" role="status">{deleteError}</div>}
+            <div className="remote-confirm-actions">
+              <button type="button" className="remote-confirm-cancel" disabled={deleting} onClick={() => setConfirmDelete(false)}>取消</button>
+              <button type="button" className="remote-confirm-danger" disabled={deleting} onClick={() => void runDelete()}>
+                {deleting ? '删除中…' : '删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

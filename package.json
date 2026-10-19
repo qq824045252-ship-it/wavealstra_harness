@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -351,6 +351,9 @@
     "test:task-status-dot-desktop": "esbuild scripts/task-status-dot-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/task-status-dot-seed.cjs && node scripts/test-guard.mjs scripts/task-status-dot-desktop-test.cjs",
     "test:task-status-dot:live": "node scripts/test-guard.mjs scripts/task-status-dot-live-db-check.cjs",
     "test:remote-done-ack": "esbuild scripts/remote-done-ack-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-done-ack-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-done-ack-test.mjs",
+    "test:remote-delete": "esbuild scripts/remote-delete-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-delete-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-delete-test.mjs",
+    "test:remote-task-cache": "esbuild scripts/remote-task-cache-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-task-cache-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-task-cache-test.mjs",
+    "test:remote-db": "esbuild scripts/remote-db-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-db-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-db-test.mjs",
     "test:remote-task-dot-ui-desktop": "node scripts/test-guard.mjs scripts/remote-task-dot-ui-test.cjs",
     "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs",
     "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",

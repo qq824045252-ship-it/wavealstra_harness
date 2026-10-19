@@ -5,13 +5,23 @@ export { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory } from 
 import type {
   RemoteAttachmentInput, RemoteBootstrap, RemoteConnectionState, RemoteConversationInteraction,
   RemoteConversationInteractionAnswer, RemoteEventEnvelope, RemoteHistoryMessage,
-  RemoteNotification, RemoteRuntimeSnapshot, RemoteTaskHistory,
+  RemoteNotification, RemoteRuntimeSnapshot, RemoteTaskHistory, RemoteTaskSummary,
   RemoteWelcomeMode,
 } from '@mybuddy/shared'
-import { RemoteClient } from '../api/RemoteClient'
+import { RemoteApiError, RemoteClient } from '../api/RemoteClient'
 import { RemoteEventStream } from '../api/RemoteEventStream'
 import { clearCredential, getInstallationId, loadCredential, saveCredential } from '../api/credentialStore'
 import { loadLastActiveTaskId, saveLastActiveTaskId } from './remoteUiState'
+import {
+  clearAll as clearAllCached,
+  deleteHistory as deleteCachedHistory,
+  loadHistory as loadCachedHistory,
+  loadTaskList,
+  saveHistory as saveCachedHistory,
+  saveTaskList,
+  serverCacheKey,
+  type CachedTaskList,
+} from './remoteDb'
 
 export interface PendingAttachment {
   id: string
@@ -91,6 +101,11 @@ interface State {
   markTaskDoneSeen(taskId: string): Promise<void>
   /** 回首页（返回手势 / 左上角返回按钮）；同时丢弃模型/权限的一次性覆盖，避免泄漏到下一个任务 */
   goHome(): void
+  /**
+   * 删除任务（服务端进入安全回收，可在电脑端回收站恢复）。
+   * 成功后本地立即摘除该任务并回到首页，不等 SSE 回环。
+   */
+  deleteTask(taskId: string): Promise<void>
   startNewTask(spaceId?: string): void
   send(text: string, attachments?: PendingAttachment[]): Promise<void>
   create(text: string, attachments?: PendingAttachment[]): Promise<void>
@@ -173,7 +188,90 @@ let serverOffsetMs = 0
 let lastResumeAt = 0
 const taskSyncRevisions = new Map<string, number>()
 const taskEventRevisions = new Map<string, number>()
+/** 最近一次成功拉取历史的时刻（ms）与当时的事件序号；用于判断缓存是否仍可信 */
+const historyFetchedAt = new Map<string, number>()
+const historyFetchedEventRevision = new Map<string, number>()
+/**
+ * 已加载历史的 LRU 顺序（最近使用在末尾）。手机端没有本地数据库，
+ * 历史只能靠内存缓存避免「每次切任务都全量重拉」；同时必须修剪，否则越用越卡。
+ */
+const HISTORY_CACHE_LIMIT = 5
+const historyLru: string[] = []
+/** 缓存被认为是新鲜的窗口：窗口内切回不重新拉取，仅后台静默刷新 */
+const HISTORY_FRESH_MS = 30_000
+/** 超过该时长后，切回时顺带后台补拉一次（不阻塞渲染） */
+const HISTORY_REVALIDATE_MS = 10_000
+
+/** 按 baseUrl 模糊查找缓存（deviceId 未知时用）；找到任意一条即认为属于该服务器。 */
+async function loadTaskListLoose(baseUrl: string): Promise<CachedTaskList | null> {
+  // deviceId 在 bootstrap 返回前未知，先用空 deviceId 的键试；失败则由 commit 后的写入补齐。
+  return loadTaskList(serverCacheKey(baseUrl, null))
+}
+
+/** 冷启动回填：用本地快照把任务列表先渲染出来，不触碰已有的历史缓存。 */
+function applyCachedTaskList(tasks: RemoteTaskSummary[]): void {
+  const state = useRemoteStore.getState()
+  if (state.bootstrap) return
+  // 快照缺少 server/device 等字段，只在渲染层面使用；联网成功后会被真实 bootstrap 覆盖。
+  // 用目标类型断言构造成完整形状，避免消费方读到 undefined。
+  const placeholder = {
+    apiVersion: 1,
+    tasks,
+    spaces: [],
+    projects: [],
+    server: { now: Date.now() },
+    unreadNotificationCount: 0,
+    device: { id: '', name: '', pairedAt: 0 },
+    models: [],
+    defaultModelId: null,
+    defaultPermissionMode: 'default',
+  } as unknown as RemoteBootstrap
+  useRemoteStore.setState({ bootstrap: placeholder, connection: 'reconnecting' })
+}
+
+function touchHistoryLru(taskId: string): void {
+  const index = historyLru.indexOf(taskId)
+  if (index >= 0) historyLru.splice(index, 1)
+  historyLru.push(taskId)
+}
+
+/**
+ * 把超出上限的、且不是当前活跃任务的历史从内存里丢掉。
+ * 只丢前端投影，不影响电脑端数据；切回时会重新拉一次（走后台静默刷新）。
+ */
+/**
+ * 返回修剪后的局部 state 补丁（不含变动时返回 null，避免无谓重渲染）。
+ * 只丢前端投影，不影响电脑端数据；切回时会重新拉一次。
+ */
+function pruneHistories(histories: Record<string, RemoteTaskHistory>, runtimes: Record<string, RemoteRuntimeSnapshot>,
+  live: Record<string, Record<string, LiveRemoteMessage>>, keep: string | null, nextActive: string | null): {
+    histories: Record<string, RemoteTaskHistory>
+    runtimes: Record<string, RemoteRuntimeSnapshot>
+    live: Record<string, Record<string, LiveRemoteMessage>>
+  } | null {
+  const victims: string[] = []
+  while (historyLru.length > HISTORY_CACHE_LIMIT) {
+    const victim = historyLru.find((id) => id !== keep && id !== nextActive && histories[id] !== undefined)
+    if (!victim) break
+    historyLru.splice(historyLru.indexOf(victim), 1)
+    victims.push(victim)
+  }
+  if (!victims.length) return null
+  const nextHistories = { ...histories }
+  const nextRuntimes = { ...runtimes }
+  const nextLive = { ...live }
+  for (const victim of victims) {
+    historyFetchedAt.delete(victim)
+    historyFetchedEventRevision.delete(victim)
+    delete nextHistories[victim]
+    delete nextRuntimes[victim]
+    delete nextLive[victim]
+  }
+  return { histories: nextHistories, runtimes: nextRuntimes, live: nextLive }
+}
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
+/** 当前连接的服务器缓存键（baseUrl + deviceId）；历史读写都用它做命名空间 */
+let activeServerKey: string | null = null
 
 export const useRemoteStore = create<State>((set, get) => ({
   connection: 'disconnected', client: null, bootstrap: null, notifications: [], activeTaskId: null,
@@ -251,7 +349,17 @@ export const useRemoteStore = create<State>((set, get) => ({
     const previousClient = get().client
     const previousConnection = get().connection
     set({ connection: 'connecting', error: null })
-    const client = new RemoteClient(baseUrl.replace(/\/$/, ''), token)
+    const normalizedBase = baseUrl.replace(/\/$/, '')
+    const client = new RemoteClient(normalizedBase, token)
+    // 冷启动先用本地数据库里的快照渲染，网络成功后再覆盖（stale-while-revalidate）。
+    // 只有当前没有任何 bootstrap 时才回填，避免覆盖正在使用的新数据。
+    if (!get().bootstrap) {
+      const cachedKey = serverCacheKey(normalizedBase, null)
+      const cached = await loadTaskList(cachedKey) ?? await loadTaskListLoose(normalizedBase)
+      if (cached && revision === connectionRevision && !get().bootstrap) {
+        applyCachedTaskList(cached.tasks)
+      }
+    }
     try {
       const [bootstrap, rawNotifications] = await Promise.all([client.bootstrap(), client.notifications()])
       if (revision !== connectionRevision) return
@@ -265,13 +373,17 @@ export const useRemoteStore = create<State>((set, get) => ({
         set({ connection: connected ? 'connected' : 'reconnecting', ...(connected ? { error: null } : {}) })
         if (connected) scheduleRemoteSync()
       })
+      const nextServerKey = serverCacheKey(normalizedBase, bootstrap.device?.id)
+      activeServerKey = nextServerKey
       set({
-        client, bootstrap, notifications, connection: 'connected', histories: {}, runtimes: {}, live: {},
+        client, bootstrap, notifications, connection: 'connected', histories: get().histories, runtimes: get().runtimes, live: get().live,
         activeTaskId: bootstrap.tasks.some(task => task.id === get().activeTaskId && !task.archived) ? get().activeTaskId : null,
         // P0：默认 'follow'（不传 permissionMode，服务端跟随任务/设置），不再从默认权限推断覆盖值
         // 连接新会话（配对 / 切换服务器 / 重新连接）时清空上个会话遗留的 transient 覆盖
         ...resetTransientOverrides(),
       })
+      // 落本地数据库：任务列表快照供下次冷启动使用
+      void saveTaskList(nextServerKey, bootstrap).catch(() => undefined)
       stream.start()
       const lastTaskId = navigation === navigationRevision ? loadLastActiveTaskId() : null
       if (lastTaskId) {
@@ -323,17 +435,66 @@ export const useRemoteStore = create<State>((set, get) => ({
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     await clearCredential()
+    // 断开连接 = 不再信任本机缓存（换设备/换账号后不应残留上一台电脑的对话）
+    activeServerKey = null
+    void clearAllCached().catch(() => undefined)
     saveLastActiveTaskId(null)
     set({ connection: 'disconnected', client: null, bootstrap: null, activeTaskId: null, sending: false, creating: false, ...resetTransientOverrides() })
   },
   async openTask(taskId) {
-    if (!get().client) return
+    // 不再要求必须有 client：离线时仍可从本地数据库读出已缓存的对话。
+    if (!get().client && !activeServerKey) return
     ++navigationRevision
     saveLastActiveTaskId(taskId)
+    const previousTaskId = get().activeTaskId
     set(state => ({ activeTaskId: taskId, ...(state.activeTaskId !== taskId ? resetTransientOverrides() : {}) }))
     // 打开任务 = 已查看结果：先清绿点（本地即时生效），再落库给所有设备共享
     void get().markTaskDoneSeen(taskId)
+
+    // 本地数据库命中：内存里没有（冷启动 / 已被修剪），但本机存过这份历史——
+    // 先渲染出来，再后台向电脑端校正。离线时这就是唯一的数据来源。
+    if (get().histories[taskId] === undefined && activeServerKey) {
+      const local = await loadCachedHistory(activeServerKey, taskId)
+      // 期间用户可能已切走：本次打开作废
+      if (get().activeTaskId !== taskId) return
+      if (local?.history && get().histories[taskId] === undefined) {
+        touchHistoryLru(taskId)
+        historyFetchedAt.set(taskId, local.at)
+        historyFetchedEventRevision.set(taskId, taskEventRevisions.get(taskId) ?? 0)
+        const state = get()
+        set({
+          histories: { ...state.histories, [taskId]: local.history },
+          ...(local.runtime ? { runtimes: { ...state.runtimes, [taskId]: local.runtime } } : {}),
+        })
+        const patch = pruneHistories(get().histories, get().runtimes, get().live, previousTaskId, taskId)
+        if (patch) set(patch)
+        // 后台校正：网络失败（离线）时保持本地内容，不报错
+        void syncTaskHistory(taskId).catch(() => undefined)
+        return
+      }
+    }
+
+    // 缓存命中：已加载过该任务且事件序号未推进、且仍在新鲜窗口内，
+    // 直接渲染内存里的历史，不阻塞 UI；同时在后台静默刷新以纠正漂移。
+    const cached = get().histories[taskId]
+    const fetchedAt = historyFetchedAt.get(taskId) ?? 0
+    const fetchedRevision = historyFetchedEventRevision.get(taskId) ?? -1
+    const revisionUnchanged = fetchedRevision === (taskEventRevisions.get(taskId) ?? 0)
+    const fresh = cached !== undefined && revisionUnchanged && Date.now() - fetchedAt < HISTORY_FRESH_MS
+    if (fresh) {
+      touchHistoryLru(taskId)
+      const state = get()
+      const patch = pruneHistories(state.histories, state.runtimes, state.live, previousTaskId, taskId)
+      if (patch) set(patch)
+      // 后台静默刷新：事件序号未变说明期间没有新流量，只在缓存已偏旧时才补拉；
+      // 失败不影响已经显示的缓存内容。
+      if (Date.now() - fetchedAt > HISTORY_REVALIDATE_MS) void syncTaskHistory(taskId).catch(() => undefined)
+      return
+    }
     await syncTaskHistory(taskId)
+    const state = get()
+    const patch = pruneHistories(state.histories, state.runtimes, state.live, previousTaskId, taskId)
+    if (patch) set(patch)
   },
   async markTaskDoneSeen(taskId) {
     const at = Date.now() + serverOffsetMs // 用电脑端时间轴，和 task.updatedAt 可比
@@ -360,6 +521,35 @@ export const useRemoteStore = create<State>((set, get) => ({
     ++navigationRevision
     saveLastActiveTaskId(null)
     set({ activeTaskId: null, ...resetTransientOverrides() })
+  },
+  async deleteTask(taskId) {
+    const { client, bootstrap, histories, runtimes, live } = get()
+    if (!client) throw new Error('尚未连接电脑端')
+    try {
+      await client.deleteTask(taskId)
+    } catch (error) {
+      // 电脑端已在回收区/任务正忙（409）时，仍把本地视图对齐：不再显示该任务。
+      if (!(error instanceof RemoteApiError) || error.status !== 409) throw error
+    }
+    const nextHistories = { ...histories }
+    const nextRuntimes = { ...runtimes }
+    const nextLive = { ...live }
+    delete nextHistories[taskId]; delete nextRuntimes[taskId]; delete nextLive[taskId]
+    // 本地数据库同步清理：否则回收后仍能从缓存读到旧对话
+    if (activeServerKey) void deleteCachedHistory(activeServerKey, taskId).catch(() => undefined)
+    const removedEntry = (bootstrap?.tasks ?? []).find((task) => task.id === taskId)
+    const nextTasks = (bootstrap?.tasks ?? []).filter((task) => task.id !== taskId)
+    // 模型/权限覆盖来自被删任务时一并丢弃，避免泄漏到下一个任务。
+    const activeDeleted = get().activeTaskId === taskId
+    ++navigationRevision
+    if (activeDeleted) saveLastActiveTaskId(null)
+    set({
+      bootstrap: bootstrap ? { ...bootstrap, tasks: nextTasks } : bootstrap,
+      histories: nextHistories, runtimes: nextRuntimes, live: nextLive,
+      ...(activeDeleted ? { activeTaskId: null, ...resetTransientOverrides() } : {}),
+    })
+    // 与桌面端一致：从任务所属空间/项目的计数里移除
+    if (removedEntry) void refresh().catch(() => undefined)
   },
   startNewTask(spaceId) {
     ++navigationRevision
@@ -565,6 +755,11 @@ async function syncTaskHistory(taskId: string): Promise<void> {
   const eventRevision = taskEventRevisions.get(taskId) ?? 0
   const [history, runtime] = await Promise.all([client.history(taskId), client.runtime(taskId)])
   if (useRemoteStore.getState().client !== client || taskSyncRevisions.get(taskId) !== revision) return
+  historyFetchedAt.set(taskId, Date.now())
+  historyFetchedEventRevision.set(taskId, taskEventRevisions.get(taskId) ?? 0)
+  touchHistoryLru(taskId)
+  // 落本地数据库：下次冷启动/切回可直接读取，离线也可看历史
+  if (activeServerKey) void saveCachedHistory(activeServerKey, taskId, history, runtime).catch(() => undefined)
   useRemoteStore.setState(state => {
     const newer = (taskEventRevisions.get(taskId) ?? 0) !== eventRevision
     if (history.durable) {
@@ -602,6 +797,8 @@ async function refresh(): Promise<void> {
   const cleared = getClearedNoticeIds()
   const notifications = rawNotifications.filter(n => !cleared.has(n.id))
   useRemoteStore.setState({ bootstrap, notifications })
+  // 每次刷新都把最新任务列表落到本地数据库，保证冷启动快照尽量新
+  if (activeServerKey) void saveTaskList(activeServerKey, bootstrap).catch(() => undefined)
 }
 
 function projectInteraction(state: State, taskId: string, interaction: RemoteConversationInteraction): Partial<State> {
@@ -656,8 +853,12 @@ export function applyEvent(event: RemoteEventEnvelope): void {
     useRemoteStore.setState(current => {
       const previous = current.histories[taskId]?.durable;
       if (previous?.epoch === snapshot.epoch && previous.revision >= snapshot.revision) return current;
+      // durable_snapshot 只携带消息与运行态：保留已由 history 建立的产物清单，
+      // 否则每次快照都会清空 imageArtifacts，使同一批图片反复消失/重现。
+      const previousHistory = current.histories[taskId];
       return {
-        histories: { ...current.histories, [taskId]: { taskId, messages: snapshot.messages, durable: snapshot } },
+        histories: { ...current.histories, [taskId]: { taskId, messages: snapshot.messages, durable: snapshot,
+          ...(previousHistory?.imageArtifacts ? { imageArtifacts: previousHistory.imageArtifacts } : {}) } },
         live: { ...current.live, [taskId]: {} },
         runtimes: { ...current.runtimes, [taskId]: { taskId, busy: snapshot.busy, pendingActions: [], interactions: [], activeGoal: null } },
       };
