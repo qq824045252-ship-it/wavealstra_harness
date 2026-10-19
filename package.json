@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -44,6 +44,7 @@
     "test:delegated-run": "esbuild scripts/delegated-run-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/delegated-run-test.mjs && node scripts/test-guard.mjs out/tests/delegated-run-test.mjs",
     "test:acp-runtime": "esbuild scripts/acp-runtime-integration-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-runtime-integration-test.mjs && node scripts/test-guard.mjs out/tests/acp-runtime-integration-test.mjs",
     "test:acp-desktop-hydration": "esbuild scripts/acp-desktop-hydration-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/acp-desktop-hydration-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/acp-desktop-hydration-test.cjs",
+    "test:acp-permission-policy": "esbuild scripts/acp-permission-policy-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-permission-policy-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/acp-permission-policy-test.mjs",
     "test:acp-remote": "esbuild scripts/acp-remote-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-remote-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/acp-remote-test.mjs",
     "test:acp-catalog": "esbuild scripts/external-agent-catalog-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/external-agent-catalog-test.mjs && node scripts/test-guard.mjs out/tests/external-agent-catalog-test.mjs",
     "test:chat-attachment-acp-desktop": "node scripts/chat-attachment-acp-desktop-test.cjs",

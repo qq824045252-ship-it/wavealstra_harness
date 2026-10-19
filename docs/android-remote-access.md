@@ -59,8 +59,26 @@ The phone can hand a turn to an **ACP (Agent Client Protocol) external agent** �
 
 | Route | Purpose |
 |---|---|
-| `GET /v1/acp/agents[?refresh=1]` | ACP catalog. Disabled agents (desktop *Settings → ACP management*) are omitted; installed-but-missing CLIs stay listed with `available: false` and a `detail` reason. `refresh=1` re-probes the host CLIs. |
-| `POST /v1/tasks/:id/acp` | `{ agentId, text, attachments?, continueFromRunId? }` → `202` with the run projection. Starts a real ACP subprocess in the task's canonical workspace. |
+| `GET /v1/acp/agents[?refresh=1]` | ACP catalog. Disabled agents (desktop *Settings → ACP management*) are omitted; installed-but-missing CLIs stay listed with `available: false` and a `detail` reason. `refresh=1` re-probes the host CLIs. Each entry carries its `permissionPolicy`. |
+| `POST /v1/acp/agents/:id/permission` | `{ policy: "ask" \| "auto-allow" \| "auto-deny" }` → updated catalog. Writes host settings; the next permission request honours it (no restart). |
+| `POST /v1/tasks/:id/acp` | `{ agentId, text, attachments?, continueFromRunId?, newSession? }` → `202` with the run projection. Starts a real ACP subprocess in the task's canonical workspace. |
+
+### Permission policy (why it no longer stops on every step)
+
+ACP agents ask the client for permission before most tool calls. By default (`ask`) each
+request blocks the run until a human answers — fine for one-off edits, unusable for long
+unattended runs. Per agent the host stores one of:
+
+| Policy | Behaviour |
+|---|---|
+| `ask` (default) | Emit the approval card (`approvalKind: "acp"`), run goes `blocked`, wait for `optionId`. |
+| `auto-allow` | Pick the agent's own `allow_*` option (prefers `allow_once`, falls back to `allow_always`) and answer immediately. No card, run never blocks; the call is still recorded in the timeline as **已按策略自动放行**. |
+| `auto-deny` | Pick the agent's `reject_*` option; the tool lands `denied`. Useful for read-only analysis runs. |
+
+Safety rules: the host never invents an option — if the agent offers no matching
+`allow_*`/`reject_*`, the policy falls back to `ask`; unknown/corrupt values also normalize to
+`ask`. The policy is read on every request, so changing it (desktop *ACP management* or the
+phone's ACP sheet) applies to the next call without restarting the agent.
 
 Behaviour that differs from the built-in Pi path:
 

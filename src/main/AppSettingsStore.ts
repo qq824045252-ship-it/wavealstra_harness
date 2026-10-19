@@ -15,7 +15,9 @@ import type { PermissionMode, DiskSpaceDto } from "../shared/agent-ipc";
 import {
   normalizeExternalAgentConfigOptions,
   normalizeExternalAgentConfigSelections,
+  normalizeExternalAgentPermissionPolicies,
   type ExternalAgentConfigOptionDto,
+  type ExternalAgentPermissionPolicy,
 } from "../shared/external-agent";
 import { normalizeModelPreferences, type ModelPreferencesDto } from "../shared/model-metadata";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -122,6 +124,8 @@ export interface AppSettings {
   externalAgentConfigSelections?: Record<string, Record<string, string | boolean>>;
   /** 各 ACP Agent 最近探测到的会话选项快照（设置页下拉数据源）。 */
   externalAgentConfigOptions?: Record<string, ExternalAgentConfigOptionDto[]>;
+  /** ACP 权限策略：agentId → ask | auto-allow | auto-deny（缺省 ask）。 */
+  externalAgentPermissionPolicies?: Record<string, ExternalAgentPermissionPolicy>;
 }
 
 export {
@@ -277,6 +281,7 @@ export class AppSettingsStore {
         : undefined;
       merged.externalAgentConfigSelections = normalizeExternalAgentConfigSelections(raw.externalAgentConfigSelections);
       merged.externalAgentConfigOptions = normalizeExternalAgentConfigOptions(raw.externalAgentConfigOptions);
+      merged.externalAgentPermissionPolicies = normalizeExternalAgentPermissionPolicies(raw.externalAgentPermissionPolicies);
       merged.modelPreferences = Object.fromEntries(Object.entries(piSettings.getAllModelThinkingLevels())
         .map(([modelId, effort]) => [modelId, { reasoning: { effort } }]));
       // Legacy global thinkingLevel is intentionally dropped: it cannot be safely mapped without model-native reasoning metadata.

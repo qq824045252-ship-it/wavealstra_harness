@@ -77,11 +77,18 @@ const db = new AppDatabase(join(root, "app.db"));
 const runtime = new ExternalAgentRuntime(db, () => workspace, async () => []);
 let behavior = "default";
 
+// 可写的设置桩：权限策略由手机端写入，listAgents 再从设置合并（与真实 Runtime 同语义）
+const appSettings = {
+  defaultModelId: null as string | null,
+  permissionMode: "default",
+  externalAgentPermissionPolicies: { devin: "auto-allow" } as Record<string, string>,
+};
+
 // 复用真实 Runtime 的执行链，只把「探测」与「启动」换成 mock（不依赖本机装了哪些 CLI）
 (runtime as unknown as { listAgents: () => unknown }).listAgents = () => [
-  { id: "devin", name: "Devin", protocol: "acp", available: true, availability: "ready", commandLabel: "mock-acp", detail: "mock", enabled: true },
-  { id: "codex", name: "Codex", protocol: "acp", available: false, availability: "missing", commandLabel: "codex-acp", detail: "未检测到 codex CLI", enabled: true },
-  { id: "claude", name: "Claude", protocol: "acp", available: true, availability: "ready", commandLabel: "claude-agent-acp", detail: "mock", enabled: false },
+  { id: "devin", name: "Devin", protocol: "acp", available: true, availability: "ready", commandLabel: "mock-acp", detail: "mock", enabled: true, permissionPolicy: appSettings.externalAgentPermissionPolicies.devin ?? "ask" },
+  { id: "codex", name: "Codex", protocol: "acp", available: false, availability: "missing", commandLabel: "codex-acp", detail: "未检测到 codex CLI", enabled: true, permissionPolicy: appSettings.externalAgentPermissionPolicies.codex ?? "ask" },
+  { id: "claude", name: "Claude", protocol: "acp", available: true, availability: "ready", commandLabel: "claude-agent-acp", detail: "mock", enabled: false, permissionPolicy: appSettings.externalAgentPermissionPolicies.claude ?? "ask" },
 ];
 (runtime as unknown as { launch: (m: unknown, cwd: string) => unknown }).launch = (_manifest: unknown, runCwd: string) => spawn(process.execPath, [fixture], {
   cwd: runCwd,
@@ -105,7 +112,11 @@ const agentStub = {
 } as never;
 const notifications = { unreadCount: () => 0, list: () => [], markRead: () => undefined, markAllRead: () => undefined, dismissAll: () => undefined } as never;
 const projects = { list: () => [], get: () => undefined } as never;
-const settings = { read: () => ({ defaultModelId: null, permissionMode: "default" }), getTaskConnectorIds: () => [] } as never;
+const settings = {
+  read: () => ({ ...appSettings }),
+  write: (partial: Record<string, unknown>) => Object.assign(appSettings, partial),
+  getTaskConnectorIds: () => [],
+} as never;
 
 const service = new RemoteAccessService(db, agentStub, notifications, projects, settings, runtime);
 const commands = new RemoteTaskCommandService(db, agentStub, settings, projects, join(root, "uploads"), undefined, undefined, runtime);
@@ -128,11 +139,28 @@ try {
     assert.equal(agents[0]!.available, true);
     assert.equal(agents[1]!.available, false, "未安装 CLI 的 Agent 保留并标记不可用");
     assert.equal(agents[1]!.detail, "未检测到 codex CLI");
+    assert.equal(agents[0]!.permissionPolicy, "auto-allow", "手机端必须能看到「这个 Agent 不会再打断我」");
+    assert.equal(agents[1]!.permissionPolicy, "ask", "未配置策略默认 ask");
     ok("GET /v1/acp/agents 投影已启用 Agent 并标记不可用项");
 
     const bootstrap = await client.bootstrap();
     assert.equal(bootstrap.acpAgents?.length, 2, "bootstrap 一并下发 ACP 目录（首屏即可用）");
     ok("bootstrap 携带 acpAgents 目录");
+
+    // ---------- 1.5 权限策略：手机端可改，写进电脑端设置 ----------
+    const updated = await client.setAcpPermission("devin", "auto-deny");
+    assert.equal(updated.find((agent) => agent.id === "devin")?.permissionPolicy, "auto-deny");
+    assert.equal(appSettings.externalAgentPermissionPolicies.devin, "auto-deny", "策略必须落到电脑端设置");
+    await client.setAcpPermission("devin", "ask");
+    assert.equal(
+      "devin" in appSettings.externalAgentPermissionPolicies,
+      false,
+      "ask 是默认值，不应留在配置里（避免配置漂移）",
+    );
+    await expectApiError(client.setAcpPermission("nope", "auto-allow"), 400, "未知 Agent 改策略 → 400");
+    await expectApiError(client.setAcpPermission("devin", "allow-everything" as never), 400, "非法策略值 → 400");
+    await client.setAcpPermission("devin", "auto-allow");
+    ok("POST /v1/acp/agents/:id/permission 修改权限策略（含非法输入拒绝）");
 
     // ---------- 2. 拒绝路径 ----------
     await expectApiError(client.acpPrompt(TASK, { agentId: "nope", text: "hi" }), 400, "未知 Agent → 400");

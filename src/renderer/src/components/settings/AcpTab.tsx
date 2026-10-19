@@ -5,9 +5,23 @@ import type {
   ExternalAgentConfigOptionDto,
   ExternalAgentDescriptorDto,
   ExternalAgentId,
+  ExternalAgentPermissionPolicy,
   ExternalAgentTestResultDto,
 } from "@shared/external-agent";
+import { EXTERNAL_AGENT_PERMISSION_POLICIES } from "@shared/external-agent";
 import "./AcpTab.css";
+
+const PERMISSION_POLICY_LABELS: Record<ExternalAgentPermissionPolicy, string> = {
+  ask: "每次询问",
+  "auto-allow": "自动允许",
+  "auto-deny": "自动拒绝",
+};
+
+const PERMISSION_POLICY_HINTS: Record<ExternalAgentPermissionPolicy, string> = {
+  ask: "Agent 每次请求权限都弹审批卡片（最安全，会打断长任务）",
+  "auto-allow": "自动按 Agent 声明的 allow 选项放行（优先 allow_once），不再打断；时间线仍记录每次调用",
+  "auto-deny": "自动拒绝所有权限请求（只读分析场景；需要改文件的 Agent 会失败）",
+};
 
 function availabilityLabel(agent: ExternalAgentDescriptorDto): { text: string; tone: "ready" | "adapter" | "missing" | "disabled" } {
   if (!agent.enabled) return { text: "已停用", tone: "disabled" };
@@ -143,6 +157,7 @@ function AgentRow({
   onToggle,
   onTest,
   onConfigChange,
+  onPermissionPolicyChange,
 }: {
   agent: ExternalAgentDescriptorDto;
   busy: boolean;
@@ -151,8 +166,10 @@ function AgentRow({
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onConfigChange: (configId: string, value: string | boolean | undefined) => void;
+  onPermissionPolicyChange: (policy: ExternalAgentPermissionPolicy) => void;
 }): React.JSX.Element {
   const state = availabilityLabel(agent);
+  const policy = agent.permissionPolicy ?? "ask";
   return (
     <div className={`acp-agent-row${agent.enabled ? "" : " is-disabled"}`}>
       <div className="acp-agent-icon"><IconBot size={16} /></div>
@@ -163,6 +180,23 @@ function AgentRow({
         </div>
         <div className="acp-agent-command">{agent.commandLabel}</div>
         {agent.detail && <div className="acp-agent-detail">{agent.detail}</div>}
+        <label className="acp-config-row acp-permission-row">
+          <span className="acp-config-label" title={PERMISSION_POLICY_HINTS[policy]}>权限</span>
+          <select
+            className={`acp-config-select${policy === "auto-allow" ? " is-accent" : ""}`}
+            value={policy}
+            disabled={busy}
+            title={PERMISSION_POLICY_HINTS[policy]}
+            onChange={(event) => onPermissionPolicyChange(event.target.value as ExternalAgentPermissionPolicy)}
+          >
+            {EXTERNAL_AGENT_PERMISSION_POLICIES.map((value) => (
+              <option key={value} value={value} title={PERMISSION_POLICY_HINTS[value]}>
+                {PERMISSION_POLICY_LABELS[value]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {policy !== "ask" && <div className="acp-agent-detail">{PERMISSION_POLICY_HINTS[policy]}</div>}
         {agent.configOptions && agent.configOptions.length > 0 && (
           <div className="acp-config-list">
             {agent.configOptions.map((option) => (
@@ -259,6 +293,34 @@ export default function AcpTab(): React.JSX.Element {
     }
   };
 
+  const setPermissionPolicy = async (
+    agent: ExternalAgentDescriptorDto,
+    policy: ExternalAgentPermissionPolicy,
+  ): Promise<void> => {
+    const update = window.api?.agent?.updateAppSettings;
+    const get = window.api?.agent?.getAppSettings;
+    if (!update || !get) {
+      setNotice({ text: "设置 API 未就绪，请完整重启应用", error: true });
+      return;
+    }
+    setBusyId(agent.id);
+    setNotice(null);
+    try {
+      const settings = await get();
+      const current = { ...(settings.externalAgentPermissionPolicies ?? {}) };
+      if (policy === "ask") delete current[agent.id];
+      else current[agent.id] = policy;
+      await update({ externalAgentPermissionPolicies: current });
+      // 策略在 Main 侧即时生效（每次权限请求都重新读设置），这里只需刷新目录显示
+      const items = await window.api?.externalAgent?.listAgents?.(false);
+      updateExternalAgentCatalog(items ?? []);
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : String(error), error: true });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const test = async (agent: ExternalAgentDescriptorDto): Promise<void> => {
     const testFn = window.api?.externalAgent?.test;
     if (!testFn) {
@@ -339,6 +401,7 @@ export default function AcpTab(): React.JSX.Element {
                 onToggle={(enabled) => void toggle(agent, enabled)}
                 onTest={() => void test(agent)}
                 onConfigChange={(configId, value) => void setConfigOption(agent, configId, value)}
+                onPermissionPolicyChange={(policy) => void setPermissionPolicy(agent, policy)}
               />
             ))
           )}

@@ -6,7 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
 import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
@@ -1290,6 +1290,8 @@ function AcpAgentSheet() {
   const setSelectedAcpAgentId = useRemoteStore((s) => s.setSelectedAcpAgentId)
   const acpNewSession = useRemoteStore((s) => s.acpNewSession)
   const setAcpNewSession = useRemoteStore((s) => s.setAcpNewSession)
+  const setAcpAgentPolicy = useRemoteStore((s) => s.setAcpAgentPolicy)
+  const [policyBusy, setPolicyBusy] = useState(false)
   const refreshAcpAgents = useRemoteStore((s) => s.refreshAcpAgents)
   const bootstrap = useRemoteStore((s) => s.bootstrap)
   const [refreshing, setRefreshing] = useState(false)
@@ -1355,6 +1357,11 @@ function AcpAgentSheet() {
                   <span className="select-model-desc">
                     {agent.detail || agent.commandLabel}
                     {agent.configOptionNames.length ? ` · ${agent.configOptionNames.join(' / ')}` : ''}
+                    {agent.permissionPolicy === 'auto-allow'
+                      ? ' · 权限：自动允许（不再打断）'
+                      : agent.permissionPolicy === 'auto-deny'
+                        ? ' · 权限：自动拒绝'
+                        : ' · 权限：每次询问'}
                   </span>
                 </div>
                 {active && <Check size={20} className="select-model-check" strokeWidth={2.5} />}
@@ -1367,6 +1374,51 @@ function AcpAgentSheet() {
               电脑端没有可用的 ACP Agent。请在电脑端「设置 → ACP 管理」启用并安装对应 CLI 后点下方刷新。
             </div>
           )}
+
+          {/* 权限策略：直接写电脑端设置，之后这个 Agent 不再逐条弹审批 */}
+          {selectedAcpAgentId && (() => {
+            const current = agents.find((agent) => agent.id === selectedAcpAgentId)
+            const policy: RemoteAcpPermissionPolicy = current?.permissionPolicy ?? 'ask'
+            const options: Array<{ value: RemoteAcpPermissionPolicy; title: string; desc: string }> = [
+              { value: 'ask', title: '每次询问', desc: '每次都弹审批卡片（默认）' },
+              { value: 'auto-allow', title: '自动允许', desc: '不再打断；电脑端按 Agent 的 allow 选项放行并留痕' },
+              { value: 'auto-deny', title: '自动拒绝', desc: '只读分析场景：所有权限请求自动拒绝' },
+            ]
+            return (
+              <div className="acp-policy-block">
+                <div className="acp-policy-title">权限策略 · {current?.name ?? selectedAcpAgentId}</div>
+                {options.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`add-to-chat-row acp-policy-row ${policy === option.value ? 'acp-policy-row-on' : ''}`}
+                    disabled={policyBusy}
+                    aria-pressed={policy === option.value}
+                    onClick={async () => {
+                      if (policyBusy || policy === option.value) return
+                      setPolicyBusy(true)
+                      try {
+                        await setAcpAgentPolicy(selectedAcpAgentId, option.value)
+                      } catch (error) {
+                        alert(`设置失败：${error instanceof Error ? error.message : String(error)}`)
+                      } finally {
+                        setPolicyBusy(false)
+                      }
+                    }}
+                  >
+                    <div className="add-to-chat-row-left">
+                      <div className="add-to-chat-row-icon"><Shield size={18} /></div>
+                      <div className="add-to-chat-row-info">
+                        <span className="add-to-chat-row-title">{option.title}</span>
+                        <span className="add-to-chat-row-subtitle">{option.desc}</span>
+                      </div>
+                    </div>
+                    {policy === option.value ? <Check size={18} /> : <ChevronRight size={18} />}
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
 
           <button type="button" className="add-to-chat-row" onClick={() => void refresh()} disabled={refreshing}>
             <div className="add-to-chat-row-left">

@@ -17,6 +17,7 @@ import type {
   ExternalAgentId,
   ExternalAgentContinuationMode,
   ExternalAgentPermissionOptionDto,
+  ExternalAgentPermissionPolicy,
   ExternalAgentPromptRequest,
   ExternalAgentPromptResult,
   ExternalAgentResolvePermissionRequest,
@@ -25,6 +26,10 @@ import type {
   ExternalAgentTestResultDto,
   ExternalAgentTestStepDto,
   ExternalAgentUiEvent,
+} from "../../shared/external-agent";
+import {
+  normalizeExternalAgentPermissionPolicy,
+  resolvePolicyPermissionOptionId,
 } from "../../shared/external-agent";
 
 interface Manifest {
@@ -291,6 +296,8 @@ export class ExternalAgentRuntime {
     ) => Promise<string[]>,
     private readonly readDisabledAgentIds: () => string[] = () => [],
     private readonly sessionConfig?: ExternalAgentSessionConfigStore,
+    /** ACP 权限策略：agentId → ask | auto-allow | auto-deny（桌面 ACP 管理页保存）。 */
+    private readonly readPermissionPolicies: () => Record<string, ExternalAgentPermissionPolicy> = () => ({}),
   ) {
     this.ensureSchema();
     // 上一次 MyBuddy 进程异常退出时，不允许把无主 ACP Run 永久显示为 running/blocked。
@@ -390,10 +397,20 @@ export class ExternalAgentRuntime {
       return {
         ...descriptor,
         enabled: !disabled.has(descriptor.id),
+        permissionPolicy: this.permissionPolicyOf(descriptor.id),
         ...(configOptions?.length ? { configOptions } : {}),
         ...(configSelections && Object.keys(configSelections).length ? { configSelections } : {}),
       };
     });
+  }
+
+  /** 读取某 Agent 的权限策略（缺省 ask；配置损坏也按 ask 处理，绝不静默放行）。 */
+  permissionPolicyOf(agentId: ExternalAgentId | string): ExternalAgentPermissionPolicy {
+    try {
+      return normalizeExternalAgentPermissionPolicy(this.readPermissionPolicies()[agentId]);
+    } catch {
+      return "ask";
+    }
   }
 
   private isAgentEnabled(id: ExternalAgentId): boolean {
@@ -894,6 +911,42 @@ export class ExternalAgentRuntime {
 
   private handlePermission(run: ActiveRun, params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
     const options = params.options.map((option) => ({ optionId: option.optionId, name: option.name, kind: option.kind }));
+    // 权限策略（桌面「ACP 管理」按 Agent 保存）：auto-allow / auto-deny 时不阻塞用户，
+    // 但仍把这次调用完整写进时间线（谁知道放行了什么），并且只在 Agent 自己声明的
+    // allow_* / reject_* 选项里挑；挑不到就退回询问，绝不猜一个更宽的授权。
+    const policy = this.permissionPolicyOf(run.dto.agentId);
+    const autoOptionId = resolvePolicyPermissionOptionId(policy, options);
+    if (autoOptionId) {
+      const option = options.find((item) => item.optionId === autoOptionId)!;
+      const denied = option.kind.startsWith("reject");
+      const recorded = this.updateTool(run, params.toolCall.toolCallId, {
+        summary: params.toolCall.title || "需要授权",
+        tool: params.toolCall.name || params.toolCall.kind || "tool",
+        detail: stringifyBounded(params.toolCall.rawInput),
+        status: denied ? "denied" : "running",
+        output: denied ? `已按策略自动拒绝（${option.name}）` : `已按策略自动放行（${option.name}）`,
+      });
+      this.emit(run, {
+        type: "tool_start",
+        taskId: run.dto.taskId,
+        messageId: run.dto.assistantMessageId,
+        toolCallId: params.toolCall.toolCallId,
+        tool: recorded.tool,
+        summary: recorded.summary,
+        detail: recorded.detail,
+        status: "running",
+      });
+      // tool_start 的 status 只允许 pending_approval/running，自动判定经 tool_update 落到 UI
+      this.emit(run, {
+        type: "tool_update",
+        taskId: run.dto.taskId,
+        messageId: run.dto.assistantMessageId,
+        toolCallId: params.toolCall.toolCallId,
+        status: denied ? "denied" : "running",
+        output: recorded.output,
+      });
+      return Promise.resolve({ outcome: { outcome: "selected", optionId: option.optionId } });
+    }
     this.updateRun(run, "blocked");
     const previous = this.updateTool(run, params.toolCall.toolCallId, {
       summary: params.toolCall.title || "需要授权",

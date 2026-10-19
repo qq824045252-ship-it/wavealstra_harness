@@ -10,7 +10,7 @@ import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
 import { isPrivateIpv4 } from "./RemoteNetwork";
 import { RemoteConflictError, RemoteNotFoundError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
-import { remoteAcpPromptSchema, remoteApprovalSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
+import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
 
 const BODY_LIMIT = 512 * 1024;
 /** prompt 路由允许携带 base64 附件：4 个 × ~3MB 原始字节（≈4M base64 字符）+ JSON 包裹 */
@@ -201,6 +201,12 @@ export class RemoteAccessServer {
       // ACP 外部 Agent 目录：手机端选择器的数据源（只读，不启动子进程）
       if (request.method === "GET" && path === "/v1/acp/agents") {
         return replyJson(200, this.options.service.listAcpAgents(url.searchParams.get("refresh") === "1"));
+      }
+      // 手机端修改某 Agent 的权限策略：写电脑端设置，下一轮立即生效
+      const acpAgentMatch = /^\/v1\/acp\/agents\/([^/]+)\/permission$/.exec(path);
+      if (request.method === "POST" && acpAgentMatch) {
+        const body = remoteAcpPermissionSchema.parse(await readJson(request));
+        return replyJson(200, this.options.service.setAcpPermissionPolicy(decodeURIComponent(acpAgentMatch[1]!), body.policy));
       }
       if (request.method === "POST" && path === "/v1/device/revoke-self") {
         this.options.devices.revoke(auth.principal.deviceId);

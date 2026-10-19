@@ -35,6 +35,11 @@ export const remoteApprovalSchema = z.object({
   optionId: z.string().trim().min(1).max(200).optional(),
 }).strict();
 
+/** 手机端修改 ACP 权限策略：只接受三档，其余 400 */
+export const remoteAcpPermissionSchema = z.object({
+  policy: z.enum(["ask", "auto-allow", "auto-deny"]),
+}).strict();
+
 /** 手机端发起一轮 ACP 委托：Agent 由电脑端 ACP 目录决定，text/attachments 与内置 prompt 同语义 */
 export const remoteAcpPromptSchema = z.object({
   agentId: z.string().trim().min(1).max(64),

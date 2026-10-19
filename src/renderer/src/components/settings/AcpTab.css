@@ -370,6 +370,16 @@
   opacity: .55;
 }
 
+.acp-permission-row .acp-config-select {
+  max-width: 200px;
+}
+
+/* 自动允许是关键设置：用 accent 边框让它在一堆会话选项里一眼可见 */
+.acp-config-select.is-accent {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
 .acp-config-select.is-stale {
   border-color: color-mix(in srgb, #d29922 45%, transparent);
   color: #9a6700;

@@ -3,7 +3,7 @@ import { reconcileLiveMessagesWithHistory, type LiveRemoteMessage } from './remo
 import { reduceRemotePatch } from './remotePatch'
 export { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory } from './remoteTimeline'
 import type {
-  RemoteAttachmentInput, RemoteBootstrap, RemoteConnectionState, RemoteConversationInteraction,
+  RemoteAcpPermissionPolicy, RemoteAttachmentInput, RemoteBootstrap, RemoteConnectionState, RemoteConversationInteraction,
   RemoteConversationInteractionAnswer, RemoteEventEnvelope, RemoteHistoryMessage,
   RemoteNotification, RemoteRuntimeSnapshot, RemoteTaskHistory, RemoteTaskSummary,
   RemoteWelcomeMode,
@@ -90,6 +90,8 @@ interface State {
   setAcpNewSession: (value: boolean) => void
   isAcpSheetOpen: boolean
   setAcpSheetOpen: (open: boolean) => void
+  /** 修改某 Agent 的权限策略（写电脑端设置）：解决「每次都要手动点允许」 */
+  setAcpAgentPolicy: (agentId: string, policy: RemoteAcpPermissionPolicy) => Promise<void>
   refreshAcpAgents: () => Promise<void>
   taskSetupSection: 'location' | 'project' | 'mode' | 'tag' | null
   setTaskSetupSection: (section: State['taskSetupSection']) => void
@@ -371,6 +373,13 @@ export const useRemoteStore = create<State>((set, get) => ({
   setAcpNewSession: (acpNewSession) => set({ acpNewSession }),
   isAcpSheetOpen: false,
   setAcpSheetOpen: (isAcpSheetOpen) => set({ isAcpSheetOpen }),
+  async setAcpAgentPolicy(agentId, policy) {
+    const client = get().client
+    if (!client) return
+    const acpAgents = await client.setAcpPermission(agentId, policy)
+    const bootstrap = get().bootstrap
+    if (bootstrap) set({ bootstrap: { ...bootstrap, acpAgents } })
+  },
   /** ACP 目录刷新（电脑端装/卸载 CLI 后手动重探） */
   async refreshAcpAgents() {
     const client = get().client

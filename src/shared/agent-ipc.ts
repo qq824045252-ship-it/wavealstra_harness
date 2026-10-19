@@ -1469,6 +1469,12 @@ export interface AppSettingsDto {
   externalAgentConfigSelections?: Record<string, Record<string, string | boolean>>;
   /** 各 ACP Agent 最近探测到的会话选项快照（设置页下拉数据源）。 */
   externalAgentConfigOptions?: Record<string, import("./external-agent").ExternalAgentConfigOptionDto[]>;
+  /**
+   * ACP 权限应答策略：agentId → ask | auto-allow | auto-deny。
+   * 缺省（不写）= ask。auto-allow 不会把「询问」变成「允许一切」以外的语义：
+   * 它只在 Agent 自己声明的 allow_* 选项里挑一个（优先 allow_once）。
+   */
+  externalAgentPermissionPolicies?: Record<string, import("./external-agent").ExternalAgentPermissionPolicy>;
 }
 
 /** 用户导入的本地字体（~/.mybuddy/fonts/） */

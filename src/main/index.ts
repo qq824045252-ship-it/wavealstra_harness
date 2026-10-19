@@ -2755,6 +2755,8 @@ app.whenReady().then(async () => {
         });
       },
     },
+    // ACP 权限策略（ACP 管理页按 Agent 保存）：auto-allow/auto-deny 时不再阻塞等人工点选
+    () => agentService.getAppSettings().externalAgentPermissionPolicies ?? {},
   );
   externalAgentRuntime.setSend((event) => {
     for (const win of BrowserWindow.getAllWindows()) {

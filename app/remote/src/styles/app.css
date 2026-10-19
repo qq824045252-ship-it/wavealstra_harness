@@ -2135,6 +2135,11 @@ button:disabled {
 
 .acp-run-chip-state { padding-left: 6px; border-left: 1px solid var(--border-default); }
 .acp-new-session-on .add-to-chat-row-title { color: var(--accent); }
+
+/* ACP 权限策略：三档单选（每次询问 / 自动允许 / 自动拒绝） */
+.acp-policy-block { display: flex; flex-direction: column; gap: 4px; padding: 6px 0 2px; }
+.acp-policy-title { padding: 2px 16px 4px; color: var(--fg-muted); font-size: 12px; }
+.acp-policy-row-on .add-to-chat-row-title { color: var(--accent); }
 .permission-options { display: flex; flex-direction: column; gap: 6px; padding: 0 16px; }
 .permission-option { min-height: 64px; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 12px; text-align: left; }
 .permission-option[aria-checked="true"] { background: var(--accent-soft); }

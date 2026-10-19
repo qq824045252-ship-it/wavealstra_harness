@@ -2,6 +2,51 @@ import type { AgentUiPatch, ChatMessageDto } from "./agent-ipc";
 
 export type ExternalAgentId = "codex" | "claude" | "grok" | "cline" | "opencode" | "devin" | "agy" | "dim" | "command";
 export type ExternalAgentProtocol = "acp";
+/**
+ * ACP 权限请求的应答策略（每个 Agent 独立配置，桌面「ACP 管理」或手机 ACP 面板可改）：
+ *  - ask：每次都弹审批卡（默认，最安全，但会打断长任务）
+ *  - auto-allow：自动挑一个 allow_* 选项放行（优先 allow_once，最小授权且不再阻塞）
+ *  - auto-deny：自动挑一个 reject_* 选项拒绝（用于只想看分析、不许改文件的场景）
+ */
+export type ExternalAgentPermissionPolicy = "ask" | "auto-allow" | "auto-deny";
+
+export const EXTERNAL_AGENT_PERMISSION_POLICIES: readonly ExternalAgentPermissionPolicy[] = ["ask", "auto-allow", "auto-deny"];
+
+/** 未知/损坏值一律按 ask（绝不因为配置写错而静默放行）。 */
+export function normalizeExternalAgentPermissionPolicy(raw: unknown): ExternalAgentPermissionPolicy {
+  return raw === "auto-allow" || raw === "auto-deny" ? raw : "ask";
+}
+
+/** agentId → 策略的配置表归一化：丢掉非法 key/value，只保留非默认项。 */
+export function normalizeExternalAgentPermissionPolicies(raw: unknown): Record<string, ExternalAgentPermissionPolicy> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const result: Record<string, ExternalAgentPermissionPolicy> = {};
+  for (const [agentId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const id = agentId.trim();
+    if (!id) continue;
+    const policy = normalizeExternalAgentPermissionPolicy(value);
+    if (policy !== "ask") result[id] = policy;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+/**
+ * 按策略挑选要回传的 ACP 选项。返回 undefined = 该策略下没有合适选项，
+ * 调用方必须退回「询问用户」，不能凭猜放行/拒绝。
+ */
+export function resolvePolicyPermissionOptionId(
+  policy: ExternalAgentPermissionPolicy,
+  options: ReadonlyArray<{ optionId: string; kind: string }>,
+): string | undefined {
+  if (policy === "ask") return undefined;
+  const matches = (prefix: "allow" | "reject"): Array<{ optionId: string; kind: string }> =>
+    options.filter((option) => option.kind.startsWith(prefix));
+  const wanted = policy === "auto-allow" ? matches("allow") : matches("reject");
+  if (!wanted.length) return undefined;
+  // 优先 once（最小授权），没有再取 always
+  const once = wanted.find((option) => !option.kind.endsWith("always"));
+  return (once ?? wanted[0]).optionId;
+}
 export type ExternalAgentAvailability = "ready" | "missing" | "adapter";
 export type ExternalAgentRunStatus = "starting" | "working" | "blocked" | "completed" | "failed" | "cancelled";
 export type ExternalAgentContinuationMode = "new" | "resume" | "load" | "fallback_new";
@@ -145,6 +190,8 @@ export interface ExternalAgentDescriptorDto {
   configOptions?: ExternalAgentConfigOptionDto[];
   /** 用户为该 Agent 保存的会话选项偏好；建会话后自动应用。 */
   configSelections?: ExternalAgentConfigSelections;
+  /** 权限应答策略；缺省 = ask（每次弹审批）。 */
+  permissionPolicy?: ExternalAgentPermissionPolicy;
 }
 
 export interface ExternalAgentTestStepDto {

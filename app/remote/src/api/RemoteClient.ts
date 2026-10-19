@@ -2,6 +2,7 @@ import type {
   RemoteAcpAgentSummary,
   RemoteAcpCreateRequest,
   RemoteAcpCreateResponse,
+  RemoteAcpPermissionPolicy,
   RemoteAcpPromptRequest,
   RemoteAcpPromptResponse,
   RemoteApprovalRequest,
@@ -56,6 +57,10 @@ export class RemoteClient {
   approve(taskId: string, toolCallId: string, request: RemoteApprovalRequest) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/actions/${encodeURIComponent(toolCallId)}/respond`, request) }
   /** ACP 外部 Agent 目录：手机端 Agent 选择器；refresh=1 让电脑端重新探测 CLI/adapter */
   acpAgents(refresh = false) { return this.get<RemoteAcpAgentSummary[]>(`/v1/acp/agents${refresh ? '?refresh=1' : ''}`) }
+  /** 修改某 Agent 的权限策略（ask / auto-allow / auto-deny）；电脑端下一轮即生效 */
+  setAcpPermission(agentId: string, policy: RemoteAcpPermissionPolicy) {
+    return this.post<RemoteAcpAgentSummary[]>(`/v1/acp/agents/${encodeURIComponent(agentId)}/permission`, { policy })
+  }
   /** 在电脑端起一轮真实 ACP 进程执行（长任务；流式输出走 /v1/events） */
   acpPrompt(taskId: string, request: RemoteAcpPromptRequest) {
     return this.post<RemoteAcpPromptResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/acp`, request)

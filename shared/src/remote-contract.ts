@@ -73,6 +73,9 @@ export interface RemoteToolCall {
  */
 export type RemoteAcpAgentAvailability = 'ready' | 'missing' | 'adapter'
 
+/** ACP 权限应答策略（电脑端「ACP 管理」设置；手机端只读展示） */
+export type RemoteAcpPermissionPolicy = 'ask' | 'auto-allow' | 'auto-deny'
+
 export interface RemoteAcpAgentSummary {
   id: string
   name: string
@@ -86,6 +89,8 @@ export interface RemoteAcpAgentSummary {
   commandLabel: string
   /** Agent 声明的会话配置项名（模型/会话模式等），仅展示用 */
   configOptionNames: string[]
+  /** 权限策略：ask = 每次弹审批；auto-* = 电脑端按策略自动应答（手机端不再被打断） */
+  permissionPolicy?: RemoteAcpPermissionPolicy
 }
 
 /** ACP 授权请求的一项可选动作（kind 决定放行/拒绝与持久范围） */
@@ -130,6 +135,11 @@ export interface RemoteAcpPromptResponse {
   run: RemoteAcpRunInfo
   userMessageId: string
   assistantMessageId: string
+}
+
+/** 手机端修改某 Agent 的权限策略（写电脑端设置；下一次权限请求立即生效） */
+export interface RemoteAcpPermissionUpdate {
+  policy: RemoteAcpPermissionPolicy
 }
 
 /** 新建任务并直接交给 ACP 外部 Agent 执行（首页选好 Agent 后的第一轮） */

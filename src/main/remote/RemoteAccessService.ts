@@ -2,6 +2,7 @@ import { RemoteImageService, type RemoteArtifactReader } from './RemoteImageServ
 import {
   REMOTE_API_VERSION,
   type RemoteAcpAgentSummary,
+  type RemoteAcpPermissionPolicy,
   type RemoteAcpRunInfo,
   type RemoteBootstrap,
   type RemoteModelSummary,
@@ -17,6 +18,7 @@ import type { ProjectService } from "../project/ProjectService";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import type { RemoteDeviceSummary } from "../../../shared/src/remote-contract";
 import { mapRemoteAcpRun, mapRemoteHistory, mapRemoteHistoryMessage, mapRemoteModel, mapRemoteNotification, mapRemoteProject, mapRemoteSpace, mapRemoteTask } from "./RemoteDtoMapper";
+import { RemoteValidationError } from "./RemoteTaskCommandService";
 import { WELCOME_MODES } from "../../shared/mode-profile";
 
 /** 模型目录缓存窗口：bootstrap 在每次 SSE/refresh 都会被调用，避免反复 await provider 目录 */
@@ -91,6 +93,8 @@ export class RemoteAccessService {
         detail: descriptor.detail,
         commandLabel: descriptor.commandLabel,
         configOptionNames: (descriptor.configOptions ?? []).map((option) => option.name).filter(Boolean),
+        // 手机端要能看出「这个 Agent 不会再打断我」：策略由电脑端 ACP 管理页保存
+        permissionPolicy: descriptor.permissionPolicy ?? "ask",
       }));
     this.acpAgentsCache = { at: now, agents };
     return agents;
@@ -190,6 +194,22 @@ export class RemoteAccessService {
     const runs = this.externalAgent?.history(taskId).runs ?? [];
     const latest = [...runs].sort((a, b) => b.startedAt - a.startedAt)[0];
     return latest ? mapRemoteAcpRun(latest) : undefined;
+  }
+
+  /**
+   * 手机端修改某 Agent 的权限策略（ask / auto-allow / auto-deny）。
+   * 直接写 AppSettings，Runtime 每次权限请求都实时读设置，因此下一轮即生效（无需重启进程）。
+   */
+  setAcpPermissionPolicy(agentId: string, policy: RemoteAcpPermissionPolicy): RemoteAcpAgentSummary[] {
+    const known = this.externalAgent?.listAgents().some((descriptor) => descriptor.id === agentId);
+    if (!known) throw new RemoteValidationError("电脑端没有这个 ACP Agent");
+    const current = { ...(this.settings.read().externalAgentPermissionPolicies ?? {}) };
+    if (policy === "ask") delete current[agentId];
+    else current[agentId] = policy;
+    this.settings.write({ externalAgentPermissionPolicies: current });
+    // 目录缓存立即失效；listAgents(false) 不会重新探测 CLI，只是把新策略合并进描述符
+    this.acpAgentsCache = null;
+    return this.listAcpAgents();
   }
 
   private acpPendingActions(taskId: string): RemotePendingAction[] {
