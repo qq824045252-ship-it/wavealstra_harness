@@ -2652,3 +2652,82 @@ button:disabled {
   .remote-interaction-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .remote-interaction-btn { min-width: 0; width: 100%; }
 }
+
+/* ==========================================================================
+   Remote Confirm Dialog (destructive actions)
+   ========================================================================== */
+.remote-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: rgba(31, 27, 22, 0.45);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.remote-confirm-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--bg-elevated, #FFFFFF);
+  border-radius: 16px;
+  padding: 20px 20px 16px;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.28);
+}
+
+.remote-confirm-title {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text-primary, #1F1B16);
+  margin-bottom: 8px;
+}
+
+.remote-confirm-body {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-secondary, #57534E);
+}
+
+.remote-confirm-error {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--status-danger, #B91C1C);
+}
+
+.remote-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.remote-confirm-cancel,
+.remote-confirm-danger {
+  min-width: 76px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.remote-confirm-cancel {
+  background: var(--bg-subtle, #F1EFEA);
+  color: var(--text-primary, #1F1B16);
+}
+
+.remote-confirm-danger {
+  background: var(--status-danger, #B91C1C);
+  color: #FFFFFF;
+}
+
+.remote-confirm-cancel:disabled,
+.remote-confirm-danger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

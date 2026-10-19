@@ -40,7 +40,7 @@ function sendJson(response: ServerResponse, status: number, value: unknown, orig
     "x-frame-options": "DENY",
     ...(origin ? {
       "access-control-allow-origin": origin,
-      "access-control-allow-methods": "GET, POST, HEAD, OPTIONS",
+      "access-control-allow-methods": "GET, POST, DELETE, HEAD, OPTIONS",
       "access-control-allow-headers": "Content-Type, Authorization, Last-Event-ID",
     } : {}),
   });
@@ -165,7 +165,7 @@ export class RemoteAccessServer {
         response.writeHead(204, {
           ...(origin ? {
             "access-control-allow-origin": origin,
-            "access-control-allow-methods": "GET, POST, HEAD, OPTIONS",
+            "access-control-allow-methods": "GET, POST, DELETE, HEAD, OPTIONS",
             "access-control-allow-headers": "Content-Type, Authorization, Last-Event-ID",
             "access-control-max-age": "86400",
           } : {}),
@@ -227,6 +227,12 @@ export class RemoteAccessServer {
       if (taskMatch) {
         const taskId = decodeURIComponent(taskMatch[1]);
         const action = taskMatch[2];
+        // 手机端删除：安全回收（可恢复），与桌面端侧栏删除同一条 taskLifecycle.trash 链路
+        if (request.method === "DELETE" && !action) {
+          await this.options.commands.deleteTask(taskId);
+          this.options.events.publish("task.changed", { taskId });
+          return replyJson(200, { ok: true });
+        }
         if (request.method === "GET" && action === "history") {
           const result = await this.options.service.history(taskId);
           return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "任务不存在"));

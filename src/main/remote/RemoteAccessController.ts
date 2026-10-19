@@ -6,6 +6,8 @@ import type { AgentService } from "../agent/AgentService";
 import type { ExternalAgentRuntime } from "../external-agent/ExternalAgentRuntime";
 import type { NotificationService } from "../notification/NotificationService";
 import type { ProjectService } from "../project/ProjectService";
+import { join } from "node:path";
+import { getMyBuddyDir } from "../paths";
 import { AppSettingsStore } from "../AppSettingsStore";
 import type { RemoteConfigureRequest, RemoteStatus } from "../../../shared/src/remote-contract";
 import { RemoteAccessPairing } from "./RemoteAccessPairing";
@@ -13,7 +15,7 @@ import { RemoteAccessServer } from "./RemoteAccessServer";
 import { RemoteAccessService } from "./RemoteAccessService";
 import { RemoteDeviceStore } from "./RemoteDeviceStore";
 import { RemoteEventBus, mapAgentPatchToRemoteEvent } from "./RemoteEventBus";
-import { RemoteTaskCommandService } from "./RemoteTaskCommandService";
+import { RemoteTaskCommandService, type RemoteTrashLifecycle, type RemoteWorkGraphCleanup } from "./RemoteTaskCommandService";
 import { RemoteUsbBridge } from "./RemoteUsbBridge";
 import { remoteConfigureSchema } from "./remoteSchemas";
 import { isAllowedRemoteBaseUrl, listLanIpv4Addresses, resolveRemotePairingBaseUrl } from "./RemoteNetwork";
@@ -42,9 +44,13 @@ export class RemoteAccessController {
     private readonly staticRoot: string,
     private readonly externalAgent?: ExternalAgentRuntime,
     artifactSource?: () => RemoteArtifactReader | null | undefined,
+    /** 桌面端同一条安全回收 + 工作图清理链路，供手机端删除复用 */
+    lifecycle?: RemoteTrashLifecycle,
+    workGraph?: RemoteWorkGraphCleanup,
   ) {
     this.service = new RemoteAccessService(db, agent, notifications, projects, this.settings, externalAgent, artifactSource);
-    this.commands = new RemoteTaskCommandService(db, agent, this.settings, projects);
+    this.commands = new RemoteTaskCommandService(db, agent, this.settings, projects,
+      join(getMyBuddyDir(), "remote-uploads"), lifecycle, workGraph);
     this.unsubscribePatch = agent.onPatch((patch) => {
       this.events.publish("agent.patch", mapAgentPatchToRemoteEvent(patch));
       if (patch.type === "tool_start" || patch.type === "tool_update") {

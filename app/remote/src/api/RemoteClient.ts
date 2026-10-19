@@ -41,6 +41,8 @@ export class RemoteClient {
   abort(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/abort`, {}) }
   /** 「已结束」绿点确认：打开任务 = 已查看。电脑端写 tasks.done_acked_at，多设备共享同一状态。 */
   ackDone(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/ackDone`, {}) }
+  /** 删除任务：服务端走安全回收（可恢复），不是物理删除。 */
+  deleteTask(taskId: string) { return this.del(`/v1/tasks/${encodeURIComponent(taskId)}`) }
   approve(taskId: string, toolCallId: string, request: RemoteApprovalRequest) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/actions/${encodeURIComponent(toolCallId)}/respond`, request) }
   respondInteraction(taskId: string, interactionId: string, answer: RemoteConversationInteractionAnswer) {
     return this.post<RemoteConversationInteractionMutationResult>(
@@ -104,6 +106,9 @@ export class RemoteClient {
     return fetch(`${this.baseUrl}${path}`, {
       method: 'POST', headers: { ...this.headers(), 'content-type': 'application/json' }, body: JSON.stringify(body),
     }).then(RemoteClient.read<T>)
+  }
+  private del<T = { ok: true }>(path: string): Promise<T> {
+    return fetch(`${this.baseUrl}${path}`, { method: 'DELETE', headers: this.headers(), signal: AbortSignal.timeout(20_000) }).then(RemoteClient.read<T>)
   }
   private headers() { return { authorization: `Bearer ${this.token}` } }
   private static async read<T>(response: Response): Promise<T> {

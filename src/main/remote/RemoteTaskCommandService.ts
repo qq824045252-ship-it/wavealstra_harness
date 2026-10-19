@@ -46,6 +46,15 @@ export class RemoteConflictError extends Error {}
 export class RemoteNotFoundError extends Error {}
 export class RemoteValidationError extends Error {}
 
+/** 远程删除需要的最小生命周期能力：与桌面端 DbIpc.deleteTask 同一条安全回收链路。 */
+export interface RemoteTrashLifecycle {
+  trash(taskId: string): Promise<unknown>;
+}
+/** 远程删除后清理工作图节点；失败只告警，与桌面端一致不阻断删除。 */
+export interface RemoteWorkGraphCleanup {
+  cleanupByNode(kind: "task", id: string): unknown;
+}
+
 /** 任务永久删除（purge）时清理其远程附件目录；失败只告警，不阻断删除流程 */
 export async function cleanupRemoteUploads(taskId: string, uploadsRoot = join(getMyBuddyDir(), "remote-uploads")): Promise<void> {
   const dir = join(uploadsRoot, taskId);
@@ -63,6 +72,9 @@ export class RemoteTaskCommandService {
     private readonly projects: ProjectLookup,
     /** 测试注入用；生产走 userData/remote-uploads */
     private readonly uploadsRoot = join(getMyBuddyDir(), "remote-uploads"),
+    /** 删除复用桌面端 taskLifecycle.trash（安全回收，可恢复）；缺省时退化为仅标记 trashed */
+    private readonly lifecycle?: RemoteTrashLifecycle,
+    private readonly workGraph?: RemoteWorkGraphCleanup,
   ) {}
 
   async createAndPrompt(request: RemotePromptRequest): Promise<RemotePromptResponse> {
@@ -263,6 +275,22 @@ export class RemoteTaskCommandService {
   ackTaskDone(taskId: string): void {
     this.requireTask(taskId);
     this.db.ackTaskDone(taskId, Date.now());
+  }
+
+  /**
+   * 手机端删除任务：与桌面端 DbIpc.deleteTask 同一条链路 —— 走 taskLifecycle.trash
+   * 进入安全回收（archived=1 + ws state=trashed，可恢复、不 rm -rf、不立即删 Artifact），
+   * 再清理 work graph。正在执行的任务拒绝删除，避免删除后仍有补丁回写。
+   */
+  async deleteTask(taskId: string): Promise<void> {
+    this.requireTask(taskId);
+    if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已在回收区或已归档");
+    if (this.agent.isTaskBusy(taskId)) throw new RemoteConflictError("任务正在执行，请先停止再删除");
+    if (this.lifecycle) await this.lifecycle.trash(taskId);
+    // 无生命周期实现时（仅测试/降级）退化为落库标记，保证远端语义一致。
+    else this.db.connection.prepare("UPDATE tasks SET archived = 1 WHERE id = ?").run(taskId);
+    try { this.workGraph?.cleanupByNode("task", taskId); } catch { /* 与桌面端一致：清理失败不阻断删除 */ }
+    // 附件目录保留到最后 purge：回收区内的任务仍可从桌面端恢复。
   }
 
   respondToAction(taskId: string, toolCallId: string, request: RemoteApprovalRequest): void {

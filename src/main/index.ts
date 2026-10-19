@@ -2770,6 +2770,13 @@ app.whenReady().then(async () => {
     join(app.getAppPath(), "app", "remote", "dist"),
     externalAgentRuntime,
     () => artifactDomainService,
+    // 手机端删除复用桌面端同一条安全回收链路（可恢复，不 rm -rf）。
+    // taskLifecycle 在本调用之后才初始化，故在方法体内延迟读取。
+    { trash: (id) => {
+        if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
+        return taskLifecycle.trash(id);
+      } },
+    { cleanupByNode: (kind, id) => workGraphService.cleanupByNode(kind, id) },
   );
   agentService.setTaskLifecycleListener((event) => {
     if (event.kind === "completed" || event.kind === "failed") {
