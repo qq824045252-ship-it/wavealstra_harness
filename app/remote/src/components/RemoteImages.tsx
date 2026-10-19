@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { RemoteArtifactMetadata, RemoteImageArtifact } from '@mybuddy/shared'
 import { resolveRemoteImageReference } from '../../../../shared/src/remote-images'
@@ -58,16 +58,27 @@ function RemoteArtifactImage({ image, taskId, alt }: { image: RemoteImageArtifac
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
   const [expanded, setExpanded] = useState(false)
+  const urlRef = useRef<string | null>(null)
   useEffect(() => {
-    let alive = true, objectUrl: string | undefined
-    setError(null); setUrl(null); setExpanded(false)
+    let alive = true
+    setError(null)
     if (!client) return
     void loadRemoteImage(client, taskId, image).then(blob => {
       if (!alive) return
-      objectUrl = URL.createObjectURL(blob); setUrl(objectUrl)
+      const next = URL.createObjectURL(blob)
+      const previous = urlRef.current
+      urlRef.current = next
+      setUrl(next)
+      // 新图已挂上后再释放旧 URL，避免中途闪成「加载中」。
+      if (previous) URL.revokeObjectURL(previous)
     }).catch(cause => { if (alive) setError(cause instanceof Error ? cause.message : '图片读取失败') })
-    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+    return () => { alive = false }
   }, [client, taskId, image.id, image.version, retry])
+  // object URL 随组件卸载回收；展开态在 id/version 切换时复位。
+  useEffect(() => () => {
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null }
+  }, [])
+  useEffect(() => { setExpanded(false) }, [image.id, image.version])
   useEffect(() => {
     if (!expanded) return
     const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setExpanded(false) }
@@ -93,7 +104,9 @@ export function RemoteMarkdownImage({ src = '', alt, title }: { src?: string; al
   const scope = useContext(Scope)
   const image = scope ? resolveRemoteImageReference(src, scope.images) : undefined
   const id = image?.id
-  useEffect(() => { if (scope && id) return scope.register(id) }, [scope?.register, id])
+  // 必须在绘制前登记：useEffect 的异步登记会让 fallback 先渲染一次、下一帧再让位给内联图，
+  // 表现为「同一张图反复卸载重建」。
+  useLayoutEffect(() => { if (scope && id) return scope.register(id) }, [scope?.register, id])
   if (image && scope) return <RemoteArtifactImage image={image} taskId={scope.taskId} alt={alt} />
   // Only safe network/data images reach this component via the URL transform.
   if (/^https:\/\//i.test(src) || /^data:image\/(?:png|jpeg|jpg|gif|webp|bmp|avif);base64,/i.test(src)) {

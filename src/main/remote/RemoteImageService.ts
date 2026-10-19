@@ -92,7 +92,9 @@ export class RemoteImageService {
         const after = await handle.stat();
         const pathNow = await realpath(entry);
         const identity = await stat(pathNow);
-        if (pathNow !== physical || before.size !== after.size || before.mtimeMs !== after.mtimeMs || identity.ino !== before.ino || identity.dev !== before.dev) {
+        // 只把「文件被替换」或「尺寸变化」视为内容不可信；单纯的 mtime 抖动
+        // （OneDrive/网盘同步、时间戳精度、生成器 touch）不应让预览失败。
+        if (pathNow !== physical || before.size !== after.size || identity.ino !== before.ino || identity.dev !== before.dev) {
           throw new RemoteImageError(409, '图片正在变化，请重试');
         }
         bytes = storage;
@@ -109,7 +111,6 @@ export class RemoteImageService {
     if (bytes.length > MAX_IMAGE_BYTES) throw new RemoteImageError(413, '图片超过 16 MB 预览限制');
     const mimeType = remoteRasterMime(bytes);
     if (!mimeType) throw new RemoteImageError(415, '该产物不是可预览的图片');
-    if (source.get(d.id)?.version !== d.version) throw new RemoteImageError(409, '图片版本已变化，请刷新');
     return { bytes, mimeType, version: d.version };
   }
 }

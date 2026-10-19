@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 900" width="1180" height="900" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1180" height="900" fill="#f7f9fc"/>
+
+  <text x="40" y="46" font-size="24" font-weight="700" fill="#111827">安卓端图片反复刷新 / 时隐时现 — 根因与修复</text>
+  <text x="40" y="74" font-size="13" fill="#4b5563">结论：durable_snapshot 覆盖 histories[taskId] 时丢掉 imageArtifacts，图片反复从「可见」掉回「不可用」</text>
+
+  <!-- lane A: broken flow -->
+  <text x="40" y="118" font-size="16" font-weight="700" fill="#b91c1c">修复前：抖动循环</text>
+
+  <rect x="40" y="134" width="300" height="86" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="160" font-size="14" font-weight="700" fill="#111827">① 进入任务 / resync</text>
+  <text x="58" y="182" font-size="12.5" fill="#374151">GET /v1/tasks/:id/history</text>
+  <text x="58" y="201" font-size="12.5" fill="#059669">→ history.imageArtifacts 有 2 张图</text>
+
+  <rect x="410" y="134" width="300" height="86" rx="8" fill="#ecfdf5" stroke="#22c55e"/>
+  <text x="428" y="160" font-size="14" font-weight="700" fill="#065f46">② 图片正常显示</text>
+  <text x="428" y="182" font-size="12.5" fill="#065f46">resolveRemoteImageReference ✔</text>
+  <text x="428" y="201" font-size="12.5" fill="#065f46">createObjectURL → &lt;img src&gt;</text>
+
+  <rect x="780" y="134" width="360" height="86" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="798" y="160" font-size="14" font-weight="700" fill="#7f1d1d">③ SSE 推 durable_snapshot</text>
+  <text x="798" y="182" font-size="12.5" fill="#7f1d1d">remoteStore.ts:660 整对象替换</text>
+  <text x="798" y="201" font-size="12.5" fill="#7f1d1d">{ taskId, messages, durable } ← 无 imageArtifacts</text>
+
+  <rect x="780" y="252" width="360" height="86" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="798" y="278" font-size="14" font-weight="700" fill="#7f1d1d">④ images 变空数组</text>
+  <text x="798" y="300" font-size="12.5" fill="#7f1d1d">resolveRemoteImageReference → undefined</text>
+  <text x="798" y="319" font-size="12.5" fill="#7f1d1d">显示「图片尚不可用 / 请同步电脑端」</text>
+
+  <rect x="410" y="252" width="300" height="86" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="428" y="278" font-size="14" font-weight="700" fill="#78350f">⑤ artifact_ref → resync</text>
+  <text x="428" y="300" font-size="12.5" fill="#78350f">scheduleRemoteSync() 150ms 去抖</text>
+  <text x="428" y="319" font-size="12.5" fill="#78350f">history 又带回 imageArtifacts</text>
+
+  <rect x="40" y="252" width="300" height="86" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="58" y="278" font-size="14" font-weight="700" fill="#78350f">⑥ 回到 ② 重新显示</text>
+  <text x="58" y="300" font-size="12.5" fill="#78350f">循环 ②→③→④→⑤→②</text>
+  <text x="58" y="319" font-size="12.5" fill="#78350f">用户看到：反复刷新 / 时隐时现</text>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="arrRed" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrGreen" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrGray" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <line x1="340" y1="177" x2="404" y2="177" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+  <line x1="710" y1="177" x2="774" y2="177" stroke="#ef4444" stroke-width="2" marker-end="url(#arrRed)"/>
+  <line x1="960" y1="220" x2="960" y2="246" stroke="#ef4444" stroke-width="2" marker-end="url(#arrRed)"/>
+  <line x1="780" y1="295" x2="716" y2="295" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrRed)"/>
+  <line x1="410" y1="295" x2="346" y2="295" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrRed)"/>
+  <path d="M190,252 L190,224" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#arrRed)" stroke-dasharray="5 4"/>
+
+  <!-- second cause -->
+  <text x="40" y="392" font-size="16" font-weight="700" fill="#b45309">叠加因素：图片组件反复卸载重建</text>
+
+  <rect x="40" y="408" width="360" height="104" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="434" font-size="14" font-weight="700" fill="#111827">A. effect 开头的 setUrl(null)</text>
+  <text x="58" y="456" font-size="12.5" fill="#374151">RemoteImages.tsx 旧代码先清空 url</text>
+  <text x="58" y="475" font-size="12.5" fill="#374151">→ 重新拉取期间回落「图片加载中…」</text>
+  <text x="58" y="494" font-size="12.5" fill="#b45309">修复：旧 object URL 保留到新图就绪</text>
+
+  <rect x="410" y="408" width="360" height="104" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="428" y="434" font-size="14" font-weight="700" fill="#111827">B. register 用 useEffect</text>
+  <text x="428" y="456" font-size="12.5" fill="#374151">fallback 计数在绘制后才更新</text>
+  <text x="428" y="475" font-size="12.5" fill="#374151">→ 内联图与 fallback 位互换一帧</text>
+  <text x="428" y="494" font-size="12.5" fill="#b45309">修复：改 useLayoutEffect 绘制前登记</text>
+
+  <rect x="790" y="408" width="350" height="104" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="808" y="434" font-size="14" font-weight="700" fill="#111827">C. 服务端 409 过严</text>
+  <text x="808" y="456" font-size="12.5" fill="#374151">RemoteImageService 比 mtimeMs</text>
+  <text x="808" y="475" font-size="12.5" fill="#374151">网盘/同步/生成器 touch 即失败</text>
+  <text x="808" y="494" font-size="12.5" fill="#b45309">修复：只比较 inode/dev/size</text>
+
+  <!-- fixed flow -->
+  <text x="40" y="566" font-size="16" font-weight="700" fill="#065f46">修复后：一次加载，稳定保持</text>
+
+  <rect x="40" y="582" width="255" height="96" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="58" y="608" font-size="14" font-weight="700" fill="#065f46">① history 建清单</text>
+  <text x="58" y="630" font-size="12.5" fill="#065f46">imageArtifacts 落 store</text>
+  <text x="58" y="649" font-size="12.5" fill="#065f46">键 = id + version</text>
+
+  <rect x="330" y="582" width="255" height="96" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="348" y="608" font-size="14" font-weight="700" fill="#065f46">② snapshot 合并</text>
+  <text x="348" y="630" font-size="12.5" fill="#065f46">保留 previous.imageArtifacts</text>
+  <text x="348" y="649" font-size="12.5" fill="#065f46">只更新 messages / durable</text>
+
+  <rect x="620" y="582" width="255" height="96" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="638" y="608" font-size="14" font-weight="700" fill="#065f46">③ 图片引用稳定</text>
+  <text x="638" y="630" font-size="12.5" fill="#065f46">id/version 不变 → effect 不跑</text>
+  <text x="638" y="649" font-size="12.5" fill="#065f46">不重发请求、不重建 img</text>
+
+  <rect x="910" y="582" width="230" height="96" rx="8" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="928" y="608" font-size="14" font-weight="700" fill="#065f46">④ 结果</text>
+  <text x="928" y="630" font-size="12.5" fill="#065f46">图片持续可见</text>
+  <text x="928" y="649" font-size="12.5" fill="#065f46">无刷新闪烁</text>
+
+  <line x1="295" y1="630" x2="324" y2="630" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+  <line x1="585" y1="630" x2="614" y2="630" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+  <line x1="875" y1="630" x2="904" y2="630" stroke="#16a34a" stroke-width="2" marker-end="url(#arrGreen)"/>
+
+  <!-- code anchors -->
+  <rect x="40" y="712" width="1100" height="150" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="58" y="738" font-size="14" font-weight="700" fill="#111827">代码定位（均已验证）</text>
+  <text x="58" y="762" font-size="12.5" fill="#374151">app/remote/src/store/remoteStore.ts :660　durable_snapshot 分支整对象替换 histories[taskId] — 主因</text>
+  <text x="58" y="784" font-size="12.5" fill="#374151">app/remote/src/components/RemoteImages.tsx :63,:96　effect 清空 url；register 走 useEffect 造成一帧错位</text>
+  <text x="58" y="806" font-size="12.5" fill="#374151">src/main/remote/RemoteImageService.ts :95　要求 mtimeMs 完全不变，网络盘/同步抖动即 409</text>
+  <text x="58" y="828" font-size="12.5" fill="#059669">保留不变：version 不匹配仍返回 409（缓存一致性契约，remote-image-access-test 守护）</text>
+  <text x="58" y="850" font-size="12.5" fill="#059669">验证：run-remote-image-tests 23/23 通过；pnpm typecheck 通过</text>
+</svg>
