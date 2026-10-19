@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { DEFAULT_WEBHOOK_PORT, listenOnFirstAvailablePort } from "./webhook-port";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
@@ -114,7 +115,11 @@ export class GatewayService {
   /** 幂等去重守卫：key = channelId:chatId:messageId */
   private readonly processed = createIdempotencyGuard();
   private webhookServer: Server | null = null;
-  private webhookPort = 52140;
+  /**
+   * Webhook 端口。首选 52140（历史值）可能落在 Windows 的 TCP 保留区间内，
+   * 此时由 webhook-port 模块按候选表自动回退；实际绑定端口会写回这里并展示给用户。
+   */
+  private webhookPort = DEFAULT_WEBHOOK_PORT;
   private running = false;
   private stopping = false;
   /** 侧栏删除会把目录移进回收区，绑定仍指向原路径。下一条外部消息到来时移回。 */
@@ -503,9 +508,8 @@ export class GatewayService {
     broadcast(GatewayIpc.event, ev);
   }
 
-  private async startWebhookServer(): Promise<void> {
-    if (this.webhookServer) return;
-    this.webhookServer = createServer(async (req, res) => {
+  private createWebhookServer(): Server {
+    return createServer(async (req, res) => {
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${this.webhookPort}`);
       const path = url.pathname;
 
@@ -563,10 +567,13 @@ export class GatewayService {
       res.writeHead(404);
       res.end("not found");
     });
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      this.webhookServer!.listen(this.webhookPort, "127.0.0.1", () => resolve());
-      this.webhookServer!.on("error", reject);
-    });
+  private async startWebhookServer(): Promise<void> {
+    if (this.webhookServer) return;
+    // 首选端口在 Windows 保留区间内会 EACCES，这里自动回退到可用候选端口。
+    const { port, server } = await listenOnFirstAvailablePort(() => this.createWebhookServer(), this.webhookPort);
+    this.webhookServer = server;
+    this.webhookPort = port;
   }
 }
