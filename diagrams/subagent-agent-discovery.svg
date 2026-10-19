@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 520" width="1080" height="520" role="img" aria-label="Subagent 角色发现路径与优先级">
+  <rect width="1080" height="520" fill="#f7f8fa"/>
+  <text x="28" y="38" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="20" font-weight="700" fill="#111827">Subagent 角色发现：修前 / 修后</text>
+  <text x="28" y="62" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">PI_CODING_AGENT_DIR 被 MyBuddy 重定向为 ~/.mybuddy，但产品角色实际装在 ~/.mybuddy/plugins/agents</text>
+
+  <!-- before -->
+  <rect x="28" y="84" width="490" height="300" rx="10" fill="#ffffff" stroke="#dc2626"/>
+  <text x="48" y="112" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#991b1b">0.1.38 及以前（坏）</text>
+
+  <rect x="48" y="130" width="450" height="58" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="64" y="154" font-family="Consolas, monospace" font-size="12.5" fill="#7f1d1d">user scope → ~/.mybuddy/agents</text>
+  <text x="64" y="176" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#b91c1c">目录不存在 → 0 个角色</text>
+
+  <rect x="48" y="200" width="450" height="58" rx="8" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="64" y="224" font-family="Consolas, monospace" font-size="12.5" fill="#7c2d12">~/.mybuddy/plugins/agents  (planner / reviewer / scout / worker)</text>
+  <text x="64" y="246" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#c2410c">没有任何 scope 会读它 → 永远用不上</text>
+
+  <rect x="48" y="274" width="450" height="58" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="64" y="298" font-family="Consolas, monospace" font-size="12.5" fill="#7f1d1d">project scope → &lt;cwd&gt;/.pi/agents</text>
+  <text x="64" y="320" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#b91c1c">仓库里没有 → 0 个角色</text>
+
+  <text x="48" y="360" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#991b1b">结果：both 也凑不出任何 agent → Unknown agent: "worker"</text>
+
+  <!-- after -->
+  <rect x="562" y="84" width="490" height="300" rx="10" fill="#ffffff" stroke="#16a34a"/>
+  <text x="582" y="112" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#14532d">0.1.39（修好）</text>
+
+  <rect x="582" y="130" width="450" height="62" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="598" y="152" font-family="Consolas, monospace" font-size="12.5" fill="#14532d">user scope = 产品目录 + 用户目录</text>
+  <text x="598" y="174" font-family="Consolas, monospace" font-size="11.5" fill="#166534">~/.mybuddy/plugins/agents  →  ~/.mybuddy/agents（可选覆盖）</text>
+
+  <rect x="582" y="204" width="450" height="62" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="598" y="226" font-family="Consolas, monospace" font-size="12.5" fill="#14532d">project scope → &lt;cwd&gt;/.pi/agents</text>
+  <text x="598" y="248" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#166534">仅在 project / both 生效，仍走项目 agent 确认弹窗</text>
+
+  <rect x="582" y="278" width="450" height="54" rx="8" fill="#ecfdf5" stroke="#34d399"/>
+  <text x="598" y="300" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#065f46">覆盖优先级（后者覆盖前者同名）</text>
+  <text x="598" y="320" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11.5" fill="#047857">产品自带  &lt;  用户显式  &lt;  项目本地</text>
+
+  <text x="582" y="360" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#14532d">结果：worker / reviewer / scout / planner 可用</text>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+  <line x1="518" y1="234" x2="556" y2="234" stroke="#4b5563" stroke-width="1.8" marker-end="url(#a)"/>
+
+  <!-- footer -->
+  <rect x="28" y="404" width="1024" height="92" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="48" y="430" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700" fill="#111827">诊断与验证（不是推断）</text>
+  <text x="48" y="454" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 真实环境实测：discoverAgents(cwd, "user") → planner / reviewer / scout / worker（tools 也正确解析）。</text>
+  <text x="48" y="476" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• Unknown agent 现在会带出「查了哪些目录 + agentScope」，下次不会再靠猜；MYBUDDY_AGENTS_DIR 可覆盖产品目录。</text>
+</svg>
