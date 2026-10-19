@@ -26,6 +26,29 @@ allow/exclude policy and a hard recursion-depth limit.
 - `context.ts`: child context contract
 - `invocation.ts`: executable/CLI resolution
 
+## Parallel limits
+
+`index.ts` exports the hard caps; `subagent.json` may only lower them (never raise):
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `MAX_PARALLEL_TASKS` | **200** | tasks allowed in one `parallel` call (exceeding it fails the whole call) |
+| `MAX_CONCURRENCY` | **100** | worker processes alive at once; the rest queue in array order |
+| `PER_PARALLEL_TOTAL_OUTPUT_CAP` | 400 KB | total text returned to the main model per `parallel` call; per-task cap = `min(50 KB, total / n)` |
+| `MAX_SUBAGENT_DEPTH` | 2 | subagents cannot delegate further |
+| `MAX_IDLE_WORKERS` | 3 | idle process pool kept warm for reuse (not a task limit) |
+| `WORKER_START_TIMEOUT_MS` | 45 s | readiness timeout, widened for 100-way cold starts |
+
+Cost warning measured on this machine: one Pi worker ≈ **200 MB RSS**, so 100 concurrent
+≈ **20 GB** — more than the 10 GB that was free when the cap was raised. Lower
+`maxConcurrency` (e.g. 24) if runs start failing with OOM/exit errors. 100 concurrent
+model calls can also hit provider rate limits; those surface per-task as failures.
+
+```json
+// ~/.mybuddy/subagent.json — optional, only lowers the caps
+{ "maxParallelTasks": 200, "maxConcurrency": 24 }
+```
+
 ## Role directories (agent scope)
 
 `agents.ts` resolves roles from up to three directories; later entries override

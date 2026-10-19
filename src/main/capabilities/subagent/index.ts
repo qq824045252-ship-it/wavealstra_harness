@@ -52,10 +52,28 @@ import {
 import { resolvePiCliJs, resolvePiInvocation, resolveSystemNode, tryRequireResolve } from "./invocation.ts";
 import type { SubagentStatus } from "./registry.ts";
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
+/**
+ * 并行上限（2026-10 用户要求：总数 200、同时干活 100、其余排队）。
+ *
+ * 为什么不是「无限」：每个 subagent 是真实 Pi RPC 子进程 + 独立 session，
+ * 200 条 tasks 是单次 parallel 调用允许声明的上限，100 是同时存活的进程数，
+ * 剩下 100 条在队列里，前面完成一个补位一个（mapWithConcurrencyLimit）。
+ *
+ * 代价（部署时需知）：
+ *  - 100 个并发 Pi 子进程 ≈ 数十 GB 内存；机器不够时 OS 会 OOM，表现为 run 失败而非静默丢任务。
+ *  - 100 个并发模型请求容易撞 provider 速率限制（429），失败会逐个体现在结果里。
+ *  - 主模型要读回全部结果，所以下面用 PER_PARALLEL_TOTAL_OUTPUT_CAP 给总量封顶。
+ */
+export const MAX_PARALLEL_TASKS = 200;
+export const MAX_CONCURRENCY = 100;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+/**
+ * 一次 parallel 返回给主模型的输出总量上限。
+ * 单任务 50KB × 200 = 10MB 会直接撑爆上下文，因此总量封顶后按任务数均分
+ * （任务少时仍是每任务 50KB，行为不变）。
+ */
+const PER_PARALLEL_TOTAL_OUTPUT_CAP = 400 * 1024;
 export const DEFAULT_TASK_TIMEOUT_MS = 600_000;
 
 export const DEFAULT_CONFIRM_TOOLS = ["write", "edit"] as const;
@@ -160,11 +178,17 @@ function getFinalOutput(messages: MessageLike[]): string {
   return "";
 }
 
-function truncateParallelOutput(output: string): string {
+/** 单次 parallel 调用的每任务输出上限：总量封顶后按任务数均分，任务少时保持 50KB。 */
+export function parallelPerTaskOutputCap(taskCount: number): number {
+  if (!Number.isFinite(taskCount) || taskCount <= 0) return PER_TASK_OUTPUT_CAP;
+  return Math.max(2 * 1024, Math.min(PER_TASK_OUTPUT_CAP, Math.floor(PER_PARALLEL_TOTAL_OUTPUT_CAP / taskCount)));
+}
+
+function truncateParallelOutput(output: string, cap = PER_TASK_OUTPUT_CAP): string {
   const byteLength = Buffer.byteLength(output, "utf8");
-  if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-  let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-  while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) truncated = truncated.slice(0, -1);
+  if (byteLength <= cap) return output;
+  let truncated = output.slice(0, cap);
+  while (Buffer.byteLength(truncated, "utf8") > cap) truncated = truncated.slice(0, -1);
   return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
 }
 
@@ -213,6 +237,25 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 
 // ---------- 配置 ----------
 
+/**
+ * 并行上限的生效值：默认就是 200 总数 / 100 并发，允许 subagent.json 往下调
+ * （只能调小，不能超过上面的硬上限），给内存不足的机器一个不用重新打包的旋钮。
+ */
+export function resolveParallelLimits(input?: { maxParallelTasks?: unknown; maxConcurrency?: unknown }): {
+  maxParallelTasks: number;
+  maxConcurrency: number;
+} {
+  const toInt = (value: unknown): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    const int = Math.floor(value);
+    return int >= 1 ? int : undefined;
+  };
+  const maxParallelTasks = Math.min(toInt(input?.maxParallelTasks) ?? MAX_PARALLEL_TASKS, MAX_PARALLEL_TASKS);
+  // 并发不可能超过总任务数
+  const maxConcurrency = Math.min(toInt(input?.maxConcurrency) ?? MAX_CONCURRENCY, MAX_CONCURRENCY, maxParallelTasks);
+  return { maxParallelTasks, maxConcurrency };
+}
+
 interface SubagentConfig {
   agentScope?: AgentScope;
   confirmProjectAgents?: boolean;
@@ -228,6 +271,10 @@ interface SubagentConfig {
   transportThinking?: string;
   /** transportThinking 绑定的目标模型。 */
   transportThinkingModelId?: string;
+  /** subagent.json 可选：单次 parallel 的任务上限（只能 ≤ 200） */
+  maxParallelTasks?: number;
+  /** subagent.json 可选：同时运行的 worker 数（只能 ≤ 100 且 ≤ maxParallelTasks） */
+  maxConcurrency?: number;
 }
 
 function loadSubagentConfig(): SubagentConfig {
@@ -261,6 +308,9 @@ function loadSubagentConfig(): SubagentConfig {
         typeof raw.transportThinkingModelId === "string" && raw.transportThinkingModelId.trim()
           ? raw.transportThinkingModelId.trim()
           : undefined,
+      // 原样保留，交给 resolveParallelLimits 统一做上限与交叉约束（并发 ≤ 任务数）
+      maxParallelTasks: typeof raw.maxParallelTasks === "number" ? raw.maxParallelTasks : undefined,
+      maxConcurrency: typeof raw.maxConcurrency === "number" ? raw.maxConcurrency : undefined,
     };
   } catch {
     return {};
@@ -878,7 +928,7 @@ export default function (pi: any) {
     label: "Subagent",
     description: [
       "Delegate bounded subtasks to a persistent specialized subagent (isolated pi session).",
-      "Modes: single (agent+task), parallel (tasks array), chain (sequential, {previous} placeholder).",
+      "Modes: single (agent+task), parallel (tasks array, up to " + MAX_PARALLEL_TASKS + " tasks, " + MAX_CONCURRENCY + " running concurrently, the rest queued), chain (sequential, {previous} placeholder).",
       "Delegation policy: create a NEW subagent for bounded, independent, long-running subtasks; REUSE via subagentId (same persistent session/history) when continuing related work; use subagent_steer to guide a running or idle subagent; do the work yourself for trivial questions (each subagent run costs a cold start).",
       "Context boundary: the subagent inherits ONLY cwd + role system prompt + your task text. Project shared context / memory / plan / tag / skill / expert / connector policies are NOT inherited — compress and pass needed context inside the task (unknown stays unknown, no fabrication).",
       "Permissions: subagent tool sets are derived from the host permission mode; default (no tools frontmatter) is a READ-ONLY analysis set (read/ls/find/grep). bash/write/edit require explicit tools frontmatter or allowTools — bash is a HIGH-PRIVILEGE tool (arbitrary command execution, no approval in subagent); recursion is hard-capped and subagent tools are disabled inside subagents.",
@@ -909,6 +959,8 @@ export default function (pi: any) {
         return undefined;
       };
       const confirmProjectAgents = params.confirmProjectAgents ?? config.confirmProjectAgents ?? true;
+      // 生效并行上限：默认 200/100，subagent.json 可往下调（不会超过硬上限，并发也不会超过任务数）
+      const limits = resolveParallelLimits({ maxParallelTasks: config.maxParallelTasks, maxConcurrency: config.maxConcurrency });
       // 诊断信息：把「到底查了哪些目录」写进错误文本，避免再出现「Unknown agent」却不知道去哪放文件
       const searchedAgentDirs = [
         discovery.productAgentsDir,
@@ -1030,8 +1082,8 @@ export default function (pi: any) {
 
       // ---- parallel ----
       if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS)
-          return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }], details: makeDetailsFn("parallel")([]) };
+        if (params.tasks.length > limits.maxParallelTasks)
+          return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${limits.maxParallelTasks} (concurrency ${limits.maxConcurrency}).` }], details: makeDetailsFn("parallel")([]) };
         const allResults: SingleResult[] = new Array(params.tasks.length);
         for (let i = 0; i < params.tasks.length; i++) {
           const t = params.tasks[i];
@@ -1045,7 +1097,7 @@ export default function (pi: any) {
           const done = allResults.filter((r) => r.exitCode !== -1).length;
           onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${allResults.length} done...` }], details: makeDetailsFn("parallel")([...allResults]) });
         };
-        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t: any, index: number) => {
+        const results = await mapWithConcurrencyLimit(params.tasks, limits.maxConcurrency, async (t: any, index: number) => {
           const agent = resolveAgent(t.agent);
           if (!agent) {
             const result: SingleResult = {
@@ -1070,8 +1122,10 @@ export default function (pi: any) {
           return result;
         });
         const successCount = results.filter((r) => !isFailedResult(r)).length;
+        // 200 条任务时每任务 2KB（400KB 总量），任务少时仍是 50KB —— 避免主模型上下文被结论淹没。
+        const outputCap = parallelPerTaskOutputCap(results.length);
         const summaries = results.map((r) => {
-          const output = truncateParallelOutput(getResultOutput(r));
+          const output = truncateParallelOutput(getResultOutput(r), outputCap);
           const status = isFailedResult(r) ? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}` : "completed";
           return `### [${r.agent}] ${status} (id: ${r.subagentId})\n\n${output}`;
         });

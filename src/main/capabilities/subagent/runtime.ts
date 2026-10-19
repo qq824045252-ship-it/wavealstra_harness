@@ -31,7 +31,12 @@ export type { SubagentRecord } from "./registry.ts";
 export const MAX_SUBAGENT_DEPTH = 2;
 export const MAX_IDLE_WORKERS = 3;
 export const IDLE_WORKER_TIMEOUT_MS = 30 * 60_000;
-export const WORKER_START_TIMEOUT_MS = 15_000;
+/**
+ * 等待子进程 ready 的上限。并行上限提到 100 后，冷启动是「100 个 node 同时拉起」，
+ * 15s 在慢盘/CPU 抢占下会误判启动失败，因此放宽到 45s（只影响失败判定的等待时长，
+ * 正常启动仍是毫秒级就绪）。
+ */
+export const WORKER_START_TIMEOUT_MS = 45_000;
 export const ABORT_SETTLE_GRACE_MS = 5_000;
 export const TRANSCRIPT_MAX_LINES = 1000;
 
