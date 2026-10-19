@@ -28,11 +28,16 @@ export class GenerationSpeedTracker {
   private ttftMs: number | null = null;
   private outcome: GenerationStats["outcome"];
   private activeTools = new Set<string>();
+  /** Provider attempts used by this reply; Pi reports retries, the host only counts them. */
+  private attempts = 1;
+  /** Last retry Pi scheduled, kept while the retried request is streaming again. */
+  private retry: GenerationStats["retry"];
 
   /** A queued user message can end a UI reply without an SDK agent_end. */
   finishReply(now = Date.now()): GenerationStats {
     return {
       phase: "complete", startedAt: this.phaseStartedAt, updatedAt: now,
+      attempts: this.attempts,
       tps: this.usageComplete && this.decodeMs > 0 ? this.outputTokens / (this.decodeMs / 1000) : null,
       estimated: false,
       outputTokens: this.usageComplete && this.outputTokens > 0 ? this.outputTokens : null,
@@ -58,6 +63,8 @@ export class GenerationSpeedTracker {
       this.usageComplete = true;
       this.ttftMs = null;
       this.outcome = undefined;
+      this.attempts = 1;
+      this.retry = undefined;
       this.activeTools.clear();
       if (carry && carry.firstResponseAt === null) {
         this.performance.onTurnStart(carry.turnIndex, carry.requestStartedAt);
@@ -114,6 +121,13 @@ export class GenerationSpeedTracker {
           : event.message.stopReason === "error" ? "error" : "completed";
         this.phase = event.message.stopReason === "toolUse" ? "tools" : "waiting";
         this.phaseStartedAt = now;
+        // Keep the failure visible through the retried attempt; a successful request clears it.
+        if (event.message.stopReason === "error") {
+          this.retry = {
+            ...(this.retry ?? { attempt: Math.max(1, this.attempts) }),
+            error: event.message.errorMessage || this.retry?.error || "连接中断",
+          };
+        } else this.retry = undefined;
         break;
       }
       case "tool_execution_start":
@@ -128,6 +142,14 @@ export class GenerationSpeedTracker {
         break;
       case "auto_retry_start":
         this.performance.onSettled();
+        // Pi's attempt is the retry counter (1 = first retry), so attempts = retries issued + 1.
+        this.attempts = Math.max(this.attempts, event.attempt + 1);
+        this.retry = {
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          error: event.errorMessage || this.retry?.error || "连接中断",
+        };
         this.phase = "retrying";
         this.phaseStartedAt = now;
         break;
@@ -144,6 +166,7 @@ export class GenerationSpeedTracker {
       case "agent_settled":
         if (this.performance.pendingCount) this.usageComplete = false;
         this.performance.onSettled();
+        this.retry = undefined;
         this.phase = "complete";
         break;
       default:
@@ -163,6 +186,8 @@ export class GenerationSpeedTracker {
       phase: this.phase,
       startedAt: this.phaseStartedAt,
       updatedAt: now,
+      attempts: this.attempts,
+      ...(this.retry ? { retry: this.retry } : {}),
       tps: tps !== null && Number.isFinite(tps) && tps > 0 ? tps : null,
       estimated: generating,
       outputTokens: this.usageComplete && this.outputTokens > 0 ? this.outputTokens : null,

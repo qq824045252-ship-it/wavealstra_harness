@@ -308,6 +308,7 @@
     "test:model-catalog-update": "esbuild scripts/model-catalog-update-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/model-catalog-update-test.mjs && node scripts/test-guard.mjs out/tests/model-catalog-update-test.mjs",
     "models:refresh": "esbuild scripts/refresh-model-catalogs.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/refresh-model-catalogs.mjs && node out/tests/refresh-model-catalogs.mjs --apply",
     "test:pi-native-control": "esbuild scripts/pi-native-control-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi-native-control-test.mjs && node scripts/test-guard.mjs out/tests/pi-native-control-test.mjs",
+    "test:retry-display": "esbuild scripts/retry-display-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/retry-display-test.mjs && node scripts/test-guard.mjs out/tests/retry-display-test.mjs",
     "test:pi-native-lifecycle": "esbuild scripts/pi-native-lifecycle-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi-native-lifecycle-test.mjs && node scripts/test-guard.mjs out/tests/pi-native-lifecycle-test.mjs",
     "test:memory-lifecycle-desktop": "node scripts/test-guard.mjs scripts/memory-lifecycle-desktop-test.cjs",
     "test:pi-host-control": "esbuild scripts/pi-host-control-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi-host-control-test.mjs && node scripts/test-guard.mjs out/tests/pi-host-control-test.mjs",

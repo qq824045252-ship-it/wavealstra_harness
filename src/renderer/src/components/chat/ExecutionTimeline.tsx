@@ -254,7 +254,8 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
       return <div className="execution-timeline timeline-preparing" role="status" aria-live="polite">
         <div className="timeline-header timeline-header-static">
           {message.streaming && <span className="streaming-dot" />}
-          <span>{message.streaming ? nativeRunPhaseLabel(message.generationStats.phase, [], hasFinalOutput)
+          <span>{message.streaming ? nativeRunPhaseLabel(message.generationStats.phase, [], hasFinalOutput,
+            message.generationStats.retry, message.generationStats.attempts)
             : `${completionLabel}${message.durationLabel ? ` ${message.durationLabel}` : ""}`}</span>
         </div>
       </div>;
@@ -280,7 +281,8 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
     Boolean(message.streaming) && !hasPendingApproval && !hasFinalOutput;
   const running = Boolean(message.streaming) && !hasPendingApproval;
   const activeToolNames = message.blocks.flatMap((block) => block.type === "tool" && block.toolCall.status === "running" ? [block.toolCall.tool] : []);
-  const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput);
+  const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput,
+    message.generationStats?.retry, message.generationStats?.attempts);
   const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch));
   const resultBlocks = message.blocks.filter(isResultCard);
   const searchCalls = resultBlocks.flatMap(block => block.type === "tool" && block.toolCall.webSearch ? [block.toolCall] : []);
@@ -300,7 +302,8 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
     <div className="execution-timeline">
       <button type="button" className="timeline-header" onClick={() => setOpen(!open)}>
         {running && <span className="streaming-dot" />}
-        <span>
+        <span className={running && message.generationStats?.retry ? "timeline-status timeline-status--retry" : "timeline-status"}
+          title={running ? runningLabel : undefined}>
           {running
             ? runningLabel
             : hasPendingApproval

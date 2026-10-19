@@ -57,7 +57,10 @@ export function generationSpeedView(input: GenerationSpeedInput, now: number): {
     label = "工具执行中";
     details.push("工具执行期间不统计生成速度。");
   } else if (stats?.phase === "retrying") {
-    label = "正在重试";
+    const retry = stats.retry;
+    const budget = retry?.maxAttempts !== undefined ? `/${retry.maxAttempts}` : "";
+    label = retry ? `正在重试 ${retry.attempt}${budget}` : "正在重试";
+    if (retry) details.push(`上次中断：${retry.error}`);
     details.push("模型请求正在重试，等待期间不统计生成速度。");
   } else if (stats?.phase === "compacting") {
     label = "整理上下文";
@@ -72,6 +75,11 @@ export function generationSpeedView(input: GenerationSpeedInput, now: number): {
   } else {
     label = `等待 ${seconds(now - (stats?.startedAt ?? createdAt))}`;
     details.push("等待模型输出，首响应等待不计入生成速度。");
+  }
+  // A retry makes the current attempt the long one (large tool arguments); show it, don't hide it.
+  if ((stats?.attempts ?? 1) > 1 && stats?.retry && stats.phase !== "retrying") {
+    details.push(`第 ${stats.attempts} 次尝试；上次中断：${stats.retry.error}`);
+    if (stats.phase !== "complete") label += ` · 第 ${stats.attempts} 次尝试`;
   }
   if (stats?.outputTokens != null && !streaming) {
     details.push(`输出 ${stats.outputTokens.toLocaleString()} tokens`);

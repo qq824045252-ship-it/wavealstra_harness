@@ -505,8 +505,14 @@ export class DurableBotRuntime {
       }
       current.streaming = true;
       current.durationMs = undefined;
-      current.generationStats = { phase: live.generation?.retry ? "retrying" : live.compactions?.some(item => item.blocking) ? "compacting" : live.tools?.length ? "tools" : live.generation?.message ? "generating" : "waiting",
-        startedAt: turnStartedAt ?? current.createdAt, updatedAt: current.createdAt, tps: null, estimated: false, outputTokens: null, ttftMs: null };
+      // Durable's attempt counts the initial one too; Pi's retry counter counts retries only.
+      const liveAttempt = live.generation?.attempt;
+      const liveRetry = live.generation?.retry;
+      current.generationStats = { phase: liveRetry ? "retrying" : live.compactions?.some(item => item.blocking) ? "compacting" : live.tools?.length ? "tools" : live.generation?.message ? "generating" : "waiting",
+        startedAt: turnStartedAt ?? current.createdAt, updatedAt: current.createdAt, tps: null, estimated: false, outputTokens: null, ttftMs: null,
+        ...(liveAttempt !== undefined ? { attempts: liveAttempt } : {}),
+        ...(liveRetry ? { retry: { attempt: Math.max(1, (liveAttempt ?? 2) - 1), error: liveRetry.error,
+          delayMs: Math.max(0, liveRetry.at - Date.now()) } } : {}) };
     }
     for (const slot of live.tools ?? []) {
       const tool = tools.get(slot.callId);

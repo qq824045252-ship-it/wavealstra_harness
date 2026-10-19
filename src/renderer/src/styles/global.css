@@ -1761,6 +1761,11 @@ html[data-theme="dark"] .extension-top-bar {
   pointer-events: none;
 }
 
+/* A provider retry is a warning state, not normal generation: keep it visible in the header. */
+.timeline-status--retry {
+  color: var(--warning);
+}
+
 .timeline-preparing {
   min-height: 30px;
 }
