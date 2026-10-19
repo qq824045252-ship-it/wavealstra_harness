@@ -883,7 +883,7 @@ export default function (pi: any) {
       "Context boundary: the subagent inherits ONLY cwd + role system prompt + your task text. Project shared context / memory / plan / tag / skill / expert / connector policies are NOT inherited — compress and pass needed context inside the task (unknown stays unknown, no fabrication).",
       "Permissions: subagent tool sets are derived from the host permission mode; default (no tools frontmatter) is a READ-ONLY analysis set (read/ls/find/grep). bash/write/edit require explicit tools frontmatter or allowTools — bash is a HIGH-PRIVILEGE tool (arbitrary command execution, no approval in subagent); recursion is hard-capped and subagent tools are disabled inside subagents.",
       "Persistence: each subagentId maps to a durable pi session (restart-safe); results are queryable via subagent_list; steerable via subagent_steer.",
-      `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")}).`,
+      `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")} and ${path.join(getAgentDirCompat(), "plugins", "agents")}).`,
       `To enable project-local agents in ${getConfigDirNameCompat()}/agents, set agentScope: "both" (or "project").`,
       "Per-task timeout: param timeout_ms (1..3600s) > subagent.json timeoutMs > 600s default; on timeout the process is aborted then killed.",
     ].join(" "),
@@ -909,6 +909,16 @@ export default function (pi: any) {
         return undefined;
       };
       const confirmProjectAgents = params.confirmProjectAgents ?? config.confirmProjectAgents ?? true;
+      // 诊断信息：把「到底查了哪些目录」写进错误文本，避免再出现「Unknown agent」却不知道去哪放文件
+      const searchedAgentDirs = [
+        discovery.productAgentsDir,
+        discovery.userAgentsDir,
+        agentScope === "project" || agentScope === "both" ? discovery.projectAgentsDir : null,
+      ].filter((dir): dir is string => Boolean(dir));
+      const unknownAgentMessage = (name: unknown): string => {
+        const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+        return `Unknown agent: "${name}". Available: ${available}. Searched (agentScope=${agentScope}): ${searchedAgentDirs.join(" | ")}`;
+      };
 
       const parentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0") || 0;
       const makeDetailsFn =
@@ -991,7 +1001,7 @@ export default function (pi: any) {
           if (!agent) {
             const result = {
               agent: step.agent, agentSource: "unknown" as const, task: step.task, subagentId: "unknown",
-              status: "failed" as const, exitCode: 1, messages: [], stderr: `Unknown agent: "${step.agent}"`,
+              status: "failed" as const, exitCode: 1, messages: [], stderr: unknownAgentMessage(step.agent),
               usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, step: i + 1,
             };
             results.push(result);
@@ -1040,7 +1050,7 @@ export default function (pi: any) {
           if (!agent) {
             const result: SingleResult = {
               agent: t.agent, agentSource: "unknown", task: t.task, subagentId: "", status: "failed", exitCode: 1,
-              messages: [], stderr: `Unknown agent: "${t.agent}"`,
+              messages: [], stderr: unknownAgentMessage(t.agent),
               usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
             };
             allResults[index] = result;
@@ -1073,7 +1083,7 @@ export default function (pi: any) {
         const agent = resolveAgent(params.agent);
         if (!agent) {
           const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-          return { content: [{ type: "text", text: `Unknown agent: "${params.agent}". Available: ${available}` }], details: makeDetailsFn("single")([]) };
+          return { content: [{ type: "text", text: unknownAgentMessage(params.agent) }], details: makeDetailsFn("single")([]) };
         }
         const result = await runDelegatedStep({
           runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,

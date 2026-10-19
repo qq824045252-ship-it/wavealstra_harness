@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -256,6 +256,7 @@
     "test:terminal": "esbuild scripts/terminal-host-test.ts --bundle --platform=node --format=cjs --external:node-pty --outfile=out/tests/terminal-host-test.cjs && node scripts/test-guard.mjs out/tests/terminal-host-test.cjs && esbuild scripts/terminal-bridge-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/terminal-bridge-test.cjs && node scripts/test-guard.mjs out/tests/terminal-bridge-test.cjs && esbuild scripts/terminal-store-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/terminal-store-test.cjs && node scripts/test-guard.mjs out/tests/terminal-store-test.cjs && esbuild scripts/terminal-herdr-launcher-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/terminal-herdr-launcher-test.cjs && node scripts/test-guard.mjs out/tests/terminal-herdr-launcher-test.cjs",
     "rebuild:node-pty": "electron-rebuild -f -w node-pty",
     "postinstall": "install-electron --no && electron-rebuild -f -w better-sqlite3,node-pty",
+    "test:subagent-agent-discovery": "esbuild scripts/subagent-agent-discovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-agent-discovery-test.mjs && node scripts/test-guard.mjs out/tests/subagent-agent-discovery-test.mjs",
     "test:subagent-mapper": "esbuild scripts/subagent-mapper-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/subagent-mapper-test.cjs && node scripts/test-guard.mjs out/tests/subagent-mapper-test.cjs",
     "test:overview-runtime": "esbuild scripts/overview-runtime-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/overview-runtime-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/overview-runtime-test.cjs",
     "test:usage-stats": "esbuild scripts/usage-stats-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/usage-stats-test.cjs --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/usage-stats-test.cjs",

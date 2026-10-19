@@ -26,6 +26,25 @@ allow/exclude policy and a hard recursion-depth limit.
 - `context.ts`: child context contract
 - `invocation.ts`: executable/CLI resolution
 
+## Role directories (agent scope)
+
+`agents.ts` resolves roles from up to three directories; later entries override
+earlier ones on the same `name`:
+
+| Scope | Directory | Notes |
+|---|---|---|
+| user | `<PI_CODING_AGENT_DIR>/plugins/agents` | **MyBuddy product location** (`src/main/paths.ts` `getAgentsDir()` → `~/.mybuddy/plugins/agents`). Ships `planner` / `reviewer` / `scout` / `worker`. |
+| user | `<PI_CODING_AGENT_DIR>/agents` | User overrides (`~/.mybuddy/agents`). Not created by default. |
+| project / both | nearest `<cwd>/.pi/agents` | Repo-local roles; still gated by the project-agent confirmation prompt. |
+
+Because `PI_CODING_AGENT_DIR` is redirected to `~/.mybuddy` by the host
+(`src/main/agent-environment.ts`), the product directory is what makes
+`agentScope: "both"` (or the default `user`) find `worker`. Skipping it produced
+the historical `Unknown agent: "worker"` failure; `MYBUDDY_AGENTS_DIR` can point
+the product directory elsewhere (tests/deployment). Unknown-agent errors now
+print the searched directories and the effective scope.
+
 The tests under `test/` exercise protocol, policy, lifecycle, and real-worker
 behavior. Product regression tests also live under the repository `scripts/`
-directory.
+directory. Agent discovery specifically is covered by
+`scripts/subagent-agent-discovery-test.ts` (`pnpm -s test:subagent-agent-discovery`).
