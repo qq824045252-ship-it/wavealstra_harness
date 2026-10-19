@@ -24,7 +24,7 @@ import type {
   ToolStatus,
   WelcomeMode,
 } from "@/types";
-import type { AgentUiPatch, LocalConnectorDto, ModeProfileDto, SpaceDto, TaskDto } from "../../../shared/agent-ipc";
+import type { AgentUiPatch, ChatMessageDto, LocalConnectorDto, ModeProfileDto, SpaceDto, TaskDto } from "../../../shared/agent-ipc";
 import type { AgentRegenerateResult } from "../../../shared/agent-ipc";
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../../../shared/archive-deletion";
 import type { ConversationBranchInfoDto } from "../../../shared/conversation-branch";
@@ -898,8 +898,73 @@ export function nonEmptyFinalTextBlocks(finalBlocks: MessageBlock[] | undefined)
   return finalBlocks.filter((b) => b.type !== "text" || b.text.trim() !== "");
 }
 
-function hydrateTaskMetadataFromDb(taskId: string): void {
-  if (pendingTaskMetadataHydrations.has(taskId)) return;
+/**
+ * ACP 外部 Agent 的「补历史」机制：
+ * Pi 有 user_message / assistant_start 等创建型 patch，桌面端能凭空长出消息；
+ * ACP Runtime 只发增量 patch，渲染层只能更新「已存在」的消息。当一轮委托由手机
+ * （或另一台设备）发起、桌面端从未加载过该任务的 ACP 消息时，这些事件会被静默丢弃 ——
+ * 用户看到的就是「手机上已经回复，电脑上什么都没有」。
+ * 因此首次遇到未知 assistantMessageId 时按 taskId 补一次 history，把该轮 user/assistant
+ * 消息落进 store，之后到达的 patch 就能正常增量渲染。按 taskId 去抖，避免事件风暴里反复拉取。
+ */
+const externalHistoryHydrations = new Map<string, number>();
+const EXTERNAL_HISTORY_HYDRATION_MS = 2000;
+
+/** 导出供测试直接驱动（initRuntime 的事件订阅走同一条路径）。 */
+export function hydrateExternalAgentHistory(taskId: string): void {
+  const now = Date.now();
+  if (now - (externalHistoryHydrations.get(taskId) ?? 0) < EXTERNAL_HISTORY_HYDRATION_MS) return;
+  externalHistoryHydrations.set(taskId, now);
+  void (async () => {
+    try {
+      const history = await window.api?.agent?.loadTaskHistory?.(taskId);
+      if (!history?.messages?.length) return;
+      useAppStore.setState((state) => ({
+        tasks: state.tasks.map((task) => {
+          if (task.id !== taskId) return task;
+          const known = new Set(task.messages.map((message) => message.id));
+          const missing = history.messages
+            .filter((message) => !known.has(message.id))
+            .map((message) => historyMessageToChatMessage(message));
+          if (!missing.length) return task;
+          return {
+            ...task,
+            messages: [...task.messages, ...missing]
+              .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+          };
+        }),
+      }));
+    } catch {
+      /* best effort：补历史失败不影响后续事件（下一次事件会再试） */
+    }
+  })();
+}
+
+/** 与 setActiveTask 的历史恢复保持同一投影：user=正文块；assistant=思考/工具 + 最终正文。 */
+export function historyMessageToChatMessage(m: ChatMessageDto): ChatMessage {
+  return {
+    id: m.id,
+    role: m.role,
+    createdAt: m.createdAt,
+    modelName: m.modelName,
+    externalAgent: m.externalAgent,
+    durationLabel: formatDuration(m.durationMs),
+    entryId: m.entryId,
+    attachments: m.attachments,
+    blocks: m.role === "user"
+      ? [{ type: "text" as const, text: m.text }]
+      : [
+          ...(m.thinking ? [{ type: "thinking" as const, text: m.thinking }] : []),
+          ...(m.tools ?? []).map((tool) => ({ type: "tool" as const, toolCall: { ...tool } })),
+          ...(m.text ? [{ type: "text" as const, text: m.text }] : []),
+        ],
+    finalBlocks: m.role === "assistant" && m.text ? [{ type: "text" as const, text: m.text }] : undefined,
+    artifactIds: m.artifactIds,
+    streaming: false,
+  };
+}
+
+function hydrateTaskMetadataFromDb(taskId: string): void {  if (pendingTaskMetadataHydrations.has(taskId)) return;
   pendingTaskMetadataHydrations.add(taskId);
   void (async () => {
     try {
@@ -2137,6 +2202,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     externalAgentEventUnsub?.();
     externalAgentEventUnsub = api.externalAgent?.onEvent?.((event: ExternalAgentUiEvent) => {
+      // 手机/其它设备发起的一轮 ACP：桌面端可能还没有这条 assistant 消息，补一次 history，
+      // 否则下面的 patch 找不到目标消息会被整体丢弃（表现为「电脑上看不到手机的回复」）。
+      const currentTask = useAppStore.getState().tasks.find((task) => task.id === event.taskId);
+      if (currentTask && !currentTask.messages.some((message) => message.id === event.assistantMessageId)) {
+        hydrateExternalAgentHistory(event.taskId);
+      }
       // External Agent 与 Pi 共用消息渲染 reducer，但事件通道独立；先固化消息来源，
       // 再应用结构化 patch，避免 UI 把 Codex/Claude 等误标成 MyBuddy。
       useAppStore.setState((state) => ({

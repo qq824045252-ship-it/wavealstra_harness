@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -43,6 +43,7 @@
     "test:session-history-recovery": "esbuild scripts/session-history-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/session-history-recovery-test.mjs && node scripts/test-guard.mjs out/tests/session-history-recovery-test.mjs",
     "test:delegated-run": "esbuild scripts/delegated-run-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/delegated-run-test.mjs && node scripts/test-guard.mjs out/tests/delegated-run-test.mjs",
     "test:acp-runtime": "esbuild scripts/acp-runtime-integration-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-runtime-integration-test.mjs && node scripts/test-guard.mjs out/tests/acp-runtime-integration-test.mjs",
+    "test:acp-desktop-hydration": "esbuild scripts/acp-desktop-hydration-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/acp-desktop-hydration-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/acp-desktop-hydration-test.cjs",
     "test:acp-remote": "esbuild scripts/acp-remote-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/acp-remote-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/acp-remote-test.mjs",
     "test:acp-catalog": "esbuild scripts/external-agent-catalog-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/external-agent-catalog-test.mjs && node scripts/test-guard.mjs out/tests/external-agent-catalog-test.mjs",
     "test:chat-attachment-acp-desktop": "node scripts/chat-attachment-acp-desktop-test.cjs",
@@ -358,6 +359,7 @@
     "test:gateway-port-fallback": "esbuild scripts/gateway-port-fallback-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/gateway-port-fallback-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/gateway-port-fallback-test.cjs",
     "test:remote-task-dot-ui-desktop": "node scripts/test-guard.mjs scripts/remote-task-dot-ui-test.cjs",
     "test:acp-remote-android:live": "node scripts/test-guard.mjs scripts/android-acp-ui-check.cjs",
+    "test:acp-remote-android-sync:live": "node scripts/test-guard.mjs scripts/android-acp-desktop-sync-check.cjs",
     "test:acp-remote-android-e2e:live": "node scripts/test-guard.mjs scripts/android-acp-e2e-check.cjs",
     "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs",
     "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",

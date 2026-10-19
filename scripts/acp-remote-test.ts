@@ -99,6 +99,8 @@ const agentStub = {
   getConversationRuntimeSnapshot: () => ({ taskId: TASK, interactions: [], activeGoal: null }),
   listModels: async () => [],
   getModeProfile: (id: string) => ({ labelZh: id, policy: { presets: [] } }),
+  // 续聊判定要求「工作目录仍是本任务权威 root」：测试里任务 cwd 就是 workspace
+  resolveTaskExecutionWorkspaceCwd: () => workspace,
   abort: async () => undefined,
 } as never;
 const notifications = { unreadCount: () => 0, list: () => [], markRead: () => undefined, markAllRead: () => undefined, dismissAll: () => undefined } as never;
@@ -240,6 +242,42 @@ try {
     assert.match(resumedHistory.messages.find((item) => item.id === resumed.assistantMessageId)!.text, /permission-selected-reject/);
     ok("续聊轮次完成并记录拒绝结果");
 
+    // 不传任何续聊字段：手机端默认自动续接（进程会新起，但 session 上下文延续）
+    const auto = await client.acpPrompt(TASK, { agentId: "devin", text: "自动续接一轮" });
+    const autoMode = await waitFor(async () => {
+      const value = await client.history(TASK);
+      return value.messages.find((item) => item.id === auto.assistantMessageId)?.acp?.continuationMode;
+    }, "auto continuation mode");
+    assert.equal(autoMode, "resume", "缺省必须自动续接上一轮 session，而不是每次清空上下文");
+    const autoPermission = await waitFor(() => {
+      const current = service.runtime(TASK);
+      return current?.pendingActions.find((item) => item.approvalKind === "acp");
+    }, "auto permission");
+    await client.approve(TASK, autoPermission.toolCallId, { decision: "deny", optionId: "reject" });
+    await waitFor(async () => {
+      const value = await client.history(TASK);
+      return value.messages.find((item) => item.id === auto.assistantMessageId)?.acp?.status === "completed";
+    }, "auto completion");
+    ok("缺省自动续接会话（resume）");
+
+    // newSession: true 强制开新会话（丢弃上下文）
+    const fresh = await client.acpPrompt(TASK, { agentId: "devin", text: "强制新会话", newSession: true });
+    const freshMode = await waitFor(async () => {
+      const value = await client.history(TASK);
+      return value.messages.find((item) => item.id === fresh.assistantMessageId)?.acp?.continuationMode;
+    }, "newSession continuation mode");
+    assert.equal(freshMode, "new", "newSession=true 必须新建 session");
+    const freshPermission = await waitFor(() => {
+      const current = service.runtime(TASK);
+      return current?.pendingActions.find((item) => item.approvalKind === "acp");
+    }, "fresh permission");
+    await client.approve(TASK, freshPermission.toolCallId, { decision: "deny", optionId: "reject" });
+    await waitFor(async () => {
+      const value = await client.history(TASK);
+      return value.messages.find((item) => item.id === fresh.assistantMessageId)?.acp?.status === "completed";
+    }, "fresh completion");
+    ok("newSession=true 强制新会话");
+
     // 续聊目标不存在 → 降级为新 session（不报错、也不串到别的 run）
     const fallback = await client.acpPrompt(TASK, { agentId: "devin", text: "降级一轮", continueFromRunId: "does-not-exist" });
     assert.ok(fallback.run.runId !== started.run.runId);
@@ -368,6 +406,14 @@ try {
         body: { decision: "allow-once", optionId: "allow" },
       }, "ACP 审批必须回传 optionId");
       ok("store.resolveAcpPermission 回传 optionId");
+
+      // 「下一轮开新会话」开关：必须下发 newSession，且只对一轮生效
+      captured = null;
+      useRemoteStore.setState({ acpNewSession: true });
+      await useRemoteStore.getState().sendAcp("清空上下文", []);
+      assert.deepEqual((captured as unknown as { body: unknown }).body, { agentId: "devin", text: "清空上下文", newSession: true });
+      assert.equal(useRemoteStore.getState().acpNewSession, false, "一次性开关用后必须复位");
+      ok("store.sendAcp 支持 newSession（一次性）");
 
       // 新任务第一轮交给 ACP：必须一次请求同时落任务与 run
       captured = null;

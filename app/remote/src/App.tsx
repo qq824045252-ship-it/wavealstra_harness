@@ -1288,6 +1288,8 @@ function AcpAgentSheet() {
   const setOpen = useRemoteStore((s) => s.setAcpSheetOpen)
   const selectedAcpAgentId = useRemoteStore((s) => s.selectedAcpAgentId)
   const setSelectedAcpAgentId = useRemoteStore((s) => s.setSelectedAcpAgentId)
+  const acpNewSession = useRemoteStore((s) => s.acpNewSession)
+  const setAcpNewSession = useRemoteStore((s) => s.setAcpNewSession)
   const refreshAcpAgents = useRemoteStore((s) => s.refreshAcpAgents)
   const bootstrap = useRemoteStore((s) => s.bootstrap)
   const [refreshing, setRefreshing] = useState(false)
@@ -1376,6 +1378,29 @@ function AcpAgentSheet() {
             </div>
             <ChevronRight size={18} />
           </button>
+
+          {/* ACP 进程每轮都会新起，但会话上下文默认续接；这里给出「下一轮清空上下文」的一次性开关 */}
+          {selectedAcpAgentId && (
+            <button
+              type="button"
+              className={`add-to-chat-row ${acpNewSession ? 'acp-new-session-on' : ''}`}
+              aria-pressed={acpNewSession}
+              onClick={() => setAcpNewSession(!acpNewSession)}
+            >
+              <div className="add-to-chat-row-left">
+                <div className="add-to-chat-row-icon"><RotateCcw size={18} /></div>
+                <div className="add-to-chat-row-info">
+                  <span className="add-to-chat-row-title">
+                    {acpNewSession ? '下一轮：开新会话（已开启）' : '下一轮：开新会话'}
+                  </span>
+                  <span className="add-to-chat-row-subtitle">
+                    {acpNewSession ? '将丢弃该任务里本 Agent 的上下文，仅本轮生效' : '默认自动续接上次会话上下文'}
+                  </span>
+                </div>
+              </div>
+              {acpNewSession ? <Check size={18} /> : <ChevronRight size={18} />}
+            </button>
+          )}
         </div>
       </div>
     </>

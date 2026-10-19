@@ -82,6 +82,12 @@ interface State {
   /** ACP 外部 Agent：null = 内置 Pi；非空 = 本轮委托给电脑端该 Agent */
   selectedAcpAgentId: string | null
   setSelectedAcpAgentId: (id: string | null) => void
+  /**
+   * 下一轮是否强制开新 ACP 会话（丢弃上下文）。默认 false = 自动续接同任务同 Agent
+   * 最近一次可恢复 session；发送成功后复位，避免一直清空上下文。
+   */
+  acpNewSession: boolean
+  setAcpNewSession: (value: boolean) => void
   isAcpSheetOpen: boolean
   setAcpSheetOpen: (open: boolean) => void
   refreshAcpAgents: () => Promise<void>
@@ -131,6 +137,43 @@ interface State {
 const CLEARED_NOTICES_KEY = 'mybuddy_remote_cleared_notices'
 /** 本机「已结束绿点」确认水位：电脑端 ack 不可用时的兜底（键 = taskId，值 = 电脑端时间轴 ms） */
 const DONE_ACK_OVERRIDES_KEY = 'mybuddy_remote_done_acks'
+/**
+ * 每个任务选过的 ACP Agent（taskId → agentId）。
+ * 只放内存会导致「杀进程/重装后静默回到内置 MyBuddy」——用户以为还在用 OpenCode，
+ * 实际已经把消息发给了内置 Pi，所以必须持久化到本机。
+ */
+const ACP_AGENT_BY_TASK_KEY = 'mybuddy_remote_acp_agent_by_task'
+
+function readAcpAgentByTask(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(ACP_AGENT_BY_TASK_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {}
+  } catch {
+    return {}
+  }
+}
+
+let acpAgentByTask: Record<string, string> = readAcpAgentByTask()
+
+function rememberAcpAgentForTask(taskId: string | null, agentId: string | null): void {
+  if (!taskId) return
+  const next = { ...acpAgentByTask }
+  if (agentId) next[taskId] = agentId
+  else delete next[taskId]
+  // 只保留最近 200 个任务，避免无限增长
+  acpAgentByTask = Object.fromEntries(Object.entries(next).slice(-200))
+  try {
+    localStorage.setItem(ACP_AGENT_BY_TASK_KEY, JSON.stringify(acpAgentByTask))
+  } catch {
+    // ignore：写不进去只影响下次启动的默认值
+  }
+}
+
+export function rememberedAcpAgentForTask(taskId: string | null): string | null {
+  if (!taskId) return null
+  return acpAgentByTask[taskId] ?? null
+}
 
 function readDoneAckOverrides(): Record<string, number> {
   try {
@@ -175,8 +218,8 @@ function resetTransientOverrides(): Partial<State> {
  * ACP 选择是「粘性」的：用户选了某个外部 Agent，后续每轮都还给它，直到手动切回内置 Pi。
  * 只随「切换任务 / 回首页」清理，避免任务 A 选的 Agent 泄漏到任务 B（两个 Agent 共用同一 cwd 会互相踩）。
  */
-function resetAcpSelection(): Pick<State, 'selectedAcpAgentId' | 'isAcpSheetOpen'> {
-  return { selectedAcpAgentId: null, isAcpSheetOpen: false }
+function resetAcpSelection(): Pick<State, 'selectedAcpAgentId' | 'isAcpSheetOpen' | 'acpNewSession'> {
+  return { selectedAcpAgentId: null, isAcpSheetOpen: false, acpNewSession: false }
 }
 function getClearedNoticeIds(): Set<string> {
   try {
@@ -320,7 +363,12 @@ export const useRemoteStore = create<State>((set, get) => ({
    * 选择后当前任务的发送会走电脑端真实 ACP 进程（/v1/tasks/:id/acp）。
    */
   selectedAcpAgentId: null,
-  setSelectedAcpAgentId: (selectedAcpAgentId) => set({ selectedAcpAgentId }),
+  setSelectedAcpAgentId: (selectedAcpAgentId) => {
+    rememberAcpAgentForTask(get().activeTaskId, selectedAcpAgentId)
+    set({ selectedAcpAgentId })
+  },
+  acpNewSession: false,
+  setAcpNewSession: (acpNewSession) => set({ acpNewSession }),
   isAcpSheetOpen: false,
   setAcpSheetOpen: (isAcpSheetOpen) => set({ isAcpSheetOpen }),
   /** ACP 目录刷新（电脑端装/卸载 CLI 后手动重探） */
@@ -484,7 +532,14 @@ export const useRemoteStore = create<State>((set, get) => ({
     ++navigationRevision
     saveLastActiveTaskId(taskId)
     const previousTaskId = get().activeTaskId
-    set(state => ({ activeTaskId: taskId, ...(state.activeTaskId !== taskId ? { ...resetTransientOverrides(), ...resetAcpSelection() } : {}) }))
+    // 恢复该任务上次选过的 ACP Agent（杀进程/重装后不能静默退回内置 MyBuddy）
+    const rememberedAcpAgent = rememberedAcpAgentForTask(taskId)
+    set(state => ({
+      activeTaskId: taskId,
+      ...(state.activeTaskId !== taskId ? { ...resetTransientOverrides(), ...resetAcpSelection() } : {}),
+      // 放在 spread 之后：即使触发 resetAcpSelection，也要恢复该任务记住的 Agent
+      selectedAcpAgentId: rememberedAcpAgent,
+    }))
     // 打开任务 = 已查看结果：先清绿点（本地即时生效），再落库给所有设备共享
     void get().markTaskDoneSeen(taskId)
 
@@ -574,6 +629,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     delete nextHistories[taskId]; delete nextRuntimes[taskId]; delete nextLive[taskId]
     // 本地数据库同步清理：否则回收后仍能从缓存读到旧对话
     if (activeServerKey) void deleteCachedHistory(activeServerKey, taskId).catch(() => undefined)
+    rememberAcpAgentForTask(taskId, null)
     const removedEntry = (bootstrap?.tasks ?? []).find((task) => task.id === taskId)
     const nextTasks = (bootstrap?.tasks ?? []).filter((task) => task.id !== taskId)
     // 模型/权限覆盖来自被删任务时一并丢弃，避免泄漏到下一个任务。
@@ -657,7 +713,7 @@ export const useRemoteStore = create<State>((set, get) => ({
    * runtime 随后刷新出 running/blocked 与权限卡片。
    */
   async sendAcp(text, pendingAttachments = [], continueFromRunId) {
-    const { client, activeTaskId, sending, selectedAcpAgentId } = get()
+    const { client, activeTaskId, sending, selectedAcpAgentId, acpNewSession } = get()
     const agentId = selectedAcpAgentId
     if (!client || !activeTaskId || sending) return
     if (!agentId) throw new Error('请先选择 ACP Agent')
@@ -669,6 +725,8 @@ export const useRemoteStore = create<State>((set, get) => ({
         agentId,
         text,
         continueFromRunId,
+        // 显式 continueFromRunId 优先；否则按 acpNewSession 决定「强制新会话 / 自动续接」
+        ...(continueFromRunId ? {} : { newSession: acpNewSession || undefined }),
         attachments: attachments.length ? attachments : undefined,
       })
       set((state) => {
@@ -702,6 +760,8 @@ export const useRemoteStore = create<State>((set, get) => ({
         return null
       })
       if (runtime) set((state) => ({ runtimes: { ...state.runtimes, [activeTaskId]: runtime } }))
+      // 「强制新会话」是一次性动作：本轮已用掉，下一轮回到自动续接
+      if (acpNewSession) set({ acpNewSession: false })
     } finally {
       set({ sending: false })
     }
@@ -750,6 +810,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       })
       await refresh().catch((error) => console.warn('bootstrap refresh after acp create failed', error))
       saveLastActiveTaskId(result.task.id)
+      rememberAcpAgentForTask(result.task.id, selectedAcpAgentId)
       set((state) => {
         const fallback: RemoteHistoryMessage = {
           id: result.userMessageId,

@@ -40,6 +40,8 @@ export const remoteAcpPromptSchema = z.object({
   agentId: z.string().trim().min(1).max(64),
   text: z.string().trim().max(100_000),
   continueFromRunId: z.string().trim().min(1).max(200).optional(),
+  /** true = 丢弃上下文开新会话；缺省自动续接同任务同 Agent 的可恢复 session */
+  newSession: z.boolean().optional(),
   attachments: z.array(z.object({
     name: z.string().trim().min(1).max(200),
     data: z.string().min(1).max(ATTACHMENT_DATA_MAX),

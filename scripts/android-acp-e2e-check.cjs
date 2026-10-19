@@ -187,6 +187,48 @@ const SNAP = `(() => {
   assert(last.cards.some((card) => card.text.includes(agentName)), 'ACP 气泡没有标注 Agent 名称');
   assert(sawRunning || last.cards.some((card) => card.text.includes('执行中') || card.text.includes('等待授权')), '没有观察到 ACP 运行状态');
   assert(last.cards.every((card) => !card.running), 'ACP 运行没有结束');
+  console.log('android ACP E2E: first turn passed');
+
+  // 5) 上下文续接：进程每轮新起，但 session 必须延续（同一任务里问上一轮记住的数字）
+  if (process.env.MYBUDDY_ACP_SKIP_CONTINUATION !== '1') {
+    const assistantCount = () => evaluate(`document.querySelectorAll('.message-bubble-assistant').length`);
+    const before = await assistantCount();
+    const sendTurn = async (message) => {
+      const count = await assistantCount();
+      await evaluate(`(() => {
+        const el = document.querySelector('.composer-input-area');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(el, ${JSON.stringify(message)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()`);
+      await wait(400);
+      await evaluate(`(() => { document.querySelector('.composer-main-btn').click(); return true; })()`);
+      // 等到出现新的助手气泡并结束
+      const deadline2 = Date.now() + 180_000;
+      while (Date.now() < deadline2) {
+        const state = await evaluate(SNAP);
+        if (state.approvals.length) {
+          await evaluate(`(() => { const card = document.querySelector('.approval-card'); const bs=[...card.querySelectorAll('.approval-card-actions button')]; (bs.find(b=>b.textContent.trim()==='拒绝')??bs[0])?.click(); return true; })()`);
+          await wait(800);
+          continue;
+        }
+        const cards = state.cards;
+        const streaming = state.bubbles.some((b) => b.streaming);
+        if (await assistantCount() > count && cards.length >= before && !streaming && cards.every((c) => !c.running)) return state;
+        await wait(1200);
+      }
+      throw Error('timeout waiting for turn: ' + message);
+    };
+
+    await sendTurn('记住一个数字：42。只回复：已记住。不要调用任何工具。');
+    const second = await sendTurn('我刚才让你记住的数字是多少？只回复数字，不要调用任何工具。');
+    const texts = second.bubbles.map((b) => b.text);
+    console.log(JSON.stringify({ stage: 'continuation', texts }, null, 2));
+    assert(texts.some((text) => /42/.test(text)), '第二轮没有拿到 42：ACP 会话上下文没有续接（每轮都开了新会话）');
+    console.log('android ACP E2E: continuation passed');
+  }
+
   console.log('android ACP E2E: all assertions passed');
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });

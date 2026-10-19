@@ -2,7 +2,7 @@ import { resolveWelcomeMode } from "../../shared/mode-profile";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import type {
   RemoteAcpCreateRequest,
   RemoteAcpCreateResponse,
@@ -19,6 +19,7 @@ import type { AppSettingsStore } from "../AppSettingsStore";
 import type { AgentService } from "../agent/AgentService";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { ExternalAgentRuntime } from "../external-agent/ExternalAgentRuntime";
+import type { ExternalAgentRunDto } from "../../shared/external-agent";
 import { getMyBuddyDir } from "../paths";
 import { mapRemoteAcpRun, mapRemoteTask } from "./RemoteDtoMapper";
 
@@ -272,7 +273,7 @@ export class RemoteTaskCommandService {
     if (this.externalAgent!.active(taskId).length) {
       throw new RemoteConflictError("该任务已有 ACP Agent 正在执行，请先停止或等待完成");
     }
-    const continuation = this.resolveAcpContinuation(taskId, agentId, request.continueFromRunId);
+    const continuation = this.resolveAcpContinuation(taskId, agentId, request.continueFromRunId, request.newSession);
     const userMessageId = `remote-acp-user-${randomUUID()}`;
     const assistantMessageId = `remote-acp-assistant-${randomUUID()}`;
     let runId: string;
@@ -369,18 +370,43 @@ export class RemoteTaskCommandService {
   }
 
   /**
-   * 续聊解析：只续接「同任务、同 Agent、上一轮真的建立了可恢复 session」的 run。
-   * 解析失败一律降级为新 session（与桌面端 fallback_new 语义一致），
-   * 但跨 Agent 的显式续聊请求直接拒绝，避免把另一个 Agent 的上下文带进来。
+   * 续聊解析（决定「这轮是接着聊还是开新会话」）：
+   *  - newSession=true           → 强制新会话；
+   *  - continueFromRunId 显式给 → 只接受同 Agent 的 run，找不到就降级（不报错）；
+   *  - 都没给                     → 自动续接同任务同 Agent 最近一次「已建 session + 可恢复 + cwd 未变」的 run。
+   *
+   * 注意：ACP 子进程每轮都会重新启动（一次性进程），这里续接的是 **session**，
+   * 也就是对话上下文，而不是复用进程。
    */
-  private resolveAcpContinuation(taskId: string, agentId: string, continueFromRunId?: string): string | undefined {
+  private resolveAcpContinuation(
+    taskId: string,
+    agentId: string,
+    continueFromRunId?: string,
+    newSession?: boolean,
+  ): string | undefined {
+    if (newSession) return undefined;
+    const runs = this.externalAgent!.history(taskId).runs;
     const requested = continueFromRunId?.trim();
-    if (!requested) return undefined;
-    const run = this.externalAgent!.history(taskId).runs.find((candidate) => candidate.runId === requested);
-    if (!run) return undefined;
-    if (run.agentId !== agentId) throw new RemoteValidationError("续聊必须使用同一个 ACP Agent");
-    if (!run.sessionId || !run.capabilities.resumeSupported) return undefined;
-    return run.runId;
+    if (requested) {
+      const run = runs.find((candidate) => candidate.runId === requested);
+      if (!run) return undefined;
+      if (run.agentId !== agentId) throw new RemoteValidationError("续聊必须使用同一个 ACP Agent");
+      return this.isResumableInTask(run, taskId) ? run.runId : undefined;
+    }
+    const latest = [...runs].reverse().find((run) => run.agentId === agentId && this.isResumableInTask(run, taskId));
+    return latest?.runId;
+  }
+
+  /** 可恢复 = 建过 session + Agent 声明支持 resume + 工作目录仍是本任务当前的权威 root */
+  private isResumableInTask(run: ExternalAgentRunDto, taskId: string): boolean {
+    if (!run.sessionId || !run.capabilities.resumeSupported) return false;
+    try {
+      const current = this.agent.resolveTaskExecutionWorkspaceCwd(taskId);
+      const normalize = (value: string): string => resolvePath(value);
+      return normalize(run.cwd) === normalize(current);
+    } catch {
+      return false;
+    }
   }
 
   respondToInteraction(

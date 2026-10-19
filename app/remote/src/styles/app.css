@@ -2134,6 +2134,7 @@ button:disabled {
 .acp-run-chip.running { color: var(--accent); border-color: var(--accent); }
 
 .acp-run-chip-state { padding-left: 6px; border-left: 1px solid var(--border-default); }
+.acp-new-session-on .add-to-chat-row-title { color: var(--accent); }
 .permission-options { display: flex; flex-direction: column; gap: 6px; padding: 0 16px; }
 .permission-option { min-height: 64px; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 12px; text-align: left; }
 .permission-option[aria-checked="true"] { background: var(--accent-soft); }

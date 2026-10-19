@@ -119,6 +119,11 @@ export interface RemoteAcpPromptRequest {
   attachments?: RemoteAttachmentInput[]
   /** 续接上一轮同一 Agent、同一 cwd 的 session；省略或失效则新建 */
   continueFromRunId?: string
+  /**
+   * 强制开新会话（丢弃上下文）。缺省 false = 自动续接该任务同 Agent 最近一次可恢复 session，
+   * 与桌面端「固定 ACP」语义一致：进程每轮都会新起，但会话上下文默认延续。
+   */
+  newSession?: boolean
 }
 
 export interface RemoteAcpPromptResponse {

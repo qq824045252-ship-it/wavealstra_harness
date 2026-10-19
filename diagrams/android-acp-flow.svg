@@ -106,5 +106,5 @@
   <text x="52" y="616" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700" fill="#111827">已验证的边界（不是推断）</text>
   <text x="52" y="640" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 手机会话里没有电脑路径：run 投影只含 runId / agentId / status / sessionReady / resumeSupported / verificationStatus / commandLabel，不含 cwd。</text>
   <text x="52" y="661" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• ACP 审批不经过内置 PendingActionRegistry，必须由 ExternalAgentRuntime 的 Promise + dto.pendingPermissions 提供选项；用错 optionId 返回 400，重复点返回 409。</text>
-  <text x="52" y="682" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 同一任务只允许一个活着的 ACP run；续聊要求同任务 + 同 Agent + 上一轮真的建立了可恢复 session，否则降级为 continuationMode:"new"。</text>
+  <text x="52" y="682" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 同一任务只允许一个活着的 ACP run；进程每轮新起，但 session 默认自动续接（newSession:true 才清空上下文），续接要求同任务 + 同 Agent + cwd 未变。</text>
 </svg>
