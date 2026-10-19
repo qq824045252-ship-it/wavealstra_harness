@@ -1,4 +1,5 @@
 import type {
+  RemoteAcpRunInfo,
   RemoteArtifactMetadata,
   RemoteHistoryMessage,
   RemoteModelSummary,
@@ -9,6 +10,7 @@ import type {
   RemoteTaskSummary,
 } from "../../../shared/src/remote-contract";
 import type { ChatMessageDto, ModelInfoDto, SpaceDto, TaskDto, TaskHistoryDto } from "../../shared/agent-ipc";
+import type { ExternalAgentRunDto } from "../../shared/external-agent";
 import type { NotificationDto } from "../../shared/notification";
 import type { ProjectDto } from "../../shared/project-domain";
 
@@ -75,6 +77,24 @@ export function mapRemoteProject(project: ProjectDto): RemoteProjectSummary {
 
 function mapArtifact(artifact: NonNullable<ChatMessageDto["artifacts"]>[number]): RemoteArtifactMetadata {
   return { id: artifact.id, name: artifact.name, kind: artifact.kind };
+}
+
+/** ExternalAgentRunDto → 手机端 ACP 运行投影（只暴露展示与续聊所需的字段） */
+export function mapRemoteAcpRun(run: ExternalAgentRunDto): RemoteAcpRunInfo {
+  return {
+    runId: run.runId,
+    agentId: run.agentId,
+    agentName: run.agentName,
+    protocol: "acp",
+    status: run.status,
+    sessionReady: Boolean(run.sessionId),
+    resumeSupported: run.capabilities.resumeSupported === true,
+    cancelSupported: run.capabilities.cancelSupported === true,
+    continuationMode: run.continuationMode,
+    recoveryState: run.recovery.state,
+    verificationStatus: run.verification.status,
+    commandLabel: run.diagnostics.commandLabel,
+  };
 }
 
 export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryMessage {

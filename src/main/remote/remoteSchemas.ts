@@ -12,6 +12,11 @@ export const remotePromptSchema = z.object({
   modePresetId: z.string().trim().min(1).max(200).nullable().optional(),
   modelId: z.string().trim().min(1).max(200).optional(),
   permissionMode: z.enum(["default", "readonly", "auto"]).optional(),
+  /**
+   * 非空 = 新任务第一轮直接交给该 ACP 外部 Agent（忽略 modelId/permissionMode：
+   * ACP 进程用自己的推理与权限模型）。Agent 必须存在于电脑端 ACP 目录且已启用。
+   */
+  acpAgentId: z.string().trim().min(1).max(64).optional(),
   attachments: z.array(z.object({
     name: z.string().trim().min(1).max(200),
     data: z.string().min(1).max(ATTACHMENT_DATA_MAX),
@@ -25,7 +30,26 @@ export const remotePromptSchema = z.object({
 
 export const remoteApprovalSchema = z.object({
   decision: z.enum(["deny", "allow-once", "allow-task-dir"]),
+  // ACP 外部 Agent 的权限请求用 Agent 自己声明的 optionId 回传（allow_once/allow_always/reject_*）；
+  // 缺省时由服务端按 decision 映射到最接近的选项。
+  optionId: z.string().trim().min(1).max(200).optional(),
 }).strict();
+
+/** 手机端发起一轮 ACP 委托：Agent 由电脑端 ACP 目录决定，text/attachments 与内置 prompt 同语义 */
+export const remoteAcpPromptSchema = z.object({
+  agentId: z.string().trim().min(1).max(64),
+  text: z.string().trim().max(100_000),
+  continueFromRunId: z.string().trim().min(1).max(200).optional(),
+  attachments: z.array(z.object({
+    name: z.string().trim().min(1).max(200),
+    data: z.string().min(1).max(ATTACHMENT_DATA_MAX),
+    mimeType: z.string().trim().min(1).max(100).optional(),
+  }).strict()).max(4).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.text && !(value.attachments?.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["text"], message: "消息与附件不能同时为空" });
+  }
+});
 
 export const remoteInteractionAnswerSchema = z.object({
   answer: z.union([

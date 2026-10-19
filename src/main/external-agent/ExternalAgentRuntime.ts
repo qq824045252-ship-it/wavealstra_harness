@@ -495,6 +495,7 @@ export class ExternalAgentRuntime {
       startedAt,
       outputCursor: 0,
       artifactRefs: [],
+      pendingPermissions: [],
       capabilities: { cancelSupported: true, resumeSupported: false },
       verification: { status: "not_verified", message: "尚未完成工作目录观察；传输状态不等于业务验证。" },
       recovery: { state: "none" },
@@ -928,6 +929,24 @@ export class ExternalAgentRuntime {
         options,
         resolve,
       });
+      // run 快照同步带上等待中的授权选项：Remote（手机端）只读 run 快照，
+      // 不进这个 Map，必须靠快照才能渲染「允许一次 / 始终允许 / 拒绝」。
+      this.syncPendingPermissions(run);
+    });
+  }
+
+  /** 把该 run 仍在等待的权限请求投影进 dto（桌面/手机审批 UI 共用同一份快照） */
+  private syncPendingPermissions(run: ActiveRun): void {
+    const pending = [...this.permissions.values()].filter((item) => item.runId === run.dto.runId);
+    run.dto.pendingPermissions = pending.map((item) => {
+      const tool = this.readTools(run.dto.runId).find((entry) => entry.id === item.toolCallId);
+      return {
+        toolCallId: item.toolCallId,
+        tool: tool?.tool ?? "tool",
+        summary: tool?.summary ?? "需要授权",
+        detail: tool?.detail,
+        options: item.options,
+      };
     });
   }
 
@@ -941,6 +960,7 @@ export class ExternalAgentRuntime {
     pending.resolve({ outcome: { outcome: "selected", optionId: option.optionId } });
     const run = this.activeRuns.get(request.runId);
     if (run) {
+      this.syncPendingPermissions(run);
       const denied = option.kind.startsWith("reject");
       this.updateRun(run, "working");
       this.updateTool(run, request.toolCallId, { status: denied ? "denied" : "running" });
@@ -1235,6 +1255,7 @@ export class ExternalAgentRuntime {
         this.permissions.delete(key);
         pending.resolve({ outcome: { outcome: "cancelled" } });
       }
+      run.dto.pendingPermissions = [];
       const child = run.process;
       if (child && child.exitCode === null && child.signalCode === null) {
         // Retain ownership while kill is pending, including cancelled runs hidden by active().
@@ -1255,6 +1276,13 @@ export class ExternalAgentRuntime {
       // Cancellation is a terminal user decision. Persist it immediately so a slow
       // adapter response cannot keep the run visible or overwrite it with completed.
       this.updateRun(run, "cancelled", { completedAt: Date.now() });
+      // 取消即终态：等待中的授权请求一并作废，避免手机/桌面仍渲染可点击的审批卡片
+      for (const [key, pending] of this.permissions) {
+        if (pending.runId !== run.dto.runId) continue;
+        this.permissions.delete(key);
+        pending.resolve({ outcome: { outcome: "cancelled" } });
+      }
+      run.dto.pendingPermissions = [];
       try {
         if (run.context && run.dto.sessionId) {
           await run.context.notify(acp.methods.agent.session.cancel, { sessionId: run.dto.sessionId });
@@ -1306,6 +1334,8 @@ export class ExternalAgentRuntime {
         error: row.error ? String(row.error) : undefined,
         outputCursor: Number(row.output_cursor || 0),
         artifactRefs,
+        // 历史 run 的等待中授权请求随进程存在与否失效；只有在内存里仍存活的 run 才可能恢复交互
+        pendingPermissions: [],
         capabilities: {
           cancelSupported: Number(row.cancel_supported ?? 1) === 1,
           resumeSupported: Number(row.resume_supported ?? 0) === 1 && Boolean(row.session_id),

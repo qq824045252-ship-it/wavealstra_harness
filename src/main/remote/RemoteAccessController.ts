@@ -49,14 +49,15 @@ export class RemoteAccessController {
     workGraph?: RemoteWorkGraphCleanup,
   ) {
     this.service = new RemoteAccessService(db, agent, notifications, projects, this.settings, externalAgent, artifactSource);
+    // ACP 委托：手机端发起的一轮外部 Agent 执行走同一个 ExternalAgentRuntime（进程留在电脑端）
     this.commands = new RemoteTaskCommandService(db, agent, this.settings, projects,
-      join(getMyBuddyDir(), "remote-uploads"), lifecycle, workGraph);
+      join(getMyBuddyDir(), "remote-uploads"), lifecycle, workGraph, externalAgent);
     this.unsubscribePatch = agent.onPatch((patch) => {
       this.events.publish("agent.patch", mapAgentPatchToRemoteEvent(patch));
       if (patch.type === "tool_start" || patch.type === "tool_update") {
         queueMicrotask(() => this.events.publish("pending_action.changed", {
           taskId: patch.taskId,
-          pendingActions: agent.listPendingActions(patch.taskId),
+          pendingActions: this.service.pendingActions(patch.taskId),
         }));
       }
       if (patch.type === "user_message" || patch.type === "assistant_start" || patch.type === "assistant_end") {
@@ -163,6 +164,16 @@ export class RemoteAccessController {
     this.events.publish("agent.patch", mapAgentPatchToRemoteEvent(patch));
     if (patch.type === "assistant_start" || patch.type === "assistant_end") {
       this.events.publish("task.changed", { taskId: patch.taskId });
+    }
+    // ACP 权限请求由 ExternalAgentRuntime 的 Promise 承担，不会走内置 PendingActionRegistry；
+    // 手机端的审批卡片数据来自 runtime()，这里必须主动推一次让它刷新。
+    if (patch.type === "tool_start" || patch.type === "tool_update") {
+      const taskId = patch.taskId;
+      queueMicrotask(() => this.events.publish("pending_action.changed", {
+        taskId,
+        pendingActions: this.service.pendingActions(taskId),
+        acpRun: this.service.liveAcpRun(taskId) ?? null,
+      }));
     }
   }
 

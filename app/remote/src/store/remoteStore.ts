@@ -79,6 +79,12 @@ interface State {
   selectedModePresetId: string | null
   setSelectedWelcomeMode: (mode: RemoteWelcomeMode | null) => void
   setSelectedModePresetId: (id: string | null) => void
+  /** ACP 外部 Agent：null = 内置 Pi；非空 = 本轮委托给电脑端该 Agent */
+  selectedAcpAgentId: string | null
+  setSelectedAcpAgentId: (id: string | null) => void
+  isAcpSheetOpen: boolean
+  setAcpSheetOpen: (open: boolean) => void
+  refreshAcpAgents: () => Promise<void>
   taskSetupSection: 'location' | 'project' | 'mode' | 'tag' | null
   setTaskSetupSection: (section: State['taskSetupSection']) => void
   attachments: PendingAttachment[]
@@ -108,6 +114,10 @@ interface State {
   deleteTask(taskId: string): Promise<void>
   startNewTask(spaceId?: string): void
   send(text: string, attachments?: PendingAttachment[]): Promise<void>
+  sendAcp(text: string, attachments?: PendingAttachment[], continueFromRunId?: string): Promise<void>
+  /** 新建任务并直接交给 ACP Agent（首页选中 Agent 的第一轮） */
+  createAcp(text: string, attachments?: PendingAttachment[]): Promise<void>
+  resolveAcpPermission(toolCallId: string, optionId: string): Promise<void>
   create(text: string, attachments?: PendingAttachment[]): Promise<void>
   abort(): Promise<void>
   approve(toolCallId: string, decision: 'deny' | 'allow-once' | 'allow-task-dir'): Promise<void>
@@ -160,6 +170,13 @@ function recordLocalDoneAck(taskId: string, at: number): void {
 function resetTransientOverrides(): Partial<State> {
   return { selectedModelId: null, toolAccessMode: 'follow', selectedProjectId: null, selectedSpaceId: null,
     selectedWelcomeMode: null, selectedModePresetId: null, taskSetupSection: null }
+}
+/**
+ * ACP 选择是「粘性」的：用户选了某个外部 Agent，后续每轮都还给它，直到手动切回内置 Pi。
+ * 只随「切换任务 / 回首页」清理，避免任务 A 选的 Agent 泄漏到任务 B（两个 Agent 共用同一 cwd 会互相踩）。
+ */
+function resetAcpSelection(): Pick<State, 'selectedAcpAgentId' | 'isAcpSheetOpen'> {
+  return { selectedAcpAgentId: null, isAcpSheetOpen: false }
 }
 function getClearedNoticeIds(): Set<string> {
   try {
@@ -298,6 +315,26 @@ export const useRemoteStore = create<State>((set, get) => ({
   setSelectedSpaceId: (selectedSpaceId) => set({ selectedSpaceId }),
   selectedWelcomeMode: null,
   selectedModePresetId: null,
+  /**
+   * ACP 外部 Agent 选择：null = 用内置 Pi（默认）；
+   * 选择后当前任务的发送会走电脑端真实 ACP 进程（/v1/tasks/:id/acp）。
+   */
+  selectedAcpAgentId: null,
+  setSelectedAcpAgentId: (selectedAcpAgentId) => set({ selectedAcpAgentId }),
+  isAcpSheetOpen: false,
+  setAcpSheetOpen: (isAcpSheetOpen) => set({ isAcpSheetOpen }),
+  /** ACP 目录刷新（电脑端装/卸载 CLI 后手动重探） */
+  async refreshAcpAgents() {
+    const client = get().client
+    if (!client) return
+    try {
+      const acpAgents = await client.acpAgents(true)
+      const bootstrap = get().bootstrap
+      if (bootstrap) set({ bootstrap: { ...bootstrap, acpAgents } })
+    } catch (error) {
+      console.warn('refresh acp agents failed', error)
+    }
+  },
   setSelectedWelcomeMode: (selectedWelcomeMode) => set({ selectedWelcomeMode, selectedModePresetId: null,
     ...(selectedWelcomeMode === 'bot' ? { toolAccessMode: 'follow' as const, isPermissionSheetOpen: false } : {}) }),
   setSelectedModePresetId: (selectedModePresetId) => set({ selectedModePresetId }),
@@ -447,7 +484,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     ++navigationRevision
     saveLastActiveTaskId(taskId)
     const previousTaskId = get().activeTaskId
-    set(state => ({ activeTaskId: taskId, ...(state.activeTaskId !== taskId ? resetTransientOverrides() : {}) }))
+    set(state => ({ activeTaskId: taskId, ...(state.activeTaskId !== taskId ? { ...resetTransientOverrides(), ...resetAcpSelection() } : {}) }))
     // 打开任务 = 已查看结果：先清绿点（本地即时生效），再落库给所有设备共享
     void get().markTaskDoneSeen(taskId)
 
@@ -520,7 +557,7 @@ export const useRemoteStore = create<State>((set, get) => ({
   goHome() {
     ++navigationRevision
     saveLastActiveTaskId(null)
-    set({ activeTaskId: null, ...resetTransientOverrides() })
+    set({ activeTaskId: null, ...resetTransientOverrides(), ...resetAcpSelection() })
   },
   async deleteTask(taskId) {
     const { client, bootstrap, histories, runtimes, live } = get()
@@ -546,7 +583,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     set({
       bootstrap: bootstrap ? { ...bootstrap, tasks: nextTasks } : bootstrap,
       histories: nextHistories, runtimes: nextRuntimes, live: nextLive,
-      ...(activeDeleted ? { activeTaskId: null, ...resetTransientOverrides() } : {}),
+      ...(activeDeleted ? { activeTaskId: null, ...resetTransientOverrides(), ...resetAcpSelection() } : {}),
     })
     // 与桌面端一致：从任务所属空间/项目的计数里移除
     if (removedEntry) void refresh().catch(() => undefined)
@@ -554,7 +591,7 @@ export const useRemoteStore = create<State>((set, get) => ({
   startNewTask(spaceId) {
     ++navigationRevision
     saveLastActiveTaskId(null)
-    set({ activeTaskId: null, ...resetTransientOverrides(), selectedSpaceId: spaceId ?? null,
+    set({ activeTaskId: null, ...resetTransientOverrides(), ...resetAcpSelection(), selectedSpaceId: spaceId ?? null,
       attachments: [], isDrawerOpen: false, isAddToChatOpen: false, isModelSheetOpen: false, isPermissionSheetOpen: false })
   },
   async send(text, pendingAttachments = []) {
@@ -612,6 +649,139 @@ export const useRemoteStore = create<State>((set, get) => ({
       if (runtime) set((state) => ({ runtimes: { ...state.runtimes, [activeTaskId]: runtime } }))
     } finally {
       set({ sending: false })
+    }
+  },
+  /**
+   * ACP 委托发送：与内置 send() 同一套「POST 成功即提交」语义。
+   * 电脑端会起真实 ACP 进程；手机端先乐观落用户/助手气泡，流式输出由 SSE agent.patch 补齐，
+   * runtime 随后刷新出 running/blocked 与权限卡片。
+   */
+  async sendAcp(text, pendingAttachments = [], continueFromRunId) {
+    const { client, activeTaskId, sending, selectedAcpAgentId } = get()
+    const agentId = selectedAcpAgentId
+    if (!client || !activeTaskId || sending) return
+    if (!agentId) throw new Error('请先选择 ACP Agent')
+    const attachments = pendingAttachments.map(toAttachmentInput).filter(Boolean) as RemoteAttachmentInput[]
+    const submittedAt = Date.now() + serverOffsetMs
+    set({ sending: true })
+    try {
+      const result = await client.acpPrompt(activeTaskId, {
+        agentId,
+        text,
+        continueFromRunId,
+        attachments: attachments.length ? attachments : undefined,
+      })
+      set((state) => {
+        const fallback: RemoteHistoryMessage = {
+          id: result.userMessageId,
+          role: 'user',
+          text,
+          createdAt: submittedAt,
+          attachments: pendingAttachments.length ? pendingAttachments.map((a) => ({ name: a.name })) : undefined,
+        }
+        const existing = state.live[activeTaskId]?.[result.userMessageId]
+        const assistant = state.live[activeTaskId]?.[result.assistantMessageId] ?? {
+          id: result.assistantMessageId, role: 'assistant' as const, text: '', createdAt: submittedAt + 0.01, streaming: true,
+        }
+        return {
+          live: {
+            ...state.live,
+            [activeTaskId]: {
+              ...(state.live[activeTaskId] ?? {}),
+              [result.assistantMessageId]: { ...assistant, replyToId: result.userMessageId, acp: result.run },
+              [result.userMessageId]: existing
+                ? { ...existing, text: existing.text || text, attachments: existing.attachments ?? fallback.attachments }
+                : fallback,
+            },
+          },
+        }
+      })
+      // 立即拉一次 runtime：ACP 启动后马上就要显示「Agent 执行中 / 待授权」，不能等 7 秒轮询
+      const runtime = await client.runtime(activeTaskId).catch((error) => {
+        console.warn('runtime refresh after acp prompt failed', error)
+        return null
+      })
+      if (runtime) set((state) => ({ runtimes: { ...state.runtimes, [activeTaskId]: runtime } }))
+    } finally {
+      set({ sending: false })
+    }
+  },
+  /**
+   * ACP 权限应答：必须回传 Agent 声明的 optionId（allow_once/allow_always/reject_*），
+   * 不是内置工具的 allow-once/deny 布尔语义。
+   */
+  async resolveAcpPermission(toolCallId, optionId) {
+    const { client, activeTaskId } = get()
+    if (!client || !activeTaskId) return
+    await client.approve(activeTaskId, toolCallId, { decision: 'allow-once', optionId })
+    await syncTaskHistory(activeTaskId)
+  },
+  /**
+   * 新建任务并直接交给 ACP Agent：任务行由电脑端落库，手机端拿到 task + run 后立即进入该任务。
+   * 失败（Agent 不可用/校验失败）由调用方恢复草稿；任务不会被半创建（电脑端回滚）。
+   */
+  async createAcp(text, pendingAttachments = []) {
+    const { client, creating, selectedProjectId, selectedSpaceId, selectedWelcomeMode, selectedModePresetId, selectedAcpAgentId, bootstrap } = get()
+    if (!client || creating) return
+    if (!selectedAcpAgentId) throw new Error('请先选择 ACP Agent')
+    const mode = bootstrap?.taskModes?.find(item => item.id === selectedWelcomeMode)
+    if (!mode || !selectedModePresetId || !mode.tags.some(tag => tag.id === selectedModePresetId)) {
+      throw new Error('请先选择模式和 Tag；若选项不可用，请更新电脑端并刷新连接')
+    }
+    if (selectedSpaceId) {
+      const space = bootstrap?.spaces.find(item => item.id === selectedSpaceId)
+      if (!space || space.effectiveArchived || space.archived || space.pathMissing) throw new Error('所选空间文件夹已不可用，请重新选择或在电脑端修复')
+    }
+    if (selectedProjectId && !bootstrap?.projects.some(project => project.id === selectedProjectId && !project.archived)) {
+      throw new Error('所选项目已不可用，请重新选择')
+    }
+    const attachments = pendingAttachments.map(toAttachmentInput).filter(Boolean) as RemoteAttachmentInput[]
+    const submittedAt = Date.now() + serverOffsetMs
+    set({ creating: true })
+    try {
+      const result = await client.createAcpTask({
+        agentId: selectedAcpAgentId,
+        text,
+        spaceId: selectedSpaceId ?? undefined,
+        projectId: selectedProjectId ?? undefined,
+        welcomeMode: mode.id,
+        modePresetId: selectedModePresetId,
+        attachments: attachments.length ? attachments : undefined,
+      })
+      await refresh().catch((error) => console.warn('bootstrap refresh after acp create failed', error))
+      saveLastActiveTaskId(result.task.id)
+      set((state) => {
+        const fallback: RemoteHistoryMessage = {
+          id: result.userMessageId,
+          role: 'user',
+          text,
+          createdAt: submittedAt,
+          attachments: pendingAttachments.length ? pendingAttachments.map(a => ({ name: a.name })) : undefined,
+        }
+        const existing = state.live[result.task.id]?.[result.userMessageId]
+        return {
+          activeTaskId: result.task.id,
+          live: {
+            ...state.live,
+            [result.task.id]: {
+              ...(state.live[result.task.id] ?? {}),
+              [result.assistantMessageId]: {
+                id: result.assistantMessageId, role: 'assistant' as const, text: '', createdAt: submittedAt + 0.01,
+                streaming: true, replyToId: result.userMessageId, acp: result.run,
+              },
+              [result.userMessageId]: existing
+                ? { ...existing, text: existing.text || text, attachments: existing.attachments ?? fallback.attachments }
+                : fallback,
+            },
+          },
+          // 新任务已提交：空间/项目/Tag 一次性选择复位；ACP Agent 保持粘性（下一轮还是它）
+          ...resetTransientOverrides(),
+        }
+      })
+      const runtime = await client.runtime(result.task.id).catch(() => null)
+      if (runtime) set((state) => ({ runtimes: { ...state.runtimes, [result.task.id]: runtime } }))
+    } finally {
+      set({ creating: false })
     }
   },
   async create(text, pendingAttachments = []) {
@@ -834,11 +1004,16 @@ export function applyEvent(event: RemoteEventEnvelope): void {
     return
   }
   if (event.type === 'pending_action.changed') {
-    const payload = event.payload as { taskId: string; pendingActions: RemoteRuntimeSnapshot['pendingActions'] }
+    const payload = event.payload as {
+      taskId: string
+      pendingActions: RemoteRuntimeSnapshot['pendingActions']
+      acpRun?: RemoteRuntimeSnapshot['acpRun']
+    }
     useRemoteStore.setState(current => ({
       runtimes: { ...current.runtimes, [payload.taskId]: {
         ...(current.runtimes[payload.taskId] ?? { taskId: payload.taskId, busy: true, interactions: [], activeGoal: null }),
         pendingActions: payload.pendingActions,
+        ...(payload.acpRun !== undefined ? { acpRun: payload.acpRun } : {}),
       } },
     }))
     return

@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 720" width="1180" height="720" role="img" aria-label="安卓端 ACP 委托链路">
+  <rect width="1180" height="720" fill="#f7f8fa"/>
+  <text x="32" y="44" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700" fill="#111827">安卓端使用 ACP 外部 Agent：真实链路</text>
+  <text x="32" y="72" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" fill="#4b5563">进程、session、工作目录都在 Windows 主机；手机只发指令、看流、点授权</text>
+
+  <!-- Lanes -->
+  <rect x="32" y="96" width="300" height="470" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="356" y="96" width="330" height="470" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="710" y="96" width="438" height="470" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="182" y="122" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#111827">安卓 App（Capacitor WebView）</text>
+  <text x="521" y="122" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#111827">电脑端 Remote Access</text>
+  <text x="929" y="122" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#111827">电脑端执行链</text>
+
+  <!-- Phone boxes -->
+  <rect x="56" y="146" width="252" height="66" rx="8" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="182" y="172" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="600" fill="#312e81">composer ACP 胶囊</text>
+  <text x="182" y="194" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#3730a3">bootstrap.acpAgents 目录</text>
+
+  <rect x="56" y="232" width="252" height="66" rx="8" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="182" y="258" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="600" fill="#312e81">remoteStore.sendAcp()</text>
+  <text x="182" y="280" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#3730a3">POST /v1/tasks/:id/acp</text>
+
+  <rect x="56" y="318" width="252" height="66" rx="8" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="182" y="344" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="600" fill="#312e81">ACP 权限卡片</text>
+  <text x="182" y="366" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#3730a3">每个 optionId 一个按钮</text>
+
+  <rect x="56" y="404" width="252" height="66" rx="8" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="182" y="430" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="600" fill="#312e81">SSE /v1/events</text>
+  <text x="182" y="452" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#3730a3">agent.patch + pending_action.changed</text>
+
+  <rect x="56" y="490" width="252" height="56" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+  <text x="182" y="514" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#92400e">Android 包 1.1.23（versionCode 25）</text>
+  <text x="182" y="533" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#92400e">assets/public 已含新 UI</text>
+
+  <!-- Server boxes -->
+  <rect x="380" y="146" width="282" height="66" rx="8" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="521" y="170" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#065f46">GET /v1/acp/agents[?refresh=1]</text>
+  <text x="521" y="191" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#047857">只投影已启用；缺 CLI 标 available:false</text>
+
+  <rect x="380" y="232" width="282" height="66" rx="8" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="521" y="256" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#065f46">POST /v1/tasks/:id/acp</text>
+  <text x="521" y="277" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#047857">202 + run 投影；同任务并发 → 409</text>
+
+  <rect x="380" y="318" width="282" height="66" rx="8" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="521" y="342" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#065f46">POST …/actions/:id/respond</text>
+  <text x="521" y="363" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#047857">{ decision, optionId }</text>
+
+  <rect x="380" y="404" width="282" height="66" rx="8" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="521" y="428" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#065f46">GET …/runtime · …/history</text>
+  <text x="521" y="449" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#047857">acpRun + approvalKind:"acp"</text>
+
+  <rect x="380" y="490" width="282" height="56" rx="8" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="521" y="514" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="600" fill="#374151">RemoteAccessController</text>
+  <text x="521" y="533" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#4b5563">外部事件 → SSE 事件总线</text>
+
+  <!-- Host boxes -->
+  <rect x="734" y="146" width="390" height="66" rx="8" fill="#fff7ed" stroke="#f97316"/>
+  <text x="929" y="170" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#9a3412">ExternalAgentRuntime.listAgents()</text>
+  <text x="929" y="191" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#c2410c">ACP 管理页开关 + CLI/adapter 探测</text>
+
+  <rect x="734" y="232" width="390" height="66" rx="8" fill="#fff7ed" stroke="#f97316"/>
+  <text x="929" y="256" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#9a3412">ExternalAgentRuntime.prompt()</text>
+  <text x="929" y="277" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#c2410c">spawn ACP 子进程（cwd = 任务工作目录）</text>
+
+  <rect x="734" y="318" width="390" height="66" rx="8" fill="#fff7ed" stroke="#f97316"/>
+  <text x="929" y="342" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#9a3412">resolvePermission(optionId)</text>
+  <text x="929" y="363" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#c2410c">dto.pendingPermissions 同步给桌面/手机</text>
+
+  <rect x="734" y="404" width="390" height="66" rx="8" fill="#fff7ed" stroke="#f97316"/>
+  <text x="929" y="428" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#9a3412">external_agent_runs（SQLite）</text>
+  <text x="929" y="449" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#c2410c">与 Pi session 历史按 createdAt 合并投影</text>
+
+  <rect x="734" y="490" width="390" height="56" rx="8" fill="#fff7ed" stroke="#f97316"/>
+  <text x="929" y="514" text-anchor="middle" font-family="Consolas, monospace" font-size="12" font-weight="600" fill="#9a3412">abort → runtime.cancel(taskId)</text>
+  <text x="929" y="533" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="11" fill="#c2410c">ACP 进程与内置 Pi 两条链一起停</text>
+
+  <!-- Arrows phone<->server -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/>
+    </marker>
+  </defs>
+
+  <line x1="308" y1="179" x2="376" y2="179" stroke="#4b5563" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="308" y1="265" x2="376" y2="265" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+  <line x1="308" y1="351" x2="376" y2="351" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+  <line x1="376" y1="437" x2="308" y2="437" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+
+  <!-- Arrows server<->host -->
+  <line x1="662" y1="179" x2="730" y2="179" stroke="#4b5563" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="662" y1="265" x2="730" y2="265" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+  <line x1="662" y1="351" x2="730" y2="351" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+  <line x1="730" y1="437" x2="662" y2="437" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrowAccent)"/>
+
+  <!-- Flow order labels -->
+  <text x="342" y="160" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="10" fill="#6b7280">①目录</text>
+  <text x="342" y="246" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="10" fill="#6b7280">②委托</text>
+  <text x="342" y="332" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="10" fill="#6b7280">③授权</text>
+  <text x="342" y="418" text-anchor="middle" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="10" fill="#6b7280">④流式</text>
+
+  <!-- Footer note -->
+  <rect x="32" y="590" width="1116" height="98" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="52" y="616" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700" fill="#111827">已验证的边界（不是推断）</text>
+  <text x="52" y="640" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 手机会话里没有电脑路径：run 投影只含 runId / agentId / status / sessionReady / resumeSupported / verificationStatus / commandLabel，不含 cwd。</text>
+  <text x="52" y="661" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• ACP 审批不经过内置 PendingActionRegistry，必须由 ExternalAgentRuntime 的 Promise + dto.pendingPermissions 提供选项；用错 optionId 返回 400，重复点返回 409。</text>
+  <text x="52" y="682" font-family="Segoe UI, Noto Sans CJK SC, sans-serif" font-size="12" fill="#374151">• 同一任务只允许一个活着的 ACP run；续聊要求同任务 + 同 Agent + 上一轮真的建立了可恢复 session，否则降级为 continuationMode:"new"。</text>
+</svg>

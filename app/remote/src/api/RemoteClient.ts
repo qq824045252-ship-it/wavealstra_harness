@@ -1,4 +1,9 @@
 import type {
+  RemoteAcpAgentSummary,
+  RemoteAcpCreateRequest,
+  RemoteAcpCreateResponse,
+  RemoteAcpPromptRequest,
+  RemoteAcpPromptResponse,
   RemoteApprovalRequest,
   RemoteBootstrap,
   RemoteEventEnvelope,
@@ -37,6 +42,11 @@ export class RemoteClient {
   runtime(taskId: string) { return this.get<RemoteRuntimeSnapshot>(`/v1/tasks/${encodeURIComponent(taskId)}/runtime`) }
   notifications() { return this.get<RemoteNotification[]>('/v1/notifications?limit=100') }
   createTask(request: RemotePromptRequest) { return this.post<RemotePromptResponse>('/v1/tasks', request) }
+  /** 新任务第一轮直接交给 ACP 外部 Agent（契约字段名是 acpAgentId，本地用 agentId 复用请求类型） */
+  createAcpTask(request: RemoteAcpCreateRequest) {
+    const { agentId, ...rest } = request
+    return this.post<RemoteAcpCreateResponse>('/v1/tasks', { ...rest, acpAgentId: agentId })
+  }
   prompt(taskId: string, request: RemotePromptRequest) { return this.post<RemotePromptResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/prompt`, request) }
   abort(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/abort`, {}) }
   /** 「已结束」绿点确认：打开任务 = 已查看。电脑端写 tasks.done_acked_at，多设备共享同一状态。 */
@@ -44,6 +54,12 @@ export class RemoteClient {
   /** 删除任务：服务端走安全回收（可恢复），不是物理删除。 */
   deleteTask(taskId: string) { return this.del(`/v1/tasks/${encodeURIComponent(taskId)}`) }
   approve(taskId: string, toolCallId: string, request: RemoteApprovalRequest) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/actions/${encodeURIComponent(toolCallId)}/respond`, request) }
+  /** ACP 外部 Agent 目录：手机端 Agent 选择器；refresh=1 让电脑端重新探测 CLI/adapter */
+  acpAgents(refresh = false) { return this.get<RemoteAcpAgentSummary[]>(`/v1/acp/agents${refresh ? '?refresh=1' : ''}`) }
+  /** 在电脑端起一轮真实 ACP 进程执行（长任务；流式输出走 /v1/events） */
+  acpPrompt(taskId: string, request: RemoteAcpPromptRequest) {
+    return this.post<RemoteAcpPromptResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/acp`, request)
+  }
   respondInteraction(taskId: string, interactionId: string, answer: RemoteConversationInteractionAnswer) {
     return this.post<RemoteConversationInteractionMutationResult>(
       `/v1/tasks/${encodeURIComponent(taskId)}/interactions/${encodeURIComponent(interactionId)}/respond`,

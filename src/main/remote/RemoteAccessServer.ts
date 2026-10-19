@@ -10,7 +10,7 @@ import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
 import { isPrivateIpv4 } from "./RemoteNetwork";
 import { RemoteConflictError, RemoteNotFoundError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
-import { remoteApprovalSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
+import { remoteAcpPromptSchema, remoteApprovalSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
 
 const BODY_LIMIT = 512 * 1024;
 /** prompt 路由允许携带 base64 附件：4 个 × ~3MB 原始字节（≈4M base64 字符）+ JSON 包裹 */
@@ -198,12 +198,28 @@ export class RemoteAccessServer {
       if (request.method === "GET" && path === "/v1/bootstrap") return replyJson(200, await this.options.service.bootstrap(auth.device));
       if (request.method === "GET" && path === "/v1/tasks") return replyJson(200, this.options.service.listTasks());
       if (request.method === "GET" && path === "/v1/device/me") return replyJson(200, auth.device);
+      // ACP 外部 Agent 目录：手机端选择器的数据源（只读，不启动子进程）
+      if (request.method === "GET" && path === "/v1/acp/agents") {
+        return replyJson(200, this.options.service.listAcpAgents(url.searchParams.get("refresh") === "1"));
+      }
       if (request.method === "POST" && path === "/v1/device/revoke-self") {
         this.options.devices.revoke(auth.principal.deviceId);
         return replyJson(200, { ok: true });
       }
       if (request.method === "POST" && path === "/v1/tasks") {
-        const result = await this.options.commands.createAndPrompt(remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT)));
+        const body = remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT));
+        // 首页选了 ACP Agent：新任务第一轮直接起电脑端 ACP 进程（不经过内置 Pi）
+        if (body.acpAgentId) {
+          const result = await this.options.commands.createWithAcp({
+            ...body,
+            agentId: body.acpAgentId,
+          });
+          this.options.events.publish("task.changed", { taskId: result.task.id });
+          return replyJson(201, result);
+        }
+        const { acpAgentId: _acpAgentId, ...nativeRequest } = body;
+        void _acpAgentId;
+        const result = await this.options.commands.createAndPrompt(nativeRequest);
         return replyJson(201, result);
       }
       const imageMatch = /^\/v1\/tasks\/([^/]+)\/artifacts\/([^/]+)\/image$/.exec(path);
@@ -223,7 +239,7 @@ export class RemoteAccessServer {
         response.end(request.method === 'HEAD' ? undefined : image.bytes);
         return;
       }
-      const taskMatch = /^\/v1\/tasks\/([^/]+)(?:\/(history|runtime|prompt|abort|ackDone))?$/.exec(path);
+      const taskMatch = /^\/v1\/tasks\/([^/]+)(?:\/(history|runtime|prompt|acp|abort|ackDone))?$/.exec(path);
       if (taskMatch) {
         const taskId = decodeURIComponent(taskMatch[1]);
         const action = taskMatch[2];
@@ -244,6 +260,13 @@ export class RemoteAccessServer {
         if (request.method === "POST" && action === "prompt") {
           const result = await this.options.commands.promptExisting(taskId, remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT)));
           return replyJson(200, result);
+        }
+        // ACP 外部 Agent：在电脑端起真实 ACP 进程执行本轮（长任务，流式结果走 /v1/events）
+        if (request.method === "POST" && action === "acp") {
+          const body = remoteAcpPromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT));
+          const result = this.options.commands.acpPromptExisting(taskId, body.agentId, body);
+          this.options.events.publish("task.changed", { taskId });
+          return replyJson(202, result);
         }
         if (request.method === "POST" && action === "abort") {
           await this.options.commands.abort(taskId);

@@ -4,8 +4,12 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
-  RemoteAttachmentInput,
+  RemoteAcpCreateRequest,
+  RemoteAcpCreateResponse,
+  RemoteAcpPromptRequest,
+  RemoteAcpPromptResponse,
   RemoteApprovalRequest,
+  RemoteAttachmentInput,
   RemoteConversationInteractionAnswer,
   RemoteConversationInteractionMutationResult,
   RemotePromptRequest,
@@ -14,8 +18,9 @@ import type {
 import type { AppSettingsStore } from "../AppSettingsStore";
 import type { AgentService } from "../agent/AgentService";
 import type { AppDatabase } from "../db/AppDatabase";
+import type { ExternalAgentRuntime } from "../external-agent/ExternalAgentRuntime";
 import { getMyBuddyDir } from "../paths";
-import { mapRemoteTask } from "./RemoteDtoMapper";
+import { mapRemoteAcpRun, mapRemoteTask } from "./RemoteDtoMapper";
 
 interface ProjectLookup { get(id: string): unknown | undefined }
 
@@ -75,6 +80,8 @@ export class RemoteTaskCommandService {
     /** 删除复用桌面端 taskLifecycle.trash（安全回收，可恢复）；缺省时退化为仅标记 trashed */
     private readonly lifecycle?: RemoteTrashLifecycle,
     private readonly workGraph?: RemoteWorkGraphCleanup,
+    /** ACP 外部 Agent：手机端把一轮委托交给电脑端真实 ACP 进程 */
+    private readonly externalAgent?: ExternalAgentRuntime,
   ) {}
 
   async createAndPrompt(request: RemotePromptRequest): Promise<RemotePromptResponse> {
@@ -242,7 +249,138 @@ export class RemoteTaskCommandService {
 
   async abort(taskId: string): Promise<void> {
     this.requireTask(taskId);
+    // ACP 外部 Agent 与内置 Pi 是两条执行链：手机端点「停止」必须两条都停，
+    // 否则 ACP 进程会继续在电脑端跑完（用户以为已中断）。
+    if (this.externalAgent?.active(taskId).length) this.externalAgent.cancel(undefined, taskId);
     await this.agent.abort(taskId);
+  }
+
+  /**
+   * 手机端发起一轮 ACP 委托（当前任务）：
+   * 1) 校验 Agent 在电脑端 ACP 目录里可用且已启用；
+   * 2) 写入本轮用户/助手消息 id，交给 ExternalAgentRuntime.prompt（真实 ACP 进程在电脑端跑）；
+   * 3) 返回手机端投影（run 信息），UI 通过 SSE agent.patch 收到流式输出。
+   */
+  acpPromptExisting(taskId: string, agentId: string, request: RemoteAcpPromptRequest): RemoteAcpPromptResponse {
+    this.requireTask(taskId);
+    if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
+    const runtime = this.requireAcpRuntime();
+    this.requireAvailableAgent(agentId, runtime);
+    const text = request.text.trim();
+    if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
+    // ACP 是长时子进程：同一任务只允许一轮在跑，避免两个 Agent 同时改同一个工作目录。
+    if (this.externalAgent!.active(taskId).length) {
+      throw new RemoteConflictError("该任务已有 ACP Agent 正在执行，请先停止或等待完成");
+    }
+    const continuation = this.resolveAcpContinuation(taskId, agentId, request.continueFromRunId);
+    const userMessageId = `remote-acp-user-${randomUUID()}`;
+    const assistantMessageId = `remote-acp-assistant-${randomUUID()}`;
+    let runId: string;
+    try {
+      runId = runtime.prompt({
+        taskId,
+        agentId: agentId as Parameters<typeof runtime.prompt>[0]["agentId"],
+        text,
+        displayText: text,
+        userMessageId,
+        assistantMessageId,
+        ...(continuation ? { continueFromRunId: continuation } : {}),
+      }).runId;
+    } catch (error) {
+      throw new RemoteValidationError(error instanceof Error ? error.message : String(error));
+    }
+    const run = runtime.history(taskId).runs.find((candidate) => candidate.runId === runId);
+    if (!run) throw new RemoteConflictError("ACP Run 未能建立，请稍后重试");
+    return { run: mapRemoteAcpRun(run), userMessageId, assistantMessageId };
+  }
+
+  private requireAcpRuntime(): ExternalAgentRuntime {
+    if (!this.externalAgent) throw new RemoteConflictError("当前电脑端未初始化 ACP Runtime，请更新电脑端");
+    return this.externalAgent;
+  }
+
+  /**
+   * 新建任务并直接委托给 ACP 外部 Agent（首页选好 Agent 时的第一轮）。
+   * 与 createAndPrompt 同一套校验/回滚语义，只是执行侧换成 ExternalAgentRuntime：
+   * 任务行先落库（ACP 需要 taskId 解析 cwd），失败则连同附件目录一起回滚。
+   */
+  async createWithAcp(request: RemoteAcpCreateRequest): Promise<RemoteAcpCreateResponse> {
+    const text = request.text.trim();
+    if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
+    const space = request.spaceId ? this.db.getSpace(request.spaceId) : undefined;
+    if (request.spaceId && (!space || space.effectiveArchived)) throw new RemoteValidationError("Workspace 不存在或不可用");
+    if (request.projectId && !this.projects.get(request.projectId)) throw new RemoteValidationError("Project 不存在");
+    const welcomeMode = resolveWelcomeMode(request.welcomeMode);
+    if (request.modePresetId && !this.agent.getModeProfile(welcomeMode).policy.presets?.some(tag => tag.id === request.modePresetId)) {
+      throw new RemoteValidationError("所选 Tag 不属于当前模式或已被删除，请刷新后重新选择");
+    }
+    const runtime = this.requireAcpRuntime();
+    this.requireAvailableAgent(request.agentId, runtime);
+
+    const taskId = `remote-${randomUUID()}`;
+    const now = Date.now();
+    this.db.upsertTask({
+      id: taskId,
+      title: titleFromPrompt(text, request.attachments),
+      spaceId: request.spaceId,
+      projectId: request.projectId,
+      updatedAt: now,
+      welcomeMode,
+      modePresetId: request.modePresetId ?? null,
+    });
+    const userMessageId = `remote-acp-user-${randomUUID()}`;
+    const assistantMessageId = `remote-acp-assistant-${randomUUID()}`;
+    try {
+      const attachments = await this.persistAttachments(taskId, request.attachments);
+      const runId = runtime.prompt({
+        taskId,
+        agentId: request.agentId as Parameters<typeof runtime.prompt>[0]["agentId"],
+        text,
+        displayText: text,
+        userMessageId,
+        assistantMessageId,
+        ...(attachments?.length ? { attachments } : {}),
+      }).runId;
+      const run = runtime.history(taskId).runs.find((candidate) => candidate.runId === runId);
+      if (!run) throw new RemoteConflictError("ACP Run 未能建立，请稍后重试");
+      const created = this.requireTask(taskId);
+      return {
+        task: mapRemoteTask(created, {
+          busy: true,
+          pendingActionCount: 0,
+        }),
+        run: mapRemoteAcpRun(run),
+        userMessageId,
+        assistantMessageId,
+      };
+    } catch (error) {
+      this.db.deleteTask(taskId);
+      await cleanupRemoteUploads(taskId, this.uploadsRoot).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Agent 必须在电脑端目录里存在、已启用且可用（CLI/adapter 已安装） */
+  private requireAvailableAgent(agentId: string, runtime: ExternalAgentRuntime): void {
+    const descriptor = runtime.listAgents().find((item) => item.id === agentId);
+    if (!descriptor) throw new RemoteValidationError("电脑端没有这个 ACP Agent");
+    if (!descriptor.enabled) throw new RemoteValidationError(`${descriptor.name} 已在电脑端「ACP 管理」中停用`);
+    if (!descriptor.available) throw new RemoteValidationError(descriptor.detail || `${descriptor.name} ACP Runtime 不可用`);
+  }
+
+  /**
+   * 续聊解析：只续接「同任务、同 Agent、上一轮真的建立了可恢复 session」的 run。
+   * 解析失败一律降级为新 session（与桌面端 fallback_new 语义一致），
+   * 但跨 Agent 的显式续聊请求直接拒绝，避免把另一个 Agent 的上下文带进来。
+   */
+  private resolveAcpContinuation(taskId: string, agentId: string, continueFromRunId?: string): string | undefined {
+    const requested = continueFromRunId?.trim();
+    if (!requested) return undefined;
+    const run = this.externalAgent!.history(taskId).runs.find((candidate) => candidate.runId === requested);
+    if (!run) return undefined;
+    if (run.agentId !== agentId) throw new RemoteValidationError("续聊必须使用同一个 ACP Agent");
+    if (!run.sessionId || !run.capabilities.resumeSupported) return undefined;
+    return run.runId;
   }
 
   respondToInteraction(
@@ -285,7 +423,11 @@ export class RemoteTaskCommandService {
   async deleteTask(taskId: string): Promise<void> {
     this.requireTask(taskId);
     if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已在回收区或已归档");
-    if (this.agent.isTaskBusy(taskId)) throw new RemoteConflictError("任务正在执行，请先停止再删除");
+    // ACP 子进程同样算「任务正在执行」：删除前必须没有活着的 run，
+    // 否则进程会在任务被回收后继续写工作目录。
+    if (this.agent.isTaskBusy(taskId) || this.externalAgent?.active(taskId).length) {
+      throw new RemoteConflictError("任务正在执行，请先停止再删除");
+    }
     if (this.lifecycle) await this.lifecycle.trash(taskId);
     // 无生命周期实现时（仅测试/降级）退化为落库标记，保证远端语义一致。
     else this.db.connection.prepare("UPDATE tasks SET archived = 1 WHERE id = ?").run(taskId);
@@ -294,6 +436,24 @@ export class RemoteTaskCommandService {
   }
 
   respondToAction(taskId: string, toolCallId: string, request: RemoteApprovalRequest): void {
+    // ACP 权限请求走 ExternalAgentRuntime 的 Promise，不在内置审批注册表里：
+    // 必须用 Agent 声明的 optionId 回传，不能用 allow-once/deny 之类的布尔语义。
+    const acpRun = this.externalAgent?.active(taskId).find((run) =>
+      run.pendingPermissions.some((permission) => permission.toolCallId === toolCallId));
+    if (acpRun) {
+      const permission = acpRun.pendingPermissions.find((item) => item.toolCallId === toolCallId)!;
+      const optionId = request.optionId?.trim()
+        || (request.decision === "deny"
+          ? permission.options.find((option) => option.kind.startsWith("reject"))?.optionId
+          : permission.options.find((option) => option.kind === "allow_once")?.optionId);
+      if (!optionId) throw new RemoteValidationError("缺少 ACP 授权选项，请刷新任务状态");
+      if (!permission.options.some((option) => option.optionId === optionId)) {
+        throw new RemoteValidationError("无效的 ACP 授权选项");
+      }
+      const resolved = this.externalAgent!.resolvePermission({ runId: acpRun.runId, toolCallId, optionId });
+      if (!resolved.ok) throw new RemoteConflictError(resolved.message);
+      return;
+    }
     const action = this.agent.listPendingActions(taskId).find((candidate) => candidate.toolCallId === toolCallId);
     if (!action) throw new RemoteConflictError("审批已失效，请刷新任务状态");
     if (request.decision === "allow-task-dir" && action.approvalKind !== "external-write") {

@@ -230,6 +230,15 @@ export interface ExternalAgentPermissionOptionDto {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
 }
 
+/** 一次等待中的 ACP 权限请求（run 快照投影，供桌面/手机共用审批 UI） */
+export interface DelegatedRunPendingPermissionDto {
+  toolCallId: string;
+  tool: string;
+  summary: string;
+  detail?: string;
+  options: ExternalAgentPermissionOptionDto[];
+}
+
 export interface ExternalAgentResolvePermissionRequest {
   runId: string;
   toolCallId: string;
@@ -257,6 +266,11 @@ export interface ExternalAgentRunDto {
   outputCursor: number;
   /** Artifact ids registered by MyBuddy for this delegated run's assistant message. */
   artifactRefs: string[];
+  /**
+   * 当前等待用户授权的 ACP 权限请求（status === "blocked" 时非空）。
+   * 手机端无法读取进程状态，必须从 run 快照里拿到选项才能渲染审批卡片。
+   */
+  pendingPermissions: DelegatedRunPendingPermissionDto[];
   capabilities: DelegatedRunCapabilitiesDto;
   verification: DelegatedRunVerificationDto;
   recovery: DelegatedRunRecoveryDto;

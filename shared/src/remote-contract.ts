@@ -67,6 +67,78 @@ export interface RemoteToolCall {
   status: string
 }
 
+/**
+ * ACP（Agent Client Protocol）外部 Agent 在手机端的投影。
+ * 手机端只做「选 Agent → 发指令 → 看流式输出 → 审批权限」，进程与 session 始终在电脑端。
+ */
+export type RemoteAcpAgentAvailability = 'ready' | 'missing' | 'adapter'
+
+export interface RemoteAcpAgentSummary {
+  id: string
+  name: string
+  protocol: 'acp'
+  /** 电脑端是否检测到可启动的 ACP runtime（CLI / adapter） */
+  available: boolean
+  availability: RemoteAcpAgentAvailability
+  /** ACP 管理页开关；停用后不出现在手机端选择器 */
+  enabled: boolean
+  detail?: string
+  commandLabel: string
+  /** Agent 声明的会话配置项名（模型/会话模式等），仅展示用 */
+  configOptionNames: string[]
+}
+
+/** ACP 授权请求的一项可选动作（kind 决定放行/拒绝与持久范围） */
+export interface RemoteAcpPermissionOption {
+  optionId: string
+  name: string
+  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always'
+}
+
+/** 消息级 ACP 运行投影：本轮属于哪个外部 Agent、能否续聊、恢复/验证状态 */
+export interface RemoteAcpRunInfo {
+  runId: string
+  agentId: string
+  agentName: string
+  protocol: 'acp'
+  /** starting | working | blocked | completed | failed | cancelled */
+  status: string
+  sessionReady: boolean
+  resumeSupported: boolean
+  cancelSupported: boolean
+  continuationMode?: 'new' | 'resume' | 'load' | 'fallback_new'
+  recoveryState: 'none' | 'resume-available' | 'new-run-required'
+  verificationStatus: 'not_verified' | 'workspace_observed'
+  commandLabel: string
+}
+
+/** 手机端发起一轮 ACP 委托：电脑端用 ExternalAgentRuntime 启动真实 ACP 进程 */
+export interface RemoteAcpPromptRequest {
+  agentId: string
+  text: string
+  attachments?: RemoteAttachmentInput[]
+  /** 续接上一轮同一 Agent、同一 cwd 的 session；省略或失效则新建 */
+  continueFromRunId?: string
+}
+
+export interface RemoteAcpPromptResponse {
+  run: RemoteAcpRunInfo
+  userMessageId: string
+  assistantMessageId: string
+}
+
+/** 新建任务并直接交给 ACP 外部 Agent 执行（首页选好 Agent 后的第一轮） */
+export interface RemoteAcpCreateRequest extends RemoteAcpPromptRequest {
+  spaceId?: string
+  projectId?: string
+  welcomeMode?: 'working' | 'coding' | 'bot'
+  modePresetId?: string | null
+}
+
+export interface RemoteAcpCreateResponse extends RemoteAcpPromptResponse {
+  task: RemoteTaskSummary
+}
+
 export interface RemoteArtifactMetadata {
   id: string
   name: string
@@ -95,6 +167,8 @@ export interface RemoteHistoryMessage {
   tools?: RemoteToolCall[]
   artifacts?: RemoteArtifactMetadata[]
   attachments?: Array<{ name: string }>
+  /** 本轮由 ACP 外部 Agent 执行时的运行投影（内置 Pi 轮次为 undefined） */
+  acp?: RemoteAcpRunInfo
 }
 
 export interface RemoteTaskHistory {
@@ -127,13 +201,20 @@ export interface RemotePendingAction {
   summary: string
   detail?: string
   dangerous: boolean
-  approvalKind: 'tool' | 'external-write'
+  /**
+   * tool = 内置 Pi 工具审批；external-write = 目录级写入授权；
+   * acp = ACP 外部 Agent 的权限请求，必须用 optionId 回传（见 RemoteAcpPermissionOption）。
+   */
+  approvalKind: 'tool' | 'external-write' | 'acp'
   createdAt: number
   externalWrite?: {
     targetPath: string
     taskRoot: string
     canonicalDir?: string
   }
+  /** approvalKind === 'acp' 时的运行标识与候选动作 */
+  acpRunId?: string
+  acpPermissionOptions?: RemoteAcpPermissionOption[]
 }
 
 export type RemoteConversationInteractionKind =
@@ -184,6 +265,8 @@ export interface RemoteRuntimeSnapshot {
   interactions: RemoteConversationInteraction[]
   activeGoal: unknown | null
   pendingActions: RemotePendingAction[]
+  /** 当前活着的 ACP 外部 Agent 轮次（无则为 null）；手机端据此显示 Agent 胶囊与停止按钮 */
+  acpRun?: RemoteAcpRunInfo | null
 }
 
 export interface RemoteNotification {
@@ -242,6 +325,11 @@ export interface RemoteBootstrap {
   defaultPermissionMode: 'default' | 'readonly' | 'auto'
   /** Optional for older hosts; new clients require the catalog before creating tasks. */
   taskModes?: RemoteTaskMode[]
+  /**
+   * ACP 外部 Agent 目录（ACP 管理页开关已合并）。旧电脑端没有该字段 → 手机端隐藏 ACP 入口；
+   * 空数组表示电脑端已升级但当前没有可用/已启用的 ACP Agent。
+   */
+  acpAgents?: RemoteAcpAgentSummary[]
 }
 
 /** 远程附件输入：data 为 base64（不带 dataUrl 前缀） */
@@ -274,6 +362,8 @@ export interface RemotePromptResponse {
 
 export interface RemoteApprovalRequest {
   decision: 'deny' | 'allow-once' | 'allow-task-dir'
+  /** approvalKind === 'acp' 时必填：ACP Agent 声明的选项 id（决定放行/拒绝与持久范围） */
+  optionId?: string
 }
 
 export interface RemotePairRequest {

@@ -1,6 +1,6 @@
 # MyBuddy Android / Mobile Remote
 
-Remote Access keeps the Agent runtime, task database, memory, workspaces, projects, skills, MCP tools, and file authority on the Windows host. The mobile client only consumes the narrow `/v1` API (17 routes, Bearer-token authenticated, zod-strict payloads) plus the bundled SPA.
+Remote Access keeps the Agent runtime, task database, memory, workspaces, projects, skills, MCP tools, and file authority on the Windows host. The mobile client only consumes the narrow `/v1` API (Bearer-token authenticated, zod-strict payloads) plus the bundled SPA.
 
 The server supports **three network channels**. Pick one per device; all channels share the same pairing and device-token model, and one phone can move between them without re-pairing (token and baseUrl are decoupled).
 
@@ -52,6 +52,26 @@ Note: reverse mappings are not torn down automatically on unplug today; run `adb
 ## Prompt capabilities
 
 The remote composer is wired end-to-end: the model picker lists the host's actually available models (fetched from `/v1/bootstrap`), the tool-access mode (`default` / `readonly` / `auto`) is forwarded per prompt only when the phone explicitly overrides it (otherwise the task's own mode is kept), and up to 4 attachments (≤ ~3 MB each, base64, 17 MB request cap) are persisted under `~/.mybuddy/remote-uploads/<taskId>/` on the host before the prompt runs; the directory is removed when the task is purged or a new remote task fails to start. Requests with unknown fields are rejected (`zod` strict mode).
+
+## ACP external agents on the phone
+
+The phone can hand a turn to an **ACP (Agent Client Protocol) external agent** — Codex, Claude, OpenCode, Devin, etc. — while the process, session and workspace authority stay on the Windows host.
+
+| Route | Purpose |
+|---|---|
+| `GET /v1/acp/agents[?refresh=1]` | ACP catalog. Disabled agents (desktop *Settings → ACP management*) are omitted; installed-but-missing CLIs stay listed with `available: false` and a `detail` reason. `refresh=1` re-probes the host CLIs. |
+| `POST /v1/tasks/:id/acp` | `{ agentId, text, attachments?, continueFromRunId? }` → `202` with the run projection. Starts a real ACP subprocess in the task's canonical workspace. |
+
+Behaviour that differs from the built-in Pi path:
+
+- **One live run per task.** A second delegation while a run is `starting`/`working`/`blocked` returns `409` — two agents must never edit the same directory concurrently.
+- **`busy` includes ACP.** Task rows and `GET /v1/tasks/:id/runtime` report `busy: true` and expose `acpRun` while the agent runs, so the phone replaces *send* with *stop*.
+- **Permissions are agent-defined.** ACP permission requests surface in `runtime.pendingActions` with `approvalKind: "acp"` plus `acpRunId` and `acpPermissionOptions` (`allow_once` / `allow_always` / `reject_*`). The phone must answer with `POST /v1/tasks/:id/actions/:toolCallId/respond { decision, optionId }`; an unknown or expired option is rejected (`400` / `409`) instead of being silently treated as *deny*.
+- **History is merged.** Completed runs live in `external_agent_runs`, not the Pi session file; `/history` merges both and tags the assistant message with an `acp: { runId, agentId, status, resumeSupported, verificationStatus }` projection. No host paths (`cwd`) are ever projected.
+- **Continuation is scoped.** `continueFromRunId` only resumes a run of the *same* task and *same* agent that actually established a resumable session; anything else falls back to a fresh session (`continuationMode: "new"`) rather than failing the send.
+- **Stop cancels both chains.** `POST /v1/tasks/:id/abort` cancels the ACP subprocess as well as the built-in Pi turn.
+
+The phone UI mirrors this: an ACP pill in the composer opens the agent picker (data from `bootstrap.acpAgents`, with a *re-probe* row), the selected agent is sticky for the task, and ACP permission prompts render one button per agent-declared option.
 
 ## Browser-origin policy (CSRF)
 

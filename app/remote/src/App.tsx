@@ -6,7 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
 import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
@@ -19,11 +19,43 @@ import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
 import './styles/app.css'
 
-export function handleBackNavigation(): boolean {
-  const s = useRemoteStore.getState()
+/** ACP 权限选项 → 手机端短标签：优先表达「范围」而不是照搬英文原文（与桌面端同一套规则） */
+export function acpOptionLabel(option: RemoteAcpPermissionOption): string {
+  const raw = option.name.trim()
+  if (option.kind.startsWith('reject')) return '拒绝'
+  if (/bypass/i.test(raw)) return '自动放行'
+  if (!option.kind.endsWith('always')) return option.kind.startsWith('allow') ? '允许一次' : raw || '允许'
+  const scope = /all projects?/i.test(raw)
+    ? '所有项目'
+    : /(?:this|current) project/i.test(raw)
+      ? '当前项目'
+      : /(?:this|current) session/i.test(raw)
+        ? '本次会话'
+        : /(?:this|current) command/i.test(raw)
+          ? '此命令'
+          : ''
+  if (scope) return `${scope}始终允许`
+  return '始终允许'
+}
+
+/** ACP run 状态 → 手机端短标签（只描述传输/执行状态，不代表业务正确性） */
+export function acpStatusLabel(status: string): string {
+  switch (status) {
+    case 'starting': return '启动中'
+    case 'working': return '执行中'
+    case 'blocked': return '等待授权'
+    case 'completed': return '已完成'
+    case 'failed': return '失败'
+    case 'cancelled': return '已停止'
+    default: return status
+  }
+}
+
+export function handleBackNavigation(): boolean {  const s = useRemoteStore.getState()
   if (s.taskSetupSection) { s.setTaskSetupSection(null); return true }
   if (s.isConnectionSettingsOpen && s.client && s.bootstrap) { s.setConnectionSettingsOpen(false); return true }
   if (s.isPermissionSheetOpen) { s.setPermissionSheetOpen(false); return true }
+  if (s.isAcpSheetOpen) { s.setAcpSheetOpen(false); return true }
   if (s.isModelSheetOpen) {
     s.setModelSheetOpen(false)
     return true
@@ -145,6 +177,8 @@ function HomePage() {
   const selectedModelId = useRemoteStore((state) => state.selectedModelId)
   const openTask = useRemoteStore((state) => state.openTask)
   const createTask = useRemoteStore((state) => state.create)
+  const createAcp = useRemoteStore((state) => state.createAcp)
+  const selectedAcpAgentId = useRemoteStore((state) => state.selectedAcpAgentId)
   const creating = useRemoteStore((state) => state.creating)
   const showDrawer = useRemoteStore((state) => state.isDrawerOpen)
   const setShowDrawer = useRemoteStore((state) => state.setDrawerOpen)
@@ -173,7 +207,9 @@ function HomePage() {
     clearAttachments()
     setText('')
     try {
-      await createTask(value, pending)
+      // 首页已选 ACP Agent → 新任务第一轮直接交给电脑端 ACP 进程
+      if (selectedAcpAgentId) await createAcp(value, pending)
+      else await createTask(value, pending)
     } catch (error) {
       setText(draftText)
       for (const att of pending) addAttachment(att)
@@ -278,6 +314,7 @@ function HomePage() {
       <AddToChatSheet />
       <PermissionSheet />
       <SelectModelSheet />
+      <AcpAgentSheet />
     </>
   )
 }
@@ -293,6 +330,10 @@ function ChatPage() {
   const bootstrap = useRemoteStore((state) => state.bootstrap)
   const selectedModelId = useRemoteStore((state) => state.selectedModelId)
   const send = useRemoteStore((state) => state.send)
+  const sendAcp = useRemoteStore((state) => state.sendAcp)
+  const resolveAcpPermission = useRemoteStore((state) => state.resolveAcpPermission)
+  const selectedAcpAgentId = useRemoteStore((state) => state.selectedAcpAgentId)
+  const setAcpSheetOpen = useRemoteStore((state) => state.setAcpSheetOpen)
   const sending = useRemoteStore((state) => state.sending)
   const abort = useRemoteStore((state) => state.abort)
   const approve = useRemoteStore((state) => state.approve)
@@ -454,7 +495,9 @@ function ChatPage() {
     setText('')
     armUserAnchor()
     try {
-      await send(value, pending)
+      // 选了外部 ACP Agent → 这一轮交给电脑端的真实 ACP 进程（Gemini/Codex/Claude 等）
+      if (selectedAcpAgentId) await sendAcp(value, pending)
+      else await send(value, pending)
     } catch (error) {
       setText(draftText)
       for (const att of pending) addAttachment(att)
@@ -566,6 +609,16 @@ function ChatPage() {
 
             return (
               <div key={message.id} data-message-id={message.id} className="message-bubble-assistant">
+                {message.acp && (
+                  <div className={`acp-run-chip ${message.streaming ? 'running' : ''}`}>
+                    <Terminal size={13} />
+                    <span>{message.acp.agentName} · ACP</span>
+                    {message.streaming && <span className="acp-run-chip-state">{acpStatusLabel(message.acp.status)}</span>}
+                    {!message.streaming && message.acp.verificationStatus === 'not_verified' && (
+                      <span className="acp-run-chip-state">未验证</span>
+                    )}
+                  </div>
+                )}
                 {(message.thinking || (message.tools && message.tools.length > 0) || message.streaming) && (
                   <ProcessPanel thinking={message.thinking} tools={message.tools} activity={message.activity} running={!!message.streaming || (message.id === lastAssistantId && isBusy)} />
                 )}
@@ -634,35 +687,55 @@ function ChatPage() {
             <div className="approval-card" key={action.toolCallId}>
               <div className="approval-card-head">
                 <Sparkles size={16} />
-                <span>工具执行审批 · {action.tool}</span>
+                <span>
+                  {action.approvalKind === 'acp' ? 'Agent 请求权限' : '工具执行审批'} · {action.tool}
+                </span>
               </div>
               <div className="approval-card-body">{action.summary}</div>
               {action.detail && (
                 <div className="approval-card-detail">{action.detail}</div>
               )}
               <div className="approval-card-actions">
-                <button
-                  type="button"
-                  className="btn-pill btn-pill-secondary"
-                  onClick={() => void approve(action.toolCallId, 'deny')}
-                >
-                  拒绝
-                </button>
-                <button
-                  type="button"
-                  className="btn-pill btn-pill-primary"
-                  onClick={() => void approve(action.toolCallId, 'allow-once')}
-                >
-                  允许一次
-                </button>
-                {action.approvalKind === 'external-write' && (
-                  <button
-                    type="button"
-                    className="btn-pill btn-pill-secondary"
-                    onClick={() => void approve(action.toolCallId, 'allow-task-dir')}
-                  >
-                    允许任务目录
-                  </button>
+                {action.approvalKind === 'acp' ? (
+                  // ACP：按钮必须来自 Agent 自己声明的选项（允许一次/始终允许/拒绝…），
+                  // 不能伪装成内置工具的「允许一次」，否则会把持久授权降级成一次性。
+                  (action.acpPermissionOptions ?? []).map((option) => (
+                    <button
+                      key={option.optionId}
+                      type="button"
+                      className={`btn-pill ${option.kind.startsWith('reject') ? 'btn-pill-secondary' : 'btn-pill-primary'}`}
+                      title={option.name}
+                      onClick={() => void resolveAcpPermission(action.toolCallId, option.optionId)}
+                    >
+                      {acpOptionLabel(option)}
+                    </button>
+                  ))
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-pill btn-pill-secondary"
+                      onClick={() => void approve(action.toolCallId, 'deny')}
+                    >
+                      拒绝
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-pill btn-pill-primary"
+                      onClick={() => void approve(action.toolCallId, 'allow-once')}
+                    >
+                      允许一次
+                    </button>
+                    {action.approvalKind === 'external-write' && (
+                      <button
+                        type="button"
+                        className="btn-pill btn-pill-secondary"
+                        onClick={() => void approve(action.toolCallId, 'allow-task-dir')}
+                      >
+                        允许任务目录
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -692,7 +765,10 @@ function ChatPage() {
           onAbort={() => void abort()}
           onFocus={handleComposerFocus}
           onBlur={handleComposerBlur}
-          placeholder="给 MyBuddy 发送回复…"
+          placeholder={(() => {
+            const agent = bootstrap?.acpAgents?.find(item => item.id === selectedAcpAgentId)
+            return agent ? `交给 ${agent.name}（ACP）执行…` : '给 MyBuddy 发送回复…'
+          })()}
           effectiveModelId={selectedModelId ?? task?.modelId ?? bootstrap?.defaultModelId ?? null}
         />
       </main>
@@ -711,6 +787,7 @@ function ChatPage() {
       <AddToChatSheet />
       <PermissionSheet />
       <SelectModelSheet />
+      <AcpAgentSheet />
 
       {confirmDelete && (
         <div className="remote-confirm-overlay" role="dialog" aria-modal="true" aria-label="删除任务" onClick={() => { if (!deleting) setConfirmDelete(false) }}>
@@ -775,6 +852,12 @@ function FloatingComposer({
   const permissionLabel = permissionMode === 'follow' ? effectivePermission === 'auto' ? '完全访问' : effectivePermission === 'readonly' ? '只读模式' : '默认权限' : permissionMode === 'auto' ? '完全访问' : PERMISSION_NAMES[permissionMode]
   const attachments = useRemoteStore((s) => s.attachments)
   const removeAttachment = useRemoteStore((s) => s.removeAttachment)
+  const setAcpSheetOpen = useRemoteStore((s) => s.setAcpSheetOpen)
+  const selectedAcpAgentId = useRemoteStore((s) => s.selectedAcpAgentId)
+  const acpAgents = bootstrap?.acpAgents ?? []
+  const selectedAcpAgent = acpAgents.find((agent) => agent.id === selectedAcpAgentId)
+  // 首页也能选 ACP（电脑端会先落任务再起 ACP 进程）；目录为空时隐藏入口
+  const acpAvailable = acpAgents.length > 0
 
 
   // 胶囊显示当前真正会生效的模型（effectiveModelId 已含任务级解析）；目录缺失时兜底文案
@@ -874,6 +957,17 @@ function FloatingComposer({
             {!isBot && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
               <Shield size={17} />
             </button>}
+            {acpAvailable && (
+              <button
+                type="button"
+                className={`composer-permission-pill composer-acp-pill ${selectedAcpAgentId ? 'acp-active' : ''}`}
+                aria-label={`ACP Agent：${selectedAcpAgent?.name ?? '内置 MyBuddy'}`}
+                title={selectedAcpAgent ? `ACP · ${selectedAcpAgent.name}` : 'ACP · 内置 MyBuddy'}
+                onClick={(e) => { e.stopPropagation(); setAcpSheetOpen(true) }}
+              >
+                <Terminal size={17} />
+              </button>
+            )}
           </div>
 
           <div className="composer-toolbar-right">
@@ -1180,6 +1274,108 @@ function SelectModelSheet() {
               暂未获取到电脑端模型目录，稍后下拉刷新后重试。
             </div>
           )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+/* ==========================================================================
+   ACP Agent Bottom Sheet（数据来自 /v1/bootstrap.acpAgents，即电脑端 ACP 目录）
+   ========================================================================== */
+function AcpAgentSheet() {
+  const open = useRemoteStore((s) => s.isAcpSheetOpen)
+  const setOpen = useRemoteStore((s) => s.setAcpSheetOpen)
+  const selectedAcpAgentId = useRemoteStore((s) => s.selectedAcpAgentId)
+  const setSelectedAcpAgentId = useRemoteStore((s) => s.setSelectedAcpAgentId)
+  const refreshAcpAgents = useRemoteStore((s) => s.refreshAcpAgents)
+  const bootstrap = useRemoteStore((s) => s.bootstrap)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const agents = bootstrap?.acpAgents ?? []
+
+  const select = (id: string | null) => {
+    setSelectedAcpAgentId(id)
+    setOpen(false)
+  }
+
+  const refresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try { await refreshAcpAgents() } finally { setRefreshing(false) }
+  }
+
+  return (
+    <>
+      <div className={`claude-sheet-backdrop ${open ? 'open' : ''}`} onClick={() => setOpen(false)} />
+      <div className={`claude-sheet ${open ? 'open' : ''}`} aria-hidden={!open} inert={!open}>
+        <div className="claude-sheet-grabber" />
+        <div className="claude-sheet-header">
+          <button type="button" className="claude-sheet-close-btn" onClick={() => setOpen(false)} aria-label="关闭">
+            <X size={20} />
+          </button>
+          <span className="claude-sheet-title">ACP Agent</span>
+        </div>
+
+        <div className="select-model-group">
+          <button
+            type="button"
+            className={`select-model-item ${selectedAcpAgentId === null ? 'active' : ''}`}
+            onClick={() => select(null)}
+          >
+            <div className="select-model-info">
+              <div className="select-model-title-row">
+                <span className="select-model-name">内置 MyBuddy（默认）</span>
+              </div>
+              <span className="select-model-desc">在本机模型上执行，支持模型选择与工具审批</span>
+            </div>
+            {selectedAcpAgentId === null && <Check size={20} className="select-model-check" strokeWidth={2.5} />}
+          </button>
+
+          {agents.map((agent) => {
+            const active = selectedAcpAgentId === agent.id
+            const disabled = !agent.available
+            return (
+              <button
+                key={agent.id}
+                type="button"
+                className={`select-model-item ${active ? 'active' : ''}`}
+                disabled={disabled}
+                title={agent.detail}
+                onClick={() => { if (!disabled) select(agent.id) }}
+              >
+                <div className="select-model-info">
+                  <div className="select-model-title-row">
+                    <span className="select-model-name">{agent.name}</span>
+                    <span className="select-model-badge">ACP</span>
+                    {disabled && <span className="select-model-badge">电脑端未就绪</span>}
+                  </div>
+                  <span className="select-model-desc">
+                    {agent.detail || agent.commandLabel}
+                    {agent.configOptionNames.length ? ` · ${agent.configOptionNames.join(' / ')}` : ''}
+                  </span>
+                </div>
+                {active && <Check size={20} className="select-model-check" strokeWidth={2.5} />}
+              </button>
+            )
+          })}
+
+          {agents.length === 0 && (
+            <div style={{ padding: '18px 16px', fontSize: '13px', color: 'var(--fg-muted)' }}>
+              电脑端没有可用的 ACP Agent。请在电脑端「设置 → ACP 管理」启用并安装对应 CLI 后点下方刷新。
+            </div>
+          )}
+
+          <button type="button" className="add-to-chat-row" onClick={() => void refresh()} disabled={refreshing}>
+            <div className="add-to-chat-row-left">
+              <div className="add-to-chat-row-icon"><RotateCcw size={18} /></div>
+              <div className="add-to-chat-row-info">
+                <span className="add-to-chat-row-title">{refreshing ? '正在重新探测…' : '重新探测电脑端 ACP'}</span>
+                <span className="add-to-chat-row-subtitle">安装/更新 CLI 后使用</span>
+              </div>
+            </div>
+            <ChevronRight size={18} />
+          </button>
         </div>
       </div>
     </>

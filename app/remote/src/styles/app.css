@@ -2127,6 +2127,13 @@ button:disabled {
 .composer-model-pill { min-width: 36px; width: 36px; height: 36px; flex: 0 0 36px; padding: 0; justify-content: center; }
 .composer-permission-pill { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 999px; background: var(--bg-subtle); flex-shrink: 0; }
 .composer-permission-pill.full-access { color: var(--status-warning); background: var(--status-warning-soft); }
+/* ACP 外部 Agent：选中后胶囊高亮，提示「下一轮交给电脑端 ACP 进程」 */
+.composer-acp-pill.acp-active { color: var(--accent); background: var(--accent-soft); }
+.acp-run-chip { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin-bottom: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-default); background: var(--bg-subtle); color: var(--fg-muted); font-size: 11px; }
+
+.acp-run-chip.running { color: var(--accent); border-color: var(--accent); }
+
+.acp-run-chip-state { padding-left: 6px; border-left: 1px solid var(--border-default); }
 .permission-options { display: flex; flex-direction: column; gap: 6px; padding: 0 16px; }
 .permission-option { min-height: 64px; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-radius: 12px; text-align: left; }
 .permission-option[aria-checked="true"] { background: var(--accent-soft); }
