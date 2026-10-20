@@ -10,8 +10,20 @@ export interface WindowCaptureResult {
     captureRectPhysical: Rect;
     captureMode: "foreground-display-crop";
     coordinateSpace: "client-dip-aligned-pixels" | "window-dip-aligned-pixels";
+    mimeType: "image/jpeg";
+    /** Physical client pixels per returned image pixel (1 when the capture is not downscaled). */
+    imageScale: number;
+    imageSize: { width: number; height: number };
   };
 }
+
+/**
+ * Pi resizes tool-result images above 2000px and re-encodes them (about 1s for
+ * a 2560x1440 frame). Capping here keeps the capture deterministic, reports the
+ * exact scale to the model, and emits JPEG so the payload stays small.
+ */
+const MAX_CAPTURE_EDGE = 2000;
+const CAPTURE_JPEG_QUALITY = 70;
 
 function contains(outer: Rect, inner: Rect): boolean {
   return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right && inner.bottom <= outer.bottom;
@@ -81,12 +93,22 @@ export class WindowCaptureService {
     }
     const dipWidth = Math.max(1, Math.round(target.width / window.scaleFactor));
     const dipHeight = Math.max(1, Math.round(target.height / window.scaleFactor));
-    const image = physicalImage.getSize().width === dipWidth && physicalImage.getSize().height === dipHeight
+    let image = physicalImage.getSize().width === dipWidth && physicalImage.getSize().height === dipHeight
       ? physicalImage
       : physicalImage.resize({ width: dipWidth, height: dipHeight, quality: "best" });
+    const dipSize = image.getSize();
+    let imageScale = 1;
+    if (dipSize.width > MAX_CAPTURE_EDGE || dipSize.height > MAX_CAPTURE_EDGE) {
+      const factor = Math.min(MAX_CAPTURE_EDGE / dipSize.width, MAX_CAPTURE_EDGE / dipSize.height);
+      const width = Math.max(1, Math.round(dipSize.width * factor));
+      const height = Math.max(1, Math.round(dipSize.height * factor));
+      image = image.resize({ width, height, quality: "best" });
+      imageScale = dipSize.width / width;
+    }
     if (image.isEmpty()) throw new WindowsAutomationError("CAPTURE_FAILED", "DIP-aligned window image is empty", { dipWidth, dipHeight });
+    const imageSize = image.getSize();
     return {
-      screenshot: image.toPNG(),
+      screenshot: image.toJPEG(CAPTURE_JPEG_QUALITY),
       details: {
         displayId: String(display.id),
         scaleFactor: display.scaleFactor,
@@ -94,6 +116,9 @@ export class WindowCaptureService {
         captureRectPhysical: target,
         captureMode: "foreground-display-crop",
         coordinateSpace: clientOnly ? "client-dip-aligned-pixels" : "window-dip-aligned-pixels",
+        mimeType: "image/jpeg",
+        imageScale: Math.round(imageScale * 10_000) / 10_000,
+        imageSize,
       },
     };
   }

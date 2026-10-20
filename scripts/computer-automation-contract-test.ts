@@ -105,6 +105,7 @@ async function main(): Promise<void> {
 
   let current = windowFixture();
   let sideEffectCalled = false;
+  let clickCount = 0;
   let lastSideEffectTarget: Record<string, unknown> | undefined;
   let closeOnNextClick = false;
   let windowClosed = false;
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
       if (action === "focus_window") return { window: current };
       if (action === "click_client") {
         sideEffectCalled = true;
+        clickCount += 1;
         lastSideEffectTarget = params.target as Record<string, unknown>;
         if (closeOnNextClick) windowClosed = true;
         if (loseObservationAfterNextClick) observationUnavailable = true;
@@ -198,7 +200,47 @@ async function main(): Promise<void> {
   loseObservationAfterNextClick = false;
   observationUnavailable = false;
 
-  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture)`);
+  // list_windows filtering + compact output (the full geometry dominated context)
+  const filteredWindows = await service.execute({ action: "list_windows", windowTitle: "fix" });
+  assert.equal(filteredWindows.windows?.length, 1, "list_windows must honor the title filter");
+  assert.equal((filteredWindows.windows?.[0] as { windowRect?: unknown }).windowRect, undefined, "list_windows must stay compact");
+  assert.ok((filteredWindows.windows?.[0] as { clientRect?: unknown }).clientRect, "compact windows must keep client geometry");
+  const noWindow = await service.execute({ action: "list_windows", windowTitle: "nope" });
+  assert.equal(noWindow.windows?.length, 0, "a non-matching filter must return an empty list");
+
+  // batch: sequential steps, one final observation, stop at the first error
+  clickCount = 0;
+  const batch = await service.execute({
+    actions: [
+      { action: "click_client", x: 10, y: 10 },
+      { action: "click_client", x: 20, y: 20 },
+    ],
+    windowHandle: current.handle,
+    settleMs: 0,
+  });
+  assert.equal(batch.action, "batch");
+  assert.equal(clickCount, 2, "batch must execute every step");
+  assert.equal(batch.batch?.steps.length, 2);
+  assert.ok(batch.batch?.steps.every((step) => step.ok), "successful batch steps must be reported");
+  assert.ok(batch.observation?.targetAfter, "batch must return one final observation");
+
+  let batchError: unknown;
+  try {
+    await service.execute({
+      actions: [
+        { action: "click_client", x: 10, y: 10 },
+        { action: "drag_client", x: 10, y: 10 },
+      ],
+      windowHandle: current.handle,
+      settleMs: 0,
+    });
+  } catch (error) { batchError = error; }
+  const batchFailure = batchError as { message?: string; details?: { batch?: { completedSteps?: number } } };
+  assert.match(String(batchFailure.message), /批量第 2 步失败/);
+  assert.equal(batchFailure.details?.batch?.completedSteps, 1, "batch failure must report how many steps already ran");
+  await assert.rejects(service.execute({ actions: [{ action: "click_client", x: 1, y: 1 }] }), /window_handle/);
+
+  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture + batch + window filtering)`);
 }
 
 void main();

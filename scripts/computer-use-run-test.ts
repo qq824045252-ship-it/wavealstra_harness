@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { ComputerAutomationService } from "../src/main/capabilities/ComputerAutomationService";
 import { prepareComputerUseInput } from "../src/main/capabilities/ComputerUsePolicy";
 import { planComputerUseRecovery } from "../src/main/capabilities/ComputerUseRecoveryPolicy";
@@ -203,7 +203,11 @@ async function main(): Promise<void> {
     action: "click_client", taskId: "task-run", windowHandle: "9001", x: 20, y: 30, observeAfter: false,
   });
   assert.equal(prepared.observeAfter, true, "Agent side effects must force post-action observation");
-  assert.equal(prepared.captureAfter, true, "window-scoped Agent actions must force visual verification");
+  assert.equal(prepared.captureAfter, undefined, "capture_after must stay opt-in");
+  const explicitCapture = prepareComputerUseInput({
+    action: "click_client", taskId: "task-run", windowHandle: "9001", x: 20, y: 30, captureAfter: true,
+  });
+  assert.equal(explicitCapture.captureAfter, true, "explicit capture_after must be preserved");
   const raw = prepareComputerUseInput({ action: "click_client", windowHandle: "9001", x: 20, y: 30, observeAfter: false });
   assert.equal(raw.observeAfter, false, "raw low-level calls keep caller semantics");
   assert.equal(raw.captureAfter, undefined);
@@ -246,7 +250,7 @@ async function main(): Promise<void> {
   const service = new ComputerAutomationService(fakeHost as never, fakeCapture as never);
 
   const result = await service.execute({
-    action: "click_client", taskId: "task-run", windowHandle: current.handle, x: 10, y: 10,
+    action: "click_client", taskId: "task-run", windowHandle: current.handle, x: 10, y: 10, captureAfter: true,
     expectedOutcomes: [{ kind: "target_foreground", windowTitleContains: "Fixture" }],
   });
   assert.equal(clicks, 1);
@@ -263,6 +267,8 @@ async function main(): Promise<void> {
   assert.equal(clicks, 2);
   assert.equal(semanticMismatch.semanticOutcome?.status, "failed", "missing expected window must not be reported as success");
   assert.equal((semanticMismatch.computerUseRun as any)?.verification?.semanticVerification, "failed");
+  assert.equal(semanticMismatch.screenshot, undefined, "capture_after must not be forced after every action");
+  assert.equal((semanticMismatch.computerUseRun as any)?.verification?.visualVerification, "not-required");
 
   const observation = await service.execute({ action: "inspect_window", windowHandle: current.handle });
   current = fixture({ clientRect: { x: 0, y: 0, width: 760, height: 560 } });

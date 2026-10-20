@@ -65,7 +65,8 @@ export const COMPUTER_EXEC_READONLY_ACTIONS = new Set([
 ]);
 
 export function isComputerExecReadonly(input: unknown): boolean {
-  const value = (input ?? {}) as { action?: unknown; ensure_foreground?: unknown };
+  const value = (input ?? {}) as { action?: unknown; ensure_foreground?: unknown; actions?: unknown };
+  if (Array.isArray(value.actions) && value.actions.length > 0) return false;
   const action = String(value.action ?? "");
   if (action === "screenshot_window") return value.ensure_foreground === false;
   return COMPUTER_EXEC_READONLY_ACTIONS.has(action);
@@ -91,6 +92,9 @@ function summarizeToolInput(tool: string, input: unknown): { summary: string; de
   }
   if (tool === "text_to_speech" && typeof obj.text === "string") {
     return { summary: obj.text.slice(0, 120), detail: JSON.stringify(obj, null, 2) };
+  }
+  if (tool === "computer_exec" && Array.isArray(obj.actions) && obj.actions.length > 0) {
+    return { summary: `batch: ${obj.actions.length} 步`, detail: JSON.stringify(obj, null, 2) };
   }
   if ((tool === "browser_exec" || tool === "ui_exec" || tool === "computer_exec" || tool === "runtime_probe") && typeof obj.action === "string") {
     const target = typeof obj.url === "string"

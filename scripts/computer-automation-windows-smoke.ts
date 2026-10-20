@@ -160,7 +160,7 @@ async function main(): Promise<void> {
     assert.ok((reset.controls ?? []).some((control) => control.name === "idle"), "second semantic invoke must reset click evidence");
 
     const screenshot = await service.execute({ action: "screenshot_window", windowHandle: window.handle, processId: window.processId, clientOnly: true });
-    assert.ok((screenshot.screenshot?.byteLength ?? 0) > 100, "window screenshot must be a non-empty PNG");
+    assert.ok((screenshot.screenshot?.byteLength ?? 0) > 100, "window screenshot must be a non-empty JPEG");
     assert.equal(screenshot.window?.handle, window.handle);
     const imageSize = nativeImage.createFromBuffer(Buffer.from(screenshot.screenshot!)).getSize();
     assert.equal(imageSize.width, Math.round(window.clientRect.width / window.scaleFactor), "screenshot pixels must equal client DIP width");

@@ -26,7 +26,7 @@ import type {
 } from "./BuiltinCapabilityRuntime";
 import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutomationService";
 import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
-import { computerAutomationService, type ComputerExecInput } from "./ComputerAutomationService";
+import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput } from "./ComputerAutomationService";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
 import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
@@ -86,10 +86,13 @@ export interface BuiltinCapabilityExtensionBridge {
 }
 function errorResult(tool: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const details = (error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object")
+    ? { error: message, details: error.details as Record<string, unknown> }
+    : { error: message };
   return {
     content: [{ type: "text" as const, text: `[${tool}] ${message}` }],
     isError: true as const,
-    details: { error: message } as Record<string, unknown>,
+    details: details as Record<string, unknown>,
   };
 }
 
@@ -288,8 +291,24 @@ const computerOutcomeExpectationSchema = Type.Object({
   exact_name: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
-const computerExecSchema = Type.Object({
+const computerBatchStepSchema = Type.Object({
   action: Type.Union([
+    Type.Literal("move_client"), Type.Literal("click_client"), Type.Literal("drag_client"),
+    Type.Literal("scroll_client"), Type.Literal("key_press"), Type.Literal("type_text"),
+  ]),
+  x: Type.Optional(Type.Number()),
+  y: Type.Optional(Type.Number()),
+  x2: Type.Optional(Type.Number()),
+  y2: Type.Optional(Type.Number()),
+  button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
+  delta_x: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
+  delta_y: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
+  key: Type.Optional(Type.String({ maxLength: 120 })),
+  text: Type.Optional(Type.String({ maxLength: 20_000 })),
+}, { additionalProperties: false });
+
+const computerExecSchema = Type.Object({
+  action: Type.Optional(Type.Union([
     Type.Literal("status"),
     Type.Literal("active_window"), Type.Literal("list_windows"), Type.Literal("inspect_window"),
     Type.Literal("focus_window"), Type.Literal("wait_for_window"),
@@ -298,7 +317,13 @@ const computerExecSchema = Type.Object({
     Type.Literal("move_client"), Type.Literal("click_client"), Type.Literal("drag_client"), Type.Literal("scroll_client"),
     Type.Literal("mouse_move"), Type.Literal("mouse_click"), Type.Literal("mouse_drag"), Type.Literal("scroll"),
     Type.Literal("key_press"), Type.Literal("type_text"),
-  ]),
+  ])),
+  actions: Type.Optional(Type.Array(computerBatchStepSchema, {
+    minItems: 1,
+    maxItems: 8,
+    description: "批量窗口输入：1–8 个步骤按顺序执行、出错即停，只做一次最终观察。与 action 二选一，步骤共用顶层窗口目标。",
+  })),
+  settle_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 2_000, description: "批量步骤之间的等待毫秒数，默认 120。" })),
   x: Type.Optional(Type.Number()),
   y: Type.Optional(Type.Number()),
   x2: Type.Optional(Type.Number()),
@@ -311,6 +336,7 @@ const computerExecSchema = Type.Object({
   window_title: Type.Optional(Type.String({ maxLength: 1_000 })),
   window_handle: Type.Optional(Type.String({ maxLength: 100 })),
   process_id: Type.Optional(Type.Integer({ minimum: 1 })),
+  process_name: Type.Optional(Type.String({ maxLength: 200 })),
   class_name: Type.Optional(Type.String({ maxLength: 1_000 })),
   screen_id: Type.Optional(Type.String({ maxLength: 100 })),
   control_name: Type.Optional(Type.String({ maxLength: 1_000 })),
@@ -662,15 +688,33 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "computer_exec",
         label: "Windows Computer Use",
-        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true，其截图像素对应客户区 DIP。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容再决定后续操作。执行顺序、重试与取消由 Durable 决定；请自己观察操作后的实际结果。截图按主模型能力直接返回图片或视觉描述。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标，screenBoundsPhysical 仅用于诊断。UIA 不可用时使用 screenshot_window（client_only 默认 true）→ click_client，客户区截图像素与 client DIP 坐标直接对齐。显式 client_only=false 会返回含边框的 window-DIP 图像，不能直接作为 click_client 坐标。只有无法绑定窗口的特殊场景才使用 legacy desktop mouse actions。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。screenshot_window 默认会抢焦点并按副作用审批，ensure_foreground=false 仅允许已在前台的只读捕获。任何返回截图的 computer_exec 动作都会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。 Agent calls automatically enforce Observe -> Act -> Verify and bounded recovery. For actions with a concrete expected result, pass expected_outcomes (for example target_closed, new_window, or control_present); semantic failure means re-observe/re-plan instead of treating a successful capture as task success.",
-        promptSnippet: "computer_exec(action, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, expected_outcomes?)",
+        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true。截图返回 JPEG，可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例（通常为 1），窗口截图坐标 = 图像像素 × image_scale，desktop 截图仅用于观察。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容。capture_after 默认关闭，需要视觉确认时显式传 true。actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停），返回 steps 与最终 observation；list_windows 支持 window_title/process_id/process_name/class_name 过滤。截图按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标。UIA 不可用时 screenshot_window（client_only 默认 true）→ click_client。截图统一为 JPEG 并可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例，窗口截图的客户区坐标 = 图像像素 × image_scale（通常为 1），desktop 截图仅用于观察、legacy 桌面坐标需乘 image_scale。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。capture_after 默认关闭，只有需要视觉确认时才显式传 true（否则只做窗口集合观测）。actions 可一次执行 1–8 个窗口输入步骤（move/click/drag/scroll/key/type，同一窗口目标、顺序执行、出错即停），返回 steps、最终 observation 与可选 capture，用它替代逐个动作的多轮往返。list_windows 支持 window_title/process_id/process_name/class_name 过滤并返回精简字段；需要完整几何时用 inspect_window。任何返回截图的动作都会按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。",
+        promptSnippet: "computer_exec(action?|actions?, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, capture_after?, expected_outcomes?)",
         parameters: computerExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
           let input: ComputerExecInput | undefined;
           let operationSignal: AbortSignal | undefined;
           try {
+            const batchActions = Array.isArray(p.actions)
+              ? (p.actions as Array<Record<string, unknown>>).map((step) => ({
+                action: step.action as ComputerBatchAction,
+                x: step.x as number | undefined,
+                y: step.y as number | undefined,
+                x2: step.x2 as number | undefined,
+                y2: step.y2 as number | undefined,
+                button: step.button as ComputerExecInput["button"],
+                deltaX: step.delta_x as number | undefined,
+                deltaY: step.delta_y as number | undefined,
+                key: step.key as string | undefined,
+                text: step.text as string | undefined,
+              }))
+              : undefined;
+            const action = (p.action as ComputerExecInput["action"] | undefined) ?? batchActions?.[0]?.action;
+            if (!action && !batchActions?.length) throw new Error("computer_exec 需要 action 或 actions");
             input = {
-              action: p.action as ComputerExecInput["action"],
+              action,
+              actions: batchActions?.length ? batchActions : undefined,
+              settleMs: p.settle_ms as number | undefined,
               taskId: bridge.nativeExecution ? undefined : bridge.taskId,
               x: p.x as number | undefined,
               y: p.y as number | undefined,
@@ -684,6 +728,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               windowTitle: p.window_title as string | undefined,
               windowHandle: p.window_handle as string | undefined,
               processId: p.process_id as number | undefined,
+              processName: p.process_name as string | undefined,
               className: p.class_name as string | undefined,
               screenId: p.screen_id as string | undefined,
               controlName: p.control_name as string | undefined,
@@ -710,21 +755,23 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             settleComputerUseResultRecovery(bridge.computerRecovery, input, result);
             if (result.screenshot) {
               const context = toolContext(bridge, tc, operationSignal);
+              const mimeType = result.screenshotMimeType ?? "image/png";
+              const fileName = result.artifactFileName ?? (mimeType === "image/jpeg" ? "desktop-screenshot.jpg" : "desktop-screenshot.png");
               const saved = await materializer.materialize("image", {
                 provider: "mybuddy-computer",
-                items: [{ bytes: result.screenshot, mimeType: "image/png", fileName: result.artifactFileName ?? "desktop-screenshot.png" }],
+                items: [{ bytes: result.screenshot, mimeType, fileName }],
               }, context, "桌面截图");
               operationSignal?.throwIfAborted();
               const details = { ...result, screenshot: undefined, path: saved.paths[0], artifactId: saved.artifacts[0]?.id };
               const imageResult = await visionAwareImageResult({
                 summary: "Windows 画面已保存", details, model: ctx?.model, vision, context,
-                images: [{ path: saved.paths[0], bytes: result.screenshot, mimeType: "image/png" }],
+                images: [{ path: saved.paths[0], bytes: result.screenshot, mimeType }],
                 prompt: "请分析这张 Windows 界面截图，准确描述可见窗口、主要控件、文本、状态、错误提示和与当前任务相关的可交互目标及其相对位置。不要猜测不可见内容。",
               });
               operationSignal?.throwIfAborted();
               return imageResult;
             }
-            return jsonResult(`桌面动作完成：${input.action}`, result);
+            return jsonResult(batchActions?.length ? `批量桌面动作完成：${batchActions.length} 步` : `桌面动作完成：${String(action)}`, result);
           } catch (error) {
             const failure = operationSignal?.aborted ? operationSignal.reason : error;
             if (input && !bridge.nativeExecution) {

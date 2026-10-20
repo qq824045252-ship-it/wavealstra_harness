@@ -1,4 +1,4 @@
-# MyBuddy Computer Use 评估（2026-10-19，沙箱放开后复测）
+# MyBuddy Computer Use 评估（2026-10-19 复测；2026-10-20 已实施 P0 修复）
 
 > 评估对象：仓库内 `computer_exec`（Windows 原生 Computer Use）当前实现与真实使用数据。
 > 结论先行：三个抱怨都成立，但复测修正了首版的耗时归因——
@@ -6,6 +6,8 @@
 > ② 自动化层和采集并不慢（窗口截图 0.4–0.6s、点击 0.7–1.1s），**单步耗时的大头是模型回合（3.7–9.1s）**，且随会话上下文增长；
 > ③ 输入原语缺失（双击、修饰键、按住、拖拽时长、跨窗口拖拽、后台输入、滚动量）依然成立；
 > ④ 首版把"委托视觉"的耗时混进了截图耗时中位数：原生多模态下 `screenshot_window` 623ms，委托视觉下 10.3s；同时强制事后截图确实存在（点击从 0.72s 变 1.08s）。
+>
+> **2026-10-20 已实施 P0 的前四项（见第 7 节）：截图改 JPEG 并封顶 2000px、`capture_after` 改为显式开启、新增 `actions` 批量窗口输入、`list_windows` 过滤 + 精简输出。**
 
 ---
 
@@ -229,3 +231,43 @@
 - 长会话 222 次模型调用里 205 次以工具调用收尾，规划是连续的；126 次 CU 调用只有 4 次失败（焦点/截图/超时）。
 - 干净 CU 会话模型回合 3.7 s，长会话 9.1 s——差异来自上下文，不是 CU 逻辑。
 - CU 自身在上下文里只占约 3.5%（8.5k / 240k），工具耗时 0.7–1.3 s；可优化空间主要在"每步一轮模型"和"强制截图/窗口枚举"。
+
+---
+
+## 7. 已实施的 P0 修复（2026-10-20）
+
+### 7.1 改动
+
+| # | 改动 | 文件 |
+|---|---|---|
+| 1 | 截图统一输出 JPEG q70；超过 2000px 等比缩放并返回 `image_scale`，避免 Pi 二次归一化 | `windows/WindowCaptureService.ts`、`ComputerAutomationService.ts`、`builtin-capability-extension.ts` |
+| 2 | `capture_after` 改为显式开启，不再对每个窗口动作强制事后截图 | `ComputerUsePolicy.ts` |
+| 3 | 新增 `actions: [...]`（1–8 个窗口输入步骤，顺序执行、出错即停、只做一次最终观察） | `ComputerAutomationService.ts`、`builtin-capability-extension.ts` |
+| 4 | `list_windows` 支持 `window_title/process_id/process_name/class_name` 过滤并返回精简字段 | `ComputerAutomationService.ts`、`builtin-capability-extension.ts` |
+| 5 | 批量动作不自动重试（避免部分已执行后重复副作用）；错误结果携带已完成步骤 | `ComputerUseRecoveryPolicy.ts`、`ComputerAutomationService.ts` |
+| 6 | 审批/侧效应识别适配批量；事件摘要显示 `batch: N 步` | `src/shared/pi-event-mapper.ts` |
+
+### 7.2 实测（同一台机器、同一 Electron 版本）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `screenshot`（整屏） | 1.08–1.31 s，PNG → base64 ≈1.9M 字符，归一化 1.10 s | **274 ms**，JPEG **178 KB**，2000×1125，`image_scale=1.28` |
+| `screenshot_window` | 0.62 s，PNG ≈790 KB | **275 ms**，JPEG **111 KB**，`image_scale=1` |
+| 点击（Agent 默认） | 1.08 s + 182 KB 强制截图 | **708 ms，无截图**（`visualVerification: not-required`） |
+| 点击（显式 `capture_after`） | — | 889 ms + 111 KB |
+| 3 次点击 | 3 轮模型 + 3×1.08 s ≈ 逐次 1.82 s 工具时间 | **批量 727 ms**，1 轮模型（2.5× 工具时间，1/3 模型轮数） |
+| `list_windows`（8 窗口） | 全量几何 ≈400 行 JSON | **2,012 字符（约 50 行）**，过滤可用（1 条命中） |
+
+### 7.3 验证
+
+- `pnpm -s typecheck` 通过；`pnpm -s build` 通过。
+- `test:computer-automation`、`test:computer-use-run`、`test:computer-use-recovery`、`test:image-resize-assets`、`test:builtin-capabilities` 全部通过。
+- 实机：`test:computer-automation-windows`（UIA、DIP 截图、物理点击、陈旧目标、取消、Host 崩溃重启）与 `test:computer-use-overlay`（叠加框/停止按钮/等待阶段）通过。
+
+### 7.4 仍未做（P1）
+
+- 应用会话（`attach_app`）与窗口级叠加框；
+- 后台捕获（`PrintWindow`）、Chromium/Tauri 的语义/OCR 兜底；
+- 鼠标/键盘原语（双击、修饰键、按住、拖拽时长、滚动量、粘贴、后台输入）；
+- 多显示器 `list_displays`；
+- 截图 `image_scale>1` 时的 legacy 桌面坐标换算仍依赖模型按文档乘系数（窗口截图通常为 1）。

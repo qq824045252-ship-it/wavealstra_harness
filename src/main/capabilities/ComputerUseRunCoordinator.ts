@@ -1,4 +1,4 @@
-﻿import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
+import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
 import { computerUseOverlayService } from "./ComputerUseOverlayService";
 import { prepareComputerUseInput, verificationFor, type ComputerUsePhase } from "./ComputerUsePolicy";
 import type { ComputerUseRecoveryPlan } from "./ComputerUseRecoveryPolicy";
@@ -48,7 +48,7 @@ export class ComputerUseRunCoordinator {
     // Computer Use is visibly active from the beginning of the tool call, even
     // before a concrete HWND is resolved. Targeted actions will move the stable
     // screen border to the target monitor once inspection completes.
-    computerUseOverlayService.presentDesktop({ taskId, phase: "observing", action: prepared.action });
+    computerUseOverlayService.presentDesktop({ taskId, phase: "observing", action: prepared.action ?? "batch" });
     return prepared;
   }
 
@@ -59,7 +59,7 @@ export class ComputerUseRunCoordinator {
     this.requireActive(state);
     state.lastTarget = target;
     state.touchedAt = Date.now();
-    computerUseOverlayService.present({ taskId, target, phase, action: input.action, cursor });
+    computerUseOverlayService.present({ taskId, target, phase, action: input.action ?? "batch", cursor });
   }
 
   presentDesktop(input: ComputerExecInput, phase: ComputerUsePhase = "acting", cursor?: { x?: number; y?: number; clicking?: boolean }): void {
@@ -71,7 +71,7 @@ export class ComputerUseRunCoordinator {
     computerUseOverlayService.presentDesktop({
       taskId,
       phase,
-      action: input.action,
+      action: input.action ?? "batch",
       xPhysical: cursor?.x,
       yPhysical: cursor?.y,
       clicking: cursor?.clicking,
@@ -84,7 +84,7 @@ export class ComputerUseRunCoordinator {
     const state = this.getRun(taskId);
     this.requireActive(state);
     if (state.lastTarget) {
-      computerUseOverlayService.present({ taskId, target: state.lastTarget, phase: "recovering", action: `${input.action}:${plan.reason}` });
+      computerUseOverlayService.present({ taskId, target: state.lastTarget, phase: "recovering", action: `${input.action ?? "batch"}:${plan.reason}` });
     }
   }
 
@@ -97,9 +97,9 @@ export class ComputerUseRunCoordinator {
     const target = output.observation?.targetAfter ?? output.window ?? state.lastTarget;
     if (target) {
       state.lastTarget = target;
-      computerUseOverlayService.present({ taskId, target, phase: "verifying", action: input.action });
+      computerUseOverlayService.present({ taskId, target, phase: "verifying", action: input.action ?? "batch" });
     } else {
-      computerUseOverlayService.presentDesktop({ taskId, phase: "verifying", action: input.action });
+      computerUseOverlayService.presentDesktop({ taskId, phase: "verifying", action: input.action ?? "batch" });
     }
     // A verified action is not the end of Computer Use. Keep the screen-level
     // mode visible while the Agent reasons about the next step.
@@ -110,7 +110,7 @@ export class ComputerUseRunCoordinator {
         runId: state.runId,
         taskId,
         step: state.step,
-        action: input.action,
+        action: input.action ?? "batch",
         phase: "verified",
         verification: verificationFor(input, output),
         recovery: recovery ? { reason: recovery.reason, guidance: recovery.guidance, retried: true } : undefined,

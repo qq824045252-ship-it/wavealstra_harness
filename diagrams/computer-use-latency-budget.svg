@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1240" height="800" viewBox="0 0 1240 800" font-family="Segoe UI, Microsoft YaHei, sans-serif">
   <rect x="0" y="0" width="1240" height="800" fill="#f7f8fb"/>
   <text x="40" y="46" font-size="24" font-weight="700" fill="#1f2430">复测：单步耗时 80–90% 在模型回合，工具只占 10–20%</text>
-  <text x="40" y="72" font-size="13" fill="#5b6472">沙箱放开后用真实 Electron 路径重测：2560×1440 / 100% DPI / Electron 44.5.1；数据来自 17 个会话、126 次 computer_exec 调用</text>
+  <text x="40" y="72" font-size="13" fill="#5b6472">修复前基线（2026-10-19 复测）：2560×1440 / 100% DPI / Electron 44.5.1；数据来自 17 个会话、126 次 computer_exec 调用</text>
 
   <!-- flow boxes -->
   <g>

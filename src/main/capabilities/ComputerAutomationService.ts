@@ -22,14 +22,44 @@ export type ComputerExecAction =
   | "move_client" | "click_client" | "drag_client" | "scroll_client"
   | "mouse_move" | "mouse_click" | "mouse_drag" | "scroll" | "key_press" | "type_text";
 
+export const COMPUTER_BATCH_ACTIONS = [
+  "move_client", "click_client", "drag_client", "scroll_client", "key_press", "type_text",
+] as const;
+export type ComputerBatchAction = (typeof COMPUTER_BATCH_ACTIONS)[number];
+
+/** One window-scoped input step inside a batch; coordinates are client DIP. */
+export interface ComputerBatchStep {
+  action: ComputerBatchAction;
+  x?: number; y?: number; x2?: number; y2?: number;
+  button?: "left" | "right" | "middle";
+  deltaX?: number; deltaY?: number; key?: string; text?: string;
+}
+
+export interface ComputerBatchStepResult {
+  index: number;
+  action: ComputerBatchAction;
+  ok: boolean;
+  detail?: string;
+}
+
+export interface ComputerBatchResult {
+  steps: ComputerBatchStepResult[];
+  settleMs: number;
+  completed: boolean;
+}
+
 export interface ComputerExecInput {
-  action: ComputerExecAction;
+  action?: ComputerExecAction;
+  /** Agent-facing batched window input; when present, `action` is optional. */
+  actions?: ComputerBatchStep[];
+  /** Delay between batch steps (default 120ms, 0-2000). */
+  settleMs?: number;
   /** Internal Agent run identity; intentionally not exposed in the tool schema. */
   taskId?: string;
   x?: number; y?: number; x2?: number; y2?: number;
   button?: "left" | "right" | "middle";
   deltaX?: number; deltaY?: number; key?: string; text?: string;
-  windowTitle?: string; windowHandle?: string; processId?: number; className?: string; screenId?: string;
+  windowTitle?: string; windowHandle?: string; processId?: number; processName?: string; className?: string; screenId?: string;
   controlName?: string; automationId?: string; controlType?: string; controlRuntimeId?: string; controlClassName?: string; exactName?: boolean;
   clientOnly?: boolean; ensureForeground?: boolean; observationId?: string;
   maxDepth?: number; maxNodes?: number; timeoutMs?: number; waitState?: "visible" | "foreground" | "closed";
@@ -39,7 +69,7 @@ export interface ComputerExecInput {
 }
 
 export interface ComputerExecOutput {
-  action: ComputerExecAction;
+  action: ComputerExecAction | "batch";
   detail?: string;
   windows?: WindowInfo[];
   window?: WindowInfo;
@@ -48,17 +78,27 @@ export interface ComputerExecOutput {
   uiaAvailable?: boolean;
   truncated?: boolean;
   screenshot?: Uint8Array;
+  screenshotMimeType?: "image/jpeg" | "image/png";
+  /** Physical pixels per returned image pixel; 1 when the capture is not downscaled. */
+  imageScale?: number;
+  imageSize?: { width: number; height: number };
   artifactFileName?: string;
   observationId?: string;
   observation?: ActionObservation;
   hostPid?: number;
   semanticOutcome?: ComputerSemanticOutcome;
+  batch?: ComputerBatchResult;
   [key: string]: unknown;
 }
 
 interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
 const OBSERVATION_TTL_MS = 30_000;
 const MAX_OBSERVATIONS = 64;
+/** Pi re-encodes tool images above 2000px; stay below it and report the scale. */
+const MAX_SCREENSHOT_EDGE = 2000;
+const SCREENSHOT_JPEG_QUALITY = 70;
+const BATCH_SETTLE_DEFAULT_MS = 120;
+const BATCH_MAX_STEPS = 8;
 
 function assertNotCancelled(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -114,10 +154,42 @@ function normalizeKeyToken(token: string): string {
   throw new Error(`不支持的按键：${token}`);
 }
 
-function safeArtifactName(window: WindowInfo): string {
+function safeArtifactName(window: WindowInfo, extension = "png"): string {
   const base = window.title.trim() || window.processName || String(window.processId);
   const safe = base.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-").replace(/\s+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return `window-${safe || window.processId}.png`;
+  return `window-${safe || window.processId}.${extension}`;
+}
+
+function compactWindowInfo(window: WindowInfo): WindowInfo {
+  // The full per-window geometry is only needed by inspect_window; list_windows
+  // is an enumeration and its full JSON dominated tool-result context.
+  return {
+    handle: window.handle,
+    processId: window.processId,
+    processName: window.processName,
+    title: window.title,
+    className: window.className,
+    visible: window.visible,
+    minimized: window.minimized,
+    foreground: window.foreground,
+    clientRect: window.clientRect,
+    dpi: window.dpi,
+    scaleFactor: window.scaleFactor,
+  } as WindowInfo;
+}
+
+function filterWindows(windows: WindowInfo[], input: ComputerExecInput): WindowInfo[] {
+  const title = input.windowTitle?.trim().toLocaleLowerCase();
+  const className = input.className?.trim();
+  const processName = input.processName?.trim().toLocaleLowerCase();
+  const processId = Number.isInteger(input.processId) ? input.processId : undefined;
+  if (!title && !className && !processName && processId === undefined) return windows;
+  return windows.filter((window) =>
+    (!title || window.title.toLocaleLowerCase().includes(title))
+    && (!className || window.className === className)
+    && (!processName || (window.processName ?? "").toLocaleLowerCase().includes(processName))
+    && (processId === undefined || window.processId === processId),
+  );
 }
 
 function sameCaptureGeometry(left: WindowInfo, right: WindowInfo): boolean {
@@ -146,12 +218,16 @@ export class ComputerAutomationService {
   async shutdown(): Promise<void> { await this.host.shutdown(); }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    if (input.actions?.length) return this.executeBatch(input, signal);
+    const action = input.action;
+    if (!action) throw new Error("computer_exec 需要 action 或 actions");
+    const normalized = { ...input, action } as ComputerExecInput & { action: ComputerExecAction };
     // Keep the low-level service deterministic for tests/direct callers. The
     // Agent-facing extension supplies taskId and opts into run policy/recovery/overlay.
-    if (!input.taskId) return this.executeOnce(input, signal);
+    if (!input.taskId) return this.executeOnce(normalized, signal);
     signal = computerUseRunCoordinator.scope(input.taskId, signal);
     assertNotCancelled(signal);
-    const prepared = computerUseRunCoordinator.prepare(input);
+    const prepared = computerUseRunCoordinator.prepare(normalized) as ComputerExecInput & { action: ComputerExecAction };
     let current = prepared;
     let attempt = 0;
     let recoveredBy: ComputerUseRecoveryPlan | undefined;
@@ -174,7 +250,7 @@ export class ComputerAutomationService {
           computerUseRunCoordinator.recovering(current, plan);
           if (plan.delayMs) await checked(() => new Promise((resolve) => setTimeout(resolve, plan.delayMs)), signal);
           assertNotCancelled(signal);
-          current = plan.input;
+          current = plan.input as ComputerExecInput & { action: ComputerExecAction };
           attempt += 1;
           continue;
         }
@@ -206,7 +282,7 @@ export class ComputerAutomationService {
     });
   }
 
-  private async executeOnce(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async executeOnce(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     assertNotCancelled(signal);
     if (input.action === "status") {
       return { action: input.action, detail: this.available ? "ready (persistent Windows Automation Host + UIA + guarded SendInput)" : "unsupported platform", hostPid: this.host.pid };
@@ -220,7 +296,17 @@ export class ComputerAutomationService {
     }
     if (input.action === "list_windows") {
       const raw = await this.request<"list_windows", unknown[]>("list_windows", {}, signal);
-      return { action: input.action, windows: raw.map(normalizeWindowInfo), hostPid: this.host.pid };
+      const all = raw.map(normalizeWindowInfo);
+      const filtered = filterWindows(all, input);
+      // Keep the response compact: the full geometry of every window is never
+      // needed for window-scoped actions and dominated the tool-result context.
+      return {
+        action: input.action,
+        windows: filtered.map(compactWindowInfo),
+        hostPid: this.host.pid,
+        totalWindows: all.length,
+        filtered: filtered.length !== all.length ? filtered.length : undefined,
+      };
     }
     if (input.action === "inspect_window") {
       const window = await this.inspect(this.targetFromInput(input), signal);
@@ -299,7 +385,7 @@ export class ComputerAutomationService {
       className: input.className?.trim() || undefined,
     };
     if (required && !target.windowHandle && !target.windowTitle && !target.processId && !target.className) {
-      throw new Error(`${input.action} 需要 window_handle、window_title、process_id 或 class_name`);
+      throw new Error(`${input.action ?? "batch"} 需要 window_handle、window_title、process_id 或 class_name`);
     }
     return target;
   }
@@ -380,7 +466,7 @@ export class ComputerAutomationService {
     return { windowHandle: current.handle, expectedProcessId: current.processId };
   }
 
-  private async captureDesktop(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async captureDesktop(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     assertNotCancelled(signal);
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { desktopCapturer, screen } = require("electron") as typeof import("electron");
@@ -392,10 +478,31 @@ export class ComputerAutomationService {
     const sources = await checked(() => desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width, height }, fetchWindowIcons: false }), signal);
     const source = sources.find((item) => item.display_id === String(display.id));
     if (!source || source.thumbnail.isEmpty()) throw new WindowsAutomationError("CAPTURE_FAILED", "无法捕获指定桌面截图", { displayId: display.id });
-    return { action: input.action, screenshot: source.thumbnail.toPNG(), artifactFileName: "desktop-screenshot.png", detail: `screen ${display.id}: ${width}x${height}` };
+    // Keep the capture at most 2000px so Pi does not resize/re-encode it, and
+    // report the exact physical-pixel scale for legacy desktop coordinates.
+    const physical = source.thumbnail.getSize();
+    let image = source.thumbnail;
+    let imageScale = 1;
+    if (physical.width > MAX_SCREENSHOT_EDGE || physical.height > MAX_SCREENSHOT_EDGE) {
+      const factor = Math.min(MAX_SCREENSHOT_EDGE / physical.width, MAX_SCREENSHOT_EDGE / physical.height);
+      const imageWidth = Math.max(1, Math.round(physical.width * factor));
+      const imageHeight = Math.max(1, Math.round(physical.height * factor));
+      image = image.resize({ width: imageWidth, height: imageHeight, quality: "best" });
+      imageScale = physical.width / imageWidth;
+    }
+    const imageSize = image.getSize();
+    return {
+      action: input.action,
+      screenshot: image.toJPEG(SCREENSHOT_JPEG_QUALITY),
+      screenshotMimeType: "image/jpeg",
+      imageScale: Math.round(imageScale * 10_000) / 10_000,
+      imageSize,
+      artifactFileName: "desktop-screenshot.jpg",
+      detail: `screen ${display.id}: ${width}x${height} -> ${imageSize.width}x${imageSize.height} JPEG (image_scale ${Math.round(imageScale * 1000) / 1000})`,
+    };
   }
 
-  private async captureWindow(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async captureWindow(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.guardedTarget(input, signal);
     let window: WindowInfo;
     if (input.ensureForeground !== false) {
@@ -423,12 +530,14 @@ export class ComputerAutomationService {
       });
     }
     return {
-      action: input.action, window: verifiedAfter, screenshot: capture.screenshot, artifactFileName: safeArtifactName(verifiedAfter),
+      action: input.action, window: verifiedAfter, screenshot: capture.screenshot,
+      screenshotMimeType: capture.details.mimeType, imageScale: capture.details.imageScale, imageSize: capture.details.imageSize,
+      artifactFileName: safeArtifactName(verifiedAfter, "jpg"),
       capture: capture.details, observationId: this.remember(verifiedAfter), detail: "foreground identity and geometry verified before and after display crop",
     };
   }
 
-  private async executeClientInput(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async executeClientInput(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.guardedTarget(input, signal);
     const targetWindow = await this.inspect(target, signal);
     const cursor = Number.isFinite(input.x) && Number.isFinite(input.y)
@@ -444,7 +553,7 @@ export class ComputerAutomationService {
     return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "window-scoped guarded input" };
   }
 
-  private async executeLegacyInput(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async executeLegacyInput(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const cursor = input.action === "scroll"
       ? undefined
       : {
@@ -469,7 +578,7 @@ export class ComputerAutomationService {
     return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "legacy desktop-coordinate fallback" };
   }
 
-  private async executeKeyboard(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  private async executeKeyboard(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = input.windowHandle || input.windowTitle || input.processId || input.className || input.observationId ? await this.guardedTarget(input, signal) : undefined;
     if (target) computerUseRunCoordinator.presentTarget(input, await this.inspect(target, signal), "acting");
     const observed = await this.withObservation(target, input, async () => {
@@ -485,19 +594,174 @@ export class ComputerAutomationService {
     return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: target ? "window-scoped guarded input" : "legacy foreground-targeted input" };
   }
 
+  private async listWindows(signal?: AbortSignal): Promise<WindowInfo[]> {
+    return (await this.request<"list_windows", unknown[]>("list_windows", {}, signal)).map(normalizeWindowInfo);
+  }
+
+  private buildObservation(before: WindowInfo[], targetBefore: WindowInfo | undefined, after: WindowInfo[]): ActionObservation {
+    const beforeHandles = new Set(before.map((item) => item.handle));
+    const afterHandles = new Set(after.map((item) => item.handle));
+    const targetAfter = targetBefore ? after.find((item) => item.handle === targetBefore.handle && item.processId === targetBefore.processId) : undefined;
+    return {
+      targetBefore, targetAfter,
+      foregroundBefore: before.find((item) => item.foreground)?.handle,
+      foregroundAfter: after.find((item) => item.foreground)?.handle,
+      focusPreserved: targetBefore ? Boolean(targetAfter?.foreground) : undefined,
+      newWindows: after.filter((item) => !beforeHandles.has(item.handle)),
+      closedWindows: before.filter((item) => !afterHandles.has(item.handle)),
+    };
+  }
+
+  /** Attach an optional post-action window capture to an already-built result. */
+  private async applyCapture(targetBefore: WindowInfo, after: WindowInfo[], resultRecord: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    const targetAfter = after.find((item) => item.handle === targetBefore.handle && item.processId === targetBefore.processId);
+    const captureFailed = (message: string, details?: unknown): void => {
+      Object.assign(resultRecord, {
+        captureStatus: "failed",
+        captureError: { code: "CAPTURE_FAILED", message, details },
+      });
+    };
+    if (!targetAfter) {
+      captureFailed("Target closed before post-action capture", { targetBefore });
+      return;
+    }
+    if (!targetAfter.foreground) {
+      captureFailed("Target lost foreground before post-action capture", { targetAfter });
+      return;
+    }
+    try {
+      const captured = await checked(() => this.capture.capture(targetAfter, true), signal);
+      const verifiedAfterCapture = await this.inspect({ windowHandle: targetAfter.handle, expectedProcessId: targetAfter.processId }, signal);
+      if (!verifiedAfterCapture.foreground || !sameCaptureGeometry(targetAfter, verifiedAfterCapture)) {
+        captureFailed("Target focus or geometry changed during post-action capture", {
+          beforeCapture: targetAfter,
+          afterCapture: verifiedAfterCapture,
+        });
+        return;
+      }
+      Object.assign(resultRecord, {
+        captureStatus: "captured",
+        screenshot: captured.screenshot,
+        screenshotMimeType: captured.details.mimeType,
+        imageScale: captured.details.imageScale,
+        imageSize: captured.details.imageSize,
+        artifactFileName: safeArtifactName(verifiedAfterCapture, "jpg"),
+        capture: captured.details,
+      });
+    } catch (error) {
+      assertNotCancelled(signal);
+      captureFailed("Target changed or capture failed during post-action capture", {
+        targetAfter,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private validateBatch(input: ComputerExecInput): ComputerBatchStep[] {
+    const steps = input.actions ?? [];
+    if (steps.length < 1 || steps.length > BATCH_MAX_STEPS) throw new Error(`actions 需要 1–${BATCH_MAX_STEPS} 个步骤`);
+    for (const [index, step] of steps.entries()) {
+      if (!COMPUTER_BATCH_ACTIONS.includes(step.action)) throw new Error(`actions[${index}] 不支持动作：${String(step.action)}`);
+    }
+    this.targetFromInput(input);
+    return steps;
+  }
+
+  private batchStepError(error: unknown, completed: ComputerBatchStepResult[], failedIndex: number): unknown {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = {
+      ...(error instanceof WindowsAutomationError && error.details && typeof error.details === "object"
+        ? error.details as Record<string, unknown>
+        : {}),
+      batch: { completedSteps: completed.length, failedIndex, steps: completed },
+    };
+    const suffix = `（批量第 ${failedIndex + 1} 步失败，前 ${completed.length} 步已执行）`;
+    if (error instanceof WindowsAutomationError) {
+      return new WindowsAutomationError(error.code, `${message}${suffix}`, detail);
+    }
+    const wrapped = new Error(`${message}${suffix}`) as Error & { details?: unknown };
+    wrapped.details = detail;
+    return wrapped;
+  }
+
+  private async runBatch(input: ComputerExecInput, steps: ComputerBatchStep[], signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const target = this.targetFromInput(input);
+    const before = await this.listWindows(signal);
+    const beforeTarget = await this.inspect(target, signal);
+    computerUseRunCoordinator.presentTarget(input, beforeTarget, "acting");
+    const settleMs = Math.min(2_000, Math.max(0, Math.round(input.settleMs ?? BATCH_SETTLE_DEFAULT_MS)));
+    const completed: ComputerBatchStepResult[] = [];
+    for (const [index, step] of steps.entries()) {
+      assertNotCancelled(signal);
+      if (index > 0 && settleMs > 0) await checked(() => new Promise((resolve) => setTimeout(resolve, settleMs)), signal);
+      const stepInput: ComputerExecInput & { action: ComputerExecAction } = {
+        action: step.action,
+        x: step.x, y: step.y, x2: step.x2, y2: step.y2,
+        button: step.button, deltaX: step.deltaX, deltaY: step.deltaY, key: step.key, text: step.text,
+        windowHandle: beforeTarget.handle,
+        processId: beforeTarget.processId,
+        clientOnly: true,
+        observeAfter: false,
+        captureAfter: false,
+        taskId: input.taskId,
+      };
+      try {
+        const result = await checked(() => this.executeOnce(stepInput, signal), signal);
+        completed.push({ index, action: step.action, ok: true, detail: typeof result.detail === "string" ? result.detail : undefined });
+      } catch (error) {
+        completed.push({ index, action: step.action, ok: false });
+        throw this.batchStepError(error, completed.filter((item) => item.ok), index);
+      }
+    }
+    await checked(() => new Promise((resolve) => setTimeout(resolve, 150)), signal);
+    const after = await this.listWindows(signal);
+    const observation = this.buildObservation(before, beforeTarget, after);
+    const output: ComputerExecOutput = {
+      action: "batch",
+      batch: { steps: completed, settleMs, completed: true },
+      observation,
+    };
+    if (input.captureAfter) await this.applyCapture(beforeTarget, after, output as unknown as Record<string, unknown>, signal);
+    return output;
+  }
+
+  private async executeBatch(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const steps = this.validateBatch(input);
+    const batchInput: ComputerExecInput = { ...input, actions: steps };
+    const taskId = input.taskId?.trim();
+    if (!taskId) return this.runBatch(batchInput, steps, signal);
+    const scoped = computerUseRunCoordinator.scope(taskId, signal);
+    assertNotCancelled(scoped);
+    const first = steps[0];
+    const prepared = computerUseRunCoordinator.prepare({
+      ...batchInput,
+      action: first.action,
+      observeAfter: true,
+      captureAfter: input.captureAfter,
+    });
+    try {
+      const output = await this.runBatch({ ...prepared, actions: steps }, steps, scoped);
+      output.semanticOutcome = await checked(() => this.evaluateSemanticOutcome({ ...prepared, action: first.action }, output, scoped), scoped);
+      return computerUseRunCoordinator.complete({ ...prepared, action: first.action }, output);
+    } catch (error) {
+      computerUseRunCoordinator.fail(prepared, scoped);
+      throw error;
+    }
+  }
+
   private async withObservation<T>(target: TargetIdentity | undefined, input: ComputerExecInput, action: () => Promise<T>, signal?: AbortSignal): Promise<{ result: T; observation?: ActionObservation }> {
     assertNotCancelled(signal);
     if (input.captureAfter && !target) {
       throw new WindowsAutomationError("CAPTURE_FAILED", "capture_after requires a window-scoped target");
     }
     if (input.observeAfter === false && !input.captureAfter) return { result: await checked(action, signal) };
-    const before = (await this.request<"list_windows", unknown[]>("list_windows", {}, signal)).map(normalizeWindowInfo);
+    const before = await this.listWindows(signal);
     const targetBefore = target ? await this.inspect(target, signal) : undefined;
     const result = await checked(action, signal);
     let after: WindowInfo[];
     try {
       await checked(() => new Promise((resolve) => setTimeout(resolve, 150)), signal);
-      after = (await this.request<"list_windows", unknown[]>("list_windows", {}, signal)).map(normalizeWindowInfo);
+      after = await this.listWindows(signal);
     } catch (error) {
       assertNotCancelled(signal);
       if (result && typeof result === "object") {
@@ -522,54 +786,9 @@ export class ComputerAutomationService {
       }
       return { result };
     }
-    const beforeHandles = new Set(before.map((item) => item.handle));
-    const afterHandles = new Set(after.map((item) => item.handle));
-    const targetAfter = targetBefore ? after.find((item) => item.handle === targetBefore.handle && item.processId === targetBefore.processId) : undefined;
-    const observation: ActionObservation = {
-      targetBefore, targetAfter,
-      foregroundBefore: before.find((item) => item.foreground)?.handle,
-      foregroundAfter: after.find((item) => item.foreground)?.handle,
-      focusPreserved: targetBefore ? Boolean(targetAfter?.foreground) : undefined,
-      newWindows: after.filter((item) => !beforeHandles.has(item.handle)),
-      closedWindows: before.filter((item) => !afterHandles.has(item.handle)),
-    };
-    if (input.captureAfter && result && typeof result === "object") {
-      const resultRecord = result as Record<string, unknown>;
-      const captureFailed = (message: string, details?: unknown): void => {
-        Object.assign(resultRecord, {
-          captureStatus: "failed",
-          captureError: { code: "CAPTURE_FAILED", message, details },
-        });
-      };
-      if (!targetAfter) {
-        captureFailed("Target closed before post-action capture", { targetBefore });
-      } else if (!targetAfter.foreground) {
-        captureFailed("Target lost foreground before post-action capture", { targetAfter });
-      } else {
-        try {
-          const captured = await checked(() => this.capture.capture(targetAfter, true), signal);
-          const verifiedAfterCapture = await this.inspect({ windowHandle: targetAfter.handle, expectedProcessId: targetAfter.processId }, signal);
-          if (!verifiedAfterCapture.foreground || !sameCaptureGeometry(targetAfter, verifiedAfterCapture)) {
-            captureFailed("Target focus or geometry changed during post-action capture", {
-              beforeCapture: targetAfter,
-              afterCapture: verifiedAfterCapture,
-            });
-          } else {
-            Object.assign(resultRecord, {
-              captureStatus: "captured",
-              screenshot: captured.screenshot,
-              artifactFileName: safeArtifactName(verifiedAfterCapture),
-              capture: captured.details,
-            });
-          }
-        } catch (error) {
-          assertNotCancelled(signal);
-          captureFailed("Target changed or capture failed during post-action capture", {
-            targetAfter,
-            cause: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+    const observation = this.buildObservation(before, targetBefore, after);
+    if (input.captureAfter && targetBefore && result && typeof result === "object") {
+      await this.applyCapture(targetBefore, after, result as Record<string, unknown>, signal);
     }
     return { result, observation };
   }

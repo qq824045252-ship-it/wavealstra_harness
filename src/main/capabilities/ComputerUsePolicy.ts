@@ -1,4 +1,4 @@
-﻿import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
+import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
 
 export type ComputerUsePhase = "observing" | "acting" | "verifying" | "waiting" | "recovering" | "completed" | "failed";
 
@@ -10,20 +10,14 @@ const SIDE_EFFECT_ACTIONS = new Set<ComputerExecInput["action"]>([
   "key_press", "type_text",
 ]);
 
-const VISUAL_VERIFY_ACTIONS = new Set<ComputerExecInput["action"]>([
-  "invoke_control", "set_control_value",
-  "click_client", "drag_client", "scroll_client",
-  "key_press", "type_text",
-]);
-
 const LIGHTWEIGHT_ACTIONS = new Set<ComputerExecInput["action"]>(["move_client", "mouse_move"]);
 
-export function isComputerUseSideEffect(action: ComputerExecInput["action"]): boolean {
-  return SIDE_EFFECT_ACTIONS.has(action);
+export function isComputerUseSideEffect(action: ComputerExecInput["action"] | undefined): boolean {
+  return action !== undefined && SIDE_EFFECT_ACTIONS.has(action);
 }
 
-export function isComputerUseLightweightAction(action: ComputerExecInput["action"]): boolean {
-  return LIGHTWEIGHT_ACTIONS.has(action);
+export function isComputerUseLightweightAction(action: ComputerExecInput["action"] | undefined): boolean {
+  return action !== undefined && LIGHTWEIGHT_ACTIONS.has(action);
 }
 
 export function hasWindowTarget(input: ComputerExecInput): boolean {
@@ -33,17 +27,16 @@ export function hasWindowTarget(input: ComputerExecInput): boolean {
 /**
  * Real Agent Computer Use calls are wrapped in an Observe → Act → Verify loop.
  * Low-level tests and direct service consumers without taskId keep the raw contract.
+ *
+ * `capture_after` stays opt-in: forcing a window screenshot after every click,
+ * key press and scroll doubled the image payload and added ~0.36s per action.
+ * Callers ask for visual proof explicitly when the result is ambiguous.
  */
 export function prepareComputerUseInput(input: ComputerExecInput): ComputerExecInput {
   const expectsSemanticOutcome = Boolean(input.expectedOutcomes?.length);
   if (!input.taskId || (!isComputerUseSideEffect(input.action) && !expectsSemanticOutcome)) return { ...input };
   if (isComputerUseLightweightAction(input.action) && !expectsSemanticOutcome) return { ...input };
-
-  const next: ComputerExecInput = { ...input, observeAfter: true };
-  if (VISUAL_VERIFY_ACTIONS.has(input.action) && hasWindowTarget(input)) {
-    next.captureAfter = true;
-  }
-  return next;
+  return { ...input, observeAfter: true };
 }
 
 export interface ComputerUseVerification {

@@ -1,4 +1,4 @@
-﻿import type { ComputerExecInput } from "./ComputerAutomationService";
+import type { ComputerExecInput } from "./ComputerAutomationService";
 import { isComputerUseSideEffect } from "./ComputerUsePolicy";
 import { WindowsAutomationError } from "./windows/windowsAutomationProtocol";
 
@@ -20,6 +20,11 @@ function stableSelectorAvailable(input: ComputerExecInput): boolean {
 
 export function planComputerUseRecovery(error: unknown, input: ComputerExecInput, attempt: number): ComputerUseRecoveryPlan | null {
   if (!(error instanceof WindowsAutomationError)) return null;
+  // A batch may already have executed part of its steps; retrying the whole
+  // batch could duplicate side effects. Re-observe and continue manually.
+  if (input.actions?.length) {
+    return { retry: false, reason: "batch", guidance: "批量动作可能已执行部分步骤；先观察窗口/控件状态，再决定剩余步骤，不要重复整批。" };
+  }
   if (error.code === "REQUEST_CANCELLED") {
     return { retry: false, reason: "cancelled", guidance: "用户或运行时已取消 Computer Use；不要自动重试。" };
   }
