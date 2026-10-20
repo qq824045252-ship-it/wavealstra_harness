@@ -258,6 +258,8 @@
 | 3 次点击 | 3 轮模型 + 3×1.08 s ≈ 逐次 1.82 s 工具时间 | **批量 727 ms**，1 轮模型（2.5× 工具时间，1/3 模型轮数） |
 | `list_windows`（8 窗口） | 全量几何 ≈400 行 JSON | **2,012 字符（约 50 行）**，过滤可用（1 条命中） |
 
+![P0 修复结果](diagrams/computer-use-p0-result.svg)
+
 ### 7.3 验证
 
 - `pnpm -s typecheck` 通过；`pnpm -s build` 通过。

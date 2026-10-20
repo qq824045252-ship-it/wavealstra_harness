@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="700" viewBox="0 0 1240 700" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1240" height="700" fill="#f7f8fb"/>
+  <text x="40" y="46" font-size="24" font-weight="700" fill="#1f2430">P0 修复结果：截图与点击成本（2026-10-20 实测）</text>
+  <text x="40" y="72" font-size="13" fill="#5b6472">同机同 Electron 44.5.1；2560×1440 / 100% DPI。修复内容：JPEG 截图、capture_after 可选、批量 actions、list_windows 过滤。</text>
+
+  <!-- table header -->
+  <rect x="40" y="96" width="1160" height="38" fill="#2b3446"/>
+  <text x="60" y="121" font-size="14" font-weight="700" fill="#ffffff">指标</text>
+  <text x="470" y="121" font-size="14" font-weight="700" fill="#ffffff">修复前</text>
+  <text x="830" y="121" font-size="14" font-weight="700" fill="#ffffff">修复后</text>
+
+  <!-- row 1 -->
+  <rect x="40" y="134" width="1160" height="58" fill="#ffffff" stroke="#dfe4ee"/>
+  <text x="60" y="157" font-size="13" font-weight="700" fill="#1f2430">整屏 screenshot</text>
+  <text x="60" y="178" font-size="12" fill="#7a8496">桌面观察</text>
+  <text x="470" y="157" font-size="12" fill="#3b4556">1.08–1.31s；1.9M base64</text>
+  <text x="470" y="178" font-size="12" fill="#3b4556">Pi 归一化再花 1.10s</text>
+  <text x="830" y="157" font-size="12" fill="#1d6b3f" font-weight="700">274ms；178KB JPEG</text>
+  <text x="830" y="178" font-size="12" fill="#3b4556">2000×1125，归一化 0（≤2000px）</text>
+
+  <!-- row 2 -->
+  <rect x="40" y="192" width="1160" height="58" fill="#fbfcfe" stroke="#dfe4ee"/>
+  <text x="60" y="215" font-size="13" font-weight="700" fill="#1f2430">窗口 screenshot_window</text>
+  <text x="60" y="236" font-size="12" fill="#7a8496">窗口观察</text>
+  <text x="470" y="215" font-size="12" fill="#3b4556">0.62s（原生）</text>
+  <text x="470" y="236" font-size="12" fill="#3b4556">≈790KB PNG</text>
+  <text x="830" y="215" font-size="12" fill="#1d6b3f" font-weight="700">275ms；111KB JPEG</text>
+  <text x="830" y="236" font-size="12" fill="#3b4556">image_scale=1（客户区 DIP 不变）</text>
+
+  <!-- row 3 -->
+  <rect x="40" y="250" width="1160" height="58" fill="#ffffff" stroke="#dfe4ee"/>
+  <text x="60" y="273" font-size="13" font-weight="700" fill="#1f2430">点击（Agent 默认）</text>
+  <text x="60" y="294" font-size="12" fill="#7a8496">click_client</text>
+  <text x="470" y="273" font-size="12" fill="#3b4556">1.08s</text>
+  <text x="470" y="294" font-size="12" fill="#8a2f22">每次附带 182KB 强制截图</text>
+  <text x="830" y="273" font-size="12" fill="#1d6b3f" font-weight="700">708ms</text>
+  <text x="830" y="294" font-size="12" fill="#3b4556">0 张图；visualVerification=not-required</text>
+
+  <!-- row 4 -->
+  <rect x="40" y="308" width="1160" height="58" fill="#fbfcfe" stroke="#dfe4ee"/>
+  <text x="60" y="331" font-size="13" font-weight="700" fill="#1f2430">点击（capture_after）</text>
+  <text x="60" y="352" font-size="12" fill="#7a8496">需要视觉确认时</text>
+  <text x="470" y="331" font-size="12" fill="#3b4556">—（原实现强制开启）</text>
+  <text x="830" y="331" font-size="12" fill="#3b4556">889ms + 111KB JPEG（显式可选）</text>
+  <text x="830" y="352" font-size="12" fill="#3b4556">visualVerification=captured</text>
+
+  <!-- row 5 -->
+  <rect x="40" y="366" width="1160" height="58" fill="#ffffff" stroke="#dfe4ee"/>
+  <text x="60" y="389" font-size="13" font-weight="700" fill="#1f2430">连续 3 次点击</text>
+  <text x="60" y="410" font-size="12" fill="#7a8496">多选/表单场景</text>
+  <text x="470" y="389" font-size="12" fill="#3b4556">1.82s 工具时间 + 3 轮模型</text>
+  <text x="830" y="389" font-size="12" fill="#1d6b3f" font-weight="700">727ms + 1 轮模型</text>
+  <text x="830" y="410" font-size="12" fill="#3b4556">actions 批量：顺序执行、出错即停</text>
+
+  <!-- row 6 -->
+  <rect x="40" y="424" width="1160" height="58" fill="#fbfcfe" stroke="#dfe4ee"/>
+  <text x="60" y="447" font-size="13" font-weight="700" fill="#1f2430">list_windows（8 窗口）</text>
+  <text x="60" y="468" font-size="12" fill="#7a8496">窗口枚举</text>
+  <text x="470" y="447" font-size="12" fill="#3b4556">≈400 行 JSON</text>
+  <text x="470" y="468" font-size="12" fill="#3b4556">window_title 过滤被忽略</text>
+  <text x="830" y="447" font-size="12" fill="#1d6b3f" font-weight="700">2,012 字符（≈50 行）</text>
+  <text x="830" y="468" font-size="12" fill="#3b4556">title/pid/process_name/class 过滤可用</text>
+
+  <!-- row 7 -->
+  <rect x="40" y="482" width="1160" height="58" fill="#ffffff" stroke="#dfe4ee"/>
+  <text x="60" y="505" font-size="13" font-weight="700" fill="#1f2430">批量失败处理</text>
+  <text x="60" y="526" font-size="12" fill="#7a8496">部分步骤已执行</text>
+  <text x="470" y="505" font-size="12" fill="#3b4556">—（无批量）</text>
+  <text x="830" y="505" font-size="12" fill="#3b4556">不自动重试；错误携带已完成步骤</text>
+  <text x="830" y="526" font-size="12" fill="#3b4556">completedSteps / failedIndex / steps</text>
+
+  <!-- footer -->
+  <rect x="40" y="560" width="1160" height="110" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
+  <text x="58" y="588" font-size="14" font-weight="700" fill="#1d4f9c">仍然成立的两个边界</text>
+  <text x="58" y="614" font-size="12" fill="#33496e">① 模型回合仍是单步大头（3.7–9.1s）；批量的价值是把 N 个动作压成 1 轮，而不是让模型变快。下一步 P1：应用会话、后台捕获、输入原语。</text>
+  <text x="58" y="636" font-size="12" fill="#33496e">② 截图超过 2000px 会等比缩放并返回 image_scale（整屏 1.28；窗口通常为 1）。窗口坐标 = 图像像素 × image_scale；legacy 桌面坐标需乘 image_scale。</text>
+  <text x="58" y="658" font-size="12" fill="#33496e">验证：typecheck / build / 5 个单测 / 2 个实机 smoke 全绿；test:all 256 通过、1 个已知失败、0 新增回归。</text>
+</svg>
