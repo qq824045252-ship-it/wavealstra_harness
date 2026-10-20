@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="820" viewBox="0 0 1180 820" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect width="1180" height="820" fill="#f7f8fa"/>
+  <text x="24" y="38" font-size="22" font-weight="700" fill="#1b2330">子代理运行时缺失：根因与构建闸门</text>
+  <text x="24" y="62" font-size="13" fill="#53606f">MyBuddy 打包链路 · 实测于 2026-10-20 · 实线=已验证，虚线=推断/流程</text>
+
+  <!-- Panel A: broken build -->
+  <rect x="20" y="80" width="560" height="360" rx="10" fill="#fff5f5" stroke="#e0a3a3" stroke-width="1.5"/>
+  <text x="40" y="108" font-size="16" font-weight="700" fill="#a12a2a">A. 用户实际运行：release-p1\win-unpacked（0.1.45）</text>
+
+  <rect x="40" y="124" width="240" height="86" rx="8" fill="#ffffff" stroke="#c9ccd2"/>
+  <text x="52" y="146" font-size="13" font-weight="700" fill="#1b2330">resources/app.asar</text>
+  <text x="52" y="168" font-size="12" fill="#53606f">19617 个文件（含主进程 bundle）</text>
+  <text x="52" y="186" font-size="12" fill="#53606f">asar 索引 588 条标记 unpacked</text>
+  <text x="52" y="202" font-size="12" fill="#a12a2a">索引引用了解包区文件</text>
+
+  <rect x="320" y="124" width="240" height="86" rx="8" fill="#fff0f0" stroke="#c0504d" stroke-width="2"/>
+  <text x="332" y="146" font-size="13" font-weight="700" fill="#a12a2a">resources/app.asar.unpacked</text>
+  <text x="332" y="168" font-size="12" fill="#a12a2a">out\ 整棵树缺失</text>
+  <text x="332" y="186" font-size="12" fill="#a12a2a">586 / 588 个条目不存在</text>
+  <text x="332" y="202" font-size="12" fill="#a12a2a">node_modules 仅剩部分目录</text>
+
+  <rect x="40" y="238" width="520" height="72" rx="8" fill="#ffffff" stroke="#c9ccd2"/>
+  <text x="52" y="260" font-size="13" font-weight="700" fill="#1b2330">缺失的关键文件（子进程必须能直接执行）</text>
+  <text x="52" y="282" font-size="12" fill="#3a3f47">out\main\capabilities\subagent\runtime\pi-runtime.mjs</text>
+  <text x="52" y="300" font-size="12" fill="#3a3f47">out\main\capabilities\subagent\worker-launcher.mjs</text>
+
+  <rect x="40" y="330" width="520" height="88" rx="8" fill="#ffffff" stroke="#c0504d" stroke-width="1.5"/>
+  <text x="52" y="352" font-size="13" font-weight="700" fill="#a12a2a">运行期解析（src/main/capabilities/subagent/index.ts）</text>
+  <text x="52" y="374" font-size="12" fill="#3a3f47">__dirname 在 app.asar 内 → 路径改写为 app.asar.unpacked</text>
+  <text x="52" y="392" font-size="12" fill="#3a3f47">fs.existsSync(pi-runtime.mjs) === false</text>
+  <text x="52" y="410" font-size="12" fill="#a12a2a">throw “安装包缺少原生 Pi 子代理 Runtime” → 10 个子代理全部无法启动</text>
+
+  <!-- Panel B: good build -->
+  <rect x="600" y="80" width="560" height="360" rx="10" fill="#f2fbf5" stroke="#8fbc9b" stroke-width="1.5"/>
+  <text x="620" y="108" font-size="16" font-weight="700" fill="#1e6b3a">B. 快捷方式实际指向：release\win-unpacked（0.1.46）</text>
+
+  <rect x="620" y="124" width="240" height="86" rx="8" fill="#ffffff" stroke="#c9ccd2"/>
+  <text x="632" y="146" font-size="13" font-weight="700" fill="#1b2330">resources/app.asar</text>
+  <text x="632" y="168" font-size="12" fill="#53606f">19617 个文件，索引一致</text>
+  <text x="632" y="186" font-size="12" fill="#53606f">588 条 unpacked 条目</text>
+  <text x="632" y="202" font-size="12" fill="#1e6b3a">索引与解包区完全对齐</text>
+
+  <rect x="900" y="124" width="240" height="86" rx="8" fill="#eaf7ee" stroke="#2f7d4f" stroke-width="2"/>
+  <text x="912" y="146" font-size="13" font-weight="700" fill="#1e6b3a">resources/app.asar.unpacked</text>
+  <text x="912" y="168" font-size="12" fill="#1e6b3a">out\main\… 全部存在</text>
+  <text x="912" y="186" font-size="12" fill="#1e6b3a">588 / 588 条目齐全</text>
+  <text x="912" y="202" font-size="12" fill="#1e6b3a">better-sqlite3 / node-pty 在位</text>
+
+  <rect x="620" y="238" width="520" height="72" rx="8" fill="#ffffff" stroke="#c9ccd2"/>
+  <text x="632" y="260" font-size="13" font-weight="700" fill="#1b2330">功能实测（与 App 自检同一条入口）</text>
+  <text x="632" y="282" font-size="12" fill="#3a3f47">node worker-launcher.mjs pi-runtime.mjs --version</text>
+  <text x="632" y="300" font-size="12" fill="#1e6b3a">退出码 0，输出 1.3.0 = launcher 的 EXPECTED_PI_VERSION</text>
+
+  <rect x="620" y="330" width="520" height="88" rx="8" fill="#ffffff" stroke="#2f7d4f" stroke-width="1.5"/>
+  <text x="632" y="352" font-size="13" font-weight="700" fill="#1e6b3a">结论</text>
+  <text x="632" y="374" font-size="12" fill="#3a3f47">代码与构建配置是对的：同一个仓库能产出可用包</text>
+  <text x="632" y="392" font-size="12" fill="#3a3f47">坏包是“产物不完整”，不是逻辑缺陷</text>
+  <text x="632" y="410" font-size="12" fill="#1e6b3a">所以每次 dev 测试都绿，一装就坏</text>
+
+  <!-- Divider -->
+  <line x1="20" y1="456" x2="1160" y2="456" stroke="#d5d9e0" stroke-width="1"/>
+
+  <!-- Panel C: gate -->
+  <rect x="20" y="472" width="1140" height="300" rx="10" fill="#ffffff" stroke="#7f8ea3" stroke-width="1.5"/>
+  <text x="40" y="500" font-size="16" font-weight="700" fill="#1b2330">C. 新增构建闸门：electron-builder afterPack → scripts/verify-packaged-app.cjs</text>
+
+  <rect x="40" y="516" width="200" height="70" rx="8" fill="#eef2f8" stroke="#7f8ea3"/>
+  <text x="52" y="538" font-size="13" font-weight="700" fill="#1b2330">1 结构一致性</text>
+  <text x="52" y="558" font-size="12" fill="#3a3f47">asar 索引 unpacked 条目</text>
+  <text x="52" y="575" font-size="12" fill="#3a3f47">必须逐个存在于解包区</text>
+
+  <rect x="268" y="516" width="200" height="70" rx="8" fill="#eef2f8" stroke="#7f8ea3"/>
+  <text x="280" y="538" font-size="13" font-weight="700" fill="#1b2330">2 关键文件在位</text>
+  <text x="280" y="558" font-size="12" fill="#3a3f47">pi-runtime.mjs / launcher</text>
+  <text x="280" y="575" font-size="12" fill="#3a3f47">codemode / 图片缩放 / wasm</text>
+
+  <rect x="496" y="516" width="200" height="70" rx="8" fill="#eef2f8" stroke="#7f8ea3"/>
+  <text x="508" y="538" font-size="13" font-weight="700" fill="#1b2330">3 真实启动</text>
+  <text x="508" y="558" font-size="12" fill="#3a3f47">node + launcher + runtime</text>
+  <text x="508" y="575" font-size="12" fill="#3a3f47">--version 必须等于 1.3.0</text>
+
+  <rect x="724" y="516" width="416" height="70" rx="8" fill="#fff8e6" stroke="#c9a227"/>
+  <text x="736" y="538" font-size="13" font-weight="700" fill="#7a5c00">判定</text>
+  <text x="736" y="558" font-size="12" fill="#5a4614">任一项失败 → afterPack 抛错 → 构建中止，不可安装/不可指快捷方式</text>
+  <text x="736" y="575" font-size="12" fill="#5a4614">三项全过 → 才允许发布（pnpm -s verify:packaged 可手工复核）</text>
+
+  <text x="40" y="620" font-size="13" font-weight="700" fill="#1b2330">闸门对四个真实产物的判定（本次实跑）</text>
+  <text x="40" y="644" font-size="12" fill="#1e6b3a">release\win-unpacked → PASS（588/588 条目齐全，worker 输出 1.3.0）</text>
+  <text x="40" y="664" font-size="12" fill="#1e6b3a">release-p1b\win-unpacked → PASS（同上，已按指示删除）</text>
+  <text x="40" y="684" font-size="12" fill="#a12a2a">release-p1\win-unpacked → FAIL（586/588 缺，10 个关键文件缺，node-pty 缺）</text>
+  <text x="40" y="704" font-size="12" fill="#a12a2a">release-next\win-unpacked → FAIL（10 个关键文件 + 原生模块缺）</text>
+
+  <text x="40" y="736" font-size="12" fill="#53606f">虚线说明：坏包的成因（解包区被清空/复制不完整）未取得写入日志，属推断；</text>
+  <text x="40" y="754" font-size="12" fill="#53606f">但“产物不完整必然导致子代理全挂、且 dev 测试无法发现”已由上述实跑证据闭合。</text>
+</svg>

@@ -428,7 +428,15 @@ function makeInvocationResolver() {
     const isElectron = execName.includes("electron") || !!process.versions.electron;
     const bundledRoot = path.join(__dirname, "capabilities/subagent/runtime/pi-runtime.mjs").replace("app.asar", "app.asar.unpacked");
     const isPackaged = __dirname.includes("app.asar");
-    if (isPackaged && !fs.existsSync(bundledRoot)) throw new Error("安装包缺少原生 Pi 子代理 Runtime，请重新构建应用");
+    if (isPackaged && !fs.existsSync(bundledRoot)) {
+      // 打包后 app.asar 里的路径对子进程不可执行：runtime 必须落在 app.asar.unpacked。
+      // 产物缺文件时给出可验证的诊断，而不是只留一句“请重新构建”。
+      throw new Error(
+        `安装包缺少原生 Pi 子代理 Runtime：${bundledRoot} 不存在。` +
+          `这是 app.asar.unpacked 不完整的构建（开发模式 out/ 始终有该文件，dev 测试发现不了）；` +
+          `请运行 pnpm -s verify:packaged 校验产物后重新安装，勿使用该构建。`,
+      );
+    }
     const resolved = fs.existsSync(bundledRoot)
       ? { command: resolveSystemNode(process.env, fs.existsSync) ?? "node", args: [bundledRoot] }
       : resolvePiInvocation(process.env, process.execPath, isElectron, tryRequireResolve, fs.existsSync);
@@ -438,7 +446,12 @@ function makeInvocationResolver() {
       path.join(process.cwd(), "src/main/capabilities/subagent/worker-launcher.mjs"),
     ];
     const launcher = candidates.find((candidate) => fs.existsSync(candidate));
-    if (!launcher || resolved.args.length !== 1) throw new Error("无法加载子代理模型准入入口，请重新构建应用并检查 Pi CLI 路径");
+    if (!launcher || resolved.args.length !== 1) {
+      throw new Error(
+        `无法加载子代理模型准入入口（worker-launcher.mjs 不在 ${candidates.join(" 或 ")}，` +
+          `Pi CLI 参数数 ${resolved.args.length}）；请运行 pnpm -s verify:packaged 校验产物后重新安装。`,
+      );
+    }
     return { command: resolved.command, args: [launcher, ...resolved.args] };
   };
 }
