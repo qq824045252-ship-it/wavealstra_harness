@@ -174,13 +174,13 @@ async function main(): Promise<void> {
   });
   await flush();
   assertOk(requests.length === 2, "5. 再次发起请求");
-  resolveNext({ ok: false, code: "TASK_BUSY", message: "当前任务仍在运行，请先停止生成后再创建分支。" });
+  resolveNext({ ok: false, code: "ANCHOR_NOT_FOUND", message: "所选消息已不存在，请刷新后重试。" });
   const ok5 = await p5;
   assertOk(ok5 === false, "5. 失败返回 false");
   const s5 = useAppStore.getState();
   assertOk(s5.activeTaskId === "task-child", "5. 失败不切换任务");
   assertOk(
-    s5.branchError?.taskId === "task-child" && s5.branchError.message.includes("仍在运行"),
+    s5.branchError?.taskId === "task-child" && s5.branchError.message.includes("所选消息"),
     "5. 错误信息可读且归属当前任务",
   );
   assertOk(s5.branchCreatingTaskId === null, "5. 失败后 loading 清除");
@@ -242,10 +242,30 @@ async function main(): Promise<void> {
   assertOk(requests.length === beforeCount + 1, "9. live assistant fallback sends one request");
   assertOk(requests.at(-1)?.userMessageIndex === 0, "9. assistant fallback refers to its own user, not the next turn");
   assertOk(requests.at(-1)?.position === "after_reply", "9. assistant fallback retains after_reply semantics");
-  resolveNext({ ok: false, code: "TASK_BUSY", message: "busy" });
+  resolveNext({ ok: false, code: "INVALID_REQUEST", message: "分支位置无效。" });
   await p9;
   const bad = await useAppStore.getState().createBranchFromMessage("missing-message", { role: "user" });
   assertOk(!bad && requests.length === beforeCount + 1, "9. missing UI message never becomes a last-turn branch");
+
+  // ===== 10. 任务执行中（TASK_BUSY）：自动停止当前运行并重试，不再变成死胡同 =====
+  useAppStore.setState({
+    tasks: [makeTask("task-busy", "忙碌任务")],
+    activeTaskId: "task-busy",
+    conversationBranchEnabled: true,
+    branchError: null,
+  });
+  const busyStart = requests.length;
+  const p10 = useAppStore.getState().createBranchFromMessage("u1", { role: "user", entryId: "entry-u1" });
+  await flush();
+  assertOk(requests.length === busyStart + 1, "10. 先发一次 create");
+  resolveNext({ ok: false, code: "TASK_BUSY", message: "当前任务仍在运行，请先停止生成后再创建分支。" });
+  // abort + 700ms 退避后自动重试
+  await new Promise((r) => setTimeout(r, 900));
+  assertOk(requests.length === busyStart + 2, "10. TASK_BUSY 后自动重试（不直接失败）");
+  assertOk(requests.at(-1)?.requestId === requests.at(-2)?.requestId, "10. 重试沿用同一 requestId（主进程幂等）");
+  resolveNext(okOutcome);
+  assertOk((await p10) === true, "10. 停止后重试成功创建分支");
+  assertOk(useAppStore.getState().branchError === null, "10. 成功路径不残留 branchError");
 
   console.log(`\nconversation-branch-ui: passed=${passed} failed=${failed}`);
   if (failed > 0) process.exit(1);

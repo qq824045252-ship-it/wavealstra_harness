@@ -8,8 +8,8 @@ android {
         applicationId "com.mybuddy.remote"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 29
-        versionName "1.1.27"
+        versionCode 30
+        versionName "1.1.28"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             ignoreAssetsPattern = '!.git:!.ds_store:.*:!thumbs.db:!*~'

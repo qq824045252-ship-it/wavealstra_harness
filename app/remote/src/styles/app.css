@@ -1913,32 +1913,7 @@ button:disabled {
   padding: 12px 10px 4px;
 }
 
-/* 抽屉任务行：主按钮 + 右侧删除按钮（不再只有进任务后才能删） */
-.drawer-item-row {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: 10px;
-}
-
-.drawer-item-row:active { background-color: var(--bg-hover); }
-
-.drawer-item-delete {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  margin-right: 4px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--fg-muted);
-}
-
-.drawer-item-delete:hover, .drawer-item-delete:active {
-  color: var(--status-danger);
-  background-color: color-mix(in srgb, var(--status-danger) 12%, transparent);
-}
-
+/* 删除入口只保留在任务内（聊天页头部）；抽屉仅用于切换任务，不放删除按钮。 */
 .remote-confirm-hint {
   margin-top: 8px;
   font-size: 12px;

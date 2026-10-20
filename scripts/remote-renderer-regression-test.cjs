@@ -99,7 +99,7 @@ app.whenReady().then(async()=>{
     const bounds=await evaluate(`(()=>{const t=document.querySelector('.chat-timeline');return {width:t.clientWidth,scroll:t.scrollWidth,negative:[...t.children].some(x=>x.getBoundingClientRect().height<0)}})()`);
     assert.ok(bounds.scroll<=bounds.width+1,JSON.stringify(bounds));pass('no horizontal overflow at '+width+' CSS px');
   }
-  // 删除入口必须真的可点：头部按钮不能被长标题挤出视口，抽屉每行都要有删除按钮
+  // 删除入口只在任务内：头部按钮必须留在视口内；抽屉列表不放删除按钮（产品决定）
   win.setContentSize(360,800);await delay(120);
   const deleteUi=await evaluate(`(()=>{
     const btn=document.querySelector('button[aria-label="删除任务"]');
@@ -112,8 +112,8 @@ app.whenReady().then(async()=>{
     };
   })()`);
   assert.equal(deleteUi.headerVisible,true,'delete button must stay inside the viewport at 360px: '+JSON.stringify(deleteUi));
-  assert.ok(deleteUi.drawerDeleteButtons>0,'drawer task rows must expose a delete button');
-  pass('delete stays reachable at 360px and every drawer row has its own delete affordance');
+  assert.equal(deleteUi.drawerDeleteButtons,0,'drawer list must not expose delete buttons (deletion happens inside a task)');
+  pass('delete stays reachable at 360px and is only offered inside a task');
   await evaluate('window.remoteFixture.tableHistory()');await until('document.querySelectorAll(".markdown-table-scroll").length===2');
   win.setContentSize(360,800);await delay(100);
   const tableLayout=await evaluate(`(()=>{const timeline=document.querySelector('.chat-timeline');const wraps=[...document.querySelectorAll('.markdown-table-scroll')];return {

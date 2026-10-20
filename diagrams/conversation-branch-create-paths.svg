@@ -1,158 +1,122 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1460" viewBox="0 0 1180 1460" font-family="'Microsoft YaHei','Noto Sans SC',sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1010" viewBox="0 0 1180 1010" font-family="'Microsoft YaHei','Noto Sans SC',sans-serif">
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+    <marker id="b1" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
       <path d="M0,0 L10,4 L0,8 z" fill="#374151"/>
     </marker>
-    <marker id="arrowRed" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
-      <path d="M0,0 L10,4 L0,8 z" fill="#b3261e"/>
-    </marker>
-    <marker id="arrowGray" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+    <marker id="b1g" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
       <path d="M0,0 L10,4 L0,8 z" fill="#6b7280"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="1180" height="1460" fill="#f7f8fa"/>
-  <text x="60" y="52" font-size="26" font-weight="700" fill="#111827">对话分支创建链路与失败点（2026-10-19 实测）</text>
-  <text x="60" y="80" font-size="14" fill="#4b5563">文件：src/renderer/src/store/appStore.ts、src/main/agent/ConversationBranchService.ts、src/main/agent/session-branch.ts、src/main/task/TaskWorkspaceBrancher.ts</text>
+  <rect x="0" y="0" width="1180" height="1010" fill="#f7f8fa"/>
+  <text x="60" y="48" font-size="21" font-weight="700" fill="#111827">对话分支：链路与本轮判定（取消沙箱后重测）</text>
+  <text x="60" y="76" font-size="13" fill="#4b5563">create → 锚点定位 → 策略 → 预检/复制 → 物化 → DB commit</text>
 
-  <!-- legend -->
-  <rect x="700" y="26" width="420" height="62" rx="8" fill="#ffffff" stroke="#d1d5db"/>
-  <rect x="714" y="40" width="16" height="16" rx="3" fill="#e8f5ee" stroke="#1f7a4d"/>
-  <text x="738" y="53" font-size="13" fill="#111827">测试通过</text>
-  <rect x="826" y="40" width="16" height="16" rx="3" fill="#fdecea" stroke="#b3261e"/>
-  <text x="850" y="53" font-size="13" fill="#111827">实测失败</text>
-  <rect x="938" y="40" width="16" height="16" rx="3" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="3 3"/>
-  <text x="962" y="53" font-size="13" fill="#111827">静态确认/推断</text>
-  <text x="714" y="76" font-size="12" fill="#6b7280">绿色=用例通过；红色=自动化用例或探针实测失败；虚线灰=仅读代码确认、无用例覆盖</text>
+  <rect x="700" y="22" width="420" height="64" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="714" y="36" width="16" height="16" rx="3" fill="#e8f5ee" stroke="#1f7a4d"/>
+  <text x="738" y="49" font-size="13" fill="#111827">用例通过（实测）</text>
+  <rect x="866" y="36" width="16" height="16" rx="3" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="3 3"/>
+  <text x="890" y="49" font-size="13" fill="#111827">代码确认 / 无覆盖</text>
+  <text x="714" y="74" font-size="12" fill="#6b7280">无「实测失败」：沙箱期间的 2 条失败已证实为环境伪阳性</text>
 
-  <!-- spine -->
+  <!-- steps -->
   <g>
-    <!-- 1 menu -->
-    <rect x="120" y="100" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
-    <text x="138" y="130" font-size="15" font-weight="700" fill="#111827">① 用户消息「更多」菜单：从这里创建分支</text>
+    <rect x="120" y="104" width="470" height="66" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="138" y="132" font-size="15" font-weight="700" fill="#111827">① 消息「更多」→ 从这里创建分支</text>
     <text x="138" y="156" font-size="12.5" fill="#4b5563">MessageItem.tsx:643（非 bot / flag 开 / 非 btw / 非流式中）</text>
 
-    <!-- 2 store -->
-    <rect x="120" y="208" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
-    <text x="138" y="238" font-size="15" font-weight="700" fill="#111827">② appStore.createBranchFromMessage</text>
-    <text x="138" y="264" font-size="12.5" fill="#4b5563">appStore.ts:2050 计算过滤后 userMessageIndex（主锚点仍为 entryId）</text>
+    <rect x="120" y="200" width="470" height="66" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+    <text x="138" y="228" font-size="15" font-weight="700" fill="#111827">② appStore.createBranchFromMessage → IPC create</text>
+    <text x="138" y="252" font-size="12.5" fill="#4b5563">appStore.ts:2050；只传 entryId + 过滤后 userMessageIndex</text>
 
-    <!-- 3 ipc -->
-    <rect x="120" y="316" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
-    <text x="138" y="346" font-size="15" font-weight="700" fill="#111827">③ IPC conversationBranch.create</text>
-    <text x="138" y="372" font-size="12.5" fill="#4b5563">preload/index.ts:642 → 主进程；renderer 不传 session 路径 / cwd / leaf</text>
+    <rect x="120" y="296" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="324" font-size="15" font-weight="700" fill="#111827">③ 校验：flag / 幂等 requestId / 任务 / 回收区 / 特殊前缀</text>
+    <text x="138" y="348" font-size="12.5" fill="#4b5563">ConversationBranchService.ts:125-183</text>
 
-    <!-- 4 validations -->
-    <rect x="120" y="424" width="470" height="72" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
-    <text x="138" y="454" font-size="15" font-weight="700" fill="#111827">④ 校验：flag / 请求键 / requestId 幂等 / 任务 / 回收区 / 特殊前缀</text>
-    <text x="138" y="480" font-size="12.5" fill="#4b5563">ConversationBranchService.ts:125-183</text>
+    <rect x="120" y="392" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="420" font-size="15" font-weight="700" fill="#111827">④ isTaskBusy → ⑤ sessionFile 存在性</text>
+    <text x="138" y="444" font-size="12.5" fill="#4b5563">TASK_BUSY / SESSION_MISSING 两条拒绝分支，用例覆盖</text>
 
-    <!-- 5 busy -->
-    <rect x="120" y="532" width="470" height="72" rx="10" fill="#eef2ff" stroke="#3730a3" stroke-width="1.5"/>
-    <text x="138" y="562" font-size="15" font-weight="700" fill="#111827">⑤ isTaskBusy → TASK_BUSY</text>
-    <text x="138" y="588" font-size="12.5" fill="#4b5563">AgentService.ts:3785（streaming / 排队回合 / 挂起审批 任一即忙）</text>
+    <rect x="120" y="488" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="516" font-size="15" font-weight="700" fill="#111827">⑥ resolveConversationBranchLeaf（entryId 主锚点）</text>
+    <text x="138" y="540" font-size="12.5" fill="#4b5563">ANCHOR_* / POSITION_MISMATCH；helper 与 UI 口径一致</text>
 
-    <!-- 6 session -->
-    <rect x="120" y="640" width="470" height="72" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
-    <text x="138" y="670" font-size="15" font-weight="700" fill="#111827">⑥ task.sessionFile 存在性 → SESSION_MISSING</text>
-    <text x="138" y="696" font-size="12.5" fill="#4b5563">「源会话文件不存在，无法创建分支。」</text>
+    <rect x="120" y="584" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="612" font-size="15" font-weight="700" fill="#111827">⑦ resolveStrategy：shared_space / conversation_only / snapshot</text>
+    <text x="138" y="636" font-size="12.5" fill="#4b5563">Space 路径有效强制共享；否则默认复制快照</text>
 
-    <!-- 7 anchor -->
-    <rect x="120" y="748" width="470" height="72" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
-    <text x="138" y="778" font-size="15" font-weight="700" fill="#111827">⑦ resolveConversationBranchLeaf（entryId 主锚点）</text>
-    <text x="138" y="804" font-size="12.5" fill="#4b5563">session-branch.ts:80 → ANCHOR_* / POSITION_MISMATCH</text>
+    <rect x="120" y="680" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="708" font-size="15" font-weight="700" fill="#111827">⑧ preflight(walkStats) → ⑨ copySnapshotToPending</text>
+    <text x="138" y="732" font-size="12.5" fill="#4b5563">junction 一律跳过并计数（真实环境 73/73 通过）</text>
 
-    <!-- 8 strategy -->
-    <rect x="120" y="856" width="470" height="72" rx="10" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
-    <text x="138" y="886" font-size="15" font-weight="700" fill="#111827">⑧ resolveStrategy 策略选择</text>
-    <text x="138" y="912" font-size="12.5" fill="#4b5563">shared_space / conversation_only / current_snapshot（默认复制快照）</text>
+    <rect x="120" y="776" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="804" font-size="15" font-weight="700" fill="#111827">⑩ 物化 child session + DB 单事务 commit</text>
+    <text x="138" y="828" font-size="12.5" fill="#4b5563">task / 血缘 / usage 水位；J/K/M/N/O 组全通过</text>
 
-    <!-- 9 preflight -->
-    <rect x="120" y="964" width="470" height="72" rx="10" fill="#fdecea" stroke="#b3261e" stroke-width="2"/>
-    <text x="138" y="994" font-size="15" font-weight="700" fill="#111827">⑨ preflight → walkStats（reparse point 检测）</text>
-    <text x="138" y="1020" font-size="12.5" fill="#b3261e">✗ 用例 I.1：lstatSync(junction) 报 isDirectory → 未计入 reparse</text>
+    <rect x="120" y="872" width="470" height="66" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
+    <text x="138" y="900" font-size="15" font-weight="700" fill="#111827">⑪ 产物克隆（失败仅 warning）→ 切到 child</text>
+    <text x="138" y="924" font-size="12.5" fill="#4b5563">child 可立即再次分支（native 用例通过）</text>
 
-    <!-- 10 copy -->
-    <rect x="120" y="1072" width="470" height="72" rx="10" fill="#fdecea" stroke="#b3261e" stroke-width="2"/>
-    <text x="138" y="1102" font-size="15" font-weight="700" fill="#111827">⑩ copySnapshotToPending / commitPending</text>
-    <text x="138" y="1128" font-size="12.5" fill="#b3261e">✗ 用例 I.2：junction 被跟随，外部文件复制进 child 工作区</text>
-
-    <!-- 11 materialize + commit -->
-    <rect x="120" y="1180" width="470" height="72" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
-    <text x="138" y="1210" font-size="15" font-weight="700" fill="#111827">⑪ 物化 child session + DB 单事务 commit</text>
-    <text x="138" y="1236" font-size="12.5" fill="#4b5563">createConversationBranchSession + task/血缘/用量水位（J/K/M/O 通过）</text>
-
-    <!-- 12 finish -->
-    <rect x="120" y="1288" width="470" height="72" rx="10" fill="#e8f5ee" stroke="#1f7a4d" stroke-width="1.5"/>
-    <text x="138" y="1318" font-size="15" font-weight="700" fill="#111827">⑫ 产物克隆（失败仅 warning）→ setActiveTask(child)</text>
-    <text x="138" y="1344" font-size="12.5" fill="#4b5563">M 组产物溯源克隆全部通过；child 立即可再次分支（native 用例通过）</text>
-
-    <!-- arrows -->
-    <line x1="355" y1="172" x2="355" y2="204" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="280" x2="355" y2="312" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="388" x2="355" y2="420" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="496" x2="355" y2="528" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="604" x2="355" y2="636" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="712" x2="355" y2="744" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="820" x2="355" y2="852" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="928" x2="355" y2="960" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="1036" x2="355" y2="1068" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="1144" x2="355" y2="1176" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
-    <line x1="355" y1="1252" x2="355" y2="1284" stroke="#374151" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <line x1="355" y1="170" x2="355" y2="196" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="266" x2="355" y2="292" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="362" x2="355" y2="388" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="458" x2="355" y2="484" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="554" x2="355" y2="580" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="650" x2="355" y2="676" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="746" x2="355" y2="772" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
+    <line x1="355" y1="842" x2="355" y2="868" stroke="#374151" stroke-width="1.6" marker-end="url(#b1)"/>
   </g>
 
-  <!-- callouts -->
+  <!-- right panel: results -->
   <g>
-    <!-- busy callout -->
-    <rect x="700" y="532" width="420" height="72" rx="10" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="4 3"/>
-    <text x="716" y="560" font-size="14" font-weight="700" fill="#111827">在跑任务时必然被拒</text>
-    <text x="716" y="584" font-size="12.5" fill="#4b5563">「当前任务仍在运行，请先停止生成后再创建分支。」</text>
-    <line x1="592" y1="568" x2="696" y2="568" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowGray)"/>
-
-    <!-- session callout -->
-    <rect x="700" y="640" width="420" height="72" rx="10" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="4 3"/>
-    <text x="716" y="668" font-size="14" font-weight="700" fill="#111827">无持久会话的任务</text>
-    <text x="716" y="692" font-size="12.5" fill="#4b5563">网关 / 定时 / 部分远端任务 → 直接报 SESSION_MISSING</text>
-    <line x1="592" y1="676" x2="696" y2="676" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowGray)"/>
-
-    <!-- junction callout -->
-    <rect x="700" y="964" width="420" height="70" rx="10" fill="#fdecea" stroke="#b3261e"/>
-    <text x="716" y="992" font-size="14" font-weight="700" fill="#b3261e">探针实测：junction 被当成普通目录</text>
-    <text x="716" y="1015" font-size="12" fill="#7f1d1d">preflight={fileCount:3, skippedReparsePointCount:0}</text>
-    <line x1="592" y1="1000" x2="696" y2="1000" stroke="#b3261e" stroke-width="1.4" marker-end="url(#arrowRed)"/>
-
-    <!-- overLimit dead end -->
-    <rect x="700" y="820" width="420" height="120" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="4 3"/>
-    <text x="716" y="846" font-size="14" font-weight="700" fill="#111827">死胡同（静态确认）：超限后没有选择入口</text>
-    <text x="716" y="870" font-size="12.5" fill="#4b5563">⑨ overLimit → WORKSPACE_LIMIT_EXCEEDED，提示</text>
-    <text x="716" y="892" font-size="12.5" fill="#4b5563">「请选择『仅分支对话』或先保存到工作空间」</text>
-    <text x="716" y="916" font-size="12.5" fill="#4b5563">但 renderer 从不调用 preview、从不传 workspaceStrategy</text>
-    <text x="716" y="934" font-size="11.5" fill="#6b7280">→ 用户只能看到报错，无法选择策略（无用例覆盖）</text>
-    <line x1="592" y1="892" x2="696" y2="892" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowGray)"/>
-
-    <!-- copy callout -->
-    <rect x="700" y="1072" width="420" height="86" rx="10" fill="#fdecea" stroke="#b3261e"/>
-    <text x="716" y="1100" font-size="14" font-weight="700" fill="#b3261e">探针实测：外部内容被复制进 child</text>
-    <text x="716" y="1123" font-size="12" fill="#7f1d1d">junctionFollowed=true, escapedEntries=["nested","secret.txt"]</text>
-    <text x="716" y="1145" font-size="12" fill="#7f1d1d">违反 TaskWorkspaceBrancher 头注释「reparse point 一律跳过」</text>
-    <line x1="592" y1="1112" x2="696" y2="1112" stroke="#b3261e" stroke-width="1.4" marker-end="url(#arrowRed)"/>
+    <rect x="700" y="104" width="420" height="318" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+    <text x="716" y="132" font-size="15" font-weight="700" fill="#111827">本轮实测（取消沙箱后）</text>
+    <text x="716" y="158" font-size="12.5" fill="#1f7a4d">test:conversation-branch            73/73</text>
+    <text x="716" y="180" font-size="12.5" fill="#1f7a4d">test:conversation-branch-service    73/73（沙箱内 71/73 为假失败）</text>
+    <text x="716" y="202" font-size="12.5" fill="#1f7a4d">test:conversation-branch-ui         32/32</text>
+    <text x="716" y="224" font-size="12.5" fill="#1f7a4d">test:conversation-branch:native      7/7</text>
+    <text x="716" y="246" font-size="12.5" fill="#1f7a4d">test:conversation-branch:workspace  10/10</text>
+    <line x1="716" y1="260" x2="1104" y2="260" stroke="#e5e7eb"/>
+    <text x="716" y="282" font-size="12.5" fill="#1f7a4d">test:remote-delete                  18/18</text>
+    <text x="716" y="304" font-size="12.5" fill="#1f7a4d">test:remote-workspace-create         8/8（Electron）</text>
+    <text x="716" y="326" font-size="12.5" fill="#1f7a4d">test:remote-renderer-stdio          40/40 + 3 负向</text>
+    <text x="716" y="348" font-size="12.5" fill="#1f7a4d">test:archive-deletion-desktop        5 场景通过</text>
+    <text x="716" y="370" font-size="12.5" fill="#1f7a4d">sidebar-space-collapse(-desktop)、project-workspace-ui 通过</text>
+    <text x="716" y="396" font-size="12" fill="#6b7280">test:all：257 个用例 · 256 通过 · 1 已知失败</text>
+    <text x="716" y="414" font-size="12" fill="#6b7280">（test:project-agent，baseline）· 新增回归 0 · exit 0</text>
   </g>
 
-  <!-- results panel -->
+  <!-- sandbox artifact callout -->
   <g>
-    <rect x="700" y="142" width="420" height="330" rx="10" fill="#ffffff" stroke="#d1d5db"/>
-    <text x="716" y="172" font-size="15" font-weight="700" fill="#111827">本次用例结果（fixture 级，均未触真实任务）</text>
-    <text x="716" y="200" font-size="13" fill="#1f7a4d">test:conversation-branch           73/73 通过</text>
-    <text x="716" y="224" font-size="13" fill="#1f7a4d">test:conversation-branch-ui        32/32 通过</text>
-    <text x="716" y="248" font-size="13" fill="#1f7a4d">test:conversation-branch:native     7/7  通过</text>
-    <text x="716" y="272" font-size="13" fill="#1f7a4d">test:conversation-branch:workspace 10/10 通过</text>
-    <text x="716" y="296" font-size="13" fill="#b3261e">test:conversation-branch-service   71/73 失败 2</text>
-    <text x="716" y="318" font-size="12.5" fill="#b3261e">↳ I.1 预检识别 reparse point / I.2 不复制越界 junction</text>
-    <line x1="716" y1="334" x2="1104" y2="334" stroke="#e5e7eb"/>
-    <text x="716" y="358" font-size="12.5" fill="#4b5563">基线 scripts/test-baseline.json 只记录 test:project-agent，</text>
-    <text x="716" y="378" font-size="12.5" fill="#4b5563">因此这 2 条属于「新增失败」，会卡 test:all 门禁。</text>
-    <text x="716" y="404" font-size="12.5" fill="#4b5563">注：Electron/CDP 与远程用例在本会话被沙箱 spawn EPERM 拦住，</text>
-    <text x="716" y="424" font-size="12.5" fill="#4b5563">未能执行（见正文「环境限制」）。</text>
-    <text x="716" y="450" font-size="12" fill="#6b7280">真实 App 佐证：DB conversation_branches 有 1 行，</text>
-    <text x="716" y="468" font-size="12" fill="#6b7280">2026-10-19 17:03:30（本地）after_user / current_snapshot 创建成功。</text>
+    <rect x="700" y="470" width="420" height="150" rx="10" fill="#fffbeb" stroke="#b45309" stroke-dasharray="4 3"/>
+    <text x="716" y="498" font-size="14" font-weight="700" fill="#92400e">已纠正：沙箱造成 2 条假失败</text>
+    <text x="716" y="522" font-size="12.5" fill="#78350f">沙箱内 lstat(junction) → isDirectory=true, mode=040666</text>
+    <text x="716" y="544" font-size="12.5" fill="#78350f">无沙箱 lstat(junction) → isSymbolicLink=true, mode=120666</text>
+    <text x="716" y="568" font-size="12.5" fill="#78350f">→ 沙箱期间 I.1/I.2 失败是 DSH 文件沙箱改写了</text>
+    <text x="716" y="588" font-size="12.5" fill="#78350f">stat 结果，不是 TaskWorkspaceBrancher 的缺陷。</text>
+    <text x="716" y="610" font-size="12" fill="#92400e">同一 bundle、同一用例，沙箱外 73/73 通过。</text>
+    <line x1="592" y1="545" x2="696" y2="545" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#b1g)"/>
+  </g>
+
+  <!-- remaining gaps -->
+  <g>
+    <rect x="700" y="656" width="420" height="196" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-dasharray="4 3"/>
+    <text x="716" y="684" font-size="14" font-weight="700" fill="#111827">仍然成立的两处缺口（未被修复）</text>
+    <text x="716" y="710" font-size="12.5" fill="#374151">1. 快照超限没有策略入口</text>
+    <text x="716" y="730" font-size="12" fill="#4b5563">create() 在 overLimit 且未传 workspaceStrategy 时失败，</text>
+    <text x="716" y="748" font-size="12" fill="#4b5563">报错让用户「选择仅分支对话」；但 renderer 从不调用</text>
+    <text x="716" y="766" font-size="12" fill="#4b5563">preview、也从不传该字段 → 无 UI 入口（静态确认）。</text>
+    <text x="716" y="792" font-size="12.5" fill="#374151">2. 「在跑任务」时分支/删除会被忙碌守卫拒绝</text>
+    <text x="716" y="812" font-size="12" fill="#4b5563">这是设计行为（TASK_BUSY / 任务仍在运行），不是缺陷；</text>
+    <text x="716" y="830" font-size="12" fill="#4b5563">但桌面端只有报错，没有「停止并删除/停止再分支」的下一步。</text>
+    <line x1="592" y1="727" x2="696" y2="727" stroke="#6b7280" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#b1g)"/>
+  </g>
+
+  <!-- real app evidence -->
+  <g>
+    <rect x="700" y="884" width="420" height="120" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+    <text x="716" y="912" font-size="14" font-weight="700" fill="#111827">真实 App 佐证（只读查询 ~/.mybuddy/app.db）</text>
+    <text x="716" y="938" font-size="12.5" fill="#4b5563">conversation_branches 有 1 行：2026-10-19 17:03:30（本地）</text>
+    <text x="716" y="960" font-size="12.5" fill="#4b5563">parent「你好」/ after_user / current_snapshot，创建成功。</text>
+    <text x="716" y="986" font-size="12" fill="#6b7280">说明真实链路可用；无法创建分支需按具体报错再定位。</text>
   </g>
 </svg>

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-label="MyBuddy 0.1.34 编译与旧包清理流程">
+  <rect x="0" y="0" width="1120" height="560" fill="#f7f9fc"/>
+  <text x="32" y="42" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="700" fill="#111827">MyBuddy 0.1.34：编译 → 验收 → 切换 → 删除旧包</text>
+  <text x="32" y="68" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#4b5563">实线 = 已执行并验证；黄色 = 构建输入含未提交改动；灰色虚线 = 已知验证器限制，不计入验收</text>
+
+  <!-- Row 1 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="32" y="100" width="200" height="96" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="48" y="126" font-size="14" font-weight="700" fill="#111827">构建输入</text>
+    <text x="48" y="148" font-size="12" fill="#374151">HEAD 712f3ff</text>
+    <text x="48" y="167" font-size="12" fill="#374151">+ package.json 0.1.34</text>
+    <text x="48" y="186" font-size="12" fill="#b45309">+ 3 个未提交并行改动</text>
+
+    <rect x="272" y="100" width="200" height="96" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="288" y="126" font-size="14" font-weight="700" fill="#111827">质量门禁</text>
+    <text x="288" y="148" font-size="12" fill="#374151">typecheck：通过</text>
+    <text x="288" y="167" font-size="12" fill="#374151">test:all：250 通过</text>
+    <text x="288" y="186" font-size="12" fill="#374151">1 已知基线失败 / 0 回归</text>
+
+    <rect x="512" y="100" width="200" height="96" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="528" y="126" font-size="14" font-weight="700" fill="#111827">打包</text>
+    <text x="528" y="148" font-size="12" fill="#374151">remote:build → build</text>
+    <text x="528" y="167" font-size="12" fill="#374151">electron-builder --win</text>
+    <text x="528" y="186" font-size="12" fill="#374151">NSIS + win-unpacked</text>
+
+    <rect x="752" y="100" width="336" height="96" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="1.8"/>
+    <text x="768" y="126" font-size="14" font-weight="700" fill="#166534">产物验收（全部通过）</text>
+    <text x="768" y="148" font-size="12" fill="#374151">exe 0.1.34 / ProductVersion 0.1.34.0</text>
+    <text x="768" y="167" font-size="12" fill="#374151">app.asar 内 main / renderer / remote 字节一致</text>
+    <text x="768" y="186" font-size="12" fill="#374151">打包应用端到端 9/9</text>
+  </g>
+
+  <g stroke="#64748b" stroke-width="2" fill="none">
+    <line x1="232" y1="148" x2="268" y2="148"/>
+    <polygon points="268,148 260,143 260,153" fill="#64748b" stroke="none"/>
+    <line x1="472" y1="148" x2="508" y2="148"/>
+    <polygon points="508,148 500,143 500,153" fill="#64748b" stroke="none"/>
+    <line x1="712" y1="148" x2="748" y2="148"/>
+    <polygon points="748,148 740,143 740,153" fill="#64748b" stroke="none"/>
+  </g>
+
+  <!-- Row 2 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="752" y="240" width="336" height="96" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="768" y="266" font-size="14" font-weight="700" fill="#111827">快捷方式切换并回读</text>
+    <text x="768" y="288" font-size="12" fill="#374151">桌面 MyBuddy 0.1.34.lnk</text>
+    <text x="768" y="307" font-size="12" fill="#374151">开始菜单 MyBuddy.lnk</text>
+    <text x="768" y="326" font-size="12" fill="#374151">target / cwd / icon / 描述 / AppID 已核对</text>
+
+    <rect x="432" y="240" width="280" height="96" rx="10" fill="#ffffff" stroke="#dc2626" stroke-width="1.8"/>
+    <text x="448" y="266" font-size="14" font-weight="700" fill="#991b1b">删除旧包 release-mybuddy-0.1.33</text>
+    <text x="448" y="288" font-size="12" fill="#374151">1,794.9 MB / 616 文件</text>
+    <text x="448" y="307" font-size="12" fill="#374151">删除前：0 进程占用、快捷方式已切换</text>
+    <text x="448" y="326" font-size="12" fill="#374151">删除后：0.1.34 exe/asar 哈希不变</text>
+
+    <rect x="32" y="240" width="360" height="96" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="1.8"/>
+    <text x="48" y="266" font-size="14" font-weight="700" fill="#166534">当前运行：MyBuddy 0.1.34</text>
+    <text x="48" y="288" font-size="12" fill="#374151">窗口标题 MyBuddy · Responding=true</text>
+    <text x="48" y="307" font-size="12" fill="#374151">4 个进程均来自 0.1.34 win-unpacked</text>
+    <text x="48" y="326" font-size="12" fill="#374151">删除后再次验收：9/9 通过</text>
+  </g>
+
+  <g stroke="#64748b" stroke-width="2" fill="none">
+    <line x1="920" y1="196" x2="920" y2="236"/>
+    <polygon points="920,236 915,228 925,228" fill="#64748b" stroke="none"/>
+    <line x1="752" y1="288" x2="716" y2="288"/>
+    <polygon points="716,288 724,283 724,293" fill="#64748b" stroke="none"/>
+    <line x1="432" y1="288" x2="396" y2="288"/>
+    <polygon points="396,288 404,283 404,293" fill="#64748b" stroke="none"/>
+  </g>
+
+  <!-- Known limitation -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="32" y="392" width="1056" height="72" rx="10" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="48" y="416" font-size="13" font-weight="700" fill="#4b5563">验证器限制（不影响包）</text>
+    <text x="48" y="438" font-size="12" fill="#4b5563">validate-packaged-image-resize：asar / unpacked worker+wasm 字节检查通过；其功能探针以 .cjs 作为参数启动打包 exe，</text>
+    <text x="48" y="455" font-size="12" fill="#4b5563">打包版会忽略该参数并启动真实应用，探针 exit null。因此未把该探针计入验收依据。</text>
+  </g>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="32" y="492" width="1056" height="44" rx="10" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="48" y="519" font-size="13" fill="#92400e">提交：6d0bb61（版本号）→ 82e405a（验收记录）；并行会话后续产生的 App.tsx / RemoteClient.ts 等改动未进入本包，也未提交。</text>
+  </g>
+</svg>

@@ -188,8 +188,6 @@ function HomePage() {
 
   const [text, setText] = useState('')
   const [isInputFocused, setIsInputFocused] = useState(false)
-  // 首页/抽屉删除：与聊天页共用同一个 DeleteTaskDialog（含「停止并删除」）
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const tasks = useMemo(() => {
     return [...(bootstrap?.tasks ?? [])]
@@ -311,14 +309,12 @@ function HomePage() {
           setShowDrawer(false)
           void openTask(id)
         }}
-        onRequestDelete={(id) => setDeleteTarget(id)}
       />
 
       <AddToChatSheet />
       <PermissionSheet />
       <SelectModelSheet />
       <AcpAgentSheet />
-      <DeleteTaskDialog taskId={deleteTarget} onClose={() => setDeleteTarget(null)} />
     </>
   )
 }
@@ -770,7 +766,6 @@ function ChatPage() {
           setShowDrawer(false)
           void openTask(id)
         }}
-        onRequestDelete={(id) => setDeleteTarget(id)}
       />
 
       <AddToChatSheet />
@@ -1697,14 +1692,12 @@ function ClaudeDrawer({
   onNewChat,
   tasks,
   onSelectTask,
-  onRequestDelete,
 }: {
   open: boolean
   onClose: () => void
   onNewChat: (spaceId?: string) => void
   tasks: RemoteTaskSummary[]
   onSelectTask: (id: string) => void
-  onRequestDelete: (id: string) => void
 }) {
   const taskModes = useRemoteStore((state) => state.bootstrap?.taskModes)
   const setConnectionSettingsOpen = useRemoteStore((state) => state.setConnectionSettingsOpen)
@@ -1735,39 +1728,26 @@ function ClaudeDrawer({
   const renderTask = (task: RemoteTaskSummary, depth: number) => {
     const dot = taskStatusDot(task, localDoneAckAt(task.id))
     return (
-      <div key={task.id} className="drawer-item-row" style={{ paddingLeft: 12 + depth * 18 }}>
-        <button
-          type="button"
-          className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
-          style={{ paddingLeft: 0 }}
-          onClick={() => onSelectTask(task.id)}
-        >
-          <span className="drawer-task-row">
-            <span className="drawer-task-title">{task.title}</span>
-            {dot && (
-              <span
-                className={`task-status-dot task-status-dot--${dot}`}
-                role="img"
-                aria-label={taskDotLabel(dot)}
-                title={taskDotLabel(dot)}
-              />
-            )}
-          </span>
-          <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
-        </button>
-        <button
-          type="button"
-          className="drawer-item-delete"
-          aria-label={`删除任务：${task.title}`}
-          title="删除任务"
-          onClick={(event) => {
-            event.stopPropagation()
-            onRequestDelete(task.id)
-          }}
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
+      <button
+        key={task.id}
+        type="button"
+        className={`drawer-item-btn ${task.id === activeTaskId ? 'active' : ''}`}
+        style={{ paddingLeft: 12 + depth * 18 }}
+        onClick={() => onSelectTask(task.id)}
+      >
+        <span className="drawer-task-row">
+          <span className="drawer-task-title">{task.title}</span>
+          {dot && (
+            <span
+              className={`task-status-dot task-status-dot--${dot}`}
+              role="img"
+              aria-label={taskDotLabel(dot)}
+              title={taskDotLabel(dot)}
+            />
+          )}
+        </span>
+        <span className="task-mode-label">{taskModeLabel(task, taskModes)}</span>
+      </button>
     )
   }
 

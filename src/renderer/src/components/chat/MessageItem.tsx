@@ -6,6 +6,7 @@ import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
 import { requestUserInputDisplayText } from "@shared/request-user-input-fallback";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
+import { taskHasActiveExecution } from "@/utils/taskFilters";
 import { ArtifactChipRow, FileBadge } from "@/components/common/FileBadge";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import ExecutionTimeline from "./ExecutionTimeline";
@@ -453,6 +454,11 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   );
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** 任务执行中（流式/挂起交互/状态 in_progress）→ 删除与分支都会先停止当前运行 */
+  const taskExecuting = useAppStore((s) => {
+    const active = s.tasks.find((item) => item.id === s.activeTaskId) ?? null;
+    return taskHasActiveExecution(active);
+  });
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const copyTimerRef = useRef<number | null>(null);
 
@@ -667,9 +673,12 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
             <>
               <div>这条消息以及它之后的对话将从当前会话分支中移除。</div>
               <div style={{ marginTop: 6 }}>后续模型上下文不会再包含这些内容。此操作不可撤销。</div>
+              {taskExecuting && (
+                <div style={{ marginTop: 6 }}>该任务正在执行，删除会先停止当前运行。</div>
+              )}
             </>
           }
-          confirmLabel="删除消息"
+          confirmLabel={taskExecuting ? "停止并删除" : "删除消息"}
           danger
           onCancel={() => setDeleteConfirmOpen(false)}
           onConfirm={() => {

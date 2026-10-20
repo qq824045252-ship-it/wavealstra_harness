@@ -27,7 +27,7 @@ import type {
 import type { AgentUiPatch, ChatMessageDto, LocalConnectorDto, ModeProfileDto, SpaceDto, TaskDto } from "../../../shared/agent-ipc";
 import type { AgentRegenerateResult } from "../../../shared/agent-ipc";
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../../../shared/archive-deletion";
-import type { ConversationBranchInfoDto } from "../../../shared/conversation-branch";
+import type { ConversationBranchInfoDto, CreateConversationBranchRequest } from "../../../shared/conversation-branch";
 import type { ExternalAgentDescriptorDto, ExternalAgentId, ExternalAgentPinDto, ExternalAgentUiEvent } from "../../../shared/external-agent";
 import { resolveExternalAgentContinuationRunId } from "../../../shared/external-agent";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
@@ -2061,13 +2061,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
     set({ branchCreatingTaskId: taskId, branchError: null });
     try {
-      const result = await window.api?.conversationBranch?.create({
+      const request: CreateConversationBranchRequest = {
         sourceTaskId: taskId,
         entryId: opts.entryId,
         userMessageIndex,
         position: opts.role === "user" ? "after_user" : "after_reply",
         requestId,
-      });
+      };
+      let result = await window.api?.conversationBranch?.create(request);
+      // 任务仍在执行时主进程返回 TASK_BUSY：与安卓端「停止并删除」同构，
+      // 先停止当前运行再重试（requestId 不变，重复请求返回同一个 child）。
+      for (let attempt = 0; result && !result.ok && result.code === "TASK_BUSY" && attempt < 3; attempt += 1) {
+        await get().abortActiveTask().catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        result = await window.api?.conversationBranch?.create(request);
+      }
       if (!result) {
         set({ branchCreatingTaskId: null });
         return false;
@@ -2075,7 +2083,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!result.ok) {
         set({
           branchCreatingTaskId: null,
-          branchError: { taskId, message: result.message },
+          branchError: {
+            taskId,
+            message:
+              result.code === "TASK_BUSY"
+                ? "任务仍在收尾：已停止当前运行，请稍后再点一次「从这里创建分支」。"
+                : result.message,
+          },
         });
         return false;
       }
@@ -3975,17 +3989,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!task) return;
     const messageIndex = task.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0 || task.messages[messageIndex]?.role !== "user") return;
-    if (task.messages.some((message) => message.streaming)) {
-      throw new Error("任务仍在运行，请先停止生成后再删除消息");
-    }
+    const targetEntryId = task.messages[messageIndex].entryId;
     const userMessageIndex = task.messages
       .slice(0, messageIndex + 1)
       .filter((message) => message.role === "user").length - 1;
     if (userMessageIndex < 0) return;
 
+    // 任务仍在执行时主进程会拒绝删除。与安卓端「停止并删除」对齐：先停止当前运行，
+    // 再短暂重试（abort 收尾是异步的），避免删除入口在长任务上变成死胡同。
+    if (hasActiveExecutionMessages(task.messages) || task.status === "in_progress") {
+      await get().abortActiveTask().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+
     const api = window.api?.agent;
     if (api?.deleteUserMessage) {
-      await api.deleteUserMessage({ taskId: activeTaskId, userMessageIndex, entryId: task.messages[messageIndex].entryId });
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        try {
+          await api.deleteUserMessage({ taskId: activeTaskId, userMessageIndex, entryId: targetEntryId });
+          lastError = undefined;
+          break;
+        } catch (cause) {
+          lastError = cause;
+          const text = cause instanceof Error ? cause.message : String(cause);
+          if (!/执行|停止|busy|conflict/i.test(text)) throw cause;
+          await get().abortActiveTask().catch(() => undefined);
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+      }
+      if (lastError) throw lastError;
     }
 
     const remaining = task.messages.slice(0, messageIndex);
