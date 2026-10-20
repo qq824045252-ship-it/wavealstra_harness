@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $null = Add-Type -AssemblyName UIAutomationClient
 $null = Add-Type -AssemblyName UIAutomationTypes
 $null = Add-Type -AssemblyName System.Windows.Forms
+$null = Add-Type -AssemblyName System.Drawing
 
 $source = @'
 using System;
@@ -54,6 +55,8 @@ public static class MyBuddyWindowsAutomation {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
   public static void EnablePerMonitorDpi() {
@@ -159,6 +162,68 @@ public static class MyBuddyWindowsAutomation {
   }
   public static bool SendMouseClickCurrent(uint down, uint up) {
     return SendBatch(new INPUT[] { Mouse(down, 0, 0, 0), Mouse(up, 0, 0, 0) });
+  }
+  public static bool SendMouseClickAtCount(int x, int y, uint down, uint up, int count, int gapMs) {
+    if (count < 1 || count > 3) return false;
+    // Inject all clicks in one atomic batch so the system sees a double/triple
+    // click (an interleaved absolute move can break double-click detection).
+    var inputs = new List<INPUT>(); inputs.Add(AbsoluteMove(x, y));
+    for (int click = 0; click < count; click++) {
+      inputs.Add(Mouse(down, 0, 0, 0));
+      inputs.Add(Mouse(up, 0, 0, 0));
+    }
+    return SendBatch(inputs);
+  }
+  public static bool SendMouseDownAt(int x, int y, uint down) {
+    return SendBatch(new INPUT[] { AbsoluteMove(x, y), Mouse(down, 0, 0, 0) });
+  }
+  public static bool SendMouseUpAt(int x, int y, uint up) {
+    return SendBatch(new INPUT[] { AbsoluteMove(x, y), Mouse(up, 0, 0, 0) });
+  }
+  public static bool SendMouseDragTimed(int x, int y, int x2, int y2, uint down, uint up, int steps, int durationMs) {
+    if (steps < 1) steps = 1;
+    if (steps > 60) steps = 60;
+    int delay = durationMs > 0 ? Math.Max(0, durationMs / steps) : 0;
+    if (!SendMouseDownAt(x, y, down)) return false;
+    for (int step = 1; step <= steps; step++) {
+      if (delay > 0) System.Threading.Thread.Sleep(delay);
+      if (!SendBatch(new INPUT[] { AbsoluteMove(
+        (int)Math.Round(x + (x2 - x) * (double)step / steps),
+        (int)Math.Round(y + (y2 - y) * (double)step / steps)
+      ) })) return false;
+    }
+    return SendBatch(new INPUT[] { Mouse(up, 0, 0, 0) });
+  }
+  public static bool SendScrollAtNotches(int x, int y, int notches, bool horizontal) {
+    if (notches == 0) return false;
+    int direction = notches > 0 ? 1 : -1;
+    var inputs = new List<INPUT>(); inputs.Add(AbsoluteMove(x, y));
+    uint flag = horizontal ? 0x1000u : 0x0800u;
+    for (int index = 0; index < Math.Abs(notches); index++) inputs.Add(Mouse(flag, 0, 0, 120 * direction));
+    return SendBatch(inputs);
+  }
+  public static bool SendKeyStates(byte[] downs, byte[] ups) {
+    var inputs = new List<INPUT>();
+    foreach (byte key in downs) { var input = new INPUT(); input.type = 1; input.U.ki.wVk = key; inputs.Add(input); }
+    for (int index = ups.Length - 1; index >= 0; index--) { var input = new INPUT(); input.type = 1; input.U.ki.wVk = ups[index]; input.U.ki.dwFlags = 0x0002; inputs.Add(input); }
+    return SendBatch(inputs);
+  }
+  public static bool PostMouseClick(IntPtr hwnd, int x, int y, int button, int count) {
+    uint down = button == 2 ? 0x0204u : (button == 3 ? 0x0207u : 0x0201u);
+    uint up = button == 2 ? 0x0205u : (button == 3 ? 0x0208u : 0x0202u);
+    uint doubleClick = button == 1 ? 0x0203u : 0u;
+    int wparam = button == 1 ? 1 : (button == 2 ? 2 : 16);
+    IntPtr lparam = (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
+    if (!PostMessage(hwnd, 0x0200u, IntPtr.Zero, lparam)) return false;
+    for (int click = 0; click < count; click++) {
+      if (!PostMessage(hwnd, down, (IntPtr)wparam, lparam)) return false;
+      if (!PostMessage(hwnd, up, IntPtr.Zero, lparam)) return false;
+      if (click == 0 && doubleClick != 0) {
+        if (!PostMessage(hwnd, doubleClick, (IntPtr)wparam, lparam)) return false;
+        if (!PostMessage(hwnd, up, IntPtr.Zero, lparam)) return false;
+      }
+    }
+    return true;
   }
   public static bool SendMouseDrag(int x, int y, int x2, int y2, uint down, uint up) {
     var inputs = new List<INPUT>(); inputs.Add(AbsoluteMove(x, y)); inputs.Add(Mouse(down, 0, 0, 0));
@@ -555,10 +620,52 @@ function Invoke-Dispatch([string]$action, $params) {
       return $point
     }
     'click_client' {
+      $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      $buttonNumber = if ($button -eq 'right') { 2 } elseif ($button -eq 'middle') { 3 } else { 1 }
+      $count = if ($null -ne $params.clickCount) { [Math]::Min(3, [Math]::Max(1, [int]$params.clickCount)) } else { 1 }
+      if ([bool]$params.background) {
+        $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
+        $physicalX = [Math]::Round([double]$params.x * [double]$window.scaleFactor)
+        $physicalY = [Math]::Round([double]$params.y * [double]$window.scaleFactor)
+        if ($physicalX -lt 0 -or $physicalY -lt 0 -or $physicalX -ge $window.clientRect.width -or $physicalY -ge $window.clientRect.height) {
+          return New-ErrorResult 'POINT_OUTSIDE_CLIENT' 'Client point is outside the target window' @{ x = $params.x; y = $params.y; physicalX = $physicalX; physicalY = $physicalY; clientRect = $window.clientRect; scaleFactor = $window.scaleFactor }
+        }
+        $handle = [IntPtr]::new([Int64]::Parse($window.handle))
+        if (-not [MyBuddyWindowsAutomation]::PostMouseClick($handle, $physicalX, $physicalY, $buttonNumber, $count)) {
+          return New-ErrorResult 'TARGET_CHANGED' 'Background click message post failed' $window
+        }
+        return [ordered]@{ background = $true; posted = $true; window = $window; x = $physicalX; y = $physicalY; button = $button; clickCount = $count }
+      }
+      $point = Get-ClientPoint $params.target $params.x $params.y; if ($null -ne $point.__error) { return $point }
+      $guard = Confirm-InputTarget $point.window; if ($null -ne $guard) { return $guard }
+      $downs = @(); if ($null -ne $params.modifiers) { $downs = @($params.modifiers | ForEach-Object { [byte][int]$_ }) }
+      $ok = $true
+      if ($downs.Count -gt 0) { $ok = [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]$downs, [byte[]]@()) }
+      if ($ok) {
+        $hold = if ($null -ne $params.holdMs) { [Math]::Min(5000, [Math]::Max(0, [int]$params.holdMs)) } else { 0 }
+        if ($hold -gt 0) {
+          $ok = [MyBuddyWindowsAutomation]::SendMouseDownAt($point.x, $point.y, (Get-MouseFlags $button $true))
+          if ($ok) { Start-Sleep -Milliseconds $hold; $ok = [MyBuddyWindowsAutomation]::SendMouseUpAt($point.x, $point.y, (Get-MouseFlags $button $false)) }
+        } else {
+          $ok = [MyBuddyWindowsAutomation]::SendMouseClickAtCount($point.x, $point.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $count, 60)
+        }
+      }
+      if ($downs.Count -gt 0) { $null = [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]@(), [byte[]]$downs) }
+      if (-not $ok) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic click injection failed' $point }
+      return $point
+    }
+    'mouse_down_client' {
       $point = Get-ClientPoint $params.target $params.x $params.y; if ($null -ne $point.__error) { return $point }
       $guard = Confirm-InputTarget $point.window; if ($null -ne $guard) { return $guard }
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
-      if (-not [MyBuddyWindowsAutomation]::SendMouseClickAt($point.x, $point.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false))) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic click injection failed' $point }
+      if (-not [MyBuddyWindowsAutomation]::SendMouseDownAt($point.x, $point.y, (Get-MouseFlags $button $true))) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic mouse down failed' $point }
+      return $point
+    }
+    'mouse_up_client' {
+      $point = Get-ClientPoint $params.target $params.x $params.y; if ($null -ne $point.__error) { return $point }
+      $guard = Confirm-InputTarget $point.window; if ($null -ne $guard) { return $guard }
+      $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      if (-not [MyBuddyWindowsAutomation]::SendMouseUpAt($point.x, $point.y, (Get-MouseFlags $button $false))) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic mouse up failed' $point }
       return $point
     }
     'drag_client' {
@@ -567,7 +674,15 @@ function Invoke-Dispatch([string]$action, $params) {
       if ($start.window.handle -ne $finish.window.handle -or $start.window.processId -ne $finish.window.processId) { return New-ErrorResult 'TARGET_CHANGED' 'Target changed while preparing drag' }
       $guard = Confirm-InputTarget $finish.window; if ($null -ne $guard) { return $guard }
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
-      if (-not [MyBuddyWindowsAutomation]::SendMouseDrag($start.x, $start.y, $finish.x, $finish.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false))) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic drag injection failed' $finish }; return $finish
+      $steps = if ($null -ne $params.steps) { [Math]::Min(60, [Math]::Max(1, [int]$params.steps)) } else { 12 }
+      $duration = if ($null -ne $params.durationMs) { [Math]::Min(10000, [Math]::Max(0, [int]$params.durationMs)) } else { 0 }
+      if (-not [MyBuddyWindowsAutomation]::SendMouseDragTimed($start.x, $start.y, $finish.x, $finish.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $steps, $duration)) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic drag injection failed' $finish }; return $finish
+    }
+    'drag_screen' {
+      $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      $steps = if ($null -ne $params.steps) { [Math]::Min(60, [Math]::Max(1, [int]$params.steps)) } else { 12 }
+      $duration = if ($null -ne $params.durationMs) { [Math]::Min(10000, [Math]::Max(0, [int]$params.durationMs)) } else { 0 }
+      if (-not [MyBuddyWindowsAutomation]::SendMouseDragTimed([int]$params.x, [int]$params.y, [int]$params.x2, [int]$params.y2, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $steps, $duration)) { return New-ErrorResult 'TARGET_CHANGED' 'Cross-window drag injection failed' }; return @{ legacy = $true; crossWindow = $true }
     }
     'scroll_client' {
       $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
@@ -575,6 +690,12 @@ function Invoke-Dispatch([string]$action, $params) {
       $y = if ($null -ne $params.y) { [double]$params.y } else { ($window.clientRect.height / $window.scaleFactor) / 2 }
       $point = Get-ClientPoint $params.target $x $y; if ($null -ne $point.__error) { return $point }
       $guard = Confirm-InputTarget $point.window; if ($null -ne $guard) { return $guard }
+      $notches = if ($null -ne $params.notches) { [int]$params.notches } else { 0 }
+      if ($notches -ne 0) {
+        $notches = [Math]::Min(50, [Math]::Max(-50, $notches))
+        if (-not [MyBuddyWindowsAutomation]::SendScrollAtNotches($point.x, $point.y, $notches, $false)) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic scroll injection failed' $point }
+        return [ordered]@{ window = $point.window; x = $point.x; y = $point.y; notches = $notches; foregroundBefore = $point.foregroundBefore; foregroundAfter = $point.foregroundAfter }
+      }
       $dx = if ($null -ne $params.deltaX) { [int]$params.deltaX } else { 0 }; $dy = if ($null -ne $params.deltaY) { [int]$params.deltaY } else { 0 }
       if ($dx -eq 0 -and $dy -eq 0) { return New-ErrorResult 'POINT_OUTSIDE_CLIENT' 'Scroll delta must be non-zero' }
       if (-not [MyBuddyWindowsAutomation]::SendScrollAt($point.x,$point.y,$dx,$dy)) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic scroll injection failed' $point }; return $point
@@ -622,6 +743,39 @@ function Invoke-Dispatch([string]$action, $params) {
         if ($null -ne $changed) { return @{ targeted = $true; completed = $false; typedLength = $typedLength; requestedLength = $value.Length; stopReason = $changed.__error } }
       }
       return @{ targeted = $true; completed = $true; typedLength = $typedLength; requestedLength = $value.Length; length = $value.Length }
+    }
+    'key_down' {
+      if ($null -ne $params.target) {
+        $focused = Focus-Target $params.target; if ($null -ne $focused.__error) { return $focused }
+        $guard = Confirm-InputTarget $focused.window; if ($null -ne $guard) { return $guard }
+      }
+      $keys = @([string]$params.key -split '\+' | ForEach-Object { [byte][int][Enum]::Parse([Windows.Forms.Keys], $_, $true) })
+      if (-not [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]$keys, [byte[]]@())) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic key down injection failed' }
+      return @{ targeted = ($null -ne $params.target); down = $true }
+    }
+    'key_up' {
+      if ($null -ne $params.target) {
+        $focused = Focus-Target $params.target; if ($null -ne $focused.__error) { return $focused }
+        $guard = Confirm-InputTarget $focused.window; if ($null -ne $guard) { return $guard }
+      }
+      $keys = @([string]$params.key -split '\+' | ForEach-Object { [byte][int][Enum]::Parse([Windows.Forms.Keys], $_, $true) })
+      if (-not [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]@(), [byte[]]$keys)) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic key up injection failed' }
+      return @{ targeted = ($null -ne $params.target); up = $true }
+    }
+    'capture_window_background' {
+      $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
+      if ($window.minimized) { return New-ErrorResult 'WINDOW_NOT_VISIBLE' 'Target window is minimized; background capture needs a visible window' $window }
+      $handle = [IntPtr]::new([Int64]::Parse($window.handle))
+      $width = [int]$window.windowRect.width; $height = [int]$window.windowRect.height
+      if ($width -le 0 -or $height -le 0) { return New-ErrorResult 'CAPTURE_FAILED' 'Target window has no drawable size' $window }
+      $bitmap = New-Object System.Drawing.Bitmap $width, $height
+      $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+      $hdc = $graphics.GetHdc()
+      try { $printed = [MyBuddyWindowsAutomation]::PrintWindow($handle, $hdc, 2) } finally { $graphics.ReleaseHdc($hdc); $graphics.Dispose() }
+      if (-not $printed) { $bitmap.Dispose(); return New-ErrorResult 'CAPTURE_FAILED' 'PrintWindow failed for the target window' $window }
+      $bitmap.Save([string]$params.path, [System.Drawing.Imaging.ImageFormat]::Png)
+      $bitmap.Dispose()
+      return [ordered]@{ window = $window; path = [string]$params.path; width = $width; height = $height }
     }
     'shutdown' { return @{ shutdown = $true } }
     default { return New-ErrorResult 'HOST_PROTOCOL_ERROR' ('Unsupported action: ' + $action) }

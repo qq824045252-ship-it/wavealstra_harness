@@ -11,6 +11,7 @@ export const WINDOWS_AUTOMATION_ERROR_CODES = [
   "CAPTURE_FAILED",
   "CAPTURE_SPANS_MULTIPLE_DISPLAYS",
   "POINT_OUTSIDE_CLIENT",
+  "OCR_UNAVAILABLE",
   "WAIT_TIMEOUT",
   "HOST_UNAVAILABLE",
   "HOST_PROTOCOL_ERROR",
@@ -125,15 +126,27 @@ export interface HostRequestMap {
   invoke_control: { target: TargetIdentity; selector: ControlSelector };
   set_control_value: { target: TargetIdentity; selector: ControlSelector; value: string };
   move_client: { target: TargetIdentity; x: number; y: number };
-  click_client: { target: TargetIdentity; x: number; y: number; button?: "left" | "right" | "middle" };
-  drag_client: { target: TargetIdentity; x: number; y: number; x2: number; y2: number; button?: "left" | "right" | "middle" };
-  scroll_client: { target: TargetIdentity; x?: number; y?: number; deltaX?: number; deltaY?: number };
+  click_client: {
+    target: TargetIdentity; x: number; y: number; button?: "left" | "right" | "middle";
+    clickCount?: number; modifiers?: number[]; holdMs?: number; background?: boolean;
+  };
+  mouse_down_client: { target: TargetIdentity; x: number; y: number; button?: "left" | "right" | "middle" };
+  mouse_up_client: { target: TargetIdentity; x: number; y: number; button?: "left" | "right" | "middle" };
+  drag_client: {
+    target: TargetIdentity; x: number; y: number; x2: number; y2: number; button?: "left" | "right" | "middle";
+    steps?: number; durationMs?: number;
+  };
+  drag_screen: { x: number; y: number; x2: number; y2: number; button?: "left" | "right" | "middle"; steps?: number; durationMs?: number };
+  scroll_client: { target: TargetIdentity; x?: number; y?: number; deltaX?: number; deltaY?: number; notches?: number };
   mouse_move: { x: number; y: number };
   mouse_click: { x?: number; y?: number; button?: "left" | "right" | "middle" };
   mouse_drag: { x: number; y: number; x2: number; y2: number; button?: "left" | "right" | "middle" };
   scroll: { deltaX?: number; deltaY?: number };
   key_press: { key: string; target?: TargetIdentity };
+  key_down: { key: string; target?: TargetIdentity };
+  key_up: { key: string; target?: TargetIdentity };
   type_text: { text: string; target?: TargetIdentity };
+  capture_window_background: { target: TargetIdentity; path: string };
   shutdown: Record<string, never>;
 }
 

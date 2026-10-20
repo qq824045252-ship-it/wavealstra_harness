@@ -266,10 +266,56 @@
 - `test:computer-automation`、`test:computer-use-run`、`test:computer-use-recovery`、`test:image-resize-assets`、`test:builtin-capabilities` 全部通过。
 - 实机：`test:computer-automation-windows`（UIA、DIP 截图、物理点击、陈旧目标、取消、Host 崩溃重启）与 `test:computer-use-overlay`（叠加框/停止按钮/等待阶段）通过。
 
-### 7.4 仍未做（P1）
+### 7.4 P1 现状
 
-- 应用会话（`attach_app`）与窗口级叠加框；
-- 后台捕获（`PrintWindow`）、Chromium/Tauri 的语义/OCR 兜底；
-- 鼠标/键盘原语（双击、修饰键、按住、拖拽时长、滚动量、粘贴、后台输入）；
-- 多显示器 `list_displays`；
-- 截图 `image_scale>1` 时的 legacy 桌面坐标换算仍依赖模型按文档乘系数（窗口截图通常为 1）。
+已在第 8 节完成：应用会话、窗口级叠加框、后台捕获（原生应用）、输入原语、图片淘汰、OCR 语义兜底。仍保留的边界见 8.4。
+
+---
+
+## 8. P1 实施（2026-10-20）
+
+### 8.1 新增能力
+
+| 能力 | 实现 | 实测 |
+|---|---|---|
+| 应用会话 | `attach_app` 返回 `app_session_id`；后续动作传 `app_session_id` 即固定到该窗口（HWND+PID 双校验，10 分钟 TTL） | 会话解析到同一 HWND；过期会话返回 `STALE_OBSERVATION` |
+| 窗口级叠加框 | border/cursor 按 `windowRect` 绘制，不再覆盖整块显示器；工具栏优先浮在窗口上方 | 叠加框 bounds 与目标窗口完全一致（120,120,1100,800） |
+| 后台捕获 | Host 新增 `capture_window_background`（`PrintWindow` + `PW_RENDERFULLCONTENT`），`screenshot_window background=true` 不抢焦点 | 原生 Win32 窗口可用；Chromium/Qt/Tauri 会明确报 `CAPTURE_FAILED`（见 8.4） |
+| 双击/三击 | `click_client click_count=1..3`，点击在同一 `SendInput` 批次内注入 | 页面 `dblclick` 事件触发（dbl=1） |
+| 修饰键点击 | `click_client modifiers=["ctrl","shift","alt","win"]`，按下修饰键→点击→释放 | `click` 事件 `ctrlKey=true` |
+| 长按 / down-up | `hold_ms` 长按；`mouse_down_client` / `mouse_up_client` 独立按下/释放 | down/up 事件成对出现 |
+| 拖拽时长 | `drag_client steps/duration_ms`，按步插值并延时 | 400ms 请求 → 实际 621ms、29 次 mousemove |
+| 跨窗口拖拽 | `drag_screen`（桌面绝对坐标，不要求同一客户区） | 请求直达 Host，可用于拖到桌面/其它应用 |
+| 滚动量 | `scroll_client notches`（正上负下，1 格 = 120 单位） | 3 格 → `scrollY=300` |
+| 键盘按住 | `key_down` / `key_up`（可与点击组合） | 按住 Shift 点击 → `shiftKey=true` |
+| 长文本粘贴 | `paste_text`：写剪贴板 + 目标窗口 `Ctrl+V` | 输入框值 = `PASTE-验证-123` |
+| 后台点击 | `click_client background=true` 用 `PostMessage`（移动/按下/释放，可选双击消息） | Electron 页面收到点击（clicksDelta=2）；部分应用会忽略或激活窗口 |
+| 图片淘汰 | `context` 钩子只保留最近 2 张 tool-result 图片，旧图替换为占位文本；用户附件与磁盘历史不受影响 | 单测 5 项断言通过 |
+| OCR 语义兜底 | `ocr_window`：截图 → 本地 OCR_NPU_CLI → 返回 client DIP 的文本行（x/y/w/h） | 3.5–4.0s；前台窗口用显示裁剪，文本坐标可直接喂给 `click_client` |
+
+`computer_exec` 行动作从 22 个增至 30 个；批量 `actions` 同步支持 click_count/modifiers/hold_ms/steps/duration_ms/notches/paste。
+
+### 8.2 验证
+
+- `pnpm -s typecheck`、`pnpm -s build` 通过；
+- `test:computer-automation`（30 actions、app session、input primitives、batch、filter）、`test:computer-use-run`、`test:computer-use-recovery`、`test:tool-image-aging` 全部通过；
+- 实机 `test:computer-automation-windows`、`test:computer-use-overlay` 通过；
+- 独立 Electron 实测（`out/tmp/cu-p1-bench.ts`）：会话/叠加框、双击、Ctrl 点击、Shift 按住点击、down/up、拖拽、滚动、粘贴、窗口级叠加框全部符合预期。
+
+### 8.3 性能
+
+| 指标 | 结果 |
+|---|---|
+| 截图（整屏/窗口） | 274ms / 275ms，178KB / 111KB JPEG |
+| 点击（默认/显式截图） | 708ms / 889ms |
+| 连续 8 次点击 | 批量 1.11s（逐个 5.57s）、模型轮数 8→1 |
+| OCR | 3.5–4.0s（含截图 + CLI 启动 + 推理） |
+| 图片上下文 | 最多保留 2 张 tool-result 图，旧图不再每轮重传 |
+
+### 8.4 已知边界
+
+- **Chromium/Qt/Tauri 的后台截图不可用**：`PrintWindow` 只能拿到原生外框，页面内容为空；服务会检测并拒绝，需先 `focus_window` 再前台截图。OCR 对这类应用因此也需要前台窗口。
+- **后台点击依赖应用**：`PostMessage` 对 Electron 测试页有效，但可能激活窗口或被其它应用忽略；默认仍走真实输入。
+- **OCR 依赖本机 OCR_NPU_CLI**（`MYBUDDY_OCR_CLI` 或 PATH），未安装时 `ocr_window` 返回 `OCR_UNAVAILABLE`。
+- **模型回合仍是单步大头**：3.7–9.1s，批量与图片淘汰只减少轮数和上下文，不改变单轮推理时间。
+- 多显示器 `list_displays` 尚未实现；截图 `image_scale>1` 时 legacy 桌面坐标仍需按文档乘系数（窗口截图通常为 1）。

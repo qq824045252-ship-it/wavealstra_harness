@@ -1,4 +1,4 @@
-﻿import type { BrowserWindow as ElectronBrowserWindow } from "electron";
+import type { BrowserWindow as ElectronBrowserWindow } from "electron";
 import type { ComputerUsePhase } from "./ComputerUsePolicy";
 import type { WindowInfo } from "./windows/windowsAutomationProtocol";
 
@@ -216,12 +216,11 @@ export class ComputerUseOverlayService {
   }
 
   private dipBounds(window: WindowInfo): { x: number; y: number; width: number; height: number } {
-    // Computer Use is a screen-level mode, not a one-click window decoration.
-    // Prefer the monitor containing the target window so the user sees a stable
-    // OpenAI-style border for the whole controlled screen throughout the run.
+    // Frame the controlled window, not the whole monitor: with an attached app
+    // session the user should see exactly which application is being driven.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { screen } = require("electron") as typeof import("electron");
-    const rect = window.monitorRect ?? window.windowRect;
+    const rect = window.windowRect;
     try {
       const topLeft = screen.screenToDipPoint({ x: rect.left, y: rect.top });
       const bottomRight = screen.screenToDipPoint({ x: rect.right, y: rect.bottom });
@@ -303,9 +302,9 @@ export class ComputerUseOverlayService {
     border.setBounds(bounds, false);
     const toolbarWidth = Math.min(360, Math.max(250, bounds.width));
     const toolbarX = Math.round(bounds.x + Math.max(0, (bounds.width - toolbarWidth) / 2));
-    // Keep the controls inside the controlled screen so a top-edge monitor never
-    // places the status pill off-screen.
-    const toolbarY = bounds.y + 8;
+    // Keep the controls visible: prefer just above a window-level frame, fall
+    // back to inside the frame when the window touches the top edge.
+    const toolbarY = bounds.y >= 44 ? bounds.y - 44 : bounds.y + 8;
     controls.setBounds({ x: toolbarX, y: toolbarY, width: toolbarWidth, height: 36 }, false);
     const cursor = state.screenCursorDip
       ? {

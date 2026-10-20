@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { promisify } from "node:util";
 import { windowsAutomationHost, type WindowsAutomationHost } from "./windows/WindowsAutomationHost";
 import { windowCaptureService, type WindowCaptureService } from "./windows/WindowCaptureService";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
@@ -17,15 +23,20 @@ import {
 } from "./windows/windowsAutomationProtocol";
 
 export type ComputerExecAction =
+  | "attach_app"
   | "status" | "active_window" | "list_windows" | "inspect_window" | "focus_window" | "wait_for_window"
-  | "screenshot" | "screenshot_window" | "inspect_controls" | "find_control" | "invoke_control" | "set_control_value"
+  | "screenshot" | "screenshot_window" | "ocr_window" | "inspect_controls" | "find_control" | "invoke_control" | "set_control_value"
   | "move_client" | "click_client" | "drag_client" | "scroll_client"
+  | "mouse_down_client" | "mouse_up_client" | "key_down" | "key_up" | "paste_text" | "drag_screen"
   | "mouse_move" | "mouse_click" | "mouse_drag" | "scroll" | "key_press" | "type_text";
 
 export const COMPUTER_BATCH_ACTIONS = [
-  "move_client", "click_client", "drag_client", "scroll_client", "key_press", "type_text",
+  "move_client", "click_client", "drag_client", "scroll_client",
+  "mouse_down_client", "mouse_up_client", "key_down", "key_up", "key_press", "type_text", "paste_text",
 ] as const;
 export type ComputerBatchAction = (typeof COMPUTER_BATCH_ACTIONS)[number];
+
+export type ComputerModifier = "ctrl" | "shift" | "alt" | "win";
 
 /** One window-scoped input step inside a batch; coordinates are client DIP. */
 export interface ComputerBatchStep {
@@ -33,6 +44,31 @@ export interface ComputerBatchStep {
   x?: number; y?: number; x2?: number; y2?: number;
   button?: "left" | "right" | "middle";
   deltaX?: number; deltaY?: number; key?: string; text?: string;
+  clickCount?: number; holdMs?: number; steps?: number; durationMs?: number; notches?: number;
+  modifiers?: ComputerModifier[]; background?: boolean;
+}
+
+export interface AppSessionInfo {
+  id: string;
+  window: WindowInfo;
+  attachedAt: number;
+  lastSeenAt: number;
+}
+
+export interface OcrLine {
+  text: string;
+  score: number;
+  /** Client-area DIP rectangle (same coordinate system as click_client). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OcrResultInfo {
+  provider: string;
+  totalLines: number;
+  ms: number;
 }
 
 export interface ComputerBatchStepResult {
@@ -59,6 +95,26 @@ export interface ComputerExecInput {
   x?: number; y?: number; x2?: number; y2?: number;
   button?: "left" | "right" | "middle";
   deltaX?: number; deltaY?: number; key?: string; text?: string;
+  /** 1-3 clicks at the same point (double/triple click). */
+  clickCount?: number;
+  /** Modifier keys held down around the click (ctrl/shift/alt/win). */
+  modifiers?: ComputerModifier[];
+  /** Press-and-hold duration for click_client (0-5000ms). */
+  holdMs?: number;
+  /** Post input messages without stealing focus (works only for apps that accept posted messages). */
+  background?: boolean;
+  /** Drag interpolation steps (1-60). */
+  steps?: number;
+  /** Drag duration in milliseconds (0-10000). */
+  durationMs?: number;
+  /** Wheel notches for scroll_client (positive=up, negative=down). */
+  notches?: number;
+  /** Stable app session created by attach_app; replaces per-action window selectors. */
+  appSessionId?: string;
+  /** ocr_window: maximum returned text lines (1-200, default 80). */
+  maxLines?: number;
+  /** ocr_window: minimum OCR confidence (0-1, default 0.5). */
+  minScore?: number;
   windowTitle?: string; windowHandle?: string; processId?: number; processName?: string; className?: string; screenId?: string;
   controlName?: string; automationId?: string; controlType?: string; controlRuntimeId?: string; controlClassName?: string; exactName?: boolean;
   clientOnly?: boolean; ensureForeground?: boolean; observationId?: string;
@@ -88,6 +144,11 @@ export interface ComputerExecOutput {
   hostPid?: number;
   semanticOutcome?: ComputerSemanticOutcome;
   batch?: ComputerBatchResult;
+  appSessionId?: string;
+  appSession?: AppSessionInfo;
+  lines?: OcrLine[];
+  lineCount?: number;
+  ocr?: OcrResultInfo;
   [key: string]: unknown;
 }
 
@@ -99,6 +160,67 @@ const MAX_SCREENSHOT_EDGE = 2000;
 const SCREENSHOT_JPEG_QUALITY = 70;
 const BATCH_SETTLE_DEFAULT_MS = 120;
 const BATCH_MAX_STEPS = 8;
+const APP_SESSION_TTL_MS = 10 * 60_000;
+const MAX_APP_SESSIONS = 8;
+const MODIFIER_VK: Record<ComputerModifier, number> = { ctrl: 0x11, shift: 0x10, alt: 0x12, win: 0x5b };
+const OCR_TIMEOUT_MS = 30_000;
+const OCR_KNOWN_PATHS = [
+  "C:\\Users\\servi\\Documents\\GitHub\\OCR_NPU\\dist\\OCR_NPU_CLI\\OCR_NPU_CLI.exe",
+];
+const execFileAsync = promisify(execFile);
+
+function resolveOcrCli(): string | undefined {
+  const configured = process.env.MYBUDDY_OCR_CLI?.trim();
+  if (configured && existsSync(configured)) return configured;
+  for (const candidate of OCR_KNOWN_PATHS) if (existsSync(candidate)) return candidate;
+  for (const directory of (process.env.PATH ?? "").split(";")) {
+    if (!directory.trim()) continue;
+    for (const extension of [".exe", ".cmd", ""]) {
+      const candidate = join(directory.trim(), `OCR_NPU_CLI${extension}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+interface OcrRawText { text: string; score: number; box: Array<[number, number]> }
+
+function flattenOcrJson(payload: unknown): OcrRawText[] {
+  const pages = (payload as { pages?: unknown })?.pages;
+  if (!Array.isArray(pages)) return [];
+  const lines: OcrRawText[] = [];
+  for (const page of pages) {
+    const texts = (page as { texts?: unknown })?.texts;
+    if (!Array.isArray(texts)) continue;
+    for (const entry of texts) {
+      const item = entry as { text?: unknown; score?: unknown; box?: unknown };
+      if (typeof item.text !== "string" || !item.text.trim()) continue;
+      const box = Array.isArray(item.box)
+        ? (item.box as unknown[]).filter((point): point is [number, number] => Array.isArray(point) && point.length >= 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))).map((point) => [Number(point[0]), Number(point[1])] as [number, number])
+        : [];
+      lines.push({ text: item.text, score: Number.isFinite(Number(item.score)) ? Number(item.score) : 1, box });
+    }
+  }
+  return lines;
+}
+
+function parseOcrOutput(stdout: string, outputDir: string, imagePath: string): OcrRawText[] {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(lines[index]);
+      const flat = flattenOcrJson(parsed);
+      if (flat.length) return flat;
+    } catch { /* keep scanning */ }
+  }
+  const stem = basename(imagePath).replace(/\.[^.]+$/, "");
+  const file = join(outputDir, `${stem}_ocr.json`);
+  if (existsSync(file)) {
+    try { return flattenOcrJson(JSON.parse(readFileSync(file, "utf8"))); } catch { /* fall through */ }
+  }
+  throw new WindowsAutomationError("OCR_UNAVAILABLE", "OCR 输出无法解析");
+}
 
 function assertNotCancelled(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -147,6 +269,11 @@ function normalizeKeyToken(token: string): string {
     ENTER: "Enter", RETURN: "Enter", ESC: "Escape", ESCAPE: "Escape", TAB: "Tab",
     BACKSPACE: "Back", DELETE: "Delete", DEL: "Delete", SPACE: "Space", HOME: "Home", END: "End",
     PAGEUP: "PageUp", PAGEDOWN: "PageDown", UP: "Up", DOWN: "Down", LEFT: "Left", RIGHT: "Right",
+    WIN: "LWin", LWIN: "LWin", RWIN: "RWin", INSERT: "Insert", INS: "Insert",
+    PRINTSCREEN: "PrintScreen", PRTSC: "PrintScreen", SNAPSHOT: "Snapshot", PAUSE: "Pause",
+    CAPSLOCK: "CapsLock", NUMLOCK: "NumLock", SCROLLLOCK: "Scroll", APPS: "Apps", CONTEXTMENU: "Apps",
+    MEDIAPLAYPAUSE: "MediaPlayPause", MEDIASTOP: "MediaStop", MEDIANEXT: "MediaNextTrack", MEDIAPREV: "MediaPreviousTrack",
+    VOLUMEUP: "VolumeUp", VOLUMEDOWN: "VolumeDown", VOLUMEMUTE: "VolumeMute",
   };
   if (aliases[normalized]) return aliases[normalized];
   if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(normalized)) return normalized;
@@ -192,6 +319,42 @@ function filterWindows(windows: WindowInfo[], input: ComputerExecInput): WindowI
   );
 }
 
+function isBlankBitmap(bitmap: Buffer): boolean {
+  if (bitmap.length < 4) return true;
+  const offsets = [0, Math.floor(bitmap.length / 8 / 4) * 4, Math.floor(bitmap.length / 2 / 4) * 4, Math.floor((bitmap.length * 3) / 4 / 4) * 4, bitmap.length - 4];
+  return offsets.every((offset) => bitmap[offset] === 0 && bitmap[offset + 1] === 0 && bitmap[offset + 2] === 0);
+}
+
+/**
+ * Some apps (notably Chromium/Electron web content) return only their native
+ * frame from PrintWindow, with a uniform surface below it. Reject such frames
+ * so callers fall back to the foreground display crop instead of trusting a
+ * contentless screenshot.
+ */
+function assertCaptureHasContent(bitmap: Buffer, size: { width: number; height: number }, topSkip = 56): void {
+  if (size.width < 16 || size.height < topSkip + 16) return;
+  const stride = size.width * 4;
+  let min = 255;
+  let max = 0;
+  for (let gridY = 0; gridY < 8; gridY += 1) {
+    for (let gridX = 0; gridX < 8; gridX += 1) {
+      const x = Math.min(size.width - 1, Math.round(((gridX + 0.5) * size.width) / 8));
+      const y = Math.min(size.height - 1, Math.round(topSkip + ((gridY + 0.5) * (size.height - topSkip)) / 8));
+      const index = y * stride + x * 4;
+      const value = Math.max(bitmap[index] ?? 0, bitmap[index + 1] ?? 0, bitmap[index + 2] ?? 0);
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
+  }
+  if (max - min < 12) {
+    throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture returned a contentless frame (this app draws through a surface PrintWindow cannot read); use foreground capture instead", { size, channelRange: max - min });
+  }
+}
+
+function modifierVks(modifiers?: ComputerModifier[]): number[] {
+  return (modifiers ?? []).map((modifier) => MODIFIER_VK[modifier]).filter((value) => Number.isFinite(value));
+}
+
 function sameCaptureGeometry(left: WindowInfo, right: WindowInfo): boolean {
   return left.handle === right.handle
     && left.processId === right.processId
@@ -208,6 +371,7 @@ function sameCaptureGeometry(left: WindowInfo, right: WindowInfo): boolean {
 
 export class ComputerAutomationService {
   private readonly observations = new Map<string, CachedObservation>();
+  private readonly appSessions = new Map<string, AppSessionInfo>();
 
   constructor(
     private readonly host: WindowsAutomationHost = windowsAutomationHost,
@@ -288,7 +452,9 @@ export class ComputerAutomationService {
       return { action: input.action, detail: this.available ? "ready (persistent Windows Automation Host + UIA + guarded SendInput)" : "unsupported platform", hostPid: this.host.pid };
     }
     if (!this.available) throw new Error("computer_exec 当前仅支持 Windows");
+    if (input.action === "attach_app") return this.attachApp(input, signal);
     if (input.action === "screenshot") return this.captureDesktop(input, signal);
+    if (input.action === "ocr_window") return this.ocrWindow(input, signal);
     if (input.action === "active_window") {
       const window = normalizeWindowInfo(await this.request("active_window", {}, signal));
       computerUseRunCoordinator.presentTarget(input, window, "observing");
@@ -367,17 +533,29 @@ export class ComputerAutomationService {
         : this.request("set_control_value", { target, selector, value: input.text ?? "" }, signal), signal);
       return { action: input.action, ...(observed.result as object), observation: observed.observation };
     }
-    if (input.action === "move_client" || input.action === "click_client" || input.action === "drag_client" || input.action === "scroll_client") {
+    if (input.action === "move_client" || input.action === "click_client" || input.action === "drag_client" || input.action === "scroll_client"
+      || input.action === "mouse_down_client" || input.action === "mouse_up_client") {
       return this.executeClientInput(input, signal);
     }
+    if (input.action === "drag_screen") return this.executeDragScreen(input, signal);
+    if (input.action === "paste_text") return this.executePaste(input, signal);
     if (input.action === "mouse_move" || input.action === "mouse_click" || input.action === "mouse_drag" || input.action === "scroll") {
       return this.executeLegacyInput(input, signal);
     }
-    if (input.action === "key_press" || input.action === "type_text") return this.executeKeyboard(input, signal);
+    if (input.action === "key_press" || input.action === "type_text" || input.action === "key_down" || input.action === "key_up") return this.executeKeyboard(input, signal);
     throw new Error(`不支持的 computer_exec action：${input.action}`);
   }
 
   private targetFromInput(input: ComputerExecInput, required = true): TargetIdentity {
+    const sessionId = input.appSessionId?.trim();
+    if (sessionId) {
+      const session = this.appSessions.get(sessionId);
+      if (!session) {
+        throw new WindowsAutomationError("STALE_OBSERVATION", "App session is missing or expired; call attach_app again", { appSessionId: sessionId });
+      }
+      session.lastSeenAt = Date.now();
+      return { windowHandle: session.window.handle, expectedProcessId: session.window.processId };
+    }
     const target: TargetIdentity = {
       windowHandle: input.windowHandle?.trim() || undefined,
       windowTitle: input.windowTitle?.trim() || undefined,
@@ -385,9 +563,37 @@ export class ComputerAutomationService {
       className: input.className?.trim() || undefined,
     };
     if (required && !target.windowHandle && !target.windowTitle && !target.processId && !target.className) {
-      throw new Error(`${input.action ?? "batch"} 需要 window_handle、window_title、process_id 或 class_name`);
+      throw new Error(`${input.action ?? "batch"} 需要 app_session_id、window_handle、window_title、process_id 或 class_name`);
     }
     return target;
+  }
+
+  private pruneAppSessions(): void {
+    const cutoff = Date.now() - APP_SESSION_TTL_MS;
+    for (const [id, session] of this.appSessions) if (session.lastSeenAt < cutoff) this.appSessions.delete(id);
+    while (this.appSessions.size > MAX_APP_SESSIONS) {
+      const oldest = [...this.appSessions.values()].sort((a, b) => a.lastSeenAt - b.lastSeenAt)[0];
+      if (!oldest) break;
+      this.appSessions.delete(oldest.id);
+    }
+  }
+
+  private async attachApp(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    this.pruneAppSessions();
+    const target = this.targetFromInput({ ...input, appSessionId: undefined });
+    const window = await this.inspect(target, signal);
+    const session: AppSessionInfo = { id: randomUUID(), window, attachedAt: Date.now(), lastSeenAt: Date.now() };
+    this.appSessions.set(session.id, session);
+    this.pruneAppSessions();
+    computerUseRunCoordinator.presentTarget(input, window, "observing");
+    return {
+      action: input.action,
+      appSessionId: session.id,
+      appSession: session,
+      window,
+      observationId: this.remember(window),
+      detail: "app session attached; pass app_session_id to keep operating this window",
+    };
   }
 
   private selectorFromInput(input: ComputerExecInput): ControlSelector {
@@ -504,6 +710,24 @@ export class ComputerAutomationService {
 
   private async captureWindow(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.guardedTarget(input, signal);
+    if (input.background) {
+      const window = await this.inspect(target, signal);
+      if (!window.visible || window.minimized) {
+        throw new WindowsAutomationError("WINDOW_NOT_VISIBLE", "Background capture requires a visible, non-minimized window", { window });
+      }
+      const capture = await this.captureBackground(window, input.clientOnly ?? true, signal);
+      const verifiedAfter = await this.inspect({ windowHandle: window.handle, expectedProcessId: window.processId }, signal);
+      if (!sameCaptureGeometry(window, verifiedAfter)) {
+        throw new WindowsAutomationError("CAPTURE_FAILED", "Target geometry changed while capturing in background", { before: window, after: verifiedAfter });
+      }
+      return {
+        action: input.action, window: verifiedAfter, screenshot: capture.screenshot,
+        screenshotMimeType: capture.details.mimeType, imageScale: capture.details.imageScale, imageSize: capture.details.imageSize,
+        artifactFileName: safeArtifactName(verifiedAfter, "jpg"),
+        capture: capture.details, observationId: this.remember(verifiedAfter),
+        detail: "background PrintWindow capture (no focus change)",
+      };
+    }
     let window: WindowInfo;
     if (input.ensureForeground !== false) {
       const focused = await this.request<"focus_window", { window: unknown }>("focus_window", { target }, signal);
@@ -537,18 +761,204 @@ export class ComputerAutomationService {
     };
   }
 
+  /**
+   * PrintWindow captures a visible window without changing foreground focus.
+   * Captures that silently return an all-black frame (some GPU/DRM apps) are
+   * rejected so the caller can fall back to the display-crop path.
+   */
+  private async captureBackground(window: WindowInfo, clientOnly: boolean, signal?: AbortSignal): Promise<{
+    screenshot: Uint8Array;
+    details: {
+      displayId: string;
+      scaleFactor: number;
+      captureRectPhysical: { left: number; top: number; right: number; bottom: number; width: number; height: number };
+      captureMode: "background-printwindow";
+      coordinateSpace: "client-dip-aligned-pixels" | "window-dip-aligned-pixels";
+      mimeType: "image/jpeg";
+      imageScale: number;
+      imageSize: { width: number; height: number };
+      windowRect: WindowInfo["windowRect"];
+    };
+  }> {
+    const path = join(tmpdir(), `mybuddy-cu-${randomUUID()}.png`);
+    try {
+      // PrintWindow cannot read Chromium/Qt/Tauri composited surfaces: it only
+      // returns the native frame. Fail fast instead of returning a blank image.
+      if (/chrome_widgetwin|tauri window|qt\d*qwindow/i.test(window.className ?? "")) {
+        throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture is not supported for this app surface (Chromium/Qt/Tauri); focus the window and capture in the foreground", { window });
+      }
+      await this.request("capture_window_background", {
+        target: { windowHandle: window.handle, expectedProcessId: window.processId },
+        path,
+      }, signal, 15_000);
+      const bytes = await readFile(path);
+      if (bytes.byteLength === 0) throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture produced an empty file", { window });
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { nativeImage } = require("electron") as typeof import("electron");
+      let image = nativeImage.createFromBuffer(bytes);
+      if (image.isEmpty()) throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture could not be decoded", { window });
+      if (isBlankBitmap(image.toBitmap())) {
+        throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture returned a blank frame; this app may block PrintWindow. Retry with background=false or ensure_foreground.", { window });
+      }
+      const physicalWidth = window.windowRect.width;
+      const physicalHeight = window.windowRect.height;
+      const raw = image.getSize();
+      if (raw.width !== physicalWidth || raw.height !== physicalHeight) {
+        image = image.resize({ width: physicalWidth, height: physicalHeight, quality: "best" });
+      }
+      if (clientOnly) {
+        const offsetX = Math.max(0, window.clientOrigin.x - window.windowRect.left);
+        const offsetY = Math.max(0, window.clientOrigin.y - window.windowRect.top);
+        image = image.crop({
+          x: offsetX,
+          y: offsetY,
+          width: Math.min(window.clientRect.width, physicalWidth - offsetX),
+          height: Math.min(window.clientRect.height, physicalHeight - offsetY),
+        });
+      }
+      const targetWidth = clientOnly ? window.clientRect.width : window.windowRect.width;
+      const targetHeight = clientOnly ? window.clientRect.height : window.windowRect.height;
+      const dipWidth = Math.max(1, Math.round(targetWidth / window.scaleFactor));
+      const dipHeight = Math.max(1, Math.round(targetHeight / window.scaleFactor));
+      if (image.getSize().width !== dipWidth || image.getSize().height !== dipHeight) {
+        image = image.resize({ width: dipWidth, height: dipHeight, quality: "best" });
+      }
+      const dipSize = image.getSize();
+      let imageScale = 1;
+      if (dipSize.width > MAX_SCREENSHOT_EDGE || dipSize.height > MAX_SCREENSHOT_EDGE) {
+        const factor = Math.min(MAX_SCREENSHOT_EDGE / dipSize.width, MAX_SCREENSHOT_EDGE / dipSize.height);
+        const width = Math.max(1, Math.round(dipSize.width * factor));
+        const height = Math.max(1, Math.round(dipSize.height * factor));
+        image = image.resize({ width, height, quality: "best" });
+        imageScale = dipSize.width / width;
+      }
+      const imageSize = image.getSize();
+      assertCaptureHasContent(image.toBitmap(), imageSize);
+      const captureRectPhysical = clientOnly
+        ? {
+            left: window.clientOrigin.x,
+            top: window.clientOrigin.y,
+            right: window.clientOrigin.x + window.clientRect.width,
+            bottom: window.clientOrigin.y + window.clientRect.height,
+            width: window.clientRect.width,
+            height: window.clientRect.height,
+          }
+        : window.windowRect;
+      return {
+        screenshot: image.toJPEG(SCREENSHOT_JPEG_QUALITY),
+        details: {
+          displayId: window.monitorHandle ?? "0",
+          scaleFactor: window.scaleFactor,
+          captureRectPhysical,
+          captureMode: "background-printwindow",
+          coordinateSpace: clientOnly ? "client-dip-aligned-pixels" : "window-dip-aligned-pixels",
+          mimeType: "image/jpeg",
+          imageScale: Math.round(imageScale * 10_000) / 10_000,
+          imageSize,
+          windowRect: window.windowRect,
+        },
+      };
+    } finally {
+      await unlink(path).catch(() => undefined);
+    }
+  }
+
+  /**
+   * OCR semantic fallback for apps whose UIA tree is empty (Electron/Qt/Tauri).
+   * Captures the window without stealing focus, runs the local OCR CLI and
+   * returns text lines in client DIP coordinates so click_client can target them.
+   */
+  private async ocrWindow(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const cli = resolveOcrCli();
+    if (!cli) {
+      throw new WindowsAutomationError("OCR_UNAVAILABLE", "未找到 OCR_NPU_CLI；设置 MYBUDDY_OCR_CLI 或把 OCR_NPU_CLI.exe 加入 PATH", { searched: [process.env.MYBUDDY_OCR_CLI, ...OCR_KNOWN_PATHS, "PATH"] });
+    }
+    const target = await this.guardedTarget(input, signal);
+    const window = await this.inspect(target, signal);
+    if (!window.visible || window.minimized) {
+      throw new WindowsAutomationError("WINDOW_NOT_VISIBLE", "OCR 需要可见、未最小化的窗口", { window });
+    }
+    let capture: { screenshot: Uint8Array; details: { imageScale: number; imageSize: { width: number; height: number } } };
+    // Foreground windows: the display crop is content-complete and fast.
+    // Background windows: try PrintWindow; Chromium surfaces reject it clearly.
+    if (window.foreground) {
+      capture = await checked(() => this.capture.capture(window, true), signal);
+    } else {
+      capture = await this.captureBackground(window, true, signal);
+    }
+    const workDir = join(tmpdir(), `mybuddy-cu-ocr-${randomUUID()}`);
+    const imagePath = join(workDir, "capture.jpg");
+    const outputDir = join(workDir, "out");
+    await mkdir(outputDir, { recursive: true });
+    await writeFile(imagePath, Buffer.from(capture.screenshot));
+    const startedAt = Date.now();
+    try {
+      const { stdout } = await execFileAsync(cli, ["--input_path", imagePath, "--json", "--output_dir", outputDir], {
+        timeout: OCR_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      const raw = parseOcrOutput(String(stdout), outputDir, imagePath);
+      const scale = capture.details.imageScale || 1;
+      const minScore = Math.min(1, Math.max(0, Number(input.minScore ?? 0.5)));
+      const maxLines = Math.min(200, Math.max(1, Math.round(Number(input.maxLines ?? 80))));
+      const lines: OcrLine[] = raw
+        .filter((item) => item.score >= minScore)
+        .slice(0, maxLines)
+        .map((item) => {
+          if (!item.box.length) return { text: item.text, score: Math.round(item.score * 1000) / 1000, x: 0, y: 0, width: 0, height: 0 };
+          const xs = item.box.map((point) => point[0]);
+          const ys = item.box.map((point) => point[1]);
+          const left = Math.min(...xs), top = Math.min(...ys), right = Math.max(...xs), bottom = Math.max(...ys);
+          return {
+            text: item.text,
+            score: Math.round(item.score * 1000) / 1000,
+            x: Math.round(left * scale),
+            y: Math.round(top * scale),
+            width: Math.round((right - left) * scale),
+            height: Math.round((bottom - top) * scale),
+          };
+        });
+      return {
+        action: input.action,
+        window,
+        lines,
+        lineCount: lines.length,
+        imageScale: scale,
+        imageSize: capture.details.imageSize,
+        ocr: { provider: "OCR_NPU_CLI", totalLines: raw.length, ms: Date.now() - startedAt },
+        detail: "OCR semantic fallback (background capture, client-DIP boxes)",
+      };
+    } catch (error) {
+      if (error instanceof WindowsAutomationError) throw error;
+      throw new WindowsAutomationError("OCR_UNAVAILABLE", `OCR 执行失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   private async executeClientInput(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.guardedTarget(input, signal);
     const targetWindow = await this.inspect(target, signal);
     const cursor = Number.isFinite(input.x) && Number.isFinite(input.y)
-      ? { x: Number(input.x), y: Number(input.y), clicking: input.action === "click_client" || input.action === "drag_client" }
+      ? { x: Number(input.x), y: Number(input.y), clicking: input.action === "click_client" || input.action === "drag_client" || input.action === "mouse_down_client" }
       : undefined;
     computerUseRunCoordinator.presentTarget(input, targetWindow, "acting", cursor);
     const observed = await this.withObservation(target, input, async () => {
       if (input.action === "move_client") return this.request("move_client", { target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y") }, signal);
-      if (input.action === "click_client") return this.request("click_client", { target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), button: input.button }, signal);
-      if (input.action === "drag_client") return this.request("drag_client", { target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), x2: requireFinite(input.x2, "x2"), y2: requireFinite(input.y2, "y2"), button: input.button }, signal);
-      return this.request("scroll_client", { target, x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY }, signal);
+      if (input.action === "click_client") return this.request("click_client", {
+        target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), button: input.button,
+        clickCount: input.clickCount, modifiers: modifierVks(input.modifiers), holdMs: input.holdMs, background: input.background,
+      }, signal);
+      if (input.action === "mouse_down_client") return this.request("mouse_down_client", { target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), button: input.button }, signal);
+      if (input.action === "mouse_up_client") return this.request("mouse_up_client", { target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), button: input.button }, signal);
+      if (input.action === "drag_client") return this.request("drag_client", {
+        target, x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"), x2: requireFinite(input.x2, "x2"), y2: requireFinite(input.y2, "y2"),
+        button: input.button, steps: input.steps, durationMs: input.durationMs,
+      }, signal);
+      return this.request("scroll_client", {
+        target, x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY, notches: input.notches,
+      }, signal);
     }, signal);
     return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "window-scoped guarded input" };
   }
@@ -578,13 +988,42 @@ export class ComputerAutomationService {
     return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "legacy desktop-coordinate fallback" };
   }
 
+  private async executeDragScreen(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const cursor = {
+      x: Number.isFinite(input.x) ? Number(input.x) : undefined,
+      y: Number.isFinite(input.y) ? Number(input.y) : undefined,
+      clicking: true,
+    };
+    computerUseRunCoordinator.presentDesktop(input, "acting", cursor);
+    const observed = await this.withObservation(undefined, input, () => this.request("drag_screen", {
+      x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y"),
+      x2: requireFinite(input.x2, "x2"), y2: requireFinite(input.y2, "y2"),
+      button: input.button, steps: input.steps, durationMs: input.durationMs,
+    }, signal), signal);
+    return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "cross-window desktop drag" };
+  }
+
+  private async executePaste(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const text = input.text ?? "";
+    if (!text) throw new Error("paste_text 需要 text");
+    if (text.length > 200_000) throw new Error("text 过长（粘贴上限 200000 字符）");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { clipboard } = require("electron") as typeof import("electron");
+    clipboard.writeText(text);
+    const hasTarget = input.windowHandle || input.windowTitle || input.processId || input.className || input.appSessionId || input.observationId;
+    const target = hasTarget ? await this.guardedTarget(input, signal) : undefined;
+    if (target) computerUseRunCoordinator.presentTarget(input, await this.inspect(target, signal), "acting");
+    const observed = await this.withObservation(target, input, () => this.request("key_press", { key: "ControlKey+V", target }, signal), signal);
+    return { action: input.action, ...(observed.result as object), observation: observed.observation, detail: "clipboard paste via Ctrl+V" };
+  }
+
   private async executeKeyboard(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const target = input.windowHandle || input.windowTitle || input.processId || input.className || input.observationId ? await this.guardedTarget(input, signal) : undefined;
+    const target = input.windowHandle || input.windowTitle || input.processId || input.className || input.appSessionId || input.observationId ? await this.guardedTarget(input, signal) : undefined;
     if (target) computerUseRunCoordinator.presentTarget(input, await this.inspect(target, signal), "acting");
     const observed = await this.withObservation(target, input, async () => {
-      if (input.action === "key_press") {
+      if (input.action === "key_press" || input.action === "key_down" || input.action === "key_up") {
         const key = requireShort(input.key, "key", 120).split("+").map(normalizeKeyToken).join("+");
-        return this.request("key_press", { key, target }, signal);
+        return this.request(input.action, { key, target }, signal);
       }
       const text = input.text ?? "";
       if (!text) throw new Error("text 不能为空");
@@ -613,7 +1052,7 @@ export class ComputerAutomationService {
   }
 
   /** Attach an optional post-action window capture to an already-built result. */
-  private async applyCapture(targetBefore: WindowInfo, after: WindowInfo[], resultRecord: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+  private async applyCapture(targetBefore: WindowInfo, after: WindowInfo[], resultRecord: Record<string, unknown>, signal?: AbortSignal, background = false): Promise<void> {
     const targetAfter = after.find((item) => item.handle === targetBefore.handle && item.processId === targetBefore.processId);
     const captureFailed = (message: string, details?: unknown): void => {
       Object.assign(resultRecord, {
@@ -625,14 +1064,16 @@ export class ComputerAutomationService {
       captureFailed("Target closed before post-action capture", { targetBefore });
       return;
     }
-    if (!targetAfter.foreground) {
+    if (!background && !targetAfter.foreground) {
       captureFailed("Target lost foreground before post-action capture", { targetAfter });
       return;
     }
     try {
-      const captured = await checked(() => this.capture.capture(targetAfter, true), signal);
+      const captured = background && !targetAfter.foreground
+        ? await this.captureBackground(targetAfter, true, signal)
+        : await checked(() => this.capture.capture(targetAfter, true), signal);
       const verifiedAfterCapture = await this.inspect({ windowHandle: targetAfter.handle, expectedProcessId: targetAfter.processId }, signal);
-      if (!verifiedAfterCapture.foreground || !sameCaptureGeometry(targetAfter, verifiedAfterCapture)) {
+      if ((!background && !verifiedAfterCapture.foreground) || !sameCaptureGeometry(targetAfter, verifiedAfterCapture)) {
         captureFailed("Target focus or geometry changed during post-action capture", {
           beforeCapture: targetAfter,
           afterCapture: verifiedAfterCapture,
@@ -698,6 +1139,8 @@ export class ComputerAutomationService {
         action: step.action,
         x: step.x, y: step.y, x2: step.x2, y2: step.y2,
         button: step.button, deltaX: step.deltaX, deltaY: step.deltaY, key: step.key, text: step.text,
+        clickCount: step.clickCount, modifiers: step.modifiers, holdMs: step.holdMs,
+        steps: step.steps, durationMs: step.durationMs, notches: step.notches,
         windowHandle: beforeTarget.handle,
         processId: beforeTarget.processId,
         clientOnly: true,
@@ -721,7 +1164,7 @@ export class ComputerAutomationService {
       batch: { steps: completed, settleMs, completed: true },
       observation,
     };
-    if (input.captureAfter) await this.applyCapture(beforeTarget, after, output as unknown as Record<string, unknown>, signal);
+    if (input.captureAfter) await this.applyCapture(beforeTarget, after, output as unknown as Record<string, unknown>, signal, steps.every((step) => step.background === true));
     return output;
   }
 
@@ -788,7 +1231,7 @@ export class ComputerAutomationService {
     }
     const observation = this.buildObservation(before, targetBefore, after);
     if (input.captureAfter && targetBefore && result && typeof result === "object") {
-      await this.applyCapture(targetBefore, after, result as Record<string, unknown>, signal);
+      await this.applyCapture(targetBefore, after, result as Record<string, unknown>, signal, input.background === true);
     }
     return { result, observation };
   }

@@ -54,21 +54,23 @@ function reconcileThinkingSnapshot(
 }
 
 export const COMPUTER_EXEC_READONLY_ACTIONS = new Set([
+  "attach_app",
   "status",
   "active_window",
   "list_windows",
   "inspect_window",
   "wait_for_window",
   "screenshot",
+  "ocr_window",
   "inspect_controls",
   "find_control",
 ]);
 
 export function isComputerExecReadonly(input: unknown): boolean {
-  const value = (input ?? {}) as { action?: unknown; ensure_foreground?: unknown; actions?: unknown };
+  const value = (input ?? {}) as { action?: unknown; ensure_foreground?: unknown; background?: unknown; actions?: unknown };
   if (Array.isArray(value.actions) && value.actions.length > 0) return false;
   const action = String(value.action ?? "");
-  if (action === "screenshot_window") return value.ensure_foreground === false;
+  if (action === "screenshot_window") return value.ensure_foreground === false || value.background === true;
   return COMPUTER_EXEC_READONLY_ACTIONS.has(action);
 }
 

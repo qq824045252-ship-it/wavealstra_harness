@@ -32,6 +32,7 @@ import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
 import { runtimeProbeService, type RuntimeProbeInput } from "./RuntimeProbeService";
 import { MediaArtifactMaterializer } from "./MediaArtifactMaterializer";
+import { ageToolResultImages } from "./ToolImageAging";
 import { routeVisionForPaths, type VisionRouteResult } from "./VisionRouting";
 import { createWebAccessCapabilityExtension } from "./web-access/index";
 import { quoteBashArg, quotePowerShellLiteral, toBashPath } from "../agent/ShellArguments";
@@ -294,7 +295,8 @@ const computerOutcomeExpectationSchema = Type.Object({
 const computerBatchStepSchema = Type.Object({
   action: Type.Union([
     Type.Literal("move_client"), Type.Literal("click_client"), Type.Literal("drag_client"),
-    Type.Literal("scroll_client"), Type.Literal("key_press"), Type.Literal("type_text"),
+    Type.Literal("scroll_client"), Type.Literal("mouse_down_client"), Type.Literal("mouse_up_client"),
+    Type.Literal("key_down"), Type.Literal("key_up"), Type.Literal("key_press"), Type.Literal("type_text"), Type.Literal("paste_text"),
   ]),
   x: Type.Optional(Type.Number()),
   y: Type.Optional(Type.Number()),
@@ -304,17 +306,27 @@ const computerBatchStepSchema = Type.Object({
   delta_x: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
   delta_y: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
   key: Type.Optional(Type.String({ maxLength: 120 })),
-  text: Type.Optional(Type.String({ maxLength: 20_000 })),
+  text: Type.Optional(Type.String({ maxLength: 200_000 })),
+  click_count: Type.Optional(Type.Integer({ minimum: 1, maximum: 3 })),
+  hold_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 5_000 })),
+  steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 60 })),
+  duration_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })),
+  notches: Type.Optional(Type.Integer({ minimum: -50, maximum: 50 })),
+  modifiers: Type.Optional(Type.Array(Type.Union([Type.Literal("ctrl"), Type.Literal("shift"), Type.Literal("alt"), Type.Literal("win")]), { maxItems: 4 })),
+  background: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
 const computerExecSchema = Type.Object({
   action: Type.Optional(Type.Union([
+    Type.Literal("attach_app"),
     Type.Literal("status"),
     Type.Literal("active_window"), Type.Literal("list_windows"), Type.Literal("inspect_window"),
     Type.Literal("focus_window"), Type.Literal("wait_for_window"),
-    Type.Literal("screenshot"), Type.Literal("screenshot_window"),
+    Type.Literal("screenshot"), Type.Literal("screenshot_window"), Type.Literal("ocr_window"),
     Type.Literal("inspect_controls"), Type.Literal("find_control"), Type.Literal("invoke_control"), Type.Literal("set_control_value"),
     Type.Literal("move_client"), Type.Literal("click_client"), Type.Literal("drag_client"), Type.Literal("scroll_client"),
+    Type.Literal("mouse_down_client"), Type.Literal("mouse_up_client"), Type.Literal("key_down"), Type.Literal("key_up"),
+    Type.Literal("paste_text"), Type.Literal("drag_screen"),
     Type.Literal("mouse_move"), Type.Literal("mouse_click"), Type.Literal("mouse_drag"), Type.Literal("scroll"),
     Type.Literal("key_press"), Type.Literal("type_text"),
   ])),
@@ -324,6 +336,7 @@ const computerExecSchema = Type.Object({
     description: "批量窗口输入：1–8 个步骤按顺序执行、出错即停，只做一次最终观察。与 action 二选一，步骤共用顶层窗口目标。",
   })),
   settle_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 2_000, description: "批量步骤之间的等待毫秒数，默认 120。" })),
+  app_session_id: Type.Optional(Type.String({ maxLength: 100, description: "attach_app 返回的应用会话 id；后续动作用它代替 window_handle/title。" })),
   x: Type.Optional(Type.Number()),
   y: Type.Optional(Type.Number()),
   x2: Type.Optional(Type.Number()),
@@ -332,7 +345,14 @@ const computerExecSchema = Type.Object({
   delta_x: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
   delta_y: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
   key: Type.Optional(Type.String({ maxLength: 120 })),
-  text: Type.Optional(Type.String({ maxLength: 20_000 })),
+  text: Type.Optional(Type.String({ maxLength: 200_000 })),
+  click_count: Type.Optional(Type.Integer({ minimum: 1, maximum: 3, description: "1–3 次点击（双击/三击）。" })),
+  modifiers: Type.Optional(Type.Array(Type.Union([Type.Literal("ctrl"), Type.Literal("shift"), Type.Literal("alt"), Type.Literal("win")]), { maxItems: 4, description: "点击时按住的修饰键。" })),
+  hold_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 5_000, description: "按下保持毫秒数（长按）。" })),
+  steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 60, description: "拖拽插值步数。" })),
+  duration_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000, description: "拖拽时长毫秒；0 表示尽快。" })),
+  notches: Type.Optional(Type.Integer({ minimum: -50, maximum: 50, description: "滚轮格数，正数向上、负数向下。" })),
+  background: Type.Optional(Type.Boolean({ description: "不抢焦点：screenshot_window 用 PrintWindow；click_client 用 PostMessage（仅部分应用接受）。" })),
   window_title: Type.Optional(Type.String({ maxLength: 1_000 })),
   window_handle: Type.Optional(Type.String({ maxLength: 100 })),
   process_id: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -350,6 +370,8 @@ const computerExecSchema = Type.Object({
   observation_id: Type.Optional(Type.String({ maxLength: 100 })),
   max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
   max_nodes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
+  max_lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "ocr_window 最多返回的文本行数，默认 80。" })),
+  min_score: Type.Optional(Type.Number({ minimum: 0, maximum: 1, description: "ocr_window 最低置信度，默认 0.5。" })),
   timeout_ms: Type.Optional(Type.Integer({ minimum: 100, maximum: 30_000 })),
   wait_state: Type.Optional(Type.Union([Type.Literal("visible"), Type.Literal("foreground"), Type.Literal("closed")])),
   expected_outcomes: Type.Optional(Type.Array(computerOutcomeExpectationSchema, { maxItems: 4, description: "Semantic postconditions for verifying that the intended window/control state was actually reached, not merely captured." })),
@@ -407,6 +429,16 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
     const video = config.videoGeneration.enabled ? bridge.runtime.videoProvider() : null;
     const stt = config.speechToText.enabled ? bridge.runtime.speechToTextProvider() : null;
     const tts = config.textToSpeech.enabled ? bridge.runtime.textToSpeechProvider() : null;
+
+    // Computer Use accumulates screenshots quickly; keep only the newest two in
+    // the model context so every request does not re-send old pixels. Session
+    // history keeps the original images. Test doubles may omit the event API.
+    if (typeof pi.on === "function") {
+      pi.on("context", (event) => {
+        const aged = ageToolResultImages(event.messages, 2);
+        return aged === event.messages ? undefined : { messages: aged as typeof event.messages };
+      });
+    }
 
     if (config.web.enabled) createWebAccessCapabilityExtension(pi);
 
@@ -604,7 +636,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。",
+        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow 后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图 + 本地 OCR，返回 client DIP 的文本行（x/y/width/height）供 click_client 使用（需要本机 OCR_NPU_CLI，约 5–9s）。",
         promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {
@@ -639,7 +671,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "ui_exec",
         label: "界面操作",
-        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。",
+        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow 后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图 + 本地 OCR，返回 client DIP 的文本行（x/y/width/height）供 click_client 使用（需要本机 OCR_NPU_CLI，约 5–9s）。",
         promptSnippet: "ui_exec(action, target?, selector?/text?/role?/name?, value?, key?, state?)",
         parameters: uiExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -688,7 +720,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "computer_exec",
         label: "Windows Computer Use",
-        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true。截图返回 JPEG，可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例（通常为 1），窗口截图坐标 = 图像像素 × image_scale，desktop 截图仅用于观察。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容。capture_after 默认关闭，需要视觉确认时显式传 true。actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停），返回 steps 与最终 observation；list_windows 支持 window_title/process_id/process_name/class_name 过滤。截图按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标。UIA 不可用时 screenshot_window（client_only 默认 true）→ click_client。截图统一为 JPEG 并可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例，窗口截图的客户区坐标 = 图像像素 × image_scale（通常为 1），desktop 截图仅用于观察、legacy 桌面坐标需乘 image_scale。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。capture_after 默认关闭，只有需要视觉确认时才显式传 true（否则只做窗口集合观测）。actions 可一次执行 1–8 个窗口输入步骤（move/click/drag/scroll/key/type，同一窗口目标、顺序执行、出错即停），返回 steps、最终 observation 与可选 capture，用它替代逐个动作的多轮往返。list_windows 支持 window_title/process_id/process_name/class_name 过滤并返回精简字段；需要完整几何时用 inspect_window。任何返回截图的动作都会按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。",
+        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true。截图返回 JPEG，可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例（通常为 1），窗口截图坐标 = 图像像素 × image_scale，desktop 截图仅用于观察。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容。capture_after 默认关闭，需要视觉确认时显式传 true。actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停），返回 steps 与最终 observation；list_windows 支持 window_title/process_id/process_name/class_name 过滤。截图按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow 后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图 + 本地 OCR，返回 client DIP 的文本行（x/y/width/height）供 click_client 使用（需要本机 OCR_NPU_CLI，约 5–9s）。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标。UIA 不可用时 screenshot_window（client_only 默认 true）→ click_client。截图统一为 JPEG 并可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例，窗口截图的客户区坐标 = 图像像素 × image_scale（通常为 1），desktop 截图仅用于观察、legacy 桌面坐标需乘 image_scale。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。capture_after 默认关闭，只有需要视觉确认时才显式传 true（否则只做窗口集合观测）。actions 可一次执行 1–8 个窗口输入步骤（move/click/drag/scroll/key/type，同一窗口目标、顺序执行、出错即停），返回 steps、最终 observation 与可选 capture，用它替代逐个动作的多轮往返。list_windows 支持 window_title/process_id/process_name/class_name 过滤并返回精简字段；需要完整几何时用 inspect_window。任何返回截图的动作都会按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow 后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图 + 本地 OCR，返回 client DIP 的文本行（x/y/width/height）供 click_client 使用（需要本机 OCR_NPU_CLI，约 5–9s）。",
         promptSnippet: "computer_exec(action?|actions?, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, capture_after?, expected_outcomes?)",
         parameters: computerExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -707,6 +739,13 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
                 deltaY: step.delta_y as number | undefined,
                 key: step.key as string | undefined,
                 text: step.text as string | undefined,
+                clickCount: step.click_count as number | undefined,
+                modifiers: step.modifiers as ComputerExecInput["modifiers"],
+                holdMs: step.hold_ms as number | undefined,
+                steps: step.steps as number | undefined,
+                durationMs: step.duration_ms as number | undefined,
+                notches: step.notches as number | undefined,
+                background: step.background as boolean | undefined,
               }))
               : undefined;
             const action = (p.action as ComputerExecInput["action"] | undefined) ?? batchActions?.[0]?.action;
@@ -725,6 +764,14 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               deltaY: p.delta_y as number | undefined,
               key: p.key as string | undefined,
               text: p.text as string | undefined,
+              appSessionId: p.app_session_id as string | undefined,
+              clickCount: p.click_count as number | undefined,
+              modifiers: p.modifiers as ComputerExecInput["modifiers"],
+              holdMs: p.hold_ms as number | undefined,
+              steps: p.steps as number | undefined,
+              durationMs: p.duration_ms as number | undefined,
+              notches: p.notches as number | undefined,
+              background: p.background as boolean | undefined,
               windowTitle: p.window_title as string | undefined,
               windowHandle: p.window_handle as string | undefined,
               processId: p.process_id as number | undefined,
@@ -742,6 +789,8 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               observationId: p.observation_id as string | undefined,
               maxDepth: p.max_depth as number | undefined,
               maxNodes: p.max_nodes as number | undefined,
+              maxLines: p.max_lines as number | undefined,
+              minScore: p.min_score as number | undefined,
               timeoutMs: p.timeout_ms as number | undefined,
               waitState: p.wait_state as ComputerExecInput["waitState"],
               expectedOutcomes: p.expected_outcomes as ComputerExecInput["expectedOutcomes"],

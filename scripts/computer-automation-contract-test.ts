@@ -13,14 +13,17 @@ import {
 import { COMPUTER_EXEC_READONLY_ACTIONS, isComputerExecReadonly, isDangerousTool, isSideEffectTool } from "../src/shared/pi-event-mapper";
 
 const requiredActions = [
+  "attach_app",
   "status", "active_window", "list_windows", "inspect_window", "focus_window", "wait_for_window",
-  "screenshot", "screenshot_window", "inspect_controls", "find_control", "invoke_control", "set_control_value",
+  "screenshot", "screenshot_window", "ocr_window", "inspect_controls", "find_control", "invoke_control", "set_control_value",
   "move_client", "click_client", "drag_client", "scroll_client",
+  "mouse_down_client", "mouse_up_client", "key_down", "key_up", "paste_text", "drag_screen",
   "mouse_move", "mouse_click", "mouse_drag", "scroll", "key_press", "type_text",
 ];
 const readonlyActions = [
+  "attach_app",
   "status", "active_window", "list_windows", "inspect_window", "wait_for_window",
-  "screenshot", "inspect_controls", "find_control",
+  "screenshot", "ocr_window", "inspect_controls", "find_control",
 ];
 
 function windowFixture(overrides: Partial<WindowInfo> = {}): WindowInfo {
@@ -55,7 +58,7 @@ async function main(): Promise<void> {
     assert.match(extensionSource, new RegExp(`Type\\.Literal\\(\\"${action}\\"\\)`), `schema missing ${action}`);
   }
   assert.match(extensionSource, /additionalProperties:\s*false/);
-  assert.doesNotMatch(serviceSource, /execFile|EncodedCommand|Add-Type/);
+  assert.doesNotMatch(serviceSource, /exec\(|execSync|spawnSync|EncodedCommand|Add-Type|shell:\s*true/);
 
   for (const action of requiredActions) {
     if (action === "screenshot_window") {
@@ -63,6 +66,7 @@ async function main(): Promise<void> {
       assert.equal(isSideEffectTool("computer_exec", { action }), true);
       assert.equal(isDangerousTool("computer_exec", { action }), true);
       assert.equal(isComputerExecReadonly({ action, ensure_foreground: false }), true, "already-foreground capture can be readonly");
+      assert.equal(isComputerExecReadonly({ action, background: true }), true, "PrintWindow background capture is readonly");
       assert.equal(isSideEffectTool("computer_exec", { action, ensure_foreground: false }), false);
       continue;
     }
@@ -107,6 +111,10 @@ async function main(): Promise<void> {
   let sideEffectCalled = false;
   let clickCount = 0;
   let lastSideEffectTarget: Record<string, unknown> | undefined;
+  let lastClickParams: Record<string, unknown> | undefined;
+  let lastDragParams: Record<string, unknown> | undefined;
+  let lastScrollParams: Record<string, unknown> | undefined;
+  let lastKeyAction: string | undefined;
   let closeOnNextClick = false;
   let windowClosed = false;
   let loseObservationAfterNextClick = false;
@@ -128,8 +136,21 @@ async function main(): Promise<void> {
         sideEffectCalled = true;
         clickCount += 1;
         lastSideEffectTarget = params.target as Record<string, unknown>;
+        lastClickParams = params;
         if (closeOnNextClick) windowClosed = true;
         if (loseObservationAfterNextClick) observationUnavailable = true;
+        return {};
+      }
+      if (action === "drag_client" || action === "drag_screen") {
+        lastDragParams = params;
+        return {};
+      }
+      if (action === "scroll_client") {
+        lastScrollParams = params;
+        return {};
+      }
+      if (action === "key_press" || action === "key_down" || action === "key_up") {
+        lastKeyAction = action;
         return {};
       }
       throw new Error(`Unexpected fake action ${action}`);
@@ -240,7 +261,32 @@ async function main(): Promise<void> {
   assert.equal(batchFailure.details?.batch?.completedSteps, 1, "batch failure must report how many steps already ran");
   await assert.rejects(service.execute({ actions: [{ action: "click_client", x: 1, y: 1 }] }), /window_handle/);
 
-  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture + batch + window filtering)`);
+  // app session: attach once, then target by session id
+  const attached = await service.execute({ action: "attach_app", windowTitle: current.title });
+  assert.ok(attached.appSessionId, "attach_app must return an app session id");
+  assert.equal(attached.window?.handle, current.handle);
+  lastClickParams = undefined;
+  await service.execute({ action: "click_client", appSessionId: attached.appSessionId, x: 10, y: 10, observeAfter: false });
+  assert.equal((lastClickParams?.target as { windowHandle?: string })?.windowHandle, current.handle, "app session must resolve to the attached HWND");
+  await expectCode(service.execute({ action: "click_client", appSessionId: "missing-session", x: 1, y: 1 }), "STALE_OBSERVATION");
+
+  // input primitives: click count + modifiers, timed drag, notches, key down/up
+  await service.execute({ action: "click_client", windowHandle: current.handle, x: 10, y: 10, clickCount: 2, modifiers: ["ctrl", "shift"], observeAfter: false });
+  assert.equal(lastClickParams?.clickCount, 2, "double click must reach the host");
+  assert.deepEqual(lastClickParams?.modifiers, [17, 16], "modifiers must be translated to virtual keys");
+  await service.execute({ action: "drag_client", windowHandle: current.handle, x: 0, y: 0, x2: 20, y2: 20, steps: 30, durationMs: 500, observeAfter: false });
+  assert.equal(lastDragParams?.steps, 30, "drag steps must reach the host");
+  assert.equal(lastDragParams?.durationMs, 500, "drag duration must reach the host");
+  await service.execute({ action: "drag_screen", x: 10, y: 10, x2: 300, y2: 300, steps: 8, observeAfter: false });
+  assert.equal(lastDragParams?.steps, 8, "cross-window drag must use desktop coordinates");
+  await service.execute({ action: "scroll_client", windowHandle: current.handle, notches: -3, observeAfter: false });
+  assert.equal(lastScrollParams?.notches, -3, "scroll notches must reach the host");
+  await service.execute({ action: "key_down", windowHandle: current.handle, key: "Shift", observeAfter: false });
+  assert.equal(lastKeyAction, "key_down");
+  await service.execute({ action: "key_up", windowHandle: current.handle, key: "Shift", observeAfter: false });
+  assert.equal(lastKeyAction, "key_up");
+
+  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture + batch + app session + input primitives + window filtering)`);
 }
 
 void main();

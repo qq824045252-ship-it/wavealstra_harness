@@ -11,11 +11,12 @@ export interface ComputerUseRecoveryPlan {
 }
 
 function readonlyAction(input: ComputerExecInput): boolean {
-  return !isComputerUseSideEffect(input.action) || (input.action === "screenshot_window" && input.ensureForeground === false);
+  return !isComputerUseSideEffect(input.action)
+    || (input.action === "screenshot_window" && (input.ensureForeground === false || input.background === true));
 }
 
 function stableSelectorAvailable(input: ComputerExecInput): boolean {
-  return Boolean(input.windowHandle || input.windowTitle || input.processId || input.className);
+  return Boolean(input.appSessionId || input.windowHandle || input.windowTitle || input.processId || input.className);
 }
 
 export function planComputerUseRecovery(error: unknown, input: ComputerExecInput, attempt: number): ComputerUseRecoveryPlan | null {

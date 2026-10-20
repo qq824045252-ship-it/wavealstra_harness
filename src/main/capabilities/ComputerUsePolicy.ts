@@ -6,6 +6,7 @@ const SIDE_EFFECT_ACTIONS = new Set<ComputerExecInput["action"]>([
   "focus_window", "screenshot_window",
   "invoke_control", "set_control_value",
   "move_client", "click_client", "drag_client", "scroll_client",
+  "mouse_down_client", "mouse_up_client", "key_down", "key_up", "paste_text", "drag_screen",
   "mouse_move", "mouse_click", "mouse_drag", "scroll",
   "key_press", "type_text",
 ]);
@@ -21,7 +22,7 @@ export function isComputerUseLightweightAction(action: ComputerExecInput["action
 }
 
 export function hasWindowTarget(input: ComputerExecInput): boolean {
-  return Boolean(input.windowHandle || input.windowTitle || input.processId || input.className || input.observationId);
+  return Boolean(input.appSessionId || input.windowHandle || input.windowTitle || input.processId || input.className || input.observationId);
 }
 
 /**

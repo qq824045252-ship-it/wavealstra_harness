@@ -1,48 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="700" viewBox="0 0 1100 700" font-family="Segoe UI, Microsoft YaHei, sans-serif">
-  <rect x="0" y="0" width="1100" height="700" fill="#f7f8fb"/>
-  <text x="32" y="42" font-size="22" font-weight="700" fill="#1f2430">Computer Use 三条要求：达成情况（2026-10-20）</text>
-  <text x="32" y="66" font-size="12" fill="#5b6472">P0 只覆盖了“速度”的工具侧；“聚焦应用”和“鼠标能力”仍属 P1，尚未实现。</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="720" viewBox="0 0 1100 720" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1100" height="720" fill="#f7f8fb"/>
+  <text x="32" y="42" font-size="22" font-weight="700" fill="#1f2430">Computer Use 三条要求：P1 完成后的达成情况（2026-10-20）</text>
+  <text x="32" y="66" font-size="12" fill="#5b6472">已补齐应用会话、窗口级叠加框、后台捕获（原生）、输入原语、图片淘汰、OCR 兜底；剩余边界在每项末尾标注。</text>
 
   <!-- requirement 1 -->
-  <rect x="32" y="88" width="1036" height="164" rx="10" fill="#ffffff" stroke="#e2b6b6"/>
+  <rect x="32" y="88" width="1036" height="176" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
   <text x="52" y="118" font-size="15" font-weight="700" fill="#1f2430">① 能聚焦某个应用，不要像全屏扫描</text>
-  <rect x="880" y="98" width="166" height="28" rx="14" fill="#fdeceb" stroke="#d9a3a3"/>
-  <text x="963" y="117" font-size="13" font-weight="700" fill="#a33124" text-anchor="middle">未满足</text>
+  <rect x="880" y="98" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
+  <text x="963" y="117" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">基本满足</text>
   <g font-size="12" fill="#3b4556">
-    <text x="52" y="146">仍缺：没有应用会话（每次动作都要传 handle/title/pid）；主动观察仍是整屏 2000×1125；</text>
-    <text x="52" y="168">screenshot_window 仍是“整屏截取→裁剪”且必须前台；屏幕叠加框仍按 monitorRect 画整屏；</text>
-    <text x="52" y="190">Electron/Qt/Tauri 的 UIA 仍只有 0–3 个控件，语义路径不通。</text>
-    <text x="52" y="216" fill="#1d6b3f">已改善：list_windows 可按 process_name / process_id / title / class 过滤且只回精简字段；</text>
-    <text x="52" y="238" fill="#1d6b3f">批量 actions 固定同一个窗口目标，减少“点错窗口”。</text>
+    <text x="52" y="146">已实现：attach_app 返回 app_session_id，后续动作固定到同一 HWND+PID（10 分钟 TTL）；</text>
+    <text x="52" y="168">叠加框改为按窗口矩形绘制（实测 bounds 与目标窗口完全一致）；原生窗口支持 PrintWindow 后台截图。</text>
+    <text x="52" y="196">边界：Chromium / Qt / Tauri 的 PrintWindow 只返回原生外框，后台截图会被明确拒绝，需先聚焦再前台截图；</text>
+    <text x="52" y="218">多显示器 list_displays 尚未实现。</text>
   </g>
 
   <!-- requirement 2 -->
-  <rect x="32" y="266" width="1036" height="164" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
-  <text x="52" y="296" font-size="15" font-weight="700" fill="#1f2430">② 速度慢，识别太慢</text>
-  <rect x="880" y="276" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
-  <text x="963" y="295" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">部分满足</text>
+  <rect x="32" y="278" width="1036" height="176" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
+  <text x="52" y="308" font-size="15" font-weight="700" fill="#1f2430">② 速度慢，识别太慢</text>
+  <rect x="880" y="288" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
+  <text x="963" y="307" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">部分满足</text>
   <g font-size="12" fill="#3b4556">
-    <text x="52" y="324" fill="#1d6b3f">工具侧已达成：整屏截图 1.08–1.31s → 274ms、1.9M → 178KB、归一化 1.10s → 0；</text>
-    <text x="52" y="346" fill="#1d6b3f">窗口截图 0.62s/790KB → 275ms/111KB；点击 1.08s+图 → 708ms 无图；</text>
-    <text x="52" y="368" fill="#1d6b3f">8 次点击批量 1.11s（逐个 5.57s），模型轮数 8 → 1；list_windows 400 → 约 50 行。</text>
-    <text x="52" y="394" fill="#8a5a12">仍慢：模型回合 3.7–9.1s/步（随会话上下文增长）；批量只减少轮数，不减少单轮耗时；</text>
-    <text x="52" y="416" fill="#8a5a12">文本模型下每张截图仍有 10.3s 委托视觉；历史截图未做淘汰（体积已从 6.4MB 降到约 1MB）。</text>
+    <text x="52" y="336" fill="#1d6b3f">工具侧：截图 274/275ms、点击 708ms、8 连点 1.11s（逐个 5.57s）；图片只保留最近 2 张，旧图不再每轮重传。</text>
+    <text x="52" y="364" fill="#8a5a12">仍慢：模型回合 3.7–9.1s/步（随上下文增长）；OCR 3.5–4.0s；文本模型下每张截图仍有 10.3s 委托视觉。</text>
+    <text x="52" y="392">批量只减少轮数、图片淘汰只减少上下文；单轮推理时间未变，需要更小上下文或更快模型。</text>
+    <text x="52" y="420" fill="#5b6472">判定：工具侧与上下文已达标，端到端“识别”仍取决于模型。</text>
   </g>
 
   <!-- requirement 3 -->
-  <rect x="32" y="444" width="1036" height="164" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
-  <text x="52" y="474" font-size="15" font-weight="700" fill="#1f2430">③ 操作鼠标限制大</text>
-  <rect x="880" y="454" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
-  <text x="963" y="473" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">部分满足</text>
+  <rect x="32" y="468" width="1036" height="176" rx="10" fill="#ffffff" stroke="#a9d3b8"/>
+  <text x="52" y="498" font-size="15" font-weight="700" fill="#1f2430">③ 操作鼠标限制大</text>
+  <rect x="880" y="478" width="166" height="28" rx="14" fill="#eef8f1" stroke="#8fc9a4"/>
+  <text x="963" y="497" font-size="13" font-weight="700" fill="#1d6b3f" text-anchor="middle">已满足（有边界）</text>
   <g font-size="12" fill="#3b4556">
-    <text x="52" y="502" fill="#1d6b3f">已改善：批量最多 8 步；10 个不连续目标 = 2 批（约 1.4s、2 轮模型），不再 10 轮；拖拽/滚动/键入也可混在批次里。</text>
-    <text x="52" y="528" fill="#a33124">仍缺原语：双击/三击、Ctrl/Shift+点击、mouse down/up、拖拽时长与步数、跨窗口拖拽、</text>
-    <text x="52" y="550" fill="#a33124">滚轮的“行/页”语义、Win/Insert/PrintScreen 等键、长文本粘贴、后台点击（不抢焦点）。</text>
-    <text x="52" y="580" fill="#5b6472">因此“连续多选 10 项”现在可行；“双击打开 / Ctrl 点选不连续项 / 拖到桌面 / 后台操作”仍不可行。</text>
+    <text x="52" y="526" fill="#1d6b3f">已实现：双击/三击（dblclick 触发）、Ctrl/Shift+点击（ctrlKey/shiftKey=true）、长按 hold_ms、mouse_down/up、</text>
+    <text x="52" y="548" fill="#1d6b3f">拖拽 steps/duration（621ms、29 步）、跨窗口 drag_screen、滚动 notches（3 格=300px）、key_down/up、剪贴板粘贴、后台点击。</text>
+    <text x="52" y="576">边界：后台点击走 PostMessage，可能激活窗口或被部分应用忽略；跨窗口拖拽使用桌面绝对坐标。</text>
+    <text x="52" y="604" fill="#5b6472">批量 actions 可把这些原语组合成一键多步（1–8 步，出错即停）。</text>
   </g>
 
   <!-- footer -->
-  <rect x="32" y="622" width="1036" height="58" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
-  <text x="52" y="646" font-size="12" fill="#33496e">待验证：以上为源码 + Electron 实测 + 单测/实机 smoke；尚未在打包版中由真实模型跑一轮完整任务（模型需学习 actions / capture_after 的用法）。</text>
-  <text x="52" y="666" font-size="12" fill="#33496e">建议 P1 顺序：应用会话（attach_app + 窗口级叠加框 + 后台捕获）→ 输入原语 → 图片淘汰/上下文控制 → OCR/CDP 语义兜底。</text>
+  <rect x="32" y="654" width="1036" height="52" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
+  <text x="52" y="676" font-size="12" fill="#33496e">验证：30 actions · typecheck/build · 4 个单测 · 2 个实机 smoke 全绿；Electron 实测覆盖会话/叠加框/双击/修饰键/拖拽/滚动/粘贴/OCR。</text>
+  <text x="52" y="696" font-size="12" fill="#33496e">待验证：打包版真实模型端到端；OCR 依赖本机 OCR_NPU_CLI；Chromium 后台截图/OCR 需前台窗口。</text>
 </svg>

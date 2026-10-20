@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -108,6 +108,7 @@
     "test:computer-use-run": "esbuild scripts/computer-use-run-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-run-test.cjs --external:electron && node scripts/test-guard.mjs out/tests/computer-use-run-test.cjs",
     "test:computer-use-overlay": "esbuild scripts/computer-use-overlay-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-overlay-smoke.cjs --external:electron && electron out/tests/computer-use-overlay-smoke.cjs",
     "test:computer-automation-windows": "esbuild scripts/computer-automation-windows-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-automation-windows-smoke.cjs --external:electron && electron out/tests/computer-automation-windows-smoke.cjs",
+    "test:tool-image-aging": "esbuild scripts/tool-image-aging-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/tool-image-aging-test.cjs && node scripts/test-guard.mjs out/tests/tool-image-aging-test.cjs",
     "test:runtime-probe": "esbuild scripts/runtime-probe-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/runtime-probe-test.mjs --external:electron && node scripts/test-guard.mjs out/tests/runtime-probe-test.mjs",
     "test:runtime-probe-electron": "esbuild scripts/runtime-probe-electron-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/runtime-probe-electron-smoke.cjs --external:electron && electron out/tests/runtime-probe-electron-smoke.cjs",
     "test:external-write-grant": "esbuild scripts/external-write-grant-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/external-write-grant-test.cjs --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/external-write-grant-test.cjs",
