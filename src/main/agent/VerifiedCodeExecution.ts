@@ -70,6 +70,16 @@ export async function executeVerifiedProcess<T>(input: {
   causePrefix: string;
   executionLabel: string;
   signal?: AbortSignal;
+  /**
+   * 已观测到确定退出码的失败（exit-nonzero）是否升级为任务恢复卡片。
+   * - "recovery-card"（默认）：长过程/会改动用户工程文件的工具（如 CAD）保留卡片。
+   * - "tool-result"：进程已经退出、退出码与 stdout/stderr 都拿得到，这是普通工具失败，
+   *   不是「结果未决」的恢复状态。execute_code 用这个值：卡片只留给真未决的场景
+   *   （超时、退出码未知、应用重启），否则每次用户代码报错都会在聊天顶部留一张
+   *   claim「副作用未知」的卡；而自动消解要求 target 完全相等，code 模式的 target 含
+   *   sha256(源码)，模型改代码后必然换 target，于是旧卡只能等用户手动关闭。
+   */
+  observedExitPolicy?: "recovery-card" | "tool-result";
   execute: () => Promise<VerifiedProcessTransport<T>>;
 }): Promise<T> {
   if (!input.bridge) return (await input.execute()).result;
@@ -100,6 +110,8 @@ export async function executeVerifiedProcess<T>(input: {
   };
   const settleRecovery = (finished: ExecutionAttempt) => {
     if (["cancelled", "stale-execution"].includes(finished.causeCode ?? "")) return;
+    // 观测到确定退出码的失败不是恢复状态：进程已结束、输出已捕获，工具结果本身就是完整答案。
+    if (input.observedExitPolicy === "tool-result" && finished.causeCode === nonzeroCause) return;
     input.bridge!.failures?.recordIfAbsent({
       ...ctx,
       causeCode: finished.causeCode ?? errorCause,
@@ -215,6 +227,9 @@ export async function executeVerifiedCode<T>(input: {
     targetNamespace: "code:execute_code",
     causePrefix: "code-execution",
     executionLabel: "execute_code",
+    // 用户代码以非零退出是普通工具失败：traceback 已随工具结果返回，模型当场就能修，
+    // 不构成需要用户核对的「副作用未知」恢复状态。
+    observedExitPolicy: "tool-result",
   });
 }
 

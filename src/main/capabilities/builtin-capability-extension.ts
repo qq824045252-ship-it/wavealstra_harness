@@ -872,6 +872,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         label: "代码执行",
         description:
           "在当前任务目录执行一次性 JavaScript、Python、PowerShell 或 Bash 代码；PowerShell 使用独立原生后端，不经 Bash 二次转义。" +
+          "JavaScript 以 Node ESM（.mjs）执行：用 `import x from 'node:fs'`，不要用 require。" +
           "Python 由 MyBuddy 受管运行时提供解释器与依赖环境：需要额外第三方库时，在代码里用注释 `# mybuddy-deps: pandas, openpyxl>=2.1` 声明，" +
           "需要特定版本时用 `# mybuddy-python: 3.12` 声明；不要自行 pip install、不要创建 .venv，也不要假设系统装有 Python。" +
           "运行技能自带的 Python 脚本时用 script 模式（`script` + `args`，只支持 Python）：脚本路径必须在任务目录或技能目录内，" +

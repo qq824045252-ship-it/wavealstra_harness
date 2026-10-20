@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="830" viewBox="0 0 1240 830" role="img" aria-label="execute_code 非零退出如何变成任务恢复卡：修复前后的机制对照">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e11d48"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="830" fill="#f7f9fc"/>
+
+  <text x="40" y="46" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="23" font-weight="700" fill="#0f172a">execute_code 非零退出 → 任务恢复卡：真实机制与修复</text>
+  <text x="40" y="76" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" fill="#475569">证据：本机 ~/.mybuddy/app.db（只读）与会话 JSONL；红色 = 修复前路径，绿色 = 修复后路径。名称均取自源码。</text>
+
+  <!-- 共享前半段：5 个环节 -->
+  <rect x="40" y="100" width="1160" height="88" rx="10" fill="#eef2f7" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="52" y="92" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="14" font-weight="700" fill="#0f172a">共享前半段（修复不动）</text>
+
+  <rect x="50" y="114" width="204" height="62" rx="7" fill="#ffffff" stroke="#94a3b8" stroke-width="1.1"/>
+  <text x="58" y="134" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" font-weight="700" fill="#0f172a">① execute_code 工具</text>
+  <text x="58" y="152" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">builtin-capability-</text>
+  <text x="58" y="169" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">extension.ts:871</text>
+
+  <path d="M256,145 L270,145" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="274" y="114" width="204" height="62" rx="7" fill="#ffffff" stroke="#94a3b8" stroke-width="1.1"/>
+  <text x="282" y="134" font-family="Consolas,'Courier New',monospace" font-size="12.5" font-weight="700" fill="#0f172a">② executeVerifiedCode()</text>
+  <text x="282" y="152" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">VerifiedCodeExecution.ts</text>
+  <text x="282" y="169" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">:205</text>
+
+  <path d="M480,145 L494,145" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="498" y="114" width="204" height="62" rx="7" fill="#ffffff" stroke="#94a3b8" stroke-width="1.1"/>
+  <text x="506" y="134" font-family="Consolas,'Courier New',monospace" font-size="12.5" font-weight="700" fill="#0f172a">③ attempts.begin()</text>
+  <text x="506" y="152" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#334155">写 execution_attempts</text>
+  <text x="506" y="169" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#334155">（审计行，照旧保留）</text>
+
+  <path d="M704,145 L718,145" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="722" y="114" width="204" height="62" rx="7" fill="#ffffff" stroke="#94a3b8" stroke-width="1.1"/>
+  <text x="730" y="134" font-family="Consolas,'Courier New',monospace" font-size="12.5" font-weight="700" fill="#0f172a">④ process-exit-code</text>
+  <text x="730" y="152" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#334155">expected 0 / observed 1</text>
+  <text x="730" y="169" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#334155">→ verification failed</text>
+
+  <path d="M928,145 L942,145" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="946" y="114" width="204" height="62" rx="7" fill="#ffffff" stroke="#94a3b8" stroke-width="1.1"/>
+  <text x="954" y="134" font-family="Consolas,'Courier New',monospace" font-size="12.5" font-weight="700" fill="#0f172a">⑤ settleRecovery()</text>
+  <text x="954" y="152" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">VerifiedCodeExecution.ts</text>
+  <text x="954" y="169" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">:101 分叉点</text>
+
+  <path d="M620,188 L620,196" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- 修复前 -->
+  <rect x="40" y="200" width="1160" height="308" rx="12" fill="#fff5f5" stroke="#e11d48" stroke-width="1.5"/>
+  <text x="62" y="229" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="16" font-weight="700" fill="#9f1239">修复前：已观测的非零退出被升级为「结果未知」的任务恢复卡</text>
+
+  <rect x="66" y="246" width="330" height="128" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.2"/>
+  <text x="82" y="272" font-family="Consolas,'Courier New',monospace" font-size="13.5" font-weight="700" fill="#0f172a">failures.recordIfAbsent()</text>
+  <text x="82" y="296" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">表 execution_failures：</text>
+  <text x="82" y="316" font-family="Consolas,'Courier New',monospace" font-size="12.5" fill="#334155">cause_code=code-execution-exit-nonzero</text>
+  <text x="82" y="336" font-family="Consolas,'Courier New',monospace" font-size="12.5" fill="#334155">sideEffects="unknown" recovery="recoverable"</text>
+  <text x="82" y="357" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#64748b">进程其实已退出，退出码与 stderr 都已拿到</text>
+
+  <path d="M400,310 L418,310" stroke="#e11d48" stroke-width="1.8" marker-end="url(#arrowRed)"/>
+
+  <rect x="428" y="246" width="310" height="128" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.2"/>
+  <text x="444" y="272" font-family="Consolas,'Courier New',monospace" font-size="13.5" font-weight="700" fill="#0f172a">TaskRecoveryNotice.tsx:15</text>
+  <text x="444" y="296" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">listExecutionFailures(taskId)</text>
+  <text x="444" y="316" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">取「最新未决」一条（resolvedAt 为空）</text>
+  <text x="444" y="336" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">渲染在聊天顶部 ChatView.tsx:1094</text>
+  <text x="444" y="357" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#64748b">标题「需要恢复」，详情写「结果未知」</text>
+
+  <path d="M742,310 L766,310" stroke="#e11d48" stroke-width="1.8" marker-end="url(#arrowRed)"/>
+
+  <rect x="770" y="246" width="404" height="128" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.2"/>
+  <text x="786" y="270" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">用户看到的卡片原文（消息 + 下一步）</text>
+  <text x="786" y="292" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">execute_code did not complete reliably</text>
+  <text x="786" y="310" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">(code-execution-exit-nonzero).</text>
+  <text x="786" y="328" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">Partial side effects may exist. Inspect the</text>
+  <text x="786" y="346" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">process output and affected files/state</text>
+  <text x="786" y="364" font-family="Consolas,'Courier New',monospace" font-size="12" fill="#334155">before deciding whether to retry.</text>
+
+  <rect x="66" y="390" width="1108" height="104" rx="8" fill="#fff1f2" stroke="#fda4af" stroke-width="1.2"/>
+  <text x="84" y="414" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" font-weight="700" fill="#9f1239">为什么「经常报错」而且关不掉：自动消解键是逐字节源码</text>
+  <text x="84" y="438" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">target = sha256(evidenceIdentity)；code 模式 identity = 语言 + sha256(源码) + args + deps（VerifiedCodeExecution.ts:26-37）</text>
+  <text x="84" y="458" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">只有同一 target 再次成功才 resolve（:172-174）；模型改代码 → 新 hash → 永不命中（script 模式的 target 只哈希脚本路径）。</text>
+  <text x="84" y="478" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">实测 execution_failures：该 cause_code 共 39 条，resolved 0，手动 dismissed 29，仍可见 10 条（分属 3 个任务；39 条合计跨 11 个任务）。</text>
+
+  <path d="M620,508 L620,520" stroke="#64748b" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="632" y="519" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" font-weight="600" fill="#475569">修复</text>
+
+  <!-- 修复后 -->
+  <rect x="40" y="524" width="1160" height="290" rx="12" fill="#f0fdf4" stroke="#059669" stroke-width="1.5"/>
+  <text x="62" y="553" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="16" font-weight="700" fill="#065f46">修复后：observedExitPolicy="tool-result" —— 已观测失败只作工具失败（execute_code 专属，默认策略不变）</text>
+
+  <rect x="66" y="570" width="340" height="118" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.2"/>
+  <text x="82" y="596" font-family="Consolas,'Courier New',monospace" font-size="13.5" font-weight="700" fill="#0f172a">settleRecovery 提前 return</text>
+  <text x="82" y="620" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">条件：observedExitPolicy==="tool-result"</text>
+  <text x="82" y="640" font-family="Consolas,'Courier New',monospace" font-size="12.5" fill="#334155">且 causeCode === "-exit-nonzero"</text>
+  <text x="82" y="660" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">→ 不写 execution_failures，不产生恢复卡</text>
+  <text x="82" y="680" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#64748b">CAD 等未 opt-in 的工具仍走 recovery-card</text>
+
+  <path d="M410,629 L430,629" stroke="#059669" stroke-width="1.8" marker-end="url(#arrowGreen)"/>
+
+  <rect x="436" y="570" width="330" height="118" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.2"/>
+  <text x="452" y="596" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">工具结果照旧完整</text>
+  <text x="452" y="620" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">isError=true + traceback / stderr 原文</text>
+  <text x="452" y="640" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">模型在同一轮里读到错误并修正</text>
+  <text x="452" y="660" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">聊天里的工具卡片仍是失败态</text>
+  <text x="452" y="680" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#64748b">用户仍能在工具卡里看到完整输出</text>
+
+  <path d="M770,629 L790,629" stroke="#059669" stroke-width="1.8" marker-end="url(#arrowGreen)"/>
+
+  <rect x="796" y="570" width="378" height="118" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.2"/>
+  <text x="812" y="596" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">审计证据不丢（Python 分支）</text>
+  <text x="812" y="620" font-family="Consolas,'Courier New',monospace" font-size="12.5" fill="#334155">execution_attempts: status=failed</text>
+  <text x="812" y="640" font-family="Consolas,'Courier New',monospace" font-size="12.5" fill="#334155">observedExitCode=1, verification=failed</text>
+  <text x="812" y="660" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">JS/PS/Bash 分支仍硬编码 exitCode: 0</text>
+  <text x="812" y="680" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12" fill="#64748b">→ 既存审计盲点，本次不改</text>
+
+  <rect x="66" y="700" width="1108" height="104" rx="8" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.2"/>
+  <text x="84" y="724" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="13.5" font-weight="700" fill="#065f46">升级迁移与保留边界</text>
+  <text x="84" y="746" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">迁移：ExecutionFailureRepository.ts:22 构造时把历史未决的 code-execution-exit-nonzero 行置为 dismissed（同旧 shell-exit-nonzero）。</text>
+  <text x="84" y="766" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">仍会生成恢复卡：超时 code-execution-timeout、退出码未知 code-execution-exit-unknown、异常 code-execution-error、应用重启 application-restarted。</text>
+  <text x="84" y="786" font-family="'Segoe UI','Microsoft YaHei',sans-serif" font-size="12.5" fill="#334155">边界：只有 execute_code opt-in 到 tool-result 策略；CAD（cad-extension.ts:383）默认仍升级为恢复卡。回归：scripts/verified-code-execution-test.ts</text>
+</svg>

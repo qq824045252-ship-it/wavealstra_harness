@@ -7,6 +7,7 @@ import { verifyObservedProcessExit } from "../src/main/agent/ExecutionVerifierRe
 import {
   codeExecutionEvidenceIdentity,
   executeVerifiedCode,
+  executeVerifiedProcess,
   recordCodeRuntimePreparationFailure,
   resolveCodeRuntimePreparationFailure,
 } from "../src/main/agent/VerifiedCodeExecution";
@@ -48,16 +49,26 @@ try {
   records = attempts.list(ctx);
   const failed = records.find((item) => item.toolCallId === "code-nonzero")!;
   assert.equal(failed.status, "failed");
+  assert.equal(failed.observedExitCode, 7, "audit keeps the observed exit code");
   assert.equal(failed.causeCode, "code-execution-exit-nonzero");
   assert.equal(failed.verification?.status, "failed");
-  const nonzeroFailure = failures.list("task").find((item) => item.causeCode === "code-execution-exit-nonzero")!;
-  assert.equal(nonzeroFailure.sideEffects, "unknown");
-  assert.equal(nonzeroFailure.target, failed.target);
+  // 已观测的非零退出是普通工具失败：stderr 已随工具结果返回，模型当场就能修；它不产生
+  // 「副作用未知」的任务恢复卡（旧行为会生成，且只有逐字节相同的源码再次成功才消解）。
+  assert.equal(failures.list("task").find((item) => item.causeCode === "code-execution-exit-nonzero"), undefined,
+    "observed nonzero execute_code exit must not persist a task recovery card");
 
   const repair = await executeVerifiedCode({ bridge, toolCallId: "code-repair", evidenceIdentity: identity,
     execute: async () => ({ result: { content: [{ type: "text", text: "repaired" }] }, exitCode: 0 }) });
   assert.equal((repair as any).details.executionVerification.status, "passed");
-  assert(failures.list("task").find((item) => item.id === nonzeroFailure.id)?.resolvedAt, "same source identity success resolves prior process failure");
+  assert.equal(failures.list("task").filter((item) => item.causeCode === "code-execution-exit-nonzero").length, 0,
+    "a later successful run cannot leave a stale nonzero-exit card behind");
+
+  // 默认策略保持不变：其它产品自有进程工具（如 CAD）仍把已观测失败升级为恢复卡。
+  await executeVerifiedProcess({ bridge, toolCallId: "process-default", toolName: "fixture_tool", targetNamespace: "fixture",
+    evidenceIdentity: "fixture-process", causePrefix: "fixture-process", executionLabel: "fixture_tool",
+    execute: async () => ({ result: { content: [{ type: "text", text: "boom" }], isError: true }, exitCode: 3 }) });
+  assert(failures.list("task").some((item) => item.causeCode === "fixture-process-exit-nonzero"),
+    "tools that do not opt into tool-result policy keep their recovery card");
 
   const timeoutIdentity = codeExecutionEvidenceIdentity({ language: "python", code: "while True: pass" });
   const timeout = await executeVerifiedCode({ bridge, toolCallId: "code-timeout", evidenceIdentity: timeoutIdentity,
@@ -104,5 +115,25 @@ try {
   assert(builtin.includes("recordCodeRuntimePreparationFailure(bridge.shellVerification"));
   assert(builtin.includes("resolveCodeRuntimePreparationFailure(bridge.shellVerification)"));
 
-  console.log("verified code execution: PASS (stable hashed identity, process verifier, structured nonzero/timeout/cancel, stale guard, Python prepare recovery, anti-forgery, main-tool wiring)");
+  // 升级迁移：历史遗留的未决非零退出卡必须在仓库构造时隐藏，其它恢复类故障不能被误伤。
+  const legacyDb = new Database(":memory:");
+  legacyDb.exec(`CREATE TABLE tasks(id TEXT PRIMARY KEY); INSERT INTO tasks VALUES ('legacy');
+    CREATE TABLE execution_failures (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, cause_code TEXT NOT NULL,
+      record_json TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER);`);
+  const legacyRecord = (id: string, causeCode: string) => JSON.stringify({
+    id, taskId: "legacy", causeCode, phase: "execute", recovery: "recoverable", sideEffects: "unknown",
+    message: "legacy card", nextAction: "inspect", createdAt: Date.now(),
+  });
+  legacyDb.prepare("INSERT INTO execution_failures(id,task_id,cause_code,record_json,created_at) VALUES (?,?,?,?,?)")
+    .run("legacy-nonzero", "legacy", "code-execution-exit-nonzero", legacyRecord("legacy-nonzero", "code-execution-exit-nonzero"), Date.now());
+  legacyDb.prepare("INSERT INTO execution_failures(id,task_id,cause_code,record_json,created_at) VALUES (?,?,?,?,?)")
+    .run("legacy-timeout", "legacy", "code-execution-timeout", legacyRecord("legacy-timeout", "code-execution-timeout"), Date.now());
+  const legacyRepo = new ExecutionFailureRepository(legacyDb);
+  const visibleLegacy = legacyRepo.list("legacy").map((item) => item.causeCode);
+  try {
+    assert(!visibleLegacy.includes("code-execution-exit-nonzero"), "legacy observed-nonzero cards are hidden on upgrade");
+    assert(visibleLegacy.includes("code-execution-timeout"), "genuinely unresolved timeout recovery stays visible");
+  } finally { legacyDb.close(); }
+
+  console.log("verified code execution: PASS (stable hashed identity, process verifier, structured nonzero/timeout/cancel, observed-nonzero stays a tool result, stale guard, Python prepare recovery, anti-forgery, main-tool wiring)");
 } finally { db.close(); }

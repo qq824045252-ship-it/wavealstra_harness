@@ -18,8 +18,10 @@ export class ExecutionFailureRepository {
     ); CREATE INDEX IF NOT EXISTS idx_execution_failures_task ON execution_failures(task_id, created_at);`);
     const columns = db.prepare("PRAGMA table_info(execution_failures)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "dismissed_at")) db.exec("ALTER TABLE execution_failures ADD COLUMN dismissed_at INTEGER");
-    // Legacy MyBuddy versions persisted every shell non-zero exit as a Recovery card. Those are ordinary tool failures, not unresolved recovery state.
-    db.prepare("UPDATE execution_failures SET dismissed_at = COALESCE(dismissed_at, ?) WHERE cause_code = 'shell-exit-nonzero' AND resolved_at IS NULL AND dismissed_at IS NULL").run(Date.now());
+    // 已观测到退出码的非零退出是普通工具失败，不是未决的恢复状态（旧 shell 覆盖层与 execute_code
+    // 都曾把它写成 Recovery 卡片）。新写入已停止，这里只把仍可见的历史行一次性隐藏，避免升级后
+    // 聊天顶部残留「副作用未知」的旧卡。
+    db.prepare("UPDATE execution_failures SET dismissed_at = COALESCE(dismissed_at, ?) WHERE cause_code IN ('shell-exit-nonzero', 'code-execution-exit-nonzero') AND resolved_at IS NULL AND dismissed_at IS NULL").run(Date.now());
     initializedConnections.add(db);
   }
 
