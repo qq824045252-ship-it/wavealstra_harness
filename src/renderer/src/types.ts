@@ -220,6 +220,8 @@ export interface Task {
   sessionRecovery?: import("../../shared/agent-ipc").SessionHistoryRecoveryDto;
   /** 历史记录完全打不开时的原因（必须显式展示，不能显示成空白会话）。 */
   historyError?: string;
+  /** 任务模型曾被模型目录淘汰并自动替换：展示替换事实（from → to）。 */
+  modelRecovery?: { from: string; to: string };
   cwd?: string;
   modelId?: string;
   permissionMode?: import("../../shared/agent-ipc").PermissionMode;

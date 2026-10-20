@@ -2022,6 +2022,13 @@ export interface TaskHistoryDto {
    * 渲染层必须显式展示，不能退化成「等待第一条消息」的空白会话。
    */
   historyError?: string;
+  /**
+   * 任务当前实际使用的模型（provider/id）。模型目录收缩后主进程会自动把失效的
+   * `tasks.model_id` 修复为可解析的模型，这里回传修复结果，渲染层校正模型选择器。
+   */
+  modelId?: string;
+  /** 本次打开会话时持久化的模型已被目录淘汰而自动替换：必须展示给用户，不能静默换模型。 */
+  modelRecovery?: { from: string; to: string };
 }
 
 /* ------------------------------ MCP 配置 ------------------------------ */

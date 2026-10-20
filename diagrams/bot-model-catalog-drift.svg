@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" width="1100" height="700" role="img" aria-label="Bot 任务模型目录漂移：修复前后的打开链路">
+  <rect x="0" y="0" width="1100" height="700" fill="#f7f8fa"/>
+  <text x="40" y="42" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="20" font-weight="700" fill="#111827">Bot 任务模型目录漂移：为什么「会话记录打不开」，以及 0.1.47 的修复链路</text>
+  <text x="40" y="66" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="13" fill="#4b5563">事实来源：~/.mybuddy/app.db（tasks.model_id）、~/.mybuddy/models.json、pi ModelRuntime.getModel 实测；图中字段名为真实列/方法名。</text>
+
+  <!-- ===== 目录漂移 ===== -->
+  <rect x="40" y="86" width="1020" height="92" rx="8" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="58" y="110" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="14" font-weight="700" fill="#9a3412">目录漂移（已验证）</text>
+  <text x="58" y="132" font-family="Consolas, monospace" font-size="12.5" fill="#7c2d12">10-16 models.json: magpie 21 个模型，含 commandcode/deepseek/deepseek-v4.1-flash、commandcode/z-ai/glm-5.3-flash</text>
+  <text x="58" y="151" font-family="Consolas, monospace" font-size="12.5" fill="#7c2d12">10-19 models.json: magpie 19 个模型，commandcode/* 整组消失；现存 workbuddy/*、opendesign/*、group/*</text>
+  <text x="58" y="170" font-family="Consolas, monospace" font-size="12.5" fill="#7c2d12">任务行不会随目录更新：tasks.model_id 仍是创建时的坐标 → getModel() 返回 undefined</text>
+
+  <!-- ===== 修复前 ===== -->
+  <text x="40" y="218" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#7f1d1d">修复前（0.1.46）：模型缺失被当成会话损坏</text>
+
+  <g font-family="Segoe UI, 'Microsoft YaHei', sans-serif">
+    <rect x="40" y="232" width="176" height="86" rx="8" fill="#ffffff" stroke="#ef4444"/>
+    <text x="52" y="256" font-size="13" font-weight="700" fill="#111827">tasks.model_id</text>
+    <text x="52" y="277" font-size="11.5" fill="#374151">magpie/commandcode/</text>
+    <text x="52" y="293" font-size="11.5" fill="#374151">z-ai/glm-5.3-flash</text>
+    <text x="52" y="309" font-size="11.5" fill="#6b7280">（创建时写入，不再变）</text>
+
+    <rect x="256" y="232" width="176" height="86" rx="8" fill="#ffffff" stroke="#ef4444"/>
+    <text x="268" y="256" font-size="13" font-weight="700" fill="#111827">DurableBotService</text>
+    <text x="268" y="277" font-size="11.5" fill="#374151">openInternal → model()</text>
+    <text x="268" y="295" font-size="11.5" fill="#374151">models.getModel(provider,</text>
+    <text x="268" y="311" font-size="11.5" fill="#374151">modelId)</text>
+
+    <rect x="472" y="232" width="176" height="86" rx="8" fill="#ffffff" stroke="#ef4444"/>
+    <text x="484" y="256" font-size="13" font-weight="700" fill="#111827">返回 undefined</text>
+    <text x="484" y="277" font-size="11.5" fill="#374151">目录里没有该路由</text>
+    <text x="484" y="295" font-size="11.5" fill="#374151">（模型确实已下线）</text>
+
+    <rect x="688" y="232" width="176" height="86" rx="8" fill="#ffffff" stroke="#ef4444"/>
+    <text x="700" y="256" font-size="13" font-weight="700" fill="#111827">throw Error</text>
+    <text x="700" y="277" font-size="11.5" fill="#374151">「Bot 模型不存在：</text>
+    <text x="700" y="293" font-size="11.5" fill="#374151">magpie/commandcode/…」</text>
+
+    <rect x="904" y="232" width="156" height="86" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+    <text x="916" y="256" font-size="13" font-weight="700" fill="#991b1b">UI 会话记录打不开</text>
+    <text x="916" y="277" font-size="11.5" fill="#7f1d1d">history() catch</text>
+    <text x="916" y="293" font-size="11.5" fill="#7f1d1d">→ historyError</text>
+    <text x="916" y="309" font-size="11.5" fill="#7f1d1d">历史完全不可见</text>
+  </g>
+  <g stroke="#ef4444" stroke-width="2" fill="none" marker-end="url(#arrowRed)">
+    <path d="M216 275 H250"/><path d="M432 275 H466"/><path d="M648 275 H682"/><path d="M864 275 H898"/>
+  </g>
+
+  <!-- ===== 修复后 ===== -->
+  <text x="40" y="372" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#065f46">修复后（0.1.47）：resolveBotModel 按确定顺序替换，绝不静默、绝不把模型问题当数据损坏</text>
+
+  <g font-family="Segoe UI, 'Microsoft YaHei', sans-serif">
+    <rect x="40" y="388" width="176" height="92" rx="8" fill="#ffffff" stroke="#10b981"/>
+    <text x="52" y="412" font-size="13" font-weight="700" fill="#111827">① 精确命中</text>
+    <text x="52" y="433" font-size="11.5" fill="#374151">getModel(provider,</text>
+    <text x="52" y="449" font-size="11.5" fill="#374151">modelId) 有值</text>
+    <text x="52" y="467" font-size="11.5" fill="#047857">→ 原样使用，无提示</text>
+
+    <rect x="256" y="388" width="176" height="92" rx="8" fill="#ffffff" stroke="#10b981"/>
+    <text x="268" y="412" font-size="13" font-weight="700" fill="#111827">② 同 provider 同名</text>
+    <text x="268" y="433" font-size="11.5" fill="#374151">commandcode/z-ai/</text>
+    <text x="268" y="449" font-size="11.5" fill="#374151">glm-5.3-flash →</text>
+    <text x="268" y="467" font-size="11.5" fill="#047857">workbuddy/glm-5.3-flash</text>
+
+    <rect x="472" y="388" width="176" height="92" rx="8" fill="#ffffff" stroke="#10b981"/>
+    <text x="484" y="412" font-size="13" font-weight="700" fill="#111827">③ 默认模型</text>
+    <text x="484" y="433" font-size="11.5" fill="#374151">settings 的</text>
+    <text x="484" y="449" font-size="11.5" fill="#374151">defaultModelId</text>
+    <text x="484" y="467" font-size="11.5" fill="#047857">（无同名前先看它）</text>
+
+    <rect x="688" y="388" width="176" height="92" rx="8" fill="#ffffff" stroke="#10b981"/>
+    <text x="700" y="412" font-size="13" font-weight="700" fill="#111827">④ 第一个可用</text>
+    <text x="700" y="433" font-size="11.5" fill="#374151">getAvailable() 顺序</text>
+    <text x="700" y="451" font-size="11.5" fill="#374151">存在才用</text>
+    <text x="700" y="469" font-size="11.5" fill="#b45309">（-fast 变体按同模型匹配）</text>
+
+    <rect x="904" y="388" width="156" height="92" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+    <text x="916" y="412" font-size="13" font-weight="700" fill="#92400e">⑤ 都没有</text>
+    <text x="916" y="433" font-size="11.5" fill="#78350f">明确报错：</text>
+    <text x="916" y="449" font-size="11.5" fill="#78350f">没有可用模型，</text>
+    <text x="916" y="465" font-size="11.5" fill="#78350f">请启用一个模型</text>
+  </g>
+  <g stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrowGreen)">
+    <path d="M216 434 H250"/><path d="M432 434 H466"/><path d="M648 434 H682"/><path d="M864 434 H898"/>
+  </g>
+
+  <!-- ===== 落盘与告知 ===== -->
+  <text x="40" y="522" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#1e3a8a">替换必须落地并且可见</text>
+  <g font-family="Segoe UI, 'Microsoft YaHei', sans-serif">
+    <rect x="40" y="538" width="310" height="110" rx="8" fill="#ffffff" stroke="#3b82f6"/>
+    <text x="56" y="562" font-size="13" font-weight="700" fill="#111827">写回数据库</text>
+    <text x="56" y="583" font-size="11.5" fill="#374151">upsertTask({ ...current, modelId })</text>
+    <text x="56" y="601" font-size="11.5" fill="#374151">不改 updatedAt</text>
+    <text x="56" y="619" font-size="11.5" fill="#374151">（不把任务顶到列表最前）</text>
+    <text x="56" y="637" font-size="11.5" fill="#1d4ed8">任务模型跟着目录自愈</text>
+
+    <rect x="386" y="538" width="310" height="110" rx="8" fill="#ffffff" stroke="#3b82f6"/>
+    <text x="402" y="562" font-size="13" font-weight="700" fill="#111827">随历史回传</text>
+    <text x="402" y="583" font-size="11.5" fill="#374151">TaskHistoryDto.modelId</text>
+    <text x="402" y="601" font-size="11.5" fill="#374151">TaskHistoryDto.modelRecovery</text>
+    <text x="402" y="619" font-size="11.5" fill="#374151">= { from, to }</text>
+    <text x="402" y="637" font-size="11.5" fill="#1d4ed8">打开会话时一次性告知</text>
+
+    <rect x="732" y="538" width="328" height="110" rx="8" fill="#ffffff" stroke="#3b82f6"/>
+    <text x="748" y="562" font-size="13" font-weight="700" fill="#111827">UI 如实展示</text>
+    <text x="748" y="583" font-size="11.5" fill="#374151">TaskModelRecoveryNotice 卡片</text>
+    <text x="748" y="601" font-size="11.5" fill="#374151">「原模型已下线，已改用 X」</text>
+    <text x="748" y="619" font-size="11.5" fill="#374151">appStore 同步 task.modelId 与</text>
+    <text x="748" y="637" font-size="11.5" fill="#1d4ed8">activeModelId；历史照常渲染</text>
+  </g>
+
+  <text x="40" y="668" font-family="Segoe UI, 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280">已验证：live app.db 31 个 Bot 任务已按同一规则写回（备份 ~/.mybuddy/backups/pre-model-repair-*）；单测覆盖精确命中/同名换路由/-fast 变体/默认模型/无模型报错。</text>
+  <defs>
+    <marker id="arrowRed" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="#ef4444"/></marker>
+    <marker id="arrowGreen" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="#10b981"/></marker>
+  </defs>
+</svg>

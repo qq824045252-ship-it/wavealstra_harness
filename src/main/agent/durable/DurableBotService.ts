@@ -16,6 +16,7 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import { DurableMcp } from "./DurableMcp";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
@@ -26,10 +27,13 @@ import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
+interface BotModelRepair { from: string; to: string }
 interface OpenBot {
   runtime: DurableBotRuntime; mcp: DurableMcp; mcpConfigKey: string;
   retiredMcp: Set<DurableMcp>;
   refreshingMcp?: { key: string; promise: Promise<DurableMcp> };
+  /** 打开任务时持久化模型已失效，本次执行实际使用的替换模型。必须展示给用户。 */
+  modelRepair?: BotModelRepair;
   /** Set while this runtime and its MCP clients are being torn down after a Session failure. */
   closing?: Promise<void>;
 }
@@ -189,7 +193,11 @@ export class DurableBotService {
       let workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
       let projected = "";
       let wasBusy = false;
-      const selected = await this.model(task.modelId);
+      const resolvedModel = await this.resolveTaskModel(task);
+      const selected = resolvedModel.target;
+      const modelRepair = resolvedModel.repairedFrom
+        ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
+        : undefined;
       const base = this.options.assetsDir?.replace(/([\\/])app\.asar(?=[\\/])/, "$1app.asar.unpacked");
       const wasm = base && join(base, "quickjs.wasm");
       const worker = base && join(base, "codemode-worker.cjs");
@@ -230,7 +238,7 @@ export class DurableBotService {
           }
         },
       });
-      return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set() };
+      return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), ...(modelRepair ? { modelRepair } : {}) };
     } catch (error) { await mcp.close(); throw error; }
   }
 
@@ -260,17 +268,23 @@ export class DurableBotService {
     finally { if (open.refreshingMcp?.promise === promise) open.refreshingMcp = undefined; }
   }
 
-  private async model(preferred?: string) {
-    const id = preferred || this.options.defaultModel();
-    if (id) {
-      const slash = id.indexOf("/");
-      const model = this.options.models.getModel(id.slice(0, slash), id.slice(slash + 1));
-      if (!model) throw new Error(`Bot 模型不存在：${id}`);
-      return { provider: model.provider, modelId: model.id };
+  /**
+   * 任务持久化的模型坐标可能已被模型目录淘汰（网关路由重组、厂商目录收缩）。
+   * 这里按 BotModelCatalog 的确定规则替换并**立即写回任务**，让输入框后续显示与实际执行一致；
+   * 替换事实存进 OpenBot.modelRepair，历史打开时作为 modelRecovery 展示，不静默换模型。
+   */
+  private async resolveTaskModel(task: TaskDto): Promise<BotModelResolution> {
+    const resolution = await resolveBotModel(this.options.models, task.modelId, this.options.defaultModel());
+    const target = resolution.target;
+    if (!resolution.repairedFrom) return resolution;
+    const repair: BotModelRepair = { from: resolution.repairedFrom, to: modelKey(target) };
+    const current = this.options.db.getTask(task.id) ?? task;
+    if (current.modelId !== repair.to) {
+      // updatedAt 保持不变：修复模型归属不应把任务顶到列表最前。
+      this.options.db.upsertTask({ ...current, modelId: repair.to });
+      console.warn(`[Durable] 任务 ${task.id} 的模型 ${repair.from} 已不在模型目录中，改用 ${repair.to}（${resolution.reason}）`);
     }
-    const model = (await this.options.models.getAvailable())[0];
-    if (!model) throw new Error("请先配置可用模型");
-    return { provider: model.provider, modelId: model.id };
+    return resolution;
   }
 
   private async admit(request: AgentPromptRequest) {
@@ -292,7 +306,12 @@ export class DurableBotService {
       }
       const current = this.options.db.getTask(request.taskId)!;
       const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
-      await open.runtime.configure(await this.model(current.modelId), this.toolMode(current), this.options.thinking?.(current, request),
+      const resolvedModel = await this.resolveTaskModel(current);
+      // 替换提示是一次性的开卷告知：一旦本轮能按任务模型正常执行（用户也可能已手动改选模型），就收起。
+      open.modelRepair = resolvedModel.repairedFrom
+        ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
+        : undefined;
+      await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
         [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
@@ -363,11 +382,15 @@ export class DurableBotService {
     try {
       const recovered = await this.withRecovery(taskId, async open => {
         const snapshot = await open.runtime.refresh();
-        return { runtime: open.runtime, snapshot };
+        return { runtime: open.runtime, snapshot, modelRepair: open.modelRepair };
       });
       await this.projections.get(taskId);
       const recovery = durableHistoryRecovery(recovered.runtime.repairReport);
-      return { messages: recovered.snapshot.messages, durable: recovered.snapshot, cwd: this.binding(taskId)?.cwd, ...(recovery ? { sessionRecovery: recovery } : {}) };
+      // 复述任务当前模型（可能刚刚被目录漂移修复过），渲染层据此校正输入框的模型选择。
+      const modelId = this.options.db.getTask(taskId)?.modelId;
+      return { messages: recovered.snapshot.messages, durable: recovered.snapshot, cwd: this.binding(taskId)?.cwd,
+        ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}),
+        ...(recovery ? { sessionRecovery: recovery } : {}) };
     } catch (error) {
       // A Bot conversation that cannot be opened must say so: an empty projection renders as the
       // product's "waiting for the first message" state, which hides real damage from the user.

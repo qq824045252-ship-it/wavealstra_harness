@@ -3256,10 +3256,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       void window.api?.agent?.loadTaskHistory?.(id).then(async (history) => {
         if (history.durable) {
           get().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: history.durable });
+          // 模型目录收缩后主进程会把失效的任务模型修复为可解析模型：这里同步任务与输入框，
+          // 否则输入框会继续显示旧的（已不存在的）模型，与实际执行不一致。
+          const repairedModelId = history.modelId && get().models.some((model) => model.id === history.modelId && model.enabled !== false)
+            ? history.modelId
+            : undefined;
           set((s) => ({
             tasks: s.tasks.map((t) => (t.id === id
-              ? { ...t, sessionRecovery: history.sessionRecovery, historyError: history.historyError }
+              ? {
+                  ...t,
+                  sessionRecovery: history.sessionRecovery,
+                  historyError: history.historyError,
+                  modelRecovery: history.modelRecovery,
+                  modelId: history.modelId ?? t.modelId,
+                }
               : t)),
+            ...(s.activeTaskId === id && repairedModelId ? { activeModelId: repairedModelId } : {}),
           }));
           return;
         }

@@ -10,6 +10,7 @@ import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-durable";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
+import { modelKey, resolveBotModel } from "../src/main/agent/durable/BotModelCatalog";
 import { DurableMcp } from "../src/main/agent/durable/DurableMcp";
 import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
@@ -518,5 +519,63 @@ for (const mode of ["native", "codemode"] as const) {
     assert(runtime.snapshot.messages.some(m => m.tools?.some(t => t.tool === "recall_fixture" && t.status === "success" && t.output === "restored source")), "metadata must survive in a new Code Mode child after restart");
   } finally { await runtime.close(); clearResults(); }
   console.log("PASS extension metadata survives restart and new Code Mode child ownership");
+}
+{
+  // 真实事故：网关路由重组把 magpie/commandcode/* 整组下线，任务里持久化的 model_id 变成悬空坐标，
+  // 打开历史时被当成会话损坏（「会话记录打不开 / Bot 模型不存在」）。解析规则必须确定且可解释。
+  const magpie = (id: string, name: string): any => ({ ...model, provider: "magpie", id, name });
+  const catalogModels = [magpie("workbuddy/glm-5.3-flash", "GLM-5.3-Flash · WorkBuddy"),
+    magpie("opendesign/glm-5.3-flash", "GLM 5.3 Flash"), magpie("workbuddy/deepseek-v4.1-flash", "Deepseek-V4.1-Flash · WorkBuddy")];
+  const catalog: any = {
+    getModel: (provider: string, id: string) => catalogModels.find(candidate => candidate.provider === provider && candidate.id === id),
+    getModels: () => catalogModels,
+    getAvailable: async () => catalogModels,
+  };
+  const exact = await resolveBotModel(catalog, "magpie/workbuddy/glm-5.3-flash");
+  assert.equal(modelKey(exact.target), "magpie/workbuddy/glm-5.3-flash");
+  assert.equal(exact.repairedFrom, undefined, "目录里仍可解析的任务模型必须原样使用");
+  const drift = await resolveBotModel(catalog, "magpie/commandcode/z-ai/glm-5.3-flash");
+  assert.equal(modelKey(drift.target), "magpie/workbuddy/glm-5.3-flash", "同 provider 同名模型换路由：保留模型家族与网关");
+  assert.equal(drift.repairedFrom, "magpie/commandcode/z-ai/glm-5.3-flash");
+  assert.equal(drift.reason, "same-model-other-route");
+  const defaulted = await resolveBotModel(catalog, "magpie/commandcode/z-ai/kimi-k2.6", "magpie/workbuddy/deepseek-v4.1-flash");
+  assert.equal(modelKey(defaulted.target), "magpie/workbuddy/deepseek-v4.1-flash", "同名路由不存在时退到全局默认模型");
+  assert.equal(defaulted.reason, "default-model");
+  const variant = await resolveBotModel(catalog, "magpie/commandcode/deepseek/deepseek-v4.1-flash-fast");
+  assert.equal(modelKey(variant.target), "magpie/workbuddy/deepseek-v4.1-flash", "路由变体（-fast）没有对应目录项时按同一模型匹配，而不是跳默认模型");
+  await assert.rejects(resolveBotModel({ getModel: () => undefined, getModels: () => [], getAvailable: async () => [] },
+    "magpie/commandcode/z-ai/glm-5.3-flash"), /已不在模型目录中，且当前没有其它可用模型/, "无任何可用模型时必须明确报错，不能静默成功");
+  console.log("PASS 模型目录漂移解析：精确命中 / 同名换路由 / 默认模型 / 无模型明确报错");
+}
+{
+  // 端到端：model_id 悬空的 Bot 任务必须能打开历史，并把替换结果写回任务、如实告知用户。
+  const agentDir = join(root, "model-drift"); await mkdir(agentDir);
+  const cwd = join(agentDir, "cwd"); await mkdir(cwd);
+  const db = new AppDatabase(join(agentDir, "app.db"));
+  const taskId = "drifted-bot", staleId = "magpie/commandcode/z-ai/glm-5.3-flash";
+  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "bot", modelId: staleId, cwd, updatedAt: Date.now() });
+  const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
+  await mkdir(directory, { recursive: true });
+  const magpie = (id: string, name: string): any => ({ ...model, provider: "magpie", id, name });
+  const catalogModels = [magpie("workbuddy/glm-5.3-flash", "GLM-5.3-Flash · WorkBuddy"), magpie("workbuddy/deepseek-v4.1-flash", "Deepseek-V4.1-Flash · WorkBuddy")];
+  const modelsStub: any = {
+    getModel: (provider: string, id: string) => catalogModels.find(candidate => candidate.provider === provider && candidate.id === id),
+    getModels: () => catalogModels, getAvailable: async () => catalogModels, refresh: async () => ({}),
+  };
+  const service = new DurableBotService({ db, agentDir, mcpDir: join(agentDir, "mcp"), models: modelsStub,
+    resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native", defaultModel: () => "magpie/workbuddy/deepseek-v4.1-flash", emit: () => {} });
+  db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
+  try {
+    const history = await service.history(taskId);
+    assert.equal(history.historyError, undefined, "模型下线不能被当成会话损坏（这才是「会话记录打不开」的根因）");
+    assert.deepEqual(history.modelRecovery, { from: staleId, to: "magpie/workbuddy/glm-5.3-flash" });
+    assert.equal(history.modelId, "magpie/workbuddy/glm-5.3-flash");
+    assert.equal(db.getTask(taskId)!.modelId, "magpie/workbuddy/glm-5.3-flash", "修复必须写回任务，输入框才不会继续显示已下线模型");
+    await service.release(taskId);
+    const reopened = await service.history(taskId);
+    assert.equal(reopened.modelRecovery, undefined, "任务模型已修复，重开不再重复提示");
+    assert.equal(db.getTask(taskId)!.modelId, "magpie/workbuddy/glm-5.3-flash");
+  } finally { await service.close(); db.close(); }
+  console.log("PASS 悬空模型不阻塞 Bot 历史：同名路由替换 + 写回任务 + 一次性告知");
 }
 console.log("Durable Bot tests passed");

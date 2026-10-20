@@ -1,6 +1,7 @@
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
 import { DurableBotService } from "./durable/DurableBotService";
+import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
@@ -5139,6 +5140,24 @@ export class AgentService {
         ?? session.settingsManager.getDefaultThinkingLevel();
     if (preference && level === undefined) throw new Error("当前模型不支持这组 Pi 思考偏好");
     if (level !== undefined) session.setThinkingLevel(level);
+  }
+
+  /**
+   * 把「持久化的模型坐标」解析成当前目录里真的存在的模型：模型目录收缩（网关路由重组、
+   * 厂商目录变化）后，cron_jobs/tasks 里的旧坐标会永远解析不到。调用方负责把返回的
+   * modelId（以及 repairedFrom 事实）写回自己的记录，避免每次运行都从旧坐标重造一条失效任务。
+   */
+  async resolveAvailableModelId(preferredId?: string): Promise<{ modelId: string; repairedFrom?: string } | undefined> {
+    const runtime = this.durableModels ?? this.modelRuntime;
+    if (!runtime) return undefined;
+    try {
+      const resolution = await resolveBotModel(runtime, preferredId, this.settingsStore.read().defaultModelId);
+      const modelId = `${resolution.target.provider}/${resolution.target.modelId}`;
+      return { modelId, ...(resolution.repairedFrom && resolution.repairedFrom !== modelId ? { repairedFrom: resolution.repairedFrom } : {}) };
+    } catch (error) {
+      console.warn("[AgentService] 无法解析可用模型", preferredId, error);
+      return undefined;
+    }
   }
 
   private resolveModel(modelId: string) {

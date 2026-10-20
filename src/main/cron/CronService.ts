@@ -327,11 +327,19 @@ export class CronService {
       latest.welcomeMode === "coding" || latest.welcomeMode === "bot"
         ? latest.welcomeMode
         : "working";
-    // 默认模型：任务未指定时走应用默认，避免空 model 导致秒退空回复
-    const modelId =
+    // 默认模型：任务未指定时走应用默认，避免空 model 导致秒退空回复。
+    // 定时任务的坐标可能已被模型目录淘汰（网关路由重组）：先解析成当前存在的模型，并把修复写回
+    // cron_jobs.model_id，否则每次运行都会从旧坐标重造一条注定失败的任务。
+    const requestedModelId =
       latest.modelId?.trim() ||
       this.agent.getAppSettings?.()?.defaultModelId ||
       undefined;
+    const resolved = requestedModelId ? await this.agent.resolveAvailableModelId(requestedModelId) : undefined;
+    const modelId = resolved?.modelId ?? requestedModelId;
+    if (latest.modelId?.trim() && resolved?.repairedFrom) {
+      console.warn(`[CronService] 定时任务 ${latest.id} 的模型 ${resolved.repairedFrom} 已不在模型目录中，改用 ${resolved.modelId}`);
+      this.db.upsertCronJob({ ...latest, modelId });
+    }
 
     // 必须先落库任务（正确标题），再广播 run；否则 UI 竞态拿到「定时任务」占位标题，
     // 且 agent 事件到达时侧栏还没有 task，流式补丁会被丢弃。

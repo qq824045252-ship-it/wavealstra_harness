@@ -1,6 +1,7 @@
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
 import SessionHistoryRecoveryNotice from "./SessionHistoryRecoveryNotice";
+import TaskModelRecoveryNotice from "./TaskModelRecoveryNotice";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -906,6 +907,7 @@ export default function ChatView(): React.JSX.Element {
         </div>
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
+        <TaskModelRecoveryNotice recovery={task.modelRecovery} />
         {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
         <ChatInput variant="chat" />
       </div>
@@ -1091,6 +1093,7 @@ export default function ChatView(): React.JSX.Element {
       </div>
 
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
+      <TaskModelRecoveryNotice recovery={task.modelRecovery} />
       {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
       {task.durable && <div className="durable-bot-state" role="status">
