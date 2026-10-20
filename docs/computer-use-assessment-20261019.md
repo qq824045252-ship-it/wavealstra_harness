@@ -280,7 +280,8 @@
 |---|---|---|
 | 应用会话 | `attach_app` 返回 `app_session_id`；后续动作传 `app_session_id` 即固定到该窗口（HWND+PID 双校验，10 分钟 TTL） | 会话解析到同一 HWND；过期会话返回 `STALE_OBSERVATION` |
 | 窗口级叠加框 | border/cursor 按 `windowRect` 绘制，不再覆盖整块显示器；工具栏优先浮在窗口上方 | 叠加框 bounds 与目标窗口完全一致（120,120,1100,800） |
-| 后台捕获 | Host 新增 `capture_window_background`（`PrintWindow` + `PW_RENDERFULLCONTENT`），`screenshot_window background=true` 不抢焦点 | 原生 Win32 窗口可用；Chromium/Qt/Tauri 会明确报 `CAPTURE_FAILED`（见 8.4） |
+| 后台捕获 | Host `PrintWindow`；Chromium/Qt/Tauri 自动回退 WGC（Electron `desktopCapturer` 窗口源），`screenshot_window background=true` 不抢焦点 | 原生 Win32 用 PrintWindow；非前台 Chrome 窗口 `mode=window-source` 截图成功 |
+| 后台点击 / 前台恢复 | `click_client background=true` 用 `PostMessage`；`restore_foreground=true` 在动作后把原前台窗口切回 | 后台点击 Electron 页面收到事件；恢复后前台回到原窗口（restored=true） |
 | 双击/三击 | `click_client click_count=1..3`，点击在同一 `SendInput` 批次内注入 | 页面 `dblclick` 事件触发（dbl=1） |
 | 修饰键点击 | `click_client modifiers=["ctrl","shift","alt","win"]`，按下修饰键→点击→释放 | `click` 事件 `ctrlKey=true` |
 | 长按 / down-up | `hold_ms` 长按；`mouse_down_client` / `mouse_up_client` 独立按下/释放 | down/up 事件成对出现 |
@@ -291,7 +292,7 @@
 | 长文本粘贴 | `paste_text`：写剪贴板 + 目标窗口 `Ctrl+V` | 输入框值 = `PASTE-验证-123` |
 | 后台点击 | `click_client background=true` 用 `PostMessage`（移动/按下/释放，可选双击消息） | Electron 页面收到点击（clicksDelta=2）；部分应用会忽略或激活窗口 |
 | 图片淘汰 | `context` 钩子只保留最近 2 张 tool-result 图片，旧图替换为占位文本；用户附件与磁盘历史不受影响 | 单测 5 项断言通过 |
-| OCR 语义兜底 | `ocr_window`：截图 → 本地 OCR_NPU_CLI → 返回 client DIP 的文本行（x/y/w/h） | 3.5–4.0s；前台窗口用显示裁剪，文本坐标可直接喂给 `click_client` |
+| OCR 语义兜底 | `ocr_window`：截图 → 本地 OCR（优先 OCR_NPU_CLI，缺失时回退 Windows.Media.Ocr）→ 返回 client DIP 的文本行（x/y/w/h） | NPU 3.5–4.0s；内置 Windows OCR 0.5s，非前台 Chrome 识别到目标文本 |
 
 `computer_exec` 行动作从 22 个增至 30 个；批量 `actions` 同步支持 click_count/modifiers/hold_ms/steps/duration_ms/notches/paste。
 
@@ -309,13 +310,14 @@
 | 截图（整屏/窗口） | 274ms / 275ms，178KB / 111KB JPEG |
 | 点击（默认/显式截图） | 708ms / 889ms |
 | 连续 8 次点击 | 批量 1.11s（逐个 5.57s）、模型轮数 8→1 |
-| OCR | 3.5–4.0s（含截图 + CLI 启动 + 推理） |
+| OCR | 前台 NPU 3.5–4.0s；后台 Windows OCR 0.5s（整条截图+识别 <1.5s） |
+| 后台窗口截图 | WGC 窗口源约 0.5–1s（含窗口枚举，非前台 Chrome/Electron） |
 | 图片上下文 | 最多保留 2 张 tool-result 图，旧图不再每轮重传 |
 
-### 8.4 已知边界
+### 8.4 边界与仍未解决
 
-- **Chromium/Qt/Tauri 的后台截图不可用**：`PrintWindow` 只能拿到原生外框，页面内容为空；服务会检测并拒绝，需先 `focus_window` 再前台截图。OCR 对这类应用因此也需要前台窗口。
-- **后台点击依赖应用**：`PostMessage` 对 Electron 测试页有效，但可能激活窗口或被其它应用忽略；默认仍走真实输入。
-- **OCR 依赖本机 OCR_NPU_CLI**（`MYBUDDY_OCR_CLI` 或 PATH），未安装时 `ocr_window` 返回 `OCR_UNAVAILABLE`。
-- **模型回合仍是单步大头**：3.7–9.1s，批量与图片淘汰只减少轮数和上下文，不改变单轮推理时间。
+- **后台截图**：原生应用走 PrintWindow；Chromium/Qt/Tauri 自动回退 WGC 窗口源，已实测可截非前台 Chrome 并 OCR。仍不可用：最小化窗口、DRM/受保护内容、与本进程同 exe 的窗口（Chromium 窗口枚举不返回自身进程窗口）。
+- **后台点击**：`PostMessage` 仍是应用相关（可能被忽略或激活窗口）；`restore_foreground=true` 可在动作后把原前台窗口切回，避免把用户桌面留在目标上。真正的“不抢焦点输入”在 Windows 上没有通用 API，只能按应用选择 UIA/PostMessage/CDP。
+- **OCR**：优先 OCR_NPU_CLI；缺失时回退 Windows.Media.Ocr（系统内置，无需外部 exe），需要安装对应 OCR 语言包；两者都没有才返回 `OCR_UNAVAILABLE`。
+- **模型回合**：3.7–9.1s 仍是单步大头，属于推理时间；批量、图片淘汰、OCR 只减少轮数和输入，不能消除单轮延迟，需要更快模型或更低 thinking。
 - 多显示器 `list_displays` 尚未实现；截图 `image_scale>1` 时 legacy 桌面坐标仍需按文档乘系数（窗口截图通常为 1）。

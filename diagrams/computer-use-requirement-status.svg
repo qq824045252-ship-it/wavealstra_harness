@@ -6,12 +6,12 @@
   <!-- requirement 1 -->
   <rect x="32" y="88" width="1036" height="176" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
   <text x="52" y="118" font-size="15" font-weight="700" fill="#1f2430">① 能聚焦某个应用，不要像全屏扫描</text>
-  <rect x="880" y="98" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
-  <text x="963" y="117" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">基本满足</text>
+  <rect x="880" y="98" width="166" height="28" rx="14" fill="#eef8f1" stroke="#8fc9a4"/>
+  <text x="963" y="117" font-size="13" font-weight="700" fill="#1d6b3f" text-anchor="middle">已满足（含边界）</text>
   <g font-size="12" fill="#3b4556">
     <text x="52" y="146">已实现：attach_app 返回 app_session_id，后续动作固定到同一 HWND+PID（10 分钟 TTL）；</text>
-    <text x="52" y="168">叠加框改为按窗口矩形绘制（实测 bounds 与目标窗口完全一致）；原生窗口支持 PrintWindow 后台截图。</text>
-    <text x="52" y="196">边界：Chromium / Qt / Tauri 的 PrintWindow 只返回原生外框，后台截图会被明确拒绝，需先聚焦再前台截图；</text>
+    <text x="52" y="168">叠加框按窗口矩形绘制（实测与窗口完全一致）；原生 PrintWindow，Chromium/Qt/Tauri 自动回退 WGC 窗口源。</text>
+    <text x="52" y="196" fill="#8a5a12">边界：最小化窗口、DRM 保护内容、同进程窗口仍不可后台截图；</text>
     <text x="52" y="218">多显示器 list_displays 尚未实现。</text>
   </g>
 
@@ -35,12 +35,12 @@
   <g font-size="12" fill="#3b4556">
     <text x="52" y="526" fill="#1d6b3f">已实现：双击/三击（dblclick 触发）、Ctrl/Shift+点击（ctrlKey/shiftKey=true）、长按 hold_ms、mouse_down/up、</text>
     <text x="52" y="548" fill="#1d6b3f">拖拽 steps/duration（621ms、29 步）、跨窗口 drag_screen、滚动 notches（3 格=300px）、key_down/up、剪贴板粘贴、后台点击。</text>
-    <text x="52" y="576">边界：后台点击走 PostMessage，可能激活窗口或被部分应用忽略；跨窗口拖拽使用桌面绝对坐标。</text>
+    <text x="52" y="576">边界：后台点击仍走 PostMessage（可能被忽略/激活窗口），可加 restore_foreground=true 把原前台窗口切回；跨窗口拖拽用桌面绝对坐标。</text>
     <text x="52" y="604" fill="#5b6472">批量 actions 可把这些原语组合成一键多步（1–8 步，出错即停）。</text>
   </g>
 
   <!-- footer -->
   <rect x="32" y="654" width="1036" height="52" rx="10" fill="#eef4ff" stroke="#9fb8e8"/>
-  <text x="52" y="676" font-size="12" fill="#33496e">验证：30 actions · typecheck/build · 4 个单测 · 2 个实机 smoke 全绿；Electron 实测覆盖会话/叠加框/双击/修饰键/拖拽/滚动/粘贴/OCR。</text>
-  <text x="52" y="696" font-size="12" fill="#33496e">待验证：打包版真实模型端到端；OCR 依赖本机 OCR_NPU_CLI；Chromium 后台截图/OCR 需前台窗口。</text>
+  <text x="52" y="676" font-size="12" fill="#33496e">验证：30 actions · typecheck/build · 4 个单测 · 2 个实机 smoke 全绿；实测覆盖会话/叠加框/双击/修饰键/拖拽/滚动/粘贴/WGC 后台截图/OCR。</text>
+  <text x="52" y="696" font-size="12" fill="#33496e">待验证：打包版真实模型端到端；OCR 优先 NPU CLI，缺失时回退 Windows 内置识别（需语言包）。</text>
 </svg>

@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -457,6 +457,12 @@
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "scripts/windows-ocr.ps1",
+        "to": "windows-ocr.ps1"
+      }
+    ],
     "files": [
       "out/main/**/*",
       "out/preload/**/*",

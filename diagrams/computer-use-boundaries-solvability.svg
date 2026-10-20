@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="640" viewBox="0 0 1100 640" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1100" height="640" fill="#f7f8fb"/>
+  <text x="32" y="42" font-size="22" font-weight="700" fill="#1f2430">四条边界能不能都解决？逐条结论（2026-10-20）</text>
+  <text x="32" y="66" font-size="12" fill="#5b6472">结论：1 和 3 已解决；2 只能缓解，Windows 没有通用“不抢焦点输入”API；4 是模型推理时间，不能被工具消除，只能减小。</text>
+
+  <!-- row 1 -->
+  <rect x="32" y="88" width="1036" height="120" rx="10" fill="#ffffff" stroke="#a9d3b8"/>
+  <text x="52" y="116" font-size="15" font-weight="700" fill="#1f2430">① Chromium / Qt / Tauri 后台截图不可用</text>
+  <rect x="880" y="98" width="166" height="28" rx="14" fill="#eef8f1" stroke="#8fc9a4"/>
+  <text x="963" y="117" font-size="13" font-weight="700" fill="#1d6b3f" text-anchor="middle">已解决</text>
+  <g font-size="12" fill="#3b4556">
+    <text x="52" y="142">做法：PrintWindow 失败或窗口类为 Chromium/Qt/Tauri 时，自动改用 WGC（Electron desktopCapturer 窗口源）抓取窗口合成表面。</text>
+    <text x="52" y="164">证据：非前台 Chrome 窗口截图 mode=window-source，1249×1364，OCR 识别到 “CHROME-TARGET-42”。</text>
+    <text x="52" y="186" fill="#8a5a12">余留：最小化窗口、DRM 保护内容、与本进程同 exe 的窗口（窗口枚举不返回自身进程）。</text>
+  </g>
+
+  <!-- row 2 -->
+  <rect x="32" y="220" width="1036" height="120" rx="10" fill="#ffffff" stroke="#e8d1a8"/>
+  <text x="52" y="248" font-size="15" font-weight="700" fill="#1f2430">② 后台点击依赖应用（PostMessage）</text>
+  <rect x="880" y="230" width="166" height="28" rx="14" fill="#fff6e6" stroke="#e8c98a"/>
+  <text x="963" y="249" font-size="13" font-weight="700" fill="#8a5a12" text-anchor="middle">部分解决</text>
+  <g font-size="12" fill="#3b4556">
+    <text x="52" y="274">已做：PostMessage 后台点击 + restore_foreground=true 在动作后把原前台窗口切回（实测 restored=true）。</text>
+    <text x="52" y="296">限制：Windows 没有“不抢焦点输入”的通用 API；PostMessage 可能被忽略或激活目标窗口，只能按应用选 UIA/PostMessage/CDP。</text>
+    <text x="52" y="318" fill="#5b6472">结论：可以做到“尽量不打扰”，但不能保证所有应用都接受后台点击。</text>
+  </g>
+
+  <!-- row 3 -->
+  <rect x="32" y="352" width="1036" height="120" rx="10" fill="#ffffff" stroke="#a9d3b8"/>
+  <text x="52" y="380" font-size="15" font-weight="700" fill="#1f2430">③ OCR 依赖本机 OCR_NPU_CLI</text>
+  <rect x="880" y="362" width="166" height="28" rx="14" fill="#eef8f1" stroke="#8fc9a4"/>
+  <text x="963" y="381" font-size="13" font-weight="700" fill="#1d6b3f" text-anchor="middle">已解决</text>
+  <g font-size="12" fill="#3b4556">
+    <text x="52" y="406">做法：有 OCR_NPU_CLI 时优先使用；缺失时自动回退 Windows.Media.Ocr（系统内置，随安装包附带 windows-ocr.ps1）。</text>
+    <text x="52" y="428">证据：Windows OCR 0.5s 识别 10 行文本；整条后台截图 + OCR &lt; 1.5s。</text>
+    <text x="52" y="450" fill="#8a5a12">余留：Windows OCR 需要系统安装对应语言包；两者都不可用时才返回 OCR_UNAVAILABLE。</text>
+  </g>
+
+  <!-- row 4 -->
+  <rect x="32" y="484" width="1036" height="120" rx="10" fill="#ffffff" stroke="#e3b3b3"/>
+  <text x="52" y="512" font-size="15" font-weight="700" fill="#1f2430">④ 模型回合仍是 3.7–9.1s</text>
+  <rect x="880" y="494" width="166" height="28" rx="14" fill="#fdeeee" stroke="#d99a9a"/>
+  <text x="963" y="513" font-size="13" font-weight="700" fill="#8f2f2f" text-anchor="middle">不能完全解决</text>
+  <g font-size="12" fill="#3b4556">
+    <text x="52" y="538">原因：这是模型推理时间（TTFT + 解码），不是工具等待；批量/图片淘汰/OCR 只减少轮数与输入。</text>
+    <text x="52" y="560">可做：换更快模型或更低 thinking、进一步压缩上下文、把固定流程做成脚本/宏，减少需要模型决策的步数。</text>
+    <text x="52" y="582" fill="#5b6472">结论：可以明显缩短端到端时间，但不能把单轮推理降到 0。</text>
+  </g>
+
+  <rect x="32" y="614" width="1036" height="2" fill="#d8dee9"/>
+</svg>

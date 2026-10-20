@@ -5,6 +5,7 @@ import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
+import type { NativeImage } from "electron";
 import { windowsAutomationHost, type WindowsAutomationHost } from "./windows/WindowsAutomationHost";
 import { windowCaptureService, type WindowCaptureService } from "./windows/WindowCaptureService";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
@@ -71,6 +72,21 @@ export interface OcrResultInfo {
   ms: number;
 }
 
+export interface CapturedImage {
+  screenshot: Uint8Array;
+  details: {
+    displayId: string;
+    scaleFactor: number;
+    captureRectPhysical: { left: number; top: number; right: number; bottom: number; width: number; height: number };
+    captureMode: "foreground-display-crop" | "background-printwindow" | "window-source";
+    coordinateSpace: "client-dip-aligned-pixels" | "window-dip-aligned-pixels";
+    mimeType: "image/jpeg";
+    imageScale: number;
+    imageSize: { width: number; height: number };
+    windowRect: WindowInfo["windowRect"];
+  };
+}
+
 export interface ComputerBatchStepResult {
   index: number;
   action: ComputerBatchAction;
@@ -113,6 +129,8 @@ export interface ComputerExecInput {
   appSessionId?: string;
   /** ocr_window: maximum returned text lines (1-200, default 80). */
   maxLines?: number;
+  /** Put the previously focused window back after the action (courtesy restore). */
+  restoreForeground?: boolean;
   /** ocr_window: minimum OCR confidence (0-1, default 0.5). */
   minScore?: number;
   windowTitle?: string; windowHandle?: string; processId?: number; processName?: string; className?: string; screenId?: string;
@@ -181,6 +199,55 @@ function resolveOcrCli(): string | undefined {
     }
   }
   return undefined;
+}
+
+type OcrProvider = { kind: "npu"; path: string } | { kind: "windows"; script: string };
+
+function windowsOcrScriptPath(): string | undefined {
+  const candidates: string[] = [];
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { app } = require("electron") as typeof import("electron");
+    if (app?.isPackaged) candidates.push(join(process.resourcesPath, "windows-ocr.ps1"));
+  } catch { /* node-only tests */ }
+  candidates.push(join(__dirname, "..", "..", "scripts", "windows-ocr.ps1"));
+  candidates.push(join(process.cwd(), "scripts", "windows-ocr.ps1"));
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function resolveOcrProvider(): OcrProvider | undefined {
+  const preference = (process.env.MYBUDDY_OCR_PROVIDER ?? "auto").trim().toLowerCase();
+  if (preference !== "windows") {
+    const cli = resolveOcrCli();
+    if (cli) return { kind: "npu", path: cli };
+  }
+  const script = windowsOcrScriptPath();
+  if (script) return { kind: "windows", script };
+  return undefined;
+}
+
+function parseWindowsOcrOutput(stdout: string): OcrRawText[] {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith("[") && !line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      const entries = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ text?: unknown; score?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown }>;
+      return entries
+        .filter((item) => typeof item.text === "string" && item.text.trim())
+        .map((item) => {
+          const x = Number(item.x) || 0, y = Number(item.y) || 0;
+          const width = Number(item.width) || 0, height = Number(item.height) || 0;
+          return {
+            text: String(item.text),
+            score: Number.isFinite(Number(item.score)) ? Number(item.score) : 1,
+            box: [[x, y], [x + width, y], [x + width, y + height], [x, y + height]] as Array<[number, number]>,
+          };
+        });
+    } catch { /* keep scanning */ }
+  }
+  throw new WindowsAutomationError("OCR_UNAVAILABLE", "Windows OCR 输出无法解析");
 }
 
 interface OcrRawText { text: string; score: number; box: Array<[number, number]> }
@@ -331,20 +398,16 @@ function isBlankBitmap(bitmap: Buffer): boolean {
  * so callers fall back to the foreground display crop instead of trusting a
  * contentless screenshot.
  */
-function assertCaptureHasContent(bitmap: Buffer, size: { width: number; height: number }, topSkip = 56): void {
+function assertCaptureHasContent(bitmap: Buffer, size: { width: number; height: number }, topSkip = 0): void {
   if (size.width < 16 || size.height < topSkip + 16) return;
   const stride = size.width * 4;
   let min = 255;
   let max = 0;
-  for (let gridY = 0; gridY < 8; gridY += 1) {
-    for (let gridX = 0; gridX < 8; gridX += 1) {
-      const x = Math.min(size.width - 1, Math.round(((gridX + 0.5) * size.width) / 8));
-      const y = Math.min(size.height - 1, Math.round(topSkip + ((gridY + 0.5) * (size.height - topSkip)) / 8));
-      const index = y * stride + x * 4;
-      const value = Math.max(bitmap[index] ?? 0, bitmap[index + 1] ?? 0, bitmap[index + 2] ?? 0);
-      min = Math.min(min, value);
-      max = Math.max(max, value);
-    }
+  // Scan the whole frame sparsely: thin text lines are missed by a 64-point grid.
+  for (let index = topSkip * stride; index + 3 < bitmap.length; index += 97 * 4) {
+    const value = Math.max(bitmap[index], bitmap[index + 1], bitmap[index + 2]);
+    min = Math.min(min, value);
+    max = Math.max(max, value);
   }
   if (max - min < 12) {
     throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture returned a contentless frame (this app draws through a surface PrintWindow cannot read); use foreground capture instead", { size, channelRange: max - min });
@@ -353,6 +416,20 @@ function assertCaptureHasContent(bitmap: Buffer, size: { width: number; height: 
 
 function modifierVks(modifiers?: ComputerModifier[]): number[] {
   return (modifiers ?? []).map((modifier) => MODIFIER_VK[modifier]).filter((value) => Number.isFinite(value));
+}
+
+async function withCaptureTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new WindowsAutomationError("CAPTURE_FAILED", message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function sameCaptureGeometry(left: WindowInfo, right: WindowInfo): boolean {
@@ -382,6 +459,29 @@ export class ComputerAutomationService {
   async shutdown(): Promise<void> { await this.host.shutdown(); }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    // Optional courtesy restore: actions must focus their target, but the user's
+    // previous foreground window is put back afterwards so the desktop is not
+    // left on the automation target.
+    const restoreHandle = input.restoreForeground === true ? await this.foregroundHandle(signal) : undefined;
+    let outcome: ComputerExecOutput | undefined;
+    try {
+      outcome = await this.executeCore(input, signal);
+      return outcome;
+    } finally {
+      if (restoreHandle) {
+        // Let the action's overlay/focus settle, then put the user's window back
+        // through the normal verified focus path.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        try {
+          await this.executeOnce({ action: "focus_window", windowHandle: restoreHandle } as ComputerExecInput & { action: ComputerExecAction }, undefined);
+        } catch (error) {
+          if (outcome) (outcome as { restoreError?: string }).restoreError = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+  }
+
+  private async executeCore(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     if (input.actions?.length) return this.executeBatch(input, signal);
     const action = input.action;
     if (!action) throw new Error("computer_exec 需要 action 或 actions");
@@ -421,6 +521,15 @@ export class ComputerAutomationService {
         computerUseRunCoordinator.fail(current, signal);
         throw withRecoveryDetails(error, plan, attempt);
       }
+    }
+  }
+
+  private async foregroundHandle(signal?: AbortSignal): Promise<string | undefined> {
+    try {
+      const active = await this.request<"active_window", WindowInfo>("active_window", {}, signal, 5_000);
+      return active?.handle;
+    } catch {
+      return undefined;
     }
   }
 
@@ -681,7 +790,7 @@ export class ComputerAutomationService {
     if (!display) throw new WindowsAutomationError("CAPTURE_FAILED", "Requested display was not found", { screenId: requested });
     const width = Math.max(1, Math.round(display.size.width * display.scaleFactor));
     const height = Math.max(1, Math.round(display.size.height * display.scaleFactor));
-    const sources = await checked(() => desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width, height }, fetchWindowIcons: false }), signal);
+    const sources = await checked(() => withCaptureTimeout(desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width, height }, fetchWindowIcons: false }), 8_000, "Display capture enumeration timed out"), signal);
     const source = sources.find((item) => item.display_id === String(display.id));
     if (!source || source.thumbnail.isEmpty()) throw new WindowsAutomationError("CAPTURE_FAILED", "无法捕获指定桌面截图", { displayId: display.id });
     // Keep the capture at most 2000px so Pi does not resize/re-encode it, and
@@ -761,32 +870,106 @@ export class ComputerAutomationService {
     };
   }
 
-  /**
-   * PrintWindow captures a visible window without changing foreground focus.
-   * Captures that silently return an all-black frame (some GPU/DRM apps) are
-   * rejected so the caller can fall back to the display-crop path.
-   */
-  private async captureBackground(window: WindowInfo, clientOnly: boolean, signal?: AbortSignal): Promise<{
-    screenshot: Uint8Array;
-    details: {
-      displayId: string;
-      scaleFactor: number;
-      captureRectPhysical: { left: number; top: number; right: number; bottom: number; width: number; height: number };
-      captureMode: "background-printwindow";
-      coordinateSpace: "client-dip-aligned-pixels" | "window-dip-aligned-pixels";
-      mimeType: "image/jpeg";
-      imageScale: number;
-      imageSize: { width: number; height: number };
-      windowRect: WindowInfo["windowRect"];
+  private finalizeCapturedImage(image: NativeImage, window: WindowInfo, clientOnly: boolean, captureMode: "background-printwindow" | "window-source"): CapturedImage {
+    const targetWidth = clientOnly ? window.clientRect.width : window.windowRect.width;
+    const targetHeight = clientOnly ? window.clientRect.height : window.windowRect.height;
+    const dipWidth = Math.max(1, Math.round(targetWidth / window.scaleFactor));
+    const dipHeight = Math.max(1, Math.round(targetHeight / window.scaleFactor));
+    if (image.getSize().width !== dipWidth || image.getSize().height !== dipHeight) {
+      image = image.resize({ width: dipWidth, height: dipHeight, quality: "best" });
+    }
+    const dipSize = image.getSize();
+    let imageScale = 1;
+    if (dipSize.width > MAX_SCREENSHOT_EDGE || dipSize.height > MAX_SCREENSHOT_EDGE) {
+      const factor = Math.min(MAX_SCREENSHOT_EDGE / dipSize.width, MAX_SCREENSHOT_EDGE / dipSize.height);
+      const width = Math.max(1, Math.round(dipSize.width * factor));
+      const height = Math.max(1, Math.round(dipSize.height * factor));
+      image = image.resize({ width, height, quality: "best" });
+      imageScale = dipSize.width / width;
+    }
+    const imageSize = image.getSize();
+    // WGC (window-source) reads composited surfaces reliably; only PrintWindow
+    // frames need the content check that triggers the WGC fallback.
+    if (captureMode === "background-printwindow") assertCaptureHasContent(image.toBitmap(), imageSize);
+    const captureRectPhysical = clientOnly
+      ? {
+          left: window.clientOrigin.x,
+          top: window.clientOrigin.y,
+          right: window.clientOrigin.x + window.clientRect.width,
+          bottom: window.clientOrigin.y + window.clientRect.height,
+          width: window.clientRect.width,
+          height: window.clientRect.height,
+        }
+      : window.windowRect;
+    return {
+      screenshot: image.toJPEG(SCREENSHOT_JPEG_QUALITY),
+      details: {
+        displayId: window.monitorHandle ?? "0",
+        scaleFactor: window.scaleFactor,
+        captureRectPhysical,
+        captureMode,
+        coordinateSpace: clientOnly ? "client-dip-aligned-pixels" : "window-dip-aligned-pixels",
+        mimeType: "image/jpeg",
+        imageScale: Math.round(imageScale * 10_000) / 10_000,
+        imageSize,
+        windowRect: window.windowRect,
+      },
     };
-  }> {
+  }
+
+  /**
+   * Windows Graphics Capture path (via Electron's window sources). Unlike
+   * PrintWindow it reads Chromium/Qt/Tauri composited surfaces, so it is the
+   * fallback for those windows and for any PrintWindow frame without content.
+   */
+  private async captureWindowSource(window: WindowInfo, clientOnly: boolean, signal?: AbortSignal): Promise<CapturedImage> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { desktopCapturer } = require("electron") as typeof import("electron");
+    const physicalWidth = Math.max(1, window.windowRect.width);
+    const physicalHeight = Math.max(1, window.windowRect.height);
+    const sources = await checked(() => withCaptureTimeout(desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: physicalWidth, height: physicalHeight },
+      fetchWindowIcons: false,
+    }), 8_000, "Window-source enumeration timed out"), signal);
+    const prefix = `window:${window.handle}:`;
+    const title = window.title.trim();
+    const source = sources.find((item) => item.id.startsWith(prefix))
+      ?? (title.length >= 2 ? sources.find((item) => item.name.trim() === title) : undefined)
+      ?? (title.length >= 3 ? sources.find((item) => item.name.includes(title)) : undefined);
+    if (!source || source.thumbnail.isEmpty()) {
+      throw new WindowsAutomationError("CAPTURE_FAILED", "Window-source capture is unavailable for this window", {
+        window, candidates: sources.map((item) => item.name).slice(0, 20),
+      });
+    }
+    let image = source.thumbnail;
+    const raw = image.getSize();
+    if (raw.width !== physicalWidth || raw.height !== physicalHeight) {
+      image = image.resize({ width: physicalWidth, height: physicalHeight, quality: "best" });
+    }
+    if (clientOnly) {
+      const offsetX = Math.max(0, window.clientOrigin.x - window.windowRect.left);
+      const offsetY = Math.max(0, window.clientOrigin.y - window.windowRect.top);
+      image = image.crop({
+        x: offsetX,
+        y: offsetY,
+        width: Math.min(window.clientRect.width, physicalWidth - offsetX),
+        height: Math.min(window.clientRect.height, physicalHeight - offsetY),
+      });
+    }
+    return this.finalizeCapturedImage(image, window, clientOnly, "window-source");
+  }
+
+  /**
+   * Captures a visible window without changing foreground focus. Native apps
+   * use PrintWindow; Chromium/Qt/Tauri surfaces (and contentless PrintWindow
+   * frames) fall back to the window-source capture.
+   */
+  private async captureBackground(window: WindowInfo, clientOnly: boolean, signal?: AbortSignal): Promise<CapturedImage> {
     const path = join(tmpdir(), `mybuddy-cu-${randomUUID()}.png`);
+    const chromiumLike = /chrome_widgetwin|tauri window|qt\d*qwindow/i.test(window.className ?? "");
+    if (chromiumLike) return this.captureWindowSource(window, clientOnly, signal);
     try {
-      // PrintWindow cannot read Chromium/Qt/Tauri composited surfaces: it only
-      // returns the native frame. Fail fast instead of returning a blank image.
-      if (/chrome_widgetwin|tauri window|qt\d*qwindow/i.test(window.className ?? "")) {
-        throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture is not supported for this app surface (Chromium/Qt/Tauri); focus the window and capture in the foreground", { window });
-      }
       await this.request("capture_window_background", {
         target: { windowHandle: window.handle, expectedProcessId: window.processId },
         path,
@@ -798,13 +981,11 @@ export class ComputerAutomationService {
       let image = nativeImage.createFromBuffer(bytes);
       if (image.isEmpty()) throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture could not be decoded", { window });
       if (isBlankBitmap(image.toBitmap())) {
-        throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture returned a blank frame; this app may block PrintWindow. Retry with background=false or ensure_foreground.", { window });
+        throw new WindowsAutomationError("CAPTURE_FAILED", "Background capture returned a blank frame", { window });
       }
-      const physicalWidth = window.windowRect.width;
-      const physicalHeight = window.windowRect.height;
       const raw = image.getSize();
-      if (raw.width !== physicalWidth || raw.height !== physicalHeight) {
-        image = image.resize({ width: physicalWidth, height: physicalHeight, quality: "best" });
+      if (raw.width !== window.windowRect.width || raw.height !== window.windowRect.height) {
+        image = image.resize({ width: window.windowRect.width, height: window.windowRect.height, quality: "best" });
       }
       if (clientOnly) {
         const offsetX = Math.max(0, window.clientOrigin.x - window.windowRect.left);
@@ -812,52 +993,16 @@ export class ComputerAutomationService {
         image = image.crop({
           x: offsetX,
           y: offsetY,
-          width: Math.min(window.clientRect.width, physicalWidth - offsetX),
-          height: Math.min(window.clientRect.height, physicalHeight - offsetY),
+          width: Math.min(window.clientRect.width, window.windowRect.width - offsetX),
+          height: Math.min(window.clientRect.height, window.windowRect.height - offsetY),
         });
       }
-      const targetWidth = clientOnly ? window.clientRect.width : window.windowRect.width;
-      const targetHeight = clientOnly ? window.clientRect.height : window.windowRect.height;
-      const dipWidth = Math.max(1, Math.round(targetWidth / window.scaleFactor));
-      const dipHeight = Math.max(1, Math.round(targetHeight / window.scaleFactor));
-      if (image.getSize().width !== dipWidth || image.getSize().height !== dipHeight) {
-        image = image.resize({ width: dipWidth, height: dipHeight, quality: "best" });
+      return this.finalizeCapturedImage(image, window, clientOnly, "background-printwindow");
+    } catch (error) {
+      if (error instanceof WindowsAutomationError && error.code === "CAPTURE_FAILED") {
+        return this.captureWindowSource(window, clientOnly, signal);
       }
-      const dipSize = image.getSize();
-      let imageScale = 1;
-      if (dipSize.width > MAX_SCREENSHOT_EDGE || dipSize.height > MAX_SCREENSHOT_EDGE) {
-        const factor = Math.min(MAX_SCREENSHOT_EDGE / dipSize.width, MAX_SCREENSHOT_EDGE / dipSize.height);
-        const width = Math.max(1, Math.round(dipSize.width * factor));
-        const height = Math.max(1, Math.round(dipSize.height * factor));
-        image = image.resize({ width, height, quality: "best" });
-        imageScale = dipSize.width / width;
-      }
-      const imageSize = image.getSize();
-      assertCaptureHasContent(image.toBitmap(), imageSize);
-      const captureRectPhysical = clientOnly
-        ? {
-            left: window.clientOrigin.x,
-            top: window.clientOrigin.y,
-            right: window.clientOrigin.x + window.clientRect.width,
-            bottom: window.clientOrigin.y + window.clientRect.height,
-            width: window.clientRect.width,
-            height: window.clientRect.height,
-          }
-        : window.windowRect;
-      return {
-        screenshot: image.toJPEG(SCREENSHOT_JPEG_QUALITY),
-        details: {
-          displayId: window.monitorHandle ?? "0",
-          scaleFactor: window.scaleFactor,
-          captureRectPhysical,
-          captureMode: "background-printwindow",
-          coordinateSpace: clientOnly ? "client-dip-aligned-pixels" : "window-dip-aligned-pixels",
-          mimeType: "image/jpeg",
-          imageScale: Math.round(imageScale * 10_000) / 10_000,
-          imageSize,
-          windowRect: window.windowRect,
-        },
-      };
+      throw error;
     } finally {
       await unlink(path).catch(() => undefined);
     }
@@ -869,9 +1014,9 @@ export class ComputerAutomationService {
    * returns text lines in client DIP coordinates so click_client can target them.
    */
   private async ocrWindow(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const cli = resolveOcrCli();
-    if (!cli) {
-      throw new WindowsAutomationError("OCR_UNAVAILABLE", "未找到 OCR_NPU_CLI；设置 MYBUDDY_OCR_CLI 或把 OCR_NPU_CLI.exe 加入 PATH", { searched: [process.env.MYBUDDY_OCR_CLI, ...OCR_KNOWN_PATHS, "PATH"] });
+    const provider = resolveOcrProvider();
+    if (!provider) {
+      throw new WindowsAutomationError("OCR_UNAVAILABLE", "未找到可用 OCR：设置 MYBUDDY_OCR_CLI（OCR_NPU_CLI）或安装 Windows OCR 语言包", { searched: [process.env.MYBUDDY_OCR_CLI, ...OCR_KNOWN_PATHS, "windows-ocr.ps1"] });
     }
     const target = await this.guardedTarget(input, signal);
     const window = await this.inspect(target, signal);
@@ -880,7 +1025,7 @@ export class ComputerAutomationService {
     }
     let capture: { screenshot: Uint8Array; details: { imageScale: number; imageSize: { width: number; height: number } } };
     // Foreground windows: the display crop is content-complete and fast.
-    // Background windows: try PrintWindow; Chromium surfaces reject it clearly.
+    // Background windows: PrintWindow for native surfaces, WGC for Chromium/Qt/Tauri.
     if (window.foreground) {
       capture = await checked(() => this.capture.capture(window, true), signal);
     } else {
@@ -893,12 +1038,28 @@ export class ComputerAutomationService {
     await writeFile(imagePath, Buffer.from(capture.screenshot));
     const startedAt = Date.now();
     try {
-      const { stdout } = await execFileAsync(cli, ["--input_path", imagePath, "--json", "--output_dir", outputDir], {
-        timeout: OCR_TIMEOUT_MS,
-        windowsHide: true,
-        maxBuffer: 16 * 1024 * 1024,
-      });
-      const raw = parseOcrOutput(String(stdout), outputDir, imagePath);
+      let raw: OcrRawText[];
+      let providerName: string;
+      if (provider.kind === "npu") {
+        const { stdout } = await execFileAsync(provider.path, ["--input_path", imagePath, "--json", "--output_dir", outputDir], {
+          timeout: OCR_TIMEOUT_MS,
+          windowsHide: true,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        raw = parseOcrOutput(String(stdout), outputDir, imagePath);
+        providerName = "OCR_NPU_CLI";
+      } else {
+        const { stdout } = await execFileAsync("powershell.exe", [
+          "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", provider.script,
+        ], {
+          timeout: OCR_TIMEOUT_MS,
+          windowsHide: true,
+          maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env, MYBUDDY_OCR_IMAGE: imagePath },
+        });
+        raw = parseWindowsOcrOutput(String(stdout));
+        providerName = "Windows.Media.Ocr";
+      }
       const scale = capture.details.imageScale || 1;
       const minScore = Math.min(1, Math.max(0, Number(input.minScore ?? 0.5)));
       const maxLines = Math.min(200, Math.max(1, Math.round(Number(input.maxLines ?? 80))));
@@ -926,8 +1087,8 @@ export class ComputerAutomationService {
         lineCount: lines.length,
         imageScale: scale,
         imageSize: capture.details.imageSize,
-        ocr: { provider: "OCR_NPU_CLI", totalLines: raw.length, ms: Date.now() - startedAt },
-        detail: "OCR semantic fallback (background capture, client-DIP boxes)",
+        ocr: { provider: providerName, totalLines: raw.length, ms: Date.now() - startedAt },
+        detail: "OCR semantic fallback (client-DIP boxes)",
       };
     } catch (error) {
       if (error instanceof WindowsAutomationError) throw error;
