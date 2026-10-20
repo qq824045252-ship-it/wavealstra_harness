@@ -17,11 +17,12 @@ import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
+import type { DurableDomainTools } from "./DurableDomainTools";
 import { DurableMcp } from "./DurableMcp";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
-import { SessionFailed, type ToolRegistration, type EntryRecord } from "@earendil-works/pi-durable";
+import { SessionFailed, type EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
@@ -46,7 +47,7 @@ export interface DurableBotServiceOptions {
   resolveCwd: (taskId: string) => string;
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
-  tools?: (task: TaskDto, cwd: string) => Promise<ToolRegistration[]>;
+  tools?: (task: TaskDto, cwd: string) => Promise<DurableDomainTools>;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (taskId: string, entries: readonly EntryRecord[]) => void;
   onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void;
@@ -193,16 +194,19 @@ export class DurableBotService {
       let workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
       let projected = "";
       let wasBusy = false;
-      const resolvedModel = await this.resolveTaskModel(task);
-      const selected = resolvedModel.target;
-      const modelRepair = resolvedModel.repairedFrom
+      // 打开会话/读历史不是「发请求」：模型目录暂时解析不到也不能阻断，先沿用任务记录的坐标。
+      const resolvedModel = await this.resolveTaskModelForOpen(task);
+      const selected = resolvedModel?.target;
+      const modelRepair = resolvedModel?.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
+      const domain = await this.domainToolsForOpen(task, cwd);
       const base = this.options.assetsDir?.replace(/([\\/])app\.asar(?=[\\/])/, "$1app.asar.unpacked");
       const wasm = base && join(base, "quickjs.wasm");
       const worker = base && join(base, "codemode-worker.cjs");
       const runtime = await DurableBotRuntime.open({ directory, cwd, models,
-        taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...await this.options.tools?.(task, cwd) ?? []],
+        taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
+        contextHooks: domain?.contextHooks ?? [],
         restoreTools: names => mcp.restoreTools(names),
         prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
         onEntries: entries => this.options.onEntries?.(taskId, entries),
@@ -287,6 +291,27 @@ export class DurableBotService {
     return resolution;
   }
 
+  /**
+   * 打开会话（含只读历史）时的模型解析：尽力而为，绝不抛错。
+   * 模型目录 = 为「发请求」准备的运行时配置；历史能否打开只取决于 Durable 存储本身。
+   */
+  private async resolveTaskModelForOpen(task: TaskDto): Promise<BotModelResolution | undefined> {
+    try { return await this.resolveTaskModel(task); }
+    catch (error) {
+      console.warn(`[Durable] 任务 ${task.id} 暂时解析不到可用模型，打开会话先沿用 ${task.modelId ?? "(未记录)"}：${failureText(error)}`);
+      return undefined;
+    }
+  }
+
+  /** 打开会话时构建域工具/上下文钩子；单个扩展工厂失败也不能让历史打不开。 */
+  private async domainToolsForOpen(task: TaskDto, cwd: string): Promise<DurableDomainTools | undefined> {
+    try { return await this.options.tools?.(task, cwd); }
+    catch (error) {
+      console.warn(`[Durable] 任务 ${task.id} 的扩展工具装配失败，先以 MCP 工具打开会话（发请求时会重新装配）：${failureText(error)}`);
+      return undefined;
+    }
+  }
+
   private async admit(request: AgentPromptRequest) {
     await this.options.models.refresh({ allowNetwork: false });
     this.options.expertBindings?.ensureLegacy(request.taskId);
@@ -306,13 +331,15 @@ export class DurableBotService {
       }
       const current = this.options.db.getTask(request.taskId)!;
       const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
+      // 只有真正要发请求时才要求模型可用：这里解析失败会明确报错，而不是把会话标成损坏。
       const resolvedModel = await this.resolveTaskModel(current);
       // 替换提示是一次性的开卷告知：一旦本轮能按任务模型正常执行（用户也可能已手动改选模型），就收起。
       open.modelRepair = resolvedModel.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
+      const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd);
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
-        [...mcp.tools, ...await this.options.tools?.(current, this.binding(request.taskId)!.cwd) ?? []]);
+        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? []);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
       const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];

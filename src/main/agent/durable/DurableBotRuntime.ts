@@ -15,6 +15,7 @@ import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
+import type { DurableContextHook } from "./DurableDomainTools";
 import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
@@ -43,6 +44,8 @@ export interface DurableBotOptions {
   onEntries?: (entries: readonly EntryRecord[]) => void;
   taskId?: string;
   tools?: readonly ToolRegistration[];
+  /** 扩展的 context 钩子（改写每次请求的上下文）；在 beforeRequest 里与 evidence 一起执行。 */
+  contextHooks?: readonly DurableContextHook[];
   /** Task-scoped compatibility registrations for stored names, without transport startup. */
   restoreTools?: (names: readonly string[]) => readonly ToolRegistration[];
   prepareCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<readonly ToolRegistration[]>;
@@ -198,10 +201,14 @@ export class DurableBotRuntime {
     }
   }
 
-  async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel, extensions?: readonly ToolRegistration[]): Promise<void> {
+  async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel,
+    extensions?: readonly ToolRegistration[], contextHooks?: readonly DurableContextHook[]): Promise<void> {
     this.assertSessionHealthy();
-    if (extensions) {
-      this.nativeTools = [...codingTools(), ...extensions];
+    // Request-context hooks come from the same extension factories as the tools; they are re-installed
+    // together so a refreshed tool set can never keep a stale (or dropped) context rewrite.
+    if (contextHooks) this.options.contextHooks = [...contextHooks];
+    if (extensions || contextHooks) {
+      if (extensions) this.nativeTools = [...codingTools(), ...extensions];
       const available = this.nativeTools;
       this.codemode = createDurableCodeMode(() => available, this.options.assets, join(this.options.directory, "images"), async (code, context) => {
         const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
@@ -626,9 +633,21 @@ function botExtension(
   return defineExtension({ name: "mybuddy.bot", tools: [...native, codemode],
     sections: [section("mybuddy", () => options.instructions(), { tag: false })],
     // Request-only evidence; no policy hooks, scheduler or continuation loop.
-    hooks: [hook(GenerationTask, { beforeRequest: request => {
-      const text = options.evidence?.(request.messages);
-      return text ? { messages: [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...request.messages] } : undefined;
+    hooks: [hook(GenerationTask, { beforeRequest: async request => {
+      let messages = request.messages;
+      let changed = false;
+      const text = options.evidence?.(messages);
+      if (text) {
+        messages = [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...messages];
+        changed = true;
+      }
+      // 扩展的 context 钩子（例如 Computer Use 的老截图淘汰）必须在这里真实执行；
+      // 直接拒绝会让所有 Bot 会话打不开，而这与「读历史」无关。
+      for (const contextHook of options.contextHooks ?? []) {
+        const rewritten = await contextHook(messages);
+        if (rewritten?.messages) { messages = rewritten.messages; changed = true; }
+      }
+      return changed ? { messages } : undefined;
     }, afterResponse: async (message, api, context) => {
       await recordResponse(api.taskId, message);
       // Code Mode discovers MCP tools from the script. Install them during the generation task so the nested

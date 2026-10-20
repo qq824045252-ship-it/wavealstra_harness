@@ -499,7 +499,7 @@ for (const mode of ["native", "codemode"] as const) {
   let stage = "save";
   const api = models(context => context.messages.at(-1)?.role === "toolResult" ? text("metadata complete")
     : call("codemode", { code: stage === "save" ? "await tools.remember_fixture({});" : "text(await tools.recall_fixture({}));" }));
-  const tools = await durableDomainTools([pi => {
+  const domain = await durableDomainTools([pi => {
     pi.registerTool({ name: "remember_fixture", label: "remember", description: "fixture", parameters: Type.Object({}), execute: async () => {
       pi.appendEntry("web-search-results", { id: "native-search-fixture", type: "search", timestamp: Date.now(), queries: [{ query: "q", answer: "persisted source", results: [], error: null }] });
       return { content: text("saved") as any, details: {} };
@@ -509,7 +509,7 @@ for (const mode of ["native", "codemode"] as const) {
       return { content: text("restored source") as any, details: {} };
     } });
   }], { cwd, models: api });
-  const options = { directory: join(cwd, "state"), cwd, model: ref, toolMode: "codemode" as const, instructions: () => "fixture", models: api, tools, onSnapshot: () => {} };
+  const options = { directory: join(cwd, "state"), cwd, model: ref, toolMode: "codemode" as const, instructions: () => "fixture", models: api, tools: domain.tools, contextHooks: domain.contextHooks, onSnapshot: () => {} };
   let runtime = await DurableBotRuntime.open(options);
   await (await runtime.submit("save", "save-metadata")).wait(ctx);
   await runtime.close(); clearResults(); stage = "recall";
@@ -577,5 +577,53 @@ for (const mode of ["native", "codemode"] as const) {
     assert.equal(db.getTask(taskId)!.modelId, "magpie/workbuddy/glm-5.3-flash");
   } finally { await service.close(); db.close(); }
   console.log("PASS 悬空模型不阻塞 Bot 历史：同名路由替换 + 写回任务 + 一次性告知");
+}
+{
+  // 真实事故 2：图片淘汰这类扩展钩子 `pi.on("context")` 被 Durable 桥接层直接拒绝，
+  // 报「Unsupported execution hook: context」，让所有 Bot 会话打不开 —— 与读历史毫无关系。
+  const cwd = join(root, "context-hook"); await mkdir(cwd);
+  const domain = await durableDomainTools([pi => {
+    pi.on("context", (event: any) => ({
+      messages: event.messages.map((message: any) => message.role === "user" && typeof message.content === "string"
+        ? { ...message, content: `[aged] ${message.content}` } : message),
+    }));
+    pi.on("not_a_real_hook", () => { throw new Error("ignored hook must never run"); });
+  }], { cwd, models: models(() => text("unused")) });
+  assert.equal(domain.contextHooks.length, 1, "context 钩子必须被收集，而不是抛错");
+  assert.equal(domain.tools.length, 0);
+  let seen: any[] = [];
+  const api = models(context => { seen = context.messages; return text("hooked"); });
+  const runtime = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref, toolMode: "native",
+    instructions: () => "fixture", models: api, tools: domain.tools, contextHooks: domain.contextHooks, onSnapshot: () => {} });
+  try {
+    await (await runtime.submit("hello", "context-hook")).wait(ctx);
+    const userTexts = seen.filter(message => message.role === "user")
+      .map(message => typeof message.content === "string" ? message.content : JSON.stringify(message.content));
+    assert(userTexts.some(value => value.includes("[aged] hello")), "context 钩子必须在真实请求前改写模型上下文");
+  } finally { await runtime.close(); }
+  console.log("PASS 扩展 context 钩子转发到 Durable beforeRequest；未知钩子不再让 Bot 打不开");
+}
+{
+  // 设计边界：读历史 = 读 Durable 存储，不应经过模型解析。模型目录为空也必须能打开，且不改写任务配置。
+  const agentDir = join(root, "no-model-history"); await mkdir(agentDir);
+  const cwd = join(agentDir, "cwd"); await mkdir(cwd);
+  const db = new AppDatabase(join(agentDir, "app.db"));
+  const taskId = "no-model-bot", storedModel = "magpie/commandcode/z-ai/glm-5.3-flash";
+  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "bot", modelId: storedModel, cwd, updatedAt: Date.now() });
+  const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
+  await mkdir(directory, { recursive: true });
+  const emptyModels: any = { getModel: () => undefined, getModels: () => [], getAvailable: async () => [], refresh: async () => ({}) };
+  const service = new DurableBotService({ db, agentDir, mcpDir: join(agentDir, "mcp"), models: emptyModels,
+    // 扩展工厂自身抛错同样不能阻断只读历史；发请求时才严格重新装配。
+    tools: () => { throw new Error("extension factory boom"); },
+    resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native", defaultModel: () => undefined, emit: () => {} });
+  db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
+  try {
+    const history = await service.history(taskId);
+    assert.equal(history.historyError, undefined, "模型目录为空不能把历史变成打不开（模型只属于发请求）");
+    assert.equal(history.durable?.backend, "pi-durable");
+    assert.equal(db.getTask(taskId)!.modelId, storedModel, "只读打开不得改写任务配置");
+  } finally { await service.close(); db.close(); }
+  console.log("PASS 只读历史与模型目录解耦：没有可用模型也能打开，且不改写任务");
 }
 console.log("Durable Bot tests passed");

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ModelRegistry, type ModelRuntime, type ExtensionAPI, type ExtensionContext, type ToolDefinition, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { defineEntry, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
 
@@ -8,9 +9,24 @@ type NativeApi = Parameters<ToolRegistration["execute"]>[1];
 type NativeContext = Parameters<ToolRegistration["execute"]>[2];
 interface CapabilityContext { cwd: string; models: ModelRuntime }
 
-/** Reuse domain operations, not AgentSession. This bridge cannot install policy/event hooks. */
-export async function durableDomainTools(factories: readonly InlineExtension[], capabilities?: CapabilityContext): Promise<ToolRegistration[]> {
+/** 扩展的 context 钩子（改写每次请求的模型上下文），由 Durable 的 beforeRequest 钩子执行。 */
+export type DurableContextHook = (messages: readonly Message[]) => Promise<{ messages: readonly Message[] } | undefined> | { messages: readonly Message[] } | undefined;
+
+export interface DurableDomainTools {
+  tools: ToolRegistration[];
+  /** 供 DurableBotRuntime 在 beforeRequest 里按序执行；不由 ToolTask 执行，也不影响打开历史。 */
+  contextHooks: DurableContextHook[];
+}
+
+/**
+ * Reuse domain operations, not AgentSession. This bridge cannot install policy/event hooks;
+ * the only hook it understands is `context` (request-context rewrite), which it forwards to
+ * Durable's beforeRequest. Unknown hooks are logged and ignored: a hook landing in a shared
+ * extension factory must never make a Bot conversation unopenable.
+ */
+export async function durableDomainTools(factories: readonly InlineExtension[], capabilities?: CapabilityContext): Promise<DurableDomainTools> {
   const tools: ToolRegistration[] = [];
+  const contextHooks: DurableContextHook[] = [];
   const invocation = new AsyncLocalStorage<{ native: NativeApi; context: NativeContext; conversationId: ConversationId; writes: Promise<unknown>[] }>();
   const api = new Proxy({
     registerTool(tool: ToolDefinition) {
@@ -36,8 +52,19 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
     if (capabilities) {
       // TUI commands/widgets are not a second workflow in Bot. Tool results are rendered from Durable.
       if (key === "registerShortcut" || key === "registerCommand") return () => {};
-      if (key === "on") return (event: string) => {
-        if (!["session_start", "session_tree", "session_shutdown"].includes(event)) throw new Error(`Unsupported execution hook: ${event}`);
+      if (key === "on") return (event: string, handler: (...args: unknown[]) => unknown) => {
+        // Session lifecycle hooks have no Durable equivalent and are pure no-ops.
+        if (["session_start", "session_tree", "session_shutdown"].includes(event)) return;
+        if (event === "context") {
+          contextHooks.push(async messages => {
+            const result = await handler({ messages });
+            const rewritten = (result as { messages?: unknown } | undefined)?.messages;
+            return Array.isArray(rewritten) ? { messages: rewritten as Message[] } : undefined;
+          });
+          return;
+        }
+        // 兼容性防线：共享扩展工厂新增的钩子不能把 Bot 会话变成「打不开」。
+        console.warn(`[Durable] 扩展钩子 ${event} 在 Bot 执行后端没有对应实现，已忽略（会话与工具保持可用）`);
       };
       if (key === "appendEntry") return (kind: string, data: unknown) => {
         const current = invocation.getStore();
@@ -49,7 +76,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
     throw new Error(`Durable domain extensions cannot use AgentSession API: ${String(key)}`);
   } }) as unknown as ExtensionAPI;
   for (const factory of factories) await (typeof factory === "function" ? factory : factory.factory)(api);
-  return tools;
+  return { tools, contextHooks };
 }
 
 /** Code Mode's private tool conversations share presentation data through their native owner chain. */

@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -518,3 +518,4 @@
     "onnxruntime-node": "1.30.0"
   }
 }
+
