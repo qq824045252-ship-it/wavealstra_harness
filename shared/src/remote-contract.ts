@@ -191,6 +191,13 @@ export interface RemoteTaskHistory {
   taskId: string
   messages: RemoteHistoryMessage[]
   imageArtifacts?: RemoteImageArtifact[]
+  /**
+   * 历史**完全打不开**时的人类可读原因。服务端必须如实回传，否则远端会把真实的存储/模型故障
+   * 伪装成「空会话」，与桌面端「会话记录打不开」不一致。旧客户端忽略该字段（向后兼容）。
+   */
+  historyError?: string
+  /** 任务当前实际使用的模型（provider/id）；服务端修复失效坐标后回传，供远端校正模型显示。 */
+  modelId?: string
 }
 
 export interface RemoteDurableSnapshot {

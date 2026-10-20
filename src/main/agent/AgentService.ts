@@ -4451,6 +4451,9 @@ export class AgentService {
       // P0 §7.4：regenerate 同样重新解析并绑定 canonical cwd（忽略 existing.cwd / req.cwd）
       const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, taskId, req.assistantMessageId);
       const existing = this.db.listTasks().find((t) => t.id === taskId);
+      // 重新生成不能因为「任务里记录的模型坐标已下线」就硬失败：这里先自愈成可用模型；
+      // 用户在界面上显式选择的模型（req.modelId）仍走严格校验。
+      const usablePersistedModelId = await this.repairedTaskModelId(existing);
       // 重建会话时回传原 Active 连接器（其 Private Skills 已随旧会话装配过）。
       // F1：内层 prompt() 必须携带同一份 connectorIds，否则装配检测会把「一致」误判为「变更”并错误重建。
       const prevConnectorIds = this.registry.get(taskId)?.connectorIds;
@@ -4493,7 +4496,7 @@ export class AgentService {
           spaceId: existing.spaceId ?? undefined,
           welcomeMode: existing.welcomeMode ?? req.welcomeMode ?? DEFAULT_WELCOME_MODE,
           permissionMode: existing.permissionMode ?? req.permissionMode ?? "default",
-          modelId: existing.modelId ?? req.modelId,
+          modelId: usablePersistedModelId ?? req.modelId,
           sessionFile: existing.sessionFile,
           expertId: existing.expertId ?? req.expertId,
           modePresetId: existing.modePresetId ?? req.modePresetId,
@@ -4513,7 +4516,7 @@ export class AgentService {
           spaceId: existing.spaceId ?? undefined,
           welcomeMode: existing.welcomeMode ?? req.welcomeMode ?? DEFAULT_WELCOME_MODE,
           permissionMode: existing.permissionMode ?? req.permissionMode ?? "default",
-          modelId: existing.modelId ?? req.modelId,
+          modelId: usablePersistedModelId ?? req.modelId,
           sessionFile: existing.sessionFile,
           expertId: existing.expertId ?? req.expertId,
           modePresetId: existing.modePresetId ?? req.modePresetId,
@@ -4564,7 +4567,7 @@ export class AgentService {
       const promptResult = await this.prompt({
         taskId,
         text: editorText,
-        modelId: req.modelId ?? existing?.modelId,
+        modelId: req.modelId ?? usablePersistedModelId,
         reasoningPreference: req.reasoningPreference,
         reasoningPreferenceModelId: req.reasoningPreferenceModelId,
         permissionMode: req.permissionMode ?? entry.permissionMode ?? "default",
@@ -5158,6 +5161,22 @@ export class AgentService {
       console.warn("[AgentService] 无法解析可用模型", preferredId, error);
       return undefined;
     }
+  }
+
+  /**
+   * 没有用户显式选择时使用的任务模型：持久化坐标可能已被模型目录淘汰（网关路由重组），
+   * 此时自愈写回可用模型并返回；只有用户显式传 modelId 的路径才保持严格校验。
+   */
+  private async repairedTaskModelId(task?: TaskDto): Promise<string | undefined> {
+    const stored = task?.modelId?.trim();
+    if (!stored) return undefined;
+    const resolved = await this.resolveAvailableModelId(stored);
+    if (!resolved) return stored;
+    if (resolved.repairedFrom && resolved.modelId !== stored) {
+      console.warn(`[AgentService] 任务 ${task!.id} 的模型 ${stored} 已不在模型目录中，改用 ${resolved.modelId}`);
+      this.db.upsertTask({ ...task!, modelId: resolved.modelId });
+    }
+    return resolved.modelId;
   }
 
   private resolveModel(modelId: string) {

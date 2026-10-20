@@ -122,7 +122,10 @@ export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryM
 
 export function mapRemoteHistory(taskId: string, history: TaskHistoryDto): RemoteTaskHistory {
   return { taskId, messages: history.messages.map(mapRemoteHistoryMessage),
-    durable: history.durable ? { ...history.durable, messages: history.durable.messages.map(mapRemoteHistoryMessage) } : undefined };
+    durable: history.durable ? { ...history.durable, messages: history.durable.messages.map(mapRemoteHistoryMessage) } : undefined,
+    // 打不开的原因与修复后的模型必须透传给远端：远端不能把它显示成空会话。
+    ...(history.historyError ? { historyError: history.historyError } : {}),
+    ...(history.modelId ? { modelId: history.modelId } : {}) };
 }
 
 export function mapRemoteNotification(notification: NotificationDto): RemoteNotification {
