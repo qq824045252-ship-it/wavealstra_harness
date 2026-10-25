@@ -201,7 +201,7 @@ async function main(): Promise<void> {
       "tc-execute-shell",
       {
         language: "shell",
-        code: "printf 'EXEC_SHELL_OK\\n'\npython - <<'PY'\nprint('EXEC_UNICODE_OK_中文')\nPY",
+        code: "printf 'EXEC_SHELL_OK\\n'\nnode -e \"console.log('EXEC_UNICODE_OK_中文')\"",
         timeout: 15,
       } as never,
     );

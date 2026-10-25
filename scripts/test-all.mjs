@@ -42,7 +42,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  */
 const EXCLUDE_PATTERNS = [
   /-e2e$/, // 端到端：脚本里直接 `electron out/tests/...`，且单个用例可达 305s
-  /-desktop$/, // Electron 桌面端 UI（CDP 截图/真实窗口）
+  /[-:]desktop$/, // Electron 桌面端 UI（CDP 截图/真实窗口）。`:desktop` 与 `-desktop` 都是这类用例。
   /-electron$/, // 需要 electron 运行时
   /:live$/, // 联网/真实服务
   /^test:remote-/, // 远程访问（需真实网络+GUI）
@@ -106,19 +106,29 @@ const started = Date.now();
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
 
+function tail(value, lines = 80) {
+  const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? "");
+  const parts = text.trim().split(/\r?\n/);
+  if (parts.length <= lines) return parts.join("\n");
+  return parts.slice(-lines).join("\n");
+}
+
 function runOne(name) {
   const t0 = Date.now();
   const res = spawnSync("pnpm", ["-s", name], {
     cwd: ROOT,
-    stdio: "ignore",
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
     shell: true,
     env: childEnv,
     timeout: PER_TEST_TIMEOUT * 1000,
     killSignal: "SIGKILL",
+    maxBuffer: 32 * 1024 * 1024,
   });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const killed = res.error?.code === "ETIMEDOUT" || res.signal === "SIGKILL";
-  return { name, ok: !killed && res.status === 0, killed, secs };
+  const output = [res.stdout, res.stderr, res.error ? String(res.error.message ?? res.error) : ""].filter(Boolean).join("\n");
+  return { name, ok: !killed && res.status === 0, killed, secs, output };
 }
 
 /** 有限并发：pnpm+esbuild 启动开销占比高，串行会慢数倍。 */
@@ -139,6 +149,8 @@ async function runPool(items, worker) {
         console.log(
           `  ${r.killed ? "TIMEOUT" : "FAIL "} ${r.name}  (${r.secs}s)${r.killed ? "" : known ? "  [baseline 已知]" : "  [新增回归]"}`,
         );
+        const detail = tail(r.output);
+        if (detail) console.log(detail.split("\n").map((line) => `      | ${line}`).join("\n"));
       }
     }
   });

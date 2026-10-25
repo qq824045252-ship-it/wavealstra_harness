@@ -41,12 +41,12 @@ const models:any={refresh:async()=>{},getAvailable:async()=>[model],getModel:()=
 }};
 models.completeSimple=(m:any,c:any,o:any)=>models.streamSimple(m,c,o).result();
 const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:()=>"codemode",
-  instructions:()=>"fixture",tools:async()=>[hold],emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
+  instructions:()=>"fixture",tools:async()=>({tools:[hold],contextHooks:[]}),emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
 let durable=createService();
 const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
 const inbound=(gateway as any).createInboundHandler();
-const until=async(check:()=>boolean|Promise<boolean>)=>{const end=Date.now()+15000;while(!await check()){if(Date.now()>end)throw Error("fixture timeout");await new Promise(r=>setTimeout(r,10));}};
+const until=async(check:()=>boolean|Promise<boolean>, label="fixture")=>{const end=Date.now()+15000;while(!await check()){if(Date.now()>end)throw Error(`${label} timeout`);await new Promise(r=>setTimeout(r,10));}};
 const request=(text:string,userMessageId=text)=>({taskId:"gw-bot-receipts",text,userMessageId,assistantMessageId:"ignored-"+userMessageId});
 try{
   const channelNames: Record<string, string> = { feishu: "飞书", wecom: "企微", wechat: "微信", telegram: "Telegram", slack: "Slack" };
@@ -99,16 +99,16 @@ try{
   const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});
   assert.equal(requests,beforeDenied);(gateway as any).channelPolicies.clear();
 
-  const first=durable.runGatewayTurn(request("HOLD_FIRST"));await until(()=>held.has("HOLD_FIRST"));
+  const first=durable.runGatewayTurn(request("HOLD_FIRST"));await until(()=>held.has("HOLD_FIRST"), "HOLD_FIRST");
   const duplicate=durable.runGatewayTurn(request("HOLD_FIRST"));
   const second=durable.runGatewayTurn(request("SECOND"));
-  await until(async()=>Boolean((await durable.history("gw-bot-receipts")).durable?.queued));
+  await until(async()=>Boolean((await durable.history("gw-bot-receipts")).durable?.queued), "queued receipt");
   const effectCount=effects;held.get("HOLD_FIRST")!();
   assert.equal(await first,"ANSWER:HOLD_FIRST");assert.equal(await duplicate,"ANSWER:HOLD_FIRST");assert.equal(await second,"ANSWER:SECOND");assert.equal(effects,effectCount);
   console.log("PASS queued and duplicate inputs await their own native receipt, without mixed replies or repeated effects");
 
   const cancelled=durable.runGatewayTurn(request("HOLD_CANCEL")).then(()=>assert.fail("cancel should fail"),error=>assert.match(error.message,/取消/));
-  await until(()=>held.has("HOLD_CANCEL"));await durable.abort("gw-bot-receipts");await cancelled;
+  await until(()=>held.has("HOLD_CANCEL"), "HOLD_CANCEL");await durable.abort("gw-bot-receipts");await cancelled;
   await assert.rejects(durable.runGatewayTurn(request("FAIL")),/GATEWAY_FIXTURE_REJECTION/);
   console.log("PASS cancellation and model failure are terminal native outcomes");
 
@@ -117,7 +117,7 @@ try{
   console.log("PASS reply delivery retry reads the existing answer without rerunning tools");
 
   const suspended=durable.runGatewayTurn(request("HOLD_RESTART")).catch(error=>error);
-  await until(()=>held.has("HOLD_RESTART"));const effectsBeforeRestart=effects;await durable.close();assert((await suspended) instanceof Error);
+  await until(()=>held.has("HOLD_RESTART"), "HOLD_RESTART");const effectsBeforeRestart=effects;await durable.close();assert((await suspended) instanceof Error);
   durable=createService();assert.equal(await durable.runGatewayTurn(request("HOLD_RESTART")),"ANSWER:HOLD_RESTART");assert.equal(effects,effectsBeforeRestart);
   const afterRestart=requests;assert.equal(await durable.runGatewayTurn(request("SECOND")),"ANSWER:SECOND");assert.equal(requests,afterRestart);
   assert.deepEqual(db.getTask(legacy!.id),legacy);

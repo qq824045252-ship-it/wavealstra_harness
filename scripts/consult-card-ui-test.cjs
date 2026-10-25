@@ -15,11 +15,16 @@ const { join } = require('node:path');
 const output = join(__dirname, '../out/tests');
 const shots = join(output, 'consult-card-ui');
 app.setPath('userData', join(output, 'consult-card-ui-profile'));
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.disableHardwareAcceleration();
 const timeout = setTimeout(() => { console.error('consult-card-ui timed out'); app.exit(1); }, 90000);
 
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1360, height: 1000, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
+  win.webContents.on('render-process-gone', (_event, details) => console.error('render-process-gone', details));
+  win.webContents.on('did-fail-load', (_event, code, description) => console.error('did-fail-load', code, description));
+  // Windows 上 show:false 的窗口有时得不到布局，几何断言会在首帧失败。
+  win.showInactive();
   const evaluate = async (code) => win.webContents.executeJavaScript(code);
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const checks = [];

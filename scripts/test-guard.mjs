@@ -18,6 +18,7 @@
  * 终止：Windows 用 taskkill /PID /T /F（可靠杀整树）；POSIX 用进程组 SIGKILL。
  */
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const MEM_MB = Number(process.env.GUARD_MEM_MB ?? 6144);
 const TIMEOUT_S = Number(process.env.GUARD_TIMEOUT_S ?? 900);
@@ -92,9 +93,8 @@ function readMem(pid) {
       ps.on("error", () => resolve(null));
       return;
     }
-    const fs = require("node:fs");
     try {
-      const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const rss = /^VmRSS:\s+(\d+) kB$/m.exec(status);
       const swap = /^VmSwap:\s+(\d+) kB$/m.exec(status);
       resolve({
@@ -164,20 +164,27 @@ timer.unref?.();
 
 // 内存看门狗：周期性采样，超限即杀（不依赖 V8 堆上限，外部内存同样受控）
 poller = setInterval(async () => {
-  if (settled || !child.pid) return;
-  const mem = await readMem(child.pid);
-  if (process.env.GUARD_DEBUG) {
-    console.error(`[test-guard][dbg] pid=${child.pid} mem=${mem ? JSON.stringify(mem) : "null"}`);
-  }
-  if (settled || !mem) return;
-  // demand-zero 大块分配场景：WS 可能极小（不驻留），私有 commit 才是事故口径 → 取 max 防漏判
-  const totalMb = Math.max(mem.ws, mem.commit) / (1024 * 1024);
-  if (totalMb > MEM_MB) {
-    console.error(
-      `[test-guard] KILL pid=${child.pid} reason=memory ${totalMb.toFixed(0)}MB (ws=${(mem.ws / 1048576).toFixed(0)}MB private_commit=${(mem.commit / 1048576).toFixed(0)}MB) > cap=${MEM_MB}MB elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
-    );
-    killTree(child.pid);
-    finish(137, null);
+  try {
+    if (settled || !child.pid) return;
+    const mem = await readMem(child.pid);
+    if (process.env.GUARD_DEBUG) {
+      console.error(`[test-guard][dbg] pid=${child.pid} mem=${mem ? JSON.stringify(mem) : "null"}`);
+    }
+    if (settled || !mem) return;
+    // demand-zero 大块分配场景：WS 可能极小（不驻留），私有 commit 才是事故口径 → 取 max 防漏判
+    const totalMb = Math.max(mem.ws, mem.commit) / (1024 * 1024);
+    if (totalMb > MEM_MB) {
+      console.error(
+        `[test-guard] KILL pid=${child.pid} reason=memory ${totalMb.toFixed(0)}MB (ws=${(mem.ws / 1048576).toFixed(0)}MB private_commit=${(mem.commit / 1048576).toFixed(0)}MB) > cap=${MEM_MB}MB elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
+      );
+      killTree(child.pid);
+      finish(137, null);
+    }
+  } catch (err) {
+    // 采样失败不能把已经通过的用例判成失败（ESM 里误用 require 会在这里变成未处理拒绝）。
+    if (process.env.GUARD_DEBUG) {
+      console.error(`[test-guard][dbg] memory sample failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }, POLL_MS);
 poller.unref?.();
