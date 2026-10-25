@@ -1,9 +1,9 @@
-// 构建 TrayService 冒烟测试 bundle：用插件把 `?asset` 导入 stub 成本地图标路径
+// 构建 TrayService 冒烟测试 bundle：把 `?asset` 导入解析成仓库里的真实图标路径
 import { build } from "esbuild";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
-const iconPath = `${root}/src/main/assets/tray.ico`;
 
 await build({
   entryPoints: [`${root}/src/main/TrayService.ts`],
@@ -16,11 +16,11 @@ await build({
       name: "asset-stub",
       setup(b) {
         b.onResolve({ filter: /\?asset$/ }, (args) => ({
-          path: iconPath,
+          path: path.resolve(args.resolveDir, args.path.replace(/\?asset$/, "")),
           namespace: "asset",
         }));
-        b.onLoad({ filter: /.*/, namespace: "asset" }, () => ({
-          contents: `export default ${JSON.stringify(iconPath)};`,
+        b.onLoad({ filter: /.*/, namespace: "asset" }, (args) => ({
+          contents: `export default ${JSON.stringify(args.path)};`,
           loader: "js",
         }));
       },

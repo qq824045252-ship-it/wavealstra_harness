@@ -3,9 +3,12 @@
 // 2) 关闭事件 → 窗口隐藏且 preventDefault 被调用（应用不退出）
 // 3) setCloseToTray(false) 后 → 关闭事件不再拦截
 // 4) dispose() → shouldSuppressQuit() 变 false
+// 5) Linux 用 png；托盘创建失败时 Linux 仍驻留，其它平台不拦截关闭
 // 运行：electron scripts/tray-service-test.cjs
+const fs = require("node:fs");
+const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
-const { TrayService } = require("../out/tests/tray-service-test.cjs");
+const { TrayService, trayIconAsset } = require("../out/tests/tray-service-test.cjs");
 
 function makeCloseEvent() {
   let prevented = false;
@@ -36,7 +39,7 @@ app.whenReady().then(() => {
   });
 
   // 1) 托盘已创建
-  assert("托盘已创建并存活", svc.shouldSuppressQuit() === true);
+  assert("托盘已创建并存活", svc.hasTray() === true && svc.shouldSuppressQuit() === true);
 
   // 2) 关闭事件 → 拦截 + 窗口隐藏
   const evt = makeCloseEvent();
@@ -68,6 +71,38 @@ app.whenReady().then(() => {
   svc.setCloseToTray(true);
   svc.dispose();
   assert("dispose 后托盘不再存活", svc.shouldSuppressQuit() === false);
+
+  assert(
+    "linux 托盘图标是 png",
+    trayIconAsset("linux").endsWith(`${path.sep}tray.png`) && fs.existsSync(trayIconAsset("linux")),
+  );
+  assert(
+    "win32 托盘图标是 ico",
+    trayIconAsset("win32").endsWith(`${path.sep}tray.ico`) && fs.existsSync(trayIconAsset("win32")),
+  );
+
+  // 6) 托盘后端失败：Linux 关窗仍驻留；Windows / macOS 保持原行为（不拦截、不抑制退出）
+  const hidden = new BrowserWindow({ width: 320, height: 240, show: false });
+  const failedTray = new TrayService();
+  failedTray.initialize(hidden, {
+    createTray() {
+      throw new Error("status notifier unavailable");
+    },
+  });
+  const failedEvent = makeCloseEvent();
+  hidden.emit("close", failedEvent);
+  assert("托盘失败时没有图标", failedTray.hasTray() === false);
+  if (process.platform === "linux") {
+    assert("托盘失败时 Linux 仍拦截关闭", failedEvent.defaultPrevented === true);
+    assert("托盘失败时 Linux 仍抑制退出", failedTray.shouldSuppressQuit() === true);
+    assert("托盘失败时窗口已隐藏", hidden.isVisible() === false);
+  } else {
+    assert("托盘失败时不拦截关闭", failedEvent.defaultPrevented === false);
+    assert("托盘失败时不抑制退出", failedTray.shouldSuppressQuit() === false);
+  }
+  failedTray.dispose();
+  assert("托盘失败后 dispose 不再驻留", failedTray.shouldSuppressQuit() === false);
+  hidden.destroy();
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n==== ${results.length - failed.length}/${results.length} passed ====`);

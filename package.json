@@ -63,6 +63,7 @@
     "dist": "pnpm run remote:build && electron-vite build && electron-builder --win",
     "test:backup": "esbuild scripts/backup-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/backup-test.cjs && node scripts/test-guard.mjs out/tests/backup-test.cjs",
     "test:tray": "node scripts/build-tray-test.mjs && electron scripts/tray-service-test.cjs",
+    "test:linux-session": "esbuild scripts/linux-password-store-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/linux-password-store-test.cjs --alias:electron=./scripts/linux-password-store-electron-stub.ts && node scripts/test-guard.mjs out/tests/linux-password-store-test.cjs && esbuild scripts/tray-residency-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/tray-residency-test.cjs && node scripts/test-guard.mjs out/tests/tray-residency-test.cjs",
     "test:task-expert-binding": "esbuild scripts/task-expert-binding-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/task-expert-binding-test.mjs && node scripts/test-guard.mjs out/tests/task-expert-binding-test.mjs",
     "test:expert-ui": "esbuild scripts/expert-ui-test.tsx --bundle --platform=browser --format=iife --global-name=ExpertUITest --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.png=dataurl --loader:.svg=dataurl --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/expert-ui.js && electron scripts/expert-ui-test.cjs",
     "test:expert-binding-desktop": "node scripts/expert-binding-desktop-test.cjs",
@@ -475,6 +476,7 @@
       "node_modules/node-pty/**/*",
       "node_modules/@napi-rs/keyring/**/*",
       "node_modules/@napi-rs/keyring-win32-x64-msvc/**/*",
+      "node_modules/@napi-rs/keyring-linux-x64-gnu/**/*",
       "extensions/mcp/**/*",
       "!extensions/mcp/**/repo/**",
       "node_modules/onnxruntime-node/**/*",
@@ -489,6 +491,7 @@
       "**/node_modules/better-sqlite3/**/*",
       "**/node_modules/@napi-rs/keyring/**/*",
       "**/node_modules/@napi-rs/keyring-win32-x64-msvc/**/*",
+      "**/node_modules/@napi-rs/keyring-linux-x64-gnu/**/*",
       "**/node_modules/node-pty/**",
       "**/node_modules/jiti/**",
       "**/node_modules/onnxruntime-node/**",
@@ -512,6 +515,20 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "synopsis": "MyBuddy desktop agent",
+      "executableName": "mybuddy",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   },
   "optionalDependencies": {
