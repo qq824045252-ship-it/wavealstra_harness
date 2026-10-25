@@ -24,7 +24,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # pnpm 9 不读取 pnpm-workspace.yaml 里的 overrides。
+          # 用 9.15.9 做 frozen install 会报 ERR_PNPM_LOCKFILE_CONFIG_MISMATCH，
+          # node_modules 装不上，后面的 tsc 也就不存在。
+          # 11.28.8 能读这份配置，并且与当前 lockfile 的 frozen install 一致。
+          version: 11.28.8
 
       - uses: actions/setup-node@v4
         with:
@@ -33,7 +37,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        continue-on-error: true
 
       - name: Typecheck
         run: pnpm -s typecheck
