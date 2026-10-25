@@ -35,19 +35,38 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # MSBuild 仍走 260 字符的旧路径 API。runner 上的
+      # D:\a\wavealstra_harness\wavealstra_harness 加上 pnpm 带 patch hash 的
+      # node-pty 虚拟目录后，node-addon-api 的 vcxproj 中间文件会超限。
+      # 拷到真实短目录 C:\r（不用 junction，避免 Node realpath 又变回长路径）。
+      - name: Use a short path for native builds
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\r | Out-Null
+          robocopy $env:GITHUB_WORKSPACE C:\r /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          exit 0
+
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        working-directory: C:\r
+        run: |
+          pnpm config set virtualStoreDirMaxLength 40 --location global
+          pnpm install --frozen-lockfile
 
       - name: Typecheck
+        working-directory: C:\r
         run: pnpm -s typecheck
 
       - name: Harness quality gate
+        working-directory: C:\r
         run: pnpm -s test:harness-quality
 
       - name: Artifact machine gate
+        working-directory: C:\r
         run: pnpm -s test:artifact-gate
 
       # 棘轮门禁：新增回归 → 失败；scripts/test-baseline.json 中的已知失败
       # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
       - name: Full default suite (ratchet gate)
+        working-directory: C:\r
         run: pnpm -s test:all
