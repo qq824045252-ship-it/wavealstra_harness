@@ -9,7 +9,7 @@ import { closeSync, copyFileSync, existsSync, openSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
 import appIconPath from "./assets/app.ico?asset";
 import appPngPath from "./assets/app.png?asset";
 import trayPngPath from "./assets/tray.png?asset";
@@ -230,6 +230,8 @@ import { CadRuntimeService } from "./cad/CadRuntimeService";
 import { CadArtifactService } from "./cad/CadArtifactService";
 import { FreeCadInterop } from "./cad/FreeCadInterop";
 import { TrayService } from "./TrayService";
+import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
+import { getRuntimeLogger } from "./runtime-logging";
 import { NotificationService } from "./notification/NotificationService";
 import { NotificationIpc, type NotificationListRequest } from "../shared/notification";
 import {
@@ -331,6 +333,26 @@ let selectionPopover: SelectionPopover | null = null;
 let htmlEditService: HtmlEditService | null = null;
 let reopenSelectionComment: (() => void) | null = null;
 let perfStartupReported = false;
+
+// §5-7 崩溃可观测性（必须在 app ready 前装配）：
+// - crashDumps 固定到 <MyBuddyDir>/crashdumps，crashReporter 只落本地、不上传；
+// - 主进程运行日志落 <MyBuddyDir>/logs/main-YYYYMMDD.log（按天/大小轮转，保留 7 份）；
+// - uncaughtException / unhandledRejection 记录完整栈与进程信息后交回 Node 默认处理；
+// - render/child process gone 写日志 + 用户可见通知（同类事件节流，避免崩溃循环刷屏）。
+const runtimeLogger = getRuntimeLogger();
+configureCrashReporting({
+  app,
+  crashReporter,
+  logger: runtimeLogger,
+  productName: "MyBuddy",
+  version: app.getVersion(),
+  platform: process.platform,
+});
+installFaultHandlers({ logger: runtimeLogger });
+const reportProcessGone = createProcessGoneReporter({
+  logger: runtimeLogger,
+  publish: (notification) => notificationService?.publish(notification),
+});
 
 // P3-6：单实例 —— 第二个实例直接退出并聚焦/恢复主窗口（复用托盘恢复路径），
 // 保证同一时刻只有一个 MyBuddy 实例写用户设置（settings.json 无跨实例合并）。
@@ -578,14 +600,22 @@ function createWindow(initialTheme: AppTheme = "light"): void {
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return; // ERR_ABORTED
     console.error("[renderer] did-fail-load", { errorCode, errorDescription, validatedURL });
+    runtimeLogger.error("renderer", `did-fail-load code=${errorCode} ${errorDescription} url=${validatedURL}`);
   });
 
   win.webContents.on("render-process-gone", (_event, details) => {
     console.error("[renderer] render-process-gone", details);
     if (details.reason === "clean-exit") return;
+    // 退出/重启流程里 renderer 会被一起结束：只记日志，不重载、不发用户通知（避免每次 stop 弹窗）。
+    if (quitCleanupPromise || quitCleanupComplete) {
+      runtimeLogger.warn("renderer", `render-process-gone during shutdown：reason=${details.reason} exitCode=${details.exitCode}`);
+      return;
+    }
+    reportProcessGone("renderer", details);
     if (win.isDestroyed()) return;
     if (rendererCrashReloads >= 3) {
       console.error("[renderer] 连续崩溃，停止自动刷新。请用托盘右键「刷新」或重启应用。");
+      runtimeLogger.error("renderer", `连续崩溃（已自动重载 ${rendererCrashReloads} 次），停止自动刷新：reason=${details.reason}`);
       return;
     }
     rendererCrashReloads += 1;
@@ -3435,6 +3465,12 @@ app.whenReady().then(async () => {
 app.on("child-process-gone", (_event, details) => {
   if (details.type !== "GPU" && details.type !== "Utility") return;
   console.error("[process] child-process-gone", details);
+  // 应用正在退出时子进程随之结束是正常现象：写日志即可，不触发用户通知。
+  if (quitCleanupPromise || quitCleanupComplete) {
+    runtimeLogger.warn("process", `child-process-gone during shutdown：type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`);
+    return;
+  }
+  reportProcessGone("child", details);
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
     win.webContents.invalidate();
