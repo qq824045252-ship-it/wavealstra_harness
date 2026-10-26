@@ -1,0 +1,82 @@
+{
+  "$comment": "架构图门禁棘轮基线（scripts/architecture-graph-test.ts）。只允许记录**既有**例外：新增越层 / 新增运行期环 / 文件超限都必须先在代码上解决；确属有意设计才写进这里，并在 note 里写明原因与处置计划。基线只允许收紧——条目消失后请删除（脚本会打印建议）。本文件只由人工更新，禁止让测试自己改写（避免「测试改基线」式假绿）。更新流程：① 改完代码跑 node out/tests/architecture-graph-test.cjs --print-baseline > /tmp/b.json；② 人工把差异合并进本文件（保留既有 note 与各段 $comment）；③ 把 $source.head 改成当前 git rev-parse --short HEAD、generatedAt 改成当前时间。",
+  "$source": {
+    "head": "e112984",
+    "generatedAt": "2026-10-26T22:16:36.263Z",
+    "generator": "scripts/architecture-graph-test.ts --print-baseline",
+    "fileCount": 747,
+    "edgeCount": 2618
+  },
+  "layers": {
+    "$comment": "规则：src/renderer ↛ src/main|src/preload（只能经 preload 白名单）；src/preload ↛ 两端；src/shared ↛ 三端；shared/src（workspace 包）↛ src/**；app/remote（安卓客户端）↛ src/main|src/renderer。当前实测仅 app/remote→src/renderer 1 条，其余方向为 0。",
+    "allow": [
+      {
+        "key": "layer:app/remote/src/components/RemoteMarkdown.tsx->src/renderer/src/components/common/SvgFencePreview.tsx",
+        "detail": "app/remote/src/components/RemoteMarkdown.tsx:8 → src/renderer/src/components/common/SvgFencePreview.tsx",
+        "note": "待共享组件下沉：移动端与桌面端刻意共用同一 SVG fence 预览与校验路径（组件注释已写明），但物理位置在桌面 renderer 里，安卓端用 4 级相对路径穿越。处置：把 SvgFencePreview.tsx（178 行，仅依赖 react + renderer 的 icons.tsx）下沉到 shared/src 后删除本条目；下沉前不得再新增任何 app/remote→src/renderer 导入。"
+      }
+    ]
+  },
+  "runtimeCycles": {
+    "$comment": "剔除 `import type` / `export type`（编译期擦除，不产生运行期环）后的强连通分量（Tarjan）。key = 排序后的成员路径以 | 连接。基线外出现任何 >1 节点的 SCC → FAIL。",
+    "allow": [
+      {
+        "key": "cycle:src/main/capabilities/web-access/extract.ts|src/main/capabilities/web-access/gemini-url-context.ts|src/main/capabilities/web-access/video-extract.ts|src/main/capabilities/web-access/youtube-extract.ts",
+        "members": [
+          "src/main/capabilities/web-access/extract.ts",
+          "src/main/capabilities/web-access/gemini-url-context.ts",
+          "src/main/capabilities/web-access/video-extract.ts",
+          "src/main/capabilities/web-access/youtube-extract.ts"
+        ],
+        "note": "provider 注册表与调度器互为依赖：extract.ts 静态 import 13 个 provider，其中 gemini-url-context / video-extract / youtube-extract 又 import 回 extract.ts。当前靠 ESM 提升才不炸。处置：把 provider 列表抽成只含数据的 provider-registry.ts，provider 只 import registry + 类型（成本 S，见 artifacts/audit-2026-10-26/architecture-debt.md §2.2 环 1）。"
+      }
+    ]
+  },
+  "fileSizes": {
+    "$comment": "行数棘轮（防止巨型文件继续膨胀）：>= floor 行的文件在此记录当前行数，允许继续增长 maxGrowth 行；基线外的新文件不得超过 maxNew 行。文件变小（重构生效）后请手动下调对应数值，脚本会打印「可下调基线」提示。",
+    "maxGrowth": 200,
+    "maxNew": 2500,
+    "floor": 1000,
+    "entries": {
+      "src/renderer/src/store/appStore.ts": 6562,
+      "src/main/agent/AgentService.ts": 5992,
+      "src/main/db/AppDatabase.ts": 3819,
+      "src/main/index.ts": 3521,
+      "src/main/capabilities/web-access/curator-page.ts": 3471,
+      "src/main/capabilities/web-access/index.ts": 3292,
+      "src/renderer/src/components/chat/ChatInput.tsx": 2310,
+      "src/shared/agent-ipc.ts": 2305,
+      "src/renderer/src/components/settings/ModesTab.tsx": 2285,
+      "src/main/library/LibraryService.ts": 2055,
+      "app/remote/src/App.tsx": 1998,
+      "src/renderer/src/components/pages/AutomationPage.tsx": 1915,
+      "src/renderer/src/components/pages/HubPage.tsx": 1762,
+      "src/renderer/src/components/settings/SettingsModal.tsx": 1515,
+      "src/main/external-agent/ExternalAgentRuntime.ts": 1476,
+      "src/main/experts/ExpertService.ts": 1475,
+      "src/main/capabilities/subagent/index.ts": 1425,
+      "src/main/capabilities/ComputerAutomationService.ts": 1401,
+      "src/renderer/src/components/chat/InputAddMenu.tsx": 1378,
+      "src/preload/index.ts": 1375,
+      "src/main/skills/SkillsService.ts": 1214,
+      "src/shared/workspace-shared-context.ts": 1196,
+      "src/main/memory/MemoryService.ts": 1174,
+      "src/renderer/src/components/settings/MemoryKernelExplorer.tsx": 1171,
+      "src/renderer/src/components/settings/ModelsTab.tsx": 1165,
+      "src/main/project/ProjectService.ts": 1139,
+      "app/remote/src/store/remoteStore.ts": 1129,
+      "src/renderer/src/components/chat/ChatView.tsx": 1115,
+      "src/main/project/ProjectRepository.ts": 1110,
+      "src/main/mcp/McpConfigService.ts": 1085,
+      "src/main/capabilities/subagent/runtime.ts": 1075,
+      "src/renderer/src/components/pages/library/LibraryPage.tsx": 1058,
+      "src/main/capabilities/builtin-capability-extension.ts": 1049,
+      "src/renderer/src/components/Sidebar.tsx": 1022,
+      "src/main/capabilities/web-access/extract.ts": 1018
+    }
+  },
+  "preloadContract": {
+    "$comment": "src/preload/index.ts 的 `api` 对象键数。脚本断言它与手写的 src/preload/index.d.ts 的 PreloadApi 键集合完全一致（当前 53 键，实测一致）；本数值变化只作为提示打印，用于提醒审查「新增 IPC 方法是否同步了三处手写契约」。",
+    "keys": 53
+  }
+}
