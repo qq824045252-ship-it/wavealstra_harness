@@ -1,5 +1,8 @@
 # MyBuddy (MyBuddy) — 软件当前状态
 
+> **2026-10-27 更新（以此为准）**：产品版本 0.1.49；Pi SDK **1.3.0**（`@earendil-works/pi-*`）、Electron **44.5.1**、TypeScript **7.0.2**、pnpm **12.14.0**（`packageManager`）、Node 24+；Linux（Omarchy / Wayland）已内置适配（托盘 PNG、gnome-libsecret、Linux 打包 `pack:linux`，见 [omarchy-linux.md](omarchy-linux.md)），Windows 发布流程见 [AGENTS.md](../AGENTS.md)；default 测试套件为 headless 253 个用例（`pnpm -s test:all`），GUI 套件用 `pnpm -s test:all:gui`。
+> **以下 §1–§8 是 2026-08-08 的历史快照**：架构理念与大部分实现描述仍适用，但版本号、命令、测试数量与部分功能清单已过期；与代码冲突时以代码和 AGENTS.md 为准。
+
 > 本文件供第三方 AI / 开发者快速了解本项目：架构、实现原理、已实现功能、数据存储、IPC 契约、剩余工作与注意事项。
 > 最后核对时间：2026-08-08（V3.5 收口批次：Wave 1–3 封板，分支 `cursor/mybuddy-ui-parity`）。
 > 深入版架构分析见同仓库《架构分析.md》（进程模型、15 项核心实现原理、运行方式、安全设计）。
@@ -28,13 +31,13 @@
 
 | 类别 | 内容 |
 |---|---|
-| 运行时 | Electron ^37、Node（Electron 内置）、React ^19、Zustand ^5 |
-| 构建 | electron-vite ^4、Vite ^7、TypeScript ^5.8、pnpm（Node 24） |
-| AI | `@earendil-works/pi-coding-agent` ^0.83（createAgentSession / ModelRuntime / SessionManager / DefaultResourceLoader / loadSkills / SettingsManager） |
-| MCP | `pi-mcp-adapter` ^2.20.1（esbuild 预打包 vendor bundle `src/main/mcp/vendor/pi-mcp-adapter.mjs`） |
+| 运行时 | Electron 44.5.1、Node（Electron 内置 / 开发 Node 24–26）、React ^19、Zustand ^5 |
+| 构建 | electron-vite ^5、Vite ^7、TypeScript 7.0.2、pnpm 12.14.0（`packageManager`，见 package.json） |
+| AI | `@earendil-works/pi-coding-agent` 1.3.0（createAgentSession / ModelRuntime / SessionManager / DefaultResourceLoader / loadSkills / SettingsManager；版本 pin 见 worker-launcher） |
+| MCP | `pi-mcp-adapter`（esbuild 预打包 vendor bundle `src/main/mcp/vendor/pi-mcp-adapter.mjs`） |
 | 存储 | better-sqlite3 ^13（主进程；WAL 模式）、croner ^10（调度） |
 | 文档预览 | jszip（Office 解包）、pdfjs-dist、react-markdown + remark-gfm/math + rehype-highlight/katex + highlight.js |
-| 打包 | electron-builder ^26（nsis，已配置**未实跑**） |
+| 打包 | electron-builder ^26：Windows NSIS（`dist`）+ Linux dir（`pack:linux`）；afterPack payload 门禁全平台执行 |
 
 常用命令（`package.json` scripts，完整测试清单见 §8）：
 

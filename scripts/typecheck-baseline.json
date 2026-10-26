@@ -1,8 +1,7 @@
 {
   "$comment": "scripts/ 的历史 TypeScript 错误基线（棘轮）——只允许减少。修复后请跑 `pnpm -s typecheck:scripts:update-baseline` 重写本文件；切勿为掩盖新错误而新增条目。",
-  "generatedAt": "2026-10-26T09:06:53.205Z",
+  "generatedAt": "2026-10-26T22:15:13.697Z",
   "knownErrors": [
-    "scripts/_tmp_actual_wavealstra_execution_probe.ts :: TS2307 :: Cannot find module '../src/main/execution/ExecutionControlPlane' or its corresponding type declarations.",
     "scripts/acp-permission-policy-test.ts :: TS2339 :: Property 'permissionPolicy' does not exist on type 'ExternalAgentRunDto'.",
     "scripts/agent-loadout-test.ts :: TS2353 :: Object literal may only specify known properties, and 'text' does not exist in type 'Pick<ResolvedMemoryContext, \"items\" | \"profileIds\" | \"scenarioIds\">'.",
     "scripts/agent-loadout-test.ts :: TS2353 :: Object literal may only specify known properties, and 'updatedAt' does not exist in type 'SpaceDto'.",

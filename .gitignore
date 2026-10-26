@@ -85,6 +85,7 @@ scripts/_debug/
 /.tmp-*
 electron.vite.config.*.mjs
 /scripts/.tmp-*
+/scripts/_tmp_*
 /app/remote/android/.workbuddy/
 /app/remote/android/app/build-*/
 /app/remote/android/app/*.mybuddy-tmp
