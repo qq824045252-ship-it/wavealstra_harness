@@ -138,7 +138,7 @@ try {
   const createService = () => {
     const service = new DurableBotService({ db, agentDir: join(sandbox, "bot-agent"), mcpDir: join(sandbox, "bot-mcp"),
       models: fixtureModels, expertBindings: bindings, resolveCwd: () => cwd, defaultModel: () => "fixture/fixture", toolMode: task => task.modePresetId === "codemode" ? "codemode" : "native",
-      instructions: task => bindings.active(task.id)?.instructions ?? "default-identity", emit: patch => patches.push(patch), tools: async () => [hold],
+      instructions: task => bindings.active(task.id)?.instructions ?? "default-identity", emit: patch => patches.push(patch), tools: async () => ({ tools: [hold], contextHooks: [] }),
     });
     (service as any).config.loadRuntimeConfig = () => ({ mcpServers: {
       selected: { url: "http://127.0.0.1:1/mcp", enabled: true },

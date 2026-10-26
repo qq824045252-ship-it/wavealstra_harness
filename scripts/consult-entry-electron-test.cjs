@@ -37,11 +37,21 @@ const exe=executableOverride||(installed?path.join(os.homedir(),'AppData/Local/P
 const args=[...((installed||executableOverride)?[]:[path.join(root,'out/main/index.js')]),'--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port];
 const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local'),PI_CODING_AGENT_DIR:agentDir};delete env.ELECTRON_RUN_AS_NODE;
 fd=fs.openSync(path.join(out,'desktop.log'),'w');child=cp.spawn(exe,args,{cwd:home,env,stdio:['ignore',fd,fd],windowsHide:true});report.pid=child.pid;report.port=port;report.executable=exe;save();
-let page;for(let i=0;i<120;i++){try{const xs=await fetch('http://127.0.0.1:'+port+'/json/list').then(r=>r.json());page=xs.find(p=>p.type==='page'&&!p.url.startsWith('devtools'));if(page)break;}catch{}if(child.exitCode!==null)throw Error('Desktop exited: '+child.exitCode);await wait(250);}assert(page,'No desktop page');
+let page;for(let i=0;i<120;i++){try{const xs=await fetch('http://127.0.0.1:'+port+'/json/list').then(r=>r.json());// 应用会同时暴露多个空 URL 的 page target（隐藏 webContents），连上去 Runtime.enable 永不返回；
+// 必须挑 URL 已就绪的那个（file://…/out/renderer/index.html 或 http://）。
+page=xs.find(p=>p.type==='page'&&/^(file:|http:)/.test(p.url)&&!p.url.startsWith('devtools'));if(page)break;}catch{}if(child.exitCode!==null)throw Error('Desktop exited: '+child.exitCode);await wait(250);}assert(page,'No desktop page');
 socket=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});socket.addEventListener('message',e=>{const m=JSON.parse(e.data),p=pending.get(m.id);if(!p)return;pending.delete(m.id);clearTimeout(p.timer);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);});
 await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1360,height:1000,deviceScaleFactor:1,mobile:false});
 await until('Boolean(window.api?.agent?.getBuiltinCapabilities && document.querySelector("textarea"))',30000);
 report.initial=await evaluate('(async()=>{const s=await window.api.agent.getBuiltinCapabilities();return {multiModelConsult:s.config.multiModelConsult,buttons:[...document.querySelectorAll("button")].slice(-15).map(e=>({text:e.textContent,title:e.title,aria:e.getAttribute("aria-label")}))};})()');save();
+// 本用例校验「已保存的多模型会诊配置」的端到端行为：需要 profile 里已存在 enabled + participants
+// （开发机/Windows 上通常有；CI 与新机器的 profile 是空的，UI 根本没有会诊入口）。
+// 前置条件不满足时显式 SKIP，而不是伪造一份产品配置去迎合断言。
+if(!report.initial?.multiModelConsult?.enabled){
+  console.log('SKIP consult-entry:desktop —— 当前 profile 未配置多模型会诊（multiModelConsult.enabled=false）');
+  try{child.kill();}catch{}
+  process.exit(0);
+}
 await test('saved configuration selects this-message chip without opening settings',async()=>{const s=await selectConsult();await screenshot('configured-selection');assert(s.chip,JSON.stringify(s));assert(!s.settings,JSON.stringify(s));return s;});
 await test('reselecting consult stays in composer',async()=>{if(await evaluate('Boolean(document.querySelector("button[aria-label=\\"移除多模型会诊\\"]"))'))await click('button[aria-label="移除多模型会诊"]');const s=await selectConsult();assert(s.chip,JSON.stringify(s));assert(!s.settings,JSON.stringify(s));return s;});
 

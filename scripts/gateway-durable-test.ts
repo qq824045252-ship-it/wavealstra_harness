@@ -41,7 +41,7 @@ const models:any={refresh:async()=>{},getAvailable:async()=>[model],getModel:()=
 }};
 models.completeSimple=(m:any,c:any,o:any)=>models.streamSimple(m,c,o).result();
 const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:()=>"codemode",
-  instructions:()=>"fixture",tools:async()=>[hold],emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
+  instructions:()=>"fixture",tools:async()=>({ tools:[hold], contextHooks:[] }),emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
 let durable=createService();
 const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
