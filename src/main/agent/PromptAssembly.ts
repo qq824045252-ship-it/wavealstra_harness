@@ -197,7 +197,7 @@ export function mapBtwProjectContextSegments(
   opts: { catalog: string | null; attachments: string | null },
 ): string[] {
   const planSummary = context?.planSummary ?? null;
-  return segments
+  const parts = segments
     .filter((s) => s.id !== "workspace")
     .map((s) => {
       if (s.id === "projectPlan") {
@@ -223,6 +223,14 @@ export function mapBtwProjectContextSegments(
       return s.content;
     })
     .filter((part): part is string => Boolean(part));
+  // Evidence 段（projectPlan/projectSharedContext/...）在主会话装配里被
+  // `ephemeralEvidence` 过滤掉，由每轮 request projection 提供。但 BTW 瞬时会话的
+  // 工具面是只读的，必须保留「只读计划」使用指引，否则计划指引与工具面不一致
+  // （test:project-agent 的 P1 收口断言）。这里在父装配缺失该段时按当前 context 补齐。
+  if (planSummary && !segments.some((segment) => segment.id === "projectPlan")) {
+    parts.push(renderProjectPlanContext(planSummary, false));
+  }
+  return parts;
 }
 
 /** Pinned Library 引用段：只给标题/id/类型（reference，不复制内容）；与任务显式附加去重。

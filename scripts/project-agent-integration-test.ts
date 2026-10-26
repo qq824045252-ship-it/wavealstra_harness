@@ -246,10 +246,24 @@ try {
     expertId: "blocked-expert",
     connectorIds: ["blocked-connector"],
   });
-  assert.equal(sdkCalls, 2, "File resource content change must recreate the runtime session");
-  const changedSnapshot = agent.listRuntimeContextSnapshots("runtime-task")[0];
-  assert.notEqual(changedSnapshot?.assemblyHash, snapshots[0]?.assemblyHash);
-  assert.ok(changedSnapshot?.resolvedInstructions.some((segment) => segment.content.includes("resource revision two")));
+  assert.equal(
+    sdkCalls,
+    1,
+    "File resource content change must not recreate the session (project evidence is request-only)",
+  );
+  const changedSnapshots = agent.listRuntimeContextSnapshots("runtime-task");
+  assert.equal(changedSnapshots.length, 2, "Every accepted prompt records its own runtime snapshot");
+  const changedSnapshot = changedSnapshots[0];
+  assert.equal(
+    changedSnapshot?.assemblyHash,
+    snapshots[0]?.assemblyHash,
+    "Evidence-only content change must keep the same runtime assembly hash",
+  );
+  assert.equal(
+    changedSnapshot?.resolvedInstructions.some((segment) => segment.content.includes("resource revision two")),
+    false,
+    "Request-only evidence must not leak into the execution audit snapshot (EphemeralContextProjection)",
+  );
   projects.update({ id: project.id, instructions: "Changed after execution" });
   assert.ok(
     snapshots[0]?.resolvedInstructions.some((segment) =>
@@ -285,9 +299,9 @@ try {
     welcomeMode: "coding",
   });
   assert.equal(noProjectResult.queued, false);
-  assert.equal(sdkCalls, 3);
+  assert.equal(sdkCalls, 2);
   assert.equal(
-    assembledCalls[2].some((part) => part.includes(project.instructions ?? "")),
+    assembledCalls[1].some((part) => part.includes(project.instructions ?? "")),
     false,
     "No-Project Task must preserve the previous assembly behavior",
   );
@@ -387,8 +401,9 @@ try {
     "Main task session registers project plan + unified memory tools",
   );
   assert.equal(seenSessions[0]?.tools, undefined, "Main task session keeps default (unrestricted) tool surface");
-  // 2: no-project-task / 3: global-gate-task（未绑定项目）→ 不注入 plan/memory 工具
-  for (const index of [2, 3]) {
+  // 1: no-project-task / 2: global-gate-task（未绑定项目）→ 不注入 plan/memory 工具
+  // （runtime-task 只创建一次会话：资源内容变化走 request-only evidence，不重建 session）
+  for (const index of [1, 2]) {
     assert.ok(
       seenSessions[index] &&
         planToolNames.every((name) => !seenSessions[index]!.extensionToolNames.includes(name)) &&
@@ -431,7 +446,9 @@ try {
   );
   assert.ok(
     !unboundBtw?.append.some(
-      (part) => part.includes("项目共享计划") || part.includes("项目共享记忆"),
+      // 只看段标题：内置 memoryRules 文案本身会提到「项目共享记忆（事实/决策/…）随证据提供」，
+      // 用裸子串会把这段通用说明误判成 projectMemory 段。
+      (part) => part.includes("## 项目共享计划（Project Plan）") || part.includes("## 项目共享记忆"),
     ),
     "BTW after project unbind has no projectPlan/projectMemory guidance segments",
   );

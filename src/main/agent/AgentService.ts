@@ -3887,8 +3887,19 @@ export class AgentService {
     // binding 覆盖。0.1.17 引入 binding 覆盖后，team:* 会被静默吸收而不再是显式拒绝
     // （新增于 3261a43，导致 runtime-skill-loader-test T1 由通过转为失败）；这里恢复该边界。
     assertSingleExpertId(req.expertId);
-    req = { ...req, expertId: taskBinding ? activeIdentity?.sourceExpertId : req.expertId,
-      connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds) };
+    // 审计契约（§5-8）：执行快照必须保留「本轮请求的 Expert」决定，即使它被项目策略拒绝。
+    // 旧实现只要存在 binding 行就无条件改用 activeIdentity：当 legacy 专家导入失败被清空
+    // （binding 行存在但 desired/active 都为 null）时，显式传入的 expertId 会被吞掉，
+    // 快照里连一条 project_policy_denied 的 expert 决定都不会留下（test:project-agent）。
+    // 回退顺序：已生效的 binding → binding 的 desired → 本轮显式请求。
+    const explicitExpertId = req.expertId;
+    req = {
+      ...req,
+      expertId: taskBinding
+        ? activeIdentity?.sourceExpertId ?? taskBinding.desired?.sourceExpertId ?? explicitExpertId
+        : explicitExpertId,
+      connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds),
+    };
     const welcomeMode = resolveWelcomeMode(req.welcomeMode, taskConfig?.welcomeMode);
     const projectContext = this.projectContextResolver.resolveTask(req.taskId);
     const gatingProfile = this.modeProfiles.getProfile(welcomeMode);

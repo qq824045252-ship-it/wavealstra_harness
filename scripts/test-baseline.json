@@ -1,11 +1,9 @@
 {
   "$comment": "已知失败基线（棘轮 / ratchet）。test:all 允许这些用例失败但会打印出来，任何*新增*失败会让门禁失败。修复后请用 `pnpm -s test:all:update-baseline` 重写本文件（或手动删除已修复条目）。切勿为掩盖真实回归而新增条目。",
   "$basis": "2026-10-09：本仓库只支持当前 Pi 版本 1.3.0。旧版本（0.99.x / 0.99.2）的 9 个 test 条目及其 49 个脚本已删除（见 artifacts/quality-audit/pi-legacy-purge.md），default 套件由 249 降为 241 个用例。",
-  "generatedAt": "2026-10-09T05:56:36.640Z",
-  "knownFailing": [
-    "test:project-agent"
-  ],
-  "$remaining": {
-    "test:project-agent": "执行审计快照 resolvedCapabilities 未保留「被项目策略拒绝的 Expert」（expertId='blocked-expert' 确有传入，执行前 inspectRuntimeContext 正确包含）。这是产品行为问题，需产品决策：审计快照是否应保留被拒的 Expert；不宜由测试擅自迁就实现，也不宜由实现迁就测试。"
+  "generatedAt": "2026-10-27T00:00:00.000Z",
+  "knownFailing": [],
+  "$resolved": {
+    "test:project-agent": "2026-10-27 修复（审计 §5-8）：1) 执行审计快照保留被项目策略拒绝的 Expert 决定（reason=project_policy_denied）；2) 恢复 BTW 瞬时会话的只读项目计划指引（evidence 改为 request-only 后父装配不再含 projectPlan 段）；3) 资源内容变化属于每轮请求证据，不再要求重建 session，测试按现行架构对齐并修掉 BTW 断言里「项目共享记忆」裸子串误伤通用 memoryRules 文案。"
   }
 }
