@@ -145,6 +145,36 @@ function importedConnectorMarketRoot(): string {
   return join(getConnectorMarketDir(), "connectors");
 }
 
+/**
+ * 解析已安装连接器的注册目录（~/.mybuddy/plugins/connectors/<id>/）。
+ *
+ * 注册目录名沿用「安装时连接器包目录名」的大小写（例如 demoX），而启用/停用、Active 判定、
+ * 私有技能目录解析的入参 id 大小写不可控（往往被调用方 lowercase）。NTFS/APFS 默认大小写不敏感
+ * 所以历史上没暴露，但 Linux 的 ext4 区分大小写 —— 必须按小写比对，找到真实目录名。
+ * 非法 id（空、含路径分隔符）直接返回 null，避免越界访问。
+ */
+function resolveConnectorRegDir(id: string): string | null {
+  const key = String(id ?? "").trim().toLowerCase();
+  if (!key || /[\\/]/.test(key)) return null;
+  const root = getConnectorsDir();
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    if (name.toLowerCase() !== key) continue;
+    const dir = join(root, name);
+    try {
+      if (statSync(dir).isDirectory()) return dir;
+    } catch {
+      /* 竞态删除：继续找 */
+    }
+  }
+  return null;
+}
+
 function normalizeImportedConnectorId(raw: string): string {
   const id = raw
     .trim()
@@ -283,9 +313,8 @@ export class ConnectorService {
     // 已安装连接器的安装时间/启用状态（从注册 meta 读）
     for (const dto of out) {
       if (!dto.installed) continue;
-      const reg = readJson<ConnectorRegistration>(
-        join(getConnectorsDir(), dto.id, "meta.json"),
-      );
+      const regDir = resolveConnectorRegDir(dto.id);
+      const reg = regDir ? readJson<ConnectorRegistration>(join(regDir, "meta.json")) : undefined;
       dto.installedAt = reg?.installedAt;
       // 缺省 enabled（旧安装无该字段）视为启用，保证不破坏旧行为
       dto.enabled = reg?.enabled !== false;
@@ -375,8 +404,11 @@ export class ConnectorService {
     const connector = this.list().find((c) => c.id.toLowerCase() === key || c.name.toLowerCase() === key);
     if (!connector) throw new Error(`未找到连接器: ${id}`);
 
-    // 注册安装状态
-    const regDir = join(getConnectorsDir(), connector.id);
+    // 注册安装状态：目录名统一用小写 id 落盘，并清理历史上大小写变体的遗留注册目录
+    // （Windows 上 demoX/demox 指向同一目录，Linux 上会是两个目录 → 会读到过期状态）。
+    const regDir = join(getConnectorsDir(), connector.id.toLowerCase());
+    const legacyRegDir = resolveConnectorRegDir(connector.id);
+    if (legacyRegDir && legacyRegDir !== regDir) rmSync(legacyRegDir, { recursive: true, force: true });
     if (existsSync(regDir)) rmSync(regDir, { recursive: true, force: true });
     mkdirSync(regDir, { recursive: true });
 
@@ -444,8 +476,9 @@ export class ConnectorService {
    * 停用后其 Private Skills 不再进入会话候选技能集（getPrivateSkillDirs 过滤）。
    */
   setEnabled(id: string, enabled: boolean): void {
-    const regDir = join(getConnectorsDir(), id.toLowerCase());
-    if (!existsSync(regDir) || !statSync(regDir).isDirectory()) {
+    // 注册目录名大小写随安装时的包名，调用方传入的 id 大小写不可控 → 按大小写不敏感解析。
+    const regDir = resolveConnectorRegDir(id);
+    if (!regDir) {
       throw new Error(`连接器未安装: ${id}`);
     }
     const reg = readJson<ConnectorRegistration>(join(regDir, "meta.json")) ?? {};
@@ -457,12 +490,8 @@ export class ConnectorService {
   isActive(id: string): boolean {
     const normalized = String(id ?? "").trim().toLowerCase();
     if (!normalized || /[\\/]/.test(normalized)) return false;
-    const regDir = join(getConnectorsDir(), normalized);
-    try {
-      if (!existsSync(regDir) || !statSync(regDir).isDirectory()) return false;
-    } catch {
-      return false;
-    }
+    const regDir = resolveConnectorRegDir(normalized);
+    if (!regDir) return false;
     const reg = readJson<ConnectorRegistration>(join(regDir, "meta.json"));
     return reg?.enabled !== false;
   }
@@ -473,23 +502,14 @@ export class ConnectorService {
    * 非自有/共享技能绝不动。
    */
   uninstall(id: string): void {
-    // 不依赖 list()（会过滤隐藏项）：直接读注册目录
-    const candidates = [id, id.toLowerCase()];
-    let regDir: string | null = null;
+    // 不依赖 list()（会过滤隐藏项）：直接按大小写不敏感解析注册目录
+    let regDir: string | null = resolveConnectorRegDir(id);
     let connectorId = id;
-    for (const c of candidates) {
-      const d = join(getConnectorsDir(), c);
-      if (existsSync(d)) {
-        regDir = d;
-        connectorId = c;
-        break;
-      }
-    }
     // 再按 list 匹配 name
     if (!regDir) {
       const connector = this.list().find((c) => c.id === id || c.name === id);
       if (!connector?.installed) throw new Error(`连接器未安装: ${id}`);
-      regDir = join(getConnectorsDir(), connector.id);
+      regDir = resolveConnectorRegDir(connector.id) ?? join(getConnectorsDir(), connector.id.toLowerCase());
       connectorId = connector.id;
     }
     // 旧版全局副本清理（meta 校验过才删，防误删共享技能）
@@ -514,11 +534,12 @@ export class ConnectorService {
    */
   getPrivateSkillDirs(ids: string[]): string[] {
     const out: string[] = [];
-    const root = getConnectorsDir();
     for (const raw of ids ?? []) {
       const id = String(raw ?? "").trim().toLowerCase();
-      if (!this.isActive(id)) continue;
-      const regDir = join(root, id);
+      if (!id || /[\\/]/.test(id)) continue;
+      // 注册目录名可能保留安装时的大小写（demoX），必须大小写不敏感解析
+      const regDir = resolveConnectorRegDir(id);
+      if (!regDir || !this.isActive(id)) continue;
       const dir = join(regDir, "skills");
       if (!existsSync(dir)) continue;
       try {
@@ -544,7 +565,6 @@ export class ConnectorService {
   migrateLegacyGlobalSkills(): { migrated: number; removed: number; skipped: number } {
     const stats = { migrated: 0, removed: 0, skipped: 0 };
     const skillsRoot = getSkillsDir();
-    const connectorsRoot = getConnectorsDir();
     if (!existsSync(skillsRoot)) return stats;
     for (const name of readdirSync(skillsRoot)) {
       if (/[\\/]/.test(name)) {
@@ -566,8 +586,9 @@ export class ConnectorService {
         stats.skipped += 1;
         continue;
       }
-      const regDir = join(connectorsRoot, connectorId);
-      if (!existsSync(regDir) || !statSync(regDir).isDirectory()) continue; // 注册缺失：保留
+      // 大小写不敏感解析注册目录（注册名保留安装时大小写，Linux 上不能直接 join 小写 id）
+      const regDir = resolveConnectorRegDir(connectorId);
+      if (!regDir) continue; // 注册缺失：保留
       const destRoot = join(regDir, "skills");
       try {
         const target = join(destRoot, name.toLowerCase());

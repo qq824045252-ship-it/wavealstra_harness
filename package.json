@@ -68,6 +68,7 @@
     "test:expert-binding-desktop": "node scripts/expert-binding-desktop-test.cjs",
     "test:expert": "esbuild scripts/expert-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/expert-test.cjs && node scripts/test-guard.mjs out/tests/expert-test.cjs",
     "test:expert-market": "esbuild scripts/expert-market-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/expert-market-smoke.cjs && node scripts/test-guard.mjs out/tests/expert-market-smoke.cjs",
+    "test:connector-id-case": "esbuild scripts/connector-id-case-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/connector-id-case-test.mjs && node scripts/test-guard.mjs out/tests/connector-id-case-test.mjs",
     "test:skill-connector": "esbuild scripts/skill-connector-smoke.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/skill-connector-smoke.mjs && node scripts/test-guard.mjs out/tests/skill-connector-smoke.mjs",
     "test:skill-authoring": "esbuild scripts/skill-authoring-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/skill-authoring-test.mjs && node scripts/test-guard.mjs out/tests/skill-authoring-test.mjs",
     "test:mode": "esbuild scripts/mode-profile-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/mode-profile-test.cjs --external:electron && node scripts/test-guard.mjs out/tests/mode-profile-test.cjs",
