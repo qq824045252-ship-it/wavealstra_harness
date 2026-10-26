@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * test-all.mjs — 统一测试聚合门禁（default 套件）。
+ * test-all.mjs — 统一测试聚合门禁。
  *
- * 背景：仓库有 290+ 个 `test:*` 脚本，但既无聚合入口也无 CI，导致「过期常量」
+ * 背景：仓库有 320+ 个 `test:*` 脚本，但既无聚合入口也无 CI，导致「过期常量」
  * （如断言 Pi 1.0.0 而实际 1.3.0）与「源码文本断言」长期腐烂而无人察觉。
  *
  * 设计（棘轮 ratchet，避免"上线即全红→被忽略"）：
- *   - 跑 default 套件（排除需要 GUI/CDP/GPU 与联网 live 的用例，见 EXCLUDE_PATTERNS）。
+ *   - default 套件只跑 headless 用例；GUI/NETWORK/DATASET 三类显式分类后再排除
+ *     （见下方 GUI_TESTS / NETWORK_TESTS / DATASET_TESTS）。
+ *   - GUI 类可用 `--include-gui` 单独放行（真实桌面会话）；`--include-live` 放行全部。
  *   - 与 scripts/test-baseline.json 中记录的已知失败对比：
  *       * 新增失败（回归）→ 退出码 1（门禁失败）
  *       * 已知失败仍失败 → 允许，但在输出中列出，债务保持可见
@@ -14,9 +16,12 @@
  *   - 未在 baseline 中且通过的用例正常通过。
  *
  * 用法：
- *   node scripts/test-all.mjs                 # 顺序跑（默认）
+ *   node scripts/test-all.mjs                    # default 套件（headless，并行池 + 串行性能池）
+ *   node scripts/test-all.mjs --include-gui      # default + GUI（需要真实桌面会话/Electron）
+ *   node scripts/test-all.mjs --include-live     # 全部（GUI + NETWORK + DATASET）
+ *   node scripts/test-all.mjs --list             # 只列分类与选中的用例，不执行
+ *   node scripts/test-all.mjs --audit            # 只做分类自检（GUI 清单 vs electron 命令）
  *   node scripts/test-all.mjs --update-baseline  # 记录当前失败集为基线
- *   node scripts/test-all.mjs --include-live     # 连同 GUI/live 一起跑
  *   node scripts/test-all.mjs --filter=memory    # 只跑名字含 memory 的
  *
  * 退出码：0 = 无新增失败；1 = 有新增失败；2 = 用法/环境错误。
@@ -45,31 +50,155 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
 const SERIAL_TEST_PATTERNS = [/^test:core-performance/];
 
 /**
- * 需要 GUI / CDP / GPU / 真实桌面会话或联网的用例：在无头 CI 上不可靠。
- * 这些由 `--include-live` 或本地机器单独验证，不进入 default 门禁。
+ * 排除集合分三类（+ 一个临时桶），默认套件只跑 headless 用例：
+ *
+ *   GUI     真实桌面会话/Electron 窗口（--include-gui 放行）
+ *   NETWORK 联网、远程设备、浏览器自动化、本地端口服务（--include-live 放行）
+ *   DATASET 依赖本机数据集或原生模块（--include-live 放行）
+ *   KNOWN_HEADLESS_RED 临时桶：本身 headless，但当前是既有红（见各项原因），
+ *           修好后必须移回 default；只有 --include-live 会跑到，避免把它藏进 GUI job。
+ *
+ * 清单以"显式名字"为准（审计 artifacts/audit-2026-10-26/gate-test-debt.md §2-3）：
+ * 名字正则只做新用例的兜底，不能判断一个用例到底会不会启动 Electron
+ * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
-const EXCLUDE_PATTERNS = [
-  /-e2e$/, // 端到端：脚本里直接 `electron out/tests/...`，且单个用例可达 305s
-  /-desktop$/, // Electron 桌面端 UI（CDP 截图/真实窗口）
-  /-electron$/, // 需要 electron 运行时
-  /:live$/, // 联网/真实服务
-  /^test:remote-/, // 远程访问（需真实网络+GUI）
-  /^test:browser-/, // 浏览器自动化（需 CDP）
-  /^test:computer-/, // 计算机使用（需真实桌面 + Windows 自动化）
-  /^test:streaming-live$/,
-  /^test:durable-bot$/,
-  /^test:multi-search-live$/,
-  /^test:workspace-files-ui$/, // 需 GUI 文件面板
-  /^test:models-settings-overlay$/,
-  /^test:terminal$/, // 需 node-pty 原生模块
-  // 依赖 gitignore 的官方市场归档 `mybuddyskills-main/`（约 294 技能）：该用例从市场安装真实
-  // blender-* 技能，归档不存在时**无法**通过（不是代码缺陷）。需在具备该数据集的机器上单独跑。
-  /^test:blender-skill$/,
-];
+const GUI_TESTS = new Set([
+  // 真 Electron 窗口（隐藏 BrowserWindow / 真实 UI 交互）
+  "test:memory-ui",
+  "test:tray",
+  "test:expert-ui",
+  "test:project-create-folder-ui",
+  "test:project-materials-ui",
+  "test:project-activity-ui",
+  "test:consult-card-ui",
+  "test:settings-records-ui",
+  "test:svg-preview-resize",
+  "test:consult-selection",
+  "test:consult-entry:desktop",
+  // Electron 运行时 / e2e
+  "test:html-edit-electron",
+  "test:local-capabilities-electron",
+  "test:runtime-probe-electron",
+  "test:browser-refresh",
+  "test:browser-navbar-ui",
+  "test:browser-screenshot-electron",
+  // 性能用例里会 spawn 真实 Electron（core-performance-all 内部还串联 electron 用例）
+  "test:core-performance-electron",
+  "test:core-performance-mybuddy-startup",
+  "test:core-performance-all",
+  "test:wave4-e2e",
+  "test:wave5a-e2e",
+  "test:wave5b-e2e",
+  "test:wave5c-e2e",
+  "test:wave5d1-e2e",
+  "test:wave5d2-e2e",
+  "test:wave5d3-e2e",
+  "test:pdf-runtime-e2e",
+  "test:pdf-page-identity-e2e",
+  "test:artifact-open-e2e",
+  // -desktop
+  "test:chat-attachment-acp-desktop",
+  "test:expert-binding-desktop",
+  "test:memory-lifecycle-desktop",
+  "test:magpie-desktop",
+  "test:multi-search-desktop",
+  "test:durable-bot-desktop",
+  "test:archive-deletion-desktop",
+  "test:task-status-dot-desktop",
+  "test:remote-task-dot-ui-desktop",
+  "test:sidebar-space-collapse-desktop",
+  "test:computer-use-desktop",
+  // Windows 桌面自动化（UIA/真实桌面）
+  "test:computer-use-recovery",
+  "test:computer-automation",
+  "test:computer-use-run",
+  "test:computer-use-overlay",
+  "test:computer-automation-windows",
+]);
+
+const NETWORK_TESTS = new Set([
+  "test:remote-workspace-create",
+  "test:remote-access",
+  "test:remote-renderer-stdio",
+  "test:remote-connection",
+  "test:remote-done-ack",
+  "test:remote-delete",
+  "test:remote-task-cache",
+  "test:remote-db",
+  "test:compaction:live",
+  "test:multi-model-consult:live",
+  "test:conversation-branch:live",
+  "test:task-status-dot:live",
+  "test:acp-remote-android:live",
+  "test:acp-remote-android-sync:live",
+  "test:acp-remote-android-e2e:live",
+  "test:remote-task-dot-android:live",
+  "test:streaming-live",
+  "test:multi-search-live",
+  "test:durable-bot",
+  "test:browser-automation-recovery",
+]);
+
+const DATASET_TESTS = new Set([
+  // 依赖 gitignore 的官方市场归档 `mybuddyskills-main/`（约 294 技能），归档不存在时无法通过。
+  "test:blender-skill",
+  // node-pty 原生模块 + 真实 pty。
+  "test:terminal",
+]);
+
+/**
+ * GUI 里"只在 Windows 上有意义"的用例：computer_* 系列依赖 UIA/Windows 桌面自动化，
+ * 非 Windows 平台会直接断言 "requires Windows"（或在 Windows 专属验收里读真实 profile）。
+ * 非 win32 上 `--include-gui` 会自动跳过它们并打印说明，避免本机 Linux 的 GUI 跑被
+ * 平台限制污染；Windows 的 GUI job 仍然会跑。
+ */
+const GUI_WINDOWS_ONLY = new Set([
+  "test:computer-use-desktop",
+  "test:computer-automation",
+  "test:computer-use-run",
+  "test:computer-use-overlay",
+  "test:computer-automation-windows",
+]);
+
+/** 临时桶：headless 但当前是既有红，先不进 default（否则门禁立刻红），也不要塞进 GUI
+ * job 掩盖成"GUI 环境问题"。修好后删掉本项，让它回到 default。
+ */
+const KNOWN_HEADLESS_RED = new Set([
+  // 2026-10-26 实测 1/37 红："项目资产可跳到侧边栏资料库"（源码文本断言，疑似产品已改）。
+  "test:workspace-files-ui",
+]);
+
+/**
+ * 显式 headless 白名单：名字看起来像 GUI/NETWORK，但实际是纯 node 静态断言。
+ * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
+ */
+const HEADLESS_TESTS = new Set([
+  "test:browser-open-guard", // 纯源码文本断言（stale preload 回归门），6/6 PASS
+  "test:models-settings-overlay", // 纯源码文本断言，9/9 PASS
+]);
+
+/** 兜底规则：显式清单之外的新用例按命名约定归类（显式清单永远优先）。 */
+const GUI_PATTERNS = [/-e2e$/, /-desktop$/, /-electron$/, /:desktop$/, /^test:computer-/];
+const NETWORK_PATTERNS = [/:live$/, /^test:remote-/, /^test:browser-/];
+const DATASET_PATTERNS = [/^test:blender-skill$/];
+
+/** @returns {"headless"|"gui"|"network"|"dataset"|"pending"} */
+function classify(name) {
+  if (GUI_TESTS.has(name)) return "gui";
+  if (NETWORK_TESTS.has(name)) return "network";
+  if (DATASET_TESTS.has(name)) return "dataset";
+  if (KNOWN_HEADLESS_RED.has(name)) return "pending";
+  if (HEADLESS_TESTS.has(name)) return "headless";
+  if (GUI_PATTERNS.some((re) => re.test(name))) return "gui";
+  if (NETWORK_PATTERNS.some((re) => re.test(name))) return "network";
+  if (DATASET_PATTERNS.some((re) => re.test(name))) return "dataset";
+  return "headless";
+}
 
 const args = process.argv.slice(2);
 const updateBaseline = args.includes("--update-baseline");
 const includeLive = args.includes("--include-live");
+const includeGui = args.includes("--include-gui");
 const filterArg = args.find((a) => a.startsWith("--filter="));
 const filter = filterArg ? filterArg.slice("--filter=".length) : null;
 const jobsArg = args.find((a) => a.startsWith("--jobs="));
@@ -79,11 +208,87 @@ const timeoutArg = args.find((a) => a.startsWith("--timeout="));
 // 否则一个挂死用例就会拖住整条流水线（实测串行跑 250 个用例可超过 45 分钟）。
 const PER_TEST_TIMEOUT = Math.max(30, Number(timeoutArg ? timeoutArg.slice("--timeout=".length) : 300));
 
-let names = Object.keys(pkg.scripts).filter((k) => k.startsWith("test:"));
-names = names.filter((n) => !SELF_EXCLUDE_PATTERNS.some((re) => re.test(n)));
-if (!includeLive) names = names.filter((n) => !EXCLUDE_PATTERNS.some((re) => re.test(n)));
+/** 全量 test:*（去掉聚合脚本自身），用于分类统计与自检。 */
+const allTestNames = Object.keys(pkg.scripts)
+  .filter((k) => k.startsWith("test:"))
+  .filter((n) => !SELF_EXCLUDE_PATTERNS.some((re) => re.test(n)))
+  .sort();
+
+const classOf = (name) => classify(name);
+const classCounts = { headless: 0, gui: 0, network: 0, dataset: 0, pending: 0 };
+for (const n of allTestNames) classCounts[classOf(n)] += 1;
+
+/**
+ * 自检：显式 GUI 清单与"命令里真的启动 electron"应对齐。
+ * 这不是门禁断言（避免把分类维护成本转成红灯），但 `--list` / `--audit` 会打印，
+ * 让新加的 Electron 用例不会悄悄混进 default 套件。
+ *
+ * warnings：需要处理（Electron 用例被归为 headless / 清单项已不存在）
+ * info：预期内的信息（GUI 用例由 node driver 内部 spawn electron，命令串里看不到）
+ */
+function classificationWarnings() {
+  const warnings = [];
+  const info = [];
+  const launchers = new Set();
+  for (const [name, cmd] of Object.entries(pkg.scripts)) {
+    if (!name.startsWith("test:")) continue;
+    if (/(^|&&|;)\s*electron\s/.test(cmd)) launchers.add(name);
+  }
+  for (const name of launchers) {
+    if (classOf(name) === "headless") warnings.push(`${name} 命令里直接启动 electron，却归为 headless（会进 default 套件）`);
+  }
+  for (const name of GUI_TESTS) {
+    if (!pkg.scripts[name]) warnings.push(`GUI 清单里的 ${name} 已不存在于 package.json`);
+    else if (!launchers.has(name)) info.push(`${name} 由 node driver 内部 spawn electron（命令串里没有直接 electron，属预期）`);
+  }
+  return { warnings, info };
+}
+
+let names = [...allTestNames];
+if (includeLive) {
+  // 放行全部（GUI + NETWORK + DATASET + pending）。
+} else if (includeGui) {
+  names = names.filter((n) => classOf(n) === "headless" || classOf(n) === "gui");
+} else {
+  names = names.filter((n) => classOf(n) === "headless");
+}
+// 非 Windows 上跳过 GUI_WINDOWS_ONLY（它们会直接断言 requires Windows）。
+const skippedWindowsOnly =
+  includeGui && !includeLive && process.platform !== "win32"
+    ? names.filter((n) => GUI_WINDOWS_ONLY.has(n))
+    : [];
+if (skippedWindowsOnly.length > 0) names = names.filter((n) => !GUI_WINDOWS_ONLY.has(n));
 if (filter) names = names.filter((n) => n.includes(filter));
 names.sort();
+
+if (args.includes("--list") || args.includes("--audit")) {
+  const { warnings, info } = classificationWarnings();
+  console.log(
+    `[test-all] 分类：headless ${classCounts.headless} · GUI ${classCounts.gui} · NETWORK ${classCounts.network} · DATASET ${classCounts.dataset} · pending ${classCounts.pending}`,
+  );
+  console.log(
+    `[test-all] 选中 ${names.length} 个用例${includeLive ? "（全部：GUI+NETWORK+DATASET）" : includeGui ? "（default + GUI）" : "（default：headless）"}${filter ? ` filter=${filter}` : ""}`,
+  );
+  if (skippedWindowsOnly.length > 0) {
+    console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
+  }
+  if (warnings.length > 0) {
+    console.log(`[test-all] 分类自检警告（${warnings.length} 条，需要处理）：`);
+    for (const w of warnings) console.log(`  ! ${w}`);
+  } else {
+    console.log("[test-all] 分类自检 OK：没有 Electron 用例混进 headless。");
+  }
+  if (args.includes("--audit") && info.length > 0) {
+    console.log(`[test-all] 分类说明（${info.length} 条）：`);
+    for (const line of info) console.log(`  · ${line}`);
+  }
+  if (args.includes("--list")) {
+    const serial = names.filter((n) => SERIAL_TEST_PATTERNS.some((re) => re.test(n)));
+    console.log(`[test-all] 并行 ${names.length - serial.length} · 串行 ${serial.length}`);
+    for (const n of names) console.log(`  ${n}`);
+  }
+  process.exit(0);
+}
 
 if (names.length === 0) {
   console.error("[test-all] 没有匹配的 test:* 脚本");
@@ -93,17 +298,16 @@ if (names.length === 0) {
 const serialNames = names.filter((n) => SERIAL_TEST_PATTERNS.some((re) => re.test(n)));
 const parallelNames = names.filter((n) => !serialNames.includes(n));
 
-if (args.includes("--list")) {
-  console.log(`[test-all] 选中 ${names.length} 个用例（并行 ${parallelNames.length} · 串行 ${serialNames.length}）：`);
-  for (const n of names) console.log(`  ${n}`);
-  process.exit(0);
-}
-
 const baseline = existsSync(BASELINE_PATH)
   ? new Set(JSON.parse(readFileSync(BASELINE_PATH, "utf8")).knownFailing ?? [])
   : new Set();
 
-console.log(`[test-all] 运行 ${names.length} 个用例${includeLive ? "（含 GUI/live）" : "（default 套件）"}${filter ? ` filter=${filter}` : ""}`);
+console.log(
+  `[test-all] 运行 ${names.length} 个用例${includeLive ? "（全部：GUI+NETWORK+DATASET）" : includeGui ? "（default + GUI）" : "（default：headless）"}${filter ? ` filter=${filter}` : ""}`,
+);
+if (skippedWindowsOnly.length > 0) {
+  console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
+}
 console.log(`[test-all] baseline 已知失败: ${baseline.size}`);
 console.log("");
 

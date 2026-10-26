@@ -15,12 +15,17 @@ const save = () => fs.writeFileSync(path.join(out,'results.json'), JSON.stringif
 const wait = ms => new Promise(r=>setTimeout(r,ms));
 const home = fs.mkdtempSync(path.join(os.tmpdir(),'mybuddy-consult-entry-'));
 const agentDir = path.join(home,'.mybuddy');fs.mkdirSync(agentDir,{recursive:true});
-const userDir = path.join(os.homedir(),'.mybuddy');
-for (const name of ['auth.json','models.json','models-store.json','capabilities.json']) {
-  const from=path.join(userDir,name);if(fs.existsSync(from))fs.copyFileSync(from,path.join(agentDir,name));
+// 隔离原则：默认只写最小夹具，**完全不读真实 ~/.mybuddy**（不碰用户的 auth/models/token）。
+// 需要在本机验证「已保存的多模型会诊配置」深层流程时显式 opt-in：
+//   CONSULT_ENTRY_SEED_USER_PROFILE=1 env -u ELECTRON_RUN_AS_NODE pnpm -s test:consult-entry:desktop
+const seedFromUserProfile = process.env.CONSULT_ENTRY_SEED_USER_PROFILE === '1';
+if (seedFromUserProfile) {
+  const userDir = path.join(os.homedir(),'.mybuddy');
+  for (const name of ['auth.json','models.json','models-store.json','capabilities.json']) {
+    const from=path.join(userDir,name);if(fs.existsSync(from))fs.copyFileSync(from,path.join(agentDir,name));
+  }
 }
-let settings={};try{settings=JSON.parse(fs.readFileSync(path.join(userDir,'settings.json'),'utf8'));}catch{}
-fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({...settings,memoryEnabled:false,memoryGatewayEnabled:false,remoteAccessEnabled:false,closeToTray:false,theme:'light',language:'zh-CN'}));
+fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({memoryEnabled:false,memoryGatewayEnabled:false,remoteAccessEnabled:false,closeToTray:false,theme:'light',language:'zh-CN'}));
 fs.writeFileSync(path.join(agentDir,'mcp.json'),'{"mcpServers":{}}');
 for(const d of ['AppData/Roaming','AppData/Local'])fs.mkdirSync(path.join(home,d),{recursive:true});
 let child,socket,fd,id=0;const pending=new Map();
@@ -44,12 +49,18 @@ socket=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,rejec
 await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1360,height:1000,deviceScaleFactor:1,mobile:false});
 await until('Boolean(window.api?.agent?.getBuiltinCapabilities && document.querySelector("textarea"))',30000);
 report.initial=await evaluate('(async()=>{const s=await window.api.agent.getBuiltinCapabilities();return {multiModelConsult:s.config.multiModelConsult,buttons:[...document.querySelectorAll("button")].slice(-15).map(e=>({text:e.textContent,title:e.title,aria:e.getAttribute("aria-label")}))};})()');save();
-// 本用例校验「已保存的多模型会诊配置」的端到端行为：需要 profile 里已存在 enabled + participants
-// （开发机/Windows 上通常有；CI 与新机器的 profile 是空的，UI 根本没有会诊入口）。
-// 前置条件不满足时显式 SKIP，而不是伪造一份产品配置去迎合断言。
+// 本用例校验「已保存的多模型会诊配置」的端到端行为：需要 profile 里已存在 enabled + participants。
+// 默认夹具是空 profile（不读真实 ~/.mybuddy 凭据），因此这里显式 SKIP 并说明如何在本机跑深层流程，
+// 而不是复制用户 token 去迎合断言。
 if(!report.initial?.multiModelConsult?.enabled){
-  console.log('SKIP consult-entry:desktop —— 当前 profile 未配置多模型会诊（multiModelConsult.enabled=false）');
+  console.log('SKIP consult-entry:desktop —— 隔离 profile 未配置多模型会诊（multiModelConsult.enabled=false）');
+  if(!seedFromUserProfile)console.log('  本机深层验证可显式 opt-in：CONSULT_ENTRY_SEED_USER_PROFILE=1 env -u ELECTRON_RUN_AS_NODE pnpm -s test:consult-entry:desktop');
+  // process.exit 不会走下面的 finally，这里显式回收子进程/日志句柄/临时 profile，
+  // 否则每次 GUI 全量跑都会在 /tmp 留下 mybuddy-consult-entry-* 目录。
   try{child.kill();}catch{}
+  if(socket){try{socket.close();}catch{}}
+  if(fd!==undefined){try{fs.closeSync(fd);}catch{}}
+  try{fs.rmSync(home,{recursive:true,force:true,maxRetries:5,retryDelay:200});}catch{}
   process.exit(0);
 }
 await test('saved configuration selects this-message chip without opening settings',async()=>{const s=await selectConsult();await screenshot('configured-selection');assert(s.chip,JSON.stringify(s));assert(!s.settings,JSON.stringify(s));return s;});

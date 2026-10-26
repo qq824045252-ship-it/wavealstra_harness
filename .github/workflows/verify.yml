@@ -1,8 +1,14 @@
 name: verify
 
 # 仓库此前的核心问题不是"测试挂了"，而是没有任何机制会让任何人发现测试挂了：
-# 290+ 个 test:* 脚本没有聚合入口、没有 CI，于是"过期常量"（断言 Pi 1.0.0 而实际 1.0.4）
+# 320+ 个 test:* 脚本没有聚合入口、没有 CI，于是"过期常量"（断言 Pi 1.0.0 而实际 1.3.0）
 # 与"源码文本断言"可以长期腐烂。本工作流把 test:all 作为门禁接进回路。
+#
+# 套件分层（scripts/test-all.mjs 的 GUI/NETWORK/DATASET 分类）：
+#   - push / PR / 手动 default：两条 verify-* job 只跑 headless default 套件（不含 Electron/GUI）。
+#   - 每晚 18:00 UTC（北京 02:00）+ 手动 gui/all：额外跑 verify-windows-gui，
+#     在 windows-latest 上执行 `node scripts/test-all.mjs --include-gui`。
+#     GUI 用例（真实 Electron 窗口/Tray/桌面自动化）不进无头门禁，但必须有人定期真的跑它们。
 #
 # pnpm 版本必须是 10+：`overrides`/`allowBuilds` 等配置在 pnpm-workspace.yaml 里，
 # pnpm 9 读不到它们，`pnpm install --frozen-lockfile` 会报 LOCKFILE_CONFIG_MISMATCH。
@@ -12,10 +18,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # 每晚 GUI 套件（windows-latest）：GUI 用例不进 push/PR 门禁，但没有定时跑就会重新腐烂。
+    - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "要运行的套件"
+        type: choice
+        options: [default, gui, all]
+        default: default
 
 concurrency:
-  group: verify-${{ github.ref }}
+  group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -23,8 +38,8 @@ env:
 
 jobs:
   verify-windows:
-    # 只跑无头可判定部分；GUI/CDP/GPU 用例由 test:all 的 EXCLUDE_PATTERNS 排除，
-    # 需要真实桌面会话时用 `pnpm -s test:all:live` 在自托管 runner 上验证。
+    # push/PR 与手动 default/all 跑；schedule 只跑 GUI job。
+    if: ${{ github.event_name != 'schedule' && (!inputs.suite || inputs.suite == 'default' || inputs.suite == 'all') }}
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -71,16 +86,16 @@ jobs:
 
       # 棘轮门禁：新增回归 → 失败；scripts/test-baseline.json 中的已知失败
       # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
-      - name: Full default suite (ratchet gate)
+      - name: Full default suite (headless ratchet gate)
         working-directory: C:\r
         run: pnpm -s test:all
 
   verify-linux:
     # 本机开发/发布目标是 Linux（Omarchy/Wayland），必须有一条 Linux 门禁，
     # 否则托盘/密钥库/打包这类平台代码永远只能靠手测。
-    # 说明：default 套件里仍有若干真 Electron 用例（见审计 C4）；这里用 xvfb 提供
-    # 显示服务，按现状跑通。若某条 Electron 用例在无头 xvfb 下必然失败，应把它挪去
-    # live job（另一项工作），不要为此削弱 test:all 或本 job。
+    # default 套件已不含 GUI 用例（见 scripts/test-all.mjs 的分类）；这里仍保留 xvfb，
+    # 用来兜住「某些非 GUI 用例间接拉起 Electron」的现状，GUI 用例由 verify-windows-gui 覆盖。
+    if: ${{ github.event_name != 'schedule' && (!inputs.suite || inputs.suite == 'default' || inputs.suite == 'all') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -118,3 +133,64 @@ jobs:
 
       - name: Full default suite (ratchet gate, headless X)
         run: xvfb-run -a pnpm -s test:all
+
+  verify-windows-gui:
+    # GUI 套件：默认套件 + GUI 类（真实 Electron 窗口/Tray/桌面自动化），
+    # 只在 schedule 或手动 suite=gui/all 时运行；不加 continue-on-error，
+    # 失败就是失败 —— GUI 用例的腐烂必须可见。
+    # 本地等价命令（需要真实桌面会话）：
+    #   node scripts/test-all.mjs --include-gui
+    if: ${{ github.event_name == 'schedule' || inputs.suite == 'gui' || inputs.suite == 'all' }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Use a short path for native builds
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\r | Out-Null
+          robocopy $env:GITHUB_WORKSPACE C:\r /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Install dependencies
+        working-directory: C:\r
+        run: |
+          pnpm config set virtualStoreDirMaxLength 40 --location global
+          pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: C:\r
+        run: pnpm -s typecheck
+
+      # 部分 GUI 用例直接启动 out/main/index.js（consult-entry、startup perf），先构建。
+      - name: Build app for GUI tests
+        working-directory: C:\r
+        run: pnpm -s build
+
+      - name: GUI suite (default + GUI, no ratchet tolerance hiding)
+        working-directory: C:\r
+        run: node scripts/test-all.mjs --include-gui
+
+      - name: Upload GUI test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-test-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            C:\r\out\tests\**\*.png
+            C:\r\out\tests\**\results.json
+            C:\r\out\tests\**\desktop.log
+            C:\r\out\tests\consult-entry\**\results.json

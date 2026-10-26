@@ -14,6 +14,21 @@
 - **不要**把 Windows 的 `%USERPROFILE%\.mybuddy` 拷到 Linux 的 `~/.mybuddy`：那边的 safeStorage 密文绑的是 Windows 凭据库，换到 gnome-libsecret 解不开；库里还有 Windows 绝对路径。让应用自己生成新的 `~/.mybuddy`，再在设置里重新填写模型、API key、Slack 与 MCP。
 - 排查数据问题时 `~/.mybuddy/app.db` 用只读模式打开；`~/.config/...` 里的 Cache 不属于用户数据。
 
+## 日志与崩溃转储（崩溃可观测性）
+
+主进程会在 ready 前装配日志与 crashReporter，证据都落在 `~/.mybuddy/`（不在 Chromium userData）：
+
+| 目录/文件 | 内容 | 轮转 |
+|---|---|---|
+| `~/.mybuddy/logs/main-YYYYMMDD.log` | 主进程运行日志，行格式 `YYYY-MM-DD HH:mm:ss.SSS LEVEL [scope] message`；`uncaughtException` / `unhandledRejection` 附完整栈 + pid/Electron/Node 版本；`render-process-gone` / `child-process-gone` 附 reason/exitCode/进程类型 | 按天 + 单文件 4 MB 上限（超限改名为 `main-YYYYMMDD-N.log`）；保留最近 7 份 |
+| `~/.mybuddy/crashdumps/` | Electron `crashReporter` 的本地 crashpad dump（`pending/`、`completed/`、`attachments/`），`uploadToServer:false`，不会发起上传请求 | 由 crashpad 管理，无自动清理 |
+
+- 启动日志会打印 `crashReporter started …；本地 dump 目录：…`；只有 warn（目录不可写 / crashpad 启动失败）时不影响应用运行。
+- 主进程 console 输出保持原样；关键错误额外双写到文件，便于打包版/无终端场景回溯（Windows 打包版没有 stderr）。
+- 用户可见提示：渲染进程或 GPU/Utility 子进程异常退出会发 `runtime.failed` 通知，同一 `kind/reason/exitCode` 5 分钟内只提示一次；界面进程崩溃仍自动重载（最多 3 次），连续崩溃则停止重载并写日志。
+- 原生 SIGILL/段错误这类 core dump 不在 crashpad 里，由 systemd 收集：`coredumpctl list | tail`、`coredumpctl info <pid>`；本机 2026-10-26 的四次 SIGILL 分析见 `artifacts/audit-2026-10-26/crash-sigill.md`。
+- 快速确认日志层在工作：`ls -la ~/.mybuddy/logs/ ~/.mybuddy/crashdumps/ 2>/dev/null`，然后 `pnpm dev`，出现 `main-$(date +%Y%m%d).log` 且首行是 `INFO [crash] crashReporter started…` / `INFO [main]` 即正常。
+
 ## 系统依赖
 
 ```bash
@@ -60,6 +75,15 @@ pnpm dev
    pnpm -s test:linux-session   # linux-password-store 开关/后端判定 + tray-residency 纯逻辑
    env -u ELECTRON_RUN_AS_NODE pnpm -s test:tray   # 真实 Electron Tray（会临时拉起一个 Electron 进程）
    ```
+7. **GUI 套件（本机全量，需要真实桌面会话）**：不要用 xvfb 代替，否则会掩盖 Wayland/托盘/截图类问题。
+   ```bash
+   pnpm -s build                                   # consult-entry / startup perf 需要 out/main/index.js
+   node scripts/test-all.mjs --include-gui         # default + GUI 类（并行池 + 串行性能池）
+   node scripts/test-all.mjs --list                # 看分类与选中数量（headless/GUI/NETWORK/DATASET/pending）
+   node scripts/test-all.mjs --audit                # 分类自检：GUI 清单 vs 命令里真的启动 electron
+   ```
+   单条 GUI 用例仍按老办法跑：`env -u ELECTRON_RUN_AS_NODE pnpm -s test:<name>`。
+   `test:consult-entry:desktop` 默认用空夹具（不读真实 `~/.mybuddy`）并明确 SKIP；想用本机「已保存的多模型会诊配置」跑深层流程时显式 opt-in：`CONSULT_ENTRY_SEED_USER_PROFILE=1 env -u ELECTRON_RUN_AS_NODE pnpm -s test:consult-entry:desktop`。
 
 ## Linux 打包与验收
 
@@ -77,12 +101,15 @@ pnpm -s verify:packaged -- --app-dir release/linux-unpacked
 
 ## CI
 
-`.github/workflows/verify.yml` 有两条 job：
+`.github/workflows/verify.yml` 现在有三条 job，GUI 与 default 分层：
 
-- `verify-windows`（`windows-latest`）：pnpm 12.14.0 + 短路径原生编译 + typecheck / harness-quality / artifact-gate / `test:all`。
-- `verify-linux`（`ubuntu-latest`）：装 xvfb/Electron 运行库，`xvfb-run -a pnpm -s test:all`，同样跑 typecheck / harness-quality / artifact-gate。`ELECTRON_DISABLE_SANDBOX=1` 只作用于 CI 容器；不代表 Linux 桌面要以该参数运行。
+- `verify-windows`（`windows-latest`，push/PR/手动 `suite=default`）：pnpm 12.14.0 + 短路径原生编译 + typecheck / harness-quality / artifact-gate / `pnpm -s test:all`（headless default 套件）。
+- `verify-linux`（`ubuntu-latest`，push/PR/手动 `suite=default`）：装 xvfb/Electron 运行库，`xvfb-run -a pnpm -s test:all`，同样跑 typecheck / harness-quality / artifact-gate。`ELECTRON_DISABLE_SANDBOX=1` 只作用于 CI 容器；不代表 Linux 桌面要以该参数运行。
+- `verify-windows-gui`（`windows-latest`，每晚 18:00 UTC / 手动 `suite=gui` 或 `all`）：`pnpm -s build` 后跑 `node scripts/test-all.mjs --include-gui`（default + GUI 类）。**不加 `continue-on-error`**：GUI 用例腐烂必须可见。
 
-由于 default 套件里仍有真 Electron 用例（`test:tray`、`test:*:ui`、`test:consult-entry:desktop` 等），Linux 无头 job 是「按现状跑通」；若某条用例在 xvfb 下必然失败，应挪到 live job，而不是削弱 `test:all`。
+default 套件已不含真 GUI 用例：`scripts/test-all.mjs` 把 `test:*` 显式分为 headless / GUI / NETWORK / DATASET（+ 临时 pending 桶），`node scripts/test-all.mjs --list` 可查分类与选中数量，`--audit` 做分类自检。GUI 用例（`test:tray`、`test:*:ui`、`test:consult-entry:desktop`、`test:*-e2e` 等）只在 GUI job 与本机手动跑；`test:workspace-files-ui` 目前 headless 但有 1 条既有红，先留在 pending 桶（只有 `--include-live` 会跑到），修好后应移回 default。
+
+> GUI job 在 GitHub 托管 runner 上的稳定性尚未在本仓库实测（托管 Windows runner 是否支持 Tray/桌面自动化取决于 runner 会话）；如果 nightly 因环境（而不是代码）长期红，正确做法是给 GUI job 换自托管 runner，而不是把它挪回无头门禁或加 `continue-on-error`。
 
 ## 与 Windows 发布流程的关系
 

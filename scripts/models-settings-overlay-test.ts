@@ -23,6 +23,66 @@ function findRoot(start: string): string {
 const ROOT = findRoot(process.cwd());
 const read = (rel: string): string => readFileSync(join(ROOT, rel), "utf8");
 
+/**
+ * 从源码里截出某个方法的方法体（大括号配平，跳过字符串/模板/注释）。
+ *
+ * 源码文本断言必须限定在目标方法体内：BrowserHost 里 `navigateForAutomation()` 也有
+ * `wc.loadURL(url)`（Agent 导航，与刷新无关），此前用整文件 `!includes("loadURL(url)")`
+ * 会把这段正常代码误判成「显式刷新走了 loadURL」，导致用例长期红而被排除出门禁。
+ */
+function methodBody(source: string, signature: RegExp, label: string): string {
+  const found = signature.exec(source);
+  if (!found) throw new Error(`找不到 ${label} 的定义`);
+  const start = found.index + found[0].length;
+  let depth = 1;
+  let quote: string | null = null;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      i += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      i += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i);
+    }
+  }
+  throw new Error(`${label} 的方法体没有闭合`);
+}
+
 const results: Array<{ rule: string; pass: boolean; detail: string }> = [];
 function check(rule: string, pass: boolean, detail = ""): void {
   results.push({ rule, pass, detail });
@@ -80,11 +140,19 @@ check(
 
 const browserHost = read("src/main/browser/BrowserHost.ts");
 const browserView = read("src/renderer/src/components/artifact/BrowserView.tsx");
+const reloadCurrent = methodBody(browserHost, /private reloadCurrent\(\): void \{/, "BrowserHost.reloadCurrent");
+const publicReload = methodBody(browserHost, /^ {2}reload\(\): void \{/m, "BrowserHost.reload");
+const publicHardReload = methodBody(browserHost, /^ {2}hardReload\(\): void \{/m, "BrowserHost.hardReload");
 check(
   "explicit refresh bypasses cache for documents and subresources",
-  browserHost.includes("this.view.webContents.reloadIgnoringCache()")
-    && !browserHost.includes("this.view.webContents.reload()")
-    && !browserHost.includes("loadURL(url)"),
+  // 只针对 reloadCurrent() 方法体：显式刷新必须 reloadIgnoringCache，不能退化成普通
+  // reload（复用旧 JS/CSS），也不能走 loadURL（丢会话/历史）。
+  reloadCurrent.includes("reloadIgnoringCache()")
+    && !/\.reload\s*\(/.test(reloadCurrent)
+    && !/\bloadURL\s*\(/.test(reloadCurrent)
+    && publicReload.includes("this.reloadCurrent()")
+    && publicHardReload.includes("this.reloadCurrent()"),
+  "reloadCurrent()=reloadIgnoringCache；reload()/hardReload() 都委托 reloadCurrent()",
 );
 check(
   "browserFrameKey bump reloads the current page",

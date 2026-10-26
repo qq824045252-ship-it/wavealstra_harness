@@ -5,10 +5,37 @@
 // 4) dispose() → shouldSuppressQuit() 变 false
 // 5) Linux 用 png；托盘创建失败时 Linux 仍驻留，其它平台不拦截关闭
 // 运行：electron scripts/tray-service-test.cjs
+//
+// 隔离：Electron 默认把 Chromium 状态/托盘相关缓存写到真实 userData
+// （Linux ~/.config/<app>、Windows %APPDATA%\<app>）。这里在 ready 前改到临时目录，
+// 避免门禁把测试 profile 写进开发者/CI 的真实用户目录。
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
 const { TrayService, trayIconAsset } = require("../out/tests/tray-service-test.cjs");
+
+// 固定路径 + 每次开头重建：Electron 的 native 退出路径在 quit 之后仍会写 Cache/
+// declarative_performance_observer.db 等文件，进程内删除只能尽力而为；固定路径保证
+// /tmp 里最多留一个 mybuddy-tray-test，且每次运行都是干净 profile（不会串状态）。
+const sandboxUserData = path.join(os.tmpdir(), "mybuddy-tray-test");
+try {
+  fs.rmSync(sandboxUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+} catch {
+  /* 上一轮残留可能被并发进程占用，尽力而为 */
+}
+fs.mkdirSync(sandboxUserData, { recursive: true });
+app.setPath("userData", sandboxUserData);
+app.setPath("sessionData", sandboxUserData);
+function cleanupSandboxProfile() {
+  try {
+    fs.rmSync(sandboxUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    /* best effort */
+  }
+}
+app.on("quit", cleanupSandboxProfile);
+process.on("exit", cleanupSandboxProfile);
 
 function makeCloseEvent() {
   let prevented = false;
@@ -107,6 +134,7 @@ app.whenReady().then(() => {
   const failed = results.filter((r) => !r.ok);
   console.log(`\n==== ${results.length - failed.length}/${results.length} passed ====`);
   win.destroy();
-  app.quit();
   process.exitCode = failed.length > 0 ? 1 : 0;
+  cleanupSandboxProfile();
+  app.quit();
 });
