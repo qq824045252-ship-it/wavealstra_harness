@@ -83,6 +83,7 @@ pnpm dev
    node scripts/test-all.mjs --audit                # 分类自检：GUI 清单 vs 命令里真的启动 electron
    ```
    单条 GUI 用例仍按老办法跑：`env -u ELECTRON_RUN_AS_NODE pnpm -s test:<name>`。
+8. **停止/重启 dev 实例必须优雅**：只对 Electron **主进程**发 `SIGTERM`，等它自己关闭 GPU/renderer/utility，再停 dev server。不要 `pkill -f electron` 同时杀所有子进程——主进程会把 GPU 的死亡当成崩溃并尝试 relaunch，退出期连续 5 次 `launch-failed` 后 Chromium 会主动 `ud2`（SIGILL + core dump，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。`.tools/mybuddy.sh stop` 已按此实现；正常托盘「退出」不受影响。
    `test:consult-entry:desktop` 默认用空夹具（不读真实 `~/.mybuddy`）并明确 SKIP；想用本机「已保存的多模型会诊配置」跑深层流程时显式 opt-in：`CONSULT_ENTRY_SEED_USER_PROFILE=1 env -u ELECTRON_RUN_AS_NODE pnpm -s test:consult-entry:desktop`。
 
 ## Linux 打包与验收

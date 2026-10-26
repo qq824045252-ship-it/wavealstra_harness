@@ -164,3 +164,49 @@ gdb --args ./node_modules/.pnpm/electron@44.5.1_*/node_modules/electron/dist/ele
    这份 dmp；最小复现已可稳定触发——启动应用后只对主进程 `kill -TERM`，观察 keyring
    linux 原生模块在 teardown 期的调用栈。修根因（不是加日志）需要一次单独的 Electron/原生模块
    排查窗口。
+
+---
+
+## 9. 根因（已定位并修复 dev 侧触发条件）
+
+下载 Electron 44.5.1 官方 debug symbols（`electron-v44.5.1-linux-x64-debug.zip`，
+build ID `b2ea506795df6224232fcc64a7d9e7fc3775f920`）后用 gdb 符号化 848886 的 core，
+崩溃栈完整可读：
+
+```text
+#0 logging::LogMessage::HandleFatal(...)                    base/immediate_crash.h:180
+#1 logging::LogMessage::Flush()                              base/logging.cc:743
+#2 logging::LogMessageFatal::~LogMessageFatal()              base/logging.cc:1017
+#3 content::IntentionallyCrashBrowserForUnusableGpuProcess() content/browser/gpu/gpu_data_manager_impl_private.cc:417
+#4 content::GpuDataManagerImplPrivate::FallBackToNextGpuMode()
+#5 content::GpuDataManagerImplPrivate::FallBackToNextGpuModeDueToCrash()
+#6 content::GpuDataManagerImpl::FallBackToNextGpuModeDueToCrash()
+#7 content::GpuProcessHost::RecordProcessCrash()             gpu_process_host.cc:1503
+#8 content::GpuProcessHost::OnProcessLaunchFailed(int)       gpu_process_host.cc:1030
+...
+```
+
+**结论：不是产品 bug，也不是 CPU 指令集问题。** 这是 Chromium 的 GPU 崩溃保护：
+GPU 子进程在退出阶段连续 5 次 `launch-failed`（日志 `reason=launch-failed exitCode=1002`），
+`GpuDataManager` 判定 "GPU process isn't usable. Goodbye."，主动触发
+`IntentionallyCrashBrowserForUnusableGpuProcess()` → `ud2` → SIGILL + core dump。
+
+**触发条件（dev 脚本）**：旧版 `~/github/.tools/mybuddy.sh stop` 用
+`pkill -f .../electron ` 给**所有** Electron 进程（含 GPU/renderer/utility）同时发 SIGTERM。
+主进程看到 GPU 死亡后按崩溃处理并尝试 relaunch；退出期 relaunch 必然失败，连续 5 次后
+触发上述 fatal。正常用户退出（托盘「退出」/`app.quit()`）不会先杀子进程，不会触发。
+
+**实验对照**：
+- 只对主进程 `kill -TERM` → 干净退出，**0 份 core**（06:36 实测）。
+- 空白 Electron 44.5.1 应用收到 SIGTERM → 干净退出，0 core。
+- 最小应用仅加载 `@napi-rs/keyring`/`better-sqlite3`/`onnxruntime-node`/`node-pty` 后
+  SIGTERM → 全部干净退出，0 core（排除原生模块 teardown 假说）。
+- 旧 `stop`（broad pkill）→ 06:23/06:24 两次稳定复现 SIGILL（见 §8）。
+
+**修复**：`~/github/.tools/mybuddy.sh stop` 改为只对主进程发 SIGTERM 并等待其自行关闭
+GPU/renderer/utility，然后才停 electron-vite dev server；只有主进程 20s 不退出时才兜底
+强制清理子进程。06:37 用新脚本 stop → **不再产生 core**，日志无 `launch-failed` 风暴。
+修复前的脚本备份在 `~/github/.tools/mybuddy.sh.bak-20261027`。
+
+**影响面**：该崩溃只出现在 dev 的 `stop/restart` 路径；普通关窗/托盘退出/系统关机走
+Electron 正常退出，不受影响。crashReporter 仍保留（以后再出现原生崩溃会有本地 minidump）。

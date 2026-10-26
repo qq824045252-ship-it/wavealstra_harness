@@ -20,6 +20,7 @@
 - safeStorage 需要在 ready 前注入开关并打印后端：启动日志应出现 `[safeStorage] linux backend=gnome_libsecret available=true` 与 `[Tray] 系统托盘已初始化 (png)`；若后端是 `basic_text`，Slack/MCP 凭据会弱加密，先修密钥环（`docs/omarchy-linux.md` §系统依赖）。
 - Linux 打包：`pnpm -s pack:linux`（electron-builder `--linux --dir`，产物 `release/linux-unpacked/mybuddy`），然后用 `pnpm -s verify:packaged -- --app-dir release/linux-unpacked` 过 payload 门禁（afterPack 现在所有平台都跑）。目前只有 dir 目标，还没有 AppImage/deb；从 Linux 交叉构建 Windows 不受支持（需要 wine + win32 原生重建）。
 - CI：`.github/workflows/verify.yml` 有 `verify-windows` / `verify-linux`（default headless）与 `verify-windows-gui`（每晚 + 手动，不做 continue-on-error）。Linux job 用 xvfb 兜底间接拉起 Electron 的 headless 用例。
+- 停止/重启 dev 实例只对 Electron **主进程**发 SIGTERM（`.tools/mybuddy.sh stop` 已如此）；不要 broad `pkill` 所有 electron 进程——退出期 GPU relaunch 连续失败会触发 Chromium 的 GPU 崩溃保护（SIGILL + core，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。
 
 ## Default release workflow
 
