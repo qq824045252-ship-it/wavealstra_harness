@@ -222,7 +222,9 @@ const report={temp,tests:[],status:'running'};
   const selected=await selectProse();
   fs.writeFileSync(path.join(out,'prose-selection.png'),Buffer.from((await rpc('Page.captureScreenshot',{format:'png'})).data,'base64'));
   // Clone available clipboard payloads before native copy; restore text, HTML and images.
-  await evaluate(`(async()=>{window.__savedClipboard=await Promise.all((await navigator.clipboard.read()).map(async item=>new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type=>[type,await item.getType(type)]))))));return true;})()`);
+  // 空剪贴板在 Linux/Wayland 上会以「types 为空」的 ClipboardItem 返回，new ClipboardItem({}) 直接抛
+// 『Empty dictionary argument』；过滤空项，恢复逻辑用已有的 length 判断兜底。
+await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await navigator.clipboard.read()).map(async item=>item.types.length?new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type=>[type,await item.getType(type)])))):null))).filter(Boolean);return true;})()`);
   let pasted;
   try {
     await key('c','KeyC',67,2);
