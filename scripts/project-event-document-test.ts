@@ -48,6 +48,10 @@ function throws(fn: () => unknown, label: string): void {
 }
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-doc-"));
+// 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
+// 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
+process.env.HOME = root;
+process.env.USERPROFILE = root;
 const dbPath = join(root, "app.db");
 const db = new AppDatabase(dbPath);
 const projects = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));

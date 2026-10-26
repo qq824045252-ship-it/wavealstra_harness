@@ -13,6 +13,10 @@ import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-workspace-context-"));
+// 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
+// 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
+process.env.HOME = root;
+process.env.USERPROFILE = root;
 const db = new AppDatabase(join(root, "app.db"));
 const memory = new MemoryService(db, { semantic: false });
 const repository = new ProjectRepository(db.connection);

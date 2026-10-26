@@ -19,6 +19,10 @@ import { createLibraryExtension, type LibraryExtensionBridge } from "../src/main
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-ext-"));
+// 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
+// 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
+process.env.HOME = root;
+process.env.USERPROFILE = root;
 const db = new AppDatabase(join(root, "app.db"));
 const service = new LibraryService(db, { libraryRoot: join(root, "lib") });
 const projectService = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));

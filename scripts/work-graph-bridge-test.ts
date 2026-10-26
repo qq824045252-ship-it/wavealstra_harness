@@ -34,6 +34,10 @@ function mkTask(db: AppDatabase, id: string, spaceId: string | null, projectId: 
 }
 async function withTmpDb(fn: (db: AppDatabase) => Promise<void> | void) {
   const dir = mkdtempSync(join(tmpdir(), "wg-bridge-"));
+  // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
+  // 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
   const db = new AppDatabase(join(dir, "test.db"));
   try { await fn(db); } finally { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
 }

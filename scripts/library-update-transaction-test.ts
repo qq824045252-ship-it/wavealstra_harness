@@ -7,6 +7,10 @@ import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { LibraryService, LibraryUpdatePartialStateError } from "../src/main/library/LibraryService";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-update-tx-"));
+// 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
+// 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
+process.env.HOME = root;
+process.env.USERPROFILE = root;
 const db = new AppDatabase(join(root, "app.db"));
 new ArtifactRepository(db.connection);
 const library = new LibraryService(db, { libraryRoot: join(root, "library") });

@@ -13,12 +13,16 @@
  *   GUARD_TIMEOUT_S   墙钟总超时（到点 kill 整树），默认 900
  *   GUARD_POLL_MS     内存采样间隔，默认 1500
  *   GUARD_V8_HEAP_MB  追加的 --max-old-space-size，默认 4096（已带该参数则不重复加）
+ *   GUARD_HOME        默认 'sandbox'：给子进程一个临时 HOME（避免用例把夹具数据写进真实 ~/.mybuddy）；
+ *                     设成 'host' 可关闭隔离；GUARD_KEEP_HOME=1 保留沙箱目录便于排查。
  *
  * 退出码：子进程退出码原样透传；护栏触发 → 137（内存）/ 124（超时）。
  * 终止：Windows 用 taskkill /PID /T /F（可靠杀整树）；POSIX 用进程组 SIGKILL。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const MEM_MB = Number(process.env.GUARD_MEM_MB ?? 6144);
 const TIMEOUT_S = Number(process.env.GUARD_TIMEOUT_S ?? 900);
@@ -48,11 +52,31 @@ if (isNodeBinary(childArgs[0]) && !childArgs.some((a) => a.startsWith("--max-old
 }
 
 const startedAt = Date.now();
+
+/**
+ * 默认隔离 HOME：大量用例会把夹具数据写到 ~/.mybuddy（资料库文档、技能、模式 profile…），
+ * POSIX 的 os.homedir() 读的是 HOME，没有隔离就会污染真实用户数据，也会让用例互相影响。
+ * 需要真实家目录的用例显式设置 GUARD_HOME=host。
+ */
+const isolateHome = (process.env.GUARD_HOME ?? "sandbox") !== "host";
+let sandboxHome = null;
+const childEnv = { ...process.env };
+if (isolateHome) {
+  sandboxHome = mkdtempSync(join(tmpdir(), "mybuddy-test-home-"));
+  childEnv.HOME = sandboxHome;
+  childEnv.USERPROFILE = sandboxHome;
+  childEnv.XDG_CONFIG_HOME = join(sandboxHome, ".config");
+  childEnv.XDG_CACHE_HOME = join(sandboxHome, ".cache");
+  childEnv.XDG_DATA_HOME = join(sandboxHome, ".local", "share");
+  childEnv.XDG_STATE_HOME = join(sandboxHome, ".local", "state");
+}
+
 let child;
 try {
   child = spawn(childArgs[0], childArgs.slice(1), {
     stdio: "inherit",
     windowsHide: true,
+    env: childEnv,
     // POSIX：独立进程组，便于整组 SIGKILL
     detached: !IS_WIN,
   });
@@ -128,9 +152,15 @@ let settled = false;
 let timer = null;
 let poller = null;
 
+function cleanupSandboxHome() {
+  if (!sandboxHome || process.env.GUARD_KEEP_HOME === "1") return;
+  try { rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* 忽略清理失败 */ }
+}
+
 function finish(code, reason) {
   if (settled) return;
   settled = true;
+  cleanupSandboxHome();
   clearInterval(poller);
   clearTimeout(timer);
   if (reason) {
