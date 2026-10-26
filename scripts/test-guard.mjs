@@ -18,6 +18,7 @@
  * 终止：Windows 用 taskkill /PID /T /F（可靠杀整树）；POSIX 用进程组 SIGKILL。
  */
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const MEM_MB = Number(process.env.GUARD_MEM_MB ?? 6144);
 const TIMEOUT_S = Number(process.env.GUARD_TIMEOUT_S ?? 900);
@@ -92,9 +93,8 @@ function readMem(pid) {
       ps.on("error", () => resolve(null));
       return;
     }
-    const fs = require("node:fs");
     try {
-      const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const rss = /^VmRSS:\s+(\d+) kB$/m.exec(status);
       const swap = /^VmSwap:\s+(\d+) kB$/m.exec(status);
       resolve({
