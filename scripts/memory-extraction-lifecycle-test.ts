@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-memory-drain-"));
 process.env.USERPROFILE = sandbox;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = sandbox;
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { AgentService } = await import("../src/main/agent/AgentService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");

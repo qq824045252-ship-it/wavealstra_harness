@@ -1,4 +1,5 @@
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot } = require('./ui-capture.cjs');
 const { readFileSync, writeFileSync, mkdirSync, mkdtempSync } = require('node:fs');
 const { join } = require('node:path');
 app.setPath('userData', mkdtempSync(join(require('node:os').tmpdir(), 'mybuddy-records-ui-')));
@@ -19,10 +20,10 @@ app.whenReady().then(async () => {
       await win.webContents.executeJavaScript(`RecordsUI.preview('${tab}', ${dark})`);
       await new Promise((resolve) => setTimeout(resolve, 180));
       console.log('PASS layout', tab, await win.webContents.executeJavaScript('RecordsUI.layout()'));
-      writeFileSync(join(output, `${tab}-${width}.png`), (await win.webContents.capturePage()).toPNG());
+      await writeScreenshot(win, join(output, `${tab}-${width}.png`));
       if (tab === 'security') {
         await win.webContents.executeJavaScript('RecordsUI.showSettings()');
-        writeFileSync(join(output, `security-settings-${width}.png`), (await win.webContents.capturePage()).toPNG());
+        await writeScreenshot(win, join(output, `security-settings-${width}.png`));
       }
     }
   }

@@ -14,6 +14,8 @@ function assert(cond: boolean, msg: string): void {
 
 const base = mkdtempSync(join(tmpdir(), "skill-market-"));
 process.env.USERPROFILE = base;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = base;
 
 // 遗留市场源 ~/.mybuddy/skills
 mkdirSync(join(base, ".mybuddy", "skills", "legacy-skill"), { recursive: true });

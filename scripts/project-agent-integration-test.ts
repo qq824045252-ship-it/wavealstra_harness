@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-project-agent-"));
 process.env.USERPROFILE = root;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = root;
 mkdirSync(join(root, ".mybuddy"), { recursive: true });
 writeFileSync(
   join(root, ".mybuddy", "mcp.json"),

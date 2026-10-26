@@ -10,6 +10,18 @@ import MultiModelConsultCard from "../src/renderer/src/components/chat/MultiMode
 import { appendCalls, state as storeState } from "./consult-card-store-stub";
 
 interface StopCall { taskId: string; consultId: string; workerIndex: number }
+// 帧等待：rAF 在不可见窗口里可能永不触发（无合成器的 Linux），用定时器兜底。
+const nextFrame = () =>
+  Promise.race([
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 50)),
+  ]);
+const twoFrames = () =>
+  Promise.race([
+    new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    new Promise<void>((resolve) => setTimeout(resolve, 100)),
+  ]);
+
 const stopCalls: StopCall[] = [];
 (window as unknown as { api: unknown }).api = {
   agent: {
@@ -118,10 +130,11 @@ const rect = (selector: string) => {
     const startY = box.top + 10;
     heading.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: startX, clientY: startY, pointerId: 1, isPrimary: true }));
     // React commits the drag state (and installs its window listeners) on the next frame.
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // 隐藏窗口在无合成器的 Linux 上 rAF 可能永不触发 → 定时器兜底，避免整条用例挂死。
+    await twoFrames();
     for (const step of [0.5, 1]) {
       window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: startX + dx * step, clientY: startY + dy * step, pointerId: 1, isPrimary: true }));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await nextFrame();
     }
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: startX + dx, clientY: startY + dy, pointerId: 1, isPrimary: true }));
   },

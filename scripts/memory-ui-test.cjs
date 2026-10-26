@@ -1,5 +1,6 @@
 // Build memory-ui-test.tsx as global MemoryUITest in out/tests/memory-ui.js first.
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot, settleFramesScript } = require('./ui-capture.cjs');
 const { readFileSync, writeFileSync, mkdirSync, mkdtempSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
@@ -20,9 +21,9 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript(`MemoryUITest.preview('${page}', ${dark})`);
     const layout = await win.webContents.executeJavaScript('MemoryUITest.layout()');
     console.log('PASS layout', page, dark ? 'dark' : 'light', JSON.stringify(layout));
-    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await win.webContents.executeJavaScript(settleFramesScript);
     await new Promise(resolve => setTimeout(resolve, 180));
-    writeFileSync(join(output, `${page}-${width}-${dark ? 'dark' : 'light'}.png`), (await win.webContents.capturePage()).toPNG());
+    await writeScreenshot(win, join(output, `${page}-${width}-${dark ? 'dark' : 'light'}.png`));
   }
   await win.webContents.executeJavaScript('MemoryUITest.dispose()');
   await win.loadURL('about:blank');

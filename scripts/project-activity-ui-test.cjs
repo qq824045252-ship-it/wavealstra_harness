@@ -1,4 +1,5 @@
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot, settleFramesScript } = require('./ui-capture.cjs');
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -17,9 +18,9 @@ app.whenReady().then(async () => {
   };
   const click = (label) => evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.replace(/^\\+/, '').trim().startsWith(${JSON.stringify(label)}) && b.getClientRects().length); if(!b || b.disabled)throw Error('button unavailable: '+${JSON.stringify(label)}); b.click()})()`);
   const capture = async (name) => {
-    await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await evaluate(settleFramesScript);
     await new Promise((accept) => setTimeout(accept, 100));
-    writeFileSync(join(output, name), (await win.webContents.capturePage()).toPNG());
+    await writeScreenshot(win, join(output, name));
   };
   const overflow = `[...document.querySelectorAll('.project-activity *')].filter(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.right > document.querySelector('.project-activity').getBoundingClientRect().right + 1; }).map(el => el.className)`;
   try {

@@ -9,6 +9,8 @@ import { SkillsService } from "../src/main/skills/SkillsService";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-skill-history-"));
 process.env.USERPROFILE = sandbox;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = sandbox;
 const db = new AppDatabase(":memory:");
 try {
   const memory = new MemoryService(db, { semantic: false });

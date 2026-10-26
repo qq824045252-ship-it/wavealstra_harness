@@ -65,7 +65,9 @@ const longPath = join(root, "长文.md");
 writeFileSync(longPath, "段落。" + "x".repeat(5000), "utf8");
 const pngPath = join(root, "示意图.png");
 writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]));
-const longNamePath = join(root, `${"名".repeat(250)}.md`);
+// 长文件名：Windows 上限是 255 个字符，POSIX(ext4) 上限是 255 个字节；中文 3 字节/字，
+// 250 个中文会超过 POSIX 上限直接 ENAMETOOLONG。改用 ASCII 250 字符：两端都合法，且 >200 触发标题截断。
+const longNamePath = join(root, `${"n".repeat(250)}.md`);
 writeFileSync(longNamePath, "内容", "utf8");
 const dirPath = join(root, "目录");
 

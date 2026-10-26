@@ -8,6 +8,7 @@
  *  3. "基于此发现继续调查" works for completed AND failed/interrupted participants, without "undefined"
  */
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot, settleFramesScript } = require('./ui-capture.cjs');
 const assert = require('node:assert/strict');
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
@@ -21,7 +22,7 @@ const timeout = setTimeout(() => { console.error('consult-card-ui timed out'); a
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1360, height: 1000, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
   const evaluate = async (code) => win.webContents.executeJavaScript(code);
-  const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  const settle = () => evaluate(settleFramesScript);
   const checks = [];
   const check = async (name, fn) => { await fn(); checks.push(name); console.log('PASS', name); };
   const wait = async (code, ms = 8000) => {
@@ -34,7 +35,7 @@ app.whenReady().then(async () => {
   const screenshot = async (name) => {
     await settle();
     await new Promise((resolve) => setTimeout(resolve, 120));
-    writeFileSync(join(shots, `${name}.png`), (await win.webContents.capturePage()).toPNG());
+    await writeScreenshot(win, join(shots, `${name}.png`));
   };
   try {
     mkdirSync(shots, { recursive: true });

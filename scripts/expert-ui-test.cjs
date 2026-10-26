@@ -1,4 +1,5 @@
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot } = require('./ui-capture.cjs');
 const { readFileSync, writeFileSync, mkdirSync, mkdtempSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
@@ -16,7 +17,7 @@ app.whenReady().then(async () => {
   for (const [width, height] of [[1024, 640], [560, 640]]) {
     win.setContentSize(width, height);
     await win.webContents.executeJavaScript('ExpertUITest.preview()');
-    writeFileSync(join(output, `expert-editor-${width}x${height}.png`), (await win.webContents.capturePage()).toPNG());
+    await writeScreenshot(win, join(output, `expert-editor-${width}x${height}.png`));
     console.log('PASS viewport', width, height);
   }
   await win.webContents.executeJavaScript('ExpertUITest.dispose()');

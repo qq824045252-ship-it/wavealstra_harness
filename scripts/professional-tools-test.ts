@@ -105,6 +105,8 @@ function fakeHarness(options: {
   // spawn FreeCAD 时模拟 addon 写 discovery json（gui:true + 本进程 pid 保证存活）
   const fcHome = mkdtempSync(join(tmpdir(), "fc-mcp-"));
   process.env.USERPROFILE = fcHome;
+  // POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+  process.env.HOME = fcHome;
   const fcInstancesDir = join(fcHome, ".cache", "freecad-mcp", "instances");
   mkdirSync(fcInstancesDir, { recursive: true });
   const ensureFreecadInstance = (): void => {

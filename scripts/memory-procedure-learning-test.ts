@@ -13,6 +13,8 @@ import { getSkillsDir } from "../src/main/paths";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-procedure-learning-"));
 process.env.USERPROFILE = sandbox;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = sandbox;
 const db = new AppDatabase(":memory:");
 const memory = new MemoryService(db, { semantic: false });
 const pipeline = new MemoryPipelineManager(db);

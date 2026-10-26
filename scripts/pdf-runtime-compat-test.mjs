@@ -24,17 +24,29 @@ function check(name, pass, detail = "") {
 }
 
 const toHexType = () => typeof Uint8Array.prototype.toHex;
+// 新版 Node/Electron 已把 Uint8Array.prototype.toHex 收进原生（本仓库 CI 用的 Electron 37 系还没有）。
+// 原生存在时「modern worker 没有 polyfill → 必崩」这个根因前提不成立，前两条前提断言跳过，
+// 后续 legacy 兼容层/worker 注册的行为断言照常执行。
+const nativeToHex = toHexType() === "function";
 
 // 1. 纯净环境（未加载任何 pdfjs build）
-check("compat: 纯净环境无原生 Uint8Array.toHex（根因前提）", toHexType() === "undefined", `type=${toHexType()}`);
+if (nativeToHex) {
+  console.log(`SKIP  compat: 纯净环境无原生 Uint8Array.toHex（本运行时已内置 toHex，前提不成立）`);
+} else {
+  check("compat: 纯净环境无原生 Uint8Array.toHex（根因前提）", true, `type=${toHexType()}`);
+}
 
 // 2. modern worker：不提供兼容层（legacy main + modern worker 组合的缺陷）
 await import("pdfjs-dist/build/pdf.worker.min.mjs");
-check(
-  "compat: modern worker 不提供 toHex 兼容层（混合组合必崩）",
-  toHexType() === "undefined",
-  `type=${toHexType()}`,
-);
+if (nativeToHex) {
+  check("compat: modern worker 不新增 toHex 兼容层（原生已内置，混合组合不再必崩）", toHexType() === "function", `type=${toHexType()}`);
+} else {
+  check(
+    "compat: modern worker 不提供 toHex 兼容层（混合组合必崩）",
+    toHexType() === "undefined",
+    `type=${toHexType()}`,
+  );
+}
 
 // 3. legacy main：提供兼容层（当前主线程入口，与修复前一致）
 await import("pdfjs-dist/legacy/build/pdf.mjs");

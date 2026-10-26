@@ -35,6 +35,8 @@ function assert(cond: boolean, label: string): void {
 const base = mkdtempSync(join(tmpdir(), "blender-skill-integration-"));
 // 隔离 USERPROFILE：保证不触碰真实 ~/.mybuddy
 process.env.USERPROFILE = base;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = base;
 const fakeMybuddySkills = join(base, ".mybuddy", "skills");
 mkdirSync(fakeMybuddySkills, { recursive: true });
 

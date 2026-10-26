@@ -100,7 +100,15 @@ async function cancellationTransaction(stage: "bytes" | "register"): Promise<voi
     getIsolationLevel: () => "guarded",
   })({ registerTool: (tool: any) => tools.push(tool), on: () => undefined } as never);
   const tool = tools.find((candidate) => candidate.name === "computer_exec");
-  assert(tool, "Real computer_exec extension must register for this Windows fixture");
+  if (!tool) {
+    // computer_exec 是「Windows 原生 Computer Use」扩展（UIA / PrintWindow / WGC），
+    // 依赖 computerAutomationService.available；在 Linux/macOS 上合法地不存在。
+    if (process.platform !== "win32") {
+      console.log("SKIP  media-artifact-transaction: 需要 Windows computer_exec 扩展，本平台不提供");
+      process.exit(0);
+    }
+    throw new Error("Real computer_exec extension must register for this Windows fixture");
+  }
   const originalExecute = computerAutomationService.execute;
   const fsPromises = createRequire(import.meta.url)("node:fs/promises") as typeof import("node:fs/promises");
   const originalWrite = fsPromises.writeFile;

@@ -1980,14 +1980,20 @@ async function main(): Promise<void> {
     new AppSettingsStore().clearTaskConnectorIds("t-fixed");
     // 写入失败（目标只读 → rename 阶段 EPERM）：抛错不静默、原文件不被截断/覆盖、无 .tmp 残留
     writeFileSync(settingsPath, '{"keep": true}\n', "utf-8");
-    chmodSync(settingsPath, 0o444);
+    // Windows 的只读文件属性会让 rename 失败（EPERM）；POSIX 的 rename 只看「目录」写权限，
+    // 文件只读并不阻止替换 —— 因此按平台制造不可写条件，否则该断言在 Linux/macOS 上永不成立。
+    const settingsDir = dirname(settingsPath);
+    const isWin = process.platform === "win32";
+    if (isWin) chmodSync(settingsPath, 0o444);
+    else chmodSync(settingsDir, 0o555);
     let writeFailed = false;
     try {
       st.setTaskConnectorIds("t-fail", ["c3"]);
     } catch {
       writeFailed = true;
     }
-    chmodSync(settingsPath, 0o666);
+    if (isWin) chmodSync(settingsPath, 0o666);
+    else chmodSync(settingsDir, 0o755);
     assert(writeFailed, "N4：目标不可替换时原子写失败（不静默）");
     assert(!existsSync(`${settingsPath}.tmp`), "N4：失败后无 .tmp 残留");
     assert(

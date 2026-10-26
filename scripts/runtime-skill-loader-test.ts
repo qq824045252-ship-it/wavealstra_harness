@@ -33,6 +33,8 @@ import {
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-skill-loader-"));
 process.env.USERPROFILE = root;
+// POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+process.env.HOME = root;
 mkdirSync(join(root, ".mybuddy"), { recursive: true });
 
 const { AppDatabase } = await import("../src/main/db/AppDatabase");

@@ -1,4 +1,5 @@
 const { app, BrowserWindow } = require('electron');
+const { writeScreenshot, settleFramesScript } = require('./ui-capture.cjs');
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -19,9 +20,9 @@ app.whenReady().then(async () => {
   };
   const visibleText = `document.body.innerText`;
   const capture = async (name) => {
-    await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await evaluate(settleFramesScript);
     await new Promise((accept) => setTimeout(accept, 100));
-    writeFileSync(join(output, name), (await win.webContents.capturePage()).toPNG());
+    await writeScreenshot(win, join(output, name));
   };
   try {
     mkdirSync(output, { recursive: true });

@@ -7,6 +7,8 @@ async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-dimagent-debug-"));
   const previousProfile = process.env.USERPROFILE;
   process.env.USERPROFILE = root;
+  // POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
+  process.env.HOME = root;
   try {
     const [{ SkillsService }, { CODING_MODE_PRESETS }, { BUILTIN_CAPABILITY_TOOLS }, { NATIVE_CAPABILITY_TOOL_NAMES }, { getSkillsDir }] = await Promise.all([
       import("../src/main/skills/SkillsService"),
