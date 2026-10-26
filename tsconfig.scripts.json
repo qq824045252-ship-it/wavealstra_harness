@@ -1,0 +1,20 @@
+{
+  // scripts/（测试与工具脚本）的口径：这些文件不在 tsconfig.node/web 的 include 里，
+  // 过去引用主进程服务契约发生漂移时没有任何静态检查能发现。
+  // 现状有历史错误，由 scripts/typecheck-scripts.mjs 做棘轮（只拦新增）。
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "strict": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["scripts/**/*.ts", "scripts/**/*.tsx"]
+}

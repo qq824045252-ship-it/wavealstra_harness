@@ -21,7 +21,7 @@
     "test:remote-connection": "esbuild scripts/remote-connection-setup-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs scripts/remote-connection-ui-test.cjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs",
     "test:browser-refresh": "esbuild scripts/browser-refresh-e2e.ts --bundle --platform=node --format=cjs --outfile=out/tests/browser-refresh-e2e.cjs --external:electron && electron out/tests/browser-refresh-e2e.cjs",
     "test:browser-navbar-ui": "esbuild scripts/browser-navbar-ui-test.tsx --bundle --platform=browser --format=iife --global-name=BrowserNavTest --jsx=automatic --alias:@=./src/renderer/src --outfile=out/tests/browser-navbar-ui.js && electron scripts/browser-navbar-ui-test.cjs",
     "test:pi-autonomous-execution": "esbuild scripts/pi-autonomous-execution-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi-autonomous-execution-test.mjs && node scripts/test-guard.mjs out/tests/pi-autonomous-execution-test.mjs",
@@ -369,7 +369,9 @@
     "test:acp-remote-android-e2e:live": "node scripts/test-guard.mjs scripts/android-acp-e2e-check.cjs",
     "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs",
     "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",
-    "test:sidebar-space-collapse-desktop": "esbuild scripts/sidebar-space-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/sidebar-space-seed.cjs && node scripts/test-guard.mjs scripts/sidebar-space-collapse-desktop-test.cjs"
+    "test:sidebar-space-collapse-desktop": "esbuild scripts/sidebar-space-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/sidebar-space-seed.cjs && node scripts/test-guard.mjs scripts/sidebar-space-collapse-desktop-test.cjs",
+    "typecheck:scripts": "node scripts/typecheck-scripts.mjs",
+    "typecheck:scripts:update-baseline": "node scripts/typecheck-scripts.mjs --update-baseline"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
@@ -519,5 +521,4 @@
     "onnxruntime-node": "1.30.0"
   }
 }
-
 
