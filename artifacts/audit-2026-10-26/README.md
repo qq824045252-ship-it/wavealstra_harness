@@ -25,19 +25,21 @@
 
 | # | 动作 | 状态 | 提交 / 证据 |
 |---|---|---|---|
-| 1 | Linux 托盘/密钥库移植 | ✅ | `176f964`：`linux-password-store.ts`（gnome-libsecret + backend 日志）、PNG 托盘 22px、degraded 驻留、Linux 关窗通知、窗口 PNG；`test:linux-session`、`test:tray` 16/16 |
+| 1 | Linux 托盘/密钥库移植 | ✅（真机复验） | `176f964`：`linux-password-store.ts`（gnome-libsecret + backend 日志）、PNG 托盘 22px、degraded 驻留、Linux 关窗通知、窗口 PNG；`test:linux-session`、`test:tray` 16/16。06:24 重启复验：SNI 项有 `IconPixmap 44×44`、日志 `[Tray] 系统托盘已初始化 (png)` |
 | 2 | Linux 打包链路 | ✅（未实跑 pack） | `176f964`：afterPack payload 门禁全平台、`verify:packaged` 支持 linux-unpacked、keyring-linux 进 files/asarUnpack、`build.linux`、`pack:linux`/`dist:linux`；夹具 PASS + 负例 FAIL。真机 `pack:linux` 与 onnx linux 仍待单独验证 |
 | 3 | CI 可信度 | ✅（未在真实 runner 实跑） | `176f964`：pnpm 12.14.0 + `packageManager`、install 去掉 continue-on-error、新增 verify-linux（xvfb）；`8c8f4f0` 增加 verify-windows-gui（nightly + 手动） |
 | 4 | 删库守卫 | ✅ | `176f964`：不兼容库改名 `.discarded-<UTC>` 备份后重建、rename 失败回滚抛错；`test:db-schema-discard` 7 项、`test:db-migration` |
 | 5 | 门禁棘轮加固 | ✅ | `176f964`：typecheck 棘轮 fail-open 修复（+`test:typecheck-guard`）、test-all 失败尾部输出/进程组 kill/性能串行池/`--update-baseline` 保留 provenance；tsconfig paths 评估记录（209→816，不硬开） |
 | 6 | 排除用例可见性 | ✅ / 🟡 | `8c8f4f0`：GUI/NETWORK/DATASET 分类、`--include-gui`/`--audit`/`test:all:gui`、nightly GUI job、`models-settings-overlay` 9/9、tray/consult-entry 隔离。GUI 全量本机 298 用例中仍有环境性失败（Windows-only/缺 d2/缺 MAGPIE_TEST_EXE/无头截图超时），已分类记录在 `gate-gui-classification.md`；CI GUI job 首跑结果未知 |
-| 7 | 崩溃可观测性 | ✅（根因待符号） | `71524d9`：crashReporter 本地 dump、`~/.mybuddy/logs` 轮转、uncaught/unhandled 记录、render/child process gone 通知；`crash-sigill.md` 证明 4 次 SIGILL 是 Chromium `NOTREACHED` ud2、发生在 restart stop 阶段，需 electron debug symbols 才能到 file:line |
+| 7 | 崩溃可观测性 | ✅（根因待符号） | `71524d9`：crashReporter 本地 dump、`~/.mybuddy/logs` 轮转、uncaught/unhandled 记录、render/child process gone 通知；`crash-sigill.md` 证明 SIGILL 是 Chromium `NOTREACHED` ud2、发生在 restart stop 阶段。06:24 复验：**每次 stop 必现**（又 2 次 core），crashReporter 已捕获 360KB minidump；root cause 需 electron debug symbols |
 | 8 | test:project-agent 产品决策 | ✅（决定：保留） | `e112984`：执行审计快照保留被拒 Expert 决定（reason=project_policy_denied）；同时修复 evidence request-only 后丢失的 BTW 只读计划指引；`test-baseline.json` knownFailing 清空；test:project-agent 转绿 |
 | 9 | 架构小步 | ✅（部分） | `b7f4a1b`：`test:architecture-graph`（分层/运行期环/越层/行数棘轮/preload 契约，基线棘轮）；`registerIpc` 拆分与死代码删除未做（见 §7） |
 | 10 | 清理与文档对齐 | 🟡 | 本次提交：删 `_tmp_` 探针、`.gitignore`、typecheck 基线 209→208、AGENTS.md（Pi 1.3.0/Linux/门禁分层/日志与删库契约）、docs/STATUS.md 顶部权威更新块、审计报告留档。未做：2,740 行死代码删除、`artifacts/` 仓库瘦身（765 文件/53MB、6 个 APK）、`AgentService`/`registerIpc` 拆分——风险与收益需单独排期 |
 
 **最终验证（2026-10-27）**：`pnpm -s typecheck` exit 0（scripts 208 基线 / 新增 0）；`pnpm -s test:all` → **254 通过 / 0 失败 / 0 已知失败 / 0 新增回归（0.9 min）**；`test:architecture` 323/0；`test:harness-quality`、`test:artifact-gate` 通过；`test:architecture-graph` PASS 5/5。
-**未验证/剩余风险**：真实 GitHub runner（Windows/Linux/GUI nightly）首跑；Linux 实机 `pack:linux`/onnx 二进制；Windows dist 与快捷方式（需 Windows）；SIGILL 根因；GUI 套件中的环境性失败需要一台带 d2/MAGPIE_TEST_EXE/真实桌面的机器才能判定。
+**未验证/剩余风险**：真实 GitHub runner（Windows/Linux/GUI nightly）首跑；Linux 实机 `pack:linux`/onnx 二进制；Windows dist 与快捷方式（需 Windows）；SIGILL 根因（已能稳定复现并抓到 minidump，但缺 debug symbols）；GUI 套件中的环境性失败需要一台带 d2/MAGPIE_TEST_EXE/真实桌面的机器才能判定。
+
+**真机复验（2026-10-27 06:24）**：重启 dev 实例后 `[safeStorage] linux backend=gnome_libsecret available=true`、`[Tray] 系统托盘已初始化 (png)`、D-Bus SNI 项带 `IconPixmap (44×44)`；`stop` 时 SIGILL 稳定复现并被 crashReporter 本地抓取（见 `crash-sigill.md` §8）。
 
 ---
 

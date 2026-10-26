@@ -141,3 +141,26 @@ gdb --args ./node_modules/.pnpm/electron@44.5.1_*/node_modules/electron/dist/ele
 - `crashReporter` 已启动（`uploadToServer:false`，`crashDumps` → `~/.mybuddy/crashdumps`）：**下一次同类 `ud2` 崩溃会被 crashpad 以本地 dump 形式记录**（比只依赖 systemd coredump 更容易导出/上报）；启动时日志会打印 dump 目录。
 - `~/.mybuddy/logs/main-YYYYMMDD.log` 会记录 `uncaughtException`/`unhandledRejection`（含栈与进程信息）与 `render-process-gone`/`child-process-gone`（含 reason/exitCode）；这两类 JS 层异常此前只能看 stderr。
 - 注意：crashpad 只能捕获它自己接管的进程内崩溃；本次四份 core 是 **crashReporter 尚未装配时**产生的，历史 dump 无法补做，只能用于后续复现。
+
+---
+
+## 8. 2026-10-27 复验：修复后每次 stop 必现 + crashpad 已能抓到 dump
+
+修复（§5-1/§5-7）落到 main 后，用 `.tools/mybuddy.sh restart` 做了一次真实桌面复验（06:23–06:24）：
+
+1. **托盘修复生效**：新实例（PID 848886）的 SNI 项 `org.freedesktop.StatusNotifierItem-848886-1`
+   现在有 `IconPixmap`（44×44，非空），此前旧实例只有空属性；启动日志为
+   `[Tray] 系统托盘已初始化 (png)`。
+2. **safeStorage 修复生效**：启动日志 `[safeStorage] linux backend=gnome_libsecret available=true`
+   （此前是 basic_text 风险）。
+3. **SIGILL 不是偶发**：`mybuddy.sh stop` 在 06:23:08 一次产生 3 份 SIGILL core
+   （PID 224446 / 570992 / 573040，均为同一 exit 路径），06:24:07 对带 crashReporter 的新实例
+   （PID 848886）再次 SIGILL → **每次 stop 必现**，不是启动崩溃或环境偶发。
+4. **crashReporter 捕获成功**：新实例的 SIGILL 在本地 crashpad 留下
+   `~/.mybuddy/crashdumps/pending/f6895012-0ef2-4529-b93b-341c614d6f25.dmp`（约 360KB）
+   + `.meta`；`~/.mybuddy/logs/main-20261027.log` 同时记录了 shutdown 阶段的
+   `child-process-gone`/`render-process-gone`（不再只有 console）。→ §5-7 的可观测性目标达成。
+5. **下一步（仍未做）**：用 `minidump_stackwalk` / Electron 44.5.1 官方 debug symbols 符号化
+   这份 dmp；最小复现已可稳定触发——启动应用后只对主进程 `kill -TERM`，观察 keyring
+   linux 原生模块在 teardown 期的调用栈。修根因（不是加日志）需要一次单独的 Electron/原生模块
+   排查窗口。
