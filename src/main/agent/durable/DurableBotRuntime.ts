@@ -8,7 +8,7 @@ import {
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
   type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission,
 } from "@earendil-works/pi-durable";
-import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
@@ -22,6 +22,7 @@ import { durableCompletedTurns } from "./DurableTurnProjection";
 import { withDurableImageRead } from "./DurableImages";
 import { getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
+import { createPlatformShellTools } from "../../platform/shell-tools";
 
 type BotInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }> };
 const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current",
@@ -609,9 +610,16 @@ export class DurableBotRuntime {
   }
 }
 
-/** Durable leaves PowerShell opt-in; expose its native argv execution on Windows in both Tags. */
+/**
+ * Durable leaves the platform shell tool opt-in：Windows 额外暴露 PowerShell 的原生 argv 执行
+ * （两个 Tag 都生效），Linux/macOS 复用 CodingTools 自带的 bash。
+ * 平台判定见 `platform/shell-tools.ts`（业务侧不再直接判断 process.platform）。
+ */
 function codingTools(): ToolRegistration[] {
-  return [...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : tool), ...(process.platform === "win32" ? [createPowerShellTool()] : [])];
+  return [
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : tool),
+    ...createPlatformShellTools(),
+  ];
 }
 
 /** Resolve old persisted agent/checkpoint selections without rewriting immutable transcripts. */

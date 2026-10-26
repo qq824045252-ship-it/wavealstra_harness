@@ -22,6 +22,12 @@ import {
   type HostAction,
   type HostRequestMap,
 } from "./windows/windowsAutomationProtocol";
+import {
+  computerUseUnsupportedMessage,
+  detectComputerUseSupport,
+  type PlatformId,
+} from "../platform/computer-use";
+import { ocrSearchCandidates, resolveOcrProvider } from "../platform/computer-use/ocr";
 
 export type ComputerExecAction =
   | "attach_app"
@@ -167,6 +173,13 @@ export interface ComputerExecOutput {
   lines?: OcrLine[];
   lineCount?: number;
   ocr?: OcrResultInfo;
+  /** status: 平台能力探测结果（Windows/Linux/macOS 通用）。 */
+  platform?: PlatformId;
+  backend?: string;
+  supported?: boolean;
+  missingDependencies?: string[];
+  installHint?: string;
+  reason?: string;
   [key: string]: unknown;
 }
 
@@ -182,49 +195,7 @@ const APP_SESSION_TTL_MS = 10 * 60_000;
 const MAX_APP_SESSIONS = 8;
 const MODIFIER_VK: Record<ComputerModifier, number> = { ctrl: 0x11, shift: 0x10, alt: 0x12, win: 0x5b };
 const OCR_TIMEOUT_MS = 30_000;
-const OCR_KNOWN_PATHS = [
-  "C:\\Users\\servi\\Documents\\GitHub\\OCR_NPU\\dist\\OCR_NPU_CLI\\OCR_NPU_CLI.exe",
-];
 const execFileAsync = promisify(execFile);
-
-function resolveOcrCli(): string | undefined {
-  const configured = process.env.MYBUDDY_OCR_CLI?.trim();
-  if (configured && existsSync(configured)) return configured;
-  for (const candidate of OCR_KNOWN_PATHS) if (existsSync(candidate)) return candidate;
-  for (const directory of (process.env.PATH ?? "").split(";")) {
-    if (!directory.trim()) continue;
-    for (const extension of [".exe", ".cmd", ""]) {
-      const candidate = join(directory.trim(), `OCR_NPU_CLI${extension}`);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return undefined;
-}
-
-type OcrProvider = { kind: "npu"; path: string } | { kind: "windows"; script: string };
-
-function windowsOcrScriptPath(): string | undefined {
-  const candidates: string[] = [];
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { app } = require("electron") as typeof import("electron");
-    if (app?.isPackaged) candidates.push(join(process.resourcesPath, "windows-ocr.ps1"));
-  } catch { /* node-only tests */ }
-  candidates.push(join(__dirname, "..", "..", "scripts", "windows-ocr.ps1"));
-  candidates.push(join(process.cwd(), "scripts", "windows-ocr.ps1"));
-  return candidates.find((candidate) => existsSync(candidate));
-}
-
-function resolveOcrProvider(): OcrProvider | undefined {
-  const preference = (process.env.MYBUDDY_OCR_PROVIDER ?? "auto").trim().toLowerCase();
-  if (preference !== "windows") {
-    const cli = resolveOcrCli();
-    if (cli) return { kind: "npu", path: cli };
-  }
-  const script = windowsOcrScriptPath();
-  if (script) return { kind: "windows", script };
-  return undefined;
-}
 
 function parseWindowsOcrOutput(stdout: string): OcrRawText[] {
   const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -455,7 +426,10 @@ export class ComputerAutomationService {
     private readonly capture: WindowCaptureService = windowCaptureService,
   ) {}
 
-  get available(): boolean { return process.platform === "win32"; }
+  get available(): boolean {
+    // 平台边界：能力探测统一走 src/main/platform（Windows=UIA；Linux/macOS=unsupported）。
+    return detectComputerUseSupport().supported;
+  }
   async shutdown(): Promise<void> { await this.host.shutdown(); }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
@@ -558,9 +532,22 @@ export class ComputerAutomationService {
   private async executeOnce(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     assertNotCancelled(signal);
     if (input.action === "status") {
-      return { action: input.action, detail: this.available ? "ready (persistent Windows Automation Host + UIA + guarded SendInput)" : "unsupported platform", hostPid: this.host.pid };
+      const support = detectComputerUseSupport();
+      return {
+        action: input.action,
+        detail: support.supported
+          ? `ready (${support.backend}: persistent Windows Automation Host + UIA + guarded SendInput)`
+          : computerUseUnsupportedMessage(support),
+        hostPid: this.host.pid,
+        platform: support.platform,
+        backend: support.backend,
+        supported: support.supported,
+        missingDependencies: support.missingDependencies,
+        installHint: support.installHint,
+        reason: support.reason,
+      };
     }
-    if (!this.available) throw new Error("computer_exec 当前仅支持 Windows");
+    if (!this.available) throw new Error(computerUseUnsupportedMessage(detectComputerUseSupport()));
     if (input.action === "attach_app") return this.attachApp(input, signal);
     if (input.action === "screenshot") return this.captureDesktop(input, signal);
     if (input.action === "ocr_window") return this.ocrWindow(input, signal);
@@ -1016,7 +1003,7 @@ export class ComputerAutomationService {
   private async ocrWindow(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const provider = resolveOcrProvider();
     if (!provider) {
-      throw new WindowsAutomationError("OCR_UNAVAILABLE", "未找到可用 OCR：设置 MYBUDDY_OCR_CLI（OCR_NPU_CLI）或安装 Windows OCR 语言包", { searched: [process.env.MYBUDDY_OCR_CLI, ...OCR_KNOWN_PATHS, "windows-ocr.ps1"] });
+      throw new WindowsAutomationError("OCR_UNAVAILABLE", "未找到可用 OCR：设置 MYBUDDY_OCR_CLI（OCR_NPU_CLI）或安装 Windows OCR 语言包", { searched: ocrSearchCandidates() });
     }
     const target = await this.guardedTarget(input, signal);
     const window = await this.inspect(target, signal);

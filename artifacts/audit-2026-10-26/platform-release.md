@@ -353,3 +353,41 @@ grep -rl 'C:\\Users\\servi' artifacts | wc -l
 3. **`.github/workflows/verify.yml` 的 Linux job 是新增门禁**：`ELECTRON_DISABLE_SANDBOX=1` 是否被 Electron 44 采纳、xvfb 下 GUI 用例是否全绿，未在本机 CI 复现（本机是有 Hyprland 的真桌面，不是 xvfb）。已知 default 套件混入的真 Electron 用例（见 §4/§6）是最大风险点。
 4. `scripts/after-pack.cjs` 的 `verifyPackagedApp` 现在会要求 win32 包里有 `@napi-rs/keyring-win32-x64-msvc` 解包目录；若既有 Windows 包构建里该目录走的是 asar 内路径而非 unpacked，门禁会在首次 Windows 构建时报错——需要 Windows 机器上跑一次 `pnpm -s dist` 确认（本机无法验证）。
 5. `dev` 实例未做热重启验证：运行中的实例（PID 224446）在本次改动后仍未重建 `out/main`（21:12 之后无写入），因此**没有**用运行实例的 D-Bus 复验新托盘图标；托盘修复由 `test:tray` 的真实 Electron 进程验证（PNG 托盘创建成功）。应用重启后应能在 quickshell 状态栏看到图标。
+
+---
+
+## 12. 实施记录：平台拆分 A —— Computer Use 边界（task-12，2026-10-27）
+
+> 目标：把 Windows 专属常量/路径/判断从 Computer Use 业务服务剥离；只做平台边界与能力探测，不实现 Linux 后端。
+
+### 12.1 新增/修改
+
+| 文件 | 内容 |
+|---|---|
+| `src/main/platform/computer-use.ts`（新） | `ComputerUseSupport`（platform/backend/supported/missingDependencies/installHint/reason）、`detectComputerUseSupport(platform, {pathValue,refresh})`（按平台缓存）、`probeLinuxComputerUseTools()`（纯 PATH 扫描 `hyprctl/grim/slurp/tesseract/wtype/ydotool`，不 spawn）、`executableInPath()`、`supportsComputerUseOverlay()`（仅 Windows）、`computerUseUnsupportedMessage()`。Windows→`windows-uia/supported`；Linux→`linux-wayland/unsupported` + pacman 安装提示（已装的不列）；macOS→`unsupported`。 |
+| `src/main/platform/computer-use/ocr.ts`（新） | OCR 候选/provider 从服务搬出：`ocrInstallCandidates()`（**不再含 `C:\Users\servi\...`**，只用 `LOCALAPPDATA`/`ProgramFiles` 标准位置 + 仓库相对路径）、`resolveOcrCli()`（`MYBUDDY_OCR_CLI` 优先）、`windowsOcrScriptPath()`（packaged resources → 仓库 scripts → cwd）、`resolveOcrProvider()`（语义不变）、`ocrSearchCandidates()`；另导出 Linux tesseract 描述 `describeLinuxOcrProvider()`（命令/语言参数/安装提示），不执行。 |
+| `src/main/capabilities/ComputerAutomationService.ts` | `available` 改用 `detectComputerUseSupport().supported`；`status` 返回 `platform/backend/supported/missingDependencies/installHint/reason`（原有 `action/detail/hostPid` 兼容）；非 Windows `execute` 抛带安装提示的可诊断错误（不再写「仅支持 Windows」）；OCR 候选/错误清单改从 platform 模块取；文件从 1401→1388 行。 |
+| `src/main/capabilities/ComputerUseOverlayService.ts` | `electronAvailable()` → `overlaySupported()`（= Electron 运行时 && `supportsComputerUseOverlay()`），并新增 `get isSupported()`；行为等价（Windows 才启用）。 |
+| `scripts/platform-computer-use-test.ts`（新，207 行） | 注入 platform/PATH 的 12 项断言：Linux unsupported+PATH 一致性+pacman 提示+缓存、Windows supported、macOS unsupported、overlay 仅 Windows、OCR 候选无个人路径、`MYBUDDY_OCR_CLI` 优先、Linux tesseract 描述。 |
+
+### 12.2 验证（2026-10-27）
+
+```bash
+pnpm -s typecheck                                                        # exit 0
+./node_modules/.bin/esbuild scripts/platform-computer-use-test.ts --bundle --platform=node \
+  --format=cjs --outfile=out/tests/platform-computer-use-test.cjs --external:electron \
+  && node scripts/test-guard.mjs out/tests/platform-computer-use-test.cjs # 12 checks passed
+pnpm -s test:harness-quality                                             # PASS
+pnpm -s test:artifact-gate                                               # 32/32 PASS
+pnpm -s test:architecture-graph                                          # PASS 5/5
+pnpm -s test:architecture                                                # passed=323 failed=0
+pnpm -s test:computer-automation / test:computer-use-run                 # 在 Linux 上失败（既有行为：这两个用例被 test-all 归为 GUI/Windows，仅在 verify-windows-gui 跑）
+```
+
+### 12.3 建议的 package.json 接线（本次不改 package.json）
+
+```json
+"test:platform-computer-use": "esbuild scripts/platform-computer-use-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/platform-computer-use-test.cjs --external:electron && node scripts/test-guard.mjs out/tests/platform-computer-use-test.cjs"
+```
+
+`test:all` 的分类按显式名单 + 兜底正则（`GUI_PATTERNS = [/-e2e$/, /-desktop$/, /-electron$/, /:desktop$/, /^test:computer-/]`）；`test:platform-computer-use` 不命中任何一条，接线后会自动落进 headless default 套件，无需改 `test-all.mjs`。

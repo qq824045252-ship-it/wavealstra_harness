@@ -1,6 +1,7 @@
 import type { BrowserWindow as ElectronBrowserWindow } from "electron";
 import type { ComputerUsePhase } from "./ComputerUsePolicy";
 import type { WindowInfo } from "./windows/windowsAutomationProtocol";
+import { supportsComputerUseOverlay } from "../platform/computer-use";
 
 interface CursorState {
   x: number;
@@ -23,8 +24,12 @@ type AbortHandler = (taskId: string) => void | Promise<void>;
 const OVERLAY_TITLE = "__MYBUDDY_COMPUTER_USE_OVERLAY__";
 const CONTROLS_TITLE = "__MYBUDDY_COMPUTER_USE_CONTROLS__";
 
-function electronAvailable(): boolean {
-  return Boolean(process.versions.electron) && process.platform === "win32";
+/**
+ * Overlay 是 Windows 专属实现（透明分层窗口 + WGC 命中测试）；平台判断收敛到
+ * src/main/platform/computer-use，服务层不再直接看 process.platform。
+ */
+function overlaySupported(): boolean {
+  return Boolean(process.versions.electron) && supportsComputerUseOverlay();
 }
 
 function phaseLabel(phase: ComputerUsePhase): string {
@@ -73,6 +78,11 @@ window.__setComputerControls=(state)=>{document.body.dataset.phase=state.phase||
 </script></body></html>`;
 
 export class ComputerUseOverlayService {
+  /** 平台能力探测：仅 Windows + Electron 运行时支持叠加层。 */
+  get isSupported(): boolean {
+    return overlaySupported();
+  }
+
   private border: ElectronBrowserWindow | null = null;
   private controls: ElectronBrowserWindow | null = null;
   private ready: Promise<void> | null = null;
@@ -87,7 +97,7 @@ export class ComputerUseOverlayService {
   }
 
   present(state: OverlayState): void {
-    if (!electronAvailable()) return;
+    if (!overlaySupported()) return;
     this.current = state;
     this.generation += 1;
     if (this.hideTimer) clearTimeout(this.hideTimer);
@@ -96,7 +106,7 @@ export class ComputerUseOverlayService {
   }
 
   presentDesktop(input: { taskId: string; phase: ComputerUsePhase; action: string; xPhysical?: number; yPhysical?: number; clicking?: boolean }): void {
-    if (!electronAvailable()) return;
+    if (!overlaySupported()) return;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { screen } = require("electron") as typeof import("electron");
     let cursorDip = screen.getCursorScreenPoint();
@@ -118,7 +128,7 @@ export class ComputerUseOverlayService {
   }
 
   settle(taskId: string, phase: "completed" | "failed", delayMs = phase === "completed" ? 900 : 1_800): void {
-    if (!electronAvailable() || this.current?.taskId !== taskId) return;
+    if (!overlaySupported() || this.current?.taskId !== taskId) return;
     const generation = ++this.generation;
     if (this.hideTimer) clearTimeout(this.hideTimer);
     const current = { ...this.current, phase } as OverlayState;
@@ -131,7 +141,7 @@ export class ComputerUseOverlayService {
   }
 
   waitForNextStep(taskId: string, delayMs = 260): void {
-    if (!electronAvailable() || this.current?.taskId !== taskId) return;
+    if (!overlaySupported() || this.current?.taskId !== taskId) return;
     const generation = this.generation;
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
@@ -169,7 +179,7 @@ export class ComputerUseOverlayService {
   }
 
   private async ensureWindows(): Promise<void> {
-    if (!electronAvailable()) return;
+    if (!overlaySupported()) return;
     if (this.border && !this.border.isDestroyed() && this.controls && !this.controls.isDestroyed()) return;
     if (this.ready) return this.ready;
     this.ready = (async () => {
@@ -262,7 +272,7 @@ export class ComputerUseOverlayService {
   }
 
   private startStopHitTest(): void {
-    if (this.hitTestTimer || !electronAvailable()) return;
+    if (this.hitTestTimer || !overlaySupported()) return;
     this.hitTestTimer = setInterval(() => {
       const controls = this.controls;
       if (!controls || controls.isDestroyed() || !controls.isVisible()) return;

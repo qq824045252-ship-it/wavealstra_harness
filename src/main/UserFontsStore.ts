@@ -8,10 +8,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 import { shell } from "electron";
 import type { UserFontDto } from "../shared/agent-ipc";
 import { getFontsDir } from "./paths";
+import { listSystemFonts as listSystemFontsFromPlatform } from "./platform/fonts";
 
 const FONT_EXTS = new Set([".ttf", ".otf", ".woff", ".woff2"]);
 
@@ -94,85 +94,17 @@ export class UserFontsStore {
   }
 
   /**
-   * 系统已安装字体。优先使用 Windows PowerShell + InstalledFontCollection；
-   * 如果宿主环境禁止 System.Drawing / PowerShell，再退回注册表字体项。
+   * 系统已安装字体（family 名）。平台实现见 `platform/fonts.ts`：
+   *   Windows = PowerShell InstalledFontCollection → 注册表兜底（逻辑逐字搬迁）；
+   *   Linux   = fontconfig 的 `fc-list --format=%{family}\n`；
+   *   macOS   = []（尚未接入原生字体 API）。
    * 仅缓存非空结果，避免一次临时失败把“0 个字体”缓存到整个进程生命周期。
    */
   listSystemFonts(): string[] {
     if (this.systemFontsCache?.length) return [...this.systemFontsCache];
-    if (process.platform !== "win32") return [];
-
-    const normalize = (names: string[]): string[] =>
-      names
-        .map((name) => String(name).replace(/^\uFEFF/, "").trim())
-        .filter(Boolean)
-        .filter((name, index, all) => all.indexOf(name) === index)
-        .sort((a, b) => a.localeCompare(b, "zh-CN", { sensitivity: "base" }));
-
-    try {
-      const command = [
-        "$ErrorActionPreference='Stop'",
-        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
-        "Add-Type -AssemblyName System.Drawing",
-        "$fonts = New-Object System.Drawing.Text.InstalledFontCollection",
-        "$fonts.Families | ForEach-Object { $_.Name } | Sort-Object -Unique | ConvertTo-Json -Compress",
-      ].join("; ");
-      const encoded = Buffer.from(command, "utf16le").toString("base64");
-      const systemRoot = process.env.SystemRoot || process.env.WINDIR || "C:\Windows";
-      const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const output = execFileSync(
-        powershell,
-        ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-        { encoding: "utf-8", timeout: 10000, windowsHide: true },
-      ).replace(/^\uFEFF/, "").trim();
-      if (output) {
-        const parsed = JSON.parse(output) as string | string[];
-        const list = normalize(Array.isArray(parsed) ? parsed : [parsed]);
-        if (list.length) {
-          this.systemFontsCache = list;
-          return [...list];
-        }
-      }
-    } catch (error) {
-      console.warn("[UserFontsStore] InstalledFontCollection 枚举失败，改用注册表", error);
-    }
-
-    try {
-      const systemRoot = process.env.SystemRoot || process.env.WINDIR || "C:\Windows";
-      const reg = join(systemRoot, "System32", "reg.exe");
-      const roots = [
-        "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
-        "HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
-      ];
-      const names: string[] = [];
-      for (const key of roots) {
-        let output = "";
-        try {
-          output = execFileSync(reg, ["query", key], {
-            encoding: "utf-8",
-            timeout: 5000,
-            windowsHide: true,
-          });
-        } catch {
-          continue;
-        }
-        for (const line of output.split(/\r?\n/)) {
-          const match = line.match(/^\s+(.+?)\s+REG_(?:SZ|EXPAND_SZ)\s+.+$/i);
-          if (!match?.[1]) continue;
-          const family = match[1]
-            .replace(/\s+\((?:TrueType|OpenType)\)$/i, "")
-            .replace(/\s+(?:Regular|Roman)$/i, "")
-            .trim();
-          if (family) names.push(family);
-        }
-      }
-      const list = normalize(names);
-      if (list.length) this.systemFontsCache = list;
-      return [...list];
-    } catch (error) {
-      console.warn("[UserFontsStore] 注册表字体枚举失败", error);
-      return [];
-    }
+    const list = listSystemFontsFromPlatform();
+    if (list.length) this.systemFontsCache = list;
+    return [...list];
   }
 
   /** 从本地路径复制到 fonts 目录；同名覆盖 */

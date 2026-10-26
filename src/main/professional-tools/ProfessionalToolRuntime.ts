@@ -22,6 +22,12 @@ import {
   type ProfessionalToolStatusDto,
 } from "../../shared/professional-tools";
 import { getMyBuddyDir } from "../paths";
+import {
+  listListeningPids as platformListeningPids,
+  listPidsByImageName as platformPidsByImageName,
+  pidExecutablePath as platformPidExecutablePath,
+  runProcess,
+} from "../platform/processes";
 
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_POLL_MS = 400;
@@ -98,69 +104,6 @@ function defaultTcpReady(host: string, port: number): Promise<boolean> {
   });
 }
 
-/** netstat 端口归属：`netstat -ano -p tcp` 解析 LISTENING 行 → pid 列表。非 Windows => []。 */
-async function defaultListListeningPids(port: number): Promise<number[]> {
-  if (process.platform !== "win32") return [];
-  try {
-    const { code, output } = await defaultRun("netstat", ["-ano", "-p", "tcp"], { timeoutMs: 5_000 });
-    if (code !== 0) return [];
-    const wanted = `:${port}`;
-    const pids: number[] = [];
-    for (const line of output.split(/\r?\n/)) {
-      // TCP    127.0.0.1:9876    0.0.0.0:0    LISTENING    1234
-      const m = /\s+LISTENING\s+(\d+)\s*$/i.exec(line.trim());
-      if (!m) continue;
-      if (!line.includes(wanted)) continue;
-      const pid = Number(m[1]);
-      if (Number.isFinite(pid) && pid > 0 && !pids.includes(pid)) pids.push(pid);
-    }
-    return pids;
-  } catch {
-    return [];
-  }
-}
-
-/** tasklist 镜像名 → pid 列表。非 Windows => []。 */
-async function defaultRunningPidsByImageName(imageName: string): Promise<number[]> {
-  if (process.platform !== "win32") return [];
-  try {
-    const { code, output } = await defaultRun("tasklist", ["/FI", `IMAGENAME eq ${imageName}`, "/FO", "CSV", "/NH"], {
-      timeoutMs: 5_000,
-    });
-    if (code !== 0) return [];
-    const pids: number[] = [];
-    for (const line of output.split(/\r?\n/)) {
-      // "blender.exe","1234","Console","1","123,456 K"
-      const m = /^"[^"]*","(\d+)"/.exec(line.trim());
-      if (!m) continue;
-      const pid = Number(m[1]);
-      if (Number.isFinite(pid) && pid > 0 && !pids.includes(pid)) pids.push(pid);
-    }
-    return pids;
-  } catch {
-    return [];
-  }
-}
-
-/** 进程可执行文件路径（wmic → PowerShell CIM 兜底）。非 Windows / 失败 => null。 */
-async function defaultPidExecutablePath(pid: number): Promise<string | null> {
-  if (process.platform !== "win32") return null;
-  try {
-    // PowerShell Get-CimInstance 比已废弃的 wmic 更稳；单行输出避免编码问题
-    const ps = [
-      "-NoProfile",
-      "-Command",
-      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").ExecutablePath`,
-    ];
-    const { code, output } = await defaultRun("powershell", ps, { timeoutMs: 5_000 });
-    if (code !== 0) return null;
-    const path = output.trim().split(/\r?\n/)[0]?.trim();
-    return path ? path : null;
-  } catch {
-    return null;
-  }
-}
-
 function defaultHttpReady(url: string): Promise<boolean> {
   return new Promise((resolve) => {
     const req = httpGet(url, { timeout: 1_500 }, (res) => {
@@ -218,44 +161,6 @@ function defaultHttpGet(url: string): Promise<string | null> {
   });
 }
 
-function defaultRun(
-  command: string,
-  args: string[],
-  options?: { env?: Record<string, string>; timeoutMs?: number },
-): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: options?.env ? { ...process.env, ...options.env } : undefined,
-    });
-    let output = "";
-    const timer =
-      options?.timeoutMs != null
-        ? setTimeout(() => {
-            try {
-              child.kill();
-            } catch {
-              /* best effort */
-            }
-          }, options.timeoutMs)
-        : undefined;
-    child.stdout?.on("data", (chunk) => (output += String(chunk)));
-    child.stderr?.on("data", (chunk) => (output += String(chunk)));
-    child.once("error", (error) => {
-      if (timer) clearTimeout(timer);
-      resolve({ code: -1, output: error.message });
-    });
-    child.once("exit", (code) => {
-      if (timer) clearTimeout(timer);
-      resolve({
-        code: code ?? -1,
-        output: timer && output.length === 0 ? `[timed out after ${options?.timeoutMs}ms]` : output,
-      });
-    });
-  });
-}
-
 function defaultOps(): ProfessionalToolPlatformOps {
   return {
     exists: existsSync,
@@ -281,11 +186,12 @@ function defaultOps(): ProfessionalToolPlatformOps {
         detached: true,
         env: env ? { ...process.env, ...env } : undefined,
       }),
-    run: defaultRun,
+    run: runProcess,
     tcpReady: defaultTcpReady,
-    listListeningPids: defaultListListeningPids,
-    runningPidsByImageName: defaultRunningPidsByImageName,
-    pidExecutablePath: defaultPidExecutablePath,
+    // 平台实现见 platform/processes.ts（Windows netstat/tasklist/PowerShell CIM；Linux ss//proc）。
+    listListeningPids: platformListeningPids,
+    runningPidsByImageName: platformPidsByImageName,
+    pidExecutablePath: platformPidExecutablePath,
     httpReady: defaultHttpReady,
     httpStatus: defaultHttpStatus,
     httpGet: defaultHttpGet,

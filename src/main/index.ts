@@ -230,6 +230,7 @@ import { CadRuntimeService } from "./cad/CadRuntimeService";
 import { CadArtifactService } from "./cad/CadArtifactService";
 import { FreeCadInterop } from "./cad/FreeCadInterop";
 import { TrayService } from "./TrayService";
+import { applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
 import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
 import { getRuntimeLogger } from "./runtime-logging";
 import { NotificationService } from "./notification/NotificationService";
@@ -496,7 +497,16 @@ function toBrowserConsoleEntry(event: RuntimeProbeEvent): BrowserConsoleEntryDto
 function createWindow(initialTheme: AppTheme = "light"): void {
   const overlay = THEME_TITLEBAR[initialTheme];
 
-  const windowIconPath = process.platform === "linux" ? appPngPath : appIconPath;
+  // 平台差异集中在 src/main/platform/window-shell.ts：图标格式 / titleBarOverlay / 任务栏身份。
+  const shellOptions = {
+    windowsIconPath: appIconPath,
+    linuxIconPath: appPngPath,
+    titleBar: { color: overlay.color, symbolColor: overlay.symbolColor, height: TITLE_BAR_HEIGHT },
+    isPackaged: app.isPackaged,
+    execPath: process.execPath,
+    appPath: app.getAppPath(),
+  };
+  const windowIconPath = platformWindowIconPath(shellOptions);
   const appIcon = nativeImage.createFromPath(windowIconPath);
   const win = new BrowserWindow({
     width: 1360,
@@ -512,27 +522,10 @@ function createWindow(initialTheme: AppTheme = "light"): void {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
     },
-    ...(process.platform === "win32"
-      ? {
-          titleBarOverlay: {
-            color: overlay.color,
-            symbolColor: overlay.symbolColor,
-            height: TITLE_BAR_HEIGHT,
-          },
-        }
-      : {}),
+    ...platformWindowOptions(shellOptions),
   });
 
-  if (process.platform === "win32") {
-    // Shell taskbar identity can otherwise resolve to a development Electron shortcut.
-    win.setAppDetails({
-      appId: app.isPackaged ? "com.mybuddy.app" : "com.mybuddy.app.dev",
-      appIconPath: app.isPackaged ? process.execPath : appIconPath,
-      appIconIndex: 0,
-      relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
-      relaunchDisplayName: "MyBuddy",
-    });
-  }
+  applyPlatformWindowIdentity(win, shellOptions);
 
   runtimeProbeService.attach("app", win.webContents);
 
