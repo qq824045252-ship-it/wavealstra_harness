@@ -18,6 +18,7 @@
 没有发现新的、会导致核心功能不可用的缺陷；有 **9 项 P1**（见下表），建议在下次发布前解决。
 
 **2026-10-27 执行结果：§5 第 1–9 项已实施并验证，第 10 项部分完成；default 门禁 254 个用例全绿（0 失败 / 0 已知失败）。** 明细见 §0.1。
+随后按用户要求清理旧测试：删除 29 个过时 script 条目 + 91 个旧测试/辅助文件（详见 `test-deletion-plan.md` 执行结果），并把 `test:workspace-files-ui`、`test:artifact-open-e2e` 修回绿灯；当前 default = **252 个 headless 用例全绿**，GUI 39 / NETWORK 20 / DATASET 2。
 
 ---
 

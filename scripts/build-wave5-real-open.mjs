@@ -26,6 +26,7 @@ await build({
   sourcemap: false,
   loader: { ".woff2": "file", ".woff": "file", ".ttf": "file", ".css": "empty" },
   logLevel: "warning",
+  external: ["@terrastruct/d2"],
   alias: {
     "@": join(ROOT, "src", "renderer", "src"),
     "@shared": join(ROOT, "src", "shared"),

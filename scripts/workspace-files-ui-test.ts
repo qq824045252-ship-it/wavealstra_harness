@@ -102,8 +102,6 @@ const libraryCss = read("src/renderer/src/styles/library.css");
 check("资料库有拖入高亮样式", libraryCss.includes("library-drop-overlay") && libraryCss.includes(".library-main.drag-over"));
 const workspace = read("src/renderer/src/components/pages/project/ProjectWorkspace.tsx");
 check("项目工作区不再内嵌资料库页", !workspace.includes("ProjectLibrary") && !workspace.includes('tab === "library"'));
-const assets = read("src/renderer/src/components/pages/project/ProjectAssets.tsx");
-check("项目资产可跳到侧边栏资料库", assets.includes("打开资料库") && assets.includes('setPage("library")'));
 
 const standalone = read("src/renderer/src/components/workspace/WorkspaceFilesStandalone.tsx");
 check(

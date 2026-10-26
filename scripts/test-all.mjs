@@ -86,13 +86,6 @@ const GUI_TESTS = new Set([
   "test:core-performance-electron",
   "test:core-performance-mybuddy-startup",
   "test:core-performance-all",
-  "test:wave4-e2e",
-  "test:wave5a-e2e",
-  "test:wave5b-e2e",
-  "test:wave5c-e2e",
-  "test:wave5d1-e2e",
-  "test:wave5d2-e2e",
-  "test:wave5d3-e2e",
   "test:pdf-runtime-e2e",
   "test:pdf-page-identity-e2e",
   "test:artifact-open-e2e",
@@ -164,8 +157,8 @@ const GUI_WINDOWS_ONLY = new Set([
  * job 掩盖成"GUI 环境问题"。修好后删掉本项，让它回到 default。
  */
 const KNOWN_HEADLESS_RED = new Set([
-  // 2026-10-26 实测 1/37 红："项目资产可跳到侧边栏资料库"（源码文本断言，疑似产品已改）。
-  "test:workspace-files-ui",
+  // 目前为空。2026-10-27 清理时已删除 test:workspace-files-ui 的过时断言
+  //（"项目资产可跳到侧边栏资料库"：ProjectAssets 已不再提供该入口），用例回到 default。
 ]);
 
 /**

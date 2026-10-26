@@ -20,7 +20,7 @@ await build({
   format: "cjs",
   platform: "node",
   target: "node18",
-  external: ["electron", "better-sqlite3"],
+  external: ["electron", "better-sqlite3", "@terrastruct/d2"],
   alias: {
     "@": join(root, "src", "renderer", "src"),
     "@shared": join(root, "src", "shared"),

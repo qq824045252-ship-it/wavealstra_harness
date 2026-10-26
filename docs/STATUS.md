@@ -1,6 +1,6 @@
 # MyBuddy (MyBuddy) — 软件当前状态
 
-> **2026-10-27 更新（以此为准）**：产品版本 0.1.49；Pi SDK **1.3.0**（`@earendil-works/pi-*`）、Electron **44.5.1**、TypeScript **7.0.2**、pnpm **12.14.0**（`packageManager`）、Node 24+；Linux（Omarchy / Wayland）已内置适配（托盘 PNG、gnome-libsecret、Linux 打包 `pack:linux`，见 [omarchy-linux.md](omarchy-linux.md)），Windows 发布流程见 [AGENTS.md](../AGENTS.md)；default 测试套件为 headless 253 个用例（`pnpm -s test:all`），GUI 套件用 `pnpm -s test:all:gui`。
+> **2026-10-27 更新（以此为准）**：产品版本 0.1.49；Pi SDK **1.3.0**（`@earendil-works/pi-*`）、Electron **44.5.1**、TypeScript **7.0.2**、pnpm **12.14.0**（`packageManager`）、Node 24+；Linux（Omarchy / Wayland）已内置适配（托盘 PNG、gnome-libsecret、Linux 打包 `pack:linux`，见 [omarchy-linux.md](omarchy-linux.md)），Windows 发布流程见 [AGENTS.md](../AGENTS.md)；default 测试套件为 headless 252 个用例（`pnpm -s test:all`），GUI 套件用 `pnpm -s test:all:gui`。
 > **以下 §1–§8 是 2026-08-08 的历史快照**：架构理念与大部分实现描述仍适用，但版本号、命令、测试数量与部分功能清单已过期；与代码冲突时以代码和 AGENTS.md 为准。
 
 > 本文件供第三方 AI / 开发者快速了解本项目：架构、实现原理、已实现功能、数据存储、IPC 契约、剩余工作与注意事项。
