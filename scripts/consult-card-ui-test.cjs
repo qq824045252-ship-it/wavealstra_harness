@@ -22,6 +22,19 @@ const timeout = setTimeout(() => { console.error('consult-card-ui timed out'); a
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1360, height: 1000, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
   const evaluate = async (code) => win.webContents.executeJavaScript(code);
+  // 隐藏窗口的 setContentSize 在 Linux 上不可靠（实测有时完全不生效），响应式布局断言会随机失败。
+  // 改用 CDP 的设备度量覆盖：确定性设置 viewport，不依赖真实窗口能否 resize。
+  const debuggerApi = win.webContents.debugger;
+  let viewportOverride = false;
+  try { debuggerApi.attach('1.3'); viewportOverride = true; }
+  catch (error) { console.warn('[consult-card-ui] 无法 attach debugger，退回 setContentSize：', error?.message ?? error); }
+  const setViewport = async (width, height) => {
+    if (viewportOverride) {
+      await debuggerApi.sendCommand('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    } else {
+      win.setContentSize(width, height);
+    }
+  };
   const settle = () => evaluate(settleFramesScript);
   const checks = [];
   const check = async (name, fn) => { await fn(); checks.push(name); console.log('PASS', name); };
@@ -91,8 +104,13 @@ app.whenReady().then(async () => {
     await screenshot('detail-dragged-and-recentred');
 
     // Narrow viewport must fall back to the horizontal strip and still fit.
-    await win.setContentSize(420, 820);
+    await setViewport(420, 820);
     await settle();
+    // 窗口尺寸变化要经过一次 layout + React 重渲染才反映到 bodyDirection；隐藏窗口下 rAF 可能不触发，
+    // 固定 settle 存在竞态 → 显式轮询到目标布局（最多 3s），断言本身保留为最终校验。
+    await wait('window.innerWidth <= 500', 3000);
+    await settle();
+    await wait('window.consultCardTest.bodyDirection() === "column"', 3000);
     const narrow = await evaluate('window.consultCardTest.dialogRect()');
     console.log('RECT narrow', JSON.stringify(narrow));
     await check('narrow viewport keeps the panel inside the screen', async () => {
@@ -101,8 +119,10 @@ app.whenReady().then(async () => {
     });
     await check('narrow layout falls back to the horizontal participant strip', async () => assert.equal(await evaluate('window.consultCardTest.bodyDirection()'), 'column'));
     await screenshot('detail-narrow');
-    await win.setContentSize(1360, 1000);
+    await setViewport(1360, 1000);
     await settle();
+    await wait('window.innerWidth >= 1000', 3000);
+    console.log('viewport after restore', await evaluate('window.innerWidth + "x" + window.innerHeight'));
 
     // ---- 3. Follow-up works for complete / failed / interrupted participants ----
     await check('follow-up is enabled for a completed participant', async () => {
