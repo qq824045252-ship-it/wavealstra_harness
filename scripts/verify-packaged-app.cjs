@@ -11,9 +11,9 @@
  * Dev mode (`out/`) always has these files, so no dev test can catch it.
  *
  * This script is both:
- *   - a CLI gate:  node scripts/verify-packaged-app.cjs [--app-dir <win-unpacked>] [--launch]
- *   - a module used by scripts/after-pack-windows.cjs, so electron-builder refuses
- *     to produce/accept a package whose payload cannot start the subagent worker.
+ *   - a CLI gate:  node scripts/verify-packaged-app.cjs [--app-dir <win-unpacked|linux-unpacked>] [--launch]
+ *   - a module used by scripts/after-pack.cjs (every platform), so electron-builder
+ *     refuses to produce/accept a package whose payload cannot start the subagent worker.
  */
 "use strict";
 
@@ -93,9 +93,65 @@ function findNode() {
 }
 
 /**
- * Verify one packaged app directory (`.../win-unpacked`).
+ * electron-builder 的 unpacked 目录名（win-unpacked / linux-unpacked）是目标平台的可靠提示；
+ * 不依赖宿主 process.platform，才能在 Linux 上校验 Windows 产物、反之亦然。
+ */
+function platformFromAppDir(appDir) {
+  const base = path.basename(appDir).toLowerCase();
+  if (base.includes("win")) return "win32";
+  if (base.includes("linux")) return "linux";
+  if (base.includes("mac")) return "darwin";
+  return process.platform;
+}
+
+/** Electron Linux/macOS 打包目录里与产品无关的可执行文件，不能当作主程序。 */
+const HELPER_EXECUTABLES = new Set([
+  "chrome-sandbox",
+  "chrome_crashpad_handler",
+  "chrome_crashpad_handler.exe",
+]);
+
+function isExecutableFile(filePath) {
+  try {
+    const info = fs.statSync(filePath);
+    return info.isFile() && (info.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 找打包后的主程序：Windows 是 `*.exe`；Linux 是无扩展名的可执行文件
+ * （`mybuddy`），需排除 chrome-sandbox / chrome_crashpad_handler / `*.so` 等。
+ */
+function findPackagedExecutable(appDir, platform) {
+  let names;
+  try {
+    names = fs.readdirSync(appDir);
+  } catch {
+    return null;
+  }
+  if (platform === "win32") {
+    return names.find((name) => name.toLowerCase().endsWith(".exe") && !/unins/i.test(name)) ?? null;
+  }
+  const candidates = names.filter(
+    (name) =>
+      !HELPER_EXECUTABLES.has(name) &&
+      !name.includes(".") &&
+      isExecutableFile(path.join(appDir, name)),
+  );
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  // 多个候选时优先产品名（electron-builder 的 productFilename/executableName 小写形态）。
+  const preferred = candidates.find((name) => /^mybuddy$/i.test(name)) ?? candidates.find((name) => /mybuddy|wavealstra/i.test(name));
+  return preferred ?? candidates.sort()[0];
+}
+
+/**
+ * Verify one packaged app directory (`.../win-unpacked` / `.../linux-unpacked`).
  * Returns `{ ok, errors: string[], facts: Record<string, unknown> }` — never throws
  * for inspectable failures, so callers can report every problem at once.
+ *
+ * options.platform: 'win32' | 'linux' | 'darwin'，默认由 appDir 目录名推断。
  */
 function verifyPackagedApp(appDir, options = {}) {
   const errors = [];
@@ -109,9 +165,17 @@ function verifyPackagedApp(appDir, options = {}) {
   if (!fs.existsSync(appDir)) return { ok: false, errors: [`app directory not found: ${appDir}`], facts };
   if (!fs.existsSync(asarPath)) return { ok: false, errors: [`app.asar not found: ${asarPath}`], facts };
 
-  const exe = fs.readdirSync(appDir).find((name) => name.toLowerCase().endsWith(".exe") && !/unins/i.test(name));
+  const targetPlatform = options.platform ?? platformFromAppDir(appDir);
+  facts.platform = targetPlatform;
+  const exe = findPackagedExecutable(appDir, targetPlatform);
   facts.executable = exe ?? null;
-  if (!exe) fail("no application executable found in " + appDir);
+  if (!exe) {
+    fail(
+      targetPlatform === "win32"
+        ? "no application executable (.exe) found in " + appDir
+        : `no application executable (extension-less executable) found in ${appDir} for ${targetPlatform}`,
+    );
+  }
 
   let files;
   try {
@@ -212,7 +276,19 @@ function verifyPackagedApp(appDir, options = {}) {
   }
 
   // 5. native modules the main process loads from the unpacked tree
-  for (const rel of ["node_modules/better-sqlite3", "node_modules/node-pty"]) {
+  const requiredNativeModules = ["node_modules/better-sqlite3", "node_modules/node-pty"];
+  if (targetPlatform === "linux") {
+    // @napi-rs/keyring 在缺平台包时会在 require 期抛 "Cannot find native binding"；
+    // 主进程静态 import 了 BuiltinCredentialStore，不能让它以这种状态出厂。
+    requiredNativeModules.push(
+      "node_modules/@napi-rs/keyring",
+      "node_modules/@napi-rs/keyring-linux-x64-gnu",
+    );
+  }
+  if (targetPlatform === "win32") {
+    requiredNativeModules.push("node_modules/@napi-rs/keyring-win32-x64-msvc");
+  }
+  for (const rel of requiredNativeModules) {
     if (!fs.existsSync(path.join(unpackedRoot, rel))) fail(`missing unpacked native module: ${rel}`);
   }
 
@@ -242,19 +318,24 @@ function formatReport(appDir, result) {
   return lines.join("\n");
 }
 
-/** Resolve the app dir from argv, defaulting to the accepted release build. */
+/**
+ * Resolve the app dir from argv, defaulting to the newest unpacked build in release/.
+ * 同时接受 win-unpacked 与 linux-unpacked（取修改时间最新的那个）。
+ */
 function resolveAppDir(repoRoot) {
   const index = process.argv.indexOf("--app-dir");
   if (index !== -1 && process.argv[index + 1]) return path.resolve(process.argv[index + 1]);
-  const candidates = (fs.existsSync(path.join(repoRoot, "release"))
-    ? fs.readdirSync(path.join(repoRoot, "release")).filter((name) => name.startsWith("win-"))
-    : []
-  ).map((name) => path.join(repoRoot, "release", name));
-  const fallback = path.join(repoRoot, "release", "win-unpacked");
-  return candidates.includes(fallback) ? fallback : fallback;
+  const releaseDir = path.join(repoRoot, "release");
+  const candidates = (fs.existsSync(releaseDir) ? fs.readdirSync(releaseDir) : [])
+    .filter((name) => /^(win|linux|mac)/.test(name))
+    .map((name) => path.join(releaseDir, name))
+    .filter((dir) => fs.existsSync(dir))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  if (candidates[0]) return candidates[0];
+  return path.join(releaseDir, process.platform === "linux" ? "linux-unpacked" : "win-unpacked");
 }
 
-module.exports = { verifyPackagedApp, formatReport, readAsarIndex, flattenAsarFiles, REQUIRED_UNPACKED_ENTRIES };
+module.exports = { verifyPackagedApp, formatReport, readAsarIndex, flattenAsarFiles, findPackagedExecutable, platformFromAppDir, REQUIRED_UNPACKED_ENTRIES };
 
 if (require.main === module) {
   const repoRoot = path.resolve(__dirname, "..");

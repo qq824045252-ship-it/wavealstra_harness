@@ -1,3 +1,4 @@
+import "./linux-password-store";
 import "./agent-environment";
 import { ExecutionFailureRepository } from "./agent/ExecutionFailureRepository";
 import { HtmlEditService } from "./html-edit/HtmlEditService";
@@ -10,6 +11,7 @@ import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
 import appIconPath from "./assets/app.ico?asset";
+import appPngPath from "./assets/app.png?asset";
 import trayPngPath from "./assets/tray.png?asset";
 import {
   AgentIpc,
@@ -472,7 +474,8 @@ function toBrowserConsoleEntry(event: RuntimeProbeEvent): BrowserConsoleEntryDto
 function createWindow(initialTheme: AppTheme = "light"): void {
   const overlay = THEME_TITLEBAR[initialTheme];
 
-  const appIcon = nativeImage.createFromPath(appIconPath);
+  const windowIconPath = process.platform === "linux" ? appPngPath : appIconPath;
+  const appIcon = nativeImage.createFromPath(windowIconPath);
   const win = new BrowserWindow({
     width: 1360,
     height: 860,

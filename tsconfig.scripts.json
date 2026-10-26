@@ -2,6 +2,12 @@
   // scripts/（测试与工具脚本）的口径：这些文件不在 tsconfig.node/web 的 include 里，
   // 过去引用主进程服务契约发生漂移时没有任何静态检查能发现。
   // 现状有历史错误，由 scripts/typecheck-scripts.mjs 做棘轮（只拦新增）。
+  //
+  // 不用 paths 解析 `@/…` 别名：2026-10-26 实测给本配置加上与 tsconfig.web 相同的
+  // `paths` 后，209 条基线错误会变成 816 条（TS2339 536 条）——别名解析会把测试里
+  // 原本被当成 any 的真实契约漂移一次性暴露出来。这本身是好事，但需要一轮专门清理，
+  // 不能靠重写基线掩盖（见 artifacts/audit-2026-10-26/README.md §4.5）。
+  // 在完成那轮清理前保持现状；`strict` 也仍是 false，同理逐目录收紧。
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

@@ -3,6 +3,11 @@ name: verify
 # 仓库此前的核心问题不是"测试挂了"，而是没有任何机制会让任何人发现测试挂了：
 # 290+ 个 test:* 脚本没有聚合入口、没有 CI，于是"过期常量"（断言 Pi 1.0.0 而实际 1.0.4）
 # 与"源码文本断言"可以长期腐烂。本工作流把 test:all 作为门禁接进回路。
+#
+# pnpm 版本必须是 10+：`overrides`/`allowBuilds` 等配置在 pnpm-workspace.yaml 里，
+# pnpm 9 读不到它们，`pnpm install --frozen-lockfile` 会报 LOCKFILE_CONFIG_MISMATCH。
+# 12.14.0 与本机开发环境、lockfile 的实际消费方式一致，并与 package.json
+# 的 `packageManager` 字段保持同一个值。
 on:
   push:
     branches: [main]
@@ -13,8 +18,11 @@ concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PNPM_VERSION: 12.14.0
+
 jobs:
-  verify:
+  verify-windows:
     # 只跑无头可判定部分；GUI/CDP/GPU 用例由 test:all 的 EXCLUDE_PATTERNS 排除，
     # 需要真实桌面会话时用 `pnpm -s test:all:live` 在自托管 runner 上验证。
     runs-on: windows-latest
@@ -24,16 +32,80 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: ${{ env.PNPM_VERSION }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
 
+      # MSBuild 仍走 260 字符的旧路径 API。runner 上的
+      # D:\a\wavealstra_harness\wavealstra_harness 加上 pnpm 带 patch hash 的
+      # node-pty 虚拟目录后，node-addon-api 的 vcxproj 中间文件会超限。
+      # 拷到真实短目录 C:\r（不用 junction，避免 Node realpath 又变回长路径）。
+      - name: Use a short path for native builds
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\r | Out-Null
+          robocopy $env:GITHUB_WORKSPACE C:\r /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Install dependencies
+        working-directory: C:\r
+        run: |
+          pnpm config set virtualStoreDirMaxLength 40 --location global
+          pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: C:\r
+        run: pnpm -s typecheck
+
+      - name: Harness quality gate
+        working-directory: C:\r
+        run: pnpm -s test:harness-quality
+
+      - name: Artifact machine gate
+        working-directory: C:\r
+        run: pnpm -s test:artifact-gate
+
+      # 棘轮门禁：新增回归 → 失败；scripts/test-baseline.json 中的已知失败
+      # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
+      - name: Full default suite (ratchet gate)
+        working-directory: C:\r
+        run: pnpm -s test:all
+
+  verify-linux:
+    # 本机开发/发布目标是 Linux（Omarchy/Wayland），必须有一条 Linux 门禁，
+    # 否则托盘/密钥库/打包这类平台代码永远只能靠手测。
+    # 说明：default 套件里仍有若干真 Electron 用例（见审计 C4）；这里用 xvfb 提供
+    # 显示服务，按现状跑通。若某条 Electron 用例在无头 xvfb 下必然失败，应把它挪去
+    # live job（另一项工作），不要为此削弱 test:all 或本 job。
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # CI 里以普通用户运行且无 SUID sandbox 环境，禁用 Chromium sandbox。
+      ELECTRON_DISABLE_SANDBOX: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Linux runtime deps for Electron
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libgbm1 libasound2t64 \
+            || sudo apt-get install -y xvfb libnss3 libgbm1 libasound2
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        continue-on-error: true
 
       - name: Typecheck
         run: pnpm -s typecheck
@@ -44,7 +116,5 @@ jobs:
       - name: Artifact machine gate
         run: pnpm -s test:artifact-gate
 
-      # 棘轮门禁：新增回归 → 失败；scripts/test-baseline.json 中的已知失败
-      # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
-      - name: Full default suite (ratchet gate)
-        run: pnpm -s test:all
+      - name: Full default suite (ratchet gate, headless X)
+        run: xvfb-run -a pnpm -s test:all

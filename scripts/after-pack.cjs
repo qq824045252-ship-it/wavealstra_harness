@@ -3,9 +3,17 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { verifyPackagedApp, formatReport } = require('./verify-packaged-app.cjs');
 
-module.exports = async function afterPackWindows(context) {
-  if (process.platform !== 'win32' || context.electronPlatformName !== 'win32') return;
-
+/**
+ * electron-builder afterPack hook（平台无关，Windows/Linux 共用）。
+ *
+ * 1) Payload gate：**所有平台都跑**。一个 unpacked 树不完整的安装包绝不能被产出/接受
+ *    （校验逻辑见 scripts/verify-packaged-app.cjs）。dev 模式永远有这些文件，只有这一步
+ *    能抓住坏安装包。Linux 用无扩展名主程序 + 同一个 node worker 探针。
+ * 2) Windows-only：把打包 payload 的完整性级别设为 Medium（icacls）。工作区可能继承
+ *    Low integrity，Windows 会以 Low 启动 EXE，Chromium 主进程无法创建 sandbox window
+ *    station。只在 Windows 宿主 + win32 目标上执行。
+ */
+module.exports = async function afterPack(context) {
   const outDir = fs.realpathSync(context.outDir);
   const appOutDir = fs.realpathSync(context.appOutDir);
   const relative = path.relative(outDir, appOutDir);
@@ -13,10 +21,7 @@ module.exports = async function afterPackWindows(context) {
     throw new Error('Refusing to change integrity labels outside the packaged application directory');
   }
 
-  // Payload gate runs BEFORE any side effect: a package whose unpacked tree is
-  // incomplete must never be produced/accepted. Dev mode always has these files,
-  // so only this check can catch a broken installer (see scripts/verify-packaged-app.cjs).
-  const verification = verifyPackagedApp(appOutDir);
+  const verification = verifyPackagedApp(appOutDir, { platform: context.electronPlatformName });
   console.log(formatReport(appOutDir, verification));
   if (!verification.ok) {
     throw new Error(
@@ -26,9 +31,14 @@ module.exports = async function afterPackWindows(context) {
     );
   }
 
-  // A workspace may inherit Low integrity. Windows then starts its EXE at Low,
-  // preventing Chromium's main process from creating its sandbox window station.
-  // Label only the packaged payload, preserving the workspace and all DACLs.
+  if (context.electronPlatformName !== 'win32' || process.platform !== 'win32') {
+    console.log(
+      `[packaging] payload gate passed for ${context.electronPlatformName} (host ${process.platform}); ` +
+        'Windows integrity labelling skipped',
+    );
+    return;
+  }
+
   const icacls = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
   const result = execFileSync(icacls, [appOutDir, '/setintegritylevel', '(OI)(CI)M', '/L', '/Q'], {
     encoding: 'utf8',

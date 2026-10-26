@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { PythonProjectBindingStore } from "../src/main/runtime/PythonProjectBindingStore";
@@ -15,6 +15,15 @@ function assert(cond: unknown, label: string): void {
 
 function tableExists(db: AppDatabase, name: string): boolean {
   return db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) !== undefined;
+}
+
+/** 同一目录下某个数据库文件的 `.discarded-<UTC 时间戳>` 备份（含 -wal/-shm 边车）。 */
+function discardedBackups(dbPath: string): string[] {
+  const prefix = `${basename(dbPath)}.discarded-`;
+  return readdirSync(dirname(dbPath))
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(dirname(dbPath), name))
+    .sort();
 }
 function columnExists(db: AppDatabase, table: string, name: string): boolean {
   return (db.connection.pragma(`table_info(${table})`) as Array<{ name: string }>).some((row) => row.name === name);
@@ -70,16 +79,33 @@ try {
   legacy.close();
   const reset = new AppDatabase(legacyPath);
   assertCurrentSchema(reset, "legacy reset");
-  assert(!tableExists(reset, "sentinel"), "incompatible schema is discarded instead of migrated");
-  assert(reset.listTasks().length === 0, "incompatible database data is cleared");
+  assert(!tableExists(reset, "sentinel"), "incompatible schema is rebuilt (not migrated) after backup");
+  assert(reset.listTasks().length === 0, "incompatible database data is cleared from the rebuilt database");
   reset.close();
+
+  // 旧库不再被删除：三个文件改名为同目录 `.discarded-<UTC 时间戳>` 备份，备份内容仍可读。
+  const legacyBackups = discardedBackups(legacyPath);
+  assert(legacyBackups.length === 1, "incompatible database is backed up instead of deleted");
   assert(!existsSync(`${legacyPath}.pre-migration-v24-to-v${CURRENT_DATABASE_SCHEMA_VERSION}`), "no compatibility backup contract remains");
+  const legacyBackupStamp = basename(legacyBackups[0]).slice(`${basename(legacyPath)}.discarded-`.length);
+  assert(/^\d{8}T\d{9}Z$/.test(legacyBackupStamp), `backup name carries a UTC timestamp: ${legacyBackupStamp}`);
+  const legacyBackup = new Database(legacyBackups[0], { readonly: true, fileMustExist: true });
+  assert(legacyBackup.pragma("user_version", { simple: true }) === 24, "backup keeps the discarded user_version");
+  assert((legacyBackup.prepare("SELECT value FROM sentinel").get() as { value: string }).value === "must-disappear", "backup preserves the discarded rows");
+  legacyBackup.close();
+  const rebuilt = new AppDatabase(legacyPath);
+  assertCurrentSchema(rebuilt, "legacy rebuild reopen");
+  assert(rebuilt.listTasks().length === 0, "rebuilt empty database is usable after backup");
+  rebuilt.close();
 
   const corruptPath = join(root, "corrupt.db");
   writeFileSync(corruptPath, "not-a-sqlite-database");
   const recovered = new AppDatabase(corruptPath);
   assertCurrentSchema(recovered, "corrupt reset");
   recovered.close();
+  const corruptBackups = discardedBackups(corruptPath);
+  assert(corruptBackups.length === 1, "corrupt database is backed up instead of deleted");
+  assert(readFileSync(corruptBackups[0], "utf8") === "not-a-sqlite-database", "backup preserves the corrupt file bytes");
 
   // 对话分支关系在 v27 库补表后立即可用（§5.2/§13.2）
   const branchDbPath = join(root, "branch.db");

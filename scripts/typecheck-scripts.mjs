@@ -21,12 +21,20 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BASELINE_PATH = join(ROOT, "scripts", "typecheck-baseline.json");
-const CONFIG = join(ROOT, "tsconfig.scripts.json");
+// TYPECHECK_SCRIPTS_CONFIG 仅用于自检（模拟配置级错误/tsc 崩溃）；正常路径固定仓库根 tsconfig。
+const CONFIG = process.env.TYPECHECK_SCRIPTS_CONFIG
+  ? resolve(ROOT, process.env.TYPECHECK_SCRIPTS_CONFIG)
+  : join(ROOT, "tsconfig.scripts.json");
+
+function tail(text, lines = 40) {
+  const parts = String(text ?? "").trim().split(/\r?\n/);
+  return parts.length <= lines ? parts.join("\n") : parts.slice(-lines).join("\n");
+}
 
 const args = process.argv.slice(2);
 const updateBaseline = args.includes("--update-baseline");
@@ -50,9 +58,11 @@ if (result.error) {
 
 const LINE = /^(.+?)\(\d+,\d+\): error (TS\d+): (.*)$/;
 const keys = new Map(); // key -> { file, code, message, samples }
+let parsedAny = 0;
 for (const line of `${result.stdout ?? ""}\n${result.stderr ?? ""}`.split("\n")) {
   const match = LINE.exec(line.trim());
   if (!match) continue;
+  parsedAny += 1;
   const file = relative(ROOT, match[1]).replace(/\\/g, "/");
   // 只统计 scripts/ 下的错误；被 import 连带进来的 app/** 归它们自己的检查口径
   if (!file.startsWith("scripts/")) continue;
@@ -60,6 +70,19 @@ for (const line of `${result.stdout ?? ""}\n${result.stderr ?? ""}`.split("\n"))
   const message = match[3].trim();
   const key = `${file} :: ${code} :: ${message}`;
   if (!keys.has(key)) keys.set(key, { file, code, message });
+}
+
+// fail-open 防护：tsc 非 0 退出却一条 `file(line,col): error TSxxxx` 都解析不到时，
+// 说明失败发生在解析之外（tsc 崩溃、TS18003 无输入、tsconfig 配置错误、maxBuffer 截断等）。
+// 这类失败绝不能被当成「历史错误已不复现」放行——否则门禁在 tsc 本身坏掉时仍是绿的。
+if (result.status !== 0 && parsedAny === 0) {
+  console.error(
+    `[typecheck-scripts] tsc 退出码 ${result.status}，但没有解析到任何错误行；` +
+      `这通常是配置级错误（如 TS18003）或 tsc 崩溃，不能当作「没有新增错误」放行。`,
+  );
+  const detail = tail(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  if (detail) console.error(detail.split("\n").map((line) => `      | ${line}`).join("\n"));
+  process.exit(1);
 }
 
 const baseline = existsSync(BASELINE_PATH)

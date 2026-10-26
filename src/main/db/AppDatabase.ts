@@ -3,7 +3,7 @@ import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
 import {
@@ -217,26 +217,74 @@ function sameLegacyTaskExecutionWorkspaceStateRow(
     sameNullable(a.trash_path, b.trash_path)
   );
 }
-function resetIncompatibleDatabaseFile(dbPath: string): void {
-  if (dbPath === ":memory:" || !existsSync(dbPath)) return;
-  let version = -1;
-  try {
-    const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
-    try { version = Number(probe.pragma("user_version", { simple: true })); }
-    finally { probe.close(); }
-  } catch {
-    version = -1;
+/** 不兼容数据库的备份时间戳：UTC、文件系统安全（Windows 文件名不允许冒号）。 */
+function incompatibleDatabaseBackupStamp(now = new Date()): string {
+  // 2026-10-26T13:36:05.123Z → 20261026T133605123Z
+  return now.toISOString().replace(/[-:.]/g, "");
+}
+
+/** 同名备份已存在时追加序号：绝不覆盖既有备份（POSIX rename 会静默覆盖目标文件）。 */
+function reserveDatabaseBackupPath(candidate: string): string {
+  if (!existsSync(candidate)) return candidate;
+  for (let index = 1; index < 1000; index++) {
+    const next = `${candidate}-${index}`;
+    if (!existsSync(next)) return next;
   }
-  if (version === CURRENT_DATABASE_SCHEMA_VERSION) return;
-  for (const candidate of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
-    try { rmSync(candidate, { force: true }); }
-    catch (error) {
-      throw new Error(`无法清理不兼容数据库文件 ${candidate}: ${error instanceof Error ? error.message : String(error)}`);
+  throw new Error(`无法为不兼容数据库分配备份路径（同名备份过多）: ${candidate}`);
+}
+
+/**
+ * user_version 与 CURRENT_DATABASE_SCHEMA_VERSION 不一致（降级/回滚/迁移中断/损坏）时：
+ * 把 db / -wal / -shm 改名到同目录 `${dbPath}.discarded-<UTC 时间戳>[-wal|-shm]` 备份，再让构造函数重建空库。
+ *
+ * 任何情况下都不删除用户数据：rename 失败会回滚已改名的文件并抛错（启动失败好过静默清库）。
+ * 备份的 -wal/-shm 与备份主库同前缀，SQLite 打开备份时仍能自动重放未 checkpoint 的 WAL。
+ */
+function resetIncompatibleDatabaseFile(dbPath: string): void {
+  if (dbPath === ":memory:") return;
+  const dbExisted = existsSync(dbPath);
+  if (!dbExisted && !existsSync(`${dbPath}-wal`) && !existsSync(`${dbPath}-shm`)) return;
+  let version = -1;
+  if (dbExisted) {
+    try {
+      const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
+      try { version = Number(probe.pragma("user_version", { simple: true })); }
+      finally { probe.close(); }
+    } catch {
+      version = -1;
     }
   }
+  if (version === CURRENT_DATABASE_SCHEMA_VERSION) return;
+
+  const stamp = incompatibleDatabaseBackupStamp();
+  const moved: Array<{ source: string; backup: string }> = [];
+  try {
+    // 先搬 WAL/SHM，最后搬主库：搬走主库前不让旧库以「可被误开」的形态留在原位。
+    for (const suffix of ["-wal", "-shm", ""]) {
+      const source = `${dbPath}${suffix}`;
+      if (!existsSync(source)) continue;
+      const backup = reserveDatabaseBackupPath(`${dbPath}.discarded-${stamp}${suffix}`);
+      renameSync(source, backup);
+      moved.push({ source, backup });
+    }
+  } catch (error) {
+    for (const { source, backup } of moved.reverse()) {
+      try { renameSync(backup, source); }
+      catch (rollbackError) {
+        console.error(
+          `[AppDatabase] 备份回滚失败，文件保留在 ${backup}（未删除）：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        );
+      }
+    }
+    throw new Error(
+      `无法备份不兼容数据库 ${dbPath}（未删除任何数据）: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   if (existsSync(dbPath)) throw new Error(`无法重建不兼容数据库：${dbPath}`);
+  const versionLabel = dbExisted ? `v${version}` : "缺失主库文件";
   console.warn(
-    `[AppDatabase] development schema reset: discarded incompatible database v${version} -> v${CURRENT_DATABASE_SCHEMA_VERSION}`,
+    `[AppDatabase] incompatible database ${versionLabel} (current v${CURRENT_DATABASE_SCHEMA_VERSION}) reset: backed up ` +
+      `${moved.map(({ source, backup }) => `${source} -> ${backup}`).join(", ") || "nothing"}; rebuilding empty database`,
   );
 }
 
