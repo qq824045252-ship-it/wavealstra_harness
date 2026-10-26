@@ -335,6 +335,7 @@
     "test:computer-use-desktop": "node scripts/computer-use-browser-desktop-live.cjs",
     "test:magpie-desktop": "node scripts/test-guard.mjs scripts/magpie-desktop-test.cjs",
     "test:magpie-catalog": "esbuild scripts/magpie-gateway-catalog-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/magpie-gateway-catalog-test.mjs && node scripts/test-guard.mjs out/tests/magpie-gateway-catalog-test.mjs",
+    "test:magpie-agent-mybuddy": "node scripts/magpie-agent-mybuddy-test.mjs",
     "test:multi-search-desktop": "node scripts/test-guard.mjs scripts/multi-search-desktop-test.cjs",
     "test:search-source-address": "esbuild scripts/search-source-address-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/search-source-address-test.mjs && node scripts/test-guard.mjs out/tests/search-source-address-test.mjs",
     "test:multi-search-live": "esbuild scripts/multi-search-live-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/multi-search-live-test.mjs && node scripts/test-guard.mjs out/tests/multi-search-live-test.mjs",

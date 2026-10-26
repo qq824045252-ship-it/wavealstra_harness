@@ -1,0 +1,87 @@
+{
+  "verifiedAt": "2026-10-26T18:33:18+08:00",
+  "kind": "magpie third-party agent plugin for MyBuddy, with the app's own runtime completing a turn through the live gateway",
+  "magpie": {
+    "versionCLI": "0.1.1566",
+    "pendingUpdate": "0.1.1587 (~/app/magpie-linux-amd64.new)",
+    "gateway": "http://127.0.0.1:3425",
+    "pluginSpec": "/home/vivion/github/wavealstra_harness/integrations/magpie-agent-mybuddy",
+    "pluginLoaded": true
+  },
+  "plugin": {
+    "agentId": "mybuddy",
+    "agentName": "MyBuddy",
+    "config": "~/.mybuddy/models.json",
+    "modelKey": null,
+    "mode": "connect-only (MyBuddy picks its model in its own picker)",
+    "ua": [
+      "MyBuddy"
+    ],
+    "sha256": {
+      "mybuddy.agent.js": "8272914cfb1f264cd0e62e0e3cc30faba67743f3b650d657b6c27531199e7135",
+      "package.json": "53f57c61175282b6dea2688e618075c25bd7ed3200f1d774eaeba6870d1d9ea2"
+    }
+  },
+  "wiring": {
+    "file": "~/.mybuddy/models.json",
+    "provider": "providers.magpie",
+    "keys": [
+      "name",
+      "baseUrl",
+      "api",
+      "apiKey",
+      "headers",
+      "compat",
+      "models"
+    ],
+    "apiKeyIsAgentKey": "magpie-mybuddy",
+    "userAgent": "MyBuddy",
+    "sessionAffinityHeaders": true,
+    "modelCount": 5,
+    "models": [
+      "auto/deepseek-v4.1-flash",
+      "workbuddy/hy3",
+      "workbuddy/deepseek-v4.1-flash",
+      "workbuddy-ai/deepseek-v4.1-flash",
+      "opendesign/deepseek-v4.1-flash"
+    ]
+  },
+  "restore": {
+    "command": "magpie mybuddy provider default",
+    "restoredToBackup": true,
+    "note": "the block the user had before magpie's first write came back; the pretty-printed JSON compared identical to the backup taken first"
+  },
+  "appRuntime": {
+    "how": "the app's own ModelRuntime plus registerMyBuddyProviders, with ~/.mybuddy/models.json and ~/.mybuddy/auth.json, against the live gateway (no UI driven)",
+    "availableMagpieModels": 5,
+    "completed": {
+      "provider": "magpie",
+      "model": "opendesign/deepseek-v4.1-flash",
+      "api": "openai-completions",
+      "stopReason": "stop",
+      "latencyMs": 1294,
+      "reply": "OK"
+    },
+    "gatewayRequest": {
+      "url": "http://127.0.0.1:3425/v1/chat/completions",
+      "authorization": "Bearer magpie",
+      "userAgent": "MyBuddy"
+    },
+    "note": "auth.json already had an api_key credential for magpie, which wins over the provider block's apiKey (magpie-mybuddy); the provider's User-Agent still names the turn"
+  },
+  "gatewayAttribution": {
+    "agent": "MyBuddy",
+    "calls": 1,
+    "tokensIn": 37,
+    "evidence": "magpie usage today"
+  },
+  "tests": {
+    "pnpm -s test:magpie-agent-mybuddy": "7 checks passed",
+    "pnpm -s test:all": "259 passed, 1 failed, 1 known failing, 0 new regressions (exit 0)"
+  },
+  "limitations": [
+    "the running MyBuddy window was not driven through its UI: the model picker was not clicked and no chat turn was sent from it",
+    "magpie sets MyBuddy's provider, not its model: MyBuddy picks the model in its own picker, so magpie's Agents row has only the provider field",
+    "the plugin lives in this repository and is installed from its absolute path"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@mybuddy/magpie-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "magpie agent plugin for MyBuddy: magpie's models in MyBuddy's own model picker",
+  "type": "module",
+  "magpie": {
+    "agent": "./mybuddy.agent.js"
+  },
+  "files": [
+    "mybuddy.agent.js"
+  ]
+}
