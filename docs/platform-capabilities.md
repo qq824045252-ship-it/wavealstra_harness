@@ -54,7 +54,7 @@
 | 端口归属 / 进程名 / PID 路径 | ✅ netstat/tasklist/CIM | ✅ `ss` + `/proc` | `platform/processes` |
 | PowerShell 工具 | ✅ | ➖ 不需要（bash 已由 CodingTools 提供） | `platform/shell-tools` |
 | Computer Use（观察/输入） | ✅ `WindowsComputerUseBackend`（UIA + SendInput + WGC/PrintWindow + Windows OCR） | ✅ `LinuxComputerUseBackend`（computer-use-linux MCP：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype 输入 + AT-SPI + tesseract） | `platform/computer-use/{backend,windows,linux}` |
-| Computer Use 叠加框 | ✅ | ❌ Wayland 无全局 overlay；需重设计 | `supportsComputerUseOverlay` |
+| Computer Use 屏幕反馈 | ✅ 叠加框 + 光标 + 停止按钮 | ⚠️ 只有阶段通知（`hyprctl notify`），画不出窗口外框 | `supportsComputerUseOverlay`（Windows）/ `supportsComputerUseActivityNotice`（Linux） |
 | 安装包 / 快捷方式 / 自启动 | ✅ NSIS/.lnk | ⚠️ `pack:linux` 仅 dir；需 AppImage/deb + `.desktop` + XDG autostart | 待做 |
 | 后台截取被遮挡窗口 | ✅ WGC/PrintWindow | ❌ Wayland 不提供；只能 portal 录屏/前台截图 | 产品上接受限制 |
 
@@ -72,6 +72,8 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 | 能力 | 来源 |
 |---|---|
 | 窗口枚举/焦点/几何 | CUL `list_windows` / `focused_window` / `activate_window`（内部走 `hyprctl -j clients`） |
+| 窗口移动/改尺寸 | `hyprctl repl` 的 Hyprland Lua（`linux/hyprlandWindows.ts`），CUL 自己不支持 |
+| 操作中用户反馈 | `hyprctl notify`（`linux/activityNotice.ts`），按 phase 配色 + 目标名 |
 | 截图（全屏 / 窗口） | CUL `screenshot`（走 `xdg-desktop-portal`；首次可能弹一次授权框） |
 | 输入（指针/键盘） | CUL `click`/`drag`/`scroll`（uinput 绝对指针）、`type_text`（wtype）、`press_key` |
 | 语义树 | CUL `get_app_state` + **自动 `get_tree_page` 翻页**（AT-SPI）。CUL 会把树 compact 到内联 ~37 个节点且仍报 `accessibility_tree_truncated:false`，真总数只在 `accessibility_tree_spill.node_count`；后端据此翻页收全（上限 8 页 / 3000 节点）。Electron 需 `--force-renderer-accessibility` 才暴露 renderer 内容 |
@@ -94,11 +96,27 @@ OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
 
 Wayland 的真实限制（后端显式报错，不做假成功）：
 - 没有后台截图：`background=true` 被拒绝；portal 只能截前台窗口。
-- 没有全局 overlay：`supportsComputerUseOverlay()` 仅 Windows（CUL 自带的 `computer-use-linux-indicator` 走 wlr-layer-shell，
-  Hyprland 原生支持，能在状态栏显示正在操作什么，但画不出 Windows 那种窗口外框）。
+- **没有窗口外框叠加层**（`supportsComputerUseOverlay()` 仅 Windows）。这不是没做，是三条路都实测不成立：
+  1. Electron 透明窗口会被拍进 agent 自己的截图。Wayland 没有 `WDA_EXCLUDEFROMCAPTURE` 等价物，
+     `setContentProtection(true)` 在 Hyprland 上是空操作，`hl.window_rule({no_screenshare=...})` 三种写法都返回 ok
+     但 grim 照样拍到叠加层（实测洋红边框像素仍在）。叠加层会污染 `screenshot`/`screenshot_window` 的输入。
+  2. 分数缩放下铺不满：CSS px ≠ 逻辑 px（dpr 0.90625 vs scale 1.6），按逻辑尺寸建窗只覆盖 1956×1302 / 2160×1440；
+     `setZoomFactor`、按物理尺寸建窗、`setContentSize(2383,1589)` 都仍有约 100px 缺口。只有启动期全局
+     `force-device-scale-factor=1.6` 能铺满，但那会影响整个 app 的所有窗口。
+  3. CUL 自带的 `computer-use-linux-indicator` 不是可靠替代：它确实走 wlr-layer-shell 并起 4 条边框 + 1 个 pill，
+     但只在 CUL 内部 `screenshot` 时被拉起（我们无法按 phase 驱动）、抓帧里**完全不显色**、
+     D-Bus 名 `dev.avifenesh.ComputerUseLinux.WindowControl` 在 Hyprland 上不注册，
+     `$XDG_RUNTIME_DIR/computer-use-linux-indicator.sock` 是 SOCK_DGRAM 但发任意事件都不改变可见状态。
+  → Linux 的反馈改走**阶段通知**（`hyprctl notify` + `linux/activityNotice.ts`）：不污染截图、无外部依赖。
+  不用 `hyprctl dismissnotify`（会把用户自己的通知一起关掉），每条通知靠 `time_ms` 自己过期。
 - GNOME 专用的 `setup_window_targeting` 在 Hyprland 上不可用。
-- 窗口移动/改尺寸（`move_window`/`resize_window`）**CUL 在 Hyprland 上直接失败**（需要 GNOME Shell 扩展或 X11/EWMH），
-  `hyprctl repl` 的 Lua API（`hl.dsp.window.move/resize`）可以替代，但需要先 `float`，尚未接线。
+- **窗口移动/改尺寸已接线**：CUL 的 `move_window`/`resize_window` 在 Hyprland 上直接失败（需要 GNOME Shell 扩展或
+  X11/EWMH），后端改用 `hyprctl repl` 的 Lua（`hl.dispatch(hl.dsp.window.move/resize)`，`linux/hyprlandWindows.ts`）。
+  要点：`hl.dsp.window.*` 只构造 dispatcher 对象，**必须** `hl.dispatch(...)` 包住才执行；平铺窗口先
+  `hl.dispatch(hl.dsp.window.float({mode="toggle"}))`；坐标是逻辑/布局像素（与 `hyprctl clients` 的 `at`/`size` 同域）；
+  返回值 `window_geometry` 是合成器实际采纳值（可能差 1–2px），不是请求值。
+  `hl.dsp.window.set_prop` 在 Hyprland 0.56.2 上是**静默空操作**（`prop="bogus"` 也返回 ok，改 bordercolor 后抓帧零变化），
+  所以不能用它画高亮边框。
 
 ## 4. 新增一个平台要做什么
 

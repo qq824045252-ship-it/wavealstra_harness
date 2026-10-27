@@ -493,6 +493,11 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       return this.executeLegacyInput(input, signal);
     }
     if (input.action === "key_press" || input.action === "type_text" || input.action === "key_down" || input.action === "key_up") return this.executeKeyboard(input, signal);
+    if (input.action === "move_window" || input.action === "resize_window") {
+      // 协议里这两个 action 是给 Hyprland 走 hyprctl Lua 实现的（见 platform/computer-use/linux/hyprlandWindows.ts）。
+      // Windows 侧 automation host 目前没有 SetWindowPos/MoveWindow，明确拒绝好过让模型以为是参数问题。
+      throw new Error(`${input.action} 在 Windows 后端尚未实现（automation host 没有 SetWindowPos 通道）；可用 click_client 坐标操作代替`);
+    }
     throw new Error(`不支持的 computer_exec action：${input.action}`);
   }
 

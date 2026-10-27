@@ -187,6 +187,7 @@ export type ComputerExecAction =
   | "screenshot" | "screenshot_window" | "ocr_window" | "inspect_controls" | "find_control" | "invoke_control" | "set_control_value"
   | "move_client" | "click_client" | "drag_client" | "scroll_client"
   | "mouse_down_client" | "mouse_up_client" | "key_down" | "key_up" | "paste_text" | "drag_screen"
+  | "move_window" | "resize_window"
   | "mouse_move" | "mouse_click" | "mouse_drag" | "scroll" | "key_press" | "type_text";
 
 export const COMPUTER_BATCH_ACTIONS = [
@@ -326,6 +327,12 @@ export interface ComputerExecInput {
   clientOnly?: boolean; ensureForeground?: boolean; observationId?: string;
   maxDepth?: number; maxNodes?: number; timeoutMs?: number; waitState?: "visible" | "foreground" | "closed";
   observeAfter?: boolean; captureAfter?: boolean;
+  /** move_window: 目标窗口 frame 左上角的桌面坐标（逻辑/布局像素，与 hyprctl clients 同域）。 */
+  windowX?: number;
+  windowY?: number;
+  /** resize_window: 目标窗口 frame 的宽高（逻辑/布局像素）。 */
+  windowWidth?: number;
+  windowHeight?: number;
   /** Explicit semantic postconditions for Agent-facing Observe -> Act -> Verify. */
   expectedOutcomes?: ComputerOutcomeExpectation[];
 }

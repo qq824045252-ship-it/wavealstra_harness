@@ -3,7 +3,7 @@ import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/m
 import { prepareComputerUseInput } from "../src/main/capabilities/ComputerUsePolicy";
 import { planComputerUseRecovery } from "../src/main/capabilities/ComputerUseRecoveryPolicy";
 import { computerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
-import { computerUseOverlayService } from "../src/main/platform/computer-use/windows/overlay";
+import { computerUseOverlayService } from "../src/main/platform/computer-use/overlay";
 import { WindowsAutomationError, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 function fixture(overrides: Partial<WindowInfo> = {}): WindowInfo {

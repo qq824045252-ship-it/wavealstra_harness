@@ -50,6 +50,9 @@ sudo pacman -S --needed grim slurp wtype ydotool \
 
 - `wtype`：键盘输入（CUL 的 `type_text`/`press_key` 走它）。
 - `ydotool` + `ydotoold`：指针/滚轮**以及按住/释放分离与长按**。需要 `/dev/uinput` 可写（`input` 组或 udev 规则），daemon 要在跑：`systemctl --user enable --now ydotool`（或 `ydotoold` 手动起，socket 默认 `/run/user/$UID/.ydotool_socket`）。
+  **排障**：若 `systemctl --user status ydotool` 显示 `start-limit-hit`，socket 文件会残留而 daemon 已死，
+  ydotool 报 `failed to connect socket ... Connection refused`（与「没装」极易混淆，后端会单独识别并给出恢复命令）。
+  恢复：`rm -f /run/user/$(id -u)/.ydotool_socket && systemctl --user reset-failed ydotool && systemctl --user restart ydotool`。
   `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up`/`click_client` 的 `hold_ms`/`drag_client` 的 `steps`+`duration_ms` 都依赖它；缺 `ydotool` 时这些动作报 `HOST_UNAVAILABLE` 并给出 pacman 安装提示（不会静默降级）。
 - `wl-clipboard`（`wl-copy`/`wl-paste`）：`paste_text` 写剪贴板 + Ctrl+V；缺失时回落逐字 `wtype`，速度慢很多。
 - `tesseract` + `tesseract-data-chi_sim`：`ocr_window` 的本地 OCR（不联网）；缺 `chi_sim` 时中文识别为空。
@@ -96,7 +99,7 @@ pnpm dev
    真机自动冒烟（不需要常驻前台窗口，只读步骤即可自证 CUL/portal/AT-SPI 链路）：
    ```bash
    pnpm -s test:computer-use-linux                 # 只读：status / doctor / list_windows / 语义树翻页 / 截图
-   node out/tests/computer-use-linux-smoke.cjs --allow-input   # 追加 ydotool 按住→hyprctl 验证→释放 / paste_text
+   node out/tests/computer-use-linux-smoke.cjs --allow-input   # 追加 ydotool 按住→hyprctl 验证→释放 / 一次性靶窗的 move_window+resize_window / paste_text
    ```
    注意它必须跑在**真实 Hyprland 会话**里（`GUARD_HOME=host` 已写进脚本）：隔离 `XDG_CONFIG_HOME` 会把
    `org.gnome.desktop.interface toolkit-accessibility` 变成 `false`，GTK 就不再启 atk-bridge，AT-SPI 会一颗节点都拿不到。

@@ -50,6 +50,7 @@ import {
   toAccessibilityPage,
 } from "./accessibilityTree";
 import { YdotoolInput, type YdotoolRunner } from "./ydotool";
+import { createHyprlandWindowControl, type HyprlandWindowControl, type HyprlandWindowRect } from "./hyprlandWindows";
 
 const execFileAsync = promisify(execFile);
 
@@ -144,6 +145,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   private readonly observations = new Map<string, CachedObservation>();
   private readonly appSessions = new Map<string, AppSessionInfo>();
   private readonly input: YdotoolInput;
+  private readonly windowControl: HyprlandWindowControl;
   private diagnosticsRefresh?: Promise<void>;
 
   /**
@@ -154,8 +156,15 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   constructor(private readonly options: {
     ydotoolRunner?: YdotoolRunner;
     pasteViaClipboard?: (text: string) => void | Promise<void>;
+    /**
+     * Hyprland 窗口几何控制（move_window/resize_window）。CUL 自己的 move_window/
+     * resize_window 在 Hyprland 上直接失败（它只有 GNOME Shell 扩展和 X11/EWMH 两条路），
+     * 所以这里走 hyprctl 的 Lua API。
+     */
+    windowControl?: HyprlandWindowControl;
   } = {}) {
     this.input = new YdotoolInput({ runner: options.ydotoolRunner });
+    this.windowControl = options.windowControl ?? createHyprlandWindowControl();
   }
 
 
@@ -324,6 +333,8 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       case "key_down": return this.keySplit(action, input, true, signal);
       case "key_up": return this.keySplit(action, input, false, signal);
       case "drag_screen": return this.dragScreen(action, input, signal);
+      case "move_window": return this.windowGeometryAction(action, input, signal);
+      case "resize_window": return this.windowGeometryAction(action, input, signal);
       case "mouse_move": return this.legacyMouse(action, input, "move", signal);
       case "mouse_click": return this.legacyMouse(action, input, "click", signal);
       case "mouse_drag": return this.legacyMouse(action, input, "drag", signal);
@@ -1007,6 +1018,82 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       start_x: start.x, start_y: start.y, end_x: end.x, end_y: end.y,
     }, signal), signal);
     return { action, detail: `screen drag ${start.x},${start.y} -> ${end.x},${end.y}`, backend: this.backend } as ComputerExecOutput;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* 窗口几何（Hyprland）                                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * `move_window` / `resize_window`。
+   *
+   * **不走 CUL**：CUL 的这两条在 Hyprland 上恒定失败（它只有 GNOME Shell 扩展和 X11/EMWM 两条路），
+   * 原文错误见 `hyprlandWindows.ts` 头注释。这里走 `hyprctl repl` 的 Lua API，并且回读
+   * 合成器实际采纳的几何作为证据——平铺窗口会被先转成浮窗，所以「请求 200,150」和
+   * 「实际 200,151」这种差异必须暴露给模型，不能假装成功。
+   */
+  private async windowGeometryAction(
+    action: ComputerExecAction,
+    input: ComputerExecInput,
+    signal?: AbortSignal,
+  ): Promise<ComputerExecOutput> {
+    // 先校验参数再解析目标窗口：坏参数不该先触发一次 CUL 连接/焦点变更。
+    const moving = action === "move_window";
+    if (moving) {
+      if (!Number.isFinite(Number(input.windowX)) || !Number.isFinite(Number(input.windowY))) {
+        throw new ComputerUseError(
+          "HOST_PROTOCOL_ERROR",
+          "move_window 需要 window_x 与 window_y（逻辑/布局像素，与 hyprctl clients 的 at 同域）",
+          { action },
+        );
+      }
+    } else if (!Number.isFinite(Number(input.windowWidth)) || !Number.isFinite(Number(input.windowHeight))) {
+      throw new ComputerUseError(
+        "HOST_PROTOCOL_ERROR",
+        "resize_window 需要 window_width 与 window_height（逻辑/布局像素，与 hyprctl clients 的 size 同域）",
+        { action },
+      );
+    }
+
+    const target = (await this.maybeTarget(input, signal))
+      ?? (await this.readWindows(signal)).find((window) => window.foreground);
+    if (!target) {
+      throw new ComputerUseError("WINDOW_NOT_FOUND", `${action} 需要目标窗口：请传 window_handle，或先让窗口到前台`);
+    }
+
+    const before = await this.windowControl.geometry(target.handle, signal).catch(() => undefined);
+    if (moving) {
+      const after = await this.windowControl.move(target.handle, Number(input.windowX), Number(input.windowY), signal);
+      return this.geometryOutput(action, target, before, after, `move -> ${input.windowX},${input.windowY}`);
+    }
+    const after = await this.windowControl.resize(target.handle, Number(input.windowWidth), Number(input.windowHeight), signal);
+    return this.geometryOutput(action, target, before, after, `resize -> ${input.windowWidth}x${input.windowHeight}`);
+  }
+
+  private geometryOutput(
+    action: ComputerExecAction,
+    target: WindowInfo,
+    before: HyprlandWindowRect | undefined,
+    after: HyprlandWindowRect | undefined,
+    request: string,
+  ): ComputerExecOutput {
+    if (!after) {
+      throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 已下发但读不回几何：hyprctl 没有返回该窗口的 at/size`, {
+        action,
+        windowHandle: target.handle,
+      });
+    }
+    const describe = (rect: HyprlandWindowRect): string =>
+      `at=${rect.x},${rect.y} size=${rect.width}x${rect.height}${rect.floating ? " floating" : ""}`;
+    const detail = `${request}；合成器实际：${describe(after)}${before ? `（原 ${describe(before)}）` : ""}`;
+    return {
+      action,
+      window: target,
+      detail,
+      windowGeometry: after,
+      windowGeometryBefore: before,
+      backend: this.backend,
+    } as ComputerExecOutput;
   }
 
   /* ---------------------------------------------------------------- */

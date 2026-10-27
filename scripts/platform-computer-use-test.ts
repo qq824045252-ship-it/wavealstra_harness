@@ -9,6 +9,7 @@ import {
   executableInPath,
   LINUX_COMPUTER_USE_TOOLS,
   probeLinuxComputerUseTools,
+  supportsComputerUseActivityNotice,
   supportsComputerUseOverlay,
 } from "../src/main/platform/computer-use/support";
 import {
@@ -41,17 +42,32 @@ import {
 } from "../src/main/platform/computer-use/linux/culProtocol";
 import { chunkText, LinuxComputerUseBackend } from "../src/main/platform/computer-use/linux/LinuxComputerUseBackend";
 import {
+  createActivityNotice,
+  noticeMessage,
+  phasePresentation,
+} from "../src/main/platform/computer-use/linux/activityNotice";
+import {
   clickMask,
   clickStateArgs,
   evdevKeycode,
+  isStaleDaemonError,
   keyChordToKeycodes,
   keyStateArgs,
+  ydotoolFailure,
   YdotoolInput,
 } from "../src/main/platform/computer-use/linux/ydotool";
 import {
   collectAccessibilityTree,
   toAccessibilityPage,
 } from "../src/main/platform/computer-use/linux/accessibilityTree";
+import {
+  buildMoveScript,
+  buildReadGeometryScript,
+  buildResizeScript,
+  createHyprlandWindowControl,
+  hyprlandAddressFromHandle,
+  parseGeometry,
+} from "../src/main/platform/computer-use/linux/hyprlandWindows";
 import { ComputerUseError } from "../src/main/platform/computer-use/protocol";
 
 /**
@@ -210,13 +226,21 @@ await check("unsupported message carries install hint, not a bare 'Windows only'
 });
 
 /* ------------------------------------------------------------------ */
-/* 3. Overlay 支持判定（仅 Windows）                                    */
+/* 3. Overlay / 活动反馈支持判定                                        */
 /* ------------------------------------------------------------------ */
 
-await check("overlay is Windows-only", () => {
+await check("the window-framing overlay stays Windows-only", () => {
+  // Linux 上真机验证过三条路都不成立（污染截图 / 分数缩放铺不满 / indicator 无控制通道），
+  // 详见 support.ts 里 supportsComputerUseOverlay 的注释。
   assert.equal(supportsComputerUseOverlay("windows"), true);
   assert.equal(supportsComputerUseOverlay("linux"), false);
   assert.equal(supportsComputerUseOverlay("macos"), false);
+});
+
+await check("linux gets activity notices where the overlay is unavailable", () => {
+  assert.equal(supportsComputerUseActivityNotice("linux"), true);
+  assert.equal(supportsComputerUseActivityNotice("windows"), false);
+  assert.equal(supportsComputerUseActivityNotice("macos"), false);
 });
 
 /* ------------------------------------------------------------------ */
@@ -894,6 +918,210 @@ await check("toAccessibilityPage reflects the real 21-node inline screen from ge
     assert.equal(result.nodes.length, 22);
     assert.equal(result.truncated, false);
   });
+});
+
+await check("hyprlandAddressFromHandle converts CUL's decimal window_id to a Hyprland 0x address", () => {
+  // 真机样本：CUL 的 window_id 就是 Hyprland 窗口指针的十进制。
+  assert.equal(hyprlandAddressFromHandle("94718514217904"), "0x56255f64c3b0");
+  assert.equal(hyprlandAddressFromHandle("0x56255F64C3B0"), "0x56255f64c3b0");
+  assert.equal(hyprlandAddressFromHandle("  0x1a  "), "0x1a");
+  assert.equal(hyprlandAddressFromHandle(""), undefined);
+  assert.equal(hyprlandAddressFromHandle("not-a-handle"), undefined);
+  assert.equal(hyprlandAddressFromHandle("-5"), undefined);
+});
+
+await check("buildMoveScript floats tiling windows first and always wraps dispatch", () => {
+  const script = buildMoveScript("0x1a", 200, 150);
+  // 最大的坑：只写 hl.dsp.window.move(...) 不执行，必须 hl.dispatch(...)
+  assert.match(script, /hl\.dispatch\(hl\.dsp\.window\.move\(\{window = target, x = 200, y = 150\}\)\)/);
+  assert.match(script, /if not target\.floating then hl\.dispatch\(hl\.dsp\.window\.float\(/);
+  assert.match(script, /return "moved"/);
+  assert.match(script, /hl\.get_windows\(\)/);
+  assert.match(script, /0x1a/);
+});
+
+await check("buildMoveScript clamps out-of-range coordinates and rounds fractions", () => {
+  const script = buildMoveScript("0x1a", 999_999, -999_999);
+  assert.match(script, /x = 32000, y = -32000/);
+  assert.match(buildMoveScript("0x1a", 10.6, 10.2), /x = 11, y = 10/);
+});
+
+await check("buildResizeScript clamps to a positive size", () => {
+  const script = buildResizeScript("0x1a", 700, 500);
+  assert.match(script, /hl\.dispatch\(hl\.dsp\.window\.resize\(\{window = target, x = 700, y = 500\}\)\)/);
+  assert.match(script, /return "resized"/);
+  assert.match(buildResizeScript("0x1a", 0, -20), /x = 1, y = 1/);
+  assert.match(buildResizeScript("0x1a", 99_999, 99_999), /x = 32000, y = 32000/);
+});
+
+await check("parseGeometry reads the 5-field readback and rejects junk", () => {
+  assert.deepEqual(parseGeometry("200,150,700,500,true"), { x: 200, y: 150, width: 700, height: 500, floating: true });
+  assert.deepEqual(parseGeometry(" 12,36,652,848,false "), { x: 12, y: 36, width: 652, height: 848, floating: false });
+  assert.equal(parseGeometry("missing"), undefined);
+  assert.equal(parseGeometry("1,2,3"), undefined);
+  assert.equal(parseGeometry("1,2,3,4,true,5"), undefined);
+  assert.equal(parseGeometry("a,b,c,d,true"), undefined);
+});
+
+await check("createHyprlandWindowControl reports synthesizer-adopted geometry, not the request", async () => {
+  const scripts: string[] = [];
+  const control = createHyprlandWindowControl(async (args) => {
+    const script = args[1] ?? "";
+    scripts.push(script);
+    if (script.includes('return tostring(target.at.x)')) {
+      // 动作后的读回故意返回和请求不同的值：模拟合成器自己调整了窗口
+      // （平铺→浮窗、吸附等），调用方必须看到真实值而不是请求值。
+      return "201,151,700,500,true";
+    }
+    return "moved";
+  });
+  const rect = await control.move("94718514217904", 200, 150);
+  assert.deepEqual(rect, { x: 201, y: 151, width: 700, height: 500, floating: true });
+  assert.equal(scripts.length, 2, "应该先下发动作再读回几何");
+  assert.match(scripts[0], /hl\.dispatch\(hl\.dsp\.window\.move/);
+  assert.match(scripts[1], /return tostring\(target\.at\.x\)/);
+});
+
+await check("createHyprlandWindowControl maps a missing window to WINDOW_NOT_FOUND", async () => {
+  const control = createHyprlandWindowControl(async () => "missing");
+  await assert.rejects(
+    () => control.move("0x1a", 10, 10),
+    (error: unknown) => {
+      assert.ok(error instanceof ComputerUseError);
+      assert.equal(error.code, "WINDOW_NOT_FOUND");
+      return true;
+    },
+  );
+});
+
+await check("createHyprlandWindowControl distinguishes a missing hyprctl from a Lua failure", async () => {
+  const unavailable = createHyprlandWindowControl(async () => {
+    throw new Error("command not found: hyprctl");
+  });
+  await assert.rejects(
+    () => unavailable.move("0x1a", 10, 10),
+    (error: unknown) => {
+      assert.ok(error instanceof ComputerUseError);
+      assert.equal(error.code, "HOST_UNAVAILABLE");
+      assert.match(error.message, /hyprctl 不可用/);
+      return true;
+    },
+  );
+  const broken = createHyprlandWindowControl(async () => {
+    throw new Error("lua: attempt to index a nil value");
+  });
+  await assert.rejects(
+    () => broken.move("0x1a", 10, 10),
+    (error: unknown) => {
+      assert.ok(error instanceof ComputerUseError);
+      assert.equal(error.code, "HOST_PROTOCOL_ERROR");
+      assert.match(error.message, /hyprctl repl 失败/);
+      return true;
+    },
+  );
+});
+
+await check("linux backend rejects move_window/resize_window without coordinates before touching the desktop", async () => {
+  let replCalls = 0;
+  const backend = new LinuxComputerUseBackend({
+    windowControl: createHyprlandWindowControl(async () => {
+      replCalls += 1;
+      return "moved";
+    }),
+  });
+  await assert.rejects(
+    () => backend.execute({ action: "move_window", windowHandle: "0x1a" }),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /window_x 与 window_y/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => backend.execute({ action: "resize_window", windowHandle: "0x1a" }),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /window_width 与 window_height/);
+      return true;
+    },
+  );
+  assert.equal(replCalls, 0, "参数校验失败时不该下发 hyprctl 命令");
+  await backend.shutdown();
+});
+
+await check("phasePresentation maps every phase to a distinct hyprctl notify colour", () => {
+  const phases = ["observing", "acting", "verifying", "waiting", "recovering", "completed", "failed"] as const;
+  const seen = new Set<string>();
+  for (const phase of phases) {
+    const presentation = phasePresentation(phase);
+    assert.match(presentation.color, /^rgb\(\d+,\d+,\d+\)$/, `${phase} 的颜色格式不对`);
+    assert.ok(presentation.durationMs > 0, `${phase} 的停留时间必须 > 0`);
+    assert.ok(presentation.label.length > 0);
+    seen.add(presentation.color);
+  }
+  // 成功/失败必须能靠颜色区分开，否则用户看不出结果。
+  assert.notEqual(phasePresentation("completed").color, phasePresentation("failed").color);
+});
+
+await check("noticeMessage prefixes MyBuddy and truncates long targets", () => {
+  assert.equal(noticeMessage("acting"), "MyBuddy · 正在操作");
+  assert.equal(noticeMessage("acting", "  "), "MyBuddy · 正在操作");
+  assert.equal(noticeMessage("verifying", "Nautilus"), "MyBuddy · 验证结果 · Nautilus");
+  const long = "x".repeat(200);
+  const message = noticeMessage("observing", long);
+  assert.ok(message.length < 70, `通知太长会被通知栏截断：${message.length}`);
+  assert.match(message, /…$/);
+});
+
+await check("activity notice sends hyprctl notify and never throws when hyprctl is missing", async () => {
+  const calls: string[][] = [];
+  const notice = createActivityNotice({ runner: async (args) => { calls.push([...args]); } });
+  assert.equal(notice.available, true);
+  notice.show("acting", "Nautilus");
+  // show() 是 fire-and-forget；等一个微任务让 runner 被调用。
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 3), ["notify", "1", "4000"]);
+  assert.equal(calls[0][3], "rgb(91,141,255)");
+  assert.equal(calls[0][4], "MyBuddy · 正在操作 · Nautilus");
+
+  // hyprctl 不存在时必须静默降级，不能把 Computer Use 打断。
+  const failing = createActivityNotice({ runner: async () => { throw new Error("command not found: hyprctl"); } });
+  failing.show("failed");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+await check("activity notice is a no-op when disabled", async () => {
+  const calls: string[][] = [];
+  const notice = createActivityNotice({ available: false, runner: async (args) => { calls.push([...args]); } });
+  assert.equal(notice.available, false);
+  notice.show("acting");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls, []);
+});
+
+await check("isStaleDaemonError tells a dead ydotoold apart from a missing ydotool", () => {
+  // 实测踩过：ydotoold 的 start-limit-hit 之后 socket 文件残留，ydotool 报
+  // "Connection refused"/"Please check if ydotoold is running."，与「没装」很难区分。
+  assert.equal(isStaleDaemonError("failed to connect socket `/run/user/1000/.ydotool_socket': Connection refused"), true);
+  assert.equal(isStaleDaemonError("Please check if ydotoold is running."), true);
+  assert.equal(isStaleDaemonError("failed to connect socket"), true);
+  assert.equal(isStaleDaemonError("spawn ydotool ENOENT"), false);
+  assert.equal(isStaleDaemonError("ydotool: unrecognized option"), false);
+});
+
+await check("ydotoolFailure gives an actionable recovery command for a dead daemon", () => {
+  const dead = ydotoolFailure("failed to connect socket: Connection refused", ["key", "42:1"]);
+  assert.equal(dead.code, "HOST_UNAVAILABLE");
+  assert.match(dead.message, /rm -f \/run\/user/);
+  assert.match(dead.message, /systemctl --user reset-failed ydotool/);
+  assert.match(dead.message, /systemctl --user restart ydotool/);
+  const missing = ydotoolFailure("spawn ydotool ENOENT", ["key", "42:1"]);
+  assert.equal(missing.code, "HOST_UNAVAILABLE");
+  assert.match(missing.message, /ydotool 执行失败：spawn ydotool ENOENT/);
+  // 不要把「没装」也误导成「重启服务」。
+  assert.doesNotMatch(missing.message, /reset-failed/);
 });
 
 console.log(`platform-computer-use: ${results.length} checks passed`);

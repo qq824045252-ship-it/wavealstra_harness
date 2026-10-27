@@ -139,13 +139,36 @@ export function clickStateArgs(mask: number): string[] {
 /** 执行一次 ydotool 命令（可注入，测试不碰真机）。 */
 export type YdotoolRunner = (args: readonly string[]) => Promise<void>;
 
+/**
+ * `/run/user/<uid>/.ydotool_socket` 是**陈旧的**（ydotoold 已退出但 socket 文件还在）时，
+ * ydotool 报的是 `Connection refused` / `Please check if ydotoold is running.`。
+ * 这个错误极难和「ydotool 没装」区分开，实测踩过一次（服务 start-limit-hit 后
+ * socket 残留 4 小时）。所以单独识别并给出可操作的恢复命令。
+ */
+export const YDOTOOL_STALE_DAEMON_HINT =
+  "ydotoold 没有在运行（socket 可能已陈旧）。恢复：rm -f /run/user/$(id -u)/.ydotool_socket && "
+  + "systemctl --user reset-failed ydotool && systemctl --user restart ydotool";
+
+/** ydotool 的报错是否在说「守护进程没跑」，而不是「ydotool 没装」。 */
+export function isStaleDaemonError(message: string): boolean {
+  return /Connection refused|ydotoold is running|failed to connect socket/i.test(message);
+}
+
+/** 把 ydotool 的原始报错翻译成可操作的 ComputerUseError。 */
+export function ydotoolFailure(message: string, args: readonly string[]): ComputerUseError {
+  return new ComputerUseError(
+    "HOST_UNAVAILABLE",
+    isStaleDaemonError(message) ? YDOTOOL_STALE_DAEMON_HINT : `ydotool 执行失败：${message}`,
+    { args: [...args] },
+  );
+}
+
 export function createYdotoolRunner(binPath = "ydotool", timeoutMs = 10_000): YdotoolRunner {
   return async (args) => {
     try {
       await execFileAsync(binPath, [...args], { timeout: timeoutMs, maxBuffer: 64 * 1024 });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new ComputerUseError("HOST_UNAVAILABLE", `ydotool 执行失败：${message}`, { args: [...args] });
+      throw ydotoolFailure(error instanceof Error ? error.message : String(error), args);
     }
   };
 }

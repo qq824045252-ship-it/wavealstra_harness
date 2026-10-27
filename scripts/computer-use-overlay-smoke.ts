@@ -1,6 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { app, BrowserWindow, screen } from "electron";
-import { ComputerUseOverlayService } from "../src/main/platform/computer-use/windows/overlay";
+import { ComputerUseOverlayService } from "../src/main/platform/computer-use/overlay";
 import { ComputerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
 import { WindowsAutomationHost } from "../src/main/platform/computer-use/windows/WindowsAutomationHost";
 import type { WindowInfo } from "../src/main/platform/computer-use/protocol";

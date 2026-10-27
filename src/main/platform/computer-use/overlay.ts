@@ -1,7 +1,8 @@
 import type { BrowserWindow as ElectronBrowserWindow } from "electron";
-import type { ComputerUsePhase } from "../../../capabilities/ComputerUsePolicy";
-import type { WindowInfo } from "./windowsAutomationProtocol";
-import { supportsComputerUseOverlay } from "../support";
+import type { ComputerUsePhase } from "../../capabilities/ComputerUsePolicy";
+import type { WindowInfo } from "./protocol";
+import { supportsComputerUseActivityNotice, supportsComputerUseOverlay } from "./support";
+import { createActivityNotice, type ActivityNotice } from "./linux/activityNotice";
 
 interface CursorState {
   x: number;
@@ -25,11 +26,20 @@ const OVERLAY_TITLE = "__MYBUDDY_COMPUTER_USE_OVERLAY__";
 const CONTROLS_TITLE = "__MYBUDDY_COMPUTER_USE_CONTROLS__";
 
 /**
- * Overlay 是 Windows 专属实现（透明分层窗口 + WGC 命中测试）；平台判断收敛到
+ * Windows 才是真正的 overlay（透明分层窗口 + WGC 命中测试）；平台判断收敛到
  * src/main/platform/computer-use，服务层不再直接看 process.platform。
  */
 function overlaySupported(): boolean {
   return Boolean(process.versions.electron) && supportsComputerUseOverlay();
+}
+
+/**
+ * Linux 上的轻量替代：不画窗口外框，只用 `hyprctl notify` 显示当前阶段和操作目标。
+ * 为什么不能画外框见 `../support.ts` 里 `supportsComputerUseOverlay` 的注释
+ * （会污染 agent 自己的截图、分数缩放下铺不满、CUL indicator 没有控制通道）。
+ */
+function activityNoticeSupported(): boolean {
+  return supportsComputerUseActivityNotice();
 }
 
 function phaseLabel(phase: ComputerUsePhase): string {
@@ -78,9 +88,26 @@ window.__setComputerControls=(state)=>{document.body.dataset.phase=state.phase||
 </script></body></html>`;
 
 export class ComputerUseOverlayService {
-  /** 平台能力探测：仅 Windows + Electron 运行时支持叠加层。 */
+  /**
+   * 平台能力探测：Windows + Electron 运行时画真正的叠加层；Linux 只有阶段通知，
+   * 所以也返回 true（用户确实会看到反馈），两者都用 `present()` 驱动。
+   */
   get isSupported(): boolean {
-    return overlaySupported();
+    return overlaySupported() || activityNoticeSupported();
+  }
+
+  private readonly notice: ActivityNotice = createActivityNotice();
+  /** 上次通知的阶段+目标，避免同一状态重复刷屏。 */
+  private lastNotice: string | null = null;
+
+  /** Linux 的轻量反馈：同阶段同目标只提示一次，避免每一步都弹通知。 */
+  private showNotice(state: { taskId: string; phase: ComputerUsePhase; action: string; target?: WindowInfo }): void {
+    if (!activityNoticeSupported() || !this.notice.available) return;
+    const target = state.target?.title || state.target?.processName;
+    const key = `${state.taskId}|${state.phase}|${target ?? ""}`;
+    if (this.lastNotice === key) return;
+    this.lastNotice = key;
+    this.notice.show(state.phase, target);
   }
 
   private border: ElectronBrowserWindow | null = null;
@@ -97,7 +124,10 @@ export class ComputerUseOverlayService {
   }
 
   present(state: OverlayState): void {
-    if (!overlaySupported()) return;
+    if (!overlaySupported()) {
+      this.showNotice(state);
+      return;
+    }
     this.current = state;
     this.generation += 1;
     if (this.hideTimer) clearTimeout(this.hideTimer);
@@ -106,7 +136,10 @@ export class ComputerUseOverlayService {
   }
 
   presentDesktop(input: { taskId: string; phase: ComputerUsePhase; action: string; xPhysical?: number; yPhysical?: number; clicking?: boolean }): void {
-    if (!overlaySupported()) return;
+    if (!overlaySupported()) {
+      this.showNotice({ taskId: input.taskId, phase: input.phase, action: input.action });
+      return;
+    }
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { screen } = require("electron") as typeof import("electron");
     let cursorDip = screen.getCursorScreenPoint();
@@ -128,7 +161,13 @@ export class ComputerUseOverlayService {
   }
 
   settle(taskId: string, phase: "completed" | "failed", delayMs = phase === "completed" ? 900 : 1_800): void {
-    if (!overlaySupported() || this.current?.taskId !== taskId) return;
+    if (!overlaySupported()) {
+      // Linux：已完成/受阻各发一条终态通知；idle 后清掉 lastNotice，让下一轮能再提示。
+      this.showNotice({ taskId, phase, action: "settle" });
+      setTimeout(() => { if (this.current === null && !overlaySupported()) this.lastNotice = null; }, delayMs).unref?.();
+      return;
+    }
+    if (this.current?.taskId !== taskId) return;
     const generation = ++this.generation;
     if (this.hideTimer) clearTimeout(this.hideTimer);
     const current = { ...this.current, phase } as OverlayState;
@@ -141,7 +180,11 @@ export class ComputerUseOverlayService {
   }
 
   waitForNextStep(taskId: string, delayMs = 260): void {
-    if (!overlaySupported() || this.current?.taskId !== taskId) return;
+    if (!overlaySupported()) {
+      // Linux 没有常驻 overlay，"等待下一步" 不发通知：下一步马上会发自己的。
+      return;
+    }
+    if (this.current?.taskId !== taskId) return;
     const generation = this.generation;
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
@@ -157,6 +200,7 @@ export class ComputerUseOverlayService {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.current = null;
+    this.lastNotice = null;
     this.stopStopHitTest();
     if (this.controls && !this.controls.isDestroyed()) this.controls.setIgnoreMouseEvents(true, { forward: true });
     for (const win of [this.border, this.controls]) {
@@ -169,6 +213,7 @@ export class ComputerUseOverlayService {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.current = null;
+    this.lastNotice = null;
     this.stopStopHitTest();
     for (const win of [this.border, this.controls]) {
       if (win && !win.isDestroyed()) win.destroy();

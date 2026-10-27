@@ -20,12 +20,13 @@
  * 退出码：0 = 通过或按预期跳过；1 = 断言失败。
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { LinuxComputerUseBackend } from "../src/main/platform/computer-use/linux/LinuxComputerUseBackend";
 import { resolveCulBinary } from "../src/main/platform/computer-use/linux/culBinary";
 import { probeLinuxComputerUseTools } from "../src/main/platform/computer-use/support";
 import { clickMask, keyChordToKeycodes } from "../src/main/platform/computer-use/linux/ydotool";
+import { createHyprlandWindowControl } from "../src/main/platform/computer-use/linux/hyprlandWindows";
 
 const execFileAsync = promisify(execFile);
 
@@ -168,6 +169,7 @@ async function main(): Promise<void> {
       await skip("key_down/key_up 按住状态跨进程持久", "需要 --allow-input（会真的按住修饰键）");
       await skip("mouse_down_client/mouse_up_client", "需要 --allow-input");
       await skip("paste_text 走 wl-copy", "需要 --allow-input");
+      await skip("move_window/resize_window", "需要 --allow-input（会起一个一次性 foot 靶窗并移动它）");
     } else {
       await step("key_down/key_up 按住状态跨进程持久", async () => {
         assert(await commandExists("ydotool"), "没有 ydotool（sudo pacman -S ydotool）");
@@ -193,6 +195,64 @@ async function main(): Promise<void> {
         await backend.execute({ action: "mouse_down_client", button: "left" });
         await backend.execute({ action: "mouse_up_client", button: "left" });
         return "left down/up 均被接受";
+      });
+
+      await step("move_window/resize_window 走 hyprctl Lua 并回读几何", async () => {
+        assert(await commandExists("hyprctl"), "没有 hyprctl");
+        assert(await commandExists("foot"), "没有 foot（用来起一个一次性靶窗，不碰用户当前窗口）");
+        // 用一次性 foot 窗口做靶子：move 会把窗口强制转浮窗，绝不能拿用户正在用的窗口试。
+        const scratch = spawn("foot", ["--app-id=mybuddy-cu-smoke", "--title=mybuddy-cu-smoke"], {
+          stdio: "ignore", detached: true,
+        });
+        scratch.unref();
+        try {
+          let target: { handle: string; x: number; y: number; width: number; height: number } | undefined;
+          const control = createHyprlandWindowControl();
+          const deadline = Date.now() + 8_000;
+          while (Date.now() < deadline && !target) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const listed = await backend.execute({ action: "list_windows" });
+            const hit = (listed.windows ?? []).find((item) => /mybuddy-cu-smoke/i.test(`${item.title} ${item.className ?? ""}`));
+            if (!hit) continue;
+            const rect = await control.geometry(hit.handle);
+            if (rect) target = { handle: hit.handle, ...rect };
+          }
+          assert(target, "8 秒内没等到 mybuddy-cu-smoke 窗口");
+
+          // 缺参数必须被明确拒绝，不能静默成功。
+          let rejected = false;
+          try {
+            await backend.execute({ action: "move_window", windowHandle: target.handle });
+          } catch {
+            rejected = true;
+          }
+          assert(rejected, "move_window 缺 window_x/window_y 时应报错");
+
+          const moved = await backend.execute({
+            action: "move_window", windowHandle: target.handle,
+            windowX: target.x + 40, windowY: target.y + 30,
+          });
+          const afterMove = moved.windowGeometry as { x: number; y: number; floating: boolean } | undefined;
+          assert(afterMove, "move_window 没有回读几何");
+          assert(afterMove.floating, "move 之后窗口应是浮窗（平铺窗口无法移动）");
+          assert(Math.abs(afterMove.x - (target.x + 40)) <= 2, `move 后 x=${afterMove.x}，期望约 ${target.x + 40}`);
+          assert(Math.abs(afterMove.y - (target.y + 30)) <= 2, `move 后 y=${afterMove.y}，期望约 ${target.y + 30}`);
+
+          const resized = await backend.execute({
+            action: "resize_window", windowHandle: target.handle,
+            windowWidth: target.width - 60, windowHeight: target.height - 40,
+          });
+          const afterResize = resized.windowGeometry as { width: number; height: number } | undefined;
+          assert(afterResize, "resize_window 没有回读几何");
+          assert(Math.abs(afterResize.width - (target.width - 60)) <= 2, `resize 后 width=${afterResize.width}，期望约 ${target.width - 60}`);
+          assert(Math.abs(afterResize.height - (target.height - 40)) <= 2, `resize 后 height=${afterResize.height}，期望约 ${target.height - 40}`);
+
+          return `at ${target.x},${target.y} → ${afterMove.x},${afterMove.y}；size ${target.width}x${target.height} → ${afterResize.width}x${afterResize.height}（靶窗已关闭）`;
+        } finally {
+          if (scratch.pid) {
+            try { process.kill(-scratch.pid, "SIGTERM"); } catch { /* 已退出 */ }
+          }
+        }
       });
 
       await step("paste_text 写剪贴板再按 Ctrl+V", async () => {
