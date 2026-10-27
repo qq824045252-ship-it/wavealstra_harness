@@ -155,6 +155,31 @@ const GUI_WINDOWS_ONLY = new Set([
   "test:computer-automation-windows",
 ]);
 
+/**
+ * 平台限定用例：只在列出的 host 平台跑，其他平台整条跳过并在开跑前打印说明。
+ *
+ * 与 GUI_WINDOWS_ONLY 的区别：那个是"GUI 类里只有 Windows 有意义"的旧清单，只作用于
+ * --include-gui；本表对 default / --include-gui / --include-live 全部生效，因为下面这些
+ * 用例是按 host 平台探测真实后端能力的，跨平台跑必然红（实测 Windows 上两条必红）：
+ *
+ *   · test:platform-computer-use — detectComputerUseSupport("linux") 内部用
+ *     resolveCulBinary() 默认按 process.platform 解析 computer-use-linux 原生二进制，
+ *     Windows host 上"linux 支持"恒为 false，Linux 分节断言必然失败。
+ *   · test:computer-use-linux — Linux 真机冒烟（hyprctl + xdg-desktop-portal + CUL），
+ *     Windows 上没有对应后端实现。
+ *
+ * 标记原则：按"用例真实覆盖的后端"标，不是按"本机跑不过"标。能在两个平台都成立的断言
+ * 应写成 host 无关（期望值用 join()/resolve() 拼，别写死 "/tmp/x"），不要塞进这张表。
+ */
+const PLATFORM_ONLY_TESTS = new Map([
+  ["test:platform-computer-use", ["linux"]],
+  ["test:computer-use-linux", ["linux"]],
+]);
+
+/** 当前 host 的平台 id（与 src/shared/desktop-platform 的 PlatformId 对齐）。 */
+const HOST_PLATFORM =
+  process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux";
+
 /** 临时桶：headless 但当前是既有红，先不进 default（否则门禁立刻红），也不要塞进 GUI
  * job 掩盖成"GUI 环境问题"。修好后删掉本项，让它回到 default。
  */
@@ -232,6 +257,9 @@ function classificationWarnings() {
   for (const name of launchers) {
     if (classOf(name) === "headless") warnings.push(`${name} 命令里直接启动 electron，却归为 headless（会进 default 套件）`);
   }
+  for (const name of PLATFORM_ONLY_TESTS.keys()) {
+    if (!pkg.scripts[name]) warnings.push(`平台限定清单里的 ${name} 已不存在于 package.json`);
+  }
   for (const name of GUI_TESTS) {
     if (!pkg.scripts[name]) warnings.push(`GUI 清单里的 ${name} 已不存在于 package.json`);
     else if (!launchers.has(name)) info.push(`${name} 由 node driver 内部 spawn electron（命令串里没有直接 electron，属预期）`);
@@ -253,6 +281,12 @@ const skippedWindowsOnly =
     ? names.filter((n) => GUI_WINDOWS_ONLY.has(n))
     : [];
 if (skippedWindowsOnly.length > 0) names = names.filter((n) => !GUI_WINDOWS_ONLY.has(n));
+// 平台限定用例：当前 host 不在用例声明的平台里就整条跳过（不算失败、也不进 baseline）。
+const skippedByPlatform = names.filter((n) => {
+  const platforms = PLATFORM_ONLY_TESTS.get(n);
+  return Boolean(platforms) && !platforms.includes(HOST_PLATFORM);
+});
+if (skippedByPlatform.length > 0) names = names.filter((n) => !skippedByPlatform.includes(n));
 if (filter) names = names.filter((n) => n.includes(filter));
 names.sort();
 
@@ -266,6 +300,12 @@ if (args.includes("--list") || args.includes("--audit")) {
   );
   if (skippedWindowsOnly.length > 0) {
     console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
+  }
+  if (skippedByPlatform.length > 0) {
+    console.log(
+      `[test-all] 本机 ${HOST_PLATFORM}，跳过 ${skippedByPlatform.length} 个平台限定用例：` +
+        skippedByPlatform.map((n) => `${n}(${PLATFORM_ONLY_TESTS.get(n).join("/")})`).join(", "),
+    );
   }
   if (warnings.length > 0) {
     console.log(`[test-all] 分类自检警告（${warnings.length} 条，需要处理）：`);
@@ -302,6 +342,12 @@ console.log(
 );
 if (skippedWindowsOnly.length > 0) {
   console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
+}
+if (skippedByPlatform.length > 0) {
+  console.log(
+    `[test-all] 本机 ${HOST_PLATFORM}，跳过 ${skippedByPlatform.length} 个平台限定用例：` +
+      skippedByPlatform.map((n) => `${n}(${PLATFORM_ONLY_TESTS.get(n).join("/")})`).join(", "),
+  );
 }
 console.log(`[test-all] baseline 已知失败: ${baseline.size}`);
 console.log("");
