@@ -42,7 +42,10 @@ function isNodeBinary(name) {
   return /^node(\.exe)?$/i.test(base);
 }
 
-const childArgs = [...argv];
+// `--host-home`：不隔离 HOME 的跨平台写法（`GUARD_HOME=host cmd` 这种内联环境变量在
+// Windows 的 cmd.exe 下不生效，package.json 脚本就没法用它）。
+const hostHomeFlag = argv.includes("--host-home");
+const childArgs = argv.filter((arg) => arg !== "--host-home");
 // 直接给 JS 文件时自动补 node 前缀（`node scripts/test-guard.mjs out/tests/x.cjs` 的惯用写法）
 if (!isNodeBinary(childArgs[0]) && /\.(cjs|mjs|js)$/i.test(childArgs[0] ?? "")) {
   childArgs.unshift("node");
@@ -58,7 +61,7 @@ const startedAt = Date.now();
  * POSIX 的 os.homedir() 读的是 HOME，没有隔离就会污染真实用户数据，也会让用例互相影响。
  * 需要真实家目录的用例显式设置 GUARD_HOME=host。
  */
-const isolateHome = (process.env.GUARD_HOME ?? "sandbox") !== "host";
+const isolateHome = !hostHomeFlag && (process.env.GUARD_HOME ?? "sandbox") !== "host";
 let sandboxHome = null;
 const childEnv = { ...process.env };
 if (isolateHome) {
