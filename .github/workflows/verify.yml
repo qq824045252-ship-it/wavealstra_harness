@@ -49,6 +49,16 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      # setup-node 的 `cache: pnpm` 在 `pnpm store path` 指向不存在的目录时只会记一条
+      # "pnpm cache is not found"，然后在 post 阶段以 "Path Validation Error" 把**整条 job
+      # 判失败**——即使 245 个用例全绿。先把 store 目录建出来，缓存路径才存在。
+      - name: Ensure pnpm store dir exists
+        shell: pwsh
+        run: |
+          $store = (& pnpm store path).Trim()
+          New-Item -ItemType Directory -Force -Path $store | Out-Null
+          Write-Host "pnpm store: $store"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,6 +86,13 @@ jobs:
         working-directory: C:\r
         run: pnpm -s typecheck
 
+      # 若干部件用例直接读 out/main 产物（image-resize-worker.js、out/main/index.js、
+      # configurePiCodemodeAssets 的 assets 目录）。CI 从不构建 → 这些用例必然 ENOENT，
+      # 那是"门禁缺前置条件"，不是真回归，所以套件之前先构建一次。
+      - name: Build out/ (部件用例的前置产物)
+        working-directory: C:\r
+        run: pnpm -s build
+
       - name: Harness quality gate
         working-directory: C:\r
         run: pnpm -s test:harness-quality
@@ -88,6 +105,11 @@ jobs:
       # 允许通过但会在日志中列出，债务保持可见（避免"上线即全红→被忽略"）。
       - name: Full default suite (headless ratchet gate)
         working-directory: C:\r
+        # 2 个并发而不是默认 4：runner 只有 4 vCPU，4 个用例同时 spawn
+        # node+esbuild+ACP/网关子进程会互相抢 CPU，把带超时/顺序断言的用例拖成假红
+        # （acp-remote 409、slack-gateway 超时、pi-native-core-tools 取消顺序）。
+        env:
+          TEST_ALL_JOBS: 2
         run: pnpm -s test:all
 
   verify-linux:
@@ -108,6 +130,13 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      # 同 verify-windows：store 目录不存在会让 setup-node 的 post 步骤判 job 失败。
+      - name: Ensure pnpm store dir exists
+        run: |
+          store="$(pnpm store path)"
+          mkdir -p "$store"
+          echo "pnpm store: $store"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -125,6 +154,10 @@ jobs:
       - name: Typecheck
         run: pnpm -s typecheck
 
+      # 同 verify-windows：部件用例要读 out/main 产物，套件前先构建。
+      - name: Build out/ (部件用例的前置产物)
+        run: pnpm -s build
+
       - name: Harness quality gate
         run: pnpm -s test:harness-quality
 
@@ -132,6 +165,9 @@ jobs:
         run: pnpm -s test:artifact-gate
 
       - name: Full default suite (ratchet gate, headless X)
+        # 同 verify-windows：降并发，避免 CPU 争用把超时断言变成假红。
+        env:
+          TEST_ALL_JOBS: 2
         run: xvfb-run -a pnpm -s test:all
 
   verify-windows-gui:
@@ -149,6 +185,14 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
+
+      # 同其他 job：store 目录不存在会让 setup-node 的 post 步骤判 job 失败。
+      - name: Ensure pnpm store dir exists
+        shell: pwsh
+        run: |
+          $store = (& pnpm store path).Trim()
+          New-Item -ItemType Directory -Force -Path $store | Out-Null
+          Write-Host "pnpm store: $store"
 
       - uses: actions/setup-node@v4
         with:
@@ -180,6 +224,8 @@ jobs:
 
       - name: GUI suite (default + GUI, no ratchet tolerance hiding)
         working-directory: C:\r
+        env:
+          TEST_ALL_JOBS: 2
         run: node scripts/test-all.mjs --include-gui
 
       - name: Upload GUI test artifacts

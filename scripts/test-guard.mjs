@@ -71,6 +71,13 @@ if (isolateHome) {
   childEnv.XDG_STATE_HOME = join(sandboxHome, ".local", "state");
 }
 
+// 子进程统一 UTF-8：CI 的 Windows runner 默认代码页是 cp1252（中文 Windows 是 cp936），
+// 用例里 `python - <<PY` 打印中文会按 locale 编码失败——builtin-capabilities 的
+// EXEC_UNICODE_OK_中文 在 runner 上就是这么红的（本机 UTF-8 环境是绿的）。
+// 只作用于测试子进程，不改产品行为。
+childEnv.PYTHONUTF8 = "1";
+childEnv.PYTHONIOENCODING = "utf-8";
+
 let child;
 try {
   child = spawn(childArgs[0], childArgs.slice(1), {

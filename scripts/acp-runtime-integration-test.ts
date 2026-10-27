@@ -333,5 +333,7 @@ try {
   console.log("ACP runtime integration: PASS (initialize/new/prompt, permission, resume, load, fallback_new, auth retry, cancel, crash, testAgent, disabled, session config options)");
 } finally {
   db.close();
-  rmSync(root, { recursive: true, force: true });
+  // Windows 上被中止的 ACP 子进程可能还持有 workspace 里的句柄，立刻 rmSync 会 EBUSY
+  // （CI 上就这么红过）。rmSync 的 maxRetries 只对 EBUSY/EPERM 生效，是官方给的退避口。
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
