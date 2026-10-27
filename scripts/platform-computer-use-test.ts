@@ -29,12 +29,14 @@ import {
   dipPerImagePixel,
   filterWindows,
   findControl,
+  controlBoundsAreZeroOrigin,
   imageScaleFromMeta,
   joinOcrWords,
   monitorPhysicalRect,
   monitorScaleFor,
   parseMonitors,
   parseTesseractTsv,
+  stripUnreliableControlBounds,
   toControlInfo,
   toCulKey,
   toCulModifiers,
@@ -603,6 +605,44 @@ await check("toControlInfo converts AT-SPI nodes to client DIP + physical bounds
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.name, undefined);
   assert.equal(disabled.runtimeId, "9");
+});
+
+/* GTK 的 AT-SPI bounds 原点实测恒为 (0,0)：坐标必须作废，控件身份要保留。 */
+const zeroOriginNode = (index: number, role: string, name: string, width = 80, height = 30) =>
+  toControlInfo({ index, object_ref: `ref-${index}`, role, name, bounds: { x: 0, y: 0, width, height } });
+
+await check("controlBoundsAreZeroOrigin flags GTK zero-origin trees but keeps a lone root", () => {
+  const gtkDialog = [
+    toControlInfo({ index: 0, role: "application", name: "zenity" }),
+    zeroOriginNode(1, "dialog", "CUL-E2E", 300, 251),
+    zeroOriginNode(2, "button", "OK", 120, 44),
+    zeroOriginNode(3, "text box", "name", 228, 34),
+  ];
+  assert.equal(controlBoundsAreZeroOrigin(gtkDialog), true);
+  // 窗口根节点单独是 (0,0) 属正常（client 原点即 0,0），不能因此判定整棵树不可信。
+  assert.equal(controlBoundsAreZeroOrigin([gtkDialog[0], zeroOriginNode(1, "dialog", "d", 300, 251)]), false);
+  // 有真实原点时正常透传
+  const real = [
+    toControlInfo({ index: 1, object_ref: "a", role: "push button", name: "A", bounds: { x: 12, y: 40, width: 80, height: 30 } }),
+    toControlInfo({ index: 2, object_ref: "b", role: "push button", name: "B", bounds: { x: 100, y: 40, width: 80, height: 30 } }),
+    toControlInfo({ index: 3, object_ref: "c", role: "push button", name: "C", bounds: { x: 0, y: 0, width: 80, height: 30 } }),
+  ];
+  assert.equal(controlBoundsAreZeroOrigin(real), false);
+  assert.deepEqual(controlBoundsAreZeroOrigin([]), false);
+});
+
+await check("stripUnreliableControlBounds drops coordinates but keeps control identity", () => {
+  const controls = [zeroOriginNode(1, "button", "OK", 120, 44)];
+  const [stripped] = stripUnreliableControlBounds(controls);
+  assert.equal(stripped.runtimeId, "ref-1");
+  assert.equal(stripped.name, "OK");
+  assert.equal(stripped.controlType, "button");
+  assert.equal(stripped.clientBoundsDip, undefined);
+  assert.equal(stripped.screenBoundsPhysical, undefined);
+  assert.equal(stripped.bounds, undefined);
+  // 没有坐标的节点原样返回（同一个对象，不做无意义拷贝）
+  const bare = toControlInfo({ index: 5, role: "label", name: "x" });
+  assert.equal(stripUnreliableControlBounds([bare])[0], bare);
 });
 
 await check("matchesSelector / findControl honour exactName and types", () => {

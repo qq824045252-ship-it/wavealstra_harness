@@ -213,8 +213,8 @@ const WINDOWS_BACKGROUND_NOTE = "background=true 用 PrintWindow（Chromium/Qt/T
 const LINUX_DESCRIPTION = [
   "Linux/Wayland 桌面 Computer Use（后端 computer-use-linux：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype/ydotool 输入 + AT-SPI 无障碍树）。",
   "优先按窗口操作：list_windows 拿 window_handle → inspect_window 确认几何 → inspect_controls/find_control 找控件 → invoke_control/set_control_value；",
-  "bounds 与 clientBoundsDip 是客户区 DIP，可直接用于 click_client/move_client。",
-  "inspect_controls 会自动翻页收全 AT-SPI 树（CUL 的 get_app_state 只内联前约 20 个节点，可交互控件常在后几页）；返回 truncated=true 才表示还有节点没取到。只有控件确实为空（应用未启用无障碍）时才需要 screenshot_window / ocr_window 拿文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
+  "bounds 与 clientBoundsDip 是客户区 DIP；但 GTK 应用（GTK3 HiDPI extents / GTK4 zero-origin bounds）实测原点恒为 0：当 inspect_controls/find_control 返回 boundsReliable=false 时坐标已被清空，不要按控件坐标点，改用 invoke_control/set_control_value。",
+  "inspect_controls 会自动翻页收全 AT-SPI 树（CUL 的 get_app_state 只内联前约 20 个节点，可交互控件常在后几页）；返回 truncated=true 才表示还有节点没取到。只有控件确实为空（应用未启用无障碍，例如 Chromium/Electron 未开 --force-renderer-accessibility）或 boundsReliable=false 时才需要 screenshot_window / ocr_window 拿文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
   "截图是 JPEG，可能等比缩放到 1600px 以内，image_scale = 物理像素/图像像素；窗口截图坐标 = 图像像素 × image_scale。",
   "Wayland 的限制（会明确报错，不要盲目重试）：没有后台截图（background=true 被拒绝，portal 只能截前台窗口）；GNOME 专用的 setup_window_targeting 不可用。",
   "窗口移动/改尺寸走 Hyprland 的 hyprctl Lua（move_window 传 window_x/window_y、resize_window 传 window_width/window_height，都是逻辑/布局像素，与 hyprctl clients 的 at/size 同域）：平铺窗口会先被转成浮窗，返回值里的 window_geometry 是合成器实际采纳的几何（可能与你请求的值差 1–2px），不要假设等于请求值。Windows/GNOME 上没有这条通道，会明确拒绝。",

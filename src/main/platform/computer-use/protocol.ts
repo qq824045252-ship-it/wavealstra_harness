@@ -346,6 +346,14 @@ export interface ComputerExecOutput {
   controls?: ControlInfo[];
   uiaAvailable?: boolean;
   truncated?: boolean;
+  /**
+   * AT-SPI 控件坐标是否可用于坐标点击。
+   *
+   * Linux：GTK（GTK3 HiDPI / GTK4 zero-origin）实测 bounds 原点恒为 (0,0)，此时后端会把
+   * `clientBoundsDip`/`screenBoundsPhysical` 清空并置 false，模型只能走 invoke_control /
+   * set_control_value 或 ocr_window。Windows 不设置该字段。
+   */
+  boundsReliable?: boolean;
   screenshot?: Uint8Array;
   screenshotMimeType?: "image/jpeg" | "image/png";
   /** Physical pixels per returned image pixel; 1 when the capture is not downscaled. */

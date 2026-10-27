@@ -84,6 +84,20 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 `clientDipToScreenPhysical = clientOrigin + dip × scaleFactor`。截图 `image_scale = 物理像素 / 图像像素`，
 OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
 
+AT-SPI 控件坐标在 GTK 上不可用（2026-10-27 真机复核）：zenity（GTK3 对话框）9 个节点、
+Nautilus（GTK4 主窗，2 页共 75 个节点）的 `bounds.x/y` **全部为 0**，只有宽高是真的；
+照坐标点会稳定点到客户区左上角。CUL README 同样把这种情形列为「GTK3 HiDPI extents /
+GTK4 zero-origin bounds」，它对元素点击优先走原生 AT-SPI action。后端因此做能力降级：
+同一窗口 ≥3 个有尺寸节点原点全是 (0,0) 时 `inspect_controls`/`find_control` 返回
+`boundsReliable=false`，并把 `clientBoundsDip`/`screenBoundsPhysical` 清空（控件身份、
+`runtimeId`、`patterns` 保留，`invoke_control`/`set_control_value` 照常可用），
+detail 里提示改用 OCR 文字行坐标。真机验证：GTK 对话框上 `set_control_value` + `invoke_control(OK)`
+能把 zenity 的输入回读出来（端到端 PASS）。
+
+截图与几何：`screenshot_window` 会先 raise（portal 只能截前台窗口）。raise 一个**平铺**窗口会触发
+Hyprland 重排，客户区尺寸随之变化，旧实现直接报 `CAPTURE_FAILED: 截图期间窗口几何发生变化`；
+现在按新几何**重试一次**，仍然不一致才报错。
+
 按下/释放分离与长按（2026-10-27 真机验证，推翻旧结论）：
 - `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` **可用**，走 `ydotool`（`ydotool click 0x40|0x80`、`ydotool key <code>:1|0`）。
   不能用 `wtype`：虚拟键盘协议在进程退出时自动释放，按住状态保不住；`ydotool` 直写 uinput，跨进程持久
@@ -92,6 +106,9 @@ OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
 - `click_client` 的 `modifiers`（Ctrl+点击）与 `hold_ms`、`drag_client` 的 `steps`/`duration_ms`、`key_press` 的 `hold_ms` 都真的生效；
   `move_client` 不接受 `modifiers`/`hold_ms`，会显式报错而不是静默忽略。
 - `paste_text` 走 `wl-copy` + Ctrl+V（`wl-clipboard`），比逐字 `wtype` 快一个数量级；剪贴板不可用会回落逐字输入并在 detail 说明。
+  注意：`wl-copy` 会 fork 常驻进程持有选区并**继承 stderr 管道**，所以不能用 `close` 事件等它
+  （父进程 100ms 就 exit，`close` 要等选区被替换才到，`paste_text` 会一直挂住）；后端按 `exit` 判定 + 3 秒兜底。
+  真机验证：`paste_text` → GTK 对话框 entry → 点 OK 回读文本，端到端 PASS；终端类应用要 Ctrl+Shift+V，`Ctrl+V` 不会粘贴。
 - 指针定位仍由 CUL 负责（`scroll pages=0` 只定位不滚动）：`ydotool mousemove -a` 的坐标系是「逻辑 DIP × 2」，与 Hyprland 物理像素不等价。
 
 Wayland 的真实限制（后端显式报错，不做假成功）：

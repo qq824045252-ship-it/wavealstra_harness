@@ -238,6 +238,45 @@ export function imageScaleFromMeta(meta: { scale?: unknown } & Record<string, un
   return Number((1 / scale).toFixed(4));
 }
 
+/**
+ * AT-SPI 的 bounds 原点是否整体不可信。
+ *
+ * 真机实测（Hyprland 0.56.2 / eDP-1 2160x1440 @1.6，2026-10-27）：
+ * GTK3（zenity 对话框）与 GTK4（Nautilus 主窗）返回的每个节点都是
+ * `bounds.x = bounds.y = 0`，只有宽高是真的 —— 于是 `clientBoundsDip` 全部堆在客户区
+ * 左上角，模型照着点会稳定点到窗口边角。CUL 自己的 README 也写明
+ * 「GTK3 HiDPI extents / GTK4 zero-origin bounds」不可靠，所以它对元素点击优先走
+ * 原生 AT-SPI action（`perform_action` / `set_value`）。
+ *
+ * 判定：同一个窗口里 ≥3 个有尺寸的节点，原点**全部**是 (0,0) → 该窗口的 bounds 不能
+ * 用于坐标点击。窗口根节点单独为 (0,0) 是正常的（client 原点就是 0,0），所以要求 ≥3。
+ */
+export function controlBoundsAreZeroOrigin(nodes: ControlInfo[]): boolean {
+  const sized = nodes.filter((node) => {
+    const bounds = node.clientBoundsDip;
+    return bounds !== undefined && (bounds.width > 0 || bounds.height > 0);
+  });
+  if (sized.length < 3) return false;
+  return sized.every((node) => node.clientBoundsDip!.x === 0 && node.clientBoundsDip!.y === 0);
+}
+
+/**
+ * 清掉不可信的控件坐标（保留控件本身：`runtimeId` / `name` / `role` / `patterns` 仍然有效，
+ * `invoke_control` / `set_control_value` 走的是 AT-SPI 元素下标，不需要坐标）。
+ * 保留 width/height 只会诱导模型按「(0,0) + 尺寸」点击，所以整块 bounds 一起摘掉。
+ */
+export function stripUnreliableControlBounds(nodes: ControlInfo[]): ControlInfo[] {
+  return nodes.map((node) => {
+    if (!node.clientBoundsDip) return node;
+    return {
+      ...node,
+      clientBoundsDip: undefined,
+      screenBoundsPhysical: undefined,
+      bounds: undefined,
+    };
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* 按键名                                                              */
 /* ------------------------------------------------------------------ */

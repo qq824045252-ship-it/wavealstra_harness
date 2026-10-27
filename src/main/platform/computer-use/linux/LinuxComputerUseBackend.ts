@@ -30,12 +30,14 @@ import {
   CUL_TOOLS,
   clientDipToScreenPhysical,
   compactWindowInfo,
+  controlBoundsAreZeroOrigin,
   culFailure,
   filterWindows,
   findControl,
   imageScaleFromMeta,
   matchesSelector,
   parseTesseractTsv,
+  stripUnreliableControlBounds,
   toControlInfo,
   toCulKey,
   toWindowInfo,
@@ -65,6 +67,12 @@ const TYPE_TEXT_CHUNK = 90;
 const DOCTOR_TTL_MS = 60_000;
 const SCREENSHOT_MAX_EDGE = 1600;
 const SCREENSHOT_QUALITY = 70;
+/**
+ * GTK 的 AT-SPI bounds 原点实测恒为 (0,0)（宽高是真的），照坐标点会稳定点到客户区左上角。
+ * 这个提示会随 `inspect_controls` / `find_control` 的 detail 一起回给模型。
+ */
+const ZERO_ORIGIN_BOUNDS_HINT =
+  "该窗口的 AT-SPI bounds 原点全部为 0（GTK 已知问题：GTK3 HiDPI extents / GTK4 zero-origin bounds），控件坐标已省略、不能用于 click_client：有语义动作时用 invoke_control / set_control_value，需要坐标时用 ocr_window 拿文字行坐标再点";
 
 interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
 interface DoctorCache { at: number; report: CulDoctorReport }
@@ -503,24 +511,33 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         action, background: true,
       });
     }
-    const target = await this.resolveTarget(input, signal);
-    const result = await this.captureWindowImage(target, input.ensureForeground !== false, signal);
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+    let target = await this.resolveTarget(input, signal);
+    // raise 一个平铺窗口会重排 Hyprland 布局（切 workspace / 重新平铺），客户区尺寸随之变化。
+    // 这时截出来的是「旧几何的图 + 新几何的窗口」，模型换算会全错；但重截一次就对齐了，
+    // 所以先按新几何重试一次，仍然在变才报错（不要一遇到重排就把动作判死）。
+    let result: Awaited<ReturnType<LinuxComputerUseBackend["captureWindowImage"]>> | undefined;
+    let after: WindowInfo | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      result = await this.captureWindowImage(target, input.ensureForeground !== false, signal);
+      after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+      if (!after || (after.clientRect.width === target.clientRect.width && after.clientRect.height === target.clientRect.height)) break;
+      if (attempt === 0) target = after;
+    }
     if (after && (after.clientRect.width !== target.clientRect.width || after.clientRect.height !== target.clientRect.height)) {
-      throw new ComputerUseError("CAPTURE_FAILED", "截图期间窗口几何发生变化", { before: target, after });
+      throw new ComputerUseError("CAPTURE_FAILED", "截图期间窗口几何发生变化（已按新几何重试一次仍不一致）", { before: target, after });
     }
     return {
       action,
       window: after ?? target,
-      screenshot: result.bytes,
+      screenshot: result!.bytes,
       screenshotMimeType: "image/jpeg",
-      imageScale: result.imageScale,
-      imageSize: result.imageSize,
+      imageScale: result!.imageScale,
+      imageSize: result!.imageSize,
       artifactFileName: `window-${target.handle}.jpg`,
-      capture: result.details,
+      capture: result!.details,
       observationId: this.remember(after ?? target),
       backend: this.backend,
-      detail: `window crop via ${String(result.source ?? "portal")}`,
+      detail: `window crop via ${String(result!.source ?? "portal")}`,
     } as ComputerExecOutput;
   }
 
@@ -683,13 +700,18 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
 
   private async inspectControls(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.resolveTarget(input, signal);
-    const { nodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
+    const { nodes: rawNodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
+    const boundsReliable = !controlBoundsAreZeroOrigin(rawNodes);
+    const nodes = boundsReliable ? rawNodes : stripUnreliableControlBounds(rawNodes);
     // 只有「翻完所有页仍然几乎没有节点」才是真的没有语义树；页数 >1 说明树是完整的。
-    const detail = nodes.length <= 3
-      ? "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
-      : truncated
-        ? `语义树仍有 ${nodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
-        : undefined;
+    const detail = [
+      rawNodes.length <= 3
+        ? "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
+        : truncated
+          ? `语义树仍有 ${rawNodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
+          : "",
+      boundsReliable ? "" : ZERO_ORIGIN_BOUNDS_HINT,
+    ].filter(Boolean).join("；");
     return {
       action,
       window: target,
@@ -697,15 +719,17 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       uiaAvailable: nodes.length > 1,
       truncated,
       accessibilityPages: pages,
+      boundsReliable,
       observationId: this.remember(target),
       backend: this.backend,
-      detail,
+      detail: detail || undefined,
     } as ComputerExecOutput;
   }
 
   private async findControlAction(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.resolveTarget(input, signal);
     const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+    const boundsReliable = !controlBoundsAreZeroOrigin(nodes);
     const found = findControl(nodes, {
       controlRuntimeId: input.controlRuntimeId,
       controlName: input.controlName,
@@ -719,7 +743,14 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         target: { windowTitle: input.windowTitle, controlName: input.controlName, automationId: input.automationId },
       });
     }
-    return { action, window: target, control: found, backend: this.backend } as ComputerExecOutput;
+    return {
+      action,
+      window: target,
+      control: boundsReliable ? found : stripUnreliableControlBounds([found])[0],
+      boundsReliable,
+      backend: this.backend,
+      detail: boundsReliable ? undefined : ZERO_ORIGIN_BOUNDS_HINT,
+    } as ComputerExecOutput;
   }
 
   private async invokeControl(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal, setValue = false): Promise<ComputerExecOutput> {
@@ -750,7 +781,8 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     const output: ComputerExecOutput = {
       action,
       window: after ?? target,
-      control: found,
+      // 这里只回报控件身份，不回传坐标：GTK 的 bounds 原点不可信（见 ZERO_ORIGIN_BOUNDS_HINT）。
+      control: controlBoundsAreZeroOrigin(nodes) ? stripUnreliableControlBounds([found])[0] : found,
       observation: after ? { targetBefore: target, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground } : undefined,
       backend: this.backend,
     };
@@ -1190,15 +1222,34 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     await new Promise<void>((resolve, reject) => {
       const child = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "pipe"], detached: true });
       let stderr = "";
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const fail = (error: ComputerUseError) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        reject(error);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
       child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-      child.on("error", (error) => reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
-      child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
+      child.on("error", (error) => fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
+      // 注意：**不要等 `close`**。wl-copy 会 fork 一个常驻进程持有选区，并继承这里的 stderr
+      // 管道；父进程退出后子进程仍持有 fd，`close` 要等所有 stdio 关闭 —— 实测 100ms 就 exit、
+      // 3 秒内 close 永不到来，用 close 会让 paste_text 一直挂到选区被替换。按 `exit` 判定。
+      child.on("exit", (code) => {
+        if (code === 0) succeed();
+        else fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
       });
-      child.stdin?.on("error", () => { /* 子进程可能先退出；由 close 决定成败 */ });
+      // 兜底：连 exit 都不来（wl-copy 被塞住/无 Wayland 剪贴板）时不要无限期挂着。
+      timer = setTimeout(() => fail(new ComputerUseError("HOST_UNAVAILABLE", "wl-copy 3 秒内没有退出（剪贴板可能被占用）")), 3_000);
+      timer.unref?.();
+      child.stdin?.on("error", () => { /* 子进程可能先退出；由 exit 决定成败 */ });
       child.stdin?.end(text);
-      // wl-copy 会 fork 常驻进程持有选区；父进程按 close 判定即可。
       child.unref();
     });
   }
