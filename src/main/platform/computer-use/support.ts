@@ -167,7 +167,9 @@ function detectComputerUseSupportUncached(platform: PlatformId, pathValue?: stri
  *    JSON 事件都不改变可见状态 → 没有可用的控制通道。
  *
  * 所以 Linux 上的「正在操作」反馈走**通知**（`hyprctl notify`），见
- * `linux/indicator.ts`；它不污染截图、不依赖未知协议，代价是画不出窗口外框。
+ * `linux/culIndicator.ts`：驱动 CUL 自带的 layer-shell 指示器（屏幕四周光晕 + 状态 pill），
+ * indicator 在 CUL 截图期间被 `.capture` flock 挡住（实测 0 像素），所以不会污染 agent 截图；
+ * 代价是它只能显示 ASCII phase 文案、约 8 秒淡出（靠 2 秒心跳保持），中文终态仍走 hyprctl 通知。
  */
 export function supportsComputerUseOverlay(platform: PlatformId = currentPlatformId): boolean {
   return platform === "windows";
@@ -212,17 +214,17 @@ const WINDOWS_BACKGROUND_NOTE = "background=true 用 PrintWindow（Chromium/Qt/T
 
 const LINUX_DESCRIPTION = [
   "Linux/Wayland 桌面 Computer Use（后端 computer-use-linux：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype/ydotool 输入 + AT-SPI 无障碍树）。",
-  "优先按窗口操作：list_windows 拿 window_handle → inspect_window 确认几何 → inspect_controls/find_control 找控件 → invoke_control/set_control_value；",
-  "bounds 与 clientBoundsDip 是客户区 DIP，可直接用于 click_client/move_client。",
-  "inspect_controls 会自动翻页收全 AT-SPI 树（CUL 的 get_app_state 只内联前约 20 个节点，可交互控件常在后几页）；返回 truncated=true 才表示还有节点没取到。只有控件确实为空（应用未启用无障碍）时才需要 screenshot_window / ocr_window 拿文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
+  "优先按窗口操作：list_windows 拿 window_handle → inspect_window 确认几何 → inspect_controls/find_control 找控件 → invoke_control/set_control_value；语义动作会做执行后复核：set_control_value 回读文本不一致会自动重试一次，invoke_control 看不出变化会返回 verified=false（模态对话框按钮会自动重试一次）——verified=false 不等于失败，但必须重新观察或加 expected_outcomes 再判断，不要盲目重复点击；",
+  "bounds 与 clientBoundsDip 是客户区 DIP；但 GTK 应用（GTK3 HiDPI extents / GTK4 zero-origin bounds）实测原点恒为 0：当 inspect_controls/find_control 返回 boundsReliable=false 时坐标已被清空，不要按控件坐标点，改用 invoke_control/set_control_value。",
+  "inspect_controls 会自动翻页收全 AT-SPI 树（CUL 的 get_app_state 只内联前约 20 个节点，可交互控件常在后几页）；返回 truncated=true 才表示还有节点没取到。只有控件确实为空（应用未启用无障碍，例如 Chromium/Electron 未开 --force-renderer-accessibility）或 boundsReliable=false 时才需要 screenshot_window / ocr_window 拿文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
   "截图是 JPEG，可能等比缩放到 1600px 以内，image_scale = 物理像素/图像像素；窗口截图坐标 = 图像像素 × image_scale。",
   "Wayland 的限制（会明确报错，不要盲目重试）：没有后台截图（background=true 被拒绝，portal 只能截前台窗口）；GNOME 专用的 setup_window_targeting 不可用。",
   "窗口移动/改尺寸走 Hyprland 的 hyprctl Lua（move_window 传 window_x/window_y、resize_window 传 window_width/window_height，都是逻辑/布局像素，与 hyprctl clients 的 at/size 同域）：平铺窗口会先被转成浮窗，返回值里的 window_geometry 是合成器实际采纳的几何（可能与你请求的值差 1–2px），不要假设等于请求值。Windows/GNOME 上没有这条通道，会明确拒绝。",
-  "按下/释放分离可用：mouse_down_client + mouse_up_client（指针按钮按住，可跨步骤）、key_down + key_up（修饰键按住，例如先 key_down Ctrl 再 click_client）。click_client 的 modifiers 与 hold_ms、drag_client 的 steps/duration_ms 都真的生效（modifiers 与长按走 ydotool）。Wayland 上这些按住状态会一直持续到你显式释放，用完必须 key_up / mouse_up_client。",
+  "按下/释放分离可用：mouse_down_client + mouse_up_client（指针按钮按住，可跨步骤）、key_down + key_up（修饰键按住，例如先 key_down Ctrl 再 click_client）。click_client 的 modifiers 与 hold_ms、drag_client 的 steps/duration_ms 都真的生效（modifiers 与长按走 ydotool）。Wayland 上这些按住状态会一直持续到你显式释放，用完必须 key_up / mouse_up_client（任务结束或动作失败时后端会兜底释放自己按下的键/按钮，但不要依赖它）。",
   "选中文字后优先 paste_text（写 wl-copy 再按 Ctrl+V），比 type_text 逐字输入快且不被输入法干扰；剪贴板不可用时它会退回逐字输入并在 detail 里说明。",
   "actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停）。type_text 对无法分类的输入框按 90 字符分块，返回 completed=false 时先观察 typedLength 再决定是否续写。",
   "焦点切换、坐标与 DPI 都由后端换算；点击前会校验目标窗口仍存在。attach_app 锁定会话后传 app_session_id 可持续操作同一窗口。",
-  "操作期间顶部会弹出 MyBuddy 阶段通知（观察界面/正在操作/验证结果/操作完成/操作受阻）——Linux 上画不出 Windows 那种窗口外框（会污染你自己的截图），所以只做状态提示，不要向用户承诺有高亮框。",
+  "操作期间会显示阶段反馈：优先是 CUL 原生 layer-shell 指示器（屏幕边缘光晕 + 英文阶段 pill，CUL 截图期间自动不画，不会污染你的截图），不可用时回落为顶部 MyBuddy 通知（中文）。Linux 上画不出 Windows 那种贴合目标窗口的边框，所以不要向用户承诺有窗口级高亮框。",
 ].join("");
 
 /**

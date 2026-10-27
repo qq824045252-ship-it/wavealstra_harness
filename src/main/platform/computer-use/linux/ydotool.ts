@@ -206,6 +206,17 @@ export class YdotoolInput {
     return codes;
   }
 
+  /**
+   * 按 evdev keycode 直接按下/松开（不做键名解析）。
+   *
+   * 用于「清理按住状态」：后端记录的是 keycode 集合，任务结束/动作失败时按集合释放，
+   * 不需要再把 keycode 反解成键名。
+   */
+  async setKeycodesHeld(codes: number[], pressed: boolean): Promise<void> {
+    if (codes.length === 0) return;
+    await this.runner()(keyStateArgs(codes, pressed));
+  }
+
   /** 按下/松开鼠标按钮（不移动指针）。 */
   async setButtonHeld(button: "left" | "right" | "middle", phase: "down" | "up"): Promise<void> {
     await this.runner()(clickStateArgs(clickMask(button, phase)));

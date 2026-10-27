@@ -76,7 +76,7 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 | 操作中用户反馈 | `hyprctl notify`（`linux/activityNotice.ts`），按 phase 配色 + 目标名 |
 | 截图（全屏 / 窗口） | CUL `screenshot`（走 `xdg-desktop-portal`；首次可能弹一次授权框） |
 | 输入（指针/键盘） | CUL `click`/`drag`/`scroll`（uinput 绝对指针）、`type_text`（wtype）、`press_key` |
-| 语义树 | CUL `get_app_state` + **自动 `get_tree_page` 翻页**（AT-SPI）。CUL 会把树 compact 到内联 ~37 个节点且仍报 `accessibility_tree_truncated:false`，真总数只在 `accessibility_tree_spill.node_count`；后端据此翻页收全（上限 8 页 / 3000 节点）。Electron 需 `--force-renderer-accessibility` 才暴露 renderer 内容 |
+| 语义树 | CUL `get_app_state` + **自动 `get_tree_page` 翻页**（AT-SPI）。CUL 会把树 compact 到内联 ~37 个节点且仍报 `accessibility_tree_truncated:false`，真总数只在 `accessibility_tree_spill.node_count`；后端据此翻页收全（上限 8 页 / 3000 节点）。Electron 需 `--force-renderer-accessibility` **且** 平台闸打开（`GNOME_ACCESSIBILITY=1` 或 `IsEnabled=true`）才注册 AT-SPI（MyBuddy 已自带，外部浏览器需重启时带 env） |
 | OCR | 本地 `tesseract`（`--psm 6 tsv`）+ `parseTesseractTsv`；不依赖 CUL |
 
 实测坐标语义（Hyprland 1.6x，eDP-1 2160×1440）：
@@ -84,30 +84,96 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 `clientDipToScreenPhysical = clientOrigin + dip × scaleFactor`。截图 `image_scale = 物理像素 / 图像像素`，
 OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
 
+AT-SPI 控件坐标在 GTK 上不可用（2026-10-27 真机复核）：zenity（GTK3 对话框）9 个节点、
+Nautilus（GTK4 主窗，2 页共 75 个节点）的 `bounds.x/y` **全部为 0**，只有宽高是真的；
+照坐标点会稳定点到客户区左上角。CUL README 同样把这种情形列为「GTK3 HiDPI extents /
+GTK4 zero-origin bounds」，它对元素点击优先走原生 AT-SPI action。后端因此做能力降级：
+同一窗口 ≥3 个有尺寸节点原点全是 (0,0) 时 `inspect_controls`/`find_control` 返回
+`boundsReliable=false`，并把 `clientBoundsDip`/`screenBoundsPhysical` 清空（控件身份、
+`runtimeId`、`patterns` 保留，`invoke_control`/`set_control_value` 照常可用），
+detail 里提示改用 OCR 文字行坐标。真机验证：GTK 对话框上 `set_control_value` + `invoke_control(OK)`
+能把 zenity 的输入回读出来（端到端 PASS）。
+
+语义动作复核（2026-10-27 真机）：
+`perform_action` 返回 ok 但界面没反应会真实发生（GTK 的输入抓取/弹窗会吞掉激活，实测 zenity 的 OK
+在 `set_value` 之后偶发不生效），CUL 自己不校验元素点击结果。后端补了四层：
+1. 用快照里的 `element_index`（`ControlInfo.elementIndex`）下发，不再按数组位置反查（分页收集会错位）；
+2. 先看便宜的观测（`list_windows` 的窗口集合/标题、目标是否还在），能判定生效就不再读树；
+3. 看不出变化时读一次树比较指纹（`controlFingerprint`）；**只有模态对话框里的按钮**才允许自动重试一次
+   （对话框按钮是确认/关闭语义，重复激活安全；toggle/复选框之类绝不重试，会点反）；
+4. `set_control_value` 是幂等路径：回读文本不一致就重试一次再读，结论写进 `verified`；
+   读不到文本给 `undefined`（不假装成功）。真机实测：CUL 对可编辑控件返回的 `text` 是对象
+   `{caret_offset, character_count, content, ...}`，必须先 `normalizeAccessibilityText` 取 `content` 再比较。
+
+截图与几何：`screenshot_window` 会先 raise（portal 只能截前台窗口）。raise 一个**平铺**窗口会触发
+Hyprland 重排，客户区尺寸随之变化，旧实现直接报 `CAPTURE_FAILED: 截图期间窗口几何发生变化`；
+现在按新几何**重试一次**，仍然不一致才报错。
+
 按下/释放分离与长按（2026-10-27 真机验证，推翻旧结论）：
 - `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` **可用**，走 `ydotool`（`ydotool click 0x40|0x80`、`ydotool key <code>:1|0`）。
   不能用 `wtype`：虚拟键盘协议在进程退出时自动释放，按住状态保不住；`ydotool` 直写 uinput，跨进程持久
   （实测 `ydotool key 42:1` 后 `hyprctl repl 'hl.is_key_down("Shift_L")'` = true）。
-- **按住状态会一直保持到显式释放**，用完必须 `key_up`/`mouse_up_client`，否则用户桌面残留按下的键。
+- **按住状态会一直保持到显式释放**，用完必须 `key_up`/`mouse_up_client`，否则用户桌面残留按下的键
+  （任务结束/取消时后端会兜底释放自己按下的，见下面的「输入安全语义」）。
 - `click_client` 的 `modifiers`（Ctrl+点击）与 `hold_ms`、`drag_client` 的 `steps`/`duration_ms`、`key_press` 的 `hold_ms` 都真的生效；
   `move_client` 不接受 `modifiers`/`hold_ms`，会显式报错而不是静默忽略。
 - `paste_text` 走 `wl-copy` + Ctrl+V（`wl-clipboard`），比逐字 `wtype` 快一个数量级；剪贴板不可用会回落逐字输入并在 detail 说明。
+  注意：`wl-copy` 会 fork 常驻进程持有选区并**继承 stderr 管道**，所以不能用 `close` 事件等它
+  （父进程 100ms 就 exit，`close` 要等选区被替换才到，`paste_text` 会一直挂住）；后端按 `exit` 判定 + 3 秒兜底。
+  真机验证：`paste_text` → GTK 对话框 entry → 点 OK 回读文本，端到端 PASS；终端类应用要 Ctrl+Shift+V，`Ctrl+V` 不会粘贴。
 - 指针定位仍由 CUL 负责（`scroll pages=0` 只定位不滚动）：`ydotool mousemove -a` 的坐标系是「逻辑 DIP × 2」，与 Hyprland 物理像素不等价。
+
+借鉴 LCU 的三条输入安全语义（`amontlabs/lcu` 的 Linux `sky_linux`/输入队列文档，2026-10-27 移植）：
+1. **输入/焦点动作串行化**：两个并发 `computer_exec` 穿插执行会把按键打到被抢走焦点的窗口上。
+   后端在 `execute()` 里给所有可能改变焦点或输入状态的动作（指针、键盘、type/paste、invoke/set、
+   focus/attach、move/resize、screenshot_window，以及 batch）加了一条 Promise 链队列；读类动作
+   （list/inspect/ocr）不进队列，不拖慢观察。
+2. **按住状态兜底释放**：`ydotool` 的按住状态跨进程持久，动作失败或模型漏 `key_up` 会把用户桌面
+   留在「按着 Ctrl」。后端记录自己按下的 keycode/按钮；动作失败时只回滚「这次动作自己按下、现在
+   还按着」的部分（不拆掉之前动作按住的组合键），任务结束/取消（`ComputerUseRunCoordinator.endTask`/
+   `cancel`）与 `shutdown()` 时释放全部。释放入口放在无依赖的 `platform/computer-use/heldInput.ts`
+   注册表里——直接 import `ComputerAutomationService` 会形成
+   `index → windows backend → coordinator → ComputerAutomationService → index` 的循环。
+   真机验证：`key_down Ctrl+Shift` 后 `hl.is_key_down` 均为 true，任务结束路径释放后均为 false。
+3. **点击前确认目标在前台**：Wayland 的 uinput 点击落在指针下的窗口，不认 `window_id`；目标在后台时
+   会点到遮挡它的窗口。现在 `click_client`/指针动作先激活目标并复核前台，失败就报 `FOCUS_FAILED`，
+   而不是把点击悄悄打偏（LCU 的 Linux 输入翻译同样「激活 → 复核 → 失败即拒绝」）。
+   真机验证：zenity 对话框在后台时按 OCR 坐标 `click_client` → 自动激活并点中 OK（对话框正常关闭）。
+
+Chromium/Electron 的语义树（2026-10-27 真机 + 源码核对）：
+`--force-renderer-accessibility` 只开 renderer 的 AXMode，**平台 AT-SPI 桥还有第二道闸**——
+`AtkUtilAuraLinux::InitializeAsync()` 只认 env `GNOME_ACCESSIBILITY`/`ACCESSIBILITY_ENABLED`/`QT_ACCESSIBILITY = "1"`，
+否则查 session bus 上 `org.a11y.Bus` 的 `org.a11y.Status.IsEnabled` 并直接采信（Hyprland 没有 GNOME 会话去置位，
+实测恒为 false；at-spi2-core 只在有 AT-SPI 监听器时才置 true）。所以：
+- **MyBuddy 自己**：`applyPlatformCommandLineSwitches()`（`platform/app.ts`，ready 前调用）追加
+  `--force-renderer-accessibility` 且补 `GNOME_ACCESSIBILITY=1`（用户显式设 "0" 时不覆盖）。实测 21 个节点，
+  含 heading/button/entry/static，`inspect_controls` 能读到渲染进程控件。
+- **外部 Chrome/Electron**：已运行的进程改不了；重启时带 `GNOME_ACCESSIBILITY=1 --force-renderer-accessibility`
+  才注册（实测 Chrome 156、Electron 44 都成立，sandbox/ozone 都不影响）。没开时 `inspect_controls` 返回 0 节点，
+  detail 会给出这条配方，此时用 `browser_exec`/`ui_exec` 或 `ocr_window`。
+- 纠正：`--enable-accessibility` 与 `--enable-features=Accessibility` 在 Chrome 156 / Electron 44 里**不存在**，
+  传了等于没传；`chrome://accessibility` 的 `native=` 反映 AXMode，不代表 AT-SPI 桥已注册。
 
 Wayland 的真实限制（后端显式报错，不做假成功）：
 - 没有后台截图：`background=true` 被拒绝；portal 只能截前台窗口。
-- **没有窗口外框叠加层**（`supportsComputerUseOverlay()` 仅 Windows）。这不是没做，是三条路都实测不成立：
-  1. Electron 透明窗口会被拍进 agent 自己的截图。Wayland 没有 `WDA_EXCLUDEFROMCAPTURE` 等价物，
-     `setContentProtection(true)` 在 Hyprland 上是空操作，`hl.window_rule({no_screenshare=...})` 三种写法都返回 ok
-     但 grim 照样拍到叠加层（实测洋红边框像素仍在）。叠加层会污染 `screenshot`/`screenshot_window` 的输入。
-  2. 分数缩放下铺不满：CSS px ≠ 逻辑 px（dpr 0.90625 vs scale 1.6），按逻辑尺寸建窗只覆盖 1956×1302 / 2160×1440；
-     `setZoomFactor`、按物理尺寸建窗、`setContentSize(2383,1589)` 都仍有约 100px 缺口。只有启动期全局
-     `force-device-scale-factor=1.6` 能铺满，但那会影响整个 app 的所有窗口。
-  3. CUL 自带的 `computer-use-linux-indicator` 不是可靠替代：它确实走 wlr-layer-shell 并起 4 条边框 + 1 个 pill，
-     但只在 CUL 内部 `screenshot` 时被拉起（我们无法按 phase 驱动）、抓帧里**完全不显色**、
-     D-Bus 名 `dev.avifenesh.ComputerUseLinux.WindowControl` 在 Hyprland 上不注册，
-     `$XDG_RUNTIME_DIR/computer-use-linux-indicator.sock` 是 SOCK_DGRAM 但发任意事件都不改变可见状态。
-  → Linux 的反馈改走**阶段通知**（`hyprctl notify` + `linux/activityNotice.ts`）：不污染截图、无外部依赖。
+- **没有贴合目标窗口的边框叠加层**（`supportsComputerUseOverlay()` 仅 Windows）：
+  1. Electron 透明窗口实测仍不可行（2026-10-27 复核）：dpr 0.90625 下只渲染 1957×1304 / 2160×1440，
+     右/下各缺约 200/136px；且 grim 与 portal 都拍得到（实测 16280 个洋红像素）。隐藏可行
+     （`hide()` 后合成器 13–17ms 生效），但 CUL 的截图发生在 MCP server 内部，app 没法在每次截图前协调。
+  2. 自建 `gtk4-layer-shell` 覆盖层技术上可行（本机有 `gtk4-layer-shell 1.3.0` + Gtk4 GI，实测四边精确贴齐
+     0/2159、0/1439，需 `LD_PRELOAD=libgtk4-layer-shell.so`），但它是系统依赖、要处理输入区域/点击穿透、
+     还要为「截图前清空 buffer」维护额外进程 —— 收益不抵成本，暂不做。
+  3. **已接线：驱动 CUL 自带的 `computer-use-linux-indicator`**（`linux/culIndicator.ts`）。它是无 CLI 的常驻
+     daemon，靠 `$XDG_RUNTIME_DIR/computer-use-linux-indicator.sock`（SOCK_DGRAM）收
+     `{"agent":"mybuddy-computer-use","tool":"<phase>"}`：4×26 逻辑像素边缘光晕 + 560×56 pill，
+     pill 文案 `<agent> is using your computer · <tool>`。要点（真机实测）：
+     - pill 只支持 ASCII（中文渲染成方块）→ phase 用英文短词，中文终态仍走 `hyprctl notify`；
+     - 单条约 8 秒淡出，2 秒心跳可连续保持；`tool` 可被 CUL 自己的动作事件覆盖（last-write-wins，可接受）；
+     - **截图安全**：CUL 截图时持有 `.capture` flock，indicator 自动不画。实测同一时刻 grim 拍到
+       32% 洋红光晕像素，而 CUL `screenshot` 的顶部区域紫色像素 1172 = 关闭 indicator 时的基线 1172（零污染）；
+     - Node 的 `dgram` 只支持 udp4/udp6，发 unix dgram 走 `socat -u - UNIX-SENDTO:<path>`（缺 socat 用 python3 兜底），
+       两者都没有就回落到 `hyprctl notify`（`linux/activityNotice.ts`）。
+  → Linux 的反馈：**indicator 光晕 + 英文 phase pill** 为主，`hyprctl notify` 兜底/终态中文。
   不用 `hyprctl dismissnotify`（会把用户自己的通知一起关掉），每条通知靠 `time_ms` 自己过期。
 - GNOME 专用的 `setup_window_targeting` 在 Hyprland 上不可用。
 - **窗口移动/改尺寸已接线**：CUL 的 `move_window`/`resize_window` 在 Hyprland 上直接失败（需要 GNOME Shell 扩展或

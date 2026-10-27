@@ -30,12 +30,17 @@ import {
   CUL_TOOLS,
   clientDipToScreenPhysical,
   compactWindowInfo,
+  controlBoundsAreZeroOrigin,
+  controlFingerprint,
   culFailure,
   filterWindows,
   findControl,
+  hasDialogRole,
   imageScaleFromMeta,
+  looksLikeChromiumWindow,
   matchesSelector,
   parseTesseractTsv,
+  stripUnreliableControlBounds,
   toControlInfo,
   toCulKey,
   toWindowInfo,
@@ -49,7 +54,7 @@ import {
   collectAccessibilityTree,
   toAccessibilityPage,
 } from "./accessibilityTree";
-import { YdotoolInput, type YdotoolRunner } from "./ydotool";
+import { keyChordToKeycodes, YdotoolInput, type YdotoolRunner } from "./ydotool";
 import { createHyprlandWindowControl, type HyprlandWindowControl, type HyprlandWindowRect } from "./hyprlandWindows";
 
 const execFileAsync = promisify(execFile);
@@ -65,6 +70,32 @@ const TYPE_TEXT_CHUNK = 90;
 const DOCTOR_TTL_MS = 60_000;
 const SCREENSHOT_MAX_EDGE = 1600;
 const SCREENSHOT_QUALITY = 70;
+/**
+ * GTK 的 AT-SPI bounds 原点实测恒为 (0,0)（宽高是真的），照坐标点会稳定点到客户区左上角。
+ * 这个提示会随 `inspect_controls` / `find_control` 的 detail 一起回给模型。
+ */
+const ZERO_ORIGIN_BOUNDS_HINT =
+  "该窗口的 AT-SPI bounds 原点全部为 0（GTK 已知问题：GTK3 HiDPI extents / GTK4 zero-origin bounds），控件坐标已省略、不能用于 click_client：有语义动作时用 invoke_control / set_control_value，需要坐标时用 ocr_window 拿文字行坐标再点";
+
+/**
+ * 需要串行执行的动作：任何可能改变焦点或输入状态的调用。
+ *
+ * 借鉴 LCU 的 Linux 输入队列：它把所有「可能移动焦点/输东西」的调用排进一个队列，
+ * 并在真正下发前再确认一次焦点，避免两个并发调用互相穿插（后一个把焦点抢走，前一个
+ * 的按键落到别的窗口）。这里在 backend 层用一条 Promise 链做同样的串行化。
+ */
+const SERIALIZED_ACTIONS: ReadonlySet<string> = new Set([
+  "attach_app", "focus_window",
+  "invoke_control", "set_control_value",
+  "screenshot_window",
+  "move_window", "resize_window",
+  "move_client", "click_client", "drag_client", "scroll_client",
+  "mouse_down_client", "mouse_up_client", "drag_screen",
+  "key_press", "key_down", "key_up", "type_text", "paste_text",
+  "mouse_move", "mouse_click", "mouse_drag", "scroll",
+]);
+
+type MouseButton = "left" | "right" | "middle";
 
 interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
 interface DoctorCache { at: number; report: CulDoctorReport }
@@ -87,6 +118,12 @@ async function checked<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<
     }
     throw error;
   }
+}
+
+/** 窗口集合（handle + 标题）是否发生变化：语义动作的便宜生效判据（`list_windows` ~100ms）。 */
+function windowsChanged(before: WindowInfo[], after: WindowInfo[]): boolean {
+  const key = (windows: WindowInfo[]) => windows.map((window) => `${window.handle}:${window.title}`).sort().join("|");
+  return key(before) !== key(after);
 }
 
 function requireFinite(value: unknown, name: string): number {
@@ -147,6 +184,11 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   private readonly input: YdotoolInput;
   private readonly windowControl: HyprlandWindowControl;
   private diagnosticsRefresh?: Promise<void>;
+  /** 后端按下、尚未释放的 keycode / 鼠标按钮（任务结束或动作失败时兜底释放）。 */
+  private readonly heldKeys = new Set<number>();
+  private readonly heldButtons = new Set<MouseButton>();
+  /** 输入/焦点动作的串行队列（同 LCU 的 input queue）。 */
+  private inputLock: Promise<unknown> = Promise.resolve();
 
   /**
    * @param options.pasteViaClipboard 注入剪贴板写入（默认走 Electron `clipboard`）；
@@ -252,6 +294,8 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   async shutdown(): Promise<void> {
+    // 先释放按住状态，再关 MCP：否则一个漏掉的 key_down 会把用户桌面留在按着修饰键的状态。
+    await this.releaseHeldInput().catch(() => undefined);
     await this.client?.close();
     this.client = undefined;
     this.doctor = undefined;
@@ -261,10 +305,18 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    if (input.actions?.length) return this.executeBatch(input, signal);
-    const action = input.action;
+    const action = input.actions?.length ? "batch" : input.action;
     if (!action) throw new Error("computer_exec 需要 action 或 actions");
     if (action === "status") return { action, ...this.status() } as ComputerExecOutput;
+    // 批量里全是输入步骤；读类动作（list/inspect/ocr）不进队列，避免拖慢观察。
+    if (action === "batch" || SERIALIZED_ACTIONS.has(action)) {
+      return this.withInputLock(() => this.executeUnlocked(input, signal));
+    }
+    return this.executeUnlocked(input, signal);
+  }
+
+  private async executeUnlocked(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    if (input.actions?.length) return this.executeBatch(input, signal);
     const restore = input.restoreForeground === true ? await this.foregroundHandle(signal) : undefined;
     let outcome: ComputerExecOutput | undefined;
     try {
@@ -279,6 +331,76 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         }
       }
     }
+  }
+
+  /**
+   * 串行执行 + 失败清理（借鉴 LCU 的 input queue / input state）。
+   *
+   * 1. **串行**：焦点和输入是全局状态，两个并发 computer_exec 穿插会把按键打到错误窗口。
+   * 2. **失败清理**：动作抛错或被取消时，只释放「这次动作自己按下、现在还按着」的键/按钮；
+   *    之前动作已经按住的（跨动作按住是受支持的能力）保持不动，避免把用户/模型的组合键拆掉。
+   */
+  private async withInputLock<T>(task: () => Promise<T>): Promise<T> {
+    const previous = this.inputLock;
+    let release!: () => void;
+    // 占住队尾（而不是等 task 结束再改 inputLock）：失败清理也在锁内，不会和下一个动作的
+    // ydotool 写入交错。
+    this.inputLock = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    const keysBefore = new Set(this.heldKeys);
+    const buttonsBefore = new Set(this.heldButtons);
+    try {
+      return await task();
+    } catch (error) {
+      await this.releaseHeldSince(keysBefore, buttonsBefore).catch(() => undefined);
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  /** 释放「按之前快照对比新增」的按住状态（失败清理用）。 */
+  private async releaseHeldSince(keysBefore: Set<number>, buttonsBefore: Set<MouseButton>): Promise<void> {
+    const addedKeys = [...this.heldKeys].filter((code) => !keysBefore.has(code)).reverse();
+    const addedButtons = [...this.heldButtons].filter((button) => !buttonsBefore.has(button));
+    for (const code of addedKeys) {
+      try {
+        await this.input.setKeycodesHeld([code], false);
+      } catch { /* 尽力而为：ydotool 不可用时没什么可释放 */ }
+      this.heldKeys.delete(code);
+    }
+    for (const button of addedButtons) {
+      try {
+        await this.input.setButtonHeld(button, "up");
+      } catch { /* 同上 */ }
+      this.heldButtons.delete(button);
+    }
+  }
+
+  /**
+   * 释放后端记录的全部按住状态（任务结束/取消/关闭后端时调用）。
+   *
+   * ydotool 的按住状态跨进程持久，agent 漏掉 `key_up` 会把用户桌面留在「按着 Ctrl」的状态。
+   * 返回实际释放了什么，便于日志/断言。
+   */
+  async releaseHeldInput(): Promise<{ keys: number[]; buttons: string[] }> {
+    return this.withInputLock(async () => {
+      const keys = [...this.heldKeys].reverse();
+      const buttons = [...this.heldButtons] as MouseButton[];
+      this.heldKeys.clear();
+      this.heldButtons.clear();
+      for (const code of keys) {
+        try {
+          await this.input.setKeycodesHeld([code], false);
+        } catch { /* 尽力而为 */ }
+      }
+      for (const button of buttons) {
+        try {
+          await this.input.setButtonHeld(button, "up");
+        } catch { /* 尽力而为 */ }
+      }
+      return { keys, buttons: buttons as string[] };
+    });
   }
 
   /* ---------------------------------------------------------------- */
@@ -444,6 +566,28 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     await checked(() => this.cul().require(CUL_TOOLS.activateWindow, { window_id: Number(window.handle) }, signal), signal);
   }
 
+  /**
+   * 确保目标在前台（借鉴 LCU 的 Linux 输入翻译）。
+   *
+   * Wayland 上 uinput 的点击落在「指针下面的窗口」，不认 window_id：目标在后台时点击会
+   * 打到遮挡它的窗口或另一个 workspace。LCU 的做法是「激活 → 复核焦点，失败就拒绝发送」；
+   * 这里照做——宁可明确报 FOCUS_FAILED，也不要把点击悄悄打偏。
+   */
+  private async ensureForeground(window: WindowInfo, signal?: AbortSignal): Promise<WindowInfo> {
+    if (window.foreground) return window;
+    await this.activateWindow(window, signal);
+    const fresh = await this.inspectHandle(window.handle, signal).catch(() => undefined);
+    if (!fresh) throw new ComputerUseError("WINDOW_NOT_FOUND", "激活后目标窗口消失了", { handle: window.handle });
+    if (!fresh.foreground) {
+      throw new ComputerUseError(
+        "FOCUS_FAILED",
+        "目标窗口不在前台：点击会落到别的窗口上。先确认窗口可见（没有被全屏/浮动窗口盖住），或手动切到它所在的 workspace 再重试",
+        { handle: window.handle, title: fresh.title },
+      );
+    }
+    return fresh;
+  }
+
   private async waitForWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const timeoutMs = Math.max(500, Math.min(35_000, input.timeoutMs ?? 5_000));
     const deadline = Date.now() + timeoutMs;
@@ -503,24 +647,33 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         action, background: true,
       });
     }
-    const target = await this.resolveTarget(input, signal);
-    const result = await this.captureWindowImage(target, input.ensureForeground !== false, signal);
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+    let target = await this.resolveTarget(input, signal);
+    // raise 一个平铺窗口会重排 Hyprland 布局（切 workspace / 重新平铺），客户区尺寸随之变化。
+    // 这时截出来的是「旧几何的图 + 新几何的窗口」，模型换算会全错；但重截一次就对齐了，
+    // 所以先按新几何重试一次，仍然在变才报错（不要一遇到重排就把动作判死）。
+    let result: Awaited<ReturnType<LinuxComputerUseBackend["captureWindowImage"]>> | undefined;
+    let after: WindowInfo | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      result = await this.captureWindowImage(target, input.ensureForeground !== false, signal);
+      after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+      if (!after || (after.clientRect.width === target.clientRect.width && after.clientRect.height === target.clientRect.height)) break;
+      if (attempt === 0) target = after;
+    }
     if (after && (after.clientRect.width !== target.clientRect.width || after.clientRect.height !== target.clientRect.height)) {
-      throw new ComputerUseError("CAPTURE_FAILED", "截图期间窗口几何发生变化", { before: target, after });
+      throw new ComputerUseError("CAPTURE_FAILED", "截图期间窗口几何发生变化（已按新几何重试一次仍不一致）", { before: target, after });
     }
     return {
       action,
       window: after ?? target,
-      screenshot: result.bytes,
+      screenshot: result!.bytes,
       screenshotMimeType: "image/jpeg",
-      imageScale: result.imageScale,
-      imageSize: result.imageSize,
+      imageScale: result!.imageScale,
+      imageSize: result!.imageSize,
       artifactFileName: `window-${target.handle}.jpg`,
-      capture: result.details,
+      capture: result!.details,
       observationId: this.remember(after ?? target),
       backend: this.backend,
-      detail: `window crop via ${String(result.source ?? "portal")}`,
+      detail: `window crop via ${String(result!.source ?? "portal")}`,
     } as ComputerExecOutput;
   }
 
@@ -683,13 +836,20 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
 
   private async inspectControls(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.resolveTarget(input, signal);
-    const { nodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
+    const { nodes: rawNodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
+    const boundsReliable = !controlBoundsAreZeroOrigin(rawNodes);
+    const nodes = boundsReliable ? rawNodes : stripUnreliableControlBounds(rawNodes);
     // 只有「翻完所有页仍然几乎没有节点」才是真的没有语义树；页数 >1 说明树是完整的。
-    const detail = nodes.length <= 3
-      ? "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
-      : truncated
-        ? `语义树仍有 ${nodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
-        : undefined;
+    const detail = [
+      rawNodes.length <= 3
+        ? looksLikeChromiumWindow(target)
+          ? "Chromium/Electron 窗口没有暴露 AT-SPI 树：这类应用要平台无障碍桥初始化才注册（启动时 GNOME_ACCESSIBILITY=1 或 AT-SPI 的 IsEnabled=true）并且带 --force-renderer-accessibility；已运行的浏览器改不了，重启时加 GNOME_ACCESSIBILITY=1 才有语义树。现在可改用 browser_exec / ui_exec，或 ocr_window + click_client；MyBuddy 自己已默认设置"
+          : "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
+        : truncated
+          ? `语义树仍有 ${rawNodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
+          : "",
+      boundsReliable ? "" : ZERO_ORIGIN_BOUNDS_HINT,
+    ].filter(Boolean).join("；");
     return {
       action,
       window: target,
@@ -697,15 +857,17 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       uiaAvailable: nodes.length > 1,
       truncated,
       accessibilityPages: pages,
+      boundsReliable,
       observationId: this.remember(target),
       backend: this.backend,
-      detail,
+      detail: detail || undefined,
     } as ComputerExecOutput;
   }
 
   private async findControlAction(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.resolveTarget(input, signal);
     const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+    const boundsReliable = !controlBoundsAreZeroOrigin(nodes);
     const found = findControl(nodes, {
       controlRuntimeId: input.controlRuntimeId,
       controlName: input.controlName,
@@ -719,12 +881,34 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         target: { windowTitle: input.windowTitle, controlName: input.controlName, automationId: input.automationId },
       });
     }
-    return { action, window: target, control: found, backend: this.backend } as ComputerExecOutput;
+    return {
+      action,
+      window: target,
+      control: boundsReliable ? found : stripUnreliableControlBounds([found])[0],
+      boundsReliable,
+      backend: this.backend,
+      detail: boundsReliable ? undefined : ZERO_ORIGIN_BOUNDS_HINT,
+    } as ComputerExecOutput;
   }
 
+  /**
+   * 语义动���（`invoke_control` / `set_control_value`）+ 执行后复核。
+   *
+   * 真机问题（2026-10-27）：`perform_action` 返回 ok 但界面没有反应——GTK 的输入
+   * 抓取/弹窗会把这次激活吞掉（zenity 的 OK 在 set_value 之后偶发不生效）。
+   * CUL 自己对元素点击不做结果校验，所以后端补一层：
+   *
+   * 1. **精确 element_index**：用 AT-SPI 快照里的 `index`，不再用数组位置反查
+   *    （分页收集时两者可能错位，见 `ControlInfo.elementIndex`）。
+   * 2. **先复核便宜的观测**（窗口集合/标题/目标是否还在）：能判定生效就不再多读树。
+   * 3. **看不出变化时**再读一次树比较指纹；如果目标是**模态对话框**，按钮重复激活是
+   *    安全的（对话框按钮 = 确认/关闭），所以允许一次有界重试；其它控件不重试
+   *    （LCU 的结论一致：不要盲目重复点击，像 toggle/复选框会被点反）。
+   * 4. `set_control_value` 走幂等路径：回读文本不一致就重试一次并再回读，结论写进
+   *    `verified`；读不到文本时给 `undefined`（不假装成功）。
+   */
   private async invokeControl(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal, setValue = false): Promise<ComputerExecOutput> {
-    const target = await this.resolveTarget(input, signal);
-    const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
     const selector = {
       controlRuntimeId: input.controlRuntimeId,
       controlName: input.controlName,
@@ -733,33 +917,100 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       controlClassName: input.controlClassName,
       exactName: input.exactName,
     };
-    const found = findControl(nodes, selector, { maxDepth: input.maxDepth });
-    if (!found) {
-      throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window + click_client 走坐标点击）", { selector });
-    }
-    const nodeIndex = Number(found.runtimeId.split("/").pop());
-    const index = Number.isFinite(nodeIndex) && found.automationId ? this.indexForObjectRef(nodes, found) : this.indexForObjectRef(nodes, found);
-    if (setValue) {
-      await checked(() => this.cul().require(CUL_TOOLS.setValue, { element_index: index, value: input.text ?? "" }, signal), signal);
+    const act = async (): Promise<{ nodes: ControlInfo[]; found: ControlInfo }> => {
+      const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+      const found = findControl(nodes, selector, { maxDepth: input.maxDepth });
+      if (!found) {
+        throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window + click_client 走坐标点击）", { selector });
+      }
+      const index = found.elementIndex ?? this.indexForObjectRef(nodes, found);
+      if (setValue) {
+        await checked(() => this.cul().require(CUL_TOOLS.setValue, { element_index: index, value: input.text ?? "" }, signal), signal);
+      } else {
+        const args: Record<string, unknown> = { element_index: index };
+        if (input.controlName) args.name = input.controlName;
+        await checked(() => this.cul().require(CUL_TOOLS.performAction, args, signal), signal);
+      }
+      return { nodes, found };
+    };
+
+    const windowsBefore = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
+    let result = await act();
+    let after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+    let verified: boolean | undefined;
+    let verifyDetail: string | undefined;
+    let retried = false;
+
+    if (!after) {
+      // 窗口关了 = 动作确实生效
+      verified = true;
+    } else if (setValue) {
+      let text = await this.readControlText(target, result.found, input, signal);
+      if (input.text !== undefined && text !== undefined && text !== input.text) {
+        // set_value 幂等：允许一次有界重试
+        result = await act();
+        after = await this.inspectHandle(target.handle, signal).catch(() => after);
+        text = await this.readControlText(target, result.found, input, signal);
+        retried = true;
+      }
+      if (input.text === undefined || text === undefined) {
+        verified = undefined;
+      } else {
+        verified = text === input.text;
+        if (!verified) {
+          verifyDetail = `回读文本 ${JSON.stringify(text)} 与请求 ${JSON.stringify(input.text)} 不一致${retried ? "（已重试一次）" : ""}`;
+        }
+      }
     } else {
-      const args: Record<string, unknown> = { element_index: index };
-      if (input.controlName) args.name = input.controlName;
-      await checked(() => this.cul().require(CUL_TOOLS.performAction, args, signal), signal);
+      const windowsAfter = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
+      if (windowsChanged(windowsBefore, windowsAfter)) {
+        verified = true;
+      } else {
+        // 便宜观测看不出变化：读树比较指纹（可能只是 a11y 内部状态变了）
+        const recheck = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
+        if (recheck && controlFingerprint(result.nodes) !== controlFingerprint(recheck.nodes)) {
+          verified = true;
+        } else if (hasDialogRole(result.nodes)) {
+          // 模态对话框按钮：被输入抓取吞掉一次很常见，重复激活是安全的（确认/关闭语义）
+          result = await act();
+          after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+          retried = true;
+          const afterRetry = after ? await this.readWindows(signal).catch(() => [] as WindowInfo[]) : [];
+          if (!after || windowsChanged(windowsAfter, afterRetry)) {
+            verified = true;
+          } else {
+            const final = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
+            verified = final ? controlFingerprint(result.nodes) !== controlFingerprint(final.nodes) : undefined;
+            if (verified === false) verifyDetail = "模态对话框按钮激活后仍看不出变化（已重试一次）：可能被输入抓取吞掉，请重新观察或用 expected_outcomes 验证";
+          }
+        } else {
+          verified = false;
+          verifyDetail = "看不出可观测变化：可能被弹窗/输入抓取吞掉，也可能本来就是无副作用的动作。需要确认就重新观察或加 expected_outcomes，不要盲目重复点击";
+        }
+      }
     }
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+
     const output: ComputerExecOutput = {
       action,
       window: after ?? target,
-      control: found,
+      // 这里只回报控件身份，不回传坐标：GTK 的 bounds 原点不可信（见 ZERO_ORIGIN_BOUNDS_HINT）。
+      control: controlBoundsAreZeroOrigin(result.nodes) ? stripUnreliableControlBounds([result.found])[0] : result.found,
       observation: after ? { targetBefore: target, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground } : undefined,
       backend: this.backend,
+      verified,
+      detail: [retried ? "已自动重试一次" : "", verifyDetail ?? ""].filter(Boolean).join("；") || undefined,
     };
-    if (setValue) {
-      // CUL 的 set_value 对可编辑文本会做精确回读（verified），这里把结论透出给模型。
-      output.verified = input.text === undefined ? undefined : true;
-    }
     return output;
   }
+
+  /** 读回控件当前文本（`set_control_value` 校验；runtimeId 变了就按名字/角色兜底匹配）。 */
+  private async readControlText(target: WindowInfo, previous: ControlInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<string | undefined> {
+    const { nodes } = await this.readAccessibilityNodes(target, input, signal).catch(() => ({ nodes: [] as ControlInfo[], truncated: false, pages: 0 }));
+    const found = nodes.find((node) => node.runtimeId === previous.runtimeId)
+      ?? nodes.find((node) => node.controlType === previous.controlType && node.name === previous.name);
+    return found?.text;
+  }
+
 
   /** AT-SPI 节点的 `index` 是 CUL 树里的稳定下标；用 object_ref 反查。 */
   private indexForObjectRef(nodes: ControlInfo[], control: ControlInfo): number {
@@ -787,7 +1038,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         { action, modifiers, holdMs: input.holdMs },
       );
     }
-    const target = await this.resolveTarget(input, signal);
+    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
     const point = clientDipToScreenPhysical(target, requireFinite(input.x, "x"), requireFinite(input.y, "y"));
     const button = input.button ?? "left";
     // CUL 的 click/scroll/drag 都不接受 modifier 参数，所以修饰键只能由 ydotool 真的按住
@@ -939,13 +1190,17 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     phase: "down" | "up",
     signal?: AbortSignal,
   ): Promise<ComputerExecOutput> {
-    const target = await this.maybeTarget(input, signal);
+    const resolved = await this.maybeTarget(input, signal);
+    const target = resolved ? await this.ensureForeground(resolved, signal) : undefined;
     if (Number.isFinite(Number(input.x)) && Number.isFinite(Number(input.y)) && target) {
       const point = clientDipToScreenPhysical(target, Number(input.x), Number(input.y));
       await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
     }
     const button = input.button ?? "left";
+    // 先登记再下发：如果 setButtonHeld 抛错，动作失败清理会把它当成「可能已按下」释放掉。
+    if (phase === "down") this.heldButtons.add(button as MouseButton);
     await this.input.setButtonHeld(button, phase);
+    if (phase === "up") this.heldButtons.delete(button as MouseButton);
     return {
       action,
       window: target,
@@ -973,7 +1228,11 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     const target = await this.maybeTarget(input, signal);
     // ydotool 没有 window_id 定向：按住/松开只会打到当前前台窗口，所以先聚焦目标。
     if (target && !target.foreground) await this.focusWindow(target.handle, signal);
-    const codes = await this.input.setKeysHeld(key, pressed);
+    const codes = keyChordToKeycodes(key);
+    // 先登记再下发：组合键中途失败时动作失败清理会释放它可能已经按下的键。
+    if (pressed) for (const code of codes) this.heldKeys.add(code);
+    await this.input.setKeycodesHeld(codes, pressed);
+    if (!pressed) for (const code of codes) this.heldKeys.delete(code);
     return {
       action,
       window: target,
@@ -1190,15 +1449,34 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     await new Promise<void>((resolve, reject) => {
       const child = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "pipe"], detached: true });
       let stderr = "";
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const fail = (error: ComputerUseError) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        reject(error);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
       child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-      child.on("error", (error) => reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
-      child.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
+      child.on("error", (error) => fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
+      // 注意：**不要等 `close`**。wl-copy 会 fork 一个常驻进程持有选区，并继承这里的 stderr
+      // 管道；父进程退出后子进程仍持有 fd，`close` 要等所有 stdio 关闭 —— 实测 100ms 就 exit、
+      // 3 秒内 close 永不到来，用 close 会让 paste_text 一直挂到选区被替换。按 `exit` 判定。
+      child.on("exit", (code) => {
+        if (code === 0) succeed();
+        else fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
       });
-      child.stdin?.on("error", () => { /* 子进程可能先退出；由 close 决定成败 */ });
+      // 兜底：连 exit 都不来（wl-copy 被塞住/无 Wayland 剪贴板）时不要无限期挂着。
+      timer = setTimeout(() => fail(new ComputerUseError("HOST_UNAVAILABLE", "wl-copy 3 秒内没有退出（剪贴板可能被占用）")), 3_000);
+      timer.unref?.();
+      child.stdin?.on("error", () => { /* 子进程可能先退出；由 exit 决定成败 */ });
       child.stdin?.end(text);
-      // wl-copy 会 fork 常驻进程持有选区；父进程按 close 判定即可。
       child.unref();
     });
   }

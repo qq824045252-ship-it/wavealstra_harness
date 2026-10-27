@@ -29,12 +29,18 @@ import {
   dipPerImagePixel,
   filterWindows,
   findControl,
+  controlBoundsAreZeroOrigin,
+  controlFingerprint,
+  normalizeAccessibilityText,
+  hasDialogRole,
   imageScaleFromMeta,
+  looksLikeChromiumWindow,
   joinOcrWords,
   monitorPhysicalRect,
   monitorScaleFor,
   parseMonitors,
   parseTesseractTsv,
+  stripUnreliableControlBounds,
   toControlInfo,
   toCulKey,
   toCulModifiers,
@@ -56,6 +62,15 @@ import {
   ydotoolFailure,
   YdotoolInput,
 } from "../src/main/platform/computer-use/linux/ydotool";
+import { applyPlatformCommandLineSwitches } from "../src/main/platform/app";
+import {
+  CulIndicator,
+  INDICATOR_AGENT_NAME,
+  INDICATOR_PHASE_WORDS,
+  indicatorPayload,
+  indicatorSocketPath,
+  pickIndicatorTransport,
+} from "../src/main/platform/computer-use/linux/culIndicator";
 import {
   collectAccessibilityTree,
   toAccessibilityPage,
@@ -374,6 +389,148 @@ await check("linux backend implements pointer/key split through the injected ydo
   await backend.shutdown();
 });
 
+/* 借鉴 LCU 的输入安全语义：串行队列 + 按住状态兜底释放（真机验证见 smoke --allow-input）。 */
+
+await check("linux backend serializes focus/input actions instead of interleaving", async () => {
+  const events: string[] = [];
+  let openGate: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { openGate = resolve; });
+  const backend = new LinuxComputerUseBackend({
+    ydotoolRunner: async (args) => {
+      events.push(`start:${args.join(" ")}`);
+      await gate;
+      events.push(`end:${args.join(" ")}`);
+    },
+  });
+  const first = backend.execute({ action: "key_down", key: "Ctrl" });
+  const second = backend.execute({ action: "mouse_down_client", button: "left" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // 第一条还卡在 ydotool 里时，第二条必须还没开始（否则焦点/按键会互相穿插）
+  assert.deepEqual(events, ["start:key 29:1"]);
+  openGate?.();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, [
+    "start:key 29:1", "end:key 29:1",
+    "start:click 0x40", "end:click 0x40",
+  ]);
+  await backend.shutdown();
+});
+
+await check("linux backend releases only what a failed action may have pressed", async () => {
+  const calls: string[][] = [];
+  let failNext = false;
+  const backend = new LinuxComputerUseBackend({
+    ydotoolRunner: async (args) => {
+      calls.push([...args]);
+      if (failNext) {
+        failNext = false;
+        throw new Error("ydotoold 掉了");
+      }
+    },
+  });
+  await backend.execute({ action: "key_down", key: "Ctrl" });
+  failNext = true;
+  await assert.rejects(() => backend.execute({ action: "key_down", key: "Shift" }));
+  // 只回滚这次动作的 Shift(42)，之前按住的 Ctrl(29) 不能被拆掉
+  assert.deepEqual(calls, [["key", "29:1"], ["key", "42:1"], ["key", "42:0"]]);
+  const released = await backend.releaseHeldInput();
+  assert.deepEqual(released, { keys: [29], buttons: [] });
+  assert.deepEqual(calls.at(-1), ["key", "29:0"]);
+  // 幂等：再调一次不应再发 ydotool
+  const before = calls.length;
+  assert.deepEqual(await backend.releaseHeldInput(), { keys: [], buttons: [] });
+  assert.equal(calls.length, before);
+  await backend.shutdown();
+});
+
+await check("linux backend releases held keys/buttons at shutdown", async () => {
+  const calls: string[][] = [];
+  const backend = new LinuxComputerUseBackend({ ydotoolRunner: async (args) => { calls.push([...args]); } });
+  await backend.execute({ action: "mouse_down_client", button: "right" });
+  await backend.execute({ action: "key_down", key: "Ctrl+Shift" });
+  await backend.shutdown();
+  assert.deepEqual(calls, [
+    ["click", "0x41"],
+    ["key", "29:1", "42:1"],
+    ["key", "42:0"],
+    ["key", "29:0"],
+    ["click", "0x81"],
+  ]);
+});
+
+/* CUL indicator（layer-shell 光晕 + pill）：协议/心跳/降级都要能单测，不碰真机。 */
+
+await check("linux platform switches force renderer accessibility and open the AT-SPI gate", () => {
+  const recorded: string[] = [];
+  const fakeApp = { commandLine: { appendSwitch: (name: string) => { recorded.push(name); } } };
+  const previous = process.env.GNOME_ACCESSIBILITY;
+  try {
+    delete process.env.GNOME_ACCESSIBILITY;
+    applyPlatformCommandLineSwitches(fakeApp, "linux");
+    assert.deepEqual(recorded, ["force-renderer-accessibility"]);
+    // Chromium 的平台 AT-SPI 桥只认 env 或 IsEnabled；Hyprland 下后者恒为 false
+    assert.equal(process.env.GNOME_ACCESSIBILITY, "1");
+    // 用户显式设置的值不覆盖（"0" 是关闭）
+    process.env.GNOME_ACCESSIBILITY = "0";
+    applyPlatformCommandLineSwitches(fakeApp, "linux");
+    assert.equal(process.env.GNOME_ACCESSIBILITY, "0");
+    // 其它平台 no-op
+    recorded.length = 0;
+    delete process.env.GNOME_ACCESSIBILITY;
+    applyPlatformCommandLineSwitches(fakeApp, "windows");
+    applyPlatformCommandLineSwitches(fakeApp, "macos");
+    assert.deepEqual(recorded, []);
+    assert.equal(process.env.GNOME_ACCESSIBILITY, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.GNOME_ACCESSIBILITY;
+    else process.env.GNOME_ACCESSIBILITY = previous;
+  }
+});
+
+await check("indicator payload is ASCII JSON with the CUL agent name", () => {
+  const payload = JSON.parse(indicatorPayload("acting"));
+  assert.deepEqual(payload, { agent: INDICATOR_AGENT_NAME, tool: "acting" });
+  assert.equal(INDICATOR_AGENT_NAME, "mybuddy-computer-use");
+  // indicator 渲染不了中文：所有 phase 词必须是 ASCII
+  for (const word of Object.values(INDICATOR_PHASE_WORDS)) {
+    assert.match(word, /^[a-z]+$/);
+  }
+  assert.equal(JSON.parse(indicatorPayload("completed")).tool, "done");
+  assert.equal(indicatorSocketPath({ XDG_RUNTIME_DIR: "/run/user/1000" }), "/run/user/1000/computer-use-linux-indicator.sock");
+  assert.equal(indicatorSocketPath({}), undefined);
+});
+
+await check("indicator transport prefers socat, falls back to python3, then unavailable", () => {
+  assert.equal(pickIndicatorTransport((name) => (name === "socat" ? "/usr/bin/socat" : undefined)), "socat");
+  assert.equal(pickIndicatorTransport((name) => (name === "python3" ? "/usr/bin/python3" : undefined)), "python3");
+  assert.equal(pickIndicatorTransport(() => undefined), undefined);
+});
+
+await check("indicator sends a heartbeat while showing and stops when stopped", async () => {
+  const payloads: string[] = [];
+  const indicator = new CulIndicator({ send: (payload) => { payloads.push(payload); return true; }, heartbeatMs: 250 });
+  assert.equal(indicator.available, true);
+  assert.equal(indicator.show("observing"), true);
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  assert.ok(payloads.length >= 2, `expected heartbeat, got ${payloads.length}`);
+  indicator.show("acting");
+  assert.equal(JSON.parse(payloads.at(-1)!).tool, "acting");
+  indicator.stop();
+  const afterStop = payloads.length;
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  assert.equal(payloads.length, afterStop);
+});
+
+await check("indicator degrades silently when the transport fails", () => {
+  const indicator = new CulIndicator({ send: () => { throw new Error("no socat"); } });
+  assert.equal(indicator.available, true);
+  assert.equal(indicator.show("acting"), false);
+  indicator.stop();
+  const unavailable = new CulIndicator({ send: undefined, executable: () => undefined, ensureServer: async () => false });
+  assert.equal(unavailable.available, false);
+  assert.equal(unavailable.show("acting"), false);
+});
+
 await check("linux backend surfaces a pacman hint when ydotool is missing", async () => {
   const backend = new LinuxComputerUseBackend({ ydotoolRunner: undefined });
   // 直接判 YdotoolInput 的不可用分支：把 PATH 清空后再调用
@@ -603,6 +760,104 @@ await check("toControlInfo converts AT-SPI nodes to client DIP + physical bounds
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.name, undefined);
   assert.equal(disabled.runtimeId, "9");
+});
+
+/* GTK 的 AT-SPI bounds 原点实测恒为 (0,0)：坐标必须作废，控件身份要保留。 */
+const zeroOriginNode = (index: number, role: string, name: string, width = 80, height = 30) =>
+  toControlInfo({ index, object_ref: `ref-${index}`, role, name, bounds: { x: 0, y: 0, width, height } });
+
+await check("controlBoundsAreZeroOrigin flags GTK zero-origin trees but keeps a lone root", () => {
+  const gtkDialog = [
+    toControlInfo({ index: 0, role: "application", name: "zenity" }),
+    zeroOriginNode(1, "dialog", "CUL-E2E", 300, 251),
+    zeroOriginNode(2, "button", "OK", 120, 44),
+    zeroOriginNode(3, "text box", "name", 228, 34),
+  ];
+  assert.equal(controlBoundsAreZeroOrigin(gtkDialog), true);
+  // 窗口根节点单独是 (0,0) 属正常（client 原点即 0,0），不能因此判定整棵树不可信。
+  assert.equal(controlBoundsAreZeroOrigin([gtkDialog[0], zeroOriginNode(1, "dialog", "d", 300, 251)]), false);
+  // 有真实原点时正常透传
+  const real = [
+    toControlInfo({ index: 1, object_ref: "a", role: "push button", name: "A", bounds: { x: 12, y: 40, width: 80, height: 30 } }),
+    toControlInfo({ index: 2, object_ref: "b", role: "push button", name: "B", bounds: { x: 100, y: 40, width: 80, height: 30 } }),
+    toControlInfo({ index: 3, object_ref: "c", role: "push button", name: "C", bounds: { x: 0, y: 0, width: 80, height: 30 } }),
+  ];
+  assert.equal(controlBoundsAreZeroOrigin(real), false);
+  assert.deepEqual(controlBoundsAreZeroOrigin([]), false);
+});
+
+await check("toControlInfo carries element index and current text for semantic verification", () => {
+  const control = toControlInfo({
+    index: 7,
+    object_ref: "ref-7",
+    role: "entry",
+    name: "搜索",
+    text: "current value",
+    states: ["editable", "focused"],
+    bounds: { x: 0, y: 0, width: 100, height: 20 },
+  });
+  assert.equal(control.elementIndex, 7);
+  assert.equal(control.text, "current value");
+  // 没有 text 时回落到 value（AT-SPI 的 sliders 等控件只有 value）
+  assert.equal(toControlInfo({ index: 8, role: "slider", value: "42" }).text, "42");
+  assert.equal(toControlInfo({ index: 9, role: "label" }).text, undefined);
+  // CUL 对可编辑控件返回 JSON（真机 zenity entry 实测），要取出 content 才能比较回读值
+  assert.equal(
+    normalizeAccessibilityText('{"caret_offset":0,"character_count":13,"content":"verified-text","selections":[],"truncated":false}'),
+    "verified-text",
+  );
+  assert.equal(normalizeAccessibilityText('{"value":"42"}'), "42");
+  // 对象形式（CUL MCP 结构化内容实测）
+  assert.equal(normalizeAccessibilityText({ caret_offset: 0, character_count: 13, content: "verified-text", selections: [] }), "verified-text");
+  assert.equal(normalizeAccessibilityText({ value: 42 }), undefined);
+  assert.equal(normalizeAccessibilityText("plain"), "plain");
+  assert.equal(normalizeAccessibilityText("{not json"), "{not json");
+  assert.equal(normalizeAccessibilityText(""), undefined);
+  assert.equal(normalizeAccessibilityText(undefined), undefined);
+});
+
+await check("controlFingerprint detects observable accessibility changes only", () => {
+  const base = [
+    toControlInfo({ index: 0, role: "button", name: "OK", states: ["enabled"] }),
+    toControlInfo({ index: 1, role: "entry", name: "搜索", text: "abc" }),
+  ];
+  assert.equal(controlFingerprint(base), controlFingerprint(base.map((node) => ({ ...node }))));
+  // 文本变了 → 指纹变
+  const textChanged = [base[0], { ...base[1], text: "abcd" }];
+  assert.notEqual(controlFingerprint(base), controlFingerprint(textChanged));
+  // 启用状态 / 焦点变化也算
+  assert.notEqual(controlFingerprint(base), controlFingerprint([{ ...base[0], enabled: false }, base[1]]));
+  assert.notEqual(controlFingerprint(base), controlFingerprint([base[0], { ...base[1], hasKeyboardFocus: true }]));
+});
+
+await check("looksLikeChromiumWindow recognizes Chromium/Electron apps for the empty-tree hint", () => {
+  assert.equal(looksLikeChromiumWindow({ processName: "google-chrome" }), true);
+  assert.equal(looksLikeChromiumWindow({ className: "electron" }), true);
+  assert.equal(looksLikeChromiumWindow({ processName: "code" }), false);
+  assert.equal(looksLikeChromiumWindow({ title: "Slack | general" }), true);
+  assert.equal(looksLikeChromiumWindow({ processName: "zenity" }), false);
+  assert.equal(looksLikeChromiumWindow({}), false);
+});
+
+await check("hasDialogRole only matches dialog roles", () => {
+  assert.equal(hasDialogRole([toControlInfo({ index: 0, role: "dialog", name: "CUL-E2E" })]), true);
+  assert.equal(hasDialogRole([toControlInfo({ index: 0, role: "alert dialog", name: "x" })]), true);
+  assert.equal(hasDialogRole([toControlInfo({ index: 0, role: "frame", name: "main" })]), false);
+  assert.equal(hasDialogRole([]), false);
+});
+
+await check("stripUnreliableControlBounds drops coordinates but keeps control identity", () => {
+  const controls = [zeroOriginNode(1, "button", "OK", 120, 44)];
+  const [stripped] = stripUnreliableControlBounds(controls);
+  assert.equal(stripped.runtimeId, "ref-1");
+  assert.equal(stripped.name, "OK");
+  assert.equal(stripped.controlType, "button");
+  assert.equal(stripped.clientBoundsDip, undefined);
+  assert.equal(stripped.screenBoundsPhysical, undefined);
+  assert.equal(stripped.bounds, undefined);
+  // 没有坐标的节点原样返回（同一个对象，不做无意义拷贝）
+  const bare = toControlInfo({ index: 5, role: "label", name: "x" });
+  assert.equal(stripUnreliableControlBounds([bare])[0], bare);
 });
 
 await check("matchesSelector / findControl honour exactName and types", () => {
