@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ComputerAutomationService } from "../src/main/capabilities/ComputerAutomationService";
-import { WINDOWS_AUTOMATION_HOST_SCRIPT } from "../src/main/capabilities/windows/windowsAutomationHostScript";
+import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { WINDOWS_AUTOMATION_HOST_SCRIPT } from "../src/main/platform/computer-use/windows/windowsAutomationHostScript";
 import {
   WINDOWS_AUTOMATION_ERROR_CODES,
   WindowsAutomationError,
   normalizeWindowInfo,
   validateClientPoint,
   type WindowInfo,
-} from "../src/main/capabilities/windows/windowsAutomationProtocol";
+} from "../src/main/platform/computer-use/protocol";
 import { COMPUTER_EXEC_READONLY_ACTIONS, isComputerExecReadonly, isDangerousTool, isSideEffectTool } from "../src/shared/pi-event-mapper";
 
 const requiredActions = [
@@ -53,7 +53,7 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<void
 
 async function main(): Promise<void> {
   const extensionSource = readFileSync(resolve("src/main/capabilities/builtin-capability-extension.ts"), "utf8");
-  const serviceSource = readFileSync(resolve("src/main/capabilities/ComputerAutomationService.ts"), "utf8");
+  const serviceSource = readFileSync(resolve("src/main/platform/computer-use/windows/WindowsComputerUseBackend.ts"), "utf8");
   for (const action of requiredActions) {
     assert.match(extensionSource, new RegExp(`Type\\.Literal\\(\\"${action}\\"\\)`), `schema missing ${action}`);
   }
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
   assert.match(WINDOWS_AUTOMATION_HOST_SCRIPT, /set_control_value[\s\S]*Current\.IsEnabled[\s\S]*Current\.IsOffscreen[\s\S]*ValuePattern/, "semantic value update must reject disabled/offscreen controls before action");
   assert.match(WINDOWS_AUTOMATION_HOST_SCRIPT, /completed = \$false; typedLength = \$typedLength; requestedLength = \$value\.Length/, "partial targeted text must report its completed prefix");
   assert.match(WINDOWS_AUTOMATION_HOST_SCRIPT, /\(\$visited \+ \$queue\.Count\) -ge 2000/, "runtime-id lookup must bound sibling enqueue");
-  const captureSource = readFileSync(resolve("src/main/capabilities/windows/WindowCaptureService.ts"), "utf8");
+  const captureSource = readFileSync(resolve("src/main/platform/computer-use/windows/WindowCaptureService.ts"), "utf8");
   assert.match(captureSource, /target\.width\s*\/\s*window\.scaleFactor/);
   assert.match(captureSource, /clientOnly \? "client-dip-aligned-pixels" : "window-dip-aligned-pixels"/);
 

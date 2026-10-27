@@ -1,9 +1,9 @@
 ﻿import assert from "node:assert/strict";
 import { app, BrowserWindow, screen } from "electron";
-import { ComputerUseOverlayService } from "../src/main/capabilities/ComputerUseOverlayService";
+import { ComputerUseOverlayService } from "../src/main/platform/computer-use/windows/overlay";
 import { ComputerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
-import { WindowsAutomationHost } from "../src/main/capabilities/windows/WindowsAutomationHost";
-import type { WindowInfo } from "../src/main/capabilities/windows/windowsAutomationProtocol";
+import { WindowsAutomationHost } from "../src/main/platform/computer-use/windows/WindowsAutomationHost";
+import type { WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 const target: WindowInfo = {
   handle: "1",

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import type { RemoteUsbDevice, RemoteUsbStatus } from "../../../shared/src/remote-contract";
+import { adbCandidatePaths } from "../platform/apps";
 
 const APP_COMPONENT = "com.mybuddy.remote/.MainActivity";
 const ADB_TIMEOUT_MS = 8_000;
@@ -87,18 +87,8 @@ export class RemoteUsbBridge {
 
   private async findAdb(): Promise<string | null> {
     if (this.resolvedAdb) return this.resolvedAdb;
-    const executable = process.platform === "win32" ? "adb.exe" : "adb";
-    const candidates = new Set<string>();
-    if (process.env.MYBUDDY_ADB_PATH?.trim()) candidates.add(process.env.MYBUDDY_ADB_PATH.trim());
-    for (const sdk of [process.env.ANDROID_SDK_ROOT, process.env.ANDROID_HOME]) {
-      if (sdk?.trim()) candidates.add(join(sdk.trim(), "platform-tools", executable));
-    }
-    if (process.platform === "win32") {
-      if (process.env.LOCALAPPDATA) candidates.add(join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", executable));
-      if (process.env.USERPROFILE) candidates.add(join(process.env.USERPROFILE, "AppData", "Local", "Android", "Sdk", "platform-tools", executable));
-    }
-    for (const entry of (process.env.PATH || "").split(delimiter).filter(Boolean)) candidates.add(join(entry, executable));
-    candidates.add(process.platform === "win32" ? "adb.exe" : "adb");
+    // 候选顺序见 platform/apps.adbCandidatePaths（Windows 额外含默认 SDK 目录）。
+    const candidates = new Set(adbCandidatePaths());
 
     for (const candidate of candidates) {
       if ((candidate.includes("/") || candidate.includes("\\")) && !existsSync(candidate)) continue;

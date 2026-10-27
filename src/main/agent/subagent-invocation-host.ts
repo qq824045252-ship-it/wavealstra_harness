@@ -4,6 +4,7 @@
  * pi-coding-agent 的 package exports，必须由宿主用实路径注入。
  */
 import { existsSync } from "node:fs";
+import { nodeExecutableName, pathListSeparator, programFilesDefault } from "../platform/runtime";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
@@ -44,11 +45,11 @@ export function resolveHostPiCliPath(): string | null {
 
 export function resolveHostNodePath(): string | null {
   if (process.env.PI_NODE_PATH && existsSync(process.env.PI_NODE_PATH)) return process.env.PI_NODE_PATH;
-  const exe = process.platform === "win32" ? "node.exe" : "node";
+  const exe = nodeExecutableName();
   const fromPath = (process.env.PATH ?? process.env.Path ?? "")
-    .split(process.platform === "win32" ? ";" : ":")
+    .split(pathListSeparator())
     .map((dir) => join(dir, exe));
-  const programFiles = process.env.ProgramFiles ?? (process.platform === "win32" ? "C:\\Program Files" : "");
+  const programFiles = process.env.ProgramFiles ?? programFilesDefault();
   const extras = programFiles ? [join(programFiles, "nodejs", exe)] : [];
   return firstExisting([...fromPath, ...extras]);
 }

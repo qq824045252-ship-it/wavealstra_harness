@@ -1,4 +1,4 @@
-import "./linux-password-store";
+import "./platform/credentials";
 import "./agent-environment";
 import { ExecutionFailureRepository } from "./agent/ExecutionFailureRepository";
 import { HtmlEditService } from "./html-edit/HtmlEditService";
@@ -230,7 +230,9 @@ import { CadRuntimeService } from "./cad/CadRuntimeService";
 import { CadArtifactService } from "./cad/CadArtifactService";
 import { FreeCadInterop } from "./cad/FreeCadInterop";
 import { TrayService } from "./TrayService";
-import { applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
+import { applyPlatformAppIdentity, nodePlatformName } from "./platform/app";
+import { applyPlatformTitleBarOverlay, applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
+import { shouldQuitOnAllWindowsClosed, windowOpenProperties } from "./platform/lifecycle";
 import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
 import { getRuntimeLogger } from "./runtime-logging";
 import { NotificationService } from "./notification/NotificationService";
@@ -347,7 +349,7 @@ configureCrashReporting({
   logger: runtimeLogger,
   productName: "MyBuddy",
   version: app.getVersion(),
-  platform: process.platform,
+  platform: nodePlatformName(),
 });
 installFaultHandlers({ logger: runtimeLogger });
 const reportProcessGone = createProcessGoneReporter({
@@ -454,21 +456,13 @@ function applyNativeChrome(theme: AppTheme): void {
   nativeTheme.themeSource = theme;
 
   for (const win of BrowserWindow.getAllWindows()) {
-    const bg = THEME_WINDOW_BG[theme];
-    win.setBackgroundColor(bg);
+    win.setBackgroundColor(THEME_WINDOW_BG[theme]);
 
-    if (process.platform !== "win32") continue;
-
+    // Windows titleBarOverlay 的实时更新收在 platform/window-shell.ts；其它平台 no-op。
     const overlay = THEME_TITLEBAR[theme];
-    try {
-      win.setTitleBarOverlay({
-        color: overlay.color,
-        symbolColor: overlay.symbolColor,
-        height: TITLE_BAR_HEIGHT,
-      });
-    } catch {
-      /* 旧版 Windows 不支持 titleBarOverlay */
-    }
+    applyPlatformTitleBarOverlay(win, {
+      titleBar: { color: overlay.color, symbolColor: overlay.symbolColor, height: TITLE_BAR_HEIGHT },
+    });
   }
 }
 
@@ -867,8 +861,7 @@ function registerIpc(): void {
 
   ipcMain.handle("workspace:pickLocalFolder", async () => {
     const win = BrowserWindow.getFocusedWindow();
-    const properties: Array<"openDirectory" | "createDirectory"> = ["openDirectory"];
-    if (process.platform === "darwin") properties.push("createDirectory");
+    const properties = windowOpenProperties();
 
     const result = win
       ? await dialog.showOpenDialog(win, {
@@ -2663,9 +2656,8 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  if (process.platform === "win32") {
-    app.setAppUserModelId(app.isPackaged ? "com.mybuddy.app" : "com.mybuddy.app.dev");
-  }
+  // Windows 专属初始化（AppUserModelID）收在 platform/app.ts；其它平台 no-op。
+  applyPlatformAppIdentity(app);
 
   getMyBuddyDir();
   getPluginStorage();
@@ -3471,8 +3463,8 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 app.on("window-all-closed", () => {
-  // 托盘存活时驻留后台，不退出
-  if (process.platform !== "darwin" && !trayService?.shouldSuppressQuit()) app.quit();
+  // 托盘存活时驻留后台，不退出；macOS 始终驻留。平台差异收在 platform/lifecycle.ts。
+  if (shouldQuitOnAllWindowsClosed({ suppressQuit: trayService?.shouldSuppressQuit() ?? false })) app.quit();
 });
 
 app.on("before-quit", (event) => {

@@ -17,6 +17,7 @@ import { computerAutomationService } from "./ComputerAutomationService";
 import { runtimeProbeService } from "./RuntimeProbeService";
 import { resolveBuiltinSubagentInvocation } from "./subagent/index";
 import { getMyBuddyDir } from "../paths";
+import { platformShellLanguageIds } from "../platform/shell-tools";
 
 const execFileAsync = promisify(execFile);
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
@@ -52,7 +53,7 @@ export async function checkLocalExecution(kind: "terminal" | "code-execution", p
     })(api);
     const successes: string[] = [], failures: string[] = [];
     const codeTool = tools.get("execute_code")!;
-    for (const language of ["javascript", ...(process.platform === "win32" ? ["powershell"] : [])]) {
+    for (const language of ["javascript", ...platformShellLanguageIds()]) {
       try {
         const code = language === "javascript" ? `console.log('${marker}')` : `Write-Output '${marker}'`;
         const result = await codeTool.execute(marker, { language, code, timeout: 5 } as never, undefined, undefined, undefined as never);

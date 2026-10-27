@@ -391,3 +391,46 @@ pnpm -s test:computer-automation / test:computer-use-run                 # 在 L
 ```
 
 `test:all` 的分类按显式名单 + 兜底正则（`GUI_PATTERNS = [/-e2e$/, /-desktop$/, /-electron$/, /:desktop$/, /^test:computer-/]`）；`test:platform-computer-use` 不命中任何一条，接线后会自动落进 headless default 套件，无需改 `test-all.mjs`。
+
+---
+
+## 13. 实施记录：Computer Use 完整 backend 化（task-14，2026-10-27）
+
+目标：Windows 实现整体搬到平台层，业务/入口不再含 Windows 代码。
+
+### 13.1 新布局
+
+```
+src/main/platform/computer-use/
+  protocol.ts                     跨平台 DTO/动作枚举（ComputerExecInput/Output、窗口/控件/观察、OCR、错误类 ComputerUseError+旧名别名）
+  backend.ts                      ComputerUseBackend 接口 + ComputerUseStatus
+  index.ts                        createComputerUseBackend(platform=currentPlatformId) 工厂/缓存 + resetComputerUseBackends()
+  support.ts                      （原 platform/computer-use.ts）能力探测/PATH 扫描/overlay 支持判定
+  ocr.ts                          OCR 候选/provider（Windows）+ Linux tesseract 描述
+  windows/
+    protocol.ts                   Windows host 线协议（HostRequestMap/Request/Response，re-export 共享 DTO）
+    hostScript.ts                 PowerShell host 脚本（原 windowsAutomationHostScript.ts）
+    host.ts                       WindowsAutomationHost
+    capture.ts                    WindowCaptureService
+    overlay.ts                    ComputerUseOverlayService（Windows 专属叠加层）
+    WindowsComputerUseBackend.ts  原 1388 行 ComputerAutomationService 实现（类改名 + 实现 ComputerUseBackend + status()）
+  linux/LinuxComputerUseBackend.ts available=false；status=能力探测；execute 抛带 installHint 的 unsupported；shutdown no-op
+  macos/MacosComputerUseBackend.ts 显式 unsupported
+```
+
+### 13.2 迁移/删除清单
+
+- 迁入：`capabilities/windows/{windowsAutomationProtocol,windowsAutomationHostScript,WindowsAutomationHost,WindowCaptureService}.ts` → `platform/computer-use/windows/*`（原目录已删除）。
+- 迁入并改名：`capabilities/ComputerAutomationService.ts` → `windows/WindowsComputerUseBackend.ts`（`ComputerAutomationService` → `WindowsComputerUseBackend`，DTO 抽到 protocol.ts，新增 `platform/backend/status()`，删除单例）。
+- 迁入：`capabilities/ComputerUseOverlayService.ts` → `windows/overlay.ts`。
+- 兼容薄层：`capabilities/ComputerAutomationService.ts`（15 行，`export * protocol` + `ComputerAutomationService` 别名 + `computerAutomationService = createComputerUseBackend()`）、`capabilities/ComputerUseOverlayService.ts`（10 行 re-export）。
+- 业务层去 Windows 化：`ComputerUsePolicy/Outcome/RecoveryPolicy/RunCoordinator`、`agent/ComputerUseFailureRecovery` 只从 `platform/computer-use/protocol` 取类型；`computer-use/recovery` 测试仍通过。
+- 测试 import 更新：`scripts/computer-automation-contract-test.ts`（含读源码路径改到新 backend/capture）、`computer-automation-windows-smoke.ts`、`computer-use-run-test.ts`、`computer-use-overlay-smoke.ts`、`computer-use-recovery-evidence-test.ts`、`harness-quality-gate-test.ts`；`scripts/platform-computer-use-test.ts` 增加 factory/Linux/macOS/Windows 四种 backend 断言（16 checks）。
+- 验证：`pnpm -s typecheck` exit 0；`pnpm -s test:platform-computer-use` 16 checks passed；`test:harness-quality` PASS；`test:artifact-gate` 32/32；`test:computer-use-recovery` PASS；`test:architecture-graph` PASS（修复过 index↔ocr 环）；`test:architecture` 323/323；4 个 Windows GUI 用例 esbuild 打包通过且无旧路径引用。
+
+### 13.3 风险 / 下一步
+
+1. Windows 实现未在真机实跑（本机 Linux）：`test:computer-automation`/`test:computer-use-run`/`overlay` 仍归 GUI/Windows 套件，需 `verify-windows-gui` 或 Windows 机器确认；代码为整体搬迁 + 机械改名，语义未变。
+2. Linux backend 的观测/输入层未实现：下一步在 `linux/LinuxComputerUseBackend.execute()` 接线 hyprctl（窗口枚举/焦点）+ grim/slurp（截图）+ tesseract（OCR）+ wtype/ydotool（输入），状态已由 `status()` 给出依赖与安装提示。
+3. `docs/platform-capabilities.md` 仍把 Windows backend 标为「规划」并引用旧路径，需随本次迁移更新（本任务未改文档）。
+4. `scripts/architecture-graph-baseline.json` 里 `src/main/capabilities/ComputerAutomationService.ts: 1401` 已成薄层，可下次跑 baseline 时下调/删除（门禁只提示不失败）。

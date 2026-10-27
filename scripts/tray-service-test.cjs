@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
-const { TrayService, trayIconAsset } = require("../out/tests/tray-service-test.cjs");
+const { TrayService, trayIconAsset, resolveTrayPlatformBehavior } = require("../out/tests/tray-service-test.cjs");
 
 // 固定路径 + 每次开头重建：Electron 的 native 退出路径在 quit 之后仍会写 Cache/
 // declarative_performance_observer.db 等文件，进程内删除只能尽力而为；固定路径保证
@@ -104,8 +104,36 @@ app.whenReady().then(() => {
     trayIconAsset("linux").endsWith(`${path.sep}tray.png`) && fs.existsSync(trayIconAsset("linux")),
   );
   assert(
-    "win32 托盘图标是 ico",
-    trayIconAsset("win32").endsWith(`${path.sep}tray.ico`) && fs.existsSync(trayIconAsset("win32")),
+    "windows 托盘图标是 ico",
+    trayIconAsset("windows").endsWith(`${path.sep}tray.ico`) && fs.existsSync(trayIconAsset("windows")),
+  );
+
+  // 平台行为矩阵（纯数据；不依赖宿主平台 —— Windows/macOS CI 也能覆盖）
+  const windowsBehavior = resolveTrayPlatformBehavior("windows");
+  assert(
+    "windows 托盘行为：ico + 气泡提示 + 支持 balloon + 无降级驻留",
+    windowsBehavior.iconFormat === "ico" &&
+      windowsBehavior.hideHint === "balloon" &&
+      windowsBehavior.supportsBalloon === true &&
+      windowsBehavior.degradedResidency === false &&
+      windowsBehavior.scaleToPx === undefined,
+  );
+  const linuxBehavior = resolveTrayPlatformBehavior("linux");
+  assert(
+    "linux 托盘行为：png + 22px + 桌面通知 + 降级驻留",
+    linuxBehavior.iconFormat === "png" &&
+      linuxBehavior.scaleToPx === 22 &&
+      linuxBehavior.hideHint === "notification" &&
+      linuxBehavior.supportsBalloon === false &&
+      linuxBehavior.degradedResidency === true,
+  );
+  const macosBehavior = resolveTrayPlatformBehavior("macos");
+  assert(
+    "macos 托盘行为：ico + 不提示 + 无降级驻留",
+    macosBehavior.iconFormat === "ico" &&
+      macosBehavior.hideHint === "none" &&
+      macosBehavior.supportsBalloon === false &&
+      macosBehavior.degradedResidency === false,
   );
 
   // 6) 托盘后端失败：Linux 关窗仍驻留；Windows / macOS 保持原行为（不拦截、不抑制退出）

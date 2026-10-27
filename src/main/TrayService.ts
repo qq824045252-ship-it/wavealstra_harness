@@ -2,24 +2,25 @@ import { app, BrowserWindow, Menu, nativeImage, Notification, Tray, type NativeI
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
-import { shouldRemainResidentAfterClose } from "./tray-residency";
-// electron-vite 会把该资源 emit 到 out/main/assets 下并返回正确路径（打包后在 asar 内也可读）
-import trayIcoPath from "./assets/tray.ico?asset";
-import trayPngPath from "./assets/tray.png?asset";
+import { shouldRemainResidentAfterClose } from "./platform/tray/residency";
+import { resolveTrayPlatformBehavior, trayIconAsset, type PlatformTrayBehavior } from "./platform/tray";
+
+// 托盘测试（scripts/tray-service-test.cjs）从这里取图标路径与平台行为矩阵；实现已移到 platform/tray。
+export { resolveTrayPlatformBehavior, trayIconAsset };
 
 const HINT_FILE = "close-to-tray-hint.json";
 
-/** Linux / Wayland StatusNotifier 需要 PNG。Windows 继续用 ico。 */
-export function trayIconAsset(platform: NodeJS.Platform = process.platform): string {
-  return platform === "linux" ? trayPngPath : trayIcoPath;
-}
+/** 系统托盘首次隐藏到托盘时提示策略对应的处理器。 */
+type HideHintHandler = () => void;
 
 /**
  * 系统托盘：点击关闭窗口时最小化到后台（默认开启）。
  * - 托盘左键/双击 → 恢复主窗口
  * - 托盘右键 → 菜单（显示 MyBuddy / 刷新 / 退出）
- * - 首次隐藏到托盘时弹一次系统通知提示
+ * - 首次隐藏到托盘时按平台策略提示一次（Windows 气泡 / Linux 通知 / macOS 不提示）
  * - Linux 托盘创建失败时仍驻留进程，避免关窗误停提醒 / cron / Gateway
+ *
+ * 平台差异全部来自 `platform/tray` 的 behavior，本文件不做平台判断。
  */
 export class TrayService {
   private tray: Tray | null = null;
@@ -30,6 +31,13 @@ export class TrayService {
   private degradedHintShown = false;
   private trayUnavailable = false;
   private readonly liveNotifications = new Set<Notification>();
+  /** 平台行为（图标格式/缩放/标签/提示策略/降级驻留） */
+  private readonly behavior: PlatformTrayBehavior = resolveTrayPlatformBehavior();
+  private readonly hideHintHandlers: Record<PlatformTrayBehavior["hideHint"], HideHintHandler> = {
+    balloon: () => this.maybeShowBalloonHint(),
+    notification: () => this.maybeShowNotificationHint(),
+    none: () => { /* macOS 不提示 */ },
+  };
   /** 刷新前收起原生叠加层（WebContentsView），避免盖住刚重载的页面 */
   private onBeforeReload: (() => void) | null = null;
 
@@ -44,17 +52,20 @@ export class TrayService {
     const createTray = options?.createTray ?? ((image: NativeImage) => new Tray(image.isEmpty() ? nativeImage.createEmpty() : image));
 
     try {
-      const iconPath = trayIconAsset();
+      const iconPath = this.behavior.iconAsset;
       let icon = nativeImage.createFromPath(iconPath);
-      if (process.platform === "linux" && icon.isEmpty()) {
+      if (this.behavior.iconFormat === "png" && icon.isEmpty()) {
         throw new Error(`Linux 托盘需要可读的 PNG 图标，当前文件无法解码: ${iconPath}`);
       }
-      if (process.platform === "linux" && !icon.isEmpty()) {
+      const scaleToPx = this.behavior.scaleToPx;
+      if (scaleToPx && !icon.isEmpty()) {
         const size = icon.getSize();
-        if (size.width > 32 || size.height > 32) icon = icon.resize({ width: 22, height: 22 });
+        if (size.width > 32 || size.height > 32) {
+          icon = icon.resize({ width: scaleToPx, height: scaleToPx });
+        }
       }
       const tray = createTray(icon);
-      tray.setToolTip("MyBuddy");
+      tray.setToolTip(this.behavior.initialLabel);
 
       const contextMenu = Menu.buildFromTemplate([
         { label: "显示 MyBuddy", click: () => this.showMainWindow() },
@@ -76,12 +87,12 @@ export class TrayService {
       tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
       this.tray = tray;
       this.trayUnavailable = false;
-      console.log(`[Tray] 系统托盘已初始化 (${process.platform === "linux" ? "png" : "ico"})`);
+      console.log(`[Tray] 系统托盘已初始化 (${this.behavior.iconFormat})`);
     } catch (err) {
       this.tray = null;
       this.trayUnavailable = true;
       console.error("[Tray] 创建系统托盘失败", err);
-      if (process.platform === "linux") {
+      if (this.behavior.degradedResidency) {
         console.error("[Tray] Linux 托盘不可用。关闭窗口后进程仍驻留，提醒、cron 与 Gateway 不会随关窗退出。再次启动 MyBuddy 可恢复窗口。");
       }
     }
@@ -143,7 +154,7 @@ export class TrayService {
     const body = input.body?.trim() || "";
     try {
       if (Notification.isSupported()) {
-        const notice = new Notification({ title, body, icon: trayIconAsset() });
+        const notice = new Notification({ title, body, icon: this.behavior.iconAsset });
         this.liveNotifications.add(notice);
         notice.on("click", () => this.showMainWindow());
         notice.on("close", () => this.liveNotifications.delete(notice));
@@ -153,6 +164,7 @@ export class TrayService {
     } catch (error) {
       console.warn("[Tray] 原生通知失败，回退气泡", error);
     }
+    if (!this.behavior.supportsBalloon) return;
     try {
       this.tray?.displayBalloon({ title, content: body || title, iconType: "info" });
     } catch {
@@ -175,7 +187,7 @@ export class TrayService {
 
   private shouldRemainResident(): boolean {
     return shouldRemainResidentAfterClose({
-      platform: process.platform,
+      degradedResidency: this.behavior.degradedResidency,
       closeToTray: this.closeToTray,
       trayAlive: this.tray !== null,
       trayUnavailable: this.trayUnavailable,
@@ -183,16 +195,13 @@ export class TrayService {
     });
   }
 
-  /** 首次隐藏到托盘时提示一次（跨会话持久化到 ~/.mybuddy） */
+  /** 首次隐藏到托盘时按平台策略提示一次（跨会话持久化到 ~/.mybuddy） */
   private maybeShowHint(): void {
-    if (process.platform === "win32") {
-      this.maybeShowWindowsBalloon();
-      return;
-    }
-    if (process.platform === "linux") this.maybeShowLinuxNotice();
+    this.hideHintHandlers[this.behavior.hideHint]();
   }
 
-  private maybeShowWindowsBalloon(): void {
+  /** Windows：系统气泡提示一次 */
+  private maybeShowBalloonHint(): void {
     if (this.hintShown || !this.tray) return;
     if (this.readHint().shown) return;
     this.hintShown = true;
@@ -208,7 +217,8 @@ export class TrayService {
     }
   }
 
-  private maybeShowLinuxNotice(): void {
+  /** Linux：桌面通知提示一次；托盘不可用时提示降级语义 */
+  private maybeShowNotificationHint(): void {
     const degraded = this.tray === null;
     if (degraded ? this.degradedHintShown : this.hintShown) return;
     const saved = this.readHint();
@@ -221,7 +231,7 @@ export class TrayService {
     console.warn(`[Tray] ${content}`);
     try {
       if (Notification.isSupported()) {
-        const notice = new Notification({ title: "MyBuddy", body: content, icon: trayIconAsset() });
+        const notice = new Notification({ title: "MyBuddy", body: content, icon: this.behavior.iconAsset });
         this.liveNotifications.add(notice);
         notice.on("click", () => this.showMainWindow());
         notice.on("close", () => this.liveNotifications.delete(notice));

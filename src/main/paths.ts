@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { getPluginDirectory, getPluginStorage } from "./plugins/PluginStorage";
+import { resolvedPathKey } from "./platform/paths";
 
 export function getPluginsDir(): string { return getPluginStorage().root; }
 export function getMcpConfigPath(): string { return getPluginStorage().mcpConfig; }
@@ -166,10 +167,7 @@ export function getTaskExecutionWorkspacesTrashDir(): string {
  *  - 剩余部分保留原始大小写/分隔符，交给 join 归一化。
  */
 export function mapLegacyRootPath(legacyRoot: string, newRoot: string, absPath: string): string | null {
-  const normalizeForCompare = (p: string): string => {
-    const r = resolve(p);
-    return process.platform === "win32" ? r.toLowerCase() : r;
-  };
+  const normalizeForCompare = (p: string): string => resolvedPathKey(p);
   const base = normalizeForCompare(legacyRoot);
   const candidate = normalizeForCompare(absPath);
   if (candidate === base) return newRoot;

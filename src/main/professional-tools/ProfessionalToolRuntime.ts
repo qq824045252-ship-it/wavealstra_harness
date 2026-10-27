@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { get as httpGet } from "node:http";
 import { connect as netConnect } from "node:net";
 import { dirname, join } from "node:path";
+import { npxFallbackPaths, npxProbeCommand } from "../platform/apps";
 import {
   DRAWIO_DEFAULT_PORT,
   DRAWIO_HTTP_TITLE_MARKER,
@@ -466,17 +467,10 @@ class DrawioRuntime extends BaseRuntime {
   private resolveNpx(): Promise<string | null> {
     if (this.npxResolvePromise) return this.npxResolvePromise;
     this.npxResolvePromise = (async () => {
-      const probe = await this.ops.run(
-        process.platform === "win32" ? "where" : "which",
-        ["npx"],
-        { timeoutMs: 10_000 },
-      );
+      const probe = await this.ops.run(npxProbeCommand(), ["npx"], { timeoutMs: 10_000 });
       if (probe.code !== 0) {
         // 直接探测常见路径，避免 PATH 探测失败误判
-        const candidates =
-          process.platform === "win32"
-            ? ["C:\\Program Files\\nodejs\\npx.cmd", "C:\\Program Files (x86)\\nodejs\\npx.cmd"]
-            : ["/usr/bin/npx", "/usr/local/bin/npx"];
+        const candidates = npxFallbackPaths();
         const hit = candidates.find((c) => this.ops.exists(c));
         return hit ?? null;
       }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { commandCodeAcpEnv, devinDesktopBundledCli, spawnExternalCliCommand, whereFirst } from "../platform/apps";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -157,47 +158,11 @@ function resolveNativeCommand(manifest: Manifest): string | null {
   if (!manifest.nativeCommand) return null;
   const onPath = whereFirst(manifest.nativeCommand);
   if (onPath) return onPath;
-  if (manifest.id === "devin" && process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA?.trim();
-    if (localAppData) {
-      const desktopBundledCli = join(
-        localAppData,
-        "Programs",
-        "Devin",
-        "resources",
-        "app",
-        "extensions",
-        "windsurf",
-        "devin",
-        "bin",
-        "devin.exe",
-      );
-      if (existsSync(desktopBundledCli)) return desktopBundledCli;
-    }
+  if (manifest.id === "devin") {
+    const bundled = devinDesktopBundledCli();
+    if (bundled) return bundled;
   }
   return null;
-}
-
-function whereFirst(command: string): string | null {
-  try {
-    const output = execFileSync(process.platform === "win32" ? "where.exe" : "which", [command], {
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const rows = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (process.platform !== "win32") return rows[0] ?? null;
-    // npm emits both extensionless POSIX shims and .cmd launchers on Windows.
-    // Prefer files Windows can execute directly; .ps1 is kept as the last fallback.
-    const priority = [".exe", ".com", ".cmd", ".bat", ".ps1"];
-    for (const ext of priority) {
-      const hit = rows.find((row) => row.toLowerCase().endsWith(ext));
-      if (hit) return hit;
-    }
-    return rows[0] ?? null;
-  } catch {
-    return null;
-  }
 }
 
 function resolveAdapterEntry(packageName: string): string | null {
@@ -225,41 +190,6 @@ function spawnBundledAdapter(
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-}
-
-function quoteCmdArg(value: string): string {
-  if (!/[\s&|<>^()"]/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function spawnCommand(command: string, args: string[], cwd: string): ChildProcessWithoutNullStreams {
-  const resolved = whereFirst(command) ?? command;
-  if (process.platform === "win32") {
-    const lower = resolved.toLowerCase();
-    if (lower.endsWith(".ps1")) {
-      return spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved, ...args], {
-        cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        env: process.env,
-      });
-    }
-    if (lower.endsWith(".cmd") || lower.endsWith(".bat") || (!lower.endsWith(".exe") && !lower.endsWith(".com"))) {
-      const line = [resolved, ...args].map(quoteCmdArg).join(" ");
-      return spawn("cmd.exe", ["/d", "/s", "/c", line], {
-        cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        env: process.env,
-      });
-    }
-  }
-  return spawn(resolved, args, {
-    cwd,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    env: process.env,
   });
 }
 
@@ -719,19 +649,13 @@ export class ExternalAgentRuntime {
       if (manifest.id === "command") {
         const commandCodePath = whereFirst("cmdc") ?? whereFirst("command-code");
         if (!commandCodePath) throw new Error("\u672a\u68c0\u6d4b\u5230 Command Code CLI");
-        if (process.platform === "win32") {
-          const nodeEntry = join(dirname(commandCodePath), "node_modules", "command-code", "dist", "index.mjs");
-          if (!existsSync(nodeEntry)) throw new Error("\u672a\u627e\u5230 Command Code Node \u5165\u53e3");
-          env.COMMAND_CODE_ACP_NODE_ENTRY = nodeEntry;
-        } else {
-          env.COMMAND_CODE_ACP_CMD_PATH = commandCodePath;
-        }
+        Object.assign(env, commandCodeAcpEnv(commandCodePath));
       }
       return spawnBundledAdapter(entry, cwd, env);
     }
     const nativeCommand = resolveNativeCommand(manifest);
     if (!nativeCommand) throw new Error(`${manifest.name} \u7f3a\u5c11\u542f\u52a8\u547d\u4ee4`);
-    return spawnCommand(nativeCommand, manifest.nativeArgs ?? [], cwd);
+    return spawnExternalCliCommand(nativeCommand, manifest.nativeArgs ?? [], cwd);
   }
 
   private emit(run: ActiveRun, patch: AgentUiPatch): void {

@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { PythonProjectBinding } from "../../shared/python-runtime";
+import { currentNodePlatform } from "../platform/runtime";
 import { readPythonProjectSpec } from "./PythonProjectManifest";
 import { pythonProjectDirKey } from "./python-environment-spec";
 
@@ -13,7 +14,7 @@ import { pythonProjectDirKey } from "./python-environment-spec";
  */
 export function discoverProjectPython(
   startDir: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = currentNodePlatform,
 ): PythonProjectBinding | null {
   const raw = (startDir ?? "").trim();
   if (!raw) return null;

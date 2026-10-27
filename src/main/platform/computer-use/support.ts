@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { currentPlatformId, type PlatformId } from "./index";
+import { currentPlatformId, type PlatformId } from "../index";
 
-export type { PlatformId } from "./index";
+export type { PlatformId } from "../index";
 
 /**
  * Computer Use 的平台能力边界。
@@ -11,11 +11,11 @@ export type { PlatformId } from "./index";
  * 不再散落 `process.platform === "win32"`。当前产品只有 Windows UIA 后端；Linux/macOS
  * 返回 `supported: false` 以及可诊断的缺失依赖/安装提示，供后续接 Linux 后端。
  */
-export type ComputerUseBackend = "windows-uia" | "linux-wayland" | "unsupported";
+export type ComputerUseBackendName = "windows-uia" | "linux-wayland" | "unsupported";
 
 export interface ComputerUseSupport {
   platform: PlatformId;
-  backend: ComputerUseBackend;
+  backend: ComputerUseBackendName;
   supported: boolean;
   /** 后端仍需安装的命令名（PATH 探测结果；已安装的不列出）。 */
   missingDependencies: string[];

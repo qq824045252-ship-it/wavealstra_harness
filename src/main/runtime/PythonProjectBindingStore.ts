@@ -18,6 +18,7 @@ import type {
   PythonProjectBindingView,
 } from "../../shared/python-runtime";
 import { pythonProjectBindingId, pythonProjectDirKey } from "./python-environment-spec";
+import { currentNodePlatform } from "../platform/runtime";
 
 /**
  * 本 store 只需要「能 prepare 一条语句」，不需要整个 AppDatabase。
@@ -46,7 +47,7 @@ interface BindingRow {
 export class PythonProjectBindingStore {
   constructor(
     private readonly connection: PythonBindingConnection,
-    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly platform: NodeJS.Platform = currentNodePlatform,
   ) {}
 
   /** 幂等 upsert：同一目录改绑到另一个解释器时覆盖，不留下两行互相打架。 */

@@ -1,34 +1,22 @@
-import type { ActionObservation, ControlInfo, ControlSelector, TargetIdentity, WindowInfo } from "./windows/windowsAutomationProtocol";
+import type {
+  ActionObservation,
+  ComputerOutcomeCheckResult,
+  ComputerOutcomeExpectation,
+  ComputerOutcomeKind,
+  ComputerSemanticOutcome,
+  ControlInfo,
+  ControlSelector,
+  TargetIdentity,
+  WindowInfo,
+} from "../platform/computer-use/protocol";
 
-export type ComputerOutcomeKind =
-  | "target_present"
-  | "target_closed"
-  | "target_foreground"
-  | "new_window"
-  | "control_present"
-  | "control_absent";
-
-export interface ComputerOutcomeExpectation {
-  kind: ComputerOutcomeKind;
-  windowTitleContains?: string;
-  controlName?: string;
-  automationId?: string;
-  controlType?: string;
-  controlRuntimeId?: string;
-  controlClassName?: string;
-  exactName?: boolean;
-}
-
-export interface ComputerOutcomeCheckResult {
-  kind: ComputerOutcomeKind;
-  status: "passed" | "failed" | "not_evaluable";
-  evidence: string;
-}
-
-export interface ComputerSemanticOutcome {
-  status: "passed" | "failed" | "not_evaluable" | "not_requested";
-  checks: ComputerOutcomeCheckResult[];
-}
+// 跨平台 DTO 在 platform/computer-use/protocol.ts；这里 re-export 保持旧 import 路径可用。
+export type {
+  ComputerOutcomeCheckResult,
+  ComputerOutcomeExpectation,
+  ComputerOutcomeKind,
+  ComputerSemanticOutcome,
+};
 
 export interface ComputerOutcomeEvaluationContext {
   observation?: ActionObservation;

@@ -27,6 +27,7 @@ import type {
   McpSaveServerRequest,
 } from "../../shared/agent-ipc";
 import { pluginStoragePaths } from "../plugins/PluginStorage";
+import { roamingAppDataDir } from "../platform/apps";
 import { toNativeMcpConfig } from "./NativeMcpConfig";
 import { emptyMcpFilterResult } from "./McpModeFilter";
 import { parseJsonc as parseConfigJsonc } from "../../shared/jsonc";
@@ -274,10 +275,7 @@ export class McpConfigService {
       join(home, ".agents", "mcp.json"),
       join(home, ".agents", "mcp", "mcp.json"),
     ] as const;
-    const apdata =
-      process.platform === "win32"
-        ? join(process.env.APPDATA ?? join(home, "AppData", "Roaming"))
-        : "";
+    const apdata = roamingAppDataDir(home);
     this.importPaths = {
       cursor: [join(home, ".cursor", "mcp.json")],
       "claude-code": [

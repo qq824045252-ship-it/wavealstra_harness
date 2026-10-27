@@ -18,6 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getTaskExecutionWorkspacesDir } from "../paths";
+import { resolvedPathKey } from "../platform/paths";
 
 /** 任务目录内清单文件名（不注册为产物） */
 export const MANIFEST_FILENAME = ".mybuddy-task.json";
@@ -58,8 +59,7 @@ export class TaskPathBoundaryError extends TaskExecutionWorkspaceError {}
 
 /** 统一路径比较形式：resolve 后仅 win32 统一小写（盘符/目录大小写不敏感） */
 export function normalizePathForComparison(p: string): string {
-  const resolved = resolve(p);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return resolvedPathKey(p);
 }
 
 /**

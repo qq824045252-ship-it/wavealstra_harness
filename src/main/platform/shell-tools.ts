@@ -11,6 +11,14 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { createPowerShellTool } from "@earendil-works/pi-durable/tools";
 import { currentPlatformId, type PlatformId } from "./index";
 
+/**
+ * 该平台原生支持的 shell 语言 id（execute_code 的 language 取值）。
+ * 迁自 capabilities/LocalCapabilityChecks.ts 的 `["javascript", ...(win32 ? ["powershell"] : [])]`。
+ */
+export function platformShellLanguageIds(platform: PlatformId = currentPlatformId): string[] {
+  return platform === "windows" ? ["powershell"] : [];
+}
+
 export interface PlatformShellToolDeps {
   /** 测试注入用；默认 `@earendil-works/pi-durable/tools` 的 createPowerShellTool。 */
   createPowerShellTool?: () => ToolRegistration;

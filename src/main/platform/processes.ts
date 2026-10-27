@@ -15,7 +15,7 @@
  * 可测性：`createProcessDiscovery(platform, { runner, fs })` 允许注入假 runner / 假 /proc，
  * 解析逻辑同时导出纯函数（`parseSsListeningPids` / `parseProcCommMatches`），测试不依赖真实进程。
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { currentPlatformId, type PlatformId } from "./index";
 
@@ -334,4 +334,129 @@ export function listPidsByImageName(imageName: string): Promise<number[]> {
 
 export function pidExecutablePath(pid: number): Promise<string | null> {
   return createProcessDiscovery().pidExecutablePath(pid);
+}
+
+// ---------------------------------------------------------------- 进程树终止
+// 迁自四处各自的实现，语义按调用方保留（Windows 一律 taskkill /T /F，POSIX 走进程组信号）：
+//   · security/TaskExecutionIsolation.ts  —— Windows taskkill；POSIX SIGKILL 组杀；回退 child.kill
+//   · cad/FreeCadInterop.ts               —— Windows taskkill；POSIX 只 child.kill（不组杀）
+//   · capabilities/web-access/github-extract.ts —— Windows execFile taskkill（失败回退）；
+//                                            POSIX SIGTERM 组杀 → 3s 后 SIGKILL（unref）
+//   · runtime/PythonExecutor.ts           —— Windows taskkill（error 回退 child.kill）；
+//                                            POSIX SIGTERM 组杀 → 1s 后 SIGKILL（保留 timer 供清理）
+
+export interface KillableChild {
+  pid?: number | null;
+  kill(signal?: NodeJS.Signals): void;
+}
+
+export interface KillProcessTreeOptions {
+  platform?: PlatformId;
+  /** Windows：`spawn`（默认，stdio ignore）或 `execFile`（github-extract 的回调语义）。 */
+  windowsMode?: "spawn" | "execFile";
+  /** Windows taskkill 失败/异步 error 时的回退（不传则不回退，与各调用点原行为一致）。 */
+  onWindowsError?: () => void;
+  /** taskkill 子进程是否 unref（github-extract 会立即返回）。 */
+  unref?: boolean;
+  /** Windows taskkill 命令名（PythonExecutor 原用 "taskkill.exe"，其余用 "taskkill"）。 */
+  windowsTaskkillCommand?: string;
+  /** 测试注入：POSIX 信号发送（默认 process.kill）。 */
+  killProcess?(pid: number, signal: NodeJS.Signals): boolean;
+  /** 测试注入：Windows spawn 版 taskkill（默认 spawn(taskkill, …, {stdio:"ignore"})）。 */
+  spawnTaskkill?(command: string, args: string[]): {
+    on?(event: "error", listener: () => void): unknown;
+    unref?(): void;
+  };
+  /** 测试注入：Windows execFile 版 taskkill（默认 execFile(..., cb)）。 */
+  execFileTaskkill?(command: string, args: string[], done: (error: Error | null) => void): { unref?(): void };
+  /** POSIX 是否做进程组杀（FreeCadInterop 传 false）。 */
+  groupKill?: boolean;
+  /** POSIX 首个信号（默认 SIGKILL，匹配 TaskExecutionIsolation / FreeCadInterop）。 */
+  posixSignal?: NodeJS.Signals;
+  /** POSIX 升级信号（github-extract / PythonExecutor 用 SIGTERM → SIGKILL）。 */
+  escalateSignal?: NodeJS.Signals;
+  escalateAfterMs?: number;
+  /** 升级计时器是否 unref。 */
+  unrefEscalation?: boolean;
+  /** POSIX 信号失败后的回退（默认 child.kill）；传 false 表示不回退。 */
+  onPosixError?: (() => void) | false;
+  /** 拿不到 pid 时的回退（TaskExecutionIsolation：child.kill()；其它：什么都不做）。 */
+  onMissingPid?: () => void;
+  /** POSIX 组杀成功但需要额外动作时不用；保留给将来。 */
+  afterPosixSignal?: () => void;
+}
+
+function safeKill(child: KillableChild, signal?: NodeJS.Signals): void {
+  try {
+    child.kill(signal);
+  } catch {
+    /* 进程已退出 */
+  }
+}
+
+/**
+ * 终止子进程树。返回 POSIX 升级计时器（调用方可 clearTimeout；Windows/无升级时 undefined）。
+ */
+export function killProcessTree(
+  child: KillableChild,
+  options: KillProcessTreeOptions = {},
+): ReturnType<typeof setTimeout> | undefined {
+  const platform = options.platform ?? currentPlatformId;
+  const pid = child.pid;
+  if (pid == null) {
+    options.onMissingPid?.();
+    return undefined;
+  }
+
+  if (platform === "windows") {
+    const args = ["/PID", String(pid), "/T", "/F"];
+    const taskkill = options.windowsTaskkillCommand ?? "taskkill";
+    if (options.windowsMode === "execFile") {
+      const execTaskkill = options.execFileTaskkill
+        ?? ((command: string, cmdArgs: string[], done: (error: Error | null) => void) =>
+          execFile(command, cmdArgs, { windowsHide: true }, done));
+      const killer = execTaskkill(taskkill, args, (error) => {
+        if (error) options.onWindowsError?.();
+      });
+      if (options.unref) killer.unref?.();
+      return undefined;
+    }
+    const spawnTaskkill = options.spawnTaskkill
+      ?? ((command: string, cmdArgs: string[]) => spawn(command, cmdArgs, { windowsHide: true, stdio: "ignore" }));
+    try {
+      const killer = spawnTaskkill(taskkill, args);
+      if (options.onWindowsError) killer.on?.("error", () => options.onWindowsError?.());
+    } catch {
+      options.onWindowsError?.();
+    }
+    return undefined;
+  }
+
+  const onPosixError = options.onPosixError;
+  if (options.groupKill === false) {
+    safeKill(child);
+    return undefined;
+  }
+  const signal = options.posixSignal ?? "SIGKILL";
+  const killProcess = options.killProcess ?? ((target: number, sig: NodeJS.Signals) => process.kill(target, sig));
+  try {
+    killProcess(-pid, signal);
+  } catch {
+    // 组杀失败（不是进程组组长/已退出）：按调用方语义回退到 child.kill，
+    // 但**仍继续**设置升级计时器（与 github-extract / PythonExecutor 原实现一致）。
+    if (onPosixError === false) return undefined;
+    if (onPosixError) onPosixError();
+    else safeKill(child, signal);
+  }
+
+  if (!options.escalateSignal || !options.escalateAfterMs) return undefined;
+  const timer = setTimeout(() => {
+    try {
+      killProcess(-pid, options.escalateSignal!);
+    } catch {
+      if (onPosixError !== false) safeKill(child, options.escalateSignal);
+    }
+  }, options.escalateAfterMs);
+  if (options.unrefEscalation) timer.unref();
+  return timer;
 }

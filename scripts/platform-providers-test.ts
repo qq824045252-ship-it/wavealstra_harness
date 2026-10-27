@@ -10,7 +10,9 @@
  *     Windows provider（PowerShell InstalledFontCollection JSON + 注册表兜底）、macOS → []
  *  4. shell 工具矩阵：windows → PowerShell；linux/macOS → []
  *  5. 工厂注入：假 runner / 假 /proc 只在本文件内构造，测试不触碰真实系统状态。
+ *  6-12. 平台拆分 D 的纯函数/注入面：paths、runtime、terminal、apps、input、fs-security、进程树终止。
  */
+import { dirname, join, resolve, sep } from "node:path";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import {
   normalizeFontFamilies,
@@ -26,7 +28,53 @@ import {
   type ProcessFsDeps,
   type ProcessRunner,
 } from "../src/main/platform/processes";
-import { createPlatformShellTools } from "../src/main/platform/shell-tools";
+import { createPlatformShellTools, platformShellLanguageIds } from "../src/main/platform/shell-tools";
+import {
+  canonicalPathKey,
+  caseInsensitivePathFs,
+  directorySymlinkType,
+  parentTraversalPrefix,
+  pathKey,
+  pathSeparator,
+  resolvedPathKey,
+  toPosixPath,
+} from "../src/main/platform/paths";
+import {
+  nodeExecutableName,
+  pathListSeparator,
+  programFilesDefault,
+  pythonExecutableName,
+  pythonProjectCacheKey,
+  spawnDetachedForTreeKill,
+  uvAssetName,
+  uvExecutableName,
+  venvPython3RelativePath,
+  venvPythonRelativePath,
+} from "../src/main/platform/runtime";
+import {
+  defaultShellForPlatform,
+  posixDefaultShell,
+  pwshPath,
+  useConpty,
+  windowsPowerShellPath,
+} from "../src/main/platform/terminal";
+import {
+  adbCandidatePaths,
+  adbExecutableName,
+  commandCodeAcpEnv,
+  connectorPlatformKey,
+  devinDesktopBundledCli,
+  npxFallbackPaths,
+  npxProbeCommand,
+  pickExecutablePath,
+  roamingAppDataDir,
+  spawnExternalCliCommand,
+  whereCommand,
+  whereFirst,
+} from "../src/main/platform/apps";
+import { selectAllModifier } from "../src/main/platform/input";
+import { ensureExecutableFile, protectSecretFile } from "../src/main/platform/fs-security";
+import { killProcessTree, type KillableChild } from "../src/main/platform/processes";
 
 let passed = 0;
 let failed = 0;
@@ -347,6 +395,10 @@ async function main(): Promise<void> {
 
     assertEqual(createPlatformShellTools("macos"), [], "macos：不额外提供 shell 工具");
 
+    assertEqual(platformShellLanguageIds("windows"), ["powershell"], "windows：execute_code 额外支持 powershell 语言");
+    assertEqual(platformShellLanguageIds("linux"), [], "linux：不额外声明 shell 语言");
+    assertEqual(platformShellLanguageIds("macos"), [], "macos：不额外声明 shell 语言");
+
     const real = createPlatformShellTools("windows");
     assertEqual(real.length, 1, "windows：默认工厂返回真实的 PowerShell 工具注册");
     assertEqual((real[0] as unknown as { name: string }).name, "powershell", "默认工厂工具名 powershell（pi-durable SDK）");
@@ -359,6 +411,343 @@ async function main(): Promise<void> {
     assertEqual(await mac.listListeningPids(8080), [], "macOS：listListeningPids → []");
     assertEqual(await mac.listPidsByImageName("blender.exe"), [], "macOS：listPidsByImageName → []");
     assertEqual(await mac.pidExecutablePath(1), null, "macOS：pidExecutablePath → null");
+  }
+
+
+  // ------------------------------------------------------------ 6) paths
+  console.log("== 6) platform/paths（大小写、分隔符、symlink、正斜杠）==");
+  {
+    assertEqual(pathKey("C:\\Users\\Alice", "windows"), "c:\\users\\alice", "pathKey(win32) 统一小写");
+    assertEqual(pathKey("/home/Alice", "linux"), "/home/Alice", "pathKey(linux) 原样");
+    assertEqual(resolvedPathKey("foo", "windows"), resolve("foo").toLowerCase(), "resolvedPathKey(win32)=resolve+小写");
+    assertEqual(resolvedPathKey("foo", "linux"), resolve("foo"), "resolvedPathKey(linux)=resolve");
+    assertEqual(canonicalPathKey("/tmp/x///", "linux"), "/tmp/x", "canonicalPathKey 去尾部斜杠");
+    assertEqual(canonicalPathKey("/tmp/X", "windows"), "/tmp/x", "canonicalPathKey(win32) 小写");
+    assertEqual(pathSeparator("windows"), "\\", "pathSeparator(win32) 反斜杠");
+    assertEqual(pathSeparator("linux"), "/", "pathSeparator(linux) 正斜杠");
+    assertEqual(parentTraversalPrefix("windows"), "..\\", "越界前缀(win32) 是 ..\\");
+    assertEqual(parentTraversalPrefix("linux"), "../", "越界前缀(linux) 是 ../");
+    assertEqual(directorySymlinkType("windows"), "junction", "目录 symlink(win32)=junction");
+    assertEqual(directorySymlinkType("linux"), "dir", "目录 symlink(linux)=dir");
+    assertEqual(toPosixPath("C:\\a\\b", "windows"), "C:/a/b", "toPosixPath(win32) 反斜杠转正斜杠");
+    assertEqual(toPosixPath("/a/b", "linux"), "/a/b", "toPosixPath(linux) 原样");
+    assert(caseInsensitivePathFs("windows") && !caseInsensitivePathFs("linux"), "只有 Windows 大小写不敏感");
+  }
+
+  // ------------------------------------------------------------ 7) runtime
+  console.log("== 7) platform/runtime（node/venv/uv/PATH 布局）==");
+  {
+    assertEqual(nodeExecutableName("win32"), "node.exe", "Windows node 可执行名带 .exe");
+    assertEqual(nodeExecutableName("linux"), "node", "POSIX node 可执行名");
+    assertEqual(pathListSeparator("win32"), ";", "Windows PATH 分隔符 ;");
+    assertEqual(pathListSeparator("linux"), ":", "POSIX PATH 分隔符 :");
+    assertEqual(programFilesDefault("win32"), "C:\\Program Files", "Windows ProgramFiles 默认值");
+    assertEqual(programFilesDefault("linux"), "", "POSIX 没有 ProgramFiles（空串）");
+    assertEqual(spawnDetachedForTreeKill("win32"), false, "Windows 不放进独立进程组（用 taskkill /T）");
+    assertEqual(spawnDetachedForTreeKill("linux"), true, "POSIX 新建进程组便于整树杀");
+    assertEqual(venvPythonRelativePath("win32"), join("Scripts", "python.exe"), "venv Python（win32）在 Scripts");
+    assertEqual(venvPythonRelativePath("linux"), join("bin", "python"), "venv Python（POSIX）在 bin");
+    assertEqual(venvPython3RelativePath("win32"), "python.exe", "venv python3（win32）回落 python.exe");
+    assertEqual(venvPython3RelativePath("linux"), join("bin", "python3"), "venv python3（POSIX）bin/python3");
+    assertEqual(pythonExecutableName("win32"), "python.exe", "解释器文件名（win32）");
+    assertEqual(
+      pythonProjectCacheKey("ProjDir", "win32"),
+      resolve("ProjDir").split(sep).join("/").toLowerCase(),
+      "pythonProjectCacheKey(win32)=统一分隔符+小写",
+    );
+    assertEqual(pythonProjectCacheKey("ProjDir", "linux"), resolve("ProjDir").split(sep).join("/"), "pythonProjectCacheKey(linux) 保留大小写");
+    assertEqual(uvExecutableName("win32"), "uv.exe", "uv 可执行名（win32）");
+    assertEqual(uvExecutableName("linux"), "uv", "uv 可执行名（POSIX）");
+    assertEqual(uvAssetName("win32", "x64"), "uv-x86_64-pc-windows-msvc.zip", "uv 资产：win32/x64");
+    assertEqual(uvAssetName("win32", "arm64"), "uv-aarch64-pc-windows-msvc.zip", "uv 资产：win32/arm64");
+    assertEqual(uvAssetName("darwin", "arm64"), "uv-aarch64-apple-darwin.tar.gz", "uv 资产：darwin/arm64");
+    assertEqual(uvAssetName("linux", "x64"), "uv-x86_64-unknown-linux-gnu.tar.gz", "uv 资产：linux/x64");
+    let archThrew = false;
+    try { uvAssetName("linux", "ia32" as NodeJS.Architecture); } catch { archThrew = true; }
+    assert(archThrew, "uv 资产：不支持的架构直接抛错（不做猜测式回退）");
+    let platformThrew = false;
+    try { uvAssetName("freebsd" as NodeJS.Platform, "x64"); } catch { platformThrew = true; }
+    assert(platformThrew, "uv 资产：不支持的平台直接抛错");
+  }
+
+  // ------------------------------------------------------------ 8) terminal
+  console.log("== 8) platform/terminal（默认 shell / ConPTY）==");
+  {
+    const winEnv = { ProgramFiles: "C:\\Program Files", SystemRoot: "C:\\Windows" } as NodeJS.ProcessEnv;
+    assertEqual(
+      defaultShellForPlatform("windows", { exists: () => true, env: winEnv }),
+      join("C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
+      "Windows：存在 pwsh 7 时优先 PowerShell 7",
+    );
+    assertEqual(
+      defaultShellForPlatform("windows", { exists: () => false, env: winEnv }),
+      join("C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      "Windows：无 pwsh 7 时回退 Windows PowerShell 5.1",
+    );
+    assertEqual(
+      defaultShellForPlatform("windows", { exists: () => true, env: {} as NodeJS.ProcessEnv }),
+      join("C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
+      "Windows：ProgramFiles 未设置时用默认 C:\\Program Files",
+    );
+    assertEqual(defaultShellForPlatform("linux", { env: { SHELL: "/bin/fish" } as NodeJS.ProcessEnv }), "/bin/fish", "POSIX：优先 $SHELL");
+    assertEqual(defaultShellForPlatform("linux", { env: {} as NodeJS.ProcessEnv }), "/bin/bash", "Linux 未设置 SHELL → bash");
+    assertEqual(defaultShellForPlatform("macos", { env: {} as NodeJS.ProcessEnv }), "/bin/zsh", "macOS 未设置 SHELL → zsh");
+    assertEqual(posixDefaultShell("macos"), "/bin/zsh", "posixDefaultShell(macos)");
+    assertEqual(posixDefaultShell("linux"), "/bin/bash", "posixDefaultShell(linux)");
+    assertEqual(pwshPath({} as NodeJS.ProcessEnv, "linux"), "pwsh", "POSIX 上 pwsh 就是命令名");
+    assertEqual(windowsPowerShellPath({} as NodeJS.ProcessEnv, "linux"), "powershell.exe", "POSIX 上 PowerShell 命令名");
+    assertEqual(useConpty("windows"), true, "Windows 终端用 ConPTY");
+    assertEqual(useConpty("linux"), false, "POSIX 不用 ConPTY");
+  }
+
+  // ------------------------------------------------------------ 9) apps
+  console.log("== 9) platform/apps（where/which、npx、adb、外部 CLI）==");
+  {
+    assertEqual(whereCommand("win32"), "where", "Windows 用 where");
+    assertEqual(whereCommand("win32", { exe: true }), "where.exe", "Windows where.exe 形式");
+    assertEqual(whereCommand("linux"), "which", "POSIX 用 which");
+
+    const winRows = ["C:\\tools\\npx", "C:\\tools\\npx.ps1", "C:\\tools\\npx.cmd", "C:\\tools\\npx.exe"];
+    assertEqual(pickExecutablePath(winRows, "win32"), "C:\\tools\\npx.exe", "Windows 优先 .exe");
+    assertEqual(pickExecutablePath(["C:\\a\\npx.cmd", "C:\\a\\npx.ps1"], "win32"), "C:\\a\\npx.cmd", ".cmd 优先于 .ps1");
+    assertEqual(pickExecutablePath(["C:\\a\\npx", "C:\\a\\npx.ps1"], "win32"), "C:\\a\\npx.ps1", "只有 .ps1 时用 .ps1");
+    assertEqual(pickExecutablePath(["/usr/bin/npx", "/usr/local/bin/npx"], "linux"), "/usr/bin/npx", "POSIX 取第一行");
+    assertEqual(pickExecutablePath([], "linux"), null, "空列表 → null");
+
+    const whereCalls: string[] = [];
+    const fakeExec = (command: string, args: string[]) => {
+      whereCalls.push(`${command} ${args.join(" ")}`);
+      return "C:\\tools\\npx.cmd\r\nC:\\tools\\npx.exe\r\n";
+    };
+    assertEqual(whereFirst("npx", "win32", { execFileSync: fakeExec }), "C:\\tools\\npx.exe", "whereFirst(win32) 走扩展名优先级");
+    assertEqual(whereCalls[0], "where.exe npx", "whereFirst 调 where.exe");
+    assertEqual(whereFirst("npx", "linux", { execFileSync: () => "/usr/bin/npx\n/usr/local/bin/npx\n" }), "/usr/bin/npx", "whereFirst(linux) 取第一行");
+    assertEqual(
+      whereFirst("nope", "linux", { execFileSync: () => { throw new Error("not found"); } }),
+      null,
+      "whereFirst：命令缺失 → null（不抛错）",
+    );
+
+    const devinEnv = { LOCALAPPDATA: "C:\\Users\\u" } as NodeJS.ProcessEnv;
+    assertEqual(
+      devinDesktopBundledCli(devinEnv, "win32", { exists: () => true }),
+      join("C:\\Users\\u", "Programs", "Devin", "resources", "app", "extensions", "windsurf", "devin", "bin", "devin.exe"),
+      "Devin 桌面自带 CLI 路径（Windows）",
+    );
+    assertEqual(devinDesktopBundledCli(devinEnv, "linux", { exists: () => true }), null, "Devin 桌面自带 CLI 只在 Windows 生效");
+    assertEqual(devinDesktopBundledCli({} as NodeJS.ProcessEnv, "win32", { exists: () => true }), null, "缺 LOCALAPPDATA → null");
+    assertEqual(devinDesktopBundledCli(devinEnv, "win32", { exists: () => false }), null, "文件不存在 → null");
+
+    // 外部 CLI 启动方式（假 spawn / 假 where）
+    type SpawnCall = { command: string; args: string[]; options: Record<string, unknown> };
+    const makeSpawn = (calls: SpawnCall[]) =>
+      ((command: string, args: string[], options: Record<string, unknown>) => {
+        calls.push({ command, args, options });
+        return {} as never;
+      }) as never;
+    const noWhere = { execFileSync: () => { throw new Error("not found"); } };
+
+    const spawnCalls: SpawnCall[] = [];
+    spawnExternalCliCommand("C:\\tools\\agent.ps1", ["--flag"], "/tmp/cwd", "win32", {
+      ...noWhere,
+      spawn: makeSpawn(spawnCalls),
+    });
+    assertEqual(spawnCalls[0]!.command, "powershell.exe", "Windows .ps1 → powershell.exe");
+    assert(
+      spawnCalls[0]!.args.slice(0, 4).join(" ") === "-NoProfile -ExecutionPolicy Bypass -File",
+      "Windows .ps1 用 -File 直接执行（不经 cmd）",
+    );
+
+    const cmdCalls: SpawnCall[] = [];
+    spawnExternalCliCommand("cmdc", ["--acp"], "/tmp/cwd", "win32", {
+      execFileSync: () => "C:\\tools\\cmdc.cmd\r\n",
+      spawn: makeSpawn(cmdCalls),
+    });
+    assertEqual(cmdCalls[0]!.command, "cmd.exe", "Windows .cmd → cmd.exe");
+    assertEqual(cmdCalls[0]!.args, ["/d", "/s", "/c", "C:\\tools\\cmdc.cmd --acp"], ".cmd 命令行按 Windows 规则引号拼接");
+
+    const exeCalls: SpawnCall[] = [];
+    spawnExternalCliCommand("C:\\tools\\agent.exe", ["a"], "/tmp/cwd", "win32", { ...noWhere, spawn: makeSpawn(exeCalls) });
+    assertEqual(exeCalls[0]!.command, "C:\\tools\\agent.exe", "Windows .exe 直接 spawn");
+
+    const posixCalls: SpawnCall[] = [];
+    spawnExternalCliCommand("codex", ["--version"], "/tmp/cwd", "linux", {
+      execFileSync: () => "/usr/bin/codex\n",
+      spawn: makeSpawn(posixCalls),
+    });
+    assertEqual(posixCalls[0]!.command, "/usr/bin/codex", "POSIX 直接 spawn 解析后的路径");
+
+    assertEqual(
+      commandCodeAcpEnv("/usr/local/bin/cmdc", "linux"),
+      { COMMAND_CODE_ACP_CMD_PATH: "/usr/local/bin/cmdc" },
+      "Command Code（POSIX）：注入 CMD_PATH",
+    );
+    assertEqual(
+      commandCodeAcpEnv("C:\\tools\\cmdc", "win32", { exists: () => true }),
+      { COMMAND_CODE_ACP_NODE_ENTRY: join(dirname("C:\\tools\\cmdc"), "node_modules", "command-code", "dist", "index.mjs") },
+      "Command Code（Windows）：注入 NODE_ENTRY",
+    );
+    let ccThrew = false;
+    try { commandCodeAcpEnv("C:\\tools\\cmdc", "win32", { exists: () => false }); } catch { ccThrew = true; }
+    assert(ccThrew, "Command Code（Windows）：Node 入口缺失时明确抛错");
+
+    assertEqual(adbExecutableName("win32"), "adb.exe", "adb（win32）带 .exe");
+    assertEqual(adbExecutableName("linux"), "adb", "adb（POSIX）");
+    const adb = adbCandidatePaths("win32", {
+      MYBUDDY_ADB_PATH: "/custom/adb.exe",
+      ANDROID_SDK_ROOT: "C:\\sdk",
+      LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local",
+      PATH: "C:\\bin;C:\\other",
+    } as NodeJS.ProcessEnv);
+    assertEqual(adb[0], "/custom/adb.exe", "adb 候选：MYBUDDY_ADB_PATH 优先");
+    assertEqual(adb[1], join("C:\\sdk", "platform-tools", "adb.exe"), "adb 候选：ANDROID_SDK_ROOT");
+    assert(adb.includes(join("C:\\Users\\u\\AppData\\Local", "Android", "Sdk", "platform-tools", "adb.exe")), "adb 候选：Windows 默认 SDK 目录");
+    assert(adb.includes(join("C:\\bin", "adb.exe")) && adb.includes(join("C:\\other", "adb.exe")), "adb 候选：PATH 各项");
+    assertEqual(adb[adb.length - 1], "adb.exe", "adb 候选：最后回落裸名");
+    const adbLinux = adbCandidatePaths("linux", { PATH: "/usr/bin:/usr/local/bin" } as NodeJS.ProcessEnv);
+    assert(!adbLinux.some((one) => one.includes("Android")), "Linux 不加 Windows 默认 SDK 目录");
+
+    assertEqual(npxProbeCommand("win32"), "where", "npx 探测：Windows where");
+    assertEqual(npxProbeCommand("linux"), "which", "npx 探测：POSIX which");
+    assertEqual(npxFallbackPaths("win32"), ["C:\\Program Files\\nodejs\\npx.cmd", "C:\\Program Files (x86)\\nodejs\\npx.cmd"], "npx 回退路径（Windows）");
+    assertEqual(npxFallbackPaths("linux"), ["/usr/bin/npx", "/usr/local/bin/npx"], "npx 回退路径（POSIX）");
+
+    assertEqual(connectorPlatformKey("win32"), "win32", "连接器清单平台键 = NodeJS platform 名");
+    assertEqual(roamingAppDataDir("/home/u", "linux"), "", "POSIX 没有漫游目录（空串表示跳过）");
+    assertEqual(roamingAppDataDir("/home/u", "win32", { APPDATA: "C:\\Roaming" } as NodeJS.ProcessEnv), "C:\\Roaming", "Windows 用 %APPDATA%");
+    assertEqual(roamingAppDataDir("/home/u", "win32", {} as NodeJS.ProcessEnv), join("/home/u", "AppData", "Roaming"), "Windows 无 %APPDATA% 时回落 home");
+  }
+
+  // ------------------------------------------------------------ 10) input
+  console.log("== 10) platform/input（全选修饰键）==");
+  {
+    assertEqual(selectAllModifier("macos"), "meta", "macOS 全选用 meta(Command)");
+    assertEqual(selectAllModifier("windows"), "control", "Windows 全选用 control");
+    assertEqual(selectAllModifier("linux"), "control", "Linux 全选用 control");
+  }
+
+  // ------------------------------------------------------------ 11) fs-security
+  console.log("== 11) platform/fs-security（可执行位 / Windows ACL）==");
+  {
+    const chmodCalls: Array<{ path: string; mode: number }> = [];
+    ensureExecutableFile("/tmp/script.sh", "windows", { chmodSync: (path, mode) => chmodCalls.push({ path, mode }) });
+    assertEqual(chmodCalls.length, 0, "Windows：可执行位是空操作（不 chmod）");
+    ensureExecutableFile("/tmp/script.sh", "linux", { chmodSync: (path, mode) => chmodCalls.push({ path, mode }) });
+    assertEqual(chmodCalls[0], { path: "/tmp/script.sh", mode: 0o755 }, "POSIX：chmod 0755");
+    let swallowed = true;
+    try {
+      ensureExecutableFile("/tmp/x", "linux", { chmodSync: () => { throw new Error("EPERM"); } });
+    } catch { swallowed = false; }
+    assert(swallowed, "chmod 失败是 best effort（不抛）");
+
+    const posixChmod: Array<{ path: string; mode: number }> = [];
+    const posixExec: string[] = [];
+    protectSecretFile("/tmp/secret.json", "linux", {
+      chmodSync: (path, mode) => posixChmod.push({ path, mode }),
+      execFileSync: ((file: string) => { posixExec.push(file); return ""; }) as never,
+    });
+    assertEqual(posixChmod[0], { path: "/tmp/secret.json", mode: 0o600 }, "POSIX：密钥文件 chmod 0600");
+    assertEqual(posixExec.length, 0, "POSIX：不调 icacls/whoami");
+
+    const winChmod: Array<{ path: string; mode: number }> = [];
+    const winExec: Array<{ file: string; args: readonly string[] }> = [];
+    protectSecretFile("C:\\secret.json", "windows", {
+      chmodSync: (path, mode) => winChmod.push({ path, mode }),
+      execFileSync: ((file: string, args: readonly string[]) => {
+        winExec.push({ file, args });
+        return file.endsWith("whoami.exe") ? "DOMAIN\\user,S-1-5-21-111-222-333-1001\r\n" : "";
+      }) as never,
+      env: { SystemRoot: "C:\\Windows" } as NodeJS.ProcessEnv,
+    });
+    assertEqual(winChmod[0], { path: "C:\\secret.json", mode: 0o600 }, "Windows：仍先 chmod 0600");
+    assertEqual(winExec.length, 2, "Windows：whoami + icacls 各一次");
+    assert(winExec[0]!.file.endsWith("whoami.exe"), "Windows：用 whoami.exe 取 SID");
+    assert(winExec[1]!.args.includes("/inheritance:r"), "Windows：icacls 去掉继承");
+    assert(
+      winExec[1]!.args.includes("*S-1-5-21-111-222-333-1001:(F)") && winExec[1]!.args.includes("*S-1-5-18:(F)"),
+      "Windows：只授权当前用户与 SYSTEM",
+    );
+
+    let sidThrew = false;
+    try {
+      protectSecretFile("C:\\secret.json", "windows", {
+        chmodSync: () => undefined,
+        execFileSync: (() => "no-sid-here") as never,
+        env: {} as NodeJS.ProcessEnv,
+      });
+    } catch { sidThrew = true; }
+    assert(sidThrew, "Windows：拿不到 SID 时致命失败（不静默降级）");
+  }
+
+  // ------------------------------------------------------------ 12) 进程树终止
+  console.log("== 12) platform/processes 进程树终止 ==");
+  {
+    const noopChild = (pid: number | null, kills: Array<string | undefined>) => ({
+      pid,
+      kill: (signal?: NodeJS.Signals) => kills.push(signal),
+    }) as KillableChild;
+
+    const spawnTaskkillCalls: Array<{ command: string; args: string[] }> = [];
+    const winKills: Array<string | undefined> = [];
+    killProcessTree(noopChild(123, winKills), {
+      platform: "windows",
+      spawnTaskkill: (command, args) => { spawnTaskkillCalls.push({ command, args }); return {}; },
+    });
+    assertEqual(spawnTaskkillCalls[0], { command: "taskkill", args: ["/PID", "123", "/T", "/F"] }, "Windows：taskkill /PID /T /F");
+    assertEqual(winKills.length, 0, "Windows：taskkill 成功时不再 child.kill");
+
+    const execCalls: Array<{ command: string; args: string[] }> = [];
+    let unrefed = false;
+    let windowsError = 0;
+    killProcessTree(noopChild(456, []), {
+      platform: "windows",
+      windowsMode: "execFile",
+      unref: true,
+      onWindowsError: () => { windowsError += 1; },
+      execFileTaskkill: (command, args, done) => {
+        execCalls.push({ command, args });
+        done(new Error("taskkill failed"));
+        return { unref: () => { unrefed = true; } };
+      },
+    });
+    assertEqual(execCalls[0]!.command, "taskkill", "Windows execFile 模式用 taskkill");
+    assert(unrefed, "Windows execFile 模式 unref（不阻塞退出）");
+    assertEqual(windowsError, 1, "Windows execFile 失败 → onWindowsError");
+
+    const posixSignals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const posixChildKills: Array<string | undefined> = [];
+    const timer = killProcessTree(noopChild(50, posixChildKills), {
+      platform: "linux",
+      posixSignal: "SIGTERM",
+      escalateSignal: "SIGKILL",
+      escalateAfterMs: 5,
+      killProcess: (pid, signal) => { posixSignals.push({ pid, signal }); return true; },
+    });
+    assert(!!timer, "POSIX 组杀返回升级计时器（调用方负责清理）");
+    await new Promise((done) => setTimeout(done, 30));
+    if (timer) clearTimeout(timer);
+    assertEqual(
+      posixSignals,
+      [{ pid: -50, signal: "SIGTERM" }, { pid: -50, signal: "SIGKILL" }],
+      "POSIX：先 SIGTERM 组杀，再按 grace 升级 SIGKILL",
+    );
+    assertEqual(posixChildKills.length, 0, "POSIX 组杀成功时不 child.kill");
+
+    const fallbackKills: Array<string | undefined> = [];
+    killProcessTree(noopChild(60, fallbackKills), {
+      platform: "linux",
+      posixSignal: "SIGKILL",
+      killProcess: () => { throw new Error("ESRCH"); },
+    });
+    assertEqual(fallbackKills, ["SIGKILL"], "POSIX 组杀失败 → 回退 child.kill(SIGKILL)");
+
+    const freeCadKills: Array<string | undefined> = [];
+    killProcessTree(noopChild(70, freeCadKills), { platform: "linux", groupKill: false });
+    assertEqual(freeCadKills, [undefined], "groupKill=false（FreeCAD）：只 child.kill()");
+
+    let missingPid = 0;
+    killProcessTree(noopChild(null, []), { platform: "linux", onMissingPid: () => { missingPid += 1; } });
+    assertEqual(missingPid, 1, "拿不到 pid 时调用 onMissingPid（各调用点语义不同）");
   }
 
   console.log(`\n结果: passed=${passed} failed=${failed}`);

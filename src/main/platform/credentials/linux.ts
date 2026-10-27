@@ -1,4 +1,9 @@
-import { app, safeStorage } from "electron";
+/**
+ * Linux 凭据后端（safeStorage → gnome-libsecret）。
+ *
+ * 从 `src/main/linux-password-store.ts` 逐字搬迁：Chromium 开关/后端判定仍是原来的实现，
+ * 由 `platform/credentials/index.ts` 在 app ready 前装配。
+ */
 
 /** Chromium 开关用连字符；safeStorage.getSelectedStorageBackend() 用下划线。 */
 export const LINUX_PASSWORD_STORE_SWITCH = "gnome-libsecret";
@@ -36,21 +41,4 @@ export function describeLinuxSecretStore(
     available,
     ready: available && backend === LINUX_PASSWORD_STORE_BACKEND,
   };
-}
-
-if (installLinuxPasswordStore(app.commandLine)) {
-  app.whenReady().then(() => {
-    try {
-      const status = describeLinuxSecretStore(safeStorage);
-      if (!status) return;
-      console.log(`[safeStorage] linux backend=${status.backend} available=${status.available}`);
-      if (!status.ready) {
-        console.warn(
-          "[safeStorage] gnome-libsecret 未就绪。请安装并解锁 gnome-keyring（libsecret），否则 Slack、API 与 MCP 凭据无法保存。见 docs/omarchy-linux.md",
-        );
-      }
-    } catch (error) {
-      console.warn("[safeStorage] 无法读取 Linux 加密后端", error);
-    }
-  });
 }

@@ -32,6 +32,7 @@ import {
   type PythonRuntimeStatus,
 } from "../../shared/python-runtime";
 import { getPythonRuntimeDir } from "../paths";
+import { currentNodePlatform, venvPython3RelativePath } from "../platform/runtime";
 import {
   PythonEnvironmentStore,
   type PythonEnvironmentManifest,
@@ -84,7 +85,7 @@ export class PythonRuntimeService extends EventEmitter {
 
   constructor(options: PythonRuntimeServiceOptions = {}) {
     super();
-    this.platform = options.platform ?? process.platform;
+    this.platform = options.platform ?? currentNodePlatform;
     this.projectModeResolver = options.projectModeResolver ?? null;
     this.runtimeDirOverride = options.runtimeDir;
     this.store = new PythonEnvironmentStore({
@@ -476,7 +477,7 @@ export class PythonRuntimeService extends EventEmitter {
       const pythonPath = join(
         root,
         entry,
-        this.platform === "win32" ? "python.exe" : join("bin", "python3"),
+        venvPython3RelativePath(this.platform),
       );
       if (!existsSync(pythonPath)) continue;
       result.push({ version: match ? match[1] : entry, path: pythonPath });

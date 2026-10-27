@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { selectAllModifier } from "../platform/input";
 import type { BrowserHost } from "../browser/BrowserHost";
 import { pageInspectionService, PageCaptureError, PageCaptureScope } from "../artifact/PageInspectionService";
 
@@ -254,7 +255,7 @@ export class UiAutomationService {
       await this.click(wc, element);
       const editable = await wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); if(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)))return false; el.focus(); return true;})()`, true);
       if (!editable) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标元素不可编辑", { selector: element.selector });
-      const selectModifier = process.platform === "darwin" ? "meta" : "control";
+      const selectModifier = selectAllModifier();
       wc.sendInputEvent({ type: "keyDown", keyCode: "A", modifiers: [selectModifier] });
       wc.sendInputEvent({ type: "keyUp", keyCode: "A", modifiers: [selectModifier] });
       wc.sendInputEvent({ type: "keyDown", keyCode: "Backspace" });

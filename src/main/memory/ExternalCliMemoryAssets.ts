@@ -1,6 +1,7 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getMyBuddyDir } from "../paths";
+import { ensureExecutableFile } from "../platform/fs-security";
 import { getPluginDirectory } from "../plugins/PluginStorage";
 import {
   MYBUDDY_MEMORY_CLI,
@@ -30,9 +31,7 @@ function sameContent(path: string, content: string): boolean {
 
 function writeManagedFile(path: string, content: string, executable = false): "created" | "updated" | "unchanged" {
   if (existsSync(path) && sameContent(path, content)) {
-    if (executable && process.platform !== "win32") {
-      try { chmodSync(path, 0o755); } catch { /* best effort */ }
-    }
+    if (executable) ensureExecutableFile(path);
     return "unchanged";
   }
   const created = !existsSync(path);
@@ -40,9 +39,9 @@ function writeManagedFile(path: string, content: string, executable = false): "c
   const tmp = `${path}.tmp-${process.pid}`;
   try {
     writeFileSync(tmp, content, { encoding: "utf-8", mode: executable ? 0o755 : 0o600 });
-    if (executable && process.platform !== "win32") chmodSync(tmp, 0o755);
+    if (executable) ensureExecutableFile(tmp);
     renameSync(tmp, path);
-    if (executable && process.platform !== "win32") chmodSync(path, 0o755);
+    if (executable) ensureExecutableFile(path);
     return created ? "created" : "updated";
   } catch (error) {
     try { rmSync(tmp, { force: true }); } catch { /* ignore */ }

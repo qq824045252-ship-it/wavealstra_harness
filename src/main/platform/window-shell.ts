@@ -18,8 +18,12 @@ export interface PlatformWindowShellOptions {
   appPath: string;
 }
 
+function resolvePlatformId(platform?: PlatformId): PlatformId {
+  return platform ?? currentPlatformId;
+}
+
 function resolvedPlatform(options: PlatformWindowShellOptions): PlatformId {
-  return options.platform ?? currentPlatformId;
+  return resolvePlatformId(options.platform);
 }
 
 /** 窗口图标：Linux 用 PNG，其它平台保持 .ico。 */
@@ -39,6 +43,27 @@ export function platformWindowOptions(
       height: options.titleBar.height,
     },
   };
+}
+
+export interface PlatformTitleBarOptions {
+  platform?: PlatformId;
+  titleBar: { color: string; symbolColor: string; height: number };
+}
+
+/**
+ * 已存在窗口的 titleBarOverlay 实时更新（主题切换）。
+ * 仅 Windows；旧版 Windows 不支持时忽略。非 Windows 是 no-op。
+ */
+export function applyPlatformTitleBarOverlay(
+  win: Pick<BrowserWindow, "setTitleBarOverlay">,
+  options: PlatformTitleBarOptions,
+): void {
+  if (resolvePlatformId(options.platform) !== "windows") return;
+  try {
+    win.setTitleBarOverlay(options.titleBar);
+  } catch {
+    /* 旧版 Windows 不支持 titleBarOverlay */
+  }
 }
 
 /**

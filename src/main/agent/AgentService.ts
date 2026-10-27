@@ -1,5 +1,7 @@
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
+import { resolvedPathKey } from "../platform/paths";
+import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
@@ -2214,8 +2216,8 @@ export class AgentService {
     if (skill.source === "memory-learned") return "Memory Learned Skill 使用独立 Revision / Approval 流程";
     const skillsRoot = resolve(getSkillsDir());
     const sourceDir = resolve(dirname(skill.filePath));
-    const cmpRoot = process.platform === "win32" ? skillsRoot.toLowerCase() : skillsRoot;
-    const cmpSource = process.platform === "win32" ? sourceDir.toLowerCase() : sourceDir;
+    const cmpRoot = resolvedPathKey(skillsRoot);
+    const cmpSource = resolvedPathKey(sourceDir);
     if (!(cmpSource.startsWith(cmpRoot + sep))) return "第一版 Improve 只修改 ~/.mybuddy/plugins/skills 下的用户 Skill";
     if (!/^[a-z0-9][a-z0-9-]*$/.test(skill.id.trim().toLowerCase())) return "Skill identity 不符合安全改进规则";
     return null;
@@ -2682,7 +2684,7 @@ export class AgentService {
       capabilityTrace,
       skillPolicySources: resolvedContext.skillPolicySources,
       permissionMode,
-      platform: process.platform,
+      platform: currentNodePlatform,
       memoryEnabled,
       skills,
       disableSkillFilter: settings.skillModeFilterEnabled === false,
@@ -5526,7 +5528,7 @@ export class AgentService {
       capabilityTrace,
       skillPolicySources: resolvedContext.skillPolicySources,
       permissionMode: effPermission,
-      platform: process.platform,
+      platform: currentNodePlatform,
       memoryEnabled,
       skills,
       disableSkillFilter: this.settingsStore.read().skillModeFilterEnabled === false,

@@ -5,7 +5,7 @@ import { applyPromptContextBudget, derivePromptContextCharBudget } from "../src/
 import { PromptRetryRegistry, PromptRunRegistry } from "../src/main/agent/PromptRunRegistry";
 import { evaluateComputerOutcome } from "../src/main/capabilities/ComputerUseOutcome";
 import type { AssemblySegmentDto } from "../src/shared/mode-profile";
-import type { WindowInfo } from "../src/main/capabilities/windows/windowsAutomationProtocol";
+import type { WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 function segment(id: string, source: AssemblySegmentDto["source"], chars: number): AssemblySegmentDto {
   const content = `${id}\n${"x".repeat(Math.max(0, chars - id.length - 1))}`;

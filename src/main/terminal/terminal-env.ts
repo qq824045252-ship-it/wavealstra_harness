@@ -1,8 +1,8 @@
-import { delimiter, resolve } from "node:path";
+import { delimiter } from "node:path";
+import { resolvedPathKey } from "../platform/paths";
 
 function canonicalPathEntry(value: string): string {
-  const normalized = resolve(value.trim());
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return resolvedPathKey(value.trim());
 }
 
 /** Return a cloned env with unique path entries prepended, preserving the host PATH key casing. */

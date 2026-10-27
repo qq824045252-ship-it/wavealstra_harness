@@ -1,4 +1,4 @@
-import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
+import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
 
 export type ComputerUsePhase = "observing" | "acting" | "verifying" | "waiting" | "recovering" | "completed" | "failed";
 

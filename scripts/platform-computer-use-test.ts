@@ -9,7 +9,7 @@ import {
   LINUX_COMPUTER_USE_TOOLS,
   probeLinuxComputerUseTools,
   supportsComputerUseOverlay,
-} from "../src/main/platform/computer-use";
+} from "../src/main/platform/computer-use/support";
 import {
   DEFAULT_LINUX_OCR_LANGUAGES,
   describeLinuxOcrProvider,
@@ -17,6 +17,10 @@ import {
   ocrSearchCandidates,
   resolveOcrProvider,
 } from "../src/main/platform/computer-use/ocr";
+import {
+  createComputerUseBackend,
+  resetComputerUseBackends,
+} from "../src/main/platform/computer-use/index";
 
 /**
  * 平台边界测试：Computer Use 能力探测 / OCR 候选与 provider / Overlay 支持判定。
@@ -24,8 +28,8 @@ import {
  */
 
 const results: string[] = [];
-function check(name: string, fn: () => void): void {
-  fn();
+async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
+  await fn();
   results.push(name);
   console.log(`PASS ${name}`);
 }
@@ -41,11 +45,12 @@ function fakePathDir(commands: readonly string[]): string {
   return dir;
 }
 
+async function main(): Promise<void> {
 /* ------------------------------------------------------------------ */
 /* 1. Linux：unsupported + 依赖探测 + pacman 安装提示                   */
 /* ------------------------------------------------------------------ */
 
-check("linux with empty PATH reports every Wayland dependency as missing", () => {
+await check("linux with empty PATH reports every Wayland dependency as missing", () => {
   const support = detectComputerUseSupport("linux", { pathValue: "" });
   assert.equal(support.platform, "linux");
   assert.equal(support.backend, "linux-wayland");
@@ -56,7 +61,7 @@ check("linux with empty PATH reports every Wayland dependency as missing", () =>
   assert.match(support.reason ?? "", /后端尚未实现/);
 });
 
-check("linux missingDependencies matches the PATH probe exactly", () => {
+await check("linux missingDependencies matches the PATH probe exactly", () => {
   // 装一部分，确保「已安装的不列出」
   const dir = fakePathDir(["grim", "slurp", "hyprctl"]);
   const support = detectComputerUseSupport("linux", { pathValue: dir });
@@ -75,7 +80,7 @@ check("linux missingDependencies matches the PATH probe exactly", () => {
   assert.match(support.installHint ?? "", /ydotool/);
 });
 
-check("linux with all dependencies still reports unsupported (backend not implemented)", () => {
+await check("linux with all dependencies still reports unsupported (backend not implemented)", () => {
   const dir = fakePathDir(LINUX_COMPUTER_USE_TOOLS);
   const support = detectComputerUseSupport("linux", { pathValue: dir });
   assert.deepEqual(support.missingDependencies, []);
@@ -84,7 +89,7 @@ check("linux with all dependencies still reports unsupported (backend not implem
   assert.equal(support.backend, "linux-wayland");
 });
 
-check("detection result is cached per platform; refresh recomputes", () => {
+await check("detection result is cached per platform; refresh recomputes", () => {
   const first = detectComputerUseSupport("linux");
   const second = detectComputerUseSupport("linux");
   assert.equal(first, second, "cached support object should be reused");
@@ -96,7 +101,7 @@ check("detection result is cached per platform; refresh recomputes", () => {
   assert.notEqual(isolated, first);
 });
 
-check("executableInPath only matches files in the supplied PATH entries", () => {
+await check("executableInPath only matches files in the supplied PATH entries", () => {
   const dir = fakePathDir(["ydotool"]);
   assert.equal(executableInPath("ydotool", dir), join(dir, "ydotool"));
   assert.equal(executableInPath("grim", dir), undefined);
@@ -107,7 +112,7 @@ check("executableInPath only matches files in the supplied PATH entries", () => 
 /* 2. Windows / macOS                                                  */
 /* ------------------------------------------------------------------ */
 
-check("windows is supported without any PATH probing", () => {
+await check("windows is supported without any PATH probing", () => {
   const support = detectComputerUseSupport("windows", { pathValue: "" });
   assert.equal(support.platform, "windows");
   assert.equal(support.backend, "windows-uia");
@@ -117,7 +122,7 @@ check("windows is supported without any PATH probing", () => {
   assert.equal(support.reason, undefined);
 });
 
-check("macos is unsupported with a diagnostic reason", () => {
+await check("macos is unsupported with a diagnostic reason", () => {
   const support = detectComputerUseSupport("macos");
   assert.equal(support.platform, "macos");
   assert.equal(support.backend, "unsupported");
@@ -125,7 +130,7 @@ check("macos is unsupported with a diagnostic reason", () => {
   assert.match(support.reason ?? "", /macOS/);
 });
 
-check("unsupported message carries install hint, not a bare 'Windows only'", () => {
+await check("unsupported message carries install hint, not a bare 'Windows only'", () => {
   const linux = detectComputerUseSupport("linux", { pathValue: "" });
   const message = computerUseUnsupportedMessage(linux);
   assert.match(message, /linux/);
@@ -138,7 +143,7 @@ check("unsupported message carries install hint, not a bare 'Windows only'", () 
 /* 3. Overlay 支持判定（仅 Windows）                                    */
 /* ------------------------------------------------------------------ */
 
-check("overlay is Windows-only", () => {
+await check("overlay is Windows-only", () => {
   assert.equal(supportsComputerUseOverlay("windows"), true);
   assert.equal(supportsComputerUseOverlay("linux"), false);
   assert.equal(supportsComputerUseOverlay("macos"), false);
@@ -148,7 +153,7 @@ check("overlay is Windows-only", () => {
 /* 4. OCR：候选路径无个人绝对路径；env 优先；provider 选择不变           */
 /* ------------------------------------------------------------------ */
 
-check("OCR candidates contain no personal absolute paths", () => {
+await check("OCR candidates contain no personal absolute paths", () => {
   for (const candidate of [...ocrInstallCandidates(), ...ocrSearchCandidates().filter((c): c is string => Boolean(c))]) {
     assert.doesNotMatch(candidate, /^[A-Za-z]:\\Users\\/i, `personal Windows path leaked: ${candidate}`);
     assert.doesNotMatch(candidate, /\/Users\//, `personal macOS path leaked: ${candidate}`);
@@ -156,7 +161,7 @@ check("OCR candidates contain no personal absolute paths", () => {
   }
 });
 
-check("MYBUDDY_OCR_CLI wins over the bundled windows OCR script", () => {
+await check("MYBUDDY_OCR_CLI wins over the bundled windows OCR script", () => {
   const dir = mkdtempSync(join(tmpdir(), "mybuddy-ocr-cli-"));
   const cli = join(dir, "OCR_NPU_CLI.exe");
   writeFileSync(cli, "fake");
@@ -186,7 +191,7 @@ check("MYBUDDY_OCR_CLI wins over the bundled windows OCR script", () => {
 /* 5. Linux OCR provider 描述（供后续接线，不执行）                     */
 /* ------------------------------------------------------------------ */
 
-check("linux OCR descriptor exposes tesseract command, languages and install hint", () => {
+await check("linux OCR descriptor exposes tesseract command, languages and install hint", () => {
   const dir = fakePathDir(["tesseract"]);
   const descriptor = describeLinuxOcrProvider(dir, "linux");
   assert.ok(descriptor);
@@ -204,4 +209,71 @@ check("linux OCR descriptor exposes tesseract command, languages and install hin
   assert.equal(describeLinuxOcrProvider("", "windows"), undefined);
 });
 
+/* ------------------------------------------------------------------ */
+/* 6. Backend 工厂：每平台一个 backend，Linux/macOS 显式 unsupported      */
+/* ------------------------------------------------------------------ */
+
+await check("factory returns a cached backend per platform", () => {
+  resetComputerUseBackends();
+  const linux = createComputerUseBackend("linux");
+  assert.equal(linux, createComputerUseBackend("linux"), "backend should be cached per platform");
+  assert.equal(linux.platform, "linux");
+  assert.equal(linux.backend, "linux-wayland");
+  assert.equal(linux.available, false);
+
+  const windows = createComputerUseBackend("windows");
+  assert.equal(windows.platform, "windows");
+  assert.equal(windows.backend, "windows-uia");
+  assert.equal(windows.available, true);
+
+  const macos = createComputerUseBackend("macos");
+  assert.equal(macos.platform, "macos");
+  assert.equal(macos.available, false);
+  assert.notEqual(windows, linux);
+  resetComputerUseBackends();
+});
+
+await check("linux backend status is diagnostic and execute rejects with install hint", async () => {
+  resetComputerUseBackends();
+  const backend = createComputerUseBackend("linux");
+  const status = backend.status();
+  assert.equal(status.platform, "linux");
+  assert.equal(status.supported, false);
+  assert.match(status.detail, /linux/);
+  assert.deepEqual(status.missingDependencies, detectComputerUseSupport("linux").missingDependencies);
+
+  await assert.rejects(backend.execute({ action: "status" }), (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    assert.match(message, /linux/);
+    assert.doesNotMatch(message, /当前仅支持 Windows/);
+    return true;
+  });
+  await backend.shutdown(); // no-op on Linux
+  resetComputerUseBackends();
+});
+
+await check("windows backend exposes the UIA status contract without touching the host", () => {
+  resetComputerUseBackends();
+  const backend = createComputerUseBackend("windows");
+  const status = backend.status();
+  assert.equal(status.platform, "windows");
+  assert.equal(status.backend, "windows-uia");
+  assert.equal(status.supported, true);
+  assert.deepEqual(status.missingDependencies, []);
+  assert.match(status.detail, /windows-uia/);
+  resetComputerUseBackends();
+});
+
+await check("macos backend rejects with a macOS-specific reason", async () => {
+  resetComputerUseBackends();
+  const backend = createComputerUseBackend("macos");
+  assert.equal(backend.status().backend, "unsupported");
+  await assert.rejects(backend.execute({ action: "status" }), /macOS/);
+  await backend.shutdown();
+  resetComputerUseBackends();
+});
+
 console.log(`platform-computer-use: ${results.length} checks passed`);
+}
+
+void main();

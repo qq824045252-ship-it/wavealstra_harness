@@ -11,6 +11,7 @@
  *  - staging → 原子改名；失败只留可清理残留，绝不把半成品标成可用
  */
 import { createHash } from "node:crypto";
+import { currentNodePlatform, uvAssetName as uvAssetNameImpl, uvExecutableName as uvExecutableNameImpl } from "../platform/runtime";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -113,33 +114,11 @@ function clean(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-/** 平台/架构 → 官方 asset 名。不支持的组合直接抛错，不做猜测式回退。 */
-export function uvAssetName(platform: NodeJS.Platform, arch: NodeJS.Architecture): string {
-  const archPart = (() => {
-    switch (arch) {
-      case "x64":
-        return "x86_64";
-      case "arm64":
-        return "aarch64";
-      default:
-        throw new Error(`uv 受管下载不支持的架构：${arch}`);
-    }
-  })();
-  switch (platform) {
-    case "win32":
-      return `uv-${archPart}-pc-windows-msvc.zip`;
-    case "darwin":
-      return `uv-${archPart}-apple-darwin.tar.gz`;
-    case "linux":
-      return `uv-${archPart}-unknown-linux-gnu.tar.gz`;
-    default:
-      throw new Error(`uv 受管下载不支持的平台：${platform}`);
-  }
-}
-
-export function uvExecutableName(platform: NodeJS.Platform): string {
-  return platform === "win32" ? "uv.exe" : "uv";
-}
+/**
+ * 平台/架构 → 官方 asset 名（不支持的组合直接抛错，不做猜测式回退）。
+ * 实现见 platform/runtime；保留原导出名。
+ */
+export { uvAssetName, uvExecutableName } from "../platform/runtime";
 
 /** sidecar 内容形如 "<hex>  <asset>"；只取第一个 64 位十六进制串。 */
 export function parseSha256Sidecar(text: string): string | null {
@@ -262,7 +241,7 @@ export class UvToolchain implements UvExecutor {
   get busy(): boolean { return this.installing !== null; }
 
   constructor(private readonly options: UvToolchainOptions = {}) {
-    this.platform = options.platform ?? process.platform;
+    this.platform = options.platform ?? currentNodePlatform;
     this.arch = options.arch ?? process.arch;
     this.env = options.env ?? process.env;
     this.fileExists = options.exists ?? existsSync;
@@ -287,7 +266,7 @@ export class UvToolchain implements UvExecutor {
   }
 
   managedExecutablePath(version = UV_PINNED_VERSION): string {
-    return join(this.toolchainDir, "uv", version, uvExecutableName(this.platform));
+    return join(this.toolchainDir, "uv", version, uvExecutableNameImpl(this.platform));
   }
 
   managedManifestPath(version = UV_PINNED_VERSION): string {
@@ -369,7 +348,7 @@ export class UvToolchain implements UvExecutor {
 
   private async install(signal?: AbortSignal): Promise<UvToolchainInfo> {
     const version = UV_PINNED_VERSION;
-    const asset = uvAssetName(this.platform, this.arch);
+    const asset = uvAssetNameImpl(this.platform, this.arch);
     const url = `${RELEASE_BASE}/${version}/${asset}`;
     const stagingRoot = join(this.stagingDir, `uv-${version}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(stagingRoot, { recursive: true });
@@ -412,7 +391,7 @@ export class UvToolchain implements UvExecutor {
       mkdirSync(extractedRoot, { recursive: true });
       await extractArchive(archivePath, extractedRoot);
 
-      const executableName = uvExecutableName(this.platform);
+      const executableName = uvExecutableNameImpl(this.platform);
       const located = findFileRecursive(extractedRoot, executableName);
       if (!located) throw new Error(`uv 安装失败：解压结果中找不到 ${executableName}`);
 

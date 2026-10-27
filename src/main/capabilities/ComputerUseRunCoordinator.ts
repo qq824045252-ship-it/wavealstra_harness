@@ -1,8 +1,8 @@
-import type { ComputerExecInput, ComputerExecOutput } from "./ComputerAutomationService";
+import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
 import { computerUseOverlayService } from "./ComputerUseOverlayService";
 import { prepareComputerUseInput, verificationFor, type ComputerUsePhase } from "./ComputerUsePolicy";
 import type { ComputerUseRecoveryPlan } from "./ComputerUseRecoveryPolicy";
-import { WindowsAutomationError, type WindowInfo } from "./windows/windowsAutomationProtocol";
+import { WindowsAutomationError, type WindowInfo } from "../platform/computer-use/protocol";
 
 interface RunState {
   taskId: string;

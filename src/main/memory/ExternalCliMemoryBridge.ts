@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, sep, join } from "node:path";
 import { getMyBuddyDir } from "../paths";
+import { canonicalPathKey } from "../platform/paths";
 import type { MemoryGatewayAccessMode } from "../../shared/memory-gateway";
 import type { MemoryGatewayController } from "./MemoryGatewayController";
 import { protectMemoryGatewaySecretFile } from "./MemoryGatewayFileSecurity";
@@ -27,8 +28,7 @@ export interface ExternalCliMemoryBridgeResult {
 }
 
 function canonicalPath(value: string): string {
-  const normalized = resolve(value).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? normalized.toLocaleLowerCase() : normalized;
+  return canonicalPathKey(value);
 }
 
 function safeProfileHash(workspaceId: string, cwd: string): string {

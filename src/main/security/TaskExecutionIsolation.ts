@@ -12,6 +12,8 @@
  * 默认等级 = guarded；os-sandbox 仅 opt-in。
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { spawnDetachedForTreeKill } from "../platform/runtime";
+import { killProcessTree as killPlatformProcessTree } from "../platform/processes";
 import { TaskFileAccessPolicy } from "./TaskFileAccessPolicy";
 
 export type IsolationLevel = "cwd-only" | "guarded" | "os-sandbox";
@@ -244,39 +246,13 @@ function buildEnv(
   return base;
 }
 
+/** 终止子进程树：实现见 platform/processes（Windows taskkill / POSIX 进程组 SIGKILL）。 */
 function killProcessTree(child: ChildProcess): void {
-  const pid = child.pid;
-  if (pid == null) {
-    try {
-      child.kill();
-    } catch {
-      /* */
-    }
-    return;
-  }
-  if (process.platform === "win32") {
-    try {
-      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-      return;
-    } catch {
-      /* fall through */
-    }
-  } else {
-    try {
-      process.kill(-pid, "SIGKILL");
-      return;
-    } catch {
-      /* not a process group leader */
-    }
-  }
-  try {
-    child.kill("SIGKILL");
-  } catch {
-    /* */
-  }
+  killPlatformProcessTree(child, {
+    onMissingPid: () => { try { child.kill(); } catch { /* */ } },
+    posixSignal: "SIGKILL",
+    onWindowsError: () => { try { child.kill("SIGKILL"); } catch { /* */ } },
+  });
 }
 
 function spawnCommand(
@@ -300,7 +276,7 @@ function spawnCommand(
       shell: false,
       windowsHide: true,
       // Unix：新进程组便于超时杀整树；Windows 用 taskkill /T
-      detached: process.platform !== "win32",
+      detached: spawnDetachedForTreeKill(),
     });
 
     const timer = setTimeout(() => {

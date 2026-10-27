@@ -7,7 +7,7 @@ import {
   recordComputerUseFailureRecovery,
   settleComputerUseResultRecovery,
 } from "../src/main/agent/ComputerUseFailureRecovery";
-import { WindowsAutomationError, type WindowInfo } from "../src/main/capabilities/windows/windowsAutomationProtocol";
+import { WindowsAutomationError, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 function windowFixture(): WindowInfo {
   return {

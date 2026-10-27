@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { currentPlatformId, type PlatformId } from "../index";
-import { executableInPath } from "../computer-use";
+import { executableInPath } from "./support";
 
 /**
  * OCR provider 的平台相关部分。

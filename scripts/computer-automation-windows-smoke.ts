@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { app, nativeImage } from "electron";
-import { ComputerAutomationService } from "../src/main/capabilities/ComputerAutomationService";
-import { WindowsAutomationHost } from "../src/main/capabilities/windows/WindowsAutomationHost";
-import { WindowsAutomationError, type ControlInfo, type WindowInfo } from "../src/main/capabilities/windows/windowsAutomationProtocol";
+import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { WindowsAutomationHost } from "../src/main/platform/computer-use/windows/WindowsAutomationHost";
+import { WindowsAutomationError, type ControlInfo, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 const FORM_SCRIPT = String.raw`
 $ErrorActionPreference='Stop'

@@ -11,6 +11,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { getConnectorsDir, getConnectorMarketDir, getPluginsDir, getSkillsDir } from "../paths";
+import { connectorPlatformKey } from "../platform/apps";
 
 /**
  * 连接器（Connector）服务。
@@ -90,7 +91,7 @@ interface CliJson {
 }
 
 function platformKey(): string {
-  return process.platform as string;
+  return connectorPlatformKey();
 }
 
 /** 本地市场根目录（含 connectors/ 子目录） */

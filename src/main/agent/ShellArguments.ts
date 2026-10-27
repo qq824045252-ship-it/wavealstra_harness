@@ -1,6 +1,7 @@
 /** Convert Windows paths for Bash arguments without choosing or changing the shell. */
+import { toPosixPath } from "../platform/paths";
 export function toBashPath(path: string): string {
-  return process.platform === "win32" ? path.replaceAll("\\", "/") : path;
+  return toPosixPath(path);
 }
 
 /** POSIX-shell single-quote escaping for the optional execute_code tool. */

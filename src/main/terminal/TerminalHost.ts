@@ -22,8 +22,6 @@
  * 同步发送，之后 pty 实时输出才可能到达 → 同一通道内顺序不乱、无重复。
  */
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
 import {
   TerminalIpc,
   ownerFromIds,
@@ -42,6 +40,8 @@ import {
 import { applyShellIsolationSpawnContext } from "../security/TaskExecutionIsolation";
 import { ByteBoundedRingBuffer } from "./RingBuffer";
 import { prependEnvPath } from "./terminal-env";
+import { canonicalPathKey } from "../platform/paths";
+import { defaultShellForPlatform, useConpty } from "../platform/terminal";
 
 /** 每 owner ring buffer 字节上限（256KB） */
 export const DEFAULT_RING_MAX_BYTES = 256 * 1024;
@@ -98,10 +98,7 @@ export function ownerKeyOf(owner: TerminalOwner): string {
 
 /** 路径重绑审计：Windows 大小写/尾分隔符差异不应误判为 cwd 变化。 */
 export function sameTerminalCwd(left: string, right: string): boolean {
-  const normalize = (value: string): string => {
-    const resolved = resolve(value).replace(/[\\/]+$/, "");
-    return process.platform === "win32" ? resolved.toLocaleLowerCase() : resolved;
-  };
+  const normalize = (value: string): string => canonicalPathKey(value);
   return normalize(left) === normalize(right);
 }
 
@@ -172,17 +169,8 @@ interface TerminalSession {
   flushTimer: NodeJS.Timeout | null;
 }
 
-/** 平台默认 shell（Windows 优先 pwsh，回退 powershell.exe） */
-export function defaultShellForPlatform(): string {
-  if (process.platform === "win32") {
-    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-    const pwsh = join(programFiles, "PowerShell", "7", "pwsh.exe");
-    if (existsSync(pwsh)) return pwsh;
-    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-    return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  }
-  return process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
-}
+/** 平台默认 shell（Windows 优先 pwsh，回退 powershell.exe）——实现见 platform/terminal。 */
+export { defaultShellForPlatform };
 
 export class TerminalHost {
   private readonly deps: Required<TerminalHostDeps>;
@@ -212,7 +200,7 @@ export class TerminalHost {
             rows: options.rows,
             cwd: options.cwd,
             env: options.env,
-            useConpty: process.platform === "win32",
+            useConpty: useConpty(),
           });
         }),
       ringMaxBytes: deps.ringMaxBytes ?? DEFAULT_RING_MAX_BYTES,

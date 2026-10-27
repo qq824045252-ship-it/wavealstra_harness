@@ -4,6 +4,7 @@
  * Windows/Electron（MyBuddy）：绝不复用宿主二进制；node.exe + pi CLI JS 入口，
  * shell:false（无 shell 注入面）。解析失败返回 null（结构化诊断，不静默 ENOENT）。
  */
+import { nodeExecutableName, pathListSeparator, programFilesDefault } from "../../platform/runtime";
 
 import * as path from "node:path";
 
@@ -99,14 +100,14 @@ export function resolveSystemNode(
   exists: (p: string) => boolean,
 ): string | null {
   if (env.PI_NODE_PATH && exists(env.PI_NODE_PATH)) return env.PI_NODE_PATH;
-  const exe = process.platform === "win32" ? "node.exe" : "node";
+  const exe = nodeExecutableName();
   const pathEnv = env.PATH ?? env.Path ?? "";
-  for (const dir of pathEnv.split(path.delimiter)) {
+  for (const dir of pathEnv.split(pathListSeparator())) {
     if (!dir) continue;
     const candidate = path.join(dir, exe);
     if (exists(candidate)) return candidate;
   }
-  const programFiles = env.ProgramFiles ?? (process.platform === "win32" ? "C:\\Program Files" : "");
+  const programFiles = env.ProgramFiles ?? programFilesDefault();
   if (programFiles) {
     const candidate = path.join(programFiles, "nodejs", exe);
     if (exists(candidate)) return candidate;

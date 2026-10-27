@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { spawnDetachedForTreeKill } from "../platform/runtime";
+import { killProcessTree as killPlatformProcessTree } from "../platform/processes";
 import { dirname, delimiter } from "node:path";
 import { applyShellIsolationSpawnContext } from "../security/TaskExecutionIsolation";
 
@@ -22,7 +24,7 @@ export async function executePython(options: {
   env.MYBUDDY_TASK_ROOT = options.cwd;
   const isolated = applyShellIsolationSpawnContext(options.isolationLevel, options.cwd, { command: "", cwd: options.cwd, env });
   const child = spawn(options.pythonPath, ["-u", options.scriptPath, ...(options.args ?? [])], {
-    cwd: isolated.cwd, env: isolated.env, shell: false, windowsHide: true, detached: process.platform !== "win32",
+    cwd: isolated.cwd, env: isolated.env, shell: false, windowsHide: true, detached: spawnDetachedForTreeKill(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let text = "", cancelled = false, timedOut = false;
@@ -33,13 +35,14 @@ export async function executePython(options: {
   };
   const stop = () => {
     if (!child.pid || child.exitCode !== null) return;
-    if (process.platform === "win32") {
-      const kill = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-      kill.on("error", () => child.kill());
-    } else {
-      try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); }
-      killer = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 1000);
-    }
+    killer = killPlatformProcessTree(child, {
+      windowsTaskkillCommand: "taskkill.exe",
+      onWindowsError: () => child.kill(),
+      posixSignal: "SIGTERM",
+      escalateSignal: "SIGKILL",
+      escalateAfterMs: 1000,
+      onPosixError: () => child.kill(),
+    });
   };
   const abort = () => { cancelled = true; stop(); };
   options.signal?.addEventListener("abort", abort, { once: true });

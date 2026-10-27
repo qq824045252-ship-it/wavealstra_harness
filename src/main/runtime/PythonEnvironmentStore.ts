@@ -12,6 +12,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { currentNodePlatform, venvPythonRelativePath as venvPythonRelativePathImpl } from "../platform/runtime";
 import {
   pythonFailureStageLabel,
   type PythonEnvironmentInfo,
@@ -90,10 +91,8 @@ export function isPythonEnvironmentFailure(value: unknown): value is PythonEnvir
   return value instanceof Error && typeof (value as PythonEnvironmentFailure).stage === "string";
 }
 
-/** venv 内解释器相对路径：Windows 走 Scripts，POSIX 走 bin。 */
-export function venvPythonRelativePath(platform: NodeJS.Platform): string {
-  return platform === "win32" ? join("Scripts", "python.exe") : join("bin", "python");
-}
+/** venv 内解释器相对路径：Windows 走 Scripts，POSIX 走 bin（实现见 platform/runtime）。 */
+export { venvPythonRelativePath } from "../platform/runtime";
 
 export class PythonEnvironmentStore {
   private readonly uv: UvExecutor;
@@ -105,7 +104,7 @@ export class PythonEnvironmentStore {
   private readonly labels = new Map<string, string>();
 
   constructor(private readonly options: PythonEnvironmentStoreOptions = {}) {
-    this.platform = options.platform ?? process.platform;
+    this.platform = options.platform ?? currentNodePlatform;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 900_000;
     this.onProgress = options.onProgress ?? (() => {});
     const emitToUv = (progress: UvDownloadProgress): void => {
@@ -172,7 +171,7 @@ export class PythonEnvironmentStore {
   }
 
   pythonPathOf(id: string): string {
-    return join(this.environmentPath(id), venvPythonRelativePath(this.platform));
+    return join(this.environmentPath(id), venvPythonRelativePathImpl(this.platform));
   }
 
   /** 执行租约：占用期间不能回收，结束后调用幂等 release。 */

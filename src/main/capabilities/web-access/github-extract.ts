@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { killProcessTree as killPlatformProcessTree } from "../../platform/processes";
+import { spawnDetachedForTreeKill } from "../../platform/runtime";
 import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
 import { activityMonitor } from "./activity.ts";
 import type { ExtractedContent } from "./extract.ts";
@@ -189,40 +191,18 @@ function cloneDir(config: GitHubCloneConfig, owner: string, repo: string, ref?: 
 const PROCESS_KILL_GRACE_MS = 3000;
 
 function terminateProcessTree(child: ChildProcess): void {
-	const pid = child.pid;
-	if (!pid) return;
-
-	if (process.platform === "win32") {
-		const killer = execFile(
-			"taskkill",
-			["/pid", String(pid), "/T", "/F"],
-			{ windowsHide: true },
-			(err) => {
-				if (err) child.kill();
-			},
-		);
-		killer.unref();
-		return;
-	}
-
-	try {
-		// Clone commands run in their own process group so git/gh helpers cannot
-		// survive a timeout or cancellation and keep reading from the host TTY.
-		process.kill(-pid, "SIGTERM");
-	} catch {
-		child.kill();
-	}
-
-	// A credential helper may handle or ignore SIGTERM. Escalate against the
-	// entire process group so neither git nor any descendant can block forever.
-	const forceKill = setTimeout(() => {
-		try {
-			process.kill(-pid, "SIGKILL");
-		} catch {
-			child.kill("SIGKILL");
-		}
-	}, PROCESS_KILL_GRACE_MS);
-	forceKill.unref();
+	// 平台差异见 platform/processes：Windows 用 execFile taskkill /T；POSIX 先 SIGTERM 组杀，
+	// 3s 后 SIGKILL 升级（git/gh 凭据助手可能忽略 SIGTERM）。
+	killPlatformProcessTree(child, {
+		windowsMode: "execFile",
+		onWindowsError: () => child.kill(),
+		unref: true,
+		posixSignal: "SIGTERM",
+		escalateSignal: "SIGKILL",
+		escalateAfterMs: PROCESS_KILL_GRACE_MS,
+		unrefEscalation: true,
+		onPosixError: () => child.kill(),
+	});
 }
 
 function execClone(args: string[], localPath: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
@@ -249,7 +229,7 @@ function execClone(args: string[], localPath: string, timeoutMs: number, signal?
 		};
 
 		const child = spawn(args[0], args.slice(1), {
-			detached: process.platform !== "win32",
+			detached: spawnDetachedForTreeKill(),
 			env: {
 				...process.env,
 				GIT_TERMINAL_PROMPT: "0",

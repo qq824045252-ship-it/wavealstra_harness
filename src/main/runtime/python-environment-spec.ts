@@ -7,7 +7,7 @@
  * 身份计算只在主进程发生，放这里既能用 crypto，也保证 shared 契约保持纯净。
  */
 import { createHash } from "node:crypto";
-import { resolve, sep } from "node:path";
+import { currentNodePlatform, pythonProjectCacheKey } from "../platform/runtime";
 import { DEFAULT_PYTHON_REQUEST, type PythonEnvironmentSpec } from "../../shared/python-runtime";
 
 /** Commas in version bounds and extras belong to one requirement. */
@@ -57,7 +57,7 @@ export function pythonEnvironmentSpecId(spec: PythonEnvironmentSpec | undefined)
   const profile = (spec?.profile ?? "").trim();
   const payload = JSON.stringify({
     v: 2,
-    platform: process.platform,
+    platform: currentNodePlatform,
     arch: process.arch,
     profile,
     python: normalized.python,
@@ -82,10 +82,8 @@ export function describePythonEnvironmentSpec(spec: PythonEnvironmentSpec | unde
  * 直接拿原始字符串做主键会让「绑定过的项目」在换个写法后就查不到，
  * 于是同一个项目被反复询问——正好违反「保存绑定关系，不反复询问」。
  */
-export function pythonProjectDirKey(dir: string, platform: NodeJS.Platform = process.platform): string {
-  const resolved = resolve(dir);
-  const unified = resolved.split(sep).join("/");
-  return platform === "win32" ? unified.toLowerCase() : unified;
+export function pythonProjectDirKey(dir: string, platform: NodeJS.Platform = currentNodePlatform): string {
+  return pythonProjectCacheKey(dir, platform);
 }
 
 /** 项目绑定的稳定短 id：同一目录在重启前后得到同一个 environmentId。 */

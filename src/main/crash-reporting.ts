@@ -12,6 +12,7 @@
  * `src/main/index.ts` 注入，纯逻辑因此可以在 node 测试里直接跑。
  */
 import { mkdirSync } from "node:fs";
+import { currentNodePlatform } from "./platform/runtime";
 import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
 import type { RuntimeLogger } from "./runtime-logging";
@@ -85,7 +86,7 @@ export function configureCrashReporting(input: ConfigureCrashReportingInput): Cr
     uploadToServer: false,
     compress: true,
     version: input.version ?? "unknown",
-    platform: input.platform ?? process.platform,
+    platform: input.platform ?? currentNodePlatform,
     extra: { electron: process.versions.electron ?? "unknown", node: process.versions.node ?? "unknown" },
   };
   try {

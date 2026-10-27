@@ -2,8 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { getMyBuddyBinDir } from "../paths";
+import { canonicalPathKey, directorySymlinkType } from "../platform/paths";
 import { prependEnvPath } from "./terminal-env";
 
 export type HerdrPrepareAction = "focus-existing" | "create-workspace";
@@ -42,8 +43,7 @@ interface HerdrPaneSummary {
 }
 
 function canonicalPath(value: string): string {
-  const normalized = resolve(value).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? normalized.toLocaleLowerCase() : normalized;
+  return canonicalPathKey(value);
 }
 
 export function defaultHerdrCliSkillRoots(home = homedir()): string[] {
@@ -112,7 +112,7 @@ export function projectMyBuddySkillsToCliRoots(
         continue;
       }
       try {
-        symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
+        symlinkSync(source, target, directorySymlinkType());
         result.created += 1;
       } catch (error) {
         result.errors.push(`${target}: ${error instanceof Error ? error.message : String(error)}`);

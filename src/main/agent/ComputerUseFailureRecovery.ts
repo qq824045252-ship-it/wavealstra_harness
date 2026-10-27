@@ -1,6 +1,6 @@
-import type { ComputerExecInput, ComputerExecOutput } from "../capabilities/ComputerAutomationService";
+import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
 import { isComputerUseSideEffect } from "../capabilities/ComputerUsePolicy";
-import { WindowsAutomationError, type AutomationErrorCode, type WindowInfo } from "../capabilities/windows/windowsAutomationProtocol";
+import { WindowsAutomationError, type AutomationErrorCode, type WindowInfo } from "../platform/computer-use/protocol";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
 

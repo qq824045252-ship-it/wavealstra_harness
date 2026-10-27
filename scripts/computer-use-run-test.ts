@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { ComputerAutomationService } from "../src/main/capabilities/ComputerAutomationService";
+import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
 import { prepareComputerUseInput } from "../src/main/capabilities/ComputerUsePolicy";
 import { planComputerUseRecovery } from "../src/main/capabilities/ComputerUseRecoveryPolicy";
 import { computerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
-import { computerUseOverlayService } from "../src/main/capabilities/ComputerUseOverlayService";
-import { WindowsAutomationError, type WindowInfo } from "../src/main/capabilities/windows/windowsAutomationProtocol";
+import { computerUseOverlayService } from "../src/main/platform/computer-use/windows/overlay";
+import { WindowsAutomationError, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 function fixture(overrides: Partial<WindowInfo> = {}): WindowInfo {
   return {

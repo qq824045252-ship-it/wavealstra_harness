@@ -12,6 +12,7 @@
  * - fcstd/step 导出：FreeCADCmd 原生（Import.export 等）；FCStd 由 FreeCAD 自身产生
  */
 import { spawn } from "node:child_process";
+import { killProcessTree as killPlatformProcessTree } from "../platform/processes";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shell } from "electron";
@@ -269,23 +270,7 @@ export class FreeCadInterop {
   }
 }
 
-/** Windows 整树杀（同 TaskExecutionIsolation 策略） */
+/** 整树杀（同 TaskExecutionIsolation 策略；POSIX 只杀子进程本身，不组杀）。 */
 function killTree(child: { pid?: number; kill: () => void }): void {
-  if (child.pid == null) return;
-  if (process.platform === "win32") {
-    try {
-      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-      return;
-    } catch {
-      /* fall through */
-    }
-  }
-  try {
-    child.kill();
-  } catch {
-    /* */
-  }
+  killPlatformProcessTree(child, { groupKill: false });
 }

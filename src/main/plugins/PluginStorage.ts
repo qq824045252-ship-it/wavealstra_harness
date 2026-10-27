@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { PluginStoragePathsDto } from "../../shared/plugin-storage";
 import { parseJsonc } from "../../shared/jsonc";
+import { directorySymlinkType, parentTraversalPrefix, resolvedPathKey } from "../platform/paths";
 
 const DIRECTORY_NAMES = ["skills", "experts", "connectors", "agents", "prompts", "extensions", "expert-market", "connector-market"] as const;
 const MCP_FILES = ["mcp.json", "mcp-cache.json", "mcp-native-auth.encrypted.json", "mcp-native-refresh-locks", "mcp-native.log", "mcp-native.log.1"];
@@ -69,7 +70,7 @@ function migratePluginStorageUnlocked(myBuddyDir: string): PluginStoragePathsDto
   let backedUp = false;
   const assertOwned = (path: string): void => {
     const rel = relative(base, resolve(path));
-    if (!rel || rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) throw new Error(`插件迁移路径超出数据目录: ${path}`);
+    if (!rel || rel === ".." || rel.startsWith(parentTraversalPrefix()) || isAbsolute(rel)) throw new Error(`插件迁移路径超出数据目录: ${path}`);
   };
   const move = (source: string, target: string): void => {
     assertOwned(source); assertOwned(target);
@@ -112,7 +113,7 @@ function migratePluginStorageUnlocked(myBuddyDir: string): PluginStoragePathsDto
 
   // Retarget existing CLI projections of MyBuddy Skills. CLI-owned folders/links are preserved.
   const linkBackups: { path: string; before: string; after: string }[] = [];
-  const normalize = (path: string): string => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+  const normalize = (path: string): string => resolvedPathKey(path);
   const legacySkills = join(base, "skills");
   for (const cli of [".agents", ".codex", ".claude", ".hermes"]) {
     const cliRoot = join(dirname(base), cli, "skills");
@@ -129,8 +130,8 @@ function migratePluginStorageUnlocked(myBuddyDir: string): PluginStoragePathsDto
       writeFileSync(join(backupPath, "cli-links.json"), JSON.stringify(linkBackups, null, 2), "utf8");
       backedUp = true;
       unlinkSync(link);
-      try { symlinkSync(after, link, process.platform === "win32" ? "junction" : "dir"); }
-      catch (error) { symlinkSync(before, link, process.platform === "win32" ? "junction" : "dir"); throw error; }
+      try { symlinkSync(after, link, directorySymlinkType()); }
+      catch (error) { symlinkSync(before, link, directorySymlinkType()); throw error; }
     }
   }
 

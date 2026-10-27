@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { pathKey, resolvedPathKey } from "../platform/paths";
 import {
   copyFileSync,
   cpSync,
@@ -555,7 +556,7 @@ export class SkillsService {
         // Skill must not reserve the name and shadow an active Project/Expert/Connector copy.
         if (!dto.enabled) continue;
         if (include && !include(dto)) continue;
-        const pathKey = process.platform === "win32" ? resolve(skill.filePath).toLowerCase() : resolve(skill.filePath);
+        const pathKey = resolvedPathKey(skill.filePath);
         if (seenPaths.has(pathKey)) continue;
         const existing = selected.get(skill.name);
         if (existing) {
@@ -589,7 +590,7 @@ export class SkillsService {
     cwd?: string,
     extraSkillPaths: string[] = [],
   ): SkillScriptOwner | null {
-    const lower = (value: string): string => (process.platform === "win32" ? value.toLowerCase() : value);
+    const lower = (value: string): string => pathKey(value);
     const target = lower(resolve(scriptPath));
     let best: SkillScriptOwner | null = null;
     for (const skill of this.resolveRuntimeSkills(cwd, extraSkillPaths).skills) {
@@ -948,8 +949,8 @@ export class SkillsService {
     const canonicalFile = resolve(filePath);
     const skillsRoot = resolve(getSkillsDir());
     const parent = resolve(join(canonicalFile, ".."));
-    const cmpParent = process.platform === "win32" ? parent.toLowerCase() : parent;
-    const cmpRoot = process.platform === "win32" ? skillsRoot.toLowerCase() : skillsRoot;
+    const cmpParent = pathKey(parent);
+    const cmpRoot = pathKey(skillsRoot);
     if (!(cmpParent === cmpRoot || cmpParent.startsWith(cmpRoot + sep))) return undefined;
     const metaPath = join(parent, "_skillhub_meta.json");
     if (!existsSync(canonicalFile) || !existsSync(metaPath)) return undefined;

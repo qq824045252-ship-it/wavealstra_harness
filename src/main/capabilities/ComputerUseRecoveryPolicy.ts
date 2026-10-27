@@ -1,6 +1,6 @@
-import type { ComputerExecInput } from "./ComputerAutomationService";
+import type { ComputerExecInput } from "../platform/computer-use/protocol";
 import { isComputerUseSideEffect } from "./ComputerUsePolicy";
-import { WindowsAutomationError } from "./windows/windowsAutomationProtocol";
+import { WindowsAutomationError } from "../platform/computer-use/protocol";
 
 export interface ComputerUseRecoveryPlan {
   retry: boolean;

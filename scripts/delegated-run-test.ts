@@ -161,7 +161,7 @@ try {
   assert.ok(herdr.includes('const sessionArgs = ["--session", sessionName]'), "Herdr commands stay inside the MyBuddy-owned named session");
   assert.ok(externalAgentTypes.includes('"devin"'), "ExternalAgentId includes Devin");
   assert.ok(externalAgentRuntime.includes('id: "devin"') && externalAgentRuntime.includes('nativeArgs: ["acp"]'), "Devin uses native devin acp runtime");
-  assert.ok(externalAgentRuntime.includes("desktopBundledCli"), "Devin falls back to the CLI bundled with Devin Desktop when PATH has no devin executable");
+  assert.ok(externalAgentRuntime.includes("devinDesktopBundledCli"), "Devin falls back to the CLI bundled with Devin Desktop when PATH has no devin executable");
   assert.ok(externalAgentRuntime.includes('"cognition.ai/requestDiagnostics": true'), "Devin advertises its diagnostics compatibility capability");
   assert.ok(externalAgentRuntime.includes('name: "windsurf"'), "Devin ACP initializes with the narrow Windsurf identity compatibility shim");
 
