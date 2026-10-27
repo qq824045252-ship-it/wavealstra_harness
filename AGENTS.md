@@ -1,5 +1,6 @@
 # Agent notes
 
+- 多机（Windows/Linux）同步、冲突决策表与 push 前门禁清单见 [docs/git-sync.md](docs/git-sync.md)。
 - Git workflow: use `main` as the only active local branch and commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. The release workflow below is standing authorization for its scoped commit and push; otherwise push only when explicitly requested.
 - Typecheck: `pnpm -s typecheck`
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
