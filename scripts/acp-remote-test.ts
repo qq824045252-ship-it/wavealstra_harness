@@ -54,6 +54,17 @@ async function waitFor<T>(probe: () => T | undefined | null | false | Promise<T 
   throw new Error(`timeout waiting for ${label}`);
 }
 
+/**
+ * 等上一个 ACP 轮次真的结束再发下一轮。
+ *
+ * history() 已经有输出 ≠ busy 已经清掉：CI runner 只有 2-4 vCPU，ACP 进程退出与
+ * runtime 清理之间会有可观测的窗口，此时直接续聊会撞 409「该任务已有 ACP Agent
+ * 正在执行」（未捕获的 RemoteApiError，整条用例红）。本地快机器上几乎撞不到。
+ */
+async function waitIdle(): Promise<void> {
+  await waitFor(() => (service.runtime(TASK)?.busy ? undefined : true), "previous ACP run idle");
+}
+
 function httpJson(port: number, method: string, path: string, headers: Record<string, string>, body?: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
@@ -243,6 +254,7 @@ try {
     ok("结束后 runtime 清理 acpRun 与 ACP 审批");
 
     // ---------- 4. 续聊 ----------
+    await waitIdle();
     const resumed = await client.acpPrompt(TASK, {
       agentId: "devin",
       text: "继续上一轮",
@@ -271,6 +283,7 @@ try {
     ok("续聊轮次完成并记录拒绝结果");
 
     // 不传任何续聊字段：手机端默认自动续接（进程会新起，但 session 上下文延续）
+    await waitIdle();
     const auto = await client.acpPrompt(TASK, { agentId: "devin", text: "自动续接一轮" });
     const autoMode = await waitFor(async () => {
       const value = await client.history(TASK);
@@ -289,6 +302,7 @@ try {
     ok("缺省自动续接会话（resume）");
 
     // newSession: true 强制开新会话（丢弃上下文）
+    await waitIdle();
     const fresh = await client.acpPrompt(TASK, { agentId: "devin", text: "强制新会话", newSession: true });
     const freshMode = await waitFor(async () => {
       const value = await client.history(TASK);
@@ -307,6 +321,7 @@ try {
     ok("newSession=true 强制新会话");
 
     // 续聊目标不存在 → 降级为新 session（不报错、也不串到别的 run）
+    await waitIdle();
     const fallback = await client.acpPrompt(TASK, { agentId: "devin", text: "降级一轮", continueFromRunId: "does-not-exist" });
     assert.ok(fallback.run.runId !== started.run.runId);
     const fallbackMode = await waitFor(async () => {

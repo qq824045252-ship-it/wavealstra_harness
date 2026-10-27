@@ -18,8 +18,10 @@ const config = { teamId: "T0C5V7WTE8P", appId: "A0C6PPDAB1S", allowUsers: ["U0C7
 const adapters: SlackSocketModeAdapter[] = [];
 let passed = 0;
 const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+// 5s 是本地机器上的经验值；CI runner 只有 2-4 vCPU 且同时跑多个套件，
+// 回调链会慢好几倍（曾因 "Timed out: native write result returned" 误报失败）。
 async function until(predicate: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 20000;
   while (!predicate()) { if (Date.now() >= deadline) throw new Error("Timed out: " + label); await wait(5); }
 }
 async function check(name: string, run: () => Promise<void> | void): Promise<void> {
