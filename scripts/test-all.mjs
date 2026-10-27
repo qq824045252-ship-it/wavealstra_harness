@@ -107,6 +107,10 @@ const GUI_TESTS = new Set([
   "test:computer-use-run",
   "test:computer-use-overlay",
   "test:computer-automation-windows",
+  // Linux/Wayland 真机冒烟（CUL 分页 + 截图 + doctor + 可选 ydotool 输入）。
+  // 需要真实 Hyprland 会话（hyprctl + xdg-desktop-portal + AT-SPI 桥），xvfb 里跑不了，
+  // 所以归 GUI；`--allow-input` 才碰真按键，日常只读。
+  "test:computer-use-linux",
 ]);
 
 const NETWORK_TESTS = new Set([

@@ -141,7 +141,14 @@ function detectComputerUseSupportUncached(platform: PlatformId, pathValue?: stri
   };
 }
 
-/** Computer Use 屏幕叠加层是 Windows 专属实现（WindowsGraphicsCapture + 透明分层窗口）。 */
+/**
+ * Computer Use 的「屏幕叠加层」是否可用。
+ *
+ * Windows 是完整实现（WindowsGraphicsCapture + 透明分层窗口，能画窗口外框）。
+ * Linux 上 CUL 自带 `computer-use-linux-indicator`（wlr-layer-shell，Hyprland 原生支持），
+ * 能在状态栏显示「正在操作什么」，但**画不出 Windows 那种窗口外框**，所以这里仍返回
+ * false；要用 indicator 需要另做一处接线（见 docs/platform-capabilities.md）。
+ */
 export function supportsComputerUseOverlay(platform: PlatformId = currentPlatformId): boolean {
   return platform === "windows";
 }
@@ -175,12 +182,14 @@ export interface ComputerUseToolCopy {
 const WINDOWS_BACKGROUND_NOTE = "background=true 用 PrintWindow（Chromium/Qt/Tauri 自动 WGC 窗口源）后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；";
 
 const LINUX_DESCRIPTION = [
-  "Linux/Wayland 桌面 Computer Use（后端 computer-use-linux：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype 输入 + AT-SPI 无障碍树）。",
+  "Linux/Wayland 桌面 Computer Use（后端 computer-use-linux：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype/ydotool 输入 + AT-SPI 无障碍树）。",
   "优先按窗口操作：list_windows 拿 window_handle → inspect_window 确认几何 → inspect_controls/find_control 找控件 → invoke_control/set_control_value；",
   "bounds 与 clientBoundsDip 是客户区 DIP，可直接用于 click_client/move_client。",
-  "AT-SPI 只暴露应用根节点时（Electron/Qt/Tauri 常见）：用 screenshot_window 或 ocr_window 拿到文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
+  "inspect_controls 会自动翻页收全 AT-SPI 树（CUL 的 get_app_state 只内联前约 20 个节点，可交互控件常在后几页）；返回 truncated=true 才表示还有节点没取到。只有控件确实为空（应用未启用无障碍）时才需要 screenshot_window / ocr_window 拿文本行（client DIP 的 x/y/width/height）再 click_client 坐标点击；ocr_window 走本地 tesseract，无需联网。",
   "截图是 JPEG，可能等比缩放到 1600px 以内，image_scale = 物理像素/图像像素；窗口截图坐标 = 图像像素 × image_scale。",
-  "Wayland 的限制（会明确报错，不要盲目重试）：没有后台截图（background=true 被拒绝，portal 只能截前台窗口）；没有 press/release 分离的鼠标/键盘事件（用 click_client/key_press 的组合键写法）；GNOME 专用的 setup_window_targeting 不可用。",
+  "Wayland 的限制（会明确报错，不要盲目重试）：没有后台截图（background=true 被拒绝，portal 只能截前台窗口）；GNOME 专用的 setup_window_targeting 不可用；窗口移动/改尺寸在 Hyprland 上不被 CUL 支持。",
+  "按下/释放分离可用：mouse_down_client + mouse_up_client（指针按钮按住，可跨步骤）、key_down + key_up（修饰键按住，例如先 key_down Ctrl 再 click_client）。click_client 的 modifiers 与 hold_ms、drag_client 的 steps/duration_ms 都真的生效（modifiers 与长按走 ydotool）。Wayland 上这些按住状态会一直持续到你显式释放，用完必须 key_up / mouse_up_client。",
+  "选中文字后优先 paste_text（写 wl-copy 再按 Ctrl+V），比 type_text 逐字输入快且不被输入法干扰；剪贴板不可用时它会退回逐字输入并在 detail 里说明。",
   "actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停）。type_text 对无法分类的输入框按 90 字符分块，返回 completed=false 时先观察 typedLength 再决定是否续写。",
   "焦点切换、坐标与 DPI 都由后端换算；点击前会校验目标窗口仍存在。attach_app 锁定会话后传 app_session_id 可持续操作同一窗口。",
 ].join("");

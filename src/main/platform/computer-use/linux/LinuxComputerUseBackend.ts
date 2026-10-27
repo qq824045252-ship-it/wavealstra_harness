@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ import {
 } from "../protocol";
 import { describeLinuxOcrProvider } from "../ocr";
 import { computerUseUnsupportedMessage, detectComputerUseSupport } from "../support";
-import { resolveCulBinary, runCulDoctor, type CulDoctorReport } from "./culBinary";
+import { resolveCulBinary, runCulDoctorAsync, type CulDoctorReport } from "./culBinary";
 import { CulMcpClient } from "./culClient";
 import {
   CUL_TOOLS,
@@ -43,6 +43,13 @@ import {
   type CulWindow,
 } from "./culProtocol";
 import { readHyprlandMonitors } from "./hyprlandMonitors";
+import {
+  ACCESSIBILITY_MAX_NODES,
+  ACCESSIBILITY_MAX_PAGES,
+  collectAccessibilityTree,
+  toAccessibilityPage,
+} from "./accessibilityTree";
+import { YdotoolInput, type YdotoolRunner } from "./ydotool";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,6 +94,23 @@ function requireFinite(value: unknown, name: string): number {
   return number;
 }
 
+/** Computer Use 协议的修饰键 → 键名（交给 ydotool 按 evdev keycode 按住）。 */
+function modifierKeyName(modifier: string): string {
+  switch (modifier.toLowerCase()) {
+    case "ctrl": return "Ctrl";
+    case "shift": return "Shift";
+    case "alt": return "Alt";
+    case "win": return "Super";
+    default:
+      throw new ComputerUseError("HOST_PROTOCOL_ERROR", `不认识的修饰键：${modifier}`, { modifier });
+  }
+}
+
+/** 拖拽插值/长按用的等待（可被取消时不强制打断：这些停顿都在 5 秒以内）。 */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
 /**
  * Linux Computer Use backend（Hyprland/Wayland，基于 computer-use-linux）。
  *
@@ -96,12 +120,19 @@ function requireFinite(value: unknown, name: string): number {
  *   1. 把 MyBuddy 的 `computer_exec` 动作映射到 CUL 工具；
  *   2. 做 DIP ↔ 物理像素 ↔ 截图图像像素的换算；
  *   3. 用本地 tesseract 做 OCR（CUL 不提供 OCR）；
- *   4. 保持与 `ComputerUseBackend` 一致的状态/错误契约。
+ *   4. 用 ydotool 补 CUL 没有的按下/松开分离（见 `ydotool.ts`）；
+ *   5. 把 AT-SPI 树翻页收全（见 `accessibilityTree.ts`）；
+ *   6. 保持与 `ComputerUseBackend` 一致的状态/错误契约。
  *
- * 能力边界（Wayland 的真实限制，写在这里免得以后重新踩）：
+ * 能力边界（Wayland 的真实限制，写在这里免得以后重新踩。**每条都经真机验证**，
+ * 2026-10-27 Omarchy / Hyprland 0.56.2 / eDP-1 2160×1440 @1.6）：
  * - 没有后台截图：portal 只能截前台；`background=true` 会被显式拒绝。
- * - 没有 press/release 分离的鼠标事件：`mouse_down_client` / `mouse_up_client` 报不支持。
- * - AT-SPI 对 Electron/Qt/Tauri 常只暴露 application/frame，此时用 `ocr_window` + 坐标点击。
+ * - press/release **可以**分离：走 ydotool（`key 42:1` / `key 42:0` / `click 0x40|0x80`），
+ *   状态跨进程持久；不能用 wtype（虚拟键盘协议在进程退出时释放）也不能用
+ *   Hyprland 的 `hl.dsp.send_key_state`（实测不产生持久状态）。
+ * - AT-SPI 对 Electron/Qt/Tauri **不是**只暴露 application/frame：树是完整的，但
+ *   `get_app_state` 只内联前 ~20 个节点，且 `max_nodes` 对内联数量无效，必须用
+ *   `get_tree_page` 翻页；不翻页时确实只能看到匿名 Section（所以要 ocr 兜底）。
  */
 export class LinuxComputerUseBackend implements ComputerUseBackend {
   readonly platform = "linux" as const;
@@ -112,6 +143,21 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   private monitorsCache?: { at: number; monitors: Awaited<ReturnType<typeof readHyprlandMonitors>> };
   private readonly observations = new Map<string, CachedObservation>();
   private readonly appSessions = new Map<string, AppSessionInfo>();
+  private readonly input: YdotoolInput;
+  private diagnosticsRefresh?: Promise<void>;
+
+  /**
+   * @param options.pasteViaClipboard 注入剪贴板写入（默认走 Electron `clipboard`）；
+   *   注入后 `paste_text` 会写剪贴板并打 Ctrl+V，而不是逐字 wtype。
+   * @param options.ydotoolRunner 注入 ydotool 执行器（单测不碰真机）。
+   */
+  constructor(private readonly options: {
+    ydotoolRunner?: YdotoolRunner;
+    pasteViaClipboard?: (text: string) => void | Promise<void>;
+  } = {}) {
+    this.input = new YdotoolInput({ runner: options.ydotoolRunner });
+  }
+
 
   /** 工具注册时的可用性判定：CUL 二进制在不在（不 spawn、不阻塞）。 */
   get available(): boolean {
@@ -123,7 +169,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
    *
    * **不在 status() 里 spawn `computer-use-linux doctor`**：这个方法会被工具注册、
    * 设置页和 agent 探针同步调用，而 doctor 要 1–3 秒。这里只做文件存在性判断 +
-   * 读已缓存的 doctor（由 `refreshDiagnostics()` 显式刷新）。
+   * 读已缓存的 doctor；缓存没有时由 `ensureDiagnostics()` 在后台补一次（不阻塞本次调用）。
    */
   status(): ComputerUseStatus {
     const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
@@ -139,32 +185,61 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         detail: computerUseUnsupportedMessage(support),
       };
     }
+    // 首次 status() 时后台补 doctor（不 await、不阻塞）；结果下次调用可见。
+    void this.ensureDiagnostics();
     const doctor = this.doctor?.report;
-    const readiness = doctor?.readiness as { screenshot_capture_status?: string; blockers?: string[] } | undefined;
+    const readiness = doctor?.readiness as {
+      can_capture_screenshots?: boolean;
+      screenshot_capture_status?: string;
+      blockers?: string[];
+      warnings?: string[];
+    } | undefined;
     const missingDependencies = readiness?.blockers ?? [];
+    const warnings = readiness?.warnings ?? [];
     return {
       platform: this.platform,
       backend: this.backend,
       supported: true,
       missingDependencies,
+      reason: warnings.length > 0 ? warnings.join("；") : undefined,
       detail: [
         `ready (${this.backend}: computer-use-linux MCP)`,
         `binary=${binary}`,
         readiness?.screenshot_capture_status ? `screenshot=${readiness.screenshot_capture_status}` : undefined,
+        readiness?.can_capture_screenshots === false ? "can_capture_screenshots=false" : undefined,
         doctor?.capabilities?.preferred?.input ? `input=${doctor.capabilities.preferred.input}` : undefined,
         doctor?.capabilities?.window_control?.length ? `window_control=${doctor.capabilities.window_control.join(",")}` : undefined,
+        this.input.available ? "press_release=ydotool" : "press_release=unavailable",
         this.client?.pid ? `pid=${this.client.pid}` : undefined,
       ].filter(Boolean).join(" "),
       hostPid: this.client?.pid,
     };
   }
 
-  /** 显式跑一次 `computer-use-linux doctor` 并缓存结果（诊断/设置页用，不阻塞常规动作）。 */
-  refreshDiagnostics(): void {
+  /**
+   * 显式跑一次 `computer-use-linux doctor` 并缓存结果（诊断/设置页用，不阻塞常规动作）。
+   */
+  refreshDiagnostics(): Promise<void> {
+    return this.ensureDiagnostics({ force: true });
+  }
+
+  /** 后台刷一次 doctor（同一时刻只跑一个；失败静默，后续 status() 会重试）。 */
+  private ensureDiagnostics(options: { force?: boolean } = {}): Promise<void> {
+    if (this.diagnosticsRefresh) return this.diagnosticsRefresh;
+    if (!options.force && this.doctor) return Promise.resolve();
     const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
-    if (!binary) return;
-    this.doctor = undefined;
-    this.readDoctor(binary);
+    if (!binary) return Promise.resolve();
+    this.diagnosticsRefresh = (async () => {
+      try {
+        const report = await runCulDoctorAsync(binary);
+        if (report) this.doctor = { at: Date.now(), report };
+      } catch {
+        // doctor 是诊断增强，失败不影响动作；下次 status() 再试。
+      } finally {
+        this.diagnosticsRefresh = undefined;
+      }
+    })();
+    return this.diagnosticsRefresh;
   }
 
   async shutdown(): Promise<void> {
@@ -241,13 +316,13 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       case "click_client": return this.pointerAction(action, input, "click", signal);
       case "drag_client": return this.pointerAction(action, input, "drag", signal);
       case "scroll_client": return this.pointerAction(action, input, "scroll", signal);
-      case "mouse_down_client":
-      case "mouse_up_client": return this.unsupportedPointerSplit(action);
+      case "mouse_down_client": return this.pointerSplit(action, input, "down", signal);
+      case "mouse_up_client": return this.pointerSplit(action, input, "up", signal);
       case "key_press": return this.keyPress(action, input, signal);
-      case "type_text":
-      case "paste_text": return this.typeText(action, input, signal);
-      case "key_down":
-      case "key_up": return this.unsupportedKeySplit(action);
+      case "type_text": return this.typeText(action, input, signal);
+      case "paste_text": return this.pasteText(action, input, signal);
+      case "key_down": return this.keySplit(action, input, true, signal);
+      case "key_up": return this.keySplit(action, input, false, signal);
       case "drag_screen": return this.dragScreen(action, input, signal);
       case "mouse_move": return this.legacyMouse(action, input, "move", signal);
       case "mouse_click": return this.legacyMouse(action, input, "click", signal);
@@ -272,11 +347,12 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     return this.client;
   }
 
-  private readDoctor(binaryPath: string): CulDoctorReport | undefined {
+  /** 读已缓存的 doctor（TTL 内不重复 spawn）；设置页/探针要看真话时用 `refreshDiagnostics()`。 */
+  cachedDoctor(): CulDoctorReport | undefined {
+    const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
+    if (!binary) return undefined;
     if (this.doctor && Date.now() - this.doctor.at < DOCTOR_TTL_MS) return this.doctor.report;
-    const report = runCulDoctor(binaryPath);
-    if (report) this.doctor = { at: Date.now(), report };
-    return report;
+    return undefined;
   }
 
   private async monitors(): Promise<Awaited<ReturnType<typeof readHyprlandMonitors>>> {
@@ -554,34 +630,62 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   /* 无障碍树                                                           */
   /* ---------------------------------------------------------------- */
 
-  private async readAccessibilityNodes(window: WindowInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<{ nodes: ControlInfo[]; truncated: boolean }> {
-    const result = await checked(() => this.cul().require(CUL_TOOLS.getAppState, {
+  /**
+   * 读完整 AT-SPI 树。
+   *
+   * `get_app_state` 只内联前 ~20 个节点（`accessibility_tree_truncated=true`），而
+   * `max_nodes` 对内联数量无效（实测 1000/5000/10000 都只回 12–13 个）。剩下的
+   * 节点必须用 `get_tree_page` 按服务端给的 `next_offset` 逐页取回来 —— 不翻页时
+   * Electron 应用只能看到匿名 Section，所有可交互控件都在后几页（实测 63 节点树里
+   * 10 个 Button / 1 个 Entry / 1 个 ComboBox 全在第 2、3 页）。
+   */
+  private async readAccessibilityNodes(window: WindowInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<{ nodes: ControlInfo[]; truncated: boolean; pages: number }> {
+    const first = await checked(() => this.cul().require(CUL_TOOLS.getAppState, {
       window_id: Number(window.handle),
       include_screenshot: false,
       max_nodes: input.maxNodes ?? 400,
       ...(input.maxDepth ? { max_depth: input.maxDepth } : {}),
     }, signal), signal);
-    const tree = Array.isArray(result.data.accessibility_tree)
-      ? result.data.accessibility_tree as CulAccessibilityNode[]
+    const firstNodes = Array.isArray(first.data.accessibility_tree)
+      ? first.data.accessibility_tree as CulAccessibilityNode[]
       : [];
+    // CUL 把树 compact 到内联上限（实测 ~37），**即使还有节点没内联也只写
+    // `accessibility_tree_truncated: false`**，真正「一共多少节点」只在 spill 里。
+    // 不看 spill 就会漏掉整页的可交互控件（实测 Nautilus 的 10 个 grid cell 全在第 2 页）。
+    const spill = first.data.accessibility_tree_spill as { node_count?: number; inline_node_count?: number } | undefined;
+    const spillTotal = Number(spill?.node_count);
+    const collected = await collectAccessibilityTree(firstNodes, first.data.accessibility_tree_truncated === true, {
+      maxPages: ACCESSIBILITY_MAX_PAGES,
+      maxNodes: Math.max(1, Math.min(ACCESSIBILITY_MAX_NODES, input.maxNodes ?? ACCESSIBILITY_MAX_NODES)),
+      totalNodes: Number.isFinite(spillTotal) && spillTotal > 0 ? spillTotal : undefined,
+      fetchPage: async (offset) => {
+        const page = await checked(() => this.cul().require(CUL_TOOLS.getTreePage, { offset }, signal), signal);
+        return toAccessibilityPage(page.data);
+      },
+    });
     return {
-      nodes: tree.map((node) => toControlInfo(node, window)),
-      truncated: result.data.accessibility_tree_truncated === true,
+      nodes: collected.nodes.map((node) => toControlInfo(node, window)),
+      truncated: collected.truncated,
+      pages: collected.pages,
     };
   }
 
   private async inspectControls(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const target = await this.resolveTarget(input, signal);
-    const { nodes, truncated } = await this.readAccessibilityNodes(target, input, signal);
+    const { nodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
+    // 只有「翻完所有页仍然几乎没有节点」才是真的没有语义树；页数 >1 说明树是完整的。
     const detail = nodes.length <= 3
-      ? "AT-SPI 只暴露了应用根节点（Electron/Qt/Tauri 常见）：改用 ocr_window + click_client 坐标点击"
-      : undefined;
+      ? "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
+      : truncated
+        ? `语义树仍有 ${nodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
+        : undefined;
     return {
       action,
       window: target,
       controls: nodes,
       uiaAvailable: nodes.length > 1,
       truncated,
+      accessibilityPages: pages,
       observationId: this.remember(target),
       backend: this.backend,
       detail,
@@ -662,36 +766,70 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     kind: "move" | "click" | "drag" | "scroll",
     signal?: AbortSignal,
   ): Promise<ComputerExecOutput> {
+    const modifiers = input.modifiers ?? [];
+    // 参数校验放在最前面：不静默忽略（modifiers/holdMs 对 move 没有意义，悄悄丢掉会让
+    // 模型以为按住或长按生效了），同时保证在真正按下任何键之前就失败。
+    if (kind === "move" && (modifiers.length > 0 || (input.holdMs ?? 0) > 0)) {
+      throw new ComputerUseError(
+        "HOST_PROTOCOL_ERROR",
+        "move_client 不接受 modifiers/hold_ms：要按住修饰键点按请用 click_client 的同名参数，要长按请用 mouse_down_client + mouse_up_client",
+        { action, modifiers, holdMs: input.holdMs },
+      );
+    }
     const target = await this.resolveTarget(input, signal);
     const point = clientDipToScreenPhysical(target, requireFinite(input.x, "x"), requireFinite(input.y, "y"));
     const button = input.button ?? "left";
-    switch (kind) {
-      case "move":
-        // CUL 没有单独的「移动指针」工具；`scroll pages=0` 只定位不滚动（实测 ok:true 且游标移动）。
-        await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
-        break;
-      case "click": {
-        const clickCount = Math.max(1, Math.min(3, input.clickCount ?? 1));
-        for (let index = 0; index < clickCount; index += 1) {
-          await checked(() => this.cul().require(CUL_TOOLS.click, { x: point.x, y: point.y, button, click_count: 1 }, signal), signal);
+    // CUL 的 click/scroll/drag 都不接受 modifier 参数，所以修饰键只能由 ydotool 真的按住
+    // （实测 `42:1`/`42:0` 跨进程持久），动作结束再释放；任何一步失败都要保证释放，
+    // 否则用户桌面会残留一个按住的修饰键（比动作失败更糟）。
+    const held = await this.holdModifiers(modifiers);
+    try {
+      switch (kind) {
+        case "move":
+          // CUL 没有单独的「移动指针」工具；`scroll pages=0` 只定位不滚动（实测 ok:true 且游标移动）。
+          await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
+          break;
+        case "click": {
+          const clickCount = Math.max(1, Math.min(3, input.clickCount ?? 1));
+          const holdMs = Math.max(0, Math.min(5_000, input.holdMs ?? 0));
+          if (holdMs > 0) {
+            // 长按：CUL 的 click 是原子的 down+up，中间没有停顿；holdMs>0 时改走
+            // ydotool 的 down → 停顿 → up（实测 0x40/0x80 跨进程持久）。
+            for (let index = 0; index < clickCount; index += 1) {
+              assertNotCancelled(signal);
+              await this.input.setButtonHeld(button, "down");
+              try {
+                await delay(holdMs);
+              } finally {
+                await this.input.setButtonHeld(button, "up");
+              }
+            }
+          } else {
+            for (let index = 0; index < clickCount; index += 1) {
+              assertNotCancelled(signal);
+              await checked(() => this.cul().require(CUL_TOOLS.click, { x: point.x, y: point.y, button, click_count: 1 }, signal), signal);
+            }
+          }
+          break;
         }
-        break;
-      }
-      case "drag": {
-        const end = clientDipToScreenPhysical(target, requireFinite(input.x2, "x2"), requireFinite(input.y2, "y2"));
-        await checked(() => this.cul().require(CUL_TOOLS.drag, { start_x: point.x, start_y: point.y, end_x: end.x, end_y: end.y }, signal), signal);
-        break;
-      }
-      case "scroll": {
-        const notches = input.notches ?? 0;
-        if (notches !== 0) {
-          const direction = notches > 0 ? "up" : "down";
-          const pages = Math.max(0.1, Math.abs(notches) / 3);
-          await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction, pages, x: point.x, y: point.y }, signal), signal);
+        case "drag": {
+          const end = clientDipToScreenPhysical(target, requireFinite(input.x2, "x2"), requireFinite(input.y2, "y2"));
+          await this.dragPath(point, end, input, button, signal);
+          break;
         }
-        break;
+        case "scroll": {
+          const notches = input.notches ?? 0;
+          if (notches !== 0) {
+            const direction = notches > 0 ? "up" : "down";
+            const pages = Math.max(0.1, Math.abs(notches) / 3);
+            await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction, pages, x: point.x, y: point.y }, signal), signal);
+          }
+          break;
+        }
+        default: break;
       }
-      default: break;
+    } finally {
+      await held.release();
     }
     const before = target;
     const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
@@ -701,7 +839,134 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       observation: after
         ? { targetBefore: before, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground }
         : undefined,
-      detail: `${kind} at screen px ${point.x},${point.y} (client dip ${input.x},${input.y}, scale ${target.scaleFactor})`,
+      detail: `${kind} at screen px ${point.x},${point.y} (client dip ${input.x},${input.y}, scale ${target.scaleFactor})${
+        modifiers.length > 0 ? ` with ${modifiers.join("+")}` : ""
+      }`,
+      backend: this.backend,
+    } as ComputerExecOutput;
+  }
+
+  /**
+   * 拖拽路径：`durationMs`/`steps` 有值时按插值分段移动。
+   *
+   * Wayland 下 CUL 的 `drag` 是一次性 from→to（中间没有 move 事件），部分应用会把它
+   * 当成「瞬移点击」而不是拖拽；需要真实轨迹时用 ydotool 按住按钮 + 分段移动 + 松开。
+   */
+  private async dragPath(
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+    input: ComputerExecInput,
+    button: "left" | "right" | "middle",
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const steps = Math.max(1, Math.min(60, input.steps ?? 1));
+    const durationMs = Math.max(0, Math.min(10_000, input.durationMs ?? 0));
+    if (steps <= 1 && durationMs <= 0) {
+      await checked(() => this.cul().require(CUL_TOOLS.drag, { start_x: start.x, start_y: start.y, end_x: end.x, end_y: end.y }, signal), signal);
+      return;
+    }
+    const settle = durationMs > 0 ? durationMs / steps : 0;
+    // 先把指针放到起点，再按住按钮、分段移动、最后松开：中间每一步都是真 move 事件。
+    await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: start.x, y: start.y }, signal), signal);
+    await this.input.setButtonHeld(button, "down");
+    try {
+      for (let index = 1; index <= steps; index += 1) {
+        assertNotCancelled(signal);
+        const ratio = index / steps;
+        const x = Math.round(start.x + (end.x - start.x) * ratio);
+        const y = Math.round(start.y + (end.y - start.y) * ratio);
+        await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x, y }, signal), signal);
+        if (settle > 0) await delay(settle);
+      }
+    } finally {
+      await this.input.setButtonHeld(button, "up");
+    }
+  }
+
+  /** 按住修饰键（ydotool），返回 release()；失败时立即回滚已按下的键。 */
+  private async holdModifiers(modifiers: readonly string[]): Promise<{ release: () => Promise<void> }> {
+    if (modifiers.length === 0) return { release: async () => {} };
+    const heldModifiers: string[] = [];
+    try {
+      for (const modifier of modifiers) {
+        await this.input.setKeysHeld(modifierKeyName(modifier), true);
+        heldModifiers.push(modifierKeyName(modifier));
+      }
+    } catch (error) {
+      await this.releaseModifiers(heldModifiers);
+      throw error;
+    }
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        await this.releaseModifiers(heldModifiers);
+      },
+    };
+  }
+
+  private async releaseModifiers(modifiers: readonly string[]): Promise<void> {
+    for (const modifier of [...modifiers].reverse()) {
+      await this.input.setKeysHeld(modifier, false).catch(() => {
+        // 释放失败不静默：上面 holdPre/post 的调用方能感知；这里只能尽力而为，
+        // 因为用户桌面残留按住的键比抛错更糟，但抛错会掩盖真实动作结果。
+      });
+    }
+  }
+
+  /**
+   * 按下/松开指针按钮（`mouse_down_client` / `mouse_up_client`）。
+   *
+   * 实测可行：`ydotool click 0x40` = 左键 down、`0x80` = 左键 up，跨进程持久
+   * （与 CUL 的 `get_app_state`/`click` 混用没问题，因为两边都写 uinput）。
+   * 指针位置用 CUL 的 `scroll pages=0` 先定位（ydotool `-a` 的坐标系是 DIP×2，不等价）。
+   */
+  private async pointerSplit(
+    action: ComputerExecAction,
+    input: ComputerExecInput,
+    phase: "down" | "up",
+    signal?: AbortSignal,
+  ): Promise<ComputerExecOutput> {
+    const target = await this.maybeTarget(input, signal);
+    if (Number.isFinite(Number(input.x)) && Number.isFinite(Number(input.y)) && target) {
+      const point = clientDipToScreenPhysical(target, Number(input.x), Number(input.y));
+      await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
+    }
+    const button = input.button ?? "left";
+    await this.input.setButtonHeld(button, phase);
+    return {
+      action,
+      window: target,
+      detail: `ydotool ${button} ${phase}${target ? ` (window ${target.handle})` : ""}`,
+      backend: this.backend,
+    } as ComputerExecOutput;
+  }
+
+  /**
+   * 按下/松开一组键（`key_down` / `key_up`）。
+   *
+   * `key` 支持组合写法（`Ctrl+Shift`），按下按正序、松开按逆序；`hold_ms` 在
+   * `key_down` 时不生效（按住时长由后续动作/`key_up` 决定），只在 `key_press`
+   * 里用一次完整 down+up+停顿表达。
+   */
+  private async keySplit(
+    action: ComputerExecAction,
+    input: ComputerExecInput,
+    pressed: boolean,
+    signal?: AbortSignal,
+  ): Promise<ComputerExecOutput> {
+    assertNotCancelled(signal);
+    const key = input.key?.trim();
+    if (!key) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 需要 key`);
+    const target = await this.maybeTarget(input, signal);
+    // ydotool 没有 window_id 定向：按住/松开只会打到当前前台窗口，所以先聚焦目标。
+    if (target && !target.foreground) await this.focusWindow(target.handle, signal);
+    const codes = await this.input.setKeysHeld(key, pressed);
+    return {
+      action,
+      window: target,
+      detail: `ydotool key ${codes.join(",")}:${pressed ? 1 : 0}`,
       backend: this.backend,
     } as ComputerExecOutput;
   }
@@ -735,22 +1000,6 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     return { action, detail: `screen px ${x},${y}`, backend: this.backend } as ComputerExecOutput;
   }
 
-  private unsupportedPointerSplit(action: ComputerExecAction): never {
-    throw new ComputerUseError(
-      "HOST_UNAVAILABLE",
-      `${action} 在 Linux/Wayland 上不可用：CUL 只提供完整 click/drag，不暴露 press/release 分离的指针事件；请用 click_client 或 drag_client`,
-      { action },
-    );
-  }
-
-  private unsupportedKeySplit(action: ComputerExecAction): never {
-    throw new ComputerUseError(
-      "HOST_UNAVAILABLE",
-      `${action} 在 Linux/Wayland 上不可用：wtype/ydotool 走虚拟键盘，不暴露按住/释放分离；请用 key_press 的组合键写法（如 Ctrl+Shift+T）`,
-      { action },
-    );
-  }
-
   private async dragScreen(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     const start = { x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y") };
     const end = { x: requireFinite(input.x2, "x2"), y: requireFinite(input.y2, "y2") };
@@ -769,6 +1018,30 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     if (!key) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "key_press 需要 key");
     const target = await this.maybeTarget(input, signal);
     const normalized = toCulKey(key);
+    // hold_ms > 0 表示「长按」：CUL 的 press_key 是原子的 down+up，中间没有停顿，
+    // 所以长按必须走 ydotool 的 down → 停顿 → up 三步（实测 42:1/42:0 持久）。
+    const holdMs = Math.max(0, Math.min(5_000, input.holdMs ?? 0));
+    if (holdMs > 0) {
+      // 长按走 ydotool，没有 window_id 定向：必须先把目标窗口拿到前台，否则按键会打到别人窗口。
+      if (target && !target.foreground) await this.focusWindow(target.handle, signal);
+      await this.input.setKeysHeld(normalized, true).catch((error: unknown) => {
+        throw error instanceof ComputerUseError
+          ? error
+          : new ComputerUseError("HOST_UNAVAILABLE", `长按需要 ydotool：${String(error)}`, { action, key: normalized });
+      });
+      try {
+        await delay(holdMs);
+      } finally {
+        await this.input.setKeysHeld(normalized, false).catch(() => {});
+      }
+      const after = target ? await this.inspectHandle(target.handle, signal).catch(() => undefined) : undefined;
+      return {
+        action,
+        window: after ?? target,
+        detail: `ydotool hold ${normalized} ${holdMs}ms${target ? ` (window ${target.handle})` : ""}`,
+        backend: this.backend,
+      } as ComputerExecOutput;
+    }
     const args: Record<string, unknown> = { key: normalized };
     if (target) {
       args.window_id = Number(target.handle);
@@ -781,6 +1054,66 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       detail: `press_key ${normalized}${target ? ` (window ${target.handle})` : ""}`,
       backend: this.backend,
     } as ComputerExecOutput;
+  }
+
+  /**
+   * `paste_text`：走系统剪贴板 + Ctrl+V，而不是逐字 wtype。
+   *
+   * 逐字输入在两个场景会坏：长文本要几十次 MCP 调用且中途被截断；输入法/富文本
+   * 编辑器里逐字键入会触发补全和自动格式化。Wayland 上写剪贴板用 `wl-copy`
+   * （wl-clipboard 包，Omarchy 自带；`wl-copy` 会 fork 一个常驻进程持有选区）。
+   * 剪贴板写不进去时**显式回落**到逐字输入并在 detail 里说明，不静默。
+   */
+  private async pasteText(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const text = input.text ?? "";
+    if (!text) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 需要 text`);
+    const target = await this.maybeTarget(input, signal);
+    let clipboardError: string | undefined;
+    try {
+      await this.writeClipboard(text);
+    } catch (error) {
+      clipboardError = error instanceof Error ? error.message : String(error);
+    }
+    if (clipboardError !== undefined) {
+      const typed = await this.typeText(action, input, signal);
+      return { ...typed, detail: `${typed.detail ?? ""}（剪贴板不可用，已回落逐字输入：${clipboardError}）` };
+    }
+    if (target && !target.foreground) await this.focusWindow(target.handle, signal);
+    const args: Record<string, unknown> = { key: "Ctrl+V" };
+    if (target) args.window_id = Number(target.handle);
+    await checked(() => this.cul().require(CUL_TOOLS.pressKey, args, signal), signal);
+    return {
+      action,
+      window: target,
+      completed: true,
+      typedLength: text.length,
+      totalLength: text.length,
+      pasted: true,
+      detail: `粘贴 ${text.length} 字符（wl-copy + Ctrl+V${target ? `，窗口 ${target.handle}` : ""}）`,
+      backend: this.backend,
+    } as ComputerExecOutput;
+  }
+
+  /** 写 Wayland 剪贴板（可注入，测试不碰真机）。 */
+  private async writeClipboard(text: string): Promise<void> {
+    if (this.options.pasteViaClipboard) {
+      await this.options.pasteViaClipboard(text);
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "pipe"], detached: true });
+      let stderr = "";
+      child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.on("error", (error) => reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
+      });
+      child.stdin?.on("error", () => { /* 子进程可能先退出；由 close 决定成败 */ });
+      child.stdin?.end(text);
+      // wl-copy 会 fork 常驻进程持有选区；父进程按 close 判定即可。
+      child.unref();
+    });
   }
 
   private async typeText(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {

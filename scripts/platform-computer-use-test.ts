@@ -39,7 +39,20 @@ import {
   toCulModifiers,
   toWindowInfo,
 } from "../src/main/platform/computer-use/linux/culProtocol";
-import { chunkText } from "../src/main/platform/computer-use/linux/LinuxComputerUseBackend";
+import { chunkText, LinuxComputerUseBackend } from "../src/main/platform/computer-use/linux/LinuxComputerUseBackend";
+import {
+  clickMask,
+  clickStateArgs,
+  evdevKeycode,
+  keyChordToKeycodes,
+  keyStateArgs,
+  YdotoolInput,
+} from "../src/main/platform/computer-use/linux/ydotool";
+import {
+  collectAccessibilityTree,
+  toAccessibilityPage,
+} from "../src/main/platform/computer-use/linux/accessibilityTree";
+import { ComputerUseError } from "../src/main/platform/computer-use/protocol";
 
 /**
  * 平台边界测试：Computer Use 能力探测 / OCR 候选与 provider / Overlay 支持判定 /
@@ -315,21 +328,63 @@ await check("linux backend availability and status follow the CUL binary", async
   resetComputerUseBackends();
 });
 
-await check("linux backend rejects pointer/key split actions with a Wayland-specific reason", async () => {
-  await withCulBinary(fakeCulBinary(), async () => {
-    resetComputerUseBackends();
-    const backend = createComputerUseBackend("linux");
-    for (const action of ["mouse_down_client", "mouse_up_client", "key_down", "key_up"] as const) {
-      await assert.rejects(backend.execute({ action }), (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        assert.match(message, /Linux\/Wayland/);
-        assert.match(message, /click_client|key_press/);
-        return true;
-      });
-    }
-    await backend.shutdown();
-    resetComputerUseBackends();
+await check("linux backend implements pointer/key split through the injected ydotool runner", async () => {
+  const calls: string[][] = [];
+  const backend = new LinuxComputerUseBackend({
+    ydotoolRunner: async (args) => { calls.push([...args]); },
+    pasteViaClipboard: async () => { throw new Error("clipboard unavailable"); },
   });
+  // 不带坐标/目标时不需要 CUL，纯 ydotool 写入
+  await backend.execute({ action: "mouse_down_client", button: "left" });
+  await backend.execute({ action: "mouse_up_client", button: "left" });
+  await backend.execute({ action: "mouse_down_client", button: "right" });
+  await backend.execute({ action: "key_down", key: "Ctrl" });
+  await backend.execute({ action: "key_up", key: "Ctrl" });
+  assert.deepEqual(calls, [
+    ["click", "0x40"],
+    ["click", "0x80"],
+    ["click", "0x41"],
+    ["key", "29:1"],
+    ["key", "29:0"],
+  ]);
+  await backend.shutdown();
+});
+
+await check("linux backend surfaces a pacman hint when ydotool is missing", async () => {
+  const backend = new LinuxComputerUseBackend({ ydotoolRunner: undefined });
+  // 直接判 YdotoolInput 的不可用分支：把 PATH 清空后再调用
+  const previous = process.env.PATH;
+  process.env.PATH = "";
+  try {
+    await assert.rejects(
+      () => backend.execute({ action: "key_down", key: "Ctrl" }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /pacman -S --needed ydotool/);
+        return true;
+      },
+    );
+  } finally {
+    process.env.PATH = previous;
+    await backend.shutdown();
+  }
+});
+
+await check("linux backend rejects modifiers/hold_ms on move_client instead of silently ignoring them", async () => {
+  const calls: string[][] = [];
+  const backend = new LinuxComputerUseBackend({ ydotoolRunner: async (args) => { calls.push([...args]); } });
+  await assert.rejects(
+    () => backend.execute({ action: "move_client", x: 10, y: 10, modifiers: ["ctrl"] }),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /move_client 不接受 modifiers\/hold_ms/);
+      assert.match(message, /mouse_down_client/);
+      return true;
+    },
+  );
+  // 报错前不能留下按住的修饰键
+  assert.deepEqual(calls, []);
+  await backend.shutdown();
 });
 
 await check("windows backend exposes the UIA status contract without touching the host", () => {
@@ -629,6 +684,216 @@ await check("chunkText splits on word boundaries under the CUL limit", () => {
   const hard = chunkText("z".repeat(200), 90);
   assert.deepEqual(hard.map((chunk) => chunk.length), [90, 90, 20]);
   assert.equal(hard.join(""), "z".repeat(200));
+});
+
+/* ------------------------------------------------------------------ */
+/* 14. ydotool：按下/释放分离（evdev keycode + 按钮掩码）                */
+/* ------------------------------------------------------------------ */
+
+await check("evdevKeycode maps letters, digits, punctuation, modifiers and function keys", () => {
+  assert.equal(evdevKeycode("A"), 30);
+  assert.equal(evdevKeycode("z"), 44);
+  assert.equal(evdevKeycode("Ctrl"), 29);
+  assert.equal(evdevKeycode("Shift"), 42);
+  assert.equal(evdevKeycode("Alt"), 56);
+  assert.equal(evdevKeycode("Super"), 125);
+  assert.equal(evdevKeycode("1"), 2);
+  assert.equal(evdevKeycode("0"), 11);
+  assert.equal(evdevKeycode("-"), 12);
+  assert.equal(evdevKeycode("="), 13);
+  assert.equal(evdevKeycode("Enter"), 28);
+  assert.equal(evdevKeycode("Tab"), 15);
+  assert.equal(evdevKeycode("Space"), 57);
+  assert.equal(evdevKeycode("Escape"), 1);
+  assert.equal(evdevKeycode("ArrowLeft"), 105);
+  assert.equal(evdevKeycode("F1"), 59);
+  assert.equal(evdevKeycode("F12"), 88);
+  assert.equal(evdevKeycode("F24"), 194);
+  assert.equal(evdevKeycode("XF86AudioMute"), 113);
+  // 别名：下划线/连字符/空格都归一
+  assert.equal(evdevKeycode("page_down"), 109);
+  assert.equal(evdevKeycode("CAPS-LOCK"), 58);
+  assert.equal(evdevKeycode("NotAKey"), undefined);
+});
+
+await check("keyChordToKeycodes normalizes CUL/Windows key names and rejects unknown keys", () => {
+  assert.deepEqual(keyChordToKeycodes("Ctrl"), [29]);
+  assert.deepEqual(keyChordToKeycodes("ctrl+shift+t"), [29, 42, 20]);
+  assert.deepEqual(keyChordToKeycodes("ControlKey+Alt+Delete"), [29, 56, 111]);
+  // ArrowLeft 走 toCulKey 的 Arrow 别名 → Left（105）
+  assert.deepEqual(keyChordToKeycodes("ArrowLeft"), [105]);
+  // 未知键必须显式报错，不能静默丢键
+  assert.throws(() => keyChordToKeycodes("SomeUnknownKey"), (error: unknown) => {
+    assert.ok(error instanceof ComputerUseError);
+    assert.equal((error as ComputerUseError).code, "HOST_PROTOCOL_ERROR");
+    assert.match((error as Error).message, /ydotool 不认识这个键/);
+    return true;
+  });
+});
+
+await check("clickMask encodes ydotool down/up flags with the button number in the low bits", () => {
+  assert.equal(clickMask("left", "down"), 0x40);
+  assert.equal(clickMask("left", "up"), 0x80);
+  assert.equal(clickMask("right", "down"), 0x41);
+  assert.equal(clickMask("right", "up"), 0x81);
+  assert.equal(clickMask("middle", "down"), 0x42);
+  assert.equal(clickMask("middle", "up"), 0x82);
+});
+
+await check("keyStateArgs presses in order and releases in reverse", () => {
+  assert.deepEqual(keyStateArgs([29, 42, 20], true), ["key", "29:1", "42:1", "20:1"]);
+  assert.deepEqual(keyStateArgs([29, 42, 20], false), ["key", "20:0", "42:0", "29:0"]);
+  assert.deepEqual(clickStateArgs(0x40), ["click", "0x40"]);
+  assert.deepEqual(clickStateArgs(0x81), ["click", "0x81"]);
+  assert.throws(() => keyStateArgs([], true), ComputerUseError);
+});
+
+await check("YdotoolInput routes down/up through the injected runner without touching the real machine", async () => {
+  const calls: string[][] = [];
+  const input = new YdotoolInput({ runner: async (args) => { calls.push([...args]); } });
+  assert.equal(input.available, true);
+  const codes = await input.setKeysHeld("Ctrl+Shift", true);
+  assert.deepEqual(codes, [29, 42]);
+  await input.setKeysHeld("Ctrl+Shift", false);
+  await input.setButtonHeld("left", "down");
+  await input.setButtonHeld("right", "up");
+  assert.deepEqual(calls, [
+    ["key", "29:1", "42:1"],
+    ["key", "42:0", "29:0"],
+    ["click", "0x40"],
+    ["click", "0x81"],
+  ]);
+});
+
+await check("YdotoolInput reports a pacman install hint when ydotool is missing", async () => {
+  const input = new YdotoolInput({ available: () => false });
+  assert.equal(input.available, false);
+  await assert.rejects(() => input.setKeysHeld("Ctrl", true), (error: unknown) => {
+    assert.ok(error instanceof ComputerUseError);
+    assert.equal((error as ComputerUseError).code, "HOST_UNAVAILABLE");
+    assert.match((error as Error).message, /pacman -S --needed ydotool/);
+    return true;
+  });
+  // 按钮分离走同一条通道，文案要一致
+  await assert.rejects(() => input.setButtonHeld("left", "down"), /ydotool/);
+});
+
+/* ------------------------------------------------------------------ */
+/* 15. AT-SPI 语义树分页（CUL get_tree_page）                           */
+/* ------------------------------------------------------------------ */
+
+function fakeNode(index: number, role = "section"): { index: number; role: string; name: string; object_ref: string } {
+  return { index, role, name: `node-${index}`, object_ref: `/org/a11y/${index}` };
+}
+
+await check("collectAccessibilityTree does not page when the first screen is complete", async () => {
+  const firstScreen = [fakeNode(0), fakeNode(1)];
+  let fetched = 0;
+  const collected = await collectAccessibilityTree(firstScreen, false, {
+    fetchPage: async () => { fetched += 1; return { nodes: [], nextOffset: null }; },
+  });
+  assert.equal(fetched, 0);
+  assert.equal(collected.nodes.length, 2);
+  assert.equal(collected.pages, 1);
+  assert.equal(collected.truncated, false);
+});
+
+await check("collectAccessibilityTree follows next_offset until the server ends the tree", async () => {
+  // 复刻真机形状：首屏 21 个内联节点 → 后续页 next_offset 依次 41/74/105 → 末尾
+  const firstScreen = Array.from({ length: 21 }, (_, index) => fakeNode(index));
+  const pages = new Map<number, { nodes: unknown[]; nextOffset: number | null; totalNodes: number }>([
+    [21, { nodes: [fakeNode(21), fakeNode(22)], nextOffset: 41, totalNodes: 63 }],
+    [41, { nodes: [fakeNode(41), fakeNode(42)], nextOffset: 74, totalNodes: 63 }],
+    [74, { nodes: [fakeNode(74)], nextOffset: null, totalNodes: 63 }],
+  ]);
+  const requested: number[] = [];
+  const collected = await collectAccessibilityTree(firstScreen, true, {
+    fetchPage: async (offset) => {
+      requested.push(offset);
+      const page = pages.get(offset);
+      assert.ok(page, `unexpected offset ${offset}`);
+      return page as never;
+    },
+  });
+  // 关键：offset 必须用服务端给的 next_offset 推进（每页条数不固定），不能 offset+len
+  assert.deepEqual(requested, [21, 41, 74]);
+  assert.deepEqual(collected.nodes.map((node) => node.index), [...firstScreen.map((node) => node.index), 21, 22, 41, 42, 74]);
+  assert.equal(collected.pages, 4);
+  assert.equal(collected.totalNodes, 63);
+  assert.equal(collected.truncated, false);
+});
+
+await check("collectAccessibilityTree paginates when spill reports more nodes than the inline screen", async () => {
+  // 真机回归：CUL 把树 compact 到 ~37 个节点后仍报 truncated=false，只有
+  // accessibility_tree_spill.node_count 说出「一共 71 个」。不信 spill 就会漏掉
+  // 整页可交互控件（Nautilus 的 10 个 grid cell 全在第 2 页）。
+  const inline = Array.from({ length: 37 }, (_, index) => fakeNode(index));
+  const requested: number[] = [];
+  const collected = await collectAccessibilityTree(inline, false, {
+    totalNodes: 71,
+    fetchPage: async (offset) => {
+      requested.push(offset);
+      return { nodes: Array.from({ length: 34 }, (_, index) => fakeNode(offset + index)), nextOffset: null, totalNodes: 71 };
+    },
+  });
+  assert.deepEqual(requested, [37], "truncated=false 但有 spill 总数时必须从内联末尾翻页");
+  assert.equal(collected.nodes.length, 71);
+  assert.equal(collected.pages, 2);
+  assert.equal(collected.truncated, false);
+});
+
+await check("collectAccessibilityTree does not page when spill total matches the inline screen", async () => {
+  const inline = Array.from({ length: 5 }, (_, index) => fakeNode(index));
+  let fetched = 0;
+  const collected = await collectAccessibilityTree(inline, false, {
+    totalNodes: 5,
+    fetchPage: async () => { fetched += 1; return { nodes: [], nextOffset: null }; },
+  });
+  assert.equal(fetched, 0);
+  assert.equal(collected.nodes.length, 5);
+  assert.equal(collected.pages, 1);
+});
+
+await check("collectAccessibilityTree stops at the page and node caps and reports truncation", async () => {
+  const collected = await collectAccessibilityTree([fakeNode(0)], true, {
+    maxPages: 2,
+    maxNodes: 4,
+    fetchPage: async (offset) => ({ nodes: [fakeNode(offset), fakeNode(offset + 1), fakeNode(offset + 2)], nextOffset: offset + 10 }),
+  });
+  // 首屏 1 + 第一页取到 3（到 4 个上限）→ 不再翻页，truncated 必须为真
+  assert.equal(collected.pages, 2);
+  assert.equal(collected.nodes.length, 4);
+  assert.equal(collected.truncated, true);
+});
+
+await check("collectAccessibilityTree keeps collected nodes when a later page fails", async () => {
+  const collected = await collectAccessibilityTree([fakeNode(0), fakeNode(1)], true, {
+    fetchPage: async () => { throw new Error("MCP socket closed"); },
+  });
+  assert.equal(collected.nodes.length, 2);
+  assert.equal(collected.truncated, true);
+});
+
+await check("toAccessibilityPage normalizes next_offset/node_count and tolerates junk", () => {
+  const page = toAccessibilityPage({ nodes: [fakeNode(0)], next_offset: 21, node_count: 63 });
+  assert.equal(page.nextOffset, 21);
+  assert.equal(page.totalNodes, 63);
+  assert.equal(page.nodes.length, 1);
+  assert.deepEqual(toAccessibilityPage({}), { nodes: [], nextOffset: null, totalNodes: undefined });
+  assert.equal(toAccessibilityPage({ nodes: [], next_offset: null }).nextOffset, null);
+  assert.equal(toAccessibilityPage({ nodes: [], next_offset: 0 }).nextOffset, null);
+});
+
+await check("toAccessibilityPage reflects the real 21-node inline screen from get_app_state", () => {
+  // 真机：get_app_state(MyBuddy electron window) → 21 个节点，truncated，raw_count 63
+  const inline = Array.from({ length: 21 }, (_, index) => fakeNode(index));
+  const collected = collectAccessibilityTree(inline, true, {
+    fetchPage: async (offset) => ({ nodes: [fakeNode(offset)], nextOffset: null }),
+  });
+  return collected.then((result) => {
+    assert.equal(result.nodes.length, 22);
+    assert.equal(result.truncated, false);
+  });
 });
 
 console.log(`platform-computer-use: ${results.length} checks passed`);

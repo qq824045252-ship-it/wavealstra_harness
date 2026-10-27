@@ -30,4 +30,11 @@ export interface ComputerUseBackend {
   status(): ComputerUseStatus;
   execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput>;
   shutdown(): Promise<void>;
+  /**
+   * 可选：刷新自检。Linux 的 CUL `doctor` 要 1–3 秒，不能塞进 `status()`
+   * （它被工具注册、设置页、agent 探针同步调用），所以由这里显式触发；
+   * 返回的 Promise 在结果写进缓存后 resolve，之后 `status()` 能读到更细的就绪信息
+   * （如 `can_capture_screenshots=false` 与「截图未验证」这类真实状态）。
+   */
+  refreshDiagnostics?(): void | Promise<void>;
 }

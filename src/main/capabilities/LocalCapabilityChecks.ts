@@ -78,6 +78,20 @@ export async function checkLocalExecution(kind: "terminal" | "code-execution", p
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 
+/**
+ * 桌面操作探针：实际枚举窗口，并顺带把后端的自检刷新一次。
+ *
+ * Linux 的 `computer-use-linux doctor` 要 1–3 秒，所以它不能放进 `status()`
+ * （工具注册/设置页会同步调用），只能在这里——用户主动点「检查」时——跑一次，
+ * 让设置页随后能看到「截图未验证 / 不能截图」这类真实就绪信息，而不是永远
+ * 只显示 ready。
+ */
+async function checkComputerUse(): Promise<unknown> {
+  const result = await computerAutomationService.execute({ action: "list_windows" });
+  await computerAutomationService.refreshDiagnostics?.();
+  return result;
+}
+
 export function registerLocalCapabilityChecks(runtime: BuiltinCapabilityRuntime, browser: BrowserAutomationService, python: PythonRuntimeService): void {
   runtime.registerLocalCheck("terminal", () => checkLocalExecution("terminal", python));
   runtime.registerLocalCheck("code-execution", () => checkLocalExecution("code-execution", python));
@@ -86,7 +100,7 @@ export function registerLocalCapabilityChecks(runtime: BuiltinCapabilityRuntime,
     const probes: Array<[string, boolean, () => Promise<unknown>]> = [
       ["浏览器", browser.available, () => browser.execute({ action: "read", maxChars: 1_000 })],
       ["应用界面", uiAutomationService.anyAvailable(), () => uiAutomationService.execute({ action: "snapshot", target: uiAutomationService.available("app") ? "app" : uiAutomationService.available("browser") ? "browser" : "artifact", maxChars: 1_000 })],
-      [computerUseToolCopy(currentPlatformId).desktopLabel, computerAutomationService.available, () => computerAutomationService.execute({ action: "list_windows" })],
+      [computerUseToolCopy(currentPlatformId).desktopLabel, computerAutomationService.available, () => checkComputerUse()],
     ];
     for (const [name, available, probe] of probes) {
       if (!available) { failed.push(`${name}未挂载或平台不支持`); continue; }

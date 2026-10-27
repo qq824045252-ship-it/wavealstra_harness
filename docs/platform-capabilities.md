@@ -74,7 +74,7 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 | 窗口枚举/焦点/几何 | CUL `list_windows` / `focused_window` / `activate_window`（内部走 `hyprctl -j clients`） |
 | 截图（全屏 / 窗口） | CUL `screenshot`（走 `xdg-desktop-portal`；首次可能弹一次授权框） |
 | 输入（指针/键盘） | CUL `click`/`drag`/`scroll`（uinput 绝对指针）、`type_text`（wtype）、`press_key` |
-| 语义树 | CUL `get_app_state`（AT-SPI）；Electron/Qt/Tauri 常只暴露 application/frame |
+| 语义树 | CUL `get_app_state` + **自动 `get_tree_page` 翻页**（AT-SPI）。CUL 会把树 compact 到内联 ~37 个节点且仍报 `accessibility_tree_truncated:false`，真总数只在 `accessibility_tree_spill.node_count`；后端据此翻页收全（上限 8 页 / 3000 节点）。Electron 需 `--force-renderer-accessibility` 才暴露 renderer 内容 |
 | OCR | 本地 `tesseract`（`--psm 6 tsv`）+ `parseTesseractTsv`；不依赖 CUL |
 
 实测坐标语义（Hyprland 1.6x，eDP-1 2160×1440）：
@@ -82,11 +82,23 @@ portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool -
 `clientDipToScreenPhysical = clientOrigin + dip × scaleFactor`。截图 `image_scale = 物理像素 / 图像像素`，
 OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
 
+按下/释放分离与长按（2026-10-27 真机验证，推翻旧结论）：
+- `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` **可用**，走 `ydotool`（`ydotool click 0x40|0x80`、`ydotool key <code>:1|0`）。
+  不能用 `wtype`：虚拟键盘协议在进程退出时自动释放，按住状态保不住；`ydotool` 直写 uinput，跨进程持久
+  （实测 `ydotool key 42:1` 后 `hyprctl repl 'hl.is_key_down("Shift_L")'` = true）。
+- **按住状态会一直保持到显式释放**，用完必须 `key_up`/`mouse_up_client`，否则用户桌面残留按下的键。
+- `click_client` 的 `modifiers`（Ctrl+点击）与 `hold_ms`、`drag_client` 的 `steps`/`duration_ms`、`key_press` 的 `hold_ms` 都真的生效；
+  `move_client` 不接受 `modifiers`/`hold_ms`，会显式报错而不是静默忽略。
+- `paste_text` 走 `wl-copy` + Ctrl+V（`wl-clipboard`），比逐字 `wtype` 快一个数量级；剪贴板不可用会回落逐字输入并在 detail 说明。
+- 指针定位仍由 CUL 负责（`scroll pages=0` 只定位不滚动）：`ydotool mousemove -a` 的坐标系是「逻辑 DIP × 2」，与 Hyprland 物理像素不等价。
+
 Wayland 的真实限制（后端显式报错，不做假成功）：
 - 没有后台截图：`background=true` 被拒绝；portal 只能截前台窗口。
-- 没有 press/release 分离事件：`mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` 报 `HOST_UNAVAILABLE`，用组合写法。
-- 没有全局 overlay：`supportsComputerUseOverlay()` 仅 Windows。
+- 没有全局 overlay：`supportsComputerUseOverlay()` 仅 Windows（CUL 自带的 `computer-use-linux-indicator` 走 wlr-layer-shell，
+  Hyprland 原生支持，能在状态栏显示正在操作什么，但画不出 Windows 那种窗口外框）。
 - GNOME 专用的 `setup_window_targeting` 在 Hyprland 上不可用。
+- 窗口移动/改尺寸（`move_window`/`resize_window`）**CUL 在 Hyprland 上直接失败**（需要 GNOME Shell 扩展或 X11/EWMH），
+  `hyprctl repl` 的 Lua API（`hl.dsp.window.move/resize`）可以替代，但需要先 `float`，尚未接线。
 
 ## 4. 新增一个平台要做什么
 

@@ -49,7 +49,9 @@ sudo pacman -S --needed grim slurp wtype ydotool \
 ```
 
 - `wtype`：键盘输入（CUL 的 `type_text`/`press_key` 走它）。
-- `ydotool` + `ydotoold`：指针/滚轮。需要 `/dev/uinput` 可写（`input` 组或 udev 规则），daemon 要在跑：`systemctl --user enable --now ydotool`（或 `ydotoold` 手动起，socket 默认 `/run/user/$UID/.ydotool_socket`）。
+- `ydotool` + `ydotoold`：指针/滚轮**以及按住/释放分离与长按**。需要 `/dev/uinput` 可写（`input` 组或 udev 规则），daemon 要在跑：`systemctl --user enable --now ydotool`（或 `ydotoold` 手动起，socket 默认 `/run/user/$UID/.ydotool_socket`）。
+  `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up`/`click_client` 的 `hold_ms`/`drag_client` 的 `steps`+`duration_ms` 都依赖它；缺 `ydotool` 时这些动作报 `HOST_UNAVAILABLE` 并给出 pacman 安装提示（不会静默降级）。
+- `wl-clipboard`（`wl-copy`/`wl-paste`）：`paste_text` 写剪贴板 + Ctrl+V；缺失时回落逐字 `wtype`，速度慢很多。
 - `tesseract` + `tesseract-data-chi_sim`：`ocr_window` 的本地 OCR（不联网）；缺 `chi_sim` 时中文识别为空。
 - `at-spi2-core` + `python-gobject`：CUL 的 AT-SPI 语义树（`inspect_controls`/`find_control`）。
 - 截图走 `xdg-desktop-portal-hyprland`（Omarchy 已装），**首次截图会弹一次授权框**，允许后长期有效。
@@ -91,6 +93,16 @@ pnpm dev
    env -u ELECTRON_RUN_AS_NODE pnpm -s test:tray   # 真实 Electron Tray（会临时拉起一个 Electron 进程）
    ```
 7. **Computer Use**：`computer_exec({action:"status"})` 应报 `supported:true`、`missingDependencies:[]`；再按 `list_windows` → `screenshot_window` → `ocr_window` → `click_client` 的顺序手动走一遍。截图/点击会真实动鼠标，验证前把目标窗口摆好。
+   真机自动冒烟（不需要常驻前台窗口，只读步骤即可自证 CUL/portal/AT-SPI 链路）：
+   ```bash
+   pnpm -s test:computer-use-linux                 # 只读：status / doctor / list_windows / 语义树翻页 / 截图
+   node out/tests/computer-use-linux-smoke.cjs --allow-input   # 追加 ydotool 按住→hyprctl 验证→释放 / paste_text
+   ```
+   注意它必须跑在**真实 Hyprland 会话**里（`GUARD_HOME=host` 已写进脚本）：隔离 `XDG_CONFIG_HOME` 会把
+   `org.gnome.desktop.interface toolkit-accessibility` 变成 `false`，GTK 就不再启 atk-bridge，AT-SPI 会一颗节点都拿不到。
+   语义树排查：CUL 报 `accessibility_tree_truncated:false` 不代表树完整（它把内联压到 ~37 个），
+   真总数在 `accessibility_tree_spill.node_count`；后端据此自动翻页，`inspect_controls` 的 `accessibilityPages`
+   给出实际页数。Electron 应用需要 `--force-renderer-accessibility` 才暴露 renderer 内容。
 8. **GUI 套件（本机全量，需要真实桌面会话）**：不要用 xvfb 代替，否则会掩盖 Wayland/托盘/截图类问题。
    ```bash
    pnpm -s build                                   # consult-entry / startup perf 需要 out/main/index.js

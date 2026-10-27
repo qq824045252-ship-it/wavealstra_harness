@@ -1,6 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const CUL_PACKAGE_BIN = join("node_modules", "@agent-sh", "computer-use-linux", "npm", "bin");
 
@@ -137,6 +140,27 @@ export function runCulDoctor(binaryPath: string, timeoutMs = 15_000): CulDoctorR
   } catch {
     return undefined;
   }
+  return parseDoctorOutput(raw);
+}
+
+/**
+ * 异步版本：`doctor` 要 1–3 秒，同步调用会卡住主进程事件循环（设置页/工具注册期
+ * 会明显掉帧），后台刷新一律用这个。
+ */
+export async function runCulDoctorAsync(binaryPath: string, timeoutMs = 15_000): Promise<CulDoctorReport | undefined> {
+  try {
+    const { stdout } = await execFileAsync(binaryPath, ["doctor"], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return parseDoctorOutput(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseDoctorOutput(raw: string): CulDoctorReport {
   try {
     const parsed = JSON.parse(raw) as CulDoctorReport;
     return { ...parsed, raw };
