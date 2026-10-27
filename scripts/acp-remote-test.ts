@@ -234,10 +234,14 @@ try {
       "重复/失效审批 → 409",
     );
 
+    // 等的是"终态"，不是"文本到了"：输出流先落地、run 投影随后才从 working 变 completed，
+    // 只判文本会在慢机器上偶发红（CI 上出现过 actual 'working' / expected 'completed'）。
     const history = await waitFor(async () => {
       const value = await client.history(TASK);
       const message = value.messages.find((item) => item.id === started.assistantMessageId);
-      return message && /permission-selected-allow/.test(message.text) ? value : undefined;
+      return message && /permission-selected-allow/.test(message.text) && message.acp?.status === "completed"
+        ? value
+        : undefined;
     }, "ACP completion");
     const assistant = history.messages.find((item) => item.id === started.assistantMessageId)!;
     assert.match(assistant.text, /mock-chunk/, "手机端能看到 ACP 的真实输出");
