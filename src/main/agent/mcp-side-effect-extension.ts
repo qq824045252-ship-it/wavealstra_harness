@@ -77,7 +77,7 @@ export function createMcpSideEffectExtension(bridge: McpSideEffectBridge): Exten
       }
 
       // 危险工具强制审批（escape hatch 语义）：即使 provider 策略放行也要求审批
-      // （auto 权限模式仍放行，与 cad_freecad_run 的 auto 例外一致）
+      // （auto 权限模式仍放行，与既有 escape hatch 的 auto 例外一致）
       if (dangerous) {
         decision = {
           ...decision,

@@ -271,7 +271,6 @@ import {
 
 // 场景产物黑白名单已改为「产物面板显示过滤」（V3.6）：不再注册 ArtifactPolicyExtension
 // 拦截 write/edit，文件照常落地；显示过滤在 renderer 按 artifactVisibleForDisplay 执行。
-import { createCadExtension, shouldInjectCadExtension } from "../cad/cad-extension";
 import { createProjectPlanExtension } from "../project/project-plan-extension";
 import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
@@ -283,9 +282,6 @@ import { createLocalWhisperSpeechProvider } from "../capabilities/LocalWhisperSp
 import { createCodexImageCapabilityProvider } from "../capabilities/CodexImageCapabilityProvider";
 import { getPythonRuntimeService } from "../runtime/pythonRuntimeInstance";
 import { ProjectService } from "../project/ProjectService";
-import type { CadRuntimeService } from "../cad/CadRuntimeService";
-import type { CadArtifactService } from "../cad/CadArtifactService";
-import type { FreeCadInterop } from "../cad/FreeCadInterop";
 import { RuntimeRequirementOrchestrator, type ProfessionalToolRuntimeFacade } from "../professional-tools/RuntimeRequirementOrchestrator";
 import {
   createExecutionBackendFromSettings,
@@ -572,11 +568,6 @@ export class AgentService {
   /** Declarative runtime + managed professional-tool orchestration lives outside AgentService. */
   private readonly runtimeRequirements: RuntimeRequirementOrchestrator;
 
-  /** Mechanical CAD 一等能力：cad_* native tools runtime（仅 mechanical-cad preset 注入） */
-  private cadRuntime: CadRuntimeService | null = null;
-  private cadArtifacts: CadArtifactService | null = null;
-  private cadFreeCad: FreeCadInterop | null = null;
-
   /** LLM 用量统一事实表（TTFT/TPS 投影 + 历史回填 + 查询） */
   readonly usageStats: UsageStatsService;
 
@@ -635,16 +626,6 @@ export class AgentService {
   /** 正在运行的会诊实例数量（诊断/测试用，不暴露给渲染层）。 */
   runningConsultCount(): number {
     return this.consultWorkers.size;
-  }
-  /** Mechanical CAD runtime 装配（Main 侧单例；仅 mechanical-cad preset 消费） */
-  setCadDomain(
-    runtime: CadRuntimeService,
-    artifacts: CadArtifactService,
-    freeCad: FreeCadInterop,
-  ): void {
-    this.cadRuntime = runtime;
-    this.cadArtifacts = artifacts;
-    this.cadFreeCad = freeCad;
   }
 
   private memoryWriteQueue: Promise<void> = Promise.resolve();
@@ -5300,80 +5281,6 @@ export class AgentService {
     };
   }
 
-  /**
-   * CAD 扩展工厂（条件注入）：仅 design + mechanical-cad preset 下返回 factory。
-   * 其余模式（working/coding/design 其它 preset）返回 null，不污染会话工具面。
-   */
-  private cadExtensionFactory(
-    opts: { taskId: string; cwd: string; permissionMode: PermissionMode; welcomeMode: WelcomeMode; modePresetId?: string | null },
-    effProfile: ModeProfileDto,
-  ): ReturnType<typeof createCadExtension> | null {
-    if (!this.cadRuntime || !this.cadArtifacts || !this.cadFreeCad) return null;
-    if (!shouldInjectCadExtension(opts.welcomeMode, opts.modePresetId)) return null;
-    // 防御：toolPolicy hard deny cad 时不注入（理论上 preset 不会 deny）
-    if (effProfile.policy.toolPolicy.deny.includes("cad_*")) return null;
-    return createCadExtension({
-      taskId: opts.taskId,
-      taskRoot: opts.cwd,
-      runtime: this.cadRuntime,
-      artifacts: this.cadArtifacts,
-      freeCad: this.cadFreeCad,
-      getProducerMessageId: () => this.registry.get(opts.taskId)?.assistantMessageId,
-      getPermissionMode: () => {
-        const live = this.registry.get(opts.taskId);
-        return live ? live.permissionMode : opts.permissionMode;
-      },
-      requestApproval: async (info) => {
-        const entry = this.registry.get(opts.taskId);
-        const messageId = entry?.assistantMessageId;
-        if (!entry || !messageId) return false;
-        if (entry.permissionMode === "auto") return true;
-        this.emitPatch({
-          type: "tool_start",
-          taskId: opts.taskId,
-          messageId,
-          toolCallId: info.toolCallId,
-          tool: info.toolName,
-          summary: info.summary,
-          detail: info.detail,
-          dangerous: info.dangerous,
-          status: "pending_approval",
-        });
-        this.emitTaskLifecycle({
-          kind: "action_required",
-          taskId: opts.taskId,
-          assistantMessageId: messageId,
-          toolCallId: info.toolCallId,
-          summary: info.summary,
-          detail: info.detail,
-        });
-        this.pendingActions.register({
-          taskId: opts.taskId,
-          assistantMessageId: messageId,
-          toolCallId: info.toolCallId,
-          tool: info.toolName,
-          summary: info.summary,
-          detail: info.detail,
-          dangerous: info.dangerous,
-          approvalKind: "tool",
-          createdAt: Date.now(),
-        });
-        return await new Promise<boolean>((resolveApproval) => {
-          entry.pendingApprovals.set(info.toolCallId, resolveApproval);
-        });
-      },
-      verification: {
-        resolveContext: () => {
-          const current = this.registry.get(opts.taskId);
-          if (!current?.executionId || !current.assistantMessageId) return undefined;
-          return { taskId: opts.taskId, executionId: current.executionId, assistantMessageId: current.assistantMessageId };
-        },
-        attempts: this.executionAttempts,
-        failures: this.executionFailures,
-      },
-    });
-  }
-
   private async createSession(opts: {
     taskId: string;
     cwd: string;
@@ -5562,11 +5469,6 @@ export class AgentService {
     // 用户明确配置的工具可用范围交给 Pi excludeTools。
     const builtinConfig = this.builtinCapabilities.config();
     const toolSelection = resolveSessionToolSelection(effPermission, effProfile.policy.toolPolicy, builtinConfig);
-    // Mechanical CAD：仅 design + mechanical-cad preset 注入 cad_* native tools（不污染其它模式）
-    const cadFactory = this.cadExtensionFactory(
-      { ...opts, permissionMode: effPermission },
-      effProfile,
-    );
     const contextProjection = new EphemeralContextProjection({
       registerRequestGuard: setSessionRequestGuard,
       memory: this.memoryService,
@@ -5582,7 +5484,7 @@ export class AgentService {
         return { executionId: entry?.executionId, userTurnId: pending?.userMessageId, query: pending?.userText };
       },
     });
-    const extraFactories = [...(cadFactory ? [cadFactory] : []), contextProjection.extension];
+    const extraFactories = [contextProjection.extension];
 
     // P1-A/B：Final Allowed Skill Set（唯一真相）——assembly.skillFilter.visible 是
     // Mode → Project → Tag 策略链过滤后的最终允许技能名；它同时是目录段与 loader 的

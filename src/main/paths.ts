@@ -203,6 +203,17 @@ export function getSkillsDir(): string {
   return getPluginDirectory("skills");
 }
 
+/**
+ * 受管工具根：~/.mybuddy/tools/。
+ * 只放用户/产品提供的配置与 compose 文件（如 penpot/docker-compose.yml），
+ * 不内置任何第三方软件；可执行程序一律走系统安装或显式环境变量。
+ */
+export function getToolsDir(myBuddyDir = getMyBuddyDir()): string {
+  const dir = join(myBuddyDir, "tools");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** MyBuddy-managed CLI helpers exposed only to MyBuddy-launched terminal processes. */
 export function getMyBuddyBinDir(myBuddyDir = getMyBuddyDir()): string {
   const dir = join(myBuddyDir, "bin");

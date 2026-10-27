@@ -139,7 +139,6 @@ async function main(): Promise<void> {
     shouldBlockArtifactWrite,
     evaluateArtifactWrite,
     artifactVisibleForDisplay,
-    isCadScratchArtifact,
     normalizeArtifactExtension,
   } = await import("../src/shared/mode-profile");
   assert(normalizeArtifactExtension(".PY") === "py", "扩展名归一化");
@@ -195,24 +194,7 @@ async function main(): Promise<void> {
     artifactVisibleForDisplay("report.py", null),
     "无策略 → 不过滤",
   );
-  assert(
-    isCadScratchArtifact("cad/_freecad_scripts/fc_abc123.py"),
-    "cad scratch 目录内脚本",
-  );
-  assert(
-    isCadScratchArtifact("fc_mswgcza1.args.json"),
-    "FreeCAD MCP 临时 args.json",
-  );
-  assert(
-    isCadScratchArtifact("fc_mswgcza1.py"),
-    "FreeCAD MCP 临时 py",
-  );
-  assert(!isCadScratchArtifact("lego_car.fcstd"), "CAD 成品不是 scratch");
-  assert(!isCadScratchArtifact("model.py"), "普通 py 不是 scratch");
-  assert(
-    !artifactVisibleForDisplay("fc_mswgcza1.args.json", null),
-    "CAD 临时脚本无策略也隐藏",
-  );
+  // 通用机制回归：非 .py 的业务产物（以 .step/.fcstd 等为样例）不受 py 黑名单影响
   assert(
     artifactVisibleForDisplay("lego_car.step", { mode: "hard", allow: [], deny: ["py"] }),
     "CAD 成品不受 py 黑名单影响",

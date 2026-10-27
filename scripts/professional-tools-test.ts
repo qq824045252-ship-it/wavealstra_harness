@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ProfessionalToolRuntimeService,
-  discoverPortableExecutable,
   type ProfessionalToolPlatformOps,
 } from "../src/main/professional-tools/ProfessionalToolRuntime";
 import {
@@ -26,7 +25,9 @@ function assert(cond: unknown, label: string): void {
   }
 }
 
-const toolsRoot = String.raw`C:\MyBuddy\MyBuddyTools`;
+// 工具根 = 用户数据目录（~/.mybuddy/tools 语义，只放 compose/配置，不内置软件）。
+// 用例用临时目录代替真实用户目录，避免污染 ~/.mybuddy。
+const toolsRoot = mkdtempSync(join(tmpdir(), "mybuddy-tools-"));
 const runtimeDir = String.raw`C:\Users\tester\.mybuddy\runtime`;
 const blenderExe = join(toolsRoot, "blender-99.1-windows-x64", "blender.exe");
 const freecadExe = join(toolsRoot, "FreeCAD_42.7-Windows-x86_64", "FreeCAD.exe");
@@ -47,7 +48,7 @@ function fakeHarness(options: {
   seedReadyPorts?: number[];
   /** 预置 Ardot MCP HTTP endpoint ready（TCP 未监听场景） */
   seedArdotHttpReady?: boolean;
-  /** OpenDesign MyBuddyTools CLI（dist/cli.js）；null = 不装；缺省 = 不装 */
+  /** OpenDesign CLI（dist/cli.js）；null = 不装；缺省 = 不装 */
   odCli?: string | null;
   /** `where od` 返回的 PATH 候选（Path 解析场景） */
   odPathCandidates?: string[];
@@ -282,19 +283,6 @@ function fakeHarness(options: {
 }
 
 async function main(): Promise<void> {
-  console.log("\n== 1. portable 路径 discovery ==");
-  {
-    const h = fakeHarness();
-    assert(
-      discoverPortableExecutable(toolsRoot, "blender.exe", /^blender/i, h.ops) === blenderExe,
-      "discoverPortableExecutable 仍可从版本目录发现 exe（CAD 互操作复用）",
-    );
-    assert(
-      discoverPortableExecutable(toolsRoot, "FreeCAD.exe", /^FreeCAD/i, h.ops) === freecadExe,
-      "discoverPortableExecutable 仍可发现 FreeCAD exe",
-    );
-  }
-
   console.log("\n== 2. Penpot prepare lazy + open 按需 ==");
   {
     const h = fakeHarness();

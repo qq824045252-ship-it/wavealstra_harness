@@ -34,7 +34,7 @@ export function isRetiredManagedProvider(id: string): boolean {
   return (RETIRED_MANAGED_PROVIDER_IDS as readonly string[]).includes(id);
 }
 
-/** 随 Ardot / FreeCAD Tag 一起下线的技能，设置里不再列出。Blender 技能保留，配合 Hub 已装 blender MCP。 */
+/** 随 Ardot / FreeCAD Tag 一起下线的技能，设置里不再列出。Blender 技能已退役：不内置第三方软件，也不由 MyBuddy 托管。 */
 export const RETIRED_DESIGN_SKILL_IDS = [
   "ardot",
   "ardot-design-generator",

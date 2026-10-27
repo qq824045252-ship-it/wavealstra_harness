@@ -29,7 +29,6 @@ coordinator.attach("task", process.cwd(), session);
 try {
   const readonly = classifyMcpToolCall("mcp__freecad_get_document", {}, ["freecad"]);
   assert(readonly && !readonly.sideEffect, "readonly MCP must stay outside side-effect evidence");
-  assert.equal(classifyMcpToolCall("cad_freecad_measure", {}, ["freecad"]), null, "native CAD is not MCP");
   const exact = classifyMcpToolCall("mcp__my_server_update_file", { path: "secret.txt" }, ["my-server"]);
   assert.equal(exact?.identity.providerId, "my-server");
   assert.equal(exact?.identity.shortToolName, "update_file");

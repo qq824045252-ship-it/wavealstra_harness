@@ -1,5 +1,8 @@
 # MyBuddy Design Mode × OpenDesign 接入调研与实施方案（调研版 v1）
 
+> ⚠️ **已退役**：OpenDesign（以及 blender / freecad / ardot-local）受管 provider 均已下线，
+> 本文为历史调研记录；文中 `MyBuddyTools/...` 便携路径不再适用——本产品不内置第三方软件。
+
 > 状态：**已实现**（2026-08 开发线）。实施记录见 `docs/opendesign-integration.md`；
 > 本文件为历史调研与方案，仅 P0 评审项有更新：
 > ①打包 CLI 布局以本机 0.16.1 实证为准（`app/prebundled/daemon/daemon-cli.mjs` + `open-design-config.json`
@@ -58,11 +61,12 @@
 
 `src/main/professional-tools/ProfessionalToolRuntime.ts`：
 
-- `ProfessionalToolRuntimeService`（330-400）：`ardot-local / penpot / blender / freecad` 四个 runtime；`prepareForProvider` = status → 缺 missing 报错 → 未 ready 则 start → connectMcp（校验 providerEnabled，即该 MCP 已配置且启用）。
-- toolsRoot 解析：`MYBUDDY_TOOLS_DIR` env > `<cwd>/MyBuddyTools` > exe 旁（101-107）。用户机实况：`C:\Users\servi\Desktop\mybuddy\MyBuddyTools\{Ardot,blender-5.2.0-windows-x64,FreeCAD_1.1.3-…,penpot,mcp}`。
+- `ProfessionalToolRuntimeService`：现存受管 runtime 只有 `penpot`（+ 办公侧 `drawio-ai`）；`ardot-local / blender / freecad` 已退役。`prepareForProvider` = status → 缺 missing 报错 → 未 ready 则 start → connectMcp（校验 providerEnabled，即该 MCP 已配置且启用）。
+- toolsRoot 解析（现行）：`MYBUDDY_TOOLS_DIR` env > `~/.mybuddy/tools`（只承载 compose/配置，不内置软件；`<cwd>/MyBuddyTools` 与 exe 旁探测已删除）。
+- 历史记录（已退役）：早期用户机便携目录为 `MyBuddyTools\{Ardot,blender-5.2.0-windows-x64,FreeCAD_1.1.3-…,penpot,mcp}`，对应 runtime 探测/启动方式见下。
 - 各 runtime 探测/启动方式：
   - Penpot：`docker compose -f <root>/penpot/compose.yaml up -d`，`httpReady http://localhost:9001`（`PENPOT_ORIGIN`，`src/shared/professional-tools.ts:17`）。
-  - Blender：`discoverPortableExecutable` 找 `blender.exe` → spawn `--online-mode`（官方 Lab MCP 扩展自带 Auto Start）→ `tcpReady 127.0.0.1:9876`。
+  - Blender（已退役）：历史实现用 `discoverPortableExecutable`（已删）找 `blender.exe` → spawn `--online-mode`（官方 Lab MCP 扩展自带 Auto Start）→ `tcpReady 127.0.0.1:9876`。
   - FreeCAD：spawn `FreeCAD.exe` → `tcpReady 127.0.0.1:9875`（neka-nat/freecad-mcp addon `auto_start_rpc=true`）。
   - Ardot：spawn `Ardot.exe` → ready `127.0.0.1:50501`（HTTP MCP endpoint）。
 - 生命周期：`stopOwned()` 只杀本 Runtime spawn 的 child（app quit 钩子 `src/main/index.ts:937`）；Penpot Docker 不随 app 停。
@@ -170,7 +174,7 @@
 - **探测（status）**，按序：
   1. `od daemon status --json`（`od` 在 PATH；`--daemon-url` 覆盖端口）→ 可达且 healthy = `ready`；
   2. TCP `127.0.0.1:<port>` 探测（`defaultTcpReady` 复用）→ `ready`；
-  3. CLI 探测：PATH `od` → `MyBuddyTools/open-design/bin/od` / `MyBuddyTools/open-design/dist/cli.js` → 打包 OD 桌面 app 的 `<resources>/open-design/bin/`（`resolveProcessResourcesPath` 同款 marker 逻辑，`daemon-paths.ts` 实证）→ 缺失 = `missing`（detail 给安装指引：open-design.ai 下载或源码 Node24+pnpm bootstrap）。
+  3. CLI 探测：PATH `od` → 打包 OD 桌面 app 的 `<resources>/open-design/bin/`（`resolveProcessResourcesPath` 同款 marker 逻辑，`daemon-paths.ts` 实证）→ 缺失 = `missing`（detail 给安装指引：open-design.ai 下载或源码 Node24+pnpm bootstrap）；~~`MyBuddyTools/open-design/...` 便携探测~~已删除。
 - **启动（start）**：`spawn(od, ["daemon","start","--headless","--port", String(port)], {env:{...process.env, OD_PORT: String(port), OD_DATA_DIR: <mybuddy-od-data>}})` + `unref()`；`waitReady` 用 `od daemon status --json` 或 TCP。端口冲突时回退：`OD_PORT=0` 不可行（daemon 固定语义）→ 优先探测 7456，被占用时依次尝试 7457-7466。
 - **数据目录**：默认 `~/.mybuddy/od-data`（`getMyBuddyDir()/od-data`），显式 `OD_DATA_DIR`，与 MyBuddy 其它数据同区；项目即 `<od-data>/projects/<id>/`。
 - **connectMcp**：复用 `BaseRuntime.connectMcp`（校验 MCP 条目已配置且启用）。
@@ -219,7 +223,7 @@
 ### 3.6 Windows 安装 / 探测 / 失败降级
 
 - 安装引导（设置卡片内）：① 下载官网 Windows 打包版（推荐，自带 Node runtime，`od` 在 `<resources>/open-design/bin/`）；② 源码（Node 24 + corepack pnpm + `pnpm bootstrap`）。
-- 探测链：`od` on PATH（`od --version`）→ `MyBuddyTools/open-design/bin/od.mjs` / `dist/cli.js`（含一级版本子目录，复用 `discoverPortableExecutable`）→ 打包 app 的 `<resources>/open-design/bin/` → 常见安装目录。
+- 探测链（现行）：`od` on PATH（`od --version`）→ 打包 app 的 `<resources>/open-design/bin/` → 常见安装目录；~~`MyBuddyTools/open-design/...` 便携探测~~已随"不内置第三方软件"删除（`discoverPortableExecutable` 也已移除）。
 - MCP 条目写入（`~/.mybuddy/mcp.json`）：
   ```json
   "opendesign": {
