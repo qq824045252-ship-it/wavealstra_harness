@@ -49,6 +49,16 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      # setup-node 的 `cache: pnpm` 在 `pnpm store path` 指向不存在的目录时只会记一条
+      # "pnpm cache is not found"，然后在 post 阶段以 "Path Validation Error" 把**整条 job
+      # 判失败**——即使 245 个用例全绿。先把 store 目录建出来，缓存路径才存在。
+      - name: Ensure pnpm store dir exists
+        shell: pwsh
+        run: |
+          $store = (& pnpm store path).Trim()
+          New-Item -ItemType Directory -Force -Path $store | Out-Null
+          Write-Host "pnpm store: $store"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -120,6 +130,13 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      # 同 verify-windows：store 目录不存在会让 setup-node 的 post 步骤判 job 失败。
+      - name: Ensure pnpm store dir exists
+        run: |
+          store="$(pnpm store path)"
+          mkdir -p "$store"
+          echo "pnpm store: $store"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -168,6 +185,14 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
+
+      # 同其他 job：store 目录不存在会让 setup-node 的 post 步骤判 job 失败。
+      - name: Ensure pnpm store dir exists
+        shell: pwsh
+        run: |
+          $store = (& pnpm store path).Trim()
+          New-Item -ItemType Directory -Force -Path $store | Out-Null
+          Write-Host "pnpm store: $store"
 
       - uses: actions/setup-node@v4
         with:
