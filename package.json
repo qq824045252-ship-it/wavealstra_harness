@@ -5,6 +5,9 @@
   "main": "./out/main/index.js",
   "private": true,
   "packageManager": "pnpm@12.14.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "test:command-code-request": "esbuild scripts/command-code-request-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/command-code-request-test.mjs && node scripts/test-guard.mjs out/tests/command-code-request-test.mjs",
     "test:image-resize-assets": "esbuild scripts/image-resize-assets-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/image-resize-assets-test.cjs && node scripts/test-guard.mjs out/tests/image-resize-assets-test.cjs",
