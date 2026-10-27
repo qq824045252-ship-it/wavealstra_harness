@@ -82,7 +82,8 @@ export class MemoryTurnRepository {
 
   listByTask(taskId: string, limit = 100): MemoryTurnDto[] {
     return (this.conn.prepare(
-      "SELECT * FROM memory_turns WHERE task_id=? ORDER BY captured_at DESC,id DESC LIMIT ?",
+      // 同毫秒用 rowid 兜底（id 是随机 UUID，不能作为时序兜底）。
+      "SELECT * FROM memory_turns WHERE task_id=? ORDER BY captured_at DESC,rowid DESC LIMIT ?",
     ).all(taskId, Math.max(1, Math.min(1000, limit))) as Array<Record<string, unknown>>).map((row) => this.mapTurn(row));
   }
 
@@ -98,7 +99,7 @@ export class MemoryTurnRepository {
       )
       SELECT id,user_text FROM memory_turns
       WHERE session_id=? OR session_id IN (SELECT source_session_file FROM ancestors)
-      ORDER BY captured_at,id
+      ORDER BY captured_at,rowid
     `).all(taskId ?? null, sessionId) as Array<{ id: string; user_text: string }>).map((row) => ({ id: row.id, userText: row.user_text }));
   }
 
@@ -124,15 +125,22 @@ export class MemoryTurnRepository {
     const sql = `SELECT m.*,t.title AS task_title,w.state AS task_workspace_state
       FROM memory_turns m LEFT JOIN tasks t ON t.id=m.task_id
       LEFT JOIN task_execution_workspace_state w ON w.task_id=m.task_id
-      ${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY captured_at DESC,m.id DESC LIMIT ?`;
+      ${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY captured_at DESC,m.rowid DESC LIMIT ?`;
     return (this.conn.prepare(sql).all(...args) as Array<Record<string, unknown>>).map((row) => this.mapTurn(row));
   }
 
+  /**
+   * 待抽取队列：按捕获时间升序，**同毫秒用 rowid（插入顺序）兜底**。
+   *
+   * 曾经用 `captured_at ASC,id ASC`，而 id 是 `mturn_${randomUUID()}` —— 同一毫秒内捕获的
+   * 两条 turn 只能靠随机 UUID 决胜负，批量抽取时 turn 顺序会随运行变化（记忆抽取拿到
+   * 的证据顺序不稳，用例也会偶发红）。rowid 单调递增且稳定，才是"插入顺序"的正确兜底。
+   */
   listPending(taskId: string, limit = 8, capturedThrough = Number.MAX_SAFE_INTEGER): MemoryTurnDto[] {
     return (this.conn.prepare(
       `SELECT * FROM memory_turns
        WHERE task_id=? AND extraction_state IN ('pending','failed') AND attempt_count < 3 AND captured_at<=?
-       ORDER BY captured_at ASC,id ASC LIMIT ?`,
+       ORDER BY captured_at ASC,rowid ASC LIMIT ?`,
     ).all(taskId, capturedThrough, Math.max(1, Math.min(50, limit))) as Array<Record<string, unknown>>).map((row) => this.mapTurn(row));
   }
 

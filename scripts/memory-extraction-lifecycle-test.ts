@@ -52,6 +52,20 @@ try {
   assert.equal(pipeline.turns.get(short.id)?.extractionState, "completed");
   assert.ok(notifications >= 2, "start and completion both notify the open UI");
 
+  // 回归锁：同一毫秒捕获的 turn 必须按**插入顺序**排队。
+  // memory_turns.id 是 `mturn_${randomUUID()}`，曾用 `captured_at ASC,id ASC` 排序——
+  // 同毫秒时等于让随机 UUID 决定顺序，批量抽取拿到的话语顺序会随运行漂移（本用例曾 20 次红 2 次）。
+  task("order");
+  capture("order", "第一条");
+  capture("order", "第二条");
+  assert.deepEqual(
+    pipeline.turns.listPending("order", 10).map((turn: any) => turn.userText),
+    ["第一条", "第二条"],
+    "同毫秒写入的 turn 按 rowid（插入顺序）排序，不依赖随机 id",
+  );
+  // 清掉这条回归锁自己的数据，别让它影响后面按全局计数做的断言。
+  db.connection.prepare("DELETE FROM memory_turns WHERE task_id='order'").run();
+
   task("batch");
   for (let i = 0; i < 19; i++) capture("batch", `无长期内容的对话 ${i}`);
   response = async () => ({ candidates: [] });
