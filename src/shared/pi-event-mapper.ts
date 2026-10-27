@@ -134,8 +134,6 @@ function isDangerousTool(tool: string, input: unknown): boolean {
   if (tool === "computer_exec") {
     return !isComputerExecReadonly(input);
   }
-  // Mechanical CAD 逃生通道：任意 FreeCAD Python 执行，恒为 dangerous（需审批）
-  if (tool === "cad_freecad_run") return true;
   return false;
 }
 

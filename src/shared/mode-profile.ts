@@ -146,22 +146,9 @@ export type ArtifactWriteDecision =
   | { block: true; reason: "deny" | "allow"; ext: string };
 
 /**
- * FreeCAD MCP / cad_freecad_run 落盘的临时脚本，不是用户产物。
- * 目录：cad/_freecad_scripts/；文件名：fc_<id>.py / fc_<id>.args.json
- */
-export function isCadScratchArtifact(filePath: string | undefined): boolean {
-  if (!filePath) return false;
-  const normalized = filePath.replace(/\\/g, "/");
-  if (normalized.split("/").includes("_freecad_scripts")) return true;
-  const base = normalized.split("/").pop() ?? "";
-  return /^fc_[a-z0-9]+\.(py|args\.json)$/i.test(base);
-}
-
-/**
  * 产物显示过滤（产物黑白名单作用于产物面板与消息芯片，不再拦截文件写入）：
  * deny 命中或 allow 非空未命中 → 隐藏；与 evaluateArtifactWrite 判定一致，
  * 但不区分 soft/hard —— 显示过滤始终生效，文件落地不受影响。
- * CAD 临时脚本（isCadScratchArtifact）始终隐藏。
  */
 function normalizeArtifactDisplayPath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -196,7 +183,6 @@ export function artifactVisibleForDisplay(
   peerArtifactPaths?: readonly string[],
 ): boolean {
   if (policy?.unfiltered) return true;
-  if (isCadScratchArtifact(filePath)) return false;
   if (isPptdProjectInternalArtifact(filePath, peerArtifactPaths)) return false;
   if (!policy) return true;
   const deny = normalizeArtifactExtensions(policy.deny);
@@ -374,7 +360,7 @@ export interface ModePresetDto {
   /** 本 preset 绑定的专用设计 provider MCP id（UI 可用性判断；general 为空数组） */
   providerMcpIds?: string[];
   /**
-   * 本 preset 要求的受管 runtime（managed provider id，如 freecad/blender）：
+   * 本 preset 要求的受管 runtime（managed provider id）：
    * 选择/激活该 preset 时 best-effort prewarm（启动桌面软件 + 连接 MCP，无业务副作用）；
    * 用户真正发送任务前做 required-runtime preflight gate（未 ready 先 ensureReady，
    * 失败则任务开始前明确失败）。声明式配置，机制可复用于任意 managed provider。

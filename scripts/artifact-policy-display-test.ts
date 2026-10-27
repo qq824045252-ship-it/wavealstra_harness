@@ -137,7 +137,8 @@ async function main(): Promise<void> {
   const visibleA4 = selectVisibleActiveTaskArtifacts(useAppStore.getState());
   check("A4 黑白名单空 → 不过滤", names(visibleA4) === "art-py,art-md,art-canvas", names(visibleA4));
 
-  // A5：FreeCAD MCP 临时脚本即使黑白名单皆空也不进产物面板 / 芯片
+  // A5：CAD 链已退役，产物显示不再对 CAD/FreeCAD 临时脚本做特判；
+  // 白名单皆空时 fc_*.py / fc_*.args.json 与其它业务产物同等显示（防再次引入特判）。
   useAppStore.setState({
     artifactProjection: {
       artifactsByTask: {
@@ -156,12 +157,12 @@ async function main(): Promise<void> {
   const visibleA5 = selectVisibleActiveTaskArtifacts(useAppStore.getState());
   const fullA5 = selectActiveTaskArtifacts(useAppStore.getState());
   check(
-    "A5 面板/芯片: fc_*.py / fc_*.args.json 隐藏，CAD 成品保留",
-    names(visibleA5) === "art-py,art-md,art-canvas,art-cad",
+    "A5 面板/芯片: 无 CAD 特判（fc_*.py / fc_*.args.json 与普通产物同规则）",
+    names(visibleA5) === "art-py,art-md,art-canvas,art-fc-py,art-fc-json,art-cad",
     names(visibleA5),
   );
   check(
-    "A5 变更显示: 全量仍含 FreeCAD 临时脚本",
+    "A5 变更显示: 全量同样不做 CAD 特判",
     names(fullA5) === "art-py,art-md,art-canvas,art-fc-py,art-fc-json,art-cad",
     names(fullA5),
   );

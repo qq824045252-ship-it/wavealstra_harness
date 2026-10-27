@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { connect as netConnect } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { npxFallbackPaths, npxProbeCommand } from "../platform/apps";
 import {
   DRAWIO_DEFAULT_PORT,
@@ -22,7 +22,7 @@ import {
   type ProfessionalToolResultDto,
   type ProfessionalToolStatusDto,
 } from "../../shared/professional-tools";
-import { getMyBuddyDir } from "../paths";
+import { getMyBuddyDir, getToolsDir } from "../paths";
 import {
   listListeningPids as platformListeningPids,
   listPidsByImageName as platformPidsByImageName,
@@ -207,32 +207,16 @@ function defaultOps(): ProfessionalToolPlatformOps {
   };
 }
 
-function resolveToolsRoot(ops: ProfessionalToolPlatformOps, explicit?: string): string {
+/**
+ * 受管工具根解析：显式注入 > MYBUDDY_TOOLS_DIR > ~/.mybuddy/tools。
+ *
+ * 产品不内置第三方软件：这里只承载用户/产品提供的配置（如 penpot compose），
+ * 不再从 exe 旁或 cwd 下的便携目录发现随包软件。
+ */
+function resolveToolsRoot(explicit?: string): string {
   if (explicit) return explicit;
   if (process.env.MYBUDDY_TOOLS_DIR) return process.env.MYBUDDY_TOOLS_DIR;
-  const candidates = [join(process.cwd(), "MyBuddyTools"), join(dirname(process.execPath), "MyBuddyTools")];
-  return candidates.find((candidate) => ops.exists(candidate)) ?? candidates[0];
-}
-
-/** 只查 tools root / 一级版本目录 / 其 bin，避免递归扫第三方依赖树。 */
-export function discoverPortableExecutable(
-  toolsRoot: string,
-  executableName: string,
-  directoryHint: RegExp,
-  ops: Pick<ProfessionalToolPlatformOps, "exists" | "listDirectories">,
-): string | null {
-  const direct = join(toolsRoot, executableName);
-  if (ops.exists(direct)) return direct;
-  const dirs = ops
-    .listDirectories(toolsRoot)
-    .filter((name) => directoryHint.test(name))
-    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }));
-  for (const dir of dirs) {
-    for (const candidate of [join(toolsRoot, dir, executableName), join(toolsRoot, dir, "bin", executableName)]) {
-      if (ops.exists(candidate)) return candidate;
-    }
-  }
-  return null;
+  return getToolsDir();
 }
 
 abstract class BaseRuntime implements ProfessionalToolRuntime {
@@ -592,7 +576,7 @@ export class ProfessionalToolRuntimeService {
   constructor(options: ProfessionalToolRuntimeOptions = {}) {
     const defaults = defaultOps();
     const ops: ProfessionalToolPlatformOps = { ...defaults, ...options.ops };
-    const toolsRoot = resolveToolsRoot(ops, options.toolsRoot);
+    const toolsRoot = resolveToolsRoot(options.toolsRoot);
     const runtimeDir = options.runtimeDir ?? join(getMyBuddyDir(), "runtime");
     const providerEnabled = options.providerEnabled ?? (() => false);
     const timeout = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;

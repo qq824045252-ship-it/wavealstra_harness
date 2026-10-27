@@ -60,12 +60,6 @@ export const BUILTIN_TOOL_NAMES = new Set<string>(PI_BUILTIN_TOOL_NAMES);
 /** MyBuddy 自研原生能力工具（非 MCP）——权威清单见 src/shared/native-tools.ts */
 const NATIVE_CAPABILITY_TOOL_SET = new Set<string>(NATIVE_CAPABILITY_TOOL_NAMES);
 
-/**
- * 原生（native）CAD 工具前缀：MyBuddy 自研 cad_* 工具不是 MCP，
- * parseMcpToolIdentity 必须放行（否则会被误判为 unknown MCP provider 触发审批）。
- */
-export const NATIVE_CAD_TOOL_PREFIX = "cad_";
-
 const BUILTIN_KNOWN_MCP_PROVIDER_IDS = [...MANAGED_TOOL_PROVIDER_IDS, ...RETIRED_MANAGED_PROVIDER_IDS];
 
 function splitKnownMcpProvider(
@@ -103,7 +97,7 @@ export function defaultMcpSideEffectPolicy(providerId: string): McpSideEffectPol
 }
 
 /**
- * 受管设计 runtime（freecad/blender 等）的 MCP side-effect 策略：
+ * 受管设计 runtime（blender 等）的 MCP side-effect 策略：
  * 结构化建模工具按任务内写放行（不每步无意义审批）；
  * 危险 escape-hatch 工具（execute_python 等任意代码）由
  * McpSideEffectExtension.dangerousTools 另行强制审批。
@@ -118,7 +112,8 @@ export const MANAGED_RUNTIME_TOOL_POLICY: McpSideEffectPolicy = {
 
 /**
  * 受管 runtime 的危险工具（providerId → 工具名）：强制审批（escape hatch 语义）。
- * - freecad（blwfish）：execute_python 任意代码执行；restart/stop/reload 影响运行时；
+ * - freecad（用户自装 blwfish freecad-mcp）：execute_python 任意代码执行；restart/stop/reload
+ *   影响运行时。产品不内置 FreeCAD，但用户从 Hub 自行安装该 MCP 时仍按危险工具强制审批。
  * - blender（官方 Lab MCP）：execute_blender_code_for_cli 在后台 blender 进程中执行任意
  *   代码（可写任意路径）；execute_blender_code（交互实例主通道）保持 task-write 放行。
  */
@@ -144,7 +139,7 @@ export const MANAGED_RUNTIME_DANGEROUS_TOOLS: ReadonlyMap<string, ReadonlySet<st
 
 /**
  * 注册受管 runtime 的 side-effect 策略（进程级默认 registry 已含）。
- * 统一全部 managed provider（ardot-local/penpot/blender/freecad/opendesign/drawio-ai）：
+ * 统一全部 managed provider（ardot-local/penpot/blender/opendesign/drawio-ai）：
  * 自动 prewarm/start 本身不是业务写操作；这些 provider 的工具按 task-write 放行，
  * 危险 escape-hatch 工具由 MANAGED_RUNTIME_DANGEROUS_TOOLS 强制审批。
  */
@@ -160,20 +155,19 @@ export function registerManagedRuntimePolicies(registry: McpSideEffectRegistry):
  *  - mcp 前缀：`mcp__{server}_{tool}`（server 内 `-`→`_`）
  *  - server 前缀：`{server}_{tool}`
  * 内置工具返回 null。
- * 原生工具（内置 + MyBuddy 原生能力 + cad_* native CAD）同样返回 null。
+ * 原生工具（内置 + MyBuddy 原生能力）同样返回 null。
  */
 export function parseMcpToolIdentity(
   toolName: string,
   providerIds: readonly string[] = [],
 ): { providerId: string; shortToolName: string } | null {
   if (!toolName) return null;
-  // native：内置工具 + 自研原生能力工具 + MyBuddy 原生 CAD 工具
+  // native：内置工具 + 自研原生能力工具
   // （均非 MCP，不经 MCP 副作用门禁，否则会被误判为 unknown MCP provider 触发审批）
   if (
     BUILTIN_TOOL_NAMES.has(toolName) ||
     NATIVE_CAPABILITY_TOOL_SET.has(toolName) ||
-    isMyBuddyNativeExtensionToolName(toolName) ||
-    toolName.startsWith(NATIVE_CAD_TOOL_PREFIX)
+    isMyBuddyNativeExtensionToolName(toolName)
   ) {
     return null;
   }

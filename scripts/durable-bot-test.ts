@@ -45,7 +45,8 @@ const forbidden = { ...emptyModePolicy(), artifactPolicy: { mode: "hard" as cons
 const policy = botConfiguration(forbidden);
 assert.equal(policy.presets?.[0].promptAddon, "user prompt");
 assert.equal(policy.presets?.[0].mcpPolicy, undefined);
-assert(artifactVisibleForDisplay("cad/_freecad_scripts/fc_123.py", policy.artifactPolicy));
+// Bot 产物策略 soft + unfiltered：任何产物都不隐藏（含 .py；不再有 CAD/FreeCAD 临时脚本特判）
+assert(artifactVisibleForDisplay("scripts/generated/report.py", policy.artifactPolicy));
 assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.pptd"]));
 
 for (const mode of ["native", "codemode"] as const) {

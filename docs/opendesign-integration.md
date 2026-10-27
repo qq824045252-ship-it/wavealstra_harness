@@ -1,5 +1,9 @@
 # MyBuddy × OpenDesign 集成（Design Mode「AI 设计引擎 · OpenDesign」）
 
+> ⚠️ **已退役**：OpenDesign 受管 provider / preset 已从产品下线，本文仅作历史实现记录。
+> 文中 `MyBuddyTools/...` 路径与"把官方目录放进 MyBuddyTools"的安装方式**不再适用**：
+> 本产品不内置第三方软件，OpenDesign 若需使用请自行按官方方式安装（PATH 上的 `od` 或官方桌面版）。
+
 > 状态：**已实现**（v3.6 开发线，worktree `pi/task_1d0343df2c3a`）。
 > 依据：`docs/opendesign-integration-plan.md`（调研 + 实施方案 v1）；本机实证：Open Design 桌面版
 > **0.16.1**（CLI 自报 0.18.2，prebundled），daemon 常驻 `127.0.0.1:7456`。
@@ -41,7 +45,7 @@ OpenDesign CLI 解析顺序（`OpenDesignRuntime.resolveCli`，静态链优先�
 |---|---|---|
 | 1 | `MYBUDDY_OPENDESIGN_CLI` 环境变量 | 显式指向 cli.js / od.mjs / daemon-cli.mjs / od.cmd / od.exe |
 | 2 | 设置项 cliPath（`ProfessionalToolRuntimeOptions.opendesignCliPath`） | 代码注入的显式路径 |
-| 3 | `MyBuddyTools/open-design*/dist/cli.js`、`bin/od.mjs` | 把官方目录（或版本子目录）放进 MyBuddyTools |
+| 3 | ~~`MyBuddyTools/open-design*/dist/cli.js`、`bin/od.mjs`~~ | 已删除：便携目录探测随"不内置第三方软件"下线 |
 | 4 | 打包桌面应用 `%LOCALAPPDATA%\Programs\<app>\resources` | 见下方布局差异 |
 | 5 | PATH 兜底 `where/which od` | 逐候选身份校验（见 2.2） |
 
@@ -58,8 +62,7 @@ OpenDesign CLI 解析顺序（`OpenDesignRuntime.resolveCli`，静态链优先�
 
 安装方式（任选其一，推荐 ①）：
 1. **官网下载 Windows 打包版**（自带运行时，自动探测，无需任何配置）；
-2. **源码**：Node 24 + corepack pnpm + `pnpm bootstrap`，把 `apps/daemon` 产物放到
-   `MyBuddyTools/open-design`；
+2. **源码**：Node 24 + corepack pnpm + `pnpm bootstrap`（历史做法曾把 `apps/daemon` 产物放进 `MyBuddyTools/open-design`，该便携目录已废弃）；
 3. **PATH**：把 `od`（npm 全局 shim 或源码 bin）加入 PATH，身份校验通过即可。
 
 ### 2.2 PATH 假阳性防护
