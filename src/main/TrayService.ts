@@ -80,11 +80,19 @@ export class TrayService {
         },
       ]);
 
-      // Windows/macOS：左键恢复窗口，右键弹出菜单。
-      // Linux StatusNotifier 上 click 同样恢复；右键菜单走 right-click。
+      // 菜单绑定方式按平台走 behavior：
+      // - Windows/macOS：左键恢复窗口，右键在事件里 popUpContextMenu；
+      // - Linux：StatusNotifierItem 的右键由宿主（Quickshell）自己渲染，必须用
+      //   setContextMenu 把菜单注册到 /com/canonical/dbusmenu；popUpContextMenu 在
+      //   Linux 上被 Electron 标为 darwin/win32，调用是空操作（曾导致「托盘在但
+      //   右键没菜单」）。
       tray.on("click", () => this.showMainWindow());
       tray.on("double-click", () => this.showMainWindow());
-      tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
+      if (this.behavior.menuBinding === "setContextMenu") {
+        tray.setContextMenu(contextMenu);
+      } else {
+        tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
+      }
       this.tray = tray;
       this.trayUnavailable = false;
       console.log(`[Tray] 系统托盘已初始化 (${this.behavior.iconFormat})`);

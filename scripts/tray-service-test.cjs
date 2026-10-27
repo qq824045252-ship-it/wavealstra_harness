@@ -127,6 +127,12 @@ app.whenReady().then(() => {
       linuxBehavior.supportsBalloon === false &&
       linuxBehavior.degradedResidency === true,
   );
+  // 菜单绑定：Linux 必须 setContextMenu（popUpContextMenu 在 Linux 上是空操作）
+  assert(
+    "linux 右键菜单走 setContextMenu",
+    linuxBehavior.menuBinding === "setContextMenu",
+  );
+
   const macosBehavior = resolveTrayPlatformBehavior("macos");
   assert(
     "macos 托盘行为：ico + 不提示 + 无降级驻留",
@@ -135,6 +141,43 @@ app.whenReady().then(() => {
       macosBehavior.supportsBalloon === false &&
       macosBehavior.degradedResidency === false,
   );
+  assert(
+    "windows/macOS 右键菜单走 popUpContextMenu",
+    windowsBehavior.menuBinding === "popUpContextMenu" &&
+      macosBehavior.menuBinding === "popUpContextMenu",
+  );
+
+  // 5.5) 菜单绑定：按 platform behavior 选择 setContextMenu / popUpContextMenu
+  //      用 spy 替身托盘，验证「调用哪个 API」而不只是常量值。
+  const menuWin = new BrowserWindow({ width: 320, height: 240, show: false });
+  const spy = {
+    tooltip: "",
+    menu: null,
+    popped: 0,
+    handlers: new Map(),
+    setToolTip(value) { this.tooltip = value; },
+    on(event, handler) { this.handlers.set(event, handler); return this; },
+    setContextMenu(menu) { this.menu = menu; },
+    popUpContextMenu(menu) { this.popped += 1; this.menu = menu; },
+    destroy() { this.destroyed = true; },
+  };
+  const menuSvc = new TrayService();
+  menuSvc.initialize(menuWin, { createTray: () => spy });
+  const menuLabels = (spy.menu?.items ?? []).map((item) => item.label).filter(Boolean);
+  assert(
+    "托盘菜单包含 显示/刷新/退出",
+    ["显示 MyBuddy", "刷新", "退出"].every((label) => menuLabels.includes(label)),
+    menuLabels.join("|"),
+  );
+  if (resolveTrayPlatformBehavior().menuBinding === "setContextMenu") {
+    assert("Linux 用 setContextMenu 注册菜单（不是 popUpContextMenu）", spy.menu !== null && spy.popped === 0);
+  } else {
+    assert("Windows/macOS 关联 right-click → popUpContextMenu", typeof spy.handlers.get("right-click") === "function" && spy.menu === null);
+    spy.handlers.get("right-click")();
+    assert("Windows/macOS 右键会弹出菜单", spy.popped === 1 && spy.menu !== null);
+  }
+  menuSvc.dispose();
+  menuWin.destroy();
 
   // 6) 托盘后端失败：Linux 关窗仍驻留；Windows / macOS 保持原行为（不拦截、不抑制退出）
   const hidden = new BrowserWindow({ width: 320, height: 240, show: false });
