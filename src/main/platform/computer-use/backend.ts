@@ -37,4 +37,14 @@ export interface ComputerUseBackend {
    * （如 `can_capture_screenshots=false` 与「截图未验证」这类真实状态）。
    */
   refreshDiagnostics?(): void | Promise<void>;
+  /**
+   * 可选：释放后端自己记录下来的「按住中的键/鼠标按钮」。
+   *
+   * Linux（ydotool）上 `key_down`/`mouse_down_client` 的按住状态跨进程持久，agent 用完
+   * 忘记 `key_up` 就会把用户桌面留在按着 Ctrl 的状态。借鉴 LCU 的输入状态清理规则：
+   * 任务结束/取消时由上层调用一次，后端只释放「自己按下、且现在仍按着」的输入，
+   * 不动用户自己在按的（用户的按键不经过后端，后端也看不见）。
+   * Windows 的 SendInput 没有跨调用按住语义，所以不实现。
+   */
+  releaseHeldInput?(): Promise<{ keys: number[]; buttons: string[] }>;
 }

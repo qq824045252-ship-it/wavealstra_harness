@@ -376,6 +376,75 @@ await check("linux backend implements pointer/key split through the injected ydo
   await backend.shutdown();
 });
 
+/* 借鉴 LCU 的输入安全语义：串行队列 + 按住状态兜底释放（真机验证见 smoke --allow-input）。 */
+
+await check("linux backend serializes focus/input actions instead of interleaving", async () => {
+  const events: string[] = [];
+  let openGate: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { openGate = resolve; });
+  const backend = new LinuxComputerUseBackend({
+    ydotoolRunner: async (args) => {
+      events.push(`start:${args.join(" ")}`);
+      await gate;
+      events.push(`end:${args.join(" ")}`);
+    },
+  });
+  const first = backend.execute({ action: "key_down", key: "Ctrl" });
+  const second = backend.execute({ action: "mouse_down_client", button: "left" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // 第一条还卡在 ydotool 里时，第二条必须还没开始（否则焦点/按键会互相穿插）
+  assert.deepEqual(events, ["start:key 29:1"]);
+  openGate?.();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, [
+    "start:key 29:1", "end:key 29:1",
+    "start:click 0x40", "end:click 0x40",
+  ]);
+  await backend.shutdown();
+});
+
+await check("linux backend releases only what a failed action may have pressed", async () => {
+  const calls: string[][] = [];
+  let failNext = false;
+  const backend = new LinuxComputerUseBackend({
+    ydotoolRunner: async (args) => {
+      calls.push([...args]);
+      if (failNext) {
+        failNext = false;
+        throw new Error("ydotoold 掉了");
+      }
+    },
+  });
+  await backend.execute({ action: "key_down", key: "Ctrl" });
+  failNext = true;
+  await assert.rejects(() => backend.execute({ action: "key_down", key: "Shift" }));
+  // 只回滚这次动作的 Shift(42)，之前按住的 Ctrl(29) 不能被拆掉
+  assert.deepEqual(calls, [["key", "29:1"], ["key", "42:1"], ["key", "42:0"]]);
+  const released = await backend.releaseHeldInput();
+  assert.deepEqual(released, { keys: [29], buttons: [] });
+  assert.deepEqual(calls.at(-1), ["key", "29:0"]);
+  // 幂等：再调一次不应再发 ydotool
+  const before = calls.length;
+  assert.deepEqual(await backend.releaseHeldInput(), { keys: [], buttons: [] });
+  assert.equal(calls.length, before);
+  await backend.shutdown();
+});
+
+await check("linux backend releases held keys/buttons at shutdown", async () => {
+  const calls: string[][] = [];
+  const backend = new LinuxComputerUseBackend({ ydotoolRunner: async (args) => { calls.push([...args]); } });
+  await backend.execute({ action: "mouse_down_client", button: "right" });
+  await backend.execute({ action: "key_down", key: "Ctrl+Shift" });
+  await backend.shutdown();
+  assert.deepEqual(calls, [
+    ["click", "0x41"],
+    ["key", "29:1", "42:1"],
+    ["key", "42:0"],
+    ["key", "29:0"],
+    ["click", "0x81"],
+  ]);
+});
+
 await check("linux backend surfaces a pacman hint when ydotool is missing", async () => {
   const backend = new LinuxComputerUseBackend({ ydotoolRunner: undefined });
   // 直接判 YdotoolInput 的不可用分支：把 PATH 清空后再调用

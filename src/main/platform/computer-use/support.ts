@@ -218,7 +218,7 @@ const LINUX_DESCRIPTION = [
   "截图是 JPEG，可能等比缩放到 1600px 以内，image_scale = 物理像素/图像像素；窗口截图坐标 = 图像像素 × image_scale。",
   "Wayland 的限制（会明确报错，不要盲目重试）：没有后台截图（background=true 被拒绝，portal 只能截前台窗口）；GNOME 专用的 setup_window_targeting 不可用。",
   "窗口移动/改尺寸走 Hyprland 的 hyprctl Lua（move_window 传 window_x/window_y、resize_window 传 window_width/window_height，都是逻辑/布局像素，与 hyprctl clients 的 at/size 同域）：平铺窗口会先被转成浮窗，返回值里的 window_geometry 是合成器实际采纳的几何（可能与你请求的值差 1–2px），不要假设等于请求值。Windows/GNOME 上没有这条通道，会明确拒绝。",
-  "按下/释放分离可用：mouse_down_client + mouse_up_client（指针按钮按住，可跨步骤）、key_down + key_up（修饰键按住，例如先 key_down Ctrl 再 click_client）。click_client 的 modifiers 与 hold_ms、drag_client 的 steps/duration_ms 都真的生效（modifiers 与长按走 ydotool）。Wayland 上这些按住状态会一直持续到你显式释放，用完必须 key_up / mouse_up_client。",
+  "按下/释放分离可用：mouse_down_client + mouse_up_client（指针按钮按住，可跨步骤）、key_down + key_up（修饰键按住，例如先 key_down Ctrl 再 click_client）。click_client 的 modifiers 与 hold_ms、drag_client 的 steps/duration_ms 都真的生效（modifiers 与长按走 ydotool）。Wayland 上这些按住状态会一直持续到你显式释放，用完必须 key_up / mouse_up_client（任务结束或动作失败时后端会兜底释放自己按下的键/按钮，但不要依赖它）。",
   "选中文字后优先 paste_text（写 wl-copy 再按 Ctrl+V），比 type_text 逐字输入快且不被输入法干扰；剪贴板不可用时它会退回逐字输入并在 detail 里说明。",
   "actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停）。type_text 对无法分类的输入框按 90 字符分块，返回 completed=false 时先观察 typedLength 再决定是否续写。",
   "焦点切换、坐标与 DPI 都由后端换算；点击前会校验目标窗口仍存在。attach_app 锁定会话后传 app_session_id 可持续操作同一窗口。",

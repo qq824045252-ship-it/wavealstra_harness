@@ -1,10 +1,12 @@
 import { currentPlatformId, type PlatformId } from "../index";
 import type { ComputerUseBackend } from "./backend";
+import { setHeldInputReleaser } from "./heldInput";
 import { LinuxComputerUseBackend } from "./linux/LinuxComputerUseBackend";
 import { MacosComputerUseBackend } from "./macos/MacosComputerUseBackend";
 import { WindowsComputerUseBackend } from "./windows/WindowsComputerUseBackend";
 
 export * from "./backend";
+export * from "./heldInput";
 export * from "./protocol";
 export * from "./support";
 
@@ -33,10 +35,14 @@ export function createComputerUseBackend(platform: PlatformId = currentPlatformI
       break;
   }
   backends.set(platform, backend);
+  // Linux 的 ydotool 按住状态跨进程持久：登记一个清理入口，任务结束/取消时由
+  // ComputerUseRunCoordinator 调用（Windows 的 SendInput 没有跨调用按住语义，不登记）。
+  if (backend.releaseHeldInput) setHeldInputReleaser(async () => backend.releaseHeldInput?.());
   return backend;
 }
 
 /** 测试用：清空工厂缓存（生产路径不需要调用）。 */
 export function resetComputerUseBackends(): void {
   backends.clear();
+  setHeldInputReleaser(undefined);
 }

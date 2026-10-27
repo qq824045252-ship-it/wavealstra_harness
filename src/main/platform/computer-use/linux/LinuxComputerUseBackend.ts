@@ -51,7 +51,7 @@ import {
   collectAccessibilityTree,
   toAccessibilityPage,
 } from "./accessibilityTree";
-import { YdotoolInput, type YdotoolRunner } from "./ydotool";
+import { keyChordToKeycodes, YdotoolInput, type YdotoolRunner } from "./ydotool";
 import { createHyprlandWindowControl, type HyprlandWindowControl, type HyprlandWindowRect } from "./hyprlandWindows";
 
 const execFileAsync = promisify(execFile);
@@ -73,6 +73,26 @@ const SCREENSHOT_QUALITY = 70;
  */
 const ZERO_ORIGIN_BOUNDS_HINT =
   "该窗口的 AT-SPI bounds 原点全部为 0（GTK 已知问题：GTK3 HiDPI extents / GTK4 zero-origin bounds），控件坐标已省略、不能用于 click_client：有语义动作时用 invoke_control / set_control_value，需要坐标时用 ocr_window 拿文字行坐标再点";
+
+/**
+ * 需要串行执行的动作：任何可能改变焦点或输入状态的调用。
+ *
+ * 借鉴 LCU 的 Linux 输入队列：它把所有「可能移动焦点/输东西」的调用排进一个队列，
+ * 并在真正下发前再确认一次焦点，避免两个并发调用互相穿插（后一个把焦点抢走，前一个
+ * 的按键落到别的窗口）。这里在 backend 层用一条 Promise 链做同样的串行化。
+ */
+const SERIALIZED_ACTIONS: ReadonlySet<string> = new Set([
+  "attach_app", "focus_window",
+  "invoke_control", "set_control_value",
+  "screenshot_window",
+  "move_window", "resize_window",
+  "move_client", "click_client", "drag_client", "scroll_client",
+  "mouse_down_client", "mouse_up_client", "drag_screen",
+  "key_press", "key_down", "key_up", "type_text", "paste_text",
+  "mouse_move", "mouse_click", "mouse_drag", "scroll",
+]);
+
+type MouseButton = "left" | "right" | "middle";
 
 interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
 interface DoctorCache { at: number; report: CulDoctorReport }
@@ -155,6 +175,11 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   private readonly input: YdotoolInput;
   private readonly windowControl: HyprlandWindowControl;
   private diagnosticsRefresh?: Promise<void>;
+  /** 后端按下、尚未释放的 keycode / 鼠标按钮（任务结束或动作失败时兜底释放）。 */
+  private readonly heldKeys = new Set<number>();
+  private readonly heldButtons = new Set<MouseButton>();
+  /** 输入/焦点动作的串行队列（同 LCU 的 input queue）。 */
+  private inputLock: Promise<unknown> = Promise.resolve();
 
   /**
    * @param options.pasteViaClipboard 注入剪贴板写入（默认走 Electron `clipboard`）；
@@ -260,6 +285,8 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   async shutdown(): Promise<void> {
+    // 先释放按住状态，再关 MCP：否则一个漏掉的 key_down 会把用户桌面留在按着修饰键的状态。
+    await this.releaseHeldInput().catch(() => undefined);
     await this.client?.close();
     this.client = undefined;
     this.doctor = undefined;
@@ -269,10 +296,18 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    if (input.actions?.length) return this.executeBatch(input, signal);
-    const action = input.action;
+    const action = input.actions?.length ? "batch" : input.action;
     if (!action) throw new Error("computer_exec 需要 action 或 actions");
     if (action === "status") return { action, ...this.status() } as ComputerExecOutput;
+    // 批量里全是输入步骤；读类动作（list/inspect/ocr）不进队列，避免拖慢观察。
+    if (action === "batch" || SERIALIZED_ACTIONS.has(action)) {
+      return this.withInputLock(() => this.executeUnlocked(input, signal));
+    }
+    return this.executeUnlocked(input, signal);
+  }
+
+  private async executeUnlocked(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    if (input.actions?.length) return this.executeBatch(input, signal);
     const restore = input.restoreForeground === true ? await this.foregroundHandle(signal) : undefined;
     let outcome: ComputerExecOutput | undefined;
     try {
@@ -287,6 +322,76 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         }
       }
     }
+  }
+
+  /**
+   * 串行执行 + 失败清理（借鉴 LCU 的 input queue / input state）。
+   *
+   * 1. **串行**：焦点和输入是全局状态，两个并发 computer_exec 穿插会把按键打到错误窗口。
+   * 2. **失败清理**：动作抛错或被取消时，只释放「这次动作自己按下、现在还按着」的键/按钮；
+   *    之前动作已经按住的（跨动作按住是受支持的能力）保持不动，避免把用户/模型的组合键拆掉。
+   */
+  private async withInputLock<T>(task: () => Promise<T>): Promise<T> {
+    const previous = this.inputLock;
+    let release!: () => void;
+    // 占住队尾（而不是等 task 结束再改 inputLock）：失败清理也在锁内，不会和下一个动作的
+    // ydotool 写入交错。
+    this.inputLock = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    const keysBefore = new Set(this.heldKeys);
+    const buttonsBefore = new Set(this.heldButtons);
+    try {
+      return await task();
+    } catch (error) {
+      await this.releaseHeldSince(keysBefore, buttonsBefore).catch(() => undefined);
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  /** 释放「按之前快照对比新增」的按住状态（失败清理用）。 */
+  private async releaseHeldSince(keysBefore: Set<number>, buttonsBefore: Set<MouseButton>): Promise<void> {
+    const addedKeys = [...this.heldKeys].filter((code) => !keysBefore.has(code)).reverse();
+    const addedButtons = [...this.heldButtons].filter((button) => !buttonsBefore.has(button));
+    for (const code of addedKeys) {
+      try {
+        await this.input.setKeycodesHeld([code], false);
+      } catch { /* 尽力而为：ydotool 不可用时没什么可释放 */ }
+      this.heldKeys.delete(code);
+    }
+    for (const button of addedButtons) {
+      try {
+        await this.input.setButtonHeld(button, "up");
+      } catch { /* 同上 */ }
+      this.heldButtons.delete(button);
+    }
+  }
+
+  /**
+   * 释放后端记录的全部按住状态（任务结束/取消/关闭后端时调用）。
+   *
+   * ydotool 的按住状态跨进程持久，agent 漏掉 `key_up` 会把用户桌面留在「按着 Ctrl」的状态。
+   * 返回实际释放了什么，便于日志/断言。
+   */
+  async releaseHeldInput(): Promise<{ keys: number[]; buttons: string[] }> {
+    return this.withInputLock(async () => {
+      const keys = [...this.heldKeys].reverse();
+      const buttons = [...this.heldButtons] as MouseButton[];
+      this.heldKeys.clear();
+      this.heldButtons.clear();
+      for (const code of keys) {
+        try {
+          await this.input.setKeycodesHeld([code], false);
+        } catch { /* 尽力而为 */ }
+      }
+      for (const button of buttons) {
+        try {
+          await this.input.setButtonHeld(button, "up");
+        } catch { /* 尽力而为 */ }
+      }
+      return { keys, buttons: buttons as string[] };
+    });
   }
 
   /* ---------------------------------------------------------------- */
@@ -450,6 +555,28 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
 
   private async activateWindow(window: WindowInfo, signal?: AbortSignal): Promise<void> {
     await checked(() => this.cul().require(CUL_TOOLS.activateWindow, { window_id: Number(window.handle) }, signal), signal);
+  }
+
+  /**
+   * 确保目标在前台（借鉴 LCU 的 Linux 输入翻译）。
+   *
+   * Wayland 上 uinput 的点击落在「指针下面的窗口」，不认 window_id：目标在后台时点击会
+   * 打到遮挡它的窗口或另一个 workspace。LCU 的做法是「激活 → 复核焦点，失败就拒绝发送」；
+   * 这里照做——宁可明确报 FOCUS_FAILED，也不要把点击悄悄打偏。
+   */
+  private async ensureForeground(window: WindowInfo, signal?: AbortSignal): Promise<WindowInfo> {
+    if (window.foreground) return window;
+    await this.activateWindow(window, signal);
+    const fresh = await this.inspectHandle(window.handle, signal).catch(() => undefined);
+    if (!fresh) throw new ComputerUseError("WINDOW_NOT_FOUND", "激活后目标窗口消失了", { handle: window.handle });
+    if (!fresh.foreground) {
+      throw new ComputerUseError(
+        "FOCUS_FAILED",
+        "目标窗口不在前台：点击会落到别的窗口上。先确认窗口可见（没有被全屏/浮动窗口盖住），或手动切到它所在的 workspace 再重试",
+        { handle: window.handle, title: fresh.title },
+      );
+    }
+    return fresh;
   }
 
   private async waitForWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
@@ -819,7 +946,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
         { action, modifiers, holdMs: input.holdMs },
       );
     }
-    const target = await this.resolveTarget(input, signal);
+    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
     const point = clientDipToScreenPhysical(target, requireFinite(input.x, "x"), requireFinite(input.y, "y"));
     const button = input.button ?? "left";
     // CUL 的 click/scroll/drag 都不接受 modifier 参数，所以修饰键只能由 ydotool 真的按住
@@ -971,13 +1098,17 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     phase: "down" | "up",
     signal?: AbortSignal,
   ): Promise<ComputerExecOutput> {
-    const target = await this.maybeTarget(input, signal);
+    const resolved = await this.maybeTarget(input, signal);
+    const target = resolved ? await this.ensureForeground(resolved, signal) : undefined;
     if (Number.isFinite(Number(input.x)) && Number.isFinite(Number(input.y)) && target) {
       const point = clientDipToScreenPhysical(target, Number(input.x), Number(input.y));
       await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
     }
     const button = input.button ?? "left";
+    // 先登记再下发：如果 setButtonHeld 抛错，动作失败清理会把它当成「可能已按下」释放掉。
+    if (phase === "down") this.heldButtons.add(button as MouseButton);
     await this.input.setButtonHeld(button, phase);
+    if (phase === "up") this.heldButtons.delete(button as MouseButton);
     return {
       action,
       window: target,
@@ -1005,7 +1136,11 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     const target = await this.maybeTarget(input, signal);
     // ydotool 没有 window_id 定向：按住/松开只会打到当前前台窗口，所以先聚焦目标。
     if (target && !target.foreground) await this.focusWindow(target.handle, signal);
-    const codes = await this.input.setKeysHeld(key, pressed);
+    const codes = keyChordToKeycodes(key);
+    // 先登记再下发：组合键中途失败时动作失败清理会释放它可能已经按下的键。
+    if (pressed) for (const code of codes) this.heldKeys.add(code);
+    await this.input.setKeycodesHeld(codes, pressed);
+    if (!pressed) for (const code of codes) this.heldKeys.delete(code);
     return {
       action,
       window: target,

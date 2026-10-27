@@ -1,4 +1,5 @@
 import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
+import { releaseHeldInput } from "../platform/computer-use/heldInput";
 import { computerUseOverlayService } from "./ComputerUseOverlayService";
 import { prepareComputerUseInput, verificationFor, type ComputerUsePhase } from "./ComputerUsePolicy";
 import type { ComputerUseRecoveryPlan } from "./ComputerUseRecoveryPolicy";
@@ -35,6 +36,7 @@ export class ComputerUseRunCoordinator {
     if (!state) return;
     state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。"));
     computerUseOverlayService.settle(taskId, "failed", 500);
+    releaseHeldInput();
   }
 
   prepare(input: ComputerExecInput): ComputerExecInput {
@@ -135,6 +137,7 @@ export class ComputerUseRunCoordinator {
     state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "Computer Use 所属执行已结束"));
     this.runs.delete(taskId);
     computerUseOverlayService.settle(taskId, outcome);
+    releaseHeldInput();
   }
 
   private getRun(taskId: string): RunState {

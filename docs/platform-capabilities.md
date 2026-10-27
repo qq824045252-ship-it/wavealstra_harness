@@ -102,7 +102,8 @@ Hyprland 重排，客户区尺寸随之变化，旧实现直接报 `CAPTURE_FAIL
 - `mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` **可用**，走 `ydotool`（`ydotool click 0x40|0x80`、`ydotool key <code>:1|0`）。
   不能用 `wtype`：虚拟键盘协议在进程退出时自动释放，按住状态保不住；`ydotool` 直写 uinput，跨进程持久
   （实测 `ydotool key 42:1` 后 `hyprctl repl 'hl.is_key_down("Shift_L")'` = true）。
-- **按住状态会一直保持到显式释放**，用完必须 `key_up`/`mouse_up_client`，否则用户桌面残留按下的键。
+- **按住状态会一直保持到显式释放**，用完必须 `key_up`/`mouse_up_client`，否则用户桌面残留按下的键
+  （任务结束/取消时后端会兜底释放自己按下的，见下面的「输入安全语义」）。
 - `click_client` 的 `modifiers`（Ctrl+点击）与 `hold_ms`、`drag_client` 的 `steps`/`duration_ms`、`key_press` 的 `hold_ms` 都真的生效；
   `move_client` 不接受 `modifiers`/`hold_ms`，会显式报错而不是静默忽略。
 - `paste_text` 走 `wl-copy` + Ctrl+V（`wl-clipboard`），比逐字 `wtype` 快一个数量级；剪贴板不可用会回落逐字输入并在 detail 说明。
@@ -110,6 +111,23 @@ Hyprland 重排，客户区尺寸随之变化，旧实现直接报 `CAPTURE_FAIL
   （父进程 100ms 就 exit，`close` 要等选区被替换才到，`paste_text` 会一直挂住）；后端按 `exit` 判定 + 3 秒兜底。
   真机验证：`paste_text` → GTK 对话框 entry → 点 OK 回读文本，端到端 PASS；终端类应用要 Ctrl+Shift+V，`Ctrl+V` 不会粘贴。
 - 指针定位仍由 CUL 负责（`scroll pages=0` 只定位不滚动）：`ydotool mousemove -a` 的坐标系是「逻辑 DIP × 2」，与 Hyprland 物理像素不等价。
+
+借鉴 LCU 的三条输入安全语义（`amontlabs/lcu` 的 Linux `sky_linux`/输入队列文档，2026-10-27 移植）：
+1. **输入/焦点动作串行化**：两个并发 `computer_exec` 穿插执行会把按键打到被抢走焦点的窗口上。
+   后端在 `execute()` 里给所有可能改变焦点或输入状态的动作（指针、键盘、type/paste、invoke/set、
+   focus/attach、move/resize、screenshot_window，以及 batch）加了一条 Promise 链队列；读类动作
+   （list/inspect/ocr）不进队列，不拖慢观察。
+2. **按住状态兜底释放**：`ydotool` 的按住状态跨进程持久，动作失败或模型漏 `key_up` 会把用户桌面
+   留在「按着 Ctrl」。后端记录自己按下的 keycode/按钮；动作失败时只回滚「这次动作自己按下、现在
+   还按着」的部分（不拆掉之前动作按住的组合键），任务结束/取消（`ComputerUseRunCoordinator.endTask`/
+   `cancel`）与 `shutdown()` 时释放全部。释放入口放在无依赖的 `platform/computer-use/heldInput.ts`
+   注册表里——直接 import `ComputerAutomationService` 会形成
+   `index → windows backend → coordinator → ComputerAutomationService → index` 的循环。
+   真机验证：`key_down Ctrl+Shift` 后 `hl.is_key_down` 均为 true，任务结束路径释放后均为 false。
+3. **点击前确认目标在前台**：Wayland 的 uinput 点击落在指针下的窗口，不认 `window_id`；目标在后台时
+   会点到遮挡它的窗口。现在 `click_client`/指针动作先激活目标并复核前台，失败就报 `FOCUS_FAILED`，
+   而不是把点击悄悄打偏（LCU 的 Linux 输入翻译同样「激活 → 复核 → 失败即拒绝」）。
+   真机验证：zenity 对话框在后台时按 OCR 坐标 `click_client` → 自动激活并点中 OK（对话框正常关闭）。
 
 Wayland 的真实限制（后端显式报错，不做假成功）：
 - 没有后台截图：`background=true` 被拒绝；portal 只能截前台窗口。
