@@ -42,6 +42,8 @@ interface Manifest {
   adapterPackage?: string;
   adapterKind?: "official" | "community";
   commandLabel: string;
+  /** 未检测到 nativeCommand 时给用户的安装提示（仅用于 detail 文案）。 */
+  installHint?: string;
 }
 
 const MANIFESTS: Manifest[] = [
@@ -54,6 +56,9 @@ const MANIFESTS: Manifest[] = [
   { id: "agy", name: "Antigravity", requiredCli: "agy", adapterPackage: "@ovftank/agy-acp", adapterKind: "community", commandLabel: "agy-acp" },
   { id: "dim", name: "DIM", nativeCommand: "dim", nativeArgs: ["acp"], commandLabel: "dim acp" },
   { id: "command", name: "Command Code", requiredCli: "cmdc", adapterPackage: "command-code-acp", adapterKind: "community", commandLabel: "command-code-acp" },
+  // DeepSeek Harness 的 ACP 服务是 profile，不是独立 bin：`dsh --profile acp`
+  // 在 stdio 上提供 ACP v1（initialize / session new|resume|list|close / prompt）。
+  { id: "dsh", name: "DeepSeek Harness", nativeCommand: "dsh", nativeArgs: ["--profile", "acp"], commandLabel: "dsh --profile acp", installHint: "npm install -g @deepseek-ai/dsh" },
 ];
 
 const DEFAULT_DEVIN_WINDSURF_VERSION = "1.110.1";
@@ -374,7 +379,11 @@ export class ExternalAgentRuntime {
       }
       const resolvedNative = resolveNativeCommand(manifest);
       const available = Boolean(resolvedNative);
-      let detail = available ? "\u539f\u751f ACP Runtime" : `\u672a\u68c0\u6d4b\u5230 ${manifest.nativeCommand}`;
+      const detail = available
+        ? "原生 ACP Runtime"
+        : manifest.installHint
+          ? `未检测到 ${manifest.nativeCommand}，先运行 ${manifest.installHint}`
+          : `未检测到 ${manifest.nativeCommand}`;
       return {
         id: manifest.id,
         name: manifest.name,

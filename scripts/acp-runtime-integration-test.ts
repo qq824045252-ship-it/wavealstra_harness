@@ -33,6 +33,23 @@ try {
   const runtime = new ExternalAgentRuntime(db, () => cwd, async () => []);
   runtime.setSend((event) => events.push(event));
 
+  // --- catalog manifest: DeepSeek Harness 通过 `dsh --profile acp` 原生接入 ----
+  // 这里真实探测本机 PATH：CI 上没有 dsh 时 availability=missing，但条目与命令契约必须稳定。
+  const catalog = runtime.listAgents();
+  const dshAgent = catalog.find((item) => item.id === "dsh");
+  assert.ok(dshAgent, "ACP 目录必须列出 DeepSeek Harness");
+  assert.equal(dshAgent.name, "DeepSeek Harness");
+  assert.equal(dshAgent.commandLabel, "dsh --profile acp", "ACP 会话由 dsh 的 acp profile 提供（不是独立 bin）");
+  assert.equal(dshAgent.protocol, "acp");
+  assert.ok(
+    dshAgent.availability === "ready" || dshAgent.availability === "missing",
+    "dsh 走原生命令探测，不挂 MyBuddy 适配器包",
+  );
+  if (dshAgent.availability === "missing") {
+    assert.match(dshAgent.detail ?? "", /@deepseek-ai\/dsh/, "缺少 CLI 时 detail 给出安装命令");
+  }
+  assert.equal(new Set(catalog.map((item) => item.id)).size, catalog.length, "ACP 目录 id 唯一");
+
   // Keep this test independent from whatever ACP CLIs happen to be installed locally.
   (runtime as any).listAgents = () => [{
     id: "devin",

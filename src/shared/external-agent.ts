@@ -1,6 +1,6 @@
 import type { AgentUiPatch, ChatMessageDto } from "./agent-ipc";
 
-export type ExternalAgentId = "codex" | "claude" | "grok" | "cline" | "opencode" | "devin" | "agy" | "dim" | "command";
+export type ExternalAgentId = "codex" | "claude" | "grok" | "cline" | "opencode" | "devin" | "agy" | "dim" | "command" | "dsh";
 export type ExternalAgentProtocol = "acp";
 /**
  * ACP 权限请求的应答策略（每个 Agent 独立配置，桌面「ACP 管理」或手机 ACP 面板可改）：

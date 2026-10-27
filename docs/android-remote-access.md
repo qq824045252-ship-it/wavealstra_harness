@@ -55,7 +55,7 @@ The remote composer is wired end-to-end: the model picker lists the host's actua
 
 ## ACP external agents on the phone
 
-The phone can hand a turn to an **ACP (Agent Client Protocol) external agent** — Codex, Claude, OpenCode, Devin, etc. — while the process, session and workspace authority stay on the Windows host.
+The phone can hand a turn to an **ACP (Agent Client Protocol) external agent** — Codex, Claude, OpenCode, Devin, DeepSeek Harness, etc. — while the process, session and workspace authority stay on the Windows host. DeepSeek Harness exposes ACP as a *profile* rather than a separate binary, so its catalog entry launches `dsh --profile acp` (ACP v1 over stdio, `initialize` / `session new|resume|list|close` / `prompt`) and its session config options are the profile's `model` and `reasoning_effort` selects.
 
 | Route | Purpose |
 |---|---|
