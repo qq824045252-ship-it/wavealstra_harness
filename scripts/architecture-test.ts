@@ -28,7 +28,7 @@
  *
  * 运行：pnpm test:architecture（esbuild bundle + node 直跑，临时 USERPROFILE 沙箱）
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import JSZip from "jszip";
@@ -2411,6 +2411,30 @@ async function main(): Promise<void> {
         promptEnhancementSource.includes("private buildEnvironmentContextForNewTask(") &&
         promptEnhancementSource.includes("sanitizeEnhancedPrompt(raw)"),
       "N14 PromptEnhancementService owns validation, environment projection and transient execution",
+    );
+  }
+
+  /* ================= P. 不内置第三方软件（防回归：不得再有便携工具根） ================= */
+  {
+    // 产品规则：不内置 FreeCAD/Blender 等第三方软件，工具根在用户数据目录
+    // （~/.mybuddy/tools，只放 compose/配置），不再有 cwd 下的便携工具目录。
+    // 待检查的目录名在运行时拼出：源码里不出现该字面量，便于用 grep 自查"是否还有残留"。
+    const PORTABLE_TOOL_ROOT = ["MyBuddy", "Tools"].join("");
+    console.log(`\nP. 不内置第三方软件：src/ 不得出现便携工具根 "${PORTABLE_TOOL_ROOT}"`);
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (readFileSync(full).includes(PORTABLE_TOOL_ROOT)) offenders.push(full);
+      }
+    };
+    walk("src");
+    assert(
+      offenders.length === 0,
+      `src/ 不含便携工具根目录名（不内置第三方软件；工具体根 = ~/.mybuddy/tools）${
+        offenders.length > 0 ? `：命中 ${offenders.join(", ")}` : ""
+      }`,
     );
   }
 

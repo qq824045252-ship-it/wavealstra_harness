@@ -1,9 +1,9 @@
 /**
  * RuntimePrewarmService — 策略驱动声明式 runtime requirement 的 AutoStart / preflight gate。
  *
- * 解决的问题：选择 mechanical-cad / 3d-blender 等 preset/Tag 后，agent 跑到一半才发现外部
- * 软件（FreeCAD / Blender / Ardot / Penpot Docker / OpenDesign daemon 等 managed runtime）
- * 没开。本服务提供：
+ * 解决的问题：preset/Tag 声明了外部 runtime requirement 后，agent 跑到一半才发现依赖没开。
+ * 外部软件一律由用户自行安装/启动（本产品不内置第三方软件）；本服务只做
+ * 启动与就绪探测（如 Penpot Docker、drawio-ai adapter 等未退役的 managed runtime）。本服务提供：
  *
  * - prewarm(requirement)：Tag/preset 激活时 best-effort 异步启动。按 launchPolicy：
  *   - "gui"：spawn 桌面软件 + 等待其 MCP bridge ready；

@@ -1,6 +1,6 @@
 /**
  * skill-root-guard-test 构建辅助：esbuild JS API（pi 包在 cjs bundle 下需要
- * import.meta.url define 兜底；同 build-cad-skill-sync.mjs 模式）。
+ * import.meta.url define 兜底）。
  */
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";

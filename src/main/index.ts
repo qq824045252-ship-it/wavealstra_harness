@@ -226,9 +226,6 @@ import { PluginStorageIpc } from "../shared/plugin-storage";
 import { getPluginStorage } from "./plugins/PluginStorage";
 import type { McpSaveServerRequest } from "../shared/agent-ipc";
 import { ProfessionalToolRuntimeService } from "./professional-tools/ProfessionalToolRuntime";
-import { CadRuntimeService } from "./cad/CadRuntimeService";
-import { CadArtifactService } from "./cad/CadArtifactService";
-import { FreeCadInterop } from "./cad/FreeCadInterop";
 import { TrayService } from "./TrayService";
 import { applyPlatformAppIdentity, nodePlatformName } from "./platform/app";
 import { applyPlatformTitleBarOverlay, applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
@@ -394,10 +391,6 @@ let artifactLegacySource: LegacyArtifactSource | null = null;
 installSubagentInvocationEnv();
 const mcpService = new McpConfigService();
 let professionalToolService: ProfessionalToolRuntimeService;
-/** Mechanical CAD（P0）：native cad_* tools runtime + 轻量索引 + Artifact façade + FreeCAD 互操作 */
-let cadRuntimeService: CadRuntimeService | null = null;
-let cadArtifactService: CadArtifactService | null = null;
-let cadFreeCad: FreeCadInterop | null = null;
 
 /** 向全部窗口广播（Cockpit 任务变更即时刷新；不轮询） */
 function broadcastToWindows(channel: string, payload: unknown): void {
@@ -2926,9 +2919,6 @@ app.whenReady().then(async () => {
       // 终端：任务删除/归档 → kill 该任务 PTY（cwd 即将移入回收区）
       try { terminalHost?.close({ taskId }); }
       catch (error) { errors.push(`任务终端：${error instanceof Error ? error.message : String(error)}`); }
-      // Mechanical CAD：任务删除/归档 → 回收（无 worker；保留幂等契约）
-      try { await cadRuntimeService?.releaseTask(taskId); }
-      catch (error) { errors.push(`CAD 运行时：${error instanceof Error ? error.message : String(error)}`); }
       if (errors.length) throw new Error(errors.join("；"));
     },
     onPurgeArtifacts: async (taskId) => {
@@ -3224,20 +3214,6 @@ app.whenReady().then(async () => {
     workspaceInstancesRoot: getBlueprintWorkspaceInstancesDir(),
     onChanged: (event) => broadcastToWindows(BlueprintIpc.changed, event),
   });
-  // Mechanical CAD 一等能力：CadRuntimeService 单例 + 轻量索引 + Artifact façade + FreeCAD 互操作
-  cadArtifactService = new CadArtifactService({
-    artifactService: artifactDomain.service,
-  });
-  cadFreeCad = new FreeCadInterop({
-    toolsRoot:
-      process.env.MYBUDDY_TOOLS_DIR ?? join(process.cwd(), "MyBuddyTools"),
-    runtime: professionalToolService ?? null,
-  });
-  cadRuntimeService = new CadRuntimeService({
-    artifacts: cadArtifactService,
-    interop: cadFreeCad,
-  });
-  agentService.setCadDomain(cadRuntimeService, cadArtifactService, cadFreeCad);
   // 4B：WebArtifactRuntime + ArtifactProtocol 装配——资源解析唯一入口是 Domain
   // （ArtifactSourceResolver 注入；PreviewHost 不再接触 resolver/协议/磁盘路径）
   artifactRuntime = new WebArtifactRuntime({
@@ -3494,7 +3470,6 @@ app.on("before-quit", (event) => {
         memoryGatewayController?.stop(),
         remoteAccessController?.dispose(),
         gadgetService?.disposeAll(),
-        cadRuntimeService?.shutdownAll(),
         computerAutomationService.shutdown(),
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }

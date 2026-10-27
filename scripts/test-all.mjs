@@ -137,8 +137,6 @@ const NETWORK_TESTS = new Set([
 ]);
 
 const DATASET_TESTS = new Set([
-  // 依赖 gitignore 的官方市场归档 `mybuddyskills-main/`（约 294 技能），归档不存在时无法通过。
-  "test:blender-skill",
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
 ]);
@@ -177,7 +175,7 @@ const HEADLESS_TESTS = new Set([
 /** 兜底规则：显式清单之外的新用例按命名约定归类（显式清单永远优先）。 */
 const GUI_PATTERNS = [/-e2e$/, /-desktop$/, /-electron$/, /:desktop$/, /^test:computer-/];
 const NETWORK_PATTERNS = [/:live$/, /^test:remote-/, /^test:browser-/];
-const DATASET_PATTERNS = [/^test:blender-skill$/];
+const DATASET_PATTERNS = [];
 
 /** @returns {"headless"|"gui"|"network"|"dataset"|"pending"} */
 function classify(name) {
