@@ -28,11 +28,12 @@ import {
   type ProcessFsDeps,
   type ProcessRunner,
 } from "../src/main/platform/processes";
-import { createPlatformShellTools, platformShellLanguageIds } from "../src/main/platform/shell-tools";
+import { createPlatformShellTools, executeCodeLanguages, platformShellLanguageIds } from "../src/main/platform/shell-tools";
 import {
   canonicalPathKey,
   caseInsensitivePathFs,
   directorySymlinkType,
+  isBashExecutableName,
   parentTraversalPrefix,
   pathKey,
   pathSeparator,
@@ -45,6 +46,7 @@ import {
   programFilesDefault,
   pythonExecutableName,
   pythonProjectCacheKey,
+  pythonVenvInterpreterParts,
   spawnDetachedForTreeKill,
   uvAssetName,
   uvExecutableName,
@@ -73,7 +75,13 @@ import {
   whereFirst,
 } from "../src/main/platform/apps";
 import { selectAllModifier } from "../src/main/platform/input";
-import { ensureExecutableFile, protectSecretFile } from "../src/main/platform/fs-security";
+import {
+  ensureExecutable,
+  ensureExecutableFile,
+  parsePowerShellDiskSpace,
+  protectSecretFile,
+  readDiskSpaceFallback,
+} from "../src/main/platform/fs-security";
 import { killProcessTree, type KillableChild } from "../src/main/platform/processes";
 
 let passed = 0;
@@ -748,6 +756,79 @@ async function main(): Promise<void> {
     let missingPid = 0;
     killProcessTree(noopChild(null, []), { platform: "linux", onMissingPid: () => { missingPid += 1; } });
     assertEqual(missingPid, 1, "拿不到 pid 时调用 onMissingPid（各调用点语义不同）");
+  }
+
+
+  // ------------------------------------------------------------ 13) 平台拆分 G
+  console.log("== 13) Python venv / 磁盘兜底 / execute_code 门控 / bash 名 ==");
+  {
+    // PythonProjectDiscovery 用的 venv 解释器相对路径片段
+    assertEqual(pythonVenvInterpreterParts("win32"), ["Scripts", "python.exe"], "venv 解释器片段（win32）= Scripts/python.exe");
+    assertEqual(pythonVenvInterpreterParts("linux"), ["bin", "python"], "venv 解释器片段（linux）= bin/python");
+    assertEqual(pythonVenvInterpreterParts("darwin"), ["bin", "python"], "venv 解释器片段（macOS）= bin/python");
+    assertEqual(
+      pythonVenvInterpreterParts("win32").join("/"),
+      venvPythonRelativePath("win32").split(sep).join("/"),
+      "与 venvPythonRelativePath 同源（同一事实两个入口）",
+    );
+
+    // execute_code 的 language 门控（Windows 顺序保持迁移前：javascript, python, powershell, shell）
+    assertEqual(
+      executeCodeLanguages("windows"),
+      ["javascript", "python", "powershell", "shell"],
+      "execute_code schema（Windows）含 powershell，顺序与迁移前一致",
+    );
+    assertEqual(executeCodeLanguages("linux"), ["javascript", "python", "shell"], "execute_code schema（Linux）不含 powershell");
+    assertEqual(executeCodeLanguages("macos"), ["javascript", "python", "shell"], "execute_code schema（macOS）不含 powershell");
+
+    // ensureExecutable（UvToolchain 的 uv 二进制）
+    const uvChmod: Array<{ path: string; mode: number }> = [];
+    ensureExecutable("/opt/mybuddy/uv", "linux", { chmodSync: (path, mode) => uvChmod.push({ path, mode }) });
+    assertEqual(uvChmod[0], { path: "/opt/mybuddy/uv", mode: 0o755 }, "ensureExecutable（POSIX）chmod 0755");
+    const winUvChmod: Array<{ path: string; mode: number }> = [];
+    ensureExecutable("C:\\mybuddy\\uv.exe", "windows", { chmodSync: (path, mode) => winUvChmod.push({ path, mode }) });
+    assertEqual(winUvChmod.length, 0, "ensureExecutable（Windows）是空操作");
+
+    // 磁盘容量兜底（AppSettingsStore.getDiskSpace 的 PowerShell 分支）
+    let linuxRan = false;
+    const linuxDisk = readDiskSpaceFallback("/home/u/.mybuddy", "linux", {
+      execSync: () => { linuxRan = true; return ""; },
+    });
+    assertEqual(linuxDisk, null, "非 Windows：磁盘兜底直接返回 null");
+    assertEqual(linuxRan, false, "非 Windows：不执行 PowerShell");
+
+    const winCmds: string[] = [];
+    const winDisk = readDiskSpaceFallback("C:\\Users\\u\\.mybuddy", "windows", {
+      execSync: (cmd) => { winCmds.push(cmd); return "123456\n789012\r\n"; },
+    });
+    assertEqual(winDisk, { usedBytes: 123456, totalBytes: 912468, freeBytes: 789012 }, "Windows：解析 Used/Free 两行");
+    assertEqual(
+      winCmds[0],
+      'powershell -NoProfile -Command "(Get-PSDrive C).Used,(Get-PSDrive C).Free"',
+      "Windows：命令与迁移前逐字一致（盘符取首字母大写）",
+    );
+    const driveDCmds: string[] = [];
+    readDiskSpaceFallback("d:/data", "windows", {
+      execSync: (cmd) => { driveDCmds.push(cmd); return "1\n2"; },
+    });
+    assert(driveDCmds[0]!.includes("Get-PSDrive D"), "Windows：小写盘符目录也取大写盘符");
+    assertEqual(
+      readDiskSpaceFallback("C:\\x", "windows", { execSync: () => { throw new Error("powershell missing"); } }),
+      null,
+      "Windows：PowerShell 失败 → null（上层继续 statfs/0 兜底）",
+    );
+    assertEqual(parsePowerShellDiskSpace("100\n200"), { usedBytes: 100, totalBytes: 300, freeBytes: 200 }, "解析两行输出");
+    assertEqual(parsePowerShellDiskSpace("100"), { usedBytes: 100, totalBytes: 100, freeBytes: 0 }, "只有一行时 free=0（与原实现一致）");
+    assertEqual(parsePowerShellDiskSpace(""), { usedBytes: 0, totalBytes: 0, freeBytes: 0 }, "空输出按 0 处理（与迁移前 parseInt||0 一致）");
+    assertEqual(parsePowerShellDiskSpace("abc\ndef"), { usedBytes: 0, totalBytes: 0, freeBytes: 0 }, "非数字输出按 0 处理");
+
+    // Bash 可执行名（Pi shellPath 判定）
+    for (const name of ["bash", "sh", "bash.exe", "sh.exe", "BASH.EXE", " bash "]) {
+      assert(isBashExecutableName(name), `Bash 可执行名接受 ${JSON.stringify(name)}`);
+    }
+    for (const name of ["zsh", "fish", "powershell.exe", "bash_profile", "bashx", ""]) {
+      assert(!isBashExecutableName(name), `Bash 可执行名拒绝 ${JSON.stringify(name)}`);
+    }
   }
 
   console.log(`\n结果: passed=${passed} failed=${failed}`);

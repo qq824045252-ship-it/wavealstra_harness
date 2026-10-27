@@ -1,8 +1,9 @@
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { isBashExecutableName } from "./platform/paths";
 
 /** Pi's shellPath configures its Bash tool. Interactive terminal preferences live separately. */
 export function isBashShellPath(path: string): boolean {
-  return /^(bash|sh)(\.exe)?$/i.test(path.trim().split(/[\\/]/).at(-1) ?? "");
+  return isBashExecutableName(path.trim().split(/[\\/]/).at(-1) ?? "");
 }
 
 export function normalizeTerminalShellPath(value: unknown): string {

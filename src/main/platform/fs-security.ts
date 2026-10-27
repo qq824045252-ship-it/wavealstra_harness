@@ -5,7 +5,7 @@
  * （Windows：whoami 取 SID + icacls 去继承、只授权当前用户与 SYSTEM）。
  * Windows 逻辑逐字保留；POSIX 上 chmod 才是权威，`ensureExecutableFile` 在 Windows 上必须是空操作。
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import { currentPlatformId, type PlatformId } from "./index";
@@ -13,6 +13,7 @@ import { currentPlatformId, type PlatformId } from "./index";
 export interface FsSecurityDeps {
   chmodSync?(path: string, mode: number): void;
   execFileSync?(file: string, args: readonly string[], options: { encoding?: "utf-8"; stdio?: "ignore"; windowsHide?: boolean }): string;
+  execSync?(command: string, options: { encoding: "utf-8"; timeout: number }): string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -21,7 +22,7 @@ export interface FsSecurityDeps {
  * 对应各处的 `if (executable && process.platform !== "win32") chmodSync(path, 0o755)`；
  * 失败是 best effort（与迁移前一样吞掉）。
  */
-export function ensureExecutableFile(
+export function ensureExecutable(
   path: string,
   platform: PlatformId = currentPlatformId,
   deps: Pick<FsSecurityDeps, "chmodSync"> = {},
@@ -32,6 +33,49 @@ export function ensureExecutableFile(
     chmod(path, 0o755);
   } catch {
     /* best effort */
+  }
+}
+
+/** 兼容旧名（memory/ExternalCliMemoryAssets 等既有调用点）。 */
+export const ensureExecutableFile = ensureExecutable;
+
+export interface DiskSpaceSnapshot {
+  usedBytes: number;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+/**
+ * 解析 PowerShell `(Get-PSDrive X).Used,(Get-PSDrive X).Free` 的两行输出。
+ * 解析失败按 0 处理（与迁移前 `parseInt(...) || 0` 完全一致；只有命令本身失败才返回 null）。
+ */
+export function parsePowerShellDiskSpace(raw: string): DiskSpaceSnapshot {
+  const [usedStr, freeStr] = raw.trim().split(/\r?\n/);
+  const usedBytes = parseInt(usedStr ?? "", 10) || 0;
+  const freeBytes = parseInt(freeStr ?? "", 10) || 0;
+  return { usedBytes, totalBytes: usedBytes + freeBytes, freeBytes };
+}
+
+/**
+ * 磁盘容量兜底（statfsSync 不可用/NTFS 语义差异时）：Windows 用 PowerShell 的 Get-PSDrive。
+ * 逐字搬迁自 AppSettingsStore.getDiskSpace 的 fallback 分支：
+ *   powershell -NoProfile -Command "(Get-PSDrive C).Used,(Get-PSDrive C).Free"
+ * 其它平台没有等价命令，返回 null（AppSettingsStore 继续用 statfs 或 0 兜底）。
+ */
+export function readDiskSpaceFallback(
+  dir: string,
+  platform: PlatformId = currentPlatformId,
+  deps: Pick<FsSecurityDeps, "execSync"> = {},
+): DiskSpaceSnapshot | null {
+  if (platform !== "windows") return null;
+  try {
+    const driveLetter = dir.substring(0, 1).toUpperCase();
+    const cmd = `powershell -NoProfile -Command "(Get-PSDrive ${driveLetter}).Used,(Get-PSDrive ${driveLetter}).Free"`;
+    const run = deps.execSync ?? ((command: string, options: { encoding: "utf-8"; timeout: number }) => String(execSync(command, options)));
+    const raw = run(cmd, { encoding: "utf-8", timeout: 8000 });
+    return parsePowerShellDiskSpace(raw);
+  } catch {
+    return null;
   }
 }
 

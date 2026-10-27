@@ -1,19 +1,17 @@
 import { execFile } from "node:child_process";
 import { pbkdf2Sync, createDecipheriv } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir, homedir, platform } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
+import {
+	browserCookieConfigs,
+	browserCookieKeyIterations,
+	readBrowserCookiePassword,
+	type BrowserConfig,
+} from "../../platform/browsers";
 
 export type CookieMap = Record<string, string>;
-
-interface BrowserConfig {
-	name: string;
-	baseDir: string;
-	keychainService?: string;
-	keychainAccount?: string;
-	secretToolApp?: string;
-}
 
 type SqliteRow = Record<string, unknown>;
 type SqliteFailure = "unavailable" | "query";
@@ -30,18 +28,6 @@ const ALL_COOKIE_NAMES = new Set([
 	"__Secure-3PSIDTS", "__Secure-3PAPISID", "SIDCC",
 ]);
 
-const MACOS_BROWSER_CONFIGS: BrowserConfig[] = [
-	{ name: "Helium", baseDir: "Library/Application Support/net.imput.helium", keychainService: "Helium Storage Key", keychainAccount: "Helium" },
-	{ name: "Chrome", baseDir: "Library/Application Support/Google/Chrome", keychainService: "Chrome Safe Storage", keychainAccount: "Chrome" },
-	{ name: "Arc", baseDir: "Library/Application Support/Arc/User Data", keychainService: "Arc Safe Storage", keychainAccount: "Arc" },
-];
-
-const LINUX_BROWSER_CONFIGS: BrowserConfig[] = [
-	{ name: "Chromium", baseDir: ".config/chromium", secretToolApp: "chromium" },
-	{ name: "Chrome", baseDir: ".config/google-chrome", secretToolApp: "chrome" },
-];
-
-const browserPasswordCache = new Map<string, Promise<string | null>>();
 let lastCookieDiagnostic: string | null = null;
 let sqliteModule: typeof import("node:sqlite") | null = null;
 let sqliteImportAttempted = false;
@@ -59,8 +45,7 @@ export async function getGoogleCookies(
 		return null;
 	}
 
-	const currentPlatform = platform();
-	const configs = currentPlatform === "darwin" ? MACOS_BROWSER_CONFIGS : currentPlatform === "linux" ? LINUX_BROWSER_CONFIGS : [];
+	const configs = browserCookieConfigs();
 	if (configs.length === 0) {
 		lastCookieDiagnostic = "Chromium cookie extraction is unsupported on this platform.";
 		return null;
@@ -107,13 +92,13 @@ export async function getGoogleCookies(
 					sawRequiredCookies = true;
 				}
 
-				const password = await readBrowserPassword(config, currentPlatform);
+				const password = await readBrowserCookiePassword(config);
 				if (!password) {
 					warningSet.add(`Could not read ${config.name} cookie encryption password`);
 					continue;
 				}
 
-				const key = pbkdf2Sync(password, "saltysalt", currentPlatform === "darwin" ? 1003 : 1, 16, "sha1");
+				const key = pbkdf2Sync(password, "saltysalt", browserCookieKeyIterations(), 16, "sha1");
 				const metaVersion = await readMetaVersion(tempDb);
 				if (metaVersion.failure) sawBackendFailure = metaVersion.failure;
 				if (metaVersion.value === null) continue;
@@ -244,48 +229,6 @@ function removePkcs7Padding(buf: Buffer): Buffer {
 	if (!buf.length) return buf;
 	const padding = buf[buf.length - 1];
 	return !padding || padding > 16 ? buf : buf.subarray(0, buf.length - padding);
-}
-
-function readBrowserPassword(config: BrowserConfig, currentPlatform: ReturnType<typeof platform>): Promise<string | null> {
-	const cacheKey = `${currentPlatform}:${config.name}`;
-	const cached = browserPasswordCache.get(cacheKey);
-	if (cached) return cached;
-	const passwordResult = currentPlatform === "darwin"
-		? config.keychainAccount && config.keychainService
-			? readKeychainPassword(config.keychainAccount, config.keychainService).then(password => ({ password, cacheable: Boolean(password) }))
-			: Promise.resolve({ password: null, cacheable: false })
-		: currentPlatform === "linux"
-			? readLinuxPassword(config.secretToolApp)
-			: Promise.resolve({ password: null, cacheable: false });
-	const passwordPromise = passwordResult.then(({ password, cacheable }) => {
-		if (!cacheable) browserPasswordCache.delete(cacheKey);
-		return password;
-	}, (error) => {
-		browserPasswordCache.delete(cacheKey);
-		throw error;
-	});
-	browserPasswordCache.set(cacheKey, passwordPromise);
-	return passwordPromise;
-}
-
-function readKeychainPassword(account: string, service: string): Promise<string | null> {
-	return new Promise((resolve) => {
-		execFile("security", ["find-generic-password", "-w", "-a", account, "-s", service], { timeout: 5000 }, (err, stdout) => {
-			if (err) { resolve(null); return; }
-			resolve(stdout.trim() || null);
-		});
-	});
-}
-
-function readLinuxPassword(secretToolApp: string | undefined): Promise<{ password: string; cacheable: boolean }> {
-	if (!secretToolApp) return Promise.resolve({ password: "peanuts", cacheable: true });
-	return new Promise((resolve) => {
-		execFile("secret-tool", ["lookup", "application", secretToolApp], { timeout: 5000 }, (err, stdout) => {
-			if (err) { resolve({ password: "peanuts", cacheable: false }); return; }
-			const password = stdout.trim();
-			resolve(password ? { password, cacheable: true } : { password: "peanuts", cacheable: false });
-		});
-	});
 }
 
 async function importSqlite(): Promise<typeof import("node:sqlite") | null> {

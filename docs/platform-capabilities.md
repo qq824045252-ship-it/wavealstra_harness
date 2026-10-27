@@ -33,9 +33,11 @@
 | `platform/computer-use/linux/` | Linux backend（当前 `available=false`，status 返回缺失依赖/安装提示；观察层待接线） |
 | `platform/computer-use/macos/` | macOS backend（unsupported） |
 | `platform/computer-use/ocr.ts` | OCR 候选/Provider：`MYBUDDY_OCR_CLI`、打包资源、`windows-ocr.ps1`；Linux tesseract 描述 |
+| `platform/browsers.ts` | 浏览器 Cookie 平台层：macOS/Linux 浏览器配置、Keychain/secret-tool 密码、PBKDF2 迭代数、平台浏览器启动命令（Windows 不支持 Cookie 提取） |
+| `platform/glimpse.ts` | Glimpse 内嵌浏览器（仅 macOS）：模块解析、window 接口、open；非 macOS 返回 null |
 
 兼容薄层：`src/main/capabilities/ComputerAutomationService.ts` / `ComputerUseOverlayService.ts` 仅 re-export 平台实现，自身不含平台逻辑。
-允许在 `src/main/platform/**` 内出现 `process.platform`/`PlatformId` 判断。
+允许在 `src/main/platform/**` 内出现 `process.platform`/`PlatformId` 判断。截至 2026-10-27，`src/main` 业务层已无 `process.platform` 分支或 `"win32"/"darwin"` 平台判断（`grep -rnE 'process\.platform|platform\(\)|currentPlatform' src/main | grep -v platform/` 仅剩注释）；`platform/runtime.ts` 是唯一读取 `process.platform` 的运行时模块。
 唯一例外：`src/main/memory/external-cli-memory-assets-content.ts` 里生成给用户机器的独立 CLI 字符串模板（无模块依赖，模板里保留平台判断）。
 
 ## 2. 当前能力矩阵

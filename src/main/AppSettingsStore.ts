@@ -8,9 +8,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
+import { readDiskSpaceFallback } from "./platform/fs-security";
 import type { PermissionMode, DiskSpaceDto } from "../shared/agent-ipc";
 import {
   normalizeExternalAgentConfigOptions,
@@ -513,17 +513,12 @@ export class AppSettingsStore {
     } catch {
       // fallback below
     }
-    // fallback: 用 PowerShell 获取磁盘信息
-    try {
-      const driveLetter = dir.substring(0, 1).toUpperCase();
-      const cmd = `powershell -NoProfile -Command "(Get-PSDrive ${driveLetter}).Used,(Get-PSDrive ${driveLetter}).Free"`;
-      const raw = execSync(cmd, { encoding: "utf-8", timeout: 8000 });
-      const [usedStr, freeStr] = raw.trim().split(/\r?\n/);
-      const usedBytes = parseInt(usedStr, 10) || 0;
-      const freeBytes = parseInt(freeStr, 10) || 0;
-      return { usedBytes, totalBytes: usedBytes + freeBytes, freeBytes };
-    } catch {
-      // fallback: statfsSync (Node >= 18.15)
+    // fallback: Windows 用 PowerShell 的 Get-PSDrive（实现见 platform/fs-security；其它平台返回 null）
+    const fallback = readDiskSpaceFallback(dir);
+    if (fallback) return fallback;
+
+    // fallback: 再试一次 statfsSync (Node >= 18.15)
+    {
       try {
         if (_statfsSync) {
           const stats = _statfsSync(dir);

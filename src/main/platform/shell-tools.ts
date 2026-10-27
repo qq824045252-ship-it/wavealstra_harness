@@ -19,6 +19,14 @@ export function platformShellLanguageIds(platform: PlatformId = currentPlatformI
   return platform === "windows" ? ["powershell"] : [];
 }
 
+/**
+ * execute_code 支持的 language 列表：javascript/python/shell 恒有，Windows 额外有 powershell。
+ * 顺序与搬迁前 schema 一致（javascript, python, [powershell], shell），供 schema 生成与错误提示复用。
+ */
+export function executeCodeLanguages(platform: PlatformId = currentPlatformId): string[] {
+  return ["javascript", "python", ...platformShellLanguageIds(platform), "shell"];
+}
+
 export interface PlatformShellToolDeps {
   /** 测试注入用；默认 `@earendil-works/pi-durable/tools` 的 createPowerShellTool。 */
   createPowerShellTool?: () => ToolRegistration;

@@ -54,3 +54,11 @@ export function directorySymlinkType(platform: PlatformId = currentPlatformId): 
 export function toPosixPath(value: string, platform: PlatformId = currentPlatformId): string {
   return platform === "windows" ? value.replaceAll("\\", "/") : value;
 }
+
+/**
+ * Bash 可执行名判定（Pi 的 shellPath 只接受 Bash；Windows 上允许 `bash.exe`/`sh.exe`）。
+ * 迁自 agent-shell-settings.isBashShellPath 的后缀判定（调用方负责取 basename）。
+ */
+export function isBashExecutableName(name: string): boolean {
+  return /^(bash|sh)(\.exe)?$/i.test(name.trim());
+}

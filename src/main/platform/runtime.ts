@@ -47,6 +47,14 @@ export function venvPython3RelativePath(platform: NodeJS.Platform = currentNodeP
   return platform === "win32" ? "python.exe" : join("bin", "python3");
 }
 
+/**
+ * in-project 虚拟环境里解释器的相对路径片段（`.venv` + 这些）：
+ * Windows = Scripts/python.exe，POSIX = bin/python。供项目 Python 发现使用。
+ */
+export function pythonVenvInterpreterParts(platform: NodeJS.Platform = currentNodePlatform): string[] {
+  return platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"];
+}
+
 /** 解释器可执行文件名。 */
 export function pythonExecutableName(platform: NodeJS.Platform = currentNodePlatform): string {
   return platform === "win32" ? "python.exe" : "python";

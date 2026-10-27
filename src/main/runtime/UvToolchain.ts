@@ -12,9 +12,11 @@
  */
 import { createHash } from "node:crypto";
 import { currentNodePlatform, uvAssetName as uvAssetNameImpl, uvExecutableName as uvExecutableNameImpl } from "../platform/runtime";
+import { killProcessTree } from "../platform/processes";
+import { ensureExecutable } from "../platform/fs-security";
+import { platformId } from "../platform/index";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
-  chmodSync,
   copyFileSync,
   createReadStream,
   createWriteStream,
@@ -150,24 +152,17 @@ function sha256FileSync(path: string): string | null {
   }
 }
 
+/**
+ * 终止 uv 子进程：平台差异见 platform/processes（Windows taskkill /T /F；POSIX 先 child.kill，
+ * 800ms 后仍未退出再补 SIGKILL——不做进程组杀，与原实现一致）。
+ */
 function killTree(child: ChildProcess, platform: NodeJS.Platform): void {
   if (child.exitCode != null || child.pid == null) return;
-  if (platform === "win32") {
-    try {
-      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-      return;
-    } catch {
-      /* 落到 child.kill */
-    }
-  }
-  try {
-    child.kill();
-    setTimeout(() => {
-      if (child.exitCode == null) child.kill("SIGKILL");
-    }, 800);
-  } catch {
-    /* ignore */
-  }
+  killProcessTree(child, {
+    platform: platformId(platform),
+    groupKill: false,
+    childEscalation: { signal: "SIGKILL", afterMs: 800 },
+  });
 }
 
 async function extractArchive(archivePath: string, destDir: string): Promise<void> {
@@ -400,13 +395,7 @@ export class UvToolchain implements UvExecutor {
       mkdirSync(promoted, { recursive: true });
       const executableTarget = join(promoted, executableName);
       copyFileSync(located, executableTarget);
-      if (this.platform !== "win32") {
-        try {
-          chmodSync(executableTarget, 0o755);
-        } catch {
-          /* 非 POSIX 文件系统可忽略 */
-        }
-      }
+      ensureExecutable(executableTarget, platformId(this.platform));
 
       const versionDir = dirname(this.managedExecutablePath(version));
       mkdirSync(dirname(versionDir), { recursive: true });

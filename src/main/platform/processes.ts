@@ -347,6 +347,7 @@ export function pidExecutablePath(pid: number): Promise<string | null> {
 
 export interface KillableChild {
   pid?: number | null;
+  exitCode?: number | null;
   kill(signal?: NodeJS.Signals): void;
 }
 
@@ -384,6 +385,11 @@ export interface KillProcessTreeOptions {
   onMissingPid?: () => void;
   /** POSIX 组杀成功但需要额外动作时不用；保留给将来。 */
   afterPosixSignal?: () => void;
+  /**
+   * 子进程级升级（不做进程组杀的调用方用，如 UvToolchain）：
+   * 先 child.kill()，afterMs 后仍未退出再 child.kill(signal)。
+   */
+  childEscalation?: { signal: NodeJS.Signals; afterMs: number };
 }
 
 function safeKill(child: KillableChild, signal?: NodeJS.Signals): void {
@@ -394,8 +400,22 @@ function safeKill(child: KillableChild, signal?: NodeJS.Signals): void {
   }
 }
 
+/** 子进程级升级计时（UvToolchain 语义：不组杀，超时后对同一子进程补 SIGKILL）。 */
+function scheduleChildEscalation(
+  child: KillableChild,
+  options: KillProcessTreeOptions,
+): ReturnType<typeof setTimeout> | undefined {
+  const escalate = options.childEscalation;
+  if (!escalate) return undefined;
+  const timer = setTimeout(() => {
+    if (child.exitCode == null) safeKill(child, escalate.signal);
+  }, escalate.afterMs);
+  if (options.unrefEscalation) timer.unref();
+  return timer;
+}
+
 /**
- * 终止子进程树。返回 POSIX 升级计时器（调用方可 clearTimeout；Windows/无升级时 undefined）。
+ * 终止子进程树。返回升级计时器（调用方可 clearTimeout；无升级时 undefined）。
  */
 export function killProcessTree(
   child: KillableChild,
@@ -427,7 +447,12 @@ export function killProcessTree(
       const killer = spawnTaskkill(taskkill, args);
       if (options.onWindowsError) killer.on?.("error", () => options.onWindowsError?.());
     } catch {
-      options.onWindowsError?.();
+      if (options.onWindowsError) options.onWindowsError();
+      else if (options.childEscalation) {
+        // 与迁移前 UvToolchain 一致：taskkill 起不来时回退到 child.kill + 升级
+        safeKill(child);
+        scheduleChildEscalation(child, options);
+      }
     }
     return undefined;
   }
@@ -435,7 +460,7 @@ export function killProcessTree(
   const onPosixError = options.onPosixError;
   if (options.groupKill === false) {
     safeKill(child);
-    return undefined;
+    return scheduleChildEscalation(child, options);
   }
   const signal = options.posixSignal ?? "SIGKILL";
   const killProcess = options.killProcess ?? ((target: number, sig: NodeJS.Signals) => process.kill(target, sig));

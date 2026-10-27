@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { PythonProjectBinding } from "../../shared/python-runtime";
-import { currentNodePlatform } from "../platform/runtime";
+import { currentNodePlatform, pythonVenvInterpreterParts } from "../platform/runtime";
 import { readPythonProjectSpec } from "./PythonProjectManifest";
 import { pythonProjectDirKey } from "./python-environment-spec";
 
@@ -20,9 +20,8 @@ export function discoverProjectPython(
   if (!raw) return null;
 
   let current = resolve(raw);
-  const interpreterParts = platform === "win32"
-    ? [[".venv", "Scripts", "python.exe"], ["venv", "Scripts", "python.exe"], ["env", "Scripts", "python.exe"]]
-    : [[".venv", "bin", "python"], ["venv", "bin", "python"], ["env", "bin", "python"]];
+  // 解释器相对路径片段由平台边界给出（Windows: Scripts/python.exe；POSIX: bin/python）
+  const interpreterParts = [".venv", "venv", "env"].map((dir) => [dir, ...pythonVenvInterpreterParts(platform)]);
 
   for (;;) {
     if (existsSync(current) && statSync(current).isDirectory()) {

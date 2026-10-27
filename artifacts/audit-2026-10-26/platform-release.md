@@ -434,3 +434,41 @@ src/main/platform/computer-use/
 2. Linux backend 的观测/输入层未实现：下一步在 `linux/LinuxComputerUseBackend.execute()` 接线 hyprctl（窗口枚举/焦点）+ grim/slurp（截图）+ tesseract（OCR）+ wtype/ydotool（输入），状态已由 `status()` 给出依赖与安装提示。
 3. `docs/platform-capabilities.md` 仍把 Windows backend 标为「规划」并引用旧路径，需随本次迁移更新（本任务未改文档）。
 4. `scripts/architecture-graph-baseline.json` 里 `src/main/capabilities/ComputerAutomationService.ts: 1401` 已成薄层，可下次跑 baseline 时下调/删除（门禁只提示不失败）。
+
+---
+
+## 14. 实施记录：web-access 浏览器 Cookie / Glimpse 平台层（task-17，2026-10-27）
+
+补漏：`web-access` 在上一轮全量拆分后仍残留 `platform()`/`"darwin"` 分支。
+
+### 14.1 迁移清单
+
+- 新增 `src/main/platform/browsers.ts`：`BrowserConfig`、`MACOS_BROWSER_CONFIGS`（Helium/Chrome/Arc）、`LINUX_BROWSER_CONFIGS`（Chromium/Chrome）、`browserCookieConfigs(platform)`（Windows=[]）、`supportsBrowserCookieExtraction()`、`browserCookieKeyIterations()`（macOS 1003 / 其它 1）、`readBrowserCookiePassword(config, platform, lookup?)`（security / secret-tool / peanuts 回落 + 原缓存语义，lookup 可注入）、`browserOpenCommand(platform,url)`（open / cmd `start` / xdg-open）。
+- 新增 `src/main/platform/glimpse.ts`：`GlimpseWindow`、`findGlimpseMjs`、`getGlimpseOpen`、`getPlatformGlimpseOpen(platform)`（非 macOS → null）、`openInGlimpse`（HTML shell + 85% 高度夹取逻辑逐字搬迁，`createRequire(import.meta.url)` 不变）。
+- 改 `chrome-cookies.ts`：删除 `node:os` 的 `platform()`、`MACOS/LINUX_BROWSER_CONFIGS`、`readBrowserPassword/readKeychainPassword/readLinuxPassword`、本地 `BrowserConfig`，改调 platform 层；Windows 仍返回原 unsupported 文案。
+- 改 `web-access/index.ts`：删除 `platform`/`createRequire`/`execFileSync` import 与整段 Glimpse 实现；`openInBrowser` 改 `browserOpenCommand(currentPlatformId,url)`；两处 `platform()==="darwin" ? getGlimpseOpen() : null` → `await getPlatformGlimpseOpen()`。
+- 新增 `scripts/platform-browsers-test.ts`（12 checks，注入 platform/lookup，含源码回归守卫：web-access 两文件不得再出现 `platform()`/`darwin` 分支、不得内联 `win32 ? pi.exec`）。未改 `scripts/platform-providers-test.ts`。
+
+### 14.2 验证（2026-10-27）
+
+```bash
+pnpm -s typecheck                 # exit 0（scripts 195 基线、新增 0）
+esbuild scripts/platform-browsers-test.ts ... && node scripts/test-guard.mjs ...   # 12 checks passed
+pnpm -s test:web-access-convergence   # passed=39 failed=0
+pnpm -s test:web-access-capability    # passed=26 failed=0
+pnpm -s test:harness-quality          # PASS
+pnpm -s test:artifact-gate            # 32/32 PASS
+pnpm -s test:architecture-graph       # PASS 5/5（新模块无环）
+```
+
+注：Lead 验收清单里的 `test:web-access` 在 package.json 中不存在；实际只有 `test:web-access-convergence` / `test:web-access-capability`（均已跑过）。
+
+### 14.3 建议 package.json 接线 + 风险
+
+```json
+"test:platform-browsers": "esbuild scripts/platform-browsers-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/platform-browsers-test.cjs && node scripts/test-guard.mjs out/tests/platform-browsers-test.cjs"
+```
+
+- 不在包里带 electron 依赖，无需 `--external:electron`；名字不命中 GUI 正则，接线后自动进 headless default。
+- Windows/macOS 未实跑：macOS 的 `security` 与 Glimpse 加载、Linux 的 `secret-tool` 均只在测试里用注入 lookup 验证；真实凭据读取需在对应机器手测（行为逻辑逐字搬迁，未改）。
+- `findGlimpseMjs` 在 macOS 上仍可能 spawn `npm root -g`（原逻辑）；本次未改。

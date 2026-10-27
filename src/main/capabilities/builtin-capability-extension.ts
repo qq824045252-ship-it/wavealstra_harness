@@ -36,6 +36,7 @@ import { ageToolResultImages } from "./ToolImageAging";
 import { routeVisionForPaths, type VisionRouteResult } from "./VisionRouting";
 import { createWebAccessCapabilityExtension } from "./web-access/index";
 import { quoteBashArg, quotePowerShellLiteral, toBashPath } from "../agent/ShellArguments";
+import { executeCodeLanguages } from "../platform/shell-tools";
 import type { VerifiedProcessBridge } from "../agent/VerifiedCodeExecution";
 import { codeExecutionEvidenceIdentity, executeVerifiedCode, recordCodeRuntimePreparationFailure, resolveCodeRuntimePreparationFailure } from "../agent/VerifiedCodeExecution";
 import { recordComputerUseFailureRecovery, settleComputerUseResultRecovery, type ComputerUseRecoveryBridge } from "../agent/ComputerUseFailureRecovery";
@@ -405,24 +406,32 @@ const skillAuthoringCreateSchema = Type.Object({
   model_id: Type.Optional(Type.String({ maxLength: 300 })),
 }, { additionalProperties: false });
 
-const executeCodeSchema = Type.Object({
-  language: Type.Union([
-    Type.Literal("javascript"), Type.Literal("python"), Type.Literal("powershell"), Type.Literal("shell"),
-  ]),
-  /** 内联代码；与 script 二选一 */
-  code: Type.Optional(Type.String({ minLength: 1, maxLength: 500_000 })),
-  /** 已存在的脚本路径（仅 Python）：技能自带脚本走这里，环境按该技能的依赖声明准备 */
-  script: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
-  /** 传给脚本的命令行参数 */
-  args: Type.Optional(Type.Array(Type.String({ maxLength: 4000 }), { maxItems: 64 })),
-  /** 追加到受管 Python 环境的包名（如 `camelot-py[cv]>=0.16`）；并入规格后得到新环境 id，绝不在已用过的环境里装包 */
-  python_dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 32 })),
-  timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600 })),
-}, { additionalProperties: false });
+/**
+ * execute_code 的 schema：language 由平台门控（PowerShell 仅 Windows；见 platform/shell-tools）。
+ * 其它字段与文案与迁移前一致。
+ */
+function executeCodeSchemaFor(languages: readonly string[]) {
+  return Type.Object({
+    language: Type.Union(languages.map((language) => Type.Literal(language))),
+    /** 内联代码；与 script 二选一 */
+    code: Type.Optional(Type.String({ minLength: 1, maxLength: 500_000 })),
+    /** 已存在的脚本路径（仅 Python）：技能自带脚本走这里，环境按该技能的依赖声明准备 */
+    script: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+    /** 传给脚本的命令行参数 */
+    args: Type.Optional(Type.Array(Type.String({ maxLength: 4000 }), { maxItems: 64 })),
+    /** 追加到受管 Python 环境的包名（如 `camelot-py[cv]>=0.16`）；并入规格后得到新环境 id，绝不在已用过的环境里装包 */
+    python_dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 32 })),
+    timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600 })),
+  }, { additionalProperties: false });
+}
 
 export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtensionBridge): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     const config = bridge.runtime.config();
+    // 平台门控：execute_code 的 language / schema / PowerShell 工具只在支持的平台上提供。
+    const codeLanguages = executeCodeLanguages();
+    const supportsPowerShell = codeLanguages.includes("powershell");
+    const executeCodeSchema = executeCodeSchemaFor(codeLanguages);
     const materializer = new MediaArtifactMaterializer(bridge.artifactService, bridge.markArtifactEmitted);
     const vision = config.vision.enabled ? bridge.runtime.visionProvider() : null;
     const imageCandidate = config.imageGeneration.enabled ? bridge.runtime.imageProvider() : null;
@@ -865,13 +874,15 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       spawnHook,
       shellPath: getAgentBashShellPath(bridge.taskRoot, getMyBuddyDir()),
     });
-    const powerShellTool = createPowerShellTool(bridge.taskRoot, { spawnHook });
+    const powerShellTool = supportsPowerShell ? createPowerShellTool(bridge.taskRoot, { spawnHook }) : null;
     if (config.execution.codeExecutionEnabled && !bridge.nativeExecution) {
       pi.registerTool({
         name: "execute_code",
         label: "代码执行",
         description:
-          "在当前任务目录执行一次性 JavaScript、Python、PowerShell 或 Bash 代码；PowerShell 使用独立原生后端，不经 Bash 二次转义。" +
+          (supportsPowerShell
+            ? "在当前任务目录执行一次性 JavaScript、Python、PowerShell 或 Bash 代码；PowerShell 使用独立原生后端，不经 Bash 二次转义。"
+            : "在当前任务目录执行一次性 JavaScript、Python 或 Bash 代码。") +
           "JavaScript 以 Node ESM（.mjs）执行：用 `import x from 'node:fs'`，不要用 require。" +
           "Python 由 MyBuddy 受管运行时提供解释器与依赖环境：需要额外第三方库时，在代码里用注释 `# mybuddy-deps: pandas, openpyxl>=2.1` 声明，" +
           "需要特定版本时用 `# mybuddy-python: 3.12` 声明；不要自行 pip install、不要创建 .venv，也不要假设系统装有 Python。" +
@@ -901,6 +912,12 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
           if (!scriptMode && !code) return errorResult("execute_code", "必须提供 code 或 script");
           if (scriptMode && p.language !== "python") {
             return errorResult("execute_code", "script 模式只支持 Python；其它语言请读出文件内容后用 code 运行");
+          }
+          if (p.language === "powershell" && !supportsPowerShell) {
+            return errorResult(
+              "execute_code",
+              `当前平台不支持 PowerShell（仅 Windows）；可用语言：${codeLanguages.join(" / ")}`,
+            );
           }
 
           // Python 只走受管解释器：先解析（必要时自动准备），失败即明确报错，
@@ -1023,6 +1040,8 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
           try {
             await writeFile(spec.file, code, "utf8");
             const tool = spec.runner === "powershell" ? powerShellTool : bashTool;
+            // schema 已按平台门控；这里是防御性兜底（例如调用方绕过 schema 直接传参）。
+            if (!tool) return errorResult("execute_code", "当前平台不支持 PowerShell（仅 Windows）");
             const evidenceIdentity = codeExecutionEvidenceIdentity({ language: p.language, code });
             return await executeVerifiedCode({
               bridge: bridge.shellVerification,

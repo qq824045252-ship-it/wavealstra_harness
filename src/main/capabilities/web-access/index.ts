@@ -34,9 +34,6 @@ import {
 	type SummaryMeta,
 } from "./summary-review.ts";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
-import { platform } from "node:os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isPerplexityAvailable } from "./perplexity.ts";
@@ -44,6 +41,9 @@ import { isExaAvailable } from "./exa.ts";
 import { isGeminiApiAvailable } from "./gemini-api.ts";
 import { getActiveGoogleEmail, getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable } from "./gemini-web.ts";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
+import { browserOpenCommand } from "../../platform/browsers";
+import { getPlatformGlimpseOpen, openInGlimpse, type GlimpseWindow } from "../../platform/glimpse";
+import { currentPlatformId } from "../../platform/index";
 import { isBraveAvailable } from "./brave.ts";
 import { isCodexSearchAvailable, isOpenAISearchAvailable } from "./openai-search.ts";
 import { decideBrowserReuse, resolveCodexFallbackProvider } from "./fetch-strategy.ts";
@@ -708,91 +708,11 @@ function closeCurator(callId?: string): void {
 }
 
 async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
-	const plat = platform();
-	const result = plat === "darwin"
-		? await pi.exec("open", [url])
-		: plat === "win32"
-			? await pi.exec("cmd", ["/c", "start", "", url])
-			: await pi.exec("xdg-open", [url]);
+	const { command, args } = browserOpenCommand(currentPlatformId, url);
+	const result = await pi.exec(command, args);
 	if (result.code !== 0) {
 		throw new Error(result.stderr || `Failed to open browser (exit code ${result.code})`);
 	}
-}
-
-interface GlimpseWindow {
-	on(event: "closed", handler: () => void): void;
-	on(event: "message", handler: (data: unknown) => void): void;
-	on(event: "ready", handler: (info: { screen?: { visibleHeight?: number } }) => void): void;
-	close(): void;
-	_write(obj: Record<string, unknown>): void;
-}
-
-let glimpseOpen: ((html: string, opts: Record<string, unknown>) => GlimpseWindow) | null | undefined;
-
-function findGlimpseMjs(): string | null {
-	try {
-		const req = createRequire(import.meta.url);
-		return req.resolve("glimpseui");
-	} catch {
-		// Optional dependency.
-	}
-	try {
-		const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8" }).trim();
-		const entry = join(globalRoot, "glimpseui", "src", "glimpse.mjs");
-		if (existsSync(entry)) return entry;
-	} catch {
-		// npm may be unavailable.
-	}
-	return null;
-}
-
-async function getGlimpseOpen() {
-	if (glimpseOpen !== undefined) return glimpseOpen;
-	const resolved = findGlimpseMjs();
-	if (resolved) {
-		try {
-			glimpseOpen = (await import(resolved)).open;
-			return glimpseOpen;
-		} catch {}
-	}
-	glimpseOpen = null;
-	return glimpseOpen;
-}
-
-function openInGlimpse(
-	open: (html: string, opts: Record<string, unknown>) => GlimpseWindow,
-	url: string,
-	title: string,
-): GlimpseWindow {
-	const shellHTML = `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>${title}</title></head>
-<body style="margin:0; background:#1a1a2e;">
-  <script>window.location.replace(${JSON.stringify(url)});</script>
-</body>
-</html>`;
-	const win = open(shellHTML, {
-		width: 800,
-		height: 900,
-		title,
-	});
-
-	let maxHeight = 1200;
-	win.on("ready", (info) => {
-		const visibleHeight = info?.screen?.visibleHeight;
-		if (typeof visibleHeight === "number" && visibleHeight > 0) {
-			maxHeight = Math.floor(visibleHeight * 0.85);
-		}
-	});
-	win.on("message", (data) => {
-		if (!data || typeof data !== "object") return;
-		const msg = data as Record<string, unknown>;
-		if (msg.type !== "resize" || typeof msg.height !== "number") return;
-		const clamped = Math.max(400, Math.min(Math.round(msg.height), maxHeight));
-		win._write({ type: "resize", width: 800, height: clamped });
-	});
-
-	return win;
 }
 
 function extractDomain(url: string): string {
@@ -1515,7 +1435,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const open = platform() === "darwin" ? await getGlimpseOpen() : null;
+			const open = await getPlatformGlimpseOpen();
 			if (open) {
 				try {
 					const win = openInGlimpse(open, handle.url, "Search Curator");
@@ -3075,7 +2995,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				if (!shouldAutoOpenCuratorBrowser(loadConfig())) {
 					ctx.ui.notify(`Search curator is running. Open manually: ${handle.url}`, "info");
 				} else {
-					const open = platform() === "darwin" ? await getGlimpseOpen() : null;
+					const open = await getPlatformGlimpseOpen();
 					if (open) {
 						try {
 							const win = openInGlimpse(open, handle.url, "Search Curator");
