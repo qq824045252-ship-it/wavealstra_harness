@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -470,7 +470,8 @@
       "!extensions/mcp/**/repo/**",
       "node_modules/onnxruntime-node/**/*",
       "!node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**/*",
-      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*"
+      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*",
+      "node_modules/@agent-sh/computer-use-linux/**/*"
     ],
     "asarUnpack": [
       "out/main/capabilities/subagent/worker-launcher.mjs",
@@ -488,7 +489,8 @@
       "out/main/quickjs.wasm",
       "out/main/image-resize-worker.js",
       "out/main/photon_rs_bg.wasm",
-      "out/main/capabilities/subagent/runtime/**/*"
+      "out/main/capabilities/subagent/runtime/**/*",
+      "**/node_modules/@agent-sh/computer-use-linux/**/*"
     ],
     "win": {
       "icon": "build/icon.ico",
@@ -521,6 +523,7 @@
     }
   },
   "optionalDependencies": {
+    "@agent-sh/computer-use-linux": "0.7.27",
     "onnxruntime-node": "1.30.0"
   }
 }

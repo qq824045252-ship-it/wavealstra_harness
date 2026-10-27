@@ -41,6 +41,21 @@ sudo pacman -S --needed base-devel git python nodejs pnpm \
 - `libayatana-appindicator`：Wayland 状态栏托盘（Quickshell 的 StatusNotifier）。
 - Node ≥ 24（本机 26.x）；pnpm 用 `package.json` 的 `packageManager`（12.14.0）。pip/uv 由应用自己的受管 Python 运行时处理，不要求系统 pip。
 
+**Computer Use（Linux）**：`computer_exec` 的后端是 [computer-use-linux](https://github.com/agent-sh/computer-use-linux)（npm `@agent-sh/computer-use-linux`，在 `optionalDependencies` 里，只对 `linux` 生效）。原生二进制由它的 postinstall 解包到 `node_modules/@agent-sh/computer-use-linux/npm/bin/`，不需要额外 npm 包。系统侧还需要它调用的工具：
+
+```bash
+sudo pacman -S --needed grim slurp wtype ydotool \
+  tesseract tesseract-data-chi_sim at-spi2-core python-gobject
+```
+
+- `wtype`：键盘输入（CUL 的 `type_text`/`press_key` 走它）。
+- `ydotool` + `ydotoold`：指针/滚轮。需要 `/dev/uinput` 可写（`input` 组或 udev 规则），daemon 要在跑：`systemctl --user enable --now ydotool`（或 `ydotoold` 手动起，socket 默认 `/run/user/$UID/.ydotool_socket`）。
+- `tesseract` + `tesseract-data-chi_sim`：`ocr_window` 的本地 OCR（不联网）；缺 `chi_sim` 时中文识别为空。
+- `at-spi2-core` + `python-gobject`：CUL 的 AT-SPI 语义树（`inspect_controls`/`find_control`）。
+- 截图走 `xdg-desktop-portal-hyprland`（Omarchy 已装），**首次截图会弹一次授权框**，允许后长期有效。
+
+自检：`node_modules/@agent-sh/computer-use-linux/npm/bin/computer-use-linux-linux-x64 doctor` 会打印 `preferred`/`capabilities`/缺依赖项。应用内对应 `computer_exec({action:"status"})` 的 `missingDependencies`。
+
 ## 安装并启动
 
 ```bash
@@ -75,7 +90,8 @@ pnpm dev
    pnpm -s test:linux-session   # linux-password-store 开关/后端判定 + tray-residency 纯逻辑
    env -u ELECTRON_RUN_AS_NODE pnpm -s test:tray   # 真实 Electron Tray（会临时拉起一个 Electron 进程）
    ```
-7. **GUI 套件（本机全量，需要真实桌面会话）**：不要用 xvfb 代替，否则会掩盖 Wayland/托盘/截图类问题。
+7. **Computer Use**：`computer_exec({action:"status"})` 应报 `supported:true`、`missingDependencies:[]`；再按 `list_windows` → `screenshot_window` → `ocr_window` → `click_client` 的顺序手动走一遍。截图/点击会真实动鼠标，验证前把目标窗口摆好。
+8. **GUI 套件（本机全量，需要真实桌面会话）**：不要用 xvfb 代替，否则会掩盖 Wayland/托盘/截图类问题。
    ```bash
    pnpm -s build                                   # consult-entry / startup perf 需要 out/main/index.js
    node scripts/test-all.mjs --include-gui         # default + GUI 类（并行池 + 串行性能池）
@@ -83,7 +99,7 @@ pnpm dev
    node scripts/test-all.mjs --audit                # 分类自检：GUI 清单 vs 命令里真的启动 electron
    ```
    单条 GUI 用例仍按老办法跑：`env -u ELECTRON_RUN_AS_NODE pnpm -s test:<name>`。
-8. **停止/重启 dev 实例必须优雅**：只对 Electron **主进程**发 `SIGTERM`，等它自己关闭 GPU/renderer/utility，再停 dev server。不要 `pkill -f electron` 同时杀所有子进程——主进程会把 GPU 的死亡当成崩溃并尝试 relaunch，退出期连续 5 次 `launch-failed` 后 Chromium 会主动 `ud2`（SIGILL + core dump，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。`.tools/mybuddy.sh stop` 已按此实现；正常托盘「退出」不受影响。
+9. **停止/重启 dev 实例必须优雅**：只对 Electron **主进程**发 `SIGTERM`，等它自己关闭 GPU/renderer/utility，再停 dev server。不要 `pkill -f electron` 同时杀所有子进程——主进程会把 GPU 的死亡当成崩溃并尝试 relaunch，退出期连续 5 次 `launch-failed` 后 Chromium 会主动 `ud2`（SIGILL + core dump，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。`.tools/mybuddy.sh stop` 已按此实现；正常托盘「退出」不受影响。
    `test:consult-entry:desktop` 默认用空夹具（不读真实 `~/.mybuddy`）并明确 SKIP；想用本机「已保存的多模型会诊配置」跑深层流程时显式 opt-in：`CONSULT_ENTRY_SEED_USER_PROFILE=1 env -u ELECTRON_RUN_AS_NODE pnpm -s test:consult-entry:desktop`。
 
 ## Linux 打包与验收

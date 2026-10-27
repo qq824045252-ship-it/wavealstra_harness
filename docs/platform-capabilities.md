@@ -30,7 +30,11 @@
 | `platform/computer-use/backend.ts` | `ComputerUseBackend` 接口（platform/backend/available/status/execute/shutdown） |
 | `platform/computer-use/index.ts` | `createComputerUseBackend(platform)` 工厂/缓存 |
 | `platform/computer-use/windows/` | Windows 完整实现：`WindowsComputerUseBackend`、UIA/WGC/PrintWindow 宿主、窗口截图、overlay |
-| `platform/computer-use/linux/` | Linux backend（当前 `available=false`，status 返回缺失依赖/安装提示；观察层待接线） |
+| `platform/computer-use/linux/LinuxComputerUseBackend.ts` | Linux backend：动作分发（窗口/截图/OCR/控件/指针/键盘/批量），坐标与 DIP 换算 |
+| `platform/computer-use/linux/culClient.ts` | computer-use-linux MCP 客户端（`<binary> mcp`，stdio 惰性启动/超时/诊断 stderr tail） |
+| `platform/computer-use/linux/culBinary.ts` | CUL 原生二进制定位（打包 asar.unpacked / pnpm `.pnpm` / `MYBUDDY_CUL_BIN`）+ `doctor` 报告解析 |
+| `platform/computer-use/linux/culProtocol.ts` | CUL JSON → Computer Use DTO 的纯函数适配层（窗口/显示器缩放/按键名/AT-SPI 控件/tesseract TSV/错误码） |
+| `platform/computer-use/linux/hyprlandMonitors.ts` | `hyprctl -j monitors` 读取（物理布局 + scale） |
 | `platform/computer-use/macos/` | macOS backend（unsupported） |
 | `platform/computer-use/ocr.ts` | OCR 候选/Provider：`MYBUDDY_OCR_CLI`、打包资源、`windows-ocr.ps1`；Linux tesseract 描述 |
 | `platform/browsers.ts` | 浏览器 Cookie 平台层：macOS/Linux 浏览器配置、Keychain/secret-tool 密码、PBKDF2 迭代数、平台浏览器启动命令（Windows 不支持 Cookie 提取） |
@@ -49,20 +53,40 @@
 | 系统字体枚举 | ✅ PowerShell/注册表 | ✅ `fc-list` | `platform/fonts` |
 | 端口归属 / 进程名 / PID 路径 | ✅ netstat/tasklist/CIM | ✅ `ss` + `/proc` | `platform/processes` |
 | PowerShell 工具 | ✅ | ➖ 不需要（bash 已由 CodingTools 提供） | `platform/shell-tools` |
-| Computer Use（观察/输入/UIA） | ✅ `WindowsComputerUseBackend`（UIA + SendInput + WGC/PrintWindow + Windows OCR） | ❌ backend 已抽象，Linux 观察层待接线；`status()` 返回 `linux-wayland` + 缺失依赖/安装提示 | `platform/computer-use/{backend,windows,linux}` |
+| Computer Use（观察/输入） | ✅ `WindowsComputerUseBackend`（UIA + SendInput + WGC/PrintWindow + Windows OCR） | ✅ `LinuxComputerUseBackend`（computer-use-linux MCP：Hyprland IPC + xdg-desktop-portal 截图 + uinput/wtype 输入 + AT-SPI + tesseract） | `platform/computer-use/{backend,windows,linux}` |
 | Computer Use 叠加框 | ✅ | ❌ Wayland 无全局 overlay；需重设计 | `supportsComputerUseOverlay` |
 | 安装包 / 快捷方式 / 自启动 | ✅ NSIS/.lnk | ⚠️ `pack:linux` 仅 dir；需 AppImage/deb + `.desktop` + XDG autostart | 待做 |
 | 后台截取被遮挡窗口 | ✅ WGC/PrintWindow | ❌ Wayland 不提供；只能 portal 录屏/前台截图 | 产品上接受限制 |
 
-## 3. Linux Computer Use 的实现路线（backend，不在本步范围）
+## 3. Linux Computer Use：接 computer-use-linux（CUL），不自研
 
-1. **观察**：`hyprctl -j monitors/clients/activewindow`（窗口/显示器/几何）、`grim`（截图/区域）、`tesseract`（OCR，需 `tesseract-data-chi_sim`）。
-2. **输入**：`wtype`（键盘）、`ydotool`（鼠标/点击/拖拽，需要 uinput 权限 + daemon）；Hyprland 0.56 的 `hyprctl eval` Lua dispatcher 作为窗口控制的版本相关补充。
-3. **语义**：AT-SPI2（`org.a11y.Bus`）作为 UIA 等价物；Chromium/Electron 目标需 `--force-renderer-accessibility`。
-4. **降级**：只装 `grim/hyprctl` → 只读；`wtype` → 键盘；`ydotool` → 鼠标；AT-SPI 缺失时 OCR 兜底。
-5. **不做**：后台截取被遮挡/最小化窗口、PostMessage 后台点击、全局悬浮框 1:1 复刻。
+Linux 后端**不是**自己拼 `grim` + `hyprctl` + `ydotool`，而是接 [computer-use-linux](https://github.com/agent-sh/computer-use-linux)
+（npm `@agent-sh/computer-use-linux`，Rust 原生二进制 + MCP server）。原因：Wayland 的坐标/缩放、
+portal 截图授权、AT-SPI 差异用 shell 拼装极易错（实测 `ydotool --absolute` 的入参被当成物理像素
+再用到逻辑坐标上，1.6x 缩放下差 1.6 倍），CUL 已把这些封在原生实现里。
 
-`ComputerUseBackend` 接口与 `WindowsComputerUseBackend` 已落地；Linux backend 目前是能力探测 + unsupported 壳，下一步在 `LinuxComputerUseBackend.execute()` 接观察层（hyprctl/grim/tesseract），再接 wtype/ydotool 输入与 AT-SPI2 语义层。
+集成方式：主进程 spawn `<binary> mcp`（stdio MCP），`CulMcpClient` 按工具名调用，`culProtocol.ts`
+把返回 JSON 映射成 `WindowInfo` / `ControlInfo` / `OcrLine`。二进制缺失时 `available=false`，`status()`
+给出 `pnpm install` 提示，工具不注册。
+
+| 能力 | 来源 |
+|---|---|
+| 窗口枚举/焦点/几何 | CUL `list_windows` / `focused_window` / `activate_window`（内部走 `hyprctl -j clients`） |
+| 截图（全屏 / 窗口） | CUL `screenshot`（走 `xdg-desktop-portal`；首次可能弹一次授权框） |
+| 输入（指针/键盘） | CUL `click`/`drag`/`scroll`（uinput 绝对指针）、`type_text`（wtype）、`press_key` |
+| 语义树 | CUL `get_app_state`（AT-SPI）；Electron/Qt/Tauri 常只暴露 application/frame |
+| OCR | 本地 `tesseract`（`--psm 6 tsv`）+ `parseTesseractTsv`；不依赖 CUL |
+
+实测坐标语义（Hyprland 1.6x，eDP-1 2160×1440）：
+`WindowInfo.windowRect/clientRect` 是**物理**像素，`click_client`/`move_client` 的 `x/y` 是**客户区 DIP**，
+`clientDipToScreenPhysical = clientOrigin + dip × scaleFactor`。截图 `image_scale = 物理像素 / 图像像素`，
+OCR 行坐标用 `image_scale / scaleFactor` 折回 DIP。
+
+Wayland 的真实限制（后端显式报错，不做假成功）：
+- 没有后台截图：`background=true` 被拒绝；portal 只能截前台窗口。
+- 没有 press/release 分离事件：`mouse_down_client`/`mouse_up_client`/`key_down`/`key_up` 报 `HOST_UNAVAILABLE`，用组合写法。
+- 没有全局 overlay：`supportsComputerUseOverlay()` 仅 Windows。
+- GNOME 专用的 `setup_window_targeting` 在 Hyprland 上不可用。
 
 ## 4. 新增一个平台要做什么
 
@@ -79,3 +103,7 @@ sudo pacman -S --needed grim slurp wtype ydotool \
   tesseract tesseract-data-chi_sim at-spi2-core python-gobject
 # ydotool 需要 uinput 权限（ydotoold + udev/组），否则鼠标动作会报“未安装/无权限”
 ```
+
+CUL 自身用 `doctor` 检查这些依赖；原生二进制由 `pnpm install` 的 postinstall 解包到
+`node_modules/@agent-sh/computer-use-linux/npm/bin/`（打包时进 `app.asar.unpacked`）。
+`MYBUDDY_CUL_BIN` 可覆盖二进制路径（自定义安装/测试）。

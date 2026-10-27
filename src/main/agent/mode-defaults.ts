@@ -257,7 +257,7 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
     promptAddon:
       "当前为「修 Bug」场景：采用证据优先调试。若 dimagent-debug 技能可用，优先加载；禁止未复现就猜补丁。\n" +
       "1. 先确认现实状态：必要时核对仓库/分支/进程/构建产物；只检查会影响本 Bug 的项。\n" +
-      "2. 对可运行的 UI/交互 Bug，改源码前必须先尝试实际复现：交互前可用 runtime_probe mark 建立证据起点，MyBuddy Renderer/内嵌页面优先 ui_exec，交互后用 runtime_probe read 读取新增错误/导航/焦点证据；Windows 原生对话框、焦点或桌面行为才用 computer_exec；browser_exec/ui_exec/computer_exec 的 screenshot 结果已自动按当前模型做原生多模态或委托 Vision 路由，不要再重复调用 describe_image，除非是在分析已有图片文件；框架真实窗口测试更可控时可以用测试复现。\n" +
+      "2. 对可运行的 UI/交互 Bug，改源码前必须先尝试实际复现：交互前可用 runtime_probe mark 建立证据起点，MyBuddy Renderer/内嵌页面优先 ui_exec，交互后用 runtime_probe read 读取新增错误/导航/焦点证据；原生桌面（Windows UIA / Linux AT-SPI）对话框、焦点或桌面行为才用 computer_exec；browser_exec/ui_exec/computer_exec 的 screenshot 结果已自动按当前模型做原生多模态或委托 Vision 路由，不要再重复调用 describe_image，除非是在分析已有图片文件；框架真实窗口测试更可控时可以用测试复现。\n" +
       "3. 优先做一个正常相邻路径的对照实验。测试结果与真实现象矛盾时，先检查测试本身的持久队列、残留状态、异步、缓存、重复元素或错误目标，不把 green test 当成产品正确。\n" +
       "4. 根因必须能同时解释失败路径与已有证据；必要时读取当前锁定版本的框架/依赖源码确认底层语义。\n" +
       "5. 只做根因相关的最小修改，不顺手重构或扩大变更面。修改后必须用同一路径重放；再跑最小相关测试/typecheck/build。\n" +

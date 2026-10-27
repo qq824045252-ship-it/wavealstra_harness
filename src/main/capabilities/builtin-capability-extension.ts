@@ -27,6 +27,8 @@ import type {
 import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutomationService";
 import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
 import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput } from "./ComputerAutomationService";
+import { computerUseToolCopy } from "../platform/computer-use/support";
+import { currentPlatformId } from "../platform";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
 import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
@@ -353,7 +355,7 @@ const computerExecSchema = Type.Object({
   steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 60, description: "拖拽插值步数。" })),
   duration_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000, description: "拖拽时长毫秒；0 表示尽快。" })),
   notches: Type.Optional(Type.Integer({ minimum: -50, maximum: 50, description: "滚轮格数，正数向上、负数向下。" })),
-  background: Type.Optional(Type.Boolean({ description: "不抢焦点：screenshot_window 用原生 PrintWindow，Chromium/Qt/Tauri 自动改用 WGC 窗口源；click_client 用 PostMessage（仅部分应用接受）。" })),
+  background: Type.Optional(Type.Boolean({ description: "不抢焦点（仅 Windows：screenshot_window 用 PrintWindow/WGC，click_client 用 PostMessage）。Linux/Wayland 没有后台截图，传 true 会被明确拒绝。" })),
   window_title: Type.Optional(Type.String({ maxLength: 1_000 })),
   window_handle: Type.Optional(Type.String({ maxLength: 100 })),
   process_id: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -646,7 +648,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow（Chromium/Qt/Tauri 自动 WGC 窗口源）后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。",
+        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、坐标点击、OCR）时用 computer_exec，不要用本工具。",
         promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {
@@ -681,7 +683,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "ui_exec",
         label: "界面操作",
-        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow（Chromium/Qt/Tauri 自动 WGC 窗口源）后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。",
+        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口、坐标点击和 OCR 请用 computer_exec。",
         promptSnippet: "ui_exec(action, target?, selector?/text?/role?/name?, value?, key?, state?)",
         parameters: uiExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -727,10 +729,11 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
     }
 
     if (config.browser.enabled && computerAutomationService.available) {
+      const computerUseCopy = computerUseToolCopy(currentPlatformId, { nativeExecution: bridge.nativeExecution });
       pi.registerTool({
         name: "computer_exec",
-        label: "Windows Computer Use",
-        description: bridge.nativeExecution ? "Windows 原生 Computer Use。inspect_window/find/inspect 读取窗口和 UIA 控件；invoke/set/click_client/type_text 操作目标窗口。bounds/clientBoundsDip 使用客户区 DIP，screenshot_window 的 client_only 默认 true。截图返回 JPEG，可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例（通常为 1），窗口截图坐标 = 图像像素 × image_scale，desktop 截图仅用于观察。窗口输入会验证 HWND/PID 和焦点。type_text 返回 completed=false 时先观察 typedLength 和当前内容。capture_after 默认关闭，需要视觉确认时显式传 true。actions 可一次执行 1–8 个窗口输入步骤（同一窗口、顺序执行、出错即停），返回 steps 与最终 observation；list_windows 支持 window_title/process_id/process_name/class_name 过滤。截图按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow（Chromium/Qt/Tauri 自动 WGC 窗口源）后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。" : "Windows 原生 Computer Use。优先按窗口操作：inspect_window → inspect/find UIA control → invoke/set；inspect/find 返回的 bounds/clientBoundsDip 是 click_client 可直接使用的客户区 DIP 坐标。UIA 不可用时 screenshot_window（client_only 默认 true）→ click_client。截图统一为 JPEG 并可能等比缩放到 2000px 以内：image_scale 是物理像素/图像像素比例，窗口截图的客户区坐标 = 图像像素 × image_scale（通常为 1），desktop 截图仅用于观察、legacy 桌面坐标需乘 image_scale。窗口级输入会验证 HWND/PID/前台焦点，目标变化会拒绝执行；目标化 type_text 中断会返回 completed=false 与 typedLength，禁止盲目重试。capture_after 默认关闭，只有需要视觉确认时才显式传 true（否则只做窗口集合观测）。actions 可一次执行 1–8 个窗口输入步骤（move/click/drag/scroll/key/type，同一窗口目标、顺序执行、出错即停），返回 steps、最终 observation 与可选 capture，用它替代逐个动作的多轮往返。list_windows 支持 window_title/process_id/process_name/class_name 过滤并返回精简字段；需要完整几何时用 inspect_window。任何返回截图的动作都会按主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。attach_app 锁定应用后传 app_session_id 即可持续操作同一窗口（叠加框按窗口绘制）；background=true 用 PrintWindow（Chromium/Qt/Tauri 自动 WGC 窗口源）后台截图或 PostMessage 后台点击（不抢焦点，部分应用不接受）；click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。",
+        label: computerUseCopy.label,
+        description: computerUseCopy.description,
         promptSnippet: "computer_exec(action?|actions?, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, capture_after?, expected_outcomes?)",
         parameters: computerExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -824,9 +827,9 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               operationSignal?.throwIfAborted();
               const details = { ...result, screenshot: undefined, path: saved.paths[0], artifactId: saved.artifacts[0]?.id };
               const imageResult = await visionAwareImageResult({
-                summary: "Windows 画面已保存", details, model: ctx?.model, vision, context,
+                summary: computerUseCopy.screenshotSummary, details, model: ctx?.model, vision, context,
                 images: [{ path: saved.paths[0], bytes: result.screenshot, mimeType }],
-                prompt: "请分析这张 Windows 界面截图，准确描述可见窗口、主要控件、文本、状态、错误提示和与当前任务相关的可交互目标及其相对位置。不要猜测不可见内容。",
+                prompt: computerUseCopy.visionPrompt,
               });
               operationSignal?.throwIfAborted();
               return imageResult;

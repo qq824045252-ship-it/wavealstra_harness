@@ -9,6 +9,7 @@ import type {
   BuiltinCapabilityId,
   BuiltinCapabilityStatusDto,
 } from "@shared/builtin-capabilities";
+import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-platform";
 import { useAppStore } from "@/store/appStore";
 import { WEB_SEARCH_PROVIDER_OPTIONS, type WebSearchConfigDto } from "@shared/agent-ipc";
 import "./CapabilitiesTab.css";
@@ -514,11 +515,11 @@ export default function CapabilitiesTab(): React.JSX.Element {
           <CapabilityRow
             {...rowCommon("browser", draft.browser.enabled)}
             title="界面与桌面操作"
-            description="读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标"
+            description={`读取并操作浏览器、MyBuddy 界面和${desktopPlatformLabel(window.api?.platform)}；检查会分别读取可用目标`}
             tools={statusById.get("browser")?.tools ?? ["browser_exec", "ui_exec", "computer_exec"]}
             onToggle={(enabled) => setDraft({ ...draft, browser: { enabled } })}
           >
-            <FixedRuntime enabled={draft.browser.enabled} label="浏览器 · 应用界面 · Windows 桌面" />
+            <FixedRuntime enabled={draft.browser.enabled} label={desktopRuntimeSummary(window.api?.platform)} />
           </CapabilityRow>
 
           <CapabilityRow

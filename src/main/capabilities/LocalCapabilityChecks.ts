@@ -18,6 +18,8 @@ import { runtimeProbeService } from "./RuntimeProbeService";
 import { resolveBuiltinSubagentInvocation } from "./subagent/index";
 import { getMyBuddyDir } from "../paths";
 import { platformShellLanguageIds } from "../platform/shell-tools";
+import { computerUseToolCopy } from "../platform/computer-use/support";
+import { currentPlatformId } from "../platform";
 
 const execFileAsync = promisify(execFile);
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
@@ -84,7 +86,7 @@ export function registerLocalCapabilityChecks(runtime: BuiltinCapabilityRuntime,
     const probes: Array<[string, boolean, () => Promise<unknown>]> = [
       ["浏览器", browser.available, () => browser.execute({ action: "read", maxChars: 1_000 })],
       ["应用界面", uiAutomationService.anyAvailable(), () => uiAutomationService.execute({ action: "snapshot", target: uiAutomationService.available("app") ? "app" : uiAutomationService.available("browser") ? "browser" : "artifact", maxChars: 1_000 })],
-      ["Windows 桌面", computerAutomationService.available, () => computerAutomationService.execute({ action: "list_windows" })],
+      [computerUseToolCopy(currentPlatformId).desktopLabel, computerAutomationService.available, () => computerAutomationService.execute({ action: "list_windows" })],
     ];
     for (const [name, available, probe] of probes) {
       if (!available) { failed.push(`${name}未挂载或平台不支持`); continue; }
