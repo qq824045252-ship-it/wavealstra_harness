@@ -429,8 +429,14 @@ async function main(): Promise<void> {
     assertEqual(pathKey("/home/Alice", "linux"), "/home/Alice", "pathKey(linux) 原样");
     assertEqual(resolvedPathKey("foo", "windows"), resolve("foo").toLowerCase(), "resolvedPathKey(win32)=resolve+小写");
     assertEqual(resolvedPathKey("foo", "linux"), resolve("foo"), "resolvedPathKey(linux)=resolve");
-    assertEqual(canonicalPathKey("/tmp/x///", "linux"), "/tmp/x", "canonicalPathKey 去尾部斜杠");
-    assertEqual(canonicalPathKey("/tmp/X", "windows"), "/tmp/x", "canonicalPathKey(win32) 小写");
+    // canonicalPathKey 内部用宿主 resolve() 归一化（不按 platform 参数切 path 模块），
+    // 所以期望值必须用 resolve() 拼，写死 "/tmp/x" 在 Windows 上必红。
+    assertEqual(canonicalPathKey(`${resolve("/tmp/x")}///`, "linux"), resolve("/tmp/x"), "canonicalPathKey 去尾部斜杠");
+    assertEqual(
+      canonicalPathKey("/tmp/X", "windows"),
+      resolve("/tmp/x").toLocaleLowerCase(),
+      "canonicalPathKey(win32) 小写",
+    );
     assertEqual(pathSeparator("windows"), "\\", "pathSeparator(win32) 反斜杠");
     assertEqual(pathSeparator("linux"), "/", "pathSeparator(linux) 正斜杠");
     assertEqual(parentTraversalPrefix("windows"), "..\\", "越界前缀(win32) 是 ..\\");

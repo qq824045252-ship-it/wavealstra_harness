@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { join, sep } from "node:path";
 import {
   configureCrashReporting,
   createProcessGoneReporter,
@@ -26,6 +27,13 @@ import {
   type RuntimeLoggerFileDeps,
 } from "../src/main/runtime-logging";
 
+/**
+ * 沙箱日志目录：用 join() 归一化后再用。
+ * 内存 fs 的键是 `join(dir, name)` 的结果，若把 posix 字面量 "/sandbox/logs" 直接当 dir，
+ * Windows 上 join 会把它变成 "\sandbox\logs"，两边对不上（readdir 永远返回空）。
+ */
+const LOGS_DIR = join("/sandbox", "logs");
+
 let passed = 0;
 function test(name: string, run: () => void): void {
   run();
@@ -39,7 +47,11 @@ function memoryFs(): { files: Map<string, string>; deps: RuntimeLoggerFileDeps }
   const deps: RuntimeLoggerFileDeps = {
     mkdir: () => undefined,
     appendFile: (file, data) => files.set(file, (files.get(file) ?? "") + data),
-    readdir: (dir) => [...files.keys()].filter((file) => file.startsWith(`${dir}/`)).map((file) => file.slice(dir.length + 1)),
+    // 键是 join(dir, name) 的结果，分隔符随宿主（Windows 是 "\\"），不能写死 "/"。
+    readdir: (dir) =>
+      [...files.keys()]
+        .filter((file) => file.startsWith(`${dir}${sep}`))
+        .map((file) => file.slice(dir.length + sep.length)),
     rename: (from, to) => {
       const value = files.get(from);
       if (value === undefined) throw new Error(`rename missing ${from}`);
@@ -119,7 +131,7 @@ test("RuntimeLogger writes today's file and rotates by size", () => {
   const { files, deps } = memoryFs();
   const at = new Date(2026, 9, 26, 12, 0, 0, 0);
   const logger = new RuntimeLogger({
-    dir: "/sandbox/logs",
+    dir: LOGS_DIR,
     retention: 7,
     maxBytes: 1024,
     deps,
@@ -127,9 +139,10 @@ test("RuntimeLogger writes today's file and rotates by size", () => {
   });
   const payload = "x".repeat(400);
   for (let i = 0; i < 4; i += 1) logger.info("main", `${i}:${payload}`);
-  const current = "/sandbox/logs/main-20261026.log";
+  // 期望路径用 join() 拼：实现内部也是 join(dir, name)，宿主分隔符必须一致。
+  const current = join(LOGS_DIR, "main-20261026.log");
   assert.ok(files.has(current), "current daily file exists");
-  assert.ok(files.has("/sandbox/logs/main-20261026-1.log"), "size rotation created -1 file");
+  assert.ok(files.has(join(LOGS_DIR, "main-20261026-1.log")), "size rotation created -1 file");
   assert.equal(logger.currentFilePath, current);
   assert.match(files.get(current) ?? "", /INFO \[main\] 3:/);
 });
@@ -137,7 +150,7 @@ test("RuntimeLogger writes today's file and rotates by size", () => {
 test("RuntimeLogger prunes old days on day change", () => {
   const { files, deps } = memoryFs();
   let now = new Date(2026, 9, 26, 8, 0, 0, 0);
-  const logger = new RuntimeLogger({ dir: "/sandbox/logs", retention: 2, deps, now: () => now });
+  const logger = new RuntimeLogger({ dir: LOGS_DIR, retention: 2, deps, now: () => now });
   logger.info("main", "day1");
   now = new Date(2026, 9, 27, 8, 0, 0, 0);
   logger.info("main", "day2");
@@ -145,14 +158,14 @@ test("RuntimeLogger prunes old days on day change", () => {
   logger.info("main", "day3");
   assert.deepEqual(
     [...files.keys()].sort(),
-    ["/sandbox/logs/main-20261027.log", "/sandbox/logs/main-20261028.log"],
+    [join(LOGS_DIR, "main-20261027.log"), join(LOGS_DIR, "main-20261028.log")],
   );
 });
 
 test("RuntimeLogger never throws when the filesystem fails", () => {
   const errors: unknown[] = [];
   const logger = new RuntimeLogger({
-    dir: "/sandbox/logs",
+    dir: LOGS_DIR,
     deps: {
       mkdir: () => {
         throw new Error("read-only fs");
@@ -165,13 +178,13 @@ test("RuntimeLogger never throws when the filesystem fails", () => {
 });
 
 test("log directory resolves under the MyBuddy profile", () => {
-  assert.equal(resolveRuntimeLogsDir("/home/u/.mybuddy"), "/home/u/.mybuddy/logs");
+  assert.equal(resolveRuntimeLogsDir("/home/u/.mybuddy"), join("/home/u/.mybuddy", "logs"));
 });
 
 /* ---------------- crash-reporting：crashDumps / crashReporter ---------------- */
 
 test("crashDumps path is <MyBuddyDir>/crashdumps", () => {
-  assert.equal(resolveCrashDumpsDir("/home/u/.mybuddy"), "/home/u/.mybuddy/crashdumps");
+  assert.equal(resolveCrashDumpsDir("/home/u/.mybuddy"), join("/home/u/.mybuddy", "crashdumps"));
 });
 
 test("configureCrashReporting sets crashDumps and starts a local-only reporter", () => {
@@ -190,9 +203,11 @@ test("configureCrashReporting sets crashDumps and starts a local-only reporter",
     mkdir: (dir) => { createdDirs.push(dir); },
   });
   assert.equal(result.started, true);
-  assert.equal(result.crashDumpsDir, "/home/u/.mybuddy/crashdumps");
-  assert.deepEqual(createdDirs, ["/home/u/.mybuddy/crashdumps"]);
-  assert.equal(paths.crashDumps, "/home/u/.mybuddy/crashdumps");
+  // 实现用 join(myBuddyDir, "crashdumps")，期望值必须同样随宿主分隔符。
+  const expectedCrashes = join("/home/u/.mybuddy", "crashdumps");
+  assert.equal(result.crashDumpsDir, expectedCrashes);
+  assert.deepEqual(createdDirs, [expectedCrashes]);
+  assert.equal(paths.crashDumps, expectedCrashes);
   assert.equal(started.length, 1);
   assert.equal(started[0].productName, "MyBuddy");
   assert.equal(started[0].uploadToServer, false);
