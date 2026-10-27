@@ -131,6 +131,28 @@ pnpm -s verify:packaged -- --app-dir release/linux-unpacked
 - 从 Linux **交叉构建 Windows** 不受支持：`electron-builder --win` 需要 wine + 为 win32 重建原生模块（better-sqlite3/node-pty）。Windows 产物请在 Windows 机器/CI 出。
 - 已知缺口：`build.files` 仍排除 `onnxruntime-node` 的 linux 二进制，Linux 包内语义检索/embedding 不可用（记忆语义检索会降级）；补它需要按包体积单独评估。
 
+## CI 覆盖不到的部分（必须真机手动验收）
+
+`verify-linux` 跑的是 headless default 套件，`xvfb` 只能兜住"用例间接拉起 Electron"这种情况。
+下面这些用例在 CI 里**永远不会执行**，改动相关代码后必须在 Omarchy 真机上手工跑：
+
+| 用例 | 为什么 CI 跑不了 | 真机命令 |
+|---|---|---|
+| `test:computer-use-linux` | 需要真实 Hyprland 会话（`hyprctl` + `xdg-desktop-portal` + AT-SPI 桥 + CUL 原生二进制）。它在 `scripts/test-all.mjs` 里是 linux-only **且** GUI 类：Windows GUI job 按平台跳过，Linux 只有 headless job | `pnpm -s build && pnpm -s test:computer-use-linux` |
+| `test:linux-session` | 依赖真实 libsecret 密钥环 + 托盘驻留（headless 下 safeStorage 会落到 `basic_text`） | `env -u ELECTRON_RUN_AS_NODE pnpm -s test:linux-session` |
+| `test:tray` | 真 Electron 窗口 + 系统托盘 | `pnpm -s build && env -u ELECTRON_RUN_AS_NODE pnpm -s test:tray` |
+| `test:computer-use-overlay` / `-run` / `-recovery` | 真实桌面叠加框与输入注入 | `pnpm -s build && pnpm -s test:computer-use-overlay` |
+| 全部 GUI 类 | `verify-windows-gui` 只在 `windows-latest` 上 nightly 跑；Linux 没有 GUI job | `pnpm -s build && node scripts/test-all.mjs --include-gui` |
+
+要点：
+
+- 改 `src/main/platform/computer-use/**`、`src/main/platform/tray/**`、`src/main/platform/credentials/**` 时，
+  **CI 绿不等于 Linux 上能用**，必须跑上表对应行。
+- `--include-gui` 在 Linux 上会跳过 `GUI_WINDOWS_ONLY`（Windows 桌面自动化），跳过名单会打印出来；
+  那部分本来就该在 Windows 上验。
+- 如果以后要给 Linux 接 CI，正确做法是接一台带真实 Hyprland 会话的 self-hosted runner，
+  而不是把这些用例挪回无头套件，也不要加 `continue-on-error`。
+
 ## CI
 
 `.github/workflows/verify.yml` 现在有三条 job，GUI 与 default 分层：

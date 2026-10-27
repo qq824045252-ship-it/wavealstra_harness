@@ -350,7 +350,13 @@ try {
   console.log("ACP runtime integration: PASS (initialize/new/prompt, permission, resume, load, fallback_new, auth retry, cancel, crash, testAgent, disabled, session config options)");
 } finally {
   db.close();
-  // Windows 上被中止的 ACP 子进程可能还持有 workspace 里的句柄，立刻 rmSync 会 EBUSY
-  // （CI 上就这么红过）。rmSync 的 maxRetries 只对 EBUSY/EPERM 生效，是官方给的退避口。
-  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // Windows 上被中止的 ACP 子进程可能还持有 workspace 里的句柄，rmSync 会 EBUSY。
+  // maxRetries 只退避 10×100ms（1s 量级），实测仍会偶发失败（CI 上 71fb651 那次就红在这里，
+  // 此时重试已经生效）。清理临时目录失败不构成用例失败，所以重试加长后按 best-effort 吞掉：
+  // 留一个残留临时目录，比让门禁随机变红要好。
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (error) {
+    console.warn(`[acp-runtime] 临时目录清理失败（忽略，不影响断言）: ${(error as Error).message}`);
+  }
 }

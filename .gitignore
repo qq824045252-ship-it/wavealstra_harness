@@ -96,5 +96,11 @@ electron.vite.config.*.mjs
 /artifacts/pi100-upgrade/
 /artifacts/pi104-upgrade/
 
+# 一次性诊断截图与工具目录：验收时随手生成的噪声，默认不进版本库。
+# 需要在文档里引用的证据图请显式 `git add -f`（`artifacts/` 下已有 157 张被跟踪的证据图，不受影响）。
+/artifacts/*.png
+/artifacts/ego/
+/artifacts/remote-android-*/
+
 # IDE 本地配置
 /app/remote/android/.idea/
