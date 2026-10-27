@@ -31,10 +31,13 @@ import {
   clientDipToScreenPhysical,
   compactWindowInfo,
   controlBoundsAreZeroOrigin,
+  controlFingerprint,
   culFailure,
   filterWindows,
   findControl,
+  hasDialogRole,
   imageScaleFromMeta,
+  looksLikeChromiumWindow,
   matchesSelector,
   parseTesseractTsv,
   stripUnreliableControlBounds,
@@ -115,6 +118,12 @@ async function checked<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<
     }
     throw error;
   }
+}
+
+/** 窗口集合（handle + 标题）是否发生变化：语义动作的便宜生效判据（`list_windows` ~100ms）。 */
+function windowsChanged(before: WindowInfo[], after: WindowInfo[]): boolean {
+  const key = (windows: WindowInfo[]) => windows.map((window) => `${window.handle}:${window.title}`).sort().join("|");
+  return key(before) !== key(after);
 }
 
 function requireFinite(value: unknown, name: string): number {
@@ -833,7 +842,9 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     // 只有「翻完所有页仍然几乎没有节点」才是真的没有语义树；页数 >1 说明树是完整的。
     const detail = [
       rawNodes.length <= 3
-        ? "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
+        ? looksLikeChromiumWindow(target)
+          ? "Chromium/Electron 窗口没有暴露 AT-SPI 树：这类应用要平台无障碍桥初始化才注册（启动时 GNOME_ACCESSIBILITY=1 或 AT-SPI 的 IsEnabled=true）并且带 --force-renderer-accessibility；已运行的浏览器改不了，重启时加 GNOME_ACCESSIBILITY=1 才有语义树。现在可改用 browser_exec / ui_exec，或 ocr_window + click_client；MyBuddy 自己已默认设置"
+          : "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
         : truncated
           ? `语义树仍有 ${rawNodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
           : "",
@@ -880,9 +891,24 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     } as ComputerExecOutput;
   }
 
+  /**
+   * 语义动���（`invoke_control` / `set_control_value`）+ 执行后复核。
+   *
+   * 真机问题（2026-10-27）：`perform_action` 返回 ok 但界面没有反应——GTK 的输入
+   * 抓取/弹窗会把这次激活吞掉（zenity 的 OK 在 set_value 之后偶发不生效）。
+   * CUL 自己对元素点击不做结果校验，所以后端补一层：
+   *
+   * 1. **精确 element_index**：用 AT-SPI 快照里的 `index`，不再用数组位置反查
+   *    （分页收集时两者可能错位，见 `ControlInfo.elementIndex`）。
+   * 2. **先复核便宜的观测**（窗口集合/标题/目标是否还在）：能判定生效就不再多读树。
+   * 3. **看不出变化时**再读一次树比较指纹；如果目标是**模态对话框**，按钮重复激活是
+   *    安全的（对话框按钮 = 确认/关闭），所以允许一次有界重试；其它控件不重试
+   *    （LCU 的结论一致：不要盲目重复点击，像 toggle/复选框会被点反）。
+   * 4. `set_control_value` 走幂等路径：回读文本不一致就重试一次并再回读，结论写进
+   *    `verified`；读不到文本时给 `undefined`（不假装成功）。
+   */
   private async invokeControl(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal, setValue = false): Promise<ComputerExecOutput> {
-    const target = await this.resolveTarget(input, signal);
-    const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
     const selector = {
       controlRuntimeId: input.controlRuntimeId,
       controlName: input.controlName,
@@ -891,34 +917,100 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       controlClassName: input.controlClassName,
       exactName: input.exactName,
     };
-    const found = findControl(nodes, selector, { maxDepth: input.maxDepth });
-    if (!found) {
-      throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window + click_client 走坐标点击）", { selector });
-    }
-    const nodeIndex = Number(found.runtimeId.split("/").pop());
-    const index = Number.isFinite(nodeIndex) && found.automationId ? this.indexForObjectRef(nodes, found) : this.indexForObjectRef(nodes, found);
-    if (setValue) {
-      await checked(() => this.cul().require(CUL_TOOLS.setValue, { element_index: index, value: input.text ?? "" }, signal), signal);
+    const act = async (): Promise<{ nodes: ControlInfo[]; found: ControlInfo }> => {
+      const { nodes } = await this.readAccessibilityNodes(target, input, signal);
+      const found = findControl(nodes, selector, { maxDepth: input.maxDepth });
+      if (!found) {
+        throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window + click_client 走坐标点击）", { selector });
+      }
+      const index = found.elementIndex ?? this.indexForObjectRef(nodes, found);
+      if (setValue) {
+        await checked(() => this.cul().require(CUL_TOOLS.setValue, { element_index: index, value: input.text ?? "" }, signal), signal);
+      } else {
+        const args: Record<string, unknown> = { element_index: index };
+        if (input.controlName) args.name = input.controlName;
+        await checked(() => this.cul().require(CUL_TOOLS.performAction, args, signal), signal);
+      }
+      return { nodes, found };
+    };
+
+    const windowsBefore = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
+    let result = await act();
+    let after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+    let verified: boolean | undefined;
+    let verifyDetail: string | undefined;
+    let retried = false;
+
+    if (!after) {
+      // 窗口关了 = 动作确实生效
+      verified = true;
+    } else if (setValue) {
+      let text = await this.readControlText(target, result.found, input, signal);
+      if (input.text !== undefined && text !== undefined && text !== input.text) {
+        // set_value 幂等：允许一次有界重试
+        result = await act();
+        after = await this.inspectHandle(target.handle, signal).catch(() => after);
+        text = await this.readControlText(target, result.found, input, signal);
+        retried = true;
+      }
+      if (input.text === undefined || text === undefined) {
+        verified = undefined;
+      } else {
+        verified = text === input.text;
+        if (!verified) {
+          verifyDetail = `回读文本 ${JSON.stringify(text)} 与请求 ${JSON.stringify(input.text)} 不一致${retried ? "（已重试一次）" : ""}`;
+        }
+      }
     } else {
-      const args: Record<string, unknown> = { element_index: index };
-      if (input.controlName) args.name = input.controlName;
-      await checked(() => this.cul().require(CUL_TOOLS.performAction, args, signal), signal);
+      const windowsAfter = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
+      if (windowsChanged(windowsBefore, windowsAfter)) {
+        verified = true;
+      } else {
+        // 便宜观测看不出变化：读树比较指纹（可能只是 a11y 内部状态变了）
+        const recheck = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
+        if (recheck && controlFingerprint(result.nodes) !== controlFingerprint(recheck.nodes)) {
+          verified = true;
+        } else if (hasDialogRole(result.nodes)) {
+          // 模态对话框按钮：被输入抓取吞掉一次很常见，重复激活是安全的（确认/关闭语义）
+          result = await act();
+          after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+          retried = true;
+          const afterRetry = after ? await this.readWindows(signal).catch(() => [] as WindowInfo[]) : [];
+          if (!after || windowsChanged(windowsAfter, afterRetry)) {
+            verified = true;
+          } else {
+            const final = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
+            verified = final ? controlFingerprint(result.nodes) !== controlFingerprint(final.nodes) : undefined;
+            if (verified === false) verifyDetail = "模态对话框按钮激活后仍看不出变化（已重试一次）：可能被输入抓取吞掉，请重新观察或用 expected_outcomes 验证";
+          }
+        } else {
+          verified = false;
+          verifyDetail = "看不出可观测变化：可能被弹窗/输入抓取吞掉，也可能本来就是无副作用的动作。需要确认就重新观察或加 expected_outcomes，不要盲目重复点击";
+        }
+      }
     }
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
+
     const output: ComputerExecOutput = {
       action,
       window: after ?? target,
       // 这里只回报控件身份，不回传坐标：GTK 的 bounds 原点不可信（见 ZERO_ORIGIN_BOUNDS_HINT）。
-      control: controlBoundsAreZeroOrigin(nodes) ? stripUnreliableControlBounds([found])[0] : found,
+      control: controlBoundsAreZeroOrigin(result.nodes) ? stripUnreliableControlBounds([result.found])[0] : result.found,
       observation: after ? { targetBefore: target, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground } : undefined,
       backend: this.backend,
+      verified,
+      detail: [retried ? "已自动重试一次" : "", verifyDetail ?? ""].filter(Boolean).join("；") || undefined,
     };
-    if (setValue) {
-      // CUL 的 set_value 对可编辑文本会做精确回读（verified），这里把结论透出给模型。
-      output.verified = input.text === undefined ? undefined : true;
-    }
     return output;
   }
+
+  /** 读回控件当前文本（`set_control_value` 校验；runtimeId 变了就按名字/角色兜底匹配）。 */
+  private async readControlText(target: WindowInfo, previous: ControlInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<string | undefined> {
+    const { nodes } = await this.readAccessibilityNodes(target, input, signal).catch(() => ({ nodes: [] as ControlInfo[], truncated: false, pages: 0 }));
+    const found = nodes.find((node) => node.runtimeId === previous.runtimeId)
+      ?? nodes.find((node) => node.controlType === previous.controlType && node.name === previous.name);
+    return found?.text;
+  }
+
 
   /** AT-SPI 节点的 `index` 是 CUL 树里的稳定下标；用 object_ref 反查。 */
   private indexForObjectRef(nodes: ControlInfo[], control: ControlInfo): number {

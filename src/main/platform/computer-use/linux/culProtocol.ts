@@ -40,8 +40,9 @@ export interface CulAccessibilityNode {
   role?: string | null;
   name?: string | null;
   description?: string | null;
-  text?: string | null;
-  value?: string | null;
+  /** 真机实测可能是字符串，也可能是 `{content, caret_offset, ...}` 对象（见 normalizeAccessibilityText）。 */
+  text?: unknown;
+  value?: unknown;
   states?: string[] | null;
   actions?: Array<{ name?: string | null; description?: string | null; keybinding?: string | null }> | null;
   bounds?: { x?: number; y?: number; width?: number; height?: number } | null;
@@ -261,6 +262,41 @@ export function controlBoundsAreZeroOrigin(nodes: ControlInfo[]): boolean {
 }
 
 /**
+ * 控件树的可观察指纹（语义动作执行后复核用）。
+ *
+ * 指纹不变 = 这次激活在无障碍层看不出任何效果；注意它**不是**失败判据（无副作用的按钮
+ * 指纹也不会变），只用来决定「要不要再读一次树 / 要不要在模态对话框里重试一次」。
+ */
+export function controlFingerprint(nodes: ControlInfo[]): string {
+  return nodes.map((node) => [
+    node.runtimeId,
+    node.controlType,
+    node.name ?? "",
+    node.text ?? "",
+    node.enabled ? "1" : "0",
+    node.offscreen ? "1" : "0",
+    node.hasKeyboardFocus ? "1" : "0",
+  ].join("|")).join("\n");
+}
+
+/**
+ * 是不是 Chromium/Electron 系窗口。
+ *
+ * 这类应用默认不建 AT-SPI 树（只有检测到屏幕阅读器或带 `--force-renderer-accessibility`
+ * 启动才暴露），真机实测 Chrome 窗口 `inspect_controls` = 0 个节点。用来给出「改用
+ * browser_exec / ui_exec 或开无障碍」这样能落地的提示，而不是只说「树是空的」。
+ */
+export function looksLikeChromiumWindow(window: { processName?: string; className?: string; title?: string }): boolean {
+  return /chrome|chromium|electron|brave|edge|vivaldi|msedge|code-insiders|obsidian|slack|discord|notion/i
+    .test(`${window.processName ?? ""} ${window.className ?? ""} ${window.title ?? ""}`);
+}
+
+/** 树里是否有模态对话框（GTK `dialog` role）：对话框按钮重复激活是安全的（确认/关闭语义）。 */
+export function hasDialogRole(nodes: ControlInfo[]): boolean {
+  return nodes.some((node) => /^(dialog|alert dialog|file chooser dialog|color chooser dialog)$/i.test(node.controlType));
+}
+
+/**
  * 清掉不可信的控件坐标（保留控件本身：`runtimeId` / `name` / `role` / `patterns` 仍然有效，
  * `invoke_control` / `set_control_value` 走的是 AT-SPI 元素下标，不需要坐标）。
  * 保留 width/height 只会诱导模型按「(0,0) + 尺寸」点击，所以整块 bounds 一起摘掉。
@@ -382,7 +418,39 @@ export function toControlInfo(node: CulAccessibilityNode, window?: WindowInfo): 
     bounds: dip ? { left: dip.x, top: dip.y, width: dip.width, height: dip.height } : undefined,
     patterns: (node.actions ?? []).map((action) => String(action.name ?? "")).filter(Boolean),
     depth: node.depth ?? undefined,
+    text: normalizeAccessibilityText(node.text ?? node.value),
+    elementIndex: Number.isInteger(node.index) ? node.index : undefined,
   };
+}
+
+/**
+ * AT-SPI 文本归一化。
+ *
+ * CUL 对可编辑控件返回的 `text` 不是一个字符串，而是 JSON：真机 zenity entry 上实测是
+ * `{"caret_offset":0,"character_count":13,"content":"verified-text","selections":[],"truncated":false}`。
+ * 直接把它当文本比较会让 `set_control_value` 的回读永远"不一致"，所以取出 `content`/`value`。
+ */
+export function normalizeAccessibilityText(value: unknown): string | undefined {
+  // CUL 的 MCP 结构化结果里这个字段常常直接是个对象（不是 JSON 字符串）：
+  // { caret_offset, character_count, content, selections, truncated }
+  if (value !== null && typeof value === "object") {
+    const record = value as { content?: unknown; value?: unknown };
+    if (typeof record.content === "string") return record.content;
+    if (typeof record.value === "string") return record.value;
+    return undefined;
+  }
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { content?: unknown; value?: unknown };
+      if (typeof parsed.content === "string") return parsed.content;
+      if (typeof parsed.value === "string") return parsed.value;
+    } catch {
+      // 不是 JSON：按原文本返回（有些控件就是 "{...}" 字面量）
+    }
+  }
+  return value;
 }
 
 /** 按 selector 匹配控件（name/role/automation_id，支持 exactName）。 */

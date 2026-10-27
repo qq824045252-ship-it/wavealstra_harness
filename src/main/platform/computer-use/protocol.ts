@@ -91,6 +91,13 @@ export interface ControlInfo {
   bounds?: { left: number; top: number; width: number; height: number };
   patterns: string[];
   depth?: number;
+  /** 控件当前文本/值（AT-SPI `text`/`value`，Linux）；`set_control_value` 用它回读校验。 */
+  text?: string;
+  /**
+   * 后端原生元素下标（Linux：CUL AT-SPI 快照里的 `element_index`）。
+   * 分页收集后用数组位置反查会错位，语义动作（invoke_control/set_control_value）必须用它。
+   */
+  elementIndex?: number;
 }
 
 export interface TargetIdentity {

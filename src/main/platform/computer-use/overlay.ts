@@ -3,6 +3,7 @@ import type { ComputerUsePhase } from "../../capabilities/ComputerUsePolicy";
 import type { WindowInfo } from "./protocol";
 import { supportsComputerUseActivityNotice, supportsComputerUseOverlay } from "./support";
 import { createActivityNotice, type ActivityNotice } from "./linux/activityNotice";
+import { createCulIndicator, type CulIndicator } from "./linux/culIndicator";
 
 interface CursorState {
   x: number;
@@ -34,7 +35,8 @@ function overlaySupported(): boolean {
 }
 
 /**
- * Linux 上的轻量替代：不画窗口外框，只用 `hyprctl notify` 显示当前阶段和操作目标。
+ * Linux 上的替代：不画窗口外框，但会用 CUL 原生 indicator（layer-shell 光晕 + pill）
+ * 按 phase 显示"正在操作"；indicator 不可用时回落到 `hyprctl notify`。
  * 为什么不能画外框见 `../support.ts` 里 `supportsComputerUseOverlay` 的注释
  * （会污染 agent 自己的截图、分数缩放下铺不满、CUL indicator 没有控制通道）。
  */
@@ -97,13 +99,31 @@ export class ComputerUseOverlayService {
   }
 
   private readonly notice: ActivityNotice = createActivityNotice();
+  /** CUL 原生屏幕指示器（layer-shell 光晕 + pill）；不可用时回落到 hyprctl 通知。 */
+  private readonly indicator: CulIndicator = createCulIndicator();
   /** 上次通知的阶段+目标，避免同一状态重复刷屏。 */
   private lastNotice: string | null = null;
 
-  /** Linux 的轻量反馈：同阶段同目标只提示一次，避免每一步都弹通知。 */
+  /**
+   * Linux 的反馈：优先用 CUL 原生 indicator（屏幕边缘光晕 + pill，真实视觉反馈），
+   * 不可用时回落到 `hyprctl notify`（中文文案）。
+   *
+   * 为什么不担心污染 agent 截图：indicator 在 CUL 截图期间被 `.capture` flock 挡住，
+   * 实测返回图里指示器像素为 0（见 culIndicator.ts 的注释）。
+   */
   private showNotice(state: { taskId: string; phase: ComputerUsePhase; action: string; target?: WindowInfo }): void {
-    if (!activityNoticeSupported() || !this.notice.available) return;
+    if (!activityNoticeSupported()) return;
     const target = state.target?.title || state.target?.processName;
+    const terminal = state.phase === "completed" || state.phase === "failed";
+    // 英文 pill 能表达过程阶段；终态同时保留中文通知。
+    if (this.indicator.show(state.phase)) {
+      if (terminal) {
+        if (this.notice.available) this.notice.show(state.phase, target);
+        this.indicator.stop();
+      }
+      return;
+    }
+    if (!this.notice.available) return;
     const key = `${state.taskId}|${state.phase}|${target ?? ""}`;
     if (this.lastNotice === key) return;
     this.lastNotice = key;
@@ -201,6 +221,7 @@ export class ComputerUseOverlayService {
     this.hideTimer = null;
     this.current = null;
     this.lastNotice = null;
+    this.indicator.stop();
     this.stopStopHitTest();
     if (this.controls && !this.controls.isDestroyed()) this.controls.setIgnoreMouseEvents(true, { forward: true });
     for (const win of [this.border, this.controls]) {
@@ -214,6 +235,7 @@ export class ComputerUseOverlayService {
     this.hideTimer = null;
     this.current = null;
     this.lastNotice = null;
+    this.indicator.stop();
     this.stopStopHitTest();
     for (const win of [this.border, this.controls]) {
       if (win && !win.isDestroyed()) win.destroy();

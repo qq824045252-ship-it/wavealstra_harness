@@ -227,7 +227,7 @@ import { getPluginStorage } from "./plugins/PluginStorage";
 import type { McpSaveServerRequest } from "../shared/agent-ipc";
 import { ProfessionalToolRuntimeService } from "./professional-tools/ProfessionalToolRuntime";
 import { TrayService } from "./TrayService";
-import { applyPlatformAppIdentity, nodePlatformName } from "./platform/app";
+import { applyPlatformAppIdentity, applyPlatformCommandLineSwitches, nodePlatformName } from "./platform/app";
 import { applyPlatformTitleBarOverlay, applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
 import { shouldQuitOnAllWindowsClosed, windowOpenProperties } from "./platform/lifecycle";
 import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
@@ -294,6 +294,10 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
 ]);
+
+// Linux 上给自己的 Electron 渲染进程打开无障碍（computer_exec 才能看到应用内控件）。
+// 命令行开关必须在 app ready 之前追加；其它平台 no-op。
+applyPlatformCommandLineSwitches(app);
 
 let db: AppDatabase;
 let libraryService: LibraryService;
