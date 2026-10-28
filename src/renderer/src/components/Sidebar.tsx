@@ -110,8 +110,8 @@ export default function Sidebar(): React.JSX.Element {
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
 
   // UX-2: derive current space states from single source of truth (store.page/activeWorkspaceId/activeTaskId/draft)
-  // compressed indent: 8 + min(depth,4)*12
-  const spaceIndent = (depth: number): number => 8 + Math.min(depth, 4) * 12;
+  // compressed indent: 8 + min(depth,4)*8（每级 8px）
+  const spaceIndent = (depth: number): number => 8 + Math.min(depth, 4) * 8;
   // 任务行与同级空间行同一起点，补 chevron(14)+gap(6)=20 占位，使任务图标与同级空间文件夹图标对齐。
   // 不补 .space-header 的 3px 边框：任务首元素 .task-mode-icon 是 16px 居中盒（内含 13px svg，绘制左缘再右偏 1.5px），
   // 两边一抵消，20 才是视觉对齐值（+23 实测偏右约 3px）。
