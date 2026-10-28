@@ -1,0 +1,120 @@
+{
+  "platform": "linux-x64 · Omarchy (Arch) / Hyprland / Wayland",
+  "version": "0.1.57",
+  "acceptedAt": "2026-10-28T14:55:14+08:00",
+  "packageRoot": "/home/vivion/github/wavealstra_harness/release/linux-unpacked",
+  "executable": "/home/vivion/github/wavealstra_harness/release/linux-unpacked/mybuddy",
+  "executableSha256": "9155dd17c16f0edeaadb74db4fd91e2730511cca83e8b130d59bab57aa4d4e4b",
+  "appAsarSha256": "4fd368dce12c764cf824b1534bc70cc09b8f35c512a3e489bb8e1c0215bd0dd8",
+  "exeBytes": 228629832,
+  "appAsarBytes": 175985604,
+  "packageSize": "1.2G (du) · 505 files",
+  "packagedVersionChecks": [
+    "app.asar package.json version = 0.1.57（app/main = ./out/main/index.js）",
+    "~/.mybuddy/logs/main-20261028.log: crashReporter started（product=MyBuddy version=0.1.57）",
+    "CDP 读取渲染进程：document.title = MyBuddy，界面显示 v0.1.57"
+  ],
+  "feature": "把 Windows 侧 0.1.53→0.1.57 的 5 个提交（远程连接改为「域名 + 6 位码」配对、侧栏缩进 8px、IPC 冻结基线、ACP DSH 记录）同步到 Omarchy 并重新出 Linux 包；保留一个可接受版本。",
+  "sync": {
+    "before": {
+      "commit": "6672d04",
+      "version": "0.1.53",
+      "worktree": "clean"
+    },
+    "after": {
+      "commit": "40cd3fd740abbb59ce381d9692952d5368cab2f6",
+      "version": "0.1.57"
+    },
+    "commitsPulled": 5,
+    "command": "git pull --rebase origin main",
+    "install": "pnpm install --frozen-lockfile（锁文件未变；postinstall electron-rebuild 重建 better-sqlite3 / node-pty）",
+    "afterSync": "本机 (Windows) 与 Omarchy 的 main 都是 40cd3fd，且 origin/main 相同；远端工作区只有诊断 artifacts 修改，无源码改动"
+  },
+  "build": {
+    "command": "pnpm -s pack:linux（remote:build + electron-vite build + electron-builder --linux --dir）",
+    "startedAt": "2026-10-28T14:48:35+08:00",
+    "finishedAt": "2026-10-28T14:49:52+08:00",
+    "output": "release/linux-unpacked（dir target，无 AppImage/deb）",
+    "electron": "44.5.1",
+    "node": "v26.12.1",
+    "pnpm": "12.14.0",
+    "asarIdentity": [
+      "IDENTICAL out/main/index.js cce5317a7e1efe13",
+      "IDENTICAL out/renderer/assets/index-ByWGeYZK.js 0dc2ed9c1582ed49",
+      "IDENTICAL app/remote/dist/assets/index-BhXnEIrQ.js e4533c39e2bf6390"
+    ],
+    "log": "~/wavealstra-pack-0.1.57.log（Omarchy）"
+  },
+  "qualityGates": {
+    "typecheck": "passed（tsconfig.web + tsconfig.node；scripts 基线 189 条，新增 0）",
+    "architecture": "test:architecture + test:architecture-graph passed（5/5 项检查）",
+    "build": "electron-vite build ok",
+    "testAll": "TEST_ALL_JOBS=2 pnpm -s test:all：246 passed / 0 failed / 0 known baseline / 0 new regressions（1.4 分钟）",
+    "log": "~/wavealstra-gates-0.1.57.log（Omarchy）"
+  },
+  "omarchyAcceptance": {
+    "session": "WAYLAND_DISPLAY=wayland-1 · XDG_SESSION_TYPE=wayland · XDG_CURRENT_DESKTOP=Hyprland · HYPRLAND_INSTANCE_SIGNATURE 存在",
+    "launch": "用隔离 HOME/XDG_CONFIG_HOME 启动 release/linux-unpacked/mybuddy；hyprctl clients 显示 class=wavealstra-harness、title=MyBuddy、size=656x852",
+    "safeStorage": "[safeStorage] linux backend=gnome_libsecret available=true",
+    "tray": "[Tray] 系统托盘已初始化 (png)",
+    "renderer": "CDP：document.readyState=complete，body 文案包含 MyBuddy / v0.1.57 / 新建任务；设置可打开（16 个导航页签）",
+    "newRemoteUi": "「设置 → 远程连接」渲染出 .remote-access-page：域名 + 6 位配对码文案、tailscale serve --bg 3352 命令、已关闭状态与「允许新设备接入」按钮（本轮改动最大的 RemoteAccessTab 在 Linux 包内可用）",
+    "shutdown": "只对主进程 SIGTERM → 优雅退出，无残留 mybuddy 进程",
+    "screenshots": [
+      "out/tests/release-0.1.57-linux/app-main.png",
+      "out/tests/release-0.1.57-linux/app-remote-tab.png",
+      "out/tests/release-0.1.57-linux/clients.json"
+    ]
+  },
+  "linuxSuites": {
+    "test:linux-session": "passed：linux-password-store ok + tray-residency ok，safeStorage backend=gnome_libsecret available=true",
+    "test:tray": "23/23 passed；主托盘用例 [Tray] 系统托盘已初始化 (png)",
+    "test:computer-use-linux": "5 passed / 4 skipped / 1 failed：screenshot_window 在 SSH 非交互环境拿不到截图（XDG portal 需要真机授权框；xdg-desktop-portal、-gtk、-hyprland 均在运行）。status / doctor / list_windows / inspect_controls 全通过，判定为环境授权限制，不是代码回归"
+  },
+  "payloadGate": {
+    "command": "pnpm -s verify:packaged -- --app-dir release/linux-unpacked（afterPack 已自动执行过一次）",
+    "asarEntries": 19512,
+    "unpackedEntries": 483,
+    "missingUnpacked": 0,
+    "piRuntime": "@wavealstra/pi-worker-runtime 1.3.0 · workerExitCode 0",
+    "keyringBinding": "app.asar.unpacked/node_modules/@napi-rs/keyring-linux-x64-gnu/keyring.linux-x64-gnu.node 存在（3201632 B）"
+  },
+  "obsoleteReleaseRemoval": {
+    "status": "deleted",
+    "paths": ["/home/vivion/github/wavealstra_harness/release/linux-unpacked.prev-0.1.53"],
+    "version": "0.1.53",
+    "sizeMiB": 1228.8,
+    "files": 505,
+    "oldHashes": {
+      "appAsarSha256": "93a1971e57dc9e9f34e5ca13391da75dbae09a56830454bc532bb6ecf4f347ab",
+      "appAsarBytes": 176170102,
+      "executableSha256": "9155dd17c16f0edeaadb74db4fd91e2730511cca83e8b130d59bab57aa4d4e4b"
+    },
+    "tool": "bash rm -rf -- <resolved path>（删除前 realpath -e 与预期绝对路径逐字相等）",
+    "preconditionsChecked": [
+      "realpath -e 等于 /home/vivion/github/wavealstra_harness/release/linux-unpacked.prev-0.1.53",
+      "0 个进程映射到旧路径，0 个 mybuddy 进程在运行",
+      "~/.local/share/applications/mybuddy.desktop 的 Exec 已指向新的 release/linux-unpacked/mybuddy",
+      "新包 exe/asar SHA256 记录在案"
+    ],
+    "postChecks": [
+      "保留包 SHA256 与删除前一致（9155dd17… / 4fd368dc…）",
+      "verify:packaged 再次 PASS",
+      "从 launcher Exec 路径重新启动：窗口 wavealstra-harness|MyBuddy 出现，safeStorage=gnome_libsecret，[Tray] png，SIGTERM 优雅退出",
+      "release/ 现在只剩 linux-unpacked + builder-debug.yml"
+    ]
+  },
+  "launcher": {
+    "desktopFile": "/home/vivion/.local/share/applications/mybuddy.desktop",
+    "exec": "/home/vivion/github/wavealstra_harness/release/linux-unpacked/mybuddy",
+    "icon": "/home/vivion/github/wavealstra_harness/build/icon.png",
+    "startupWMClass": "wavealstra-harness",
+    "note": "路径未变，无需改写；已回读并与新包路径核对"
+  },
+  "knownLimitations": [
+    "Linux target 仍是 dir 包（release/linux-unpacked），没有 AppImage/deb；启动依赖上面的 .desktop 指向该目录。",
+    "computer-use-linux 的 screenshot_window 在 SSH 非交互环境失败（XDG portal 截图要真机点授权框）；同一套只读检查在真实桌面会话里应可授权通过。",
+    "build.files 仍排除 onnxruntime-node 的 linux 二进制，Linux 上语义检索/embedding 降级（既有缺口，本包未改）。",
+    "本轮未跑 --include-gui 全量 GUI 套件（耗时且会占用真实桌面），只跑了与本轮改动最相关的 linux-session / tray / CUL 只读 + 打包启动验收。"
+  ]
+}
