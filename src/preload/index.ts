@@ -76,7 +76,7 @@ import type {
 } from "../shared/workspace-shared-context";
 import { MemoryIpc, type MemoryCandidateDto, type MemoryCoreProfileDto, type MemoryCreateRequest, type MemoryDismissedProjectionDto, type MemoryKernelStats, type MemoryListRequest, type MemoryProjectionProposalDto, type MemoryRecordDto, type MemoryRevisionDto, type MemoryScenarioDto, type MemoryScopeType, type MemorySearchHit, type MemorySearchRequest, type MemoryTurnDto, type MemoryTurnListRequest, type MemorySkillCandidateDto, type MemorySkillCandidateStatus, type MemorySkillEffectivenessDto, type MemorySkillEffectivenessSummaryDto, type MemorySkillFeedbackKind, type MemorySkillRevisionCandidateDto, type MemorySkillRevisionStatus, type MemoryUpdateRequest } from "../shared/memory-kernel";
 import { MemoryGatewayIpc, type MemoryGatewayAccessGrantDto, type MemoryGatewayConfigureRequest, type MemoryGatewayCreateGrantRequest, type MemoryGatewayIssuedGrantDto, type MemoryGatewayStatusDto, type MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
-import { RemoteAccessIpc, type RemoteConfigureRequest, type RemoteDeviceSummary, type RemotePairingSession, type RemoteStatus, type RemoteUsbPairingResult, type RemoteUsbStatus } from "../shared/remote-access";
+import { RemoteAccessIpc, type RemoteConfigureRequest, type RemoteDeviceSummary, type RemotePairWindowDto, type RemotePairingSession, type RemoteStatus, type RemoteUsbPairingResult, type RemoteUsbStatus } from "../shared/remote-access";
 import {
   AgentIpc,
   ArtifactIpc,
@@ -729,6 +729,9 @@ const api = {
     cancelPairingSession: (id: string): Promise<void> => ipcRenderer.invoke(RemoteAccessIpc.cancelPairingSession, id),
     usbStatus: (): Promise<RemoteUsbStatus> => ipcRenderer.invoke(RemoteAccessIpc.usbStatus),
     pairUsb: (serial: string): Promise<RemoteUsbPairingResult> => ipcRenderer.invoke(RemoteAccessIpc.pairUsb, serial),
+    openPairWindow: (): Promise<RemotePairWindowDto> => ipcRenderer.invoke(RemoteAccessIpc.openPairWindow),
+    closePairWindow: (): Promise<void> => ipcRenderer.invoke(RemoteAccessIpc.closePairWindow),
+    pairWindowState: (): Promise<RemotePairWindowDto | null> => ipcRenderer.invoke(RemoteAccessIpc.pairWindowState),
   },
 
   memory: {

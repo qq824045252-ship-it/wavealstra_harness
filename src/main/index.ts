@@ -685,6 +685,12 @@ function registerIpc(): void {
     if (!remoteAccessController) throw new Error("Remote Access 未初始化");
     return remoteAccessController.pairUsb(serial);
   });
+  ipcMain.handle(RemoteAccessIpc.openPairWindow, () => {
+    if (!remoteAccessController) throw new Error("Remote Access 未初始化");
+    return remoteAccessController.openPairWindow();
+  });
+  ipcMain.handle(RemoteAccessIpc.closePairWindow, () => remoteAccessController?.closePairWindow());
+  ipcMain.handle(RemoteAccessIpc.pairWindowState, () => remoteAccessController?.pairWindowState() ?? null);
 
   // 窗口创建前先挂上 subagent 通道，避免概览一启动 invoke 打出 No handler registered
   registerSubagentIpcHost(ipcMain);

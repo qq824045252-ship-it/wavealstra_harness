@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="880" viewBox="0 0 1280 880" role="img" aria-label="MyBuddy 与 DeepSeek Harness 的 ACP 委派链路">
+  <rect x="0" y="0" width="1280" height="880" fill="#FBFCFE"/>
+  <text x="44" y="46" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="700" fill="#111827">MyBuddy ←→ DeepSeek Harness：新增的 ACP 委派链路</text>
+  <text x="44" y="76" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#5B6472">dsh 用 profile 暴露 ACP v1（不是独立 bin）；以下为本机 dsh 0.2.0-rc.2 实测握手与两轮续聊</text>
+
+  <!-- lifeline headers -->
+  <rect x="60" y="96" width="400" height="58" rx="10" fill="#E8F1FF" stroke="#9DBEF0" stroke-width="1.2"/>
+  <text x="80" y="121" font-family="Segoe UI, system-ui, sans-serif" font-size="15" font-weight="700" fill="#12305C">MyBuddy · ExternalAgentRuntime</text>
+  <text x="80" y="141" font-family="Segoe UI, system-ui, sans-serif" font-size="12" fill="#3B5A88">ACP Client · @agentclientprotocol/sdk 1.6.0 · protocolVersion 1</text>
+
+  <rect x="820" y="96" width="400" height="58" rx="10" fill="#EFF9EF" stroke="#A6D8A6" stroke-width="1.2"/>
+  <text x="840" y="121" font-family="Segoe UI, system-ui, sans-serif" font-size="15" font-weight="700" fill="#14532D">dsh --profile acp</text>
+  <text x="840" y="141" font-family="Segoe UI, system-ui, sans-serif" font-size="12" fill="#356B45">ACP Agent · dsh-acp bridge · 每轮一个新进程</text>
+
+  <!-- lifelines -->
+  <line x1="260" y1="154" x2="260" y2="620" stroke="#B9C3D3" stroke-width="1.4" stroke-dasharray="6 6"/>
+  <line x1="1020" y1="154" x2="1020" y2="620" stroke="#B9C3D3" stroke-width="1.4" stroke-dasharray="6 6"/>
+
+  <!-- step 1: spawn -->
+  <line x1="260" y1="190" x2="1010" y2="190" stroke="#2563EB" stroke-width="1.6" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="181" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#1D4ED8">① spawn：cmd.exe /d /s /c "dsh.cmd --profile acp"（cwd = 任务工作目录）</text>
+
+  <!-- step 2: initialize -->
+  <line x1="260" y1="236" x2="1010" y2="236" stroke="#2563EB" stroke-width="1.6" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="227" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#1D4ED8">② initialize { protocolVersion: 1 }</text>
+
+  <line x1="1020" y1="272" x2="270" y2="272" stroke="#15803D" stroke-width="1.6" marker-end="url(#arrowGreen)"/>
+  <text x="274" y="291" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#166534">← protocolVersion 1 · sessionCapabilities: close / list / resume（resumeSupported = true）</text>
+
+  <!-- step 3: session/new -->
+  <line x1="260" y1="330" x2="1010" y2="330" stroke="#2563EB" stroke-width="1.6" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="321" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#1D4ED8">③ session/new { cwd, mcpServers: [], _meta }</text>
+
+  <line x1="1020" y1="366" x2="270" y2="366" stroke="#15803D" stroke-width="1.6" marker-end="url(#arrowGreen)"/>
+  <text x="274" y="385" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#166534">← sessionId + configOptions：model（deepseek-official / deepseek-account / magpie）· reasoning_effort</text>
+
+  <!-- step 4: prompt -->
+  <line x1="260" y1="424" x2="1010" y2="424" stroke="#2563EB" stroke-width="1.6" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="415" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#1D4ED8">④ session/prompt { prompt: [{ type: "text", text }] }（附件按路径转文本，image 能力为 false）</text>
+
+  <line x1="1020" y1="460" x2="270" y2="460" stroke="#15803D" stroke-width="1.6" marker-end="url(#arrowGreen)"/>
+  <text x="274" y="479" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#166534">← session/update：agent_message_chunk · agent_thought_chunk · tool_call / tool_call_update</text>
+
+  <!-- permission -->
+  <line x1="1020" y1="508" x2="270" y2="508" stroke="#B45309" stroke-width="1.8" marker-end="url(#arrowAmber)"/>
+  <text x="274" y="527" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#92400E">← session/request_permission { allow-once, reject-once }（越出工作目录时才触发）</text>
+
+  <line x1="260" y1="554" x2="1010" y2="554" stroke="#B45309" stroke-width="1.8" marker-end="url(#arrowAmber)"/>
+  <text x="274" y="573" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#92400E">→ 审批卡（approvalKind: "acp"）回传 optionId；run 状态 working → completed</text>
+
+  <!-- resume -->
+  <line x1="260" y1="606" x2="1010" y2="606" stroke="#7C3AED" stroke-width="1.6" marker-end="url(#arrowPurple)"/>
+  <text x="274" y="627" font-family="Segoe UI, system-ui, sans-serif" font-size="13" fill="#5B21B6">⑤ 下一轮：session/resume { sessionId } → 同一会话续聊（continuationMode = "resume"）</text>
+
+  <!-- bottom panels -->
+  <rect x="44" y="660" width="386" height="188" rx="12" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.2"/>
+  <text x="64" y="687" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#111827">代码入口（本次改动）</text>
+  <text x="64" y="712" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">shared：ExternalAgentId += "dsh"</text>
+  <text x="64" y="736" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">MANIFESTS：{ id: dsh, dsh --profile acp }</text>
+  <text x="64" y="760" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">缺 CLI 时 detail 提示：npm install -g @deepseek-ai/dsh</text>
+  <text x="64" y="784" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">「设置 → ACP 管理」/「+ → 外部 Agent」/ 手机 ACP 目录</text>
+  <text x="64" y="808" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">都从同一目录投影，无 per-agent 硬编码 UI</text>
+
+  <rect x="448" y="660" width="386" height="188" rx="12" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.2"/>
+  <text x="468" y="687" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#111827">探测与启动</text>
+  <text x="468" y="712" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">where dsh → %APPDATA%\npm\dsh.cmd</text>
+  <text x="468" y="736" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">Windows 用 cmd.exe /d /s /c 包装 .cmd shim</text>
+  <text x="468" y="760" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">会话持久化在 ~/.dsh/sessions，跨进程可 resume</text>
+  <text x="468" y="784" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">不支持的 ACP 面：session/load、additionalDirectories</text>
+  <text x="468" y="808" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">MyBuddy 走 resume 分支，因此不受影响</text>
+
+  <rect x="852" y="660" width="384" height="188" rx="12" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.2"/>
+  <text x="872" y="687" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="700" fill="#111827">默认路由（本机配置）</text>
+  <text x="872" y="712" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">~/.dsh/profiles/acp/cordis.patch.yml</text>
+  <text x="872" y="736" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">补了 acp 行：provider magpie / deepseek-v4.1-flash</text>
+  <text x="872" y="760" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">否则默认 deepseek-official 需要 DEEPSEEK_API_KEY</text>
+  <text x="872" y="784" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">也可在 ACP 管理里选 deepseek-account / magpie</text>
+  <text x="872" y="808" font-family="Segoe UI, system-ui, sans-serif" font-size="12.5" fill="#374151">实测：initialize 2.5s · session/new 0.9s · 首轮 4.4s</text>
+
+  <defs>
+    <marker id="arrowBlue" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto"><path d="M0,0 L7.5,3.2 L0,6.4 z" fill="#2563EB"/></marker>
+    <marker id="arrowGreen" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto"><path d="M0,0 L7.5,3.2 L0,6.4 z" fill="#15803D"/></marker>
+    <marker id="arrowAmber" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto"><path d="M0,0 L7.5,3.2 L0,6.4 z" fill="#B45309"/></marker>
+    <marker id="arrowPurple" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto"><path d="M0,0 L7.5,3.2 L0,6.4 z" fill="#7C3AED"/></marker>
+  </defs>
+</svg>

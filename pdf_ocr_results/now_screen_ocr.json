@@ -1,0 +1,1808 @@
+{
+  "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+  "schema_version": "udm-v2",
+  "metadata": {
+    "schema_version": "udm-v2",
+    "total_pages": 1,
+    "parser": "PP-OCRv5 OpenVINO Stage Engine",
+    "stage_manifest": {
+      "page_stages": [
+        {
+          "name": "render",
+          "kind": "page",
+          "order": 10,
+          "enabled": true
+        },
+        {
+          "name": "route",
+          "kind": "page",
+          "order": 20,
+          "enabled": true
+        },
+        {
+          "name": "pdf_text_layer",
+          "kind": "page",
+          "order": 30,
+          "enabled": true
+        },
+        {
+          "name": "ocr",
+          "kind": "page",
+          "order": 40,
+          "enabled": true
+        },
+        {
+          "name": "formula_candidates",
+          "kind": "page",
+          "order": 45,
+          "enabled": true
+        },
+        {
+          "name": "table",
+          "kind": "page",
+          "order": 50,
+          "enabled": true
+        },
+        {
+          "name": "assets",
+          "kind": "page",
+          "order": 60,
+          "enabled": true
+        },
+        {
+          "name": "assemble",
+          "kind": "page",
+          "order": 70,
+          "enabled": true
+        },
+        {
+          "name": "page_artifacts",
+          "kind": "page",
+          "order": 80,
+          "enabled": true
+        },
+        {
+          "name": "normalize_page",
+          "kind": "page",
+          "order": 90,
+          "enabled": true
+        }
+      ],
+      "document_stages": [
+        {
+          "name": "document_postprocess",
+          "kind": "document",
+          "order": 100,
+          "enabled": true
+        },
+        {
+          "name": "contract",
+          "kind": "document",
+          "order": 110,
+          "enabled": true
+        },
+        {
+          "name": "document_finalize",
+          "kind": "document",
+          "order": 120,
+          "enabled": true
+        },
+        {
+          "name": "document_artifacts",
+          "kind": "document",
+          "order": 130,
+          "enabled": true
+        }
+      ]
+    },
+    "architecture": {
+      "engine": "StageEngine",
+      "providers": "PDF/Image/Office",
+      "stage_manifest": {
+        "page_stages": [
+          {
+            "name": "render",
+            "kind": "page",
+            "order": 10,
+            "enabled": true
+          },
+          {
+            "name": "route",
+            "kind": "page",
+            "order": 20,
+            "enabled": true
+          },
+          {
+            "name": "pdf_text_layer",
+            "kind": "page",
+            "order": 30,
+            "enabled": true
+          },
+          {
+            "name": "ocr",
+            "kind": "page",
+            "order": 40,
+            "enabled": true
+          },
+          {
+            "name": "formula_candidates",
+            "kind": "page",
+            "order": 45,
+            "enabled": true
+          },
+          {
+            "name": "table",
+            "kind": "page",
+            "order": 50,
+            "enabled": true
+          },
+          {
+            "name": "assets",
+            "kind": "page",
+            "order": 60,
+            "enabled": true
+          },
+          {
+            "name": "assemble",
+            "kind": "page",
+            "order": 70,
+            "enabled": true
+          },
+          {
+            "name": "page_artifacts",
+            "kind": "page",
+            "order": 80,
+            "enabled": true
+          },
+          {
+            "name": "normalize_page",
+            "kind": "page",
+            "order": 90,
+            "enabled": true
+          }
+        ],
+        "document_stages": [
+          {
+            "name": "document_postprocess",
+            "kind": "document",
+            "order": 100,
+            "enabled": true
+          },
+          {
+            "name": "contract",
+            "kind": "document",
+            "order": 110,
+            "enabled": true
+          },
+          {
+            "name": "document_finalize",
+            "kind": "document",
+            "order": 120,
+            "enabled": true
+          },
+          {
+            "name": "document_artifacts",
+            "kind": "document",
+            "order": 130,
+            "enabled": true
+          }
+        ]
+      },
+      "document_model": "Page -> Block -> Span -> Asset -> Table",
+      "postprocessors": "document_stage_registry",
+      "exporters": "render_only",
+      "eval": "automatic_metrics"
+    },
+    "input_type": "png",
+    "enable_columns": false,
+    "enable_table": false,
+    "remove_headers_footers": true,
+    "prefer_text_layer": true,
+    "enable_vlm": false,
+    "pipeline_options_hash": "6f39b13a6c98744e0c7d425b6bee6767",
+    "postprocessors": [
+      "page_artifacts",
+      "headers_footers",
+      "headings",
+      "toc",
+      "lists",
+      "formulas",
+      "generic_block_tags",
+      "image_captions",
+      "table_metadata",
+      "table_deduplication",
+      "cross_page_tables",
+      "page_quality"
+    ],
+    "postprocess_elapsed": 0.0014,
+    "document_stages": [
+      {
+        "name": "document_postprocess",
+        "elapsed": 0.0013644695281982422
+      },
+      {
+        "name": "contract",
+        "elapsed": 0.0015106201171875
+      },
+      {
+        "name": "document_finalize",
+        "elapsed": 0.0
+      },
+      {
+        "name": "document_artifacts",
+        "elapsed": 0.0060117244720458984
+      }
+    ],
+    "contract": {
+      "schema_version": "contract-v1",
+      "document_schema": "udm-v2",
+      "passed": true,
+      "error_count": 0,
+      "warning_count": 0,
+      "errors": [],
+      "warnings": []
+    },
+    "summary": {
+      "pages": 1,
+      "blocks": 7,
+      "tables": 0,
+      "images": 0,
+      "scanned_like_pages": 1,
+      "page_strategies": {
+        "ocr": 1
+      },
+      "text_layer_fallback_pages": [],
+      "high_complexity_pages": [],
+      "cross_page_table_candidates": 0,
+      "captions": 0
+    },
+    "page_strategies": {
+      "ocr": 1
+    }
+  },
+  "pages": [
+    {
+      "page": 1,
+      "page_index": 0,
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "width": 1272.0,
+      "height": 2800.0,
+      "texts": [
+        {
+          "id": 0,
+          "text": "35",
+          "score": 0.66552734375,
+          "box": [
+            [
+              691.0,
+              45.0
+            ],
+            [
+              1087.0,
+              42.0
+            ],
+            [
+              1088.0,
+              110.0
+            ],
+            [
+              692.0,
+              113.0
+            ]
+          ],
+          "bbox": [
+            691.0,
+            42.0,
+            1088.0,
+            113.0
+          ],
+          "type": "text",
+          "order": 0,
+          "source": "ocr",
+          "uid": "p1_s0001",
+          "role": "page_artifact",
+          "removed": true
+        },
+        {
+          "id": 1,
+          "text": "13:46",
+          "score": 0.976269543170929,
+          "box": [
+            [
+              94.0,
+              58.0
+            ],
+            [
+              227.0,
+              58.0
+            ],
+            [
+              227.0,
+              104.0
+            ],
+            [
+              94.0,
+              104.0
+            ]
+          ],
+          "bbox": [
+            94.0,
+            58.0,
+            227.0,
+            104.0
+          ],
+          "type": "text",
+          "order": 1,
+          "source": "ocr",
+          "uid": "p1_s0002",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 2,
+          "text": "VPN",
+          "score": 0.9986979365348816,
+          "box": [
+            [
+              231.0,
+              61.0
+            ],
+            [
+              298.0,
+              61.0
+            ],
+            [
+              298.0,
+              100.0
+            ],
+            [
+              231.0,
+              100.0
+            ]
+          ],
+          "bbox": [
+            231.0,
+            61.0,
+            298.0,
+            100.0
+          ],
+          "type": "text",
+          "order": 2,
+          "source": "ocr",
+          "uid": "p1_s0003",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 3,
+          "text": "274",
+          "score": 0.9801432490348816,
+          "box": [
+            [
+              1089.0,
+              54.0
+            ],
+            [
+              1174.0,
+              54.0
+            ],
+            [
+              1174.0,
+              103.0
+            ],
+            [
+              1089.0,
+              103.0
+            ]
+          ],
+          "bbox": [
+            1089.0,
+            54.0,
+            1174.0,
+            103.0
+          ],
+          "type": "text",
+          "order": 3,
+          "source": "ocr",
+          "uid": "p1_s0004",
+          "role": "page_artifact",
+          "removed": true
+        },
+        {
+          "id": 4,
+          "text": "连接电脑端Mybuddy",
+          "score": 0.9985758513212204,
+          "box": [
+            [
+              201.0,
+              457.0
+            ],
+            [
+              1073.0,
+              476.0
+            ],
+            [
+              1070.0,
+              606.0
+            ],
+            [
+              198.0,
+              586.0
+            ]
+          ],
+          "bbox": [
+            198.0,
+            457.0,
+            1073.0,
+            606.0
+          ],
+          "type": "text",
+          "order": 4,
+          "source": "ocr",
+          "uid": "p1_s0005",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 5,
+          "text": "直接输入通道域名即可直连（支持Cloudflare 域名或",
+          "score": 0.9770100861787796,
+          "box": [
+            [
+              102.0,
+              633.0
+            ],
+            [
+              1170.0,
+              633.0
+            ],
+            [
+              1170.0,
+              688.0
+            ],
+            [
+              102.0,
+              688.0
+            ]
+          ],
+          "bbox": [
+            102.0,
+            633.0,
+            1170.0,
+            688.0
+          ],
+          "type": "text",
+          "order": 5,
+          "source": "ocr",
+          "uid": "p1_s0006",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 6,
+          "text": "Tailscale域名）。",
+          "score": 0.9885066151618958,
+          "box": [
+            [
+              440.0,
+              702.0
+            ],
+            [
+              799.0,
+              702.0
+            ],
+            [
+              799.0,
+              759.0
+            ],
+            [
+              440.0,
+              759.0
+            ]
+          ],
+          "bbox": [
+            440.0,
+            702.0,
+            799.0,
+            759.0
+          ],
+          "type": "text",
+          "order": 6,
+          "source": "ocr",
+          "uid": "p1_s0007",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 7,
+          "text": "直接输入电脑连接地址",
+          "score": 0.9998372395833334,
+          "box": [
+            [
+              146.0,
+              916.0
+            ],
+            [
+              747.0,
+              916.0
+            ],
+            [
+              747.0,
+              982.0
+            ],
+            [
+              146.0,
+              982.0
+            ]
+          ],
+          "bbox": [
+            146.0,
+            916.0,
+            747.0,
+            982.0
+          ],
+          "type": "text",
+          "order": 7,
+          "source": "ocr",
+          "uid": "p1_s0008",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 8,
+          "text": "电脑连接地址",
+          "score": 1.0,
+          "box": [
+            [
+              149.0,
+              1037.0
+            ],
+            [
+              424.0,
+              1037.0
+            ],
+            [
+              424.0,
+              1085.0
+            ],
+            [
+              149.0,
+              1085.0
+            ]
+          ],
+          "bbox": [
+            149.0,
+            1037.0,
+            424.0,
+            1085.0
+          ],
+          "type": "text",
+          "order": 8,
+          "source": "ocr",
+          "uid": "p1_s0009",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 9,
+          "text": "https://remote.vivioninst.uk",
+          "score": 0.9998697837193807,
+          "box": [
+            [
+              202.0,
+              1179.0
+            ],
+            [
+              917.0,
+              1179.0
+            ],
+            [
+              917.0,
+              1231.0
+            ],
+            [
+              202.0,
+              1231.0
+            ]
+          ],
+          "bbox": [
+            202.0,
+            1179.0,
+            917.0,
+            1231.0
+          ],
+          "type": "text",
+          "order": 9,
+          "source": "ocr",
+          "formula_score": 0.14,
+          "uid": "p1_s0010",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 10,
+          "text": "连接电脑",
+          "score": 1.0,
+          "box": [
+            [
+              531.0,
+              1403.0
+            ],
+            [
+              738.0,
+              1403.0
+            ],
+            [
+              738.0,
+              1462.0
+            ],
+            [
+              531.0,
+              1462.0
+            ]
+          ],
+          "bbox": [
+            531.0,
+            1403.0,
+            738.0,
+            1462.0
+          ],
+          "type": "text",
+          "order": 10,
+          "source": "ocr",
+          "uid": "p1_s0011",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 11,
+          "text": "电脑端未开启域名直连（或版本过旧）。请升级",
+          "score": 0.9970947355031967,
+          "box": [
+            [
+              145.0,
+              1697.0
+            ],
+            [
+              1099.0,
+              1697.0
+            ],
+            [
+              1099.0,
+              1748.0
+            ],
+            [
+              145.0,
+              1748.0
+            ]
+          ],
+          "bbox": [
+            145.0,
+            1697.0,
+            1099.0,
+            1748.0
+          ],
+          "type": "text",
+          "order": 11,
+          "source": "ocr",
+          "uid": "p1_s0012",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 12,
+          "text": "电脑端MyBuddy，并在设置→远程连接”中确",
+          "score": 0.9925144761800766,
+          "box": [
+            [
+              138.0,
+              1758.0
+            ],
+            [
+              1103.0,
+              1761.0
+            ],
+            [
+              1103.0,
+              1827.0
+            ],
+            [
+              138.0,
+              1825.0
+            ]
+          ],
+          "bbox": [
+            138.0,
+            1758.0,
+            1103.0,
+            1827.0
+          ],
+          "type": "text",
+          "order": 12,
+          "source": "ocr",
+          "uid": "p1_s0013",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 13,
+          "text": "认服务已开启。",
+          "score": 0.9986048936843872,
+          "box": [
+            [
+              141.0,
+              1832.0
+            ],
+            [
+              437.0,
+              1832.0
+            ],
+            [
+              437.0,
+              1888.0
+            ],
+            [
+              141.0,
+              1888.0
+            ]
+          ],
+          "bbox": [
+            141.0,
+            1832.0,
+            437.0,
+            1888.0
+          ],
+          "type": "text",
+          "order": 13,
+          "source": "ocr",
+          "uid": "p1_s0014",
+          "role": "",
+          "removed": false
+        }
+      ],
+      "spans": [
+        {
+          "id": 0,
+          "text": "35",
+          "score": 0.66552734375,
+          "box": [
+            [
+              691.0,
+              45.0
+            ],
+            [
+              1087.0,
+              42.0
+            ],
+            [
+              1088.0,
+              110.0
+            ],
+            [
+              692.0,
+              113.0
+            ]
+          ],
+          "bbox": [
+            691.0,
+            42.0,
+            1088.0,
+            113.0
+          ],
+          "type": "text",
+          "order": 0,
+          "source": "ocr",
+          "uid": "p1_s0001",
+          "role": "page_artifact",
+          "removed": true
+        },
+        {
+          "id": 1,
+          "text": "13:46",
+          "score": 0.976269543170929,
+          "box": [
+            [
+              94.0,
+              58.0
+            ],
+            [
+              227.0,
+              58.0
+            ],
+            [
+              227.0,
+              104.0
+            ],
+            [
+              94.0,
+              104.0
+            ]
+          ],
+          "bbox": [
+            94.0,
+            58.0,
+            227.0,
+            104.0
+          ],
+          "type": "text",
+          "order": 1,
+          "source": "ocr",
+          "uid": "p1_s0002",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 2,
+          "text": "VPN",
+          "score": 0.9986979365348816,
+          "box": [
+            [
+              231.0,
+              61.0
+            ],
+            [
+              298.0,
+              61.0
+            ],
+            [
+              298.0,
+              100.0
+            ],
+            [
+              231.0,
+              100.0
+            ]
+          ],
+          "bbox": [
+            231.0,
+            61.0,
+            298.0,
+            100.0
+          ],
+          "type": "text",
+          "order": 2,
+          "source": "ocr",
+          "uid": "p1_s0003",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 3,
+          "text": "274",
+          "score": 0.9801432490348816,
+          "box": [
+            [
+              1089.0,
+              54.0
+            ],
+            [
+              1174.0,
+              54.0
+            ],
+            [
+              1174.0,
+              103.0
+            ],
+            [
+              1089.0,
+              103.0
+            ]
+          ],
+          "bbox": [
+            1089.0,
+            54.0,
+            1174.0,
+            103.0
+          ],
+          "type": "text",
+          "order": 3,
+          "source": "ocr",
+          "uid": "p1_s0004",
+          "role": "page_artifact",
+          "removed": true
+        },
+        {
+          "id": 4,
+          "text": "连接电脑端Mybuddy",
+          "score": 0.9985758513212204,
+          "box": [
+            [
+              201.0,
+              457.0
+            ],
+            [
+              1073.0,
+              476.0
+            ],
+            [
+              1070.0,
+              606.0
+            ],
+            [
+              198.0,
+              586.0
+            ]
+          ],
+          "bbox": [
+            198.0,
+            457.0,
+            1073.0,
+            606.0
+          ],
+          "type": "text",
+          "order": 4,
+          "source": "ocr",
+          "uid": "p1_s0005",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 5,
+          "text": "直接输入通道域名即可直连（支持Cloudflare 域名或",
+          "score": 0.9770100861787796,
+          "box": [
+            [
+              102.0,
+              633.0
+            ],
+            [
+              1170.0,
+              633.0
+            ],
+            [
+              1170.0,
+              688.0
+            ],
+            [
+              102.0,
+              688.0
+            ]
+          ],
+          "bbox": [
+            102.0,
+            633.0,
+            1170.0,
+            688.0
+          ],
+          "type": "text",
+          "order": 5,
+          "source": "ocr",
+          "uid": "p1_s0006",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 6,
+          "text": "Tailscale域名）。",
+          "score": 0.9885066151618958,
+          "box": [
+            [
+              440.0,
+              702.0
+            ],
+            [
+              799.0,
+              702.0
+            ],
+            [
+              799.0,
+              759.0
+            ],
+            [
+              440.0,
+              759.0
+            ]
+          ],
+          "bbox": [
+            440.0,
+            702.0,
+            799.0,
+            759.0
+          ],
+          "type": "text",
+          "order": 6,
+          "source": "ocr",
+          "uid": "p1_s0007",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 7,
+          "text": "直接输入电脑连接地址",
+          "score": 0.9998372395833334,
+          "box": [
+            [
+              146.0,
+              916.0
+            ],
+            [
+              747.0,
+              916.0
+            ],
+            [
+              747.0,
+              982.0
+            ],
+            [
+              146.0,
+              982.0
+            ]
+          ],
+          "bbox": [
+            146.0,
+            916.0,
+            747.0,
+            982.0
+          ],
+          "type": "text",
+          "order": 7,
+          "source": "ocr",
+          "uid": "p1_s0008",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 8,
+          "text": "电脑连接地址",
+          "score": 1.0,
+          "box": [
+            [
+              149.0,
+              1037.0
+            ],
+            [
+              424.0,
+              1037.0
+            ],
+            [
+              424.0,
+              1085.0
+            ],
+            [
+              149.0,
+              1085.0
+            ]
+          ],
+          "bbox": [
+            149.0,
+            1037.0,
+            424.0,
+            1085.0
+          ],
+          "type": "text",
+          "order": 8,
+          "source": "ocr",
+          "uid": "p1_s0009",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 9,
+          "text": "https://remote.vivioninst.uk",
+          "score": 0.9998697837193807,
+          "box": [
+            [
+              202.0,
+              1179.0
+            ],
+            [
+              917.0,
+              1179.0
+            ],
+            [
+              917.0,
+              1231.0
+            ],
+            [
+              202.0,
+              1231.0
+            ]
+          ],
+          "bbox": [
+            202.0,
+            1179.0,
+            917.0,
+            1231.0
+          ],
+          "type": "text",
+          "order": 9,
+          "source": "ocr",
+          "formula_score": 0.14,
+          "uid": "p1_s0010",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 10,
+          "text": "连接电脑",
+          "score": 1.0,
+          "box": [
+            [
+              531.0,
+              1403.0
+            ],
+            [
+              738.0,
+              1403.0
+            ],
+            [
+              738.0,
+              1462.0
+            ],
+            [
+              531.0,
+              1462.0
+            ]
+          ],
+          "bbox": [
+            531.0,
+            1403.0,
+            738.0,
+            1462.0
+          ],
+          "type": "text",
+          "order": 10,
+          "source": "ocr",
+          "uid": "p1_s0011",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 11,
+          "text": "电脑端未开启域名直连（或版本过旧）。请升级",
+          "score": 0.9970947355031967,
+          "box": [
+            [
+              145.0,
+              1697.0
+            ],
+            [
+              1099.0,
+              1697.0
+            ],
+            [
+              1099.0,
+              1748.0
+            ],
+            [
+              145.0,
+              1748.0
+            ]
+          ],
+          "bbox": [
+            145.0,
+            1697.0,
+            1099.0,
+            1748.0
+          ],
+          "type": "text",
+          "order": 11,
+          "source": "ocr",
+          "uid": "p1_s0012",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 12,
+          "text": "电脑端MyBuddy，并在设置→远程连接”中确",
+          "score": 0.9925144761800766,
+          "box": [
+            [
+              138.0,
+              1758.0
+            ],
+            [
+              1103.0,
+              1761.0
+            ],
+            [
+              1103.0,
+              1827.0
+            ],
+            [
+              138.0,
+              1825.0
+            ]
+          ],
+          "bbox": [
+            138.0,
+            1758.0,
+            1103.0,
+            1827.0
+          ],
+          "type": "text",
+          "order": 12,
+          "source": "ocr",
+          "uid": "p1_s0013",
+          "role": "",
+          "removed": false
+        },
+        {
+          "id": 13,
+          "text": "认服务已开启。",
+          "score": 0.9986048936843872,
+          "box": [
+            [
+              141.0,
+              1832.0
+            ],
+            [
+              437.0,
+              1832.0
+            ],
+            [
+              437.0,
+              1888.0
+            ],
+            [
+              141.0,
+              1888.0
+            ]
+          ],
+          "bbox": [
+            141.0,
+            1832.0,
+            437.0,
+            1888.0
+          ],
+          "type": "text",
+          "order": 13,
+          "source": "ocr",
+          "uid": "p1_s0014",
+          "role": "",
+          "removed": false
+        }
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "role": "page_artifact",
+          "text": "35 274",
+          "bbox": [
+            691.0,
+            42.0,
+            1174.0,
+            113.0
+          ],
+          "source_text_ids": [
+            0,
+            3
+          ],
+          "level": 2,
+          "order": 0,
+          "id": "p1_b0001",
+          "span_ids": [
+            0,
+            3
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.8228,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": true,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              0,
+              3
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "13:46 VPN",
+          "bbox": [
+            94.0,
+            58.0,
+            298.0,
+            104.0
+          ],
+          "source_text_ids": [
+            1,
+            2
+          ],
+          "order": 1,
+          "id": "p1_b0002",
+          "level": null,
+          "span_ids": [
+            1,
+            2
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.9875,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "role": "heading",
+          "text": "连接电脑端Mybuddy",
+          "bbox": [
+            198.0,
+            457.0,
+            1073.0,
+            606.0
+          ],
+          "source_text_ids": [
+            4
+          ],
+          "level": 2,
+          "order": 2,
+          "id": "p1_b0003",
+          "span_ids": [
+            4
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.9986,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [
+            "heading"
+          ],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              4
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "直接输入通道域名即可直连（支持Cloudflare 域名或",
+          "bbox": [
+            102.0,
+            633.0,
+            1170.0,
+            688.0
+          ],
+          "source_text_ids": [
+            5
+          ],
+          "order": 3,
+          "id": "p1_b0004",
+          "level": null,
+          "span_ids": [
+            5
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.977,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              5
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "Tailscale域名）。",
+          "bbox": [
+            440.0,
+            702.0,
+            799.0,
+            759.0
+          ],
+          "source_text_ids": [
+            6
+          ],
+          "order": 4,
+          "id": "p1_b0005",
+          "level": null,
+          "span_ids": [
+            6
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.9885,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              6
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "直接输入电脑连接地址电脑连接地址https://remote.vivioninst.uk",
+          "bbox": [
+            146.0,
+            916.0,
+            917.0,
+            1231.0
+          ],
+          "source_text_ids": [
+            7,
+            8,
+            9
+          ],
+          "order": 5,
+          "id": "p1_b0006",
+          "level": null,
+          "span_ids": [
+            7,
+            8,
+            9
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.9999,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              7,
+              8,
+              9
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "连接电脑",
+          "bbox": [
+            531.0,
+            1403.0,
+            738.0,
+            1462.0
+          ],
+          "source_text_ids": [
+            10
+          ],
+          "order": 6,
+          "id": "p1_b0007",
+          "level": null,
+          "span_ids": [
+            10
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 1.0,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              10
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "role": "paragraph",
+          "text": "电脑端未开启域名直连（或版本过旧）。请升级电脑端MyBuddy，并在设置→远程连接”中确认服务已开启。",
+          "bbox": [
+            138.0,
+            1697.0,
+            1103.0,
+            1888.0
+          ],
+          "source_text_ids": [
+            11,
+            12,
+            13
+          ],
+          "order": 7,
+          "id": "p1_b0008",
+          "level": null,
+          "span_ids": [
+            11,
+            12,
+            13
+          ],
+          "asset_ref": "",
+          "table_ref": "",
+          "confidence": 0.9961,
+          "source": "ocr",
+          "latex": "",
+          "formula_score": null,
+          "formula_source": "",
+          "formula_candidate": false,
+          "native_math_rebuilt": false,
+          "native_math_scripts": 0,
+          "native_math_fonts": 0,
+          "tags": [],
+          "removed": false,
+          "page": 1,
+          "provenance": {
+            "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+            "page": 1,
+            "strategy": "ocr",
+            "stage": "ocr",
+            "source_text_ids": [
+              11,
+              12,
+              13
+            ]
+          }
+        }
+      ],
+      "table": null,
+      "tables": [],
+      "assets": [],
+      "stages": [
+        {
+          "name": "route",
+          "elapsed": 0.0
+        },
+        {
+          "name": "ocr",
+          "elapsed": 5.904597282409668,
+          "spans": 14
+        },
+        {
+          "name": "formula_candidates",
+          "elapsed": 0.008510351181030273,
+          "candidates": 0,
+          "demoted": 0,
+          "native_rebuilt": 0
+        },
+        {
+          "name": "assemble",
+          "elapsed": 0.005764961242675781,
+          "blocks": 8
+        },
+        {
+          "name": "page_artifacts",
+          "elapsed": 0.1051483154296875
+        },
+        {
+          "name": "normalize_page",
+          "elapsed": 0.0
+        }
+      ],
+      "page_strategy": "ocr",
+      "route": {
+        "page": 1,
+        "strategy": "ocr",
+        "reason": "image_input"
+      },
+      "provenance": {
+        "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+        "page": 1,
+        "strategy": "ocr"
+      },
+      "text_layer_quality": {
+        "usable": false,
+        "chars": 0,
+        "score": 0.0,
+        "reasons": [
+          "image_input"
+        ]
+      },
+      "is_scanned_like": true,
+      "warnings": [],
+      "errors": [],
+      "quality": {
+        "complexity_score": 2,
+        "complexity_level": "low",
+        "reasons": [
+          "scanned_like"
+        ],
+        "page_strategy": "ocr",
+        "text_count": 12,
+        "block_count": 7,
+        "table_count": 0,
+        "image_count": 0,
+        "image_area_ratio": 0.0,
+        "average_score": 0.9939,
+        "low_confidence_texts": 0,
+        "captions": 0,
+        "confidence": {
+          "parse_score": 0.84,
+          "layout_score": 0.88,
+          "ocr_score": 0.9939,
+          "table_score": null,
+          "mean_score": 0.9046,
+          "low_score": 0.84,
+          "grade": "excellent",
+          "low_grade": "good"
+        }
+      },
+      "schema_version": "udm-v2"
+    }
+  ],
+  "qa_report": {
+    "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+    "summary": {
+      "pages": 1,
+      "blocks": 7,
+      "tables": 0,
+      "images": 0,
+      "scanned_like_pages": 1,
+      "page_strategies": {
+        "ocr": 1
+      },
+      "text_layer_fallback_pages": [],
+      "high_complexity_pages": [],
+      "cross_page_table_candidates": 0,
+      "captions": 0
+    },
+    "complex_pages": [],
+    "low_confidence_pages": [],
+    "text_layer_fallback_pages": [],
+    "cross_page_table_candidates": [],
+    "contract": {
+      "schema_version": "contract-v1",
+      "document_schema": "udm-v2",
+      "passed": true,
+      "error_count": 0,
+      "warning_count": 0,
+      "errors": [],
+      "warnings": []
+    },
+    "recommendations": [
+      "No major layout risk signals detected."
+    ]
+  },
+  "eval_report": {
+    "schema_version": "eval-v1",
+    "generated_at": "2026-10-28T05:46:59.433926+00:00",
+    "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+    "metrics": {
+      "pages": 1,
+      "schema_version": "udm-v2",
+      "page_strategies": {
+        "ocr": 1
+      },
+      "blocks_total": 8,
+      "blocks_kept": 7,
+      "blocks_removed": 1,
+      "spans_total": 14,
+      "spans_kept": 12,
+      "spans_removed": 2,
+      "text_blocks": 6,
+      "heading_blocks": 1,
+      "list_blocks": 0,
+      "formula_blocks": 0,
+      "formula_latex_blocks": 0,
+      "formula_candidate_blocks": 0,
+      "inline_formula_candidates": 0,
+      "native_math_rebuilt_blocks": 0,
+      "native_math_rebuilt_spans": 0,
+      "formula_candidate_spans": 0,
+      "formula_false_positive_spans": 0,
+      "formula_demoted_false_positives": 0,
+      "toc_blocks": 0,
+      "table_blocks": 0,
+      "removed_table_blocks": 0,
+      "removed_table_artifacts": 0,
+      "removed_duplicate_tables": 0,
+      "image_blocks": 0,
+      "caption_blocks": 0,
+      "table_cells": 0,
+      "large_tables": 0,
+      "complex_tables": 0,
+      "cross_page_table_candidates": 0,
+      "nonspace_chars": 160,
+      "average_blocks_per_page": 7.0,
+      "average_chars_per_page": 160.0,
+      "high_complexity_pages": 0,
+      "low_confidence_pages": 0,
+      "warning_count": 0,
+      "warnings": [],
+      "contract_errors": 0,
+      "contract_warnings": 0,
+      "stage_elapsed": {
+        "assemble": 0.0058,
+        "document:contract": 0.0015,
+        "document:document_postprocess": 0.0014,
+        "formula_candidates": 0.0085,
+        "normalize_page": 0.0,
+        "ocr": 5.9046,
+        "page_artifacts": 0.1051,
+        "route": 0.0
+      }
+    },
+    "baseline_comparison": null,
+    "explained_changes": [],
+    "regression_warnings": [],
+    "quality_gate": {
+      "status": "pass",
+      "issues": [],
+      "review": []
+    }
+  }
+}

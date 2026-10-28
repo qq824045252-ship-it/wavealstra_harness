@@ -34,6 +34,66 @@ class RemoteCredentialPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun saveConfig(call: PluginCall) {
+        val configJson = call.getString("configJson")
+        if (configJson == null) {
+            call.reject("configJson is required")
+            return
+        }
+
+        try {
+            val payload = JSONObject().apply {
+                put("configJson", configJson)
+            }
+            val cipher = Cipher.getInstance(AES_GCM_NO_PADDING).apply {
+                init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            }
+            val encrypted = cipher.doFinal(payload.toString().toByteArray(StandardCharsets.UTF_8))
+            preferences.edit()
+                .putString(CIPHER_TEXT, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .apply()
+            call.resolve()
+        } catch (error: Exception) {
+            call.reject("Unable to protect remote credential", error)
+        }
+    }
+
+    @PluginMethod
+    fun loadConfig(call: PluginCall) {
+        val encrypted = preferences.getString(CIPHER_TEXT, null)
+        val iv = preferences.getString(IV, null)
+        if (encrypted.isNullOrEmpty() || iv.isNullOrEmpty()) {
+            call.resolve(JSObject())
+            return
+        }
+
+        try {
+            val cipher = Cipher.getInstance(AES_GCM_NO_PADDING).apply {
+                init(
+                    Cipher.DECRYPT_MODE,
+                    getOrCreateKey(),
+                    GCMParameterSpec(GCM_TAG_LENGTH, Base64.decode(iv, Base64.NO_WRAP))
+                )
+            }
+            val plain = cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP))
+            val payload = JSONObject(String(plain, StandardCharsets.UTF_8))
+            val result = JSObject()
+            if (payload.has("configJson")) {
+                result.put("configJson", payload.optString("configJson"))
+            } else if (payload.has("baseUrl") && payload.has("deviceToken")) {
+                // 兼容旧版单条凭据
+                result.put("legacyBaseUrl", payload.optString("baseUrl"))
+                result.put("legacyDeviceToken", payload.optString("deviceToken"))
+            }
+            call.resolve(result)
+        } catch (error: Exception) {
+            preferences.edit().remove(CIPHER_TEXT).remove(IV).apply()
+            call.reject("Unable to read remote credential", error)
+        }
+    }
+
+    @PluginMethod
     fun saveToken(call: PluginCall) {
         val baseUrl = call.getString("baseUrl")
         val deviceToken = call.getString("deviceToken")

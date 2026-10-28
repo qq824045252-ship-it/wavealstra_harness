@@ -1,0 +1,33 @@
+{
+  "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+  "summary": {
+    "pages": 1,
+    "blocks": 7,
+    "tables": 0,
+    "images": 0,
+    "scanned_like_pages": 1,
+    "page_strategies": {
+      "ocr": 1
+    },
+    "text_layer_fallback_pages": [],
+    "high_complexity_pages": [],
+    "cross_page_table_candidates": 0,
+    "captions": 0
+  },
+  "complex_pages": [],
+  "low_confidence_pages": [],
+  "text_layer_fallback_pages": [],
+  "cross_page_table_candidates": [],
+  "contract": {
+    "schema_version": "contract-v1",
+    "document_schema": "udm-v2",
+    "passed": true,
+    "error_count": 0,
+    "warning_count": 0,
+    "errors": [],
+    "warnings": []
+  },
+  "recommendations": [
+    "No major layout risk signals detected."
+  ]
+}

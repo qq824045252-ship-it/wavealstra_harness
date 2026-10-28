@@ -1,0 +1,17 @@
+# 连接电脑端Mybuddy
+
+<!-- Page 1 -->
+
+13:46 VPN
+
+## 连接电脑端Mybuddy
+
+直接输入通道域名即可直连（支持Cloudflare 域名或
+
+Tailscale域名）。
+
+直接输入电脑连接地址电脑连接地址https://remote.vivioninst.uk
+
+连接电脑
+
+电脑端未开启域名直连（或版本过旧）。请升级电脑端MyBuddy，并在设置→远程连接”中确认服务已开启。

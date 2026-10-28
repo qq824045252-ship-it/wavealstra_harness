@@ -38,6 +38,18 @@ export class RemoteClient {
     return RemoteClient.read<RemotePairResponse>(response)
   }
 
+  static async pairDirect(baseUrl: string, request: { deviceName?: string; installationId?: string; code: string }): Promise<RemotePairResponse> {
+    const payload = {
+      deviceName: request.deviceName || 'Android',
+      installationId: request.installationId,
+      code: request.code,
+    }
+    const response = await fetch(`${baseUrl}/v1/pair/direct`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(10_000),
+    })
+    return RemoteClient.read<RemotePairResponse>(response)
+  }
+
   bootstrap() { return this.get<RemoteBootstrap>('/v1/bootstrap') }
   history(taskId: string) { return this.get<RemoteTaskHistory>(`/v1/tasks/${encodeURIComponent(taskId)}/history`) }
   runtime(taskId: string) { return this.get<RemoteRuntimeSnapshot>(`/v1/tasks/${encodeURIComponent(taskId)}/runtime`) }

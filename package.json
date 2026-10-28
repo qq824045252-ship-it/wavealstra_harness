@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.53",
+  "version": "0.1.55",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": true,
@@ -16,6 +16,7 @@
     "test:html-edit-source": "esbuild scripts/html-edit-source-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/html-edit-source.cjs && node out/tests/html-edit-source.cjs",
     "test:html-edit-electron": "esbuild scripts/html-edit-electron-test.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --outfile=out/tests/html-edit-electron.cjs && electron out/tests/html-edit-electron.cjs",
     "remote:build": "pnpm --filter @mybuddy/remote build",
+    "test:remote-pair-window": "esbuild scripts/remote-pair-window-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/remote-pair-window-test.mjs && node scripts/test-guard.mjs out/tests/remote-pair-window-test.mjs",
     "remote:typecheck": "pnpm --filter @mybuddy/remote typecheck",
     "test:remote-workspace-create": "node scripts/test-guard.mjs scripts/remote-workspace-create-test.cjs",
     "remote:android:sync": "pnpm --filter @mybuddy/remote cap:sync",

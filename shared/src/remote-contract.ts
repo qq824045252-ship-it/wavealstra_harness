@@ -395,6 +395,12 @@ export interface RemotePairRequest {
   installationId?: string
 }
 
+/** 桌面端“允许新设备接入”窗口：一次性 6 位配对码 + 到期时间 */
+export interface RemotePairWindowDto {
+  code: string;
+  expiresAt: number
+}
+
 export interface RemotePairResponse {
   deviceId: string
   deviceToken: string
@@ -475,4 +481,7 @@ export const RemoteAccessIpc = {
   cancelPairingSession: 'remoteAccess:cancelPairingSession',
   usbStatus: 'remoteAccess:usbStatus',
   pairUsb: 'remoteAccess:pairUsb',
+  openPairWindow: 'remoteAccess:openPairWindow',
+  closePairWindow: 'remoteAccess:closePairWindow',
+  pairWindowState: 'remoteAccess:pairWindowState',
 } as const

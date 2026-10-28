@@ -10,7 +10,6 @@ class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(AppPlugin::class.java)
         registerPlugin(RemoteCredentialPlugin::class.java)
-        registerPlugin(RemoteDiscoveryPlugin::class.java)
         registerPlugin(RemoteClipboardPlugin::class.java)
         super.onCreate(savedInstanceState)
 

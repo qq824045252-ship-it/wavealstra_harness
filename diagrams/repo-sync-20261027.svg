@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="700" viewBox="0 0 1120 700" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="700" fill="#f7f9fc"/>
+
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">wavealstra_harness 与 GitHub 同步状态（2026-10-27 08:03）</text>
+  <text x="40" y="64" font-size="12.5" fill="#475569">origin: github.com/qq824045252-ship-it/wavealstra_harness · main 已分叉：本地 ahead 1 / behind 8</text>
+
+  <!-- 共同基点 -->
+  <rect x="470" y="330" width="180" height="52" rx="8" fill="#e2e8f0" stroke="#64748b" stroke-width="1.5"/>
+  <text x="482" y="352" font-size="12.5" font-weight="700" fill="#0f172a">4687852</text>
+  <text x="482" y="370" font-size="11.5" fill="#475569">2026-10-20 共同基点</text>
+
+  <!-- 远端 lane -->
+  <text x="40" y="96" font-size="14" font-weight="700" fill="#1e40af">origin/main（远端领先的 8 个提交）</text>
+  <line x1="60" y1="330" x2="60" y2="112" stroke="#3b82f6" stroke-width="2"/>
+  <circle cx="60" cy="330" r="4" fill="#3b82f6"/>
+
+  <circle cx="60" cy="118" r="4" fill="#3b82f6"/>
+  <text x="74" y="122" font-size="12" font-weight="600" fill="#0f172a">230e8b1</text>
+  <text x="150" y="122" font-size="11.5" fill="#1f2937">feat(magpie): 第三方 agent 插件接入 magpie 模型</text>
+
+  <circle cx="60" cy="146" r="4" fill="#3b82f6"/>
+  <text x="74" y="150" font-size="12" font-weight="600" fill="#0f172a">687ba52</text>
+  <text x="150" y="150" font-size="11.5" fill="#1f2937">test(ui): consult-card-ui 改用 CDP 设备度量</text>
+
+  <circle cx="60" cy="174" r="4" fill="#3b82f6"/>
+  <text x="74" y="178" font-size="12" font-weight="600" fill="#0f172a">78f71e0</text>
+  <text x="150" y="178" font-size="11.5" fill="#1f2937">test(isolation): test-guard 给子进程沙箱 HOME</text>
+
+  <circle cx="60" cy="202" r="4" fill="#3b82f6"/>
+  <text x="74" y="206" font-size="12" font-weight="600" fill="#0f172a">a571b0b</text>
+  <text x="150" y="206" font-size="11.5" fill="#1f2937">feat(test): scripts/ 静态检查棘轮（typecheck-scripts）</text>
+
+  <circle cx="60" cy="230" r="4" fill="#3b82f6"/>
+  <text x="74" y="234" font-size="12" font-weight="600" fill="#0f172a">3e8a26e</text>
+  <text x="150" y="234" font-size="11.5" fill="#1f2937">test(durable): Durable domain-tools 契约对齐 + CDP 修复</text>
+
+  <circle cx="60" cy="258" r="4" fill="#3b82f6"/>
+  <text x="74" y="262" font-size="12" font-weight="600" fill="#0f172a">cc32b2b</text>
+  <text x="150" y="262" font-size="11.5" fill="#1f2937">test(portability): 门禁 POSIX 可复现 + 隔离泄漏</text>
+
+  <circle cx="60" cy="286" r="4" fill="#3b82f6"/>
+  <text x="74" y="290" font-size="12" font-weight="600" fill="#0f172a">08adbe7</text>
+  <text x="150" y="290" font-size="11.5" fill="#1f2937">fix(connector): 注册目录大小写不敏感（POSIX）</text>
+
+  <circle cx="60" cy="314" r="4" fill="#3b82f6"/>
+  <text x="74" y="318" font-size="12" font-weight="600" fill="#0f172a">1fb66b5</text>
+  <text x="150" y="318" font-size="11.5" fill="#1f2937">fix(test): test-guard POSIX 采样改 ESM</text>
+
+  <!-- 本地 lane -->
+  <text x="700" y="96" font-size="14" font-weight="700" fill="#b45309">本地 main（未推的 1 个提交）</text>
+  <line x1="700" y1="330" x2="700" y2="150" stroke="#f59e0b" stroke-width="2"/>
+  <circle cx="700" cy="330" r="4" fill="#f59e0b"/>
+  <circle cx="700" cy="156" r="4" fill="#f59e0b"/>
+  <text x="714" y="160" font-size="12" font-weight="600" fill="#0f172a">213e9c4</text>
+  <text x="714" y="180" font-size="11.5" fill="#1f2937">chore(tools): 移除不可达 CAD 链与内置便携工具根</text>
+  <text x="714" y="198" font-size="11.5" fill="#475569">53 文件 · +96 / −4362 · 2026-10-26 17:53</text>
+
+  <!-- 连接线 -->
+  <line x1="470" y1="356" x2="64" y2="356" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="650" y1="356" x2="696" y2="356" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- 冲突预判 -->
+  <rect x="40" y="404" width="360" height="176" rx="8" fill="#fff7ed" stroke="#f97316" stroke-width="1.5"/>
+  <text x="56" y="430" font-size="14" font-weight="700" fill="#9a3412">冲突预判：5 个重叠文件</text>
+  <text x="56" y="456" font-size="12" fill="#1f2937">package.json（双侧改）</text>
+  <text x="56" y="478" font-size="12" fill="#1f2937">scripts/architecture-test.ts（双侧改）</text>
+  <text x="56" y="500" font-size="12" fill="#1f2937">scripts/professional-tools-test.ts（双侧改）</text>
+  <text x="56" y="522" font-size="12" fill="#1f2937">scripts/cad-skill-sync-check.ts（删/改）</text>
+  <text x="56" y="544" font-size="12" fill="#1f2937">blender-skill-integration-check.ts（删/改）</text>
+  <text x="56" y="566" font-size="12" fill="#b45309">typecheck-baseline.json 需重算（含已删脚本）</text>
+
+  <!-- 工作区 -->
+  <rect x="420" y="404" width="340" height="176" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="436" y="430" font-size="14" font-weight="700" fill="#0f172a">工作区脏（不在提交内）</text>
+  <text x="436" y="456" font-size="12" fill="#1f2937">25 个 artifacts JSON/PNG 被修改</text>
+  <text x="436" y="478" font-size="12" fill="#475569">（只有时间戳变化，测试生成物）</text>
+  <text x="436" y="500" font-size="12" fill="#1f2937">23 个未跟踪：截图 + diagrams/</text>
+  <text x="436" y="528" font-size="12" fill="#b45309">rebase 前必须先清（stash 或丢弃）</text>
+  <text x="436" y="556" font-size="12" fill="#475569">提交 213e9c4 本身 0 个 artifacts 文件</text>
+
+  <!-- 建议 -->
+  <rect x="780" y="404" width="300" height="176" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="796" y="430" font-size="14" font-weight="700" fill="#047857">建议顺序</text>
+  <text x="796" y="456" font-size="12" fill="#1f2937">1. 清 artifacts 脏数据</text>
+  <text x="796" y="478" font-size="12" fill="#1f2937">2. rebase origin/main，解 5 冲突</text>
+  <text x="796" y="500" font-size="12" fill="#1f2937">3. typecheck + scripts 基线重算</text>
+  <text x="796" y="522" font-size="12" fill="#1f2937">4. 重点测试 / test:all</text>
+  <text x="796" y="544" font-size="12" fill="#1f2937">5. push（等你授权）</text>
+
+  <!-- footer -->
+  <rect x="40" y="606" width="1040" height="72" rx="8" fill="#e0f2fe"/>
+  <text x="56" y="632" font-size="12.5" fill="#075985">其他分支：upgrade/pi-1.3.0 与远端一致；两个本地分支无 upstream（领先 main 24 / 23）；远端新增 cursor/omarchy-linux-adapt-413c。</text>
+  <text x="56" y="656" font-size="12.5" fill="#075985">线索：远端 78f71e0（test-guard 沙箱 HOME）可能正好修掉昨天那两个 fixture timeout 失败。</text>
+</svg>

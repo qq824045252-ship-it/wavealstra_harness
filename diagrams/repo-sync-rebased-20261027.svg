@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="560" fill="#f7f9fc"/>
+
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0f172a">已同步到 GitHub 最新：rebase 完成，门禁恢复绿色</text>
+  <text x="40" y="64" font-size="12.5" fill="#475569">2026-10-27 08:15 · origin/main = 230e8b1（10-26 18:33）· 本地 main = b244ec1（rebase 后，ahead 1）</text>
+
+  <!-- 线性历史 -->
+  <rect x="60" y="96" width="260" height="66" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="76" y="120" font-size="13" font-weight="700" fill="#166534">origin/main · 230e8b1</text>
+  <text x="76" y="140" font-size="12" fill="#1f2937">GitHub 最新，含 8 个提交</text>
+  <text x="76" y="156" font-size="11.5" fill="#475569">magpie / test-guard / POSIX…</text>
+
+  <line x1="320" y1="129" x2="592" y2="129" stroke="#94a3b8" stroke-width="2"/>
+  <polygon points="600,129 590,124 590,134" fill="#94a3b8"/>
+  <text x="352" y="120" font-size="12" fill="#475569">rebase 到最新（保留本地 1 个提交）</text>
+
+  <rect x="608" y="96" width="280" height="66" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="624" y="120" font-size="13" font-weight="700" fill="#92400e">main · b244ec1</text>
+  <text x="624" y="140" font-size="12" fill="#1f2937">chore(tools): 清理 CAD/便携工具根</text>
+  <text x="624" y="156" font-size="11.5" fill="#475569">54 文件 · +97 / −4374 · 待推</text>
+
+  <!-- 冲突解决 -->
+  <rect x="60" y="196" width="500" height="230" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="76" y="222" font-size="14" font-weight="700" fill="#0f172a">冲突处理（5 个重叠文件）</text>
+  <text x="76" y="248" font-size="12" fill="#1f2937">package.json —— 自动合并（保留远端新增 + 我们的删除）</text>
+  <text x="76" y="270" font-size="12" fill="#1f2937">scripts/architecture-test.ts —— 自动合并（P 段 + 远端 POSIX 改动）</text>
+  <text x="76" y="292" font-size="12" fill="#1f2937">scripts/professional-tools-test.ts —— 自动合并（临时工具根 + 远端隔离）</text>
+  <text x="76" y="314" font-size="12" fill="#1f2937">scripts/cad-skill-sync-check.ts —— 保留删除（CAD 已退役）</text>
+  <text x="76" y="336" font-size="12" fill="#1f2937">scripts/blender-skill-integration-check.ts —— 保留删除</text>
+  <text x="76" y="362" font-size="12" fill="#1f2937">scripts/typecheck-baseline.json —— 重算基线（209 → 202 条）</text>
+  <text x="76" y="390" font-size="11.5" fill="#475569">源码侧无任何对已删模块的残留引用（grep 0 命中）</text>
+
+  <!-- 验证 -->
+  <rect x="600" y="196" width="460" height="230" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="616" y="222" font-size="14" font-weight="700" fill="#166534">验证结果</text>
+  <text x="616" y="248" font-size="12.5" fill="#15803d">✓ pnpm -s typecheck（含 scripts 棘轮）→ EXIT 0</text>
+  <text x="616" y="272" font-size="12.5" fill="#15803d">✓ test:all → 250 通过 · 1 已知失败 · 新增回归 0</text>
+  <text x="632" y="292" font-size="12" fill="#475569">（唯一失败 test:project-agent 在 baseline 内）</text>
+  <text x="616" y="318" font-size="12.5" fill="#15803d">✓ gateway-durable 已通过（远端 78f71e0 修好）</text>
+  <text x="616" y="342" font-size="12.5" fill="#15803d">✓ task-expert-binding 已通过（同上）</text>
+  <text x="616" y="368" font-size="12" fill="#475569">昨天那两个 fixture timeout 不再复现；</text>
+  <text x="616" y="388" font-size="12" fill="#475569">test:all 耗时 9.3 分钟，不是本次改动引起</text>
+
+  <!-- footer -->
+  <rect x="60" y="450" width="1000" height="72" rx="8" fill="#e0f2fe"/>
+  <text x="76" y="476" font-size="12.5" fill="#075985">当前状态：本地领先 1 个提交（b244ec1），远端无新提交；未 push。工作区干净（只剩历史未跟踪截图与 diagrams/）。</text>
+  <text x="76" y="500" font-size="12.5" fill="#075985">stash@{0} 保留着 rebase 前那批 artifacts 时间戳改动（可随时丢弃）；本地另有两个无 upstream 的旧分支，需要的话可清理。</text>
+</svg>

@@ -9,8 +9,23 @@ import type {
   RemoteWelcomeMode,
 } from '@mybuddy/shared'
 import { RemoteApiError, RemoteClient } from '../api/RemoteClient'
+import { checkRemoteService, normalizeRemoteAddress } from '../api/connectionSetup'
 import { RemoteEventStream } from '../api/RemoteEventStream'
-import { clearCredential, getInstallationId, loadCredential, saveCredential } from '../api/credentialStore'
+import {
+  clearCredential,
+  getActiveServer,
+  getInstallationId,
+  loadCredential,
+  loadServerConfig,
+  removeServer,
+  renameServer,
+  saveCredential,
+  setActiveServerId,
+  updateServerNode,
+  upsertServer,
+  type RemoteServerConfig,
+  type RemoteServerNode,
+} from '../api/credentialStore'
 import { loadLastActiveTaskId, saveLastActiveTaskId } from './remoteUiState'
 import {
   clearAll as clearAllCached,
@@ -42,6 +57,8 @@ interface State {
   connection: RemoteConnectionState
   client: RemoteClient | null
   bootstrap: RemoteBootstrap | null
+  serverConfig: RemoteServerConfig
+  activeServer: RemoteServerNode | null
   notifications: RemoteNotification[]
   activeTaskId: string | null
   histories: Record<string, RemoteTaskHistory>
@@ -105,8 +122,14 @@ interface State {
   syncTask(taskId: string): Promise<void>
   connect(baseUrl: string, token: string): Promise<void>
   connectDiscovered(baseUrl: string): Promise<boolean>
+  connectByUrl(rawUrl: string, code: string, deviceName?: string): Promise<void>
   pair(input: { baseUrl: string; pairingId: string; secret: string; deviceName: string }): Promise<void>
   disconnect(): Promise<void>
+  switchServer(serverId: string): Promise<void>
+  removeServerNode(serverId: string): Promise<void>
+  renameServerNode(serverId: string, newName: string): Promise<void>
+  updateServerNode(serverId: string, patch: { name?: string; baseUrl?: string }, reconnect?: boolean): Promise<void>
+  refreshServerConfig(): Promise<void>
   openTask(taskId: string): Promise<void>
   /**
    * 「已结束」绿点确认（打开任务即已查看）：本机乐观清除 + POST /v1/tasks/:id/ackDone。
@@ -336,7 +359,10 @@ let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let activeServerKey: string | null = null
 
 export const useRemoteStore = create<State>((set, get) => ({
-  connection: 'disconnected', client: null, bootstrap: null, notifications: [], activeTaskId: null,
+  connection: 'disconnected', client: null, bootstrap: null,
+  serverConfig: { activeServerId: null, servers: [] },
+  activeServer: null,
+  notifications: [], activeTaskId: null,
   histories: {}, runtimes: {}, live: {}, error: null, sending: false, creating: false,
   isDrawerOpen: false,
   isConnectionSettingsOpen: false,
@@ -406,17 +432,20 @@ export const useRemoteStore = create<State>((set, get) => ({
     if (initializationPromise) return initializationPromise
     const revision = connectionRevision
     const attempt = (async () => {
-      let credential
+      let config: RemoteServerConfig
       try {
-        credential = await loadCredential()
+        config = await loadServerConfig()
+        set({ serverConfig: config })
       } catch (error) {
         if (revision === connectionRevision) set({ error: error instanceof Error ? error.message : String(error) })
         return
       }
+      const active = getActiveServer(config)
+      set({ activeServer: active })
       // Logout or an explicit connection supersedes a pending credential read.
-      if (revision !== connectionRevision || !credential) return
+      if (revision !== connectionRevision || !active) return
       try {
-        await get().connect(credential.baseUrl, credential.deviceToken)
+        await get().connect(active.baseUrl, active.deviceToken)
       } catch { /* connect owns the error; foreground synchronization retries transient failures. */ }
     })()
     initializationPromise = attempt
@@ -513,6 +542,24 @@ export const useRemoteStore = create<State>((set, get) => ({
     await saveCredential({ baseUrl, deviceToken: credential.deviceToken })
     return true
   },
+  async connectByUrl(rawUrl, code, deviceName = 'Android') {
+    const baseUrl = normalizeRemoteAddress(rawUrl)
+    await checkRemoteService(baseUrl)
+    const installationId = await getInstallationId()
+    const response = await RemoteClient.pairDirect(baseUrl, {
+      deviceName,
+      installationId,
+      code,
+    })
+    const defaultName = response.server?.name || '我的电脑'
+    const { config, active } = await upsertServer({
+      name: defaultName,
+      baseUrl,
+      deviceToken: response.deviceToken,
+    })
+    set({ serverConfig: config, activeServer: active })
+    await get().connect(baseUrl, response.deviceToken)
+  },
   async pair(input) {
     const installationId = await getInstallationId()
     const response = await RemoteClient.pair(input.baseUrl, {
@@ -521,7 +568,13 @@ export const useRemoteStore = create<State>((set, get) => ({
       deviceName: input.deviceName,
       installationId,
     })
-    await saveCredential({ baseUrl: input.baseUrl, deviceToken: response.deviceToken })
+    const defaultName = response.server?.name || input.deviceName || '我的电脑'
+    const { config, active } = await upsertServer({
+      name: defaultName,
+      baseUrl: input.baseUrl,
+      deviceToken: response.deviceToken,
+    })
+    set({ serverConfig: config, activeServer: active })
     await get().connect(input.baseUrl, response.deviceToken)
   },
   async disconnect() {
@@ -529,11 +582,78 @@ export const useRemoteStore = create<State>((set, get) => ({
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     await clearCredential()
-    // 断开连接 = 不再信任本机缓存（换设备/换账号后不应残留上一台电脑的对话）
+    const newConfig = await loadServerConfig()
+    const nextActive = getActiveServer(newConfig)
     activeServerKey = null
     void clearAllCached().catch(() => undefined)
     saveLastActiveTaskId(null)
-    set({ connection: 'disconnected', client: null, bootstrap: null, activeTaskId: null, sending: false, creating: false, ...resetTransientOverrides() })
+    set({
+      connection: 'disconnected',
+      client: null,
+      bootstrap: null,
+      serverConfig: newConfig,
+      activeServer: nextActive,
+      activeTaskId: null,
+      sending: false,
+      creating: false,
+      ...resetTransientOverrides()
+    })
+  },
+  async switchServer(serverId: string) {
+    if (get().serverConfig.activeServerId === serverId && get().client && get().connection === 'connected') return
+    ++connectionRevision
+    ++navigationRevision
+    clearTimeout(refreshTimer); refreshTimer = undefined
+    stream?.stop(); stream = null
+    const newConfig = await setActiveServerId(serverId)
+    const target = getActiveServer(newConfig)
+    if (!target) return
+    set({
+      serverConfig: newConfig,
+      activeServer: target,
+      client: null,
+      bootstrap: null,
+      activeTaskId: null,
+      sending: false,
+      creating: false,
+      error: null,
+      ...resetTransientOverrides()
+    })
+    saveLastActiveTaskId(null)
+    await get().connect(target.baseUrl, target.deviceToken)
+  },
+  async removeServerNode(serverId: string) {
+    const wasActive = get().serverConfig.activeServerId === serverId
+    const newConfig = await removeServer(serverId)
+    set({ serverConfig: newConfig })
+    if (wasActive) {
+      const next = getActiveServer(newConfig)
+      if (next) {
+        await get().switchServer(next.id)
+      } else {
+        await get().disconnect()
+      }
+    }
+  },
+  async renameServerNode(serverId: string, newName: string) {
+    const newConfig = await renameServer(serverId, newName)
+    const active = getActiveServer(newConfig)
+    set({ serverConfig: newConfig, activeServer: active })
+  },
+  async updateServerNode(serverId: string, patch: { name?: string; baseUrl?: string }, reconnect = false) {
+    const newConfig = await updateServerNode(serverId, patch)
+    const active = getActiveServer(newConfig)
+    set({ serverConfig: newConfig, activeServer: active })
+    if (reconnect || (newConfig.activeServerId === serverId && get().client)) {
+      if (active) {
+        await get().connect(active.baseUrl, active.deviceToken)
+      }
+    }
+  },
+  async refreshServerConfig() {
+    const config = await loadServerConfig()
+    const active = getActiveServer(config)
+    set({ serverConfig: config, activeServer: active })
   },
   async openTask(taskId) {
     // 不再要求必须有 client：离线时仍可从本地数据库读出已缓存的对话。

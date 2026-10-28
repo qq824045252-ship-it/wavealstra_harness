@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="740" viewBox="0 0 1120 740" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="740" fill="#f7f9fc"/>
+
+  <text x="40" y="42" font-size="23" font-weight="700" fill="#0f172a">失效 CAD / 便携软件清理结果（commit 213e9c4）</text>
+  <text x="40" y="66" font-size="13" fill="#475569">原则：不内置第三方软件。删不可达的 CAD 链 + 便携工具根，保留历史数据与安全审批。</text>
+
+  <!-- 删除 -->
+  <rect x="40" y="88" width="340" height="252" rx="8" fill="#fff1f2" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="56" y="116" font-size="15" font-weight="700" fill="#9f1239">删除（41 个文件，约 -4,600 行）</text>
+  <text x="56" y="144" font-size="12.5" fill="#1f2937">src/main/cad/**（8 个文件）</text>
+  <text x="56" y="166" font-size="12.5" fill="#1f2937">CadFailureRecovery.ts</text>
+  <text x="56" y="188" font-size="12.5" fill="#1f2937">FreeCadInstanceDiscovery.ts</text>
+  <text x="56" y="210" font-size="12.5" fill="#1f2937">runtime-readiness.ts（无生产调用方）</text>
+  <text x="56" y="232" font-size="12.5" fill="#1f2937">17 个 cad/freecad/blender 测试脚本</text>
+  <text x="56" y="254" font-size="12.5" fill="#1f2937">package.json 10 个 test:*（含 test:cad）</text>
+  <text x="56" y="276" font-size="12.5" fill="#1f2937">cad_ 原生豁免 · cad_freecad_run 特判</text>
+  <text x="56" y="298" font-size="12.5" fill="#1f2937">isCadScratchArtifact · CAD scratch 判据</text>
+  <text x="56" y="320" font-size="12.5" fill="#1f2937">docs/mechanical-cad.md</text>
+
+  <!-- 改造 -->
+  <rect x="400" y="88" width="340" height="252" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="416" y="116" font-size="15" font-weight="700" fill="#3730a3">改造</text>
+  <text x="416" y="144" font-size="12.5" fill="#1f2937">工具根 → ~/.mybuddy/tools</text>
+  <text x="416" y="166" font-size="12.5" fill="#475569">（只放 compose/配置，不放软件）</text>
+  <text x="416" y="188" font-size="12.5" fill="#1f2937">解析：显式 &gt; MYBUDDY_TOOLS_DIR &gt; 默认</text>
+  <text x="416" y="210" font-size="12.5" fill="#1f2937">删除 discoverPortableExecutable</text>
+  <text x="416" y="232" font-size="12.5" fill="#1f2937">新增 getToolsDir()（paths.ts）</text>
+  <text x="416" y="254" font-size="12.5" fill="#1f2937">freecad MCP 危险工具审批：保留</text>
+  <text x="416" y="276" font-size="12.5" fill="#475569">（Hub 自装 freecad-mcp 仍强制审批）</text>
+  <text x="416" y="298" font-size="12.5" fill="#1f2937">architecture-test 新增防回归：</text>
+  <text x="416" y="320" font-size="12.5" fill="#1f2937">src/ 不得出现便携工具根名</text>
+
+  <!-- 保留 -->
+  <rect x="760" y="88" width="320" height="252" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="776" y="116" font-size="15" font-weight="700" fill="#166534">保留不动</text>
+  <text x="776" y="144" font-size="12.5" fill="#1f2937">cad_models 表（dormant 历史数据）</text>
+  <text x="776" y="166" font-size="12.5" fill="#1f2937">artifact kind "cad"（产物域）</text>
+  <text x="776" y="188" font-size="12.5" fill="#1f2937">RETIRED_* 的 freecad/blender 标记</text>
+  <text x="776" y="210" font-size="12.5" fill="#1f2937">freecad + blender-* 技能文件</text>
+  <text x="776" y="232" font-size="12.5" fill="#475569">（~/.mybuddy/plugins/skills，用户数据）</text>
+  <text x="776" y="254" font-size="12.5" fill="#1f2937">penpot / drawio-ai 受管 provider</text>
+  <text x="776" y="276" font-size="12.5" fill="#475569">（compose 由用户放进 tools 根）</text>
+  <text x="776" y="298" font-size="12.5" fill="#1f2937">历史 session / 任务工作区</text>
+
+  <!-- 验证 -->
+  <rect x="40" y="368" width="520" height="222" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="56" y="396" font-size="15" font-weight="700" fill="#0f172a">验证</text>
+  <text x="56" y="424" font-size="12.5" fill="#15803d">✓ pnpm -s typecheck → EXIT 0</text>
+  <text x="56" y="446" font-size="12.5" fill="#15803d">✓ test:architecture 324/0（含新防回归段）</text>
+  <text x="56" y="468" font-size="12.5" fill="#15803d">✓ test:professional-tools 68/0 · runtime-prewarm 52/0</text>
+  <text x="56" y="490" font-size="12.5" fill="#15803d">✓ test:agent-loadout PASS · mode-preset 187/0</text>
+  <text x="56" y="514" font-size="12.5" fill="#b45309">△ test:all：246 通过 / 3 失败</text>
+  <text x="72" y="536" font-size="12.5" fill="#475569">test:project-agent —— baseline 已知失败</text>
+  <text x="72" y="556" font-size="12.5" fill="#475569">gateway-durable、task-expert-binding ——</text>
+  <text x="72" y="574" font-size="12.5" fill="#475569">git stash 后在干净 HEAD 同样失败，与本次无关</text>
+
+  <!-- 盘上残留 -->
+  <rect x="580" y="368" width="500" height="222" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="596" y="396" font-size="15" font-weight="700" fill="#0f172a">盘上失效残留（已删）</text>
+  <text x="596" y="424" font-size="12.5" fill="#1f2937">Codex 回滚备份里的 MyBuddyTools\penpot</text>
+  <text x="596" y="446" font-size="12.5" fill="#1f2937">~/.mybuddy/mcp.json.bak-blender-20260911</text>
+  <text x="596" y="468" font-size="12.5" fill="#1f2937">~/.mybuddy/runtime/blender-core-mcp（44.3 MB venv）</text>
+  <text x="596" y="496" font-size="12.5" fill="#94a3b8">未动：freecad/blender 技能文件、历史 session、</text>
+  <text x="596" y="516" font-size="12.5" fill="#94a3b8">任务工作区、当前有效 mcp.json / settings.json</text>
+  <text x="596" y="546" font-size="12.5" fill="#475569">注：freecad.exe / blender.exe 本体仍在</text>
+  <text x="596" y="566" font-size="12.5" fill="#475569">Program Files（系统安装，非本产品内置）</text>
+
+  <!-- footer -->
+  <rect x="40" y="614" width="1040" height="96" rx="8" fill="#e0f2fe"/>
+  <text x="56" y="642" font-size="13" fill="#075985">提交：213e9c4（main，未 push）· 版本未 bump、未重新打包 → 当前运行的 0.1.49 仍是旧行为，重新构建后才生效</text>
+  <text x="56" y="666" font-size="13" fill="#075985">"不内置第三方软件" 现由 test:architecture 的 P 段兜底：src/ 若再出现便携工具根名，门禁直接失败</text>
+  <text x="56" y="690" font-size="13" fill="#075985">需要外部软件时：用户自行安装到系统（PATH / 常见安装目录），或显式设 MYBUDDY_TOOLS_DIR 指向外部目录</text>
+</svg>

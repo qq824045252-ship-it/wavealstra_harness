@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown, ArrowUp, Bell, Briefcase, Camera, Check,
-  ChevronDown, ChevronRight, Copy, FileUp, Folder, Image,
+  ChevronDown, ChevronRight, Cloud, Copy, FileUp, Folder, Globe, Image,
   LoaderCircle, Settings, Menu, Plus, Redo2, RotateCcw, Sparkles, Square, Terminal,
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
@@ -1708,6 +1708,11 @@ function ClaudeDrawer({
   const showNotifications = useRemoteStore((state) => state.isNotificationsOpen)
   const setShowNotifications = useRemoteStore((state) => state.setNotificationsOpen)
   const unreadCount = notifications.filter((notice) => !notice.readAt).length
+  const serverConfig = useRemoteStore((state) => state.serverConfig)
+  const activeServer = useRemoteStore((state) => state.activeServer)
+  const connection = useRemoteStore((state) => state.connection)
+  const switchServer = useRemoteStore((state) => state.switchServer)
+  const [showServerPicker, setShowServerPicker] = useState(false)
   /**
    * 展开集合：默认全部收起（与桌面侧栏一致），只记录用户显式展开过的 spaceId。
    * 不用「收起集合」：那样无法区分「用户主动收起」和「默认未展开」，默认值会随历史状态漂移。
@@ -1801,6 +1806,75 @@ function ClaudeDrawer({
           <button type="button" className="drawer-new-chat-btn" onClick={() => onNewChat()}>
             <Plus size={14} /> 新对话
           </button>
+        </div>
+
+        {/* 方案 A：侧边栏顶部常驻电脑切换条 */}
+        <div className="drawer-server-bar">
+          <button
+            type="button"
+            className={`drawer-server-card ${showServerPicker ? 'expanded' : ''}`}
+            onClick={() => setShowServerPicker(!showServerPicker)}
+            aria-expanded={showServerPicker}
+            title="点击切换连接的电脑"
+          >
+            <div className="drawer-server-icon">
+              {activeServer?.channel === 'tailscale' ? <Globe size={15} /> : <Cloud size={15} />}
+            </div>
+            <div className="drawer-server-main">
+              <span className="drawer-server-name">{activeServer?.name ?? '未选择电脑'}</span>
+              <span className="drawer-server-meta">
+                <span className={`drawer-server-status-dot dot-${connection}`} />
+                {connection === 'connected' ? '在线' : connection === 'connecting' ? '连接中' : '离线'} · {activeServer?.channel === 'tailscale' ? 'Tailscale' : 'Cloudflare'}
+              </span>
+            </div>
+            <ChevronDown size={14} className={`drawer-server-arrow ${showServerPicker ? 'rotated' : ''}`} />
+          </button>
+
+          <AnimatedDisclosure open={showServerPicker}>
+            <div className="drawer-server-dropdown">
+              <div className="drawer-server-list">
+                {serverConfig.servers.map((srv) => {
+                  const isCurrent = srv.id === activeServer?.id
+                  return (
+                    <button
+                      key={srv.id}
+                      type="button"
+                      className={`drawer-server-option ${isCurrent ? 'active' : ''}`}
+                      onClick={async () => {
+                        setShowServerPicker(false)
+                        if (!isCurrent) {
+                          onClose()
+                          await switchServer(srv.id)
+                        }
+                      }}
+                    >
+                      <span className="drawer-server-opt-icon">
+                        {srv.channel === 'tailscale' ? <Globe size={14} /> : <Cloud size={14} />}
+                      </span>
+                      <span className="drawer-server-opt-text">
+                        <span className="drawer-server-opt-name">{srv.name}</span>
+                        <span className="drawer-server-opt-sub">
+                          {srv.channel === 'tailscale' ? 'Tailscale' : 'Cloudflare'} · {srv.baseUrl.replace(/^https?:\/\//, '')}
+                        </span>
+                      </span>
+                      {isCurrent && <Check size={14} className="drawer-server-check" />}
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                type="button"
+                className="drawer-server-manage-btn"
+                onClick={() => {
+                  setShowServerPicker(false)
+                  onClose()
+                  setConnectionSettingsOpen(true)
+                }}
+              >
+                <Plus size={14} /> 添加或管理电脑…
+              </button>
+            </div>
+          </AnimatedDisclosure>
         </div>
 
         <div className="drawer-task-groups">

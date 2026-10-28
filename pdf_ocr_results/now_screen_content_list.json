@@ -1,0 +1,238 @@
+[
+  {
+    "id": "p1_b0002",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "13:46 VPN",
+    "bbox": [
+      94.0,
+      58.0,
+      298.0,
+      104.0
+    ],
+    "order": 1,
+    "tags": [],
+    "confidence": 0.9875,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        1,
+        2
+      ]
+    },
+    "span_ids": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "p1_b0003",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "heading",
+    "role": "heading",
+    "text": "连接电脑端Mybuddy",
+    "bbox": [
+      198.0,
+      457.0,
+      1073.0,
+      606.0
+    ],
+    "order": 2,
+    "tags": [
+      "heading"
+    ],
+    "confidence": 0.9986,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        4
+      ]
+    },
+    "span_ids": [
+      4
+    ]
+  },
+  {
+    "id": "p1_b0004",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "直接输入通道域名即可直连（支持Cloudflare 域名或",
+    "bbox": [
+      102.0,
+      633.0,
+      1170.0,
+      688.0
+    ],
+    "order": 3,
+    "tags": [],
+    "confidence": 0.977,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        5
+      ]
+    },
+    "span_ids": [
+      5
+    ]
+  },
+  {
+    "id": "p1_b0005",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "Tailscale域名）。",
+    "bbox": [
+      440.0,
+      702.0,
+      799.0,
+      759.0
+    ],
+    "order": 4,
+    "tags": [],
+    "confidence": 0.9885,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        6
+      ]
+    },
+    "span_ids": [
+      6
+    ]
+  },
+  {
+    "id": "p1_b0006",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "直接输入电脑连接地址电脑连接地址https://remote.vivioninst.uk",
+    "bbox": [
+      146.0,
+      916.0,
+      917.0,
+      1231.0
+    ],
+    "order": 5,
+    "tags": [],
+    "confidence": 0.9999,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        7,
+        8,
+        9
+      ]
+    },
+    "span_ids": [
+      7,
+      8,
+      9
+    ]
+  },
+  {
+    "id": "p1_b0007",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "连接电脑",
+    "bbox": [
+      531.0,
+      1403.0,
+      738.0,
+      1462.0
+    ],
+    "order": 6,
+    "tags": [],
+    "confidence": 1.0,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        10
+      ]
+    },
+    "span_ids": [
+      10
+    ]
+  },
+  {
+    "id": "p1_b0008",
+    "page": 1,
+    "page_idx": 0,
+    "page_width": 1272.0,
+    "page_height": 2800.0,
+    "type": "text",
+    "role": "paragraph",
+    "text": "电脑端未开启域名直连（或版本过旧）。请升级电脑端MyBuddy，并在设置→远程连接”中确认服务已开启。",
+    "bbox": [
+      138.0,
+      1697.0,
+      1103.0,
+      1888.0
+    ],
+    "order": 7,
+    "tags": [],
+    "confidence": 0.9961,
+    "source": "ocr",
+    "provenance": {
+      "source": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\now_screen.png",
+      "page": 1,
+      "strategy": "ocr",
+      "stage": "ocr",
+      "source_text_ids": [
+        11,
+        12,
+        13
+      ]
+    },
+    "span_ids": [
+      11,
+      12,
+      13
+    ]
+  }
+]

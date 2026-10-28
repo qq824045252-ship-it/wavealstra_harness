@@ -444,6 +444,9 @@ export interface PreloadApi {
     cancelPairingSession: (id: string) => Promise<void>;
     usbStatus: () => Promise<RemoteUsbStatus>;
     pairUsb: (serial: string) => Promise<RemoteUsbPairingResult>;
+    openPairWindow: () => Promise<RemotePairWindowDto>;
+    closePairWindow: () => Promise<void>;
+    pairWindowState: () => Promise<RemotePairWindowDto | null>;
   };
   memory: {
     list: (request?: MemoryListRequest | number) => Promise<MemoryRecordDto[]>;

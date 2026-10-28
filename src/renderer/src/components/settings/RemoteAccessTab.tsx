@@ -10,6 +10,7 @@ import {
 } from "@/components/common/icons";
 import type {
   RemoteDeviceSummary,
+  RemotePairWindowDto,
   RemotePairingSession,
   RemoteStatus,
   RemoteUsbStatus,
@@ -131,6 +132,8 @@ export default function RemoteAccessTab(): React.JSX.Element {
   const pairingRef = useRef<RemotePairingSession | null>(null);
   const [pairingQr, setPairingQr] = useState("");
   const [pairingNow, setPairingNow] = useState(Date.now());
+  /** 桌面端“允许新设备接入”窗口：一次性 6 位配对码 + 倒计时 */
+  const [pairWindow, setPairWindow] = useState<RemotePairWindowDto | null>(null);
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
 
   const loadRemote = useCallback(async (): Promise<void> => {
@@ -157,6 +160,29 @@ export default function RemoteAccessTab(): React.JSX.Element {
     const timer = window.setInterval(() => setPairingNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [pairing]);
+
+  useEffect(() => {
+    if (!pairWindow) return;
+    const timer = window.setInterval(() => setPairingNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [pairWindow]);
+
+  // 窗口开着时轮询设备列表，手机一接入就能立刻看到
+  useEffect(() => {
+    if (!pairWindow) return;
+    const timer = window.setInterval(() => {
+      void window.api?.remoteAccess?.listDevices?.().then((list) => { if (list) setRemoteDevices(list); });
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [pairWindow]);
+
+  // 到期自动关窗并提示
+  useEffect(() => {
+    if (!pairWindow || pairWindow.expiresAt > pairingNow) return;
+    setPairWindow(null);
+    void window.api?.remoteAccess?.closePairWindow?.();
+    setNotice({ text: "接入窗口已过期（60 秒内没有手机完成配对），需要时请重新开启。" });
+  }, [pairWindow, pairingNow]);
 
   useEffect(() => {
     if (!pairing) return;
@@ -222,6 +248,28 @@ export default function RemoteAccessTab(): React.JSX.Element {
     } finally {
       setRemoteBusy(false);
     }
+  };
+
+  const openPairWindowNow = async (): Promise<void> => {
+    setRemoteBusy(true);
+    setNotice(null);
+    try {
+      const opened = await window.api?.remoteAccess?.openPairWindow?.();
+      if (!opened) return;
+      setPairWindow(opened);
+      setPairingNow(Date.now());
+      setNotice({ text: "已开启 60 秒接入窗口：在手机输入域名 + 下面这 6 位配对码。" });
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : String(error), error: true });
+    } finally {
+      setRemoteBusy(false);
+    }
+  };
+
+  const cancelPairWindow = (): void => {
+    setPairWindow(null);
+    void window.api?.remoteAccess?.closePairWindow?.();
+    void loadRemote();
   };
 
   const closeRemotePairing = (): void => {
@@ -489,15 +537,11 @@ export default function RemoteAccessTab(): React.JSX.Element {
           <button
             type="button"
             className="btn primary"
-            disabled={remoteBusy || !canCreateNetworkPairing}
-            title={!remoteStatus?.running
-              ? "请先启用并确认 Remote Access 服务运行正常"
-              : !hasNetworkPairingAddress
-                ? "请先配置 Tailscale HTTPS 地址，或切换到局域网模式"
-                : undefined}
-            onClick={() => void createRemotePairing()}
+            disabled={remoteBusy || !remoteStatus?.running}
+            title={!remoteStatus?.running ? "请先启用并确认 Remote Access 服务运行正常" : "开启 60 秒接入窗口，并生成一次性 6 位配对码"}
+            onClick={() => void openPairWindowNow()}
           >
-            添加设备
+            允许新设备接入
           </button>
         }
       >
@@ -519,28 +563,32 @@ export default function RemoteAccessTab(): React.JSX.Element {
         </div>
       </Panel>
 
-      {pairing && (
+      {pairWindow && (
         <section className="remote-pairing-card">
           <div className="remote-pairing-copy">
-            <div className="remote-panel-icon"><IconQr size={17} /></div>
+            <div className="remote-panel-icon"><IconShield size={17} /></div>
             <div>
-              <div className="remote-panel-title">添加移动设备</div>
-              <div className="remote-panel-desc">使用 MyBuddy Remote 扫描二维码或复制一次性链接。密钥只能使用一次。</div>
-              <div className="remote-pairing-timer">{Math.max(0, Math.ceil((pairing.expiresAt - pairingNow) / 1000))} 秒后过期</div>
+              <div className="remote-panel-title">允许新设备接入（一次性）</div>
+              <div className="remote-panel-desc">
+                在手机端输入连接地址后，把下面这 6 位配对码填进去。窗口关闭或配对成功后立即失效，一次只放行一台设备。
+              </div>
+              <div className="remote-pairing-timer">{Math.max(0, Math.ceil((pairWindow.expiresAt - pairingNow) / 1000))} 秒后自动关闭</div>
             </div>
           </div>
-          <div className="remote-pairing-body">
-            {pairingQr && <img src={pairingQr} width={190} height={190} alt="MyBuddy Remote 配对二维码" />}
+          <div className="remote-pairing-body" style={{ alignItems: "center" }}>
+            <div className="remote-pair-code">{pairWindow.code}</div>
             <div className="remote-pairing-link">
-              <input className="settings-input" readOnly value={pairing.pairingUrl} />
               <div className="remote-pairing-actions">
-                <button type="button" className="btn primary" onClick={() => void navigator.clipboard.writeText(pairing.pairingUrl)}>复制配对链接</button>
-                <button type="button" className="btn" onClick={closeRemotePairing}>关闭</button>
+                <button type="button" className="btn" onClick={cancelPairWindow}>取消接入窗口</button>
               </div>
             </div>
           </div>
         </section>
       )}
+
+      <div className="remote-tip-note" style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: "var(--bg-subtle)", fontSize: 13, color: "var(--fg-muted)" }}>
+        💡 手机端只需填连接地址；首次接入要现点“允许新设备接入”并把 6 位配对码填到手机上。配对成功后手机记住设备令牌，日后直接连，不再需要配对码。
+      </div>
     </div>
   );
 }

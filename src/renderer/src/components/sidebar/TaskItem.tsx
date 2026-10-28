@@ -33,6 +33,8 @@ interface Props {
   task: Task;
   /** 空间内任务：标题与空间文件夹名称左对齐 */
   nested?: boolean;
+  /** 树内缩进（px），由 Sidebar 按 depth 计算，使任务图标与下一级空间文件夹图标对齐 */
+  indent?: number;
   /** Tree V2：通知 Sidebar 拖拽开始（用于稳定 DnD 状态，不改变原有文件拖拽逻辑） */
   onDragStartNotify?: (taskId: string) => void;
 }
@@ -42,7 +44,7 @@ type SubMenu = null | "space" | "share" | "review";
 const MENU_MIN_WIDTH = 200;
 const MENU_MAX_HEIGHT = 420;
 
-export default function TaskItem({ task, nested = false, onDragStartNotify }: Props): React.JSX.Element {
+export default function TaskItem({ task, nested = false, indent, onDragStartNotify }: Props): React.JSX.Element {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const page = useAppStore((s) => s.page);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
@@ -599,6 +601,7 @@ export default function TaskItem({ task, nested = false, onDragStartNotify }: Pr
       role="button"
       tabIndex={0}
       className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} ${displayStatus !== "idle" ? `status-${displayStatus}` : ""}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
+      style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
       onClick={() => !editing && setActiveTask(task.id)}
       onKeyDown={(e) => e.key === "Enter" && !editing && setActiveTask(task.id)}

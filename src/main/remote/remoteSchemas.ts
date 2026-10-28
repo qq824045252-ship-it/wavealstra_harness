@@ -73,6 +73,13 @@ export const remotePairSchema = z.object({
   installationId: z.string().trim().min(8).max(200).optional(),
 }).strict();
 
+export const remoteDirectPairSchema = z.object({
+  deviceName: z.string().trim().min(1).max(80).optional(),
+  installationId: z.string().trim().min(8).max(200).optional(),
+  /** 电脑端“允许新设备接入”窗口里显示的 6 位一次性配对码 */
+  code: z.string().trim().regex(/^\d{6}$/, "配对码必须是 6 位数字"),
+}).strict();
+
 export const remoteConfigureSchema = z.object({
   enabled: z.boolean().optional(),
   port: z.number().int().min(1024).max(65535).optional(),

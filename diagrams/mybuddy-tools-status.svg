@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="740" viewBox="0 0 1120 740" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="740" fill="#f7f9fc"/>
+
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#0f172a">便携 MyBuddyTools 现状：FreeCAD.exe / blender.exe 还在吗（实测 2026-10-26）</text>
+  <text x="40" y="70" font-size="13" fill="#475569">依据：本机磁盘实查 + release\0.1.49 打包物（app.asar / win-unpacked）+ 运行进程与快捷方式（cwd = win-unpacked）</text>
+
+  <!-- 旧便携目录 -->
+  <rect x="40" y="95" width="330" height="185" rx="8" fill="#fff1f2" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="56" y="123" font-size="15" font-weight="700" fill="#9f1239">过去的便携目录 MyBuddyTools</text>
+  <text x="56" y="145" font-size="12" fill="#475569">Desktop\mybuddy\MyBuddyTools\</text>
+  <text x="56" y="167" font-size="12" fill="#1f2937">Ardot\</text>
+  <text x="56" y="187" font-size="12" fill="#1f2937">blender-5.2.0-windows-x64\blender.exe</text>
+  <text x="56" y="207" font-size="12" fill="#1f2937">FreeCAD_1.1.3-Windows-x86_64-py311\</text>
+  <text x="56" y="227" font-size="12" fill="#1f2937">  bin\{freecad.exe, freecadcmd.exe}</text>
+  <text x="56" y="247" font-size="12" fill="#1f2937">penpot\   mcp\{blender_mcp, freecad-mcp}</text>
+  <text x="56" y="271" font-size="13" font-weight="700" fill="#dc2626">✗ 整个目录已不存在（备份仅剩 penpot\）</text>
+
+  <!-- 系统安装 -->
+  <rect x="395" y="95" width="330" height="185" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="411" y="123" font-size="15" font-weight="700" fill="#166534">系统安装（仍在，非便携）</text>
+  <text x="411" y="145" font-size="12" fill="#1f2937">FreeCAD 1.1 → Program Files\FreeCAD 1.1\</text>
+  <text x="411" y="165" font-size="12" fill="#1f2937">  bin\{freecad.exe, freecadcmd.exe}</text>
+  <text x="411" y="185" font-size="12" fill="#475569">  实测 freecadcmd --version → 1.1.3</text>
+  <text x="411" y="205" font-size="12" fill="#475569">  Revision: 20260725 (Git shallow)</text>
+  <text x="411" y="227" font-size="12" fill="#1f2937">Blender 5.2 → Blender Foundation\</text>
+  <text x="411" y="247" font-size="12" fill="#1f2937">  Blender 5.2\blender.exe（113 MB）</text>
+  <text x="411" y="271" font-size="13" font-weight="700" fill="#16a34a">✓ 两套 exe 都还在（系统安装版）</text>
+
+  <!-- 代码口径 -->
+  <rect x="750" y="95" width="330" height="185" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="766" y="123" font-size="15" font-weight="700" fill="#1e40af">MyBuddy 0.1.49 的口径</text>
+  <text x="766" y="145" font-size="12" fill="#1f2937">受管 provider：只剩 penpot</text>
+  <text x="766" y="165" font-size="12" fill="#1f2937">已下线：ardot-local / blender /</text>
+  <text x="766" y="185" font-size="12" fill="#1f2937">        freecad / opendesign</text>
+  <text x="766" y="207" font-size="12" fill="#1f2937">mcp.json：无 freecad、无 blender 条目</text>
+  <text x="766" y="227" font-size="12" fill="#1f2937">技能仍在：freecad、4 个 blender-*</text>
+  <text x="766" y="247" font-size="12" fill="#475569">（不再有受管启停，仅剩技能文件）</text>
+  <text x="766" y="271" font-size="13" font-weight="700" fill="#1d4ed8">✓ 目录瘦身，两条工具链断开</text>
+
+  <!-- 箭头 -->
+  <line x1="205" y1="282" x2="205" y2="341" stroke="#dc2626" stroke-width="2" stroke-dasharray="5 4"/>
+  <polygon points="205,345 200,337 210,337" fill="#dc2626"/>
+  <text x="214" y="318" font-size="12" fill="#dc2626">目录缺失：找不到 exe</text>
+
+  <line x1="560" y1="282" x2="560" y2="341" stroke="#16a34a" stroke-width="2"/>
+  <polygon points="560,345 555,337 565,337" fill="#16a34a"/>
+  <text x="569" y="318" font-size="12" fill="#15803d">本体仍在：可直接命中</text>
+
+  <line x1="915" y1="282" x2="915" y2="341" stroke="#64748b" stroke-width="2" stroke-dasharray="5 4"/>
+  <polygon points="915,345 910,337 920,337" fill="#64748b"/>
+  <text x="798" y="318" font-size="12" fill="#475569">配置里没有 MCP 条目</text>
+
+  <!-- 链路 1 -->
+  <rect x="40" y="345" width="330" height="215" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="56" y="373" font-size="15" font-weight="700" fill="#0f172a">① 原生 cad_* 工具链</text>
+  <text x="56" y="399" font-size="12" fill="#1f2937">CadRuntimeService → FreeCadInterop</text>
+  <text x="56" y="419" font-size="12" fill="#1f2937">  .resolveFreeCadCmd()</text>
+  <text x="56" y="439" font-size="12" fill="#1f2937">toolsRoot = MYBUDDY_TOOLS_DIR ??</text>
+  <text x="56" y="459" font-size="12" fill="#1f2937">  &lt;cwd&gt;\MyBuddyTools</text>
+  <text x="56" y="479" font-size="12" fill="#1f2937">cwd = release\0.1.49\win-unpacked</text>
+  <text x="56" y="499" font-size="12" fill="#475569">→ win-unpacked\MyBuddyTools（不存在）</text>
+  <text x="56" y="533" font-size="13" font-weight="700" fill="#dc2626">✗ 报「未发现 FreeCADCmd」</text>
+  <text x="56" y="551" font-size="12" fill="#dc2626">（代码不回退 Program Files）</text>
+
+  <!-- 链路 2 -->
+  <rect x="395" y="345" width="330" height="215" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="411" y="373" font-size="15" font-weight="700" fill="#0f172a">② freecad 技能链（自带探测）</text>
+  <text x="411" y="399" font-size="12" fill="#1f2937">scripts\run_freecad.py → locate()</text>
+  <text x="411" y="419" font-size="12" fill="#1f2937">FREECAD_CMD → PATH →</text>
+  <text x="411" y="439" font-size="12" fill="#1f2937">%ProgramFiles%\FreeCAD *\bin\</text>
+  <text x="411" y="459" font-size="12" fill="#1f2937">  FreeCADCmd.exe</text>
+  <text x="411" y="479" font-size="12" fill="#1f2937">→ 命中 Program Files\FreeCAD 1.1\bin</text>
+  <text x="411" y="499" font-size="12" fill="#1f2937">  \freecadcmd.exe（1.1.3）</text>
+  <text x="411" y="533" font-size="13" font-weight="700" fill="#16a34a">✓ 可用，不依赖 MyBuddyTools</text>
+
+  <!-- 链路 3 -->
+  <rect x="750" y="345" width="330" height="215" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="766" y="373" font-size="15" font-weight="700" fill="#0f172a">③ blender 技能链</text>
+  <text x="766" y="399" font-size="12" fill="#1f2937">技能靠 Blender MCP（9876）提供</text>
+  <text x="766" y="419" font-size="12" fill="#1f2937">execute_blender_code 等原语</text>
+  <text x="766" y="439" font-size="12" fill="#1f2937">mcp.json 无 blender 条目</text>
+  <text x="766" y="459" font-size="12" fill="#1f2937">app.asar 内也无 blender_mcp 字符串</text>
+  <text x="766" y="479" font-size="12" fill="#475569">→ MCP 链当前是断的</text>
+  <text x="766" y="533" font-size="13" font-weight="700" fill="#dc2626">✗ 只能手动 GUI 打开 blender.exe</text>
+
+  <!-- 结论 -->
+  <rect x="40" y="596" width="1040" height="112" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="56" y="622" font-size="15" font-weight="700" fill="#3730a3">结论</text>
+  <text x="56" y="646" font-size="13" fill="#1f2937">1) 便携目录 Desktop\mybuddy\MyBuddyTools 已整体不存在 → 其中的 freecad.exe / blender.exe 便携副本没有了</text>
+  <text x="56" y="670" font-size="13" fill="#1f2937">2) 软件本体仍在系统里：FreeCAD 1.1.3（Program Files\FreeCAD 1.1）、Blender 5.2（Blender Foundation）</text>
+  <text x="56" y="694" font-size="13" fill="#1f2937">3) 0.1.49 已把 freecad / blender / ardot-local / opendesign 从受管工具下线，只剩 penpot；技能文件还在</text>
+</svg>

@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 810" width="1180" height="810" font-family="'Segoe UI','Microsoft YaHei',sans-serif">
+  <rect x="0" y="0" width="1180" height="810" fill="#f6f7f9"/>
+  <text x="30" y="44" font-size="21" font-weight="700" fill="#16191d">旧编译包清理 · wavealstra_harness（2026-10-20 15:48 → 15:52）</text>
+  <text x="30" y="70" font-size="13" fill="#5b6570">路径均实测；删除范围经用户确认；删除方式 FastCopy fcp delete（退出码 0 / ErrFiles 0）</text>
+
+  <line x1="30" y1="86" x2="1150" y2="86" stroke="#c8ced6" stroke-width="1"/>
+  <text x="30" y="108" font-size="13" font-weight="700" fill="#3c4550">产物（实测路径）</text>
+  <text x="380" y="108" font-size="13" font-weight="700" fill="#3c4550">占用（实测）</text>
+  <text x="615" y="108" font-size="13" font-weight="700" fill="#3c4550">动作</text>
+  <text x="730" y="108" font-size="13" font-weight="700" fill="#3c4550">依据 / 说明</text>
+
+  <!-- row template: y = 122 + n*54, bar x=380 max w=200 scale 0.118 px/MB -->
+  <!-- 1 release/0.1.47 -->
+  <line x1="30" y1="122" x2="1150" y2="122" stroke="#e3e7ec"/>
+  <text x="30" y="146" font-size="13" fill="#16191d">release/0.1.47</text>
+  <rect x="380" y="132" width="187" height="18" rx="3" fill="#e0a458"/>
+  <text x="575" y="146" font-size="12" fill="#5b6570">1,590 MB</text>
+  <rect x="612" y="129" width="92" height="24" rx="12" fill="#f6e3c8" stroke="#b9770e"/>
+  <text x="658" y="146" font-size="12" fill="#8a5606" text-anchor="middle">外部删除</text>
+  <text x="730" y="146" font-size="12" fill="#3c4550">15:48 可见 → 15:51 已不存在；非本会话删除 [实测]，原因未确认 [推断]</text>
+
+  <!-- 2 release/0.1.48 -->
+  <line x1="30" y1="176" x2="1150" y2="176" stroke="#e3e7ec"/>
+  <text x="30" y="200" font-size="13" fill="#16191d">release/0.1.48</text>
+  <rect x="380" y="186" width="192" height="18" rx="3" fill="#7fb08a"/>
+  <text x="580" y="200" font-size="12" fill="#5b6570">1,627 MB</text>
+  <rect x="612" y="183" width="92" height="24" rx="12" fill="#dff0e3" stroke="#1e8449"/>
+  <text x="658" y="200" font-size="12" fill="#1a6b3c" text-anchor="middle">保留</text>
+  <text x="730" y="200" font-size="12" fill="#3c4550">当前运行版本（MyBuddy.exe × 4 进程）；SHA256 F71C15…F63B0</text>
+
+  <!-- 3 release/0.1.49 -->
+  <line x1="30" y1="230" x2="1150" y2="230" stroke="#e3e7ec"/>
+  <text x="30" y="254" font-size="13" fill="#16191d">release/0.1.49</text>
+  <rect x="380" y="240" width="192" height="18" rx="3" fill="#7fb08a"/>
+  <text x="580" y="254" font-size="12" fill="#5b6570">1,627 MB</text>
+  <rect x="612" y="237" width="92" height="24" rx="12" fill="#dff0e3" stroke="#1e8449"/>
+  <text x="658" y="254" font-size="12" fill="#1a6b3c" text-anchor="middle">保留</text>
+  <text x="730" y="254" font-size="12" fill="#3c4550">15:50:17 构建完成（Install + blockmap + latest.yml）；SHA256 B8C1C8…3B9</text>
+
+  <!-- 4 release/win-unpacked -->
+  <line x1="30" y1="284" x2="1150" y2="284" stroke="#e3e7ec"/>
+  <text x="30" y="308" font-size="13" fill="#16191d">release/win-unpacked</text>
+  <rect x="380" y="294" width="152" height="18" rx="3" fill="#c9685f"/>
+  <text x="540" y="308" font-size="12" fill="#5b6570">1,288 MB</text>
+  <rect x="612" y="291" width="92" height="24" rx="12" fill="#f7dcd9" stroke="#b03a2e"/>
+  <text x="658" y="308" font-size="12" fill="#8e2b21" text-anchor="middle">已删除</text>
+  <text x="730" y="308" font-size="12" fill="#3c4550">0.1.46 旧解包（11:25 生成），无进程占用、无快捷方式引用</text>
+
+  <!-- 5 builder-debug.yml -->
+  <line x1="30" y1="338" x2="1150" y2="338" stroke="#e3e7ec"/>
+  <text x="30" y="362" font-size="13" fill="#16191d">release/builder-debug.yml</text>
+  <rect x="380" y="348" width="2" height="18" rx="1" fill="#c9685f"/>
+  <text x="392" y="362" font-size="12" fill="#5b6570">&lt;1 MB</text>
+  <rect x="612" y="345" width="92" height="24" rx="12" fill="#f7dcd9" stroke="#b03a2e"/>
+  <text x="658" y="362" font-size="12" fill="#8e2b21" text-anchor="middle">已删除</text>
+  <text x="730" y="362" font-size="12" fill="#3c4550">与旧解包同批生成的 electron-builder 调试配置</text>
+
+  <!-- 6 tgz -->
+  <line x1="30" y1="392" x2="1150" y2="392" stroke="#e3e7ec"/>
+  <text x="30" y="416" font-size="13" fill="#16191d">wavealstra_harness-0.1.35.tgz</text>
+  <rect x="380" y="402" width="42" height="18" rx="3" fill="#c9685f"/>
+  <text x="430" y="416" font-size="12" fill="#5b6570">360 MB</text>
+  <rect x="612" y="399" width="92" height="24" rx="12" fill="#f7dcd9" stroke="#b03a2e"/>
+  <text x="658" y="416" font-size="12" fill="#8e2b21" text-anchor="middle">已删除</text>
+  <text x="730" y="416" font-size="12" fill="#3c4550">仓库根目录旧打包产物（10-19，版本落后 14 个）</text>
+
+  <!-- 7 asar-verify -->
+  <line x1="30" y1="446" x2="1150" y2="446" stroke="#e3e7ec"/>
+  <text x="30" y="470" font-size="13" fill="#16191d">out/asar-verify</text>
+  <rect x="380" y="456" width="113" height="18" rx="3" fill="#c9685f"/>
+  <text x="501" y="470" font-size="12" fill="#5b6570">958 MB</text>
+  <rect x="612" y="453" width="92" height="24" rx="12" fill="#f7dcd9" stroke="#b03a2e"/>
+  <text x="658" y="470" font-size="12" fill="#8e2b21" text-anchor="middle">已删除</text>
+  <text x="730" y="470" font-size="12" fill="#3c4550">10-13 解包校验副本（19,589 文件）；scripts/ 零引用</text>
+
+  <!-- 8 asar-verify-0134 -->
+  <line x1="30" y1="500" x2="1150" y2="500" stroke="#e3e7ec"/>
+  <text x="30" y="524" font-size="13" fill="#16191d">out/asar-verify-0134</text>
+  <rect x="380" y="510" width="113" height="18" rx="3" fill="#c9685f"/>
+  <text x="501" y="524" font-size="12" fill="#5b6570">963 MB</text>
+  <rect x="612" y="507" width="92" height="24" rx="12" fill="#f7dcd9" stroke="#b03a2e"/>
+  <text x="658" y="524" font-size="12" fill="#8e2b21" text-anchor="middle">已删除</text>
+  <text x="730" y="524" font-size="12" fill="#3c4550">10-19 解包校验副本（19,617 文件）；scripts/ 零引用</text>
+
+  <!-- 9 out/main renderer preload -->
+  <line x1="30" y1="554" x2="1150" y2="554" stroke="#e3e7ec"/>
+  <text x="30" y="578" font-size="13" fill="#16191d">out/main + renderer + preload</text>
+  <rect x="380" y="564" width="9" height="18" rx="3" fill="#7fb08a"/>
+  <text x="397" y="578" font-size="12" fill="#5b6570">80 MB</text>
+  <rect x="612" y="561" width="92" height="24" rx="12" fill="#dff0e3" stroke="#1e8449"/>
+  <text x="658" y="578" font-size="12" fill="#1a6b3c" text-anchor="middle">保留</text>
+  <text x="730" y="578" font-size="12" fill="#3c4550">当前 dev 构建（15:47-15:48 刷新），删掉会破坏 dev/typecheck</text>
+
+  <!-- 10 out/tests -->
+  <line x1="30" y1="608" x2="1150" y2="608" stroke="#e3e7ec"/>
+  <text x="30" y="632" font-size="13" fill="#16191d">out/tests</text>
+  <rect x="380" y="618" width="144" height="18" rx="3" fill="#7fb08a"/>
+  <text x="532" y="632" font-size="12" fill="#5b6570">1,225 MB</text>
+  <rect x="612" y="615" width="92" height="24" rx="12" fill="#dff0e3" stroke="#1e8449"/>
+  <text x="658" y="632" font-size="12" fill="#1a6b3c" text-anchor="middle">保留</text>
+  <text x="730" y="632" font-size="12" fill="#3c4550">测试截图/产物（诊断证据，按规范保留）</text>
+  <line x1="30" y1="650" x2="1150" y2="650" stroke="#c8ced6"/>
+
+  <!-- footer -->
+  <text x="30" y="678" font-size="13" font-weight="700" fill="#16191d">本会话删除合计：3,569 MB ≈ 3.49 GB</text>
+  <text x="440" y="678" font-size="13" fill="#3c4550">+ 外部删除 0.1.47（1,590 MB）· C: 可用 415.6 GB → 427.7 GB</text>
+  <text x="30" y="704" font-size="12" fill="#5b6570">差额约 7 GB 大于已删总量，判断来自 0.1.49 构建结束时释放的临时/暂存文件 [推断，未逐项核销]</text>
+  <text x="30" y="730" font-size="12" fill="#5b6570">保留策略：release/ 只留 0.1.48（运行中）+ 0.1.49（最新构建）；桌面与开始菜单无任何指向 workspace 的快捷方式 [实测]</text>
+  <text x="30" y="756" font-size="12" fill="#5b6570">进程核验：4 个 MyBuddy.exe 全部来自 release/0.1.48/win-unpacked，未受影响 [实测]；删除后复测这些进程仍在运行</text>
+
+  <rect x="30" y="770" width="16" height="12" fill="#c9685f"/><text x="52" y="781" font-size="12" fill="#3c4550">已删除</text>
+  <rect x="120" y="770" width="16" height="12" fill="#7fb08a"/><text x="142" y="781" font-size="12" fill="#3c4550">保留</text>
+  <rect x="200" y="770" width="16" height="12" fill="#e0a458"/><text x="222" y="781" font-size="12" fill="#3c4550">外部删除（非本会话）</text>
+</svg>

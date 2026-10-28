@@ -141,8 +141,12 @@ export class DurableMcp {
         if (this.closed) throw new Error("MCP host is closed");
         await client.connect(transport);
         state.connectMs = Math.round(performance.now() - started);
+        state.error = undefined;
+        this.clearFailure(name);
         return client;
       } catch (error) {
+        state.connecting = undefined;
+        state.client = undefined;
         this.failure(name, state, error);
         await client.close().catch(() => {});
         throw error;
@@ -155,20 +159,33 @@ export class DurableMcp {
     const state = this.server(name);
     if (state.listing) return state.listing;
     state.listing = (async () => {
-      const client = await this.client(name);
-      const started = performance.now();
       try {
+        const client = await this.client(name);
+        const started = performance.now();
         const tools = await client.listTools();
         state.listToolsMs = Math.round(performance.now() - started);
+        state.error = undefined;
+        this.clearFailure(name);
         return tools.filter(tool => visible(state.config, tool.name));
-      } catch (error) { this.failure(name, state, error); throw error; }
+      } catch (error) {
+        state.listing = undefined;
+        this.failure(name, state, error);
+        throw error;
+      }
     })();
     return state.listing;
   }
 
+  private clearFailure(name: string): void {
+    const prefix = name + ": ";
+    const idx = this.errors.findIndex(err => err.startsWith(prefix) || err === name);
+    if (idx >= 0) this.errors.splice(idx, 1);
+  }
+
   private failure(name: string, server: Server, error: unknown): void {
     server.error = error instanceof Error ? error.message : String(error);
-    this.errors.push(name + ": " + server.error);
+    const msg = name + ": " + server.error;
+    if (!this.errors.includes(msg)) this.errors.push(msg);
   }
 
   private async call(server: string, name: string, args: Record<string, unknown>, context: Parameters<ToolRegistration["execute"]>[2]) {

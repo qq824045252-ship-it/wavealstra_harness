@@ -10,7 +10,8 @@ import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
 import { isPrivateIpv4 } from "./RemoteNetwork";
 import { RemoteConflictError, RemoteNotFoundError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
-import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
+import { RemotePairWindow } from "./RemotePairWindow";
+import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteDirectPairSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
 
 const BODY_LIMIT = 512 * 1024;
 /** prompt 路由允许携带 base64 附件：4 个 × ~3MB 原始字节（≈4M base64 字符）+ JSON 包裹 */
@@ -24,6 +25,8 @@ export interface RemoteAccessServerOptions {
   staticRoot?: string;
   devices: RemoteDeviceStore;
   pairing: RemoteAccessPairing;
+  /** 域名直连的设备准入窗口（默认关闭，必须桌面端显式开启并给出一次性码） */
+  pairWindow?: RemotePairWindow;
   service: RemoteAccessService;
   commands: RemoteTaskCommandService;
   events: RemoteEventBus;
@@ -86,9 +89,13 @@ export class RemoteAccessServer {
   private readonly streams = new Set<ServerResponse>();
   private readonly host: string;
 
+  /** 未注入时退化为「永远关闭」的窗口：任何直连请求都拿不到令牌（默认拒绝） */
+  private readonly pairWindow: RemotePairWindow;
+
   constructor(private readonly options: RemoteAccessServerOptions) {
     this.host = options.host ?? "127.0.0.1";
     if (!ALLOWED_BIND_HOSTS.has(this.host)) throw new Error("Remote Access 只允许监听 loopback 或显式 LAN 地址");
+    this.pairWindow = options.pairWindow ?? new RemotePairWindow();
   }
 
   async start(): Promise<{ host: string; port: number }> {
@@ -180,9 +187,21 @@ export class RemoteAccessServer {
         replyJson(200, { ok: true, service: "mybuddy-remote", apiVersion: REMOTE_API_VERSION });
         return;
       }
-      if (request.method === "POST" && path === "/v1/pair/exchange") {
-        const body = remotePairSchema.parse(await readJson(request));
-        const issued = this.options.pairing.exchange(body.pairingId, body.secret, body.deviceName, body.installationId);
+      if (request.method === "POST" && (path === "/v1/pair/direct" || path === "/v1/pair/exchange")) {
+        const rawJson = await readJson(request);
+        let issued: { device: { id: string }; token: string };
+        if (rawJson && typeof rawJson === "object" && "pairingId" in rawJson && "secret" in rawJson) {
+          const body = remotePairSchema.parse(rawJson);
+          issued = this.options.pairing.exchange(body.pairingId, body.secret, body.deviceName, body.installationId);
+        } else {
+          const body = remoteDirectPairSchema.parse(rawJson ?? {});
+          // 准入闸门：窗口未开启 / 已过期 / 配对码不符 / 输错次数超限，一律 403，且不签发任何令牌
+          if (!this.pairWindow.consume(body.code)) {
+            replyJson(403, errorBody("pair_not_allowed", "电脑端未开启设备接入，或配对码不正确/已过期"));
+            return;
+          }
+          issued = this.options.devices.issue(body.deviceName || "Android", body.installationId);
+        }
         replyJson(200, { deviceId: issued.device.id, deviceToken: issued.token, server: this.options.service.serverInfo() });
         return;
       }

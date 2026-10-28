@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="650" viewBox="0 0 940 650" role="img" aria-label="IT之家 2026-10-20 今日新闻概览">
+  <rect x="0" y="0" width="940" height="650" fill="#f7f8fa"/>
+  <rect x="1" y="1" width="938" height="648" fill="none" stroke="#d8dde5" stroke-width="2" rx="10"/>
+
+  <text x="32" y="44" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="24" font-weight="700" fill="#111827">IT之家 · 2026-10-20 今日新闻概览</text>
+  <text x="32" y="70" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#4b5563">数据：www.ithome.com 滚动新闻 50 条（08:34–10:53）+ 全文 RSS 59 条（07:31–10:53），共抓取 62 篇文章标题</text>
+  <line x1="32" y1="84" x2="908" y2="84" stroke="#e5e7eb" stroke-width="2"/>
+
+  <text x="32" y="112" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="15" font-weight="700" fill="#111827">① 新闻分类分布（滚动列表 50 条实测计数）</text>
+
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#374151">
+    <text x="32" y="152">数码之家</text>
+    <rect x="140" y="138" width="340" height="20" fill="#3b82f6" rx="3"/>
+    <text x="490" y="153" font-size="12" fill="#1f2937">17 条</text>
+
+    <text x="32" y="192">IT 资讯</text>
+    <rect x="140" y="178" width="200" height="20" fill="#60a5fa" rx="3"/>
+    <text x="350" y="193" font-size="12" fill="#1f2937">10 条</text>
+
+    <text x="32" y="232">智车之家</text>
+    <rect x="140" y="218" width="160" height="20" fill="#60a5fa" rx="3"/>
+    <text x="310" y="233" font-size="12" fill="#1f2937">8 条</text>
+
+    <text x="32" y="272">智能时代</text>
+    <rect x="140" y="258" width="60" height="20" fill="#93c5fd" rx="3"/>
+    <text x="210" y="273" font-size="12" fill="#1f2937">3 条</text>
+
+    <text x="32" y="312">安卓之家 / 科学探索 / 游戏之家 / iPhone之家 / Win11之家</text>
+    <rect x="140" y="298" width="40" height="20" fill="#93c5fd" rx="3"/>
+    <text x="190" y="313" font-size="12" fill="#1f2937">各 2 条</text>
+
+    <text x="32" y="352">软件之家 / Office之家</text>
+    <rect x="140" y="338" width="20" height="20" fill="#bfdbfe" rx="3"/>
+    <text x="170" y="353" font-size="12" fill="#1f2937">各 1 条</text>
+  </g>
+
+  <text x="32" y="404" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="15" font-weight="700" fill="#111827">② 今日主线（按主题归并）</text>
+
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="32" y="420" width="400" height="52" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="44" y="442" font-weight="700">苹果：10/29 特别活动 + 台积电 1.4nm</text>
+    <text x="44" y="462" font-size="12" fill="#4b5563">北京时间 10/29 凌晨 1:00 洛杉矶发布会（疑 OLED MacBook Pro / iPad mini 8）</text>
+  </g>
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="32" y="482" width="400" height="66" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="44" y="504" font-weight="700">AI 与算力：模型、资本、安全三条线</text>
+    <text x="44" y="523" font-size="12" fill="#4b5563">黄仁勋「不能急刹车、要装安全带」；蚂蚁开源 Ming-3.0 语音模型</text>
+    <text x="44" y="540" font-size="12" fill="#4b5563">OpenAI 估值或超 1.4 万亿美元；Anthropic 传再签 450 亿美元算力</text>
+  </g>
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="32" y="558" width="400" height="52" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="44" y="580" font-weight="700">智车：奇瑞「AI 科技公司」+ 产销里程碑</text>
+    <text x="44" y="600" font-size="12" fill="#4b5563">吉利星愿第 100 万辆、五菱宏光 MINIEV 第 200 万辆整车下线</text>
+  </g>
+
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="452" y="420" width="456" height="66" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="464" y="442" font-weight="700">手机与硬件：发布会排期密集</text>
+    <text x="464" y="461" font-size="12" fill="#4b5563">REDMI K100 定档 10/27（10000mAh）；华为畅享 100 Pro Max 传麒麟 8020</text>
+    <text x="464" y="478" font-size="12" fill="#4b5563">荣耀 X80 Pro Max 官网涨 500 元；三星承认 One UI 9 定制 Bug</text>
+  </g>
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="452" y="496" width="456" height="52" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="464" y="518" font-weight="700">系统与安全：Windows / Wi-Fi / 开源</text>
+    <text x="464" y="538" font-size="12" fill="#4b5563">Win11 配对 AirPods 快最多 15 秒；博通 Wi-Fi 漏洞无需密码可拿下路由器</text>
+  </g>
+  <g font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" fill="#1f2937">
+    <rect x="452" y="558" width="456" height="52" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5" rx="8"/>
+    <text x="464" y="580" font-weight="700">民生与政策</text>
+    <text x="464" y="600" font-size="12" fill="#4b5563">医保钱包 2.0 跨省共济全国落地；工信部就车灯国标公开征求意见</text>
+  </g>
+</svg>

@@ -11,6 +11,7 @@ import { getMyBuddyDir } from "../paths";
 import { AppSettingsStore } from "../AppSettingsStore";
 import type { RemoteConfigureRequest, RemoteStatus } from "../../../shared/src/remote-contract";
 import { RemoteAccessPairing } from "./RemoteAccessPairing";
+import { RemotePairWindow } from "./RemotePairWindow";
 import { RemoteAccessServer } from "./RemoteAccessServer";
 import { RemoteAccessService } from "./RemoteAccessService";
 import { RemoteDeviceStore } from "./RemoteDeviceStore";
@@ -25,6 +26,7 @@ export class RemoteAccessController {
   private readonly settings = new AppSettingsStore();
   private readonly devices = new RemoteDeviceStore();
   private readonly pairing = new RemoteAccessPairing(this.devices);
+  private readonly pairWindow = new RemotePairWindow();
   private readonly events = new RemoteEventBus();
   private readonly usb = new RemoteUsbBridge();
   private readonly discovery = new RemoteDiscoveryService();
@@ -134,6 +136,13 @@ export class RemoteAccessController {
     }
     return this.pairing.create(baseUrl);
   }
+  /** 桌面端点击“允许新设备接入”：开 60 秒窗口并返回一次性 6 位配对码 */
+  openPairWindow() {
+    if (!this.server) throw new Error("Remote Access 服务未运行，请先启用服务");
+    return this.pairWindow.open();
+  }
+  closePairWindow() { this.pairWindow.close(); }
+  pairWindowState() { return this.pairWindow.state(); }
   usbStatus() { return this.usb.status(); }
   pairUsb(serial: string) {
     return this.enqueue(async () => {
@@ -199,6 +208,7 @@ export class RemoteAccessController {
       staticRoot: this.staticRoot,
       devices: this.devices,
       pairing: this.pairing,
+      pairWindow: this.pairWindow,
       service: this.service,
       commands: this.commands,
       events: this.events,
