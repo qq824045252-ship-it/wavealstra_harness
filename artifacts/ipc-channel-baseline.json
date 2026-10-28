@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 454,
-  "allRegistrations": 465,
-  "uniqueChannels": 450,
+  "mainRegistrations": 457,
+  "allRegistrations": 468,
+  "uniqueChannels": 453,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -392,10 +392,13 @@
     "python-runtime:remove",
     "python-runtime:status",
     "remoteAccess:cancelPairingSession",
+    "remoteAccess:closePairWindow",
     "remoteAccess:configure",
     "remoteAccess:createPairingSession",
     "remoteAccess:listDevices",
+    "remoteAccess:openPairWindow",
     "remoteAccess:pairUsb",
+    "remoteAccess:pairWindowState",
     "remoteAccess:revokeDevice",
     "remoteAccess:status",
     "remoteAccess:usbStatus",
@@ -472,7 +475,7 @@
         "channel": "subagent:active",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:140",
-          "src/main/capabilities/subagent/index.ts:590",
+          "src/main/capabilities/subagent/index.ts:653",
           "scripts/subagent-ipc-host-test.ts:86"
         ],
         "foreign": [
@@ -483,7 +486,7 @@
         "channel": "subagent:transcript",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:141",
-          "src/main/capabilities/subagent/index.ts:582"
+          "src/main/capabilities/subagent/index.ts:645"
         ],
         "foreign": []
       },
@@ -491,7 +494,7 @@
         "channel": "subagent:steer",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:144",
-          "src/main/capabilities/subagent/index.ts:584"
+          "src/main/capabilities/subagent/index.ts:647"
         ],
         "foreign": []
       },
@@ -499,7 +502,7 @@
         "channel": "subagent:cancel",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:147",
-          "src/main/capabilities/subagent/index.ts:588"
+          "src/main/capabilities/subagent/index.ts:651"
         ],
         "foreign": []
       }
@@ -508,7 +511,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2192",
+          "src/main/index.ts:2214",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -518,7 +521,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2196",
+          "src/main/index.ts:2218",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -528,7 +531,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2200",
+          "src/main/index.ts:2222",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -538,7 +541,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2211",
+          "src/main/index.ts:2233",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -548,7 +551,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2215",
+          "src/main/index.ts:2237",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -558,7 +561,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2219",
+          "src/main/index.ts:2241",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -568,7 +571,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2223",
+          "src/main/index.ts:2245",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [
