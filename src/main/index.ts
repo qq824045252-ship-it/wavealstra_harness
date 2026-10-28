@@ -677,14 +677,6 @@ function registerIpc(): void {
     return remoteAccessController.createPairingSession();
   });
   ipcMain.handle(RemoteAccessIpc.cancelPairingSession, (_event, id: string) => remoteAccessController?.cancelPairingSession(id));
-  ipcMain.handle(RemoteAccessIpc.usbStatus, () => {
-    if (!remoteAccessController) throw new Error("Remote Access 未初始化");
-    return remoteAccessController.usbStatus();
-  });
-  ipcMain.handle(RemoteAccessIpc.pairUsb, (_event, serial: string) => {
-    if (!remoteAccessController) throw new Error("Remote Access 未初始化");
-    return remoteAccessController.pairUsb(serial);
-  });
   ipcMain.handle(RemoteAccessIpc.openPairWindow, () => {
     if (!remoteAccessController) throw new Error("Remote Access 未初始化");
     return remoteAccessController.openPairWindow();
@@ -1206,7 +1198,7 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.updateAppSettings, async (_e, partial) => {
     const {
       memoryGatewayEnabled, memoryGatewayWriteEnabled, memoryGatewayPort,
-      remoteAccessEnabled, remoteAccessPort, remoteAccessBaseUrl, remoteAccessBindMode,
+      remoteAccessEnabled, remoteAccessPort, remoteAccessBaseUrl,
       ...ordinary
     } = partial;
     const hasGatewayChange = memoryGatewayEnabled !== undefined || memoryGatewayWriteEnabled !== undefined || memoryGatewayPort !== undefined;
@@ -1218,10 +1210,10 @@ function registerIpc(): void {
         port: memoryGatewayPort,
       });
     }
-    const hasRemoteChange = remoteAccessEnabled !== undefined || remoteAccessPort !== undefined || remoteAccessBaseUrl !== undefined || remoteAccessBindMode !== undefined;
+    const hasRemoteChange = remoteAccessEnabled !== undefined || remoteAccessPort !== undefined || remoteAccessBaseUrl !== undefined;
     if (hasRemoteChange) {
       if (!remoteAccessController) throw new Error("Remote Access 未初始化");
-      await remoteAccessController.configure({ enabled: remoteAccessEnabled, port: remoteAccessPort, baseUrl: remoteAccessBaseUrl, bindMode: remoteAccessBindMode });
+      await remoteAccessController.configure({ enabled: remoteAccessEnabled, port: remoteAccessPort, baseUrl: remoteAccessBaseUrl });
     }
     const next = await agentService.updateAppSettings(ordinary);
     // 关闭到托盘开关实时生效
@@ -3375,7 +3367,7 @@ app.whenReady().then(async () => {
   if (remoteAccessController) {
     try {
       const status = await remoteAccessController.start();
-      if (status.running) console.log(`[RemoteAccess] listening http://${status.host}:${status.port}`);
+      if (status.running) console.log(`[RemoteAccess] listening http://127.0.0.1:${status.port}`);
     } catch (error) {
       console.warn(`[RemoteAccess] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
     }

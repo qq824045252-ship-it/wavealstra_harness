@@ -17,10 +17,8 @@ import { RemoteAccessService } from "./RemoteAccessService";
 import { RemoteDeviceStore } from "./RemoteDeviceStore";
 import { RemoteEventBus, mapAgentPatchToRemoteEvent } from "./RemoteEventBus";
 import { RemoteTaskCommandService, type RemoteTrashLifecycle, type RemoteWorkGraphCleanup } from "./RemoteTaskCommandService";
-import { RemoteUsbBridge } from "./RemoteUsbBridge";
 import { remoteConfigureSchema } from "./remoteSchemas";
-import { isAllowedRemoteBaseUrl, listLanIpv4Addresses, resolveRemotePairingBaseUrl } from "./RemoteNetwork";
-import { RemoteDiscoveryService } from "./RemoteDiscoveryService";
+import { isAllowedRemoteBaseUrl } from "./RemoteNetwork";
 
 export class RemoteAccessController {
   private readonly settings = new AppSettingsStore();
@@ -28,8 +26,6 @@ export class RemoteAccessController {
   private readonly pairing = new RemoteAccessPairing(this.devices);
   private readonly pairWindow = new RemotePairWindow();
   private readonly events = new RemoteEventBus();
-  private readonly usb = new RemoteUsbBridge();
-  private readonly discovery = new RemoteDiscoveryService();
   private readonly service: RemoteAccessService;
   private readonly commands: RemoteTaskCommandService;
   private server: RemoteAccessServer | null = null;
@@ -70,16 +66,11 @@ export class RemoteAccessController {
 
   status(): RemoteStatus {
     const settings = this.settings.read();
-    const port = this.runningPort ?? settings.remoteAccessPort;
-    const bindMode = settings.remoteAccessBindMode === "lan" ? "lan" : "loopback";
     return {
       configuredEnabled: settings.remoteAccessEnabled,
       running: this.server !== null,
-      bindMode,
-      host: bindMode === "lan" ? "0.0.0.0" : "127.0.0.1",
-      port,
+      port: this.runningPort ?? settings.remoteAccessPort,
       baseUrl: settings.remoteAccessBaseUrl,
-      lanUrls: bindMode === "lan" ? listLanIpv4Addresses().map((address) => `http://${address}:${port}`) : [],
       error: this.lastError,
     };
   }
@@ -98,7 +89,6 @@ export class RemoteAccessController {
         remoteAccessEnabled: validated.enabled ?? previous.remoteAccessEnabled,
         remoteAccessPort: validated.port ?? previous.remoteAccessPort,
         remoteAccessBaseUrl: validated.baseUrl ?? previous.remoteAccessBaseUrl,
-        remoteAccessBindMode: validated.bindMode ?? previous.remoteAccessBindMode,
       });
       try {
         await this.stopNow();
@@ -110,7 +100,6 @@ export class RemoteAccessController {
           remoteAccessEnabled: previous.remoteAccessEnabled,
           remoteAccessPort: previous.remoteAccessPort,
           remoteAccessBaseUrl: previous.remoteAccessBaseUrl,
-          remoteAccessBindMode: previous.remoteAccessBindMode,
         });
         await this.stopNow();
         if (previous.remoteAccessEnabled) await this.startNow().catch(() => undefined);
@@ -126,13 +115,9 @@ export class RemoteAccessController {
     if (!settings.remoteAccessEnabled || !this.server) {
       throw new Error("Remote Access 服务未运行，请先启用并确认服务状态正常");
     }
-    const baseUrl = resolveRemotePairingBaseUrl({
-      baseUrl: settings.remoteAccessBaseUrl,
-      bindMode: settings.remoteAccessBindMode === "lan" ? "lan" : "loopback",
-      port: this.runningPort ?? settings.remoteAccessPort,
-    });
+    const baseUrl = settings.remoteAccessBaseUrl.trim();
     if (!baseUrl) {
-      throw new Error("当前没有手机可访问的配对地址：请先配置 Tailscale HTTPS 地址，或切换到局域网模式");
+      throw new Error("当前没有手机可访问的配对地址：请先填写 Tailscale / Cloudflare 连接地址");
     }
     return this.pairing.create(baseUrl);
   }
@@ -143,23 +128,6 @@ export class RemoteAccessController {
   }
   closePairWindow() { this.pairWindow.close(); }
   pairWindowState() { return this.pairWindow.state(); }
-  usbStatus() { return this.usb.status(); }
-  pairUsb(serial: string) {
-    return this.enqueue(async () => {
-      const settings = this.settings.read();
-      if (!settings.remoteAccessEnabled) throw new Error("请先启用 Remote Access");
-      if (!this.server) await this.startNow();
-      const port = this.runningPort ?? settings.remoteAccessPort;
-      const session = this.pairing.create(`http://127.0.0.1:${port}`);
-      try {
-        const device = await this.usb.prepare(serial, port, session.pairingUrl);
-        return { device, session, port };
-      } catch (error) {
-        this.pairing.cancel(session.pairingId);
-        throw error;
-      }
-    });
-  }
   cancelPairingSession(id: string): void { this.pairing.cancel(id); }
   publishArtifactChanged(taskId: string): void { this.events.publish('task.changed', { taskId }); }
   publishNotificationChanged(event: NotificationChangedEvent): void { this.events.publish("notification.changed", event); }
@@ -202,7 +170,6 @@ export class RemoteAccessController {
     if (!settings.remoteAccessEnabled) return this.status();
     if (this.server) return this.status();
     const server = new RemoteAccessServer({
-      host: settings.remoteAccessBindMode === "lan" ? "0.0.0.0" : "127.0.0.1",
       port: settings.remoteAccessPort,
       baseUrl: settings.remoteAccessBaseUrl,
       staticRoot: this.staticRoot,
@@ -218,11 +185,6 @@ export class RemoteAccessController {
       this.server = server;
       this.runningPort = address.port;
       this.lastError = undefined;
-      if (settings.remoteAccessBindMode === "lan") {
-        await this.discovery.start(address.port);
-      } else {
-        await this.discovery.stop();
-      }
       return this.status();
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -235,7 +197,6 @@ export class RemoteAccessController {
     const server = this.server;
     this.server = null;
     this.runningPort = null;
-    await this.discovery.stop();
     if (server) await server.stop();
   }
 }

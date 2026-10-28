@@ -84,5 +84,4 @@ export const remoteConfigureSchema = z.object({
   enabled: z.boolean().optional(),
   port: z.number().int().min(1024).max(65535).optional(),
   baseUrl: z.string().trim().max(500).optional(),
-  bindMode: z.enum(["loopback", "lan"]).optional(),
 }).strict();

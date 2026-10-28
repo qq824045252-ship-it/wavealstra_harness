@@ -64,7 +64,6 @@ export interface AppSettings {
   remoteAccessEnabled: boolean;
   remoteAccessPort: number;
   remoteAccessBaseUrl: string;
-  remoteAccessBindMode: "loopback" | "lan";
   theme: "light" | "dark" | "system";
   /** UI projection of Pi modelThinkingLevels; never persisted as product state. */
   modelPreferences?: ModelPreferencesDto;
@@ -180,7 +179,6 @@ const DEFAULTS: AppSettings = {
   remoteAccessEnabled: false,
   remoteAccessPort: 3352,
   remoteAccessBaseUrl: "",
-  remoteAccessBindMode: "loopback",
   theme: "system",
   modelPreferences: {},
   skillModeFilterEnabled: true,
@@ -273,7 +271,6 @@ export class AppSettingsStore {
         ? merged.remoteAccessPort
         : 3352;
       merged.remoteAccessBaseUrl = typeof merged.remoteAccessBaseUrl === "string" ? merged.remoteAccessBaseUrl.trim() : "";
-      merged.remoteAccessBindMode = merged.remoteAccessBindMode === "lan" ? "lan" : "loopback";
       merged.fontFamily = typeof merged.fontFamily === "string" ? merged.fontFamily : "";
       merged.notificationPreferences = normalizeNotificationPreferences(merged.notificationPreferences);
       merged.disabledExternalAgentIds = Array.isArray(merged.disabledExternalAgentIds)
@@ -332,9 +329,6 @@ export class AppSettingsStore {
     }
     if (partial.remoteAccessBaseUrl !== undefined) {
       next.remoteAccessBaseUrl = typeof partial.remoteAccessBaseUrl === "string" ? partial.remoteAccessBaseUrl.trim() : "";
-    }
-    if (partial.remoteAccessBindMode !== undefined) {
-      next.remoteAccessBindMode = partial.remoteAccessBindMode === "lan" ? "lan" : "loopback";
     }
     if (partial.fontSize !== undefined) {
       next.fontSize = normalizeFontScale(partial.fontSize);

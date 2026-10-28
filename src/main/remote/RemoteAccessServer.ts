@@ -4,11 +4,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, resolve, sep } from "node:path";
 import { ZodError } from "zod";
 import { REMOTE_API_VERSION } from "../../../shared/src/remote-contract";
-import { RemotePairingError, type RemoteAccessPairing } from "./RemoteAccessPairing";
+import { RemotePairingError } from "./RemoteAccessPairing";
+import type { RemoteAccessPairing } from "./RemoteAccessPairing";
 import type { RemoteAccessService } from "./RemoteAccessService";
 import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
-import { isPrivateIpv4 } from "./RemoteNetwork";
 import { RemoteConflictError, RemoteNotFoundError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
 import { RemotePairWindow } from "./RemotePairWindow";
 import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteDirectPairSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
@@ -16,10 +16,10 @@ import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema,
 const BODY_LIMIT = 512 * 1024;
 /** prompt 路由允许携带 base64 附件：4 个 × ~3MB 原始字节（≈4M base64 字符）+ JSON 包裹 */
 const PROMPT_BODY_LIMIT = 17 * 1024 * 1024;
-const ALLOWED_BIND_HOSTS = new Set(["127.0.0.1", "0.0.0.0"]);
+/** 服务固定监听 loopback：手机端只能经反代域名（Tailscale Serve / Cloudflare）或本机客户端访问 */
+const BIND_HOST = "127.0.0.1";
 
 export interface RemoteAccessServerOptions {
-  host?: string;
   port: number;
   baseUrl?: string;
   staticRoot?: string;
@@ -87,26 +87,23 @@ function mime(path: string): string {
 export class RemoteAccessServer {
   private server: Server | null = null;
   private readonly streams = new Set<ServerResponse>();
-  private readonly host: string;
 
   /** 未注入时退化为「永远关闭」的窗口：任何直连请求都拿不到令牌（默认拒绝） */
   private readonly pairWindow: RemotePairWindow;
 
   constructor(private readonly options: RemoteAccessServerOptions) {
-    this.host = options.host ?? "127.0.0.1";
-    if (!ALLOWED_BIND_HOSTS.has(this.host)) throw new Error("Remote Access 只允许监听 loopback 或显式 LAN 地址");
     this.pairWindow = options.pairWindow ?? new RemotePairWindow();
   }
 
   async start(): Promise<{ host: string; port: number }> {
-    if (this.server) return { host: this.host, port: this.addressPort() };
+    if (this.server) return { host: BIND_HOST, port: this.addressPort() };
     const server = createServer((request, response) => void this.handle(request, response));
     this.server = server;
     await new Promise<void>((resolveStart, reject) => {
       server.once("error", reject);
-      server.listen(this.options.port, this.host, () => { server.off("error", reject); resolveStart(); });
+      server.listen(this.options.port, BIND_HOST, () => { server.off("error", reject); resolveStart(); });
     });
-    return { host: this.host, port: this.addressPort() };
+    return { host: BIND_HOST, port: this.addressPort() };
   }
 
   async stop(): Promise<void> {
@@ -133,8 +130,7 @@ export class RemoteAccessServer {
    * 无 Origin 的请求（原生壳 / curl / Node fetch）直接放行；带 Origin 的浏览器请求必须命中：
    * - Capacitor WebView 壳（见下方第一组：无端口的 localhost 三种形式）
    * - 本机静态托管（http://localhost:<port> / http://127.0.0.1:<port>，须同端口）
-   * - LAN 模式下同网段私网 IP 的同端口来源（手机浏览器直开 LAN 地址）
-   * - 配置的 baseUrl origin（Tailscale serve 等反向代理）
+   * - 配置的 baseUrl origin（Tailscale Serve / Cloudflare 等反向代理）
    */
   private originAllowed(origin: string): boolean {
     // Capacitor WebView 壳的 Origin（无端口）：iOS = capacitor://localhost；
@@ -155,7 +151,6 @@ export class RemoteAccessServer {
     if (url.protocol !== "http:") return false;
     const port = String(this.addressPort());
     if ((url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.port === port) return true;
-    if (this.host === "0.0.0.0" && url.port === port && isPrivateIpv4(url.hostname)) return true;
     return false;
   }
 

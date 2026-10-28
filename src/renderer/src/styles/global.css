@@ -23026,14 +23026,15 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
 
 /* ===== Remote Access Settings · connection console ===== */
 .settings-modal:has(.remote-access-page) {
-  width: min(1100px, calc(100vw - 40px));
+  width: min(760px, calc(100vw - 40px));
   height: min(820px, calc(100vh - 40px));
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 40px);
 }
 
+/* 远程连接：与手机端同一套模型（连接地址 + 6 位配对码 + 已配对设备），没有 USB / LAN / 端口配置 */
 .remote-access-page {
-  width: min(900px, 100%);
+  width: min(680px, 100%);
   margin: 0 auto;
   padding: 4px 0 28px;
 }
@@ -23119,84 +23120,25 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   background: currentColor;
 }
 
-.remote-stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.remote-stat-card {
-  min-width: 0;
-  padding: 12px 13px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
-}
-
-.remote-stat-card.good {
-  border-color: color-mix(in srgb, #16805f 16%, var(--border-subtle));
-}
-
-.remote-stat-card.warn {
-  border-color: color-mix(in srgb, #b35c19 16%, var(--border-subtle));
-}
-
-.remote-stat-label {
-  color: var(--fg-muted);
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.remote-stat-value {
-  overflow: hidden;
-  margin-top: 3px;
-  color: var(--fg);
-  font-size: 14px;
-  font-weight: 680;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.remote-stat-detail {
-  overflow: hidden;
-  margin-top: 3px;
-  color: var(--fg-muted);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .remote-notice {
-  margin: 12px 0 0;
-  padding: 9px 11px;
-  border: 1px solid color-mix(in srgb, #16805f 16%, var(--border-subtle));
-  border-radius: 9px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, #16805f 22%, var(--border-subtle));
+  border-radius: 10px;
   color: #16805f;
-  background: color-mix(in srgb, #16805f 6%, transparent);
-  font-size: 11.5px;
+  background: color-mix(in srgb, #16805f 7%, transparent);
+  font-size: 12px;
 }
 
 .remote-notice.error {
+  border-color: color-mix(in srgb, var(--danger, #d14343) 24%, var(--border-subtle));
   color: var(--danger, #d14343);
-  border-color: color-mix(in srgb, var(--danger, #d14343) 20%, var(--border-subtle));
-  background: color-mix(in srgb, var(--danger, #d14343) 6%, transparent);
+  background: color-mix(in srgb, var(--danger, #d14343) 7%, transparent);
 }
 
-.remote-layout-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.remote-tailscale-panel {
-  grid-column: 1 / -1;
-}
-
-.remote-panel,
-.remote-pairing-card {
+.remote-panel {
   min-width: 0;
+  margin-top: 12px;
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface-sidebar) 34%, var(--surface-main));
@@ -23251,128 +23193,91 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   padding: 13px 15px 15px;
 }
 
-.remote-setting-row {
+.remote-setting-hint {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.remote-setting-label,
-.remote-field > span {
-  color: var(--fg);
-  font-size: 12px;
-  font-weight: 620;
-}
-
-.remote-setting-hint {
-  margin-top: 3px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
   color: var(--fg-muted);
-  font-size: 10.5px;
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
-.remote-inline-control,
+.remote-note-action {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
 .remote-field-line,
 .remote-command-row,
 .remote-pairing-actions {
   display: flex;
   align-items: center;
-  gap: 7px;
-}
-
-.remote-port-input {
-  width: 82px;
-  text-align: center;
-}
-
-.remote-binding-note {
-  display: flex;
-  align-items: flex-start;
   gap: 8px;
-  margin-top: 13px;
+  min-width: 0;
+}
+
+.remote-field-line .settings-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.remote-command-row {
+  justify-content: space-between;
+  margin-top: 12px;
   padding: 9px 10px;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--surface-sidebar) 62%, transparent);
+  background: color-mix(in srgb, var(--surface-sidebar) 58%, transparent);
+}
+
+.remote-command-row code {
+  overflow: hidden;
   color: var(--fg-secondary);
-}
-
-.remote-binding-note.warn {
-  border: 1px solid color-mix(in srgb, #b35c19 18%, var(--border-subtle));
-  background: color-mix(in srgb, #b35c19 6%, var(--surface-sidebar));
-}
-
-.remote-binding-note.warn .remote-binding-dot {
-  background: #b35c19;
-}
-
-.remote-note-action {
-  margin-top: 8px;
-}
-.remote-binding-note b,
-.remote-binding-note span {
-  display: block;
-}
-
-.remote-binding-note b {
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.remote-binding-note span {
-  margin-top: 2px;
-  color: var(--fg-muted);
   font-size: 10.5px;
-  line-height: 1.4;
-}
-
-.remote-binding-dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 4px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #16805f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .remote-icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   color: var(--fg-secondary);
-  background: color-mix(in srgb, var(--surface-elevated) 76%, transparent);
+  background: transparent;
+  cursor: pointer;
 }
 
 .remote-icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
   color: var(--fg);
-  background: var(--surface-hover);
 }
 
 .remote-empty-state {
-  padding: 14px;
-  border: 1px dashed var(--border-default);
-  border-radius: 10px;
+  padding: 6px 0;
   color: var(--fg-muted);
-  background: color-mix(in srgb, var(--surface-sidebar) 36%, transparent);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: 12px;
 }
 
-.remote-usb-device,
+.remote-paired-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 22px;
+}
+
 .remote-paired-device {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  min-height: 56px;
 }
 
-.remote-usb-device + .remote-usb-device,
 .remote-paired-device + .remote-paired-device {
-  margin-top: 9px;
-  padding-top: 9px;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -23380,19 +23285,19 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
-  border-radius: 10px;
+  border-radius: 9px;
   color: var(--fg-secondary);
-  background: color-mix(in srgb, var(--surface-sidebar) 82%, transparent);
+  background: color-mix(in srgb, var(--surface-elevated) 82%, transparent);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 650;
 }
 
 .remote-device-avatar.online {
   color: #16805f;
-  background: color-mix(in srgb, #16805f 9%, var(--surface-sidebar));
+  background: color-mix(in srgb, #16805f 10%, var(--surface-elevated));
 }
 
 .remote-device-copy {
@@ -23418,81 +23323,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   white-space: nowrap;
 }
 
-.remote-device-state {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 4px;
-  color: var(--fg-muted);
-  font-size: 10.5px;
-}
-
-.remote-device-state.online {
-  color: #16805f;
-}
-
-.remote-device-primary {
-  flex: 0 0 auto;
-}
-
-.remote-field {
-  display: block;
-}
-
-.remote-field-line {
-  margin-top: 7px;
-}
-
-.remote-field-line .settings-input {
-  min-width: 0;
-  flex: 1;
-}
-
-.remote-command-row {
-  justify-content: space-between;
-  margin-top: 12px;
-  padding: 9px 10px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--surface-sidebar) 58%, transparent);
-}
-
-.remote-command-row code {
-  overflow: hidden;
-  color: var(--fg-secondary);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.remote-devices-panel {
-  margin-top: 12px;
-}
-
-.remote-paired-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 22px;
-}
-
-.remote-paired-device {
-  min-height: 56px;
-}
-
-.remote-capabilities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-.remote-capabilities span {
-  padding: 2px 6px;
-  border-radius: 999px;
-  color: var(--fg-muted);
-  background: color-mix(in srgb, var(--surface-sidebar) 76%, transparent);
-  font-size: 9.5px;
-}
-
 .remote-revoke-button {
   flex: 0 0 auto;
   padding: 5px 7px;
@@ -23504,18 +23334,11 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   color: var(--danger, #d14343);
 }
 
-.remote-pairing-card {
-  display: grid;
-  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
-  gap: 18px;
-  margin-top: 12px;
-  padding: 15px;
-}
-
-.remote-pairing-copy {
+.remote-pairing-body {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .remote-pairing-timer {
@@ -23528,32 +23351,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   font-size: 10.5px;
 }
 
-.remote-pairing-body {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.remote-pairing-body img {
-  width: 116px;
-  height: 116px;
-  flex: 0 0 auto;
-  border: 7px solid #fff;
-  border-radius: 10px;
-}
-
-.remote-pairing-link {
-  min-width: 0;
-  flex: 1;
-}
-
-.remote-pairing-link .settings-input {
-  width: 100%;
-  margin-bottom: 8px;
-  font-size: 10px;
-}
-
 @media (max-width: 860px) {
   .settings-modal:has(.remote-access-page) {
     width: calc(100vw - 20px);
@@ -23561,35 +23358,19 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
     max-width: calc(100vw - 20px);
     max-height: calc(100vh - 20px);
   }
-  .remote-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .remote-layout-grid {
-    grid-template-columns: 1fr;
-  }
-  .remote-tailscale-panel {
-    grid-column: auto;
-  }
   .remote-paired-list {
-    grid-template-columns: 1fr;
-  }
-  .remote-pairing-card {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 620px) {
   .remote-hero-main,
-  .remote-setting-row,
   .remote-pairing-body {
     align-items: stretch;
     flex-direction: column;
   }
   .remote-hero-control {
     justify-content: space-between;
-  }
-  .remote-stat-grid {
-    grid-template-columns: 1fr;
   }
   .remote-field-line,
   .remote-command-row {

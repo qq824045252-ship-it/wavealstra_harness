@@ -8,10 +8,9 @@ import { mapRemoteSpace, mapRemoteTask } from "../src/main/remote/RemoteDtoMappe
 import { RemoteEventBus, mapAgentPatchToRemoteEvent } from "../src/main/remote/RemoteEventBus";
 import { RemoteDeviceStore } from "../src/main/remote/RemoteDeviceStore";
 import { RemoteAccessPairing } from "../src/main/remote/RemoteAccessPairing";
+import { RemotePairWindow } from "../src/main/remote/RemotePairWindow";
 import { RemoteAccessServer } from "../src/main/remote/RemoteAccessServer";
 import { RemoteAccessService } from "../src/main/remote/RemoteAccessService";
-import { parseAdbDevices } from "../src/main/remote/RemoteUsbBridge";
-import { listLanIpv4Addresses, resolveRemotePairingBaseUrl } from "../src/main/remote/RemoteNetwork";
 import { cleanupRemoteUploads, RemoteConflictError, RemoteTaskCommandService, RemoteValidationError } from "../src/main/remote/RemoteTaskCommandService";
 import { RemoteClient } from "../app/remote/src/api/RemoteClient";
 import { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory, useRemoteStore } from "../app/remote/src/store/remoteStore";
@@ -89,13 +88,6 @@ assert.deepEqual(
   "cross-client user messages must survive the remote patch mapping",
 );
 
-const parsedUsb = parseAdbDevices("List of devices attached\r\nABC123 device product:foo model:Pixel_9 device:tokay transport_id:7\r\nXYZ unauthorized usb:1-2\r\n");
-assert.equal(parsedUsb.length, 2);
-assert.deepEqual(parsedUsb[0], { serial: "ABC123", state: "device", product: "foo", model: "Pixel 9", device: "tokay", transportId: "7" });
-assert.equal(parsedUsb[1]?.state, "unauthorized");
-assert.equal(resolveRemotePairingBaseUrl({ baseUrl: "https://desktop.example.ts.net", bindMode: "loopback", port: 3352, lanAddresses: [] }), "https://desktop.example.ts.net");
-assert.equal(resolveRemotePairingBaseUrl({ baseUrl: "", bindMode: "lan", port: 3352, lanAddresses: ["192.168.10.12"] }), "http://192.168.10.12:3352");
-assert.equal(resolveRemotePairingBaseUrl({ baseUrl: "", bindMode: "loopback", port: 3352, lanAddresses: ["192.168.10.12"] }), null, "network pairing must not emit an unusable loopback URL");
 
 {
   const history = {
@@ -214,8 +206,6 @@ try {
     respondToAction: (_taskId: string, toolCallId: string) => { if (toolCallId === "stale") throw new RemoteConflictError("stale"); },
   };
   const server = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: service as never, commands: commands as never, events });
-  assert.doesNotThrow(() => new RemoteAccessServer({ port: 0, host: "0.0.0.0", devices, pairing, service: service as never, commands: commands as never, events }));
-  assert.throws(() => new RemoteAccessServer({ port: 0, host: "192.168.1.10", devices, pairing, service: service as never, commands: commands as never, events }));
   assert.doesNotThrow(() => pairing.create("http://192.168.1.20:3352"));
   assert.throws(() => pairing.create("http://8.8.8.8:3352"));
   const address = await server.start();
@@ -243,15 +233,6 @@ try {
   assert.equal((await httpJson(proxiedAddress.port, "GET", "/v1/bootstrap", { origin: "https://other.example.ts.net", authorization: `Bearer ${token}` })).status, 403);
   await proxied.stop();
 
-  const lanAddress = listLanIpv4Addresses()[0];
-  if (lanAddress) {
-    const lanServer = new RemoteAccessServer({ port: 0, host: "0.0.0.0", staticRoot: webRoot, devices, pairing, service: service as never, commands: commands as never, events });
-    const lanBound = await lanServer.start();
-    assert.equal((await fetch(`http://${lanAddress}:${lanBound.port}/healthz`)).status, 200, "LAN bind must be reachable through the physical RFC1918 address");
-    assert.equal((await httpJson(lanBound.port, "GET", "/v1/bootstrap", { origin: `http://${lanAddress}:${lanBound.port}`, authorization: `Bearer ${token}` })).status, 200, "LAN 模式必须放行私网 IP 同端口来源");
-    assert.equal((await httpJson(lanBound.port, "GET", "/v1/bootstrap", { origin: `http://8.8.8.8:${lanBound.port}`, authorization: `Bearer ${token}` })).status, 403, "LAN 模式仍须拒绝公网来源");
-    await lanServer.stop();
-  }
   const badPair = pairing.create(base);
   assert.equal((await fetch(`${base}/v1/pair/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pairingId: badPair.pairingId, secret: `${badPair.secret}x`, deviceName: "Bad" }) })).status, 400);
   assert.equal((await fetch(`${base}/v1/bootstrap`)).status, 401);

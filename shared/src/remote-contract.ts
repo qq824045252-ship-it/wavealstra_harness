@@ -423,16 +423,12 @@ export interface RemoteEventEnvelope<T = unknown> {
   payload: T
 }
 
-export type RemoteBindMode = 'loopback' | 'lan'
-
 export interface RemoteStatus {
   configuredEnabled: boolean
   running: boolean
-  bindMode: RemoteBindMode
-  host: '127.0.0.1' | '0.0.0.0'
+  /** 服务固定监听 127.0.0.1；手机端通过 Tailscale Serve / Cloudflare 域名反代访问 */
   port: number
   baseUrl: string
-  lanUrls: string[]
   error?: string
 }
 
@@ -443,33 +439,10 @@ export interface RemotePairingSession {
   pairingUrl: string
 }
 
-export interface RemoteUsbDevice {
-  serial: string
-  state: string
-  product?: string
-  model?: string
-  device?: string
-  transportId?: string
-}
-
-export interface RemoteUsbStatus {
-  adbAvailable: boolean
-  adbPath?: string
-  devices: RemoteUsbDevice[]
-  error?: string
-}
-
-export interface RemoteUsbPairingResult {
-  device: RemoteUsbDevice
-  session: RemotePairingSession
-  port: number
-}
-
 export interface RemoteConfigureRequest {
   enabled?: boolean
   port?: number
   baseUrl?: string
-  bindMode?: RemoteBindMode
 }
 
 export const RemoteAccessIpc = {
@@ -479,8 +452,6 @@ export const RemoteAccessIpc = {
   revokeDevice: 'remoteAccess:revokeDevice',
   createPairingSession: 'remoteAccess:createPairingSession',
   cancelPairingSession: 'remoteAccess:cancelPairingSession',
-  usbStatus: 'remoteAccess:usbStatus',
-  pairUsb: 'remoteAccess:pairUsb',
   openPairWindow: 'remoteAccess:openPairWindow',
   closePairWindow: 'remoteAccess:closePairWindow',
   pairWindowState: 'remoteAccess:pairWindowState',

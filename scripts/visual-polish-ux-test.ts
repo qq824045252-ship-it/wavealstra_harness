@@ -140,24 +140,33 @@ excludes(
 );
 contains(
   "src/renderer/src/components/settings/RemoteAccessTab.tsx",
-  'className="remote-stat-grid"',
-  "remote page must retain the overview status grid",
-);
-contains(globalCssPath, ".remote-layout-grid", "remote page must retain structured connection panels");
-contains(
-  "src/renderer/src/components/settings/RemoteAccessTab.tsx",
-  "canCreateNetworkPairing",
-  "network pairing must stay disabled until the service and a reachable endpoint are ready",
+  'className="remote-panel"',
+  "remote page must keep its structured panels",
 );
 contains(
   "src/renderer/src/components/settings/RemoteAccessTab.tsx",
-  "仅 tailnet 内可访问",
-  "Tailscale Serve must be described as tailnet-only instead of public internet exposure",
+  "允许新设备接入",
+  "desktop pairing entry must stay one click away",
 );
 contains(
   "src/renderer/src/components/settings/RemoteAccessTab.tsx",
-  "remotePortValid",
-  "remote port editing must validate the backend-supported range before apply",
+  "remote-pair-code",
+  "the one-time 6 digit code must be rendered for the phone to type",
+);
+contains(
+  "src/renderer/src/components/settings/RemoteAccessTab.tsx",
+  "tailscale serve --bg",
+  "Tailscale Serve command must stay documented where the address is configured",
+);
+excludes(
+  "src/renderer/src/components/settings/RemoteAccessTab.tsx",
+  "USB 数据线",
+  "USB/ADB pairing was retired: Android pairs with address + one-time code",
+);
+excludes(
+  "src/renderer/src/components/settings/RemoteAccessTab.tsx",
+  "bindMode",
+  "LAN bind-mode switching was retired: the service only listens on loopback",
 );
 
 console.log("visual-polish-ux-test: ok");
