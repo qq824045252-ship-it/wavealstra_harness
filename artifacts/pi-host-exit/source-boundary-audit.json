@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-28T01:44:53.278Z",
+  "at": "2026-10-29T01:26:53.831Z",
   "scope": [
     "src",
     "app",
@@ -20,15 +20,15 @@
       "test": false
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "lines": 55,
-      "sha256": "ba0a3e623b2c4f114198cd8fcf64b7f6bff86217897eb630fd610dc314271efb",
+      "sha256": "c1b8db4f651001982d7740894b889ab8f603080c64ef66b0832e8e8ba9b16f41",
       "test": false
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/web-Bi6_AmEf.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/web-Bh48nAQy.js",
       "lines": 1,
-      "sha256": "53f4095fcdaff8b8d07ce21938618009cb611e8ca9a8424a8b6809141a4a67c3",
+      "sha256": "044d340dd446008c8c2c9d1d65713fd7884ca55a70e47b0dc68885ed12bea75b",
       "test": false
     },
     {
@@ -51,14 +51,14 @@
     },
     {
       "file": "app/remote/src/App.tsx",
-      "lines": 1999,
-      "sha256": "ff3264ecb67f293d31e6ecb3a234570c8d72fd986c274aeaab9580019af84d1b",
+      "lines": 2119,
+      "sha256": "bc3c38c5b44560af2b53e9a627d1881a7d915352cf46a684da1a469da462d7fb",
       "test": false
     },
     {
       "file": "app/remote/src/api/RemoteClient.ts",
-      "lines": 141,
-      "sha256": "2e1208fa6856d83977ecd377e242ae2668ca85f059442fc9ba0e079a52457db8",
+      "lines": 153,
+      "sha256": "2cdce36ad4bd74d3d2ded169ada5750c13118a5b828a6b5e18d2b0ad1c6372cd",
       "test": false
     },
     {
@@ -69,26 +69,20 @@
     },
     {
       "file": "app/remote/src/api/connectionSetup.ts",
-      "lines": 52,
-      "sha256": "e7f9af35ee9c4ff17afa480f419163425706aa5faeabd7741112e044fff52580",
+      "lines": 73,
+      "sha256": "54bc8f106af0ab11bc2b22fda6e626ce551f87438e3e1450ba679afc5e95e755",
       "test": false
     },
     {
       "file": "app/remote/src/api/credentialStore.ts",
-      "lines": 59,
-      "sha256": "ff6075579872d57ecf799f9aad2e924564587afdeb580efc19483068e88f9228",
-      "test": false
-    },
-    {
-      "file": "app/remote/src/api/remoteDiscovery.ts",
-      "lines": 62,
-      "sha256": "54730ef4a90c7b05bf0fa0ba47869ec3352cd6baac91f1fea6dfaf95c7ab0f0b",
+      "lines": 279,
+      "sha256": "21e43daff4c11b484471f09700071fbf19b1991dda654ba577a44be30df30ff1",
       "test": false
     },
     {
       "file": "app/remote/src/components/ConnectPage.tsx",
-      "lines": 170,
-      "sha256": "bf0f5b7dae9551bb2c523e5b10d268cb0eebcf12bf0b7b5039c734978f646072",
+      "lines": 339,
+      "sha256": "074c288c7dba8e8cac1f387733738cc58cecbff6f850e23f28dd00f00cc58ddd",
       "test": false
     },
     {
@@ -105,14 +99,14 @@
     },
     {
       "file": "app/remote/src/components/RemoteImages.tsx",
-      "lines": 117,
-      "sha256": "a2bc3cbb4ff448ce68b85ef220c8f1e40b23e034bddb6b7c14c8e8ec6ad98c95",
+      "lines": 222,
+      "sha256": "747cc43dc619c01c146f25614dc37db3688b811a58354b9c46e9943bd12a330c",
       "test": false
     },
     {
       "file": "app/remote/src/components/RemoteMarkdown.tsx",
-      "lines": 69,
-      "sha256": "ae743fc81b904cbb8f9bc2dfe19742749a7976b1c77fceed1ad8206f18213205",
+      "lines": 79,
+      "sha256": "11753b5c822ea0bfbae21944290430aef2806bc2472357889907fa540b3e9c1b",
       "test": false
     },
     {
@@ -159,8 +153,8 @@
     },
     {
       "file": "app/remote/src/store/remoteStore.ts",
-      "lines": 1130,
-      "sha256": "cbb0b4d16c3a95f201c774036e9fb8081e6d88ca635ec6c28dde1f46fe34de77",
+      "lines": 1252,
+      "sha256": "9c2c0c2a1f901855ff96b776448f6f1f0c365867b33584a97d1efb523a99edab",
       "test": false
     },
     {
@@ -207,8 +201,8 @@
     },
     {
       "file": "shared/src/remote-contract.ts",
-      "lines": 479,
-      "sha256": "b5db44327261ff5e5a7c4efb3ca712385d094f76cbee62c473b6ceff59106c12",
+      "lines": 459,
+      "sha256": "0ebf001e95f004076456790b355d649b72ab6f5aee04cb9ce9af1ae524ff46a9",
       "test": false
     },
     {
@@ -219,8 +213,8 @@
     },
     {
       "file": "src/main/AppSettingsStore.ts",
-      "lines": 539,
-      "sha256": "3e63f36e688f8b8c319e78801e54972ec2e82863595613a8533c9320836ab9f1",
+      "lines": 533,
+      "sha256": "a1c7586b7347e05d063c6d4441b980b9dece1a6d94ca8455d0630639012160cf",
       "test": false
     },
     {
@@ -633,8 +627,8 @@
     },
     {
       "file": "src/main/agent/durable/DurableMcp.ts",
-      "lines": 210,
-      "sha256": "f1091c0abf039ef97d3d5a79c9449cbabdb171fb521d6066b99f97b81df59610",
+      "lines": 227,
+      "sha256": "9dc13855a071254b4a2acda8080dc2a13ec8a2c60f61b2ee7214104ed93bb72a",
       "test": false
     },
     {
@@ -1623,8 +1617,8 @@
     },
     {
       "file": "src/main/index.ts",
-      "lines": 3486,
-      "sha256": "34634fe71616fa8323d5db940b458c455c92532a8a7c6dc2dc7c41e4889a2a50",
+      "lines": 3484,
+      "sha256": "71082cf17ee0ad602ec08923b1da55b1963f4e5122dea0eaf092115c09a932d7",
       "test": false
     },
     {
@@ -2235,8 +2229,8 @@
     },
     {
       "file": "src/main/remote/RemoteAccessController.ts",
-      "lines": 232,
-      "sha256": "a493b11408a970a0d42ea6b4a0484f29527815068aa84f965f136bf06228540d",
+      "lines": 203,
+      "sha256": "d7efaee625e472b14ad07cfdd7e2b764c719968f4dca70ffc5d8f0601e77e4ca",
       "test": false
     },
     {
@@ -2247,8 +2241,8 @@
     },
     {
       "file": "src/main/remote/RemoteAccessServer.ts",
-      "lines": 392,
-      "sha256": "44fa6778bc76d72c45ce4f4e8705f77c902bb5a7976da8a5d69cffc2bff2097d",
+      "lines": 406,
+      "sha256": "a1470db00dd57332a501259eb228e61124224753c914dba8959b1803570bad19",
       "test": false
     },
     {
@@ -2261,12 +2255,6 @@
       "file": "src/main/remote/RemoteDeviceStore.ts",
       "lines": 161,
       "sha256": "5610a2c17c5b57f3eb155eb55e27d922492f7451f9a5ef1f066dd765d6b234cf",
-      "test": false
-    },
-    {
-      "file": "src/main/remote/RemoteDiscoveryService.ts",
-      "lines": 167,
-      "sha256": "a69118ff746509b7ee4566ca9ae47dacd3c3844ab43ce3d2eacf7113fc6712ba",
       "test": false
     },
     {
@@ -2289,8 +2277,14 @@
     },
     {
       "file": "src/main/remote/RemoteNetwork.ts",
-      "lines": 52,
-      "sha256": "68477a8db7a6f9f6f48d20354096e6bae184aa705af1d254dbcbc9a804a6e216",
+      "lines": 22,
+      "sha256": "61ed27f93ddfd6c2375e760040eef6b3462ebde2a3aa9c846420217b7cf47502",
+      "test": false
+    },
+    {
+      "file": "src/main/remote/RemotePairWindow.ts",
+      "lines": 59,
+      "sha256": "491b00e3800476252cd94f2e87224269792e5976ca3d8e619a2120abe095c08b",
       "test": false
     },
     {
@@ -2300,15 +2294,9 @@
       "test": false
     },
     {
-      "file": "src/main/remote/RemoteUsbBridge.ts",
-      "lines": 121,
-      "sha256": "35816193729bc541e3803ee6b1711adde056a3b494ec945b5f490dd229e37ca8",
-      "test": false
-    },
-    {
       "file": "src/main/remote/remoteSchemas.ts",
-      "lines": 82,
-      "sha256": "edf0e56a7a374172d854796945d6fb6efd3ed3e63599315d96763bce77bf5579",
+      "lines": 88,
+      "sha256": "173bad1034a234b4c24dfbcd4f056e4047e4b0c4e144936bedce7692ee0dd12d",
       "test": false
     },
     {
@@ -2631,14 +2619,14 @@
     },
     {
       "file": "src/preload/index.d.ts",
-      "lines": 789,
-      "sha256": "d137bad4e8e6ed6974a9565c9883cbb0e8c9645172335de528bae86cd730fc4b",
+      "lines": 790,
+      "sha256": "70c1a54a403415038bc7b0331173fea9c6d4c1f3fabe1bcce897d71330c2ee4d",
       "test": false
     },
     {
       "file": "src/preload/index.ts",
-      "lines": 1376,
-      "sha256": "a1686ede1f5532227548e0e98ca2b2101ce2ca184848411176feac8357dc005a",
+      "lines": 1377,
+      "sha256": "07f1ffa37068e2c82d0a960554ca7de756a018d5c5d87d0167c6e216893f162d",
       "test": false
     },
     {
@@ -2661,8 +2649,8 @@
     },
     {
       "file": "src/renderer/src/components/Sidebar.tsx",
-      "lines": 1023,
-      "sha256": "932740e0a2e54c48f445d0b49fec0d589edd75bf269fc03f2e35540ecc4bcb4e",
+      "lines": 1030,
+      "sha256": "8ee0e10cf65b67cd0f22ddb95362fc24398121f4acf188eb35f661946d05475e",
       "test": false
     },
     {
@@ -3165,8 +3153,8 @@
     },
     {
       "file": "src/renderer/src/components/common/SvgFencePreview.tsx",
-      "lines": 179,
-      "sha256": "d938c280d73d8822103d024dc92e147b102f9dcced8729a9f1448ad8b3ae7b62",
+      "lines": 215,
+      "sha256": "8f97d4c556a5dd9b7e76e3c72a586047f52a3c1f2b16440b8d7361e8646a207f",
       "test": false
     },
     {
@@ -3633,8 +3621,8 @@
     },
     {
       "file": "src/renderer/src/components/settings/RemoteAccessTab.tsx",
-      "lines": 547,
-      "sha256": "7aa25ac25dc17d4918a170be9a99e70f92955eaf3ef483616e63e50c179be30a",
+      "lines": 322,
+      "sha256": "a03466d2c0ac5d967a1ed332d59e2ffc21340658c316fe88018b4e37245f3e12",
       "test": false
     },
     {
@@ -3681,8 +3669,8 @@
     },
     {
       "file": "src/renderer/src/components/sidebar/TaskItem.tsx",
-      "lines": 744,
-      "sha256": "f0059f945cb963579ef10df3f98a6baf0ec54447de29d50951bbd1d2092a52a4",
+      "lines": 747,
+      "sha256": "67a7b52c6b43efe99a33e85cf08fc959c8fe2f18e9189e6d940030eff10cfb44",
       "test": false
     },
     {
@@ -4824,52 +4812,46 @@
   ],
   "nativeCalls": [
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 8,
       "method": "abort",
       "expression": "e.controller.abort"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "abort",
       "expression": "this.controller?.abort"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "abort",
       "expression": "e.abort"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "abort",
       "expression": "e.abort"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "abort",
       "expression": "e.abort"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "prompt",
       "expression": "i.prompt"
     },
     {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
+      "file": "app/remote/android/app/src/main/assets/public/assets/index-MbudC_Yl.js",
       "line": 21,
       "method": "abort",
       "expression": "e.abort"
-    },
-    {
-      "file": "app/remote/android/app/src/main/assets/public/assets/index-C9FTTdz0.js",
-      "line": 52,
-      "method": "abort",
-      "expression": "t.abort"
     },
     {
       "file": "app/remote/src/api/RemoteEventStream.ts",
@@ -4896,20 +4878,14 @@
       "expression": "controller.abort"
     },
     {
-      "file": "app/remote/src/api/remoteDiscovery.ts",
-      "line": 30,
-      "method": "abort",
-      "expression": "controller.abort"
-    },
-    {
       "file": "app/remote/src/store/remoteStore.ts",
-      "line": 669,
+      "line": 791,
       "method": "prompt",
       "expression": "client.prompt"
     },
     {
       "file": "app/remote/src/store/remoteStore.ts",
-      "line": 929,
+      "line": 1051,
       "method": "abort",
       "expression": "client.abort"
     },
@@ -5305,25 +5281,25 @@
     },
     {
       "file": "src/main/index.ts",
-      "line": 981,
+      "line": 979,
       "method": "prompt",
       "expression": "agentService.prompt"
     },
     {
       "file": "src/main/index.ts",
-      "line": 1056,
+      "line": 1054,
       "method": "abort",
       "expression": "agentService.abort"
     },
     {
       "file": "src/main/index.ts",
-      "line": 2510,
+      "line": 2508,
       "method": "prompt",
       "expression": "externalAgentRuntime.prompt"
     },
     {
       "file": "src/main/remote/RemoteAccessServer.ts",
-      "line": 278,
+      "line": 292,
       "method": "abort",
       "expression": "this.options.commands.abort"
     },
@@ -5432,5 +5408,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "f16606a7107030b74074f60009474833f5502ceca0ce34a6af5989e218a75617"
+  "sourceSha256": "ea29c643af31b411841f83c3e9ab048e5416618603b63a46701e29c3273b867e"
 }
