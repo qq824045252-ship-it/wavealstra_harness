@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconCheck, IconCopy } from "./icons";
 
 const MAX_SVG_SOURCE_BYTES = 512 * 1024;
@@ -113,19 +113,55 @@ export default function SvgFencePreview({ code }: { code: string }): React.JSX.E
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [copied, setCopied] = useState(false);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const urlRef = useRef<string | null>(null);
   const validationError = useMemo(() => validateSvgSource(code), [code]);
 
+  /**
+   * 流式输出时 `code` 每个 token 都会变。旧实现是「立刻销毁旧 blob → 立刻换新 src」，
+   * 而 <img> 在新 SVG 解码完成前没有内在尺寸（width:100%;height:auto ⇒ 高度 0），
+   * 于是整块图形在 0 高与真实高度之间反复抽搐，把下面的内容推上推下 —— 长对话里表现为
+   * 聊天记录自己乱跳。现在：① 停止输入 ~220ms 才重建；② 新图先离屏解码，成功后才换 src，
+   * 保证可见高度在整段流式输出期间保持不变。
+   */
   useEffect(() => {
     if (validationError) {
+      const previous = urlRef.current;
+      urlRef.current = null;
       setObjectUrl(null);
+      if (previous) URL.revokeObjectURL(previous);
       return undefined;
     }
-    const url = URL.createObjectURL(
-      new Blob([code], { type: "image/svg+xml;charset=utf-8" }),
-    );
-    setObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
+    let cancelled = false;
+    let pending: string | null = null;
+    const timer = setTimeout(() => {
+      const url = URL.createObjectURL(
+        new Blob([code], { type: "image/svg+xml;charset=utf-8" }),
+      );
+      pending = url;
+      const probe = new Image();
+      const settle = (ok: boolean) => {
+        if (cancelled) { URL.revokeObjectURL(url); return; }
+        if (!ok) { URL.revokeObjectURL(url); return; } // 解码失败：保留上一张，别把高度清空
+        const previous = urlRef.current;
+        urlRef.current = url;
+        setObjectUrl(url);
+        if (previous) URL.revokeObjectURL(previous);
+      };
+      probe.onload = () => settle(true);
+      probe.onerror = () => settle(false);
+      probe.src = url;
+    }, 220);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      // 只回收「还没被采用」的那张，正在显示的不能动
+      if (pending && urlRef.current !== pending) URL.revokeObjectURL(pending);
+    };
   }, [code, validationError]);
+
+  useEffect(() => () => {
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+  }, []);
 
   const copy = (): void => {
     void navigator.clipboard.writeText(code);
