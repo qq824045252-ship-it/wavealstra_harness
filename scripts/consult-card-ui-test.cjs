@@ -56,6 +56,10 @@ app.whenReady().then(async () => {
     writeFileSync(html, '<!doctype html><html lang="zh"><meta charset="UTF-8"><div id="root"></div><link rel="stylesheet" href="consult-card-ui.css"><script src="consult-card-ui.js"></script></html>');
     await win.loadFile(html);
     await wait('Boolean(window.consultCardTest) && document.querySelectorAll("[data-testid^=consult-worker-]").length === 3');
+    // 固定桌面视口：CI runner 的虚拟屏只有 1024x768，窗口尺寸会被宿主钳制，
+    // 之前 1008x655 与本地 1360x1000 混用，拖拽/尺寸断言随机器漂移。这里显式统一。
+    await setViewport(1008, 655);
+    await settle();
 
     // ---- 1. Floating detail panel geometry ----
     await evaluate('window.consultCardTest.openDetails()');

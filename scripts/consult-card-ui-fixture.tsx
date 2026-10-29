@@ -125,7 +125,9 @@ const rect = (selector: string) => {
   clickFollowup: () => (document.querySelector("[data-testid=consult-followup]") as HTMLButtonElement).click(),
   dragBy: async (dx: number, dy: number) => {
     const heading = document.querySelector(".consult-dialog-heading") as HTMLElement;
+    const dialog = document.querySelector("dialog.consult-dialog") as HTMLElement;
     const box = heading.getBoundingClientRect();
+    const origin = dialog.getBoundingClientRect();
     const startX = box.left + 20;
     const startY = box.top + 10;
     heading.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: startX, clientY: startY, pointerId: 1, isPrimary: true }));
@@ -134,6 +136,14 @@ const rect = (selector: string) => {
     await twoFrames();
     for (const step of [0.5, 1]) {
       window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: startX + dx * step, clientY: startY + dy * step, pointerId: 1, isPrimary: true }));
+      await nextFrame();
+    }
+    // 隐藏窗口/高负载下合成的 pointermove 可能被合并或丢掉（CI 实测只吃到了 0.5 那一步）。
+    // 拖动处理器按「绝对位置」计算且幂等，所以重复发最终位置直到面板真的到位；最多 8 次。
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const moved = dialog.getBoundingClientRect();
+      if (Math.abs(moved.left - (origin.left + dx)) < 2 && Math.abs(moved.top - (origin.top + dy)) < 2) break;
+      window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: startX + dx, clientY: startY + dy, pointerId: 1, isPrimary: true }));
       await nextFrame();
     }
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: startX + dx, clientY: startY + dy, pointerId: 1, isPrimary: true }));
