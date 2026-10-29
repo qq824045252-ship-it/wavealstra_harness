@@ -332,6 +332,9 @@ async function run(): Promise<void> {
 
   const failed = results.filter(([, pass]) => !pass).length;
   console.log(`\nPDF Runtime E2E: ${results.length - failed}/${results.length} PASS`);
+  // test-all 失败时只打印子进程输出的最后 80 行；把失败用例名放在最末尾，CI 日志才看得到。
+  const failedNames = results.filter(([, pass]) => !pass).map(([name]) => name);
+  if (failedNames.length) console.log(`[FAILED CASES] ${failedNames.join(" | ")}`);
   app.exit(failures === 0 && failed === 0 ? 0 : 1);
 }
 

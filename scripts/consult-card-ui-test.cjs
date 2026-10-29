@@ -95,7 +95,19 @@ app.whenReady().then(async () => {
       const moved = await evaluate('window.consultCardTest.dialogRect()');
       assert(Math.abs(moved.left - desktop.left - 160) < 3, `not dragged horizontally: ${moved.left} vs ${desktop.left}`);
       assert(Math.abs(moved.top - desktop.top - 90) < 3, `not dragged vertically: ${moved.top} vs ${desktop.top}`);
-      assert(moved.right <= moved.viewportWidth + 0.5 && moved.bottom <= moved.viewportHeight + 0.5, `dragged panel left the screen: ${JSON.stringify(moved)}`);
+      // 面板是自由浮动窗口：产品只保证「至少留 120px 横向 / 56px 纵向可抓」的把手
+      // （MultiModelConsultCard 的 clampedLeft/clampedTop），小视口下允许被拖出屏幕边缘。
+      // 旧断言要求整块面板留在视口内，在 1008x655 的 CI runner 上必然失败（本地大窗口才碰巧通过）。
+      const MIN_VISIBLE_X = 120;
+      const MIN_VISIBLE_Y = 56;
+      assert(
+        moved.right >= MIN_VISIBLE_X - 0.5 && moved.left <= moved.viewportWidth - MIN_VISIBLE_X + 0.5,
+        `dragged panel lost its horizontal handle: ${JSON.stringify(moved)}`,
+      );
+      assert(
+        moved.top >= -0.5 && moved.top <= Math.max(0, moved.viewportHeight - MIN_VISIBLE_Y) + 0.5,
+        `dragged panel lost its vertical handle: ${JSON.stringify(moved)}`,
+      );
       await evaluate('window.consultCardTest.recenter()');
       await settle();
       const recentred = await evaluate('window.consultCardTest.dialogRect()');

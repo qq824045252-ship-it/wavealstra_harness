@@ -22,6 +22,15 @@ const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-computer-use-de
 const profile = path.join(temporary, 'profile');
 const agentDir = path.join(profile, '.mybuddy');
 const workspace = path.join(temporary, 'workspace');
+// 这是「真机验收」：需要本机 ~/.mybuddy 里已配置好的 provider/model 与凭据。
+// 托管 CI runner 没有真实用户配置，缺前置条件时显式 SKIP（退出 0），不要假装跑过。
+{
+  const realProfile = path.join(os.homedir(), '.mybuddy');
+  if (!fs.existsSync(path.join(realProfile, 'settings.json'))) {
+    console.log(`[SKIP] computer-use-desktop: 需要本机已配置的 ${path.join(realProfile, 'settings.json')}（含 provider/model 与凭据），当前不存在。`);
+    process.exit(0);
+  }
+}
 let selectedModel;
 function configureProfile() {
   fs.mkdirSync(agentDir, { recursive: true });

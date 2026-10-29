@@ -112,9 +112,13 @@ const config = { tavilyApiKey: "fixture-tavily", serperApiKey: "fixture-serper",
 writeFileSync(join(profile, "web-search.json"), JSON.stringify(config));
 const nativeFetch = globalThis.fetch;
 let scenario = "ok"; const requests: string[] = []; const dispatch: number[] = [];
+// 「并发派发」用因果判定，不用绝对时间差：只要第二个请求在第一个响应返回**之前**发出，
+// 就证明是并发而不是串行（fallback 模式会等第一个结束后才发第二个）。CI 上 4 vCPU 争用
+// 时，即使两次派发在同一事件循环批里，Date.now() 差也可能 >35ms，旧断言会假红。
+let tavilySettledAt = 0;
 globalThis.fetch = (async (url: string | URL | Request) => {
   const value = String(url); requests.push(value); dispatch.push(Date.now());
-  if (value.includes("api.tavily.com/search")) { if (scenario === "fallback") return new Response("fixture unavailable", { status: 503 }); await delay(40); return new Response(JSON.stringify({ answer: "Tavily original", results: [{ title: "Spec", url: "https://example.com/spec?utm_source=tavily", content: "规格原文摘要。" }] }), { status: 200 }); }
+  if (value.includes("api.tavily.com/search")) { if (scenario === "fallback") return new Response("fixture unavailable", { status: 503 }); await delay(200); tavilySettledAt = Date.now(); return new Response(JSON.stringify({ answer: "Tavily original", results: [{ title: "Spec", url: "https://example.com/spec?utm_source=tavily", content: "规格原文摘要。" }] }), { status: 200 }); }
   if (value.includes("google.serper.dev/search")) { if (scenario === "partial") return new Response("fixture failure", { status: 500 }); await delay(15); return new Response(JSON.stringify({ organic: [{ title: "Spec", link: "https://example.com/spec?utm_source=serper", snippet: "另一家摘要。" }, { title: "Other", link: "https://another.example/spec", snippet: "独有发现。" }] }), { status: 200 }); }
   throw new Error("Unexpected network request in isolated fixture");
 }) as typeof fetch;
@@ -128,7 +132,7 @@ try {
     const r = await tool.execute("native-test", { query: "仪器精度" }, undefined, (v: unknown) => updates.push(v), { hasUI: false });
     assert.equal(r.details.webSearch.runs.length, 2); assert.equal(r.details.webSearch.sources.length, 2);
     assert.equal(r.details.webSearch.sources[0].origins.length, 2);
-    assert(dispatch[1] - dispatch[0] < 35, "real adapters dispatched concurrently");
+    assert(dispatch.length >= 2 && tavilySettledAt > 0 && dispatch[1] < tavilySettledAt, "real adapters dispatched concurrently（第二个请求在第一个响应返回前发出）");
     assert(updates.some(u => u.details?.webSearch?.runs.some((p: any) => p.status === "success") && u.details?.webSearch?.runs.some((p: any) => p.status === "running")));
     assert((entries as any[]).some(e => e.queries?.[0].providerRuns?.length === 2));
     assert.match(r.content[0].text, /Tavily original/);
