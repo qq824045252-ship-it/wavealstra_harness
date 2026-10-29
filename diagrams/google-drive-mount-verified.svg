@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="620" viewBox="0 0 1160 620" font-family="Microsoft YaHei, Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1160" height="620" fill="#f7f9fc"/>
+  <text x="26" y="40" font-size="21" font-weight="700" fill="#0f172a">Google Drive 已经挂进 MyBuddy：实测链路</text>
+  <text x="26" y="64" font-size="12.5" fill="#475569">空间「我的云端硬盘」= G:\我的云端硬盘（DB created_at 2026-10-28 16:54）｜系统代理 127.0.0.1:7890 已开启（ProxyEnable=1）</text>
+
+  <!-- chain -->
+  <rect x="26" y="92" width="252" height="92" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.6"/>
+  <text x="42" y="117" font-size="14" font-weight="700" fill="#0f172a">① MyBuddy 空间</text>
+  <text x="42" y="139" font-size="12.5" fill="#334155">name=我的云端硬盘</text>
+  <text x="42" y="157" font-size="12.5" fill="#334155">path=G:\我的云端硬盘</text>
+  <text x="42" y="175" font-size="11.5" fill="#64748b">parent_id=null · sort_order=12000</text>
+
+  <path d="M278,138 L296,138" stroke="#16a34a" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="298" y="92" width="252" height="92" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.6"/>
+  <text x="314" y="117" font-size="14" font-weight="700" fill="#0f172a">② 执行根解析</text>
+  <text x="314" y="139" font-size="12.5" fill="#334155">resolveWorkspaceExecutionPath</text>
+  <text x="314" y="157" font-size="12.5" fill="#334155">statSync(G:) 是目录 → taskRoot</text>
+  <text x="314" y="175" font-size="11.5" fill="#64748b">不再回退 ~/.mybuddy/task-workspaces</text>
+
+  <path d="M550,138 L568,138" stroke="#16a34a" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="570" y="92" width="252" height="92" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.6"/>
+  <text x="586" y="117" font-size="14" font-weight="700" fill="#0f172a">③ DriveFS + 代理</text>
+  <text x="586" y="139" font-size="12.5" fill="#334155">GoogleDriveFS 进程 → 系统代理</text>
+  <text x="586" y="157" font-size="12.5" fill="#334155">127.0.0.1:7890（FlClash）</text>
+  <text x="586" y="175" font-size="11.5" fill="#64748b">直连时是 OFFLINE，现在已通</text>
+
+  <path d="M822,138 L840,138" stroke="#16a34a" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="842" y="92" width="292" height="92" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.6"/>
+  <text x="858" y="117" font-size="14" font-weight="700" fill="#15803d">④ googleapis.com（已连通）</text>
+  <text x="858" y="139" font-size="12.5" fill="#334155">元数据走本地缓存，内容按需下载</text>
+  <text x="858" y="157" font-size="12.5" fill="#334155">读写都落在同一个 G: 命名空间</text>
+  <text x="858" y="175" font-size="11.5" fill="#64748b">对 MyBuddy 来说就是普通目录</text>
+
+  <!-- measured band -->
+  <rect x="26" y="205" width="1108" height="86" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="42" y="230" font-size="14" font-weight="700" fill="#0f172a">实测（本机，2026-10-28 16:58 前后）</text>
+  <text x="42" y="253" font-size="12.5" fill="#334155">目录遍历 8 ms / 22 文件 / 4 目录（MyBuddy 的 12 层 · 5000 文件上限没触发）</text>
+  <text x="42" y="273" font-size="12.5" fill="#334155">读 159 KB PNG：2.16 s（首次 hydrate，之后走本地缓存）　｜　写 + 读 + 删：0.04 s</text>
+  <text x="640" y="253" font-size="12.5" fill="#334155">读 1.7 KB .ipynb：0.71 s</text>
+  <text x="640" y="273" font-size="12.5" fill="#dc2626">读 .gdoc：失败（HRESULT 1，非普通文件）</text>
+
+  <!-- caveats -->
+  <rect x="26" y="315" width="356" height="180" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5"/>
+  <text x="42" y="341" font-size="14" font-weight="700" fill="#b91c1c">坑 1：.gdoc / .gsheet 不是文件</text>
+  <text x="42" y="365" font-size="12.5" fill="#334155">它们是 186 B 的 Google 文档指针，</text>
+  <text x="42" y="384" font-size="12.5" fill="#334155">读字节直接报错，也不在 MyBuddy 的</text>
+  <text x="42" y="403" font-size="12.5" fill="#334155">预览扩展名列表里 → 点了打不开</text>
+  <text x="42" y="427" font-size="12.5" fill="#334155">对策：需要内容就导出 docx/xlsx/pdf</text>
+  <text x="42" y="446" font-size="12.5" fill="#334155">再放回 Drive，或走 Drive API。</text>
+  <text x="42" y="472" font-size="11.5" fill="#64748b">内容正常的是 pdf / docx / xlsx / png 等真文件</text>
+
+  <rect x="402" y="315" width="356" height="180" rx="8" fill="#ffffff" stroke="#fcd34d" stroke-width="1.5"/>
+  <text x="418" y="341" font-size="14" font-weight="700" fill="#b45309">坑 2：断连 = 文件夹丢失</text>
+  <text x="418" y="365" font-size="12.5" fill="#334155">代理关掉 / DriveFS 退出 / 断网时，</text>
+  <text x="418" y="384" font-size="12.5" fill="#334155">statSync 失败 → 空间标「文件夹丢失」</text>
+  <text x="418" y="403" font-size="12.5" fill="#334155">任务抛 workspace-path-missing</text>
+  <text x="418" y="427" font-size="12.5" fill="#334155">恢复：先修网络，再点「重新定位文件夹」</text>
+  <text x="418" y="446" font-size="12.5" fill="#334155">或重启 MyBuddy 让它重新 stat。</text>
+  <text x="418" y="472" font-size="11.5" fill="#64748b">别在断连时新建任务，会直接失败</text>
+
+  <rect x="778" y="315" width="356" height="180" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
+  <text x="794" y="341" font-size="14" font-weight="700" fill="#1d4ed8">坑 3：大文件首次访问会等</text>
+  <text x="794" y="365" font-size="12.5" fill="#334155">流式盘只在访问时下载：</text>
+  <text x="794" y="384" font-size="12.5" fill="#334155">根目录的 rm0456.pdf 是 73 MB，</text>
+  <text x="794" y="403" font-size="12.5" fill="#334155">第一次读会按带宽等十几秒到几分钟</text>
+  <text x="794" y="427" font-size="12.5" fill="#334155">对策：常用目录设「离线可用」，</text>
+  <text x="794" y="446" font-size="12.5" fill="#334155">或先复制到本地再处理。</text>
+  <text x="794" y="472" font-size="11.5" fill="#64748b">任务超时/网关超时多半出现在这一步</text>
+
+  <rect x="26" y="515" width="1108" height="80" rx="8" fill="#eef2f7" stroke="#dbe3ee"/>
+  <text x="42" y="540" font-size="12.5" fill="#475569">建议：把空间从「My Drive 根」缩到具体项目目录（如 G:\我的云端硬盘\WaveAlstra 项目管理），按项目建子空间；</text>
+  <text x="42" y="560" font-size="12.5" fill="#475569">根目录混着 Colab、ZLibrary、散落 .gdoc，既容易触发 5000 文件上限，也让 agent 的目录列举没有信息量。</text>
+  <text x="42" y="581" font-size="12" fill="#64748b">写操作会同步到云端：删除/覆盖前想清楚 —— 这不是本地副本，是同一份文件。</text>
+</svg>

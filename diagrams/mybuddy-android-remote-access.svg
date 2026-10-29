@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-labelledby="t d">
+  <title id="t">MyBuddy 安卓端远程接入链路与故障点</title>
+  <desc id="d">安卓 App 经 https://remote.vivioninst.uk 与 Cloudflare Tunnel 访问电脑端 127.0.0.1:3352 的 MyBuddy RemoteAccessServer。旧系统服务连接器因缓存 FlClash TUN 残留的 fake-IP 198.18.4.29/30 而超时，导致 Cloudflare 返回 1033；Tailscale 备用通道处于已登出状态。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b5b57"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b42318"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b54708"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="620" fill="#f7f7f5"/>
+  <text x="40" y="44" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#1f1f1d">MyBuddy 安卓端远程接入：链路与故障点（2026-10-28 18:15）</text>
+  <text x="40" y="70" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#55554f">证据来源：cloudflared.log（ProgramData）、~/.mybuddy/settings.json、remote-devices.json、实时 curl / Test-NetConnection 探测</text>
+
+  <!-- Row 1: 主链路 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="40" y="100" width="200" height="100" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="56" y="128" font-size="14" font-weight="700" fill="#1f1f1d">安卓 App</text>
+    <text x="56" y="152" font-size="12" fill="#4a4a45">设备 rdev_43dd8978</text>
+    <text x="56" y="172" font-size="12" fill="#4a4a45">最后通信 16:11:59</text>
+    <text x="56" y="190" font-size="12" fill="#1a7f37">未吊销 · 令牌有效</text>
+
+    <rect x="270" y="100" width="200" height="100" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="286" y="128" font-size="14" font-weight="700" fill="#1f1f1d">公网入口</text>
+    <text x="286" y="152" font-size="12" fill="#4a4a45">remote.vivioninst.uk</text>
+    <text x="286" y="172" font-size="12" fill="#4a4a45">CF 边缘 104.21.31.241</text>
+    <text x="286" y="190" font-size="12" fill="#1a7f37">18:10 前 530/1033</text>
+
+    <rect x="500" y="100" width="200" height="100" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="516" y="128" font-size="14" font-weight="700" fill="#1f1f1d">Cloudflare Tunnel</text>
+    <text x="516" y="152" font-size="12" fill="#4a4a45">0bf3dc15-… 隧道</text>
+    <text x="516" y="172" font-size="12" fill="#4a4a45">http2 / 端口 7844</text>
+    <text x="516" y="190" font-size="12" fill="#1a7f37">已恢复 200 OK</text>
+
+    <rect x="730" y="100" width="200" height="100" rx="10" fill="#eef7f0" stroke="#1a7f37"/>
+    <text x="746" y="128" font-size="14" font-weight="700" fill="#1f1f1d">cloudflared 连接器</text>
+    <text x="746" y="152" font-size="12" fill="#4a4a45">新 pid 24268 · 18:10:08</text>
+    <text x="746" y="172" font-size="12" fill="#4a4a45">4 条连接 sjc07/lax08</text>
+    <text x="746" y="190" font-size="12" fill="#1a7f37">真实边缘 198.41.192.x</text>
+
+    <rect x="960" y="100" width="180" height="100" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="976" y="128" font-size="14" font-weight="700" fill="#1f1f1d">MyBuddy 远程服务</text>
+    <text x="976" y="152" font-size="12" fill="#4a4a45">127.0.0.1:3352</text>
+    <text x="976" y="172" font-size="12" fill="#4a4a45">RemoteAccessServer</text>
+    <text x="976" y="190" font-size="12" fill="#1a7f37">/healthz → ok:true</text>
+  </g>
+
+  <!-- 主链路箭头 -->
+  <g stroke="#5b5b57" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="240" y1="150" x2="266" y2="150"/>
+    <line x1="470" y1="150" x2="496" y2="150"/>
+    <line x1="700" y1="150" x2="726" y2="150"/>
+    <line x1="930" y1="150" x2="956" y2="150"/>
+  </g>
+
+  <!-- Row 2: 故障与旁路 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="40" y="260" width="360" height="100" rx="10" fill="#fff7ed" stroke="#b54708"/>
+    <text x="56" y="288" font-size="14" font-weight="700" fill="#1f1f1d">FlClash 代理（fake-IP 来源）</text>
+    <text x="56" y="312" font-size="12" fill="#4a4a45">TUN 期分配 198.18.0.0/16 伪造地址</text>
+    <text x="56" y="332" font-size="12" fill="#4a4a45">现仅监听 127.0.0.1:7890，系统代理关闭</text>
+    <text x="56" y="350" font-size="12" fill="#b54708">残留地址被 cloudflared 缓存</text>
+
+    <rect x="470" y="260" width="340" height="100" rx="10" fill="#fdf1f0" stroke="#b42318"/>
+    <text x="486" y="288" font-size="14" font-weight="700" fill="#1f1f1d">系统服务连接器（旧）</text>
+    <text x="486" y="312" font-size="12" fill="#4a4a45">pid 45796 · 以 LocalSystem 运行</text>
+    <text x="486" y="332" font-size="12" fill="#4a4a45">死拨 198.18.4.29/30:7844</text>
+    <text x="486" y="350" font-size="12" fill="#b42318">i/o timeout → 17:17 断开 → 1033</text>
+
+    <rect x="840" y="260" width="300" height="100" rx="10" fill="#fdf1f0" stroke="#b42318"/>
+    <text x="856" y="288" font-size="14" font-weight="700" fill="#1f1f1d">Tailscale 备用通道</text>
+    <text x="856" y="312" font-size="12" fill="#4a4a45">状态 logged out / NoState</text>
+    <text x="856" y="332" font-size="12" fill="#4a4a45">no serve config，无 Tailscale IP</text>
+    <text x="856" y="350" font-size="12" fill="#b42318">无法为安卓端兜底</text>
+  </g>
+
+  <line x1="400" y1="310" x2="466" y2="310" stroke="#b54708" stroke-width="2" marker-end="url(#arrowOrange)"/>
+  <line x1="640" y1="260" x2="640" y2="204" stroke="#b42318" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrowRed)"/>
+
+  <!-- Row 3: 时间线 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <line x1="60" y1="452" x2="1120" y2="452" stroke="#a8a8a2" stroke-width="2"/>
+    <g fill="#5b5b57">
+      <circle cx="110" cy="452" r="5" fill="#1a7f37"/>
+      <circle cx="290" cy="452" r="5" fill="#1a7f37"/>
+      <circle cx="470" cy="452" r="5" fill="#b54708"/>
+      <circle cx="650" cy="452" r="5" fill="#b42318"/>
+      <circle cx="830" cy="452" r="5" fill="#b42318"/>
+      <circle cx="1010" cy="452" r="5" fill="#1a7f37"/>
+    </g>
+    <g font-size="12" font-weight="700" fill="#1f1f1d" text-anchor="middle">
+      <text x="110" y="432">09:10</text>
+      <text x="290" y="432">13:49</text>
+      <text x="470" y="432">16:11</text>
+      <text x="650" y="432">16:12</text>
+      <text x="830" y="432">17:17</text>
+      <text x="1010" y="432">18:10</text>
+    </g>
+    <g font-size="12" fill="#4a4a45" text-anchor="middle">
+      <text x="110" y="478">隧道启动</text>
+      <text x="290" y="478">安卓配对</text>
+      <text x="470" y="478">最后成功通信</text>
+      <text x="650" y="478">首次 7844 超时</text>
+      <text x="830" y="478">隧道断开(1033)</text>
+      <text x="1010" y="478">第二连接器恢复</text>
+    </g>
+  </g>
+
+  <!-- 图例 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#4a4a45">
+    <rect x="40" y="510" width="14" height="14" rx="3" fill="#eef7f0" stroke="#1a7f37"/>
+    <text x="62" y="522">已验证可用</text>
+    <rect x="170" y="510" width="14" height="14" rx="3" fill="#fdf1f0" stroke="#b42318"/>
+    <text x="192" y="522">故障 / 不可用</text>
+    <rect x="330" y="510" width="14" height="14" rx="3" fill="#fff7ed" stroke="#b54708"/>
+    <text x="352" y="522">根因来源</text>
+  </g>
+
+  <text x="40" y="560" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#4a4a45">根因：cloudflared 在进程内保留了 FlClash TUN 时期的假边缘地址（198.18.4.29/30）；重启后重新解析到真实 198.41.192.x，7844 端口 TCP/QUIC 全通。</text>
+  <text x="40" y="582" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#4a4a45">注意：桌面端 MyBuddy 自 14:52 起一直存活（5 进程），app.db / 任务数据未受影响；断的只是公网入口。</text>
+</svg>

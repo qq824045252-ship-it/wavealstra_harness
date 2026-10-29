@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="660" viewBox="0 0 1180 660" role="img" aria-labelledby="t d">
+  <title id="t">MyBuddy 云隧道自愈架构</title>
+  <desc id="d">安卓 App 经 Cloudflare Tunnel 访问电脑端 127.0.0.1:3352。cloudflared 以 SYSTEM 服务自启动运行；MyBuddy Tunnel Watchdog 计划任务每分钟探测本地与公网健康，连续两次失败即重启服务，并带 5 分钟间隔与每小时 4 次预算的节流。</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b5b57"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/>
+    </marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b54708"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="660" fill="#f7f7f5"/>
+  <text x="40" y="42" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#1f1f1d">MyBuddy 云隧道：修复后架构与自愈闭环（2026-10-29 08:14）</text>
+  <text x="40" y="66" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#55554f">实测证据：install2-result.json、watchdog.log、watchdog-heartbeat.txt、服务 pid 30332、公网 /healthz 200</text>
+
+  <!-- 主链路 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="40" y="92" width="200" height="96" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="56" y="119" font-size="14" font-weight="700" fill="#1f1f1d">安卓 App</text>
+    <text x="56" y="142" font-size="12" fill="#4a4a45">remote.vivioninst.uk</text>
+    <text x="56" y="162" font-size="12" fill="#4a4a45">SSE + REST /v1/*</text>
+    <text x="56" y="180" font-size="12" fill="#1a7f37">设备令牌有效</text>
+
+    <rect x="270" y="92" width="200" height="96" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="286" y="119" font-size="14" font-weight="700" fill="#1f1f1d">Cloudflare 边缘</text>
+    <text x="286" y="142" font-size="12" fill="#4a4a45">104.21.31.241 等</text>
+    <text x="286" y="162" font-size="12" fill="#4a4a45">TLS 终止 / 转发</text>
+    <text x="286" y="180" font-size="12" fill="#1a7f37">前置曾 1033</text>
+
+    <rect x="500" y="92" width="200" height="96" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="516" y="119" font-size="14" font-weight="700" fill="#1f1f1d">隧道 0bf3dc15</text>
+    <text x="516" y="142" font-size="12" fill="#4a4a45">http2 / 7844 / 4 连接</text>
+    <text x="516" y="162" font-size="12" fill="#4a4a45">ingress → 3352</text>
+    <text x="516" y="180" font-size="12" fill="#1a7f37">已注册</text>
+
+    <rect x="730" y="92" width="200" height="96" rx="10" fill="#eef7f0" stroke="#1a7f37"/>
+    <text x="746" y="119" font-size="14" font-weight="700" fill="#1f1f1d">cloudflared 服务</text>
+    <text x="746" y="142" font-size="12" fill="#4a4a45">LocalSystem / 自启动</text>
+    <text x="746" y="162" font-size="12" fill="#4a4a45">pid 30332</text>
+    <text x="746" y="180" font-size="12" fill="#1a7f37">重启后重新解析</text>
+
+    <rect x="960" y="92" width="180" height="96" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="976" y="119" font-size="14" font-weight="700" fill="#1f1f1d">MyBuddy</text>
+    <text x="976" y="142" font-size="12" fill="#4a4a45">127.0.0.1:3352</text>
+    <text x="976" y="162" font-size="12" fill="#4a4a45">RemoteAccessServer</text>
+    <text x="976" y="180" font-size="12" fill="#1a7f37">/healthz 200</text>
+  </g>
+  <g stroke="#5b5b57" stroke-width="2" marker-end="url(#a)">
+    <line x1="240" y1="140" x2="266" y2="140"/>
+    <line x1="470" y1="140" x2="496" y2="140"/>
+    <line x1="700" y1="140" x2="726" y2="140"/>
+    <line x1="930" y1="140" x2="956" y2="140"/>
+  </g>
+
+  <!-- 看门狗 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="40" y="248" width="560" height="186" rx="12" fill="#eef7f0" stroke="#1a7f37" stroke-width="2"/>
+    <text x="60" y="276" font-size="15" font-weight="700" fill="#1f1f1d">MyBuddy Tunnel Watchdog（SYSTEM 计划任务）</text>
+    <text x="60" y="296" font-size="12" fill="#4a4a45">触发：每 1 分钟 + 开机 1 分钟后；只看结果，不看原因</text>
+    <text x="60" y="324" font-size="12" fill="#1f1f1d">① 本地 3352 /healthz 不通 → 跳过（MyBuddy 没开，别误重启）</text>
+    <text x="60" y="346" font-size="12" fill="#1f1f1d">② 外网 cloudflare trace 不通 → 跳过（断网不是隧道问题）</text>
+    <text x="60" y="368" font-size="12" fill="#1f1f1d">③ 公网 /healthz 失败 → 连续计数</text>
+    <text x="60" y="390" font-size="12" font-weight="700" fill="#b42318">④ 连续 2 次失败 → Restart-Service cloudflared</text>
+    <text x="60" y="412" font-size="12" fill="#4a4a45">节流：两次重启至少间隔 5 分钟；每小时最多 4 次</text>
+
+    <rect x="640" y="248" width="500" height="186" rx="12" fill="#fff7ed" stroke="#b54708" stroke-width="2"/>
+    <text x="660" y="276" font-size="15" font-weight="700" fill="#1f1f1d">为什么必须“重启”而不是“等待”</text>
+    <text x="660" y="302" font-size="12" fill="#4a4a45">FlClash TUN 在跑时，argotunnel 被解析成 fake-IP</text>
+    <text x="660" y="322" font-size="12" fill="#4a4a45">198.18.4.29 / 30，隧道实际走代理出网。</text>
+    <text x="660" y="348" font-size="12" fill="#4a4a45">一旦 TUN 关闭或节点失效，旧地址全不可达；</text>
+    <text x="660" y="368" font-size="12" fill="#4a4a45">cloudflared 的 DNS 刷新也超时（i/o timeout），</text>
+    <text x="660" y="388" font-size="12" fill="#1f1f1d">进程不会退出，所以服务恢复策略永不触发。</text>
+    <text x="660" y="412" font-size="12" font-weight="700" fill="#b54708">重启 = 重新解析 + 重新建连，实测可恢复。</text>
+  </g>
+  <line x1="730" y1="248" x2="730" y2="196" stroke="#1a7f37" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ag)"/>
+  <text x="742" y="226" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1a7f37">重启 / 拉起</text>
+
+  <!-- 演练与现状 -->
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="40" y="466" width="340" height="78" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="56" y="490" font-size="13" font-weight="700" fill="#1f1f1d">故障演练（已通过）</text>
+    <text x="56" y="512" font-size="12" fill="#4a4a45">哨兵地址强制失败 2 次 → 08:11:43 重启</text>
+    <text x="56" y="532" font-size="12" fill="#4a4a45">服务 pid 9264 → 30332，随后公网 200</text>
+
+    <rect x="400" y="466" width="340" height="78" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="416" y="490" font-size="13" font-weight="700" fill="#1f1f1d">运行心跳（每分钟）</text>
+    <text x="416" y="512" font-size="12" fill="#4a4a45">08:12:00 / 08:12:26 / 08:13:27 … 均 ok</text>
+    <text x="416" y="532" font-size="12" fill="#4a4a45">heartbeat.txt + watchdog.log 可查</text>
+
+    <rect x="760" y="466" width="380" height="78" rx="10" fill="#ffffff" stroke="#c9c9c3"/>
+    <text x="776" y="490" font-size="13" font-weight="700" fill="#1f1f1d">当前状态</text>
+    <text x="776" y="512" font-size="12" fill="#4a4a45">仅 1 个 cloudflared（就是系统服务）</text>
+    <text x="776" y="532" font-size="12" fill="#1a7f37">公网 /healthz = 200（连续 3 次）</text>
+  </g>
+
+  <text x="40" y="588" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#4a4a45">最坏恢复时间 ≈ 2 分钟（1 分钟探测间隔 × 2 次失败）；持续故障时按预算节流，不会反复抖动重启。</text>
+  <text x="40" y="610" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#4a4a45">文件：C:\ProgramData\cloudflared\watchdog.ps1（Administrators 所有，Users 只读）、watchdog.log、watchdog-heartbeat.txt</text>
+</svg>
