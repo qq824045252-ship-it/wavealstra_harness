@@ -114,6 +114,8 @@ app.whenReady().then(async () => {
       );
       await evaluate('window.consultCardTest.recenter()');
       await settle();
+      // dblclick → React 提交 → 样式复位；隐藏窗口下这一拍可能晚于一帧，显式轮询到复位。
+      await wait(`Math.abs(window.consultCardTest.dialogRect().left - ${desktop.left}) < 2 && Math.abs(window.consultCardTest.dialogRect().top - ${desktop.top}) < 2`, 5000);
       const recentred = await evaluate('window.consultCardTest.dialogRect()');
       assert(Math.abs(recentred.left - desktop.left) < 2 && Math.abs(recentred.top - desktop.top) < 2, `not recentred: ${JSON.stringify(recentred)}`);
     });

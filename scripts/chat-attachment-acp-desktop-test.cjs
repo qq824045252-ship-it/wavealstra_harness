@@ -69,7 +69,8 @@ async function run() {
   report.executable = executable;
   const build = process.env.MYBUDDY_DESKTOP_EXECUTABLE ? path.join(path.dirname(executable), 'resources/app.asar') : path.join(root, 'out/main/index.js');
   report.buildSha256 = crypto.createHash('sha256').update(fs.readFileSync(build)).digest('hex');
-  const target = await until(async () => { try { return (await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json())).find(x => x.type === 'page' && x.url.includes('index.html')); } catch { return undefined; } }, 'renderer');
+  // 托管 runner 上 Electron 冷启动可能 >30s（尤其与其它 GUI 用例并发时），放宽等 CDP target。
+  const target = await until(async () => { try { return (await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json())).find(x => x.type === 'page' && x.url.includes('index.html')); } catch { return undefined; } }, 'renderer', 90000);
   socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   socket.addEventListener('message', event => { const m = JSON.parse(event.data), p = pending.get(m.id); if (!p) return; pending.delete(m.id); clearTimeout(p.timer); m.error ? p.reject(Error(JSON.stringify(m.error))) : p.resolve(m.result); });

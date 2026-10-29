@@ -225,7 +225,11 @@ jobs:
       - name: GUI suite (default + GUI, no ratchet tolerance hiding)
         working-directory: C:\r
         env:
-          TEST_ALL_JOBS: 2
+          # GUI 用例自己会拉起 Electron/桌面自动化；runner 只有 4 vCPU，2 路并发时
+          # 随机出现「CDP target 30s 超时」「文本层没赶上 800ms」「元素还没渲染」这类
+          # 环境假红（同一 commit 每次失败的用例都不同）。GUI job 是夜间批处理，
+          # 串行更慢但结果可信。
+          TEST_ALL_JOBS: 1
         run: node scripts/test-all.mjs --include-gui
 
       - name: Upload GUI test artifacts

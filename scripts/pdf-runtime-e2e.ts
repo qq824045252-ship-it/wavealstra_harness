@@ -137,10 +137,16 @@ async function scenarioChinese(wc: Electron.WebContents): Promise<void> {
   const ok = await waitFor(wc, `!!document.querySelector('.pdf-viewer .pdf-canvas')`);
   check("chinese: 中文文件名可打开", ok);
   if (!ok) return;
-  await sleep(800);
+  // 文本层是异步渲染的；慢 runner 上固定 800ms 不够（CI 实测 48/49 就挂在这条）。
+  const textReady = await waitFor(
+    wc,
+    `(() => { const element = document.querySelector('.pdf-viewer .textLayer'); const text = element?.textContent ?? ''; return text.includes('MyBuddy') || text.length > 20; })()`,
+    15000,
+  );
+  await sleep(100);
   const s = await evalJson<Snapshot>(wc, SNAPSHOT);
   check("chinese: 无加载错误", !s.error.includes("加载失败"), s.error);
-  check("chinese: 文本层含中文", s.textLayerText.includes("MyBuddy") || s.textLayerText.length > 20, s.textLayerText.slice(0, 50));
+  check("chinese: 文本层含中文", textReady && (s.textLayerText.includes("MyBuddy") || s.textLayerText.length > 20), s.textLayerText.slice(0, 50));
 }
 
 /** 关闭：worker terminate + 全部资源归零 */
