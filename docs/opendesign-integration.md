@@ -3,6 +3,11 @@
 > ⚠️ **已退役**：OpenDesign 受管 provider / preset 已从产品下线，本文仅作历史实现记录。
 > 文中 `MyBuddyTools/...` 路径与"把官方目录放进 MyBuddyTools"的安装方式**不再适用**：
 > 本产品不内置第三方软件，OpenDesign 若需使用请自行按官方方式安装（PATH 上的 `od` 或官方桌面版）。
+>
+> **现行状态（2026-10-29 复核）**：`design` 模式整体退役——`WelcomeMode = "working" | "coding" | "bot"`
+> （`src/shared/mode-profile.ts:6`），`DESIGN_MODE_PRESETS` 已是空数组（`src/main/agent/mode-defaults.ts:422-423`）；
+> Penpot 以 working 的 `web-prototype` 预设保留，OpenDesign / Blender / FreeCAD / Ardot 均不在受管 provider 内
+> （只剩 `penpot` + `drawio-ai`）。本文 §2–§7 的 preset、mcp.json 条目与验证记录都是退役前快照。
 
 > 状态：**已实现**（v3.6 开发线，worktree `pi/task_1d0343df2c3a`）。
 > 依据：`docs/opendesign-integration-plan.md`（调研 + 实施方案 v1）；本机实证：Open Design 桌面版
@@ -119,18 +124,21 @@ Design Mode 的 preset 栏选择「AI 设计引擎 · OpenDesign」→ 发首条
 
 ## 4. 职责边界（与其它专业 provider）
 
-| 场景 | 用哪个 preset |
+| 场景 | 用哪个 preset（2026-10-29 现状） |
 |---|---|
-| AI-native UI/Web/Dashboard/演示/视觉设计（OD 引擎） | **AI 设计引擎 · OpenDesign** |
-| 网页原型 / Design System 协作 | 网页原型 · Penpot |
-| 3D / Mesh / 材质 / 渲染 / 动画 | 3D · Blender |
-| 精密机械 CAD | 机械 CAD · FreeCAD |
-| 通用设计分析（不加载专用工具） | 通用设计 |
+| AI-native UI/Web/Dashboard/演示/视觉设计（OD 引擎） | ~~AI 设计引擎 · OpenDesign~~（已下线） |
+| 网页原型 / Design System 协作 | 网页原型 · Penpot（现存：working 的 `web-prototype`） |
+| 3D / Mesh / 材质 / 渲染 / 动画 | ~~3D · Blender~~（已下线） |
+| 精密机械 CAD | ~~机械 CAD · FreeCAD~~（已下线） |
+| 通用设计分析（不加载专用工具） | ~~通用设计~~（已下线，design 模式整体退役） |
 | 真实产品代码实现 | **Code Mode**（不是 Design Mode） |
 
-## 5. 配置层（`~/.mybuddy/mcp.json`）
+## 5. 配置层（`~/.mybuddy/mcp.json`）〔历史实现〕
 
-启动自愈 + daemon 端口回退时由 `McpConfigService.ensureOpenDesignServer` 维护：
+> 2026-10-29 复核：`McpConfigService.ensureOpenDesignServer` 与 `OpenDesignRuntime` 已随 provider 退役删除，
+> 下面的自愈/端口回退逻辑在当前代码里不存在；`~/.mybuddy/mcp.json` 也不再写入 `opendesign` 条目。
+
+退役前的行为：启动自愈 + daemon 端口回退时由 `McpConfigService.ensureOpenDesignServer` 维护：
 
 ```jsonc
 "opendesign": {
@@ -159,7 +167,10 @@ Design Mode 的 preset 栏选择「AI 设计引擎 · OpenDesign」→ 发首条
 | 不想用 OD | 切回 `general` 或其它 preset（并行，互不影响） |
 | Git Bash `od.exe` 在 PATH | 身份校验拒绝（输出无官方标记），不影响探测 |
 
-## 7. 验证记录
+## 7. 验证记录（退役前快照）
+
+> 2026-10-29 复核：`test:opendesign-smoke` 已从 `package.json` 删除；`test:mode-preset` 的用例数也已变化，
+> 下表数字只代表退役前那次运行，不能当作当前门禁结果。
 
 | 项目 | 结果 |
 |---|---|

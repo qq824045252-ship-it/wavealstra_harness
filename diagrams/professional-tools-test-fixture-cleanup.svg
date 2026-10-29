@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="560" fill="#f7f9fc"/>
+
+  <text x="40" y="44" font-size="23" font-weight="700" fill="#0f172a">professional-tools-test.ts 夹具清理（2026-10-29）</text>
+  <text x="40" y="70" font-size="13" fill="#475569">依据：ProfessionalToolRuntime 只注册 penpot / drawio-ai（ProfessionalToolRuntime.ts:585-586）；其余 runtime 已随 0366e5a 删除</text>
+
+  <!-- 删除 -->
+  <rect x="40" y="95" width="470" height="330" rx="8" fill="#fff1f2" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="56" y="123" font-size="15" font-weight="700" fill="#9f1239">删除：已退役 provider 的夹具（无人调用的死代码）</text>
+  <text x="56" y="153" font-size="12" fill="#1f2937">blender.exe / FreeCAD.exe / Ardot.exe 路径常量（工具根里伪造 exe）</text>
+  <text x="56" y="179" font-size="12" fill="#1f2937">FreeCAD 假 discovery：临时 USERPROFILE/HOME + .cache/freecad-mcp/instances</text>
+  <text x="56" y="205" font-size="12" fill="#1f2937">端口归属模拟 portExe{9876,23456,50501} + pidExe 种子</text>
+  <text x="56" y="231" font-size="12" fill="#1f2937">OpenDesign 夹具：odCli / odPathCandidates / seedOdReady / 打包布局</text>
+  <text x="56" y="257" font-size="12" fill="#1f2937">spawn / kill 里的 9876 / 23456 / 50501 分支</text>
+  <text x="56" y="283" font-size="12" fill="#1f2937">5 条「class XRuntime 已删除」源码文本断言</text>
+  <text x="56" y="309" font-size="12" fill="#1f2937">无用 helper：programsDirForTest / setArdotHttpReady /</text>
+  <text x="56" y="329" font-size="12" fill="#1f2937">  setDrawioReady / markReadyPort / seedReadyPorts</text>
+  <text x="56" y="363" font-size="13" font-weight="700" fill="#b91c1c">文件 498 行 → 355 行</text>
+  <text x="56" y="385" font-size="12" fill="#475569">这些夹具支撑的用例在 CAD/OD 退役时已一起删除，只剩夹具本身</text>
+
+  <!-- 箭头 -->
+  <line x1="514" y1="260" x2="590" y2="260" stroke="#64748b" stroke-width="2"/>
+  <polygon points="594,260 586,255 586,265" fill="#64748b"/>
+  <text x="516" y="246" font-size="12" fill="#475569">只剩 2 个 runtime</text>
+
+  <!-- 保留 -->
+  <rect x="600" y="95" width="480" height="330" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="616" y="123" font-size="15" font-weight="700" fill="#166534">保留：现行行为断言（63 条）</text>
+  <text x="616" y="153" font-size="12" fill="#1f2937">Penpot：compose 存在性 · docker compose up/stop · 9001 identity ·</text>
+  <text x="616" y="173" font-size="12" fill="#1f2937">  secret redaction · openExternal（系统浏览器）</text>
+  <text x="616" y="203" font-size="12" fill="#1f2937">Draw.io：where npx · 端口 6002–6020 扫描 + 身份标记 · payload ·</text>
+  <text x="616" y="223" font-size="12" fill="#1f2937">  openInApp（扩展栏）· stopOwned no-op</text>
+  <text x="616" y="253" font-size="12" fill="#1f2937">会话 gate：orchestrator prepare 失败阻断 · createSession 不自动 open</text>
+  <text x="616" y="279" font-size="12" fill="#1f2937">UI gate：ChatView / index.ts openExternal + openInApp / Hub 启停入口</text>
+  <text x="616" y="305" font-size="12" fill="#1f2937">退役语义：isRetiredManagedProvider("blender") · 技能仍可列出 ·</text>
+  <text x="616" y="325" font-size="12" fill="#1f2937">  DESIGN_PROVIDER_MCP_IDS 不含 blender</text>
+  <text x="616" y="363" font-size="13" font-weight="700" fill="#15803d">68 passed → 63 passed，0 failed</text>
+  <text x="616" y="385" font-size="12" fill="#475569">删掉的 5 条只断言「源码里没有某个类名」，不是行为</text>
+
+  <!-- 验证 -->
+  <rect x="40" y="445" width="1040" height="88" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="56" y="473" font-size="14" font-weight="700" fill="#3730a3">验证</text>
+  <text x="56" y="497" font-size="13" fill="#1f2937">test:professional-tools 63/0　·　test:all 245 通过 / 0 失败 / 0 新增回归（2.2 min）</text>
+  <text x="56" y="519" font-size="13" fill="#1f2937">typecheck（web + node + scripts 棘轮 189=189）通过；未改动任何 src/</text>
+</svg>

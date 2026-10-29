@@ -235,8 +235,10 @@ correct remediation is to **commit the deletions** — not to restore the files.
 
 ### 4.2 Tracked vs. merely-present junk
 
-`.gitignore` correctly covers `out/`, `release/`, `release-*/`, `vendor/`, `MyBuddyTools/*`,
-`*.onnx`, `/.tmp-*`.
+`.gitignore` correctly covers `out/`, `release/`, `release-*/`, `vendor/`, `*.onnx`, `/.tmp-*`.
+
+> 2026-10-29 更正：原 `MyBuddyTools/*` 规则已随「不内置第三方软件」删除（commit `0366e5a`）；
+> 受管工具根改为 `~/.mybuddy/tools`（只放 compose/配置），仓库内不再有便携工具目录。
 
 | Path | On disk | **Tracked files** | **Tracked MB** |
 |---|---|---|---|

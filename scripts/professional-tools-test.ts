@@ -1,5 +1,5 @@
 /** ProfessionalToolRuntime 纯/静态回归：不启动真实 GUI / Docker。 */
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,142 +27,44 @@ function assert(cond: unknown, label: string): void {
 
 // 工具根 = 用户数据目录（~/.mybuddy/tools 语义，只放 compose/配置，不内置软件）。
 // 用例用临时目录代替真实用户目录，避免污染 ~/.mybuddy。
+// 现行受管 runtime 只剩 penpot（compose）与 drawio-ai（npx + 端口），
+// 不再有 Blender / FreeCAD / Ardot / OpenDesign 的 exe 探测夹具。
 const toolsRoot = mkdtempSync(join(tmpdir(), "mybuddy-tools-"));
 const runtimeDir = String.raw`C:\Users\tester\.mybuddy\runtime`;
-const blenderExe = join(toolsRoot, "blender-99.1-windows-x64", "blender.exe");
-const freecadExe = join(toolsRoot, "FreeCAD_42.7-Windows-x86_64", "FreeCAD.exe");
 const penpotCompose = join(toolsRoot, "penpot", "docker-compose.yaml");
-const ardotExe = join(toolsRoot, "Ardot", "Ardot.exe");
-
-/** 与 fakeHarness 内部一致的 %LOCALAPPDATA%\Programs（打包应用探测测试用）。 */
-function programsDirForTest(): string {
-  return join(process.env.LOCALAPPDATA ?? "C:\\Users\\tester\\AppData\\Local", "Programs");
-}
 
 function fakeHarness(options: {
   secretFailure?: boolean;
-  /** 覆盖 Ardot exe 路径（discovery 测试用：版本化子目录/bin） */
-  ardotExe?: string;
-  listDirectories?: () => string[];
-  /** 预置已就绪端口（模拟外部已启动的 MCP server） */
-  seedReadyPorts?: number[];
-  /** 预置 Ardot MCP HTTP endpoint ready（TCP 未监听场景） */
-  seedArdotHttpReady?: boolean;
-  /** OpenDesign CLI（dist/cli.js）；null = 不装；缺省 = 不装 */
-  odCli?: string | null;
-  /** `where od` 返回的 PATH 候选（Path 解析场景） */
-  odPathCandidates?: string[];
-  /** 身份校验会通过的候选集合（真 OpenDesign CLI） */
-  odValidCommands?: Set<string>;
-  /** 预置 OpenDesign daemon 已就绪（httpStatus 200） */
-  seedOdReady?: boolean;
-  /** 预置被占用的端口（OpenDesign 端口回退测试） */
-  seedOdOccupiedPorts?: number[];
   /** `where npx` 返回的 PATH 候选（Draw.io npx 解析） */
   npxCandidates?: string[];
   /** 预置 Draw.io HTTP 已就绪（端口扫描命中身份标记） */
   seedDrawioReady?: boolean;
   /** 预置 Draw.io 端口被非本服务占用（httpStatus 200 但无身份标记） */
   seedDrawioOccupiedPorts?: number[];
-  /** 模拟 %LOCALAPPDATA%\Programs 下的打包 OD 桌面应用（resources 布局） */
-  odPackagedApps?: Array<{
-    appName: string;
-    /** resources/open-design-config.json 内容；null = 不写配置文件 */
-    configJson?: string | null;
-    /** 存在 app/prebundled/daemon/daemon-cli.mjs（0.16.x 布局兜底） */
-    prebundledCli?: boolean;
-  }>;
 } = {}) {
-  const ardotExePath = options.ardotExe ?? ardotExe;
-  const odCliPath = options.odCli ?? null;
-  const files = new Set([blenderExe, freecadExe, penpotCompose, ardotExePath]);
-  if (odCliPath) files.add(odCliPath);
-  const programsDir = join(process.env.LOCALAPPDATA ?? "C:\\Users\\tester\\AppData\\Local", "Programs");
-  const packagedApps = options.odPackagedApps ?? [];
-  const textFiles = new Map<string, string>();
-  for (const app of packagedApps) {
-    if (app.configJson != null) {
-      textFiles.set(join(programsDir, app.appName, "resources", "open-design-config.json"), app.configJson);
-    }
-    if (app.prebundledCli) {
-      files.add(join(programsDir, app.appName, "resources", "app", "prebundled", "daemon", "daemon-cli.mjs"));
-    }
-  }
-  const readyPorts = new Set<number>(options.seedReadyPorts ?? []);
-  const occupiedPorts = new Set<number>(options.seedOdOccupiedPorts ?? []);
+  const files = new Set<string>([penpotCompose]);
   const drawioOccupied = new Set<number>(options.seedDrawioOccupiedPorts ?? []);
-  const odValidCommands = options.odValidCommands ?? new Set<string>(options.odPathCandidates ?? []);
   const npxCandidates = options.npxCandidates ?? [];
   let drawioReady = options.seedDrawioReady ?? false;
   const drawioHtml = (port: number): string =>
     `<html><head><title>Next AI Draw.io</title></head><body></body></html>`;
   const events: string[] = [];
   let penpotReady = false;
-  let ardotHttpReady = options.seedArdotHttpReady ?? false;
-  let odReady = options.seedOdReady ?? false;
   let killCount = 0;
   let dockerStopCount = 0;
-  // FreeCAD 分层 readiness 的实例发现（hermetic）：USERPROFILE 指向临时目录，
-  // spawn FreeCAD 时模拟 addon 写 discovery json（gui:true + 本进程 pid 保证存活）
-  const fcHome = mkdtempSync(join(tmpdir(), "fc-mcp-"));
-  process.env.USERPROFILE = fcHome;
-  // POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
-  process.env.HOME = fcHome;
-  const fcInstancesDir = join(fcHome, ".cache", "freecad-mcp", "instances");
-  mkdirSync(fcInstancesDir, { recursive: true });
-  const ensureFreecadInstance = (): void => {
-    writeFileSync(
-      join(fcInstancesDir, `mock-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`),
-      JSON.stringify({
-        uuid: "mock-gui",
-        pid: process.pid,
-        gui: true,
-        label: "mock",
-        started_at: Date.now(),
-        freecad_version: "1.1.3",
-        freecad_binary: freecadExe,
-      }),
-      "utf-8",
-    );
-  };
-  // 分层 readiness 归属模拟：port → 该端口对应 exe；pid 123 = spawn/seed 的进程
-  const portExe: Record<number, string> = { 9876: blenderExe, 23456: freecadExe, 50501: ardotExePath };
-  const pidExe = new Map<number, string>();
-  for (const p of options.seedReadyPorts ?? []) {
-    readyPorts.add(p);
-    pidExe.set(123, portExe[p] ?? blenderExe);
-  }
   const penpotHtml = `<html><head><title>Penpot | Full-stack design</title></head><body></body></html>`;
 
   const ops: ProfessionalToolPlatformOps = {
     exists: (path) => files.has(path),
-    listDirectories:
-      options.listDirectories ??
-      ((path) => {
-        if (path === programsDir) return packagedApps.map((a) => a.appName);
-        return [
-          "blender-99.1-windows-x64",
-          "FreeCAD_42.7-Windows-x86_64",
-          "penpot",
-          ...(odCliPath ? ["open-design"] : []),
-        ];
-      }),
+    // 现行 runtime 不扫描工具根目录（Penpot 直接查 compose，Draw.io 走 npx + 端口）。
+    listDirectories: () => [],
     ensureDir: (path) => events.push(`mkdir:${path}`),
     writeText: (path, _text) => {
       events.push(`write:${path}`);
     },
-    readTextFile: (path) => textFiles.get(path) ?? null,
-    spawn: (command, args, env) => {
-      const envPart = env ? `:env:${JSON.stringify(env)}` : "";
-      events.push(`spawn:${command}:${args.join("|")}${envPart}`);
-      if (command === blenderExe) readyPorts.add(9876);
-      if (command === freecadExe) {
-        readyPorts.add(23456); // blwfish AICopilot bridge 端口（与 FreeCADRuntime 对齐）
-        ensureFreecadInstance(); // 模拟 addon 写 discovery（gui:true，本进程 pid 存活）
-      }
-      if (command === ardotExePath) readyPorts.add(50501);
-      if (args.includes("daemon") && args.includes("start")) odReady = true;
-      pidExe.set(123, command);
+    readTextFile: () => null,
+    spawn: (command, args) => {
+      events.push(`spawn:${command}:${args.join("|")}`);
       return {
         pid: 123,
         killed: false,
@@ -170,11 +72,6 @@ function fakeHarness(options: {
         kill: () => {
           killCount += 1;
           events.push(`kill:${command}`);
-          // 模拟真实行为：杀掉进程 → MCP server 停止监听 → 端口不再 ready
-          if (command === blenderExe) readyPorts.delete(9876);
-          if (command === freecadExe) readyPorts.delete(23456);
-          if (command === ardotExePath) readyPorts.delete(50501);
-          if (args.includes("daemon") && args.includes("start")) odReady = false;
           return true;
         },
       };
@@ -183,18 +80,7 @@ function fakeHarness(options: {
       events.push(`run:${command}:${args.join("|")}`);
       if (command === "where" || command === "which") {
         if (args.includes("npx")) return { code: npxCandidates.length ? 0 : 1, output: npxCandidates.join("\n") };
-        return { code: 0, output: (options.odPathCandidates ?? []).join("\n") };
-      }
-      // OpenDesign PATH 身份探测：真 CLI 输出官方标记（daemon-not-running / bindHost）
-      if (args.includes("daemon") && args.includes("status") && args.includes("--json")) {
-        if (odValidCommands.has(command)) {
-          return { code: 64, output: '{"ok":false,"error":{"code":"daemon-not-running"}}' };
-        }
-        return { code: 1, output: "od: 'daemon': No such file or directory" };
-      }
-      if (args.includes("daemon") && args.includes("stop")) {
-        odReady = false;
-        return { code: 0, output: "[daemon] shutdown scheduled" };
+        return { code: 1, output: "" };
       }
       if (options.secretFailure && args.includes("up")) {
         return { code: 1, output: "failed http://localhost:9001/mcp/stream?userToken=TOPSECRET" };
@@ -206,35 +92,17 @@ function fakeHarness(options: {
       }
       return { code: 0, output: "ok" };
     },
-    tcpReady: async (_host, port) => {
-      if (occupiedPorts.has(port)) return true;
-      return readyPorts.has(port);
-    },
-    listListeningPids: async (port) => {
-      if (occupiedPorts.has(port)) return [999]; // 无关进程占用（归属未知）
-      if (readyPorts.has(port)) return [123];
-      return [];
-    },
-    pidExecutablePath: async (pid) => pidExe.get(pid) ?? null,
-    runningPidsByImageName: async (imageName) => {
-      const name = imageName.toLowerCase();
-      const hit = [...pidExe.values()].find((exe) => exe.split(/[\\/]/).pop()?.toLowerCase() === name);
-      return hit ? [123] : [];
-    },
-    httpReady: async (url) => {
-      if (url === "http://localhost:9001" || url.startsWith("http://localhost:9001")) return penpotReady;
-      if (url === "http://127.0.0.1:50501/api/v1/mcp") return ardotHttpReady;
-      return false;
-    },
+    tcpReady: async () => false,
+    listListeningPids: async () => [],
+    runningPidsByImageName: async () => [],
+    pidExecutablePath: async () => null,
+    httpReady: async (url) => (url.startsWith("http://localhost:9001") ? penpotReady : false),
     httpStatus: async (url) => {
-      if (url.includes("/api/daemon/status")) return odReady ? 200 : 0;
       const m = /^http:\/\/127\.0\.0\.1:(600[2-9]|601\d|6020)$/.exec(url);
-      if (m) {
-        const port = Number(m[1]);
-        if (drawioReady) return 200;
-        if (drawioOccupied.has(port)) return 200;
-        return 0;
-      }
+      if (!m) return 0;
+      const port = Number(m[1]);
+      if (drawioReady) return 200;
+      if (drawioOccupied.has(port)) return 200;
       return 0;
     },
     httpGet: async (url) => {
@@ -242,12 +110,10 @@ function fakeHarness(options: {
         return penpotReady ? penpotHtml : null;
       }
       const m = /^http:\/\/127\.0\.0\.1:(600[2-9]|601\d|6020)$/.exec(url);
-      if (m) {
-        const port = Number(m[1]);
-        if (drawioReady) return drawioHtml(port);
-        if (drawioOccupied.has(port)) return "<html><title>other service</title></html>";
-        return null;
-      }
+      if (!m) return null;
+      const port = Number(m[1]);
+      if (drawioReady) return drawioHtml(port);
+      if (drawioOccupied.has(port)) return "<html><title>other service</title></html>";
       return null;
     },
     openExternal: async (url) => events.push(`open:${url}`),
@@ -272,11 +138,7 @@ function fakeHarness(options: {
     ops,
     files,
     events,
-    ardotExe: ardotExePath,
     setPenpotReady: (value: boolean) => (penpotReady = value),
-    setArdotHttpReady: (value: boolean) => (ardotHttpReady = value),
-    setDrawioReady: (value: boolean) => (drawioReady = value),
-    markReadyPort: (port: number) => readyPorts.add(port),
     killCount: () => killCount,
     dockerStopCount: () => dockerStopCount,
   };
@@ -484,11 +346,6 @@ async function main(): Promise<void> {
       !(DESIGN_PROVIDER_MCP_IDS as readonly string[]).includes("blender"),
       "general 出厂 deny 不再把已装 blender MCP 当专用 provider 排除",
     );
-    assert(!runtime.includes("class ArdotLocalRuntime"), "Ardot Runtime 已删除");
-    assert(!runtime.includes("class BlenderRuntime"), "Blender Runtime 已删除");
-    assert(!runtime.includes("class FreeCADRuntime"), "FreeCAD Runtime 已删除");
-    assert(!runtime.includes("class OpenDesignRuntime"), "OpenDesign Runtime 已删除");
-    assert(!runtime.includes("class NativePortableRuntime"), "NativePortableRuntime 已删除");
   }
 
   console.log(`\n[professional-tools-test] ${passed} passed, ${failed} failed`);

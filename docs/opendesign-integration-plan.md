@@ -23,19 +23,23 @@
 
 ---
 
-## 1. MyBuddy Design Mode 现状（已验证事实）
+## 1. MyBuddy Design Mode 现状（2026-10 调研快照）
+
+> ⚠️ **2026-10-29 复核**：`design` 模式已整体退役（`WelcomeMode = "working" | "coding" | "bot"`，
+> `DESIGN_MODE_PRESETS = []`）。本节及下文保留的是退役前的调研事实，**不能当作当前代码状态**；
+> 现行口径见 `docs/opendesign-integration.md` 顶部「现行状态」段。
 
 ### 1.1 顶层模式模型与持久化
 
 | 事实 | 证据 |
 |---|---|
-| 顶层模式 `WelcomeMode = "working" \| "coding" \| "design"` | `src/shared/mode-profile.ts:3` |
+| 顶层模式 `WelcomeMode = "working" \| "coding" \| "bot"`（`design` 已退役） | `src/shared/mode-profile.ts:6` |
 | 模式资料 `ModeProfileDto` = 5 个文案块（goal/workflow/delivery/forbid/criteria）+ `ModePolicyDto`（skillPolicy / toolPolicy / mcpPolicy / scenes / presets） | `src/shared/mode-profile.ts:25-141` |
 | 模式磁盘落点 `~/.mybuddy/modes/<id>/{goal.md,…,policy.json}`，`getProfile` 每次与出厂 seed 比对得出 `source: "seed"\|"user"` | `src/main/agent/ModeProfileStore.ts:240-340`（`ensureMaterialized` / `getProfile`） |
-| 出厂 seed（design 的 goal/workflow/delivery/forbid/criteria + policy） | `src/main/agent/mode-defaults.ts:255-340`（`MODE_SEEDS.design`）；design policy：skill 偏好 design/ui/prototype、tool soft 偏好 read/write/edit、`mcpPolicy: {mode:"hard", deny:["serena","codegraph"]}` |
-| Design 出厂 5 个专业 preset：`ai-ui`(ardot-local) / `web-prototype`(penpot) / `3d-blender`(blender) / `mechanical-cad`(freecad) / `general`(无 provider) | `src/main/agent/mode-defaults.ts:95-157`（`DESIGN_MODE_PRESETS`） |
-| 集中式设计 provider 清单 `DESIGN_PROVIDER_MCP_IDS = ["ardot-local","penpot","canva","blender","freecad"]`（general preset 排除用 + UI 可用性判断） | `src/shared/mode-profile.ts:99` |
-| 出厂默认 preset：`MODE_DEFAULT_PRESET_IDS.design = "ai-ui"` | `src/shared/mode-profile.ts:104` |
+| 出厂 seed（design 的 goal/workflow/delivery/forbid/criteria + policy） | ~~`MODE_SEEDS.design`~~ 已删除；现只有 working / coding / bot 三份 seed（`src/main/agent/mode-defaults.ts:456-523`） |
+| ~~Design 出厂 5 个专业 preset~~（`ai-ui` / `web-prototype` / `3d-blender` / `mechanical-cad` / `general`） | 已删除：`DESIGN_MODE_PRESETS` 现为空数组（`src/main/agent/mode-defaults.ts:422-423`）；Penpot 移到 working 的 `web-prototype`（同文件 :195） |
+| 设计 provider 清单 `DESIGN_PROVIDER_MCP_IDS = ["ardot-local","penpot","canva","freecad","opendesign"]`（仅兼容/元数据 fallback；blender 已移出本名单） | `src/shared/mode-profile.ts:390-396` |
+| ~~出厂默认 preset `MODE_DEFAULT_PRESET_IDS.design = "ai-ui"`~~ | 已不存在：默认 preset 只有 `working: general-office` / `coding: minimal` / `bot: native`（`src/shared/mode-profile.ts:409-413`） |
 | preset 与 base 的收窄合成（deny 并集 / allow 交集 / 任一侧 hard 即 hard / promptAddon） | `src/shared/mode-profile.ts:135-240`（`resolveEffectiveModePolicy` / `composeMcpPolicy` / `composeSkillPolicy`） |
 
 ### 1.2 模式切换（renderer 状态）
@@ -67,15 +71,15 @@
 - 各 runtime 探测/启动方式：
   - Penpot：`docker compose -f <root>/penpot/compose.yaml up -d`，`httpReady http://localhost:9001`（`PENPOT_ORIGIN`，`src/shared/professional-tools.ts:17`）。
   - Blender（已退役）：历史实现用 `discoverPortableExecutable`（已删）找 `blender.exe` → spawn `--online-mode`（官方 Lab MCP 扩展自带 Auto Start）→ `tcpReady 127.0.0.1:9876`。
-  - FreeCAD：spawn `FreeCAD.exe` → `tcpReady 127.0.0.1:9875`（neka-nat/freecad-mcp addon `auto_start_rpc=true`）。
-  - Ardot：spawn `Ardot.exe` → ready `127.0.0.1:50501`（HTTP MCP endpoint）。
+  - FreeCAD（已退役）：历史实现 spawn `FreeCAD.exe` → `tcpReady 127.0.0.1:9875`（neka-nat/freecad-mcp addon `auto_start_rpc=true`）。
+  - Ardot（已退役）：历史实现 spawn `Ardot.exe` → ready `127.0.0.1:50501`（HTTP MCP endpoint）。
 - 生命周期：`stopOwned()` 只杀本 Runtime spawn 的 child（app quit 钩子 `src/main/index.ts:937`）；Penpot Docker 不随 app 停。
 
 ### 1.5 MCP 配置层（外部 MCP 如何进入 Pi）
 
 - `McpConfigService`（`src/main/mcp/McpConfigService.ts`）：配置优先级 shared-global `~/.config/mcp/mcp.json` → agents-global → pi-global `~/.mybuddy/mcp.json`（**本服务管理目标**）→ 兼容 imports；`installServers / removeServers / setServerEnabled` 已有（450-530），IPC `McpIpc.install/remove`（`src/shared/agent-ipc.ts`）。
 - `McpServerEntry` 支持 `command/args/env/cwd/url/disabled/modes/directTools`（`McpConfigService.ts:50-72`）。
-- 用户机 `~/.mybuddy/mcp.json` 现有设计条目（实证）：`penpot` = URL `http://localhost:9001/mcp/stream?userToken=…` + `modes:["design"]`；`blender` = `uv run --project <root>/mcp/blender_mcp/mcp blender-mcp` + env `BLENDER_PATH/BLENDER_MCP_HOST/PORT`；`freecad` = `uvx freecad-mcp`；`ardot-local` = URL。
+- 用户机 `~/.mybuddy/mcp.json` 设计条目（**2026-10 采集，已过时**：该文件当前不存在，且无 blender / freecad / ardot-local 条目）：`penpot` = URL `http://localhost:9001/mcp/stream?userToken=…` + `modes:["design"]`（`design` 模式名已退役，现为 working 的 `web-prototype`）；`blender` = `uv run --project <root>/mcp/blender_mcp/mcp blender-mcp`；`freecad` = `uvx freecad-mcp`；`ardot-local` = URL。
 - 出厂捆绑扩展仅 `extensions/mcp/{serena,codegraph}`（`BundledMcpExtensions.ts`；`McpIpc.installBundled`）。
 
 ### 1.6 Artifact / Preview / Capture Mode（设计模式直接相关部分）
@@ -270,5 +274,5 @@
 
 ## 5. 证据索引（关键文件/符号）
 
-- MyBuddy：`src/shared/mode-profile.ts`（WelcomeMode/ModePolicyDto/ModePresetDto/DESIGN_PROVIDER_MCP_IDS/resolveEffectiveModePolicy）、`src/main/agent/mode-defaults.ts`（MODE_SEEDS/DESIGN_MODE_PRESETS）、`src/main/agent/ModeProfileStore.ts`（getProfile/ensureMaterialized）、`src/main/agent/PromptAssembly.ts`（assemblePrompt/resolveSessionTools）、`src/main/agent/AgentService.ts:1684`（createSession）/`:1715`（provider gate）/`:2064`（emitArtifactFile）、`src/main/mcp/McpModeFilter.ts`（filterMcpConfigForMode）、`src/main/mcp/McpRuntimeService.ts:88`（getInlineExtensions）、`src/main/mcp/McpConfigService.ts:468`（installServers）、`src/main/professional-tools/ProfessionalToolRuntime.ts`（Runtime 家族/resolveToolsRoot/discoverPortableExecutable）、`src/main/artifact/*`（ArtifactService/ArtifactPreviewHost/WebArtifactRuntime/CaptureModeController）、`src/main/browser/BrowserHost.ts:21`（BROWSER_CAPTURE_ARTIFACT_ID）、`src/renderer/src/lib/modePresetBar.ts`、`src/renderer/src/store/appStore.ts:653`（setWelcomeMode）
+- MyBuddy：`src/shared/mode-profile.ts`（WelcomeMode/ModePolicyDto/ModePresetDto/DESIGN_PROVIDER_MCP_IDS/resolveEffectiveModePolicy）、`src/main/agent/mode-defaults.ts`（MODE_SEEDS/DESIGN_MODE_PRESETS）、`src/main/agent/ModeProfileStore.ts`（getProfile/ensureMaterialized）、`src/main/agent/PromptAssembly.ts`（assemblePrompt/resolveSessionTools）、`src/main/agent/AgentService.ts:1684`（createSession）/`:1715`（provider gate）/`:2064`（emitArtifactFile）、`src/main/mcp/McpModeFilter.ts`（filterMcpConfigForMode）、`src/main/mcp/McpRuntimeService.ts:88`（getInlineExtensions）、`src/main/mcp/McpConfigService.ts:468`（installServers）、`src/main/professional-tools/ProfessionalToolRuntime.ts`（Runtime 家族/resolveToolsRoot；`discoverPortableExecutable` 已随 `0366e5a` 删除）、`src/main/artifact/*`（ArtifactService/ArtifactPreviewHost/WebArtifactRuntime/CaptureModeController）、`src/main/browser/BrowserHost.ts:21`（BROWSER_CAPTURE_ARTIFACT_ID）、`src/renderer/src/lib/modePresetBar.ts`、`src/renderer/src/store/appStore.ts:653`（setWelcomeMode）
 - OpenDesign：`docs/agent-adapters.md`（§5.10 pi）、`apps/daemon/src/runtimes/defs/pi.ts`、`apps/daemon/src/agent-protocol/pi-rpc/session.ts`、`apps/daemon/src/cli.ts:372`（SUBCOMMAND_MAP）/`:1893`（runMcp）、`apps/daemon/src/mcp.ts`（21 工具/SAFE_MCP_DAEMON_RETRY_CALLS/MUTATING_TOOLS）、`apps/daemon/src/mcp-install-info.ts:55`（buildMcpInstallPayload）、`apps/daemon/src/mcp-agent-install.ts:315`（pi=manual）、`apps/daemon/src/mcp-bootstrap.ts`（ensureMcpDaemonUrl/headless 拉起）、`apps/daemon/src/app-config.ts:163`（OD_DATA_DIR）、`apps/daemon/src/daemon-paths.ts`（Windows resources marker）、`apps/daemon/src/brands/design-md.ts`、`skills/design-md/SKILL.md`、`apps/desktop/package.json`（Electron 41）

@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="740" viewBox="0 0 1120 740" font-family="Segoe UI, Microsoft YaHei, sans-serif">
   <rect x="0" y="0" width="1120" height="740" fill="#f7f9fc"/>
 
-  <text x="40" y="44" font-size="24" font-weight="700" fill="#0f172a">便携 MyBuddyTools 现状：FreeCAD.exe / blender.exe 还在吗（实测 2026-10-26）</text>
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#0f172a">便携 MyBuddyTools 现状：FreeCAD.exe / blender.exe 还在吗（历史快照 2026-10-26）</text>
   <text x="40" y="70" font-size="13" fill="#475569">依据：本机磁盘实查 + release\0.1.49 打包物（app.asar / win-unpacked）+ 运行进程与快捷方式（cwd = win-unpacked）</text>
+  <text x="40" y="88" font-size="12" fill="#b45309">⚠ 本图记录 2026-10-26 状态；10-27 commit 0366e5a 已删除 CAD 链与便携工具根发现，①②③ 中的「现状」请以 diagrams/mybuddy-tools-cleanup.svg 为准。</text>
 
   <!-- 旧便携目录 -->
   <rect x="40" y="95" width="330" height="185" rx="8" fill="#fff1f2" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="6 4"/>
@@ -40,7 +41,7 @@
   <!-- 箭头 -->
   <line x1="205" y1="282" x2="205" y2="341" stroke="#dc2626" stroke-width="2" stroke-dasharray="5 4"/>
   <polygon points="205,345 200,337 210,337" fill="#dc2626"/>
-  <text x="214" y="318" font-size="12" fill="#dc2626">目录缺失：找不到 exe</text>
+  <text x="214" y="318" font-size="12" fill="#b45309">该链路已删除</text>
 
   <line x1="560" y1="282" x2="560" y2="341" stroke="#16a34a" stroke-width="2"/>
   <polygon points="560,345 555,337 565,337" fill="#16a34a"/>
@@ -52,15 +53,15 @@
 
   <!-- 链路 1 -->
   <rect x="40" y="345" width="330" height="215" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="56" y="373" font-size="15" font-weight="700" fill="#0f172a">① 原生 cad_* 工具链</text>
+  <text x="56" y="373" font-size="15" font-weight="700" fill="#0f172a">① 原生 cad_* 工具链（已删除）</text>
   <text x="56" y="399" font-size="12" fill="#1f2937">CadRuntimeService → FreeCadInterop</text>
-  <text x="56" y="419" font-size="12" fill="#1f2937">  .resolveFreeCadCmd()</text>
-  <text x="56" y="439" font-size="12" fill="#1f2937">toolsRoot = MYBUDDY_TOOLS_DIR ??</text>
-  <text x="56" y="459" font-size="12" fill="#1f2937">  &lt;cwd&gt;\MyBuddyTools</text>
-  <text x="56" y="479" font-size="12" fill="#1f2937">cwd = release\0.1.49\win-unpacked</text>
-  <text x="56" y="499" font-size="12" fill="#475569">→ win-unpacked\MyBuddyTools（不存在）</text>
-  <text x="56" y="533" font-size="13" font-weight="700" fill="#dc2626">✗ 报「未发现 FreeCADCmd」</text>
-  <text x="56" y="551" font-size="12" fill="#dc2626">（代码不回退 Program Files）</text>
+  <text x="56" y="419" font-size="12" fill="#1f2937">  已于 2026-10-27 commit 0366e5a 整体删除</text>
+  <text x="56" y="439" font-size="12" fill="#1f2937">现行工具根：~/.mybuddy/tools</text>
+  <text x="56" y="459" font-size="12" fill="#1f2937">  （MYBUDDY_TOOLS_DIR 可覆盖）</text>
+  <text x="56" y="479" font-size="12" fill="#1f2937">不再探测 exe 旁 / cwd 的 MyBuddyTools</text>
+  <text x="56" y="499" font-size="12" fill="#475569">→ 本图 ① 记录的是删除前行为</text>
+  <text x="56" y="533" font-size="13" font-weight="700" fill="#b45309">— 历史快照，勿当作现状</text>
+  <text x="56" y="551" font-size="12" fill="#b45309">（现行见 diagrams/mybuddy-tools-cleanup.svg）</text>
 
   <!-- 链路 2 -->
   <rect x="395" y="345" width="330" height="215" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>

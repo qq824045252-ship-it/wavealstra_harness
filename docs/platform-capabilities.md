@@ -13,7 +13,7 @@
 | `platform/runtime.ts` | 唯一读取 `process.platform` 的运行时模块：Node 平台名、PATH 分隔符、可执行名、ProgramFiles、Python/uv 布局、杀树/spawn 选项 |
 | `platform/paths.ts` | 路径大小写语义、路径比较/归一化、symlink 类型、PATH key、toPosixPath |
 | `platform/terminal.ts` | 默认 shell、ConPTY、终端环境变量 |
-| `platform/apps.ts` | where/which、可执行后缀优先级、adb/npx 候选、connector platformKey、FreeCAD/外部 Agent 入口、APPDATA→XDG |
+| `platform/apps.ts` | where/which、可执行后缀优先级、adb/npx 候选、connector platformKey、外部 Agent CLI 入口、APPDATA→XDG（FreeCAD 入口已随 CAD 链在 `0366e5a` 删除） |
 | `platform/fs-security.ts` | Windows ACL（icacls/SystemRoot）、POSIX 可执行位 |
 | `platform/input.ts` | 全选等输入修饰键（macOS meta / 其它 control） |
 | `platform/processes.ts` | 端口归属/镜像名/PID 可执行路径；Linux `ss` + `/proc`；统一进程树终止 |

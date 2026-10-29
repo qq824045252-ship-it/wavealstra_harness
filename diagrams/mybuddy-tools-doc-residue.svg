@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="600" viewBox="0 0 1120 600" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="1120" height="600" fill="#f7f9fc"/>
+
+  <text x="40" y="44" font-size="23" font-weight="700" fill="#0f172a">本机工具根（~/.mybuddy/tools）现状 vs 文档口径（修复后 · 2026-10-29）</text>
+  <text x="40" y="70" font-size="13" fill="#475569">依据：磁盘实查 ~/.mybuddy/tools + 代码（paths.ts / ProfessionalToolRuntime.ts / mode-defaults.ts）+ 提交 0366e5a</text>
+
+  <!-- ① 现状 -->
+  <rect x="40" y="95" width="340" height="320" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="56" y="123" font-size="15" font-weight="700" fill="#166534">① 磁盘 + 代码现状【已验证】</text>
+  <text x="56" y="155" font-size="12" fill="#1f2937">~/.mybuddy/tools\</text>
+  <text x="56" y="177" font-size="12" fill="#1f2937">  └─ mermaid2svg/   ← 只剩这一个</text>
+  <text x="56" y="203" font-size="12" fill="#1f2937">无 penpot/、无 FreeCAD_*/、无 blender-*/</text>
+  <text x="56" y="229" font-size="12" fill="#1f2937">getToolsDir() → ~/.mybuddy/tools（paths.ts:207）</text>
+  <text x="56" y="255" font-size="12" fill="#1f2937">resolveToolsRoot = 显式 &gt; MYBUDDY_TOOLS_DIR &gt; 默认</text>
+  <text x="56" y="281" font-size="12" fill="#1f2937">受管 runtime 只剩 penpot / drawio-ai（:585-586）</text>
+  <text x="56" y="307" font-size="12" fill="#1f2937">design 模式已退役：DESIGN_MODE_PRESETS = []</text>
+  <text x="56" y="333" font-size="12" fill="#1f2937">WelcomeMode = working / coding / bot（:6）</text>
+  <text x="56" y="363" font-size="12" fill="#475569">commit 0366e5a：删 CAD 链 + 删 discoverPortableExecutable</text>
+  <text x="56" y="385" font-size="12" fill="#475569">（不再从 exe 旁 / cwd 的 MyBuddyTools 发现随包软件）</text>
+
+  <!-- ② 本轮修正 -->
+  <rect x="395" y="95" width="390" height="320" rx="8" fill="#eff6ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="411" y="123" font-size="15" font-weight="700" fill="#3730a3">② 本轮修正的 6 处（✓ 已改）</text>
+  <text x="411" y="150" font-size="12" fill="#1f2937">✓ diagrams/mybuddy-tools-status.svg</text>
+  <text x="411" y="170" font-size="12" fill="#475569">  标历史快照；① 面板改为「CAD 链已删 / 工具根=~/.mybuddy/tools」</text>
+  <text x="411" y="194" font-size="12" fill="#1f2937">✓ docs/opendesign-integration.md</text>
+  <text x="411" y="214" font-size="12" fill="#475569">  加「现行状态」；§4 表 Blender/FreeCAD/通用设计划掉；§5/§7 标历史</text>
+  <text x="411" y="238" font-size="12" fill="#1f2937">✓ docs/opendesign-integration-plan.md</text>
+  <text x="411" y="258" font-size="12" fill="#475569">  模式/seed/preset/默认值改为退役口径；mcp.json 实证标过时</text>
+  <text x="411" y="282" font-size="12" fill="#1f2937">✓ docs/platform-capabilities.md:16</text>
+  <text x="411" y="302" font-size="12" fill="#475569">  apps.ts 不再声称有 FreeCAD 入口</text>
+  <text x="411" y="326" font-size="12" fill="#1f2937">✓ artifacts/quality-audit/tests-and-hygiene.md:238</text>
+  <text x="411" y="346" font-size="12" fill="#475569">  更正 .gitignore 覆盖项（MyBuddyTools/* 规则已删）</text>
+  <text x="411" y="370" font-size="12" fill="#1f2937">✓ diagrams/mybuddy-tools-doc-residue.svg（本图）</text>
+  <text x="411" y="390" font-size="12" fill="#475569">  由「残留清单」改为「修复台账」</text>
+
+  <!-- ③ 未改 / 注意 -->
+  <rect x="800" y="95" width="280" height="320" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="816" y="123" font-size="14" font-weight="700" fill="#166534">③ 其它项（未动 / 已单独处理）</text>
+  <text x="816" y="155" font-size="12" fill="#1f2937">✓ scripts/professional-tools-test.ts（已清理）</text>
+  <text x="816" y="175" font-size="12" fill="#475569">  旧夹具已删，68→63 断言</text>
+  <text x="816" y="203" font-size="12" fill="#1f2937">artifacts/release-cleanup/*</text>
+  <text x="816" y="223" font-size="12" fill="#475569">  一次性脚本/计划，含已不存在的 MyBuddyTools</text>
+  <text x="816" y="251" font-size="12" fill="#1f2937">artifacts/audit-2026-10-26/*</text>
+  <text x="816" y="271" font-size="12" fill="#475569">  带日期的历史审计，按日期读</text>
+  <text x="816" y="299" font-size="12" fill="#1f2937">docs/git-sync.md、.gitignore:54</text>
+  <text x="816" y="319" font-size="12" fill="#475569">  本来就是现行口径</text>
+
+  <!-- 结论 -->
+  <rect x="40" y="440" width="1040" height="120" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="56" y="468" font-size="15" font-weight="700" fill="#3730a3">结论</text>
+  <text x="56" y="494" font-size="13" fill="#1f2937">1) 工具根确实空了：~/.mybuddy/tools 只剩 mermaid2svg/，FreeCAD / Blender / penpot 都不在里面（既定路线，commit 0366e5a）。</text>
+  <text x="56" y="518" font-size="13" fill="#1f2937">2) 6 处过时说法已按现行代码改写：过时链路划掉、错误数字更正、历史内容加日期/快照标注。</text>
+  <text x="56" y="542" font-size="13" fill="#1f2937">3) 测试侧：professional-tools-test.ts 的退役夹具已删（见 diagrams/professional-tools-test-fixture-cleanup.svg）；只剩 release-cleanup 一次性脚本未动。</text>
+</svg>
