@@ -3270,3 +3270,88 @@ button:disabled {
   text-align: center;
   font-weight: 600;
 }
+
+/* 图片默认链接形式：单行定高，避免长对话因图片解码高度变化而乱跳 */
+.remote-image-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  margin: 8px 0;
+  border: 1px solid var(--border-default, #E2DED6);
+  border-radius: 10px;
+  background: var(--bg-subtle, #F6F4F0);
+  color: var(--fg, #1F1B16);
+  font-size: 13px;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.15s ease;
+}
+
+.remote-image-chip:active {
+  background: var(--bg-hover, #ECE9E2);
+}
+
+.remote-image-chip-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.remote-image-chip-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+
+.remote-image-chip-detail {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted, #78716C);
+  text-transform: uppercase;
+}
+
+.remote-image-chip-action {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-accent, #B45309);
+  font-weight: 600;
+}
+
+.remote-message-image-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+
+/* 任务级图片链接清单（时间轴末尾，位置恒定） */
+.timeline-image-links {
+  margin: 18px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, #E8E5DE);
+  border-radius: 12px;
+  background: var(--bg-subtle, #F8F6F2);
+}
+
+.timeline-image-links-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted, #78716C);
+  margin-bottom: 2px;
+}
+
+.timeline-image-links .remote-image-chip {
+  background: var(--bg, #FFFFFF);
+  margin: 6px 0 0;
+}
+

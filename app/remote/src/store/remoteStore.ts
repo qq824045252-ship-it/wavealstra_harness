@@ -529,7 +529,9 @@ export const useRemoteStore = create<State>((set, get) => ({
         set({ connection: previousConnection, error: error instanceof Error ? error.message : String(error) })
         throw error
       }
-      if (status === 401 || status === 403) { stream?.stop(); stream = null; set({ client: null, bootstrap: null }) }
+      // 401/403 不要拆掉当前界面：调用方（自动重连、7 秒 resync）拿到的失效令牌不该把
+      // 正在看的对话整屏换掉。保留 client/bootstrap，让缓存历史继续显示，只在顶部报错提示。
+      if (status === 401 || status === 403) { stream?.stop(); stream = null }
       set({ connection: status === 401 || status === 403 ? 'unauthorized' : 'disconnected', error: error instanceof Error ? error.message : String(error) })
       throw error
     }

@@ -99,26 +99,50 @@ export async function loadServerConfig(): Promise<RemoteServerConfig> {
   return { activeServerId: null, servers: [] }
 }
 
-export async function saveServerConfig(config: RemoteServerConfig): Promise<void> {
-  const json = JSON.stringify(config)
-  if (Capacitor.isNativePlatform()) {
-    await NativeCredentials.saveConfig({ configJson: json })
-    // 同步给旧接口一个镜像备份
-    const active = getActiveServer(config)
-    if (active) {
-      await NativeCredentials.saveToken({ baseUrl: active.baseUrl, deviceToken: active.deviceToken }).catch(() => undefined)
-    } else {
-      await NativeCredentials.clearToken().catch(() => undefined)
+/** 直接读已落盘配置（不经过 loadServerConfig，避免“迁移 → 保存 → 再迁移”的递归） */
+async function readRawConfig(): Promise<RemoteServerConfig | null> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const res = await NativeCredentials.loadConfig()
+      if (!res.configJson) return null
+      const parsed = JSON.parse(res.configJson) as RemoteServerConfig
+      return Array.isArray(parsed.servers) ? parsed : null
     }
-  } else {
-    localStorage.setItem(CONFIG_STORAGE_KEY, json)
-    const active = getActiveServer(config)
-    if (active) {
-      sessionStorage.setItem(DEV_KEY, JSON.stringify({ baseUrl: active.baseUrl, deviceToken: active.deviceToken }))
-    } else {
-      sessionStorage.removeItem(DEV_KEY)
+    const raw = localStorage.getItem(CONFIG_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as RemoteServerConfig
+    return Array.isArray(parsed.servers) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 落盘多电脑配置。
+ *
+ * 不变量：**任何一次保存都不允许“静默变少”** —— 除非调用方显式声明 allowShrink（只有
+ * removeServer 会这么做）。历史上正是“保存整份配置 + 顺手写一条镜像”共用键位，把两台
+ * 电脑覆盖成一台，表现为切到另一台后再也切不回来。这里加一道合并兜底。
+ */
+export async function saveServerConfig(config: RemoteServerConfig, options: { allowShrink?: boolean } = {}): Promise<void> {
+  let next = config
+  if (!options.allowShrink) {
+    const persisted = await readRawConfig()
+    if (persisted && persisted.servers.length > config.servers.length) {
+      const known = new Set(config.servers.map((server) => server.id))
+      const survivors = persisted.servers.filter((server) => !known.has(server.id))
+      next = { ...config, servers: [...config.servers, ...survivors] }
     }
   }
+  const json = JSON.stringify(next)
+  if (Capacitor.isNativePlatform()) {
+    // 只写配置本身。以前这里还会 saveToken 一个“镜像”，而它和 saveConfig 共用同一个
+    // SharedPreferences 键位，结果每次保存都把整份多电脑列表覆盖成单条凭据 —— 切换过一次
+    // 电脑再刷新就只剩一台。镜像备份已彻底移除。
+    await NativeCredentials.saveConfig({ configJson: json })
+    return
+  }
+  localStorage.setItem(CONFIG_STORAGE_KEY, json)
 }
 
 export function getActiveServer(config: RemoteServerConfig): RemoteServerNode | null {
@@ -171,7 +195,8 @@ export async function removeServer(serverId: string): Promise<RemoteServerConfig
   if (current.activeServerId === serverId) {
     current.activeServerId = current.servers[0]?.id ?? null
   }
-  await saveServerConfig(current)
+  // 显式删除才允许列表变短
+  await saveServerConfig(current, { allowShrink: true })
   return current
 }
 

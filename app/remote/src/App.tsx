@@ -6,10 +6,14 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
+
+/** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
+const EMPTY_MESSAGE_IMAGES: RemoteImageArtifact[] = []
 import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
+import { RemoteImageChipList, resolveImageOwnerId } from './components/RemoteImages'
 import { buildSpaceTaskGroups, spaceBreadcrumb, type SpaceGroupNode } from './lib/spaceGroups'
 import { taskModeLabel } from './lib/taskModeLabel'
 import { taskDotLabel, taskStatusDot } from './lib/taskStatusDot'
@@ -380,6 +384,30 @@ function ChatPage() {
     }
     return map
   }, [runtime?.interactions])
+  /**
+   * 图片 → 消息归属（稳定规则见 resolveImageOwnerId），以及无法归属的「其他图片」。
+   *
+   * 早先版本把归属做成「任务末尾一堆链接」，等于丢掉上下文；上一版又直接用
+   * createdByMessageId 硬匹配，遇到 live/快照 id 空间不同就整批掉到末尾。这里两条都避开：
+   * 先按稳定的工具调用 id 归属，再退化为消息 id、durable 序号，实在认不出才集中放末尾。
+   */
+  const { imagesByMessage, orphanImages } = useMemo(() => {
+    const grouped = new Map<string, RemoteImageArtifact[]>()
+    const all = histories[activeTaskId ?? '']?.imageArtifacts ?? EMPTY_MESSAGE_IMAGES
+    const orphans: RemoteImageArtifact[] = []
+    if (!all.length) return { imagesByMessage: grouped, orphanImages: orphans }
+    const seen = new Set<string>()
+    for (const image of all) {
+      const ownerId = resolveImageOwnerId(image, messages)
+      if (!ownerId) { orphans.push(image); continue }
+      if (seen.has(image.id)) continue
+      seen.add(image.id)
+      const list = grouped.get(ownerId) ?? []
+      list.push(image)
+      grouped.set(ownerId, list)
+    }
+    return { imagesByMessage: grouped, orphanImages: orphans }
+  }, [messages, histories, activeTaskId])
   const visibleAssistantIds = useMemo(
     () => new Set(messages.filter(message => message.role === 'assistant').map(message => message.id)),
     [messages],
@@ -409,6 +437,8 @@ function ChatPage() {
   }
 
   const turnView = useRef({ taskId: '', userCount: 0 })
+  /** 已经为哪个任务做过「进任务对齐」；同一任务内不再重复对齐 */
+  const pinnedTask = useRef<string | null>(null)
   const handleComposerFocus = () => setIsInputFocused(true)
   const handleComposerBlur = () => setIsInputFocused(false)
 
@@ -421,23 +451,34 @@ function ChatPage() {
     const user = users[users.length - 1]
     const previous = turnView.current
     const ownSend = pendingAnchorUserCountRef.current !== null && users.length > pendingAnchorUserCountRef.current
-    const pin = previous.taskId !== activeTaskId || (previous.userCount === 0 && users.length > 0)
-      || ownSend || (users.length > previous.userCount && isNearBottomRef.current)
+    /**
+     * 「进任务时对齐一次」必须**每任务只发生一次**。
+     * 旧判定是 previous.userCount === 0 && users.length > 0：只要中途出现过一次
+     * messages 为空（durable_snapshot 重写、缓存回填、后台 resync 的中间态），计数就会
+     * 0 → N，于是又"首次"对齐一次 —— 表现就是「刚进任务看着好好的，自动刷新一下就被拽到最底部」。
+     * 这里改为按任务记录的 pinnedTask：同一任务内不再重复对齐。
+     */
+    const ownsTaskEntry = pinnedTask.current !== activeTaskId
+    const firstDataForTask = ownsTaskEntry && users.length > 0
+    if (firstDataForTask) pinnedTask.current = activeTaskId
+    const pin = firstDataForTask || ownSend || (users.length > previous.userCount && isNearBottomRef.current)
     turnView.current = { taskId: activeTaskId, userCount: users.length }
     if (ownSend) pendingAnchorUserCountRef.current = null
     // A passive snapshot must not change the scroll range either. Recomputing
     // spacer height after asynchronous SVG decoding can clamp scrollTop even
     // when no code explicitly scrolls. Only a new-turn/navigation pin owns it.
     if (!pin || !user) return
+    // 只有在“真的要让位/对齐”时才写 DOM：每个流式 token 都改 spacer 高度会反复改变
+    // scrollHeight，滚动位置就会在“被浏览器钳一下”和“钳回去”之间来回弹。
     const spacer = el.querySelector<HTMLElement>('.chat-bottom-spacer')
     const composer = document.querySelector<HTMLElement>('.claude-composer-wrapper')
     const composerHeight = composer?.getBoundingClientRect().height ?? 150
-    el.parentElement?.style.setProperty('--remote-composer-height', composerHeight + 'px')
-    if (spacer) {
-      const tail = spacer.offsetTop - user.offsetTop
-      spacer.style.height = Math.max(24, el.clientHeight - composerHeight - 28 - tail) + 'px'
-    }
     if (pin) {
+      el.parentElement?.style.setProperty('--remote-composer-height', composerHeight + 'px')
+      if (spacer) {
+        const tail = spacer.offsetTop - user.offsetTop
+        spacer.style.height = Math.max(24, el.clientHeight - composerHeight - 28 - tail) + 'px'
+      }
       const target = el.scrollTop + user.getBoundingClientRect().top - el.getBoundingClientRect().top - 12
       el.scrollTop = Math.max(0, Math.min(target, el.scrollHeight - el.clientHeight))
       isNearBottomRef.current = true
@@ -607,7 +648,7 @@ function ChatPage() {
                   <ProcessPanel thinking={message.thinking} tools={message.tools} activity={message.activity} running={!!message.streaming || (message.id === lastAssistantId && isBusy)} />
                 )}
 
-                <RemoteMarkdown text={message.text} taskId={activeTaskId} images={histories[activeTaskId]?.imageArtifacts} artifacts={message.artifacts} />
+                <RemoteMarkdown text={message.text} taskId={activeTaskId} messageImages={imagesByMessage.get(message.id) ?? EMPTY_MESSAGE_IMAGES} images={histories[activeTaskId]?.imageArtifacts} />
                 {(interactionsByMessage.get(message.id) ?? []).map(interaction => (
                   <RemoteConversationInteractionCard
                     key={interaction.id}
@@ -724,6 +765,13 @@ function ChatPage() {
               </div>
             </div>
           ))}
+
+          {orphanImages.length > 0 && (
+            <div className="timeline-image-links">
+              <div className="timeline-image-links-title">其他图片（{orphanImages.length}）</div>
+              <RemoteImageChipList taskId={activeTaskId ?? ''} images={orphanImages} />
+            </div>
+          )}
 
           {!isBusy && <div className="chat-disclaimer">MyBuddy is AI and can make mistakes.</div>}
           <div className="chat-bottom-spacer" />
@@ -1654,11 +1702,9 @@ function ProcessPanel({ thinking, tools, activity, running = false }: {
         </div>
       </div>
 
-      {thinkingActive && thinking && !open && (
-        <div className="process-thinking-preview" aria-label="实时思考内容">
-          <div className="process-thinking-preview-text">{Array.from(thinking).slice(-600).join('')}<span className="streaming-caret" aria-hidden="true" /></div>
-        </div>
-      )}
+      {/* 这里原本有一段“实时思考预览”：它会在思考阶段从 0 长到 208px、思考结束后又收回 0，
+          高度变化发生在**回答上方**，于是整条时间轴被反复推开/拉回 —— 这就是长对话“自己乱跳”
+          的主因。预览删除，思考内容只在用户主动展开的面板里（300px 内部滚动）。 */}
 
       <AnimatedDisclosure open={open}>
         <div className="process-panel-body">

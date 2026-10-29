@@ -27,6 +27,9 @@ class RemoteCredentialPlugin : Plugin() {
         private const val PREFS = "mybuddy_remote_secure"
         private const val CIPHER_TEXT = "ciphertext"
         private const val IV = "iv"
+        // 多电脑配置必须与旧版单条凭据分开存：否则 saveToken 会把整份服务器列表覆盖掉
+        private const val CONFIG_CIPHER_TEXT = "config_ciphertext"
+        private const val CONFIG_IV = "config_iv"
         private const val INSTALLATION_ID = "installation_id"
         private const val ANDROID_KEY_STORE = "AndroidKeyStore"
         private const val AES_GCM_NO_PADDING = "AES/GCM/NoPadding"
@@ -50,8 +53,8 @@ class RemoteCredentialPlugin : Plugin() {
             }
             val encrypted = cipher.doFinal(payload.toString().toByteArray(StandardCharsets.UTF_8))
             preferences.edit()
-                .putString(CIPHER_TEXT, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .putString(CONFIG_CIPHER_TEXT, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putString(CONFIG_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
                 .apply()
             call.resolve()
         } catch (error: Exception) {
@@ -61,14 +64,38 @@ class RemoteCredentialPlugin : Plugin() {
 
     @PluginMethod
     fun loadConfig(call: PluginCall) {
-        val encrypted = preferences.getString(CIPHER_TEXT, null)
-        val iv = preferences.getString(IV, null)
-        if (encrypted.isNullOrEmpty() || iv.isNullOrEmpty()) {
-            call.resolve(JSObject())
+        // 1) 新版独立键：多电脑配置的唯一权威来源
+        readPayload(CONFIG_CIPHER_TEXT, CONFIG_IV)?.let { payload ->
+            val result = JSObject()
+            if (payload.has("configJson")) result.put("configJson", payload.optString("configJson"))
+            call.resolve(result)
             return
         }
 
-        try {
+        // 2) 旧版键里的 configJson（0.1.54 前后写入过 config 的那批安装）：读出来顺手迁移到新键
+        val legacy = readPayload(CIPHER_TEXT, IV)
+        if (legacy == null) {
+            call.resolve(JSObject())
+            return
+        }
+        val result = JSObject()
+        if (legacy.has("configJson")) {
+            result.put("configJson", legacy.optString("configJson"))
+            writePayload(CONFIG_CIPHER_TEXT, CONFIG_IV, legacy)
+        } else if (legacy.has("baseUrl") && legacy.has("deviceToken")) {
+            // 3) 更早的单条凭据
+            result.put("legacyBaseUrl", legacy.optString("baseUrl"))
+            result.put("legacyDeviceToken", legacy.optString("deviceToken"))
+        }
+        call.resolve(result)
+    }
+
+    /** 读并解密某个键位的 payload；缺失或损坏返回 null（损坏时清掉该键位，避免永久卡死） */
+    private fun readPayload(cipherKey: String, ivKey: String): JSONObject? {
+        val encrypted = preferences.getString(cipherKey, null)
+        val iv = preferences.getString(ivKey, null)
+        if (encrypted.isNullOrEmpty() || iv.isNullOrEmpty()) return null
+        return try {
             val cipher = Cipher.getInstance(AES_GCM_NO_PADDING).apply {
                 init(
                     Cipher.DECRYPT_MODE,
@@ -77,19 +104,25 @@ class RemoteCredentialPlugin : Plugin() {
                 )
             }
             val plain = cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP))
-            val payload = JSONObject(String(plain, StandardCharsets.UTF_8))
-            val result = JSObject()
-            if (payload.has("configJson")) {
-                result.put("configJson", payload.optString("configJson"))
-            } else if (payload.has("baseUrl") && payload.has("deviceToken")) {
-                // 兼容旧版单条凭据
-                result.put("legacyBaseUrl", payload.optString("baseUrl"))
-                result.put("legacyDeviceToken", payload.optString("deviceToken"))
-            }
-            call.resolve(result)
+            JSONObject(String(plain, StandardCharsets.UTF_8))
         } catch (error: Exception) {
-            preferences.edit().remove(CIPHER_TEXT).remove(IV).apply()
-            call.reject("Unable to read remote credential", error)
+            preferences.edit().remove(cipherKey).remove(ivKey).apply()
+            null
+        }
+    }
+
+    private fun writePayload(cipherKey: String, ivKey: String, payload: JSONObject) {
+        try {
+            val cipher = Cipher.getInstance(AES_GCM_NO_PADDING).apply {
+                init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            }
+            val encrypted = cipher.doFinal(payload.toString().toByteArray(StandardCharsets.UTF_8))
+            preferences.edit()
+                .putString(cipherKey, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putString(ivKey, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .apply()
+        } catch (error: Exception) {
+            // 迁移失败不影响本次读取
         }
     }
 

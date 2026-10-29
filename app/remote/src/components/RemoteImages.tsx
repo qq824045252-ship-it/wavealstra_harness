@@ -1,14 +1,26 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { RemoteArtifactMetadata, RemoteImageArtifact } from '@mybuddy/shared'
+import type { RemoteImageArtifact } from '@mybuddy/shared'
 import { resolveRemoteImageReference } from '../../../../shared/src/remote-images'
 import { RemoteClient } from '../api/RemoteClient'
 import { useRemoteStore } from '../store/remoteStore'
 
+/**
+ * 图片一律「默认链接形式」，且**渲染结果是纯函数**。
+ *
+ * 两条硬约束（都是踩过的坑）：
+ * 1. 不内联 <img>：解码前后高度会变，长对话滚动位置被反复修正，表现为聊天记录乱跳。
+ * 2. 不用「挂载时注册、卸载时注销」的计数来决定图片显示位置：那会让同一张图先出现在消息
+ *    底部、下一帧再跳到正文位置（或者反过来），表现为「有时有、有时没有」。现在由
+ *    (markdown 文本, 产物清单) 直接算出「正文提过哪些图」，与渲染顺序完全无关。
+ */
+
 const EMPTY_IMAGES: RemoteImageArtifact[] = []
-const Scope = createContext<{ taskId: string; images: readonly RemoteImageArtifact[]; register: (id: string) => () => void } | null>(null)
+export interface RemoteImageScopeValue { taskId: string; images: readonly RemoteImageArtifact[] }
+const Scope = createContext<RemoteImageScopeValue | null>(null)
 type CacheEntry = { promise: Promise<Blob>; bytes: number }
 const caches = new WeakMap<RemoteClient, Map<string, CacheEntry>>()
+
 /** Memory-only, session-scoped, bounded cache. Never put bearer tokens in URLs/storage. */
 export function loadRemoteImage(client: RemoteClient, taskId: string, image: RemoteImageArtifact): Promise<Blob> {
   let cache = caches.get(client)
@@ -32,85 +44,178 @@ export function loadRemoteImage(client: RemoteClient, taskId: string, image: Rem
   return entry.promise
 }
 
-export function RemoteMessageImageScope({ taskId, images = EMPTY_IMAGES, artifacts, children }: {
-  taskId: string; images?: readonly RemoteImageArtifact[]; artifacts?: readonly RemoteArtifactMetadata[]; children: ReactNode
-}) {
-  const [counts, setCounts] = useState<Record<string, number>>({})
-  const register = useCallback((id: string) => {
-    setCounts(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }))
-    return () => setCounts(current => {
-      const next = { ...current }
-      if ((next[id] ?? 0) <= 1) delete next[id]; else next[id]--
-      return next
-    })
-  }, [])
-  const value = useMemo(() => ({ taskId, images, register }), [taskId, images, register])
-  const ids = new Set(artifacts?.filter(a => a.kind === 'image').map(a => a.id))
-  const fallback = images.filter(image => ids.has(image.id) && !counts[image.id])
-  return <Scope.Provider value={value}>{children}
-    {fallback.length > 0 && <div className="remote-message-images">{fallback.map(image => <RemoteArtifactImage key={image.id} image={image} taskId={taskId} />)}</div>}
-  </Scope.Provider>
+function formatKind(mimeType?: string): string {
+  return mimeType?.split('/')[1]?.toUpperCase() ?? ''
 }
 
-function RemoteArtifactImage({ image, taskId, alt }: { image: RemoteImageArtifact; taskId: string; alt?: string }) {
+/**
+ * 从 markdown 源码里算出「正文引用过哪些产物图」。
+ * 与 urlTransform 用的是同一个 resolveRemoteImageReference，因此判定口径完全一致。
+ */
+export function mentionedImageIds(text: string, images: readonly RemoteImageArtifact[]): Set<string> {
+  const ids = new Set<string>()
+  if (!images.length) return ids
+  const pattern = /!?\[[^\]]*\]\(\s*([^)\s]+)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    const image = resolveRemoteImageReference(match[1]!, images)
+    if (image) ids.add(image.id)
+  }
+  // 已经是内部引用形式（mybuddy-artifact://local/<id>）时直接取 id
+  const direct = /mybuddy-artifact:\/\/local\/([^\s)"'>]+)/g
+  while ((match = direct.exec(text)) !== null) {
+    try { ids.add(decodeURIComponent(match[1]!)) } catch { ids.add(match[1]!) }
+  }
+  return ids
+}
+
+/**
+ * 图片 → 消息 的归属解析（纯函数，可单测）。
+ *
+ * 三种数据形态（live 消息 / durable 快照 / 缓存回填）里 message id 会互相不一致，
+ * 但**工具调用 id 是稳定的**，所以按以下优先级判定，保证同一张图稳定落在同一条回复下面：
+ *   1. createdByToolCallId → 工具调用所属消息（允许 `call_x/1`、`call_x:nested:bash:0` 变体）
+ *   2. createdByMessageId 直接命中消息 id
+ *   3. durable 序号：消息 id 形如 durable-<n>，取 max(n) <= 图片所属 n 的那条 assistant
+ * 三条都不命中才返回 null（调用方放到末尾「其他图片」，不会凭空消失）。
+ */
+export interface ImageOwnerMessage {
+  id: string
+  role: 'user' | 'assistant'
+  tools?: ReadonlyArray<{ id: string }>
+}
+
+function toolBaseCallId(raw: string): string {
+  const slash = raw.indexOf('/')
+  return (slash > 0 ? raw.slice(0, slash) : raw).replace(/:nested:.*$/, '')
+}
+
+function durableOrdinal(id: string): number | null {
+  const match = /^durable-(\d+)$/.exec(id)
+  return match ? Number(match[1]) : null
+}
+
+export function resolveImageOwnerId(image: RemoteImageArtifact, messages: readonly ImageOwnerMessage[]): string | null {
+  const toolId = image.createdByToolCallId
+  if (toolId) {
+    const base = toolBaseCallId(toolId)
+    const holder = messages.find(message =>
+      (message.tools ?? []).some(tool => toolBaseCallId(tool.id) === base))
+    if (holder) return holder.id
+  }
+  const byMessage = image.createdByMessageId
+  if (byMessage && messages.some(message => message.id === byMessage)) return byMessage
+  const target = byMessage ? durableOrdinal(byMessage) : null
+  if (target !== null) {
+    let best: { id: string; ordinal: number } | null = null
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue
+      const ordinal = durableOrdinal(message.id)
+      if (ordinal === null || ordinal > target) continue
+      if (!best || ordinal > best.ordinal) best = { id: message.id, ordinal }
+    }
+    if (best) return best.id
+  }
+  return null
+}
+
+function ImageViewer({ label, src, fallback, onClose }: { label: string; src: string | null; fallback?: ReactNode; onClose: () => void }) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', close)
+    return () => document.removeEventListener('keydown', close)
+  }, [onClose])
+  return createPortal(
+    <div className="remote-image-viewer" role="dialog" aria-modal="true" aria-label={label} onClick={onClose}>
+      <button type="button" autoFocus aria-label="关闭原图" onClick={onClose}>关闭</button>
+      {src ? <img src={src} alt={label} onClick={event => event.stopPropagation()} /> : fallback}
+    </div>,
+    document.body,
+  )
+}
+
+function ImageChip({ label, detail, onOpen }: { label: string; detail?: string; onOpen: () => void }) {
+  return <button type="button" className="remote-image-chip" onClick={onOpen} title="点击查看原图">
+    <span className="remote-image-chip-icon" aria-hidden="true">🖼</span>
+    <span className="remote-image-chip-label">{label}</span>
+    {detail ? <span className="remote-image-chip-detail">{detail}</span> : null}
+    <span className="remote-image-chip-action">查看</span>
+  </button>
+}
+
+/** 任务产物图（走鉴权接口取流）：默认只显示链接，点开后才加载 */
+export function RemoteArtifactImageLink({ image, taskId, alt }: { image: RemoteImageArtifact; taskId: string; alt?: string }) {
   const client = useRemoteStore(state => state.client)
+  const [open, setOpen] = useState(false)
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
-  const [expanded, setExpanded] = useState(false)
   const urlRef = useRef<string | null>(null)
+  const label = alt || image.name || '图片'
+
   useEffect(() => {
+    if (!open || !client) return
     let alive = true
     setError(null)
-    if (!client) return
     void loadRemoteImage(client, taskId, image).then(blob => {
       if (!alive) return
       const next = URL.createObjectURL(blob)
       const previous = urlRef.current
       urlRef.current = next
       setUrl(next)
-      // 新图已挂上后再释放旧 URL，避免中途闪成「加载中」。
       if (previous) URL.revokeObjectURL(previous)
     }).catch(cause => { if (alive) setError(cause instanceof Error ? cause.message : '图片读取失败') })
     return () => { alive = false }
-  }, [client, taskId, image.id, image.version, retry])
-  // object URL 随组件卸载回收；展开态在 id/version 切换时复位。
+  }, [open, client, taskId, image, retry])
+
   useEffect(() => () => {
     if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null }
   }, [])
-  useEffect(() => { setExpanded(false) }, [image.id, image.version])
-  useEffect(() => {
-    if (!expanded) return
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setExpanded(false) }
-    document.addEventListener('keydown', close)
-    return () => document.removeEventListener('keydown', close)
-  }, [expanded])
-  const label = alt || image.name || '生成图片'
-  return <span className="remote-image-frame" data-artifact-id={image.id}>
-    {error ? <span className="remote-image-status" role="status">图片无法显示：{error} <button type="button" onClick={() => setRetry(n => n + 1)}>重试</button></span>
-      : url ? <><img className="remote-artifact-image" src={url} alt={label} decoding="async" referrerPolicy="no-referrer"
-        onError={() => setError('图片解码失败')} role="button" tabIndex={0} onClick={() => setExpanded(true)}
-        onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(true) } }} />
-        <button className="remote-image-open" type="button" onClick={() => setExpanded(true)}>查看原图</button></>
-      : <span className="remote-image-status" role="status">图片加载中…</span>}
-    {expanded && url && createPortal(<div className="remote-image-viewer" role="dialog" aria-modal="true" aria-label={label} onClick={() => setExpanded(false)}>
-      <button type="button" autoFocus aria-label="关闭原图" onClick={() => setExpanded(false)}>关闭</button>
-      <img src={url} alt={label} onClick={event => event.stopPropagation()} />
-    </div>, document.body)}
-  </span>
+
+  return <>
+    <ImageChip label={label} detail={formatKind(image.mimeType)} onOpen={() => setOpen(true)} />
+    {open && <ImageViewer label={label} src={url} onClose={() => setOpen(false)} fallback={
+      <span className="remote-image-status" role="status">
+        {error
+          ? <>图片无法显示：{error} <button type="button" onClick={() => { setUrl(null); setRetry(n => n + 1) }}>重试</button></>
+          : '图片加载中…'}
+      </span>
+    } />}
+  </>
 }
 
+export function RemoteMessageImageScope({ taskId, images = EMPTY_IMAGES, children }: {
+  taskId: string; images?: readonly RemoteImageArtifact[]; children: ReactNode
+}) {
+  return <Scope.Provider value={{ taskId, images }}>{children}</Scope.Provider>
+}
+
+/** 正文没有引用到的产物图，统一在消息末尾补一条链接 */
+export function RemoteImageChipList({ taskId, images }: { taskId: string; images: readonly RemoteImageArtifact[] }) {
+  if (!images.length) return null
+  return <div className="remote-message-image-links">
+    {images.map(image => <RemoteArtifactImageLink key={image.id} image={image} taskId={taskId} />)}
+  </div>
+}
+
+function RemoteExternalImageLink({ src, alt, title }: { src: string; alt?: string; title?: string }) {
+  const [open, setOpen] = useState(false)
+  const label = alt || title || '网络图片'
+  return <>
+    <ImageChip label={label} detail="链接" onOpen={() => setOpen(true)} />
+    {open && <ImageViewer label={label} src={src} onClose={() => setOpen(false)} />}
+  </>
+}
+
+/** markdown 里的图片：默认渲染成链接条，绝不内联撑开高度 */
 export function RemoteMarkdownImage({ src = '', alt, title }: { src?: string; alt?: string; title?: string }) {
   const scope = useContext(Scope)
   const image = scope ? resolveRemoteImageReference(src, scope.images) : undefined
-  const id = image?.id
-  // 必须在绘制前登记：useEffect 的异步登记会让 fallback 先渲染一次、下一帧再让位给内联图，
-  // 表现为「同一张图反复卸载重建」。
-  useLayoutEffect(() => { if (scope && id) return scope.register(id) }, [scope?.register, id])
-  if (image && scope) return <RemoteArtifactImage image={image} taskId={scope.taskId} alt={alt} />
-  // Only safe network/data images reach this component via the URL transform.
-  if (/^https:\/\//i.test(src) || /^data:image\/(?:png|jpeg|jpg|gif|webp|bmp|avif);base64,/i.test(src)) {
-    return <img className="remote-direct-image" src={src} alt={alt || '图片'} title={title} referrerPolicy="no-referrer" loading="lazy" />
-  }
-  return <span className="remote-image-status" role="status">图片尚不可用：{alt || '请同步或更新电脑端'}</span>
+  if (image && scope) return <RemoteArtifactImageLink image={image} taskId={scope.taskId} alt={alt} />
+
+  const external = /^https:\/\//i.test(src) ? src
+    : /^data:image\/(?:png|jpeg|jpg|gif|webp|bmp|avif);base64,/i.test(src) ? src
+      : ''
+  if (!external) return <span className="remote-image-status" role="status">图片尚不可用：{alt || '请同步或更新电脑端'}</span>
+  return <RemoteExternalImageLink src={external} alt={alt} title={title} />
 }
