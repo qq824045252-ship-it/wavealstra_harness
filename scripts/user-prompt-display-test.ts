@@ -56,4 +56,13 @@ assert.deepEqual(parseUserPrompt(oldSuffix).attachments, [
   { name: "note.txt", path: "/tmp/note.txt" },
 ]);
 
+// 对话 Goal 由主进程追加在完整 prompt 尾部；用户气泡/历史回传只留用户原文。
+const withGoal = `前后端你都查下\n\n## 当前 Task 的对话 Goal（跨轮目标）\n目标：财务与 AI 改动经 ego 实测全部通过并提交\n状态：active\n成功标准：\n- [pending] 借贷失衡时用户可见具体差额提示\n需要用户决策时使用 request_user_input。不要修改 Project Goal/Todo。`;
+assert.equal(stripInjectedUserPromptTail(withGoal), "前后端你都查下");
+assert.equal(parseUserPrompt(withGoal).text, "前后端你都查下");
+
+const filesWithGoal = `${withFiles}\n\n## 当前 Task 的对话 Goal（跨轮目标）\n目标：继续推进`;
+assert.equal(parseUserPrompt(filesWithGoal).text, "请看这两份材料");
+assert.deepEqual(parseUserPrompt(filesWithGoal).attachments, parsedFiles.attachments);
+
 console.log("user-prompt-display-test: ok");
