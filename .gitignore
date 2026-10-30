@@ -101,6 +101,10 @@ electron.vite.config.*.mjs
 /artifacts/*.png
 /artifacts/ego/
 /artifacts/remote-android-*/
+# 一次性 OCR 诊断输出（ocr/ ocr2/ ocr3/ ocr4/ …），含原始截图，每份 300-500K
+/artifacts/ocr*/
+# 临时探针脚本（CDP/WebSocket 一次性调试，用完即弃）
+/scripts/tmp-*
 
 # IDE 本地配置
 /app/remote/android/.idea/
