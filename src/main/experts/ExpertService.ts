@@ -448,20 +448,62 @@ function parseAgentMd(
   };
 }
 
+/**
+ * 官方 plugin.json 的 author 既可能是字符串，也可能是 { name } / { zh, en }。
+ * 直接 String() 会得到 "[object Object]"，必须显式解构。
+ */
+function pluginAuthorName(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    const named = o.zh ?? o["zh-CN"] ?? o.en ?? o.name;
+    return named == null ? "" : String(named).trim();
+  }
+  return "";
+}
+
+/**
+ * 官方 plugin.json 的 tags 元素可能是字符串，也可能是 { en, zh } 双语对象。
+ * 统一取中文字面值、去空去重，避免 "[object Object]" 污染专家卡片。
+ */
+function pluginTagList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const tag of value) {
+    const text = pickZh(tag, "").trim();
+    if (text && !out.includes(text)) out.push(text);
+  }
+  return out.length ? out : undefined;
+}
+
+/**
+ * 官方分类用 categoryId（14 分类枚举），老包才写 category。
+ * 两者都没有时返回 undefined，交给 agents/*.md 回退。
+ */
+function pluginCategory(j: Record<string, unknown>): string | undefined {
+  const categoryId = typeof j.categoryId === "string" ? j.categoryId.trim() : "";
+  if (categoryId) return CATEGORY_ZH[categoryId] ?? categoryId;
+  const category = pickZh(j.category, "").trim();
+  return category || undefined;
+}
+
 /** 解析 .codebuddy-plugin/plugin.json（官方可选元数据，字段缺失时回退 agents/*.md） */
 function parsePluginJson(
   content: string,
 ): Partial<Pick<StoredExpert, "id" | "name" | "description" | "author" | "emoji" | "tags" | "category" | "version" | "mcpIds" | "connectorIds">> {
   try {
     const j = JSON.parse(content) as Record<string, unknown>;
+    // 中文简介优先取 displayDescription.zh，其次退回 description 原文
+    const description = pickZh(j.displayDescription, "").trim() || (j.description ? String(j.description).trim() : "");
+    const author = pluginAuthorName(j.author);
     return {
       id: j.id ? slugify(String(j.id)) : undefined,
       name: pickZh(j.displayName, String(j.name ?? "")),
-      description: j.description ? String(j.description) : undefined,
-      author: j.author ? String(j.author) : undefined,
+      description: description || undefined,
+      author: author || undefined,
       emoji: j.icon && typeof j.icon === "string" ? String(j.icon) : undefined,
-      tags: Array.isArray(j.tags) ? j.tags.map(String) : undefined,
-      category: j.category ? String(j.category) : undefined,
+      tags: pluginTagList(j.tags),
+      category: pluginCategory(j),
       version: j.version ? String(j.version) : undefined,
       mcpIds: capabilityIds(j.mcpIds),
       connectorIds: capabilityIds(j.connectorIds),
