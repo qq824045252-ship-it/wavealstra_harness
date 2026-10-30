@@ -69,12 +69,12 @@
     "test:memory-projection-deletion": "esbuild scripts/memory-projection-deletion-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/memory-projection-deletion-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/memory-projection-deletion-test.cjs",
     "test:space-relocate": "esbuild scripts/test-space-relocate.ts --bundle --platform=node --format=cjs --outfile=out/tests/space-relocate.cjs && node scripts/test-guard.mjs out/tests/space-relocate.cjs",
     "start": "electron-vite preview",
-    "pack": "pnpm run remote:build && electron-vite build && electron-builder --dir",
-    "pack:win": "pnpm run remote:build && electron-vite build && electron-builder --win --dir",
-    "pack:linux": "pnpm run remote:build && electron-vite build && electron-builder --linux --dir",
-    "dist": "pnpm run remote:build && electron-vite build && electron-builder --win",
-    "dist:win": "pnpm run remote:build && electron-vite build && electron-builder --win",
-    "dist:linux": "pnpm run remote:build && electron-vite build && electron-builder --linux",
+    "pack": "pnpm run remote:build && electron-vite build && electron-builder --dir && node scripts/check-root-package-json.cjs",
+    "pack:win": "pnpm run remote:build && electron-vite build && electron-builder --win --dir && node scripts/check-root-package-json.cjs",
+    "pack:linux": "pnpm run remote:build && electron-vite build && electron-builder --linux --dir && node scripts/check-root-package-json.cjs",
+    "dist": "pnpm run remote:build && electron-vite build && electron-builder --win && node scripts/check-root-package-json.cjs",
+    "dist:win": "pnpm run remote:build && electron-vite build && electron-builder --win && node scripts/check-root-package-json.cjs",
+    "dist:linux": "pnpm run remote:build && electron-vite build && electron-builder --linux && node scripts/check-root-package-json.cjs",
     "test:backup": "esbuild scripts/backup-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/backup-test.cjs && node scripts/test-guard.mjs out/tests/backup-test.cjs",
     "test:tray": "node scripts/build-tray-test.mjs && electron scripts/tray-service-test.cjs",
     "test:typecheck-guard": "node scripts/typecheck-ratchet-guard-test.cjs",
@@ -358,7 +358,8 @@
     "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",
     "test:sidebar-space-collapse-desktop": "esbuild scripts/sidebar-space-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/sidebar-space-seed.cjs && node scripts/test-guard.mjs scripts/sidebar-space-collapse-desktop-test.cjs",
     "typecheck:scripts": "node scripts/typecheck-scripts.mjs",
-    "typecheck:scripts:update-baseline": "node scripts/typecheck-scripts.mjs --update-baseline"
+    "typecheck:scripts:update-baseline": "node scripts/typecheck-scripts.mjs --update-baseline",
+    "test:packaged-package-json-guard": "node scripts/test-guard.mjs scripts/root-package-json-guard-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
