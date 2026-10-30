@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="720" viewBox="0 0 1000 720" role="img" aria-labelledby="t1">
+  <title id="t1">Bot 对话里「从这里创建分支 / 删除此消息」消失的原因</title>
+  <rect x="0" y="0" width="1000" height="720" fill="#f8fafc"/>
+  <text x="30" y="36" font-family="'Microsoft YaHei',sans-serif" font-size="19" font-weight="700" fill="#111827">Bot 对话：为什么「从这里创建分支 / 删除此消息」不见了</text>
+  <text x="30" y="60" font-family="'Microsoft YaHei',sans-serif" font-size="12.5" fill="#4b5563">现象任务：local-1793234170247-72「查看下当前代码和github是否同步」 · 场景 Bot · 「更多」菜单只剩「复制全文」</text>
+
+  <!-- Panel A -->
+  <rect x="30" y="82" width="455" height="452" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="46" y="108" font-family="'Microsoft YaHei',sans-serif" font-size="14" font-weight="700" fill="#1e3a8a">① 渲染层门禁：Bot 任务直接不渲染这两项</text>
+
+  <rect x="46" y="122" width="423" height="62" rx="8" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="60" y="146" font-family="Consolas,monospace" font-size="12.5" fill="#1e293b">MessageItem.tsx:429</text>
+  <text x="60" y="167" font-family="Consolas,monospace" font-size="12.5" fill="#1e293b">welcomeMode === "bot" → isBot = true</text>
+
+  <line x1="257" y1="184" x2="257" y2="204" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M257 209 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="46" y="210" width="423" height="62" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="60" y="234" font-family="Consolas,monospace" font-size="12" fill="#1e293b">canBranch = !isBot &amp;&amp; conversationBranchEnabled &amp;&amp;</text>
+  <text x="60" y="254" font-family="Consolas,monospace" font-size="12" fill="#1e293b">\ \ \ \ \ \ \ \ \ \ \ !btw &amp;&amp; !message.streaming … → false</text>
+
+  <line x1="257" y1="272" x2="257" y2="292" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M257 297 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="46" y="298" width="423" height="60" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="60" y="322" font-family="Consolas,monospace" font-size="12" fill="#7f1d1d">...(canBranch ? [从这里创建分支] : [])  → 空</text>
+  <text x="60" y="343" font-family="Consolas,monospace" font-size="12" fill="#7f1d1d">...(!isBot ? [删除此消息] : [])  → 空</text>
+
+  <line x1="257" y1="358" x2="257" y2="378" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M257 383 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="46" y="384" width="423" height="52" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="60" y="408" font-family="'Microsoft YaHei',sans-serif" font-size="13" font-weight="700" fill="#991b1b">结果：「更多」菜单只剩「复制全文」</text>
+  <text x="60" y="427" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#7f1d1d">（截图里看到的正是这一状态）</text>
+
+  <rect x="46" y="448" width="423" height="70" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+  <text x="60" y="470" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#334155">同源门禁还隐去了：助手消息的「重新生成」</text>
+  <text x="60" y="489" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#334155">与分支图标按钮（MessageItem.tsx:824、838）</text>
+  <text x="60" y="508" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#334155">→ 说明：这是同一处产品决策，不是渲染故障</text>
+
+  <!-- Panel B -->
+  <rect x="515" y="82" width="455" height="452" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="531" y="108" font-family="'Microsoft YaHei',sans-serif" font-size="14" font-weight="700" fill="#1e3a8a">② 后端能力：Durable 会话没有可删/可分叉的 Pi 会话</text>
+
+  <rect x="531" y="122" width="423" height="62" rx="8" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="545" y="146" font-family="'Microsoft YaHei',sans-serif" font-size="12.5" fill="#1e293b">tasks.session_file = NULL</text>
+  <text x="545" y="167" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#475569">本机实测：33 个 Bot 任务，0 个有 session_file</text>
+
+  <line x1="742" y1="184" x2="742" y2="204" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M742 209 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="531" y="210" width="423" height="62" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="545" y="234" font-family="'Microsoft YaHei',sans-serif" font-size="12.5" fill="#1e293b">durable_bot_bindings.backend = 'pi-durable'</text>
+  <text x="545" y="255" font-family="Consolas,monospace" font-size="11.5" fill="#475569">~/.mybuddy/durable/&lt;hash&gt;/*.jsonl</text>
+
+  <line x1="742" y1="272" x2="742" y2="292" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M742 297 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="531" y="298" width="423" height="74" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="545" y="320" font-family="'Microsoft YaHei',sans-serif" font-size="12" font-weight="700" fill="#7f1d1d">AgentService.deleteUserMessage</text>
+  <text x="545" y="340" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#7f1d1d">throw「Durable 会话保留持久执行记录，</text>
+  <text x="545" y="358" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#7f1d1d">请新建 Bot 对话以重新开始。」</text>
+
+  <line x1="742" y1="372" x2="742" y2="392" stroke="#64748b" stroke-width="1.5"/>
+  <path d="M742 397 l-4.5 -7 h9 z" fill="#64748b"/>
+
+  <rect x="531" y="398" width="423" height="74" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="545" y="420" font-family="'Microsoft YaHei',sans-serif" font-size="12" font-weight="700" fill="#7f1d1d">ConversationBranchService.preview</text>
+  <text x="545" y="440" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#7f1d1d">sessionFile 缺失 → SESSION_MISSING</text>
+  <text x="545" y="458" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#7f1d1d">「源会话文件不存在，无法创建分支。」</text>
+
+  <rect x="531" y="486" width="423" height="32" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+  <text x="545" y="507" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#78350f">本项目 conversation_branches 表：0 行（从未成功建过分支）</text>
+
+  <!-- Timeline -->
+  <line x1="46" y1="574" x2="954" y2="574" stroke="#94a3b8" stroke-width="2"/>
+  <circle cx="150" cy="574" r="6" fill="#16a34a"/>
+  <circle cx="640" cy="574" r="6" fill="#dc2626"/>
+
+  <rect x="46" y="590" width="430" height="76" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="60" y="612" font-family="'Microsoft YaHei',sans-serif" font-size="12.5" font-weight="700" fill="#14532d">0.1.5 之前（&lt; 2026-10-05，commit 95dbe28）：</text>
+  <text x="60" y="632" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#166534">Bot 任务 = 普通 Pi 会话（有 session_file）</text>
+  <text x="60" y="652" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#166534">→「从这里创建分支」「删除此消息」在菜单里</text>
+
+  <rect x="524" y="590" width="430" height="76" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="538" y="612" font-family="'Microsoft YaHei',sans-serif" font-size="12.5" font-weight="700" fill="#7f1d1d">0.1.5 起：Bot 改用 Pi Durable 运行时</text>
+  <text x="538" y="632" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#991b1b">95dbe28 在 MessageItem 加了 !isBot 门禁</text>
+  <text x="538" y="652" font-family="'Microsoft YaHei',sans-serif" font-size="12" fill="#991b1b">→ 两项入口隐藏（＝本次看到的「没了」）</text>
+
+  <text x="30" y="700" font-family="'Microsoft YaHei',sans-serif" font-size="11.5" fill="#6b7280">证据：MessageItem.tsx:429/439/661/824/838 · AgentService.ts:4370 · ConversationBranchService.ts:84 · AppDatabase.ts:2910 · ~/.mybuddy/app.db（只读查询）</text>
+</svg>

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="720" viewBox="0 0 1080 720">
+  <rect width="1080" height="720" fill="#FBFAF7"/>
+  <text x="40" y="46" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="21" font-weight="700" fill="#1F2430">一条任务要多个专家：三条路径</text>
+  <text x="40" y="72" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">现状 0.1.57：task_expert_bindings 一任务一行；执行身份只有一个 active 快照；team:* 被 assertSingleExpertId 显式拒绝</text>
+
+  <text x="40" y="104" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" font-weight="700" fill="#1F2430">你的需求</text>
+  <text x="250" y="104" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" font-weight="700" fill="#1F7A4D">今天就能做（0 改动）</text>
+  <text x="530" y="104" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" font-weight="700" fill="#8A5A00">要开发（可选）</text>
+  <text x="810" y="104" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" font-weight="700" fill="#1F2430">边界 / 代价</text>
+
+  <line x1="238" y1="116" x2="238" y2="652" stroke="#E6E9EF" stroke-width="1"/>
+  <line x1="518" y1="116" x2="518" y2="652" stroke="#E6E9EF" stroke-width="1"/>
+  <line x1="798" y1="116" x2="798" y2="652" stroke="#E6E9EF" stroke-width="1"/>
+  <line x1="40" y1="292" x2="1060" y2="292" stroke="#E6E9EF" stroke-width="1"/>
+  <line x1="40" y1="472" x2="1060" y2="472" stroke="#E6E9EF" stroke-width="1"/>
+
+  <!-- lane 1 -->
+  <text x="40" y="150" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">① 一个 AI 同时具备</text>
+  <text x="40" y="172" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">财务 + 法务的能力</text>
+  <text x="40" y="202" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">典型：一份合同既要</text>
+  <text x="40" y="222" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">税务口径也要法律风险</text>
+
+  <text x="250" y="150" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F7A4D">复合专家（单身份）</text>
+  <text x="250" y="178" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">专家中心 → 编辑专家：</text>
+  <text x="250" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">instructions 写双角色分工</text>
+  <text x="250" y="222" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">Skills / MCP / 连接器可多选</text>
+  <text x="250" y="244" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">绑定后任务仍只有 1 个专家</text>
+
+  <text x="530" y="150" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#8A5A00">不需要开发</text>
+  <text x="530" y="178" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">现有字段已覆盖：</text>
+  <text x="530" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">instructions + skillIds +</text>
+  <text x="530" y="222" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">mcpIds + connectorIds</text>
+  <text x="530" y="244" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">（一个专家装多份能力）</text>
+
+  <text x="810" y="150" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">单一人格，模型可能混角色</text>
+  <text x="810" y="172" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">权限是并集：MCP/连接器都生效</text>
+  <text x="810" y="194" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">冲突要写进 instructions 裁决</text>
+  <text x="810" y="216" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">私有 Skills 会复制进任务</text>
+  <text x="810" y="238" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">项目策略仍可 deny 收窄</text>
+
+  <!-- lane 2 -->
+  <text x="40" y="330" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">② 同一份材料，两个</text>
+  <text x="40" y="352" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">专家各给一版判断</text>
+  <text x="40" y="382" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">（评审 / 会签）</text>
+
+  <text x="250" y="330" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F7A4D">多任务分工（今天可用）</text>
+  <text x="250" y="358" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">主任务挂 A；右键任务 →</text>
+  <text x="250" y="380" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">「以专家评审此任务」→ 选 B</text>
+  <text x="250" y="402" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">新任务用引用块带入源上下文</text>
+  <text x="250" y="424" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">结论回主任务汇总</text>
+
+  <text x="530" y="330" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#8A5A00">主专家 + 顾问（advisors）</text>
+  <text x="530" y="358" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">同一条任务多 chip；顾问只</text>
+  <text x="530" y="380" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">注入只读意见，不拿工具权限</text>
+  <text x="530" y="402" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">改：additive 表 + prompt</text>
+  <text x="530" y="424" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">注入 + chip / 管理弹窗</text>
+
+  <text x="810" y="330" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">多任务：不是同一会话，</text>
+  <text x="810" y="352" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">上下文靠引用 / 汇总</text>
+  <text x="810" y="382" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">顾问模式：顾问不能执行工具，</text>
+  <text x="810" y="404" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">只影响判断；权限仍只属主专家</text>
+
+  <!-- lane 3 -->
+  <text x="40" y="510" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">③ 两个专家各自用</text>
+  <text x="40" y="532" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">自己的工具 / 权限干活</text>
+
+  <text x="250" y="510" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F7A4D">多任务分工 + 项目共享</text>
+  <text x="250" y="538" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">每条任务单专家；项目</text>
+  <text x="250" y="560" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">instructions / shared context、</text>
+  <text x="250" y="582" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">Library 产物做汇总</text>
+
+  <text x="530" y="510" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#B42318">全多身份（Expert Team）</text>
+  <text x="530" y="538" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">N 个身份；能力 / 权限合并</text>
+  <text x="530" y="560" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">要定义谁发言 / 谁拍板</text>
+  <text x="530" y="582" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">0.1.17 已主动移除</text>
+
+  <text x="810" y="510" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">L 改动：DB / prompt / 策略 /</text>
+  <text x="810" y="532" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">loadout / cron / Bot / UI / 测试</text>
+  <text x="810" y="554" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">身份与权限语义最复杂</text>
+
+  <!-- bottom -->
+  <rect x="40" y="664" width="1020" height="44" rx="10" fill="#F3F5F8" stroke="#E3E7ED"/>
+  <text x="60" y="692" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">推荐：能力型需求用复合专家；视角型需求用多任务评审或顾问模式；只有“各自工具 / 权限”才值得做全多身份。</text>
+</svg>

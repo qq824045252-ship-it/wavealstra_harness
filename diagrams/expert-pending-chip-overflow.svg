@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600" viewBox="0 0 1000 600">
+  <rect width="1000" height="600" fill="#FBFAF7"/>
+  <text x="40" y="46" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="21" font-weight="700" fill="#1F2430">待生效徽标被塞进 180×28 胶囊后竖排溢出</text>
+  <text x="40" y="72" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">ChatInput.tsx:1844-1864 · styles/global.css:15937-15951 · styles/expert-editor.css:17</text>
+
+  <!-- before -->
+  <rect x="40" y="96" width="440" height="250" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="60" y="124" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">现在（0.1.57）</text>
+
+  <line x1="80" y1="162" x2="260" y2="162" stroke="#9099A8" stroke-width="1.2"/>
+  <line x1="80" y1="157" x2="80" y2="167" stroke="#9099A8" stroke-width="1.2"/>
+  <line x1="260" y1="157" x2="260" y2="167" stroke="#9099A8" stroke-width="1.2"/>
+  <text x="170" y="154" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280" text-anchor="middle">max-width: 180px</text>
+
+  <rect x="80" y="180" width="180" height="28" rx="14" fill="#EDEFF3" stroke="#C3C8D1"/>
+  <text x="92" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" fill="#303844">🧙</text>
+  <text x="110" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#303844">柠檬云AI财税…</text>
+  <rect x="206" y="172" width="36" height="50" rx="4" fill="none" stroke="#C43B3B" stroke-width="1.4" stroke-dasharray="4 3"/>
+  <text x="211" y="188" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#9A6700">待生</text>
+  <text x="211" y="207" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#9A6700">效</text>
+  <text x="250" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">×</text>
+
+  <line x1="272" y1="180" x2="272" y2="208" stroke="#9099A8" stroke-width="1.2"/>
+  <line x1="267" y1="180" x2="277" y2="180" stroke="#9099A8" stroke-width="1.2"/>
+  <line x1="267" y1="208" x2="277" y2="208" stroke="#9099A8" stroke-width="1.2"/>
+  <text x="283" y="198" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">height: 28px</text>
+
+  <text x="60" y="242" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">名字被 ellipsis 截断；notice 被压到约 12px 宽 → 逐字换行</text>
+  <text x="60" y="264" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">2 行 × 19.2px = 38.4px &gt; 28px 胶囊 → 文字上下溢出</text>
+  <text x="60" y="286" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#B42318">截图中「待生 / 效」已越出胶囊底色</text>
+
+  <!-- after -->
+  <rect x="520" y="96" width="440" height="250" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="540" y="124" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">修复后（建议）</text>
+
+  <rect x="560" y="180" width="180" height="28" rx="14" fill="#EDEFF3" stroke="#C3C8D1"/>
+  <text x="572" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" fill="#303844">🧙</text>
+  <text x="590" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#303844">柠檬云AI财税专家</text>
+  <text x="716" y="200" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">×</text>
+
+  <rect x="752" y="184" width="56" height="22" rx="11" fill="#FFF4D6" stroke="#D8A73F"/>
+  <text x="780" y="199" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="11.5" fill="#7A5200" text-anchor="middle">待生效</text>
+
+  <text x="540" y="242" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">chip 只放身份；pending 独立徽标（nowrap / flex:none）</text>
+  <text x="540" y="264" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">或 chip 内 white-space:nowrap + max-width ≥ 220px</text>
+  <text x="540" y="286" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">徽标 title：当前执行仍为 active.name，下一条消息生效</text>
+
+  <!-- css chain -->
+  <rect x="40" y="376" width="920" height="150" rx="12" fill="#F3F5F8" stroke="#E3E7ED"/>
+  <text x="60" y="404" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F2430">CSS 链路（真实规则）</text>
+  <rect x="60" y="418" width="470" height="100" rx="8" fill="#FFFFFF" stroke="#E3E7ED"/>
+  <text x="74" y="442" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#3D4653">.input-expert-chip { max-width:180px; height:28px; }</text>
+  <text x="74" y="464" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#3D4653">.expert-editor-chip-button { display:inline-flex; gap:5px; }</text>
+  <text x="74" y="486" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#3D4653">.expert-editor-notice { font-size:12px; line-height:1.6; }</text>
+  <text x="74" y="508" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#B42318">/* 无 white-space:nowrap / flex-shrink:0 */</text>
+
+  <text x="560" y="442" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">flex 默认允许收缩：name 有 overflow:hidden → 最小宽度 0</text>
+  <text x="560" y="464" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">notice 没有 → 最小宽度 = min-content（约 1 个汉字 12px）</text>
+  <text x="560" y="486" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">→ 每行 1–2 字 → 2 行 38.4px → 垂直溢出胶囊</text>
+  <text x="560" y="508" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">名字同时被挤到约 7 个字 + 省略号</text>
+
+  <text x="60" y="556" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#B42318">修复点：pending 不要塞进固定高度胶囊；必须 nowrap / flex:none，或移出为独立徽标。</text>
+</svg>

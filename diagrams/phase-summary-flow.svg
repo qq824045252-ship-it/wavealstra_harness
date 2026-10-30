@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="840" viewBox="0 0 1280 840">
+  <rect width="1280" height="840" fill="#ffffff"/>
+  <text x="28" y="42" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700" fill="#1f2430">「阶段性小结」缺在哪：现状链路 vs 目标链路</text>
+  <text x="28" y="68" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13" fill="#6b7280">依据 wavealstra_harness@0.1.57（main 分支）源码；卡片底部为 file:line 证据</text>
+
+  <!-- 现状 -->
+  <rect x="20" y="92" width="1240" height="300" rx="14" fill="#fff7f7" stroke="#f0c9c9"/>
+  <text x="40" y="122" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700" fill="#b42318">现状 · 对话框里没有阶段小结（生成 / 数据 / 渲染 三层都缺）</text>
+
+  <rect x="40" y="140" width="288" height="168" rx="10" fill="#ffffff" stroke="#e6e8ee"/>
+  <circle cx="60" cy="166" r="10" fill="#fde8e8"/>
+  <text x="60" y="170" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#b42318">1</text>
+  <text x="80" y="171" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">生成端：提示词没要求总结</text>
+  <text x="58" y="200" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">代码开发场景只有「推荐流程」</text>
+  <text x="58" y="222" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">Bot 场景才有「简要说明进展」</text>
+  <text x="58" y="244" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">→ 截图正是「代码开发」模式</text>
+  <text x="58" y="290" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">mode-defaults.ts:494 / 533</text>
+
+  <text x="332" y="229" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="344" y="140" width="288" height="168" rx="10" fill="#ffffff" stroke="#e6e8ee"/>
+  <circle cx="364" cy="166" r="10" fill="#fde8e8"/>
+  <text x="364" y="170" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#b42318">2</text>
+  <text x="384" y="171" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">事件端：没有「段间小结」通道</text>
+  <text x="362" y="200" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">thinking_delta → blocks</text>
+  <text x="362" y="222" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">text_delta 恒 final:true → finalBlocks</text>
+  <text x="362" y="244" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">没有 summary / phase 类 patch</text>
+  <text x="362" y="290" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">pi-event-mapper.ts:194-217</text>
+
+  <text x="636" y="229" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="648" y="140" width="288" height="168" rx="10" fill="#ffffff" stroke="#e6e8ee"/>
+  <circle cx="668" cy="166" r="10" fill="#fde8e8"/>
+  <text x="668" y="170" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#b42318">3</text>
+  <text x="688" y="171" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">存储端：中间正文无顺序锚点</text>
+  <text x="666" y="200" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">MessageBlock 只有 6 种既有类型</text>
+  <text x="666" y="222" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">正文与工具分别存在两条数组</text>
+  <text x="666" y="244" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">无法表达「在下一段思考前」</text>
+  <text x="666" y="290" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">appStore.ts:1023-1066</text>
+
+  <text x="940" y="229" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="952" y="140" width="288" height="168" rx="10" fill="#ffffff" stroke="#e6e8ee"/>
+  <circle cx="972" cy="166" r="10" fill="#fde8e8"/>
+  <text x="972" y="170" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#b42318">4</text>
+  <text x="992" y="171" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">渲染端：正文永远在时间线下方</text>
+  <text x="970" y="200" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">先渲染 ExecutionTimeline</text>
+  <text x="970" y="222" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">再渲染正文（finalBlocks）</text>
+  <text x="970" y="244" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">中间正文插不进两段 Thinking 之间</text>
+  <text x="970" y="290" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">MessageItem.tsx:737-761</text>
+
+  <rect x="40" y="326" width="1200" height="48" rx="8" fill="#fef2f2" stroke="#f3c7c7"/>
+  <text x="56" y="356" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#7f1d1d">历史恢复再补一刀：session-history.ts:305-319 把中间 text 并入 thinking；刷新任务后小结更不可见。</text>
+
+  <path d="M640 396 L640 412" stroke="#9aa4b2" stroke-width="2"/>
+  <path d="M635 408 L640 416 L645 408 Z" fill="#9aa4b2"/>
+  <text x="652" y="412" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12" fill="#9aa4b2">改造</text>
+
+  <!-- 目标 -->
+  <rect x="20" y="420" width="1240" height="390" rx="14" fill="#f5f9ff" stroke="#c9daf7"/>
+  <text x="40" y="450" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700" fill="#1d4ed8">目标 · 小结固定出现在下一段 Thinking 之前（A 推荐，B 作兜底）</text>
+
+  <rect x="40" y="470" width="288" height="176" rx="10" fill="#ffffff" stroke="#dbe6f7"/>
+  <circle cx="60" cy="496" r="10" fill="#dbeafe"/>
+  <text x="60" y="500" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#1d4ed8">1</text>
+  <text x="80" y="501" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">触发与锚点</text>
+  <text x="58" y="532" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">thinking 段结束即切段：</text>
+  <text x="58" y="554" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">tool_execution_start / message_end</text>
+  <text x="58" y="576" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">记录段序号 seq 作插回锚点</text>
+  <text x="58" y="628" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">AgentService 事件回调</text>
+
+  <text x="332" y="559" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="344" y="470" width="288" height="176" rx="10" fill="#ffffff" stroke="#dbe6f7"/>
+  <circle cx="364" cy="496" r="10" fill="#dbeafe"/>
+  <text x="364" y="500" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#1d4ed8">2</text>
+  <text x="384" y="501" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">生成：A 自述 / B 摘要</text>
+  <text x="362" y="532" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">A（推荐）：提示词要求模型自述</text>
+  <text x="362" y="554" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">1–2 句：已完成 / 发现 / 下一步</text>
+  <text x="362" y="576" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">B：completeSimple 兜底，不依赖模型</text>
+  <text x="362" y="628" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">mode-defaults.ts · MemoryService.ts</text>
+
+  <text x="636" y="559" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="648" y="470" width="288" height="176" rx="10" fill="#ffffff" stroke="#dbe6f7"/>
+  <circle cx="668" cy="496" r="10" fill="#dbeafe"/>
+  <text x="668" y="500" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#1d4ed8">3</text>
+  <text x="688" y="501" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">数据：新 patch + 新块</text>
+  <text x="666" y="532" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">patch: stage_summary { seq, text }</text>
+  <text x="666" y="554" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">block: { type: "phase_summary" }</text>
+  <text x="666" y="576" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">不并入 Thinking 段</text>
+  <text x="666" y="628" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">agent-ipc.ts · renderer types.ts</text>
+
+  <text x="940" y="559" font-family="Segoe UI, sans-serif" font-size="14" fill="#9aa4b2">›</text>
+
+  <rect x="952" y="470" width="288" height="176" rx="10" fill="#ffffff" stroke="#dbe6f7"/>
+  <circle cx="972" cy="496" r="10" fill="#dbeafe"/>
+  <text x="972" y="500" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#1d4ed8">4</text>
+  <text x="992" y="501" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#1f2430">渲染与历史</text>
+  <text x="970" y="532" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">按 seq 插在下一段 Thinking 之前</text>
+  <text x="970" y="554" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">折叠态是否保留小结（设计待定）</text>
+  <text x="970" y="576" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#4b5563">历史恢复保留顺序（P1）</text>
+  <text x="970" y="628" font-family="Consolas, monospace" font-size="11.5" fill="#9aa1ad">ExecutionTimeline · session-history</text>
+
+  <rect x="40" y="674" width="1200" height="86" rx="8" fill="#eff6ff" stroke="#c9daf7"/>
+  <text x="56" y="702" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#1e3a8a">验收：每段思考后 1 条 ≤60 字小结；位置在下一段 Thinking 之前；聚焦视图不把小结算进隐藏思考数。</text>
+  <text x="56" y="726" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12.5" fill="#1e3a8a">工作量：A 约 1.5–2.5 天（提示词 0.5h + 数据/渲染 1–1.5d + 测试 0.5–1d）；B 另加约 2 天（每段一次额外模型调用）。</text>
+  <text x="56" y="748" font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12" fill="#64748b">C 方案（纯前端摘取思考段末尾句子）约 0.5 天，可作 1 天内看效果的过渡，但内容不是真正的总结。</text>
+</svg>

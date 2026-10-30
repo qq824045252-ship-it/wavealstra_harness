@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="630" viewBox="0 0 1000 630">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7A8494"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="630" fill="#FBFAF7"/>
+  <text x="40" y="46" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="21" font-weight="700" fill="#1F2430">建议方案：主专家 + 只读顾问（P1，未实现）</text>
+  <text x="40" y="72" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">保留单身份与单权限模型；顾问只贡献判断上下文，不改变工具与权限</text>
+
+  <!-- card 1 -->
+  <rect x="40" y="110" width="280" height="310" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="60" y="140" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">① 数据层</text>
+  <rect x="60" y="158" width="240" height="72" rx="8" fill="#FFF7E4" stroke="#DDAE45"/>
+  <text x="74" y="182" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B4E00">task_expert_bindings</text>
+  <text x="74" y="202" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">desired / active = 主专家</text>
+  <text x="74" y="222" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">（结构与权限不变）</text>
+
+  <rect x="60" y="244" width="240" height="100" rx="8" fill="#EAF3FF" stroke="#86ABDF"/>
+  <text x="74" y="268" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#1F4A80">task_expert_advisors（新增）</text>
+  <text x="74" y="288" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">task_id PK</text>
+  <text x="74" y="308" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">advisors_json: [</text>
+  <text x="74" y="328" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">{ name, instructions,</text>
+  <text x="74" y="348" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">sourceExpertId } ]</text>
+
+  <text x="60" y="374" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">additive 表：</text>
+  <text x="60" y="394" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">不 bump user_version，避免旧库重建</text>
+
+  <!-- card 2 -->
+  <rect x="350" y="110" width="310" height="310" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="370" y="140" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">② prompt 装配</text>
+  <text x="370" y="170" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#1F4A80">## 当前任务的专家身份</text>
+  <text x="370" y="190" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">名称 / 职责 = 主专家 active</text>
+  <text x="370" y="220" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#1F4A80">## 顾问意见（只读）</text>
+  <text x="370" y="240" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">顾问 A：&lt;instructions&gt;</text>
+  <text x="370" y="260" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">顾问 B：&lt;instructions&gt;</text>
+  <text x="370" y="292" font-family="Consolas,'Cascadia Mono',monospace" font-size="12" fill="#1F4A80">## 边界</text>
+  <text x="370" y="312" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">你仍是主专家；顾问不授予</text>
+  <text x="370" y="332" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">工具 / 权限；冲突以主专家为准</text>
+  <text x="370" y="362" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">注入点：boundExpertPrompt</text>
+  <text x="370" y="382" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">（bot / preview / createSession）</text>
+
+  <!-- card 3 -->
+  <rect x="690" y="110" width="270" height="310" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="710" y="140" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">③ 权限与 UI</text>
+  <text x="710" y="170" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">Skills / MCP / 连接器</text>
+  <text x="710" y="190" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">只来自 active 主专家</text>
+  <text x="710" y="220" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">chip：主专家 + 顾问 ×2</text>
+  <text x="710" y="242" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">待生效：只跟主专家</text>
+  <text x="710" y="264" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">管理弹窗：多选 / 排序顾问</text>
+  <text x="710" y="286" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">改顾问 → dirty 重建下一轮</text>
+  <text x="710" y="318" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" font-weight="700" fill="#1F7A4D">不改权限模型</text>
+  <text x="710" y="344" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">顾问默认不带 Skills</text>
+
+  <!-- arrows -->
+  <line x1="320" y1="265" x2="342" y2="265" stroke="#7A8494" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="660" y1="265" x2="682" y2="265" stroke="#7A8494" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- bottom -->
+  <rect x="40" y="450" width="920" height="160" rx="12" fill="#F3F5F8" stroke="#E3E7ED"/>
+  <text x="60" y="478" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F2430">改动清单（M 级，跨 5 层；未实现）</text>
+  <text x="60" y="506" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">shared/expert-binding.ts（TaskAdvisorSnapshot）· TaskExpertBindingService（save / get / promote）· AppDatabase（additive 表）</text>
+  <text x="60" y="532" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">AgentService（boundExpertPrompt 3 个调用点）· ChatInput / ChatView / ExpertBindingModal（chip、多选）· scripts 测试</text>
+  <text x="60" y="558" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">不碰：权限合并、工具命名空间、cron/Bot 身份、expertId 单值契约；顾问意见按“数据”注入，防提示注入</text>
+  <text x="60" y="584" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">建议上限：3 个顾问、每个 2k 字，避免 prompt 预算被吃光；是否允许顾问带 Skills 是产品取舍（P1 默认不带）。</text>
+</svg>

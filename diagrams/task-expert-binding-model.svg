@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="650" viewBox="0 0 1000 650">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7A8494"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9AA3B2"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="650" fill="#FBFAF7"/>
+  <text x="40" y="46" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="21" font-weight="700" fill="#1F2430">任务专家绑定：每条任务只有 1 个身份</text>
+  <text x="40" y="72" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">MyBuddy 0.1.57 · task_expert_bindings 一任务一行 · 头部与输入栏的专家芯片都只是这个绑定的视图</text>
+
+  <!-- A: templates -->
+  <rect x="40" y="96" width="270" height="170" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="60" y="126" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">① 全局专家模板</text>
+  <text x="60" y="152" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">ExpertDto / ExpertDetailDto</text>
+  <text x="60" y="174" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">name · instructions</text>
+  <text x="60" y="196" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">skillIds · mcpIds · connectorIds</text>
+  <text x="60" y="218" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">enabled · revision</text>
+  <text x="60" y="246" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#8A5A00">可装多个模板；绑定是单选</text>
+
+  <!-- arrow A -> B -->
+  <line x1="310" y1="181" x2="362" y2="181" stroke="#7A8494" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="336" y="170" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#7A8494" text-anchor="middle">单选</text>
+
+  <!-- B: task binding -->
+  <rect x="370" y="96" width="310" height="170" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="390" y="126" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">② 任务绑定（唯一一条）</text>
+  <text x="390" y="150" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">task_expert_bindings · PK task_id</text>
+  <rect x="390" y="164" width="270" height="36" rx="8" fill="#FFF7E4" stroke="#DDAE45"/>
+  <text x="404" y="187" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B4E00">desired_json · 新身份（刚保存）</text>
+  <rect x="390" y="214" width="270" height="36" rx="8" fill="#EAF3FF" stroke="#86ABDF"/>
+  <text x="404" y="237" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#1F4A80">active_json · 正在执行的身份</text>
+  <text x="390" y="262" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">pending = desired.revision ≠ active.revision</text>
+
+  <!-- arrow B -> C -->
+  <line x1="680" y1="181" x2="712" y2="181" stroke="#7A8494" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="696" y="170" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#7A8494" text-anchor="middle">active</text>
+
+  <!-- C: execution -->
+  <rect x="720" y="96" width="240" height="170" rx="12" fill="#FFFFFF" stroke="#D8DCE3"/>
+  <text x="740" y="126" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="700" fill="#1F2430">③ 本轮执行身份</text>
+  <text x="740" y="152" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">= active 快照</text>
+  <text x="740" y="174" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">身份 · Skills · MCP · 连接器</text>
+  <text x="740" y="196" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">promptInternal 读取 active</text>
+  <text x="740" y="226" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">空闲时 promote：</text>
+  <text x="740" y="246" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">active := desired</text>
+
+  <!-- chip callout under B -->
+  <line x1="525" y1="266" x2="525" y2="308" stroke="#9AA3B2" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrowSoft)"/>
+  <text x="535" y="290" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#6B7280">渲染 desired</text>
+  <rect x="370" y="316" width="310" height="110" rx="12" fill="#FFFFFF" stroke="#B9C2D0" stroke-dasharray="6 4"/>
+  <text x="390" y="342" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F2430">输入栏专家芯片（视图）</text>
+  <text x="390" y="366" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">显示 desired；pending 时叠加「待生效」</text>
+  <text x="390" y="390" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#3D4653">点击 → 管理当前任务专家</text>
+  <text x="390" y="414" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12" fill="#B42318">缺陷：待生效竖排溢出（见下图）</text>
+
+  <!-- bottom facts -->
+  <rect x="40" y="466" width="920" height="150" rx="12" fill="#F3F5F8" stroke="#E3E7ED"/>
+  <text x="60" y="492" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#1F2430">边界与事实（代码依据）</text>
+  <text x="60" y="518" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">• 一条任务 = 一行 task_expert_bindings（task_id 主键）→ 不存在第二个专家槽位；切换是覆盖 desired。</text>
+  <text x="60" y="546" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">• 项目 / Tag 预设里的“多专家”只是候选与推荐（allow / recommended / deny）；执行只取 1 个 expertId（AgentLoadoutResolver:298）。</text>
+  <text x="60" y="574" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">• 0.1.17 起移除 Expert Team：assertSingleExpertId() 直接拒绝 team:*（src/shared/expert-id.ts:15）。</text>
+  <text x="60" y="602" font-family="'Microsoft YaHei','Segoe UI',sans-serif" font-size="12.5" fill="#3D4653">• “以专家评审此任务”不是叠加：新建一条关联任务并绑定 1 个专家（TaskItem.tsx:243-262）。</text>
+</svg>
