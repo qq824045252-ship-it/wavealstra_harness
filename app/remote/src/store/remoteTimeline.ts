@@ -1,4 +1,5 @@
 import type { RemoteHistoryMessage, RemoteTaskHistory } from '@mybuddy/shared'
+import { stripInjectedUserPromptTail } from '@mybuddy/shared'
 
 /** Client projection only. Server event time, not phone receipt time, orders the turn. */
 export interface LiveRemoteMessage extends RemoteHistoryMessage {
@@ -10,11 +11,55 @@ export interface LiveRemoteMessage extends RemoteHistoryMessage {
   nextTextSegment?: boolean
 }
 
+function attachmentKey(message: RemoteHistoryMessage): string {
+  return message.attachments?.map(x => x.name).join('|') ?? ''
+}
+
+/**
+ * 附件名只用来区分“同一句话带了不同文件”。一侧没有附件记录（旧缓存、断流补发、
+ * 历史未提取到名字）时不能据此判为不同轮次，否则又掉回重复气泡。
+ */
+function attachmentsCompatible(a: RemoteHistoryMessage, b: RemoteHistoryMessage): boolean {
+  const left = attachmentKey(a)
+  const right = attachmentKey(b)
+  if (!left || !right) return true
+  return left === right
+}
+
+/**
+ * 服务端历史会把注入尾巴切掉、把 3 个以上换行压成空行；手机存的即时气泡是用户原文。
+ * 两侧用同一套归一化再比，否则同一句话在时间轴里会占两个轮次，助手回复也跟着上屏两遍。
+ */
+function userTextKey(message: RemoteHistoryMessage): string {
+  return stripInjectedUserPromptTail(message.text ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+const SAME_TURN_WINDOW_MS = 30_000
+/** 时钟偏移、离线补发时放宽；只在文本候选唯一时生效，两句相同的“继续”仍算两轮。 */
+const UNIQUE_TURN_WINDOW_MS = 5 * 60_000
+
 function sameUser(a: RemoteHistoryMessage, b: RemoteHistoryMessage): boolean {
-  return a.role === 'user' && b.role === 'user' && (a.id === b.id || (
-    a.text.trim() === b.text.trim() && Math.abs(a.createdAt - b.createdAt) <= 30_000
-    && (a.attachments?.map(x => x.name).join('|') ?? '') === (b.attachments?.map(x => x.name).join('|') ?? '')
-  ))
+  if (a.role !== 'user' || b.role !== 'user') return false
+  if (a.id === b.id) return true
+  return userTextKey(a) === userTextKey(b)
+    && attachmentsCompatible(a, b)
+    && Math.abs(a.createdAt - b.createdAt) <= SAME_TURN_WINDOW_MS
+}
+
+/** 一对一匹配：先按同轮窗口比，再退化为“文本唯一”的时钟容错匹配。 */
+function findUserMatch(live: RemoteHistoryMessage, candidates: RemoteHistoryMessage[]): number {
+  const exact = candidates.findIndex(h => sameUser(live, h))
+  if (exact >= 0) return exact
+  const key = userTextKey(live)
+  const unique = candidates.flatMap((h, index) => h.role === 'user'
+    && userTextKey(h) === key
+    && attachmentsCompatible(h, live)
+    && Math.abs(h.createdAt - live.createdAt) <= UNIQUE_TURN_WINDOW_MS ? [index] : [])
+  return unique.length === 1 ? unique[0] : -1
 }
 
 export function mergeVisibleText(left = '', right = ''): string {
@@ -63,7 +108,7 @@ export function reconcileLiveMessagesWithHistory(
   // One-to-one matching: two rapid 'continue' messages are not one user turn.
   for (const m of Object.values(live).sort((a, b) => a.createdAt - b.createdAt)) {
     if (m.role === 'user') {
-      const i = unmatched.findIndex(h => sameUser(m, h))
+      const i = findUserMatch(m, unmatched)
       if (i >= 0) {
         const canonical = unmatched[i]
         // Keep the causal anchor after replacing a live user with its session entry.
@@ -119,7 +164,7 @@ export function buildRemoteTimeline(history: RemoteHistoryMessage[], live: Recor
     for (const tool of message.tools ?? []) toolOwner.set(tool.id, anchor)
   }
   for (const message of Object.values(live).filter(x => x.role === 'user').sort((a, b) => a.createdAt - b.createdAt)) {
-    const i = unmatched.findIndex(h => sameUser(message, h))
+    const i = findUserMatch(message, unmatched)
     if (i >= 0) { aliases.set(message.id, unmatched[i].id); unmatched.splice(i, 1) }
     else users.push({ ...message })
   }
