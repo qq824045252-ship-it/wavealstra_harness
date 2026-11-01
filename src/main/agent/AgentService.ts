@@ -1,3 +1,4 @@
+import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
 import { resolvedPathKey } from "../platform/paths";
@@ -2780,11 +2781,34 @@ export class AgentService {
       cwd,
     });
     const assemblyHash = fingerprintRuntimeAssembly(assembly);
+    const live = this.registry.get(taskId);
+    const observation = this.loadoutObservations.list(taskId, 1)[0];
     const latestExecution = this.runtimeSnapshots.list(taskId, 1)[0];
     const changes = latestExecution ? diffRuntimeAssembly(assembly, latestExecution) : [];
     return {
       taskId,
       generatedAt: Date.now(),
+      sessionDiagnostics: live ? {
+        basis: "live_session",
+        cwd: live.cwd,
+        model: live.modelDiagnostic ? {
+          ...live.modelDiagnostic,
+          provider: live.session.model?.provider, model: live.session.model?.id,
+          actualId: this.sessionModelKey(live.session), reasoning: live.session.thinkingLevel,
+        } : diagnoseSessionModel({ actual: live.session.model, source: "restored_or_sdk", reasoning: live.session.thinkingLevel }),
+        mode: live.welcomeMode, preset: live.runtimeTagId,
+        activeTools: live.session.getActiveToolNames(), mcpIds: live.mcpProviderIds ?? [],
+        skillReadiness: (live.skillReadiness ?? []).map(skill => ({
+          ...skill, readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
+            && (live.skillReads?.ids.includes(skill.id) ?? false),
+          dependency: skill.whitelisted && ["officecli", "meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
+            ? probeSkillDependency(skill.id, live.cwd, live.session.getActiveToolNames()) : skill.dependency,
+        })),
+        vision: modelSupportsImageInput(live.session.model) ? "native_image"
+          : this.builtinCapabilities.visionProvider() ? "description_delegate" : "unavailable",
+        toolBoundaries: "browser_exec 仅 MyBuddy 自有浏览器；ui_exec 仅本应用；computer_exec 为跨应用桌面后端，受平台支持限制。",
+        codingSwitch: live.welcomeMode === "working" ? "编程任务请在场景选择器切换到 coding；working 的 deny 不会自动放开。" : "",
+      } : undefined,
       basis: "current_configuration",
       effectiveAt: "next_resolution",
       mode: { id: welcomeMode, label: profile.labelZh },
@@ -4073,6 +4097,8 @@ export class AgentService {
     // Apply the intended model after submission intent is fixed; usage attribution follows MyBuddy selection.
     const intendedModelId =
       req.modelId ?? existingTask?.modelId ?? entry.usageModelId ?? this.settingsStore.read().defaultModelId;
+    const modelSelectionSource = req.modelId ? "explicit" : existingTask?.modelId ? "task_selection"
+      : entry.modelDiagnostic?.source ?? (entry.usageModelId ? "session_selection" : intendedModelId ? "global_default" : "restored_or_sdk");
     if (intendedModelId) entry.usageModelId = intendedModelId;
     if (!wasStreaming && intendedModelId && this.modelRuntime) {
       const currentKey = this.sessionModelKey(entry.session);
@@ -4096,6 +4122,12 @@ export class AgentService {
         ? req.reasoningPreference
         : undefined;
     if (!wasStreaming) this.applySessionReasoningPreference(entry.session, requestedReasoningPreference);
+    entry.modelDiagnostic = diagnoseSessionModel({
+      requested: intendedModelId, actual: entry.session.model,
+      source: modelSelectionSource,
+      reasoning: entry.session.thinkingLevel,
+    });
+    console.info("[AgentService] session model diagnostic", entry.modelDiagnostic);
 
     const modelName = entry.session.model?.name ?? entry.session.model?.id;
     if (!wasStreaming) {
@@ -4224,6 +4256,14 @@ export class AgentService {
             requiredMcpIds: [...requiredMcpIds],
           })
         : undefined;
+      if (turnLoadout && entry.skillReadiness) {
+        entry.skillReadiness = diagnoseSkillReadiness({
+          recommendation: turnLoadout,
+          installedIds: entry.installedSkillIds ?? [],
+          whitelistIds: entry.skillFiles?.map(skill => skill.id) ?? [],
+          readIds: [],
+        });
+      }
       const explicitLearned = explicitSkillName
         ? entry.learnedSkills?.find((skill) => skill.skillId.toLowerCase() === explicitSkillName.toLowerCase())
         : undefined;
@@ -5684,6 +5724,20 @@ export class AgentService {
       expertId: effectiveExpertId ?? undefined,
       requestedExpertId: opts.expertId ?? undefined,
       connectorIds: opts.connectorIds,
+      modelDiagnostic: diagnoseSessionModel({
+        requested: resolvedSessionModelId, actual: session.model, reasoning: session.thinkingLevel,
+        source: opts.modelId ? "explicit_or_task" : resolvedSessionModelId === effProfile.policy.suggestedModelId
+          ? "mode_suggestion" : resolvedSessionModelId ? "global_default" : "restored_or_sdk",
+      }),
+      installedSkillIds: runtimeSkills.dtos.map(skill => skill.id),
+      skillFiles: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name) && skill.filePath)
+        .map(skill => ({ id: skill.id, path: skill.filePath! })),
+      skillReadiness: diagnoseSkillReadiness({
+        recommendation: this.loadoutService.resolve(opts.taskId, "", assembly, opts.connectorIds, opts.expertId),
+        installedIds: runtimeSkills.dtos.map(skill => skill.id),
+        whitelistIds: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name)).map(skill => skill.id),
+        readIds: [],
+      }),
       mcpProviderIds: mcpPreview.enabled,
       learnedSkills,
       pendingSkillCommands: new Map<string, string>(),

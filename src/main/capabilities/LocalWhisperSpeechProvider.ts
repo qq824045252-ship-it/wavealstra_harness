@@ -141,7 +141,7 @@ export function createLocalWhisperSpeechProvider(): SpeechCapabilityProvider {
     async test(): Promise<string> {
       const runtime = resolveWhisperRuntime();
       if (!runtime.available) throw new Error(runtime.detail);
-      return `本地 Whisper 已就绪 · ${runtime.root}`;
+      return `配置/依赖路径检查通过；最近真实转写：未知（需音频试运行） · ${runtime.root}`;
     },
   };
 }

@@ -1,3 +1,5 @@
+import { ensureWhisperRuntime } from "../src/main/voice/whisperAsr";
+import { venvPythonRelativePath } from "../src/main/platform/runtime";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +15,20 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-local-capabilities-test-"));
 try {
+  assert.equal(venvPythonRelativePath("linux"), join("bin", "python"));
+  assert.equal(venvPythonRelativePath("win32"), join("Scripts", "python.exe"));
+  const previousWhisper = process.env.MYBUDDY_WHISPER_DIR;
+  process.env.MYBUDDY_WHISPER_DIR = join(root, "missing-whisper");
+  try {
+    const absent = await ensureWhisperRuntime();
+    assert.equal(absent.available, false);
+    assert.equal(absent.pythonSource, "none");
+    assert.match(absent.detail, /transcribe_wav.py/);
+    assert.match(absent.detail, /未准备环境或启动转写/);
+  } finally {
+    if (previousWhisper === undefined) delete process.env.MYBUDDY_WHISPER_DIR;
+    else process.env.MYBUDDY_WHISPER_DIR = previousWhisper;
+  }
   let config = structuredClone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);
   const runtime = new BuiltinCapabilityRuntime({
     store: { read: () => structuredClone(config), write: (next) => (config = structuredClone(next)) },

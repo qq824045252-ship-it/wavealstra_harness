@@ -41,6 +41,8 @@ import {
   buildContextBlock,
   buildSystemPromptContent,
   readOptionalSharedContext,
+  inspectSharedContext,
+  SHARED_CONTEXT_MAX_BYTES,
 } from "./context.ts";
 import {
   MAX_SUBAGENT_DEPTH,
@@ -747,7 +749,7 @@ async function resolveForRecord(
 
 const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
-  task: Type.String({ description: "Task to delegate to the agent" }),
+  task: Type.String({ description: "Task handoff: goal; allowed file scope; constraints; known facts with source paths; acceptance commands/conditions; artifact paths. Return conclusion, changed files, execution evidence, unverified items" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
 });
@@ -766,7 +768,7 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
-  task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
+  task: Type.Optional(Type.String({ description: "Task handoff: goal; allowed scope; constraints; facts/source paths; acceptance commands; artifact paths (single mode)" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
   agentScope: Type.Optional(AgentScopeSchema),
@@ -858,7 +860,9 @@ async function runDelegatedStep(params: {
   // 首次创建会话才需要系统提示文件
   let promptFile: string | null = null;
   if (!record.sessionId && agent.systemPrompt.trim()) {
-    const shared = readOptionalSharedContext(cwd ?? process.cwd());
+    const diagnostic = inspectSharedContext(cwd ?? process.cwd());
+    console.info("[subagent] shared-context", { injected: diagnostic.injected, bytes: diagnostic.bytes, reason: diagnostic.reason });
+    const shared = diagnostic.text;
     const contextBlock = buildContextBlock({
       cwd: cwd ?? process.cwd(),
       roleName: agent.name,
@@ -867,6 +871,7 @@ async function runDelegatedStep(params: {
       permissionMode: config.permissionMode ?? hostPermissionMode,
       deniedTools: policy.denied,
       sharedContext: shared,
+      sharedContextStatus: diagnostic,
       depth: parentDepth + 1,
     });
     promptFile = await writeSystemPromptFile(agent, contextBlock);
@@ -1407,7 +1412,7 @@ export default function (pi: any) {
 
 // 兼容旧测试导出（invocation 解析相关）
 export { resolvePiCliJs, resolvePiInvocation, resolveSystemNode, tryRequireResolve, parseFrontmatterCompat };
-export { computeChildTools, buildContextBlock, buildSystemPromptContent, readOptionalSharedContext };
+export { computeChildTools, buildContextBlock, buildSystemPromptContent, readOptionalSharedContext, inspectSharedContext, SHARED_CONTEXT_MAX_BYTES };
 export { SubagentRuntime, MAX_SUBAGENT_DEPTH };
 export type { RunOutcome, MessageLike };
 export {

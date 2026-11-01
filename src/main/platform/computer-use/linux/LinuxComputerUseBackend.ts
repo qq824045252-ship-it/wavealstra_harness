@@ -741,7 +741,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     const shot = await checked(() => this.cul().require(CUL_TOOLS.screenshot, {
       window_id: Number(target.handle), format: "png", raise_window: false,
     }, signal), signal);
-    if (!shot.image) throw new ComputerUseError("CAPTURE_FAILED", "OCR 前截图失败", { window: target });
+    if (!shot.image) throw new ComputerUseError("CAPTURE_FAILED", "OCR 前截图失败：需可用桌面会话与可截图的目标窗口；此错误尚未执行文字识别", { window: target });
     const meta = shot.data as { width?: number; height?: number; coordinate_width?: number; coordinate_height?: number } & Record<string, unknown>;
     const imageScale = imageScaleFromMeta(meta);
     const imageWidth = Number(meta.width ?? 0);
@@ -784,7 +784,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       }), signal);
       return stdout;
     } catch (error) {
-      throw new ComputerUseError("OCR_UNAVAILABLE", `tesseract 执行失败：${error instanceof Error ? error.message : String(error)}`);
+      throw new ComputerUseError("OCR_UNAVAILABLE", `tesseract 执行失败：${error instanceof Error ? error.message : String(error)}；请核对语言包 ${descriptor.defaultLanguages.join("+")}，安装提示：${descriptor.installHint}；不代表用户桌面损坏`);
     } finally {
       await rm(path, { force: true }).catch(() => undefined);
     }

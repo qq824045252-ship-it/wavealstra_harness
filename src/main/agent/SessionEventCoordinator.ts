@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { collectRuntimeMaterialEvidence } from "./RuntimeMaterialEvidence";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
@@ -228,9 +229,19 @@ export class SessionEventCoordinator {
             if (materials.length) this.deps.runtimeSnapshots.appendMaterials(execution, materials);
           } catch (error) { console.warn("[runtime-materials] record failed", error); }
         }
-        if (event.toolName === "read" && !event.isError) {
+        if (event.toolName === "read" && !event.isError && execution
+          && entry.session === session && execution.executionId === entry.executionId
+          && execution.assistantMessageId === entry.assistantMessageId) {
           const rawPath = (args as { path?: unknown } | undefined)?.path;
           if (typeof rawPath === "string" && rawPath.trim()) {
+            const skillFile = entry.skillFiles?.find(skill => resolve(cwd, skill.path) === resolve(cwd, rawPath));
+            if (skillFile) {
+              if (entry.skillReads?.assistantMessageId !== entry.assistantMessageId) {
+                entry.skillReads = { assistantMessageId: entry.assistantMessageId, ids: [] };
+              }
+              if (!entry.skillReads.ids.includes(skillFile.id)) entry.skillReads.ids.push(skillFile.id);
+              this.deps.loadoutObservations.markSkillUsed(taskId, entry.assistantMessageId, skillFile.id);
+            }
             const learned = this.deps.skillsService.resolveLearnedSkillRead(rawPath, cwd);
             const allowed = learned && entry.learnedSkills?.find((item) => item.skillId === learned.skillId);
             if (allowed) {

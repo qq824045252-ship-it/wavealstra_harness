@@ -448,6 +448,35 @@ export default function RuntimeContextInspector(): React.JSX.Element | null {
             </div>
           )}
 
+          {value?.sessionDiagnostics && (
+            <details className="runtime-inspector-section">
+              <summary>当前会话模型、工具与技能就绪诊断</summary>
+              <p>实际模型：{value.sessionDiagnostics.model?.actualId ?? "未选定"}；
+                reasoning：{value.sessionDiagnostics.model?.reasoning ?? "未知"}；
+                来源：{value.sessionDiagnostics.model?.source ?? "未知"}</p>
+              {value.sessionDiagnostics.model?.fallbackReason && <p>{value.sessionDiagnostics.model.fallbackReason}</p>}
+              <p>会话模式：{value.sessionDiagnostics.mode} / {value.sessionDiagnostics.preset ?? "无预设"}；
+                cwd：{value.sessionDiagnostics.cwd}</p>
+              <p>活动工具：{value.sessionDiagnostics.activeTools.join(", ")}</p>
+              <p>MCP：{value.sessionDiagnostics.mcpIds.join(", ") || "无"}；
+                Vision：{value.sessionDiagnostics.vision}</p>
+              <p>{value.sessionDiagnostics.toolBoundaries}</p>
+              {value.sessionDiagnostics.codingSwitch && <p>{value.sessionDiagnostics.codingSwitch}</p>}
+              {value.sessionDiagnostics.skillReadiness.map(skill => (
+                <div key={skill.id}>
+                  <strong>{skill.id}</strong>
+                  <p>推荐：{skill.recommended ? "是" : "否"}；安装：{skill.installed ? "是" : "否"}；
+                    策略允许：{skill.policyAllowed ? "是" : "否"}；白名单：{skill.whitelisted ? "是" : "否"}；
+                    本轮读取：{skill.readThisTurn ? "是" : "否"}</p>
+                  <p>依赖：{skill.dependency.state} — {skill.dependency.reason}
+                    {skill.dependency.checkedAt ? "（" + new Date(skill.dependency.checkedAt).toLocaleString() + "）" : ""}</p>
+                  <p>最近真实试运行：{skill.trial.state}
+                    {skill.trial.at ? "（" + new Date(skill.trial.at).toLocaleString() + "）" : ""}；{skill.reason}</p>
+                </div>
+              ))}
+            </details>
+          )}
+
           <div className="runtime-inspector-section">
             {!agentControlReady && (
               <div className="runtime-inspector-notice runtime-inspector-restart-hint">
