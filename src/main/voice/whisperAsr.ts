@@ -1,3 +1,4 @@
+import { venvPythonRelativePath } from "../platform/runtime";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -57,9 +58,14 @@ export function resolveWhisperRuntime(): WhisperRuntimePaths {
   const root = process.env.MYBUDDY_WHISPER_DIR || DEFAULT_WHISPER_ROOT;
   const modelDir = join(root, "models", "whisper-medium-int8");
 
+  const absent = missingAssets(root);
+  if (absent.length) return {
+    root, python: "", modelDir, available: false, pythonSource: "none",
+    detail: `缺少 ${absent.map(([name]) => name).join(", ")}；当前目录：${root}`,
+  };
   const { spec } = whisperCapabilitySpec(root);
   const resolved = getPythonRuntimeService().store.resolve(spec);
-  const legacyPython = join(root, ".venv", "Scripts", "python.exe");
+  const legacyPython = join(root, ".venv", venvPythonRelativePath());
 
   let python: string;
   let pythonSource: WhisperRuntimePaths["pythonSource"];
@@ -85,8 +91,8 @@ export function resolveWhisperRuntime(): WhisperRuntimePaths {
     ? `缺少 Python 解释器：受管环境未就绪，且能力目录未提供 .venv；当前目录：${root}`
     : missing.length === 0
       ? pythonSource === "managed"
-        ? `本地 Whisper 已就绪：${root}（受管环境 ${environmentId}，Python ${pythonVersion ?? "未知"}）`
-        : `本地 Whisper 已就绪：${root}（使用能力目录自带 .venv）`
+        ? `本地 Whisper 配置/依赖路径检查通过（未验证真实转写）：${root}（受管环境 ${environmentId}，Python ${pythonVersion ?? "未知"}）`
+        : `本地 Whisper 配置/依赖路径检查通过（未验证真实转写）：${root}（使用能力目录自带 .venv）`
       : `缺少 ${missing.map(([name]) => name).join(", ")}；当前目录：${root}`;
 
   return {
@@ -101,6 +107,15 @@ export function resolveWhisperRuntime(): WhisperRuntimePaths {
  * 自带 .venv（若存在），两者都没有才报不可用——绝不静默改用系统 python。
  */
 export async function ensureWhisperRuntime(signal?: AbortSignal): Promise<WhisperRuntimePaths> {
+  const rootBeforePreparation = process.env.MYBUDDY_WHISPER_DIR || DEFAULT_WHISPER_ROOT;
+  const absent = missingAssets(rootBeforePreparation);
+  if (absent.length) {
+    return {
+      root: rootBeforePreparation, python: "", modelDir: join(rootBeforePreparation, "models", "whisper-medium-int8"),
+      available: false, pythonSource: "none",
+      detail: `缺少 ${absent.map(([name]) => name).join(", ")}；当前目录：${rootBeforePreparation}；未准备环境或启动转写`,
+    };
+  }
   const probe = resolveWhisperRuntime();
   if (probe.pythonSource === "managed" || probe.pythonSource === "project-venv") {
     const missing = missingAssets(probe.root);
@@ -118,7 +133,7 @@ export async function ensureWhisperRuntime(signal?: AbortSignal): Promise<Whispe
   const missing = missingAssets(root);
 
   if (!resolution.ok) {
-    const legacyPython = join(root, ".venv", "Scripts", "python.exe");
+    const legacyPython = join(root, ".venv", venvPythonRelativePath());
     if (existsSync(legacyPython) && missing.length === 0) {
       return {
         root, python: legacyPython, modelDir,
@@ -139,7 +154,7 @@ export async function ensureWhisperRuntime(signal?: AbortSignal): Promise<Whispe
     root, python: resolution.pythonPath, modelDir,
     available,
     detail: available
-      ? `本地 Whisper 已就绪：${root}（受管环境 ${resolution.environmentId}，Python ${resolution.pythonVersion}）`
+      ? `本地 Whisper 配置/依赖路径检查通过（未验证真实转写）：${root}（受管环境 ${resolution.environmentId}，Python ${resolution.pythonVersion}）`
       : `缺少 ${missing.map(([name]) => name).join(", ")}；当前目录：${root}`,
     pythonSource: "managed",
     environmentId: resolution.environmentId,

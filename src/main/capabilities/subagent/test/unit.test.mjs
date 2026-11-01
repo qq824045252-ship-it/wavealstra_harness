@@ -33,6 +33,25 @@ function assert(cond, label) {
 const has = (arr, item) => Array.isArray(arr) && arr.includes(item);
 const n = (p) => String(p).replace(/\\/g, "/");
 
+{
+  const dir = mkdtempSync(join(tmpdir(), "subagent-context-"));
+  try {
+    mkdirSync(join(dir, ".mybuddy"));
+    writeFileSync(join(dir, ".mybuddy", "shared-context.md"), "来源：project.md；禁止修改原件");
+    const probe = bundle.inspectSharedContext(dir);
+    assert(probe.injected && probe.bytes === Buffer.byteLength(probe.text), "shared context reports actual UTF-8 bytes");
+    const context = bundle.buildContextBlock({
+      cwd: dir, roleName: "worker", roleDescription: "", tools: ["read"],
+      permissionMode: "readonly", deniedTools: ["write"], depth: 1, sharedContext: probe.text,
+    });
+    assert(context.includes("验收命令/条件") && context.includes("未验证项") && context.includes("来源：project.md"), "handoff/output contract and visible constraint");
+    assert(context.includes("write") && context.includes("不扩大工具权限"), "handoff does not expand authority");
+    writeFileSync(join(dir, ".mybuddy", "shared-context.md"), "x".repeat(bundle.SHARED_CONTEXT_MAX_BYTES + 1));
+    const rejected = bundle.inspectSharedContext(dir);
+    assert(!rejected.injected && rejected.reason === "over_limit" && rejected.text === null, "oversized shared file rejected visibly");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 console.log("== resolvePiCliJs / resolvePiInvocation ==");
 {
   const exists = (p) => p === "C:/cli.js";
@@ -255,6 +274,7 @@ console.log("== 并发互斥（无双 spawn） + 模型/思考传入 ==");
   const p2 = runtime.runPrompt(rec.subagentId, { task: "second", timeoutMs: 30_000, toolArgs: policy });
   const out1 = await p1;
   const out2 = await p2;
+  if (out1.status !== "completed") console.error("First concurrent fixture outcome:", JSON.stringify(out1));
   assert(out1.status === "completed", "第一发完成");
   assert(out2.status === "failed" && out2.errorMessage && out2.errorMessage.includes("已结束"), "同 id 并发第二发：第一发清理后明确拒绝（disposable 唯一实例）");
   assert(runtime.debugWorkerCount(rec.subagentId) === 0, "清理后无 worker 残留");

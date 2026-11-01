@@ -1,3 +1,5 @@
+import { SkillTrialLedger } from "./SkillTrialLedger";
+import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
 import { resolvedPathKey } from "../platform/paths";
@@ -1354,6 +1356,15 @@ export class AgentService {
     return scopedModels;
   }
 
+  /** Pi static entries can remain catalogued after ChatGPT OAuth rejects them.
+   * Only automatic fallback skips these known rejected models; explicit selections remain authoritative. */
+  private async resolveAutomaticModel(scopedModels?: ScopedModel[]) {
+    const models = scopedModels?.map(item => item.model) ?? await this.modelRuntime!.getAvailable();
+    return models.find(model => !(model.provider === "openai-codex"
+      && this.modelRuntime!.isUsingOAuth("openai-codex")
+      && ["gpt-5.3-codex-spark", "gpt-5.5"].includes(model.id)));
+  }
+
   private async resolvePiModelSelection(
     preferredModelId?: string,
     settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
@@ -1362,7 +1373,7 @@ export class AgentService {
     const patterns = settingsManager.getEnabledModels();
     if (patterns === undefined) {
       return {
-        model: preferredModelId ? this.resolveModel(preferredModelId) : undefined,
+        model: preferredModelId ? this.resolveModel(preferredModelId) : await this.resolveAutomaticModel(),
       };
     }
 
@@ -1376,7 +1387,7 @@ export class AgentService {
     const selected =
       (preferredModelId ? byId.get(preferredModelId) : undefined)
       ?? (defaultModelId ? byId.get(defaultModelId) : undefined)
-      ?? scopedModels[0];
+      ?? { model: await this.resolveAutomaticModel(scopedModels) };
 
     return {
       model: selected?.model,
@@ -2749,6 +2760,18 @@ export class AgentService {
     return this.loadoutObservations.list(taskId, limit);
   }
 
+  /** Explicit main-process trial; permission facts are reloaded, never accepted from renderer. */
+  runOfficeSkillTrial(taskId: string) {
+    const live = this.registry.get(taskId);
+    const skill = live?.skillReadiness?.find(item => item.id === "officecli");
+    const file = live?.skillFiles?.find(item => item.id === "officecli");
+    if (!live || !skill || !file) throw new Error("No live whitelisted officecli skill");
+    return new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).runOfficeVersion({
+      skillPath: resolve(live.cwd, file.path), cwd: live.cwd,
+      installed: skill.installed, policyAllowed: skill.policyAllowed, whitelisted: skill.whitelisted,
+    });
+  }
+
   /**
    * Read-only Task inspection. Renderer supplies only taskId; all runtime
    * inputs are reloaded from authoritative main-process state.
@@ -2780,11 +2803,37 @@ export class AgentService {
       cwd,
     });
     const assemblyHash = fingerprintRuntimeAssembly(assembly);
+    const live = this.registry.get(taskId);
+    const observation = this.loadoutObservations.list(taskId, 1)[0];
     const latestExecution = this.runtimeSnapshots.list(taskId, 1)[0];
     const changes = latestExecution ? diffRuntimeAssembly(assembly, latestExecution) : [];
     return {
       taskId,
       generatedAt: Date.now(),
+      sessionDiagnostics: live ? {
+        basis: "live_session",
+        cwd: live.cwd,
+        model: live.modelDiagnostic ? {
+          ...live.modelDiagnostic,
+          provider: live.session.model?.provider, model: live.session.model?.id,
+          actualId: this.sessionModelKey(live.session), reasoning: live.session.thinkingLevel,
+        } : diagnoseSessionModel({ actual: live.session.model, source: "restored_or_sdk", reasoning: live.session.thinkingLevel }),
+        mode: live.welcomeMode, preset: live.runtimeTagId,
+        activeTools: live.session.getActiveToolNames(), mcpIds: live.mcpProviderIds ?? [],
+        skillReadiness: (live.skillReadiness ?? []).map(skill => ({
+          ...skill,
+          trial: new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).latest(skill.id,
+            resolve(live.cwd, live.skillFiles?.find(file => file.id === skill.id)?.path ?? "__missing_skill__"), live.cwd),
+          readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
+            && (live.skillReads?.ids.includes(skill.id) ?? false),
+          dependency: skill.whitelisted && ["officecli", "meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
+            ? probeSkillDependency(skill.id, live.cwd, live.session.getActiveToolNames()) : skill.dependency,
+        })),
+        vision: modelSupportsImageInput(live.session.model) ? "native_image"
+          : this.builtinCapabilities.visionProvider() ? "description_delegate" : "unavailable",
+        toolBoundaries: "browser_exec 仅 MyBuddy 自有浏览器；ui_exec 仅本应用；computer_exec 为跨应用桌面后端，受平台支持限制。",
+        codingSwitch: live.welcomeMode === "working" ? "编程任务请在场景选择器切换到 coding；working 的 deny 不会自动放开。" : "",
+      } : undefined,
       basis: "current_configuration",
       effectiveAt: "next_resolution",
       mode: { id: welcomeMode, label: profile.labelZh },
@@ -4073,6 +4122,8 @@ export class AgentService {
     // Apply the intended model after submission intent is fixed; usage attribution follows MyBuddy selection.
     const intendedModelId =
       req.modelId ?? existingTask?.modelId ?? entry.usageModelId ?? this.settingsStore.read().defaultModelId;
+    const modelSelectionSource = req.modelId ? "explicit" : existingTask?.modelId ? "task_selection"
+      : entry.modelDiagnostic?.source ?? (entry.usageModelId ? "session_selection" : intendedModelId ? "global_default" : "restored_or_sdk");
     if (intendedModelId) entry.usageModelId = intendedModelId;
     if (!wasStreaming && intendedModelId && this.modelRuntime) {
       const currentKey = this.sessionModelKey(entry.session);
@@ -4096,6 +4147,12 @@ export class AgentService {
         ? req.reasoningPreference
         : undefined;
     if (!wasStreaming) this.applySessionReasoningPreference(entry.session, requestedReasoningPreference);
+    entry.modelDiagnostic = diagnoseSessionModel({
+      requested: intendedModelId, actual: entry.session.model,
+      source: modelSelectionSource,
+      reasoning: entry.session.thinkingLevel,
+    });
+    console.info("[AgentService] session model diagnostic", entry.modelDiagnostic);
 
     const modelName = entry.session.model?.name ?? entry.session.model?.id;
     if (!wasStreaming) {
@@ -4224,6 +4281,14 @@ export class AgentService {
             requiredMcpIds: [...requiredMcpIds],
           })
         : undefined;
+      if (turnLoadout && entry.skillReadiness) {
+        entry.skillReadiness = diagnoseSkillReadiness({
+          recommendation: turnLoadout,
+          installedIds: entry.installedSkillIds ?? [],
+          whitelistIds: entry.skillFiles?.map(skill => skill.id) ?? [],
+          readIds: [],
+        });
+      }
       const explicitLearned = explicitSkillName
         ? entry.learnedSkills?.find((skill) => skill.skillId.toLowerCase() === explicitSkillName.toLowerCase())
         : undefined;
@@ -5379,7 +5444,7 @@ export class AgentService {
     );
     const resolvedSessionModel = resolvedSessionModelId
       ? this.resolveModel(resolvedSessionModelId)
-      : (piScopedModels[0]?.model);
+      : await this.resolveAutomaticModel(piEnabledModels !== undefined ? piScopedModels : undefined);
     const resolvedModelContextWindow = resolvedSessionModel?.contextWindow;
     const sessionContextBudgetChars = derivePromptContextCharBudget(resolvedModelContextWindow);
 
@@ -5684,6 +5749,20 @@ export class AgentService {
       expertId: effectiveExpertId ?? undefined,
       requestedExpertId: opts.expertId ?? undefined,
       connectorIds: opts.connectorIds,
+      modelDiagnostic: diagnoseSessionModel({
+        requested: resolvedSessionModelId, actual: session.model, reasoning: session.thinkingLevel,
+        source: opts.modelId ? "explicit_or_task" : resolvedSessionModelId === effProfile.policy.suggestedModelId
+          ? "mode_suggestion" : resolvedSessionModelId ? "global_default" : "restored_or_sdk",
+      }),
+      installedSkillIds: runtimeSkills.dtos.map(skill => skill.id),
+      skillFiles: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name) && skill.filePath)
+        .map(skill => ({ id: skill.id, path: skill.filePath! })),
+      skillReadiness: diagnoseSkillReadiness({
+        recommendation: this.loadoutService.resolve(opts.taskId, "", assembly, opts.connectorIds, opts.expertId),
+        installedIds: runtimeSkills.dtos.map(skill => skill.id),
+        whitelistIds: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name)).map(skill => skill.id),
+        readIds: [],
+      }),
       mcpProviderIds: mcpPreview.enabled,
       learnedSkills,
       pendingSkillCommands: new Map<string, string>(),

@@ -832,6 +832,24 @@ export interface CapabilityPolicyNoticeDto {
 }
 
 export interface RuntimeContextInspectionDto {
+  sessionDiagnostics?: {
+    basis: "live_session";
+    cwd: string;
+    model?: { provider?: string; model?: string; actualId?: string; requested?: string; source: string; reasoning: string; fallbackReason?: string };
+    mode?: WelcomeMode;
+    preset?: string;
+    activeTools: string[];
+    mcpIds: string[];
+    skillReadiness: Array<{
+      id: string; recommended: boolean; installed: boolean; policyAllowed: boolean;
+      whitelisted: boolean; readThisTurn: boolean; reason: string;
+      dependency: { state: "unknown" | "passed" | "failed"; reason: string; checkedAt?: number };
+      trial: { state: "unknown" | "passed" | "failed"; at?: number; evidence?: string };
+    }>;
+    vision: "native_image" | "description_delegate" | "unavailable";
+    toolBoundaries: string;
+    codingSwitch: string;
+  };
   taskId: string;
   generatedAt: number;
   /** This is a live projection, not an immutable historical execution record. */

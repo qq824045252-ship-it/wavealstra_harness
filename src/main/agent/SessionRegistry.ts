@@ -4,6 +4,11 @@ import type { ExternalWriteDecision } from "../../shared/external-write";
 import type { AssemblyTraceDto } from "../../shared/mode-profile";
 
 export interface SessionEntry {
+  skillReads?: { assistantMessageId: string; ids: string[] };
+  installedSkillIds?: string[];
+  skillFiles?: Array<{ id: string; path: string }>;
+  skillReadiness?: import("./SessionDiagnostics").SkillReadinessDiagnostic[];
+  modelDiagnostic?: ReturnType<typeof import("./SessionDiagnostics").diagnoseSessionModel>;
   taskId: string;
   session: AgentSession;
   unsubscribe: () => void;

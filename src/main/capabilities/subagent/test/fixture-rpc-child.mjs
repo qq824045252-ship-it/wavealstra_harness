@@ -34,6 +34,10 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+const modelSeparator = args.model?.indexOf("/") ?? -1;
+const actualModel = modelSeparator > 0
+  ? { provider: args.model.slice(0, modelSeparator), id: args.model.slice(modelSeparator + 1) }
+  : { provider: "fixture", id: args.model ?? "fixture-model" };
 let sessionFile = null;
 if (args.sessionDir && args.sessionId) {
   sessionFile = join(args.sessionDir, `${args.sessionId}.jsonl`);
@@ -76,7 +80,7 @@ function handle(cmd) {
           sessionFile,
           isStreaming: false,
           sessionName: args.sessionId ?? null,
-          model: { id: "fixture-model" },
+          model: actualModel,
         });
       if (args.stateDelay > 0) setTimeout(respond, args.stateDelay);
       else respond();
@@ -91,7 +95,8 @@ function handle(cmd) {
         role: "assistant",
         content: [{ type: "text", text: `FIXTURE_ANSWER:${text.slice(0, 40)}` }],
         usage: { input: 100, output: 20, cacheRead: 10, cacheWrite: 0, cost: { total: 0.001 }, totalTokens: 130 },
-        model: "fixture-model",
+        model: actualModel.id,
+        provider: actualModel.provider,
         stopReason: text.includes("FAIL") ? "error" : "stop",
       };
       if (text.includes("FAIL")) msg.errorMessage = "fixture 注入的错误";
@@ -121,7 +126,8 @@ function handle(cmd) {
         process.stdout.write(
           JSON.stringify({
             type: "message_end",
-            message: { role: "assistant", content: [{ type: "text", text: `STEERED:${text.slice(0, 40)}` }], usage: { input: 10, output: 5, cost: { total: 0 }, totalTokens: 15 }, model: "fixture-model", stopReason: "stop" },
+            message: { role: "assistant", content: [{ type: "text", text: `STEERED:${text.slice(0, 40)}` }], usage: { input: 10, output: 5, cost: { total: 0 }, totalTokens: 15 }, model: actualModel.id,
+        provider: actualModel.provider, stopReason: "stop" },
           }) + "\n",
         );
         process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\n");

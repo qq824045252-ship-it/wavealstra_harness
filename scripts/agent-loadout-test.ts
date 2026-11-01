@@ -1,3 +1,4 @@
+import { diagnoseSkillReadiness, diagnoseSessionModel } from "../src/main/agent/SessionDiagnostics";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,8 +17,7 @@ try {
   const { MemoryService } = await import("../src/main/memory/MemoryService");
 
   const db = new AppDatabase();
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27);
-  assert.equal(db.schemaVersion, 27);
+  assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
   db.upsertSpace({ id: "space-loadout", name: "Loadout", archived: false, updatedAt: Date.now() });
   db.upsertTask({ id: "task-loadout", title: "Review GitHub bridge code", spaceId: "space-loadout", status: "completed", updatedAt: Date.now() });
 
@@ -75,6 +75,36 @@ try {
   assert.equal(loadout.modelSuggestion, "openai/gpt-5.6-sol");
   assert.equal(loadout.permissionSuggestion, "readonly");
 
+  const fixture = { ...loadout, capabilities: [
+    ["recommended", false, false], ["denied", true, true], ["missing-cli", true, false],
+    ["untried", true, false], ["verified", true, false],
+  ].map(([id, actual, blocked]) => ({
+    kind: "skill" as const, id: String(id), label: String(id), score: 1,
+    recommended: true, actual: Boolean(actual), blocked: Boolean(blocked), evidence: [],
+  })) };
+  const readiness = diagnoseSkillReadiness({
+    recommendation: fixture, installedIds: ["denied", "missing-cli", "untried", "verified"],
+    whitelistIds: ["missing-cli", "untried", "verified"], readIds: ["verified"],
+    evidence: {
+      "missing-cli": { dependency: { state: "failed", reason: "officecli executable missing", checkedAt: 1 }, trial: { state: "unknown" } },
+      verified: { dependency: { state: "passed", reason: "target environment --version", checkedAt: 2 }, trial: { state: "passed", at: 3, evidence: "fixture execution result" } },
+    },
+  });
+  assert.equal(readiness[0].installed, false);
+  assert.equal(readiness[1].policyAllowed, false);
+  assert.equal(readiness[1].whitelisted, false);
+  assert.equal(readiness[2].dependency.state, "failed");
+  assert.equal(readiness[3].trial.state, "unknown");
+  assert.equal(readiness[4].trial.at, 3);
+  assert.equal(readiness[4].readThisTurn, true);
+  for (const source of ["explicit", "mode_suggestion", "global_default", "restored_or_sdk"]) {
+    const diagnostic = diagnoseSessionModel({ requested: "p/model", actual: { provider: "p", id: "model" }, source, reasoning: "high" });
+    assert.equal(diagnostic.actualId, "p/model");
+    assert.equal(diagnostic.source, source);
+  }
+  assert(diagnoseSessionModel({ source: "restored_or_sdk", reasoning: "off" }).fallbackReason);
+  assert(diagnoseSessionModel({ requested: "invalid", actual: { provider: "p", id: "restored" }, source: "task", reasoning: "off" }).fallbackReason);
+
   const effective = resolveEffectiveLoadoutSelection(loadout, {
     requiredMcpIds: ["pi"],
   });
@@ -85,6 +115,19 @@ try {
   assert.equal(effective.effectiveSelection!.connectorIds.includes("github"), false, "not-current connector must never be auto-added");
   assert.equal(effective.effectiveSelection!.mcpIds.includes("pi"), false, "blocked MCP must never be auto-enabled even when required");
   assert(effective.capabilities.find((item) => item.id === "review-expert")?.selected === false, "blocked expert stays unselected");
+
+  const chineseExplicit = resolveEffectiveLoadoutSelection(resolveAgentLoadout({
+    taskId: "task-loadout", query: "请用 officecli 帮我核对表格数字", mode: "working",
+    candidates: [
+      { kind: "skill", id: "officecli", label: "officecli", description: "Office documents", allowed: true, actual: true },
+      { kind: "skill", id: "low-relevance", label: "unrelated astronomy", allowed: true, actual: true },
+      { kind: "skill", id: "blocked", label: "officecli", allowed: false, actual: true },
+      { kind: "skill", id: "not-current", label: "officecli", allowed: true, actual: false },
+    ],
+  }), { explicitSkillId: "low-relevance" });
+  assert(chineseExplicit.effectiveSelection?.skillIds.includes("low-relevance"), "explicit low-relevance skill survives narrowing for Chinese request");
+  assert(!chineseExplicit.effectiveSelection?.skillIds.includes("blocked"), "blocked skill cannot be selected");
+  assert(!chineseExplicit.effectiveSelection?.skillIds.includes("not-current"), "actual=false cannot be selected");
 
   const fallbackSelection = resolveEffectiveLoadoutSelection(resolveAgentLoadout({
     taskId: "task-loadout", query: "continue", mode: "coding",

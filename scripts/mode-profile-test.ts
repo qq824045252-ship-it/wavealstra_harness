@@ -13,6 +13,7 @@ mkdirSync(sandbox, { recursive: true });
 
 // eslint-disable-next-line import/first
 import { ModeProfileStore } from "../src/main/agent/ModeProfileStore";
+import previousModeBlocks from "../src/main/agent/previous-mode-blocks.json";
 import { LEGACY_DESIGN_BLOCKS, LEGACY_DESIGN_SCENES, MODE_SEEDS } from "../src/main/agent/mode-defaults";
 // eslint-disable-next-line import/first
 import { assemblePrompt, resolveSessionTools } from "../src/main/agent/PromptAssembly";
@@ -76,6 +77,19 @@ async function main(): Promise<void> {
   assert(bot.policy.toolPolicy.deny.length === 0, "Bot 不拦截原生工具");
   assert(bot.policy.artifactPolicy.unfiltered === true, "Bot 不过滤产物显示");
 
+  for (const mode of ["working", "coding"] as const) {
+    const profile = store.getProfile(mode);
+    for (const blockId of ["workflow", "delivery", "criteria"] as const) {
+      const path = profile.blocks.find(b => b.id === blockId)!.filePath;
+      writeFileSync(path, previousModeBlocks[mode][blockId] + "\n");
+      assert(store.getProfile(mode).blocks.find(b => b.id === blockId)?.content.trimEnd() === MODE_SEEDS[mode].blocks[blockId],
+        `${mode}/${blockId}: exact stock block upgraded on disk`);
+      writeFileSync(path, "自定义，保留原文");
+      assert(store.getProfile(mode).blocks.find(b => b.id === blockId)?.content === "自定义，保留原文", "custom block retained");
+      assert(existsSync(path + ".factory-update.md"), "factory update preview available");
+      store.resetBlock(mode, blockId);
+    }
+  }
   console.log("\n2. 用户覆盖");
   store.saveBlock("working", "goal", "自定义目标：只做周报。");
   const after = store.getProfile("working");

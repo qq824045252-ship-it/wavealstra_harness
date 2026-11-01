@@ -101,6 +101,14 @@ async function runCase(name: string, steps: (request: number, context: Context) 
     assert(active.includes("bash") && active.includes("read") && active.includes("edit"), "native tools stay active");
     console.log(`PASS ${name}: ${requests.length} provider requests, 1 user input, native Pi loop retained`);
     return { requests, sessionMessages: structuredClone(session.messages) };
+  } catch (error) {
+    const failurePath = join(tmpdir(), `mybuddy-pi-autonomous-${name}-failure.json`);
+    // This provider and filesystem contain only synthetic fixtures, never user credentials.
+    await writeFile(failurePath, JSON.stringify(manager.getBranch().filter(
+      (entry) => entry.type === "message" && entry.message.role === "toolResult",
+    ), null, 2));
+    console.error("Raw fixture toolResults:", failurePath);
+    throw error;
   } finally {
     for (const entry of manager.getBranch()) {
       if (entry.type !== "message" || entry.message.role !== "toolResult") continue;

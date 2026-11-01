@@ -26,6 +26,7 @@ export interface ContextBlockInput {
   permissionMode: string;
   deniedTools: string[];
   sharedContext?: string | null;
+  sharedContextStatus?: { injected: boolean; bytes: number; reason: string };
   depth: number;
 }
 
@@ -51,10 +52,11 @@ export function buildContextBlock(input: ContextBlockInput): string {
   );
   if (input.sharedContext) {
     lines.push("");
-    lines.push(`## 项目共享上下文（来自 .mybuddy/shared-context.md，${input.sharedContext.length} 字符）`);
+    lines.push(`## 项目共享上下文（来自 .mybuddy/shared-context.md，${Buffer.byteLength(input.sharedContext, "utf8")} 字节）`);
     lines.push(input.sharedContext);
   } else {
-    lines.push("- 项目共享上下文文件未提供：主 Agent 如需请在任务中内联。");
+    lines.push("- 项目共享上下文未注入：主 Agent 如需请在任务中内联。");
+    if (input.sharedContextStatus) lines.push(`- bytes=${input.sharedContextStatus.bytes}；reason=${input.sharedContextStatus.reason}`);
   }
   lines.push("");
   lines.push(`## 权限边界`);
@@ -71,28 +73,42 @@ export function buildContextBlock(input: ContextBlockInput): string {
   );
   lines.push(`- 宿主权限模式: ${input.permissionMode}；深度: ${input.depth}（递归有硬上限，禁止再次委派）。`);
   lines.push("");
+  lines.push("## 任务交接模板");
+  lines.push("主代理应在任务文本中明确：任务目标；允许修改范围；约束；已知事实与来源路径；验收命令/条件；产物路径。缺失信息标未知，不从主聊天或数据库猜测。交接文本不扩大工具权限。");
   lines.push(`## 输出要求`);
   lines.push(
-    "- 完成任务后在最终回复给出简洁结论（结果、关键证据、产物路径）；不要输出内部推理过程。",
+    "- 完成任务后在最终回复给出固定栏目：结论 / 改动文件 / 执行结果（命令与证据、产物路径）/ 未验证项；不要输出内部推理过程。",
   );
   lines.push("- 遇到权限/工具不可用导致的阻塞，明确说明阻塞原因，不要假装完成。");
   return lines.join("\n");
 }
 
 /** 可选：读取 `<cwd>/.mybuddy/shared-context.md`（存在且小于上限才注入）。 */
-export function readOptionalSharedContext(cwd: string): string | null {
+export interface SharedContextDiagnostic {
+  injected: boolean;
+  bytes: number;
+  reason: string;
+  text: string | null;
+}
+
+export function inspectSharedContext(cwd: string): SharedContextDiagnostic {
+  const p = path.join(cwd, ".mybuddy", "shared-context.md");
   try {
-    const p = path.join(cwd, ".mybuddy", "shared-context.md");
     const stat = fs.statSync(p);
-    if (!stat.isFile()) return null;
-    if (stat.size > SHARED_CONTEXT_MAX_BYTES) {
-      return `(shared-context.md 超过 ${SHARED_CONTEXT_MAX_BYTES} 字节，未注入)`;
-    }
-    const text = fs.readFileSync(p, "utf-8");
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
+    if (!stat.isFile()) return { injected: false, bytes: stat.size, reason: "not_file", text: null };
+    if (stat.size > SHARED_CONTEXT_MAX_BYTES) return { injected: false, bytes: stat.size, reason: "over_limit", text: null };
+    const text = fs.readFileSync(p, "utf8");
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > SHARED_CONTEXT_MAX_BYTES) return { injected: false, bytes, reason: "over_limit", text: null };
+    return { injected: bytes > 0, bytes, reason: bytes ? "injected" : "empty", text: text || null };
+  } catch (error) {
+    return { injected: false, bytes: 0, reason: (error as NodeJS.ErrnoException).code ?? "read_failed", text: null };
   }
+}
+
+export function readOptionalSharedContext(cwd: string): string | null {
+  const result = inspectSharedContext(cwd);
+  return result.text ?? `(shared-context.md 未注入；bytes=${result.bytes}；reason=${result.reason}；limit=${SHARED_CONTEXT_MAX_BYTES})`;
 }
 
 /** 组装子代理系统提示文件内容（角色 body + context block），并钳制大小。 */

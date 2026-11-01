@@ -1,3 +1,4 @@
+import previousModeBlocks from "./previous-mode-blocks.json";
 import {
   existsSync,
   mkdirSync,
@@ -402,6 +403,17 @@ export class ModeProfileStore {
         for (const blockId of MODE_BLOCK_IDS) {
           const path = this.blockPath(mid, blockId);
           const current = readText(path);
+          const previous = (previousModeBlocks as Partial<Record<WelcomeMode, Partial<Record<ModeBlockId, string>>>>)[mid]?.[blockId];
+          if (previous !== undefined && (current === previous || current === previous + "\n")) {
+            writeText(path, seed.blocks[blockId]);
+          } else if (previous !== undefined && current !== null && current !== seed.blocks[blockId] && current !== seed.blocks[blockId] + "\n") {
+            // Preview alongside the customized block; never replace user text.
+            const previewPath = path + ".factory-update.md";
+            if (readText(previewPath) !== seed.blocks[blockId] + "\n") {
+              writeText(previewPath, seed.blocks[blockId]);
+              console.info("[ModeProfile] 自定义块已保留；出厂更新可预览", previewPath);
+            }
+          }
           // Upgrade only exact former factory text. User-authored blocks remain user configuration.
           if (current === null || (mid === "bot" && normText(current) === normText(LEGACY_DESIGN_BLOCKS[blockId]))) {
             writeText(path, seed.blocks[blockId]);

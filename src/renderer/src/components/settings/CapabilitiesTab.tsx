@@ -37,10 +37,10 @@ function NativeToggle({ on, disabled, label, onChange }: { on: boolean; disabled
   );
 }
 
-function StatusBadge({ status, pending }: { status?: BuiltinCapabilityStatusDto; pending?: boolean }): React.JSX.Element {
+function StatusBadge({ status, pending, readyLabel }: { status?: BuiltinCapabilityStatusDto; pending?: boolean; readyLabel?: string }): React.JSX.Element {
   if (pending) return <span className="capability-state capability-state--pending">待保存</span>;
   const state = status?.state ?? "needs-configuration";
-  return <span className={`capability-state capability-state--${state}`}>{STATE_LABEL[state] ?? state}</span>;
+  return <span className={`capability-state capability-state--${state}`}>{state === "ready" && readyLabel ? readyLabel : STATE_LABEL[state] ?? state}</span>;
 }
 
 function CapabilityRow({
@@ -82,7 +82,7 @@ function CapabilityRow({
       <div className="capability-config-copy">
         <div className="capability-config-title-line">
           <strong>{title}</strong>
-          <StatusBadge status={status} pending={pending} />
+          <StatusBadge status={status} pending={pending} readyLabel={id === "speech-to-text" ? "依赖检查通过" : undefined} />
         </div>
         {description && <div className="capability-config-description">{description}</div>}
         <div className="capability-config-tools">{tools.join(" · ")}</div>
@@ -449,7 +449,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
           <CapabilityRow
             {...rowCommon("speech-to-text", draft.speechToText.enabled)}
             title="语音转文字"
-            description="本地 Whisper medium-int8 / NPU 离线转写"
+            description="本地 Whisper medium-int8 / NPU。检查仅核对配置与依赖路径；最近真实转写未在此检查中验证，需用音频试运行。"
             tools={["speech_to_text"]}
             configurationPending={snapshot?.config.speechToText.provider !== draft.speechToText.provider}
             onToggle={(enabled) => setDraft({ ...draft, speechToText: { ...draft.speechToText, enabled, provider: "local-whisper" } })}

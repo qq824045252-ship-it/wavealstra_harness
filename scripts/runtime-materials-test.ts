@@ -53,13 +53,19 @@ async function main() {
     let subscriber: (event: any) => void = noop;
     const session: any = { subscribe(callback: any) { subscriber = callback; return noop; } };
     const entry: any = { ...ctx, session, pendingAssistantTurns: [], pendingApprovals: new Map(), pendingExternalWrites: new Map(), startedAt: Date.now() };
+    const observedReads: string[] = [];
+    entry.skillFiles = [{ id: "fixture-skill", path: join(root, "source.txt") }];
     const coordinator = new SessionEventCoordinator({ registry: { get: () => entry }, userTurnCounters: new Map(),
       runtimeSnapshots: repository, pendingActions: { remove: noop }, skillsService: { resolveLearnedSkillRead: () => undefined },
+      loadoutObservations: { markSkillUsed: (_task: string, _assistant: string, skill: string) => observedReads.push(skill) },
       emitPatch: noop, emitContextUsage: noop, maybeEmitArtifact: async () => {},
     } as any);
     coordinator.attach("task", root, session);
     subscriber({ type: "tool_execution_start", ...event });
     subscriber({ type: "tool_execution_end", ...event });
+    assert.deepEqual(entry.skillReads, { assistantMessageId: "assistant", ids: ["fixture-skill"] },
+      "successful real SDK read records skill reading separately from tool/trial success");
+    assert.deepEqual(observedReads, ["fixture-skill"]);
     assert.equal(repository.list("task")[0].materialUsage?.items.length, 1);
     repository.appendMaterials(ctx, evidence);
     assert.equal(repository.list("task")[0].materialUsage?.items.length, 1, "Repeated event is deduplicated");
@@ -67,6 +73,7 @@ async function main() {
     entry.executionId = "next"; entry.assistantMessageId = "next-assistant";
     subscriber({ type: "tool_execution_end", ...event, toolCallId: "late" });
     assert.equal(repository.list("task")[0].materialUsage?.items.length, 1, "Late result is not attributed after execution switch");
+    assert.equal(entry.skillReads.assistantMessageId, "assistant", "late skill reads cannot be attributed to next turn");
     repository.appendMaterials({ ...ctx, assistantMessageId: "wrong" }, search);
     assert.equal(repository.list("task")[0].materialUsage?.items.length, 1);
     repository.appendMaterials(ctx, search);
