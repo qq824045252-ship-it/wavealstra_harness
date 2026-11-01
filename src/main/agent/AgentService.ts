@@ -1356,6 +1356,15 @@ export class AgentService {
     return scopedModels;
   }
 
+  /** Pi static entries can remain catalogued after ChatGPT OAuth rejects them.
+   * Only automatic fallback skips these known rejected models; explicit selections remain authoritative. */
+  private async resolveAutomaticModel(scopedModels?: ScopedModel[]) {
+    const models = scopedModels?.map(item => item.model) ?? await this.modelRuntime!.getAvailable();
+    return models.find(model => !(model.provider === "openai-codex"
+      && this.modelRuntime!.isUsingOAuth("openai-codex")
+      && ["gpt-5.3-codex-spark", "gpt-5.5"].includes(model.id)));
+  }
+
   private async resolvePiModelSelection(
     preferredModelId?: string,
     settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
@@ -1364,7 +1373,7 @@ export class AgentService {
     const patterns = settingsManager.getEnabledModels();
     if (patterns === undefined) {
       return {
-        model: preferredModelId ? this.resolveModel(preferredModelId) : undefined,
+        model: preferredModelId ? this.resolveModel(preferredModelId) : await this.resolveAutomaticModel(),
       };
     }
 
@@ -1378,7 +1387,7 @@ export class AgentService {
     const selected =
       (preferredModelId ? byId.get(preferredModelId) : undefined)
       ?? (defaultModelId ? byId.get(defaultModelId) : undefined)
-      ?? scopedModels[0];
+      ?? { model: await this.resolveAutomaticModel(scopedModels) };
 
     return {
       model: selected?.model,
@@ -5435,7 +5444,7 @@ export class AgentService {
     );
     const resolvedSessionModel = resolvedSessionModelId
       ? this.resolveModel(resolvedSessionModelId)
-      : (piScopedModels[0]?.model);
+      : await this.resolveAutomaticModel(piEnabledModels !== undefined ? piScopedModels : undefined);
     const resolvedModelContextWindow = resolvedSessionModel?.contextWindow;
     const sessionContextBudgetChars = derivePromptContextCharBudget(resolvedModelContextWindow);
 

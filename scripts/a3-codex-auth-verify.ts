@@ -80,7 +80,8 @@ async function config(suggestion?: string, defaultId?: string) {
   await settings.flush();
 }
 let restoredTask: string | undefined;
-for (const name of ['explicit', 'suggestion', 'default', 'invalid-suggestion', 'restored', 'no-config']) {
+const cells = ['explicit', 'suggestion', 'default', 'invalid-suggestion', 'restored', 'no-config'];
+for (const name of cells.filter(name => !process.env.A3_CELL || (process.env.A3_CELL === 'smoke' ? name !== 'no-config' : name === process.env.A3_CELL))) {
   cellRequests = [];
   const taskId = name === 'restored' ? restoredTask! : `a3-${name}-${randomUUID()}`;
   const userMessageId = randomUUID(), assistantMessageId = randomUUID();
@@ -126,10 +127,10 @@ process.env.HOME = realProfile.slice(0, -'/.mybuddy'.length);
 process.env.USERPROFILE = process.env.HOME;
 evidence.a2Host = ['officecli', 'meeting-transcribe', 'dimagent-debug'].map(id => ({ id, dependency: probeSkillDependency(id, process.cwd(), evidence.cells[0]?.sessionDiagnostics?.activeTools ?? []) }));
 const { SkillTrialLedger } = await import('../src/main/agent/SkillTrialLedger');
-const skillPath = join(process.cwd(), 'scripts/skill-governance/payload/officecli/SKILL.md');
+const skillPath = join(realProfile, 'skills/officecli/SKILL.md');
 const ledger = new SkillTrialLedger(join(root, 'skill-trials'));
 const trial = ledger.runOfficeVersion({ skillPath, cwd: process.cwd(), installed: true, policyAllowed: true, whitelisted: true });
-evidence.a2Office = { scope: 'repository SKILL.md; explicit controlled admission, not live installed skill', trial, readback: new SkillTrialLedger(join(root, 'skill-trials')).latest('officecli', skillPath, process.cwd()) };
+evidence.a2Office = { scope: 'host installed SKILL.md; explicit controlled admission; real officecli --version', trial, readback: new SkillTrialLedger(join(root, 'skill-trials')).latest('officecli', skillPath, process.cwd()) };
 evidence.a2LocalCommand = { command: 'node --version', output: execFileSync(process.execPath, ['--version'], { encoding: 'utf8' }).trim(), scope: 'real safe CLI execution only; not skill-ledger success or UI trial' };
 agent.dispose(); await agent.closeDurableBots(); db.close();
 // No credential bytes in the emitted evidence (check against known auth string values without printing them).
