@@ -42,8 +42,6 @@ Memory Kernel 以 **L1 MemoryRecord** 为可寻址真源；对上投影 **L2 / L
 - Computer Use（Linux → computer-use-linux）；本地 OCR / Whisper 路径（≠ 整机离线）  
 - 内嵌浏览器、远程配对、Artifact 预览  
 
-和 ERP 一起用时：**ERP 只存事实；推送 / 提醒 / Slack / 日历走这个 harness。**
-
 ## 架构（示意）
 
 ```mermaid
