@@ -1,3 +1,4 @@
+import { SkillTrialLedger } from "./SkillTrialLedger";
 import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
@@ -2750,6 +2751,18 @@ export class AgentService {
     return this.loadoutObservations.list(taskId, limit);
   }
 
+  /** Explicit main-process trial; permission facts are reloaded, never accepted from renderer. */
+  runOfficeSkillTrial(taskId: string) {
+    const live = this.registry.get(taskId);
+    const skill = live?.skillReadiness?.find(item => item.id === "officecli");
+    const file = live?.skillFiles?.find(item => item.id === "officecli");
+    if (!live || !skill || !file) throw new Error("No live whitelisted officecli skill");
+    return new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).runOfficeVersion({
+      skillPath: resolve(live.cwd, file.path), cwd: live.cwd,
+      installed: skill.installed, policyAllowed: skill.policyAllowed, whitelisted: skill.whitelisted,
+    });
+  }
+
   /**
    * Read-only Task inspection. Renderer supplies only taskId; all runtime
    * inputs are reloaded from authoritative main-process state.
@@ -2799,7 +2812,10 @@ export class AgentService {
         mode: live.welcomeMode, preset: live.runtimeTagId,
         activeTools: live.session.getActiveToolNames(), mcpIds: live.mcpProviderIds ?? [],
         skillReadiness: (live.skillReadiness ?? []).map(skill => ({
-          ...skill, readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
+          ...skill,
+          trial: new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).latest(skill.id,
+            resolve(live.cwd, live.skillFiles?.find(file => file.id === skill.id)?.path ?? "__missing_skill__"), live.cwd),
+          readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
             && (live.skillReads?.ids.includes(skill.id) ?? false),
           dependency: skill.whitelisted && ["officecli", "meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
             ? probeSkillDependency(skill.id, live.cwd, live.session.getActiveToolNames()) : skill.dependency,
