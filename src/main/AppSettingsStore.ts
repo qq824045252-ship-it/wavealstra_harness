@@ -1,3 +1,4 @@
+import type { TaskModelRecommendations } from "../shared/task-model-recommendations";
 import { existsSync, readFileSync } from "node:fs";
 import {
   closeSync,
@@ -52,6 +53,7 @@ export interface AppSettings {
   language: string;
   permissionMode: PermissionMode;
   defaultModelId: string;
+  taskModelRecommendations?: TaskModelRecommendations;
   proxyUrl: string;
   memoryEnabled: boolean;
   /** External Agent Memory Gateway master switch (loopback only). */

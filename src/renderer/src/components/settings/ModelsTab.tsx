@@ -1,3 +1,4 @@
+import type { TaskModelRecommendations } from "@shared/task-model-recommendations";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { ModelInfoDto, ModelsFileConfigDto, ModelsProviderConfigDto, SubagentConfigDto } from "@shared/agent-ipc";
@@ -134,6 +135,7 @@ export default function ModelsTab(): React.JSX.Element {
   const [modelCatalog, setModelCatalog] = useState<ModelInfoDto[]>([]);
   const [pausedProviderModels, setPausedProviderModels] = useState<Record<string, string[]>>({});
   const [defaultModelId, setDefaultModelId] = useState("");
+  const [taskRecommendations, setTaskRecommendations] = useState<TaskModelRecommendations>({});
   const [subagentConfig, setSubagentConfig] = useState<SubagentConfigDto | null>(null);
   const [usageSaving, setUsageSaving] = useState(false);
   const detailRef = useRef<HTMLElement | null>(null);
@@ -160,6 +162,7 @@ export default function ModelsTab(): React.JSX.Element {
       window.api?.agent?.listModels?.(),
     ]);
     setDefaultModelId(settings?.defaultModelId ?? "");
+    setTaskRecommendations(settings?.taskModelRecommendations ?? {});
     setPausedProviderModels(settings?.pausedProviderModels ?? {});
     setSubagentConfig(subagent ?? null);
     setModelCatalog(catalog ?? []);
@@ -837,6 +840,19 @@ export default function ModelsTab(): React.JSX.Element {
           </div>
           <span className="models-usage-count">{selectableModels.length} 个可用聊天模型</span>
         </div>
+        <details><summary>经评测的场景推荐（可选）</summary>
+          <p>仅用于新会话；显式任务模型优先。只填已完成对照评测的报告路径；样本不足请保持空白。选择模型可能改变成本，任务上下文将发送到所选 provider。</p>
+          {(["coding", "working"] as const).map(mode => <div key={mode}>
+            <label>{mode}<select value={taskRecommendations[mode]?.modelId ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: e.target.value, evidencePath: taskRecommendations[mode]?.evidencePath ?? "" } })}>
+              <option value="">不启用推荐</option>{selectableModels.map(model => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
+            </select></label>
+            <input placeholder="对照评测报告路径" value={taskRecommendations[mode]?.evidencePath ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: taskRecommendations[mode]?.modelId ?? "", evidencePath: e.target.value } })} />
+          </div>)}
+          <button className="btn" onClick={async () => {
+            const saved = await window.api?.agent?.updateAppSettings?.({ taskModelRecommendations: taskRecommendations });
+            setTaskRecommendations(saved?.taskModelRecommendations ?? {});
+          }}>保存场景推荐</button>
+        </details>
         <div className="models-usage-grid">
           <label className="models-usage-field">
             <span>主对话默认</span>

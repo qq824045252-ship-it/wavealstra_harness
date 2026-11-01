@@ -67,6 +67,14 @@ Opt out of auto-start: `OFFICECLI_NO_AUTO_RESIDENT=1`.
 
 ---
 
+## Delivery acceptance (required)
+
+Work on a copy; preserve the original. Order: create/edit → `officecli close <final-file>` (save and release) → independent disk readback → semantic checks → render when an engine exists → deliver. Resident `get/view` and preview caches do not prove saved results.
+
+In this repository use `python3 scripts/office-delivery.py FINAL EXPECTATIONS.json REPORT.json --close --render RENDER_DIR`. Verify the CLI/engine in the target app environment first; do not install silently. Expectations support `texts`, PPTX `pages`/`template`, and XLSX `cells` (`Sheet1!C1`: expected number). The report records the final path/hash/mtime, semantic failures and unverified scope. Deliver that exact file; if modified, rerun acceptance.
+
+XLSX: independently checks only requested SUM(range) and cell+cell formulas and compares disk caches; stale/missing caches fail. Use an actual calculation engine for broader formulas and explicitly report its coverage. PPTX: checks slide count/text, template masters/layouts/themes and objects beyond page bounds; render every page and inspect text overflow within shapes manually. DOCX: read back target text/paragraph structure and inspect target-format layout. Render availability alone is not visual approval. Without save/close evidence or calculation/render review, report PARTIAL and the missing scope, never “fully verified”.
+
 ## Quick Start
 
 **PPT:**

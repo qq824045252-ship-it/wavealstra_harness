@@ -4,6 +4,7 @@ import type {
   BuiltinCapabilityId,
   BuiltinCapabilityStatusDto,
   BuiltinCredentialId,
+  RecognitionServiceConfig,
   TestBuiltinCapabilityResultDto,
 } from "../../shared/builtin-capabilities";
 import { BUILTIN_CAPABILITY_TOOLS } from "../../shared/builtin-capabilities";
@@ -103,6 +104,7 @@ export interface SpeechToTextInput {
 }
 
 export interface SpeechToTextOutput {
+  segments?: Array<{ start: number; end: number; text: string }>;
   text: string;
   language?: string;
   provider: string;
@@ -133,6 +135,7 @@ export interface LocalCapabilityCheckResult { state: "ready" | "degraded"; detai
 export interface LocalCapabilityAvailability { available: boolean; tools?: string[]; detail?: string }
 
 const LABELS: Record<string, { label: string; description: string; category: BuiltinCapabilityStatusDto["category"] }> = {
+  ocr: { label: "图片文字识别", description: "识别任务内图片；不提供窗口点击或 PDF/Office 转换。", category: "media" },
   web: { label: "联网搜索", description: "搜索互联网并提取网页正文。", category: "web" },
   vision: { label: "图像理解", description: "分析任务目录内的图片。", category: "media" },
   "image-generation": { label: "图像生成", description: "生成或编辑图片并保存为任务产物。", category: "media" },
@@ -225,6 +228,32 @@ export class BuiltinCapabilityRuntime {
     return provider?.generateVideo ? provider : null;
   }
 
+  private readonly recognitionRuns = new Map<string, number>();
+
+  recognitionService(capability: "speech-to-text" | "ocr", adapter: RecognitionServiceConfig["adapter"]): RecognitionServiceConfig {
+    const config = this.config();
+    const binding = capability === "ocr" ? config.ocr : config.speechToText;
+    if (!binding?.enabled) throw new Error("disabled: recognition capability disabled");
+    const service = binding.serviceId ? config.services?.[binding.serviceId] : undefined;
+    if (!service || service.adapter !== adapter || !service.endpoint || !service.model || service.timeoutMs <= 0) throw new Error("configuration: select a complete recognition service");
+    const url = new URL(service.endpoint);
+    if (url.username || url.password || url.search) throw new Error("configuration: endpoint must not contain secrets/query");
+    if (service.location === "local" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("policy: local service requires loopback endpoint");
+    if (service.credentialRef && !this.credentials.has(service.credentialRef)) throw new Error("authentication: credential not configured");
+    return service;
+  }
+
+  /** Until a private model context is available, local-only content cannot enter agent history. */
+  assertRecognitionAgentPolicy(capability: "speech-to-text" | "ocr"): void {
+    const config = this.config();
+    if (capability === "speech-to-text" && config.speechToText.provider !== "http-asr") return;
+    const binding = capability === "ocr" ? config.ocr : config.speechToText;
+    const service = binding?.serviceId ? config.services?.[binding.serviceId] : undefined;
+    if (service?.dataPolicy === "local-only") throw new Error("policy: local-only recognition is blocked in agent tools because downstream model privacy cannot be guaranteed; zero upload");
+  }
+
+  recordRecognitionRun(id: "speech-to-text" | "ocr"): void { this.recognitionRuns.set(id, Date.now()); }
+
   speechToTextProvider(): SpeechCapabilityProvider | null {
     const id = this.config().speechToText.provider;
     const provider = id ? (this.providers.get(`speech:${id}`) as SpeechCapabilityProvider | undefined) : undefined;
@@ -304,6 +333,9 @@ export class BuiltinCapabilityRuntime {
       config,
       capabilities: [
         simple("web", config.web.enabled, true),
+        { id: "ocr", ...LABELS.ocr, enabled: config.ocr?.enabled ?? false, tools: BUILTIN_CAPABILITY_TOOLS.ocr,
+          state: !config.ocr?.enabled ? "disabled" : config.ocr.serviceId && config.services?.[config.ocr.serviceId] ? "unchecked" : "needs-configuration",
+          detail: `仅图片文件；窗口 OCR 未接入。最近实际识别：${this.recognitionRuns.get("ocr") ? new Date(this.recognitionRuns.get("ocr")!).toISOString() : "未知"}` },
         !config.vision.enabled
           ? { id: "vision", ...LABELS.vision, enabled: false, tools: BUILTIN_CAPABILITY_TOOLS.vision, state: "disabled", detail: "已关闭；新会话不会注册对应工具。" }
           : !this.visionProvider()
@@ -356,6 +388,10 @@ export class BuiltinCapabilityRuntime {
       if (key !== this.checkKey(id)) return { ok: false, state: "unchecked", detail: "检查期间配置或运行组件发生变化，请重新检查。", checkedAt: Date.now() };
       if (revision === this.checkRevisions.get(id)) this.localResults.set(id, { key, result });
       return result;
+    }
+    if (id === "ocr" && status.enabled) {
+      try { this.recognitionService("ocr", "http-ocr"); return { ok: true, state: "unchecked", detail: "配置完整；连通/认证、模型及实际识别未验证，需显式调用 ocr_file。", checkedAt: Date.now() }; }
+      catch (error) { return { ok: false, state: "needs-configuration", detail: (error as Error).message, checkedAt: Date.now() }; }
     }
     if (id === "vision" && status.state === "degraded") {
       return { ok: true, state: "degraded", detail: status.detail ?? "原生多模态路径可用，但未配置纯文本模型的 Vision fallback。", checkedAt: Date.now() };

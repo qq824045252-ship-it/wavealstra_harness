@@ -1,3 +1,4 @@
+import { checkHttpRecognition } from "./recognition-http-check";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -377,6 +378,7 @@ async function main(): Promise<void> {
     assert(readonly.excludeTools?.includes("video_generate"));
     assert(readonly.excludeTools?.includes("execute_code"));
 
+    await checkHttpRecognition(root);
     console.log("builtin capabilities: ok");
   } finally {
     rmSync(root, { recursive: true, force: true });

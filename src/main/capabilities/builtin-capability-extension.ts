@@ -1,3 +1,4 @@
+import { createHttpOcrAdapter } from "./HttpOcrProvider";
 import { consultToolResult } from "./MultiModelConsult";
 import { consultSummary, type MultiModelConsultInput, type MultiModelConsultReport } from "../../shared/multi-model-consult";
 import { existsSync } from "node:fs";
@@ -611,6 +612,21 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       });
     }
 
+    if (config.ocr?.enabled) {
+      pi.registerTool({
+        name: "ocr_file", label: "图片文字识别",
+        description: "识别任务目录内 PNG/JPEG（≤10 MiB）。返回正文和可选输入像素框；无框不能用于点击。PDF/Office、窗口 OCR 未支持。",
+        parameters: Type.Object({ image_path: Type.String() }),
+        execute: async (tc, p: { image_path: string }, signal?: AbortSignal) => {
+          try {
+            bridge.runtime.assertRecognitionAgentPolicy("ocr");
+            const result = await createHttpOcrAdapter(bridge.runtime).recognize(capabilityPath(bridge, p.image_path), toolContext(bridge, tc, signal));
+            return jsonResult("图片 OCR 完成（输入像素坐标；confidence 缺省为 unknown）", result);
+          } catch (error) { return errorResult("ocr_file", error); }
+        },
+      });
+    }
+
     if (stt) {
       pi.registerTool({
         name: "speech_to_text",
@@ -620,6 +636,8 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         parameters: speechToTextSchema,
         execute: async (tc, p: { audio_path: string; language?: string; prompt?: string }, signal?: AbortSignal) => {
           try {
+            if (!bridge.runtime.config().speechToText.enabled) throw new Error("disabled: speech-to-text");
+            bridge.runtime.assertRecognitionAgentPolicy("speech-to-text");
             const result = await stt.speechToText!({ audioPath: capabilityPath(bridge, p.audio_path), language: p.language, prompt: p.prompt }, toolContext(bridge, tc, signal));
             return jsonResult(`转写完成（${result.provider}）`, result);
           } catch (error) { return errorResult("speech_to_text", error); }

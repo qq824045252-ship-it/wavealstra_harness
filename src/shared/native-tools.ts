@@ -43,6 +43,7 @@ export const NATIVE_CAPABILITY_TOOL_NAMES = [
   "image_generate",
   "video_generate",
   "speech_to_text",
+  "ocr_file",
   "text_to_speech",
   "browser_exec",
   "ui_exec",

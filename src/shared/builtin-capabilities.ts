@@ -9,6 +9,7 @@ import { DEFAULT_MULTI_MODEL_CONSULT_CONFIG, type MultiModelConsultConfig } from
 
 export type BuiltinCapabilityId =
   | "web"
+  | "ocr"
   | "vision"
   | "image-generation"
   | "video-generation"
@@ -61,9 +62,21 @@ export interface BuiltinMediaConfig {
   model?: string;
 }
 
+/** Endpoint is the complete request URL. No secrets in this DTO. */
+export interface RecognitionServiceConfig {
+  adapter: "http-asr" | "http-ocr";
+  endpoint: string;
+  model: string;
+  credentialRef?: string;
+  location: "local" | "network" | "cloud";
+  dataPolicy: "allow-cloud" | "local-only";
+  timeoutMs: number;
+}
+
 export interface BuiltinSpeechToTextConfig {
   enabled: boolean;
   provider?: string;
+  serviceId?: string;
 }
 
 export interface BuiltinTextToSpeechConfig {
@@ -88,6 +101,8 @@ export interface BuiltinSubagentConfig {
 
 export interface BuiltinCapabilitiesConfigDto {
   schemaVersion: 1;
+  services?: Record<string, RecognitionServiceConfig>;
+  ocr?: { enabled: boolean; serviceId?: string };
   web: BuiltinWebConfig;
   vision: BuiltinVisionConfig;
   imageGeneration: BuiltinMediaConfig;
@@ -164,6 +179,7 @@ export const DEFAULT_BUILTIN_CAPABILITIES_CONFIG: BuiltinCapabilitiesConfigDto =
 export const BUILTIN_CAPABILITY_TOOLS: Record<BuiltinCapabilityId, string[]> = {
   web: ["web_search", "fetch_content", "source_check", "get_search_content"],
   vision: ["describe_image"],
+  ocr: ["ocr_file"],
   "image-generation": ["image_generate"],
   "video-generation": ["video_generate"],
   "speech-to-text": ["speech_to_text"],

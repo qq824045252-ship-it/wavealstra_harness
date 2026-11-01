@@ -1,3 +1,4 @@
+import { RecognitionServiceEditor } from "./RecognitionServiceEditor";
 import SearchSettings from "./SearchSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import MultiModelConsultSettings from "./MultiModelConsultSettings";
@@ -449,12 +450,21 @@ export default function CapabilitiesTab(): React.JSX.Element {
           <CapabilityRow
             {...rowCommon("speech-to-text", draft.speechToText.enabled)}
             title="语音转文字"
-            description="本地 Whisper medium-int8 / NPU。检查仅核对配置与依赖路径；最近真实转写未在此检查中验证，需用音频试运行。"
+            description="本地 Whisper 或显式选择的 HTTP 短音频服务。检查与真实转写分开；不自动切换服务。"
             tools={["speech_to_text"]}
-            configurationPending={snapshot?.config.speechToText.provider !== draft.speechToText.provider}
-            onToggle={(enabled) => setDraft({ ...draft, speechToText: { ...draft.speechToText, enabled, provider: "local-whisper" } })}
+            configurationPending={JSON.stringify(snapshot?.config.speechToText) !== JSON.stringify(draft.speechToText) || JSON.stringify(snapshot?.config.services) !== JSON.stringify(draft.services)}
+            onToggle={(enabled) => setDraft({ ...draft, speechToText: { ...draft.speechToText, enabled } })}
           >
-            <FixedRuntime enabled={draft.speechToText.enabled} label="本地 Whisper · NPU" />
+            <select value={draft.speechToText.provider ?? "local-whisper"} onChange={e => { const provider = e.target.value; setDraft({ ...draft, speechToText: { ...draft.speechToText, provider, serviceId: provider === "http-asr" ? (draft.speechToText.serviceId ?? "speech") : undefined } }); }}>
+              <option value="local-whisper">本地 Whisper · NPU</option><option value="http-asr">HTTP ASR</option>
+            </select>
+            {draft.speechToText.provider === "http-asr" && <RecognitionServiceEditor adapter="http-asr" value={draft.services?.[draft.speechToText.serviceId ?? "speech"]} onChange={service => setDraft({ ...draft, speechToText: { ...draft.speechToText, serviceId: draft.speechToText.serviceId ?? "speech" }, services: { ...draft.services, [draft.speechToText.serviceId ?? "speech"]: service } })} />}
+          </CapabilityRow>
+
+          <CapabilityRow {...rowCommon("ocr", draft.ocr?.enabled ?? false)} title="图片文字识别" description="仅文件图片；不替代 PDF/Office CLI 或窗口 OCR。" tools={["ocr_file"]}
+            configurationPending={JSON.stringify(snapshot?.config.ocr) !== JSON.stringify(draft.ocr) || JSON.stringify(snapshot?.config.services) !== JSON.stringify(draft.services)}
+            onToggle={enabled => setDraft({ ...draft, ocr: { enabled, serviceId: draft.ocr?.serviceId ?? "ocr" } })}>
+            <RecognitionServiceEditor adapter="http-ocr" value={draft.services?.[draft.ocr?.serviceId ?? "ocr"]} onChange={service => setDraft({ ...draft, ocr: { enabled: draft.ocr?.enabled ?? false, serviceId: draft.ocr?.serviceId ?? "ocr" }, services: { ...draft.services, [draft.ocr?.serviceId ?? "ocr"]: service } })} />
           </CapabilityRow>
 
           <CapabilityRow

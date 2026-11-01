@@ -40,6 +40,8 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
   const defaults = cloneDefaults();
   return {
     schemaVersion: 1,
+    services: value.services ?? {},
+    ocr: value.ocr ?? { enabled: false },
     web: { enabled: value.web?.enabled !== false },
     vision: {
       enabled: value.vision?.enabled !== false,
@@ -56,6 +58,7 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
       model: cleanOptionalText(value.videoGeneration?.model, 300),
     },
     speechToText: {
+      serviceId: cleanOptionalText(value.speechToText?.serviceId, 100),
       enabled: value.speechToText?.enabled !== false,
       provider: cleanOptionalText(value.speechToText?.provider, 100) ?? defaults.speechToText.provider,
     },

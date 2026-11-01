@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { resolveWhisperRuntime } from "../voice/whisperAsr";
+import type { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import type { AgentLoadoutRecommendationDto } from "../../shared/agent-loadout";
 
 export interface SkillReadinessDiagnostic {
@@ -60,7 +60,7 @@ export function diagnoseSessionModel(input: {
 /** Fixed read-only probes in the application's process environment, never an install.
  * Run on explicit Inspector access, not while assembling or executing a model request.
  */
-export function probeSkillDependency(id: string, cwd: string, activeTools: string[]): SkillReadinessDiagnostic["dependency"] {
+export function probeSkillDependency(id: string, cwd: string, activeTools: string[], capabilities?: BuiltinCapabilityRuntime): SkillReadinessDiagnostic["dependency"] {
   const checkedAt = Date.now();
   if (id === "officecli") {
     try {
@@ -70,12 +70,19 @@ export function probeSkillDependency(id: string, cwd: string, activeTools: strin
       return { state: "failed", reason: "目标应用环境 officecli --version 失败；参见已安装 officecli/SKILL.md 的 Install，安装后重启终端/应用；未自动安装", checkedAt };
     }
   }
-  if (id === "meeting-transcribe") {
-    const runtime = resolveWhisperRuntime();
-    return { state: runtime.available ? "unknown" : "failed", reason: runtime.detail + "；技能另需其指定的本机 ASR 服务，尚未试运行", checkedAt };
-  }
-  if (id === "npu-ocr") {
-    return { state: "unknown", reason: "该技能依赖 SKILL.md 中的外部 OCR_NPU_CLI.exe；未配置跨平台受管入口，不能以桌面 tesseract 代替；请核对技能内 CLI 路径与模型", checkedAt };
+  if (id === "meeting-transcribe" || id === "npu-ocr") {
+    const tool = id === "meeting-transcribe" ? "speech_to_text" : "ocr_file";
+    const capability = id === "meeting-transcribe" ? "speech-to-text" : "ocr";
+    if (!activeTools.includes(tool)) return { state: "failed", reason: `当前会话缺少受管工具 ${tool}；推荐不提升权限`, checkedAt };
+    const status = capabilities?.snapshot().capabilities.find(item => item.id === capability);
+    if (!status?.enabled) return { state: "failed", reason: "能力未启用或运行时未装配", checkedAt };
+    try {
+      if (capability === "ocr" || capabilities?.config().speechToText.provider === "http-asr") {
+        capabilities?.recognitionService(capability, capability === "ocr" ? "http-ocr" : "http-asr");
+        capabilities?.assertRecognitionAgentPolicy(capability);
+      }
+      return { state: status.state === "needs-configuration" ? "failed" : "unknown", reason: `${tool}: ${status.detail ?? "配置已绑定；依赖/认证与实际试运行未验证"}`, checkedAt };
+    } catch (error) { return { state: "failed", reason: (error as Error).message, checkedAt }; }
   }
   if (id === "dimagent-debug") {
     const missing = ["read", "ui_exec", "runtime_probe"].filter(tool => !activeTools.includes(tool));
