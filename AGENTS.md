@@ -1,6 +1,6 @@
 # Agent notes
 
-- 多机（Windows/Linux）同步、冲突决策表与 push 前门禁清单见 [docs/git-sync.md](docs/git-sync.md)。
+- 多机（Windows/Linux）同步与 push 前门禁：以本文件 Default release workflow 与 git 状态为准；旧 docs/git-sync.md 已删除。
 - Git workflow: use `main` as the only active local branch and commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. The release workflow below is standing authorization for its scoped commit and push; otherwise push only when explicitly requested.
 - Typecheck: `pnpm -s typecheck`
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
@@ -17,12 +17,12 @@
 
 ## Linux（Omarchy / Wayland）
 
-- 完整开发/验收/打包说明见 [docs/omarchy-linux.md](docs/omarchy-linux.md)。main 已内置 Linux 适配：PNG 托盘（22px）、`--password-store=gnome-libsecret`（Hyprland 下防止 safeStorage 落到 basic_text）、Linux 关窗驻留降级与通知、窗口 PNG 图标。
-- safeStorage 需要在 ready 前注入开关并打印后端：启动日志应出现 `[safeStorage] linux backend=gnome_libsecret available=true` 与 `[Tray] 系统托盘已初始化 (png)`；若后端是 `basic_text`，Slack/MCP 凭据会弱加密，先修密钥环（`docs/omarchy-linux.md` §系统依赖）。
+- Linux 开发/验收要点如下（旧 docs/omarchy-linux.md 已删除）。main 已内置 Linux 适配：PNG 托盘（22px）、`--password-store=gnome-libsecret`（Hyprland 下防止 safeStorage 落到 basic_text）、Linux 关窗驻留降级与通知、窗口 PNG 图标。
+- safeStorage 需要在 ready 前注入开关并打印后端：启动日志应出现 `[safeStorage] linux backend=gnome_libsecret available=true` 与 `[Tray] 系统托盘已初始化 (png)`；若后端是 `basic_text`，Slack/MCP 凭据会弱加密，先修系统 keyring（libsecret / gnome-keyring 等）。
 - Linux 打包：`pnpm -s pack:linux`（electron-builder `--linux --dir`，产物 `release/linux-unpacked/mybuddy`），然后用 `pnpm -s verify:packaged -- --app-dir release/linux-unpacked` 过 payload 门禁（afterPack 现在所有平台都跑）。目前只有 dir 目标，还没有 AppImage/deb；从 Linux 交叉构建 Windows 不受支持（需要 wine + win32 原生重建）。
 - CI：`.github/workflows/verify.yml` 有 `verify-windows` / `verify-linux`（default headless）与 `verify-windows-gui`（每晚 + 手动，不做 continue-on-error）。Linux job 用 xvfb 兜底间接拉起 Electron 的 headless 用例。
-- **平台边界**：Windows/Linux/macOS 差异集中在 `src/main/platform/`（`runtime`/`paths`/`terminal`/`apps`/`fs-security`/`input`、`computer-use` backend、`tray`、`credentials`、`window-shell`/`app`/`lifecycle`、`fonts`、`processes`、`shell-tools`、`browsers`、`glimpse`）。服务层新增代码不要直接写 `process.platform` 分支；新增平台 = 在 platform 下加 provider/backend。矩阵与 Linux backend 路线见 [docs/platform-capabilities.md](docs/platform-capabilities.md)。
-- **Linux Computer Use 走 computer-use-linux（CUL），不要自研 shell 拼装**：`src/main/platform/computer-use/linux/` 通过 stdio MCP 调 `@agent-sh/computer-use-linux` 的原生二进制（`<binary> mcp`），`culProtocol.ts` 负责把 CUL JSON 映射成 `WindowInfo`/`ControlInfo`/`OcrLine`。二进制由 `pnpm install` 的 postinstall 解包，打包时进 `app.asar.unpacked`（`build.files` + `asarUnpack` 都有该包）；`MYBUDDY_CUL_BIN` 可覆盖路径。Wayland 上**没有**后台截图和 press/release 分离事件，后端会显式报错，不要改成假成功。手工验收命令见 [docs/platform-capabilities.md](docs/platform-capabilities.md) §3。
+- **平台边界**：Windows/Linux/macOS 差异集中在 `src/main/platform/`（`runtime`/`paths`/`terminal`/`apps`/`fs-security`/`input`、`computer-use` backend、`tray`、`credentials`、`window-shell`/`app`/`lifecycle`、`fonts`、`processes`、`shell-tools`、`browsers`、`glimpse`）。服务层新增代码不要直接写 `process.platform` 分支；新增平台 = 在 platform 下加 provider/backend。矩阵与 Linux backend 以 `src/main/platform/computer-use/support.ts` 为准。
+- **Linux Computer Use 走 computer-use-linux（CUL），不要自研 shell 拼装**：`src/main/platform/computer-use/linux/` 通过 stdio MCP 调 `@agent-sh/computer-use-linux` 的原生二进制（`<binary> mcp`），`culProtocol.ts` 负责把 CUL JSON 映射成 `WindowInfo`/`ControlInfo`/`OcrLine`。二进制由 `pnpm install` 的 postinstall 解包，打包时进 `app.asar.unpacked`（`build.files` + `asarUnpack` 都有该包）；`MYBUDDY_CUL_BIN` 可覆盖路径。Wayland 上**没有**后台截图和 press/release 分离事件，后端会显式报错，不要改成假成功。手工验收以 `src/main/platform/computer-use/` 与相关 `pnpm -s test:computer-use*` 为准。
 - 停止/重启 dev 实例只对 Electron **主进程**发 SIGTERM（`.tools/mybuddy.sh stop` 已如此）；不要 broad `pkill` 所有 electron 进程——退出期 GPU relaunch 连续失败会触发 Chromium 的 GPU 崩溃保护（SIGILL + core，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。
 
 ## Default release workflow
