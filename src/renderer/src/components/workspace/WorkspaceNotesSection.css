@@ -1,0 +1,13 @@
+.workspace-notes { max-width: 960px; margin: 0 auto; padding: 28px 32px; display: flex; flex-direction: column; gap: 16px; }
+.workspace-notes-heading, .workspace-notes-toolbar, .workspace-notes-footer { display: flex; align-items: center; gap: 12px; }
+.workspace-notes-heading, .workspace-notes-footer { justify-content: space-between; }
+.workspace-notes h2 { margin: 0 0 8px; font-size: 18px; }
+.workspace-notes p { margin: 0; color: var(--text-secondary, #a0a0a0); line-height: 1.7; font-size: 13px; }
+.workspace-notes-toolbar span, .workspace-notes-footer { color: var(--text-secondary, #a0a0a0); font-size: 12px; }
+.workspace-notes textarea { width: 100%; min-height: 360px; resize: vertical; box-sizing: border-box; padding: 20px; border: 1px solid var(--border, #363636); border-radius: 10px; background: var(--bg-secondary, #1c1c1e); color: var(--text-primary, #eee); font: 14px/1.8 ui-monospace, Consolas, monospace; }
+.workspace-notes textarea:focus { outline: 2px solid var(--accent, #5684ef); outline-offset: 1px; }
+.workspace-notes-preview { min-height: 360px; padding: 20px; border: 1px solid var(--border, #363636); border-radius: 10px; overflow-wrap: anywhere; }
+.ws-binding-location { padding: 14px 0; margin-bottom: 12px; border-bottom: 1px solid var(--border, #363636); }
+.ws-binding-location p, .ws-binding-location code { display: block; margin: 8px 0; overflow-wrap: anywhere; font-size: 12px; color: var(--text-secondary, #a0a0a0); }
+.ws-binding-create { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0; }
+.ws-binding-create input, .ws-binding-create select { padding: 8px; border: 1px solid var(--border, #363636); border-radius: 6px; background: var(--bg-secondary, #1c1c1e); color: inherit; }

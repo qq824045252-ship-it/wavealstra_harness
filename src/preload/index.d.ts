@@ -770,9 +770,11 @@ export interface PreloadApi {
   };
   htmlEdit: import("../shared/html-edit").HtmlEditApi;
   workspace: {
+    notes: import("../shared/workspace-notes").WorkspaceNotesApi;
     getSharedContextView: (req: WorkspaceSharedContextViewRequest) => Promise<WorkspaceSharedContextView>;
     promoteSharedContextItem: (req: WorkspaceSharedContextPromoteRequest) => Promise<WorkspaceSharedContextPromoteResult>;
     libraryBindings: {
+      createFolder: (req: { workspaceId: string; librarySpaceId: string; name: string }) => Promise<WorkspaceLibraryBindingMutationResult>;
       list: (workspaceId: string) => Promise<WorkspaceLibraryBindingListView>;
       bind: (req: WorkspaceLibraryBindingRequest) => Promise<WorkspaceLibraryBindingMutationResult>;
       unbind: (req: WorkspaceLibraryBindingRequest) => Promise<WorkspaceLibraryBindingMutationResult>;

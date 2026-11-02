@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
 import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
 import type { McpServerConfigDto, McpSaveServerRequest } from "../shared/agent-ipc";
@@ -1335,11 +1336,16 @@ const api = {
   },
 
   workspace: {
+    notes: {
+      read: (workspaceId: string) => ipcRenderer.invoke(WorkspaceNotesIpc.read, workspaceId),
+      save: (request: WorkspaceNoteSaveRequest) => ipcRenderer.invoke(WorkspaceNotesIpc.save, request),
+    },
     getSharedContextView: (req: WorkspaceSharedContextViewRequest): Promise<WorkspaceSharedContextView> =>
       ipcRenderer.invoke(WorkspaceIpc.getView, req),
     promoteSharedContextItem: (req: WorkspaceSharedContextPromoteRequest): Promise<WorkspaceSharedContextPromoteResult> =>
       ipcRenderer.invoke(WorkspaceIpc.promote, req),
     libraryBindings: {
+      createFolder: (req: { workspaceId: string; librarySpaceId: string; name: string }) => ipcRenderer.invoke(WorkspaceLibraryBindingIpc.createFolder, req),
       list: (workspaceId: string): Promise<WorkspaceLibraryBindingListView> =>
         ipcRenderer.invoke(WorkspaceLibraryBindingIpc.list, workspaceId),
       bind: (req: WorkspaceLibraryBindingRequest): Promise<WorkspaceLibraryBindingMutationResult> =>

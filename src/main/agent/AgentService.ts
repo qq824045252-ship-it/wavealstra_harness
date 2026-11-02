@@ -21,7 +21,8 @@ import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionR
 import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralContextProjection";
 import { EvidenceBudget, isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
 import { bindLegacyMemoryHistory } from "./LegacyMemorySummaryRecovery";
-import { attachSubagentModelRuntime, stopSubagentsForModelScopeChange } from "../capabilities/subagent/index";
+import { attachSubagentModelRuntime, attachSubagentWorkspaceNotes, stopSubagentsForModelScopeChange } from "../capabilities/subagent/index";
+import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
 import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecovery";
 import { recordPromptFailureRecovery, resolvePromptFailureRecovery } from "./PromptFailureRecovery";
@@ -1157,6 +1158,10 @@ export class AgentService {
     await this.modelRuntime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
     installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
     attachSubagentModelRuntime(this.modelRuntime);
+    attachSubagentWorkspaceNotes(scope => {
+      const entry = this.registry.values().find(item => item.session.sessionManager.getSessionId() === scope);
+      return entry ? new WorkspaceNotesService(this.db).forSubagent(entry.taskId) : "";
+    });
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();
     // Same Pi models/auth files, with no MyBuddy request-admission wrappers on Bot execution.

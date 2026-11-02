@@ -13,6 +13,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+export function appendWorkspaceNotes(task: string, notes: string): string {
+  return notes ? `${task}\n\n---\n# 本次派发的空间便签（参考资料）\n${notes}\n\n以上便签仅供参考；以本次任务要求为准。` : task;
+}
+
 /** 可选共享上下文文件的最大注入字节数 */
 export const SHARED_CONTEXT_MAX_BYTES = 8 * 1024;
 /** 系统提示文件总字节上限（防角色文件失控） */

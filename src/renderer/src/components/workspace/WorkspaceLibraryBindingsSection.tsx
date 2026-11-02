@@ -5,6 +5,8 @@ import type {
   WorkspaceLibraryBindingListView,
 } from "../../../../shared/workspace-library-binding";
 import "./WorkspaceMemorySection.css";
+import "./WorkspaceNotesSection.css";
+import { useAppStore } from "@/store/appStore";
 
 interface Props {
   currentSpaceId: string | null;
@@ -48,13 +50,13 @@ function LibraryRow({
           </span>
           {isInherited && <span className="workspace-memory-scope-chip is-inherited">继承 · {sourceName}</span>}
         </div>
-        {item.targetType === "collection" && item.path && (
-          <div className="workspace-memory-scope-note">{item.path}</div>
-        )}
+        <div className="workspace-memory-scope-note">位置：{item.path ?? `资料库 / ${item.name}`}</div>
+        <div className="workspace-memory-scope-note">范围：{item.targetType === "collection" ? "该文件夹及全部子文件夹" : "整个资料库（包括以后新增的内容）"}</div>
         {isInherited && <div className="workspace-memory-scope-note">↳ 不可在此移除，到「{sourceName}」取消绑定</div>}
       </div>
-      {actionLabel && (
         <div className="workspace-memory-row-side">
+          <button type="button" className="ws-binding-action" onClick={() => useAppStore.getState().requestLibraryNav({ view: "space", spaceId: item.librarySpaceId, folderId: item.collectionId ?? null })}>打开位置</button>
+          {actionLabel && (
           <button
             type="button"
             className="ws-binding-action"
@@ -63,8 +65,8 @@ function LibraryRow({
           >
             {busy ? "处理中…" : actionLabel}
           </button>
+          )}
         </div>
-      )}
     </article>
   );
 }
@@ -105,6 +107,9 @@ export default function WorkspaceLibraryBindingsSection({
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [folderName, setFolderName] = useState("");
+  const [destination, setDestination] = useState("");
+  const space = useAppStore(state => state.spaces.find(s => s.id === currentSpaceId));
   const fetchSeqRef = useRef(0);
   const mountedRef = useRef(true);
   const noticeTimerRef = useRef<number | null>(null);
@@ -271,7 +276,7 @@ export default function WorkspaceLibraryBindingsSection({
       <div className="workspace-memory-header">
         <div>
           <h2>资料库绑定</h2>
-          <p>{view.workspaceName ?? view.workspaceId} · 可绑定整个资料库或单独文件夹；文件夹作用域包含其子文件夹。</p>
+          <p>{view.workspaceName ?? view.workspaceId} · 选择任务可检索的资料位置。绑定后可按需读取正文，不会把整个库自动塞入上下文。</p>
         </div>
         <div className="workspace-memory-counts">
           <span>当前 {view.direct.length}</span>
@@ -279,13 +284,35 @@ export default function WorkspaceLibraryBindingsSection({
         </div>
       </div>
       {notice && <div className="ws-context-notice">{notice}</div>}
+      <div className="ws-binding-location">
+        <strong>空间本地文件夹</strong><code>{space?.path ?? "尚未连接本地文件夹"}</code>
+        <button className="ws-binding-action" onClick={() => { if (currentSpaceId) void useAppStore.getState().relocateSpace(currentSpaceId).catch(e => flashNotice(String(e))); }}>选择 / 更换本地文件夹</button>
+        <p>本地文件从空间「文件」页访问。下方绑定的是资料库内的文档位置；本地文件不会因绑定而自动导入。</p>
+        {view.libraryStoragePath && <code>资料库存储：{view.libraryStoragePath}</code>}
+      </div>
+      <form className="ws-binding-create" onSubmit={async e => {
+        e.preventDefault(); if (busyId || !folderName.trim() || !currentSpaceId) return;
+        const librarySpaceId = destination || view.destinations?.[0]?.id;
+        if (!librarySpaceId) return;
+        setBusyId("create");
+        try {
+          const result = await window.api!.workspace.libraryBindings.createFolder({ workspaceId: currentSpaceId, librarySpaceId, name: folderName.trim() });
+          if (!result.ok) throw new Error(result.error);
+          setFolderName(""); flashNotice("已创建资料库文件夹并绑定"); await fetchView();
+        } catch (e) { flashNotice(String(e)); } finally { setBusyId(null); }
+      }}>
+        <select aria-label="新文件夹所属资料库" value={destination || view.destinations?.[0]?.id || ""} onChange={e => setDestination(e.target.value)}>{view.destinations?.map(ls => <option key={ls.id} value={ls.id}>{ls.name}</option>)}</select>
+        <input aria-label="资料库文件夹名称" maxLength={100} value={folderName} onChange={e => setFolderName(e.target.value)} placeholder="例如：部署说明" />
+        <button type="submit" className="btn" disabled={!!busyId || !folderName.trim() || !view.destinations?.length}>新建文件夹并绑定</button>
+        <button type="button" className="btn btn--ghost" onClick={() => useAppStore.getState().requestLibraryNav({ view: "space", spaceId: destination || view.destinations?.[0]?.id || "personal", folderId: null })}>管理资料库</button>
+      </form>
       <div className="ws-context-groups">
         <LibraryGroup title="当前空间" count={view.direct.length} emptyHint="当前空间未直接绑定资料库">
           {view.direct.map((item) => (
             <LibraryRow
               key={bindingKey(item)}
               item={item}
-              actionLabel="移除"
+              actionLabel="取消绑定"
               busy={busyId === `unbind:${bindingKey(item)}`}
               onAction={() => void handleUnbind(item)}
             />
@@ -304,12 +331,12 @@ export default function WorkspaceLibraryBindingsSection({
           ))}
         </LibraryGroup>
 
-        <LibraryGroup title="可添加" count={addable.length} emptyHint="没有可添加的资料库或文件夹">
+        <LibraryGroup title="选择绑定位置" count={addable.length} emptyHint="所有现有位置已覆盖；也可新建文件夹后绑定">
           {addable.map((item) => (
             <LibraryRow
               key={bindingKey(item)}
               item={item}
-              actionLabel="添加"
+              actionLabel={item.targetType === "collection" ? "绑定此文件夹" : "绑定整个资料库"}
               busy={busyId === `bind:${bindingKey(item)}`}
               onAction={() => void handleBind(item)}
             />

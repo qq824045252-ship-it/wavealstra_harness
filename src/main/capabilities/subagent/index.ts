@@ -39,6 +39,7 @@ import { computeChildTools, type ToolPolicyResult } from "./policy.ts";
 import { canonicalSubagentModelReference, resolveSubagentModelThinking } from "./config.ts";
 import {
   buildContextBlock,
+  appendWorkspaceNotes,
   buildSystemPromptContent,
   readOptionalSharedContext,
   inspectSharedContext,
@@ -347,6 +348,8 @@ function loadHostDefaults(cwd = process.cwd()): { defaultModelId?: string; defau
 
 let hostModelRuntime: ModelRuntime | null = null;
 export function attachSubagentModelRuntime(runtime: ModelRuntime): void { hostModelRuntime = runtime; }
+let workspaceNotesForScope: ((scope: string) => string) | undefined;
+export function attachSubagentWorkspaceNotes(resolve: (scope: string) => string): void { workspaceNotesForScope = resolve; }
 export function stopSubagentsForModelScopeChange(): void { runtimeInstance?.shutdownAll(); }
 
 async function validateSubagentModel(modelId: string | undefined, cwd: string): Promise<void> {
@@ -878,7 +881,7 @@ async function runDelegatedStep(params: {
   }
 
   const outcome = await runtime.runPrompt(record.subagentId, {
-    task,
+    task: appendWorkspaceNotes(task, workspaceNotesForScope?.(taskScope) ?? ""),
     timeoutMs,
     signal,
     systemPromptFile: promptFile ?? undefined,

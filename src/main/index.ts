@@ -1,5 +1,7 @@
 import "./platform/credentials";
 import "./agent-environment";
+import { WorkspaceNotesIpc } from "../shared/workspace-notes";
+import { WorkspaceNotesService } from "./workspace/WorkspaceNotesService";
 import { ExecutionFailureRepository } from "./agent/ExecutionFailureRepository";
 import { HtmlEditService } from "./html-edit/HtmlEditService";
 import { HtmlEditIpc, type HtmlEditStart } from "../shared/html-edit";
@@ -214,6 +216,7 @@ import {
   getGadgetsDir,
   getMyBuddyBinDir,
   getMyBuddyDir,
+  getLibraryDir,
   getUploadsDir,
   migrateLegacyTaskWorkspacesDirs,
 } from "./paths";
@@ -1535,6 +1538,10 @@ function registerIpc(): void {
 
   /* ---------------- Workspace ↔ Library binding（Space / Collection） ---------------- */
 
+  const workspaceNotes = new WorkspaceNotesService(db);
+  ipcMain.handle(WorkspaceNotesIpc.read, (_e, workspaceId: string) => workspaceNotes.read(workspaceId));
+  ipcMain.handle(WorkspaceNotesIpc.save, (_e, request: import("../shared/workspace-notes").WorkspaceNoteSaveRequest) => workspaceNotes.save(request));
+
   const workspaceLibraryBindingList = (workspaceId: string) => {
     const ws = workspaceId?.trim();
     const spaces = db.listSpaces();
@@ -1568,6 +1575,7 @@ function registerIpc(): void {
         targetType: "space" as const,
         librarySpaceId,
         name: ls?.name ?? librarySpaceId,
+        path: `资料库 / ${ls?.name ?? librarySpaceId}`,
         kind: ls?.kind ?? ("team" as const),
         projectId: ls?.projectId,
       };
@@ -1580,7 +1588,7 @@ function registerIpc(): void {
         librarySpaceId,
         collectionId,
         name: collection?.name ?? collectionId,
-        path: collectionPath(collectionId),
+        path: `资料库 / ${collectionPath(collectionId)}`,
         kind: ls?.kind ?? ("team" as const),
         projectId: ls?.projectId,
       };
@@ -1643,6 +1651,8 @@ function registerIpc(): void {
     return {
       workspaceId: ws ?? "",
       workspaceName: current ? current.name : null,
+      destinations: librarySpaces.map(ls => ({ id: ls.id, name: ls.name })),
+      libraryStoragePath: getLibraryDir(),
       direct,
       inherited,
       addable,
@@ -1651,6 +1661,15 @@ function registerIpc(): void {
 
   ipcMain.handle(WorkspaceLibraryBindingIpc.list, (_e, workspaceId: string) =>
     workspaceLibraryBindingList(workspaceId),
+  );
+
+  ipcMain.handle(WorkspaceLibraryBindingIpc.createFolder, (_e, req: { workspaceId: string; librarySpaceId: string; name: string }) =>
+    libraryResult(() => db.connection.transaction(() => {
+      if (!db.getSpace(req.workspaceId)) throw new Error("工作空间不存在");
+      if (!req.name?.trim()) throw new Error("文件夹名称不能为空");
+      const folder = libraryService.createCollection({ spaceId: req.librarySpaceId, name: req.name.trim() });
+      workspaceLibraryBindingService.bindCollection(req.workspaceId, req.librarySpaceId, folder.id);
+    })()),
   );
 
   ipcMain.handle(WorkspaceLibraryBindingIpc.bind, (_e, req: WorkspaceLibraryBindingRequest) =>

@@ -14,6 +14,7 @@ export const WorkspaceLibraryBindingIpc = {
   list: "workspace:libraryBindings:list",
   bind: "workspace:libraryBindings:bind",
   unbind: "workspace:libraryBindings:unbind",
+  createFolder: "workspace:libraryBindings:createFolder",
 } as const;
 
 export type WorkspaceLibraryBindingTargetType = "space" | "collection";
@@ -48,6 +49,8 @@ export interface WorkspaceLibraryBindingListView {
   direct: WorkspaceLibraryBindingItem[];
   inherited: WorkspaceLibraryBindingInheritedItem[];
   addable: WorkspaceLibraryBindingItem[];
+  libraryStoragePath?: string;
+  destinations?: Array<{ id: string; name: string }>;
 }
 
 /** collectionId 缺省 = 绑定整个 Library Space；存在 = 只绑定该文件夹及其子树。 */

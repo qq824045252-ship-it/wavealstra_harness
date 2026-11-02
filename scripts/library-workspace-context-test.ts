@@ -9,6 +9,7 @@ import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
 import { LibraryWorkspaceContextService } from "../src/main/agent/LibraryWorkspaceContextService";
+import { WorkspaceNotesService } from "../src/main/workspace/WorkspaceNotesService";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
 
@@ -48,6 +49,8 @@ function insertProject(id: string, name: string): void {
 }
 
 try {
+  db.createSpace({ id: "workspace-context", name: "Context" });
+  new WorkspaceNotesService(db).save({ workspaceId: "workspace-context", content: "# Manual workspace note", expectedRevision: 0 });
   insertProject("proj-a", "Project A");
   insertProject("proj-b", "Project B");
   projects.update({ id: "proj-a", goal: "A goal should disappear after rebind", currentStage: "A stage" });
@@ -73,6 +76,7 @@ try {
     welcomeMode: "working",
   });
   library.attachToTask({ itemId: attached.id, taskId: "task-context" });
+  assert(context.projectionSources("task-context").some(source => source.id === "workspace-note:workspace-context" && source.text.includes("Manual workspace note")), "saved notes enter actual task evidence projection");
 
   const first = context.resolveTask("task-context", true);
   assert.equal(context.library(), library, "extensions and context assembly must share one LibraryService truth source");

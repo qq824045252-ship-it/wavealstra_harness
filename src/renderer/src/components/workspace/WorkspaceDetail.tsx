@@ -5,6 +5,7 @@ import { useAppStore } from "@/store/appStore";
 import WorkspaceSharedContextSection from "./WorkspaceSharedContextSection";
 import WorkspaceMemorySection from "./WorkspaceMemorySection";
 import WorkspaceLibraryBindingsSection from "./WorkspaceLibraryBindingsSection";
+import WorkspaceNotesSection from "./WorkspaceNotesSection";
 import WorkspaceFilesStandalone from "./WorkspaceFilesStandalone";
 import WorkspaceGadgetsSection from "./WorkspaceGadgetsSection";
 import TerminalView from "@/components/artifact/TerminalView";
@@ -14,8 +15,8 @@ import { IconFolder, IconFolderOpen, IconChevronRight } from "@/components/commo
 import { getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 
-type Tab = "overview" | "memory" | "context" | "library" | "files" | "gadgets" | "terminal";
-const TAB_LABELS: Record<Tab, string> = { overview: "概览", memory: "记忆", context: "上下文", library: "资料库", files: "文件", gadgets: "Gadgets", terminal: "终端" };
+type Tab = "overview" | "notes" | "memory" | "context" | "library" | "files" | "gadgets" | "terminal";
+const TAB_LABELS: Record<Tab, string> = { overview: "概览", notes: "便签", memory: "记忆", context: "上下文", library: "资料库", files: "文件", gadgets: "Gadgets", terminal: "终端" };
 
 function relativeTimeLabel(ts: number): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
@@ -136,8 +137,9 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
         <section className="workspace-overview-section workspace-overview-section--summaries"><button className="workspace-overview-summary-row" onClick={() => setTab("memory")}><span><strong>记忆</strong><small>{memoryCounts.direct} 当前 · {memoryCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("context")}><span><strong>上下文</strong><small>{contextCounts.local} 当前 · {contextCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("library")}><span><strong>资料库</strong><small>{libraryCounts.direct} 当前 · {libraryCounts.inherited} 继承</small></span><b>打开 →</b></button></section>
       </div>}
       {tab === "memory" && <WorkspaceMemorySection workspaceId={space.id} />}
+      {tab === "notes" && <WorkspaceNotesSection key={space.id} workspaceId={space.id} />}
       {tab === "context" && <WorkspaceSharedContextSection currentSpaceId={space.id} />}
-      {tab === "library" && <WorkspaceLibraryBindingsSection currentSpaceId={space.id} />}
+      {tab === "library" && <WorkspaceLibraryBindingsSection key={space.id} currentSpaceId={space.id} />}
       {tab === "files" && <WorkspaceFilesStandalone spaceId={space.id} />}
       {tab === "gadgets" && <WorkspaceGadgetsSection workspaceId={space.id} />}
       {tab === "terminal" && <TerminalView />}

@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 457,
-  "allRegistrations": 468,
-  "uniqueChannels": 453,
+  "mainRegistrations": 460,
+  "allRegistrations": 471,
+  "uniqueChannels": 456,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -442,10 +442,13 @@
     "workspace:createPath",
     "workspace:getSharedContextView",
     "workspace:libraryBindings:bind",
+    "workspace:libraryBindings:createFolder",
     "workspace:libraryBindings:list",
     "workspace:libraryBindings:unbind",
     "workspace:listFiles",
     "workspace:movePath",
+    "workspace:notes:read",
+    "workspace:notes:save",
     "workspace:openFolder",
     "workspace:pathExists",
     "workspace:pickLocalFile",
@@ -475,7 +478,7 @@
         "channel": "subagent:active",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:140",
-          "src/main/capabilities/subagent/index.ts:655",
+          "src/main/capabilities/subagent/index.ts:658",
           "scripts/subagent-ipc-host-test.ts:86"
         ],
         "foreign": [
@@ -486,7 +489,7 @@
         "channel": "subagent:transcript",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:141",
-          "src/main/capabilities/subagent/index.ts:647"
+          "src/main/capabilities/subagent/index.ts:650"
         ],
         "foreign": []
       },
@@ -494,7 +497,7 @@
         "channel": "subagent:steer",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:144",
-          "src/main/capabilities/subagent/index.ts:649"
+          "src/main/capabilities/subagent/index.ts:652"
         ],
         "foreign": []
       },
@@ -502,7 +505,7 @@
         "channel": "subagent:cancel",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:147",
-          "src/main/capabilities/subagent/index.ts:653"
+          "src/main/capabilities/subagent/index.ts:656"
         ],
         "foreign": []
       }
@@ -511,7 +514,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2208",
+          "src/main/index.ts:2227",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -521,7 +524,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2212",
+          "src/main/index.ts:2231",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -531,7 +534,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2216",
+          "src/main/index.ts:2235",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -541,7 +544,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2227",
+          "src/main/index.ts:2246",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -551,7 +554,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2231",
+          "src/main/index.ts:2250",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -561,7 +564,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2235",
+          "src/main/index.ts:2254",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -571,7 +574,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2239",
+          "src/main/index.ts:2258",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [

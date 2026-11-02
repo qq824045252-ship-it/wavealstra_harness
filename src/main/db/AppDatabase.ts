@@ -1611,6 +1611,13 @@ export class AppDatabase {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_notes (
+        workspace_id TEXT PRIMARY KEY REFERENCES spaces(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
