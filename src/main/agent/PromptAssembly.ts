@@ -27,6 +27,7 @@ import { applyPromptContextBudget } from "./PromptContextBudget";
 import { isEvidenceSegment } from "./EvidenceBudget";
 import {
   MUTATING_BUILTIN_TOOLS,
+  MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES,
   NATIVE_CAPABILITY_TOOL_NAMES,
   READONLY_EXTRA_ACTIVE,
   WEB_ACCESS_TOOL_NAMES,
@@ -620,7 +621,10 @@ export function activateResolvedSessionTools(
   for (const name of [...(selection.extraActiveTools ?? []), ...piCodeModeExtraActiveTools(welcomeMode)]) {
     if (registered.has(name) && !exclude.has(name.toLowerCase())) next.add(name);
   }
-  for (const name of NATIVE_CAPABILITY_TOOL_NAMES) {
+  // Pi restores the persisted loadout on resume, which can predate installed
+  // product tools. Reconcile our registered defaults without resetting Pi/MCP
+  // selections or bypassing the current policy's exclusions.
+  for (const name of [...NATIVE_CAPABILITY_TOOL_NAMES, ...MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES]) {
     if (registered.has(name) && !exclude.has(name.toLowerCase())) next.add(name);
   }
   session.setActiveToolsByName([...next]);

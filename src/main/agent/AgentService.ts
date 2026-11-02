@@ -4351,6 +4351,12 @@ export class AgentService {
         return { queued: false };
       }
       await entry.session.prompt(promptText, options);
+      // The provider can retain a transport error when abort closes its SSE
+      // iterator. The accepted user cancellation owns this turn's outcome.
+      if (run.cancelled) {
+        this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
+        return { queued: false };
+      }
       if (!preflightObserved && !wasStreaming) {
         options.preflightResult?.("started");
       }
@@ -4396,6 +4402,10 @@ export class AgentService {
       });
       return { queued: false };
     } catch (err) {
+      if (run.cancelled) {
+        this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
+        return { queued: false };
+      }
       recordPromptFailureRecovery({ failures: this.executionFailures, taskId: req.taskId, executionId: conversationExecutionId,
         assistantMessageId: req.assistantMessageId, modelKey: this.sessionModelKey(entry.session) ?? intendedModelId, error: err });
       this.pendingMemoryTurns.delete(req.assistantMessageId);
@@ -4910,11 +4920,11 @@ export class AgentService {
     }
   }
 
-  private settleCancelledAssistantTurn(taskId: string, messageId: string): void {
+  private settleCancelledAssistantTurn(taskId: string, messageId: string, announceCancellation = true): void {
     this.pendingMemoryTurns.delete(messageId);
     this.loadoutObservations.markOutcome(taskId, messageId, "aborted");
     this.registry.get(taskId)?.pendingSkillCommands?.delete(messageId);
-    this.emitPatch({
+    if (announceCancellation) this.emitPatch({
       type: "text_delta",
       taskId,
       messageId,

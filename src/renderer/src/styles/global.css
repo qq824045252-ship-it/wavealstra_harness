@@ -19742,12 +19742,6 @@ html[data-theme="dark"] .input-expert-chip {
 .gadget-inline-error { margin-top: 6px; color: #bd3c3c; font-size: 11px; }
 .gadget-inherited-group { margin-top: 24px; }
 .gadget-inherited-group h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary, #777); }
-.gadget-view-overlay { position: fixed; inset: 32px 0 0; z-index: 1300; display: grid; place-items: center; padding: clamp(12px, 2vw, 28px); background: rgba(20,20,18,.48); }
-.gadget-view { width: min(1440px, 100%); height: min(920px, 100%); min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid color-mix(in srgb, #fff 42%, transparent); border-radius: 14px; background: #fff; box-shadow: 0 24px 70px rgba(0,0,0,.28); }
-.gadget-view header { display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 9px 14px 9px 18px; border-bottom: 1px solid #e2e2dd; }
-.gadget-view header strong { min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gadget-view header span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #888; font-size: 11px; }
-.gadget-view iframe { flex: 1; width: 100%; border: 0; background: white; }
 .blueprint-list { display: grid; gap: 10px; }
 .blueprint-card { align-items: flex-start; flex-wrap: wrap; }
 .blueprint-card-main strong { margin-right: 9px; }
@@ -19776,21 +19770,12 @@ html[data-theme="dark"] .input-expert-chip {
 .task-gadgets-panel-nav { flex: 1; min-height: 0; }
 .task-gadgets-panel-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
 .task-gadgets-panel-empty { padding: 22px 14px; color: var(--fg-muted); font-size: 12px; }
+.task-gadgets-panel-scroll .gadget-section-head h2 { font-size: 15px; }
 .task-gadgets-panel-scroll .gadget-section-head { flex-direction: column; gap: 12px; }
 .task-gadgets-panel-scroll .gadget-section-tools { width: 100%; }
 .task-gadgets-panel-scroll .gadget-card { align-items: stretch; flex-direction: column; gap: 10px; }
 .task-gadgets-panel-scroll .gadget-card-actions { justify-content: flex-start; }
 .task-gadgets-panel-scroll .gadget-action-menu-popover { right: auto; left: 0; }
-.task-gadget-strip { position: relative; z-index: 2; flex: 0 0 auto; max-height: 190px; overflow: auto; padding: 8px 18px; border-bottom: 1px solid var(--border-color, #e6e6e1); background: var(--bg-secondary, #fafaf8); }
-/* Gadget 更多菜单需要越过任务 Gadget 条的 max-height/overflow 边界，避免弹层被截断。 */
-.task-gadget-strip:has(.gadget-action-menu[open]) { overflow: visible; z-index: 40; }
-.task-gadget-strip .gadget-action-menu[open] { z-index: 41; }
-.task-gadget-strip:empty { display: none; }
-.gadget-section--compact .gadget-section-head { align-items: center; margin-bottom: 7px; }
-.gadget-section--compact .gadget-section-head h2 { font-size: 12px; }
-.gadget-section--compact .gadget-section-head .btn { padding: 4px 9px; font-size: 11px; }
-.gadget-section--compact .gadget-card { padding: 8px 10px; }
-.gadget-section--compact .gadget-empty { padding: 7px; text-align: left; font-size: 11px; }
 .artifact-gadget-convert { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border-color, #ddd); font-size: 11px; color: var(--text-secondary, #777); }
 
 @media (max-width: 900px) {
@@ -22803,11 +22788,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   background: color-mix(in srgb, var(--hero-mode) 22%, transparent);
   color: var(--hero-mode);
   border-color: transparent;
-}
-
-.chat-column.task-ambient .task-gadget-strip {
-  background: transparent;
-  border-bottom-color: transparent;
 }
 
 .chat-column.task-ambient > .input-area:not(.hero-input)::before {

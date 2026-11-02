@@ -202,6 +202,30 @@ try {
   assert.equal(auth?.auth.headers?.["User-Agent"], USER_AGENT, "usage attribution depends on this header");
   pass("the gateway key and MyBuddy User-Agent stay Pi's resolved auth");
 
+  // Inspect the actual native Responses wire payload, before fetch. Omitting strict
+  // causes Codex to require optional fields and invent dummy computer_exec actions.
+  const responsesModel = runtime.getModel(MAGPIE_PROVIDER_ID, "vendor/new-responses")!;
+  const tool = { name: "computer_exec", description: "List windows or send input", parameters: {
+    type: "object", properties: { action: { type: "string" }, process_id: { type: "integer", minimum: 1 },
+      actions: { type: "array", minItems: 1, items: { type: "object", properties: { action: { type: "string" } }, required: ["action"] } } }
+  } };
+  for (const method of ["stream", "streamSimple"] as const) {
+    for (const supportsStrictMode of [undefined, false]) {
+      let payload: any;
+      const candidate = { ...responsesModel, compat: { ...responsesModel.compat, supportsStrictMode } };
+      const response = await runtime[method](candidate, { messages: [
+        { role: "system", content: "Fixture", toolsAdded: [tool], timestamp: Date.now() },
+        { role: "user", content: "List windows", timestamp: Date.now() },
+      ] }, { apiKey: GATEWAY_KEY, onPayload: (value: unknown) => { payload = value; throw new Error("PAYLOAD_CAPTURE_ONLY"); } }).result();
+      assert(response.errorMessage?.includes("PAYLOAD_CAPTURE_ONLY"), "capture must stop before network");
+      const sent = payload.tools.find((entry: any) => entry.name === "computer_exec");
+      assert.equal(sent.strict, supportsStrictMode === false ? undefined : false, method + " preserves optional fields with explicit strict:false");
+      assert.deepEqual(sent.parameters, tool.parameters, "the schema is not made strict or rewritten");
+      assert.equal(candidate.compat.supportsStrictMode, supportsStrictMode, "the configured model is not mutated");
+    }
+  }
+  pass("native Responses stream and streamSimple explicitly disable implicit strictness while honoring an opt-out");
+
   // Pi persists the fetched overlay beside models.json, and a restart is a new
   // process that restores from exactly that file. Assert the persisted shape
   // rather than re-reading it in this process: Pi's FileModelsStore keeps an

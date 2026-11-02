@@ -180,7 +180,7 @@ export class BrowserHost {
     this.applyVisibility();
   }
 
-  open(url: string): void {
+  open(url: string, options?: { reload?: boolean }): void {
     if (!this.view) return;
     if (!url) {
       this.close();
@@ -202,7 +202,7 @@ export class BrowserHost {
       });
     } else {
       // 同一路径的本地文件可能已被编辑，重开也必须更新其 JS/CSS。
-      if (/^file:/i.test(target)) this.reload();
+      if (options?.reload || /^file:/i.test(target)) this.reload();
       this.desiredVisible = Boolean(this.lastBounds);
       this.applyVisibility();
     }

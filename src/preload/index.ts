@@ -1040,7 +1040,7 @@ const api = {
   },
   /** 扩展栏浏览器（WebContentsView） */
   browser: {
-    open: (url: string): void => ipcRenderer.send(BrowserIpc.open, url),
+    open: (url: string, options?: { reload?: boolean }): void => ipcRenderer.send(BrowserIpc.open, url, options),
     close: (): void => ipcRenderer.send(BrowserIpc.open, ""),
     navigate: (url: string): void => ipcRenderer.send(BrowserIpc.navigate, url),
     reload: (): void => ipcRenderer.send(BrowserIpc.reload),

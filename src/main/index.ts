@@ -2311,7 +2311,7 @@ function registerIpc(): void {
   });
 
   // 扩展栏浏览器 IPC
-  ipcMain.on(BrowserIpc.open, (_e, url: string) => browserHost.open(url ?? ""));
+  ipcMain.on(BrowserIpc.open, (_e, url: string, options?: { reload?: boolean }) => browserHost.open(url ?? "", options));
   ipcMain.on(BrowserIpc.navigate, (_e, url: string) => browserHost.navigate(url ?? ""));
   ipcMain.on(BrowserIpc.reload, () => browserHost.reload());
   ipcMain.on(BrowserIpc.hardReload, () => browserHost.hardReload());

@@ -7,13 +7,12 @@ import { useAppStore } from "@/store/appStore";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
+import { openGadgetBrowser } from "@/lib/gadgetBrowser";
 
 interface Props {
   scope: GadgetScope;
   includeInherited?: boolean;
-  compact?: boolean;
   title?: string;
-  viewOnly?: boolean;
 }
 
 function scopeKey(scope: GadgetScope): string {
@@ -33,7 +32,7 @@ function gadgetApi(): NonNullable<typeof window.api>["gadget"] {
   return api;
 }
 
-export default function GadgetSection({ scope, includeInherited = false, compact = false, title, viewOnly = false }: Props): React.JSX.Element {
+export default function GadgetSection({ scope, includeInherited = false, title }: Props): React.JSX.Element {
   const spaces = useAppStore((state) => state.spaces);
   const activeTaskId = useAppStore((state) => state.activeTaskId);
   const taskWorkspaceId = useAppStore((state) => scope.type === "task" ? state.tasks.find((task) => task.id === scope.taskId)?.spaceId : undefined);
@@ -42,12 +41,10 @@ export default function GadgetSection({ scope, includeInherited = false, compact
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<GadgetListItem | null>(null);
-  const [openItem, setOpenItem] = useState<GadgetListItem | null>(null);
   const [moveItem, setMoveItem] = useState<{ item: GadgetListItem; initialTarget?: "global" | "workspace" } | null>(null);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [sourceItem, setSourceItem] = useState<GadgetListItem | null>(null);
-  const [viewerRevision, setViewerRevision] = useState(0);
   const [query, setQuery] = useState("");
   const { requestText, textPromptDialog } = useTextPrompt();
   const key = scopeKey(scope);
@@ -66,17 +63,8 @@ export default function GadgetSection({ scope, includeInherited = false, compact
   useEffect(() => {
     const api = window.api?.gadget;
     if (!api) return;
-    return api.onChanged((event) => {
-      void reload();
-      if (event.type === "updated" && event.gadgetId === openItem?.id) setViewerRevision((revision) => revision + 1);
-      if (event.type === "deleted" && event.gadgetId === openItem?.id) setOpenItem(null);
-      // Only the active task's main strip owns Agent open requests, not its duplicate preview panel.
-      if (event.type === "open-requested" && compact && scope.type === "task" && event.taskId === scope.taskId) {
-        void api.get(event.gadgetId).then((item) => { if (item?.runtime.url) setOpenItem(item); })
-          .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-      }
-    });
-  }, [reload, compact, key, openItem?.id]);
+    return api.onChanged(() => { void reload(); });
+  }, [reload]);
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent): void => {
       const target = event.target;
@@ -92,14 +80,6 @@ export default function GadgetSection({ scope, includeInherited = false, compact
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
-  useEffect(() => {
-    if (!openItem) return;
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpenItem(null);
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [openItem]);
 
   const direct = useMemo(() => items.filter((item) => !item.inherited), [items]);
   const inherited = useMemo(() => items.filter((item) => item.inherited), [items]);
@@ -114,8 +94,7 @@ export default function GadgetSection({ scope, includeInherited = false, compact
       const state = await gadgetApi()[action](item.id);
       if (state.status === "error") throw new Error(state.error || "Gadget 启动失败");
       await reload();
-      if (action !== "stop") setOpenItem({ ...item, runtime: state });
-      else if (openItem?.id === item.id) setOpenItem(null);
+      if (action !== "stop" && state.url) openGadgetBrowser(state.url);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -161,7 +140,6 @@ export default function GadgetSection({ scope, includeInherited = false, compact
     try {
       setBusyId(item.id);
       await gadgetApi().delete(item.id);
-      if (openItem?.id === item.id) setOpenItem(null);
       await reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -223,10 +201,10 @@ export default function GadgetSection({ scope, includeInherited = false, compact
         </div>
         <div className="gadget-card-actions">
           <button className="btn btn--primary" disabled={busy} onClick={() => void run(item, "start")}>Open</button>
-          {!viewOnly && !item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => setMoveItem({ item, initialTarget: "workspace" })}>Save to Workspace</button>}
-          {!viewOnly && !item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => void saveToMyGadgets(item)}>Save to My Gadgets</button>}
-          {!viewOnly && !item.inherited && (taskScoped || workspaceScoped) && <button className="btn btn--ghost gadget-danger" disabled={busy} onClick={() => setPendingRemove(item)}>Delete</button>}
-          {!viewOnly && (!item.inherited || scope.type === "task") && (
+          {!item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => setMoveItem({ item, initialTarget: "workspace" })}>Save to Workspace</button>}
+          {!item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => void saveToMyGadgets(item)}>Save to My Gadgets</button>}
+          {!item.inherited && (taskScoped || workspaceScoped) && <button className="btn btn--ghost gadget-danger" disabled={busy} onClick={() => setPendingRemove(item)}>Delete</button>}
+          {(!item.inherited || scope.type === "task") && (
             <details className="gadget-action-menu" open={actionOpen}>
               <summary
                 className="btn btn--ghost"
@@ -256,18 +234,16 @@ export default function GadgetSection({ scope, includeInherited = false, compact
     );
   };
 
-  if (compact && direct.length === 0 && inherited.length === 0 && !error) return <></>;
-
   return (
-    <section className={`gadget-section${compact ? " gadget-section--compact" : ""}`}>
+    <section className="gadget-section">
       <div className="gadget-section-head">
         <div>
-          <h2>{compact ? `Gadgets ${items.length}` : title ?? (scope.type === "global" ? "My Gadgets" : "Gadgets")}</h2>
-          {!compact && <p>{viewOnly ? "快速查看当前任务的 Gadget；管理操作保留在对话顶部。" : scope.type === "global" ? "可在 MyBuddy 各处重复使用的个人工具。" : scope.type === "workspace" ? "为这个工作空间持续提供帮助的工具。" : "当前任务创建和使用的临时工具；可随时保存到工作空间或 My Gadgets。"}</p>}
+          <h2>{title ?? (scope.type === "global" ? "My Gadgets" : "Gadgets")}</h2>
+          <p>{scope.type === "global" ? "可在 MyBuddy 各处重复使用的个人工具。" : scope.type === "workspace" ? "为这个工作空间持续提供帮助的工具。" : "管理当前任务、工作空间与个人工具；打开后可在侧面浏览器中使用。"}</p>
         </div>
         <div className="gadget-section-tools">
-          {scope.type === "global" && !compact && <input className="gadget-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Gadget" aria-label="搜索 Gadget" />}
-          {!compact && !viewOnly && <button className="btn btn--primary" onClick={() => { setError(null); setCreateOpen(true); }}>New Gadget</button>}
+          {scope.type === "global" && <input className="gadget-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Gadget" aria-label="搜索 Gadget" />}
+          <button className="btn btn--primary" onClick={() => { setError(null); setCreateOpen(true); }}>New Gadget</button>
         </div>
       </div>
       {error && <div className="gadget-error" role="alert">{error}<button type="button" onClick={() => setError(null)}>×</button></div>}
@@ -283,21 +259,6 @@ export default function GadgetSection({ scope, includeInherited = false, compact
           <h3>{scope.type === "task" ? "工作空间与个人工具" : "Inherited"}</h3>
           <div className="gadget-grid">{inherited.map(renderCard)}</div>
         </div>
-      )}
-      {openItem?.runtime.url && createPortal(
-        <div
-          className="gadget-view-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label={openItem.name}
-          onPointerDown={(event) => { if (event.target === event.currentTarget) setOpenItem(null); }}
-        >
-          <div className="gadget-view">
-            <header><strong title={openItem.name}>{openItem.name}</strong><span>{statusLabel(openItem.runtime)}</span><button className="btn btn--ghost" onClick={() => setOpenItem(null)}>关闭</button></header>
-            <iframe key={`${openItem.id}:${viewerRevision}`} title={openItem.name} src={openItem.runtime.url} sandbox="allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox" />
-          </div>
-        </div>,
-        document.body,
       )}
       {sourceItem && createPortal(<GadgetSourceDialog gadget={sourceItem} onClose={() => setSourceItem(null)} />, document.body)}
       {moveItem && (
@@ -319,7 +280,7 @@ export default function GadgetSection({ scope, includeInherited = false, compact
               setError(item.runtime.error || "Gadget 启动失败");
               return;
             }
-            if (item.runtime.url) setOpenItem(item);
+            if (item.runtime.url) openGadgetBrowser(item.runtime.url);
           }}
         />
       )}

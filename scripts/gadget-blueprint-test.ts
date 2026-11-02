@@ -588,18 +588,13 @@ async function main(): Promise<void> {
     const gadgetRenderer = readFileSync(join(process.cwd(), "src/renderer/src/components/gadget/GadgetSection.tsx"), "utf8");
     const captureRenderer = readFileSync(join(process.cwd(), "src/renderer/src/components/blueprint/BlueprintCaptureDialog.tsx"), "utf8");
     const workspaceDetail = readFileSync(join(process.cwd(), "src/renderer/src/components/workspace/WorkspaceDetail.tsx"), "utf8");
-    const chatView = readFileSync(join(process.cwd(), "src/renderer/src/components/chat/ChatView.tsx"), "utf8");
     const artifactPanel = readFileSync(join(process.cwd(), "src/renderer/src/components/artifact/ArtifactPanel.tsx"), "utf8");
     const extensionModes = readFileSync(join(process.cwd(), "src/renderer/src/components/artifact/extensionModes.ts"), "utf8");
     assert.equal(/child_process|\bspawn\s*\(/.test(gadgetRenderer), false, "renderer must not spawn Gadget runtime");
-    assert.equal(gadgetRenderer.includes("createPortal") && gadgetRenderer.includes("document.body"), true, "Gadget viewer must escape nested stacking contexts");
     assert.equal(captureRenderer.includes("previewCapture") && captureRenderer.includes("selectedFiles"), true, "capture UI must preview definition and expose explicit file selection");
     assert.equal(workspaceDetail.includes('"gadgets"') && workspaceDetail.includes("WorkspaceGadgetsSection"), true, "Workspace Detail must expose Gadgets");
     assert.equal(artifactPanel.includes('panelMode === "gadgets"') && artifactPanel.includes("TaskGadgetsView"), true, "right panel must expose Task Gadgets");
     assert.equal(extensionModes.includes('"gadgets"') && extensionModes.includes('gadgets: "Gadgets"'), true, "right-panel mode menu must list Gadgets");
-    assert.equal(chatView.includes("task-gadget-strip") && chatView.includes("Task Gadgets"), true, "Task view must retain its full-action Gadget strip");
-    const taskGadgetsView = readFileSync(join(process.cwd(), "src/renderer/src/components/artifact/TaskGadgetsView.tsx"), "utf8");
-    assert.equal(taskGadgetsView.includes("viewOnly"), true, "right-panel Gadgets must remain a quick-view surface");
     await service.disposeAll();
     console.log("gadget-blueprint-test: ok");
   } finally {

@@ -12,6 +12,8 @@ import {
 import { SessionExtensionAssembler } from "../src/main/agent/SessionExtensionAssembler";
 import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
+import { activateResolvedSessionTools } from "../src/main/agent/PromptAssembly";
+import { createGadgetAgentExtension } from "../src/main/gadget/gadget-agent-extension";
 
 // Only the provider and unrelated product services are controlled fixtures. The production
 // assembler, installed Pi session, final tool registry, native tools and disk/shell are real.
@@ -25,10 +27,12 @@ const model: Model<any> = { id: "native-core-fixture", provider: "fixture", api:
   contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 type Desired = { name: string; arguments: Record<string, unknown>; id: string; requests: number };
 let desired: Desired | undefined;
+let declaredTools: string[] = [];
 const runtime = {
   hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "local-fixture-only" } }),
   getModel: () => model, getModels: () => [model], getAvailable: () => [model],
-  streamSimple: () => {
+  streamSimple: (_model: unknown, context: any) => {
+    declaredTools = getCurrentTools(context.messages).map(tool => tool.name);
     assert(desired, "a concrete fixture request must be set");
     assert(++desired.requests <= 2, "Pi must settle without a host-injected extra turn");
     const content: AssistantMessage["content"] = desired.requests === 1
@@ -103,6 +107,39 @@ let native: AgentSession | undefined;
 let production: AgentSession | undefined;
 try {
   native = await makeSession([]); production = await makeSession(factories);
+  await test("resumed task declares newly registered product tools and executes gadget_list without losing native selection", async () => {
+    let lists = 0;
+    const extension = createGadgetAgentExtension({ taskId: "resumed-gadgets", getPermissionMode: () => "auto",
+      service: { list: () => { lists++; return []; } } } as any);
+    const manager = SessionManager.create(cwd, join(root, "gadget-sessions"));
+    manager.appendMessage({ role: "system", content: "Previously saved task tool selection", timestamp: Date.now(),
+      toolsAdded: [{ name: "gadget_create", description: "Create a Gadget", parameters: { type: "object", properties: {} } }]
+    });
+    manager.appendMessage({ role: "user", content: "Find the existing workspace Gadget", timestamp: Date.now() });
+    manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Previously only creation was available." }],
+      api: model.api, provider: model.provider, model: model.id, stopReason: "stop", timestamp: Date.now(),
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+    const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+    const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager: settings,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [extension] });
+    await loader.reload();
+    const { session } = await createAgentSession({ cwd, agentDir: cwd, model, modelRuntime: runtime,
+      settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.open(manager.getSessionFile()!) });
+    try {
+      await session.bindExtensions({ mode: "rpc" });
+      assert(session.getAllTools().some(tool => tool.name === "gadget_list"));
+      assert(!session.getActiveToolNames().includes("gadget_list"), "current Pi restores the persisted subset before host reconciliation");
+      activateResolvedSessionTools(session, { excludeTools: ["gadget_update"] }, "working");
+      const active = session.getActiveToolNames();
+      for (const name of ["gadget_list", "gadget_read", "gadget_open"]) assert(active.includes(name), name + " must be active after resume");
+      assert(!active.includes("gadget_update"), "explicit exclusions still win");
+      assert(!active.includes("bash"), "do not reset the user's native tool selection to defaults");
+      const result = await invoke(session, "gadget_list", {}, "resumed-list");
+      assert(!result.isError); assert.equal(lists, 1);
+      assert(declaredTools.includes("gadget_list"), "the actual provider request must declare the tool, not only register it");
+      return { active, declared: declaredTools, lists };
+    } finally { session.dispose(); }
+  });
   await test("restored session keeps native persisted active tools over settings.defaultTools (Pi 1.3.0 semantics)", async () => {
     const sessionDir = join(root, "restore-sessions");
     const manager = SessionManager.create(cwd, sessionDir);

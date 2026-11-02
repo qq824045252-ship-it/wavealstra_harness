@@ -624,7 +624,7 @@ export interface PreloadApi {
   };
   /** 扩展栏浏览器 */
   browser: {
-    open: (url: string) => void;
+    open: (url: string, options?: { reload?: boolean }) => void;
     close: () => void;
     navigate: (url: string) => void;
     reload: () => void;

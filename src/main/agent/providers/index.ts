@@ -4,7 +4,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { commandCodeProvider } from "./command-code";
-import { magpieProvider, type MagpieGatewayConfig } from "./magpie";
+import { magpieProvider, magpieResponsesModel, type MagpieGatewayConfig } from "./magpie";
 
 export interface MyBuddyProviderOptions {
   /**
@@ -17,6 +17,10 @@ export interface MyBuddyProviderOptions {
 }
 
 export function registerMyBuddyProviders(runtime: ModelRuntime, options: MyBuddyProviderOptions = {}): void {
+  const stream = runtime.stream.bind(runtime);
+  const streamSimple = runtime.streamSimple.bind(runtime);
+  runtime.stream = (model, context, request) => stream(magpieResponsesModel(model), context, request);
+  runtime.streamSimple = (model, context, request) => streamSimple(magpieResponsesModel(model), context, request);
   runtime.registerNativeProvider(commandCodeProvider({ createProvider, envApiKeyAuth }, {
     "anthropic-messages": anthropicMessagesApi(),
     "openai-completions": openAICompletionsApi(),

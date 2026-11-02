@@ -13,7 +13,6 @@ import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
-import GadgetSection from "@/components/gadget/GadgetSection";
 import ChatProjectCrumb from "./ChatProjectCrumb";
 import WorkspaceCrumb from "./WorkspaceCrumb";
 import RuntimeStatusChips from "./RuntimeStatusChips";
@@ -835,16 +834,13 @@ export default function ChatView(): React.JSX.Element {
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
   const boundProjectId = task?.projectId ?? draftProjectId;
-  const taskGadgets = task ? (
-    <div className="task-gadget-strip">
-      <GadgetSection key={task.id} scope={{ type: "task", taskId: task.id }} includeInherited compact title="Task Gadgets" />
-    </div>
-  ) : null;
+  const sidePanelButton = <button className={`icon-btn ${panelOpen ? "toggled" : ""}`} title={panelOpen ? "关闭侧栏" : "打开概览"}
+    onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
 
   // Bot tasks are materialized on submission. Their first durable snapshot may
   // arrive after runtime startup; an empty projection is already a conversation.
   if (!task || (task.welcomeMode !== "bot" && task.messages.length === 0 && !task.sessionFile)) {
-    const showHeroHeader = Boolean(sidebarCollapsed || boundProjectId || draftSpaceId);
+    const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
         {showHeroHeader && (
@@ -853,9 +849,9 @@ export default function ChatView(): React.JSX.Element {
             {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
             {draftSpaceId ? <WorkspaceCrumb spaceId={draftSpaceId} /> : null}
             <div className="chat-header-sub" />
+            {task && sidePanelButton}
           </div>
         )}
-        {taskGadgets}
         <HomeHero />
       </>
     );
@@ -892,8 +888,8 @@ export default function ChatView(): React.JSX.Element {
           )}
           <RuntimeStatusChips modePresetId={task.modePresetId} />
           <div className="input-spacer" />
+          {sidePanelButton}
         </div>
-        {taskGadgets}
         <div className="chat-scroll">
           {task.botPendingSubmission && <div className="bot-submission-preview">
             <div className="bot-submission-input">{task.botPendingSubmission.text}
@@ -1020,18 +1016,9 @@ export default function ChatView(): React.JSX.Element {
             <TaskWriteGrantsMenu taskId={task.id} onClose={() => setTaskMenuOpen(false)} />
           )}
         </div>}
-        {task.messages.length > 0 && (
-          <button
-            className={`icon-btn ${panelOpen ? "toggled" : ""}`}
-            title={panelOpen ? "关闭侧栏" : "打开概览"}
-            onClick={() => (panelOpen ? closePanel() : openSidePanel())}
-          >
-            <IconPanel size={15} />
-          </button>
-        )}
+        {sidePanelButton}
       </div>
 
-      {taskGadgets}
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>

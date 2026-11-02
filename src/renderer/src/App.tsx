@@ -23,6 +23,7 @@ import MyGadgetsView from "@/components/gadget/MyGadgetsView";
 import { IconPanel } from "@/components/common/icons";
 import { HOME_BROWSER_KEY } from "@/lib/browserLinks";
 import { canvasPanelWidth } from "@/lib/panelWidth";
+import { subscribeGadgetBrowser } from "@/lib/gadgetBrowser";
 
 export default function App(): React.JSX.Element {
   const page = useAppStore((s) => s.page);
@@ -38,6 +39,8 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => subscribeGadgetBrowser(), []);
 
   useEffect(() => {
     const unsub = useAppStore.getState().initRuntime();
@@ -104,11 +107,12 @@ export default function App(): React.JSX.Element {
   const showArtifactPanel =
     panelOpen &&
     (page === "chat"
-      ? // 有消息的任务右栏，或扩展栏浏览器（首页选 Penpot 时无任务也可开），或终端（无消息也可开）
-        Boolean(activeTask && (activeTask.messages.length ?? 0) > 0) ||
+      ? // Empty tasks also need the side tools; home can open browser/terminal without a task.
+        Boolean(activeTask) ||
         panelMode === "browser" ||
+        panelMode === "gadgets" ||
         panelMode === "terminal"
-      : page === "workspace");
+      : page === "workspace" || page === "gadgets");
 
   // 原生 WebContentsView 不在 React DOM 树内，页面切换/右栏卸载时不能只依赖
   // 局部 cleanup；统一在宿主面板消失时关闭产物/浏览器原生视图。
@@ -156,7 +160,10 @@ export default function App(): React.JSX.Element {
         ) : page === "library" ? (
           <LibraryPage />
         ) : page === "gadgets" ? (
-          <MyGadgetsView />
+          <>
+            <div className="content-col"><MyGadgetsView /></div>
+            {showArtifactPanel && <><PanelResizeHandle /><ArtifactPanel /></>}
+          </>
         ) : page === "workspace" ? (
           <>
             <div className="content-col">
