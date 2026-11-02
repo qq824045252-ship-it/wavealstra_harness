@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc">
+<title id="title">临时补充消息的位置导致本轮缓存复用停滞</title><desc id="desc">真实 MyBuddy 大上下文的对照：将请求专用补充消息每次移到尾部，三次续调缓存读取固定23168；将其固定在本轮用户消息后，读取增长到158976、161920、164864。原聊天历史不变，工具只用虚拟结果。</desc>
+<rect width="1120" height="660" fill="#f8fafc"/>
+<g font-family="Segoe UI,Microsoft YaHei,sans-serif" fill="#172033">
+<text x="32" y="42" font-size="25" font-weight="700">已验证：补充消息移动到尾部，破坏本轮请求的完整前缀</text>
+<text x="32" y="75" font-size="16">同一实际历史、账号、缓存键和路由状态；顺序交错；只运行虚拟工具，不改原任务历史。</text>
+<rect x="26" y="98" width="1068" height="210" rx="10" fill="#fff5f2" stroke="#e5a794"/>
+<text x="48" y="129" font-size="20" font-weight="700">原实现：每次把补充证据追加到最新尾部</text>
+<text x="48" y="171" font-size="16">请求 1</text><text x="48" y="226" font-size="16">请求 2</text>
+<rect x="145" y="146" width="300" height="38" rx="5" fill="#d6e7fa"/><text x="161" y="171" font-size="16">已有历史 ＋ 本轮用户消息</text>
+<rect x="452" y="146" width="188" height="38" rx="5" fill="#ffe0a3"/><text x="467" y="171" font-size="16">本轮补充证据 C</text>
+<rect x="145" y="201" width="300" height="38" rx="5" fill="#d6e7fa"/><text x="161" y="226" font-size="16">已有历史 ＋ 本轮用户消息</text>
+<rect x="452" y="201" width="282" height="38" rx="5" fill="#e6def5"/><text x="468" y="226" font-size="16">新增助手消息 ＋ 工具结果</text>
+<rect x="741" y="201" width="188" height="38" rx="5" fill="#ffe0a3"/><text x="756" y="226" font-size="16">本轮补充证据 C</text>
+<path d="M 448 141 V 245" stroke="#b95037" stroke-width="2" stroke-dasharray="5 4"/>
+<text x="48" y="280" font-size="18" fill="#943c25">三次工具续调读取缓存：23,168 → 23,168 → 23,168 tokens</text>
+<rect x="26" y="326" width="1068" height="211" rx="10" fill="#edf9f3" stroke="#89b99b"/>
+<text x="48" y="358" font-size="20" font-weight="700">修复：补充证据固定在本轮用户消息之后</text>
+<text x="48" y="401" font-size="16">请求 1</text><text x="48" y="456" font-size="16">请求 2</text>
+<rect x="145" y="376" width="300" height="38" rx="5" fill="#d6e7fa"/><text x="161" y="401" font-size="16">已有历史 ＋ 本轮用户消息</text>
+<rect x="452" y="376" width="188" height="38" rx="5" fill="#ffe0a3"/><text x="467" y="401" font-size="16">本轮补充证据 C</text>
+<rect x="145" y="431" width="300" height="38" rx="5" fill="#d6e7fa"/><text x="161" y="456" font-size="16">已有历史 ＋ 本轮用户消息</text>
+<rect x="452" y="431" width="188" height="38" rx="5" fill="#ffe0a3"/><text x="467" y="456" font-size="16">本轮补充证据 C</text>
+<rect x="647" y="431" width="282" height="38" rx="5" fill="#e6def5"/><text x="663" y="456" font-size="16">新增助手消息 ＋ 工具结果</text>
+<path d="M 145 421 H 640" stroke="#277449" stroke-width="3"/><text x="668" y="410" font-size="15" fill="#21613e">上次请求完整保留为前缀</text>
+<text x="48" y="509" font-size="18" fill="#21613e">三次工具续调读取缓存：158,976 → 161,920 → 164,864 tokens</text>
+<text x="32" y="575" font-size="16">C 仍只在请求中存在；新用户轮重新生成，旧补充不写入会话，也不累积到历史。</text>
+<text x="32" y="607" font-size="15" fill="#475569">证据边界：已验证消息排列与缓存读取的因果差异；未观察服务端内部 KV 存储实现。</text>
+<text x="32" y="636" font-size="14" fill="#475569">来源：runtime-seed-paired-evidence.json · 实测时间 2026-11-02 10:58（Asia/Shanghai）</text>
+</g></svg>

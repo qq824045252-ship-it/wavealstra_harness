@@ -46,11 +46,31 @@ export class EphemeralContextProjection {
         const capsule = await this.resolve(event.messages);
         if (!capsule) return;
         const messages = [...event.messages];
-        if (capsule.text) messages.push({
-          role: "custom" as const, customType: "mybuddy.context-capsule", display: false,
-          content: capsule.text, timestamp: capsule.timestamp,
-          details: { fingerprint: capsule.fingerprint, policy: "context-projection-v2" },
-        });
+        if (capsule.text) {
+          // Anchor to the canonical user rather than the growing tool-loop tail.
+          // If compaction removed that user, place the capsule at the stable
+          // beginning of the projected context until the next logical turn.
+          const user = [...this.session!.sessionManager.getBranch()].reverse().find(
+            (entry) => entry.type === "message" && entry.message.role === "user",
+          );
+          const canonical = user?.type === "message" && user.message.role === "user" ? user.message : undefined;
+          let index = -1;
+          if (canonical) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const message = messages[i];
+              if (message.role === "user" && message.timestamp === canonical.timestamp
+                && JSON.stringify(message.content) === JSON.stringify(canonical.content)) {
+                index = i;
+                break;
+              }
+            }
+          }
+          messages.splice(index + 1, 0, {
+            role: "custom" as const, customType: "mybuddy.context-capsule", display: false,
+            content: capsule.text, timestamp: capsule.timestamp,
+            details: { fingerprint: capsule.fingerprint, policy: "context-projection-v2" },
+          });
+        }
         return { messages };
       } catch (error) {
         // Pi reports and swallows context-hook exceptions. The final runtime
