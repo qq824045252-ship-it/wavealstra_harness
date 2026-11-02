@@ -27,7 +27,7 @@ const { ProjectService } = await import("../src/main/project/ProjectService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");
 // 真实 SessionManager/SettingsManager：bindSessionModelAdmission 与 legacy memory 重建会直接使用
 // session.sessionManager / session.settingsManager 的完整接口，手写最小 fake 会随实现演进而漏方法。
-const { SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+const { SessionManager, SettingsManager, ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 type AgentUiPatch = import("../src/shared/agent-ipc").AgentUiPatch;
 type CreateAgentSessionOptions = import("@earendil-works/pi-coding-agent").CreateAgentSessionOptions;
 type CreateAgentSessionResult = import("@earendil-works/pi-coding-agent").CreateAgentSessionResult;
@@ -130,6 +130,10 @@ const agent = new AgentService(
   new TaskExecutionWorkspace(join(root, "task-workspaces")),
   { createAgentSession: createSessionAtSdkBoundary },
 );
+(agent as any).modelRuntime = await ModelRuntime.create({
+  authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"),
+  allowModelNetwork: false, refreshOnCreate: false,
+});
 const baseProfile = agent.getModeProfile("coding");
 agent.saveModePolicy("coding", {
   ...baseProfile.policy,

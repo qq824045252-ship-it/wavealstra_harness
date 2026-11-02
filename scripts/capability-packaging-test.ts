@@ -7,6 +7,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { listBundledMcpExtensions } from "../src/main/mcp/BundledMcpExtensions";
 
 const repo = process.cwd();
 let passed = 0;
@@ -69,9 +70,10 @@ assert(
   !files.includes("extensions/**/*"),
   "generic executable extensions glob is absent",
 );
+const serena = listBundledMcpExtensions().find((bundle) => bundle.id === "serena");
 assert(
-  existsSync(join(repo, "extensions", "mcp", "README.md")),
-  "declarative MCP bundle root remains present",
+  Boolean(serena && Object.keys(serena.servers).length),
+  "declarative Serena MCP bundle is discoverable with server configuration",
 );
 
 console.log("\nresult: passed=" + passed + " failed=" + failed);

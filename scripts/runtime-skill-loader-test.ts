@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   formatSkillsForPrompt,
+  ModelRuntime,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
   type DefaultResourceLoader,
@@ -222,6 +223,11 @@ async function main(): Promise<void> {
     new TaskExecutionWorkspace(join(root, "task-workspaces")),
     { createAgentSession: createSessionAtSdkBoundary },
   );
+
+  (agent as any).modelRuntime = await ModelRuntime.create({
+    authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"),
+    allowModelNetwork: false, refreshOnCreate: false,
+  });
 
   const baseProfile = agent.getModeProfile("coding");
   const savePreset = (preset: {

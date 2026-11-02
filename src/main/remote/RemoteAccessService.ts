@@ -5,7 +5,9 @@ import {
   type RemoteAcpPermissionPolicy,
   type RemoteAcpRunInfo,
   type RemoteBootstrap,
+  type RemoteModelRefreshResult,
   type RemoteModelSummary,
+  type RemoteModelSetting,
   type RemotePendingAction,
   type RemoteRuntimeSnapshot,
 } from "../../../shared/src/remote-contract";
@@ -46,6 +48,8 @@ export function liveAcpRunForTask(run: ExternalAgentRunDto[], taskId: string): E
 export class RemoteAccessService {
   private readonly images: RemoteImageService;
   private modelsCache: { at: number; models: RemoteModelSummary[] } | null = null;
+  private modelMutation: Promise<void> = Promise.resolve();
+  private modelCacheRevision = 0;
   private acpAgentsCache: { at: number; agents: RemoteAcpAgentSummary[] } | null = null;
 
   constructor(
@@ -104,11 +108,66 @@ export class RemoteAccessService {
   async listModels(): Promise<RemoteModelSummary[]> {
     const now = Date.now();
     if (this.modelsCache && now - this.modelsCache.at < MODEL_CACHE_TTL_MS) return this.modelsCache.models;
+    const revision = this.modelCacheRevision;
     const models = (await this.agent.listModels())
       .filter((model) => model.enabled !== false && model.kind !== "image-generation" && model.available !== false)
       .map(mapRemoteModel);
-    this.modelsCache = { at: now, models };
+    if (revision === this.modelCacheRevision) this.modelsCache = { at: now, models };
     return models;
+  }
+
+  /** Force Pi's authenticated provider catalogs to reload, then replace the remote-safe projection cache. */
+  async refreshModels(): Promise<RemoteModelRefreshResult> {
+    const revision = ++this.modelCacheRevision;
+    this.modelsCache = null;
+    const result = await this.agent.reloadModels();
+    const models = result.models
+      .filter((model) => model.enabled !== false && model.kind !== "image-generation" && model.available !== false)
+      .map(mapRemoteModel);
+    if (revision === this.modelCacheRevision) this.modelsCache = { at: Date.now(), models };
+    return { models, errors: result.errors };
+  }
+
+  async modelSettings(): Promise<RemoteModelSetting[]> {
+    return (await this.agent.listModels())
+      .filter(model => model.kind !== "image-generation")
+      .map(model => ({ ...mapRemoteModel(model), enabled: model.enabled !== false, available: model.available !== false }));
+  }
+
+  async setModelEnabled(id: string, enabled: boolean): Promise<RemoteModelSetting[]> {
+    const operation = this.modelMutation.then(async () => {
+      const catalog = await this.agent.listModels();
+      const target = catalog.find(model => model.id === id && model.kind !== "image-generation");
+      if (!target) throw new RemoteValidationError("模型不存在或不支持此设置");
+      const selectable = catalog.filter(model => model.kind !== "image-generation" && model.available !== false && model.enabled !== false);
+      if (!enabled && target.available !== false && target.enabled !== false && selectable.length <= 1) {
+        throw new RemoteValidationError("至少保留一个可用模型");
+      }
+      const ids = new Set(catalog.filter(model => model.kind !== "image-generation" && model.enabled !== false).map(model => model.id));
+      if (enabled) ids.add(id); else ids.delete(id);
+      try {
+        await this.agent.updateAppSettings({ enabledModels: [...ids] });
+        if (!enabled) {
+          const updated = await this.agent.listModels();
+          const candidates = updated.filter(model => model.kind !== "image-generation" && model.available !== false && model.enabled !== false);
+          const selectableIds = new Set(candidates.map(model => model.id));
+          let defaultId = this.agent.getAppSettings().defaultModelId;
+          if (defaultId && !selectableIds.has(defaultId) && candidates[0]) {
+            defaultId = (await this.agent.updateAppSettings({ defaultModelId: candidates[0].id })).defaultModelId;
+          }
+          const subagent = this.agent.getSubagentConfig();
+          if (subagent.defaultModel && !selectableIds.has(subagent.defaultModel)) {
+            this.agent.saveSubagentConfig({ ...subagent, defaultModel: undefined, defaultReasoning: undefined, globalDefaultModelId: defaultId || undefined });
+          }
+        }
+      } finally {
+        this.modelCacheRevision++;
+        this.modelsCache = null;
+      }
+      return this.modelSettings();
+    });
+    this.modelMutation = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   async bootstrap(device: RemoteDeviceSummary): Promise<RemoteBootstrap> {

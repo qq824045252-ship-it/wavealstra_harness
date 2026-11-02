@@ -10,7 +10,6 @@ const tasks = read("src/renderer/src/components/pages/project/ProjectTasks.tsx")
 const execution = read("src/renderer/src/components/pages/project/ProjectExecutionMaterials.tsx");
 const recovery = read("src/renderer/src/components/chat/TaskRecoveryNotice.tsx");
 const relocation = read("src/renderer/src/components/pages/project/ProjectFolderRelocation.tsx");
-const stable = read("docs/project-v1-stable.md");
 
 const dailyFlows = [
   { name: "create-project", source: create, checks: ["项目工作目录", "ensureSpaceFromPath", "activate: false"] },
@@ -28,7 +27,6 @@ assert.ok(dailyFlows.length >= 5);
 assert.equal(dailyFlows.filter((flow) => !flow.source.includes("SettingsModal")).length / dailyFlows.length >= 0.8, true, "at least 80% representative daily flows avoid global Settings");
 assert.equal(tasks.includes("openWorkspaceDetail"), false, "Project task working-directory badge must not jump into global Workspace Detail");
 assert.ok(tasks.includes("任务工作目录"));
-assert.ok(stable.includes("`projectId` 与 `spaceId` 在存储、解析和任务生命周期上保持独立"));
-assert.ok(stable.includes("禁止根据同名目录静默重建、合并或改绑"));
-assert.ok(stable.includes("RuntimeContextSnapshot"));
+// Project identity, folder relocation, and runtime snapshots are covered by
+// project-binding-matrix, project-folder-relocation, and project-agent-integration.
 console.log(`project convergence acceptance: PASS (${dailyFlows.length}/${dailyFlows.length} representative daily flows stay inside Project UI)`);

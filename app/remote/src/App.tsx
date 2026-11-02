@@ -1284,6 +1284,14 @@ function SelectModelSheet() {
   const setSelectedModelId = useRemoteStore((s) => s.setSelectedModelId)
   const bootstrap = useRemoteStore((s) => s.bootstrap)
   const activeTaskId = useRemoteStore((s) => s.activeTaskId)
+  const refreshModels = useRemoteStore((s) => s.refreshModels)
+  const client = useRemoteStore((s) => s.client)
+  const [managing, setManaging] = useState(false)
+  const [settingsModels, setSettingsModels] = useState<Awaited<ReturnType<NonNullable<typeof client>['modelSettings']>>>([])
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
 
   const models = bootstrap?.models ?? []
   const defaultModel = models.find((m) => m.id === bootstrap?.defaultModelId)
@@ -1299,6 +1307,48 @@ function SelectModelSheet() {
   const handleSelect = (id: string | null) => {
     setSelectedModelId(id)
     setOpen(false)
+  }
+
+  const refresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    setRefreshNotice(null)
+    try {
+      const { errors } = await refreshModels()
+      if (errors.length) setRefreshNotice(`部分 Provider 刷新失败：${errors.map(error => `${error.providerId}（${error.message}）`).join('；')}`)
+    } catch (error) {
+      setRefreshNotice(`刷新模型失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const openSettings = async () => {
+    setManaging(true)
+    setSettingsBusy(true)
+    setSettingsError(null)
+    try {
+      if (!client) throw new Error('未连接到电脑端')
+      setSettingsModels(await client.modelSettings())
+    } catch (error) {
+      setSettingsError(`加载模型设置失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setSettingsBusy(false) }
+  }
+
+  const toggleSetting = async (id: string, enabled: boolean) => {
+    if (!client || settingsBusy) return
+    setSettingsBusy(true)
+    setSettingsError(null)
+    try {
+      const updated = await client.setModelEnabled(id, enabled)
+      setSettingsModels(updated)
+      useRemoteStore.setState(state => ({
+        bootstrap: state.bootstrap ? { ...state.bootstrap, models: updated.filter(m => m.enabled && m.available).map(({ enabled: _enabled, available: _available, ...model }) => model) } : null,
+        selectedModelId: state.selectedModelId && !updated.some(m => m.id === state.selectedModelId && m.enabled && m.available) ? null : state.selectedModelId,
+      }))
+    } catch (error) {
+      setSettingsError(`保存模型设置失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setSettingsBusy(false) }
   }
 
   const modelDesc = (m: (typeof models)[number]) => {
@@ -1326,10 +1376,30 @@ function SelectModelSheet() {
           >
             <X size={20} />
           </button>
-          <span className="claude-sheet-title">Select model</span>
+          <span className="claude-sheet-title">{managing ? '模型启用设置' : 'Select model'}</span>
         </div>
 
-        <div className="select-model-group">
+        {managing ? <div className="select-model-group">
+          <button type="button" className="add-to-chat-row" onClick={() => setManaging(false)}>返回选择模型</button>
+          {settingsError && <div role="alert" style={{ padding: '8px 16px' }}>{settingsError} <button type="button" onClick={() => void openSettings()}>重试</button></div>}
+          {settingsBusy && <div role="status" style={{ padding: '8px 16px' }}>正在处理…</div>}
+          {settingsModels.map(model => <button key={model.id} type="button" className="select-model-item" role="switch" aria-checked={model.enabled} disabled={settingsBusy} onClick={() => void toggleSetting(model.id, !model.enabled)}>
+            <div className="select-model-info"><span className="select-model-name">{model.name}</span><span className="select-model-desc">{model.vendor}{model.available ? '' : ' · 电脑端未认证或不可用'}</span></div>
+            <span>{model.enabled ? '已启用' : '已关闭'}</span>
+          </button>)}
+        </div> : <div className="select-model-group">
+          <button type="button" className="add-to-chat-row" onClick={() => void openSettings()}>管理模型启用状态 <ChevronRight size={18} /></button>
+          <button type="button" className="add-to-chat-row" onClick={() => void refresh()} disabled={refreshing}>
+            <div className="add-to-chat-row-left">
+              <div className="add-to-chat-row-icon"><RotateCcw size={18} /></div>
+              <div className="add-to-chat-row-info">
+                <span className="add-to-chat-row-title">{refreshing ? '正在刷新模型…' : '刷新电脑端模型'}</span>
+                <span className="add-to-chat-row-subtitle">从已登录 Provider 获取最新目录</span>
+              </div>
+            </div>
+            <ChevronRight size={18} />
+          </button>
+          {refreshNotice && <div role="status" style={{ padding: '8px 16px', fontSize: '13px', color: 'var(--fg-muted)' }}>{refreshNotice}</div>}
           <button
             type="button"
             className={`select-model-item ${selectedModelId === null ? 'active' : ''}`}
@@ -1370,7 +1440,7 @@ function SelectModelSheet() {
               暂未获取到电脑端模型目录，稍后下拉刷新后重试。
             </div>
           )}
-        </div>
+        </div>}
       </div>
     </>
   )

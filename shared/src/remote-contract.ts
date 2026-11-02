@@ -322,6 +322,16 @@ export interface RemoteModelSummary {
   supportsImages: boolean
 }
 
+export interface RemoteModelSetting extends RemoteModelSummary {
+  enabled: boolean
+  available: boolean
+}
+
+export interface RemoteModelRefreshResult {
+  models: RemoteModelSummary[]
+  errors: Array<{ providerId: string; message: string }>
+}
+
 export type RemoteWelcomeMode = 'working' | 'coding' | 'bot'
 
 /** Display/configuration metadata only. Execution remains owned by the selected runtime. */

@@ -28,6 +28,60 @@ const catalogBootstrap = await catalogService.bootstrap({ id: 'test', name: 'Tes
 assert.equal(catalogBootstrap.taskModes?.find(mode => mode.id === 'coding')?.tags[0].label, '自定义开发');
 assert.equal(JSON.stringify(catalogBootstrap).includes('private prompt'), false, 'catalog must only expose display metadata');
 
+let remoteReloadCalls = 0;
+const refreshCatalogService = new RemoteAccessService({} as any, {
+  listModels: async () => [{ id: 'cached/old', name: 'Old', vendor: 'cached', enabled: true, available: true, kind: 'chat' }],
+  reloadModels: async () => {
+    remoteReloadCalls += 1;
+    return { models: [
+      { id: 'fresh/ok', name: 'Fresh', vendor: 'fresh', enabled: true, available: true, kind: 'chat', supportsReasoning: true, supportsImages: false },
+      { id: 'fresh/hidden', name: 'Hidden', vendor: 'fresh', enabled: false, available: true, kind: 'chat' },
+    ], requestedProviderIds: ['fresh'], errors: [{ providerId: 'partial', message: 'timeout' }] };
+  },
+} as any, {} as any, {} as any, {} as any);
+await refreshCatalogService.listModels();
+const refreshedCatalog = await refreshCatalogService.refreshModels();
+assert.equal(remoteReloadCalls, 1, 'remote refresh must delegate once to AgentService.reloadModels');
+assert.deepEqual(refreshedCatalog, { models: [{ id: 'fresh/ok', name: 'Fresh', vendor: 'fresh', contextWindow: undefined, supportsReasoning: true, supportsImages: false }], errors: [{ providerId: 'partial', message: 'timeout' }] }, 'refresh must replace the cache with safe remote model projections');
+assert.deepEqual(await refreshCatalogService.listModels(), refreshedCatalog.models, 'subsequent bootstrap reads must use the refreshed projection cache');
+
+let enabledIds: string[] | undefined;
+const settingCatalog = [
+  { id: 'p/a', name: 'A', vendor: 'p', available: true, kind: 'chat', apiKey: 'secret' },
+  { id: 'p/b', name: 'B', vendor: 'p', available: true, kind: 'chat', apiKey: 'secret' },
+  { id: 'p/offline', name: 'Offline', vendor: 'p', available: false, kind: 'chat' },
+  { id: 'p/image', name: 'Image', vendor: 'p', available: true, kind: 'image-generation' },
+];
+const settingService = new RemoteAccessService({} as any, {
+  listModels: async () => settingCatalog.map(model => ({ ...model, enabled: enabledIds === undefined || enabledIds.includes(model.id) })),
+  updateAppSettings: async (settings: { enabledModels?: string[]; defaultModelId?: string }) => { if (settings.enabledModels) enabledIds = settings.enabledModels; return { defaultModelId: settings.defaultModelId ?? '' }; },
+  getAppSettings: () => ({ defaultModelId: '' }),
+  getSubagentConfig: () => ({}),
+} as any, {} as any, {} as any, {} as any);
+assert.equal(JSON.stringify(await settingService.modelSettings()).includes('secret'), false);
+assert.equal((await settingService.modelSettings()).length, 3, 'image generation has separate desktop settings');
+await settingService.listModels();
+await settingService.setModelEnabled('p/a', false);
+assert.deepEqual(enabledIds, ['p/b', 'p/offline'], 'wildcard scope expands from the complete enabled chat catalog');
+assert.deepEqual((await settingService.listModels()).map(model => model.id), ['p/b'], 'toggle invalidates cached selectable models');
+await assert.rejects(settingService.setModelEnabled('p/b', false), /至少保留一个/);
+await assert.rejects(settingService.setModelEnabled('p/image', true), /模型不存在/);
+await Promise.all([settingService.setModelEnabled('p/a', true), settingService.setModelEnabled('p/offline', false)]);
+assert.deepEqual(enabledIds, ['p/a', 'p/b'], 'concurrent remote changes preserve both updates');
+
+const stateBeforeModelRefresh = useRemoteStore.getState();
+useRemoteStore.setState({
+  client: { refreshModels: async () => ({ models: [{ id: 'store/fresh', name: 'Store Fresh', vendor: 'store', supportsReasoning: false, supportsImages: false }], errors: [] }) } as never,
+  bootstrap: { ...catalogBootstrap, models: [{ id: 'store/old', name: 'Store Old', vendor: 'store', supportsReasoning: false, supportsImages: false }], defaultModelId: 'store/default' },
+  selectedModelId: 'store/selected',
+});
+await useRemoteStore.getState().refreshModels();
+const stateAfterModelRefresh = useRemoteStore.getState();
+assert.deepEqual(stateAfterModelRefresh.bootstrap?.models, [{ id: 'store/fresh', name: 'Store Fresh', vendor: 'store', supportsReasoning: false, supportsImages: false }], 'Android store refresh must replace bootstrap.models');
+assert.equal(stateAfterModelRefresh.bootstrap?.defaultModelId, 'store/default', 'Android store refresh must not mutate the desktop default');
+assert.equal(stateAfterModelRefresh.selectedModelId, 'store/selected', 'Android store refresh must not mutate selection');
+useRemoteStore.setState(stateBeforeModelRefresh);
+
 /** Node fetch（undici）会按 fetch 规范丢弃 Origin 头，Origin 相关断言必须走原生 http */
 function httpJson(port: number, method: string, path: string, headers: Record<string, string>): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
   return new Promise((resolve, reject) => {
@@ -177,6 +231,7 @@ try {
   const service = {
     serverInfo: () => ({ apiVersion: 1, service: "mybuddy-remote", name: "MyBuddy", now: Date.now() }),
     bootstrap: (device: unknown) => ({ apiVersion: 1, server: { apiVersion: 1, service: "mybuddy-remote", name: "MyBuddy", now: Date.now() }, spaces: [], projects: [], tasks: [], unreadNotificationCount: 0, device }),
+    refreshModels: () => ({ models: [{ id: "safe/model", name: "Safe", vendor: "safe", supportsReasoning: false, supportsImages: false }], errors: [{ providerId: "partial", message: "timeout" }] }),
     listTasks: () => [], history: async () => null, runtime: () => null,
     listNotifications: () => [], markNotificationRead: () => undefined, markAllNotificationsRead: () => undefined,
   };
@@ -187,7 +242,9 @@ try {
     title: "请选择处理方式", options: [{ id: "one", label: "方案一" }, { id: "two", label: "方案二" }],
     status, answer, version: status === "pending" ? 1 : 2, createdAt: 1, resolvedAt: status === "pending" ? undefined : 2,
   });
+  let remoteModelCacheInvalidations = 0;
   const commands = {
+    invalidateModelCache: () => { remoteModelCacheInvalidations += 1; },
     createAndPrompt: async (request: never) => {
       capturedPrompt = request;
       return { task: { id: "remote-1", title: "T" }, userMessageId: "u1", assistantMessageId: "a1", queued: true };
@@ -236,6 +293,15 @@ try {
   const badPair = pairing.create(base);
   assert.equal((await fetch(`${base}/v1/pair/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pairingId: badPair.pairingId, secret: `${badPair.secret}x`, deviceName: "Bad" }) })).status, 400);
   assert.equal((await fetch(`${base}/v1/bootstrap`)).status, 401);
+  assert.equal((await fetch(`${base}/v1/models/settings`)).status, 401, "model settings must require authentication");
+  assert.equal((await fetch(`${base}/v1/models/settings`, { method: "POST" })).status, 401, "model changes must require authentication");
+  const invalidModelSettings = await fetch(`${base}/v1/models/settings`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ id: "p/a", enabled: "true" }) });
+  assert.equal(invalidModelSettings.status, 400, "model changes validate types");
+  assert.equal((await fetch(`${base}/v1/models/refresh`, { method: "POST" })).status, 401, "model refresh must require device authentication");
+  const refreshedModels = await fetch(`${base}/v1/models/refresh`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: "{}" });
+  assert.equal(refreshedModels.status, 200);
+  assert.deepEqual(await refreshedModels.json(), { models: [{ id: "safe/model", name: "Safe", vendor: "safe", supportsReasoning: false, supportsImages: false }], errors: [{ providerId: "partial", message: "timeout" }] }, "model refresh must return only the service projection and provider errors");
+  assert.equal(remoteModelCacheInvalidations, 1, "model refresh must invalidate the prompt model whitelist");
   assert.equal((await fetch(`${base}/v1/bootstrap`, { headers: { authorization: `Bearer ${token}` } })).status, 200);
   assert.equal((await fetch(`${base}/v1/tasks/t/actions/stale/respond`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ decision: "deny" }) })).status, 409);
   const interactionResponse = await fetch(`${base}/v1/tasks/t/interactions/i1/respond`, {

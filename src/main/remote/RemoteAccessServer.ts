@@ -2,7 +2,7 @@ import { RemoteImageError } from './RemoteImageService';
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import { REMOTE_API_VERSION } from "../../../shared/src/remote-contract";
 import { RemotePairingError } from "./RemoteAccessPairing";
 import type { RemoteAccessPairing } from "./RemoteAccessPairing";
@@ -210,6 +210,20 @@ export class RemoteAccessServer {
 
       if (request.method === "GET" && path === "/v1/events") return this.openEventStream(request, response);
       if (request.method === "GET" && path === "/v1/bootstrap") return replyJson(200, await this.options.service.bootstrap(auth.device));
+      if (request.method === "GET" && path === "/v1/models/settings") return replyJson(200, await this.options.service.modelSettings());
+      if (request.method === "POST" && path === "/v1/models/settings") {
+        const body = z.object({ id: z.string().trim().min(1).max(512), enabled: z.boolean() }).strict().parse(await readJson(request));
+        try {
+          return replyJson(200, await this.options.service.setModelEnabled(body.id, body.enabled));
+        } finally {
+          this.options.commands.invalidateModelCache();
+        }
+      }
+      if (request.method === "POST" && path === "/v1/models/refresh") {
+        const models = await this.options.service.refreshModels();
+        this.options.commands.invalidateModelCache();
+        return replyJson(200, models);
+      }
       if (request.method === "GET" && path === "/v1/tasks") return replyJson(200, this.options.service.listTasks());
       if (request.method === "GET" && path === "/v1/device/me") return replyJson(200, auth.device);
       // ACP 外部 Agent 目录：手机端选择器的数据源（只读，不启动子进程）

@@ -82,6 +82,7 @@ interface State {
   /** null = 跟随电脑端默认模型 */
   selectedModelId: string | null
   setSelectedModelId: (id: string | null) => void
+  refreshModels: () => Promise<{ errors: Array<{ providerId: string; message: string }> }>
   /**
    * P0 修复：三态权限，'follow' 时不传 permissionMode，服务端保持任务自身权限不变；
    * 'ask' / 'auto' 是手机端的显式覆盖（分别映射 default / auto）。
@@ -378,6 +379,13 @@ export const useRemoteStore = create<State>((set, get) => ({
   setModelSheetOpen: (isModelSheetOpen) => set({ isModelSheetOpen }),
   selectedModelId: null,
   setSelectedModelId: (selectedModelId) => set({ selectedModelId }),
+  async refreshModels() {
+    const client = get().client
+    if (!client) throw new Error('未连接到电脑端')
+    const result = await client.refreshModels()
+    set(state => state.bootstrap ? { bootstrap: { ...state.bootstrap, models: result.models } } : state)
+    return { errors: result.errors }
+  },
   toolAccessMode: 'follow',
   setToolAccessMode: (toolAccessMode) => set({ toolAccessMode }),
   selectedProjectId: null,

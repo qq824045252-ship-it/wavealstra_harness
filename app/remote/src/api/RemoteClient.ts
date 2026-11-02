@@ -10,6 +10,8 @@ import type {
   RemoteEventEnvelope,
   RemoteConversationInteractionAnswer,
   RemoteConversationInteractionMutationResult,
+  RemoteModelRefreshResult,
+  RemoteModelSetting,
   RemoteNotification,
   RemotePairResponse,
   RemotePromptRequest,
@@ -51,6 +53,9 @@ export class RemoteClient {
   }
 
   bootstrap() { return this.get<RemoteBootstrap>('/v1/bootstrap') }
+  modelSettings() { return this.get<RemoteModelSetting[]>('/v1/models/settings') }
+  setModelEnabled(id: string, enabled: boolean) { return this.post<RemoteModelSetting[]>('/v1/models/settings', { id, enabled }) }
+  refreshModels() { return this.post<RemoteModelRefreshResult>('/v1/models/refresh', {}) }
   history(taskId: string) { return this.get<RemoteTaskHistory>(`/v1/tasks/${encodeURIComponent(taskId)}/history`) }
   runtime(taskId: string) { return this.get<RemoteRuntimeSnapshot>(`/v1/tasks/${encodeURIComponent(taskId)}/runtime`) }
   notifications() { return this.get<RemoteNotification[]>('/v1/notifications?limit=100') }

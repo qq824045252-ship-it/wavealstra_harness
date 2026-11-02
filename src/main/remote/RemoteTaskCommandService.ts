@@ -85,6 +85,8 @@ export class RemoteTaskCommandService {
     private readonly externalAgent?: ExternalAgentRuntime,
   ) {}
 
+  invalidateModelCache(): void { this.modelIdsCache = null; }
+
   async createAndPrompt(request: RemotePromptRequest): Promise<RemotePromptResponse> {
     const text = request.text.trim();
     // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
