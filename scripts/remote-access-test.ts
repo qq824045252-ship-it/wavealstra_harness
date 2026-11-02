@@ -50,6 +50,7 @@ const settingCatalog = [
   { id: 'p/a', name: 'A', vendor: 'p', available: true, kind: 'chat', apiKey: 'secret' },
   { id: 'p/b', name: 'B', vendor: 'p', available: true, kind: 'chat', apiKey: 'secret' },
   { id: 'p/offline', name: 'Offline', vendor: 'p', available: false, kind: 'chat' },
+  { id: 'p/c', name: 'C', vendor: 'p', available: true, kind: 'chat' },
   { id: 'p/image', name: 'Image', vendor: 'p', available: true, kind: 'image-generation' },
 ];
 const settingService = new RemoteAccessService({} as any, {
@@ -58,16 +59,19 @@ const settingService = new RemoteAccessService({} as any, {
   getAppSettings: () => ({ defaultModelId: '' }),
   getSubagentConfig: () => ({}),
 } as any, {} as any, {} as any, {} as any);
-assert.equal(JSON.stringify(await settingService.modelSettings()).includes('secret'), false);
-assert.equal((await settingService.modelSettings()).length, 3, 'image generation has separate desktop settings');
+enabledIds = ['p/a', 'p/b', 'p/offline'];
+const visibleSettings = await settingService.modelSettings();
+assert.equal(JSON.stringify(visibleSettings).includes('secret'), false);
+assert.deepEqual(visibleSettings.map(model => [model.id, model.enabled]), [['p/a', true], ['p/b', true], ['p/c', false]], 'settings include enabled and disabled models from configured providers, excluding unavailable and image models');
 await settingService.listModels();
 await settingService.setModelEnabled('p/a', false);
 assert.deepEqual(enabledIds, ['p/b', 'p/offline'], 'wildcard scope expands from the complete enabled chat catalog');
 assert.deepEqual((await settingService.listModels()).map(model => model.id), ['p/b'], 'toggle invalidates cached selectable models');
 await assert.rejects(settingService.setModelEnabled('p/b', false), /至少保留一个/);
 await assert.rejects(settingService.setModelEnabled('p/image', true), /模型不存在/);
-await Promise.all([settingService.setModelEnabled('p/a', true), settingService.setModelEnabled('p/offline', false)]);
-assert.deepEqual(enabledIds, ['p/a', 'p/b'], 'concurrent remote changes preserve both updates');
+await assert.rejects(settingService.setModelEnabled('p/offline', false), /模型不存在/);
+await Promise.all([settingService.setModelEnabled('p/a', true), settingService.setModelEnabled('p/c', true)]);
+assert.deepEqual(enabledIds, ['p/a', 'p/b', 'p/offline', 'p/c'], 'concurrent changes preserve hidden model settings');
 
 const stateBeforeModelRefresh = useRemoteStore.getState();
 useRemoteStore.setState({

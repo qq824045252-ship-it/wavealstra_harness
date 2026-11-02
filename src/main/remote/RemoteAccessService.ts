@@ -130,14 +130,14 @@ export class RemoteAccessService {
 
   async modelSettings(): Promise<RemoteModelSetting[]> {
     return (await this.agent.listModels())
-      .filter(model => model.kind !== "image-generation")
-      .map(model => ({ ...mapRemoteModel(model), enabled: model.enabled !== false, available: model.available !== false }));
+      .filter(model => model.kind !== "image-generation" && model.available !== false)
+      .map(model => ({ ...mapRemoteModel(model), enabled: model.enabled !== false, available: true }));
   }
 
   async setModelEnabled(id: string, enabled: boolean): Promise<RemoteModelSetting[]> {
     const operation = this.modelMutation.then(async () => {
       const catalog = await this.agent.listModels();
-      const target = catalog.find(model => model.id === id && model.kind !== "image-generation");
+      const target = catalog.find(model => model.id === id && model.kind !== "image-generation" && model.available !== false);
       if (!target) throw new RemoteValidationError("模型不存在或不支持此设置");
       const selectable = catalog.filter(model => model.kind !== "image-generation" && model.available !== false && model.enabled !== false);
       if (!enabled && target.available !== false && target.enabled !== false && selectable.length <= 1) {
