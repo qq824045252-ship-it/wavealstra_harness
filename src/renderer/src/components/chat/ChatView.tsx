@@ -835,6 +835,11 @@ export default function ChatView(): React.JSX.Element {
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
   const boundProjectId = task?.projectId ?? draftProjectId;
+  const taskGadgets = task ? (
+    <div className="task-gadget-strip">
+      <GadgetSection key={task.id} scope={{ type: "task", taskId: task.id }} includeInherited compact title="Task Gadgets" />
+    </div>
+  ) : null;
 
   // Bot tasks are materialized on submission. Their first durable snapshot may
   // arrive after runtime startup; an empty projection is already a conversation.
@@ -850,6 +855,7 @@ export default function ChatView(): React.JSX.Element {
             <div className="chat-header-sub" />
           </div>
         )}
+        {taskGadgets}
         <HomeHero />
       </>
     );
@@ -887,6 +893,7 @@ export default function ChatView(): React.JSX.Element {
           <RuntimeStatusChips modePresetId={task.modePresetId} />
           <div className="input-spacer" />
         </div>
+        {taskGadgets}
         <div className="chat-scroll">
           {task.botPendingSubmission && <div className="bot-submission-preview">
             <div className="bot-submission-input">{task.botPendingSubmission.text}
@@ -1024,9 +1031,7 @@ export default function ChatView(): React.JSX.Element {
         )}
       </div>
 
-      <div className="task-gadget-strip">
-        <GadgetSection scope={{ type: "task", taskId: task.id }} compact title="Task Gadgets" />
-      </div>
+      {taskGadgets}
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>

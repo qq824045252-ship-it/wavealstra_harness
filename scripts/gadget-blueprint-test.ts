@@ -21,12 +21,14 @@ import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceL
 import { BLUEPRINT_DEFINITION_SCHEMA_VERSION, normalizeBlueprintDefinition, type CompositeBlueprintDefinition } from "../src/shared/blueprint-types";
 import { GadgetIpc } from "../src/shared/gadget-ipc";
 import { BlueprintIpc } from "../src/shared/blueprint-ipc";
+import type { GadgetChangedEvent } from "../src/shared/gadget-ipc";
+import { isMyBuddyNativeExtensionToolName } from "../src/shared/native-tools";
 
 async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-gadget-blueprint-"));
   const db = new AppDatabase(":memory:");
+  let activeService: GadgetService | undefined;
   try {
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27);
     assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
     const ws = db.createSpace({ name: "Gadget Test", path: join(root, "workspace") });
     mkdirSync(ws.path!, { recursive: true });
@@ -44,12 +46,14 @@ async function main(): Promise<void> {
     const storage = new GadgetStorage(join(root, "gadgets"));
     const registry = new GadgetRegistry();
     const runtime = new GadgetRuntime(storage, registry);
+    const events: GadgetChangedEvent[] = [];
     const artifactRows = new Map<string, { taskId: string; content: string }>([["art-html", { taskId: "task-gadget-test", content: "<html><body>artifact kept</body></html>" }]]);
     const service = new GadgetService({
       repository,
       storage,
       registry,
       runtime,
+      onChanged: (event) => events.push(event),
       workspaceExists: (id) => Boolean(db.getSpace(id)),
       workspaceEffectiveArchived: (id) => db.getSpace(id)?.effectiveArchived === true,
       taskExists: (id) => Boolean(db.getTask(id)),
@@ -63,6 +67,7 @@ async function main(): Promise<void> {
         write: async ({ taskId, content }) => { const id = `art-${artifactRows.size}`; artifactRows.set(id, { taskId, content }); return { artifactId: id }; },
       },
     });
+    activeService = service;
 
     const storageEntriesBeforeInvalidMetadata = readdirSync(join(root, "gadgets")).length;
     assert.throws(() => service.create({
@@ -83,6 +88,11 @@ async function main(): Promise<void> {
     assert.equal(service.list({ scope: { type: "global" } }).length, 1);
     assert.equal(service.list({ scope: { type: "workspace", workspaceId: ws.id } }).length, 1);
     assert.equal(service.list({ scope: { type: "task", taskId: "task-gadget-test" } }).length, 1);
+    assert.deepEqual(
+      new Set(service.list({ scope: { type: "task", taskId: "task-gadget-test" }, includeInherited: true }).map((item) => item.id)),
+      new Set([task.id, workspace.id, global.id]),
+      "a task must discover its own, workspace and personal Gadgets",
+    );
     const updatedGlobal = service.update({ gadgetId: global.id, name: "Global Updated", description: "updated", defaultConfig: { radix: 16 } });
     assert.equal(updatedGlobal.name, "Global Updated");
     assert.equal(storage.readManifest(global.id).name, "Global Updated");
@@ -167,7 +177,54 @@ async function main(): Promise<void> {
     assert.equal(workspaceAgentCreated.isError, undefined);
     const workspaceAgentGadgetId = (workspaceAgentCreated.details as { gadgetId: string }).gadgetId;
     assert.deepEqual(service.get(workspaceAgentGadgetId)?.scope, { type: "workspace", workspaceId: ws.id });
+    const tool = (name: string) => {
+      assert(isMyBuddyNativeExtensionToolName(name), `${name} must be recognized as a native product tool`);
+      const found = registeredTools.find((item) => item.name === name);
+      assert(found, `Agent must expose ${name}`);
+      return found;
+    };
+    const listed = await tool("gadget_list").execute("list", {} as never);
+    assert.equal(listed.isError, undefined);
+    assert((listed.details as { gadgets: Array<{ id: string }> }).gadgets.some((item) => item.id === workspaceAgentGadgetId));
+    const read = await tool("gadget_read").execute("read", { gadgetId: workspaceAgentGadgetId } as never);
+    assert.equal(read.isError, undefined);
+    const revision = (read.details as { revision: string }).revision;
+    writeFileSync(join(storage.paths(workspaceAgentGadgetId).dataPath, "keep.txt"), "runtime data");
+    const open = await tool("gadget_open").execute("open", { gadgetId: workspaceAgentGadgetId } as never);
+    assert.equal(open.isError, undefined);
+    const opened = open.details as { url: string; pid: number };
+    assert.deepEqual(events.at(-1), { type: "open-requested", taskId: "task-gadget-test", gadgetId: workspaceAgentGadgetId });
+    assert.match(await (await fetch(opened.url)).text(), /workspace/);
+    const changed = await tool("gadget_update").execute("update", {
+      gadgetId: workspaceAgentGadgetId, expectedRevision: revision,
+      files: [{ path: "index.html", content: "<html><body>edited from task</body></html>" }, { path: "assets/theme.css", content: "body { color: navy; }" }],
+    } as never);
+    assert.equal(changed.isError, undefined);
+    assert.notEqual((changed.details as { revision: string }).revision, revision);
+    assert.match(await (await fetch(opened.url)).text(), /edited from task/);
+    assert.equal(service.get(workspaceAgentGadgetId)?.runtime.pid, opened.pid, "edits retain the running URL/process");
+    assert.equal(readFileSync(join(storage.paths(workspaceAgentGadgetId).dataPath, "keep.txt"), "utf8"), "runtime data");
+    assert.equal(service.get(workspaceAgentGadgetId)?.id, workspaceAgentGadgetId, "edits retain Gadget identity");
+    assert.equal((await tool("gadget_update").execute("stale", { gadgetId: workspaceAgentGadgetId, expectedRevision: revision, files: [{ path: "index.html", content: "stale" }] } as never)).isError, true);
+    const snapshot = service.readSource(workspaceAgentGadgetId);
+    assert.throws(() => service.updateSource({ gadgetId: workspaceAgentGadgetId, expectedRevision: snapshot.revision, files: [{ path: "index.html", content: "partial write" }, { path: "../escape", content: "bad" }] }), /路径/);
+    assert.equal(service.readSource(workspaceAgentGadgetId).revision, snapshot.revision, "invalid batch must not partially save");
+    for (const unsafe of ["assets/.. /escaped.html", "index.html:alternate", "C:/escaped.html", "assets/CON.txt"]) {
+      assert.throws(() => service.updateSource({ gadgetId: workspaceAgentGadgetId, expectedRevision: snapshot.revision, files: [{ path: unsafe, content: "bad" }] }), /路径/);
+    }
+    assert.throws(() => storage.updateSource({ gadgetId: workspaceAgentGadgetId, expectedRevision: snapshot.revision, files: [{ path: "index.html", content: "rollback" }] }, () => { throw new Error("commit failed"); }), /commit failed/);
+    assert.equal(service.readSource(workspaceAgentGadgetId).revision, snapshot.revision, "failed DB commit must restore source");
+    const originalSnapshot = service.readSource(workspaceAgentGadgetId);
+    service.updateSource({ gadgetId: workspaceAgentGadgetId, expectedRevision: originalSnapshot.revision, files: [{ path: "index.html", content: "<html>second edit</html>" }] });
+    assert.equal(service.readSource(workspaceAgentGadgetId).files.find((file) => file.path === "assets/theme.css")?.content, "body { color: navy; }", "unmentioned files survive a patch");
+    await service.stop(workspaceAgentGadgetId);
+    const privateGadget = service.create({ name: "Other task private", scope: { type: "task", taskId: "task-gadget-other" } });
+    for (const name of ["gadget_read", "gadget_open", "gadget_update"]) {
+      assert.equal((await tool(name).execute("denied", { gadgetId: privateGadget.id, expectedRevision: service.readSource(privateGadget.id).revision, files: [{ path: "index.html", content: "bad" }] } as never)).isError, true, `${name} must reject another task's Gadget`);
+    }
+    assert.equal(service.get(privateGadget.id)?.runtime.status, "stopped");
     db.upsertTask({ ...db.getTask("task-gadget-test")!, spaceId: child.id, updatedAt: Date.now() });
+    assert(service.list({ scope: { type: "task", taskId: "task-gadget-test" }, includeInherited: true }).some((item) => item.id === workspaceAgentGadgetId && item.inheritedFromWorkspaceId === ws.id), "child workspace tasks inherit ancestor Gadgets");
     const movedTaskAgentCreated = await gadgetCreate.execute("tc-moved-workspace-gadget", { name: "Moved Workspace Agent Gadget", html: "<html>moved</html>", scope: "workspace" } as never);
     assert.equal(movedTaskAgentCreated.isError, undefined);
     assert.deepEqual(
@@ -196,6 +253,18 @@ async function main(): Promise<void> {
     })({ registerTool: (tool: never) => approvalTools.push(tool), on: () => undefined } as unknown as ExtensionAPI);
     assert.equal((await approvalTools[0].execute("tc-rejected", { name: "Rejected", html: "<html/>" } as never)).isError, true);
     assert.equal(service.list().length, gadgetCountBeforeDenied, "readonly/rejected Agent calls must not create Gadget");
+    const beforeDenied = service.readSource(workspaceAgentGadgetId);
+    for (const tools of [deniedTools, approvalTools]) {
+      const result = await tools.find((item) => item.name === "gadget_update")!.execute("deny-update", { gadgetId: workspaceAgentGadgetId, expectedRevision: beforeDenied.revision, files: [{ path: "index.html", content: "denied" }] } as never);
+      assert.equal(result.isError, true);
+      assert.equal(service.readSource(workspaceAgentGadgetId).revision, beforeDenied.revision);
+      assert.equal((await tools.find((item) => item.name === "gadget_read")!.execute("allow-read", { gadgetId: workspaceAgentGadgetId } as never)).isError, undefined);
+    }
+    const unrelated = db.createSpace({ name: "Unrelated", path: join(root, "unrelated") });
+    db.upsertTask({ ...db.getTask("task-gadget-test")!, spaceId: unrelated.id, updatedAt: Date.now() });
+    assert.equal((await tool("gadget_read").execute("moved-away", { gadgetId: workspaceAgentGadgetId } as never)).isError, true, "access must follow a task's live workspace");
+    assert.equal(service.list({ scope: { type: "task", taskId: "task-gadget-test" }, includeInherited: true }).some((item) => item.id === workspaceAgentGadgetId), false);
+    db.upsertTask({ ...db.getTask("task-gadget-test")!, spaceId: ws.id, updatedAt: Date.now() });
 
     const legacyBoardPath = join(root, "legacy-board.html");
     writeFileSync(legacyBoardPath, "<!doctype html><html><body>materialized board</body></html>", "utf8");
@@ -534,6 +603,7 @@ async function main(): Promise<void> {
     await service.disposeAll();
     console.log("gadget-blueprint-test: ok");
   } finally {
+    await activeService?.disposeAll();
     db.close();
     rmSync(root, { recursive: true, force: true });
   }

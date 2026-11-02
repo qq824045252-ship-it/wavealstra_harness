@@ -69,7 +69,7 @@ import {
 import { BlueprintIpc, type BlueprintCaptureRequest } from "../shared/blueprint-ipc";
 import type { BlueprintCreateRequest, BlueprintInstantiateRequest, BlueprintUpdateRequest } from "../shared/blueprint-types";
 import type { TemplateCapabilityRegistries } from "../shared/project-template";
-import type { GadgetCreateRequest, GadgetUpdateRequest } from "../shared/gadget-types";
+import type { GadgetCreateRequest, GadgetUpdateRequest, GadgetSourceUpdateRequest } from "../shared/gadget-types";
 import {
   LibraryIpc,
   type LibraryCreateItemRequest,
@@ -702,6 +702,8 @@ function registerIpc(): void {
   ipcMain.handle(GadgetIpc.list, (_event, request?: GadgetListRequest) => gadgetService.list(request));
   ipcMain.handle(GadgetIpc.get, (_event, id: string) => gadgetService.get(id));
   ipcMain.handle(GadgetIpc.update, (_event, request: GadgetUpdateRequest) => gadgetService.update(request));
+  ipcMain.handle(GadgetIpc.readSource, (_event, id: string) => gadgetService.readSource(id));
+  ipcMain.handle(GadgetIpc.updateSource, (_event, request: GadgetSourceUpdateRequest) => gadgetService.updateSource(request));
   ipcMain.handle(GadgetIpc.moveScope, (_event, request: GadgetMoveScopeRequest) => gadgetService.moveScope(request.gadgetId, request.scope));
   ipcMain.handle(GadgetIpc.start, (_event, id: string) => gadgetService.start(id));
   ipcMain.handle(GadgetIpc.health, (_event, id: string) => gadgetService.health(id));

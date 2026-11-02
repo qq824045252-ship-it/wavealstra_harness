@@ -8,6 +8,8 @@ import type {
   GadgetScope,
   GadgetSourceFile,
   GadgetUpdateRequest,
+  GadgetSourceSnapshot,
+  GadgetSourceUpdateRequest,
 } from "../../shared/gadget-types";
 import { assertGadgetScope, GADGET_MANIFEST_SCHEMA_VERSION, normalizeJsonRecord } from "../../shared/gadget-types";
 import type { GadgetListRequest } from "../../shared/gadget-ipc";
@@ -143,9 +145,12 @@ export class GadgetService {
       ...descriptor,
       runtime: this.deps.registry.runtime(descriptor.id),
     }));
-    if (!request.includeInherited || request.scope?.type !== "workspace") return direct;
+    if (!request.includeInherited || !request.scope || request.scope.type === "global") return direct;
     const inherited: GadgetListItem[] = [];
-    for (const workspaceId of this.deps.workspaceAncestors(request.scope.workspaceId)) {
+    const workspaceIds = request.scope.type === "workspace"
+      ? this.deps.workspaceAncestors(request.scope.workspaceId)
+      : this.visibleWorkspaceIds(request.scope.taskId);
+    for (const workspaceId of workspaceIds) {
       for (const descriptor of this.deps.repository.list({ type: "workspace", workspaceId })) {
         inherited.push({
           ...descriptor,
@@ -155,7 +160,43 @@ export class GadgetService {
         });
       }
     }
+    if (request.scope.type === "task") {
+      for (const descriptor of this.deps.repository.list({ type: "global" })) {
+        inherited.push({ ...descriptor, runtime: this.deps.registry.runtime(descriptor.id), inherited: true });
+      }
+    }
     return [...direct, ...inherited];
+  }
+
+  getForTask(id: string, taskId: string): GadgetListItem {
+    const gadget = this.get(id);
+    if (!gadget) throw new Error(`Gadget 不存在：${id}`);
+    this.assertVisibleToTask(gadget, taskId);
+    return gadget;
+  }
+
+  readSource(id: string): GadgetSourceSnapshot {
+    this.require(id);
+    return this.deps.storage.readSource(id);
+  }
+
+  updateSource(request: GadgetSourceUpdateRequest): GadgetSourceSnapshot {
+    const current = this.require(request.gadgetId);
+    const updated = { ...current, updatedAt: Date.now() };
+    const snapshot = this.deps.storage.updateSource(request, () => this.deps.repository.update(updated));
+    this.deps.registry.upsert(updated);
+    this.emitChanged({ type: "updated", gadgetId: current.id });
+    return snapshot;
+  }
+
+  async openForTask(id: string, taskId: string): Promise<GadgetRuntimeState> {
+    this.getForTask(id, taskId);
+    const state = await this.start(id);
+    if (state.status === "running") {
+      this.getForTask(id, taskId);
+      this.emitChanged({ type: "open-requested", gadgetId: id, taskId });
+    }
+    return state;
   }
 
   moveScope(id: string, scope: GadgetScope): GadgetDescriptor {
@@ -291,16 +332,21 @@ export class GadgetService {
   }
 
   private assertVisibleToTask(gadget: GadgetDescriptor, taskId: string): void {
+    if (!this.deps.taskExists(taskId)) throw new Error(`任务不存在：${taskId}`);
     if (gadget.scope.type === "global") return;
     if (gadget.scope.type === "task") {
-      if (gadget.scope.taskId !== taskId) throw new Error("Task Gadget 不能导出到其它任务");
+      if (gadget.scope.taskId !== taskId) throw new Error("当前任务不可访问其它任务的私有 Gadget");
       return;
     }
-    const workspaceId = this.deps.taskWorkspaceId(taskId);
-    const visibleWorkspaceIds = workspaceId ? [workspaceId, ...this.deps.workspaceAncestors(workspaceId)] : [];
-    if (!visibleWorkspaceIds.includes(gadget.scope.workspaceId)) {
+    if (!this.visibleWorkspaceIds(taskId).includes(gadget.scope.workspaceId)) {
       throw new Error("目标任务不在该 Workspace Gadget 的可见作用域内");
     }
+  }
+
+  private visibleWorkspaceIds(taskId: string): string[] {
+    if (!this.deps.taskExists(taskId)) throw new Error(`任务不存在：${taskId}`);
+    const id = this.deps.taskWorkspaceId(taskId);
+    return id ? [id, ...this.deps.workspaceAncestors(id)] : [];
   }
 
   private emitChanged(event: GadgetChangedEvent): void {

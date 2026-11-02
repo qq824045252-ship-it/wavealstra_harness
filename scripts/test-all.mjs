@@ -63,6 +63,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/];
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:gadget-task-desktop",
   // 真 Electron 窗口（隐藏 BrowserWindow / 真实 UI 交互）
   "test:memory-ui",
   "test:tray",

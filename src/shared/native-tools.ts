@@ -110,6 +110,10 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "project_plan_update",
   // Other product-owned extensions
   "gadget_create",
+  "gadget_list",
+  "gadget_read",
+  "gadget_update",
+  "gadget_open",
   "query_work_graph",
   "search_workspace_resources",
   "subagent",

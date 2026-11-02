@@ -212,7 +212,7 @@ import {
   type GadgetSaveAsBlueprintRequest,
   type GadgetChangedEvent,
 } from "../shared/gadget-ipc";
-import type { GadgetCreateRequest, GadgetDescriptor, GadgetListItem, GadgetRuntimeState, GadgetUpdateRequest } from "../shared/gadget-types";
+import type { GadgetCreateRequest, GadgetDescriptor, GadgetListItem, GadgetRuntimeState, GadgetUpdateRequest, GadgetSourceSnapshot, GadgetSourceUpdateRequest } from "../shared/gadget-types";
 import { BlueprintIpc, type BlueprintCaptureRequest, type BlueprintChangedEvent } from "../shared/blueprint-ipc";
 import type {
   BlueprintCreateRequest,
@@ -1238,6 +1238,8 @@ const api = {
     list: (request?: GadgetListRequest): Promise<GadgetListItem[]> => ipcRenderer.invoke(GadgetIpc.list, request),
     get: (id: string): Promise<GadgetListItem | null> => ipcRenderer.invoke(GadgetIpc.get, id),
     update: (request: GadgetUpdateRequest): Promise<GadgetDescriptor> => ipcRenderer.invoke(GadgetIpc.update, request),
+    readSource: (id: string): Promise<GadgetSourceSnapshot> => ipcRenderer.invoke(GadgetIpc.readSource, id),
+    updateSource: (request: GadgetSourceUpdateRequest): Promise<GadgetSourceSnapshot> => ipcRenderer.invoke(GadgetIpc.updateSource, request),
     moveScope: (request: GadgetMoveScopeRequest): Promise<GadgetDescriptor> => ipcRenderer.invoke(GadgetIpc.moveScope, request),
     start: (id: string): Promise<GadgetRuntimeState> => ipcRenderer.invoke(GadgetIpc.start, id),
     health: (id: string): Promise<GadgetRuntimeState> => ipcRenderer.invoke(GadgetIpc.health, id),

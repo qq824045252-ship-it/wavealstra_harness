@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GadgetManifest, GadgetSourceFile } from "../../shared/gadget-types";
+import { createHash, randomUUID } from "node:crypto";
+import type { GadgetManifest, GadgetSourceFile, GadgetSourceSnapshot, GadgetSourceUpdateRequest } from "../../shared/gadget-types";
 import { normalizeGadgetManifest } from "../../shared/gadget-types";
 import { isBlueprintSensitivePath, redactBlueprintSecrets } from "../../shared/blueprint-secret-policy";
 
@@ -49,7 +50,7 @@ function safeRelativePath(raw: string): string {
   const normalized = raw.replaceAll("\\", "/").replace(/^\.\//, "");
   if (
     !normalized || normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized) || normalized.includes("\0") ||
-    normalized.split("/").some((part) => !part || part === "." || part === "..")
+    normalized.split("/").some((part) => !part || part === "." || part === ".." || /[. ]$/.test(part) || /[<>:"|?*\x00-\x1f]/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
   ) {
     throw new Error(`Gadget 文件路径无效：${raw}`);
   }
@@ -150,6 +151,93 @@ export class GadgetStorage {
     const realEntry = realpathSync(entryPath);
     if (!isInside(realSource, realEntry)) throw new Error(`Gadget 入口符号链接越界：${manifest.entry}`);
     return { manifest, content: readFileSync(realEntry, "utf8"), path: realEntry };
+  }
+
+  /** Editing needs exact source, not the redacted Blueprint export. */
+  readSource(id: string): GadgetSourceSnapshot {
+    this.assertSafeStorage(id);
+    const sourcePath = this.paths(id).sourcePath;
+    const files: GadgetSourceFile[] = [];
+    let totalBytes = 0;
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = join(dir, entry.name);
+        if (entry.isSymbolicLink()) throw new Error("Gadget 源码包含符号链接，不能编辑");
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.isFile()) throw new Error("Gadget 源码包含非普通文件");
+        const size = lstatSync(full).size;
+        totalBytes += size;
+        if (size > MAX_BLUEPRINT_FILE_BYTES || totalBytes > MAX_BLUEPRINT_TOTAL_BYTES || files.length >= MAX_SOURCE_FILES) {
+          throw new Error("Gadget 源码超过读取大小限制");
+        }
+        const bytes = readFileSync(full);
+        const content = bytes.toString("utf8");
+        const text = Buffer.from(content, "utf8").equals(bytes);
+        files.push({ path: relative(sourcePath, full).replaceAll("\\", "/"), content: text ? content : bytes.toString("base64"), encoding: text ? "utf8" : "base64" });
+      }
+    };
+    walk(sourcePath);
+    this.validateSourceFiles(files);
+    const manifest = this.readManifest(id);
+    return { manifest, files, revision: createHash("sha256").update(JSON.stringify({ manifest, files })).digest("hex") };
+  }
+
+  updateSource(request: GadgetSourceUpdateRequest, commit: () => void): GadgetSourceSnapshot {
+    const { gadgetId: id, files, expectedRevision } = request;
+    const current = this.readSource(id);
+    if (!expectedRevision || current.revision !== expectedRevision) throw new Error("Gadget 已被修改，请重新读取源码后再保存");
+    if (!files.length) throw new Error("请提供要修改的 Gadget 源文件");
+    this.validateSourceFiles(files);
+    const merged = new Map(current.files.map((file) => [file.path.toLowerCase(), file]));
+    for (const file of files) {
+      const path = safeRelativePath(file.path);
+      const old = merged.get(path.toLowerCase());
+      merged.set(path.toLowerCase(), { ...file, path: old?.path ?? path });
+    }
+    this.validateSourceFiles([...merged.values()]);
+    if (!merged.has(current.manifest.entry.toLowerCase())) throw new Error("Gadget 缺少入口文件");
+    const paths = this.paths(id);
+    const next = join(paths.root, `code.next-${randomUUID()}`);
+    const previous = join(paths.root, `code.previous-${randomUUID()}`);
+    mkdirSync(next);
+    const applied: Array<{ destination: string; backup: string | null }> = [];
+    try {
+      for (const file of merged.values()) {
+        const destination = resolve(next, ...safeRelativePath(file.path).split("/"));
+        mkdirSync(resolve(destination, ".."), { recursive: true });
+        writeFileSync(destination, file.encoding === "base64" ? Buffer.from(file.content, "base64") : file.content);
+      }
+      // The running host uses code/ as cwd; Windows cannot rename that directory.
+      // Stage/validate the entire tree, then replace individual files atomically.
+      for (const patch of files) {
+        const file = merged.get(safeRelativePath(patch.path).toLowerCase())!;
+        const destination = resolve(paths.sourcePath, ...file.path.split("/"));
+        const backup = existsSync(destination) ? resolve(previous, ...file.path.split("/")) : null;
+        if (backup) {
+          mkdirSync(resolve(backup, ".."), { recursive: true });
+          writeFileSync(backup, readFileSync(destination));
+        }
+        mkdirSync(resolve(destination, ".."), { recursive: true });
+        renameSync(resolve(next, ...file.path.split("/")), destination);
+        applied.push({ destination, backup });
+      }
+      const snapshot = this.readSource(id);
+      commit();
+      // A cleanup failure must not report a successful source/DB commit as a failed edit.
+      try { rmSync(previous, { recursive: true, force: true }); }
+      catch (error) { console.warn("[GadgetStorage] 保留源码备份", previous, error); }
+      return snapshot;
+    } catch (error) {
+      for (const { destination, backup } of applied.reverse()) {
+        if (backup) renameSync(backup, destination);
+        else rmSync(destination, { force: true });
+      }
+      rmSync(previous, { recursive: true, force: true });
+      throw error;
+    } finally {
+      try { rmSync(next, { recursive: true, force: true }); }
+      catch (error) { console.warn("[GadgetStorage] 保留源码暂存目录", next, error); }
+    }
   }
 
   /**

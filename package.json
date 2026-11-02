@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.65",
+  "version": "0.1.66",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -264,6 +264,7 @@
     "test:runtime-prewarm": "esbuild scripts/runtime-prewarm-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/runtime-prewarm-test.cjs && node scripts/test-guard.mjs out/tests/runtime-prewarm-test.cjs",
     "test:db-migration": "esbuild scripts/db-migration-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/db-migration-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/db-migration-test.cjs",
     "test:gadget-blueprint": "esbuild scripts/gadget-blueprint-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/gadget-blueprint-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/gadget-blueprint-test.cjs",
+    "test:gadget-task-desktop": "node scripts/gadget-task-desktop-test.cjs",
     "test:workspace-navigation-ux": "esbuild scripts/workspace-navigation-ux-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/workspace-navigation-ux-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/workspace-navigation-ux-test.cjs",
     "test:visual-polish-ux": "esbuild scripts/visual-polish-ux-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/visual-polish-ux-test.cjs && node scripts/test-guard.mjs out/tests/visual-polish-ux-test.cjs",
     "test:user-prompt-display": "esbuild scripts/user-prompt-display-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/user-prompt-display-test.cjs && node scripts/test-guard.mjs out/tests/user-prompt-display-test.cjs",

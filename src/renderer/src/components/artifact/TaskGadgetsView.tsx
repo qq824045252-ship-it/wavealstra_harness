@@ -7,7 +7,7 @@ export default function TaskGadgetsView({ floating = false }: { floating?: boole
 
   const content = activeTaskId ? (
     <div className="task-gadgets-panel-scroll">
-      <GadgetSection scope={{ type: "task", taskId: activeTaskId }} title="当前任务 Gadgets" viewOnly />
+      <GadgetSection key={activeTaskId} scope={{ type: "task", taskId: activeTaskId }} includeInherited title="当前任务可用 Gadgets" viewOnly />
     </div>
   ) : (
     <div className="task-gadgets-panel-empty">请先选择一个任务</div>

@@ -70,6 +70,19 @@ export interface GadgetUpdateRequest {
   metadata?: Record<string, unknown>;
 }
 
+export interface GadgetSourceSnapshot {
+  manifest: GadgetManifest;
+  files: GadgetSourceFile[];
+  revision: string;
+}
+
+/** Patch the named source files; all other files and runtime data are retained. */
+export interface GadgetSourceUpdateRequest {
+  gadgetId: string;
+  expectedRevision: string;
+  files: GadgetSourceFile[];
+}
+
 export interface GadgetListItem extends GadgetDescriptor {
   runtime: GadgetRuntimeState;
   inherited?: boolean;

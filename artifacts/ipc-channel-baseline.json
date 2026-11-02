@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 455,
-  "allRegistrations": 466,
-  "uniqueChannels": 451,
+  "mainRegistrations": 457,
+  "allRegistrations": 468,
+  "uniqueChannels": 453,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -253,11 +253,13 @@
     "gadget:health",
     "gadget:list",
     "gadget:moveScope",
+    "gadget:readSource",
     "gadget:restart",
     "gadget:saveAsBlueprint",
     "gadget:start",
     "gadget:stop",
     "gadget:update",
+    "gadget:updateSource",
     "gateway:connect",
     "gateway:disconnect",
     "gateway:getChannelConfig",
@@ -473,7 +475,7 @@
         "channel": "subagent:active",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:140",
-          "src/main/capabilities/subagent/index.ts:653",
+          "src/main/capabilities/subagent/index.ts:655",
           "scripts/subagent-ipc-host-test.ts:86"
         ],
         "foreign": [
@@ -484,7 +486,7 @@
         "channel": "subagent:transcript",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:141",
-          "src/main/capabilities/subagent/index.ts:645"
+          "src/main/capabilities/subagent/index.ts:647"
         ],
         "foreign": []
       },
@@ -492,7 +494,7 @@
         "channel": "subagent:steer",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:144",
-          "src/main/capabilities/subagent/index.ts:647"
+          "src/main/capabilities/subagent/index.ts:649"
         ],
         "foreign": []
       },
@@ -500,7 +502,7 @@
         "channel": "subagent:cancel",
         "entries": [
           "src/main/agent/subagent-ipc-host.ts:147",
-          "src/main/capabilities/subagent/index.ts:651"
+          "src/main/capabilities/subagent/index.ts:653"
         ],
         "foreign": []
       }
@@ -509,7 +511,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2206",
+          "src/main/index.ts:2208",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -519,7 +521,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2210",
+          "src/main/index.ts:2212",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -529,7 +531,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2214",
+          "src/main/index.ts:2216",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -539,7 +541,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2225",
+          "src/main/index.ts:2227",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -549,7 +551,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2229",
+          "src/main/index.ts:2231",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -559,7 +561,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2233",
+          "src/main/index.ts:2235",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -569,7 +571,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2237",
+          "src/main/index.ts:2239",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [

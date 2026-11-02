@@ -5,6 +5,8 @@ import type {
   GadgetRuntimeState,
   GadgetScope,
   GadgetUpdateRequest,
+  GadgetSourceSnapshot,
+  GadgetSourceUpdateRequest,
 } from "./gadget-types";
 
 export const GadgetIpc = {
@@ -12,6 +14,8 @@ export const GadgetIpc = {
   list: "gadget:list",
   get: "gadget:get",
   update: "gadget:update",
+  readSource: "gadget:readSource",
+  updateSource: "gadget:updateSource",
   moveScope: "gadget:moveScope",
   start: "gadget:start",
   health: "gadget:health",
@@ -25,8 +29,9 @@ export const GadgetIpc = {
 } as const;
 
 export interface GadgetChangedEvent {
-  type: "created" | "updated" | "runtime" | "deleted";
+  type: "created" | "updated" | "runtime" | "deleted" | "open-requested";
   gadgetId: string;
+  taskId?: string;
 }
 
 export interface GadgetListRequest {
@@ -63,6 +68,8 @@ export interface GadgetApi {
   list(request?: GadgetListRequest): Promise<GadgetListItem[]>;
   get(id: string): Promise<GadgetListItem | null>;
   update(request: GadgetUpdateRequest): Promise<GadgetDescriptor>;
+  readSource(id: string): Promise<GadgetSourceSnapshot>;
+  updateSource(request: GadgetSourceUpdateRequest): Promise<GadgetSourceSnapshot>;
   moveScope(request: GadgetMoveScopeRequest): Promise<GadgetDescriptor>;
   start(id: string): Promise<GadgetRuntimeState>;
   health(id: string): Promise<GadgetRuntimeState>;
