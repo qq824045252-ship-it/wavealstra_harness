@@ -3,7 +3,7 @@ import { useId, useLayoutEffect } from "react";
 /** 与 NativeSurfaceCoordinator / HtmlArtifactView 的主 surface 对齐 */
 const SURFACE_MAIN = "artifact-main";
 /**
- * 全屏 DOM 弹层必须挡住原生 WebContentsView。
+ * 与原生 WebContentsView 重叠的 DOM 弹层/菜单必须持有 blocker。
  * Electron 的 artifact/browser 视图叠在 renderer 之上，CSS z-index 管不到。
  *
  * 每个调用实例拥有独立 blocker token：不能让多个 overlay 共享 "modal"，否则

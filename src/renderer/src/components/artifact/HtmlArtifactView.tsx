@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Artifact } from "@/types";
 import type { CaptureModeStateEvent } from "@shared/capture-mode";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
+import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import { useAppStore } from "@/store/appStore";
 import BrowserNavBar from "./BrowserNavBar";
 import CaptureModeStatus from "./CaptureModeStatus";
@@ -9,12 +10,9 @@ import BrowserConsolePanel from "./BrowserConsolePanel";
 
 /** Wave 4A：与主进程 NativeSurfaceCoordinator 的默认 surface 对齐（§75） */
 const SURFACE_MAIN = "artifact-main";
-const BLOCKER_MODAL = "modal";
 
 interface Props {
   artifact: Artifact;
-  /** 面板内有覆盖层（ExtensionFlyout 等）时隐藏原生视图（原生视图盖在 DOM 之上） */
-  overlayOpen?: boolean;
 }
 
 /**
@@ -22,7 +20,7 @@ interface Props {
  * 面板 UI 留在 renderer。Wave 4C：Capture Mode 入口（hover/click 检查元素 →
  * SelectionDescriptor；MVP 不做 SelectionStore/PromptContext）。
  */
-export default function HtmlArtifactView({ artifact, overlayOpen = false }: Props): React.JSX.Element {
+export default function HtmlArtifactView({ artifact }: Props): React.JSX.Element {
   const modelId = useAppStore((s) => s.activeModelId);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [captureState, setCaptureState] = useState<CaptureModeStateEvent>({ state: "idle" });
@@ -36,7 +34,7 @@ export default function HtmlArtifactView({ artifact, overlayOpen = false }: Prop
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const [convertMessage, setConvertMessage] = useState<string | null>(null);
   const { requestText, textPromptDialog, promptOpen } = useTextPrompt();
-  const blocksNativeSurface = overlayOpen || promptOpen;
+  useBlockNativeSurfaces(promptOpen);
 
   // 打开：加载产物（内容由主进程按 artifactId 从 Artifact Domain 解析）；卸载时关闭。
   // content/path 变化（版本刷新）时重新加载，保持旧自动刷新行为。
@@ -103,18 +101,6 @@ export default function HtmlArtifactView({ artifact, overlayOpen = false }: Prop
       window.clearTimeout(lateSync);
     };
   }, [reportRect, artifact.id]);
-
-  // 覆盖层（flyout）打开时隐藏原生视图，关闭后恢复：
-  // Wave 4A：blocker token（modal），多来源隐藏叠加时删一个不误显示（§76）
-  useEffect(() => {
-    const api = window.api?.artifact;
-    if (!api) return;
-    if (blocksNativeSurface) api.surface.addBlocker(SURFACE_MAIN, BLOCKER_MODAL);
-    else api.surface.removeBlocker(SURFACE_MAIN, BLOCKER_MODAL);
-    return () => {
-      if (blocksNativeSurface) api.surface.removeBlocker(SURFACE_MAIN, BLOCKER_MODAL);
-    };
-  }, [blocksNativeSurface]);
 
   const captureActive = captureState.state === "entering" || captureState.state === "active";
   const toggleCapture = useCallback(() => {

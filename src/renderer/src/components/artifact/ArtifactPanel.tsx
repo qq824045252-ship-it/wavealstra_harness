@@ -213,7 +213,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
           className={`artifact-body artifact-body-with-flyout ${current.kind === "markdown" || current.kind === "table" ? "doc-mode" : ""} ${isHtmlPreview || isSvgPreview || ["pdf", "docx", "xlsx", "pptx"].includes(current.kind) ? "html-mode" : ""}`}
         >
           {isHtmlPreview ? (
-            <HtmlArtifactView artifact={current} overlayOpen={extensionFlyoutOpen} />
+            <HtmlArtifactView artifact={current} />
           ) : (
             <ArtifactBody
               artifact={current}

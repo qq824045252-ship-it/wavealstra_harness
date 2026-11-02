@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
+import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import type { PanelMode } from "@/store/appStore";
 import { useAppStore } from "@/store/appStore";
 import type { Artifact } from "@/types";
@@ -61,6 +62,9 @@ export default function ExtensionTopBar({
 
   const displayMode = panelMode === "file" ? extensionView : panelMode;
   const showTabs = tabs.length > 0;
+  // Native browser/artifact views paint above DOM menus regardless of z-index.
+  // The rendered overlay owns the blocker, including pinned and nested flyouts.
+  useBlockNativeSurfaces(showTabs ? extensionFlyoutOpen : extensionMenuOpen);
 
   const pickMode = (mode: PanelMode): void => {
     if (mode === "overview") showOverview();

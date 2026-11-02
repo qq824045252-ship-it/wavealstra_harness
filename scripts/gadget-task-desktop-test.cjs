@@ -171,6 +171,25 @@ async function closeBrowser() { await click('document.querySelector(\'button[tit
     const browserBounds = await main(`globalThis.__gadgetWindow.contentView.children.find(v=>v.webContents?.getURL().startsWith('http://127.0.0.1:')).getBounds()`);
     const chatRight = await ui('document.querySelector(".content-col").getBoundingClientRect().right');
     assert(browserBounds.x >= chatRight, 'native Gadget view must not cover the chat');
+    // A DOM click alone can pass even when a native WCV physically covers the
+    // target. Check native visibility as well as renderer menu geometry.
+    const browserView = `globalThis.__gadgetWindow.contentView.children.find(v=>v.webContents?.getURL().startsWith('http://127.0.0.1:'))`;
+    await main(`${browserView}.webContents.executeJavaScript('window.menuState="preserved"');true`);
+    for (const [name, selector] of [['top-menu', '.extension-menu-btn'], ['mode-menu', '.extension-mode-section-btn']]) {
+      await click(`document.querySelector(${JSON.stringify(selector)})`);
+      assert.equal(await ui('document.querySelectorAll(".extension-mode-menu .extension-mode-item").length'), 6);
+      assert(await ui(`document.querySelector('.extension-mode-menu').getBoundingClientRect().bottom>${browserBounds.y}`), 'menu overlaps native browser rectangle');
+      await screenshot(name);
+      assert.equal(await main(`${browserView}.getVisible()`), false, 'open ' + name + ' must not be covered by the native browser');
+      await ui('window.dispatchEvent(new Event("resize"));true');
+      await main('true'); // flush the renderer setRect IPC before inspecting WCV
+      assert.equal(await main(`${browserView}.getVisible()`), false, 'layout reports cannot reveal browser through an open menu');
+      await main(`(()=>{const wc=globalThis.__gadgetWindow.webContents;wc.sendInputEvent({type:'keyDown',keyCode:'Escape'});wc.sendInputEvent({type:'keyUp',keyCode:'Escape'});return true})()`);
+      await until(() => main(`${browserView}.getVisible()`), 'browser restored after ' + name);
+      assert.equal(await ui('document.querySelectorAll(".extension-mode-menu").length'), 0);
+      assert.equal(await main(`${browserView}.webContents.executeJavaScript('window.menuState')`), 'preserved', 'dismissing a menu must preserve the document');
+    }
+    report.tests.push('Both side menus remain fully visible over native browser, survive layout reports, and dismiss without reloading the document');
     const composer = 'document.querySelector(\'.input-area [contenteditable="true"],.input-area textarea\')';
     await click(composer);
     await main(`globalThis.__gadgetWindow.webContents.insertText('Chat remains usable');true`);
@@ -243,6 +262,34 @@ async function closeBrowser() { await click('document.querySelector(\'button[tit
     assert.equal(truncated.ok, false);
     assert(truncated.error.includes('terminal response event'), truncated.error);
     report.tests.push('Uncancelled truncated Responses stream still surfaces its error');
+    // File tabs use a flyout rather than the small top menu. Its nested mode
+    // dropdown must not release the parent's blocker when it closes.
+    await ui(`window.api.artifactDomain.register({taskId:'gadget-ui-task',kind:'html',title:'menu-fixture.html',content:'<!doctype html><html><body>Artifact menu fixture</body></html>'})`);
+    await click('document.querySelector(".extension-menu-btn")');
+    await click(button('.extension-mode-item', '概览'));
+    await until(() => ui(`Boolean(${button('.extension-artifact-name', 'menu-fixture.html')})`), 'artifact row');
+    await click(button('.extension-artifact-name', 'menu-fixture.html'));
+    const artifactView = `globalThis.__gadgetWindow.contentView.children.find(v=>v.webContents?.getURL().startsWith('mybuddy-artifact:'))`;
+    await until(() => main(`Boolean(${artifactView}?.getVisible())`), 'native HTML artifact');
+    await click('document.querySelector(".extension-menu-btn")');
+    assert.equal(await main(`${artifactView}.getVisible()`), false, 'artifact flyout blocks its native surface');
+    await click('document.querySelector(\'.extension-flyout-pin[title="钉住"]\')');
+    await click('document.querySelector(".extension-flyout-card .extension-panel-header-btn")');
+    await click('document.querySelector(".extension-flyout-card .extension-panel-header-btn")');
+    assert.equal(await ui('document.querySelectorAll(".extension-mode-menu").length'), 0);
+    assert.equal(await main(`${artifactView}.getVisible()`), false, 'closing a nested menu must keep the pinned flyout blocker');
+    await screenshot('artifact-flyout');
+    await click('document.querySelector(".extension-flyout-card .extension-panel-header-btn")');
+    await click(button('.extension-mode-item', '浏览器'));
+    await until(() => main(`${browserView}.getVisible()`), 'browser restored after nested menu unmount');
+    await click('document.querySelector(".extension-menu-btn")');
+    assert.equal(await main(`${browserView}.getVisible()`), false, 'file-tab flyout blocks browser too');
+    await screenshot('browser-flyout');
+    await click('document.querySelector(\'button[title="关闭侧栏"]\')');
+    assert.equal(await main(`${browserView}.getVisible()`), false, 'unmount must not reveal a closed browser');
+    await main(`globalThis.__gadgetWindow.webContents.send('gadget:changed',${JSON.stringify({ type: 'open-requested', gadgetId: seed.gadgetId, taskId: 'gadget-ui-task' })});true`);
+    await until(() => main(`${browserView}.getVisible()`), 'reopen after overlay unmount releases blockers');
+    report.tests.push('File flyouts block HTML and browser surfaces; nested menu cleanup preserves parent ownership; panel unmount releases blockers for reopen');
     report.status = 'passed';
     console.log(JSON.stringify(report, null, 2));
   } catch (error) {

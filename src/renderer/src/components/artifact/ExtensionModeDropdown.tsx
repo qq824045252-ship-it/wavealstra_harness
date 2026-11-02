@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
+import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import type { PanelMode } from "@/store/appStore";
 import { useAppStore } from "@/store/appStore";
 import { IconCheck, IconChevronDown } from "@/components/common/icons";
@@ -26,6 +27,7 @@ export default function ExtensionModeDropdown({ fixedMode, variant = "default" }
   const anchorRef = useRef<HTMLDivElement>(null);
 
   useDismissOnClickOutside(open, () => setOpen(false), anchorRef);
+  useBlockNativeSurfaces(open);
 
   const displayMode = fixedMode ?? (panelMode === "file" ? extensionView : panelMode);
   const label = EXTENSION_MODE_LABEL[displayMode];
