@@ -14,6 +14,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
+import { writeCacheRequestTrace } from "../../agent/CacheRequestTrace";
 import {
   SubagentRegistry,
   createRecord,
@@ -457,6 +459,9 @@ export class SubagentRuntime {
         args: [...invocation.args, ...attemptArgs],
         cwd: record.project,
         env,
+        onCacheTrace: (metadata) => writeCacheRequestTrace({ ...metadata, source: 'subagent',
+          sessionHash: createHash('sha256').update(record.subagentId).digest('hex'),
+          parentSessionHash: createHash('sha256').update(record.scope).digest('hex') }),
         onStderr: (text) => {
           if (/error|warning|failed/i.test(text)) {
             console.warn(`[subagent:${record.subagentId}] ${text}`);

@@ -23,6 +23,7 @@ export async function buildSubagentRuntime(root) {
     `export {main} from ${spec(join(piRoot,'dist/main.js'))};`,
     `export {setupCli} from ${spec(join(piRoot,'dist/cli/setup.js'))};`,
     `export {loadExtensionFromFactory} from ${spec(join(piRoot,'dist/core/extensions/loader.js'))};`,
+    `export {writeRawStdout} from ${spec(join(piRoot,'dist/core/output-guard.js'))};`,
     `export {anthropicMessagesApi} from ${spec(join(aiRoot,'dist/api/anthropic-messages.lazy.js'))};`,
     `export {openAICompletionsApi} from ${spec(join(aiRoot,'dist/api/openai-completions.lazy.js'))};`,
     `export {openAIResponsesApi} from ${spec(join(aiRoot,'dist/api/openai-responses.lazy.js'))};`,

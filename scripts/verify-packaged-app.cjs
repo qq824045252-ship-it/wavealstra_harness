@@ -34,6 +34,7 @@ const REQUIRED_UNPACKED_ENTRIES = [
   "out/main/capabilities/subagent/worker-launcher.mjs",
   "out/main/capabilities/subagent/vendor/context-projection.mjs",
   "out/main/capabilities/subagent/vendor/command-code.mjs",
+  "out/main/capabilities/subagent/vendor/cache-request-trace.mjs",
   "out/main/agent/request-transport.mjs",
   "out/main/codemode-worker.cjs",
   "out/main/image-resize-worker.js",

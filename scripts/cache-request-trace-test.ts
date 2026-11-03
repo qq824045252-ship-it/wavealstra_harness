@@ -117,4 +117,19 @@ assert(summary.requests.some((x:any)=>x.classification==='stable-prefix-low-cach
 assert(summary.requests.some((x:any)=>x.classification==='client-request-changed'&&x.firstDifference?.index===1));
 assert.deepEqual(summary.requests.find((x:any)=>x.sessionHash===sessionHash).httpStatuses,[503,200]);
 console.log('PASS report distinguishes stable-prefix misses, changed requests, retries and coverage gaps');
+// A large new tool result can lower the ratio while all earlier input was cached.
+const growthRecords:any[]=[];const growthTracer=new CacheRequestTracer(record=>growthRecords.push(record));
+const growthBody:any={model:model.id,input:[{role:'user',content:'first request'}]};
+for(const [input,read] of [[10000,0],[90000,10000],[30000,70000]]){
+  const t=growthTracer.start(model,'growth',{operation:'stream'});
+  t.payload(growthBody);const a=t.sent('https://example.invalid',{body:JSON.stringify(growthBody)});
+  t.received(a,200);t.result({stopReason:'stop',usage:{input:input!,cacheRead:read!,cacheWrite:0,output:1}});
+  growthBody.input.push({role:'user',content:'new file data'});
+}
+const growthReport=summarizeCacheTraces(growthRecords);
+assert.equal(growthReport.requests[1].classification,'stable-prefix-new-input');
+assert.equal(growthReport.requests[1].historyUncachedTokens,0);
+assert.equal(growthReport.requests[2].classification,'stable-prefix-partial-cache');
+assert.equal(growthReport.requests[2].historyUncachedTokens,30000);
+console.log('PASS fresh tail growth is distinct from partial cache reuse, even with a stable prefix');
 console.log('PASS cache request tracing; all provider responses simulated; no network');

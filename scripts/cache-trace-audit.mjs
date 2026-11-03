@@ -7,13 +7,14 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function summarizeCacheTraces(records) {
-  const groups = new Map(), sends = new Map();
+  const groups = new Map(), sends = new Map(), results = new Map();
   const ordered = [...records].sort((a,b)=>String(a.epoch).localeCompare(String(b.epoch)) || (a.sequence ?? a.at) - (b.sequence ?? b.at));
   for (const row of ordered) {
     if (row.version !== 1 || !row.epoch || !row.request) continue;
     const key = `${row.epoch}/${row.request}`;
     const list = groups.get(key) ?? [];list.push(row);groups.set(key,list);
     if (row.event === 'request' && row.stage === 'http') sends.set(`${key}/${row.attempt}`,row);
+    if (row.event === 'result') results.set(key,row);
   }
   const calls=[];
   for (const rows of groups.values()) {
@@ -23,6 +24,10 @@ export function summarizeCacheTraces(records) {
     const first=http[0],last=http.at(-1);
     const before=first?.previous;
     const prior=before?sends.get(`${result.epoch}/${before.request}/${before.attempt}`):undefined;
+    const priorUsage=before?results.get(`${result.epoch}/${before.request}`)?.usage:undefined;
+    const promptTokens=u=>u?(u.input??0)+(u.cacheRead??0)+(u.cacheWrite??0):null;
+    const previousPromptTokens=promptTokens(priorUsage);
+    const historyUncachedTokens=previousPromptTokens>0&&promptTokens(result.usage)>0?Math.max(0,previousPromptTokens-(result.usage.cacheRead??0)):null;
     const complete=http.length>0&&http.every(r=>r.coverage==='complete');
     const retryChanged=complete&&http.some(r=>r.bodyHash!==first.bodyHash||r.affinityHash!==first.affinityHash||r.endpointHash!==first.endpointHash);
     const routeChanged=prior&&first&&(prior.affinityHash!==first.affinityHash||prior.endpointHash!==first.endpointHash);
@@ -32,10 +37,15 @@ export function summarizeCacheTraces(records) {
     else if(retryChanged)classification='retry-request-changed';
     else if(changed||routeChanged)classification='client-request-changed';
     else if(before&&before.prefix===true){
-      classification=!prior?'history-gap':result.hitRate!=null&&result.hitRate<0.5?'stable-prefix-low-cache':'stable-prefix';
+      const partial=historyUncachedTokens!=null&&historyUncachedTokens>Math.max(512,(previousPromptTokens??0)*0.08);
+      classification=!prior?'history-gap':partial?
+        result.hitRate!=null&&result.hitRate<0.5?'stable-prefix-low-cache':'stable-prefix-partial-cache':
+        previousPromptTokens>0&&result.hitRate!=null&&result.hitRate<0.5?'stable-prefix-new-input':'stable-prefix';
     }
     calls.push({at:result.at,epoch:result.epoch,request:result.request,sessionHash:result.sessionHash,
+      source:result.source??'main',parentSessionHash:result.parentSessionHash,
       responseHash:result.responseHash,responseModelHash:result.responseModelHash,classification,hitRate:result.hitRate,usage:result.usage,outcome:result.outcome,
+      previousPromptTokens,historyUncachedTokens,
       sends:http.length,httpStatuses:rows.filter(r=>r.event==='http-result').map(r=>r.status),
       inputCount:last?.inputCount,sharedItems:before?.sharedItems,changedFields:before?.changedFields??[],
       firstDifference:before?.firstDifference?{index:before.firstDifference.index,
@@ -52,6 +62,7 @@ export function summarizeCacheTraces(records) {
     'A changed request can be intentional (user/compaction/model/tools); a fingerprint is evidence, not fault attribution.',
     'Different process epochs, evicted chains, truncated bodies and rotated-away predecessors are not compared as unchanged.',
     'Only observed HTTP JSON sends have final-body coverage; WebSockets and arbitrary request streams remain explicit gaps.',
+    'historyUncachedTokens compares the preceding prompt size with current cache reads; it is a diagnostic estimate, not proven waste or billable savings.',
   ]};
 }
 
@@ -67,7 +78,7 @@ function main(){
   for(const name of readdirSync(dir).filter(n=>/^cache-requests-\d{8}(?:-\d+)?\.log$/.test(n))){
     for(const line of readFileSync(join(dir,name),'utf8').split('\n')){
       const at=line.indexOf('[cache-trace] ');if(at<0)continue;
-      try{const row=JSON.parse(line.slice(at+14));if(!session||row.sessionHash===session)records.push(row)}catch{/* incomplete final line */}
+      try{const row=JSON.parse(line.slice(at+14));if(!session||row.sessionHash===session||row.parentSessionHash===session)records.push(row)}catch{/* incomplete final line */}
     }
   }
   console.log(JSON.stringify(summarizeCacheTraces(records),null,2));

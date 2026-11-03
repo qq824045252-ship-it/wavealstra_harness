@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.81",
+  "version": "0.1.82",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -143,6 +143,7 @@
     "cache:trace": "node scripts/cache-trace-audit.mjs",
     "cache:replay": "esbuild scripts/cache-long-session-replay.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-long-session-replay.mjs && node out/tests/cache-long-session-replay.mjs",
     "test:cache-request-trace": "esbuild scripts/cache-request-trace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/cache-request-trace-test.mjs && node scripts/test-guard.mjs out/tests/cache-request-trace-test.mjs",
+    "test:subagent-cache-trace": "node scripts/build-subagent-context.mjs && esbuild scripts/subagent-cache-trace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-cache-trace-test.mjs && node scripts/test-guard.mjs out/tests/subagent-cache-trace-test.mjs",
     "test:cache-boundary-matrix": "esbuild scripts/cache-prefix-matrix-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-prefix-matrix-test.mjs && node scripts/test-guard.mjs out/tests/cache-prefix-matrix-test.mjs",
     "test:runtime-probe": "esbuild scripts/runtime-probe-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/runtime-probe-test.mjs --external:electron && node scripts/test-guard.mjs out/tests/runtime-probe-test.mjs",
     "test:runtime-probe-electron": "esbuild scripts/runtime-probe-electron-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/runtime-probe-electron-smoke.cjs --external:electron && electron out/tests/runtime-probe-electron-smoke.cjs",
@@ -498,6 +499,7 @@
       "out/main/capabilities/subagent/worker-launcher.mjs",
       "out/main/capabilities/subagent/vendor/context-projection.mjs",
       "out/main/capabilities/subagent/vendor/command-code.mjs",
+      "out/main/capabilities/subagent/vendor/cache-request-trace.mjs",
       "out/main/agent/request-transport.mjs",
       "**/node_modules/better-sqlite3/**/*",
       "**/node_modules/@napi-rs/keyring/**/*",

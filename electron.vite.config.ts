@@ -50,7 +50,7 @@ export default defineConfig({
         for (const asset of await buildSubagentRuntime(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiCodemodeAssets(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiImageResizeAssets(__dirname)) this.emitFile(asset);
-        for (const fileName of ["capabilities/subagent/worker-launcher.mjs", "capabilities/subagent/vendor/context-projection.mjs", "capabilities/subagent/vendor/command-code.mjs", "agent/request-transport.mjs"]) {
+        for (const fileName of ["capabilities/subagent/worker-launcher.mjs", "capabilities/subagent/vendor/context-projection.mjs", "capabilities/subagent/vendor/command-code.mjs", "capabilities/subagent/vendor/cache-request-trace.mjs", "agent/request-transport.mjs"]) {
           const outputName = fileName;
           this.emitFile({ type: "asset", fileName: outputName, source: readFileSync(resolve(__dirname, "src/main", fileName), "utf8") });
         }

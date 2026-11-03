@@ -7,17 +7,18 @@ import { dirname, join, resolve } from "node:path";
 import { createRequestTransport } from "../../agent/request-transport.mjs";
 import { EphemeralContextProjection } from "./vendor/context-projection.mjs";
 import { commandCodeProvider } from "./vendor/command-code.mjs";
+import { CacheRequestTracer, sessionTraceBoundary } from "./vendor/cache-request-trace.mjs";
 
 const EXPECTED_PI_VERSION = "1.3.0";
 
 const requestedCli = realpathSync(resolve(process.argv[2] ?? ""));
 const bundled = requestedCli.endsWith('/pi-runtime.mjs') || requestedCli.endsWith('\\pi-runtime.mjs');
-let pi, ai, anthropic, completions, responses, cliPath, loadExtensionFromFactory, bundledRuntime;
+let pi, ai, anthropic, completions, responses, cliPath, loadExtensionFromFactory, writeRawStdout, bundledRuntime;
 if (bundled) {
   const manifest = JSON.parse(readFileSync(join(dirname(requestedCli), 'package.json'), 'utf8'));
   if (manifest.name !== '@wavealstra/pi-worker-runtime' || manifest.version !== EXPECTED_PI_VERSION) throw new Error('Packaged Pi worker version mismatch');
   bundledRuntime = await import(pathToFileURL(requestedCli).href);
-  ({ pi, ai, loadExtensionFromFactory } = bundledRuntime);
+  ({ pi, ai, loadExtensionFromFactory, writeRawStdout } = bundledRuntime);
   anthropic = bundledRuntime; completions = bundledRuntime; responses = bundledRuntime;
   cliPath = requestedCli;
   if (pi.VERSION !== EXPECTED_PI_VERSION) throw new Error('Packaged native Pi version mismatch');
@@ -57,10 +58,14 @@ ai = await import(pathToFileURL(realpathSync(join(aiRoot, "dist/index.js"))).hre
 if (pi.VERSION !== EXPECTED_PI_VERSION) throw new Error(`子代理需要 Pi ${EXPECTED_PI_VERSION}，当前为 ${pi.VERSION}`);
 
   ({ loadExtensionFromFactory } = await import(pathToFileURL(join(dirname(cliPath), 'core/extensions/loader.js')).href));
+  ({ writeRawStdout } = await import(pathToFileURL(join(dirname(cliPath), 'core/output-guard.js')).href));
 }
 const settings = pi.SettingsManager.create(process.cwd(), pi.getAgentDir());
 const createRuntime = pi.ModelRuntime.create.bind(pi.ModelRuntime);
 const invocationGuard = new AsyncLocalStorage();
+const cacheTracer = process.env.MYBUDDY_CACHE_TRACE === '0' ? undefined : new CacheRequestTracer(record => {
+  writeRawStdout(JSON.stringify({ type: 'mybuddy_cache_trace', record }) + '\n');
+});
 const projections = new WeakMap();
 const attachedSessions = new WeakSet();
 const attachedLoaders = new WeakSet();
@@ -80,7 +85,8 @@ pi.DefaultResourceLoader.prototype.reload = async function (...args) {
     log: (metadata) => console.error(metadata),
     registerRequestGuard: (session, capture) => {
       const stream = session.agent.streamFunction;
-      session.agent.streamFunction = (...input) => invocationGuard.run(capture(), () => stream(...input));
+      session.agent.streamFunction = (...input) => invocationGuard.run({ validate: capture(),
+        boundary: sessionTraceBoundary(session, 'stream') }, () => stream(...input));
     },
   });
   const extension = await loadExtensionFromFactory(projection.extension, process.cwd(), pi.createEventBus(), result.runtime, "<inline:mybuddy-worker-context>");
@@ -113,6 +119,7 @@ pi.ModelRuntime.create = async (...args) => {
     const dispatch = runtime[method].bind(runtime);
     runtime[method] = (model, context, options = {}) => {
       const requestGuard = invocationGuard.getStore();
+      const trace = cacheTracer?.start(model, options.sessionId, requestGuard?.boundary);
       const output = ai.createAssistantMessageEventStream();
       void (async () => {
         try {
@@ -144,12 +151,12 @@ pi.ModelRuntime.create = async (...args) => {
             }
             if (limits?.maxPerRequest !== undefined && total > limits.maxPerRequest) throw new Error("子代理请求图片数量超过模型限制");
             options.signal?.throwIfAborted();
-            requestGuard?.();
+            requestGuard?.validate();
           };
           await validate();
           for await (const event of dispatch(model, context, {
             ...options,
-            ...createRequestTransport(model, options, validate),
+            ...createRequestTransport(model, options, validate, trace),
             transformHeaders: async (headers) => {
               const transformed = options.transformHeaders ? await options.transformHeaders(headers) : headers;
               await validate();
@@ -158,18 +165,25 @@ pi.ModelRuntime.create = async (...args) => {
             onPayload: async (payload, payloadModel) => {
               const replacement = await options.onPayload?.(payload, payloadModel);
               await validate();
+              trace?.payload(replacement === undefined ? payload : replacement);
               return replacement;
             },
-          })) output.push(event);
+          })) {
+            if (event.type === 'done') trace?.result(event.message);
+            else if (event.type === 'error') trace?.result(event.error);
+            output.push(event);
+          }
           output.end();
         } catch (error) {
           const reason = options.signal?.aborted ? "aborted" : "error";
-          output.push({ type: "error", reason, error: {
+          const response = {
             role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
             stopReason: reason, errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(),
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          } });
+          };
+          trace?.result(response);
+          output.push({ type: "error", reason, error: response });
           output.end();
         }
       })();

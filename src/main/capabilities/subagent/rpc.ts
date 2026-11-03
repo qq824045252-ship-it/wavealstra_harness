@@ -26,6 +26,8 @@ export interface RpcChildOptions {
   env: NodeJS.ProcessEnv;
   /** 子进程 stderr 行（诊断用；调用方可选择性记录） */
   onStderr?: (text: string) => void;
+  /** Trusted worker metadata, kept out of native event history and UI updates. */
+  onCacheTrace?: (record: Record<string, unknown>) => void;
 }
 
 export interface RpcEvent {
@@ -120,6 +122,12 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
   child.stdout?.on("data", (d) => lineBuffer.push(d.toString()));
 
   function handleEvent(ev: RpcEvent): void {
+    if (ev.type === 'mybuddy_cache_trace') {
+      if (ev.record && typeof ev.record === 'object' && !Array.isArray(ev.record)) {
+        try { opts.onCacheTrace?.(ev.record as Record<string, unknown>); } catch { /* diagnostics only */ }
+      }
+      return;
+    }
     events.push(ev);
     // 自动应答对话框：子代理内所有交互审批 → 拒绝（防挂起）
     if (ev.type === "extension_ui_request") {

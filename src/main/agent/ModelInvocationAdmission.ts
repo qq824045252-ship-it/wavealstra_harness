@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { resolveModelScopeWithDiagnostics, type AgentSession, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createRequestTransport } from "./request-transport.mjs";
-import { startCacheRequestTrace, type CacheTraceBoundary } from "./CacheRequestTrace";
+import { startCacheRequestTrace, sessionTraceBoundary, type CacheTraceBoundary } from "./CacheRequestTrace";
 
 // Request-local settings only. Pi still owns configuration, parsing and the model catalog.
 const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: () => void; boundary?: () => CacheTraceBoundary }>();
@@ -17,17 +17,6 @@ const sessionsByManager = new WeakMap<object, AgentSession>();
 
 export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: () => void, boundary?: () => CacheTraceBoundary): T {
   return invocationSettings.run({ settings, validate, boundary: boundary ?? invocationSettings.getStore()?.boundary }, operation);
-}
-
-function sessionTraceBoundary(session: AgentSession, operation: string): CacheTraceBoundary {
-  try {
-    const branch = session.sessionManager.getBranch();
-    const latest = (type: string, customType?: string) => [...branch].reverse().find(entry =>
-      entry.type === type && (!customType || (entry.type === 'custom' && entry.customType === customType)))?.id;
-    return { sessionId: session.sessionId, operation, leafId: session.sessionManager.getLeafId(),
-      userId: [...branch].reverse().find(entry => entry.type === 'message' && entry.message.role === 'user')?.id,
-      compactionId: latest('compaction'), ledgerId: latest('custom', 'mybuddy.context-ledger'), resetId: latest('custom', 'mybuddy.context-reset') };
-  } catch { return { operation }; }
 }
 
 export function setSessionRequestGuard(session: AgentSession, capture: () => () => void): void {

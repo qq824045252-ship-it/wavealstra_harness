@@ -8,6 +8,7 @@ export async function buildSubagentContext(root = dirname(dirname(fileURLToPath(
   for (const [entry, filename] of [
     ["src/main/agent/EphemeralContextProjection.ts", "context-projection.mjs"],
     ["src/main/agent/providers/command-code.ts", "command-code.mjs"],
+    ["src/main/agent/CacheRequestTracer.ts", "cache-request-trace.mjs"],
   ]) {
     const outfile = join(root, "src/main/capabilities/subagent/vendor", filename);
     const result = await build({
