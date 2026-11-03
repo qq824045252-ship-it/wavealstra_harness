@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { app, BrowserWindow } from "electron";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { uiAutomationService as ui, setUiAutomationMainWindow, UiAutomationError } from "../src/main/capabilities/UiAutomationService";
@@ -67,9 +68,61 @@ async function main() {
   results.push("navigation invalidates locators even when DOM IDs repeat");
   extra.destroy();
 
+  const cuWindows = () => BrowserWindow.getAllWindows().filter(w => w.getTitle().includes("COMPUTER_USE_"));
+  const cuVisible = () => cuWindows().length === 2 && cuWindows().every(w => w.isVisible());
+  const cuHidden = () => cuWindows().length === 2 && cuWindows().every(w => !w.isVisible());
+  const idleParent = new AbortController();
+  const idleScope = coordinator.scope("idle-agent", idleParent.signal, "idle-execution");
+  const step = { action: "list_windows" as const, taskId: "idle-agent" };
+  coordinator.prepare(step);
+  await until(cuVisible);
+  await delay(400);
+  assert(cuVisible(), "in-flight operations must keep Stop visible; inactivity alone is not completion");
+  const firstStep = coordinator.complete(step, { action: "list_windows" });
+  await until(cuHidden);
+  const codeFile = join(profile, "after-desktop.txt");
+  writeFileSync(codeFile, "non-desktop work continues");
+  assert.equal(await readFile(codeFile, "utf8"), "non-desktop work continues");
+  await delay(400); // parent still reasoning/waiting: no agent_settled or Stop event
+  assert(cuHidden(), "reading code or waiting for another tool must not retain the desktop overlay");
+  assert.equal(idleScope.aborted, false);
+  assert.equal(idleParent.signal.aborted, false);
+  results.push("completed CU hides BOTH windows while parent continues reading/awaiting work without final or Stop");
+
+  coordinator.prepare(step);
+  await until(cuVisible);
+  const nextStep = coordinator.complete(step, { action: "list_windows" });
+  const firstRun = firstStep.computerUseRun as Record<string, unknown>;
+  const nextRun = nextStep.computerUseRun as Record<string, unknown>;
+  assert.equal(typeof firstRun.runId, "string");
+  assert.equal(nextRun.runId, firstRun.runId);
+  assert.equal(nextRun.step, 2, "automatic hide must preserve the run for later CU");
+  coordinator.prepare(step); // next call starts before the previous hide deadline
+  await delay(400);
+  assert(cuVisible(), "previous step's hide timer must not hide an ongoing next step");
+  results.push("same execution reopens CU; stale hide deadline cannot hide a newer action");
+
+  coordinator.complete(step, { action: "list_windows" });
+  const otherParent = new AbortController();
+  const otherScope = coordinator.scope("other-agent", otherParent.signal, "other-execution");
+  coordinator.prepare({ ...step, taskId: "other-agent" });
+  await until(cuVisible);
+  coordinator.endTask("idle-agent", "completed", "idle-execution");
+  await delay(1000);
+  assert(cuVisible(), "old task settlement and old hide deadline must not hide another task's operation");
+  results.push("cross-task handoff survives the old task's delayed hide and final event");
+  overlay.setAbortHandler(taskId => coordinator.cancel(taskId));
+  await cuWindows().find(w => w.getTitle().includes("CONTROLS"))!.webContents.executeJavaScript('location.href="mybuddy-computer-use://stop"', true).catch(() => undefined);
+  await until(cuHidden);
+  assert.equal(otherScope.aborted, true);
+  assert.equal(otherParent.signal.aborted, false);
+  assert.throws(() => coordinator.scope("other-agent", otherParent.signal, "other-execution"), /停止本轮 Computer Use/);
+  coordinator.endTask("other-agent"); overlay.setAbortHandler(null);
+  results.push("manual Stop still revokes CU for the execution without aborting its parent");
+
   for (const stopReason of ["stop", "aborted", "error"] as const) {
     const taskId = "terminal-" + stopReason, executionId = "execution-" + stopReason;
-    const parent = new AbortController(); coordinator.scope(taskId, parent.signal, executionId);
+    const parent = new AbortController(); const settledScope = coordinator.scope(taskId, parent.signal, executionId);
     let deliver: (event: unknown) => void = () => {};
     const patches: string[] = [];
     const session = { messages: [{ role: "assistant", stopReason, errorMessage: "fixture", content: [] }], subscribe: (fn: typeof deliver) => { deliver = fn; return () => {}; } };
@@ -86,6 +139,7 @@ async function main() {
     await until(() => BrowserWindow.getAllWindows().some(w => w.getTitle().includes("COMPUTER_USE_OVERLAY") && w.isVisible()));
     deliver({ type: "agent_settled", aborted: stopReason === "aborted" });
     assert(patches.includes("assistant_end"));
+    assert.equal(settledScope.aborted, true, "terminal cleanup must release the run, independently of automatic UI retraction");
     await until(() => BrowserWindow.getAllWindows().filter(w => w.getTitle().includes("COMPUTER_USE_")).every(w => !w.isVisible()));
     results.push(`${stopReason} settlement hides BOTH native windows with notification listener absent`);
   }

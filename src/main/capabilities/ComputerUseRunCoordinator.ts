@@ -121,9 +121,10 @@ export class ComputerUseRunCoordinator {
     } else {
       computerUseOverlayService.presentDesktop({ taskId, phase: "verifying", action: input.action ?? "batch" });
     }
-    // A verified action is not the end of Computer Use. Keep the screen-level
-    // mode visible while the Agent reasons about the next step.
-    computerUseOverlayService.waitForNextStep(taskId);
+    // The desktop operation is done even when the Agent continues thinking,
+    // reading code or awaiting another tool. Retract its UI, but keep the scope
+    // active so a later CU call can present it again without undoing manual Stop.
+    computerUseOverlayService.hideAfterStep(taskId);
     return {
       ...output,
       computerUseRun: {

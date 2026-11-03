@@ -199,7 +199,8 @@ export class ComputerUseOverlayService {
     }, delayMs);
   }
 
-  waitForNextStep(taskId: string, delayMs = 260): void {
+  /** Retract Windows UI after this operation, without revoking the execution's CU scope. */
+  hideAfterStep(taskId: string, delayMs = 260): void {
     if (!overlaySupported()) {
       // Linux 没有常驻 overlay，"等待下一步" 不发通知：下一步马上会发自己的。
       return;
@@ -209,10 +210,7 @@ export class ComputerUseOverlayService {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
       if (this.generation !== generation || this.current?.taskId !== taskId) return;
-      const current = { ...this.current, phase: "waiting", cursor: undefined } as OverlayState;
-      this.current = current;
-      void this.render(current);
-      this.hideTimer = null;
+      this.hide();
     }, delayMs);
   }
 

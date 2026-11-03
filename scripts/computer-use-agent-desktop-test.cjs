@@ -61,7 +61,7 @@ function value(item) {
         const last = outputs.at(-1);
         if (mode !== 'complete' && step === 1) {
           assert.equal(value(last).action, 'list_windows');
-          assert((await overlayState()).some(w => w.visible), 'overlay visible after tool and before model terminal event');
+          await until(hidden, 'CU retracts while provider is still pending, without final or Stop');
           if (mode === 'cancel') held = res; else res.end();
           return;
         }
@@ -69,7 +69,7 @@ function value(item) {
         switch (step) {
           case 0: args = { action: 'list_windows' }; break;
           case 1:
-            assert((await overlayState()).some(w => w.visible));
+            await until(hidden, 'CU retracts before non-desktop UI work, without agent final');
             name = 'ui_exec'; args = { action: 'snapshot', target: 'app' }; break;
           case 2: {
             const snapshot = value(last);
@@ -158,7 +158,7 @@ function value(item) {
     await until(hidden, 'abort hides overlay while provider has not completed');
     assert.equal((await ui('window.__cuPrompt')).ok, true);
     held.end(); held = undefined;
-    report.tests.push('Abort while model is held after CU hides both native windows immediately, with no false task error');
+    report.tests.push('CU retracts while the provider is held; subsequent abort settles the task without false errors or reopening the overlays');
     mode = 'truncate'; step = 0;
     const failed = await ui(`window.api.agent.prompt(${JSON.stringify(request())}).then(value=>({ok:true,value}),error=>({ok:false,error:String(error)}))`);
     assert.equal(failed.ok, false); assert(failed.error.includes('terminal response event'), failed.error);

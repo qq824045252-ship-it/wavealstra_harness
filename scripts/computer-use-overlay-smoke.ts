@@ -71,9 +71,11 @@ async function main(): Promise<void> {
     await waitUntil(() => ignored === true);
     restoreHitTest();
     restoreHitTest = undefined;
-    overlay.waitForNextStep("overlay-smoke", 0);
-    await waitUntil(async () => await controls!.webContents.executeJavaScript('document.body.dataset.phase') === "waiting");
-    assert.match(await controls!.webContents.executeJavaScript('document.getElementById("state").textContent'), /等待下一步/, "An idle CU run must not claim that input is being injected");
+    overlay.hideAfterStep("overlay-smoke", 0);
+    await waitUntil(() => !border!.isVisible() && !controls!.isVisible());
+    assert.equal(scoped.aborted, false, "automatic retraction must not cancel later desktop work");
+    overlay.present({ taskId: "overlay-smoke", target, phase: "acting", action: "click_client" });
+    await waitUntil(() => border!.isVisible() && controls!.isVisible());
 
     const listed = await host.request<"list_windows", any[]>("list_windows", {});
     assert.equal(listed.some((item) => String(item.title).startsWith("__MYBUDDY_COMPUTER_USE_")), false, "automation host must hide overlay windows from Agent observation");
@@ -85,7 +87,7 @@ async function main(): Promise<void> {
     assert.equal(parent.signal.aborted, false, "Stop must leave the parent Agent active");
     assert.throws(() => coordinator.scope("overlay-smoke"), /停止本轮 Computer Use/, "The current parent run must not reopen CU after Stop");
     await waitUntil(() => !border!.isVisible() && !controls!.isVisible());
-    console.log("computer use overlay PASS (border/cursor window, Stop hittable while acting, other pill area click-through, truthful waiting phase, observation filtering, scoped Stop without Agent abort, stopped overlay hidden)");
+    console.log("computer use overlay PASS (border/cursor window, Stop hittable while acting, other pill area click-through, automatic idle retraction and reopening, observation filtering, scoped Stop without Agent abort, stopped overlay hidden)");
   } finally {
     restoreHitTest?.();
     coordinator.endTask("overlay-smoke", "failed");
