@@ -1,435 +1,11 @@
 {
-  "generatedAt": "2026-11-03T07:01:05.410Z",
+  "generatedAt": "2026-11-03T07:17:25.099Z",
   "model": "codex/gpt-6.1-terra",
   "gateway": "http://127.0.0.1:3425/v1",
   "scenarios": [
     {
-      "name": "baseline-3-turns",
-      "sessionHash": "2f985e93b362f148",
-      "rows": [
-        {
-          "turn": 1,
-          "call": 1,
-          "input": 855,
-          "cacheRead": 4480,
-          "cacheWrite": 0,
-          "output": 28,
-          "promptTotal": 5335,
-          "context": {
-            "messages": 2,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 0
-          }
-        },
-        {
-          "turn": 1,
-          "call": 2,
-          "input": 946,
-          "cacheRead": 4480,
-          "cacheWrite": 0,
-          "output": 14,
-          "promptTotal": 5426,
-          "context": {
-            "messages": 4,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 2
-          }
-        },
-        {
-          "turn": 1,
-          "call": 3,
-          "input": 255,
-          "cacheRead": 5248,
-          "cacheWrite": 0,
-          "output": 9,
-          "promptTotal": 5503,
-          "context": {
-            "messages": 6,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 4
-          }
-        },
-        {
-          "turn": 2,
-          "call": 4,
-          "input": 290,
-          "cacheRead": 5248,
-          "cacheWrite": 0,
-          "output": 28,
-          "promptTotal": 5538,
-          "context": {
-            "messages": 8,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 6
-          }
-        },
-        {
-          "turn": 2,
-          "call": 5,
-          "input": 253,
-          "cacheRead": 5376,
-          "cacheWrite": 0,
-          "output": 14,
-          "promptTotal": 5629,
-          "context": {
-            "messages": 10,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568",
-              "b9fee94e2b48",
-              "0605e5958a77"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 8
-          }
-        },
-        {
-          "turn": 2,
-          "call": 6,
-          "input": 202,
-          "cacheRead": 5504,
-          "cacheWrite": 0,
-          "output": 9,
-          "promptTotal": 5706,
-          "context": {
-            "messages": 12,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568",
-              "b9fee94e2b48",
-              "0605e5958a77",
-              "a78c8f9286e3",
-              "58e880465ce7"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 10
-          }
-        },
-        {
-          "turn": 3,
-          "call": 7,
-          "input": 237,
-          "cacheRead": 5504,
-          "cacheWrite": 0,
-          "output": 28,
-          "promptTotal": 5741,
-          "context": {
-            "messages": 14,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568",
-              "b9fee94e2b48",
-              "0605e5958a77",
-              "a78c8f9286e3",
-              "58e880465ce7",
-              "1ac8039391d8",
-              "d909dc8929ed"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 12
-          }
-        },
-        {
-          "turn": 3,
-          "call": 8,
-          "input": 5832,
-          "cacheRead": 0,
-          "cacheWrite": 0,
-          "output": 14,
-          "promptTotal": 5832,
-          "context": {
-            "messages": 16,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568",
-              "b9fee94e2b48",
-              "0605e5958a77",
-              "a78c8f9286e3",
-              "58e880465ce7",
-              "1ac8039391d8",
-              "d909dc8929ed",
-              "3b61b8a9443d",
-              "d112a0fbf1c1"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 14
-          }
-        },
-        {
-          "turn": 3,
-          "call": 9,
-          "input": 277,
-          "cacheRead": 5632,
-          "cacheWrite": 0,
-          "output": 9,
-          "promptTotal": 5909,
-          "context": {
-            "messages": 18,
-            "images": 0,
-            "hashes": [
-              "35d20232eea6",
-              "b50ac6090520",
-              "6a80ea46f08b",
-              "f614ce805d00",
-              "8352d2a7e59a",
-              "184bc55b96fc",
-              "4400c44fb40d",
-              "2b32bd4a6568",
-              "b9fee94e2b48",
-              "0605e5958a77",
-              "a78c8f9286e3",
-              "58e880465ce7",
-              "1ac8039391d8",
-              "d909dc8929ed",
-              "3b61b8a9443d",
-              "d112a0fbf1c1",
-              "b7fa3886428f",
-              "2eb9076d1739"
-            ],
-            "divergedAt": -1,
-            "previousMessages": 16
-          }
-        }
-      ],
-      "notes": [
-        "sessionHash=e53c485ac08f8e70"
-      ],
-      "wires": [
-        {
-          "messages": 2,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 0
-        },
-        {
-          "messages": 4,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 2
-        },
-        {
-          "messages": 6,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 4
-        },
-        {
-          "messages": 8,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 6
-        },
-        {
-          "messages": 10,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568",
-            "b9fee94e2b48",
-            "0605e5958a77"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 8
-        },
-        {
-          "messages": 12,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568",
-            "b9fee94e2b48",
-            "0605e5958a77",
-            "a78c8f9286e3",
-            "58e880465ce7"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 10
-        },
-        {
-          "messages": 14,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568",
-            "b9fee94e2b48",
-            "0605e5958a77",
-            "a78c8f9286e3",
-            "58e880465ce7",
-            "1ac8039391d8",
-            "d909dc8929ed"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 12
-        },
-        {
-          "messages": 16,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568",
-            "b9fee94e2b48",
-            "0605e5958a77",
-            "a78c8f9286e3",
-            "58e880465ce7",
-            "1ac8039391d8",
-            "d909dc8929ed",
-            "3b61b8a9443d",
-            "d112a0fbf1c1"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 14
-        },
-        {
-          "messages": 18,
-          "images": 0,
-          "hashes": [
-            "35d20232eea6",
-            "b50ac6090520",
-            "6a80ea46f08b",
-            "f614ce805d00",
-            "8352d2a7e59a",
-            "184bc55b96fc",
-            "4400c44fb40d",
-            "2b32bd4a6568",
-            "b9fee94e2b48",
-            "0605e5958a77",
-            "a78c8f9286e3",
-            "58e880465ce7",
-            "1ac8039391d8",
-            "d909dc8929ed",
-            "3b61b8a9443d",
-            "d112a0fbf1c1",
-            "b7fa3886428f",
-            "2eb9076d1739"
-          ],
-          "divergedAt": -1,
-          "previousMessages": 16
-        }
-      ],
-      "breaks": [
-        {
-          "call": 8,
-          "expected": 5741,
-          "got": 0,
-          "lost": 5741
-        }
-      ]
-    },
-    {
       "name": "memory-capsule",
-      "sessionHash": "6353da8a6f88381f",
+      "sessionHash": "ddebae5be10f89b0",
       "rows": [
         {
           "turn": 1,
@@ -443,9 +19,9 @@
             "messages": 3,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "3a976ed8e3c9"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "e783a41d7715"
             ],
             "divergedAt": -1,
             "previousMessages": 0
@@ -463,11 +39,11 @@
             "messages": 5,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "3a976ed8e3c9",
-              "2714f90c16c3",
-              "d28e1649654c"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "e783a41d7715",
+              "beacad73d973",
+              "1296cedd7fd2"
             ],
             "divergedAt": -1,
             "previousMessages": 3
@@ -476,8 +52,8 @@
         {
           "turn": 1,
           "call": 3,
-          "input": 1219,
-          "cacheRead": 4480,
+          "input": 195,
+          "cacheRead": 5504,
           "cacheWrite": 0,
           "output": 9,
           "promptTotal": 5699,
@@ -485,13 +61,13 @@
             "messages": 7,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "3a976ed8e3c9",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "e783a41d7715",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543"
             ],
             "divergedAt": -1,
             "previousMessages": 5
@@ -509,15 +85,15 @@
             "messages": 9,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "a205d4353245"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "16268961a34e"
             ],
             "divergedAt": 2,
             "previousMessages": 7
@@ -535,17 +111,17 @@
             "messages": 11,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "a205d4353245",
-              "4d17d1a8cf74",
-              "a13065783270"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "16268961a34e",
+              "b5df013539e3",
+              "1806f4601e8e"
             ],
             "divergedAt": -1,
             "previousMessages": 9
@@ -554,8 +130,8 @@
         {
           "turn": 2,
           "call": 6,
-          "input": 1422,
-          "cacheRead": 4480,
+          "input": 142,
+          "cacheRead": 5760,
           "cacheWrite": 0,
           "output": 9,
           "promptTotal": 5902,
@@ -563,19 +139,19 @@
             "messages": 13,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "a205d4353245",
-              "4d17d1a8cf74",
-              "a13065783270",
-              "00ea3f85a479",
-              "5adc5c1c49e4"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "16268961a34e",
+              "b5df013539e3",
+              "1806f4601e8e",
+              "38953a2c529b",
+              "c0d3fd06a508"
             ],
             "divergedAt": -1,
             "previousMessages": 11
@@ -593,21 +169,21 @@
             "messages": 15,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "4d17d1a8cf74",
-              "a13065783270",
-              "00ea3f85a479",
-              "5adc5c1c49e4",
-              "b2e9dc774b38",
-              "b4a5bf928f51",
-              "bafcd2cb9fc0"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "b5df013539e3",
+              "1806f4601e8e",
+              "38953a2c529b",
+              "c0d3fd06a508",
+              "91faa327d042",
+              "45a217e80d16",
+              "fb6fdc926885"
             ],
             "divergedAt": 8,
             "previousMessages": 13
@@ -616,8 +192,8 @@
         {
           "turn": 3,
           "call": 8,
-          "input": 1548,
-          "cacheRead": 4480,
+          "input": 268,
+          "cacheRead": 5760,
           "cacheWrite": 0,
           "output": 14,
           "promptTotal": 6028,
@@ -625,23 +201,23 @@
             "messages": 17,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "4d17d1a8cf74",
-              "a13065783270",
-              "00ea3f85a479",
-              "5adc5c1c49e4",
-              "b2e9dc774b38",
-              "b4a5bf928f51",
-              "bafcd2cb9fc0",
-              "c7852319990d",
-              "f79be7ca6718"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "b5df013539e3",
+              "1806f4601e8e",
+              "38953a2c529b",
+              "c0d3fd06a508",
+              "91faa327d042",
+              "45a217e80d16",
+              "fb6fdc926885",
+              "b0ae863d0942",
+              "6aa5c4ec99c5"
             ],
             "divergedAt": -1,
             "previousMessages": 15
@@ -650,8 +226,8 @@
         {
           "turn": 3,
           "call": 9,
-          "input": 345,
-          "cacheRead": 5760,
+          "input": 217,
+          "cacheRead": 5888,
           "cacheWrite": 0,
           "output": 9,
           "promptTotal": 6105,
@@ -659,25 +235,25 @@
             "messages": 19,
             "images": 0,
             "hashes": [
-              "62e84bb84650",
-              "fcb0d2d55e0f",
-              "2714f90c16c3",
-              "d28e1649654c",
-              "a2fa92912c37",
-              "c86bef46f3ff",
-              "2976e27d8c75",
-              "9aa6bfa6b985",
-              "4d17d1a8cf74",
-              "a13065783270",
-              "00ea3f85a479",
-              "5adc5c1c49e4",
-              "b2e9dc774b38",
-              "b4a5bf928f51",
-              "bafcd2cb9fc0",
-              "c7852319990d",
-              "f79be7ca6718",
-              "bc12bbcc5316",
-              "007d138b5873"
+              "eb5ab1e4311c",
+              "9d778b20b7e7",
+              "beacad73d973",
+              "1296cedd7fd2",
+              "304e4e122eb5",
+              "fbf739832543",
+              "3da30eaff866",
+              "5e6b8b9d932f",
+              "b5df013539e3",
+              "1806f4601e8e",
+              "38953a2c529b",
+              "c0d3fd06a508",
+              "91faa327d042",
+              "45a217e80d16",
+              "fb6fdc926885",
+              "b0ae863d0942",
+              "6aa5c4ec99c5",
+              "87997889ce75",
+              "15a7a744453b"
             ],
             "divergedAt": -1,
             "previousMessages": 17
@@ -685,16 +261,16 @@
         }
       ],
       "notes": [
-        "sessionHash=7038b7432a1b6380"
+        "sessionHash=e45deb4c952fbaf9"
       ],
       "wires": [
         {
           "messages": 3,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "3a976ed8e3c9"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "e783a41d7715"
           ],
           "divergedAt": -1,
           "previousMessages": 0
@@ -703,11 +279,11 @@
           "messages": 5,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "3a976ed8e3c9",
-            "2714f90c16c3",
-            "d28e1649654c"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "e783a41d7715",
+            "beacad73d973",
+            "1296cedd7fd2"
           ],
           "divergedAt": -1,
           "previousMessages": 3
@@ -716,13 +292,13 @@
           "messages": 7,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "3a976ed8e3c9",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "e783a41d7715",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543"
           ],
           "divergedAt": -1,
           "previousMessages": 5
@@ -731,15 +307,15 @@
           "messages": 9,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "a205d4353245"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "16268961a34e"
           ],
           "divergedAt": 2,
           "previousMessages": 7
@@ -748,17 +324,17 @@
           "messages": 11,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "a205d4353245",
-            "4d17d1a8cf74",
-            "a13065783270"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "16268961a34e",
+            "b5df013539e3",
+            "1806f4601e8e"
           ],
           "divergedAt": -1,
           "previousMessages": 9
@@ -767,19 +343,19 @@
           "messages": 13,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "a205d4353245",
-            "4d17d1a8cf74",
-            "a13065783270",
-            "00ea3f85a479",
-            "5adc5c1c49e4"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "16268961a34e",
+            "b5df013539e3",
+            "1806f4601e8e",
+            "38953a2c529b",
+            "c0d3fd06a508"
           ],
           "divergedAt": -1,
           "previousMessages": 11
@@ -788,21 +364,21 @@
           "messages": 15,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "4d17d1a8cf74",
-            "a13065783270",
-            "00ea3f85a479",
-            "5adc5c1c49e4",
-            "b2e9dc774b38",
-            "b4a5bf928f51",
-            "bafcd2cb9fc0"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "b5df013539e3",
+            "1806f4601e8e",
+            "38953a2c529b",
+            "c0d3fd06a508",
+            "91faa327d042",
+            "45a217e80d16",
+            "fb6fdc926885"
           ],
           "divergedAt": 8,
           "previousMessages": 13
@@ -811,23 +387,23 @@
           "messages": 17,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "4d17d1a8cf74",
-            "a13065783270",
-            "00ea3f85a479",
-            "5adc5c1c49e4",
-            "b2e9dc774b38",
-            "b4a5bf928f51",
-            "bafcd2cb9fc0",
-            "c7852319990d",
-            "f79be7ca6718"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "b5df013539e3",
+            "1806f4601e8e",
+            "38953a2c529b",
+            "c0d3fd06a508",
+            "91faa327d042",
+            "45a217e80d16",
+            "fb6fdc926885",
+            "b0ae863d0942",
+            "6aa5c4ec99c5"
           ],
           "divergedAt": -1,
           "previousMessages": 15
@@ -836,48 +412,324 @@
           "messages": 19,
           "images": 0,
           "hashes": [
-            "62e84bb84650",
-            "fcb0d2d55e0f",
-            "2714f90c16c3",
-            "d28e1649654c",
-            "a2fa92912c37",
-            "c86bef46f3ff",
-            "2976e27d8c75",
-            "9aa6bfa6b985",
-            "4d17d1a8cf74",
-            "a13065783270",
-            "00ea3f85a479",
-            "5adc5c1c49e4",
-            "b2e9dc774b38",
-            "b4a5bf928f51",
-            "bafcd2cb9fc0",
-            "c7852319990d",
-            "f79be7ca6718",
-            "bc12bbcc5316",
-            "007d138b5873"
+            "eb5ab1e4311c",
+            "9d778b20b7e7",
+            "beacad73d973",
+            "1296cedd7fd2",
+            "304e4e122eb5",
+            "fbf739832543",
+            "3da30eaff866",
+            "5e6b8b9d932f",
+            "b5df013539e3",
+            "1806f4601e8e",
+            "38953a2c529b",
+            "c0d3fd06a508",
+            "91faa327d042",
+            "45a217e80d16",
+            "fb6fdc926885",
+            "b0ae863d0942",
+            "6aa5c4ec99c5",
+            "87997889ce75",
+            "15a7a744453b"
           ],
           "divergedAt": -1,
           "previousMessages": 17
         }
       ],
+      "breaks": []
+    },
+    {
+      "name": "capsule-tailed",
+      "sessionHash": "0de9d35b98a95e05",
+      "rows": [
+        {
+          "turn": 1,
+          "call": 1,
+          "input": 1047,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 57,
+          "promptTotal": 5527,
+          "context": {
+            "messages": 3,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "5425d1fc4234"
+            ],
+            "divergedAt": -1,
+            "previousMessages": 0
+          }
+        },
+        {
+          "turn": 1,
+          "call": 2,
+          "input": 1228,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 9,
+          "promptTotal": 5708,
+          "context": {
+            "messages": 6,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "141906a1be2d",
+              "4078fcc9654a",
+              "b800d98dd851",
+              "5425d1fc4234"
+            ],
+            "divergedAt": 2,
+            "previousMessages": 3
+          }
+        },
+        {
+          "turn": 2,
+          "call": 3,
+          "input": 1259,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 57,
+          "promptTotal": 5739,
+          "context": {
+            "messages": 8,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "141906a1be2d",
+              "4078fcc9654a",
+              "b800d98dd851",
+              "bab1580a3d98",
+              "c86c5b8bb0f9",
+              "be212d4ae81b"
+            ],
+            "divergedAt": 5,
+            "previousMessages": 6
+          }
+        },
+        {
+          "turn": 2,
+          "call": 4,
+          "input": 1440,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 9,
+          "promptTotal": 5920,
+          "context": {
+            "messages": 11,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "141906a1be2d",
+              "4078fcc9654a",
+              "b800d98dd851",
+              "bab1580a3d98",
+              "c86c5b8bb0f9",
+              "803bf08df786",
+              "6f9ee8af4274",
+              "797f492408e3",
+              "be212d4ae81b"
+            ],
+            "divergedAt": 7,
+            "previousMessages": 8
+          }
+        },
+        {
+          "turn": 3,
+          "call": 5,
+          "input": 1471,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 57,
+          "promptTotal": 5951,
+          "context": {
+            "messages": 13,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "141906a1be2d",
+              "4078fcc9654a",
+              "b800d98dd851",
+              "bab1580a3d98",
+              "c86c5b8bb0f9",
+              "803bf08df786",
+              "6f9ee8af4274",
+              "797f492408e3",
+              "7829a801887d",
+              "1cf56cc2624d",
+              "5c944267dacc"
+            ],
+            "divergedAt": 10,
+            "previousMessages": 11
+          }
+        },
+        {
+          "turn": 3,
+          "call": 6,
+          "input": 1652,
+          "cacheRead": 4480,
+          "cacheWrite": 0,
+          "output": 9,
+          "promptTotal": 6132,
+          "context": {
+            "messages": 16,
+            "images": 0,
+            "hashes": [
+              "1a7a007dcc83",
+              "355faa70859a",
+              "141906a1be2d",
+              "4078fcc9654a",
+              "b800d98dd851",
+              "bab1580a3d98",
+              "c86c5b8bb0f9",
+              "803bf08df786",
+              "6f9ee8af4274",
+              "797f492408e3",
+              "7829a801887d",
+              "1cf56cc2624d",
+              "4b63c6e69eed",
+              "79b0888937ca",
+              "104da10dd7f7",
+              "5c944267dacc"
+            ],
+            "divergedAt": 12,
+            "previousMessages": 13
+          }
+        }
+      ],
+      "notes": [
+        "sessionHash=f6d6be77274b6d19"
+      ],
+      "wires": [
+        {
+          "messages": 3,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "5425d1fc4234"
+          ],
+          "divergedAt": -1,
+          "previousMessages": 0
+        },
+        {
+          "messages": 6,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "141906a1be2d",
+            "4078fcc9654a",
+            "b800d98dd851",
+            "5425d1fc4234"
+          ],
+          "divergedAt": 2,
+          "previousMessages": 3
+        },
+        {
+          "messages": 8,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "141906a1be2d",
+            "4078fcc9654a",
+            "b800d98dd851",
+            "bab1580a3d98",
+            "c86c5b8bb0f9",
+            "be212d4ae81b"
+          ],
+          "divergedAt": 5,
+          "previousMessages": 6
+        },
+        {
+          "messages": 11,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "141906a1be2d",
+            "4078fcc9654a",
+            "b800d98dd851",
+            "bab1580a3d98",
+            "c86c5b8bb0f9",
+            "803bf08df786",
+            "6f9ee8af4274",
+            "797f492408e3",
+            "be212d4ae81b"
+          ],
+          "divergedAt": 7,
+          "previousMessages": 8
+        },
+        {
+          "messages": 13,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "141906a1be2d",
+            "4078fcc9654a",
+            "b800d98dd851",
+            "bab1580a3d98",
+            "c86c5b8bb0f9",
+            "803bf08df786",
+            "6f9ee8af4274",
+            "797f492408e3",
+            "7829a801887d",
+            "1cf56cc2624d",
+            "5c944267dacc"
+          ],
+          "divergedAt": 10,
+          "previousMessages": 11
+        },
+        {
+          "messages": 16,
+          "images": 0,
+          "hashes": [
+            "1a7a007dcc83",
+            "355faa70859a",
+            "141906a1be2d",
+            "4078fcc9654a",
+            "b800d98dd851",
+            "bab1580a3d98",
+            "c86c5b8bb0f9",
+            "803bf08df786",
+            "6f9ee8af4274",
+            "797f492408e3",
+            "7829a801887d",
+            "1cf56cc2624d",
+            "4b63c6e69eed",
+            "79b0888937ca",
+            "104da10dd7f7",
+            "5c944267dacc"
+          ],
+          "divergedAt": 12,
+          "previousMessages": 13
+        }
+      ],
       "breaks": [
         {
-          "call": 3,
-          "expected": 5622,
+          "call": 2,
+          "expected": 5527,
           "got": 4480,
-          "lost": 1142
+          "lost": 1047
+        },
+        {
+          "call": 4,
+          "expected": 5739,
+          "got": 4480,
+          "lost": 1259
         },
         {
           "call": 6,
-          "expected": 5825,
+          "expected": 5951,
           "got": 4480,
-          "lost": 1345
-        },
-        {
-          "call": 8,
-          "expected": 5937,
-          "got": 4480,
-          "lost": 1457
+          "lost": 1471
         }
       ]
     }

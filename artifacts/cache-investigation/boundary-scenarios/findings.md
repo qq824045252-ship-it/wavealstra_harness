@@ -137,6 +137,29 @@ does occur in real work. The 22k/23k plateau is the capsule
 barrier seen from the provider side: header + first user message is all that can
 be reused.
 
+### 3.1 Placement alone cannot fix it (measured)
+
+A prototype that appends the same capsule text after the newest message
+("tail placement") instead of anchoring it to the current user turn was measured
+with the same fixture (`capsule-tailed`, 6 requests):
+
+```
+t1 #1 prompt=5527 read=4480      (capsule is wire item 2)
+t1 #2 prompt=5708 read=4480      diverge@2   <- the capsule slot is now an assistant item
+t2 #3 prompt=5739 read=4480      diverge@5
+t2 #4 prompt=5920 read=4480      diverge@7
+```
+
+Every request collapses to the header. The reason is structural: the first
+request of a turn is the *shortest* one, so a tail-inserted block sits early in
+the wire (item 2), and the next request fills that slot with the assistant reply.
+Tail placement is therefore no better than the anchor — it is the same break,
+just reached one request earlier. Any per-turn volatile block has this property.
+
+The only thing that survives is a block that is **byte-identical for the rest of
+the session and never moves**: it must be written once (to the transcript or
+replayed verbatim at its first slot) and only appended after.
+
 ## 4. Actionable conclusions
 
 Ranked by measured cost:
