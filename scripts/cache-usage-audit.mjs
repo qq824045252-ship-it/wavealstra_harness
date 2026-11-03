@@ -11,14 +11,15 @@
  * Only counts, hashes and token numbers are printed; no prompt text, no session
  * ids in clear, no credentials.
  *
- *   node scripts/cache-usage-audit.mjs [days]
+ *   node scripts/cache-usage-audit.mjs [days]      # or: pnpm -s cache:audit -- 7
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const days = Number(process.argv[2] ?? 7);
+const dayArg = process.argv.slice(2).map(Number).find(value => Number.isFinite(value) && value > 0);
+const days = dayArg ?? 7;
 const usagePath = join(homedir(), ".config", "magpie", "usage.jsonl");
 if (!existsSync(usagePath)) {
   console.log("SKIP: no magpie usage log");

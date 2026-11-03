@@ -113,11 +113,16 @@ Two more observed effects, both independent of product code:
 by `native_session`. "Anchor reset" = read falls back to ≤35% of the previous
 prompt while the prompt kept growing.
 
-| Agent | Sessions | Requests | Cache hit | Anchor resets | Tokens re-billed by resets |
+| Agent label | Sessions | Requests | Cache hit | Anchor resets | Tokens re-billed by resets |
 | --- | --- | --- | --- | --- | --- |
 | mybuddy | 24 | 440 | **77.5%** | 20 (6 sessions) | 1.22M |
+| MyBuddy | 31 | 330 | 90.7% | 4 (3 sessions) | 0.18M |
+| workbuddy | 1 | 45 | 95.6% | 2 (1 session) | 0.11M |
 | dsh | 46 | 3007 | 96.5% | 88 (18 sessions) | 10.8M |
-| pi | 3 | 389 | **99.1%** | 0 | 0 |
+| pi | 3 | 405 | **99.2%** | 0 | 0 |
+
+(The two MyBuddy spellings are separate writer labels in the gateway log; both
+carry the same agent.)
 
 Worst recorded MyBuddy session: **3.51M tokens re-billed** over 81 requests,
 `0, 22016 × 20, 0, 23168 × 20, … 47616 × 5, 158848, …` — the read is pinned to a
@@ -125,8 +130,10 @@ fixed anchor for twenty consecutive requests while the prompt grows past 120k.
 Other MyBuddy sessions show the same per-turn signature: `0, 25216, 26368,
 26624, 0, 27008, …` and `…, 19712, 0, 28928, …, 19712, 19840, …, 19840, …`.
 
-Plain `pi` sessions on the same gateway in the same week read 99.1% with zero
-anchor resets, and `dsh` reaches 96.5%. The 22k/23k plateau is the capsule
+Plain `pi` sessions on the same gateway in the same week read 99.2% with zero
+anchor resets, and `dsh` reaches 96.5%. The MyBuddy sessions also record 1-4
+mid-session tool-declaration changes each, i.e. the `tools`-field boundary above
+does occur in real work. The 22k/23k plateau is the capsule
 barrier seen from the provider side: header + first user message is all that can
 be reused.
 
