@@ -1,0 +1,198 @@
+{
+  "live": true,
+  "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+  "sourceHash": "4982db0621048e89c5b9f536e00970e2b6f5f549b220cd06c41f79d0676d747e",
+  "from": 80,
+  "count": 8,
+  "calls": [
+    {
+      "originalRequest": 80,
+      "ms": 7341,
+      "sourceMessages": 163,
+      "stop": "toolUse",
+      "usage": {
+        "input": 152539,
+        "output": 56,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 152595,
+        "cost": {
+          "input": 0.15253899999999998,
+          "output": 0.00028000000000000003,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.15281899999999998
+        }
+      },
+      "responseHash": "22a9cc87b2f08aeee7176998e299d2b7e606e1237ab60e5f0b4705288575ba2f",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 81,
+      "ms": 16065,
+      "sourceMessages": 165,
+      "stop": "toolUse",
+      "usage": {
+        "input": 2572,
+        "output": 27,
+        "cacheRead": 152448,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 155047,
+        "cost": {
+          "input": 0.002572,
+          "output": 0.000135,
+          "cacheRead": 0.0076224000000000005,
+          "cacheWrite": 0,
+          "total": 0.0103294
+        }
+      },
+      "responseHash": "a980ef8bf0069b0d24ffb53045635c4e182c78abedc8cd9748e39dd2d11032be",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 82,
+      "ms": 8918,
+      "sourceMessages": 167,
+      "stop": "toolUse",
+      "usage": {
+        "input": 1505,
+        "output": 54,
+        "cacheRead": 154752,
+        "cacheWrite": 0,
+        "reasoning": 22,
+        "totalTokens": 156311,
+        "cost": {
+          "input": 0.0015049999999999998,
+          "output": 0.00027,
+          "cacheRead": 0.007737600000000001,
+          "cacheWrite": 0,
+          "total": 0.009512600000000001
+        }
+      },
+      "responseHash": "c6a155e94b6ed1f393ab6318a7ec68930b29778185e1252ecc8ace80d9f12f8f",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 83,
+      "ms": 14325,
+      "sourceMessages": 169,
+      "stop": "toolUse",
+      "usage": {
+        "input": 1835,
+        "output": 30,
+        "cacheRead": 156032,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 157897,
+        "cost": {
+          "input": 0.0018349999999999998,
+          "output": 0.00015000000000000001,
+          "cacheRead": 0.0078016000000000005,
+          "cacheWrite": 0,
+          "total": 0.0097866
+        }
+      },
+      "responseHash": "f531e8c9dbc32c91205990282026f40c403fa5851b61dddff501c07a1e8cdd71",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 84,
+      "ms": 10571,
+      "sourceMessages": 171,
+      "stop": "toolUse",
+      "usage": {
+        "input": 714,
+        "output": 83,
+        "cacheRead": 157824,
+        "cacheWrite": 0,
+        "reasoning": 21,
+        "totalTokens": 158621,
+        "cost": {
+          "input": 0.000714,
+          "output": 0.00041500000000000006,
+          "cacheRead": 0.007891200000000001,
+          "cacheWrite": 0,
+          "total": 0.0090202
+        }
+      },
+      "responseHash": "b2e65a41664a9f3e9cee02b0c0157f92dadeea52c3749fff9cd84cc51869253e",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 85,
+      "ms": 11381,
+      "sourceMessages": 173,
+      "stop": "toolUse",
+      "usage": {
+        "input": 456,
+        "output": 71,
+        "cacheRead": 158464,
+        "cacheWrite": 0,
+        "reasoning": 17,
+        "totalTokens": 158991,
+        "cost": {
+          "input": 0.00045599999999999997,
+          "output": 0.000355,
+          "cacheRead": 0.0079232,
+          "cacheWrite": 0,
+          "total": 0.0087342
+        }
+      },
+      "responseHash": "24e4842fd0b1e7d44712c56f9aa29c77c72795402c8497f23a5fa8dc1c28999e",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 86,
+      "ms": 8028,
+      "sourceMessages": 175,
+      "stop": "toolUse",
+      "usage": {
+        "input": 543,
+        "output": 219,
+        "cacheRead": 158848,
+        "cacheWrite": 0,
+        "reasoning": 18,
+        "totalTokens": 159610,
+        "cost": {
+          "input": 0.000543,
+          "output": 0.001095,
+          "cacheRead": 0.0079424,
+          "cacheWrite": 0,
+          "total": 0.009580400000000001
+        }
+      },
+      "responseHash": "cb92622fda9768e8557a1a10fb652a1cc7447d23788b2b69542b4663500acb0e",
+      "offlineCaptured": false
+    },
+    {
+      "originalRequest": 87,
+      "ms": 5929,
+      "sourceMessages": 177,
+      "stop": "toolUse",
+      "usage": {
+        "input": 582,
+        "output": 63,
+        "cacheRead": 159360,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 160005,
+        "cost": {
+          "input": 0.0005819999999999999,
+          "output": 0.000315,
+          "cacheRead": 0.007968000000000001,
+          "cacheWrite": 0,
+          "total": 0.008865000000000001
+        }
+      },
+      "responseHash": "f735d5cbc3c25d2e5b4adcdd2c9db1a95f8af52e824b954a32f6105983e271c7",
+      "offlineCaptured": false
+    }
+  ],
+  "limits": [
+    "Saved history replay with fixed diagnostic system prompt and minimal tool schemas; original ephemeral evidence and original schemas are not reconstructed.",
+    "Model completions are not executed as tools or appended to the user session. A fresh upstream session/cache identity isolates this replay.",
+    "A stable replay cannot establish that the historical live production request was stable."
+  ]
+}

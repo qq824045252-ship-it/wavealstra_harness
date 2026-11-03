@@ -4,4 +4,8 @@ export function createRequestTransport(
   model: Model<Api>,
   options: Pick<ProviderRequestOptions, "fetch"> | undefined,
   validate: () => Promise<void>,
+  observer?: {
+    sent: (...args: Parameters<FetchFunction>) => number;
+    received: (attempt: number, status: number | null) => void;
+  },
 ): { fetch?: FetchFunction; transport?: "sse" };

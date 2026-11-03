@@ -6,16 +6,28 @@ import {
 } from "@earendil-works/pi-ai";
 import { resolveModelScopeWithDiagnostics, type AgentSession, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createRequestTransport } from "./request-transport.mjs";
+import { startCacheRequestTrace, type CacheTraceBoundary } from "./CacheRequestTrace";
 
 // Request-local settings only. Pi still owns configuration, parsing and the model catalog.
-const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: () => void }>();
+const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: () => void; boundary?: () => CacheTraceBoundary }>();
 const installed = new WeakSet<ModelRuntime>();
 const boundSessions = new WeakSet<AgentSession>();
 const requestGuards = new WeakMap<AgentSession, () => () => void>();
 const sessionsByManager = new WeakMap<object, AgentSession>();
 
-export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: () => void): T {
-  return invocationSettings.run({ settings, validate }, operation);
+export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: () => void, boundary?: () => CacheTraceBoundary): T {
+  return invocationSettings.run({ settings, validate, boundary: boundary ?? invocationSettings.getStore()?.boundary }, operation);
+}
+
+function sessionTraceBoundary(session: AgentSession, operation: string): CacheTraceBoundary {
+  try {
+    const branch = session.sessionManager.getBranch();
+    const latest = (type: string, customType?: string) => [...branch].reverse().find(entry =>
+      entry.type === type && (!customType || (entry.type === 'custom' && entry.customType === customType)))?.id;
+    return { sessionId: session.sessionId, operation, leafId: session.sessionManager.getLeafId(),
+      userId: [...branch].reverse().find(entry => entry.type === 'message' && entry.message.role === 'user')?.id,
+      compactionId: latest('compaction'), ledgerId: latest('custom', 'mybuddy.context-ledger'), resetId: latest('custom', 'mybuddy.context-reset') };
+  } catch { return { operation }; }
 }
 
 export function setSessionRequestGuard(session: AgentSession, capture: () => () => void): void {
@@ -34,7 +46,7 @@ export function getSessionModelInvocation(manager: object) {
       return withModelInvocationSettings(session.settingsManager, operation, () => {
         if (sessionsByManager.get(manager) !== session) throw new Error("模型调用所属会话已结束");
         validate?.();
-      });
+      }, () => sessionTraceBoundary(session, 'capability'));
     },
   };
 }
@@ -70,7 +82,7 @@ function assertImageCounts(model: Model<Api>, context: Context): void {
 }
 
 /** Both completion methods delegate to these same guarded stream methods. */
-export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackSettings: () => SettingsManager): void {
+export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackSettings: () => SettingsManager, traceFactory: typeof startCacheRequestTrace = startCacheRequestTrace): void {
   if (installed.has(runtime)) return;
   installed.add(runtime);
   function guarded<TApi extends Api, TOptions extends ProviderRequestOptions<Model<TApi>> & ModelsRequestTransforms>(
@@ -80,6 +92,10 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
     const invocation = invocationSettings.getStore();
     const settings = invocation?.settings ?? fallbackSettings();
     const stream = createAssistantMessageEventStream();
+    const trace = (() => {
+      try { return traceFactory(model, (options as { sessionId?: string } | undefined)?.sessionId, invocation?.boundary?.()); }
+      catch { return undefined; }
+    })();
     void (async () => {
       try {
         const validate = async () => {
@@ -99,7 +115,7 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
         await validate();
         const guardedOptions = {
           ...options,
-          ...createRequestTransport(model, options, validate),
+          ...createRequestTransport(model, options, validate, trace),
           transformHeaders: async (headers: ProviderHeaders) => {
             const transformed = options?.transformHeaders ? await options.transformHeaders(headers) : headers;
             // Authentication and user approvals may have awaited since entry.
@@ -109,10 +125,15 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
           onPayload: async (payload: unknown, payloadModel: Model<TApi>) => {
             const replacement = await options?.onPayload?.(payload, payloadModel);
             await validate();
+            trace?.payload(replacement === undefined ? payload : replacement);
             return replacement;
           },
         } as TOptions;
-        for await (const event of dispatch(guardedOptions)) stream.push(event);
+        for await (const event of dispatch(guardedOptions)) {
+          if (event.type === 'done') trace?.result(event.message);
+          else if (event.type === 'error') trace?.result(event.error);
+          stream.push(event);
+        }
         stream.end();
       } catch (error) {
         const reason = options?.signal?.aborted ? "aborted" : "error";
@@ -122,6 +143,7 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         };
+        trace?.result(response);
         stream.push({ type: "error", reason, error: response });
         stream.end();
       }
@@ -213,14 +235,14 @@ export function bindSessionModelAdmission(session: AgentSession, admissionSettin
   // A read-only child can keep private preferences while inheriting the parent's live enabledModels scope.
   const settings = admissionSettings;
   const stream = session.agent.streamFunction;
-  session.agent.streamFunction = (...args) => withModelInvocationSettings(settings, () => stream(...args), requestGuards.get(session)?.());
+  session.agent.streamFunction = (...args) => withModelInvocationSettings(settings, () => stream(...args), requestGuards.get(session)?.(), () => sessionTraceBoundary(session, 'stream'));
   const validateHistory = () => requestGuards.get(session)?.()();
   const prompt = session.prompt.bind(session);
   // Automatic compaction calls the runtime outside agent.streamFunction. It still
   // carries source revocation checks through admission, auth, payload and retries.
-  session.prompt = (...args) => withModelInvocationSettings(settings, () => prompt(...args), validateHistory);
+  session.prompt = (...args) => withModelInvocationSettings(settings, () => prompt(...args), validateHistory, () => sessionTraceBoundary(session, 'prompt'));
   const compact = session.compact.bind(session);
-  session.compact = (...args) => withModelInvocationSettings(settings, () => compact(...args), requestGuards.get(session)?.());
+  session.compact = (...args) => withModelInvocationSettings(settings, () => compact(...args), requestGuards.get(session)?.(), () => sessionTraceBoundary(session, 'compact'));
   const navigate = session.navigateTree.bind(session);
-  session.navigateTree = (...args) => withModelInvocationSettings(settings, () => navigate(...args), requestGuards.get(session)?.());
+  session.navigateTree = (...args) => withModelInvocationSettings(settings, () => navigate(...args), requestGuards.get(session)?.(), () => sessionTraceBoundary(session, 'navigate'));
 }

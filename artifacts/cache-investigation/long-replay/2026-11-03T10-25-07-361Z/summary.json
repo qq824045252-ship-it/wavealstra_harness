@@ -1,0 +1,254 @@
+{
+  "calls": 8,
+  "classificationCounts": {
+    "no-comparable-predecessor": 1,
+    "stable-prefix": 7
+  },
+  "requests": [
+    {
+      "at": 1793701514725,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "9ef82682-068a-4199-aaa3-47d008e4677e",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "22a9cc87b2f08aeee7176998e299d2b7e606e1237ab60e5f0b4705288575ba2f",
+      "responseModelHash": null,
+      "classification": "no-comparable-predecessor",
+      "hitRate": 0,
+      "usage": {
+        "input": 152539,
+        "output": 56,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 217,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701530792,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "64709087-bce7-41e5-bc96-7828b78b7a0c",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "a980ef8bf0069b0d24ffb53045635c4e182c78abedc8cd9748e39dd2d11032be",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.9834085924396851,
+      "usage": {
+        "input": 2572,
+        "output": 27,
+        "cacheRead": 152448,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 219,
+      "sharedItems": 217,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701539711,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "7e468a41-11e1-4f0a-a3e2-b7aa7641deac",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "c6a155e94b6ed1f393ab6318a7ec68930b29778185e1252ecc8ace80d9f12f8f",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.990368431494269,
+      "usage": {
+        "input": 1505,
+        "output": 54,
+        "cacheRead": 154752,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 221,
+      "sharedItems": 219,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701554041,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "72027a2f-5aa2-4a4e-bc47-252557efdda3",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "f531e8c9dbc32c91205990282026f40c403fa5851b61dddff501c07a1e8cdd71",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.9883762914351955,
+      "usage": {
+        "input": 1835,
+        "output": 30,
+        "cacheRead": 156032,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 224,
+      "sharedItems": 221,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701564612,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "87c75ae4-cb0c-43e1-a176-7a50f7d6383d",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "b2e65a41664a9f3e9cee02b0c0157f92dadeea52c3749fff9cd84cc51869253e",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.995496347878742,
+      "usage": {
+        "input": 714,
+        "output": 83,
+        "cacheRead": 157824,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 226,
+      "sharedItems": 224,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701575996,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "896e3fbc-317c-4473-9768-632324a95ba9",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "24e4842fd0b1e7d44712c56f9aa29c77c72795402c8497f23a5fa8dc1c28999e",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.9971306317644097,
+      "usage": {
+        "input": 456,
+        "output": 71,
+        "cacheRead": 158464,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 229,
+      "sharedItems": 226,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701584024,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "a4ecd93a-664b-49c2-9160-0bc176754c8e",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "cb92622fda9768e8557a1a10fb652a1cc7447d23788b2b69542b4663500acb0e",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.9965932831841195,
+      "usage": {
+        "input": 543,
+        "output": 219,
+        "cacheRead": 158848,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 232,
+      "sharedItems": 229,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    },
+    {
+      "at": 1793701589954,
+      "epoch": "d1fa710f-3663-4b47-9091-59dbcc48816b",
+      "request": "21cb98db-d5db-40d4-a508-91d4b8d7afb2",
+      "sessionHash": "9315f79a612c3bf34b52dacfe076ffc0a9e4babc00af018e326fb858a170dde0",
+      "responseHash": "f735d5cbc3c25d2e5b4adcdd2c9db1a95f8af52e824b954a32f6105983e271c7",
+      "responseModelHash": null,
+      "classification": "stable-prefix",
+      "hitRate": 0.9963611809280865,
+      "usage": {
+        "input": 582,
+        "output": 63,
+        "cacheRead": 159360,
+        "cacheWrite": 0
+      },
+      "outcome": "toolUse",
+      "sends": 1,
+      "httpStatuses": [
+        200
+      ],
+      "inputCount": 236,
+      "sharedItems": 232,
+      "changedFields": [],
+      "routeChanged": false,
+      "retryChanged": false,
+      "boundaryChanges": [],
+      "adapterMatches": [
+        true
+      ]
+    }
+  ],
+  "limits": [
+    "Stable client HTTP input does not prove stable gateway-to-provider input or upstream cache placement.",
+    "A changed request can be intentional (user/compaction/model/tools); a fingerprint is evidence, not fault attribution.",
+    "Different process epochs, evicted chains, truncated bodies and rotated-away predecessors are not compared as unchanged.",
+    "Only observed HTTP JSON sends have final-body coverage; WebSockets and arbitrary request streams remain explicit gaps."
+  ]
+}
