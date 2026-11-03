@@ -281,7 +281,9 @@ try {
     const resumedHistory = await waitFor(async () => {
       const value = await client.history(TASK);
       const message = value.messages.find((item) => item.id === resumed.assistantMessageId);
-      return message && /permission-selected-reject/.test(message.text) ? value : undefined;
+      // Streamed text can arrive before the terminal run projection. Wait for
+      // the behavior asserted below, rather than racing the settlement event.
+      return message?.acp?.status === "completed" && /permission-selected-reject/.test(message.text) ? value : undefined;
     }, "resume completion");
     assert.match(resumedHistory.messages.find((item) => item.id === resumed.assistantMessageId)!.text, /permission-selected-reject/);
     ok("续聊轮次完成并记录拒绝结果");
