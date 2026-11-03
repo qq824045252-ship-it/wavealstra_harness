@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.78",
+  "version": "0.1.79",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -66,6 +66,8 @@
     "test:ui-automation-recovery": "esbuild scripts/ui-automation-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/ui-automation-recovery-test.mjs && node scripts/test-guard.mjs out/tests/ui-automation-recovery-test.mjs",
     "test:browser-automation-recovery": "esbuild scripts/browser-automation-recovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/browser-automation-recovery-test.mjs && node scripts/test-guard.mjs out/tests/browser-automation-recovery-test.mjs",
     "test:memory-skill-revision": "esbuild --log-override:impossible-typeof=silent scripts/memory-skill-revision-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-skill-revision-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/memory-skill-revision-test.mjs",
+    "test:memory-organization-desktop": "node scripts/test-guard.mjs scripts/memory-organization-desktop-test.cjs",
+    "test:memory-organization": "esbuild scripts/memory-organization-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/memory-organization-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/memory-organization-test.cjs",
     "test:memory-cognition": "esbuild scripts/memory-cognition-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/memory-cognition-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/memory-cognition-test.cjs",
     "test:memory-projection-deletion": "esbuild scripts/memory-projection-deletion-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/memory-projection-deletion-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/memory-projection-deletion-test.cjs",
     "test:space-relocate": "esbuild scripts/test-space-relocate.ts --bundle --platform=node --format=cjs --outfile=out/tests/space-relocate.cjs && node scripts/test-guard.mjs out/tests/space-relocate.cjs",
@@ -374,9 +376,7 @@
     "test:workspace-notes-ui": "esbuild scripts/workspace-notes-ui-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/workspace-notes-ui-store.ts --external:@terrastruct/d2 --outfile=out/tests/workspace-notes-ui.js --loader:.woff2=file --loader:.woff=file --loader:.ttf=file && electron scripts/workspace-notes-ui-test.cjs",
     "test:computer-use-boundaries": "esbuild scripts/computer-use-boundaries-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-boundaries-test.cjs && node scripts/test-guard.mjs out/tests/computer-use-boundaries-test.cjs",
     "test:computer-use-behavior": "esbuild scripts/computer-use-behavior-electron-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-behavior-electron-test.cjs && electron out/tests/computer-use-behavior-electron-test.cjs",
-    "test:computer-use-agent-desktop": "node scripts/computer-use-agent-desktop-test.cjs",
-    "test:memory-organization": "esbuild scripts/memory-organization-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/memory-organization-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/memory-organization-test.cjs",
-    "test:memory-organization-desktop": "node scripts/test-guard.mjs scripts/memory-organization-desktop-test.cjs"
+    "test:computer-use-agent-desktop": "node scripts/computer-use-agent-desktop-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
