@@ -13,12 +13,12 @@ for (const dir of ['.mybuddy/plugins/mcp', 'appdata', 'localappdata', 'workspace
 fs.writeFileSync(path.join(fixture, '.mybuddy/plugins/mcp/mcp.json'), '{"mcpServers":{}}');
 const report = { status: 'running', executable: executable || 'dev', fixture, tests: [], calls: [] };
 const wait = ms => new Promise(r => setTimeout(r, ms));
-async function until(check, label, timeout = 30000) {
+async function until(check, label, timeout = 30000, ignoreGatewayError = false) {
   const end = Date.now() + timeout;
-  while (Date.now() < end) { if (report.gatewayError) throw Error(report.gatewayError); if (await check()) return; await wait(80); }
+  while (Date.now() < end) { if (report.gatewayError && !ignoreGatewayError) throw Error(report.gatewayError); if (await check()) return; await wait(80); }
   throw Error('Timeout: ' + label);
 }
-let proc, socket, fd, gateway, held, seq = 0, mode = 'complete', step = 0, targetHandle;
+let proc, socket, fd, gateway, held, seq = 0, mode = 'complete', step = 0, targetHandle, targetPoint;
 const pending = new Map();
 async function main(expression) {
   const result = await new Promise((resolve, reject) => {
@@ -85,15 +85,23 @@ function value(item) {
             args = { action: 'inspect_controls', window_handle: targetHandle, max_depth: 32 }; break;
           case 5:
             assert(JSON.stringify(value(last)).includes('Native action'), 'real Windows UIA tree contains fixture button: ' + JSON.stringify(value(last)));
+            { const bounds = value(last).controls.find(c => c.name === 'Native action' && c.controlType === 'Button').clientBoundsDip;
+              targetPoint = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }; }
             args = { action: 'invoke_control', window_handle: targetHandle, control_name: 'Native action', max_depth: 32 }; break;
           case 6:
             await until(() => main(`globalThis.__cuTarget.webContents.executeJavaScript('window.clicked===1')`), 'native UIA invoke updates DOM');
             args = { action: 'screenshot_window', window_handle: targetHandle }; break;
-          default: {
-            assert.equal(step, 7, 'bounded agent fixture');
+          case 7: {
             const capture = value(last);
             assert.equal(capture.computerUseRun.verification.visualVerification, 'captured');
             assert.equal(capture.computerUseRun.phase, 'executed', 'screenshot does not prove task success');
+            assert.equal(capture.capture.coordinateSpace, 'client-dip-aligned-pixels');
+            args = { action: 'click_client', window_handle: targetHandle, observation_id: capture.observationId, ...targetPoint }; break;
+          }
+          default: {
+            assert.equal(step, 8, 'bounded agent fixture');
+            await until(() => main(`globalThis.__cuTarget.webContents.executeJavaScript('window.clicked===2')`), 'physical coordinate click triggers exactly once');
+            assert.equal(value(last).computerUseRun.phase, 'executed');
             reply(res, { type: 'message', id: 'msg-final', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'CU_AGENT_FLOW_COMPLETE', annotations: [] }] });
             return;
           }
@@ -130,6 +138,7 @@ function value(item) {
     socket = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
     socket.onmessage = event => { const msg = JSON.parse(event.data), p = pending.get(msg.id); if (!p) return; pending.delete(msg.id); clearTimeout(p.timer); msg.error ? p.reject(Error(JSON.stringify(msg.error))) : p.resolve(msg.result); };
+    await until(() => main('Boolean(process.mainModule?.require)'), 'application main module initialized');
     await main(`(async()=>{const {app}=process.mainModule.require('electron');await app.whenReady();if(process.mainModule.require('node:os').homedir()!==${JSON.stringify(fixture)}||!app.getPath('userData').startsWith(${JSON.stringify(fixture)}))throw Error('Profile isolation failed');return true})()`);
     await until(() => main(`(()=>{globalThis.__cuMain=process.mainModule.require('electron').BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().includes('index.html')&&!w.webContents.isLoadingMainFrame());return !!globalThis.__cuMain})()`), 'main window');
     await until(() => ui('Boolean(window.api?.agent && document.querySelector(".sidebar"))'), 'app UI');
@@ -141,7 +150,7 @@ function value(item) {
     await ui(`window.api.agent.prompt(${JSON.stringify(request())})`);
     await until(hidden, 'normal completion hides BOTH native overlay windows');
     assert(await ui(`window.__cuEvents.some(p=>p.type==='assistant_end'&&p.messageId==='assistant-complete')`));
-    report.tests.push('Actual agent: list windows -> app snapshot -> exact DOM click -> UIA inspect/invoke -> screenshot -> final -> native overlay hidden');
+    report.tests.push('Actual agent: list windows -> app snapshot -> exact DOM click -> deep UIA inspect/invoke -> screenshot -> observation-bound physical coordinate click -> final -> native overlay hidden');
     mode = 'cancel'; step = 0;
     await ui(`window.__cuPrompt=window.api.agent.prompt(${JSON.stringify(request())}).then(value=>({ok:true,value}),error=>({ok:false,error:String(error)}));true`);
     await until(() => !!held, 'provider waiting after successful CU action');
@@ -160,7 +169,7 @@ function value(item) {
   finally {
     try { if (socket) { report.overlay = await overlayState(); await main("setTimeout(()=>process.mainModule.require('electron').app.quit(),100);true"); } } catch {}
     if (socket) socket.close();
-    if (proc) await until(() => proc.exitCode !== null, 'fixture shutdown', 10000).catch(() => proc.kill());
+    if (proc) await until(() => proc.exitCode !== null, 'fixture shutdown', 10000, true).catch(() => proc.kill());
     if (fd !== undefined) fs.closeSync(fd);
     if (held) held.end(); if (gateway) { gateway.closeAllConnections(); gateway.close(); }
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify(report, null, 2));
