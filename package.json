@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.77",
+  "version": "0.1.78",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -134,6 +134,9 @@
     "test:computer-use-linux": "esbuild scripts/computer-use-linux-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-linux-smoke.cjs --external:electron && GUARD_HOME=host node scripts/test-guard.mjs out/tests/computer-use-linux-smoke.cjs",
     "test:tool-image-aging": "esbuild scripts/tool-image-aging-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/tool-image-aging-test.mjs && node scripts/test-guard.mjs out/tests/tool-image-aging-test.mjs",
     "test:cache-live": "esbuild scripts/cache-live-scenarios.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-live.mjs && node out/tests/cache-live.mjs",
+    "cache:evaluate": "esbuild scripts/cache-strategy-evaluation.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-strategy-evaluation.mjs && node out/tests/cache-strategy-evaluation.mjs",
+    "test:cache-strategies": "esbuild scripts/cache-strategy-evaluation.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-strategy-evaluation.mjs && node scripts/test-guard.mjs out/tests/cache-strategy-evaluation.mjs --offline",
+    "test:context-ledger": "esbuild scripts/context-ledger-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/context-ledger-test.mjs && node scripts/test-guard.mjs out/tests/context-ledger-test.mjs",
     "cache:audit": "node scripts/cache-usage-audit.mjs",
     "test:cache-boundary-matrix": "esbuild scripts/cache-prefix-matrix-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-prefix-matrix-test.mjs && node scripts/test-guard.mjs out/tests/cache-prefix-matrix-test.mjs",
     "test:runtime-probe": "esbuild scripts/runtime-probe-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/runtime-probe-test.mjs --external:electron && node scripts/test-guard.mjs out/tests/runtime-probe-test.mjs",

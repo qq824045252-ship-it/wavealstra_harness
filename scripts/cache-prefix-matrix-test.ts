@@ -437,7 +437,7 @@ async function main() {
     await booted.session.prompt("Second turn with the memory capsule.");
     if (failure) throw failure;
     const start = scenarioStart;
-    const entry = report("capsule-across-turns", "request-only capsule re-anchored per user turn");
+    const entry = report("capsule-across-turns", "stable evidence retained at its original anchor; each turn appends a manifest");
     const rows = captures.slice(start);
     const capsuleIndex = rows.map(row => row.input.findIndex((item: any) => JSON.stringify(item).includes("STABLE_PROJECT_EVIDENCE")));
     entry.capsuleIndexes = capsuleIndex;
@@ -484,12 +484,7 @@ async function main() {
       }
     },
     "capsule-across-turns": row => {
-      assert(row.breaks >= 1, "the request-only capsule must re-anchor at a new user turn");
-      for (const item of row.continuity.filter(entry => !entry.prefixOk)) {
-        assert(item.prevItem?.includes("本轮补充证据") || item.nextItem?.includes("本轮补充证据")
-          || item.divergeAt <= 2,
-          `a capsule break must land on the capsule slot, saw item ${item.divergeAt}: ${item.prevItem} -> ${item.nextItem}`);
-      }
+      assert.equal(row.breaks, 0, "unchanged evidence stays at its original anchor across user turns");
     },
   };
   for (const row of results) {

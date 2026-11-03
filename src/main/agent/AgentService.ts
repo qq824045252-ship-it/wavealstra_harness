@@ -225,6 +225,7 @@ import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoor
 import type { ArtifactKind } from "../../shared/artifact-types";
 import type { GadgetService } from "../gadget/GadgetService";
 import { MemoryService } from "../memory/MemoryService";
+import { MemoryOrganizationService } from "../memory/MemoryOrganizationService";
 import { MemoryPipelineManager } from "../memory/MemoryPipelineManager";
 import { MemorySkillEffectivenessService } from "../memory/MemorySkillEffectivenessService";
 import { MemorySkillRevisionService } from "../memory/MemorySkillRevisionService";
@@ -559,6 +560,7 @@ export class AgentService {
   readonly pythonRuntime = getPythonRuntimeService();
   private readonly backups = new FileBackupService();
   private readonly memoryService: MemoryService;
+  private readonly memoryOrganization: MemoryOrganizationService;
   private readonly memoryPipeline: MemoryPipelineManager;
   private readonly skillEffectiveness: MemorySkillEffectivenessService;
   private readonly skillRevision: MemorySkillRevisionService;
@@ -690,6 +692,9 @@ export class AgentService {
     // Project 域：resolver（上下文装配）与 service（计划工具 CRUD）共享同一 repository
     const projectRepository = new ProjectRepository(db.connection);
     this.memoryService = new MemoryService(db);
+    this.memoryOrganization = new MemoryOrganizationService(db, this.memoryService, () => {
+      if (!this.memoryDisposed) this.notifyMemoryChanged({ scope: "settings" });
+    });
     this.memoryPipeline = new MemoryPipelineManager(db);
     this.skillEffectiveness = new MemorySkillEffectivenessService(db);
     this.skillRevision = new MemorySkillRevisionService(db);
@@ -3043,6 +3048,7 @@ export class AgentService {
       }
     }
     if (previous.memoryEnabled !== nextApp.memoryEnabled) {
+      if (!nextApp.memoryEnabled) this.memoryOrganization.pauseActive();
       this.sessionLifecycle.invalidateAll();
       this.notifyMemoryChanged({ scope: "settings" });
     }
@@ -5031,6 +5037,7 @@ export class AgentService {
 
   dispose(): void {
     this.memoryDisposed = true;
+    this.memoryOrganization.pauseActive();
     this.pendingMemoryTurns.clear();
     this.flushDeltaPatches();
     this.sessionLifecycle.disposeAll();
@@ -5133,9 +5140,24 @@ export class AgentService {
     if (!this.modelRuntime) throw new Error("ModelRuntime 未初始化");
     const modelId = this.settingsStore.read().defaultModelId;
     const model = modelId ? await this.resolveEnabledModel(modelId) : undefined;
-    if (!model) throw new Error("未配置 Pi enabledModels 范围内的默认模型，无法生成投影提案");
+    if (!model) throw new Error("请在模型设置中选择已启用的默认模型，再使用 AI 记忆整理。");
     return model;
   }
+
+  kernelMemoryOrganization() { return this.memoryOrganization.latest(); }
+  async startKernelMemoryOrganization(resumeId?: string) {
+    const model = await this.resolveCognitionModel();
+    const runtime = this.modelRuntime!;
+    const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
+    return withModelInvocationSettings(settings, () => this.memoryOrganization.start({
+      model, modelRuntime: runtime,
+      isEnabled: () => !this.memoryDisposed && this.settingsStore.read().memoryEnabled,
+    }, resumeId));
+  }
+  pauseKernelMemoryOrganization(id: string) { return this.memoryOrganization.pause(id); }
+  applyKernelMemoryOrganization(id: string) { return this.memoryOrganization.apply(id); }
+  undoKernelMemoryOrganization(id: string) { return this.memoryOrganization.undo(id); }
+  dismissKernelMemoryOrganization(id: string) { return this.memoryOrganization.dismiss(id); }
 
   async generateKernelL2Proposals() {
     const generation = this.memoryService.cognition.generationVersion("scenario");
@@ -5565,6 +5587,7 @@ export class AgentService {
       memory: this.memoryService,
       enabled: () => this.settingsStore.read().memoryEnabled,
       supplementalEvidence: () => this.libraryWorkspaceContext.projectionSources(opts.taskId),
+      validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(opts.taskId, access),
       scope: () => {
         const task = this.db.getTask(opts.taskId);
         return resolveTaskMemoryScope(opts.taskId, task);

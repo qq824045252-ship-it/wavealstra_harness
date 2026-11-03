@@ -214,10 +214,13 @@ export function bindSessionModelAdmission(session: AgentSession, admissionSettin
   const settings = admissionSettings;
   const stream = session.agent.streamFunction;
   session.agent.streamFunction = (...args) => withModelInvocationSettings(settings, () => stream(...args), requestGuards.get(session)?.());
+  const validateHistory = () => requestGuards.get(session)?.()();
   const prompt = session.prompt.bind(session);
-  session.prompt = (...args) => withModelInvocationSettings(settings, () => prompt(...args));
+  // Automatic compaction calls the runtime outside agent.streamFunction. It still
+  // carries source revocation checks through admission, auth, payload and retries.
+  session.prompt = (...args) => withModelInvocationSettings(settings, () => prompt(...args), validateHistory);
   const compact = session.compact.bind(session);
-  session.compact = (...args) => withModelInvocationSettings(settings, () => compact(...args));
+  session.compact = (...args) => withModelInvocationSettings(settings, () => compact(...args), requestGuards.get(session)?.());
   const navigate = session.navigateTree.bind(session);
-  session.navigateTree = (...args) => withModelInvocationSettings(settings, () => navigate(...args));
+  session.navigateTree = (...args) => withModelInvocationSettings(settings, () => navigate(...args), requestGuards.get(session)?.());
 }

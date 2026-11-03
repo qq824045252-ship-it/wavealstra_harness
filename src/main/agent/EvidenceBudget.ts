@@ -21,6 +21,12 @@ export function clipEvidence(text: string, bytes: number, keepLatest = false): s
   return keepLatest ? suffix + chars.reverse().join("") : chars.join("") + suffix;
 }
 
+export type EvidenceAccess =
+  | { kind: "library"; itemId: string; origin: "attached" | "pinned" | "catalog"; projectId: string | null }
+  | { kind: "project"; projectId: string; resourceIds: string[] }
+  | { kind: "project-note"; projectId: string }
+  | { kind: "workspace-note"; workspaceId: string };
+
 export interface SupplementalEvidence {
   id: string;
   kind: "project" | "library" | "conversation";
@@ -28,6 +34,10 @@ export interface SupplementalEvidence {
   text: string;
   /** Current access/deletion only; ordinary content changes wait for the next user turn. */
   validate: () => void;
+  /** Historical permission check, separate from an optional stricter in-turn freshness check. */
+  validateAccess?: () => void;
+  /** Access witness only, never a claim that the original body can be restored. */
+  access?: EvidenceAccess;
 }
 
 /** Bounds only automatically injected Memory/Project/Library supplements.

@@ -1,0 +1,1522 @@
+{
+  "runId": "2026-11-03T07-43-04-517Z-cabe7d47",
+  "live": true,
+  "results": [
+    {
+      "strategy": "refs",
+      "repetition": 1,
+      "live": true,
+      "calls": [
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 1,
+          "wire": {
+            "inputItems": 4,
+            "sharedItems": 0,
+            "previousItems": 0,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "3b7df0d4fca147d3ce58d5530e496d6279d389ba665c797909c164e95e84df3d",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 3881
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 506,
+            "output": 58,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 4788,
+            "cost": {
+              "input": 0.0005059999999999999,
+              "output": 0.00029,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0010072
+            }
+          },
+          "responseHash": "ffb68388bf2bd2092ac75f11b7e89e1f5499e5261d624eb5fe18f234c2acf052",
+          "ms": 5720
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 2,
+          "wire": {
+            "inputItems": 7,
+            "sharedItems": 4,
+            "previousItems": 4,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "e07a7417733a9f5521eca0c2eee146e7c11bfe87565033fad0c4b8fd7a9158b1",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 13762
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 5024,
+            "output": 617,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 9865,
+            "cost": {
+              "input": 0.005024,
+              "output": 0.003085,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0083202
+            }
+          },
+          "responseHash": "543e6e09a20e0825e625b6af7b11ca9be00b7353fd20aa5512f612afba31c9e3",
+          "ms": 8648
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 3,
+          "wire": {
+            "inputItems": 9,
+            "sharedItems": 7,
+            "previousItems": 7,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "add5a40c6b967bbc339f186c8caf974ad6dc82e3ae33d7baf4f5eae9d6716a3b",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 16096
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 154,
+            "output": 34,
+            "cacheRead": 9728,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 9916,
+            "cost": {
+              "input": 0.000154,
+              "output": 0.00017,
+              "cacheRead": 0.00048640000000000006,
+              "cacheWrite": 0,
+              "total": 0.0008104000000000001
+            }
+          },
+          "responseHash": "0b62d97d760a0b139f1bf8c514ce1aadb150cdece53aef393e7b54af95ab5a2a",
+          "ms": 3600
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 4,
+          "wire": {
+            "inputItems": 11,
+            "sharedItems": 9,
+            "previousItems": 9,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "e228c7a671f9c9ff8173574358be43a5a058384469cc1c1170503f50216bd41a",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 16483
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 5332,
+            "output": 28,
+            "cacheRead": 4608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 9968,
+            "cost": {
+              "input": 0.005332,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.00023040000000000002,
+              "cacheWrite": 0,
+              "total": 0.005702400000000001
+            }
+          },
+          "responseHash": "9da55fa146af0af5d93d9168140d994a4c876b55e16df2fb8e8609da75722de1",
+          "ms": 3777
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 5,
+          "wire": {
+            "inputItems": 13,
+            "sharedItems": 11,
+            "previousItems": 11,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "88c2482750e60694ac1315b20460d2cf88919d7d28841ddda4ac3425173f51b6",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 16934
+          },
+          "status": "stop",
+          "usage": {
+            "input": 298,
+            "output": 68,
+            "cacheRead": 9728,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10094,
+            "cost": {
+              "input": 0.000298,
+              "output": 0.00034,
+              "cacheRead": 0.00048640000000000006,
+              "cacheWrite": 0,
+              "total": 0.0011244
+            }
+          },
+          "responseHash": "da91e4d2aea4c5c71ae358747e468079f2ec3869489ddde2c10489a8f7628f01",
+          "ms": 4341
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 6,
+          "wire": {
+            "inputItems": 16,
+            "sharedItems": 13,
+            "previousItems": 13,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "dee1e57eeee515edc36c8d68744d979104e81c5c4f8f2dd66ff556b8d8e909e4",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 17895
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 327,
+            "output": 56,
+            "cacheRead": 9856,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10239,
+            "cost": {
+              "input": 0.000327,
+              "output": 0.00028000000000000003,
+              "cacheRead": 0.0004928,
+              "cacheWrite": 0,
+              "total": 0.0010998000000000002
+            }
+          },
+          "responseHash": "b499e21849893aa34206880752bb337144dd60ee4cb16865282aa8c1271c4971",
+          "ms": 6881
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 7,
+          "wire": {
+            "inputItems": 19,
+            "sharedItems": 16,
+            "previousItems": 16,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "103bb364374fa32e2c7711aeb8da5de612893dbc0da60bcd2737e2fc99fe6130",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 18803
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 272,
+            "output": 34,
+            "cacheRead": 10112,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10418,
+            "cost": {
+              "input": 0.000272,
+              "output": 0.00017,
+              "cacheRead": 0.0005056,
+              "cacheWrite": 0,
+              "total": 0.0009476
+            }
+          },
+          "responseHash": "e029e3a8e70047b3b45260cdff723b110ac22011a5eda280ec9ff6e287319591",
+          "ms": 5207
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 8,
+          "wire": {
+            "inputItems": 21,
+            "sharedItems": 19,
+            "previousItems": 19,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "5d43613788de145f9fd4cd9b0d1f515d007f00547618430e26ed8c7fe10370bc",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 19190
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 458,
+            "output": 28,
+            "cacheRead": 9984,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10470,
+            "cost": {
+              "input": 0.00045799999999999997,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.0004992,
+              "cacheWrite": 0,
+              "total": 0.0010972
+            }
+          },
+          "responseHash": "f957ad0cb52a39bb738dd44184c148f7de9380f779286d5df985fb4c27d6c1ba",
+          "ms": 6205
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 9,
+          "wire": {
+            "inputItems": 23,
+            "sharedItems": 21,
+            "previousItems": 21,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "4ae4a4f5b825c404a12973a3b88cad1ca4d96022234734e8ad41cc50f5409e2b",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 19641
+          },
+          "status": "stop",
+          "usage": {
+            "input": 160,
+            "output": 67,
+            "cacheRead": 10368,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10595,
+            "cost": {
+              "input": 0.00015999999999999999,
+              "output": 0.000335,
+              "cacheRead": 0.0005184,
+              "cacheWrite": 0,
+              "total": 0.0010134
+            }
+          },
+          "responseHash": "2e0dcb5479ab0dfcf5acb6e2da91672c628615fc56c04c92865ec8c24f0b3818",
+          "ms": 4096
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 10,
+          "wire": {
+            "inputItems": 27,
+            "sharedItems": 23,
+            "previousItems": 23,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "4b33ee779bce2d6ca88dbac6841e380debd839828ce67596ccdc798dbd15246e",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 20946
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 6531,
+            "output": 53,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10808,
+            "cost": {
+              "input": 0.0065309999999999995,
+              "output": 0.00026500000000000004,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0070072
+            }
+          },
+          "responseHash": "e50aa7fa84c9afb3f2b97510172236b5520ea129067ccf9bf8d5e96085b4281e",
+          "ms": 6848
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 11,
+          "wire": {
+            "inputItems": 30,
+            "sharedItems": 27,
+            "previousItems": 27,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "859e764b56115d21f629dfca6afb1c984ecc6347dc4aa4204476680312f7706c",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 21865
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 326,
+            "output": 35,
+            "cacheRead": 10624,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10985,
+            "cost": {
+              "input": 0.000326,
+              "output": 0.00017500000000000003,
+              "cacheRead": 0.0005312,
+              "cacheWrite": 0,
+              "total": 0.0010322
+            }
+          },
+          "responseHash": "b3347b0ef338e6843f834fa8fe698b0c126495b6655567b7843c2ae9ba913fe2",
+          "ms": 5303
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 12,
+          "wire": {
+            "inputItems": 32,
+            "sharedItems": 30,
+            "previousItems": 30,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "ea717dc96cd3319fb6895f579e9257ccac21944487c29a45a84ce273f8186995",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 22253
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 129,
+            "output": 28,
+            "cacheRead": 10880,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11037,
+            "cost": {
+              "input": 0.000129,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.000544,
+              "cacheWrite": 0,
+              "total": 0.000813
+            }
+          },
+          "responseHash": "6f8167c577aac24363650b4cb150435d1a8cdb4954cb99254078405cd6210ae0",
+          "ms": 4795
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 13,
+          "wire": {
+            "inputItems": 34,
+            "sharedItems": 32,
+            "previousItems": 32,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "ef765590585a8ad104bf84a08cc5efe3a78b5feb0f5e97b47bb2cca86f01c01e",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 22705
+          },
+          "status": "stop",
+          "usage": {
+            "input": 215,
+            "output": 67,
+            "cacheRead": 10880,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11162,
+            "cost": {
+              "input": 0.000215,
+              "output": 0.000335,
+              "cacheRead": 0.000544,
+              "cacheWrite": 0,
+              "total": 0.001094
+            }
+          },
+          "responseHash": "0df5d17327a4d19b279a3781a0decd18e808d9e42172d8d21f10503ed24284ff",
+          "ms": 5024
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 14,
+          "wire": {
+            "inputItems": 37,
+            "sharedItems": 34,
+            "previousItems": 34,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "1d970548fdfb54d574a7e9f66859222a4c8930309262b093c58304afc0ec9ffd",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 23666
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 243,
+            "output": 58,
+            "cacheRead": 11008,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11309,
+            "cost": {
+              "input": 0.000243,
+              "output": 0.00029,
+              "cacheRead": 0.0005504,
+              "cacheWrite": 0,
+              "total": 0.0010834
+            }
+          },
+          "responseHash": "2a1ae338bfec2b8e2872f2ec698bcf0d3f33861413a39daafaa36bbad4ae99e0",
+          "ms": 4118
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 15,
+          "wire": {
+            "inputItems": 40,
+            "sharedItems": 37,
+            "previousItems": 37,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "2b71b111c00c86e47d765209e391396c14391c91706c6f960b5a77db37c25903",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 24592
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 958,
+            "output": 35,
+            "cacheRead": 10496,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11489,
+            "cost": {
+              "input": 0.000958,
+              "output": 0.00017500000000000003,
+              "cacheRead": 0.0005248000000000001,
+              "cacheWrite": 0,
+              "total": 0.0016578
+            }
+          },
+          "responseHash": "8c1a2edd4184e993318e9fee719f69b216f2acc40eb6f99de153ee326f3d4cf1",
+          "ms": 4170
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 16,
+          "wire": {
+            "inputItems": 42,
+            "sharedItems": 40,
+            "previousItems": 40,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "1e1cda82561dce8cd00c5ac355156b21001232213d76b2098b97ea0f1ee631df",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 24980
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 377,
+            "output": 28,
+            "cacheRead": 11136,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11541,
+            "cost": {
+              "input": 0.000377,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.0005568000000000001,
+              "cacheWrite": 0,
+              "total": 0.0010738000000000002
+            }
+          },
+          "responseHash": "703d06bb928217da036286f159a7787a4a9edb2bc0ecba255a63ab7491dfc669",
+          "ms": 6379
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 17,
+          "wire": {
+            "inputItems": 44,
+            "sharedItems": 42,
+            "previousItems": 42,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "10a4666588919920a41b047780f3fa885ea87f0ba0fee3699c78f175ff4c9a7f",
+            "inputHash": "92fe508353793578a883d407c8d7ce7751638a3a7d081ff2551716eda10c5dc8",
+            "cacheKeyHash": "5c5b773001c5a0f820b1f63e77d6009ffe042f066a9e4e3212111a387d771118",
+            "evidenceCopies": 2,
+            "revision1Present": true,
+            "revision2Present": true,
+            "bytes": 25432
+          },
+          "status": "stop",
+          "usage": {
+            "input": 207,
+            "output": 67,
+            "cacheRead": 11392,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11666,
+            "cost": {
+              "input": 0.000207,
+              "output": 0.000335,
+              "cacheRead": 0.0005696000000000001,
+              "cacheWrite": 0,
+              "total": 0.0011116
+            }
+          },
+          "responseHash": "e73fd6bc15a53b7b0899145f22ab54841590ab521d305573ca74ee202def5548",
+          "ms": 5527
+        }
+      ],
+      "checks": [
+        {
+          "turn": 1,
+          "correct": true,
+          "expected": {
+            "count": 161,
+            "rawTotal": 54019,
+            "convertedTotal": 109165,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "actual": {
+            "count": 161,
+            "rawTotal": 54019,
+            "convertedTotal": 109165,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "calls": 5,
+          "memoryLookups": 0,
+          "prefix": true,
+          "baseChanges": []
+        },
+        {
+          "turn": 2,
+          "correct": true,
+          "expected": {
+            "count": 162,
+            "rawTotal": 53973,
+            "convertedTotal": 109080,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "actual": {
+            "count": 162,
+            "rawTotal": 53973,
+            "convertedTotal": 109080,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": true,
+          "baseChanges": []
+        },
+        {
+          "turn": 3,
+          "correct": true,
+          "expected": {
+            "count": 163,
+            "rawTotal": 55802,
+            "convertedTotal": 166754,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "actual": {
+            "count": 163,
+            "rawTotal": 55802,
+            "convertedTotal": 166754,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": true,
+          "baseChanges": []
+        },
+        {
+          "turn": 4,
+          "correct": true,
+          "expected": {
+            "count": 164,
+            "rawTotal": 55906,
+            "convertedTotal": 167062,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "actual": {
+            "count": 164,
+            "rawTotal": 55906,
+            "convertedTotal": 167062,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": true,
+          "baseChanges": []
+        },
+        {
+          "rawEvidencePersisted": false
+        }
+      ],
+      "files": [
+        {
+          "path": "refs-1-result-1.json",
+          "sha256": "3cb34c55ed4fca90d5a9861ee6384396ec10fd8c57821b19a96cdff7666653cd"
+        },
+        {
+          "path": "refs-1-result-2.json",
+          "sha256": "11e5a1bd7aaf174df597e3d10f192d8ae886c101f122f2869191796322cc6248"
+        },
+        {
+          "path": "refs-1-result-3.json",
+          "sha256": "008adb53ed920af5ab8568d6ba424760f55b4b7909173becd9293aed471a4d05"
+        },
+        {
+          "path": "refs-1-result-4.json",
+          "sha256": "8e3364262eeaea6581ce486bb26db150f3dbad8cb9222eb90907fb1749a5c8e5"
+        }
+      ]
+    },
+    {
+      "strategy": "current",
+      "repetition": 1,
+      "live": true,
+      "calls": [
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 1,
+          "wire": {
+            "inputItems": 3,
+            "sharedItems": 0,
+            "previousItems": 0,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "0b2d615a02dda33af99c10e7e0ab55873b78b36c8713941c89183d086fb89f58",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 3879
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 527,
+            "output": 60,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 4811,
+            "cost": {
+              "input": 0.000527,
+              "output": 0.00030000000000000003,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0010382
+            }
+          },
+          "responseHash": "9eed631c616d31b4c11fa2b040c5132ffe83aba71051e48e4b2137406508432b",
+          "ms": 4152
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 2,
+          "wire": {
+            "inputItems": 6,
+            "sharedItems": 3,
+            "previousItems": 3,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "5db926ee6b184ac2840276340d325a6bd8587666010e5113fcf541fe357fbd20",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 13716
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 4663,
+            "output": 654,
+            "cacheRead": 4608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 9925,
+            "cost": {
+              "input": 0.004663,
+              "output": 0.0032700000000000003,
+              "cacheRead": 0.00023040000000000002,
+              "cacheWrite": 0,
+              "total": 0.0081634
+            }
+          },
+          "responseHash": "c1775fd1a1595a54dbce8644dca396421db9a14dbffff1578013f549838a2ffc",
+          "ms": 7993
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 3,
+          "wire": {
+            "inputItems": 8,
+            "sharedItems": 6,
+            "previousItems": 6,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "0ace1e97df0e09bf662c5e9e724f08c68e985289c8d244e67876b94763ae971b",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 16196
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 214,
+            "output": 34,
+            "cacheRead": 9728,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 9976,
+            "cost": {
+              "input": 0.000214,
+              "output": 0.00017,
+              "cacheRead": 0.00048640000000000006,
+              "cacheWrite": 0,
+              "total": 0.0008704000000000001
+            }
+          },
+          "responseHash": "9ce9a135241db4b8969da35939e916087328bff84596b4bdc8b2dad19e6403ff",
+          "ms": 3395
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 4,
+          "wire": {
+            "inputItems": 10,
+            "sharedItems": 8,
+            "previousItems": 8,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "69b1fe478a7b5aafaeb677ef571453ae48e122852acebdee42ec4034e59903c1",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 16583
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 5776,
+            "output": 28,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10028,
+            "cost": {
+              "input": 0.005776,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0061272
+            }
+          },
+          "responseHash": "ccdcb8b3bbc0f435163de1db91556208e035e2b4530d0da6993c6166e400cb7d",
+          "ms": 3001
+        },
+        {
+          "phase": "task",
+          "turn": 1,
+          "ordinal": 5,
+          "wire": {
+            "inputItems": 12,
+            "sharedItems": 10,
+            "previousItems": 10,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "9a9f9c25d3bcc204abf40b875efdac0df6585b307a055452ac8af8549cafb24d",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 17034
+          },
+          "status": "stop",
+          "usage": {
+            "input": 230,
+            "output": 94,
+            "cacheRead": 9856,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10180,
+            "cost": {
+              "input": 0.00022999999999999998,
+              "output": 0.00047000000000000004,
+              "cacheRead": 0.0004928,
+              "cacheWrite": 0,
+              "total": 0.0011928
+            }
+          },
+          "responseHash": "28c1caf21686a6501e861921b0ffd2f99ffdc4300a59b68b45224bd204f41d3f",
+          "ms": 5023
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 6,
+          "wire": {
+            "inputItems": 14,
+            "sharedItems": 2,
+            "previousItems": 12,
+            "prefix": false,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "6e54bf4c33eed511f645132d2ac0b46fad24eb7611c76a600f27d4b85bb8b26f",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 17866
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 6020,
+            "output": 58,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10302,
+            "cost": {
+              "input": 0.006019999999999999,
+              "output": 0.00029,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0065212
+            }
+          },
+          "responseHash": "d6b281d041c30e2a8112545c304e12318b75ec38f90f45f46ebefe995384e21a",
+          "ms": 5074
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 7,
+          "wire": {
+            "inputItems": 17,
+            "sharedItems": 14,
+            "previousItems": 14,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "680d2b7de70e4b3d8d6ee14dce610448e3a9abd6cabfec8994c31852b263a43e",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 18780
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 335,
+            "output": 34,
+            "cacheRead": 10112,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10481,
+            "cost": {
+              "input": 0.000335,
+              "output": 0.00017,
+              "cacheRead": 0.0005056,
+              "cacheWrite": 0,
+              "total": 0.0010106
+            }
+          },
+          "responseHash": "350c10793083f7d5947e2d8925e60c0d1a16bd0425e2884b372b3b8173ea9b04",
+          "ms": 7723
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 8,
+          "wire": {
+            "inputItems": 19,
+            "sharedItems": 17,
+            "previousItems": 17,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "5ee18cfde8ec49f069bae5c8a23de30576a290bf854e8676cd8e9fbd3dbf76a4",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 19167
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 137,
+            "output": 28,
+            "cacheRead": 10368,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10533,
+            "cost": {
+              "input": 0.000137,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.0005184,
+              "cacheWrite": 0,
+              "total": 0.0007954
+            }
+          },
+          "responseHash": "1abaffc4f2894ef6298d47173fef80486ad7ae4e8646189b1fab37745cb07c6e",
+          "ms": 5117
+        },
+        {
+          "phase": "task",
+          "turn": 2,
+          "ordinal": 9,
+          "wire": {
+            "inputItems": 21,
+            "sharedItems": 19,
+            "previousItems": 19,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "943f31b1c5489fbc90f5fdb7a02ab25d5d06dd3f93e5ab336f7f0abbffd6a6ca",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": true,
+            "revision2Present": false,
+            "bytes": 19618
+          },
+          "status": "stop",
+          "usage": {
+            "input": 223,
+            "output": 94,
+            "cacheRead": 10368,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10685,
+            "cost": {
+              "input": 0.000223,
+              "output": 0.00047000000000000004,
+              "cacheRead": 0.0005184,
+              "cacheWrite": 0,
+              "total": 0.0012114
+            }
+          },
+          "responseHash": "cf7a49694160dde32c2d0b404c3665780a914a5efb039171de51e7266d3e4064",
+          "ms": 4711
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 10,
+          "wire": {
+            "inputItems": 23,
+            "sharedItems": 13,
+            "previousItems": 21,
+            "prefix": false,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "f2cf805b4d2f5047b0f50d77252f3a4bb8e7bc9190325562719de28dceea8bca",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 20451
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 6525,
+            "output": 61,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10810,
+            "cost": {
+              "input": 0.0065249999999999996,
+              "output": 0.00030500000000000004,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.007041199999999999
+            }
+          },
+          "responseHash": "c55af3b4359a4fc6515389f3cf989e58268fa1cdaaf8ab804d7da20e7bc6e837",
+          "ms": 4012
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 11,
+          "wire": {
+            "inputItems": 26,
+            "sharedItems": 23,
+            "previousItems": 23,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "67a9927aba5c9c9e05d011e972c8db29884125c5cfde5ff80090017e5dedec37",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 21357
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 328,
+            "output": 35,
+            "cacheRead": 10624,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 10987,
+            "cost": {
+              "input": 0.000328,
+              "output": 0.00017500000000000003,
+              "cacheRead": 0.0005312,
+              "cacheWrite": 0,
+              "total": 0.0010341999999999999
+            }
+          },
+          "responseHash": "caa6ee956a8fd3d7827a3ca74b79dc93b760040ec0d92dfaeafacaa5573f327c",
+          "ms": 3925
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 12,
+          "wire": {
+            "inputItems": 28,
+            "sharedItems": 26,
+            "previousItems": 26,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "d9ecdf1315da0bbde43070442d4de87576afa0e89606ea27a10f84a66d885a6c",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 21745
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 131,
+            "output": 28,
+            "cacheRead": 10880,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11039,
+            "cost": {
+              "input": 0.00013099999999999999,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.000544,
+              "cacheWrite": 0,
+              "total": 0.000815
+            }
+          },
+          "responseHash": "9840ad4a900229a6906635f2930a3f0035a76f0fe00c907e40b1c3b556265180",
+          "ms": 4360
+        },
+        {
+          "phase": "task",
+          "turn": 3,
+          "ordinal": 13,
+          "wire": {
+            "inputItems": 30,
+            "sharedItems": 28,
+            "previousItems": 28,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "7d45ec5819d7bf398d0be3f9d5c7164ad04fc441456e0620a18d5c893d6093ae",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 22197
+          },
+          "status": "stop",
+          "usage": {
+            "input": 217,
+            "output": 93,
+            "cacheRead": 10880,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11190,
+            "cost": {
+              "input": 0.000217,
+              "output": 0.000465,
+              "cacheRead": 0.000544,
+              "cacheWrite": 0,
+              "total": 0.001226
+            }
+          },
+          "responseHash": "0ebe0584e67edc2c82df5330d5d525d65b200ec45f6b64e61ee2a452e048c6c3",
+          "ms": 4421
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 14,
+          "wire": {
+            "inputItems": 32,
+            "sharedItems": 22,
+            "previousItems": 30,
+            "prefix": false,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "55b589e50c4fce839733848fb978de1e91bcf238274260520ddc0b545acb9b5a",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 23024
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 7030,
+            "output": 58,
+            "cacheRead": 4224,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11312,
+            "cost": {
+              "input": 0.00703,
+              "output": 0.00029,
+              "cacheRead": 0.0002112,
+              "cacheWrite": 0,
+              "total": 0.0075312
+            }
+          },
+          "responseHash": "0b9c6418fd5da1b39063ddf3a5b21ae5508ed19647a8833e933e06797f48481d",
+          "ms": 3818
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 15,
+          "wire": {
+            "inputItems": 35,
+            "sharedItems": 32,
+            "previousItems": 32,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "0da0cd9a66bf071f8f2e5bb3494db87647f23fc34f6141b9dffac0402fb424aa",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 23924
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 321,
+            "output": 35,
+            "cacheRead": 11136,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11492,
+            "cost": {
+              "input": 0.000321,
+              "output": 0.00017500000000000003,
+              "cacheRead": 0.0005568000000000001,
+              "cacheWrite": 0,
+              "total": 0.0010528
+            }
+          },
+          "responseHash": "557ff6fc84d5a7a8313aeb6f7f7e36115f52bc55aef645b0fbdfc317e13036cc",
+          "ms": 4917
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 16,
+          "wire": {
+            "inputItems": 37,
+            "sharedItems": 35,
+            "previousItems": 35,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "74840e6d74555703a961d22a11d7d0e29cd0b1d763dab2122ab22be3e2b9d9e8",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 24312
+          },
+          "status": "toolUse",
+          "usage": {
+            "input": 124,
+            "output": 28,
+            "cacheRead": 11392,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11544,
+            "cost": {
+              "input": 0.000124,
+              "output": 0.00014000000000000001,
+              "cacheRead": 0.0005696000000000001,
+              "cacheWrite": 0,
+              "total": 0.0008336000000000001
+            }
+          },
+          "responseHash": "e5450384362e9d256b834c3034c26534f35ff7c169bb18e250e67291b80726de",
+          "ms": 3467
+        },
+        {
+          "phase": "task",
+          "turn": 4,
+          "ordinal": 17,
+          "wire": {
+            "inputItems": 39,
+            "sharedItems": 37,
+            "previousItems": 37,
+            "prefix": true,
+            "baseChanges": [],
+            "baseHash": "1b7cd3ecf3a5baf031f07a7e7653fa35ce4ffd2fc5e05c185fe8806633703d88",
+            "inputHash": "261f8216679adeb1cc39a5b74a4f80eaa5bac1ef436c6a4e8efd021a01698106",
+            "cacheKeyHash": "c932c5fcae382c5867436b48aab40dd354a1ad7add7923179d747c832afd63a5",
+            "evidenceCopies": 1,
+            "revision1Present": false,
+            "revision2Present": true,
+            "bytes": 24764
+          },
+          "status": "stop",
+          "usage": {
+            "input": 210,
+            "output": 94,
+            "cacheRead": 11392,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 11696,
+            "cost": {
+              "input": 0.00020999999999999998,
+              "output": 0.00047000000000000004,
+              "cacheRead": 0.0005696000000000001,
+              "cacheWrite": 0,
+              "total": 0.0012496
+            }
+          },
+          "responseHash": "7294a9d9410d2fed4a357924e6c91de14b325b9b65dd4415bc3c2a0831652110",
+          "ms": 3962
+        }
+      ],
+      "checks": [
+        {
+          "turn": 1,
+          "correct": true,
+          "expected": {
+            "count": 161,
+            "rawTotal": 54019,
+            "convertedTotal": 109165,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "actual": {
+            "count": 161,
+            "rawTotal": 54019,
+            "convertedTotal": 109165,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "calls": 5,
+          "memoryLookups": 0,
+          "prefix": true,
+          "baseChanges": []
+        },
+        {
+          "turn": 2,
+          "correct": true,
+          "expected": {
+            "count": 162,
+            "rawTotal": 53973,
+            "convertedTotal": 109080,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "actual": {
+            "count": 162,
+            "rawTotal": 53973,
+            "convertedTotal": 109080,
+            "gain": 2,
+            "offset": 7,
+            "revision": 1
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": false,
+          "baseChanges": []
+        },
+        {
+          "turn": 3,
+          "correct": true,
+          "expected": {
+            "count": 163,
+            "rawTotal": 55802,
+            "convertedTotal": 166754,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "actual": {
+            "count": 163,
+            "rawTotal": 55802,
+            "convertedTotal": 166754,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": false,
+          "baseChanges": []
+        },
+        {
+          "turn": 4,
+          "correct": true,
+          "expected": {
+            "count": 164,
+            "rawTotal": 55906,
+            "convertedTotal": 167062,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "actual": {
+            "count": 164,
+            "rawTotal": 55906,
+            "convertedTotal": 167062,
+            "gain": 3,
+            "offset": -4,
+            "revision": 2
+          },
+          "calls": 4,
+          "memoryLookups": 0,
+          "prefix": false,
+          "baseChanges": []
+        },
+        {
+          "rawEvidencePersisted": false
+        }
+      ],
+      "files": [
+        {
+          "path": "current-1-result-1.json",
+          "sha256": "3cb34c55ed4fca90d5a9861ee6384396ec10fd8c57821b19a96cdff7666653cd"
+        },
+        {
+          "path": "current-1-result-2.json",
+          "sha256": "11e5a1bd7aaf174df597e3d10f192d8ae886c101f122f2869191796322cc6248"
+        },
+        {
+          "path": "current-1-result-3.json",
+          "sha256": "008adb53ed920af5ab8568d6ba424760f55b4b7909173becd9293aed471a4d05"
+        },
+        {
+          "path": "current-1-result-4.json",
+          "sha256": "8e3364262eeaea6581ce486bb26db150f3dbad8cb9222eb90907fb1749a5c8e5"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Provider onPayload, not gateway-to-vendor wire. Unknown routing and cache eviction remain.",
+    "Generated CSV engineering task; real native read/write and Node execution. Isolated SDK host, not desktop UI.",
+    "Memory source is controlled test data. Prototype revocation guard deliberately rejects, it does not erase derivatives.",
+    "Rate is descriptive; shared global system/tool prefixes and provider variability prevent guaranteed hit rates."
+  ]
+}

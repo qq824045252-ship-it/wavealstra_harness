@@ -8,7 +8,7 @@ import { WorkspaceSharedContextService } from "../workspace/WorkspaceSharedConte
 import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { assembleProjectContextSegments, mapBtwProjectContextSegments } from "./PromptAssembly";
-import { isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
+import { isEvidenceSegment, type SupplementalEvidence, type EvidenceAccess } from "./EvidenceBudget";
 
 export interface TaskLibraryWorkspaceContext {
   projectId: string | null;
@@ -90,6 +90,33 @@ export class LibraryWorkspaceContextService {
     };
   }
 
+  /** Revalidate the original binding, including removed pins/attachments/resources after restart. */
+  validateEvidenceAccess(taskId: string, access: EvidenceAccess): void {
+    const projectId = this.db.getTask(taskId)?.projectId ?? null;
+    switch (access.kind) {
+      case "project-note": return new ProjectNotesService(this.db).assertAvailable(taskId, access.projectId);
+      case "workspace-note": return new WorkspaceNotesService(this.db).assertAvailable(taskId, access.workspaceId);
+      case "project":
+        if (projectId !== access.projectId) throw new Error("历史项目资料已离开当前任务作用域");
+        this.projectContext.assertEvidenceAvailable(access.projectId, access.resourceIds);
+        return;
+      case "library": {
+        const library = this.library();
+        const item = library.getItem(access.itemId);
+        if (!item || !library.isItemVisibleToTask(item, projectId)) throw new Error("历史资料已删除或不可见");
+        if (access.origin === "attached" && !library.listTaskReferences(taskId).items.some(ref => ref.id === access.itemId)) {
+          throw new Error("历史任务资料已取消附加");
+        }
+        if (access.origin === "pinned") {
+          if (!projectId || projectId !== access.projectId) throw new Error("历史固定资料已离开项目作用域");
+          this.projectContext.assertEvidenceAvailable(projectId, [], [access.itemId]);
+        }
+        return;
+      }
+      default: throw new Error("未知历史资料权限描述");
+    }
+  }
+
   /** Fresh source facts; selection and all quotas are owned by Context Projection. */
   projectionSources(taskId: string, readOnly = false): SupplementalEvidence[] {
     const task = this.db.getTask(taskId);
@@ -105,6 +132,7 @@ export class LibraryWorkspaceContextService {
       selectedItems.add(itemId);
       output.push({
         id: `library:${item.id}`, kind: "library", revision: String(item.updatedAt),
+        access: { kind: "library", itemId: item.id, origin, projectId },
         text: `[${origin}] [${item.kind}] ${item.title} · id=${item.id}\n${readOnly
           ? "此条目是资料引用；本只读会话不提供资料库工具，需要正文时请告知用户或由主任务读取。"
           : "此条目是资料引用；需要正文时通过 library_read 读取。"}`,
@@ -123,6 +151,7 @@ export class LibraryWorkspaceContextService {
       const resourceIds = segment.id === "projectResources" ? project.resources.map((resource) => resource.id) : [];
       output.push({
         id: `project:${project.project.id}:${segment.id}`, kind: "project", revision: project.version,
+        access: { kind: "project", projectId: project.project.id, resourceIds },
         text: segment.content,
         validate: () => this.projectContext.assertEvidenceAvailable(project.project.id, resourceIds),
       });

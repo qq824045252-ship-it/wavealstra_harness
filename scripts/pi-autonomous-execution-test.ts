@@ -217,17 +217,17 @@ try {
     return [{ type: "text", text: "NATIVE_EXIT_STATUS_PRESERVED" }];
   });
 
-  await runCase("new-user-resets-capsule", (n) => {
+  await runCase("new-user-retains-evidence", (n) => {
     if (n === 1 || n === 3) return [tool(`turn-${n}`, "read", { path: join(root, "state.txt") })];
     return [{ type: "text", text: "TURN_DONE" }];
   }, [], { secondPrompt: true });
 
-  await runCase("compacted-user-fallback", (n) => {
+  await assert.rejects(runCase("missing-anchor-fails-closed", (n) => {
     if (n === 1) return [tool("fallback-read", "read", { path: join(root, "state.txt") })];
     return [{ type: "text", text: "FALLBACK_DONE" }];
   }, [], { beforeProjection: [(pi) => {
     pi.on("context", (event) => ({ messages: event.messages.filter((message) => message.role !== "user") }));
-  }] });
+  }] }), /无法定位本轮证据/);
 
   console.log(`Pi autonomous execution: 6/6 PASS (native Bash/read/edit, no network/model credentials)`);
 } finally {

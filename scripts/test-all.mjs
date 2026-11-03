@@ -392,7 +392,7 @@ function killTree(child) {
   if (!child || child.exitCode !== null) return;
   try {
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     } else {
       process.kill(-child.pid, "SIGKILL");
     }
@@ -411,6 +411,8 @@ function runOne(name) {
       // POSIX 直接 spawn pnpm（不再套 sh -c，避免 Node DEP0190 与多一层僵尸进程）；
       // Windows 的 pnpm 是 .cmd，必须经 shell。超时为整组 kill / taskkill /T。
       shell: process.platform === "win32",
+      // Headless tests must not open one desktop console per pnpm.cmd invocation.
+      windowsHide: true,
       detached: process.platform !== "win32",
     });
     activeChildren.add(child);

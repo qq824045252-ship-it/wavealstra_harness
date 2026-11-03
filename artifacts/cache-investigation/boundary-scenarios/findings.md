@@ -1,5 +1,19 @@
 # Prompt-cache invalidation: boundary scenarios and measurements
 
+> **Methodology correction (follow-up assessment):** See
+> [the strategy evaluation](../strategy-evaluation/findings.md) for actual file-processing
+> tasks and request payloads paired with their own responses. The earlier live fixture
+> used a fixed probe, hashed pre-serialization `Context` rather than the wire body,
+> and paired compaction calls by array index. Its tool-activation case was a no-op
+> (`fixture_extra` was already active). Consequently it does not prove a live cache
+> loss caused by tool activation, a specific upstream cause for zero-cache responses,
+> or the safety of reasoning changes/real interruption. Historical usage deficits
+> below are heuristic observations, not attributable billing losses or causal
+> comparisons between apps. The old screenshots, fixtures and measurements are kept
+> as an audit trail; their categorical causal claims are withdrawn. Stable prefixes
+> enable reuse but do not guarantee 100% provider hits. First-turn-only injection
+> still changes the prefix when that first capsule is removed on the second turn.
+
 Follow-up to `artifacts/cache-investigation/screenshot-prefix-findings.md`.
 That pass removed one history rewriter (`ageToolResultImages`, shipped 0.1.74)
 and concluded no second per-request rewriter existed. This pass builds the

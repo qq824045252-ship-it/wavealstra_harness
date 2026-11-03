@@ -1,12 +1,29 @@
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
-  type MemorySearchRequest, type ResolvedMemoryContext,
+  type MemorySearchRequest, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
 } from "../../shared/memory-kernel";
 import type { MemoryService } from "../memory/MemoryService";
 
 const PROJECT_BASELINE_LIMIT = 8;
 
+export const MEMORY_EVIDENCE_RENDERER = "memory-l1-v1";
+export interface MemoryEvidenceBlock {
+  id: string;
+  revision: string;
+  text: string;
+  sources: Array<{ id: string; revision: number }>;
+  scenarioIds: string[];
+  profileIds: string[];
+  reference?: { renderer: typeof MEMORY_EVIDENCE_RENDERER; id: string; revision: number; scopeType: MemoryScopeType };
+}
+
+/** Frozen rendering parameters are part of a reference; never reconstruct from today's recall order. */
+export function renderMemoryEvidence(atom: Pick<MemoryRevisionDto, "memoryId" | "revision" | "kind" | "title" | "content">, scopeType: MemoryScopeType): string {
+  return `- [L1 ${atom.memoryId}@${atom.revision}][${atom.kind}][${scopeType}] ${atom.title}${atom.content ? ` — ${atom.content.slice(0, 700)}` : ""}`;
+}
+
 export interface ProjectedMemoryContext extends ResolvedMemoryContext {
+  blocks: MemoryEvidenceBlock[];
   sourceRevisions: Array<{ id: string; revision: number }>;
   groundingScenarioIds: string[];
 }
@@ -20,7 +37,7 @@ export function projectMemoryContext(
   const result: ProjectedMemoryContext = {
     items: [], text: "", query: input.query?.trim() ?? "", budgetChars: budget,
     includedChars: 0, trimmed: false, scenarioIds: [], profileIds: [],
-    sourceRevisions: [], groundingScenarioIds: [],
+    blocks: [], sourceRevisions: [], groundingScenarioIds: [],
   };
   if (!budget) return result;
   const header = "历史记忆证据：L1 是事实来源，L2/L3 是经审批且仍有依据的派生视图；本轮明确指令优先。";
@@ -46,7 +63,8 @@ export function projectMemoryContext(
   const byScenario = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
   const coveredAtoms = new Set<string>();
   const coveredScenarios = new Set<string>();
-  const revisions = (ids: string[]) => ids.map((id) => `${id}@${memory.history(id)[0]?.revision ?? 0}`).join(",");
+  const sourceVersions = (ids: string[]) => ids.map(id => ({ id, revision: memory.history(id)[0]?.revision ?? 0 }));
+  const revisions = (ids: string[]) => sourceVersions(ids).map(({ id, revision }) => `${id}@${revision}`).join(",");
   // Only use a derived view if all of its grounding remains visible. Deduplication
   // follows source IDs, never similarity or untraceable paraphrase heuristics.
   for (const profile of sources.profiles) {
@@ -55,6 +73,8 @@ export function projectMemoryContext(
     if (!atomIds.length || atomIds.every((id) => coveredAtoms.has(id))) continue;
     const line = `- [L3 derived:${profile.id}][${profile.scopeType}] ${profile.title} — ${profile.content.slice(0, 1000)} (sources: ${revisions(atomIds)})`;
     if (push(line)) {
+      result.blocks.push({ id: `profile:${profile.id}`, revision: revisions(atomIds), text: line,
+        sources: sourceVersions(atomIds), scenarioIds: [...profile.sourceScenarioIds], profileIds: [profile.id] });
       result.profileIds!.push(profile.id);
       profile.sourceScenarioIds.forEach((id) => coveredScenarios.add(id));
       atomIds.forEach((id) => coveredAtoms.add(id));
@@ -76,6 +96,8 @@ export function projectMemoryContext(
     if (scenario.sourceMemoryIds.every((id) => coveredAtoms.has(id))) continue;
     const line = `- [L2 derived:${scenario.id}][${scenario.scopeType}] ${scenario.title} — ${scenario.summary.slice(0, 700)} (sources: ${revisions(scenario.sourceMemoryIds)})`;
     if (push(line)) {
+      result.blocks.push({ id: `scenario:${scenario.id}`, revision: revisions(scenario.sourceMemoryIds), text: line,
+        sources: sourceVersions(scenario.sourceMemoryIds), scenarioIds: [scenario.id], profileIds: [] });
       result.scenarioIds!.push(scenario.id);
       coveredScenarios.add(scenario.id);
       scenario.sourceMemoryIds.forEach((id) => coveredAtoms.add(id));
@@ -98,7 +120,12 @@ export function projectMemoryContext(
   for (const { hit, scope } of ordered) {
     if (result.items.length >= (input.limit ?? 16)) { result.trimmed = true; break; }
     const atom = hit.memory;
-    if (!push(`- [L1 ${revisions([atom.id])}][${atom.kind}][${scope.scopeType}] ${atom.title}${atom.content ? ` — ${atom.content.slice(0, 700)}` : ""}`)) continue;
+    const revision = memory.history(atom.id)[0]?.revision ?? 0;
+    const text = renderMemoryEvidence({ ...atom, memoryId: atom.id, revision }, scope.scopeType);
+    if (!push(text)) continue;
+    result.blocks.push({ id: `memory:${atom.id}`, revision: String(revision), text,
+      sources: [{ id: atom.id, revision }], scenarioIds: [], profileIds: [],
+      reference: { renderer: MEMORY_EVIDENCE_RENDERER, id: atom.id, revision, scopeType: scope.scopeType } });
     result.items.push({ id: atom.id, kind: atom.kind, title: atom.title, content: atom.content,
       scopeType: scope.scopeType, scopeId: scope.scopeId, importance: atom.importance, confidence: atom.confidence,
       score: hit.score, reasons: hit.reasons });
