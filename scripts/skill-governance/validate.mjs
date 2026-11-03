@@ -44,7 +44,7 @@ for(const id of fs.readdirSync(root)){
  if(id!=='weekly-summary'&&text.length>12000)errors.push(`Oversized ${id}: ${text.length}`);
  rows.push({skill:id,before:originalCounts.get(id)??old.length,chars:text.length,positive,negative,status:id==='weekly-summary'?'cleanup-candidate':text.length>8000?'context-reviewed':'pass'});
 }
-for(const [a,b] of [['dimagent-debug','root-cause-debugging'],['officecli','open-kimi-ppt'],['gemini-agent-platform','cheaper-inference-image']]){
+for(const [a,b] of [['officecli','open-kimi-ppt'],['gemini-agent-platform','cheaper-inference-image']]){
  for(const [prompt,expected] of allCases.get(a)) if(expected==='trigger'&&allCases.get(b).get(prompt)==='trigger')errors.push(`Cross-positive ${a}/${b}: ${prompt}`);
  for(const [from,to] of [[a,b],[b,a]]) if(![...allCases.get(from)].some(([p,e])=>e==='trigger'&&allCases.get(to).get(p)==='no-trigger'))errors.push(`Missing cross-negative ${from}/${to}`);
 }

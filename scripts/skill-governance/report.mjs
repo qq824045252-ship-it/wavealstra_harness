@@ -18,8 +18,8 @@ const formal=validation.rows.filter(r=>r.skill!=='weekly-summary');
 const sumBefore=formal.reduce((n,r)=>n+r.before,0),sumAfter=formal.reduce((n,r)=>n+r.chars,0);
 const media=read('media-smoke.json');
 media.asr.transcript=media.asr.transcript.trim();
-const pairs={'dimagent-debug':'root-cause-debugging','root-cause-debugging':'dimagent-debug',officecli:'open-kimi-ppt','open-kimi-ppt':'officecli','gemini-agent-platform':'Cheaper / native image','cheaper-inference-image':'Gemini / native image','easyeda-agent':'KiCad / epro','kicad-design':'EasyEDA / epro','epro2kicad':'KiCad 编辑','matlab-r2025b':'Origin','origin-analysis':'MATLAB','meeting-transcribe':'OCR / 已有文本','npu-ocr':'ASR / 原生文本','weekly-report-fill':'普通文字摘要','projectlibre-gen':'普通待办'};
-const method=new Set(['dimagent-debug','root-cause-debugging','dim-feature-add','loop-agent','shared-memory','wechat-public']);
+const pairs={officecli:'open-kimi-ppt','open-kimi-ppt':'officecli','gemini-agent-platform':'Cheaper / native image','cheaper-inference-image':'Gemini / native image','easyeda-agent':'KiCad / epro','kicad-design':'EasyEDA / epro','epro2kicad':'KiCad 编辑','matlab-r2025b':'Origin','origin-analysis':'MATLAB','meeting-transcribe':'OCR / 已有文本','npu-ocr':'ASR / 原生文本','weekly-report-fill':'普通文字摘要','projectlibre-gen':'普通待办'};
+const method=new Set(['root-cause-debugging','dim-feature-add','loop-agent','shared-memory','wechat-public']);
 const limitations={'easyeda-agent':'done；无连接器窗口','ansys-simulation':'done；未运行求解','kicad-design':'done；CLI 检查','epro2kicad':'done；CLI 检查','npu-ocr':'done；宽文本限制','weekly-summary':'候选清理，未删除'};
 const lines=validation.rows.map(r=>{
  const shell=r.skill==='origin-analysis'?'显式 PowerShell':method.has(r.skill)?'方法/工具路由':'Git Bash';

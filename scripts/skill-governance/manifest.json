@@ -100,16 +100,6 @@
       "after": "0c24a122836eb55968bb7d853cddc7cfc204dd03f5dbf83f3aa1f67ab78d2bd7"
     },
     {
-      "file": "dimagent-debug/SKILL.md",
-      "before": "09288418787fcdbc1e2825981e85b61f1b4c491e17b5fdc6e9a331d6c3604efa",
-      "after": "2f35e5d10e4c22786a28f6cb5a7a995b179f0ad492636925e71794e24e83247b"
-    },
-    {
-      "file": "dimagent-debug/evals/trigger.json",
-      "before": null,
-      "after": "a57922d529059902cae1161483453ab37fe8799e03c9957d865a1ce8eeb1910a"
-    },
-    {
       "file": "easyeda-agent/SKILL.md",
       "before": "604d23f99541247ee415f23504819d7cd95c0572d15c191999f5ff070ef1babb",
       "after": "c0aab789e6bb8be392be93d9fc268df773f83da39c8e61d3a54951353957530f"
