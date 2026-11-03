@@ -35,7 +35,6 @@ import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
 import { runtimeProbeService, type RuntimeProbeInput } from "./RuntimeProbeService";
 import { MediaArtifactMaterializer } from "./MediaArtifactMaterializer";
-import { ageToolResultImages } from "./ToolImageAging";
 import { routeVisionForPaths, type VisionRouteResult } from "./VisionRouting";
 import { createWebAccessCapabilityExtension } from "./web-access/index";
 import { quoteBashArg, quotePowerShellLiteral, toBashPath } from "../agent/ShellArguments";
@@ -448,15 +447,10 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
     const stt = config.speechToText.enabled ? bridge.runtime.speechToTextProvider() : null;
     const tts = config.textToSpeech.enabled ? bridge.runtime.textToSpeechProvider() : null;
 
-    // Computer Use accumulates screenshots quickly; keep only the newest two in
-    // the model context so every request does not re-send old pixels. Session
-    // history keeps the original images. Test doubles may omit the event API.
-    if (typeof pi.on === "function") {
-      pi.on("context", (event) => {
-        const aged = ageToolResultImages(event.messages, 2);
-        return aged === event.messages ? undefined : { messages: aged as typeof event.messages };
-      });
-    }
+    // Images are normalized once when Pi accepts a tool result. Keep that
+    // history stable through tool continuations; Pi compaction owns retirement.
+    // A sliding screenshot window rewrites earlier provider input and destroys
+    // prompt-prefix reuse even when the canonical session file is unchanged.
 
     if (config.web.enabled) createWebAccessCapabilityExtension(pi);
 
