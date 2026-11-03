@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getCurrentTools, normalizeContext, createAssistantMessageEventStream, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { stream as responsesStream } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
-import { EphemeralContextProjection, CONTEXT_LEDGER_TYPE, CONTEXT_RESET_TYPE } from "../src/main/agent/EphemeralContextProjection";
+import * as sourceProjection from "../src/main/agent/EphemeralContextProjection";
+const { EphemeralContextProjection, CONTEXT_LEDGER_TYPE, CONTEXT_RESET_TYPE } = process.env.MYBUDDY_LEDGER_MODULE
+  ? await import(pathToFileURL(process.env.MYBUDDY_LEDGER_MODULE).href) as typeof sourceProjection : sourceProjection;
 import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionRequestGuard } from "../src/main/agent/ModelInvocationAdmission";
 
 // Production MemoryService + projection + admission + Pi sessions/compaction + real serializer.
