@@ -34,6 +34,10 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
   }
 
   if (error.code === "STALE_OBSERVATION" && stableSelectorAvailable(input)) {
+    if (!readonlyAction(input)) return {
+      retry: false, reason: "stale-observation",
+      guidance: "窗口身份、尺寸或 DPI 已变化，旧坐标不再可信；重新截图或 inspect_controls，不能删除 observation_id 后重放旧输入。",
+    };
     return {
       retry: true,
       delayMs: 80,
@@ -46,7 +50,9 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
     return {
       retry: true,
       delayMs: 180,
-      input: { ...input, observationId: undefined },
+      // A focus retry must still validate the original coordinate evidence.
+      // The window may have resized or moved to another DPI while focus failed.
+      input: { ...input },
       reason: "focus-retry",
       guidance: "前台焦点切换失败；短暂等待并重新绑定窗口后重试一次。",
     };

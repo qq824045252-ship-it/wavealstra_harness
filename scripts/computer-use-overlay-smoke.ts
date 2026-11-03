@@ -1,9 +1,15 @@
 ﻿import assert from "node:assert/strict";
 import { app, BrowserWindow, screen } from "electron";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ComputerUseOverlayService } from "../src/main/platform/computer-use/overlay";
 import { ComputerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
 import { WindowsAutomationHost } from "../src/main/platform/computer-use/windows/WindowsAutomationHost";
 import type { WindowInfo } from "../src/main/platform/computer-use/protocol";
+
+const profile = mkdtempSync(join(tmpdir(), "mybuddy-cu-overlay-"));
+app.setPath("userData", profile); process.env.HOME = profile; process.env.USERPROFILE = profile;
 
 const target: WindowInfo = {
   handle: "1",

@@ -1,4 +1,5 @@
-import type { WebContents } from "electron";
+import { randomUUID } from "node:crypto";
+import type { BrowserWindow, WebContents } from "electron";
 import { selectAllModifier } from "../platform/input";
 import type { BrowserHost } from "../browser/BrowserHost";
 import { pageInspectionService, PageCaptureError, PageCaptureScope } from "../artifact/PageInspectionService";
@@ -87,7 +88,7 @@ function locator(input: UiExecInput): { selector?: string; text?: string; role?:
 
 function findScript(input: ReturnType<typeof locator>, limit: number, inspect: boolean): string {
   return `(() => {
-    const q=${JSON.stringify(input)}; const limit=${Math.max(1, Math.min(50, limit))}; const inspect=${inspect};
+    const q=${JSON.stringify(input)}; const limit=${Math.max(1, Math.min(200, limit))}; const inspect=${inspect};
     const norm=(v)=>String(v??'').replace(/\\s+/g,' ').trim();
     const roleOf=(el)=>{
       const explicit=norm(el.getAttribute('role')).toLowerCase(); if(explicit)return explicit;
@@ -111,7 +112,7 @@ function findScript(input: ReturnType<typeof locator>, limit: number, inspect: b
       return '';
     };
     const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?document.getElementById(el.getAttribute('aria-labelledby'))?.textContent:'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||el.textContent);
-    const path=(el)=>{ if(el.id)return '#'+CSS.escape(el.id); const tid=el.getAttribute('data-testid'); if(tid)return '[data-testid="'+CSS.escape(tid)+'"]'; const parts=[]; let n=el; while(n&&n!==document.documentElement){ let p=n.localName; if(!p)break; const parent=n.parentElement; if(parent){const peers=Array.from(parent.children).filter(x=>x.localName===n.localName); if(peers.length>1)p+=':nth-of-type('+(peers.indexOf(n)+1)+')';} parts.unshift(p); n=parent;} return parts.join(' > '); };
+    const path=(el)=>{ let ref=el.getAttribute('data-mybuddy-ui-ref'); if(!ref){ref=${JSON.stringify(randomUUID())}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
     let all; try{all=q.selector?Array.from(document.querySelectorAll(q.selector)):Array.from(document.querySelectorAll('body *'));}catch(e){return {ok:false,error:'invalid selector: '+String(e)}}
     const matches=all.filter(el=>{ if(!(el instanceof Element))return false; const n=nameOf(el),r=roleOf(el); if(q.role&&r!==q.role.toLowerCase())return false; if(q.name&&!n.toLowerCase().includes(q.name.toLowerCase()))return false; if(q.text&&!norm(el.textContent).toLowerCase().includes(q.text.toLowerCase()))return false; return true; }).slice(0,limit).map(el=>{ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); const item={selector:path(el),tag:el.tagName.toLowerCase(),id:el.id||undefined,role:roleOf(el)||undefined,name:nameOf(el).slice(0,500)||undefined,text:norm(el.textContent).slice(0,1000)||undefined,visible:r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||'1')>0,disabled:Boolean(el.disabled||el.getAttribute('aria-disabled')==='true'),bounds:{x:r.x,y:r.y,width:r.width,height:r.height}}; if(inspect){item.outerHTML=el.outerHTML.slice(0,8000); item.styles={display:s.display,visibility:s.visibility,opacity:s.opacity,position:s.position,zIndex:s.zIndex,pointerEvents:s.pointerEvents,overflowX:s.overflowX,overflowY:s.overflowY};} return item; });
     return {ok:true,matches};
@@ -159,7 +160,7 @@ export class UiAutomationService {
   private async one(wc: WebContents, input: UiExecInput): Promise<UiElementInfo> {
     const rows = await this.find(wc, input, 10, false);
     if (!rows.length) throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
-    if (rows.length > 1 && !input.selector) {
+    if (rows.length > 1) {
       const visible = rows.filter((row) => row.visible);
       if (visible.length === 1) return visible[0];
       throw new UiAutomationError("ELEMENT_AMBIGUOUS", `UI 定位不唯一：匹配 ${rows.length} 个元素`, { count: rows.length });
@@ -167,14 +168,17 @@ export class UiAutomationService {
     return rows[0];
   }
 
-  private async click(wc: WebContents, element: UiElementInfo): Promise<{ x: number; y: number }> {
+  private async click(wc: WebContents, element: UiElementInfo, check = () => {}): Promise<{ x: number; y: number }> {
     await wc.executeJavaScript(`document.querySelector(${JSON.stringify(element.selector)})?.scrollIntoView({block:'center',inline:'center'})`, true);
-    const current = (await this.find(wc, { action: "find", selector: element.selector }, 1))[0];
+    const current = await this.one(wc, { action: "find", selector: element.selector });
     if (!current) throw new UiAutomationError("ELEMENT_DISAPPEARED", "目标元素在点击前消失");
     if (!current.visible) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标元素不可见");
     if (current.disabled) throw new UiAutomationError("ELEMENT_DISABLED", "目标元素已禁用");
-    const x = Math.round(current.bounds.x + current.bounds.width / 2);
-    const y = Math.round(current.bounds.y + current.bounds.height / 2);
+    check();
+    const hit = await wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)});if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const hit=document.elementFromPoint(x,y);return hit===el||el.contains(hit)?{x,y}:null})()`, true) as { x: number; y: number } | null;
+    check();
+    if (!hit) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标被其它元素遮挡，请重新观察界面");
+    const { x, y } = hit;
     wc.sendInputEvent({ type: "mouseMove", x, y });
     wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
     wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
@@ -191,11 +195,18 @@ export class UiAutomationService {
     }
 
     const wc = this.wc(target);
+    const check = () => {
+      if (signal?.aborted) throw new DOMException("界面操作已取消", "AbortError");
+      if (wc.isDestroyed() || this.targetContents(target) !== wc) throw new UiAutomationError("SURFACE_CHANGED", "UI target 已变化，请重新观察");
+    };
     const base = { action: input.action, target, url: wc.getURL(), title: wc.getTitle() } as const;
 
     if (input.action === "snapshot") {
       const page = await pageInspectionService.getPageSnapshot(wc);
-      const rows = await wc.executeJavaScript(`(() => Array.from(document.querySelectorAll('button,a,input,textarea,select,[role],[aria-label],[data-testid]')).slice(0,200).map((el,i)=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el),n=String(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'').replace(/\\s+/g,' ').trim();return {selector:'snapshot:'+i,tag:el.tagName.toLowerCase(),id:el.id||undefined,role:el.getAttribute('role')||undefined,name:n.slice(0,300)||undefined,text:String(el.textContent||'').replace(/\\s+/g,' ').trim().slice(0,500)||undefined,visible:r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden',disabled:Boolean(el.disabled||el.getAttribute('aria-disabled')==='true'),bounds:{x:r.x,y:r.y,width:r.width,height:r.height}}}))()`, true) as UiElementInfo[];
+      // A reference belongs to this exact DOM node and document. Reordering keeps it
+      // valid; replacement/navigation/new snapshots cannot silently retarget it.
+      await wc.executeJavaScript(`document.querySelectorAll('[data-mybuddy-ui-ref]').forEach(el=>el.removeAttribute('data-mybuddy-ui-ref'))`, true);
+      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, 200);
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
       return { ...base, text: page?.text.slice(0, max) ?? "", elements: rows, detail: `snapshot: ${rows.length} interactive elements` };
     }
@@ -234,6 +245,7 @@ export class UiAutomationService {
       const timeout = Math.max(100, Math.min(30_000, Math.round(input.timeoutMs ?? 5_000)));
       const started = Date.now();
       while (Date.now() - started <= timeout) {
+        check();
         const rows = await this.find(wc, input, 20, false);
         const attached = rows.length > 0;
         const visible = rows.some((row) => row.visible);
@@ -245,30 +257,37 @@ export class UiAutomationService {
     }
 
     const element = await this.one(wc, input);
+    check();
     if (input.action === "click") {
-      const point = await this.click(wc, element);
+      const point = await this.click(wc, element, check);
       return { ...base, elements: [element], detail: `clicked ${element.selector} @ ${point.x},${point.y}` };
     }
     if (input.action === "fill") {
       const value = input.value ?? "";
       if (value.length > 100_000) throw new UiAutomationError("INVALID_INPUT", "value 过长");
-      await this.click(wc, element);
+      await this.click(wc, element, check);
       const editable = await wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); if(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)))return false; el.focus(); return true;})()`, true);
       if (!editable) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标元素不可编辑", { selector: element.selector });
+      check();
       const selectModifier = selectAllModifier();
       wc.sendInputEvent({ type: "keyDown", keyCode: "A", modifiers: [selectModifier] });
       wc.sendInputEvent({ type: "keyUp", keyCode: "A", modifiers: [selectModifier] });
       wc.sendInputEvent({ type: "keyDown", keyCode: "Backspace" });
       wc.sendInputEvent({ type: "keyUp", keyCode: "Backspace" });
-      wc.insertText(value);
+      await wc.insertText(value);
       return { ...base, elements: [element], detail: `filled ${element.selector}` };
     }
     if (input.action === "press") {
       const key = clean(input.key, 80);
       if (!key) throw new UiAutomationError("INVALID_INPUT", "key 不能为空");
-      await this.click(wc, element);
-      wc.sendInputEvent({ type: "keyDown", keyCode: key });
-      wc.sendInputEvent({ type: "keyUp", keyCode: key });
+      await this.click(wc, element, check);
+      const tokens = key.split("+");
+      const keyCode = tokens.pop()!;
+      const aliases: Record<string, "control" | "alt" | "shift" | "meta"> = { ctrl: "control", control: "control", alt: "alt", shift: "shift", meta: "meta", cmd: "meta", command: "meta" };
+      const modifiers = tokens.map(token => aliases[token.toLowerCase()]);
+      if (modifiers.some(token => !token)) throw new UiAutomationError("INVALID_INPUT", "不支持的快捷键修饰符");
+      wc.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+      wc.sendInputEvent({ type: "keyUp", keyCode, modifiers });
       return { ...base, elements: [element], detail: `pressed ${key} on ${element.selector}` };
     }
     if (input.action === "scroll") {
@@ -289,11 +308,17 @@ function electronRuntime(): typeof import("electron") {
   return require("electron") as typeof import("electron");
 }
 
+let applicationWindow: BrowserWindow | null = null;
+
+/** App identity is owned by createWindow, never by Electron window enumeration order. */
+export function setUiAutomationMainWindow(window: BrowserWindow | null): void {
+  applicationWindow = window;
+}
+
 function mainRenderer(): WebContents | null {
   try {
-    const { BrowserWindow } = electronRuntime();
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    return win && !win.webContents.isDestroyed() ? win.webContents : null;
+    const win = applicationWindow;
+    return win && !win.isDestroyed() && !win.webContents.isDestroyed() ? win.webContents : null;
   } catch {
     return null;
   }
@@ -301,9 +326,9 @@ function mainRenderer(): WebContents | null {
 
 function secondarySurface(target: "browser" | "artifact"): WebContents | null {
   try {
-    const { BrowserWindow, WebContentsView } = electronRuntime();
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    if (!win) return null;
+    const { WebContentsView } = electronRuntime();
+    const win = applicationWindow;
+    if (!win || win.isDestroyed()) return null;
     for (const child of win.contentView.children) {
       if (!(child instanceof WebContentsView)) continue;
       const wc = child.webContents;

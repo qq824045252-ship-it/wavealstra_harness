@@ -15,6 +15,7 @@ export interface SessionLifecycleManagerDependencies {
   usageStats: UsageStatsService;
   userTurnCounters: Map<string, number>;
   clearPendingMemoryTurns: (taskId: string) => void;
+  endComputerUse?: (taskId: string, executionId?: string) => void;
 }
 
 /**
@@ -28,6 +29,7 @@ export class SessionLifecycleManager {
   release(taskId: string): void {
     this.deps.clearPendingMemoryTurns(taskId);
     const entry = this.deps.registry.get(taskId);
+    this.deps.endComputerUse?.(taskId, entry?.executionId);
     const sessionFile = entry?.session.sessionFile ?? null;
     this.deps.mcpRuntime.detachSession(taskId);
     this.deps.registry.delete(taskId);
@@ -92,6 +94,7 @@ export class SessionLifecycleManager {
 
   disposeAll(): void {
     for (const entry of this.deps.registry.values()) {
+      this.deps.endComputerUse?.(entry.taskId, entry.executionId);
       this.deps.mcpRuntime.detachSession(entry.taskId);
       this.deps.pendingActions.removeTask(entry.taskId);
       this.deps.approvals.release(entry.taskId);

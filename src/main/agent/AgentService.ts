@@ -1,3 +1,4 @@
+import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
 import { evaluatedTaskModel } from "../../shared/task-model-recommendations";
 import { SkillTrialLedger } from "./SkillTrialLedger";
 import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
@@ -721,6 +722,7 @@ export class AgentService {
     };
     this.mcpRuntime = new McpRuntimeService();
     this.sessionLifecycle = new SessionLifecycleManager({
+      endComputerUse: (taskId, executionId) => computerUseRunCoordinator.endTask(taskId, "failed", executionId),
       registry: this.registry,
       mcpRuntime: this.mcpRuntime,
       pendingActions: this.pendingActions,
@@ -734,6 +736,7 @@ export class AgentService {
       },
     });
     this.sessionEvents = new SessionEventCoordinator({
+      endComputerUse: (taskId, executionId, outcome) => computerUseRunCoordinator.endTask(taskId, outcome, executionId),
       registry: this.registry,
       userTurnCounters: this.sessionUserTurnCounters,
       usageStats: this.usageStats,
@@ -4400,6 +4403,7 @@ export class AgentService {
           durationMs: completedDurationMs,
         });
       }
+      computerUseRunCoordinator.endTask(req.taskId, "completed", conversationExecutionId);
       this.emitTaskLifecycle({
         kind: "completed",
         taskId: req.taskId,
@@ -4431,6 +4435,7 @@ export class AgentService {
         durationMs: failedDurationMs,
         error: message,
       });
+      computerUseRunCoordinator.endTask(req.taskId, "failed", conversationExecutionId);
       this.emitTaskLifecycle({
         kind: "failed",
         taskId: req.taskId,
@@ -4863,6 +4868,7 @@ export class AgentService {
   private async abortTask(taskId: string, preservedRun?: PromptRunState): Promise<void> {
     this.promptExecution.cancel(taskId, preservedRun);
     const entry = this.registry.get(taskId);
+    computerUseRunCoordinator.endTask(taskId, "failed", entry?.executionId);
     if (!entry) return;
     if (entry.executionId) {
       this.conversationInteractions.cancelExecution(entry.executionId, "当前执行已由用户停止");

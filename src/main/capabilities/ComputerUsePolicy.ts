@@ -9,6 +9,7 @@ const SIDE_EFFECT_ACTIONS = new Set<ComputerExecInput["action"]>([
   "mouse_down_client", "mouse_up_client", "key_down", "key_up", "paste_text", "drag_screen",
   "mouse_move", "mouse_click", "mouse_drag", "scroll",
   "key_press", "type_text",
+  "move_window", "resize_window",
 ]);
 
 const LIGHTWEIGHT_ACTIONS = new Set<ComputerExecInput["action"]>(["move_client", "mouse_move"]);
@@ -19,6 +20,13 @@ export function isComputerUseSideEffect(action: ComputerExecInput["action"] | un
 
 export function isComputerUseLightweightAction(action: ComputerExecInput["action"] | undefined): boolean {
   return action !== undefined && LIGHTWEIGHT_ACTIONS.has(action);
+}
+
+/** Validate before any window lookup, focus change, clipboard write or overlay. */
+export function validateComputerAction(input: ComputerExecInput): void {
+  if (input.action != null && input.actions != null) throw new Error("computer_exec 的 action 与 actions 只能二选一");
+  if (input.actions != null && (!Array.isArray(input.actions) || input.actions.length < 1 || input.actions.length > 8)) throw new Error("actions 需要 1–8 个步骤");
+  if (!input.action && !input.actions?.length) throw new Error("computer_exec 需要 action 或 actions");
 }
 
 export function hasWindowTarget(input: ComputerExecInput): boolean {
@@ -51,18 +59,16 @@ export interface ComputerUseVerification {
 
 export function verificationFor(input: ComputerExecInput, output: ComputerExecOutput): ComputerUseVerification {
   const targeted = hasWindowTarget(input);
-  const postObservation = output.observation
+  const screenshotObserved = (input.action === "screenshot_window" || input.action === "screenshot" || input.action === "ocr_window") && Boolean(output.screenshot);
+  const postObservation = output.observation || screenshotObserved
     ? "verified"
     : output.observationStatus === "failed"
       ? "unavailable"
       : isComputerUseSideEffect(input.action) && !isComputerUseLightweightAction(input.action)
         ? "unavailable"
         : "not-required";
-  const visualVerification = input.captureAfter
-    ? output.captureStatus === "captured" || output.screenshot
-      ? "captured"
-      : "failed"
-    : "not-required";
+  const visualVerification = output.screenshot ? "captured"
+    : input.captureAfter || input.action === "screenshot_window" || input.action === "screenshot" ? "failed" : "not-required";
   return {
     strategy: "observe-act-verify",
     precondition: targeted ? "window-identity" : input.action === "screenshot_window" ? "foreground" : "desktop",

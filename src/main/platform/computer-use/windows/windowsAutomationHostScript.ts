@@ -440,7 +440,7 @@ function Convert-Control($element, [int]$depth, $window = $null) {
   } catch { [Console]::Error.WriteLine('[UIA Convert-Control] ' + $_.Exception.Message); return $null }
 }
 
-function Get-Controls($window, [int]$maxDepth = 6, [int]$maxNodes = 300) {
+function Get-Controls($window, [int]$maxDepth = 10, [int]$maxNodes = 300) {
   $handle = [IntPtr]::new([Int64]::Parse($window.handle))
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle) } catch { return [ordered]@{ controls = @(); uiaAvailable = $false; truncated = $false; detail = 'UI Automation root is unavailable' } }
   if ($null -eq $root) { return [ordered]@{ controls = @(); uiaAvailable = $false; truncated = $false; detail = 'UI Automation root is unavailable' } }
@@ -570,20 +570,22 @@ function Invoke-Dispatch([string]$action, $params) {
     }
     'inspect_controls' {
       $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
-      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(10, [Math]::Max(1, [int]$params.maxDepth)) } else { 6 }
+      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(32, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
       $nodes = if ($null -ne $params.maxNodes) { [Math]::Min(1000, [Math]::Max(1, [int]$params.maxNodes)) } else { 300 }
       $result = Get-Controls $window $depth $nodes; $result.window = $window; return $result
     }
     'find_control' {
       $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
-      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(10, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
+      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(32, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
       $nodes = if ($null -ne $params.maxNodes) { [Math]::Min(1000, [Math]::Max(1, [int]$params.maxNodes)) } else { 1000 }
       $control = Select-Control $window $params.selector $depth $nodes; if ($null -ne $control.__error) { return $control }
       return [ordered]@{ window = $window; control = $control }
     }
     'invoke_control' {
       $focused = Focus-Target $params.target; if ($null -ne $focused.__error) { return $focused }; $window = $focused.window
-      $control = Select-Control $window $params.selector; if ($null -ne $control.__error) { return $control }
+      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(32, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
+      $nodes = if ($null -ne $params.maxNodes) { [Math]::Min(1000, [Math]::Max(1, [int]$params.maxNodes)) } else { 1000 }
+      $control = Select-Control $window $params.selector $depth $nodes; if ($null -ne $control.__error) { return $control }
       $element = Find-ControlElement $window $control.runtimeId; if ($null -eq $element) { return New-ErrorResult 'CONTROL_NOT_FOUND' 'Control disappeared before invocation' $control }
       try {
         if (-not [bool]$element.Current.IsEnabled) { return New-ErrorResult 'CONTROL_NOT_ACTIONABLE' 'Control is disabled' $control }
@@ -601,7 +603,9 @@ function Invoke-Dispatch([string]$action, $params) {
     }
     'set_control_value' {
       $focused = Focus-Target $params.target; if ($null -ne $focused.__error) { return $focused }; $window = $focused.window
-      $control = Select-Control $window $params.selector; if ($null -ne $control.__error) { return $control }
+      $depth = if ($null -ne $params.maxDepth) { [Math]::Min(32, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
+      $nodes = if ($null -ne $params.maxNodes) { [Math]::Min(1000, [Math]::Max(1, [int]$params.maxNodes)) } else { 1000 }
+      $control = Select-Control $window $params.selector $depth $nodes; if ($null -ne $control.__error) { return $control }
       $element = Find-ControlElement $window $control.runtimeId; if ($null -eq $element) { return New-ErrorResult 'CONTROL_NOT_FOUND' 'Control disappeared before value update' $control }
       try {
         if (-not [bool]$element.Current.IsEnabled) { return New-ErrorResult 'CONTROL_NOT_ACTIONABLE' 'Control is disabled' $control }

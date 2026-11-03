@@ -296,7 +296,9 @@ try {
   const completionEnd = serviceSource.indexOf("    } catch (err) {", completionStart);
   assert(completionStart > afterPrompt && completionEnd > completionStart);
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const finishTurn = new AsyncFunction("req", "entry", "cwd", "workspaceBefore", "promptStartedAt", serviceSource.slice(completionStart, completionEnd));
+  const finishTurn = new AsyncFunction("req", "entry", "cwd", "workspaceBefore", "promptStartedAt", "computerUseRunCoordinator", "conversationExecutionId", serviceSource.slice(completionStart, completionEnd));
+  const computerEnds: string[] = [];
+  const computerUse = { endTask: (_task: string, _outcome: string, executionId: string) => computerEnds.push(executionId) };
   const oldRequest = { taskId: "same-task", assistantMessageId: "old-answer" };
   const entry = { assistantMessageId: "old-answer", startedAt: Date.now(), session: {} };
   let finishArtifacts: () => void = () => undefined;
@@ -310,19 +312,20 @@ try {
     emitPatch: (patch: { messageId: string }) => terminalPatches.push(patch),
     emitTaskLifecycle: (event: { assistantMessageId: string }) => terminalLife.push(event),
   };
-  const flushing = finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now());
+  const flushing = finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now(), computerUse, "old-execution");
   entry.assistantMessageId = "new-answer";
   finishArtifacts();
   await flushing;
   check("late artifact flush cannot end the following message", () => { assert.deepEqual(terminalPatches.map((patch) => patch.messageId), ["old-answer"]); assert.deepEqual(terminalLife.map((event) => event.assistantMessageId), ["old-answer"]); });
   terminalPatches.length = 0;
   completionOwner.lifecycleTerminalAssistantIds.add("old-answer");
-  await finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now());
+  await finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now(), computerUse, "old-execution");
   check("an already settled SDK reply emits no duplicate fallback end", () => assert.equal(terminalPatches.length, 0));
   const failureStart = serviceSource.indexOf("const failedMessageId =", completionEnd);
   const failureEnd = serviceSource.indexOf("      throw err;", failureStart) + "      throw err;".length;
-  const failTurn = new Function("req", "entry", "promptStartedAt", "wasStreaming", "err", "const message = err.message;" + serviceSource.slice(failureStart, failureEnd));
-  assert.throws(() => failTurn.call(completionOwner, oldRequest, entry, Date.now(), false, new Error("late flush failure")), /late flush failure/);
+  const failTurn = new Function("req", "entry", "promptStartedAt", "wasStreaming", "err", "computerUseRunCoordinator", "conversationExecutionId", "const message = err.message;" + serviceSource.slice(failureStart, failureEnd));
+  assert.throws(() => failTurn.call(completionOwner, oldRequest, entry, Date.now(), false, new Error("late flush failure"), computerUse, "old-execution"), /late flush failure/);
+  check("late completion and failure close only their captured Computer Use execution", () => assert.deepEqual(computerEnds, ["old-execution", "old-execution", "old-execution"]));
   check("late failure also retains its original message identity", () => assert.equal(terminalPatches.at(-1)?.messageId, "old-answer"));
   console.log(JSON.stringify({ suite: "multi-model-consult-offline", result: "PASS", checks: checks.length, passed: checks }, null, 2));
 } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }

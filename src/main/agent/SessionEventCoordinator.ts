@@ -39,6 +39,7 @@ export interface SessionEventCoordinatorDependencies {
   emitContextUsage: (taskId: string, session: AgentSession) => void;
   compactionStateChanged?: (state: import("../../shared/compaction").TaskCompactionStatusDto) => void;
   emitLifecycle: (event: MainSessionLifecycleEvent) => void;
+  endComputerUse?: (taskId: string, executionId: string | undefined, outcome: "completed" | "failed") => void;
   applyCompactionReserve: (session: AgentSession) => void;
   finalizePendingMemoryTurn: (taskId: string, assistantMessageId: string | undefined, session: AgentSession) => void;
   deletePendingMemoryTurn: (assistantMessageId: string) => void;
@@ -137,6 +138,12 @@ export class SessionEventCoordinator {
       const entry = this.deps.registry.get(taskId);
       if (!entry?.assistantMessageId || entry.session !== session) return;
 
+      // Release native resources before UI completion or fallible notification/memory work.
+      if (event.type === "agent_settled") {
+        const last = [...session.messages].reverse().find(message => message.role === "assistant");
+        this.deps.endComputerUse?.(taskId, entry.executionId,
+          last?.role === "assistant" && last.stopReason === "stop" ? "completed" : "failed");
+      }
       this.handleQueuedTurnActivation(taskId, session, entry, event, generationSpeed);
 
       mapperCtx.messageId = entry.assistantMessageId;

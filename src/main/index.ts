@@ -110,7 +110,7 @@ import {
   type ManagedToolProviderId,
 } from "../shared/professional-tools";
 import { BROWSER_CAPTURE_ARTIFACT_ID, browserHost } from "./browser/BrowserHost";
-import { uiAutomationService } from "./capabilities/UiAutomationService";
+import { uiAutomationService, setUiAutomationMainWindow } from "./capabilities/UiAutomationService";
 import { bindBrowserBridge } from "./browser/browser-bridge";
 import {
   TerminalIpc,
@@ -521,6 +521,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     ...platformWindowOptions(shellOptions),
   });
 
+  setUiAutomationMainWindow(win);
   applyPlatformWindowIdentity(win, shellOptions);
 
   runtimeProbeService.attach("app", win.webContents);
@@ -1057,11 +1058,7 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.abortCompaction, (_e, taskId: string) => agentService.abortCompaction(taskId));
   ipcMain.handle(AgentIpc.getCompactionStatus, (_e, taskId: string) => agentService.getCompactionStatus(taskId));
   ipcMain.handle(AgentIpc.abort, async (_e, taskId: string) => {
-    try {
-      await agentService.abort(taskId);
-    } finally {
-      computerUseRunCoordinator.endTask(taskId, "failed");
-    }
+    await agentService.abort(taskId);
   });
   ipcMain.handle(AgentIpc.approveTool, (_e, req: AgentApproveToolRequest) => {
     const result = agentService.approveTool(req);
@@ -2820,9 +2817,6 @@ app.whenReady().then(async () => {
     { cleanupByNode: (kind, id) => workGraphService.cleanupByNode(kind, id) },
   );
   agentService.setTaskLifecycleListener((event) => {
-    if (event.kind === "completed" || event.kind === "failed") {
-      computerUseRunCoordinator.endTask(event.taskId, event.kind);
-    }
     // Cron 有自己的 automation 生命周期通知，避免同一运行出现 task + automation 双通知。
     if (event.taskId.startsWith("cron-")) return;
     const task = db.getTask(event.taskId);

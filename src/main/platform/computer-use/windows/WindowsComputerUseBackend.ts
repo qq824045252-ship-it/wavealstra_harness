@@ -1,3 +1,4 @@
+import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -302,7 +303,22 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
 
   async shutdown(): Promise<void> { await this.host.shutdown(); }
 
+  private operationQueue: Promise<unknown> = Promise.resolve();
+
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    validateComputerAction(input);
+    if (input.taskId) signal = computerUseRunCoordinator.scope(input.taskId, signal);
+    assertNotCancelled(signal);
+    // Serialize the entire observe/act/verify transaction, not individual Host RPCs.
+    const operation = this.operationQueue.then(() => {
+      assertNotCancelled(signal);
+      return this.executeUnlocked(input, signal);
+    });
+    this.operationQueue = operation.catch(() => undefined);
+    return checked(() => operation, signal);
+  }
+
+  private async executeUnlocked(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     // Optional courtesy restore: actions must focus their target, but the user's
     // previous foreground window is put back afterwards so the desktop is not
     // left on the automation target.
@@ -312,12 +328,13 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       outcome = await this.executeCore(input, signal);
       return outcome;
     } finally {
-      if (restoreHandle) {
+      if (restoreHandle && !signal?.aborted) {
         // Let the action's overlay/focus settle, then put the user's window back
         // through the normal verified focus path.
         await new Promise((resolve) => setTimeout(resolve, 150));
+        assertNotCancelled(signal);
         try {
-          await this.executeOnce({ action: "focus_window", windowHandle: restoreHandle } as ComputerExecInput & { action: ComputerExecAction }, undefined);
+          await this.executeOnce({ action: "focus_window", windowHandle: restoreHandle } as ComputerExecInput & { action: ComputerExecAction }, signal);
         } catch (error) {
           if (outcome) (outcome as { restoreError?: string }).restoreError = error instanceof Error ? error.message : String(error);
         }
@@ -478,9 +495,12 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
         ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, clicking: input.action === "invoke_control" }
         : undefined;
       computerUseRunCoordinator.presentTarget(input, previewWindow, "acting", cursor);
+      // Bind the exact previewed control, even if another matching name appears
+      // before the Host receives the action. Keep the traversal budget identical.
+      const actionParams = { target, selector: { ...selector, controlRuntimeId: preview.control.runtimeId }, maxDepth: input.maxDepth, maxNodes: input.maxNodes };
       const observed = await this.withObservation(target, input, () => input.action === "invoke_control"
-        ? this.request("invoke_control", { target, selector }, signal)
-        : this.request("set_control_value", { target, selector, value: input.text ?? "" }, signal), signal);
+        ? this.request("invoke_control", actionParams, signal)
+        : this.request("set_control_value", { ...actionParams, value: input.text ?? "" }, signal), signal);
       return { action: input.action, ...(observed.result as object), observation: observed.observation };
     }
     if (input.action === "move_client" || input.action === "click_client" || input.action === "drag_client" || input.action === "scroll_client"
@@ -1133,9 +1153,9 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
   }
 
   private async runBatch(input: ComputerExecInput, steps: ComputerBatchStep[], signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const target = this.targetFromInput(input);
     const before = await this.listWindows(signal);
-    const beforeTarget = await this.inspect(target, signal);
+    const guarded = await this.guardedTarget(input, signal);
+    const beforeTarget = await this.inspect(guarded, signal);
     computerUseRunCoordinator.presentTarget(input, beforeTarget, "acting");
     const settleMs = Math.min(2_000, Math.max(0, Math.round(input.settleMs ?? BATCH_SETTLE_DEFAULT_MS)));
     const completed: ComputerBatchStepResult[] = [];
@@ -1147,6 +1167,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
         x: step.x, y: step.y, x2: step.x2, y2: step.y2,
         button: step.button, deltaX: step.deltaX, deltaY: step.deltaY, key: step.key, text: step.text,
         clickCount: step.clickCount, modifiers: step.modifiers, holdMs: step.holdMs,
+        background: step.background, observationId: input.observationId,
         steps: step.steps, durationMs: step.durationMs, notches: step.notches,
         windowHandle: beforeTarget.handle,
         processId: beforeTarget.processId,

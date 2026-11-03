@@ -258,7 +258,7 @@ export function computerUseToolCopy(platform: PlatformId, options: { nativeExecu
   return {
     label: "Windows Computer Use",
     desktopLabel: "Windows 桌面",
-    description: `${base}${WINDOWS_BACKGROUND_NOTE}click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。`,
+    description: `${base}控件树是结构化 JSON（非 XML）；优先 inspect_controls/find_control → invoke_control/set_control_value，UIA 不可用再 OCR/视觉坐标。坐标动作应携带本次截图的 observation_id；过期必须重新观察。action 与 actions 严格互斥。phase=executed 只证明动作执行，目标达成需要 expected_outcomes 或重新读取界面；窗口仍在前台不等于保存/提交成功。${WINDOWS_BACKGROUND_NOTE}click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。`,
     screenshotSummary: "Windows 画面已保存",
     visionPrompt: "请分析这张 Windows 界面截图，准确描述可见窗口、主要控件、文本、状态、错误提示和与当前任务相关的可交互目标及其相对位置。不要猜测不可见内容。",
   };

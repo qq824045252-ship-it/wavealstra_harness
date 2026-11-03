@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { app, nativeImage } from "electron";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
 import { WindowsAutomationHost } from "../src/main/platform/computer-use/windows/WindowsAutomationHost";
 import { WindowsAutomationError, type ControlInfo, type WindowInfo } from "../src/main/platform/computer-use/protocol";
+
+const profile = mkdtempSync(join(tmpdir(), "mybuddy-cu-native-"));
+app.setPath("userData", profile); process.env.HOME = profile; process.env.USERPROFILE = profile;
 
 const FORM_SCRIPT = String.raw`
 $ErrorActionPreference='Stop'

@@ -13,6 +13,8 @@ interface RunState {
   touchedAt: number;
   lastTarget?: WindowInfo;
   controller: AbortController;
+  executionId?: string;
+  parentSignals: Set<AbortSignal>;
 }
 
 function runId(taskId: string, startedAt: number): string {
@@ -23,9 +25,25 @@ export class ComputerUseRunCoordinator {
   private readonly runs = new Map<string, RunState>();
   private readonly scopeOwners = new WeakMap<AbortSignal, RunState>();
 
-  scope(taskId: string, agentSignal?: AbortSignal): AbortSignal {
+  scope(taskId: string, agentSignal?: AbortSignal, executionId?: string): AbortSignal {
+    agentSignal?.throwIfAborted();
+    const previous = this.runs.get(taskId);
+    if (executionId && previous?.executionId && previous.executionId !== executionId) this.endTask(taskId);
     const state = this.getRun(taskId);
+    if (executionId) state.executionId = executionId;
     this.requireActive(state);
+    // Backends receive the tool's already-scoped signal. It must not be treated
+    // as a parent: cancelling our own controller would otherwise delete the
+    // revoked run and let the same execution acquire the desktop again.
+    if (agentSignal && this.scopeOwners.get(agentSignal) === state) return agentSignal;
+    if (agentSignal && !state.parentSignals.has(agentSignal)) {
+      state.parentSignals.add(agentSignal);
+      const onAbort = () => {
+        if (this.runs.get(taskId) === state) this.endTask(taskId, "failed");
+      };
+      agentSignal.addEventListener("abort", onAbort, { once: true });
+      state.controller.signal.addEventListener("abort", () => agentSignal.removeEventListener("abort", onAbort), { once: true });
+    }
     const signal = agentSignal ? AbortSignal.any([agentSignal, state.controller.signal]) : state.controller.signal;
     this.scopeOwners.set(signal, state);
     return signal;
@@ -113,7 +131,7 @@ export class ComputerUseRunCoordinator {
         taskId,
         step: state.step,
         action: input.action ?? "batch",
-        phase: "verified",
+        phase: output.semanticOutcome?.status === "passed" ? "verified" : output.semanticOutcome?.status === "failed" ? "verification_failed" : "executed",
         verification: verificationFor(input, output),
         recovery: recovery ? { reason: recovery.reason, guidance: recovery.guidance, retried: true } : undefined,
       },
@@ -131,11 +149,12 @@ export class ComputerUseRunCoordinator {
     computerUseOverlayService.settle(taskId, "failed");
   }
 
-  endTask(taskId: string, outcome: "completed" | "failed" = "completed"): void {
+  endTask(taskId: string, outcome: "completed" | "failed" = "completed", executionId?: string): void {
     const state = this.runs.get(taskId);
     if (!state) return;
-    state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "Computer Use 所属执行已结束"));
+    if (executionId && state.executionId !== executionId) return;
     this.runs.delete(taskId);
+    state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "Computer Use 所属执行已结束"));
     computerUseOverlayService.settle(taskId, outcome);
     releaseHeldInput();
   }
@@ -144,7 +163,7 @@ export class ComputerUseRunCoordinator {
     const existing = this.runs.get(taskId);
     if (existing) return existing;
     const startedAt = Date.now();
-    const state: RunState = { taskId, runId: runId(taskId, startedAt), step: 0, startedAt, touchedAt: startedAt, controller: new AbortController() };
+    const state: RunState = { taskId, runId: runId(taskId, startedAt), step: 0, startedAt, touchedAt: startedAt, controller: new AbortController(), parentSignals: new Set() };
     this.runs.set(taskId, state);
     return state;
   }

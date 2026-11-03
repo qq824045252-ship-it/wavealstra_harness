@@ -376,7 +376,7 @@ const computerExecSchema = Type.Object({
   client_only: Type.Optional(Type.Boolean({ default: true, description: "默认 true：返回与 click_client 坐标直接对齐的客户区 DIP 图像；false 返回含窗口边框的 window-DIP 图像。" })),
   ensure_foreground: Type.Optional(Type.Boolean()),
   observation_id: Type.Optional(Type.String({ maxLength: 100 })),
-  max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+  max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 32, description: "UIA 控件树深度，默认 10；truncated=true 时可增大到 32。查询和 invoke/set 使用相同深度。" })),
   max_nodes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
   max_lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "ocr_window 最多返回的文本行数，默认 80。" })),
   min_score: Type.Optional(Type.Number({ minimum: 0, maximum: 1, description: "ocr_window 最低置信度，默认 0.5。" })),
@@ -778,7 +778,8 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
                 background: step.background as boolean | undefined,
               }))
               : undefined;
-            const action = (p.action as ComputerExecInput["action"] | undefined) ?? batchActions?.[0]?.action;
+            if (p.action != null && p.actions != null) throw new Error("computer_exec 的 action 与 actions 只能二选一；列出窗口请只传 action=list_windows");
+            const action = p.action as ComputerExecInput["action"] | undefined;
             if (!action && !batchActions?.length) throw new Error("computer_exec 需要 action 或 actions");
             input = {
               action,
@@ -832,7 +833,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               observeAfter: p.observe_after as boolean | undefined,
               captureAfter: p.capture_after as boolean | undefined,
             };
-            operationSignal = bridge.nativeExecution ? signal : computerUseRunCoordinator.scope(bridge.taskId, signal);
+            operationSignal = bridge.nativeExecution ? signal : computerUseRunCoordinator.scope(bridge.taskId, signal, bridge.computerRecovery?.resolveContext()?.executionId);
             operationSignal?.throwIfAborted();
             const result = await computerAutomationService.execute(input, operationSignal);
             operationSignal?.throwIfAborted();

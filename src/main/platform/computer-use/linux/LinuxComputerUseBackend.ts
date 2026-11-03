@@ -1,3 +1,4 @@
+import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -305,6 +306,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    validateComputerAction(input);
     const action = input.actions?.length ? "batch" : input.action;
     if (!action) throw new Error("computer_exec 需要 action 或 actions");
     if (action === "status") return { action, ...this.status() } as ComputerExecOutput;

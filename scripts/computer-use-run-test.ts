@@ -215,7 +215,7 @@ async function main(): Promise<void> {
   const stalePlan = planComputerUseRecovery(new WindowsAutomationError("STALE_OBSERVATION", "stale"), {
     action: "click_client", taskId: "task-run", windowHandle: "9001", observationId: "old", x: 1, y: 1,
   }, 0);
-  assert.equal(stalePlan?.retry, true);
+  assert.equal(stalePlan?.retry, false);
   assert.equal(stalePlan?.input?.observationId, undefined);
   const ambiguousPlan = planComputerUseRecovery(new WindowsAutomationError("CONTROL_AMBIGUOUS", "ambiguous"), {
     action: "invoke_control", taskId: "task-run", windowHandle: "9001", controlName: "Open",
@@ -272,18 +272,17 @@ async function main(): Promise<void> {
 
   const observation = await service.execute({ action: "inspect_window", windowHandle: current.handle });
   current = fixture({ clientRect: { x: 0, y: 0, width: 760, height: 560 } });
-  const recovered = await service.execute({
+  await assert.rejects(service.execute({
     action: "click_client", taskId: "task-run", windowHandle: current.handle,
     observationId: observation.observationId, x: 10, y: 10,
-  });
-  assert.equal(clicks, 3, "stale observation recovery must execute the side effect exactly once");
-  assert.equal((recovered.computerUseRun as any)?.recovery?.reason, "stale-observation");
+  }), (error: unknown) => error instanceof WindowsAutomationError && error.code === "STALE_OBSERVATION");
+  assert.equal(clicks, 2, "stale geometry must not replay coordinates after discarding its guard");
 
   failNextClickWithFocus = true;
   const focusRecovered = await service.execute({
     action: "click_client", taskId: "task-run", windowHandle: current.handle, x: 10, y: 10,
   });
-  assert.equal(clicks, 4, "focus recovery must retry only after the failed pre-input focus attempt");
+  assert.equal(clicks, 3, "focus recovery must retry only after the failed pre-input focus attempt");
   assert.equal((focusRecovered.computerUseRun as any)?.recovery?.reason, "focus-retry");
 
   computerUseRunCoordinator.endTask("task-run");

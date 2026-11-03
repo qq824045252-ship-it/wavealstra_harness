@@ -20,8 +20,8 @@ export interface HostRequestMap {
   };
   inspect_controls: { target: TargetIdentity; maxDepth?: number; maxNodes?: number };
   find_control: { target: TargetIdentity; selector: ControlSelector; maxDepth?: number; maxNodes?: number };
-  invoke_control: { target: TargetIdentity; selector: ControlSelector };
-  set_control_value: { target: TargetIdentity; selector: ControlSelector; value: string };
+  invoke_control: { target: TargetIdentity; selector: ControlSelector; maxDepth?: number; maxNodes?: number };
+  set_control_value: { target: TargetIdentity; selector: ControlSelector; value: string; maxDepth?: number; maxNodes?: number };
   move_client: { target: TargetIdentity; x: number; y: number };
   click_client: {
     target: TargetIdentity; x: number; y: number; button?: "left" | "right" | "middle";
