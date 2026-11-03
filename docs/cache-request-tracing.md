@@ -70,3 +70,11 @@ pnpm -s cache:replay -- --session-file <会话 JSONL> --from 80 --count 8 --live
 0.1.81 从提交 `36fdd95` 的固定源码导出构建，依赖单独复制安装。打包文件门禁和 Pi worker 启动通过。使用临时 HOME/userData、隐藏窗口和本地可控 Responses 服务，通过真实 preload IPC 发起三次聊天请求：前缀保持追加，故意返回的一次低缓存用量被归为 `stable-prefix-low-cache`，日志中没有测试正文或密钥。此桌面夹具不是额外的真实云模型试验。
 
 桌面和开始菜单快捷方式均已读回 target、cwd、icon、`com.mybuddy.app` 身份。验收时旧 0.1.79 仍在运行，因此保留旧目录和进程；用户完成当前任务并重新启动后，新追踪才生效。实际包哈希、验证摘要及快捷方式记录见 [0.1.81 验收记录](../artifacts/cache-investigation/request-trace-acceptance.json)。
+
+## 0.1.82 子代理验收
+
+源码提交 `609ab5d`：类型检查无新增错误，headless 门禁 255 通过、0 失败。新增 `test:subagent-cache-trace` 用真实 Pi RPC 子进程和本地 Responses 服务覆盖连续文件读取、503 原生重试、稳定前缀下模拟归零、父会话查询、追踪关闭及既有销毁行为。
+
+实际 Windows 包通过 payload 门禁；隐藏窗口和临时 HOME/userData 下，宿主三轮聊天验证通过，另一次真实 IPC 派发覆盖宿主 2 次、原生子代理 3 次调用。子代理清理后仍可按父会话核对完整指纹，正文和凭据未进入日志。模拟低缓存用于验证诊断，不代表已经复现或修复此前真实任务中的九次子代理归零。
+
+桌面和开始菜单快捷方式已指向 0.1.82，并读回目标、工作目录、图标和应用标识。0.1.79 已在确认无进程/快捷方式引用后清理；正在运行的 0.1.81 保留且未重启，新子代理追踪在正常启动新版后生效。详细证据及限制见 [0.1.82 验收记录](../artifacts/cache-investigation/subagent-trace-acceptance.json)。

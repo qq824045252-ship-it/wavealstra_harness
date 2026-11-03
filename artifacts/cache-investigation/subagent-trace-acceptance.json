@@ -1,0 +1,94 @@
+{
+  "version": "0.1.82",
+  "acceptedAt": "2026-11-03T13:38:25.884826+00:00",
+  "sourceCommit": "609ab5df116e5bc9a1430227f1323d1545cf0c49",
+  "appDir": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked",
+  "asarSha256": "9062973434a7647dffddfe46e0df0b693db68ef8122e8d522392e397b61ad008",
+  "checks": {
+    "typecheck": "pass; no new errors vs existing baseline",
+    "headless": "255 passed, 0 failures, 0 baseline failures, 0 new regressions",
+    "cacheRequestTrace": "pass; includes new-input versus partial-cache classification and error usage exclusions",
+    "nativeChild": "real Pi RPC child against local fixture; repeated reads, 503 native retry, forced cache miss, opt-out, parent lookup and disposal passed",
+    "packagedPayload": "pass; no missing unpacked entries; worker version matches EXPECTED_PI_VERSION"
+  },
+  "packagedHost": {
+    "status": "passed",
+    "identity": {
+      "version": "0.1.82",
+      "packaged": true,
+      "home": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-U53OuL",
+      "userData": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-U53OuL\\chromium",
+      "visible": false
+    },
+    "modelCalls": 3,
+    "classifications": {
+      "no-comparable-predecessor": 1,
+      "stable-prefix": 1,
+      "stable-prefix-low-cache": 1
+    }
+  },
+  "packagedSubagent": {
+    "status": "passed",
+    "identity": {
+      "version": "0.1.82",
+      "packaged": true,
+      "home": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-B5a75o",
+      "userData": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-B5a75o\\chromium",
+      "visible": false
+    },
+    "modelCalls": 5,
+    "hostCalls": 2,
+    "childCalls": 3,
+    "disposed": true,
+    "parentLinked": true,
+    "classifications": {
+      "no-comparable-predecessor": 2,
+      "stable-prefix": 2,
+      "stable-prefix-low-cache": 1
+    }
+  },
+  "shortcuts": [
+    {
+      "file": "C:\\Users\\servi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\MyBuddy.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked",
+      "args": "",
+      "description": "MyBuddy 0.1.82",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked\\MyBuddy.exe",
+      "iconIndex": 0,
+      "appUserModelId": "com.mybuddy.app",
+      "toastActivatorClsid": "{E3368CBD-EDF8-405A-A939-39EEEAA969F4}"
+    },
+    {
+      "file": "C:\\Users\\servi\\Desktop\\MyBuddy 0.1.82.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked",
+      "args": "",
+      "description": "MyBuddy 0.1.82",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked\\MyBuddy.exe",
+      "iconIndex": 0,
+      "appUserModelId": "com.mybuddy.app",
+      "toastActivatorClsid": ""
+    }
+  ],
+  "cleanup": {
+    "removed": "release/memory-0.1.79",
+    "preflight": {
+      "resolvedDeletePath": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79",
+      "retainedPath": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\subagent-cache-0.1.82\\win-unpacked",
+      "retainedAsarSha256": "9062973434a7647dffddfe46e0df0b693db68ef8122e8d522392e397b61ad008",
+      "startupChecks": "host + native child passed",
+      "shortcutReferencesToOld": 0,
+      "activeProcessesReferencingOld": 0,
+      "retainedActiveRelease": "cache-trace-0.1.81"
+    },
+    "fastCopyExitCode": 0,
+    "preserved": "release/cache-trace-0.1.81 because the user app is still running; no restart or task interruption"
+  },
+  "scope": "Sources and requested diagnostics changed; preexisting generated artifact changes and package script ordering preserved.",
+  "limits": [
+    "Local Responses fixtures verify the packaged app and worker; no new cloud model experiments were run.",
+    "Historical child sessions were disposed and do not have final HTTP fingerprints; the nine earlier zero-cache events cannot be retrospectively attributed.",
+    "Reading guidance is a prompt policy; reduced real-world reads or higher cache hit rate has not yet been measured."
+  ]
+}
