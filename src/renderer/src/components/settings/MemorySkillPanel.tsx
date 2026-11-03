@@ -14,12 +14,8 @@ import { useTextPrompt } from "@/components/common/useTextPrompt";
 import { useAppStore } from "@/store/appStore";
 import MemorySkillHistoryControls, { useSkillHistorySelection } from "./MemorySkillHistoryControls";
 
-const SCOPE_LABEL: Record<string, string> = {
-  global: "全局",
-  workspace: "工作空间",
-  project: "项目",
-  task: "任务",
-};
+import MemorySkillCandidateReview from "./MemorySkillCandidateReview";
+import "./MemorySkillPanel.css";
 
 const CANDIDATE_LABEL: Record<string, string> = { draft: "待完善", ready: "待批准", materialized: "已生成", stale: "已过期", rejected: "已拒绝" };
 const FEEDBACK_LABEL: Record<string, string> = { helpful: "有帮助", needs_revision: "需修订", incorrect: "错误" };
@@ -52,12 +48,10 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
-  const [group, setGroup] = useState<"pending" | "materialized" | "history">("pending");
+  const [section, setSection] = useState<"candidates" | "revisions" | "feedback">("candidates");
   const [showRevisionHistory, setShowRevisionHistory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ request: MemorySkillHistoryDeleteRequest; label: string } | null>(null);
-  const history = useMemo(() => skillCandidates.filter(isDeletableHistory), [skillCandidates]);
   const revisionHistory = useMemo(() => skillRevisions.filter(isDeletableHistory), [skillRevisions]);
-  const historySelection = useSkillHistorySelection(history, group === "history");
   const revisionSelection = useSkillHistorySelection(revisionHistory, showRevisionHistory);
   const loadRequest = useRef(0);
   const { requestText, textPromptDialog } = useTextPrompt();
@@ -114,7 +108,7 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
     try {
       const result = await window.api?.memory?.refreshSkillCandidates();
       if (result) setStatus(`评估完成：检查 ${result.evaluated} 条流程，待批准 ${result.ready} 条，新增 ${result.created} 条，过期 ${result.staled} 条。`);
-      setGroup("pending");
+      setSection("candidates");
       await load();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -145,7 +139,7 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
     setBusy(true);
     try {
       const deleted = await api.deleteSkillHistory(request);
-      (request.kind === "candidate" ? historySelection : revisionSelection).clear();
+      if (request.kind === "revision") revisionSelection.clear();
       setStatus(`已删除 ${deleted} 条${request.kind === "candidate" ? "技能" : "修订"}历史记录。`);
       await load();
     } catch (error) {
@@ -155,17 +149,30 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
     }
   };
 
-  const decideLearned = async (id: string, action: "approve" | "reject"): Promise<void> => {
+  const decideLearned = async (ids: string[], action: "approve" | "reject"): Promise<void> => {
     if (busy) return;
     setBusy(true);
+    let succeeded = 0;
+    const failures: string[] = [];
     try {
-      if (action === "approve") {
-        const updated = await window.api?.memory?.approveSkillCandidate(id);
-        if (updated) { setStatus(`已生成技能「${updated.title}」，自动调用默认关闭；可前往技能中心启用。`); setGroup("materialized"); }
-      } else {
-        await window.api?.memory?.rejectSkillCandidate(id);
-        setStatus("已拒绝该技能候选。");
+      const api = window.api?.memory;
+      if (!api) throw new Error("记忆服务尚未就绪，请稍后重试");
+      for (const [index, id] of ids.entries()) {
+        setStatus(`正在${action === "approve" ? "生成" : "拒绝"} ${index + 1} / ${ids.length} 条…`);
+        try {
+          if (action === "approve") {
+            const updated = await api.approveSkillCandidate(id);
+            if (!updated) throw new Error("候选已变更，请刷新后重试");
+          } else {
+            const updated = await api.rejectSkillCandidate(id);
+            if (!updated) throw new Error("候选已变更，请刷新后重试");
+          }
+          succeeded++;
+        } catch (error) {
+          failures.push(`${skillCandidates.find((item) => item.id === id)?.title ?? id}：${error instanceof Error ? error.message : String(error)}`);
+        }
       }
+      setStatus(`${action === "approve" ? `已生成 ${succeeded} 个技能，自动调用默认关闭，可前往技能中心启用。` : `已拒绝 ${succeeded} 条候选。`}${failures.length ? ` ${failures.length} 条未成功，仍保留在列表中。\n${failures.join("\n")}` : ""}`);
       await load();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -236,91 +243,44 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
   };
 
   const pending = skillCandidates.filter(isPending);
-  const generated = skillCandidates.filter((item) => item.status === "materialized");
-  const visibleCandidates = group === "pending" ? pending : group === "materialized" ? generated : history;
   const visibleRevisions = skillRevisions.filter((item) => showRevisionHistory || isPending(item));
   const openSkills = (): void => { useAppStore.getState().setPage("skills"); useAppStore.getState().setSettingsOpen(false); };
 
   return (
-    <div className="memory-tab-scroll">
-      <div className="memory-toolbar">
-        <span className="memory-count">待处理 {stats?.skillCandidates ?? 0}</span>
-        <span className="memory-count">待修订 {stats?.skillRevisionCandidates ?? 0}</span>
-        <span className="memory-count">实际调用 {stats?.skillInvocations ?? 0}</span>
-      </div>
-      <div className="memory-toolbar">
-        <button type="button" className="btn" disabled={busy} onClick={() => void refreshLearned()}>
-          评估可学习流程
-        </button>
-        <button type="button" className="btn" disabled={busy} onClick={() => void refreshSkillRevisions()}>
-          重新评估修订
-        </button>
-        <button type="button" className="btn" disabled={busy || loading} onClick={() => void load()}>
-          {loading ? "加载中…" : "刷新"}
-        </button>
-        <button type="button" className="btn" onClick={openSkills}>前往技能中心</button>
-      </div>
-
-      {status ? <div className="memory-status" role="status">{status}</div> : null}
-      {learningStatus && <div className="settings-row-desc" style={{ marginBottom: 10 }}>
-        <div>流程记忆 {learningStatus.procedures} 条 · 可复用 {learningStatus.reusableProcedures} 条 · 待提炼 {learningStatus.pendingTurns ?? stats?.pendingTurns ?? 0} 条</div>
-        {learningStatus.reusableProcedures === 0 && <div>尚无可复用流程。完成带有实际检查结果的工具任务，或明确说明以后要遵循的方法，系统会自动提炼待审核技能。</div>}
-        {learningStatus.failedTurns > 0 && <div role="status">有 {learningStatus.failedTurns} 条对话提炼失败：{learningStatus.latestError}
-          <button type="button" className="btn" disabled={busy || learningStatus.retryableFailedTurns === 0} onClick={() => void retryLearning()}>重试失败提炼</button>
-          {learningStatus.retryableFailedTurns < learningStatus.failedTurns && <div>其中 {learningStatus.retryableFailedTurns} 条可重试；归档项目、回收或已失去归属的任务保留历史记录，不参与提炼。</div>}
-        </div>}
-        {learningStatus.blockedSkills.map((skill) => <div key={skill.id}>技能「{skill.title}」：{skill.reason}</div>)}
-      </div>}
-
-      <div style={{ border: "1px solid var(--border-subtle, rgba(128,128,128,.2))", borderRadius: 8, padding: 10 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>从记忆学习技能</div>
-        <div className="settings-row-desc" style={{ marginBottom: 8 }}>
-          成功任务中的可复用方法会自动进入待处理列表。先查看来源和拟议内容，再批准生成技能。新技能默认关闭自动调用，可前往技能中心启用。
+    <div className="memory-tab-scroll memory-skill-panel">
+      <header className="skill-learning-header">
+        <div><h2>从记忆学习技能</h2><p>审核可复用的方法，逐步积累你的技能库。</p></div>
+        <div className="skill-learning-header-actions">
+          <button type="button" className="btn" disabled={busy || loading} onClick={() => void load()}>{loading ? "加载中…" : "刷新"}</button>
+          <button type="button" className="btn" onClick={openSkills}>前往技能中心</button>
+          <button type="button" className="btn primary" disabled={busy || loading} onClick={() => void refreshLearned()}>评估可学习流程</button>
         </div>
-        <div className="memory-skill-groups" aria-label="技能候选分组">
-          {([ ["pending", "待处理", pending.length], ["materialized", "已生成", generated.length], ["history", "历史记录", history.length] ] as const).map(([id, label, count]) => <button key={id} type="button" className={`btn ${group === id ? "active" : ""}`} aria-pressed={group === id} disabled={busy} onClick={() => setGroup(id)}>{label} {count}</button>)}
-        </div>
-        {group === "history" && <p className="settings-row-desc memory-history-note">历史快照仅供审核。来源变更或删除后，旧候选不会继续生效。</p>}
-        {skillCandidates.length >= 1000 && <p className="settings-row-desc">这里显示最近 1000 条记录。</p>}
-        {group === "history" && <MemorySkillHistoryControls selection={historySelection} disabled={busy || loading} kind="candidate"
-          onDeleteSelected={() => setPendingDelete({ request: { kind: "candidate", ids: historySelection.selectedIds }, label: `选中的 ${historySelection.selectedIds.length} 条技能历史记录` })}
-          onDeleteAll={() => setPendingDelete({ request: { kind: "candidate", all: true }, label: "全部技能历史记录" })} />}
-        {loading && skillCandidates.length === 0 ? <div className="memory-empty">正在加载候选…</div> : visibleCandidates.length === 0 ? (
-          <div className="memory-empty">{group === "pending" ? "暂无待处理流程。点击「评估可学习流程」检查记忆；仅属于单个任务的流程不会成为通用技能。" : "当前分组暂无记录。"}</div>
-        ) : visibleCandidates.map((candidate) => (
-          <div key={candidate.id} className="memory-skill-record">
-            <div className="memory-skill-record-heading">
-              {group === "history" && <label className="memory-projection-select"><input type="checkbox" aria-label={`选择技能历史：${candidate.title}`} checked={historySelection.has(candidate.id)} disabled={busy || loading} onChange={() => historySelection.toggle(candidate.id)} /></label>}
-              <strong>{candidate.title}</strong>
-              <span className="memory-source manual">{CANDIDATE_LABEL[candidate.status]}</span>
-              <span className="memory-source manual">{SCOPE_LABEL[candidate.scopeType] ?? candidate.scopeType}</span>
-              <span style={{ flex: 1 }} />
-              {(candidate.status === "draft" || candidate.status === "ready") ? (
-                <>
-                  <button type="button" className="btn" disabled={busy} onClick={() => void decideLearned(candidate.id, "reject")}>拒绝</button>
-                  <button type="button" className="btn" disabled={busy} onClick={() => void decideLearned(candidate.id, "approve")}>
-                    {candidate.status === "ready" ? "批准生成技能" : "确认生成技能"}
-                  </button>
-                </>
-              ) : null}
-              {isDeletableHistory(candidate) && <button type="button" className="btn danger" aria-label={`删除技能历史：${candidate.title}`} disabled={busy || loading} onClick={() => setPendingDelete({ request: { kind: "candidate", ids: [candidate.id] }, label: `「${candidate.title}」的历史记录` })}>删除</button>}
-            </div>
-            <div className="settings-row-desc" style={{ marginTop: 3 }}>支持任务 {candidate.distinctTaskCount} 个 · 已完成 {candidate.completedTaskCount} 个 · 证据 {candidate.evidenceCount} 条 · {fmt(candidate.updatedAt)}</div>
-            <div className="settings-row-desc memory-skill-description">{candidate.description}</div>
-            <details style={{ marginTop: 5 }}>
-              <summary className="settings-row-desc" style={{ cursor: "pointer" }}>{candidate.status === "materialized" ? "查看生成时的内容" : "查看技能内容"}</summary>
-              <pre className="settings-row-desc" style={{ marginTop: 5, whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>{candidate.instructions}</pre>
-            </details>
-            <div className="memory-toolbar memory-skill-record-actions">
-              {candidate.sourceMemoryIds.map((id, index) => <button type="button" className="btn" key={id} disabled={busy} onClick={() => onOpenMemory(id)}>查看来源记忆{candidate.sourceMemoryIds.length > 1 ? ` ${index + 1}` : ""}</button>)}
-              {candidate.installedSkillId ? <button type="button" className="btn" disabled={busy} onClick={openSkills}>在技能中心管理</button> : null}
-            </div>
+      </header>
+      {status && <div className="memory-status skill-learning-status" role="status">{status.length > 220 ? <details><summary>{status.split("\n")[0].slice(0, 200)} · 查看详情</summary><pre>{status}</pre></details> : status}</div>}
+      {learningStatus && <div className="skill-learning-health">
+        <span>流程记忆 <b>{learningStatus.procedures}</b> · 可复用 <b>{learningStatus.reusableProcedures}</b> · 待提炼 <b>{learningStatus.pendingTurns ?? stats?.pendingTurns ?? 0}</b></span>
+        {learningStatus.reusableProcedures === 0 && <span>尚无可复用流程，完成工具任务后会自动提炼待审核技能。</span>}
+        {(learningStatus.failedTurns > 0 || learningStatus.blockedSkills.length > 0) && <details className="skill-learning-diagnostics">
+          <summary>{learningStatus.failedTurns} 条提炼失败 · {learningStatus.blockedSkills.length} 个技能需检查<span>查看详情</span></summary>
+          <div className="skill-learning-diagnostics-body">
+            {learningStatus.failedTurns > 0 && <><p>有 {learningStatus.failedTurns} 条对话提炼失败，其中 {learningStatus.retryableFailedTurns} 条可重试。</p><pre>{learningStatus.latestError || "暂未提供错误详情"}</pre>
+              <button type="button" className="btn" disabled={busy || learningStatus.retryableFailedTurns === 0} onClick={() => void retryLearning()}>重试失败提炼</button>
+              {learningStatus.retryableFailedTurns < learningStatus.failedTurns && <p>归档项目、回收或已失去归属的任务保留历史记录，不参与提炼。</p>}</>}
+            {learningStatus.blockedSkills.map((skill) => <p key={skill.id}><strong>{skill.title}</strong>：{skill.reason}</p>)}
           </div>
-        ))}
+        </details>}
+      </div>}
+      <nav className="skill-learning-sections" aria-label="技能学习功能">
+        <button type="button" aria-pressed={section === "candidates"} className={section === "candidates" ? "active" : ""} disabled={busy} onClick={() => setSection("candidates")}>候选审核 <span>{pending.length}</span></button>
+        <button type="button" aria-pressed={section === "revisions"} className={section === "revisions" ? "active" : ""} disabled={busy} onClick={() => setSection("revisions")}>技能修订 <span>{skillRevisions.filter(isPending).length}</span></button>
+        <button type="button" aria-pressed={section === "feedback"} className={section === "feedback" ? "active" : ""} disabled={busy} onClick={() => setSection("feedback")}>使用反馈 <span>{stats?.skillInvocations ?? 0}</span></button>
+      </nav>
+      <div hidden={section !== "candidates"} className="skill-learning-candidates">
+        <MemorySkillCandidateReview candidates={skillCandidates} busy={busy} loading={loading} onDecide={decideLearned}
+          onDelete={(request, label) => setPendingDelete({ request, label })} onOpenMemory={onOpenMemory} onOpenSkills={openSkills} />
       </div>
-
-      <div style={{ marginTop: 10, border: "1px solid var(--border-subtle, rgba(128,128,128,.2))", borderRadius: 8, padding: 10 }}>
-        <div className="memory-toolbar"><strong>技能修订</strong><button type="button" className="btn" disabled={busy || loading} aria-pressed={showRevisionHistory} onClick={() => setShowRevisionHistory((v) => !v)}>{showRevisionHistory ? "收起历史" : "查看修订历史"}</button></div>
+      {section === "revisions" && <div className="skill-learning-secondary">
+        <div className="memory-toolbar"><strong>技能修订</strong><button type="button" className="btn" disabled={busy || loading} onClick={() => void refreshSkillRevisions()}>重新评估修订</button><button type="button" className="btn" disabled={busy || loading} aria-pressed={showRevisionHistory} onClick={() => setShowRevisionHistory((v) => !v)}>{showRevisionHistory ? "收起历史" : "查看修订历史"}</button></div>
         <div className="settings-row-desc" style={{ marginBottom: 8 }}>
           对实际调用标记「需修订」或「错误」并说明原因后，会形成修订建议。批准前会核对版本，保护你后来手动修改的内容。
         </div>
@@ -353,9 +313,9 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
             </details>
           </div>
         ))}
-      </div>
+      </div>}
 
-      <div style={{ marginTop: 10, border: "1px solid var(--border-subtle, rgba(128,128,128,.2))", borderRadius: 8, padding: 10 }}>
+      {section === "feedback" && <div className="skill-learning-secondary">
         <div style={{ fontWeight: 600, marginBottom: 6 }}>技能使用反馈</div>
         <div className="settings-row-desc" style={{ marginBottom: 8 }}>
           统计区分「可供模型使用」和「实际调用」。反馈会形成可审核的修订建议，不会自动修改或停用技能。
@@ -400,7 +360,7 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
             </div>
           </>
         ) : null}
-      </div>
+      </div>}
 
       {textPromptDialog}
       <ConfirmDialog open={pendingDelete !== null} title={pendingDelete?.request.all ? "清空历史记录？" : "删除历史记录？"}

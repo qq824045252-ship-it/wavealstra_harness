@@ -107,6 +107,18 @@ function skillHistoryFixtures() {
   return { data, requests, remove };
 }
 
+function learningFixtures() {
+  fixtures();
+  const titles = ["Git Bash 下执行 Windows 原生命令时保留参数", "串并联电容计算与单位核对", "在 PowerPoint 导出前检查字体和页面比例", "KiCad 原理图连接与电气规则检查", "从任务记录整理可复用的验证步骤"];
+  const items = Array.from({ length: 45 }, (_, index) => ({ ...candidate(`pending-${index}`, index % 2 ? "draft" : "ready"), title: `${titles[index % titles.length]} · ${index + 1}`, scopeType: index % 3 ? "global" : "workspace", distinctTaskCount: index + 1, evidenceCount: index + 3, instructions: `${candidate("", "ready").instructions}\n\n适用条件：在工具任务执行前，先确认环境和输入。\n\n执行步骤：\n1. 确认工作目录和命令参数。\n2. 使用原生 PowerShell 执行 Windows 命令。\n3. 读取实际输出，核对返回值。\n\n验证：保留执行结果和可复核的检查记录。` }));
+  const requests: { id: string; action: string }[] = [];
+  api.memory.skillCandidates = async () => structuredClone(items);
+  api.memory.skillLearningStatus = async () => ({ procedures: 225, reusableProcedures: 220, pendingTurns: 3, failedTurns: 4, retryableFailedTurns: 3, latestError: 'Resource exhausted. Please try again later. '.repeat(30), blockedSkills: [{ id: "blocked", title: "历史流程来源变更", reason: "来源记忆或审批记录已不存在，请重新学习并审核。" }] });
+  api.memory.approveSkillCandidate = async (id: string) => { requests.push({ id, action: "approve" }); const item = items.find((item) => item.id === id)!; item.status = "materialized"; return item; };
+  api.memory.rejectSkillCandidate = async (id: string) => { requests.push({ id, action: "reject" }); const item = items.find((item) => item.id === id)!; item.status = "rejected"; return item; };
+  return { items, requests };
+}
+
 function projectionFixtures() {
   fixtures();
   const data = {
@@ -217,6 +229,7 @@ export async function run(): Promise<string[]> {
   await click("技能学习");
   await until(() => host.textContent?.includes("17 条对话提炼失败"), "learning failure diagnostics");
   check(host.textContent?.includes("尚无可复用流程") && host.textContent.includes("来源记忆或审批记录已不存在"), "empty pipeline and orphaned skill explain their causes");
+  flushSync(() => host.querySelector<HTMLElement>('.skill-learning-diagnostics summary')!.click());
   await click("重试失败提炼");
   check(learningRetries === 1 && host.textContent?.includes("已安排重试 17 条"), "retry uses real recovery API and reports queued processing");
   api.memory.retryFailedTurns = async () => { throw new Error("当前模型尚未就绪"); };
@@ -530,6 +543,7 @@ export async function run(): Promise<string[]> {
   await dialogClick("确认清空历史");
   check(JSON.stringify(skillFixture.requests.at(-1)) === '{"kind":"candidate","all":true}', "clear history uses backend scope");
   check(skillFixture.data.candidates.length === 2, "pending and generated candidates remain");
+  await click(/^技能修订/);
   await click("查看修订历史");
   const revisionChecks = '[aria-label^="选择修订历史："]';
   check(host.querySelectorAll(revisionChecks).length === 2, "only obsolete/rejected revisions are selectable");
@@ -540,11 +554,68 @@ export async function run(): Promise<string[]> {
   await click("清空修订历史"); await dialogClick("确认清空历史");
   check(skillFixture.data.revisions.length === 2, "pending and generated revisions survive full cleanup");
   results.push("skill/revision history deletion covers selection, single/full cleanup, cancel/failure, refresh, locking and protection for pending/generated records");
+
+  {
+  const learning = learningFixtures(); mount(<MemoryTab />);
+  await until(() => buttons().some((b) => b.textContent === "刷新" && !b.disabled), "learning fixture");
+  await click("技能学习");
+  await until(() => host.querySelectorAll('.skill-review-row').length === 20, "paginated learning queue");
+  const chosen = '[aria-label^="选择技能候选："]';
+  const selectedCount = () => host.querySelectorAll(`${chosen}:checked`).length;
+  const allCandidates = '.skill-review-selection .memory-select-all input';
+  check(!host.querySelector<HTMLDetailsElement>('.skill-learning-diagnostics')?.open, "long provider errors are collapsed by default");
+  check(host.querySelector('.skill-review-detail')?.textContent?.includes("Git Bash"), "first candidate has readable detail without opening disclosure");
+  await toggleCheck(allCandidates);
+  check(selectedCount() === 20, "select all is bounded to the current page");
+  await clickLabel("下一页候选");
+  check(selectedCount() === 0 && host.querySelector('.skill-review-pagination')?.textContent?.includes("21–40"), "paging clears hidden choices");
+  await filter("搜索技能候选", "PowerPoint");
+  check(host.querySelectorAll('.skill-review-row').length === 9 && host.querySelector('.skill-review-pagination')?.textContent?.includes("1–9"), "search covers all pages and resets pagination");
+  await filter("技能适用范围", "workspace");
+  check(host.querySelectorAll('.skill-review-row').length === 3, "scope filter combines with search");
+  await toggleCheck(allCandidates);
+  await filter("技能候选状态", "ready");
+  check(host.querySelectorAll('.skill-review-row').length === 2 && selectedCount() === 2, "status filter prunes hidden selections");
+  await filter("搜索技能候选", "does-not-exist");
+  check(selectedCount() === 0 && host.textContent?.includes("没有匹配的技能"), "empty filter clears selection");
+  await click("清除筛选");
+  await filter("技能排序", "evidence");
+  check(host.querySelector('.skill-review-detail h3')?.textContent?.includes("45"), "evidence ordering prioritizes supported candidates");
+  await filter("技能排序", "recent");
+  await click("生成技能并继续");
+  await until(() => buttons().some((b) => b.textContent === "待处理 44"), "single approval refresh");
+  check(buttons().find((b) => b.textContent === "待处理 44")?.getAttribute("aria-pressed") === "true", "approval stays in pending queue");
+  check(host.querySelector('.skill-review-detail h3')?.textContent?.includes("· 2"), "approval advances detail to next candidate");
+  await toggleCheck(chosen, 0); await toggleCheck(chosen, 1);
+  await click("批量生成（2）");
+  check(dialog()?.textContent?.includes("默认关闭自动调用") && dialog()?.querySelectorAll("li").length === 2, "batch confirmation identifies candidates and invocation policy");
+  await dialogClick("取消");
+  check(learning.requests.length === 1 && selectedCount() === 2, "batch cancel preserves choices and sends no mutation");
+  const approve = api.memory.approveSkillCandidate;
+  const delayedApproval = deferred<any>();
+  api.memory.approveSkillCandidate = (id: string) => id === "pending-1" ? delayedApproval.promise : approve(id);
+  await click("批量生成（2）"); await dialogClick("确认批量生成");
+  check([...host.querySelectorAll<HTMLInputElement>(chosen)].every((item) => item.disabled), "batch locks selection until all results settle");
+  check(host.querySelector<HTMLInputElement>('[aria-label="搜索技能候选"]')?.disabled, "batch locks filtering");
+  delayedApproval.reject(new Error("来源已变更"));
+  await until(() => buttons().some((b) => b.textContent === "待处理 43"), "partial batch success refresh");
+  check(selectedCount() === 1 && host.querySelector('[role="status"]')?.textContent?.includes("1 条未成功"), "partial failure retains failed selected row and reports results");
+  check(learning.requests.filter((item) => item.action === "approve").map((item) => item.id).join() === "pending-0,pending-2", "batch attempts only confirmed IDs and continues after a failure");
+  await click("批量拒绝（1）"); await dialogClick("确认批量拒绝");
+  await until(() => buttons().some((b) => b.textContent === "待处理 42"), "batch rejection");
+  check(selectedCount() === 0 && learning.items.find((item) => item.id === "pending-1")?.status === "rejected", "batch rejection only changes selected candidate");
+  await click(/^技能修订/);
+  check(!host.querySelector('.skill-learning-candidates')?.getClientRects().length, "revision section replaces candidate workspace");
+  await click(/^使用反馈/);
+  check(host.textContent?.includes("尚无已学习技能的使用反馈"), "feedback remains accessible separately");
+  results.push("learning queue covers pagination, search/scope/status/sort, continuous approval, bounded batch selection, cancel, busy locking, partial failures and section navigation");
+  }
   return results;
 }
 
-export async function preview(page: "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "settings", dark = false): Promise<void> {
-  if (page === "scenarios" || page === "scene-delete" || page === "scenario-select" || page === "scenario-select-delete") projectionFixtures();
+export async function preview(page: "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "skill-queue" | "skill-queue-modal" | "settings", dark = false): Promise<void> {
+  if (page === "skill-queue" || page === "skill-queue-modal") learningFixtures();
+  else if (page === "scenarios" || page === "scene-delete" || page === "scenario-select" || page === "scenario-select-delete") projectionFixtures();
   else if (page === "skill-history" || page === "skill-history-delete") skillHistoryFixtures(); else fixtures();
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   mount(<MemoryTab />);
@@ -562,6 +633,12 @@ export async function preview(page: "memory" | "delete" | "select" | "select-del
     if (page === "scene-delete") await click("删除全部场景记录");
     if (page === "scenario-select" || page === "scenario-select-delete") await toggleCheck(".memory-projection-toolbar .memory-select-all input");
     if (page === "scenario-select-delete") await click("删除选中（5）");
+  } else if (page === "skill-queue" || page === "skill-queue-modal") {
+    if (page === "skill-queue-modal") {
+      host.className = "settings-backdrop";
+      flushSync(() => root!.render(<div className="settings-modal"><nav className="settings-nav"><div className="settings-nav-title">系统设置</div><button className="settings-nav-btn active">记忆</button></nav><div className="settings-content"><div className="settings-content-head"><span className="settings-content-title">记忆</span></div><div className="settings-content-body"><MemoryTab /></div></div></div>));
+    }
+    await click("技能学习"); await until(() => host.querySelectorAll('.skill-review-row').length === 20, "preview queue");
   } else if (page === "skills") { await click("技能学习"); await until(() => buttons().some((b) => b.textContent === "已生成 1"), "preview skills"); await click("已生成 1"); }
   else if (page === "skill-history" || page === "skill-history-delete") {
     await click("技能学习"); await until(() => buttons().some((b) => b.textContent === "历史记录 3"), "preview skill history");
@@ -575,6 +652,12 @@ export async function preview(page: "memory" | "delete" | "select" | "select-del
 export function layout(): { width: number; contentWidth: number; columns: string; badges: number } {
   const badges = [...host.querySelectorAll<HTMLElement>(".memory-source")].filter((e) => e.getClientRects().length);
   for (const badge of badges) check(getComputedStyle(badge).whiteSpace === "nowrap", "status badge must not wrap");
+  const modal = host.querySelector('.settings-modal');
+  const actions = host.querySelector('.skill-review-detail-actions');
+  if (modal && actions && window.innerWidth > 800) {
+    check(actions.getBoundingClientRect().bottom <= modal.getBoundingClientRect().bottom, "review actions stay within the modal without outer scrolling");
+    check(host.querySelector('.skill-review-list')!.clientHeight >= 180, "queue retains usable height at desktop window sizes");
+  }
   check(document.documentElement.scrollWidth <= window.innerWidth + 1, "page must not overflow horizontally");
   return { width: window.innerWidth, contentWidth: host.clientWidth, columns: host.querySelector(".memory-split") ? getComputedStyle(host.querySelector(".memory-split")!).gridTemplateColumns : "n/a", badges: badges.length };
 }
