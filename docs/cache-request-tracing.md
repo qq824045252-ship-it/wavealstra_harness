@@ -57,4 +57,10 @@ pnpm -s cache:replay -- --session-file <会话 JSONL> --from 80 --count 8 --live
 - 完整 headless 门禁：254 通过、0 失败；未调整失败基线。
 - 频谱仪历史 #80–#87：8 次离线回放、8 次真实模型回放，均观察到 7 次完整前缀延续。真实输入约 15–16 万 tokens，原先的骤降未复现。模型回复未执行为工具。
 
-详见 [真实用户任务审计](../artifacts/cache-investigation/real-tasks/findings.md)。剩余轮内异常应在新版自然运行时依据指纹定位，当前不宣称已消除全部缓存波动。
+详见 [真实用户任务审计](../artifacts/cache-investigation/real-tasks/findings.md) 和 [截图、子代理、搜索归因核对](../artifacts/cache-investigation/real-tasks/content-claims-check.md)。剩余轮内异常应在新版自然运行时依据指纹定位，当前不宣称已消除全部缓存波动。
+
+## 安装包验收
+
+0.1.81 从提交 `36fdd95` 的固定源码导出构建，依赖单独复制安装。打包文件门禁和 Pi worker 启动通过。使用临时 HOME/userData、隐藏窗口和本地可控 Responses 服务，通过真实 preload IPC 发起三次聊天请求：前缀保持追加，故意返回的一次低缓存用量被归为 `stable-prefix-low-cache`，日志中没有测试正文或密钥。此桌面夹具不是额外的真实云模型试验。
+
+桌面和开始菜单快捷方式均已读回 target、cwd、icon、`com.mybuddy.app` 身份。验收时旧 0.1.79 仍在运行，因此保留旧目录和进程；用户完成当前任务并重新启动后，新追踪才生效。实际包哈希、验证摘要及快捷方式记录见 [0.1.81 验收记录](../artifacts/cache-investigation/request-trace-acceptance.json)。

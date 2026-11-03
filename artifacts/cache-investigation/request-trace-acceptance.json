@@ -1,0 +1,189 @@
+{
+  "version": "0.1.81",
+  "acceptedAt": "2026-11-03T11:26:10.581Z",
+  "sourceCommit": "36fdd953d7192956401f02738e6d971b53f63c69",
+  "validationHarnessCommit": "3d940fa181b78bde89701dc842acdc360c36dfdd",
+  "exe": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+  "asarSha256": "b4091969de2ffb74e4cb46c2b5efa0d9135fe322b93bd12faf4af444ca8b6e6c",
+  "executableSha256": "4976f70902c6b6aa352bc2c5aa6361ec5bdd96ca4263d8218694f2a8660a4ebd",
+  "sourceChecks": {
+    "state": "passed",
+    "at": "2026-11-03T10:58:39.091Z",
+    "checks": [
+      {
+        "name": "typecheck",
+        "code": 0
+      },
+      {
+        "name": "offline-replay",
+        "code": 0
+      },
+      {
+        "name": "headless",
+        "code": 0
+      }
+    ],
+    "headlessPassed": 254,
+    "headlessFailed": 0
+  },
+  "packagedPayload": {
+    "missingUnpacked": 0,
+    "workerVersion": "1.3.0",
+    "verified": true
+  },
+  "packagedDesktop": {
+    "fixtureType": "local-controlled-responses",
+    "status": "passed",
+    "startedAt": "2026-11-03T11:21:01.250Z",
+    "profile": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-gaTU1w",
+    "exe": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+    "requests": 3,
+    "childPid": 29972,
+    "phase": "model-prompts",
+    "identity": {
+      "version": "0.1.81",
+      "packaged": true,
+      "home": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-gaTU1w",
+      "userData": "C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cache-trace-gaTU1w\\chromium",
+      "visible": false
+    },
+    "trace": {
+      "calls": 3,
+      "classificationCounts": {
+        "no-comparable-predecessor": 1,
+        "stable-prefix": 1,
+        "stable-prefix-low-cache": 1
+      },
+      "requests": [
+        {
+          "at": 1793704868474,
+          "epoch": "4db1eb58-483a-46d7-991f-ddea4859e8e4",
+          "request": "1f258841-d159-41bb-a979-5fd1c35abcaa",
+          "sessionHash": "fcd73a5dd6c3967220b7bdd12e9148aae4177d90ec6f1b9920dc25363d7193aa",
+          "responseHash": "052783b0a332d2ed06d319c71227590341575d6d1b903dc1b5d37a31f89cb84b",
+          "responseModelHash": null,
+          "classification": "no-comparable-predecessor",
+          "hitRate": 0,
+          "usage": {
+            "input": 100000,
+            "output": 2,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "outcome": "stop",
+          "sends": 1,
+          "httpStatuses": [
+            200
+          ],
+          "inputCount": 3,
+          "changedFields": [],
+          "routeChanged": false,
+          "retryChanged": false,
+          "boundaryChanges": [],
+          "adapterMatches": [
+            true
+          ]
+        },
+        {
+          "at": 1793704868654,
+          "epoch": "4db1eb58-483a-46d7-991f-ddea4859e8e4",
+          "request": "641877bb-9c62-4773-938c-7eec259fd70c",
+          "sessionHash": "fcd73a5dd6c3967220b7bdd12e9148aae4177d90ec6f1b9920dc25363d7193aa",
+          "responseHash": "fad3249f2543820353794dbc2037d1a27a202657cd013cd782031ee3ee4ea66a",
+          "responseModelHash": null,
+          "classification": "stable-prefix",
+          "hitRate": 0.99,
+          "usage": {
+            "input": 1000,
+            "output": 2,
+            "cacheRead": 99000,
+            "cacheWrite": 0
+          },
+          "outcome": "stop",
+          "sends": 1,
+          "httpStatuses": [
+            200
+          ],
+          "inputCount": 5,
+          "sharedItems": 3,
+          "changedFields": [],
+          "routeChanged": false,
+          "retryChanged": false,
+          "boundaryChanges": [
+            "user",
+            "ledger"
+          ],
+          "adapterMatches": [
+            true
+          ]
+        },
+        {
+          "at": 1793704868787,
+          "epoch": "4db1eb58-483a-46d7-991f-ddea4859e8e4",
+          "request": "504b315b-fa6f-4778-8e08-16c553557556",
+          "sessionHash": "fcd73a5dd6c3967220b7bdd12e9148aae4177d90ec6f1b9920dc25363d7193aa",
+          "responseHash": "f8d94c18e599bb766be7b89bf65b8f6c1324ccbf077ee7674fb44697b28b09e6",
+          "responseModelHash": null,
+          "classification": "stable-prefix-low-cache",
+          "hitRate": 0.25,
+          "usage": {
+            "input": 75000,
+            "output": 2,
+            "cacheRead": 25000,
+            "cacheWrite": 0
+          },
+          "outcome": "stop",
+          "sends": 1,
+          "httpStatuses": [
+            200
+          ],
+          "inputCount": 7,
+          "sharedItems": 5,
+          "changedFields": [],
+          "routeChanged": false,
+          "retryChanged": false,
+          "boundaryChanges": [
+            "user",
+            "ledger"
+          ],
+          "adapterMatches": [
+            true
+          ]
+        }
+      ],
+      "limits": [
+        "Stable client HTTP input does not prove stable gateway-to-provider input or upstream cache placement.",
+        "A changed request can be intentional (user/compaction/model/tools); a fingerprint is evidence, not fault attribution.",
+        "Different process epochs, evicted chains, truncated bodies and rotated-away predecessors are not compared as unchanged.",
+        "Only observed HTTP JSON sends have final-body coverage; WebSockets and arbitrary request streams remain explicit gaps."
+      ]
+    },
+    "asarSha256": "b4091969de2ffb74e4cb46c2b5efa0d9135fe322b93bd12faf4af444ca8b6e6c"
+  },
+  "shortcuts": [
+    {
+      "file": "C:\\Users\\servi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\MyBuddy.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+      "appUserModelId": "com.mybuddy.app"
+    },
+    {
+      "file": "C:\\Users\\servi\\Desktop\\MyBuddy 0.1.81.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\cache-trace-0.1.81\\win-unpacked\\MyBuddy.exe",
+      "appUserModelId": "com.mybuddy.app"
+    }
+  ],
+  "retention": {
+    "accepted": "release/cache-trace-0.1.81",
+    "previous": "release/memory-0.1.79",
+    "reason": "Previous package still runs the user session; no process was interrupted or old active package deleted"
+  },
+  "limits": [
+    "Three desktop requests use a local controlled Responses server; the low cache usage is deliberate fixture data.",
+    "Eight separate live long-history replays did not reproduce the original within-turn anomaly.",
+    "The currently running 0.1.79 process does not acquire new tracing until the user finishes its task and restarts."
+  ]
+}
