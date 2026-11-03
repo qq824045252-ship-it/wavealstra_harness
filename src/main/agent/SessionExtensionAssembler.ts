@@ -7,6 +7,8 @@ import { createGadgetAgentExtension } from "../gadget/gadget-agent-extension";
 import { createMemoryExtension } from "../memory/memory-extension";
 import type { MemoryService } from "../memory/MemoryService";
 import { createProjectAutopilotExtension } from "../project/project-autopilot-extension";
+import { createProjectNotesExtension } from "../project/project-notes-extension";
+import { ProjectNotesService } from "../project/ProjectNotesService";
 import { createProjectContextExtension } from "../project/project-context-extension";
 import { createProjectEventExtension } from "../project/project-event-extension";
 import { createProjectKnowledgeExtension } from "../project/project-knowledge-extension";
@@ -213,6 +215,11 @@ export class SessionExtensionAssembler {
         taskId: input.taskId,
         resolveProjectId,
         service: this.deps.project,
+        getPermissionMode: input.getPermissionMode,
+      }),
+      createProjectNotesExtension({
+        service: new ProjectNotesService(this.deps.db),
+        resolveProjectId,
         getPermissionMode: input.getPermissionMode,
       }),
       createProjectContextExtension({

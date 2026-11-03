@@ -5,6 +5,7 @@ import { MemoryService } from "../memory/MemoryService";
 import { ProjectContextResolver } from "../project/ProjectContextResolver";
 import { WorkspaceResourceLocator } from "../workspace/WorkspaceResourceLocator";
 import { WorkspaceSharedContextService } from "../workspace/WorkspaceSharedContextService";
+import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { assembleProjectContextSegments, mapBtwProjectContextSegments } from "./PromptAssembly";
 import { isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
@@ -95,7 +96,7 @@ export class LibraryWorkspaceContextService {
     const projectId = task?.projectId ?? null;
     const project = this.projectContext.resolveTask(taskId);
     const library = this.library();
-    const output: SupplementalEvidence[] = new WorkspaceNotesService(this.db).sources(taskId);
+    const output: SupplementalEvidence[] = [...new ProjectNotesService(this.db).sources(taskId), ...new WorkspaceNotesService(this.db).sources(taskId)];
     const selectedItems = new Set<string>();
     const addItem = (itemId: string, origin: "attached" | "pinned" | "catalog") => {
       if (selectedItems.has(itemId)) return;

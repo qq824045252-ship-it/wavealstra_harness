@@ -32,6 +32,7 @@ import ProjectCapabilities from "./ProjectCapabilities";
 import ProjectConfigRail from "./ProjectConfigRail";
 import ProjectPlan from "./ProjectPlan";
 import ProjectMemory from "./ProjectMemory";
+import ProjectNotes from "./ProjectNotes";
 import ProjectSettings from "./ProjectSettings";
 import ProjectStatusCard from "./ProjectStatusCard";
 import ProjectTasks from "./ProjectTasks";
@@ -409,6 +410,9 @@ function WorkspacePane({
         archived={Boolean(project.archived)}
       />
     );
+  }
+  if (tab === "notes") {
+    return <ProjectNotes key={project.id} projectId={project.id} archived={Boolean(project.archived)} />;
   }
   if (tab === "memory") {
     return (

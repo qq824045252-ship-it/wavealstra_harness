@@ -22,6 +22,7 @@ import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralCon
 import { EvidenceBudget, isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
 import { bindLegacyMemoryHistory } from "./LegacyMemorySummaryRecovery";
 import { attachSubagentModelRuntime, attachSubagentWorkspaceNotes, stopSubagentsForModelScopeChange } from "../capabilities/subagent/index";
+import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
 import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecovery";
@@ -1160,7 +1161,7 @@ export class AgentService {
     attachSubagentModelRuntime(this.modelRuntime);
     attachSubagentWorkspaceNotes(scope => {
       const entry = this.registry.values().find(item => item.session.sessionManager.getSessionId() === scope);
-      return entry ? new WorkspaceNotesService(this.db).forSubagent(entry.taskId) : "";
+      return entry ? [new ProjectNotesService(this.db).forSubagent(entry.taskId), new WorkspaceNotesService(this.db).forSubagent(entry.taskId)].filter(Boolean).join("\n\n") : "";
     });
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();

@@ -5,6 +5,7 @@ export const PROJECT_WORKSPACE_TABS = [
   "health",
   "plan",
   "memory",
+  "notes",
   "tasks",
   "assets",
   "capabilities",
@@ -13,13 +14,14 @@ export const PROJECT_WORKSPACE_TABS = [
 
 export type ProjectWorkspaceTab = (typeof PROJECT_WORKSPACE_TABS)[number];
 
-export const PROJECT_PRIMARY_TABS = ["activity", "health", "plan", "tasks", "memory", "assets"] as const;
+export const PROJECT_PRIMARY_TABS = ["activity", "health", "plan", "tasks", "notes", "memory", "assets"] as const;
 
 export const PROJECT_WORKSPACE_TAB_LABELS: Record<ProjectWorkspaceTab, string> = {
   health: "健康",
   activity: "概览",
   plan: "计划",
   memory: "记忆",
+  notes: "便签",
   tasks: "任务",
   assets: "资料",
   capabilities: "能力",
@@ -31,6 +33,7 @@ export const PROJECT_WORKSPACE_TAB_HINTS: Record<ProjectWorkspaceTab, string> = 
   activity: "项目留言、事件与最近动态",
   plan: "共享计划与日程",
   memory: "项目长期认知：事实、决策、约束、风险",
+  notes: "项目共享 Markdown 便签，项目内任务可读取和修改",
   tasks: "绑定本项目的任务",
   assets: "项目资料、常用引用、补充参考与实际使用记录",
   capabilities: "项目能力策略",

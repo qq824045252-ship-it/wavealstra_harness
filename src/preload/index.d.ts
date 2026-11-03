@@ -769,6 +769,7 @@ export interface PreloadApi {
     listTaskReferences: (taskId: string) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryTaskReferencesDto } | { ok: false; error: string }>;
   };
   htmlEdit: import("../shared/html-edit").HtmlEditApi;
+  projectNotes: import("../shared/project-notes").ProjectNotesApi;
   workspace: {
     notes: import("../shared/workspace-notes").WorkspaceNotesApi;
     getSharedContextView: (req: WorkspaceSharedContextViewRequest) => Promise<WorkspaceSharedContextView>;

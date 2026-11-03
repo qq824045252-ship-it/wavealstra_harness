@@ -84,6 +84,8 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "project_status_get",
   "project_review",
   "project_actions_list",
+  "project_notes_read",
+  "project_notes_save",
   "project_context_get",
   "project_context_update",
   "project_context_pin",
@@ -138,6 +140,7 @@ export const MUTATING_BUILTIN_TOOLS = [
   "video_generate",
   "text_to_speech",
   "skill_authoring_create",
+  "project_notes_save",
 ] as const;
 
 /** readonly 时补上不在 pi 默认 active 集里的只读内置工具 */

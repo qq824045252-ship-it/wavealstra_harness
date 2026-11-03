@@ -383,7 +383,7 @@ void (async () => {
 
   assert.deepEqual(
     [...PROJECT_PRIMARY_TABS],
-    ["activity", "health", "plan", "tasks", "memory", "assets"],
+    ["activity", "health", "plan", "tasks", "notes", "memory", "assets"],
     "health is a primary tab beside overview, not stacked into it",
   );
   assert.equal((PROJECT_PRIMARY_TABS as readonly string[]).includes("library"), false, "project no longer has a library tab");

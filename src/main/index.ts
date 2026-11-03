@@ -1,5 +1,7 @@
 import "./platform/credentials";
 import "./agent-environment";
+import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
+import { ProjectNotesService } from "./project/ProjectNotesService";
 import { WorkspaceNotesIpc } from "../shared/workspace-notes";
 import { WorkspaceNotesService } from "./workspace/WorkspaceNotesService";
 import { ExecutionFailureRepository } from "./agent/ExecutionFailureRepository";
@@ -1538,6 +1540,9 @@ function registerIpc(): void {
 
   /* ---------------- Workspace ↔ Library binding（Space / Collection） ---------------- */
 
+  const projectNotes = new ProjectNotesService(db);
+  ipcMain.handle(ProjectNotesIpc.read, (_e, projectId: string) => projectNotes.read(projectId));
+  ipcMain.handle(ProjectNotesIpc.save, (_e, request: ProjectNoteSaveRequest) => projectNotes.save(request));
   const workspaceNotes = new WorkspaceNotesService(db);
   ipcMain.handle(WorkspaceNotesIpc.read, (_e, workspaceId: string) => workspaceNotes.read(workspaceId));
   ipcMain.handle(WorkspaceNotesIpc.save, (_e, request: import("../shared/workspace-notes").WorkspaceNoteSaveRequest) => workspaceNotes.save(request));

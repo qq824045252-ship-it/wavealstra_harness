@@ -9,6 +9,7 @@ import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
 import { LibraryWorkspaceContextService } from "../src/main/agent/LibraryWorkspaceContextService";
+import { ProjectNotesService } from "../src/main/project/ProjectNotesService";
 import { WorkspaceNotesService } from "../src/main/workspace/WorkspaceNotesService";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
@@ -77,6 +78,9 @@ try {
   });
   library.attachToTask({ itemId: attached.id, taskId: "task-context" });
   assert(context.projectionSources("task-context").some(source => source.id === "workspace-note:workspace-context" && source.text.includes("Manual workspace note")), "saved notes enter actual task evidence projection");
+
+  new ProjectNotesService(db).save({ projectId: "proj-a", content: "# Shared project note", expectedRevision: 0 });
+  assert(context.projectionSources("task-context").some(source => source.id === "project-note:proj-a" && source.text.includes("Shared project note")));
 
   const first = context.resolveTask("task-context", true);
   assert.equal(context.library(), library, "extensions and context assembly must share one LibraryService truth source");

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
 import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
@@ -1335,6 +1336,10 @@ const api = {
       ipcRenderer.invoke(LibraryIpc.listTaskReferences, taskId),
   },
 
+  projectNotes: {
+    read: (projectId: string) => ipcRenderer.invoke(ProjectNotesIpc.read, projectId),
+    save: (request: ProjectNoteSaveRequest) => ipcRenderer.invoke(ProjectNotesIpc.save, request),
+  },
   workspace: {
     notes: {
       read: (workspaceId: string) => ipcRenderer.invoke(WorkspaceNotesIpc.read, workspaceId),

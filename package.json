@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -362,6 +362,7 @@
     "typecheck:scripts:update-baseline": "node scripts/typecheck-scripts.mjs --update-baseline",
     "test:packaged-package-json-guard": "node scripts/test-guard.mjs scripts/root-package-json-guard-test.cjs",
     "test:gadget-agent-live": "esbuild scripts/gadget-agent-live-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/pi-electron-stub.ts --outfile=out/tests/gadget-agent-live-test.mjs && node scripts/test-guard.mjs out/tests/gadget-agent-live-test.mjs",
+    "test:project-notes": "esbuild scripts/project-notes-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-notes-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/project-notes-test.cjs",
     "test:workspace-notes": "esbuild scripts/workspace-notes-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/workspace-notes-test.cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/workspace-notes-test.cjs",
     "test:workspace-notes-ui": "esbuild scripts/workspace-notes-ui-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/workspace-notes-ui-store.ts --external:@terrastruct/d2 --outfile=out/tests/workspace-notes-ui.js --loader:.woff2=file --loader:.woff=file --loader:.ttf=file && electron scripts/workspace-notes-ui-test.cjs"
   },

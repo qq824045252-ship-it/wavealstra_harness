@@ -1723,6 +1723,13 @@ export class AppDatabase {
         template_id TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS project_notes (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS project_expert_policy (
         project_id TEXT PRIMARY KEY,
         allow_json TEXT NOT NULL DEFAULT '[]',
