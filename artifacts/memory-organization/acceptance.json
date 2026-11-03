@@ -1,0 +1,55 @@
+{
+  "version": "0.1.79",
+  "sourceCommit": "93561e2ca0837e2330ea33b68c0a219319d07aaf",
+  "acceptedAt": "2026-11-03T09:13:05.148Z",
+  "package": "release/memory-0.1.79/win-unpacked",
+  "asarSha256": "67ba26326e2957a4f527c050b473a847ae917618cebf3d66643759d79cd3a179",
+  "checks": {
+    "typecheck": "pass; no new script diagnostics",
+    "headless": {
+      "passed": 253,
+      "failed": 0
+    },
+    "memoryOrganization": "pass",
+    "memoryUi": "pass; real Electron, light/dark and narrow windows",
+    "packagedPayload": {
+      "missingUnpacked": 0,
+      "workerVersion": "1.3.0",
+      "status": "pass"
+    },
+    "packagedDesktop": {
+      "status": "passed",
+      "isolatedProfile": true,
+      "model": "deterministic local HTTP fixture",
+      "modelRequests": 2,
+      "phases": [
+        "preview",
+        "reopen-apply-undo"
+      ]
+    }
+  },
+  "shortcuts": [
+    {
+      "name": "MyBuddy.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked\\MyBuddy.exe",
+      "appUserModelId": "com.mybuddy.app"
+    },
+    {
+      "name": "MyBuddy 0.1.79.lnk",
+      "target": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked\\MyBuddy.exe",
+      "cwd": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked",
+      "icon": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\release\\memory-0.1.79\\win-unpacked\\MyBuddy.exe",
+      "appUserModelId": "com.mybuddy.app"
+    }
+  ],
+  "retainedReleases": [
+    "memory-0.1.79"
+  ],
+  "notes": [
+    "Existing user memory was not organized during validation.",
+    "Other active desktop processes were not stopped.",
+    "Old generated releases were removed after process/shortcut checks and retained-package hash/startup validation."
+  ]
+}
