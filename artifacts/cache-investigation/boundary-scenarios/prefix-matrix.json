@@ -1,0 +1,629 @@
+{
+  "generatedAt": "2026-11-03T06:59:04.588Z",
+  "scenarios": [
+    {
+      "scenario": "baseline-tool-loop",
+      "requests": 4,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "three tool calls in one turn"
+    },
+    {
+      "scenario": "screenshots-across-turns",
+      "requests": 9,
+      "images": 3,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            8,
+            10
+          ]
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            10,
+            12
+          ]
+        },
+        {
+          "from": 5,
+          "to": 6,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            12,
+            14
+          ]
+        },
+        {
+          "from": 6,
+          "to": 7,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            14,
+            16
+          ]
+        },
+        {
+          "from": 7,
+          "to": 8,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            16,
+            18
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "six tool screenshots plus three user images"
+    },
+    {
+      "scenario": "steer-mid-turn",
+      "requests": 4,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            5
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            5,
+            7
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            7,
+            9
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "user message queued while tools run"
+    },
+    {
+      "scenario": "abort-then-continue",
+      "requests": 14,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            8,
+            10
+          ]
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            10,
+            12
+          ]
+        },
+        {
+          "from": 5,
+          "to": 6,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            12,
+            14
+          ]
+        },
+        {
+          "from": 6,
+          "to": 7,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            14,
+            16
+          ]
+        },
+        {
+          "from": 7,
+          "to": 8,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            16,
+            18
+          ]
+        },
+        {
+          "from": 8,
+          "to": 9,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            18,
+            20
+          ]
+        },
+        {
+          "from": 9,
+          "to": 10,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            20,
+            22
+          ]
+        },
+        {
+          "from": 10,
+          "to": 11,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            22,
+            24
+          ]
+        },
+        {
+          "from": 11,
+          "to": 12,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            24,
+            26
+          ]
+        },
+        {
+          "from": 12,
+          "to": 13,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            26,
+            28
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "aborted turn followed by a new prompt"
+    },
+    {
+      "scenario": "compaction",
+      "requests": 7,
+      "images": 0,
+      "breaks": 1,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "prefixOk": false,
+          "divergeAt": 1,
+          "prevItem": "user[<input_text>]",
+          "nextItem": "user[<input_text>]",
+          "baseChanged": [],
+          "lengths": [
+            8,
+            6
+          ]
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        },
+        {
+          "from": 5,
+          "to": 6,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            8,
+            10
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "explicit compaction between user turns"
+    },
+    {
+      "scenario": "tool-activation-mid-session",
+      "requests": 3,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [
+            "tools"
+          ],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        }
+      ],
+      "baseChanges": [
+        "tools"
+      ],
+      "note": "active tools 6 -> 7"
+    },
+    {
+      "scenario": "thinking-level-change",
+      "requests": 2,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "reasoning effort changed between turns"
+    },
+    {
+      "scenario": "resume-from-disk",
+      "requests": 7,
+      "images": 0,
+      "breaks": 0,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            2,
+            4
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            4,
+            6
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            6,
+            8
+          ]
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            8,
+            10
+          ]
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            10,
+            12
+          ]
+        },
+        {
+          "from": 5,
+          "to": 6,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            12,
+            14
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "session reloaded from its JSONL file"
+    },
+    {
+      "scenario": "capsule-across-turns",
+      "requests": 6,
+      "images": 0,
+      "breaks": 1,
+      "continuity": [
+        {
+          "from": 0,
+          "to": 1,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            3,
+            5
+          ]
+        },
+        {
+          "from": 1,
+          "to": 2,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            5,
+            7
+          ]
+        },
+        {
+          "from": 2,
+          "to": 3,
+          "prefixOk": false,
+          "divergeAt": 2,
+          "prevItem": "user[<input_text>]",
+          "nextItem": "function_call[]",
+          "baseChanged": [],
+          "lengths": [
+            7,
+            9
+          ]
+        },
+        {
+          "from": 3,
+          "to": 4,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            9,
+            11
+          ]
+        },
+        {
+          "from": 4,
+          "to": 5,
+          "prefixOk": true,
+          "divergeAt": -1,
+          "baseChanged": [],
+          "lengths": [
+            11,
+            13
+          ]
+        }
+      ],
+      "baseChanges": [],
+      "note": "request-only capsule re-anchored per user turn",
+      "capsuleIndexes": [
+        2,
+        2,
+        2,
+        8,
+        8,
+        8
+      ]
+    }
+  ],
+  "transportCalls": 0
+}

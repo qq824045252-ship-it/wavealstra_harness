@@ -119,6 +119,8 @@ const GUI_TESTS = new Set([
 
 const NETWORK_TESTS = new Set([
   "test:gadget-agent-live",
+  // 真实 Magpie 网关的缓存边界实验：要真凭据/网络/花费，缺 MYBUDDY_CACHE_LIVE=1 会自己 SKIP。
+  "test:cache-live",
   // 真机 ACP 冒烟：要真实 dsh CLI + 凭据 + 网络（缺 CLI 会自己 SKIP，但不该进无头门禁）。
   "test:acp-dsh-live",
   "test:remote-workspace-create",

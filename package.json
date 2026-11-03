@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.75",
+  "version": "0.1.76",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -133,6 +133,9 @@
     "test:computer-automation-windows": "esbuild scripts/computer-automation-windows-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-automation-windows-smoke.cjs --external:electron && electron out/tests/computer-automation-windows-smoke.cjs",
     "test:computer-use-linux": "esbuild scripts/computer-use-linux-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-linux-smoke.cjs --external:electron && GUARD_HOME=host node scripts/test-guard.mjs out/tests/computer-use-linux-smoke.cjs",
     "test:tool-image-aging": "esbuild scripts/tool-image-aging-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/tool-image-aging-test.mjs && node scripts/test-guard.mjs out/tests/tool-image-aging-test.mjs",
+    "test:cache-live": "esbuild scripts/cache-live-scenarios.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-live.mjs && node out/tests/cache-live.mjs",
+    "cache:audit": "node scripts/cache-usage-audit.mjs",
+    "test:cache-boundary-matrix": "esbuild scripts/cache-prefix-matrix-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-prefix-matrix-test.mjs && node scripts/test-guard.mjs out/tests/cache-prefix-matrix-test.mjs",
     "test:runtime-probe": "esbuild scripts/runtime-probe-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/runtime-probe-test.mjs --external:electron && node scripts/test-guard.mjs out/tests/runtime-probe-test.mjs",
     "test:runtime-probe-electron": "esbuild scripts/runtime-probe-electron-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/runtime-probe-electron-smoke.cjs --external:electron && electron out/tests/runtime-probe-electron-smoke.cjs",
     "test:external-write-grant": "esbuild scripts/external-write-grant-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/external-write-grant-test.cjs --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/external-write-grant-test.cjs",
