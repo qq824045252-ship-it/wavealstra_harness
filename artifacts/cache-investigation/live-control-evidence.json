@@ -1,0 +1,169 @@
+{
+  "startedAt": "2026-11-02T01:40:53.370Z",
+  "syntheticOnly": true,
+  "model": "codex/gpt-6.1-terra",
+  "arms": [
+    {
+      "arm": "append-only",
+      "sessionIdHash": "ce8d7e03707f776cec12c87f5080cf7fbbc1d18b7ee554ae0c700be0ab8807c8",
+      "results": [
+        {
+          "turn": 1,
+          "at": "2026-11-02T01:40:55.699Z",
+          "durationMs": 2327,
+          "stopReason": "stop",
+          "usage": {
+            "input": 16793,
+            "output": 5,
+            "cacheRead": 3968,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20766,
+            "cost": {
+              "input": 0.016793,
+              "output": 0.000025,
+              "cacheRead": 0.00019840000000000002,
+              "cacheWrite": 0,
+              "total": 0.0170164
+            }
+          },
+          "inputItems": 2,
+          "chars": 33523,
+          "keyHash": "ce8d7e03707f776cec12c87f5080cf7fbbc1d18b7ee554ae0c700be0ab8807c8",
+          "replyLength": 2
+        },
+        {
+          "turn": 2,
+          "at": "2026-11-02T01:40:57.640Z",
+          "durationMs": 1940,
+          "stopReason": "stop",
+          "usage": {
+            "input": 173,
+            "output": 5,
+            "cacheRead": 20608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20786,
+            "cost": {
+              "input": 0.000173,
+              "output": 0.000025,
+              "cacheRead": 0.0010304000000000001,
+              "cacheWrite": 0,
+              "total": 0.0012284000000000002
+            }
+          },
+          "inputItems": 4,
+          "chars": 33831,
+          "keyHash": "ce8d7e03707f776cec12c87f5080cf7fbbc1d18b7ee554ae0c700be0ab8807c8",
+          "replyLength": 2
+        },
+        {
+          "turn": 3,
+          "at": "2026-11-02T01:40:59.122Z",
+          "durationMs": 1481,
+          "stopReason": "stop",
+          "usage": {
+            "input": 193,
+            "output": 5,
+            "cacheRead": 20608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20806,
+            "cost": {
+              "input": 0.000193,
+              "output": 0.000025,
+              "cacheRead": 0.0010304000000000001,
+              "cacheWrite": 0,
+              "total": 0.0012484000000000002
+            }
+          },
+          "inputItems": 6,
+          "chars": 34139,
+          "keyHash": "ce8d7e03707f776cec12c87f5080cf7fbbc1d18b7ee554ae0c700be0ab8807c8",
+          "replyLength": 2
+        }
+      ]
+    },
+    {
+      "arm": "moving-tail",
+      "sessionIdHash": "59cddeeb12430a235f5cee68ce4a3e58b70b46506b1b27144b09a5459ac96653",
+      "results": [
+        {
+          "turn": 1,
+          "at": "2026-11-02T01:41:01.021Z",
+          "durationMs": 1898,
+          "stopReason": "stop",
+          "usage": {
+            "input": 16810,
+            "output": 5,
+            "cacheRead": 3968,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20783,
+            "cost": {
+              "input": 0.01681,
+              "output": 0.000025,
+              "cacheRead": 0.00019840000000000002,
+              "cacheWrite": 0,
+              "total": 0.0170334
+            }
+          },
+          "inputItems": 3,
+          "chars": 33661,
+          "keyHash": "59cddeeb12430a235f5cee68ce4a3e58b70b46506b1b27144b09a5459ac96653",
+          "replyLength": 2
+        },
+        {
+          "turn": 2,
+          "at": "2026-11-02T01:41:04.149Z",
+          "durationMs": 3128,
+          "stopReason": "stop",
+          "usage": {
+            "input": 190,
+            "output": 5,
+            "cacheRead": 20608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20803,
+            "cost": {
+              "input": 0.00018999999999999998,
+              "output": 0.000025,
+              "cacheRead": 0.0010304000000000001,
+              "cacheWrite": 0,
+              "total": 0.0012454
+            }
+          },
+          "inputItems": 5,
+          "chars": 33969,
+          "keyHash": "59cddeeb12430a235f5cee68ce4a3e58b70b46506b1b27144b09a5459ac96653",
+          "replyLength": 2
+        },
+        {
+          "turn": 3,
+          "at": "2026-11-02T01:41:06.696Z",
+          "durationMs": 2546,
+          "stopReason": "stop",
+          "usage": {
+            "input": 210,
+            "output": 5,
+            "cacheRead": 20608,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20823,
+            "cost": {
+              "input": 0.00020999999999999998,
+              "output": 0.000025,
+              "cacheRead": 0.0010304000000000001,
+              "cacheWrite": 0,
+              "total": 0.0012654
+            }
+          },
+          "inputItems": 7,
+          "chars": 34277,
+          "keyHash": "59cddeeb12430a235f5cee68ce4a3e58b70b46506b1b27144b09a5459ac96653",
+          "replyLength": 2
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "calls": [],
+  "calls_decoded": 28680,
+  "calls_in_window": 0,
+  "decode_failures": [],
+  "frames_decoded": 1184,
+  "hash_algorithm": "SHA-256 of exact UTF-8 value; empty values represented present=false",
+  "max_call_time": "2026-11-02T01:26:34.915Z",
+  "min_call_time": "2026-06-08T05:03:12.22Z",
+  "original_data_read_only": true,
+  "schema_limits": [
+    "No full request or response body field in Call or callFrame schema",
+    "No prompt_cache_key or input-item field in schema",
+    "Call.From/To points to original source bytes; Tokens.Input is a count excluding CacheRead",
+    "Upstream, AccountID and UserID are available only when source parser supplied them"
+  ],
+  "shards_scanned": 1174,
+  "sources": [
+    {
+      "calls": 0,
+      "dsh_carry_bytes": 0,
+      "dsh_carry_keys": [],
+      "dsh_carry_sha256": {
+        "present": false
+      },
+      "frames": 9,
+      "shard": "a6de94ab8a4af5557dd797bf77d6de346e48775d74ebf637780f825a987076f1.gob",
+      "source_exists": true,
+      "source_extension": ".jsonl",
+      "source_mod_beijing": "2026-11-02T09:17:41.8710863+08:00",
+      "source_offset": 3284381,
+      "source_path": {
+        "present": true,
+        "bytes": 155,
+        "sha256": "a6de94ab8a4af5557dd797bf77d6de346e48775d74ebf637780f825a987076f1"
+      },
+      "source_path_contains_task": true,
+      "source_size": 3284381,
+      "state_agent": {
+        "present": true,
+        "bytes": 2,
+        "sha256": "85b42e1702877c851eb7412fe958c8fb447c3207b4798fadab42ea8539046ce1"
+      },
+      "state_session": {
+        "present": true,
+        "bytes": 36,
+        "sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3"
+      },
+      "task_calls": 0,
+      "window_calls": 0
+    }
+  ],
+  "target_model_calls_in_window": 0,
+  "target_task": "01a199b1-7a56-7415-b47b-0cdd635c3fc0",
+  "target_task_calls_all_time": 0,
+  "time_window_end_exclusive": "2026-11-02T09:18:00+08:00",
+  "time_window_start": "2026-11-02T08:38:00+08:00"
+}

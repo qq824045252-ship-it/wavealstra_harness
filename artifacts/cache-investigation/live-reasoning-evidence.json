@@ -1,0 +1,67 @@
+{
+  "startedAt": "2026-11-02T01:47:19.355Z",
+  "syntheticOnly": true,
+  "model": "codex/gpt-6.1-terra",
+  "arms": [
+    {
+      "arm": "reasoning-append-only",
+      "sessionIdHash": "b1fff50c24b3885ea7850bb8d02d106de8d600b1c650f24ccb73313f514bd05e",
+      "results": [
+        {
+          "turn": 1,
+          "at": "2026-11-02T01:47:26.404Z",
+          "durationMs": 7045,
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 19493,
+            "output": 219,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 198,
+            "totalTokens": 19712,
+            "cost": {
+              "input": 0.019493,
+              "output": 0.001095,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.020588
+            }
+          },
+          "inputItems": 2,
+          "chars": 37002,
+          "keyHash": "b1fff50c24b3885ea7850bb8d02d106de8d600b1c650f24ccb73313f514bd05e",
+          "toolCalls": 1,
+          "thinkingSignatureLengths": [
+            3447
+          ]
+        },
+        {
+          "turn": 2,
+          "at": "2026-11-02T01:47:31.957Z",
+          "durationMs": 5550,
+          "stopReason": "stop",
+          "usage": {
+            "input": 3206,
+            "output": 4,
+            "cacheRead": 19584,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 22794,
+            "cost": {
+              "input": 0.0032059999999999996,
+              "output": 0.00002,
+              "cacheRead": 0.0009792000000000002,
+              "cacheWrite": 0,
+              "total": 0.0042052
+            }
+          },
+          "inputItems": 5,
+          "chars": 47218,
+          "keyHash": "b1fff50c24b3885ea7850bb8d02d106de8d600b1c650f24ccb73313f514bd05e",
+          "toolCalls": 0,
+          "thinkingSignatureLengths": []
+        }
+      ]
+    }
+  ]
+}

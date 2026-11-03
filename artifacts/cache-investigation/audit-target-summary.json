@@ -1,0 +1,3010 @@
+{
+  "matched_calls": 38,
+  "all_native_matches_unique": true,
+  "all_native_input_excludes_cache": true,
+  "account_sha256_values": [
+    "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+  ],
+  "route_account_id_sha256_values": [
+    "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+  ],
+  "session_sha256_values": [
+    "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3"
+  ],
+  "status_values": [
+    200
+  ],
+  "tries_count_values": [
+    1
+  ],
+  "order_count_values": [
+    1
+  ],
+  "http_asks_values": [
+    1
+  ],
+  "masking_ms_range": {
+    "min": 16.0,
+    "max": 171.0
+  },
+  "archive_present_count": 0,
+  "models": [
+    {
+      "model": "gpt-5.6-terra",
+      "count": 21,
+      "sum_input_uncached": 1391095.0,
+      "sum_cache_read": 440320.0,
+      "sum_output": 8439.0,
+      "cache_read_values": [
+        0,
+        22016
+      ],
+      "first_time": "2026-11-02T08:38:28.2074492+08:00",
+      "last_time": "2026-11-02T08:49:01.8468222+08:00"
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "count": 17,
+      "sum_input_uncached": 2103402.0,
+      "sum_cache_read": 370688.0,
+      "sum_output": 3334.0,
+      "cache_read_values": [
+        0,
+        23168
+      ],
+      "first_time": "2026-11-02T09:04:05.7583945+08:00",
+      "last_time": "2026-11-02T09:17:36.3591222+08:00"
+    }
+  ],
+  "calls": [
+    {
+      "native_index": 0,
+      "usage_line": 35534,
+      "routing_line": 42,
+      "route_id": 1793500712250,
+      "time_beijing": "2026-11-02T08:38:28.2074492+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 23884,
+      "cache_read": 0,
+      "prompt_total": 23884,
+      "native_input": 23884,
+      "native_input_excludes_cache": true,
+      "output": 148,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "59d3bcc6f0cfc364e107f847e03dfac2008d1e100a88507576bcbb48df2fa74e",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 16,
+      "route_masking_ms": 16,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 23884,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8012,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14749,
+          "item_count": 24
+        },
+        {
+          "kind": "chat",
+          "tokens": 1123,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 1,
+      "usage_line": 35535,
+      "routing_line": 43,
+      "route_id": 1793500712251,
+      "time_beijing": "2026-11-02T08:38:38.4725405+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 7462,
+      "cache_read": 22016,
+      "prompt_total": 29478,
+      "native_input": 7462,
+      "native_input_excludes_cache": true,
+      "output": 280,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "bb7b1e8b7a4157c05291af9e810717ec9d848e6a11f46cd95bf2f02bb022d77f",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 25,
+      "route_masking_ms": 25,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 29478,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7808,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14373,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 5704,
+          "item_count": 1
+        },
+        {
+          "kind": "chat",
+          "tokens": 1593,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 2,
+      "usage_line": 35536,
+      "routing_line": 44,
+      "route_id": 1793500712252,
+      "time_beijing": "2026-11-02T08:38:48.0348403+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 10676,
+      "cache_read": 22016,
+      "prompt_total": 32692,
+      "native_input": 10676,
+      "native_input_excludes_cache": true,
+      "output": 203,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "811f62bc05af437122ab86009f63fabd8fb8515258f89dcf7063ab7fc17dc18d",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 30,
+      "route_masking_ms": 30,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 32692,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7786,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14331,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 7232,
+          "item_count": 5
+        },
+        {
+          "kind": "results",
+          "tokens": 1239,
+          "item_count": 1
+        },
+        {
+          "kind": "chat",
+          "tokens": 2104,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 3,
+      "usage_line": 35537,
+      "routing_line": 45,
+      "route_id": 1793500712253,
+      "time_beijing": "2026-11-02T08:38:55.3295384+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 26443,
+      "cache_read": 22016,
+      "prompt_total": 48459,
+      "native_input": 26443,
+      "native_input_excludes_cache": true,
+      "output": 403,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "35d4fbcdf2adaa5dfcaa9382575c6d980ac6f3531abbf78a302eea3855fd41b1",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 55,
+      "route_masking_ms": 55,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 48459,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7883,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14510,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 9594,
+          "item_count": 7
+        },
+        {
+          "kind": "results",
+          "tokens": 13873,
+          "item_count": 1
+        },
+        {
+          "kind": "chat",
+          "tokens": 2599,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 4,
+      "usage_line": 35538,
+      "routing_line": 46,
+      "route_id": 1793500712254,
+      "time_beijing": "2026-11-02T08:39:06.8332362+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 34229,
+      "cache_read": 22016,
+      "prompt_total": 56245,
+      "native_input": 34229,
+      "native_input_excludes_cache": true,
+      "output": 411,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "c94ebfc551c44cb6e337cdcb006c765bf88bb5502b5739099472ddbdaea67497",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 73,
+      "route_masking_ms": 73,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 56245,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7936,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14608,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 11658,
+          "item_count": 9
+        },
+        {
+          "kind": "results",
+          "tokens": 18672,
+          "item_count": 1
+        },
+        {
+          "kind": "chat",
+          "tokens": 3371,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 5,
+      "usage_line": 35539,
+      "routing_line": 47,
+      "route_id": 1793500712255,
+      "time_beijing": "2026-11-02T08:39:20.910175+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 46185,
+      "cache_read": 22016,
+      "prompt_total": 68201,
+      "native_input": 46185,
+      "native_input_excludes_cache": true,
+      "output": 638,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "780ae1da43a30b1f356366175a552a7fa0be70cdb908ee5c6633d92f7c766766",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 91,
+      "route_masking_ms": 91,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 68201,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7813,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14381,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 22989,
+          "item_count": 13
+        },
+        {
+          "kind": "results",
+          "tokens": 18848,
+          "item_count": 1
+        },
+        {
+          "kind": "chat",
+          "tokens": 4170,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 6,
+      "usage_line": 35540,
+      "routing_line": 48,
+      "route_id": 1793500712256,
+      "time_beijing": "2026-11-02T08:39:37.2159345+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 52862,
+      "cache_read": 22016,
+      "prompt_total": 74878,
+      "native_input": 52862,
+      "native_input_excludes_cache": true,
+      "output": 637,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "0f5584c57418bcba069d82380771ac5449dcf4eff2e3bb6e11e4691a739e0b9e",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 86,
+      "route_masking_ms": 86,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 74878,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7788,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14336,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 26248,
+          "item_count": 14
+        },
+        {
+          "kind": "results",
+          "tokens": 21342,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 5164,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 7,
+      "usage_line": 35564,
+      "routing_line": 72,
+      "route_id": 1793500712280,
+      "time_beijing": "2026-11-02T08:41:50.2645156+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 65929,
+      "cache_read": 22016,
+      "prompt_total": 87945,
+      "native_input": 65929,
+      "native_input_excludes_cache": true,
+      "output": 519,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "2df65527f7339f0808f77d6881386a192c559d0a8598d15010cddf0bb47cc006",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 91,
+      "route_masking_ms": 91,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 87945,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7706,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14184,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 30124,
+          "item_count": 16
+        },
+        {
+          "kind": "results",
+          "tokens": 29896,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 6035,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 8,
+      "usage_line": 35590,
+      "routing_line": 98,
+      "route_id": 1793500712306,
+      "time_beijing": "2026-11-02T08:45:04.2877184+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 67000,
+      "cache_read": 22016,
+      "prompt_total": 89016,
+      "native_input": 67000,
+      "native_input_excludes_cache": true,
+      "output": 251,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "922948bed01dad2a01198f592a6a25cca4bda3864250a589447d89198cd4797b",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 75,
+      "route_masking_ms": 75,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 89016,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7658,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14097,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 29939,
+          "item_count": 16
+        },
+        {
+          "kind": "results",
+          "tokens": 30278,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 7044,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 9,
+      "usage_line": 35591,
+      "routing_line": 99,
+      "route_id": 1793500712307,
+      "time_beijing": "2026-11-02T08:45:15.7366316+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 72684,
+      "cache_read": 22016,
+      "prompt_total": 94700,
+      "native_input": 72684,
+      "native_input_excludes_cache": true,
+      "output": 373,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "aad063275207332d4c14dd5040782b26e95488330a099a31648473de684a0600",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 83,
+      "route_masking_ms": 83,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 94700,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7691,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14157,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 30065,
+          "item_count": 16
+        },
+        {
+          "kind": "results",
+          "tokens": 35196,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 7591,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 10,
+      "usage_line": 35592,
+      "routing_line": 100,
+      "route_id": 1793500712308,
+      "time_beijing": "2026-11-02T08:45:29.1782443+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 79554,
+      "cache_read": 22016,
+      "prompt_total": 101570,
+      "native_input": 79554,
+      "native_input_excludes_cache": true,
+      "output": 224,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "275d66850899ee139991844c54d3d65f4f5209bc06cc031b6a999b84deedbcc6",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 98,
+      "route_masking_ms": 98,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 101570,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7589,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13969,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 35894,
+          "item_count": 18
+        },
+        {
+          "kind": "results",
+          "tokens": 35538,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 8580,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 11,
+      "usage_line": 35593,
+      "routing_line": 101,
+      "route_id": 1793500712309,
+      "time_beijing": "2026-11-02T08:45:38.7068622+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 84112,
+      "cache_read": 22016,
+      "prompt_total": 106128,
+      "native_input": 84112,
+      "native_input_excludes_cache": true,
+      "output": 271,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "f817358cd00c44eccf0cb5dcc79a655185c2660b758c7a19cb63ae06870f99ea",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 107,
+      "route_masking_ms": 107,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 106128,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7572,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13937,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 40038,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 35457,
+          "item_count": 2
+        },
+        {
+          "kind": "chat",
+          "tokens": 9124,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 12,
+      "usage_line": 35594,
+      "routing_line": 102,
+      "route_id": 1793500712310,
+      "time_beijing": "2026-11-02T08:45:48.6242593+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 84412,
+      "cache_read": 22016,
+      "prompt_total": 106428,
+      "native_input": 84412,
+      "native_input_excludes_cache": true,
+      "output": 138,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "5e61ce7b6909943818cd4644fa4ae3c0da22774a61d058a381fd16fca7100a8a",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 108,
+      "route_masking_ms": 108,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 106428,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7535,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13870,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 39847,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 35305,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 9871,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 13,
+      "usage_line": 35595,
+      "routing_line": 103,
+      "route_id": 1793500712311,
+      "time_beijing": "2026-11-02T08:45:56.1950314+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 84578,
+      "cache_read": 22016,
+      "prompt_total": 106594,
+      "native_input": 84578,
+      "native_input_excludes_cache": true,
+      "output": 536,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "30337155ac2c4649512952266a1f0d251962e24183fc4a218b63e5ea6bd463ac",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 104,
+      "route_masking_ms": 104,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 106594,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7518,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13838,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 39754,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 35241,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 10243,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 14,
+      "usage_line": 35596,
+      "routing_line": 104,
+      "route_id": 1793500712312,
+      "time_beijing": "2026-11-02T08:46:07.8016796+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 85139,
+      "cache_read": 22016,
+      "prompt_total": 107155,
+      "native_input": 85139,
+      "native_input_excludes_cache": true,
+      "output": 193,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "76301f668de52b95d94a3881c13559eee6832969d3a30b4ac91e3c8eab50f349",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 109,
+      "route_masking_ms": 109,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 107155,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7500,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13806,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 39660,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 35175,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11014,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 15,
+      "usage_line": 35597,
+      "routing_line": 105,
+      "route_id": 1793500712313,
+      "time_beijing": "2026-11-02T08:46:16.2907821+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 88258,
+      "cache_read": 22016,
+      "prompt_total": 110274,
+      "native_input": 88258,
+      "native_input_excludes_cache": true,
+      "output": 109,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "56b7c2be5d9d26014e91e9da0d86e52eb5ac2a784d6a48758af285e04f0bc643",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 101,
+      "route_masking_ms": 101,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 110274,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7504,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13814,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 39683,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 37782,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11491,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 16,
+      "usage_line": 35598,
+      "routing_line": 106,
+      "route_id": 1793500712314,
+      "time_beijing": "2026-11-02T08:46:23.2937128+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 90275,
+      "cache_read": 22016,
+      "prompt_total": 112291,
+      "native_input": 90275,
+      "native_input_excludes_cache": true,
+      "output": 522,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "c7adf32189143508fd8bd2758e58fabcaf138e2bc139b0edf5c4d5c98a17914b",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 118,
+      "route_masking_ms": 118,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 112291,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7496,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13799,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 41364,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 37740,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11892,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 17,
+      "usage_line": 35599,
+      "routing_line": 107,
+      "route_id": 1793500712315,
+      "time_beijing": "2026-11-02T08:46:33.8311522+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 90822,
+      "cache_read": 22016,
+      "prompt_total": 112838,
+      "native_input": 90822,
+      "native_input_excludes_cache": true,
+      "output": 101,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "164d9bfe95144e921d0deb41ac17c04a3b3283136123b14652f23a39ea4f432d",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 116,
+      "route_masking_ms": 116,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 112838,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7483,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13774,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 41293,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 37690,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 12598,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 18,
+      "usage_line": 35600,
+      "routing_line": 108,
+      "route_id": 1793500712316,
+      "time_beijing": "2026-11-02T08:46:52.6478567+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 92710,
+      "cache_read": 22016,
+      "prompt_total": 114726,
+      "native_input": 92710,
+      "native_input_excludes_cache": true,
+      "output": 374,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "f0c6330ee69be61e3ef0b463c33cc2e4cf3d1540c068945ebb2973d89b7a75a4",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 114,
+      "route_masking_ms": 114,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 114726,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7493,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13792,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 41346,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 39153,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 12942,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 19,
+      "usage_line": 35601,
+      "routing_line": 109,
+      "route_id": 1793500712317,
+      "time_beijing": "2026-11-02T08:48:41.8956989+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 100534,
+      "cache_read": 22016,
+      "prompt_total": 122550,
+      "native_input": 100534,
+      "native_input_excludes_cache": true,
+      "output": 496,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "e73e61b980d355ad59cce799919bce7cc97d4fb754575f7e2108c43078919da3",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 127,
+      "route_masking_ms": 127,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 122550,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7593,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13977,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 41901,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 45084,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 13995,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 20,
+      "usage_line": 35602,
+      "routing_line": 110,
+      "route_id": 1793500712318,
+      "time_beijing": "2026-11-02T08:49:01.8468222+08:00",
+      "requested": "codex/gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "served": "gpt-5.6-terra",
+      "input_uncached": 103347,
+      "cache_read": 22016,
+      "prompt_total": 125363,
+      "native_input": 103347,
+      "native_input_excludes_cache": true,
+      "output": 1612,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "4a1ec69034ed2d9c6e0fefb2daeaa9b86537c4d87023fecd5696d1a8cdc7c0b2",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 135,
+      "route_masking_ms": 135,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 125363,
+      "prompt_counted": true,
+      "prompt_turns": 2,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 7580,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 13953,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 41827,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 46912,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 15091,
+          "item_count": 2
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 21,
+      "usage_line": 35604,
+      "routing_line": 112,
+      "route_id": 1793500712320,
+      "time_beijing": "2026-11-02T09:04:05.7583945+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 124395,
+      "cache_read": 0,
+      "prompt_total": 124395,
+      "native_input": 124395,
+      "native_input_excludes_cache": true,
+      "output": 215,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "a53d75b32b51e7b028e9c6920aff432ba53359ad50cfcc68023521c217192339",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 147,
+      "route_masking_ms": 147,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 124395,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8144,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14992,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 44942,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 50405,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 5912,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 22,
+      "usage_line": 35605,
+      "routing_line": 113,
+      "route_id": 1793500712321,
+      "time_beijing": "2026-11-02T09:04:11.2839928+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 105808,
+      "cache_read": 23168,
+      "prompt_total": 128976,
+      "native_input": 105808,
+      "native_input_excludes_cache": true,
+      "output": 197,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "1d7ecdb61f3f57c25531d38a916edbeea989cea7fc63e77deeacfe6d1ec04b7d",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 131,
+      "route_masking_ms": 131,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 128976,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8121,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14948,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 48768,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 51063,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 6076,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 23,
+      "usage_line": 35626,
+      "routing_line": 134,
+      "route_id": 1793500712342,
+      "time_beijing": "2026-11-02T09:06:29.2141295+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 106576,
+      "cache_read": 23168,
+      "prompt_total": 129744,
+      "native_input": 106576,
+      "native_input_excludes_cache": true,
+      "output": 207,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "8646e3979a57a9aeb0ba4d253422e482b12cf3ed2aff9bcfb8cb7f6f641f10a2",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 123,
+      "route_masking_ms": 123,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 129744,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8114,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14937,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 48730,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 51650,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 6313,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 24,
+      "usage_line": 35627,
+      "routing_line": 135,
+      "route_id": 1793500712343,
+      "time_beijing": "2026-11-02T09:06:40.7075849+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 113550,
+      "cache_read": 23168,
+      "prompt_total": 136718,
+      "native_input": 113550,
+      "native_input_excludes_cache": true,
+      "output": 103,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "6616d22dff574bc7565bd59318d03d24ff92f899bcca81ca9ea250c336044559",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 141,
+      "route_masking_ms": 141,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 136718,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8097,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14904,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 50056,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 56893,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 6768,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 25,
+      "usage_line": 35628,
+      "routing_line": 136,
+      "route_id": 1793500712344,
+      "time_beijing": "2026-11-02T09:06:51.8728282+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 114142,
+      "cache_read": 23168,
+      "prompt_total": 137310,
+      "native_input": 114142,
+      "native_input_excludes_cache": true,
+      "output": 165,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "697cbe236c9b3ccf29a18c4961508f3fb5f486b7ff054116e53d57ad469963ba",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 141,
+      "route_masking_ms": 141,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 137310,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8087,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14886,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 49995,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 57204,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 7138,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 26,
+      "usage_line": 35629,
+      "routing_line": 137,
+      "route_id": 1793500712345,
+      "time_beijing": "2026-11-02T09:06:57.0021015+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 114612,
+      "cache_read": 23168,
+      "prompt_total": 137780,
+      "native_input": 114612,
+      "native_input_excludes_cache": true,
+      "output": 280,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "c5be314709930626d93bd5e2797ad884b79d4f7bd98859640df31c13a9744232",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 139,
+      "route_masking_ms": 139,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 137780,
+      "prompt_counted": true,
+      "prompt_turns": 3,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8088,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14888,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 50001,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 57523,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 7280,
+          "item_count": 3
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 27,
+      "usage_line": 35631,
+      "routing_line": 139,
+      "route_id": 1793500712347,
+      "time_beijing": "2026-11-02T09:13:25.7075025+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 114858,
+      "cache_read": 23168,
+      "prompt_total": 138026,
+      "native_input": 114858,
+      "native_input_excludes_cache": true,
+      "output": 476,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "96f2d1d7ace6efd73ad3803fde95e13869f4fe967547631c4e01082f76f5e18e",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 149,
+      "route_masking_ms": 149,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 138026,
+      "prompt_counted": true,
+      "prompt_turns": 4,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8086,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14885,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 49991,
+          "item_count": 20
+        },
+        {
+          "kind": "results",
+          "tokens": 57510,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 7554,
+          "item_count": 4
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 28,
+      "usage_line": 35648,
+      "routing_line": 156,
+      "route_id": 1793500712364,
+      "time_beijing": "2026-11-02T09:14:17.7695219+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 116433,
+      "cache_read": 23168,
+      "prompt_total": 139601,
+      "native_input": 116433,
+      "native_input_excludes_cache": true,
+      "output": 309,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "e5a3ef60961ab155aad9bbbf200ff37ff87f12e84c387f84339d926e6e4904a7",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 151,
+      "route_masking_ms": 151,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 139601,
+      "prompt_counted": true,
+      "prompt_turns": 4,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8083,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14878,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 50860,
+          "item_count": 22
+        },
+        {
+          "kind": "results",
+          "tokens": 57792,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 7988,
+          "item_count": 4
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 29,
+      "usage_line": 35649,
+      "routing_line": 157,
+      "route_id": 1793500712365,
+      "time_beijing": "2026-11-02T09:14:29.4741623+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 125914,
+      "cache_read": 23168,
+      "prompt_total": 149082,
+      "native_input": 125914,
+      "native_input_excludes_cache": true,
+      "output": 85,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "e86b5c186a33c435a5553fee747b08960ef47b1acf69e6f1f677605a53a80084",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 146,
+      "route_masking_ms": 146,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 149082,
+      "prompt_counted": true,
+      "prompt_turns": 4,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8075,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14864,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52160,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 65470,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 8513,
+          "item_count": 4
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 30,
+      "usage_line": 35650,
+      "routing_line": 158,
+      "route_id": 1793500712366,
+      "time_beijing": "2026-11-02T09:14:40.5266346+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 127575,
+      "cache_read": 23168,
+      "prompt_total": 150743,
+      "native_input": 127575,
+      "native_input_excludes_cache": true,
+      "output": 120,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "c08d1d91e38ef78f76923fcc3adadf9abfabf4a27bcaa241731579cda84085b9",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 171,
+      "route_masking_ms": 171,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 150743,
+      "prompt_counted": true,
+      "prompt_turns": 4,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8056,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14828,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52034,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 66933,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 8892,
+          "item_count": 4
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 31,
+      "usage_line": 35651,
+      "routing_line": 159,
+      "route_id": 1793500712367,
+      "time_beijing": "2026-11-02T09:16:30.472044+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 131520,
+      "cache_read": 23168,
+      "prompt_total": 154688,
+      "native_input": 131520,
+      "native_input_excludes_cache": true,
+      "output": 363,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "e9524c915d670c66d1e9b7e06b129371a86c6b6c72e860dc0cccb75252a99754",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 150,
+      "route_masking_ms": 150,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 154688,
+      "prompt_counted": true,
+      "prompt_turns": 4,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8101,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14913,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52330,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 69971,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 9373,
+          "item_count": 4
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 32,
+      "usage_line": 35653,
+      "routing_line": 161,
+      "route_id": 1793500712369,
+      "time_beijing": "2026-11-02T09:16:57.0958869+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 132536,
+      "cache_read": 23168,
+      "prompt_total": 155704,
+      "native_input": 132536,
+      "native_input_excludes_cache": true,
+      "output": 215,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "7b233096cd1f6b464762746e0a98e0d2dfb5fbdbe4bf2c9d1980764a67f7e372",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 155,
+      "route_masking_ms": 155,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 155704,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8084,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14881,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52217,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 69821,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 10701,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 33,
+      "usage_line": 35654,
+      "routing_line": 162,
+      "route_id": 1793500712370,
+      "time_beijing": "2026-11-02T09:17:06.6180933+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 134119,
+      "cache_read": 23168,
+      "prompt_total": 157287,
+      "native_input": 134119,
+      "native_input_excludes_cache": true,
+      "output": 109,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "cb7bafa3cf9c9e0d691018239a72a9665c88cb1644b2875f73d7ba59f858b190",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 142,
+      "route_masking_ms": 142,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 157287,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8078,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14870,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52181,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 70992,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11166,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 34,
+      "usage_line": 35656,
+      "routing_line": 164,
+      "route_id": 1793500712371,
+      "time_beijing": "2026-11-02T09:17:13.2503449+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 134958,
+      "cache_read": 23168,
+      "prompt_total": 158126,
+      "native_input": 134958,
+      "native_input_excludes_cache": true,
+      "output": 126,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "42e4e0af1f9d3eded5eaabc4a03cf2b456229905191acf53b0eb491664eafb40",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 166,
+      "route_masking_ms": 166,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 158126,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8061,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14839,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 52072,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 71576,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11578,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 35,
+      "usage_line": 35658,
+      "routing_line": 166,
+      "route_id": 1793500712374,
+      "time_beijing": "2026-11-02T09:17:21.9677666+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 135105,
+      "cache_read": 23168,
+      "prompt_total": 158273,
+      "native_input": 135105,
+      "native_input_excludes_cache": true,
+      "output": 155,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "aaa041c66a731b607d82ad3acdfec1eaab0ebbf35e1714412bbdcc6d151cf3af",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 152,
+      "route_masking_ms": 152,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 158273,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8047,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14813,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 51979,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 71462,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 11972,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 36,
+      "usage_line": 35661,
+      "routing_line": 169,
+      "route_id": 1793500712377,
+      "time_beijing": "2026-11-02T09:17:28.7064988+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 135515,
+      "cache_read": 23168,
+      "prompt_total": 158683,
+      "native_input": 135515,
+      "native_input_excludes_cache": true,
+      "output": 54,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "4611a97df59dc3985fb506a2f423c86dd3a5c675ecd7d2949b9d2d82e6779075",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 164,
+      "route_masking_ms": 164,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 158683,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8047,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14813,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 51981,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 71713,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 12129,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    },
+    {
+      "native_index": 37,
+      "usage_line": 35664,
+      "routing_line": 172,
+      "route_id": 1793500712380,
+      "time_beijing": "2026-11-02T09:17:36.3591222+08:00",
+      "requested": "codex/gpt-6.1-terra",
+      "model": "gpt-6.1-terra",
+      "served": "gpt-6.1-terra",
+      "input_uncached": 135786,
+      "cache_read": 23168,
+      "prompt_total": 158954,
+      "native_input": 135786,
+      "native_input_excludes_cache": true,
+      "output": 155,
+      "status": 200,
+      "provider": "codex",
+      "account_sha256": "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b",
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "native_session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "response_id_sha256": "3210cf6f65b25857a26de167d2200c36ad85aa73e85165d48fd3259f1b06313a",
+      "tries_count": 1,
+      "try_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_count": 1,
+      "order_account_id_sha256": [
+        "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93"
+      ],
+      "order_who_sha256": [
+        "6b3c67abbaec8a45af0d5e591fc626246558d867af06cafff69b93209599f62b"
+      ],
+      "try_status": [
+        200
+      ],
+      "http_asks": [
+        1
+      ],
+      "try_again_ms": [
+        null
+      ],
+      "retried_ms": null,
+      "masking_ms": 169,
+      "route_masking_ms": 169,
+      "affinity": null,
+      "pinned": null,
+      "prompt_tokens": 158954,
+      "prompt_counted": true,
+      "prompt_turns": 5,
+      "prompt_parts": [
+        {
+          "kind": "system",
+          "tokens": 8034,
+          "item_count": 1
+        },
+        {
+          "kind": "tools",
+          "tokens": 14789,
+          "item_count": 24
+        },
+        {
+          "kind": "files",
+          "tokens": 51897,
+          "item_count": 24
+        },
+        {
+          "kind": "results",
+          "tokens": 71780,
+          "item_count": 3
+        },
+        {
+          "kind": "chat",
+          "tokens": 12454,
+          "item_count": 5
+        }
+      ],
+      "archive_present": false
+    }
+  ]
+}

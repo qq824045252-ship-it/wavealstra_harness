@@ -1,0 +1,108 @@
+{
+  "scope": "No-tool-execution diagnostic with persisted history at actual model-call boundaries; original request-only memory capsule unavailable",
+  "model": "codex/gpt-6.1-terra",
+  "keyHash": "f896ac3bb04e45a529bd0c1206080abe708db88a9c7ec7b16a9eef6e261aacf6",
+  "usesOriginalKey": false,
+  "rows": [
+    {
+      "beforeLine": 8,
+      "at": "2026-11-02T01:54:49.684Z",
+      "inputItems": 3,
+      "chars": 76898,
+      "sharedPreviousItems": 0,
+      "previousItems": 0,
+      "stopReason": "stop",
+      "usage": {
+        "input": 79,
+        "output": 5,
+        "cacheRead": 23296,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 23380,
+        "cost": {
+          "input": 0.000079,
+          "output": 0.000025,
+          "cacheRead": 0.0011648000000000001,
+          "cacheWrite": 0,
+          "total": 0.0012688
+        }
+      },
+      "toolCalls": 0
+    },
+    {
+      "beforeLine": 10,
+      "at": "2026-11-02T01:54:54.201Z",
+      "inputItems": 6,
+      "chars": 101293,
+      "sharedPreviousItems": 2,
+      "previousItems": 3,
+      "stopReason": "stop",
+      "usage": {
+        "input": 111,
+        "output": 5,
+        "cacheRead": 28800,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 28916,
+        "cost": {
+          "input": 0.000111,
+          "output": 0.000025,
+          "cacheRead": 0.00144,
+          "cacheWrite": 0,
+          "total": 0.0015760000000000001
+        }
+      },
+      "toolCalls": 0
+    },
+    {
+      "beforeLine": 16,
+      "at": "2026-11-02T01:54:57.575Z",
+      "inputItems": 16,
+      "chars": 115379,
+      "sharedPreviousItems": 5,
+      "previousItems": 6,
+      "stopReason": "stop",
+      "usage": {
+        "input": 87,
+        "output": 5,
+        "cacheRead": 32000,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 32092,
+        "cost": {
+          "input": 0.000087,
+          "output": 0.000025,
+          "cacheRead": 0.0016,
+          "cacheWrite": 0,
+          "total": 0.001712
+        }
+      },
+      "toolCalls": 0
+    },
+    {
+      "beforeLine": 20,
+      "at": "2026-11-02T01:55:00.301Z",
+      "inputItems": 22,
+      "chars": 178798,
+      "sharedPreviousItems": 15,
+      "previousItems": 16,
+      "stopReason": "stop",
+      "usage": {
+        "input": 204,
+        "output": 5,
+        "cacheRead": 47616,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 47825,
+        "cost": {
+          "input": 0.000204,
+          "output": 0.000025,
+          "cacheRead": 0.0023808,
+          "cacheWrite": 0,
+          "total": 0.0026098000000000002
+        }
+      },
+      "toolCalls": 0
+    }
+  ]
+}

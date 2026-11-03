@@ -1,0 +1,1165 @@
+{
+  "scope": "Offline reconstruction of persisted history through installed Pi converter; excludes request-only capsules and gateway transformations",
+  "networkCalls": 0,
+  "rows": [
+    {
+      "line": 8,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 0,
+      "input": 23884,
+      "payloadInputItems": 2,
+      "payloadChars": 76785,
+      "sharedPreviousItems": null,
+      "previousItems": null,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 10,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 7462,
+      "payloadInputItems": 6,
+      "payloadChars": 103737,
+      "sharedPreviousItems": 2,
+      "previousItems": 2,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 16,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 10676,
+      "payloadInputItems": 17,
+      "payloadChars": 120061,
+      "sharedPreviousItems": 6,
+      "previousItems": 6,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 20,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 26443,
+      "payloadInputItems": 24,
+      "payloadChars": 185640,
+      "sharedPreviousItems": 17,
+      "previousItems": 17,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 25,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 34229,
+      "payloadInputItems": 34,
+      "payloadChars": 218509,
+      "sharedPreviousItems": 24,
+      "previousItems": 24,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 32,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 46185,
+      "payloadInputItems": 47,
+      "payloadChars": 271809,
+      "sharedPreviousItems": 34,
+      "previousItems": 34,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 38,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 52862,
+      "payloadInputItems": 58,
+      "payloadChars": 301916,
+      "sharedPreviousItems": 47,
+      "previousItems": 47,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 45,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 65929,
+      "payloadInputItems": 71,
+      "payloadChars": 353742,
+      "sharedPreviousItems": 58,
+      "previousItems": 58,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 47,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 67000,
+      "payloadInputItems": 75,
+      "payloadChars": 361755,
+      "sharedPreviousItems": 71,
+      "previousItems": 71,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 51,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 72684,
+      "payloadInputItems": 83,
+      "payloadChars": 385220,
+      "sharedPreviousItems": 75,
+      "previousItems": 75,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        },
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 55,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 79554,
+      "payloadInputItems": 92,
+      "payloadChars": 419291,
+      "sharedPreviousItems": 83,
+      "previousItems": 83,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 60,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 84112,
+      "payloadInputItems": 101,
+      "payloadChars": 440611,
+      "sharedPreviousItems": 92,
+      "previousItems": 92,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 62,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 84412,
+      "payloadInputItems": 104,
+      "payloadChars": 445500,
+      "sharedPreviousItems": 101,
+      "previousItems": 101,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 64,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 84578,
+      "payloadInputItems": 107,
+      "payloadChars": 448083,
+      "sharedPreviousItems": 104,
+      "previousItems": 104,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 66,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 85139,
+      "payloadInputItems": 110,
+      "payloadChars": 452553,
+      "sharedPreviousItems": 107,
+      "previousItems": 107,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 69,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 88258,
+      "payloadInputItems": 116,
+      "payloadChars": 466902,
+      "sharedPreviousItems": 110,
+      "previousItems": 110,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 71,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 90275,
+      "payloadInputItems": 120,
+      "payloadChars": 476844,
+      "sharedPreviousItems": 116,
+      "previousItems": 116,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 73,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 90822,
+      "payloadInputItems": 123,
+      "payloadChars": 480963,
+      "sharedPreviousItems": 120,
+      "previousItems": 120,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 76,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 92710,
+      "payloadInputItems": 128,
+      "payloadChars": 489418,
+      "sharedPreviousItems": 123,
+      "previousItems": 123,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 79,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 100534,
+      "payloadInputItems": 134,
+      "payloadChars": 518163,
+      "sharedPreviousItems": 128,
+      "previousItems": 128,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 83,
+      "model": "codex/gpt-5.6-terra",
+      "cacheRead": 22016,
+      "input": 103347,
+      "payloadInputItems": 142,
+      "payloadChars": 533302,
+      "sharedPreviousItems": 134,
+      "previousItems": 134,
+      "firstMismatch": null,
+      "baseFieldsHash": "1014a23e475d8586538eeaaf3198fce575abdd52f58e3f0938f70a349c240374",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        },
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 86,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 0,
+      "input": 124395,
+      "payloadInputItems": 123,
+      "payloadChars": 475809,
+      "sharedPreviousItems": null,
+      "previousItems": null,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 90,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 105808,
+      "payloadInputItems": 130,
+      "payloadChars": 495621,
+      "sharedPreviousItems": 123,
+      "previousItems": 123,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 92,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 106576,
+      "payloadInputItems": 132,
+      "payloadChars": 498187,
+      "sharedPreviousItems": 130,
+      "previousItems": 130,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 96,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 113550,
+      "payloadInputItems": 140,
+      "payloadChars": 527723,
+      "sharedPreviousItems": 132,
+      "previousItems": 132,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 99,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 114142,
+      "payloadInputItems": 145,
+      "payloadChars": 531833,
+      "sharedPreviousItems": 140,
+      "previousItems": 140,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 102,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 114612,
+      "payloadInputItems": 150,
+      "payloadChars": 534172,
+      "sharedPreviousItems": 145,
+      "previousItems": 145,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 105,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 114858,
+      "payloadInputItems": 152,
+      "payloadChars": 535025,
+      "sharedPreviousItems": 150,
+      "previousItems": 150,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 111,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 116433,
+      "payloadInputItems": 163,
+      "payloadChars": 542901,
+      "sharedPreviousItems": 152,
+      "previousItems": 152,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 119,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 125914,
+      "payloadInputItems": 179,
+      "payloadChars": 580758,
+      "sharedPreviousItems": 163,
+      "previousItems": 163,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 121,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 127575,
+      "payloadInputItems": 182,
+      "payloadChars": 589650,
+      "sharedPreviousItems": 179,
+      "previousItems": 179,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 123,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 131520,
+      "payloadInputItems": 186,
+      "payloadChars": 602662,
+      "sharedPreviousItems": 182,
+      "previousItems": 182,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 126,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 132536,
+      "payloadInputItems": 189,
+      "payloadChars": 605579,
+      "sharedPreviousItems": 186,
+      "previousItems": 186,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 130,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 134119,
+      "payloadInputItems": 197,
+      "payloadChars": 613742,
+      "sharedPreviousItems": 189,
+      "previousItems": 189,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 132,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 134958,
+      "payloadInputItems": 200,
+      "payloadChars": 619279,
+      "sharedPreviousItems": 197,
+      "previousItems": 197,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 134,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 135105,
+      "payloadInputItems": 204,
+      "payloadChars": 621872,
+      "sharedPreviousItems": 200,
+      "previousItems": 200,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    },
+    {
+      "line": 136,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 135515,
+      "payloadInputItems": 206,
+      "payloadChars": 623688,
+      "sharedPreviousItems": 204,
+      "previousItems": 204,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": [
+        {
+          "signature": true,
+          "signatureFields": [
+            "type",
+            "id",
+            "summary",
+            "content",
+            "encrypted_content"
+          ]
+        }
+      ]
+    },
+    {
+      "line": 138,
+      "model": "codex/gpt-6.1-terra",
+      "cacheRead": 23168,
+      "input": 135786,
+      "payloadInputItems": 209,
+      "payloadChars": 626650,
+      "sharedPreviousItems": 206,
+      "previousItems": 206,
+      "firstMismatch": null,
+      "baseFieldsHash": "cbb98189d79a180f70a8318200cc9ffe00af8ab3563025dc00749edd0fb7c5bf",
+      "cacheKeyHash": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3",
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "thinkingBlocks": []
+    }
+  ]
+}

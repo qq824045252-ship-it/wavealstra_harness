@@ -1,0 +1,42 @@
+{
+  "headers": [
+    {
+      "file_extension": ".jsonl",
+      "header": {
+        "cwd": {
+          "bytes": 50,
+          "sha256": "6f7a758ed9966db8e68f6fb00a0666d2fd8b572a070237ab6d765330d2031a1a"
+        },
+        "id": {
+          "bytes": 36,
+          "embedded_uuid_sha256": [
+            "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3"
+          ],
+          "sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3"
+        },
+        "timestamp": {
+          "bytes": 24,
+          "sha256": "1d1250814b06cd7b290deddc70377030ffaef28f35db09389609751d9988095c"
+        },
+        "type": {
+          "bytes": 7,
+          "sha256": "3f3af1ecebbd1410ab417ec0d27bbfcb5d340e177ae159b59fc8626c2dfd9175"
+        },
+        "version": 3
+      },
+      "session_sha256": "a3b3b3211ffe147074069e0d4564f8fcb6e1172b638f9f501166dfc57fb818d3"
+    }
+  ],
+  "headers_found": 1,
+  "missing_session_sha256": [
+    "0cbeb5b02485c6687abc5ac4a81f76e03fdebeb8e4c6ec19ba85a83e936d5155",
+    "375d41ebc7d5918ace68fa85a6fb309e56a9cc24cdab2a146312fba0eb28bb00",
+    "4d52e023266f7a38ac687c0a451d6494cc96480d535e060f51adf4b6a8581201",
+    "4ef27ddbc883aef98f4113ef0a01bbf54ace19e8d87ba73079d6e369e28b1567",
+    "70538ad4302485d45dfaffa7bf76181f985e16a1e58a8e6e2ceae032740073aa",
+    "72776e4c9f15d5be6133dd0078d69192d46d8c357981c11cc3d7d491073789b7",
+    "b420b71404b3e836071dbf957fbfc0c27ecaf5b47c9a12b4463ce8568064cb52"
+  ],
+  "mybuddy_session_hashes": 8,
+  "scope": "Only first line of matching MyBuddy session JSONL under current workspace session directory; all strings hashed"
+}

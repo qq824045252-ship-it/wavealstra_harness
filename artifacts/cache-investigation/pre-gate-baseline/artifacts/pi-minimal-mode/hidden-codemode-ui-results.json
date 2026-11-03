@@ -1,0 +1,18 @@
+{
+  "at": "2026-11-02T01:15:25.612Z",
+  "passed": true,
+  "results": [
+    {
+      "name": "Code Mode status is not rendered on welcome or active task UI",
+      "passed": true
+    },
+    {
+      "name": "backend native Code Mode status remains diagnostic-only",
+      "passed": true
+    },
+    {
+      "name": "hidden UI has no accidental global CSS reference",
+      "passed": true
+    }
+  ]
+}

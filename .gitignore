@@ -103,6 +103,9 @@ electron.vite.config.*.mjs
 /artifacts/remote-android-*/
 # 一次性 OCR 诊断输出（ocr/ ocr2/ ocr3/ ocr4/ …），含原始截图，每份 300-500K
 /artifacts/ocr*/
+# cache-investigation 调查：Go 构建缓存（88MB，可再生）与第三方 magpie 源码副本（119MB），不入库
+/artifacts/cache-investigation/go-build/
+/artifacts/cache-investigation/magpie-source/
 # 临时探针脚本（CDP/WebSocket 一次性调试，用完即弃）
 /scripts/tmp-*
 

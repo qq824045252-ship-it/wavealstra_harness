@@ -1,0 +1,42 @@
+[
+  {
+    "path": "artifacts/pi-codemode-auto/contract-results.json",
+    "sha256": "05EE47DC0E164D66E935F742CD94342AAA8A5FA2B3D33938F26D635F815C9F16"
+  },
+  {
+    "path": "artifacts/pi-codemode-auto/native-results.json",
+    "sha256": "1611B46828A5A56E7DD9944AD344BA859C5230F8CC2FCEAC4198A55120723860"
+  },
+  {
+    "path": "artifacts/pi-host-exit/contract-results.json",
+    "sha256": "1A1C3EA77A9FA20B61183BB22EEBCC537F4AAEED29261B56858878CF1084D385"
+  },
+  {
+    "path": "artifacts/pi-host-exit/native-integration-results.json",
+    "sha256": "48E4812F086CC19410E51C9484C6C8E5965FC8ED20167AA231485EB41D38E339"
+  },
+  {
+    "path": "artifacts/pi-host-exit/source-boundary-audit.json",
+    "sha256": "05FAF3B553711E34D9432C2488D6938063881BB2D5405F4C97114E518643A188"
+  },
+  {
+    "path": "artifacts/pi-minimal-mode/contract-results.json",
+    "sha256": "A6DE43496BEAAD93CF044CBC9E6825F156210F744D1585027872ED004A8C6564"
+  },
+  {
+    "path": "artifacts/pi-minimal-mode/hidden-codemode-ui-results.json",
+    "sha256": "BBE69E287E396688F76CF2D7B94B33813B1B6F1F3579D879C473DFBB469593B5"
+  },
+  {
+    "path": "artifacts/pi-native-control/contract-results.json",
+    "sha256": "5135A2D4CEBE648163BFB708855FB17E7A76352DFE50155972BD4E7C3BE6E6A5"
+  },
+  {
+    "path": "artifacts/pi-native-control/native-lifecycle-results.json",
+    "sha256": "85998BDB2A1A51EEB2DD1132A7D0A036FE5ECCFE6864F5FA4FBBCB392DF86DF7"
+  },
+  {
+    "path": "artifacts/pi-native-core-tools/results.json",
+    "sha256": "413A4C55A4DA803321AE90E58DCBFB71DE56EF819D1ABD883267A26CF1C76427"
+  }
+]

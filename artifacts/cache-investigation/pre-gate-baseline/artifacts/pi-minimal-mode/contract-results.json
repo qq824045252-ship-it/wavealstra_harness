@@ -1,0 +1,38 @@
+{
+  "at": "2026-11-02T01:15:19.550Z",
+  "passed": true,
+  "results": [
+    {
+      "name": "minimal is the first coding seed tag",
+      "passed": true
+    },
+    {
+      "name": "minimal adds no prompt or extra policy",
+      "passed": true
+    },
+    {
+      "name": "minimal leaves the base coding policy unchanged",
+      "passed": true
+    },
+    {
+      "name": "minimal remains first even when a user custom tag was stored before seeds",
+      "passed": true
+    },
+    {
+      "name": "coding default is minimal",
+      "passed": true
+    },
+    {
+      "name": "existing policy files receive minimal first without losing custom tags",
+      "passed": true
+    },
+    {
+      "name": "minimal produces no modePreset prompt segment",
+      "passed": true
+    },
+    {
+      "name": "non-minimal coding tags still inject their preset prompt",
+      "passed": true
+    }
+  ]
+}

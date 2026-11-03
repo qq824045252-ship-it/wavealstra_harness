@@ -1,0 +1,54 @@
+{
+  "found": true,
+  "busy": false,
+  "diskMessages": 130,
+  "liveMessages": 130,
+  "differences": [],
+  "model": {
+    "id": "codex/gpt-6.1-terra",
+    "api": "openai-responses",
+    "provider": "magpie",
+    "compat": {
+      "sendSessionAffinityHeaders": true
+    }
+  },
+  "agentSessionIdHash": "7bd418995cd4c0c6fc0433469ffd189d1c223444440295aa9553ff2afc53345f",
+  "managerSessionIdHash": "7bd418995cd4c0c6fc0433469ffd189d1c223444440295aa9553ff2afc53345f",
+  "agentKeys": [
+    "_state",
+    "listeners",
+    "steeringQueue",
+    "followUpQueue",
+    "convertToLlm",
+    "transformContext",
+    "streamFunction",
+    "getApiKey",
+    "onPayload",
+    "onResponse",
+    "onProviderStreamEvent",
+    "beforeToolCall",
+    "afterToolCall",
+    "finishTurn",
+    "prepareRequest",
+    "prepareNextTurn",
+    "prepareNextTurnWithContext",
+    "activeRun",
+    "sessionId",
+    "thinkingBudgets",
+    "transport",
+    "maxRetryDelayMs",
+    "toolExecution"
+  ],
+  "sessionKeys": [
+    "_extensionRunner",
+    "_extensionRunnerRef",
+    "_extensionUIContext",
+    "_extensionMode",
+    "_extensionCommandContextActions",
+    "_extensionAbortHandler",
+    "_extensionShutdownHandler",
+    "_extensionErrorListener",
+    "_extensionErrorUnsubscriber"
+  ],
+  "firstContentType": "string"
+}

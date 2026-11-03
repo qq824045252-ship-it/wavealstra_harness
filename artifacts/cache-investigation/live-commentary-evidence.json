@@ -1,0 +1,258 @@
+{
+  "syntheticOnly": true,
+  "startedAt": "2026-11-02T02:15:28.539Z",
+  "arms": [
+    {
+      "arm": "commentary-append-only",
+      "keyHash": "5e675f3a9e1e1817b255ef7f9fc0672e570b2ebebc6023a652ccd3db30523701",
+      "results": [
+        {
+          "turn": 1,
+          "at": "2026-11-02T02:15:36.056Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 19506,
+            "output": 246,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 200,
+            "totalTokens": 19752,
+            "cost": {
+              "input": 0.019506,
+              "output": 0.0012300000000000002,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.020735999999999997
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 65,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            3469
+          ]
+        },
+        {
+          "turn": 2,
+          "at": "2026-11-02T02:15:45.594Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 3245,
+            "output": 169,
+            "cacheRead": 19584,
+            "cacheWrite": 0,
+            "reasoning": 121,
+            "totalTokens": 22998,
+            "cost": {
+              "input": 0.003245,
+              "output": 0.000845,
+              "cacheRead": 0.0009792000000000002,
+              "cacheWrite": 0,
+              "total": 0.0050692
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 66,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2766
+          ]
+        },
+        {
+          "turn": 3,
+          "at": "2026-11-02T02:15:51.482Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 26129,
+            "output": 169,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 121,
+            "totalTokens": 26298,
+            "cost": {
+              "input": 0.026129,
+              "output": 0.000845,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.026973999999999998
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 66,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2787
+          ]
+        },
+        {
+          "turn": 4,
+          "at": "2026-11-02T02:15:59.541Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 3285,
+            "output": 180,
+            "cacheRead": 26112,
+            "cacheWrite": 0,
+            "reasoning": 132,
+            "totalTokens": 29577,
+            "cost": {
+              "input": 0.0032849999999999997,
+              "output": 0.0009000000000000001,
+              "cacheRead": 0.0013056,
+              "cacheWrite": 0,
+              "total": 0.0054906
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 66,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2875
+          ]
+        }
+      ]
+    },
+    {
+      "arm": "commentary-moving-tail",
+      "keyHash": "100bdcfc0de79f214ae816f86c5c2b5009e6976687b638352754ffa5b7d86695",
+      "results": [
+        {
+          "turn": 1,
+          "at": "2026-11-02T02:16:07.293Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 19531,
+            "output": 259,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 217,
+            "totalTokens": 19790,
+            "cost": {
+              "input": 0.019531,
+              "output": 0.0012950000000000001,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.020826
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 37,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            3647
+          ]
+        },
+        {
+          "turn": 2,
+          "at": "2026-11-02T02:16:15.443Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 22867,
+            "output": 178,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 136,
+            "totalTokens": 23045,
+            "cost": {
+              "input": 0.022867,
+              "output": 0.0008900000000000001,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.023756999999999997
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 38,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2963
+          ]
+        },
+        {
+          "turn": 3,
+          "at": "2026-11-02T02:16:22.116Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 22208,
+            "output": 141,
+            "cacheRead": 3968,
+            "cacheWrite": 0,
+            "reasoning": 99,
+            "totalTokens": 26317,
+            "cost": {
+              "input": 0.022208,
+              "output": 0.000705,
+              "cacheRead": 0.00019840000000000002,
+              "cacheWrite": 0,
+              "total": 0.0231114
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 38,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2618
+          ]
+        },
+        {
+          "turn": 4,
+          "at": "2026-11-02T02:16:30.329Z",
+          "stopReason": "toolUse",
+          "usage": {
+            "input": 3432,
+            "output": 177,
+            "cacheRead": 25984,
+            "cacheWrite": 0,
+            "reasoning": 136,
+            "totalTokens": 29593,
+            "cost": {
+              "input": 0.0034319999999999997,
+              "output": 0.000885,
+              "cacheRead": 0.0012992000000000001,
+              "cacheWrite": 0,
+              "total": 0.0056162
+            }
+          },
+          "toolCalls": 1,
+          "textBlocks": [
+            {
+              "chars": 38,
+              "phase": "commentary"
+            }
+          ],
+          "thinkingSignatureLengths": [
+            2986
+          ]
+        }
+      ]
+    }
+  ]
+}
