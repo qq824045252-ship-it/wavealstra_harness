@@ -69,6 +69,7 @@ const GUI_TESTS = new Set([
   "test:gadget-task-desktop",
   // 真 Electron 窗口（隐藏 BrowserWindow / 真实 UI 交互）
   "test:memory-ui",
+  "test:memory-organization-desktop",
   "test:tray",
   "test:expert-ui",
   "test:project-create-folder-ui",

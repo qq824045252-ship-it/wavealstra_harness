@@ -59,7 +59,7 @@ const raw = (id: string, extra = {}) => ({
 });
 const atom = { id: "memory-a", kind: "procedure", title: "电容计算采用公共知识库串并联模型原理", content: "先核对模型和单位，再计算并验证结果。", status: "active", importance: 1, confidence: .98, explicit: true, sourceType: "user", tags: [], scopes: [{ scopeType: "workspace", scopeId: "ws", binding: "primary" }], evidence: [], relations: [], createdAt: 1790040000000, updatedAt: 1790040000000 };
 const candidate = (id: string, status: string) => ({ id, status, slug: id, title: status === "stale" ? "历史流程" : atom.title, description: atom.content, instructions: "# 电容计算\n1. 核对单位\n2. 核对连接结构\n3. 计算并验证", sourceMemoryIds: [atom.id], scopeType: "workspace", scopeId: "ws", distinctTaskCount: 1, completedTaskCount: 1, evidenceCount: 3, updatedAt: 1790040000000, installedSkillId: status === "materialized" ? "learned-capacitor" : undefined });
-const stats = { total: 1, l0Turns: 2, pendingTurns: 0, failedTurns: 0, activeScenarios: 0, activeCoreProfiles: 0, byScope: { global: 0, workspace: 1, project: 0, task: 0 }, byKind: { procedure: 1 }, byStatus: { active: 1 }, candidates: {}, skillCandidates: 0, skillRevisionCandidates: 0, skillInvocations: 0 };
+const stats = { total: 1, active: 1, l0Turns: 2, pendingTurns: 0, failedTurns: 0, activeScenarios: 0, activeCoreProfiles: 0, byScope: { global: 0, workspace: 1, project: 0, task: 0 }, byKind: { procedure: 1 }, byStatus: { active: 1 }, candidates: {}, skillCandidates: 0, skillRevisionCandidates: 0, skillInvocations: 0 };
 let turns = [raw("A"), raw("B", { taskTrashed: true })];
 let changed = new Set<() => void>();
 let api: any;
@@ -155,6 +155,26 @@ function projectionFixtures() {
   };
   api.memory.deleteProjectionRecords = async (request: any) => { requests.push(request); return remove(request); };
   return { data, requests, remove };
+}
+
+function organizationFixtures() {
+  fixtures();
+  const data: { run: any; starts: Array<string | undefined>; applied: number; undone: number } = { run: null, starts: [], applied: 0, undone: 0 };
+  const ready = () => ({ id: "organization-fixture", status: "ready", createdAt: Date.now(), updatedAt: Date.now(), total: 124, scanned: 124, skipped: 0, unchanged: 119,
+    completedBatches: 8, totalBatches: 8, beforeChars: 12600, afterChars: 8400, proposals: [
+      { id: "merge", action: "merge", reason: "三次对话都确认先完善示波器，再开发频谱仪，保留一个有效版本并汇集来源。", scopes: atom.scopes,
+        before: [{ ...atom, id: "first", kind: "decision", title: "优先完善示波器", content: "当前应优先完成示波器功能，再开始开发频谱仪。" }, { ...atom, id: "second", kind: "decision", title: "频谱仪开发顺序", content: "用户再次确认，先完善示波器，再开发频谱仪。" }],
+        after: [{ kind: "decision", title: "仪器开发顺序", content: "先完善示波器，再开发频谱仪。" }] },
+      { id: "rewrite", action: "rewrite", reason: "精简重复叙述，保留串并联模型与单位检查要求。", scopes: atom.scopes, before: [{ ...atom, content: "用户指出，未来在计算电容时，需要先仔细核对模型的串并联结构以及所有输入的单位，再根据确认的模型计算，并检查计算结果是否正确。" }], after: [{ kind: "procedure", title: atom.title, content: atom.content }] },
+      { id: "conflict", action: "conflict", reason: "两次记录的预算不同，现有来源未说明是否调整，保持原样等待确认。", scopes: [{ scopeType: "project", scopeId: "project-budget", binding: "owned" }], before: [{ id: "budget-a", kind: "constraint", title: "设备采购预算", content: "采购预算上限八万元。" }, { id: "budget-b", kind: "constraint", title: "项目预算", content: "采购预算上限十万元。" }], after: [] },
+    ] });
+  api.memory.organization = async () => data.run ? structuredClone(data.run) : null;
+  api.memory.startOrganization = async (resumeId?: string) => { data.starts.push(resumeId); data.run = { ...ready(), status: "scanning", scanned: 0, completedBatches: 0, proposals: [] }; return structuredClone(data.run); };
+  api.memory.pauseOrganization = async () => { data.run.status = "paused"; return structuredClone(data.run); };
+  api.memory.applyOrganization = async () => { data.applied++; data.run.status = "applied"; return structuredClone(data.run); };
+  api.memory.undoOrganization = async () => { data.undone++; data.run.status = "undone"; return structuredClone(data.run); };
+  api.memory.dismissOrganization = async () => { data.run.status = "dismissed"; data.run.proposals = []; return structuredClone(data.run); };
+  return { data, ready };
 }
 
 export async function run(): Promise<string[]> {
@@ -610,17 +630,50 @@ export async function run(): Promise<string[]> {
   check(host.textContent?.includes("尚无已学习技能的使用反馈"), "feedback remains accessible separately");
   results.push("learning queue covers pagination, search/scope/status/sort, continuous approval, bounded batch selection, cancel, busy locking, partial failures and section navigation");
   }
+  {
+    const organization = organizationFixtures(); mount(<MemoryTab />);
+    await until(() => buttons().some(b => b.textContent === "整理全部记忆" && !b.disabled), "organization entry");
+    check(host.querySelector<HTMLSelectElement>('[aria-label="筛选记忆状态"]')?.value === "active", "effective memories are the default view");
+    await filter("筛选记忆范围", "workspace");
+    await click("整理全部记忆");
+    check(organization.data.starts.length === 1 && organization.data.starts[0] === undefined, "list filtering never limits whole-store organization");
+    check(host.querySelector('progress[aria-label="记忆整理进度"]'), "progress is accessible");
+    await click("暂停"); await click("继续整理");
+    check(organization.data.starts[1] === "organization-fixture", "resume sends persisted run id");
+    organization.data.run = organization.ready(); changed.forEach(fn => fn());
+    await until(() => buttons().some(b => b.textContent === "应用 2 项变更"), "completed preview excludes conflict from apply count");
+    check(host.querySelectorAll(".memory-organization-proposal").length === 3, "full preview includes changes and conflicts");
+    const apply = api.memory.applyOrganization;
+    const delayed = deferred(); api.memory.applyOrganization = () => delayed.promise;
+    await click("应用 2 项变更");
+    check(buttons().find(b => b.textContent === "应用 2 项变更")?.disabled, "apply locks while IPC is pending");
+    delayed.reject(new Error("记忆已被修改，请重新整理"));
+    await until(() => host.querySelector('[role="alert"]')?.textContent?.includes("记忆已被修改"), "application errors are visible");
+    check(organization.data.applied === 0 && host.querySelectorAll(".memory-organization-proposal").length === 3, "failed application keeps preview");
+    api.memory.applyOrganization = apply; await click("应用 2 项变更"); await click("撤销整理");
+    check(organization.data.applied === 1 && organization.data.undone === 1, "apply and undo use the saved run");
+    organization.data.run = organization.ready(); mount(<MemoryTab />);
+    await until(() => buttons().some(b => b.textContent === "应用 2 项变更"), "navigation restores saved preview");
+    await click("放弃结果");
+    check(!host.querySelector(".memory-organization-proposal"), "discard removes preview without mutating facts");
+    results.push("whole-store organization ignores browse filters; progress, pause/resume, persisted preview, conflict exclusion, apply failure/busy locking, undo and discard");
+  }
   return results;
 }
 
-export async function preview(page: "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "skill-queue" | "skill-queue-modal" | "settings", dark = false): Promise<void> {
-  if (page === "skill-queue" || page === "skill-queue-modal") learningFixtures();
+export async function preview(page: "organization" | "organization-narrow" | "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "skill-queue" | "skill-queue-modal" | "settings", dark = false): Promise<void> {
+  if (page === "organization" || page === "organization-narrow") { const fixture = organizationFixtures(); fixture.data.run = fixture.ready(); }
+  else if (page === "skill-queue" || page === "skill-queue-modal") learningFixtures();
   else if (page === "scenarios" || page === "scene-delete" || page === "scenario-select" || page === "scenario-select-delete") projectionFixtures();
   else if (page === "skill-history" || page === "skill-history-delete") skillHistoryFixtures(); else fixtures();
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   mount(<MemoryTab />);
   await until(() => buttons().some((b) => b.textContent === "刷新" && !b.disabled), "preview load");
-  if (page === "memory" || page === "delete" || page === "select" || page === "select-delete") {
+  if (page === "organization" || page === "organization-narrow") {
+    await until(() => buttons().some(b => b.textContent === "查看 3 项变更与冲突"), "organization preview loaded");
+    await click("查看 3 项变更与冲突");
+    host.querySelector<HTMLDetailsElement>(".memory-organization-proposal")!.open = true;
+  } else if (page === "memory" || page === "delete" || page === "select" || page === "select-delete") {
     await click(/^对话来源/);
     await until(() => host.querySelectorAll(".memory-turn-row").length === 2, "preview L0");
     await click(/^对话 A/);

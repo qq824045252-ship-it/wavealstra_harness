@@ -562,6 +562,10 @@ export class AppDatabase {
 
   private ensureMemoryKernelTables(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_organization_runs (
+        id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        state_json TEXT NOT NULL CHECK (json_valid(state_json))
+      );
       CREATE TABLE IF NOT EXISTS memory_records (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK (kind IN ('identity','preference','fact','decision','constraint','risk','open_question','progress','procedure')),
@@ -580,6 +584,11 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_records_kind_updated ON memory_records(kind, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_records_hash ON memory_records(content_hash);
       CREATE INDEX IF NOT EXISTS idx_memory_records_source_task ON memory_records(source_task_id);
+      CREATE TRIGGER IF NOT EXISTS memory_organization_forget AFTER DELETE ON memory_records BEGIN
+        DELETE FROM memory_organization_runs WHERE EXISTS (
+          SELECT 1 FROM json_each(state_json, '$.sourceIds') WHERE value = OLD.id
+        );
+      END;
       CREATE TABLE IF NOT EXISTS memory_scopes (
         id TEXT PRIMARY KEY, memory_id TEXT NOT NULL,
         scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project','task')),

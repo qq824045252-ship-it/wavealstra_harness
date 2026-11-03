@@ -447,6 +447,12 @@ export interface PreloadApi {
     pairWindowState: () => Promise<RemotePairWindowDto | null>;
   };
   memory: {
+    organization: () => Promise<import("../shared/memory-organization").MemoryOrganizationRun | null>;
+    startOrganization: (resumeId?: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
+    pauseOrganization: (id: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
+    applyOrganization: (id: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
+    undoOrganization: (id: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
+    dismissOrganization: (id: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
     list: (request?: MemoryListRequest | number) => Promise<MemoryRecordDto[]>;
     turns: (request?: MemoryTurnListRequest) => Promise<MemoryTurnDto[]>;
     getTurn: (id: string) => Promise<MemoryTurnDto | undefined>;

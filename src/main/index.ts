@@ -194,6 +194,7 @@ import { MemoryGatewayController } from "./memory/MemoryGatewayController";
 import { ExternalCliMemoryBridge } from "./memory/ExternalCliMemoryBridge";
 import { ensureExternalCliMemoryAssets } from "./memory/ExternalCliMemoryAssets";
 import { MemoryGatewayIpc, type MemoryGatewayConfigureRequest, type MemoryGatewayCreateGrantRequest, type MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
+import { MemoryOrganizationIpc } from "../shared/memory-organization";
 import { MemoryIpc, type MemoryCreateRequest, type MemorySearchRequest, type MemoryScopeType, type MemoryUpdateRequest } from "../shared/memory-kernel";
 import { ProjectAttentionTracker } from "./project/ProjectAttention";
 import { ProjectCadence } from "./project/ProjectCadence";
@@ -2148,6 +2149,12 @@ function registerIpc(): void {
   });
 
   // Unified Memory Kernel IPC (single truth for Global/Workspace/Project/Task).
+  ipcMain.handle(MemoryOrganizationIpc.latest, () => agentService.kernelMemoryOrganization());
+  ipcMain.handle(MemoryOrganizationIpc.start, (_e, resumeId?: string) => agentService.startKernelMemoryOrganization(resumeId));
+  ipcMain.handle(MemoryOrganizationIpc.pause, (_e, id: string) => agentService.pauseKernelMemoryOrganization(id));
+  ipcMain.handle(MemoryOrganizationIpc.apply, (_e, id: string) => agentService.applyKernelMemoryOrganization(id));
+  ipcMain.handle(MemoryOrganizationIpc.undo, (_e, id: string) => agentService.undoKernelMemoryOrganization(id));
+  ipcMain.handle(MemoryOrganizationIpc.dismiss, (_e, id: string) => agentService.dismissKernelMemoryOrganization(id));
   ipcMain.handle(MemoryIpc.list, (_e, request?: import("../shared/memory-kernel").MemoryListRequest | number) => agentService.listKernelMemory(request));
   ipcMain.handle(MemoryIpc.turns, (_e, request?: import("../shared/memory-kernel").MemoryTurnListRequest) => agentService.listKernelMemoryTurns(request));
   ipcMain.handle(MemoryIpc.getTurn, (_e, id: string) => agentService.getKernelMemoryTurn(id));

@@ -17,6 +17,7 @@ import type {
 } from "@shared/memory-kernel";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import MemoryL0Explorer from "./MemoryL0Explorer";
+import MemoryOrganizationPanel from "./MemoryOrganizationPanel";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 import { useAppStore } from "@/store/appStore";
 
@@ -96,7 +97,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [scope, setScope] = useState("all");
   const [kind, setKind] = useState("all");
-  const [lifecycle, setLifecycle] = useState("all");
+  const [lifecycle, setLifecycle] = useState("active");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<MemoryRevisionDto[]>([]);
   const [busy, setBusy] = useState(false);
@@ -655,20 +656,27 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
   };
 
   return (
-    <section className="settings-section" style={{ marginTop: 14 }}>
+    <section className="settings-section memory-explorer" style={{ marginTop: 14 }}>
+      <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
+        scopeName={(s) => `${SCOPE_LABEL[s.scopeType]}${s.scopeId ? ` · ${scopeDisplayName(s)}` : ""}`} />
+      <div className="memory-overview" aria-label="记忆概览">
+        <div><strong>{stats?.active ?? 0}</strong><span>有效记忆</span></div>
+        <div><strong>{Math.max(0, (stats?.total ?? 0) - (stats?.active ?? 0))}</strong><span>历史记录</span></div>
+        <div><strong>{stats?.candidates?.["needs_review"] ?? review.length}</strong><span>待复核</span></div>
+      </div>
       <div className="settings-section-head">
         <div>
           <div className="settings-section-title">记忆内容与来源</div>
           <div className="settings-section-desc">
-            查看已记住的内容，追溯原始对话。场景与画像需要生成提案并经你批准后才会使用。
+            默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。
           </div>
         </div>
       </div>
       <div className="settings-section-card" style={{ padding: 12 }}>
         <div className="ext-subnav" role="tablist" aria-label="记忆层级" style={{ marginBottom: 10 }}>
           {([
-            ["l0", "对话来源", stats?.l0Turns ?? 0],
             ["l1", "记忆条目", stats?.total ?? records.length],
+            ["l0", "对话来源", stats?.l0Turns ?? 0],
             ["l2", "有效场景", stats?.scenarios ?? 0],
             ["l3", "有效画像", stats?.coreProfiles ?? 0],
           ] as const).map(([id, label, count]) => (
@@ -745,25 +753,16 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
         ) : null}
 
         <div style={{ display: layer === "l1" ? "block" : "none", marginBottom: 10 }}>
-          <div className="ext-subnav" role="tablist" aria-label="记忆范围" style={{ marginBottom: 8 }}>
-            {([
-              ["all", "全部", stats?.total ?? records.length],
-              ["global", "全局", stats?.byScope?.global ?? 0],
-              ["project", "项目", stats?.byScope?.project ?? 0],
-              ["workspace", "工作空间", stats?.byScope?.workspace ?? 0],
-              ["task", "任务级", stats?.byScope?.task ?? 0],
-            ] as const).map(([id, label, count]) => (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={scope === id}
-                className={`ext-subnav-btn ${scope === id ? "active" : ""}`}
-                onClick={() => setScope(id)}
-              >
-                {label} · {count}
-              </button>
-            ))}
+          <div className="memory-scope-filter">
+            <label htmlFor="memory-scope-filter">浏览范围</label>
+            <select id="memory-scope-filter" className="new-project-input" aria-label="筛选记忆范围" value={scope} onChange={(event) => setScope(event.target.value)}>
+              <option value="all">全部范围 · {stats?.total ?? records.length}</option>
+              <option value="global">全局 · {stats?.byScope?.global ?? 0}</option>
+              <option value="project">项目 · {stats?.byScope?.project ?? 0}</option>
+              <option value="workspace">工作空间 · {stats?.byScope?.workspace ?? 0}</option>
+              <option value="task">任务级 · {stats?.byScope?.task ?? 0}</option>
+            </select>
+            <span>仅筛选列表，AI 整理始终覆盖全部范围</span>
           </div>
           <div className="memory-filters">
             <input
@@ -785,7 +784,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
         </div>
 
         <div className="memory-split" style={{ display: layer === "l1" ? undefined : "none", minHeight: 220 }}>
-          <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--border-subtle, rgba(128,128,128,.2))", borderRadius: 8 }}>
+          <div className="memory-record-list">
             {records.length === 0 ? (
               <div className="memory-empty" style={{ padding: 14 }}>{filtering ? "暂无匹配记忆" : "暂无记忆"}</div>
             ) : records.map((item) => (
@@ -793,31 +792,24 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                 key={item.id}
                 type="button"
                 onClick={() => void select(item.id)}
-                style={{
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "9px 10px",
-                  border: 0,
-                  borderBottom: "1px solid var(--border-subtle, rgba(128,128,128,.14))",
-                  background: selectedId === item.id ? "var(--bg-hover, rgba(128,128,128,.12))" : "transparent",
-                  color: "inherit",
-                  cursor: "pointer",
-                }}
+                className={`memory-record-row ${selectedId === item.id ? "active" : ""}`}
+                aria-pressed={selectedId === item.id}
               >
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
                   <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</strong>
                   <span style={{ flex: 1 }} />
                   <span className="memory-source manual">{KIND_LABEL[item.kind] ?? item.kind}</span>
                 </div>
+                {item.content && <div className="memory-record-excerpt">{item.content}</div>}
                 <div className="settings-row-desc" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {item.scopes.map((s) => `${SCOPE_LABEL[s.scopeType] ?? s.scopeType}${s.scopeId ? "·" + scopeDisplayName(s) : ""}${s.binding === "promoted" ? "↑" : ""}`).join(" · ")} · {STATUS_LABEL[item.status] ?? item.status} · I{item.importance} · C{item.confidence.toFixed(2)} · {fmt(item.updatedAt)}
+                  {item.scopes.map((s) => `${SCOPE_LABEL[s.scopeType] ?? s.scopeType}${s.scopeId ? "·" + scopeDisplayName(s) : ""}${s.binding === "promoted" ? "↑" : ""}`).join(" · ")} · {STATUS_LABEL[item.status] ?? item.status} · {fmt(item.updatedAt)}
                 </div>
               </button>
             ))}
             {records.length >= 500 ? <div className="settings-row-desc" style={{ padding: "6px 10px" }}>结果已达 500 条上限，请用筛选缩小范围</div> : null}
           </div>
 
-          <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--border-subtle, rgba(128,128,128,.2))", borderRadius: 8, padding: 10 }}>
+          <div className="memory-record-detail">
             {!selected ? (
               <div className="memory-empty">选择一条记忆查看来源、证据与修改历史。</div>
             ) : (
@@ -880,7 +872,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                   <div>来源：{selected.sourceType}{selected.sourceTaskId ? ` · ${selected.sourceTaskId}` : ""}</div>
                   <div>召回：{selected.recallCount} 次 · 最近 {fmt(selected.lastRecalledAt)}</div>
                 </div>
-                <div style={{ marginTop: 10, fontWeight: 600 }}>证据 {selected.evidence.length}</div>
+                <details className="memory-detail-fold"><summary>证据 · {selected.evidence.length}</summary>
                 <div className="settings-row-desc">
                   {selected.evidence.length ? selected.evidence.map((ev) => (
                     <div key={ev.id} style={{ marginBottom: 4 }}>
@@ -897,13 +889,15 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                     </div>
                   )) : "暂无证据"}
                 </div>
-                <div style={{ marginTop: 10, fontWeight: 600 }}>关系 {selected.relations.length}</div>
+                </details>
+                <details className="memory-detail-fold"><summary>关联记忆 · {selected.relations.length}</summary>
                 <div className="settings-row-desc">
                   {selected.relations.length ? selected.relations.map((rel) => (
                     <div key={rel.id}>{rel.relation} · {rel.fromMemoryId === selected.id ? rel.toMemoryId : rel.fromMemoryId}</div>
                   )) : "暂无关系"}
                 </div>
-                <div style={{ marginTop: 10, fontWeight: 600 }}>修改历史 · {history.length}</div>
+                </details>
+                <details className="memory-detail-fold"><summary>修改历史 · {history.length}</summary>
                 <div className="settings-row-desc">
                   {history.length ? history.map((rev) => (
                     <div key={rev.id} style={{ marginBottom: 5 }}>
@@ -912,6 +906,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                     </div>
                   )) : "暂无修改记录"}
                 </div>
+                </details>
               </>
             )}
           </div>

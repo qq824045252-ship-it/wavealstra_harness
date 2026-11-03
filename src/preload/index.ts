@@ -76,6 +76,7 @@ import type {
   WorkspaceSharedContextPromoteRequest,
   WorkspaceSharedContextPromoteResult,
 } from "../shared/workspace-shared-context";
+import { MemoryOrganizationIpc, type MemoryOrganizationRun } from "../shared/memory-organization";
 import { MemoryIpc, type MemoryCandidateDto, type MemoryCoreProfileDto, type MemoryCreateRequest, type MemoryDismissedProjectionDto, type MemoryKernelStats, type MemoryListRequest, type MemoryProjectionProposalDto, type MemoryRecordDto, type MemoryRevisionDto, type MemoryScenarioDto, type MemoryScopeType, type MemorySearchHit, type MemorySearchRequest, type MemoryTurnDto, type MemoryTurnListRequest, type MemorySkillCandidateDto, type MemorySkillCandidateStatus, type MemorySkillEffectivenessDto, type MemorySkillEffectivenessSummaryDto, type MemorySkillFeedbackKind, type MemorySkillRevisionCandidateDto, type MemorySkillRevisionStatus, type MemoryUpdateRequest } from "../shared/memory-kernel";
 import { MemoryGatewayIpc, type MemoryGatewayAccessGrantDto, type MemoryGatewayConfigureRequest, type MemoryGatewayCreateGrantRequest, type MemoryGatewayIssuedGrantDto, type MemoryGatewayStatusDto, type MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
 import { RemoteAccessIpc, type RemoteConfigureRequest, type RemoteDeviceSummary, type RemotePairWindowDto, type RemotePairingSession, type RemoteStatus } from "../shared/remote-access";
@@ -735,6 +736,12 @@ const api = {
   },
 
   memory: {
+    organization: (): Promise<MemoryOrganizationRun | null> => ipcRenderer.invoke(MemoryOrganizationIpc.latest),
+    startOrganization: (resumeId?: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.start, resumeId),
+    pauseOrganization: (id: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.pause, id),
+    applyOrganization: (id: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.apply, id),
+    undoOrganization: (id: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.undo, id),
+    dismissOrganization: (id: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.dismiss, id),
     list: (request?: MemoryListRequest | number): Promise<MemoryRecordDto[]> => ipcRenderer.invoke(MemoryIpc.list, request),
     turns: (request?: MemoryTurnListRequest): Promise<MemoryTurnDto[]> => ipcRenderer.invoke(MemoryIpc.turns, request),
     getTurn: (id: string): Promise<MemoryTurnDto | undefined> => ipcRenderer.invoke(MemoryIpc.getTurn, id),

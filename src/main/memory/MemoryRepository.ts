@@ -124,6 +124,14 @@ export class MemoryRepository {
     return rows.map((row) => this.hydrate(row));
   }
 
+  /** Complete exact-scope enumeration for reconciliation; never a top-N sample. */
+  listScopeRecords(scopeType: MemoryScopeType, scopeId?: string, status: MemoryStatus = "active"): MemoryRecordDto[] {
+    const rows = this.conn.prepare(`SELECT m.* FROM memory_records m WHERE m.status=? AND EXISTS (
+      SELECT 1 FROM memory_scopes s WHERE s.memory_id=m.id AND s.scope_type=? AND COALESCE(s.scope_id,'')=?
+    ) ORDER BY m.id`).all(status, scopeType, scopeId ?? "") as MemoryRow[];
+    return rows.map(row => this.hydrate(row));
+  }
+
   listByScopes(input: {
     scopes: Array<{ scopeType: MemoryScopeType; scopeId?: string; distance?: number }>;
     statuses?: MemoryStatus[];
