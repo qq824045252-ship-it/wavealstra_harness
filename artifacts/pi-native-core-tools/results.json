@@ -1,8 +1,27 @@
 {
-  "at": "2026-10-29T01:27:02.121Z",
+  "at": "2026-11-03T00:40:54.552Z",
   "passed": true,
   "hostCalls": 0,
   "results": [
+    {
+      "name": "resumed task declares newly registered product tools and executes gadget_list without losing native selection",
+      "passed": true,
+      "details": {
+        "active": [
+          "gadget_create",
+          "gadget_list",
+          "gadget_read",
+          "gadget_open"
+        ],
+        "declared": [
+          "gadget_create",
+          "gadget_list",
+          "gadget_read",
+          "gadget_open"
+        ],
+        "lists": 1
+      }
+    },
     {
       "name": "restored session keeps native persisted active tools over settings.defaultTools (Pi 1.3.0 semantics)",
       "passed": true,
