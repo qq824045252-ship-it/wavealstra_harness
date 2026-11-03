@@ -23,6 +23,8 @@ import type { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
 import { createBuiltinSubagentExtension } from "../capabilities/builtin-subagent";
 import { createLibraryExtension } from "../library/library-extension";
+import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
+import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
 import { WorkGraphService } from "../workgraph/WorkGraphService";
 import { createWorkGraphAgentExtension } from "../workgraph/work-graph-agent-extension";
@@ -183,6 +185,11 @@ export class SessionExtensionAssembler {
           })]
         : []),
       ...this.projectFactories(input, resolveProjectId),
+      createWorkspaceNotesExtension({
+        service: new WorkspaceNotesService(this.deps.db),
+        resolveWorkspaceId,
+        getPermissionMode: input.getPermissionMode,
+      }),
       createLibraryExtension({
         service: this.deps.libraryWorkspace.library(),
         taskId: input.taskId,

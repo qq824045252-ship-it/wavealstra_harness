@@ -17,10 +17,11 @@ export class WorkspaceNotesService {
     if (typeof request.content !== "string" || request.content.length > WORKSPACE_NOTE_MAX_CHARS) {
       throw new Error(`便签最多支持 ${WORKSPACE_NOTE_MAX_CHARS} 个字符`);
     }
+    if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) throw new Error("便签版本无效，请先读取最新版本");
     return this.db.connection.transaction(() => {
       const current = this.read(request.workspaceId);
       if (this.db.getSpace(request.workspaceId)?.effectiveArchived) throw new Error("已归档空间不能修改便签");
-      if (current.revision !== request.expectedRevision) throw new Error("便签已在其他窗口更新，请重新加载后合并草稿");
+      if (current.revision !== request.expectedRevision) throw new Error("便签已在其他窗口或任务中更新，请重新加载后合并草稿");
       const next = { workspaceId: request.workspaceId, content: request.content, revision: current.revision + 1, updatedAt: Date.now() };
       this.db.connection.prepare(`INSERT INTO workspace_notes (workspace_id, content, revision, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(workspace_id) DO UPDATE SET content=excluded.content, revision=excluded.revision, updated_at=excluded.updated_at`)

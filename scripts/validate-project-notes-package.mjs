@@ -97,6 +97,8 @@ for (const phase of ['save', 'reopen']) {
     }
     await renderer(`(()=>{[...document.querySelectorAll('button')].find(e=>e.textContent==='预览').click()})()`);
     await waitFor(`document.querySelector('.workspace-notes-preview strong')?.textContent==='任务可共同维护'`);
+    // capturePage can observe the previous compositor frame immediately after a React update.
+    await pause(300);
     const identity = await evaluate(`(async()=>{const req=process.mainModule.require.bind(process.mainModule);const {app}=req('electron');const w=globalThis.noteTestWindow;const image=await w.capturePage();req('node:fs').writeFileSync(${JSON.stringify(path.join(output, phase + '-packaged-project-notes.png'))},image.toPNG());return {version:app.getVersion(),packaged:app.isPackaged,userData:app.getPath('userData'),pid:process.pid}})()`);
     assert(identity.packaged && identity.version === expected);
     reports.push({phase, identity});

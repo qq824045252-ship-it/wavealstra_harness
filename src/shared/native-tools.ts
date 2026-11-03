@@ -63,6 +63,8 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "conversation_goal_create",
   "conversation_goal_update",
   "conversation_goal_propose_complete",
+  "workspace_notes_read",
+  "workspace_notes_save",
   // Library / Memory
   "library_list",
   "library_search",
@@ -141,6 +143,7 @@ export const MUTATING_BUILTIN_TOOLS = [
   "text_to_speech",
   "skill_authoring_create",
   "project_notes_save",
+  "workspace_notes_save",
 ] as const;
 
 /** readonly 时补上不在 pi 默认 active 集里的只读内置工具 */
