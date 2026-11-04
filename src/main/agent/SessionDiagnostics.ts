@@ -67,7 +67,7 @@ export function probeSkillDependency(id: string, cwd: string, activeTools: strin
       execFileSync("officecli", ["--version"], { cwd, env: process.env, timeout: 2500, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"] });
       return { state: "passed", reason: "目标应用进程环境 officecli --version 成功；不代表文件试运行成功", checkedAt };
     } catch {
-      return { state: "failed", reason: "目标应用环境 officecli --version 失败；参见已安装 officecli/SKILL.md 的 Install，安装后重启终端/应用；未自动安装", checkedAt };
+      return { state: "failed", reason: "内置 officecli --version 失败；请检查安装包完整性或重新安装 MyBuddy", checkedAt };
     }
   }
   if (id === "meeting-transcribe" || id === "npu-ocr") {

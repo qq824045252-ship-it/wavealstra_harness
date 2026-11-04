@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.90",
+  "version": "0.1.91",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -400,7 +400,10 @@
     "test:unified-media-adapters": "esbuild scripts/unified-media-adapters-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/unified-media-adapters-test.mjs && node scripts/test-guard.mjs out/tests/unified-media-adapters-test.mjs",
     "test:media-capabilities-ui": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-ui.js && electron scripts/media-capabilities-ui-test.cjs",
     "test:media-capability-extension": "esbuild scripts/media-capability-extension-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/media-capability-extension-test.mjs && node scripts/test-guard.mjs out/tests/media-capability-extension-test.mjs",
-    "test:media-capabilities-dom": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-dom.js && node scripts/media-capabilities-dom-test.cjs"
+    "test:media-capabilities-dom": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-dom.js && node scripts/media-capabilities-dom-test.cjs",
+    "prepare:officecli": "node scripts/prepare-officecli.cjs",
+    "test:officecli": "esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
+    "validate:packaged-officecli": "node scripts/validate-packaged-officecli.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
@@ -494,6 +497,14 @@
       {
         "from": "scripts/windows-ocr.ps1",
         "to": "windows-ocr.ps1"
+      },
+      {
+        "to": "builtin-skills/officecli",
+        "from": "scripts/skill-governance/payload/officecli"
+      },
+      {
+        "to": "magpie-agent-mybuddy",
+        "from": "integrations/magpie-agent-mybuddy"
       }
     ],
     "files": [
@@ -544,6 +555,12 @@
             "x64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "to": "officecli",
+          "from": "vendor/officecli/win32-x64"
+        }
       ]
     },
     "nsis": {
@@ -562,8 +579,15 @@
             "x64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "to": "officecli",
+          "from": "vendor/officecli/linux-x64"
+        }
       ]
-    }
+    },
+    "beforePack": "scripts/before-pack.cjs"
   },
   "optionalDependencies": {
     "@agent-sh/computer-use-linux": "0.7.27",

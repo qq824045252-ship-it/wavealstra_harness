@@ -7,22 +7,17 @@ description: "Read, inspect and precisely modify existing DOCX, XLSX and PPTX fi
 
 AI-friendly CLI for .docx, .xlsx, .pptx. Single binary, no dependencies, no Office installation needed.
 
-## Install
+## MyBuddy runtime
 
-If `officecli` is not installed:
-
-```bash
-# macOS / Linux
-curl -fsSL https://d.officecli.ai/install.sh | bash
-
-```
-
-Windows installation only, through an explicit PowerShell backend:
-```powershell
-irm https://d.officecli.ai/install.ps1 | iex
-```
-
-Verify with `officecli --version`. If still not found after install, open a new terminal.
+MyBuddy bundles a pinned, SHA-256 verified OfficeCLI binary for Windows/Linux x64.
+Run `officecli --version` using the task's shell/execute_code tools; its directory is
+already on the task PATH, including child agents. No download, global install,
+Office installation, or administrator access is required. If the command fails,
+report the error and repair/reinstall MyBuddy; do not run remote install scripts.
+The absolute bundled executable is also available as `MYBUDDY_OFFICECLI`.
+Keep `OFFICECLI_NO_AUTO_RESIDENT=1` so task commands save files before returning.
+Use paths inside the task workspace or explicitly authorized project materials.
+After edits, read back the affected content and run `officecli validate <file>`.
 
 ---
 

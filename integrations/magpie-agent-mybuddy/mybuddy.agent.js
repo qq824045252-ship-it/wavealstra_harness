@@ -92,6 +92,7 @@ export const agent = {
   // MyBuddy installs no CLI: its folder is what says it is here.
   dir: "~/.mybuddy",
   ua: ["MyBuddy"],
+  library: { skills: "~/.mybuddy/plugins/skills" },
   notice: "Pick magpie's models in MyBuddy's own model picker; MyBuddy reloads models.json without a restart.",
 };
 

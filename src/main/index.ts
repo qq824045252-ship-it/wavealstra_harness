@@ -1,5 +1,7 @@
 import "./platform/credentials";
 import "./agent-environment";
+import "./officecli-environment";
+import { ensureOfficeCliSkill } from "./skills/OfficeCliSkill";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { ProjectNotesService } from "./project/ProjectNotesService";
 import { WorkspaceNotesIpc } from "../shared/workspace-notes";
@@ -2583,6 +2585,12 @@ app.whenReady().then(async () => {
 
   getMyBuddyDir();
   getPluginStorage();
+  try {
+    const source = app.isPackaged
+      ? join(process.resourcesPath, "builtin-skills", "officecli")
+      : join(app.getAppPath(), "scripts", "skill-governance", "payload", "officecli");
+    console.log(`[OfficeCLI] skill=${ensureOfficeCliSkill(source, join(getPluginStorage().root, "skills"))}`);
+  } catch (error) { console.error("[OfficeCLI] bundled skill unavailable", error); }
   try {
     const assets = ensureExternalCliMemoryAssets();
     if (assets.skill === "created" || assets.cli.created.length > 0 || assets.cli.updated.length > 0) {

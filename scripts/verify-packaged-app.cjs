@@ -20,6 +20,7 @@
 const cp = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { verifyOfficeCli } = require("./verify-officecli.cjs");
 
 const REQUIRED_ASAR_ENTRIES = [
   "out/main/index.js",
@@ -168,6 +169,9 @@ function verifyPackagedApp(appDir, options = {}) {
 
   const targetPlatform = options.platform ?? platformFromAppDir(appDir);
   facts.platform = targetPlatform;
+  const office = verifyOfficeCli(resources, targetPlatform);
+  errors.push(...office.errors);
+  Object.assign(facts, office.facts);
   const exe = findPackagedExecutable(appDir, targetPlatform);
   facts.executable = exe ?? null;
   if (!exe) {

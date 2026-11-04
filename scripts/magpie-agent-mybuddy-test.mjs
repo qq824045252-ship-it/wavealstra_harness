@@ -15,6 +15,7 @@ assert.equal(agent.config, "~/.mybuddy/models.json");
 assert.equal(agent.format, "json");
 assert.equal(agent.dir, "~/.mybuddy");
 assert.deepEqual(agent.ua, ["MyBuddy"]);
+assert.deepEqual(agent.library, { skills: "~/.mybuddy/plugins/skills" });
 assert.equal(agent.model, undefined);
 assert.equal(typeof connect, "function");
 pass("descriptor is a connect-only agent on ~/.mybuddy/models.json");
