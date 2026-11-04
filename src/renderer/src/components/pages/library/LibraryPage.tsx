@@ -26,6 +26,7 @@ export default function LibraryPage(): React.JSX.Element {
     void (async () => {
       try {
         if (!window.api?.library) throw new Error("资料服务不可用");
+        if (!nav || (nav.view !== "item" && nav.view !== "space")) throw new Error("长期资料请从项目或工作空间的「资料」页打开");
         const snapshot = await window.api.library.snapshot();
         const item = nav?.view === "item" ? snapshot.items.find((entry) => entry.id === nav.itemId) : undefined;
         if (nav?.view === "item" && !item) throw new Error("这份资料已不存在");
@@ -33,8 +34,9 @@ export default function LibraryPage(): React.JSX.Element {
         const space = snapshot.spaces.find((entry) => entry.id === spaceId);
         if (spaceId && !space) throw new Error("资料位置已不存在");
         const scope = space ? libraryOwnerOf(space) : { type: "personal" as const };
-        let name = "个人资料";
-        let readOnly = false;
+        // 兼容旧个人资料深链，但不恢复单独的个人资料管理入口与写入能力。
+        let name = "历史资料（只读）";
+        let readOnly = scope.type === "personal";
         if (scope.type === "project") {
           const project = await window.api.db.getProject(scope.projectId);
           if (!project) throw new Error("资料所属项目已不存在");
