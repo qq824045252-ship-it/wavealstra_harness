@@ -5,8 +5,6 @@ import { FileBadge } from "@/components/common/FileBadge";
 import { IconSearch } from "@/components/common/icons";
 import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
 
-const EMPTY_CHANGES: FileChange[] = [];
-
 export default function ChangesView({ floating = false }: { floating?: boolean }): React.JSX.Element {
   const artifacts = useActiveTaskArtifacts();
   const currentTask = useAppStore((s) => s.tasks.find((task) => task.id === s.activeTaskId));
@@ -16,6 +14,7 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
     [rawChanges, artifacts, currentTask?.messages],
   );
   const openArtifact = useAppStore((s) => s.openArtifact);
+  const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const [filter, setFilter] = useState("");
 
   const totals = useMemo(() => {
@@ -31,14 +30,23 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return changes;
-    return changes.filter((c) => c.name.toLowerCase().includes(q));
+    return changes.filter(
+      (c) => c.name.toLowerCase().includes(q) || (c.path && c.path.toLowerCase().includes(q)),
+    );
   }, [changes, filter]);
 
-  const openFile = (name: string): void => {
+  const openFile = (item: FileChange): void => {
     const artifact = artifacts.find(
-      (a) => a.name === name || a.name.toLowerCase() === name.toLowerCase(),
+      (a) =>
+        a.name === item.name ||
+        a.name.toLowerCase() === item.name.toLowerCase() ||
+        (item.path && (a.path === item.path || a.path?.toLowerCase() === item.path.toLowerCase())),
     );
-    if (artifact) openArtifact(artifact.id);
+    if (artifact) {
+      openArtifact(artifact.id);
+    } else {
+      void openWorkspaceFile(item.path || item.name, item.name);
+    }
   };
 
   const listNode = (
@@ -48,8 +56,8 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
           key={item.id}
           type="button"
           className="extension-panel-item-btn changes-file-row"
-          onClick={() => openFile(item.name)}
-          title={`${item.name}\n+${item.additions} -${item.deletions}`}
+          onClick={() => openFile(item)}
+          title={`${item.path || item.name}\n+${item.additions} -${item.deletions}`}
         >
           <FileBadge name={item.name} size={14} muted />
           <span className="extension-artifact-name">{item.name}</span>

@@ -5994,6 +5994,7 @@ export class AgentService {
         artifactId = descriptor?.id ?? null;
       }
       if (!artifactId) return; // register 失败：created/updated 事件由 Domain 负责，不阻塞消息
+      const isCodeOrText = ["code", "markdown", "html"].includes(preview.kind);
       this.emitPatch({
         type: "artifact_ref",
         taskId,
@@ -6001,13 +6002,14 @@ export class AgentService {
         artifactId,
         name: preview.name,
         kind: preview.kind,
-        change: {
-          name: preview.name,
-          additions: ["code", "markdown", "html"].includes(preview.kind)
-            ? preview.content.split("\n").length
-            : 1,
-          deletions: 0,
-        },
+        change: isCodeOrText
+          ? {
+              name: preview.name,
+              path: filePath,
+              additions: preview.content ? preview.content.split("\n").length : 1,
+              deletions: 0,
+            }
+          : undefined,
       });
     } catch (error) {
       console.warn("[AgentService] artifact preview failed", filePath, error);

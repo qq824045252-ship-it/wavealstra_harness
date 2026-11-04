@@ -1,6 +1,11 @@
 import { useMemo } from "react";
 import type { PanelMode } from "@/store/appStore";
-import { useActiveTerminalTabs, useAppStore, useVisibleTaskArtifacts } from "@/store/appStore";
+import {
+  useActiveTerminalTabs,
+  useAppStore,
+  useVisibleTaskArtifacts,
+  useActiveTaskArtifacts,
+} from "@/store/appStore";
 import type { Artifact } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
@@ -20,6 +25,7 @@ import {
 } from "@/components/common/icons";
 import { hasActiveExecutionMessages } from "@/utils/taskFilters";
 import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
+import TerminalTabsBar from "./TerminalTabsBar";
 
 interface Props {
   tabs: Artifact[];
@@ -50,20 +56,18 @@ export default function ExtensionTopBar({
   const showBrowser = useAppStore((s) => s.showBrowser);
   const showChanges = useAppStore((s) => s.showChanges);
 
-  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs();
-  const createTerminalTab = useAppStore((s) => s.createTerminalTab);
-  const closeTerminalTab = useAppStore((s) => s.closeTerminalTab);
-  const setActiveTerminalTabId = useAppStore((s) => s.setActiveTerminalTabId);
+  const { tabs: terminalTabs } = useActiveTerminalTabs();
 
-  const artifacts = useVisibleTaskArtifacts();
-  const artifactsCount = artifacts.length;
+  const visibleArtifacts = useVisibleTaskArtifacts();
+  const artifactsCount = visibleArtifacts.length;
+  const allArtifacts = useActiveTaskArtifacts();
   const workspaceFilesCount = useAppStore((s) => s.workspaceFilesCount);
   const gadgetsCount = useAppStore((s) => s.gadgetsCount);
 
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const fileChangesCount = useMemo(() => {
-    return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
-  }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
+    return resolveTaskFileChanges(currentTask?.fileChanges, allArtifacts, currentTask?.messages).length;
+  }, [currentTask?.fileChanges, allArtifacts, currentTask?.messages]);
 
   // 判定当前任务是否在执行（主 agent 或 subagent 运行中）
   const isRunning = useMemo(() => {
@@ -243,46 +247,7 @@ export default function ExtensionTopBar({
         </div>
       )}
       {/* 第二行：终端多标签横向 Tag 栏（点击加号才打开终端，支持多终端切换与管理） */}
-      {panelMode === "terminal" && (
-        <div className="extension-terminal-subbar">
-          <div className="extension-terminal-tabs">
-            {terminalTabs.map((tab) => (
-              <div
-                key={tab.id}
-                role="button"
-                tabIndex={0}
-                className={`extension-terminal-tab ${activeTerminalTabId === tab.id ? "active" : ""}`}
-                onClick={() => setActiveTerminalTabId(tab.id)}
-                onKeyDown={(e) => e.key === "Enter" && setActiveTerminalTabId(tab.id)}
-                title={tab.title}
-              >
-                <IconTerminal size={12} className="terminal-tab-icon" />
-                <span className="terminal-tab-title">{tab.title}</span>
-                <button
-                  type="button"
-                  className="terminal-tab-close"
-                  title="关闭终端"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTerminalTab(tab.id);
-                  }}
-                >
-                  <IconX size={11} />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="extension-tab-add-btn"
-              title="新建终端"
-              onClick={createTerminalTab}
-            >
-              <IconPlus size={12} />
-              <span>新建终端</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {panelMode === "terminal" && <TerminalTabsBar />}
     </div>
   );
 }

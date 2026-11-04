@@ -187,6 +187,7 @@ export interface ChatMessage {
 export interface FileChange {
   id: string;
   name: string;
+  path?: string;
   additions: number;
   deletions: number;
 }

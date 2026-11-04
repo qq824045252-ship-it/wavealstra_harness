@@ -3171,6 +3171,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 {
                   id: `fc-${patch.change.name}-${Date.now()}`,
                   name: patch.change.name,
+                  path: patch.change.path,
                   additions: patch.change.additions,
                   deletions: patch.change.deletions,
                 },

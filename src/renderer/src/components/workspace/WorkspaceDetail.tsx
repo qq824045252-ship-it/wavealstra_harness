@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceFileNodeDto } from "@shared/agent-ipc";
 import type { GadgetListItem } from "@shared/gadget-types";
-import { useAppStore } from "@/store/appStore";
+import { useActiveTerminalTabs, useAppStore } from "@/store/appStore";
 import WorkspaceSharedContextSection from "./WorkspaceSharedContextSection";
 import WorkspaceMemorySection from "./WorkspaceMemorySection";
 import WorkspaceLibraryBindingsSection from "./WorkspaceLibraryBindingsSection";
@@ -9,6 +9,7 @@ import WorkspaceNotesSection from "./WorkspaceNotesSection";
 import WorkspaceFilesStandalone from "./WorkspaceFilesStandalone";
 import WorkspaceGadgetsSection from "./WorkspaceGadgetsSection";
 import TerminalView from "@/components/artifact/TerminalView";
+import TerminalTabsBar from "@/components/artifact/TerminalTabsBar";
 import BlueprintCaptureDialog from "@/components/blueprint/BlueprintCaptureDialog";
 import MoveWorkspaceDialog from "./MoveWorkspaceDialog";
 import { IconFolder, IconFolderOpen, IconChevronRight } from "@/components/common/icons";
@@ -47,6 +48,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const [moveOpen, setMoveOpen] = useState(false);
   const [fileCount, setFileCount] = useState<number | null>(null);
   const [gadgets, setGadgets] = useState<GadgetListItem[]>([]);
+  const { tabs: terminalTabs } = useActiveTerminalTabs();
   const [contextCounts, setContextCounts] = useState({ local: 0, inherited: 0 });
   const [libraryCounts, setLibraryCounts] = useState({ direct: 0, inherited: 0 });
   const [memoryCounts, setMemoryCounts] = useState({ direct: 0, inherited: 0 });
@@ -127,7 +129,26 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       </div>
     </header>
 
-    <nav className="workspace-detail-tabs">{(Object.keys(TAB_LABELS) as Tab[]).map((key) => <button key={key} className={`workspace-detail-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>{TAB_LABELS[key]}</button>)}</nav>
+    <nav className="workspace-detail-tabs">
+      {(Object.keys(TAB_LABELS) as Tab[]).map((key) => {
+        const isTerminal = key === "terminal";
+        const terminalCount = isTerminal ? terminalTabs.length : 0;
+        return (
+          <button
+            key={key}
+            className={`workspace-detail-tab ${tab === key ? "active" : ""}`}
+            onClick={() => setTab(key)}
+          >
+            <span>{TAB_LABELS[key]}</span>
+            {isTerminal && terminalCount > 0 && (
+              <span className="workspace-tab-count-badge">
+                {terminalCount > 99 ? "99+" : terminalCount}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </nav>
     <div className={`workspace-detail-body${tab === "terminal" ? " workspace-detail-body--terminal" : ""}`}>
       {tab === "overview" && <div className="workspace-overview">
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>当前工作</h2><span>{spaceTasks.length}</span></div>{shownTasks.length ? <div className="workspace-overview-flat-list">{shownTasks.map((task) => <button key={task.id} className="workspace-overview-task-row" onClick={() => setActiveTask(task.id)}><span className={`ws-task-dot ${task.status === "in_progress" ? "on" : ""}`} /><span className="ws-task-name">{task.title || "未命名任务"}</span><span className="ws-task-time">{relativeTimeLabel(task.updatedAt)}</span></button>)}</div> : <div className="workspace-overview-empty"><strong>还没有任务</strong><span>从这个工作空间创建第一项任务。</span><button className="btn btn--primary" onClick={() => newTask(space.id)}>新建任务</button></div>}</section>
@@ -142,7 +163,12 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       {tab === "library" && <WorkspaceLibraryBindingsSection key={space.id} currentSpaceId={space.id} />}
       {tab === "files" && <WorkspaceFilesStandalone spaceId={space.id} />}
       {tab === "gadgets" && <WorkspaceGadgetsSection workspaceId={space.id} />}
-      {tab === "terminal" && <TerminalView />}
+      {tab === "terminal" && (
+        <div className="workspace-terminal-pane">
+          <TerminalTabsBar />
+          <TerminalView />
+        </div>
+      )}
     </div>
     {renameOpen && <div className="workspace-rename-overlay"><div className="workspace-rename-card"><div className="workspace-rename-title">重命名工作空间</div><input className="workspace-rename-input" value={renameVal} onChange={(event) => { setRenameVal(event.target.value); setRenameErr(null); }} autoFocus />{renameErr && <div className="workspace-rename-error">{renameErr}</div>}<div className="workspace-rename-actions"><button className="btn" onClick={() => setRenameOpen(false)}>取消</button><button className="btn btn--primary" onClick={() => void handleRename()}>保存</button></div></div></div>}
     {captureOpen && <BlueprintCaptureDialog workspaceId={space.id} workspaceName={space.name} onClose={() => setCaptureOpen(false)} onSaved={() => setCaptureOpen(false)} />}

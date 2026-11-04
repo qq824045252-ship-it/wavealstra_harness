@@ -1,19 +1,190 @@
 import type { Artifact, ChatMessage, FileChange } from "@/types";
 
-function extractFilenameFromToolCall(
+/** 非代码/非文本文件后缀黑名单（绝不能作为代码变更展示） */
+const NON_CODE_EXTENSIONS = new Set([
+  // 图片
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "tiff", "tif",
+  // 媒体
+  "mp3", "wav", "ogg", "flac", "aac", "mp4", "webm", "avi", "mov", "mkv",
+  // 压缩包 / 二进制
+  "zip", "tar", "gz", "7z", "rar", "bz2", "xz", "exe", "dll", "so", "dylib", "bin",
+  // 文档（二进制格式）
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  // 数据库 / 缓存
+  "db", "sqlite", "sqlite3", "pyc", "class", "lock",
+]);
+
+/** 常见已知代码/文本文件扩展名 */
+const CODE_EXTENSIONS = new Set([
+  "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts",
+  "html", "htm", "css", "scss", "sass", "less",
+  "json", "json5", "jsonc", "yaml", "yml", "toml", "xml",
+  "py", "pyw", "java", "c", "cpp", "cc", "cxx", "h", "hpp", "hh", "hxx",
+  "cs", "go", "rs", "rb", "php", "sh", "bash", "zsh", "ps1", "bat", "cmd",
+  "sql", "r", "swift", "kt", "kts", "dart", "lua", "vim", "dockerfile",
+  "md", "markdown", "txt", "env", "gitignore", "properties", "ini", "conf",
+]);
+
+/** 常见已知无扩展名代码/配置文件名 */
+const CODE_FILENAMES = new Set([
+  "dockerfile", "makefile", "cmakelists.txt", "gemfile", "procfile",
+  "jenkinsfile", "license", "readme", ".gitignore", ".env", ".eslintrc",
+]);
+
+export function isCodeOrTextFile(filename: string): boolean {
+  if (!filename) return false;
+  const lower = filename.trim().toLowerCase();
+  const base = lower.replaceAll("\\", "/").split("/").pop() || lower;
+  if (CODE_FILENAMES.has(base)) return true;
+
+  const parts = base.split(".");
+  if (parts.length < 2) return false;
+  const ext = parts.pop()!;
+  if (NON_CODE_EXTENSIONS.has(ext)) return false;
+  if (CODE_EXTENSIONS.has(ext)) return true;
+  // 兜底：如果是 1~8 字符的字母数字后缀，且非黑名单，判定为文本/代码
+  return /^[a-z0-9]{1,8}$/.test(ext);
+}
+
+/** 允许作为写代码/文件的工具名 */
+const FILE_WRITE_TOOLS = new Set([
+  "write",
+  "write_file",
+  "create_file",
+  "put_file",
+  "save_file",
+  "edit",
+  "edit_file",
+  "modify_file",
+  "apply_diff",
+  "patch",
+  "str_replace_editor",
+]);
+
+export function isFileWriteTool(toolName?: string): boolean {
+  if (!toolName) return false;
+  const lower = toolName.toLowerCase().trim();
+  // 显式排除常见非文件写工具（如 gadget 操作、内存操作、执行环境、只读工具等）
+  if (
+    lower.startsWith("gadget_") ||
+    lower.startsWith("memory_") ||
+    lower.startsWith("cron_") ||
+    lower.startsWith("project_") ||
+    lower.startsWith("workspace_") ||
+    lower.startsWith("search_") ||
+    lower === "codemode" ||
+    lower === "bash" ||
+    lower === "terminal" ||
+    lower === "exec" ||
+    lower === "run_command" ||
+    lower === "read" ||
+    lower === "read_file" ||
+    lower === "cat" ||
+    lower === "view" ||
+    lower === "fetch" ||
+    lower === "web_search" ||
+    lower === "consult" ||
+    lower === "multi_model_consult" ||
+    lower === "subagent"
+  ) {
+    return false;
+  }
+  return FILE_WRITE_TOOLS.has(lower) || lower.endsWith("_write") || lower.endsWith("_edit");
+}
+
+interface ExtractedToolChange {
+  name: string;
+  path?: string;
+  additions: number;
+  deletions: number;
+}
+
+export function extractChangeFromToolCall(
   tool: string,
   summary?: string,
   detail?: string,
   targetPath?: string,
-): string | null {
-  if (targetPath) {
-    const parts = targetPath.replaceAll("\\", "/").split("/");
-    return parts[parts.length - 1] || null;
+): ExtractedToolChange | null {
+  // 1. 严格检查工具类型：不是写文件工具直接返回 null
+  if (!isFileWriteTool(tool)) {
+    return null;
   }
-  const text = `${summary ?? ""} ${detail ?? ""}`;
-  // 匹配常见文件名 pattern
-  const m = text.match(/([\w.-]+\.(?:go|ts|tsx|js|jsx|json|md|py|html|css|rs|c|cpp|h|yml|yaml|sql|sh))/i);
-  return m ? m[1] : null;
+
+  let filePath: string | null = null;
+  let additions = 1;
+  let deletions = 0;
+
+  // 2. 优先从 targetPath 获取
+  if (targetPath && typeof targetPath === "string" && targetPath.trim()) {
+    filePath = targetPath.trim();
+  }
+
+  // 3. 尝试解析 detail JSON 参数
+  let args: Record<string, unknown> | null = null;
+  if (detail && typeof detail === "string") {
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed && typeof parsed === "object") {
+        args = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // 容错：detail 不是标准 JSON
+    }
+  }
+
+  if (args) {
+    // 从参数提取路径字段
+    if (!filePath) {
+      const candidate = args.path || args.filePath || args.targetPath || args.file || args.filename;
+      if (typeof candidate === "string" && candidate.trim()) {
+        filePath = candidate.trim();
+      }
+    }
+
+    // 计算增删行数
+    if (typeof args.content === "string") {
+      additions = args.content.split("\n").length;
+      deletions = 0;
+    } else if (typeof args.replacement === "string" || typeof args.target === "string") {
+      additions = typeof args.replacement === "string" ? args.replacement.split("\n").length : 0;
+      deletions = typeof args.target === "string" ? args.target.split("\n").length : 0;
+    } else if (typeof args.diff === "string" || typeof args.patch === "string") {
+      const diffText = (args.diff || args.patch) as string;
+      const lines = diffText.split("\n");
+      let add = 0;
+      let del = 0;
+      for (const line of lines) {
+        if (line.startsWith("+") && !line.startsWith("+++")) add++;
+        else if (line.startsWith("-") && !line.startsWith("---")) del++;
+      }
+      additions = add || 1;
+      deletions = del;
+    }
+  }
+
+  // 4. 若仍未提取出路径，但 summary 是短路径字符串（不包含空格换行且带后缀）
+  if (!filePath && summary && typeof summary === "string") {
+    const s = summary.trim().replace(/^(?:write|edit|create|modify|patch)\s+/i, "");
+    if (s && !/\s/.test(s) && s.length < 260 && s.includes(".")) {
+      filePath = s;
+    }
+  }
+
+  if (!filePath) return null;
+
+  // 标准化路径斜杠
+  const normPath = filePath.replaceAll("\\", "/");
+  const name = normPath.split("/").pop();
+  if (!name || !isCodeOrTextFile(name)) {
+    return null;
+  }
+
+  return {
+    name,
+    path: normPath,
+    additions: Math.max(0, additions),
+    deletions: Math.max(0, deletions),
+  };
 }
 
 export function resolveTaskFileChanges(
@@ -21,51 +192,85 @@ export function resolveTaskFileChanges(
   artifacts: Artifact[],
   messages?: ChatMessage[],
 ): FileChange[] {
-  const result: FileChange[] = [];
-  const seen = new Set<string>();
+  const result: Map<string, FileChange> = new Map();
 
-  // 1. 优先使用已记录的 rawChanges
+  const addChange = (c: { id: string; name: string; path?: string; additions: number; deletions: number }): void => {
+    if (!isCodeOrTextFile(c.name)) return;
+    const key = (c.path || c.name).toLowerCase();
+    const existing = result.get(key);
+    if (existing) {
+      existing.additions += c.additions;
+      existing.deletions += c.deletions;
+      if (!existing.path && c.path) {
+        existing.path = c.path;
+      }
+    } else {
+      result.set(key, {
+        id: c.id,
+        name: c.name,
+        path: c.path,
+        additions: c.additions,
+        deletions: c.deletions,
+      });
+    }
+  };
+
+  // 1. 已记录的 rawChanges（必须是代码/文本文件）
   for (const c of rawChanges ?? []) {
-    const key = c.name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(c);
+    if (isCodeOrTextFile(c.name)) {
+      addChange({
+        id: c.id,
+        name: c.name,
+        path: c.path,
+        additions: c.additions,
+        deletions: c.deletions,
+      });
     }
   }
 
-  // 2. 将当前任务的产物文件（代码/文本）作为可靠兜底补齐
+  // 2. 将当前任务的代码/文本类产物作为可靠补齐
   for (const a of artifacts) {
-    const key = a.name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
+    if (
+      a.kind === "image" ||
+      a.kind === "audio" ||
+      a.kind === "video" ||
+      a.kind === "pdf"
+    ) {
+      continue;
+    }
+    if (!isCodeOrTextFile(a.name)) continue;
+
+    const key = (a.path || a.name).toLowerCase();
+    if (!result.has(key)) {
       const lines = (a.content ?? "").split("\n").length;
-      result.push({
+      result.set(key, {
         id: `fc-art-${a.id}`,
         name: a.name,
+        path: a.path,
         additions: lines > 0 ? lines : 1,
         deletions: 0,
       });
     }
   }
 
-  // 3. 从 messages 的工具调用中回溯补充修改过的文件名
+  // 3. 从 messages 的工具调用中回溯补充修改过的代码文件
   for (const msg of messages ?? []) {
     for (const block of msg.blocks ?? []) {
       if (block.type === "tool") {
         const tc = block.toolCall;
-        const fn = extractFilenameFromToolCall(tc.tool, tc.summary, tc.detail, tc.targetPath);
-        if (fn && !seen.has(fn.toLowerCase())) {
-          seen.add(fn.toLowerCase());
-          result.push({
+        const change = extractChangeFromToolCall(tc.tool, tc.summary, tc.detail, tc.targetPath);
+        if (change) {
+          addChange({
             id: `fc-msg-${tc.id}`,
-            name: fn,
-            additions: 1,
-            deletions: 0,
+            name: change.name,
+            path: change.path,
+            additions: change.additions,
+            deletions: change.deletions,
           });
         }
       }
     }
   }
 
-  return result;
+  return Array.from(result.values());
 }

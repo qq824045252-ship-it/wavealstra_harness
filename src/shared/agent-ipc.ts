@@ -1035,7 +1035,7 @@ export type AgentUiPatch =
       artifactId: string;
       name: string;
       kind: ArtifactKind;
-      change?: { name: string; additions: number; deletions: number };
+      change?: { name: string; additions: number; deletions: number; path?: string };
     }
   | {
       type: "assistant_end";
