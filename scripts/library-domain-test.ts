@@ -40,6 +40,10 @@ const pendingAsyncChecks: Promise<void>[] = [];
 }
 
 {
+  const fresh = service.snapshot();
+  assert.equal(fresh.spaces.some((s) => s.id === LIBRARY_PERSONAL_SPACE_ID), false, "new installations do not create a personal library on snapshot");
+  // 明确创建旧空间仅用于兼容性回归，不代表新产品有个人资料入口。
+  service.ensureReady();
   const snap = service.snapshot();
   assert.ok(snap.spaces.some((s) => s.id === LIBRARY_PERSONAL_SPACE_ID && s.kind === "personal"));
   assert.ok(snap.items.some((i) => i.title === "一分钟玩转资料库" && i.kind === "markdown"));
@@ -400,7 +404,8 @@ const pendingAsyncChecks: Promise<void>[] = [];
   service.createItem({ spaceId: space.id, kind: "markdown", title: "项目机密文档" });
   const personalItem = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "个人文档甲" });
   const catPersonal = service.formatCatalog(36, { projectId: null });
-  assert.ok(catPersonal.includes("个人文档甲"));
+  assert.ok(!catPersonal.includes("个人文档甲"), "unbound/independent task catalog must not include legacy personal documents");
+  assert.ok(catPersonal.includes("独立任务没有长期资料库"));
   assert.ok(!catPersonal.includes("项目机密文档"), "未绑定任务不注入项目资料");
   const catProject = service.formatCatalog(36, { projectId: "proj-cat" });
   assert.ok(catProject.includes("项目机密文档") && !catProject.includes("个人文档甲"), "仅项目预览也不能自动注入个人资料");
