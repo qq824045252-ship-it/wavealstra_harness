@@ -57,7 +57,7 @@ export function createProjectKnowledgeExtension(bridge: ProjectKnowledgeExtensio
       name: "project_knowledge_search",
       label: "项目知识 · 检索",
       description:
-        "在与 library_list / library_read 相同的当前任务范围检索资料（当前项目、工作空间及显式引用；无归属独立任务使用个人资料；绝不含其他项目）。" +
+        "在与 library_list / library_read 相同的当前任务范围检索资料（当前项目、工作空间及显式引用；无归属独立任务不自动使用长期资料；绝不含其他项目）。" +
         `返回结构化命中：标题/类型/片段（≤${KNOWLEDGE_SNIPPET_MAX_CHARS} 字符）/分层标注（已附加到本任务 / 已固定到项目上下文）/读取方式。` +
         "文本类（markdown/html/csv）可用 project_knowledge_read 读取正文；PDF/Office/图片只给元数据与受管路径，需要文件/预览工具。检索是按需的，不会把整个资料库注入上下文。",
       promptSnippet: `project_knowledge_search(query, limit?, kind?) — 检索当前任务可见的项目知识（FTS + 元数据 + 分层标注）`,
@@ -87,8 +87,8 @@ export function createProjectKnowledgeExtension(bridge: ProjectKnowledgeExtensio
           const scopeLine = {
             project: "（范围：当前项目、工作空间及显式引用）",
             workspace: "（范围：当前工作空间、继承资料及显式引用）",
-            personal: "（范围：个人资料，独立任务）",
-            none: "（范围：无，当前任务或归属不可用）",
+            personal: "（范围：兼容旧资料的显式引用）",
+            none: "（范围：无默认长期资料；独立任务只使用显式引用）",
           }[result.scope];
           if (result.hits.length === 0) {
             return textResult(`项目知识检索「${params.query}」无命中${scopeLine}。`);
