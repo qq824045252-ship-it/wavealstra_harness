@@ -71,7 +71,7 @@ function cleanJob(value: VideoGenerationJob): VideoGenerationJob {
     || value.createdAt < 0 || value.updatedAt < value.createdAt) throw new ApiProviderError("storage", "invalid video job record");
   if (value.remoteId !== undefined && !/^[a-zA-Z0-9_.-]{1,200}$/.test(value.remoteId)) throw new ApiProviderError("storage", "invalid remote video ID");
   if (["queued", "in_progress", "completed"].includes(value.state) && !value.remoteId) throw new ApiProviderError("storage", "video job is missing its remote ID");
-  if (!["openai-compatible", "magpie"].includes(value.connection.protocol)) throw new ApiProviderError("storage", "invalid video connection protocol");
+  if (!["openai-compatible", "openrouter", "magpie"].includes(value.connection.protocol)) throw new ApiProviderError("storage", "invalid video connection protocol");
   if (!Number.isSafeInteger(value.connection.timeoutMs) || value.connection.timeoutMs < 1 || value.connection.timeoutMs > 30 * 60_000) throw new ApiProviderError("storage", "invalid video timeout");
   return {
     id: value.id, remoteId: value.remoteId,

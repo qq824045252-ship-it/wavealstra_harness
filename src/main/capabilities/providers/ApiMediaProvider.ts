@@ -89,33 +89,59 @@ async function generateImage(options: ApiMediaProviderOptions, id: string, input
   const prompt = requiredText(input.prompt, "image prompt", 10_000);
   const count = input.count ?? 1;
   if (!Number.isSafeInteger(count) || count < 1 || count > 4) throw new ApiProviderError("input", "image count must be between 1 and 4");
-  const size = imageSize(input);
   if (input.inputImagePaths !== undefined && (!Array.isArray(input.inputImagePaths) || input.inputImagePaths.length > 8)) throw new ApiProviderError("input", "image editing accepts up to eight reference images");
   const connection = await resolveApiConnection(options);
   assertOpenAiShape(connection);
   const model = resolveModel(connection, input.model);
   const paths = input.inputImagePaths ?? [];
+  const openRouter = connection.protocol === "openrouter";
   let body: BodyInit;
-  if (paths.length) {
-    const form = new FormData();
-    form.set("model", model); form.set("prompt", prompt); form.set("n", String(count));
-    if (size) form.set("size", size);
-    for (const [index, path] of paths.entries()) {
-      const reference = await referenceImage(path, context);
-      form.append(paths.length > 1 ? "image[]" : "image", new Blob([new Uint8Array(reference.bytes)], { type: reference.mimeType }), `reference-${index + 1}${extname(path).toLowerCase()}`);
+  let route: string;
+  if (openRouter) {
+    // OpenRouter uses one JSON /images route for generation AND reference edits.
+    const aspect = input.aspectRatio === undefined ? undefined : ratio(input.aspectRatio);
+    const size = input.width !== undefined || input.height !== undefined ? dimensions(input.width, input.height) : undefined;
+    if (size && aspect !== undefined && Math.abs(input.width! / input.height! - aspect) > 0.000001) {
+      throw new ApiProviderError("input", "dimensions conflict with the aspect ratio");
     }
-    body = form;
-  } else body = JSON.stringify({ model, prompt, n: count, ...(size ? { size } : {}) });
-  const response = await apiJson(connection, paths.length ? "/images/edits" : "/images/generations", { body, signal: context.signal, maxBytes: 96 * 1024 * 1024 }, options);
+    const references = [];
+    for (const path of paths) {
+      const image = await referenceImage(path, context);
+      references.push({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.bytes.toString("base64")}` } });
+    }
+    body = JSON.stringify({
+      model, prompt,
+      ...(count > 1 ? { n: count } : {}),
+      ...(size ? { size } : {}),
+      ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
+      ...(references.length ? { input_references: references } : {}),
+    });
+    route = "/images";
+  } else {
+    const size = imageSize(input);
+    if (paths.length) {
+      const form = new FormData();
+      form.set("model", model); form.set("prompt", prompt); form.set("n", String(count));
+      if (size) form.set("size", size);
+      for (const [index, path] of paths.entries()) {
+        const reference = await referenceImage(path, context);
+        form.append(paths.length > 1 ? "image[]" : "image", new Blob([new Uint8Array(reference.bytes)], { type: reference.mimeType }), `reference-${index + 1}${extname(path).toLowerCase()}`);
+      }
+      body = form;
+    } else body = JSON.stringify({ model, prompt, n: count, ...(size ? { size } : {}) });
+    route = paths.length ? "/images/edits" : "/images/generations";
+  }
+  const response = await apiJson(connection, route, { body, signal: context.signal, maxBytes: 96 * 1024 * 1024 }, options);
   if (!Array.isArray(response.data) || !response.data.length || response.data.length > count) throw new ApiProviderError("response", "service returned an invalid image result count");
   const items: GeneratedMediaOutput["items"] = [];
   for (const [index, entry] of response.data.entries()) {
     const data = record(entry);
     if ((typeof data.b64_json === "string") === (typeof data.url === "string")) throw new ApiProviderError("response", "image must contain exactly one data source");
+    const declaredMime = data.media_type ?? data.mime_type;
     const result = typeof data.b64_json === "string"
-      ? decodeImageBase64(data.b64_json, data.mime_type)
+      ? decodeImageBase64(data.b64_json, declaredMime)
       : await downloadApiImage(data.url as string, connection, { signal: context.signal }, options);
-    if (data.mime_type !== undefined && data.mime_type !== result.mimeType) throw new ApiProviderError("response", "generated image format does not match its declared type");
+    if (declaredMime !== undefined && declaredMime !== result.mimeType) throw new ApiProviderError("response", "generated image format does not match its declared type");
     items.push({ bytes: result.bytes, mimeType: result.mimeType, fileName: `image-${index + 1}` });
   }
   return { provider: id, model, items, metadata: { requestedCount: count, returnedCount: items.length, ...(items.length < count ? { partial: true } : {}) } };
@@ -123,8 +149,12 @@ async function generateImage(options: ApiMediaProviderOptions, id: string, input
 
 function remoteVideo(value: Record<string, unknown>, expectedId?: string): { remoteId: string; state: "queued" | "in_progress" | "completed" | "failed" } {
   if (typeof value.id !== "string" || !/^[a-zA-Z0-9_.-]{1,200}$/.test(value.id) || (expectedId && value.id !== expectedId)) throw new ApiProviderError("response", "invalid remote video ID");
-  if (!["queued", "in_progress", "completed", "failed"].includes(String(value.status))) throw new ApiProviderError("response", "unknown remote video state");
-  return { remoteId: value.id, state: value.status as "queued" | "in_progress" | "completed" | "failed" };
+  const rawStatus = String(value.status);
+  const state = rawStatus === "pending" ? "queued"
+    : rawStatus === "processing" || rawStatus === "running" ? "in_progress"
+      : rawStatus === "cancelled" || rawStatus === "canceled" || rawStatus === "expired" ? "failed" : rawStatus;
+  if (!["queued", "in_progress", "completed", "failed"].includes(state)) throw new ApiProviderError("response", "unknown remote video state");
+  return { remoteId: value.id, state: state as "queued" | "in_progress" | "completed" | "failed" };
 }
 
 function sameConnection(job: VideoGenerationJob, connection: ResolvedApiConnection): void {
@@ -169,7 +199,8 @@ async function continueVideo(options: ApiMediaProviderOptions, id: string, job: 
   const store = options.jobStore!;
   if (job.state === "failed") throw new ApiProviderError("video-failed", `remote video generation failed; jobId=${job.id}`);
   if (!job.remoteId || ["submitting", "submission-unknown"].includes(job.state)) throw new VideoJobPendingError(job.id, "submission-unknown");
-  const limits = polling(options);
+  const limits = connection.protocol === "openrouter" && options.polling?.intervalMs === undefined
+    ? { ...polling(options), intervalMs: 30_000 } : polling(options);
   const deadline = Date.now() + limits.maxWaitMs;
   job = updateJob(store, job, { waitState: "waiting", lastToolCallId: context.toolCallId, lastError: undefined });
   let attempts = 0;
@@ -216,27 +247,55 @@ async function generateVideo(options: ApiMediaProviderOptions, id: string, input
     connection = await resolveApiConnection(options, job.connection.id);
     sameConnection(job, connection);
   } else {
-    unsupported(input, ["negativePrompt", "seed", "generateAudio"]);
+    unsupported(input, ["negativePrompt", "seed"]);
     const prompt = requiredText(input.prompt, "video prompt", 10_000);
-    const size = videoSize(input);
     if (input.durationSeconds !== undefined && (!Number.isSafeInteger(input.durationSeconds) || input.durationSeconds < 1 || input.durationSeconds > 120)) throw new ApiProviderError("input", "video duration must be a whole number from 1 to 120 seconds");
     connection = await resolveApiConnection(options);
     assertOpenAiShape(connection);
+    const openRouter = connection.protocol === "openrouter";
+    if (!openRouter && input.generateAudio !== undefined) throw new ApiProviderError("unsupported", "generateAudio is not supported by this video adapter");
+    if (openRouter && input.aspectRatio !== undefined) ratio(input.aspectRatio);
+    const openRouterResolution = openRouter ? input.resolution : undefined;
+    if (openRouterResolution !== undefined && !/^(720p|1080p|\d+x\d+)$/.test(openRouterResolution)) {
+      throw new ApiProviderError("unsupported", "video resolution must be 720p, 1080p or WIDTHxHEIGHT");
+    }
+    const size = openRouter
+      ? openRouterResolution && /^\d+x\d+$/.test(openRouterResolution)
+        ? dimensions(Number(openRouterResolution.split("x")[0]), Number(openRouterResolution.split("x")[1]))
+        : undefined
+      : videoSize(input);
     const model = resolveModel(connection, input.model);
     const reference = input.inputImagePath === undefined ? undefined : await referenceImage(input.inputImagePath, context);
-    const requestDigest = createHash("sha256").update(JSON.stringify({ model, prompt, size, seconds: input.durationSeconds,
-      reference: reference ? createHash("sha256").update(reference.bytes).digest("hex") : undefined })).digest("hex");
+    const requestDigest = createHash("sha256").update(JSON.stringify({ model, prompt, size, ratio: openRouter ? input.aspectRatio : undefined,
+      resolution: openRouter ? openRouterResolution : undefined, seconds: input.durationSeconds,
+      generateAudio: input.generateAudio, reference: reference ? createHash("sha256").update(reference.bytes).digest("hex") : undefined })).digest("hex");
     const previous = store.findByInvocation(context.taskId, context.toolCallId);
     if (previous) {
       if (previous.requestDigest !== requestDigest) throw new ApiProviderError("conflict", "this tool invocation already submitted a different video request");
       sameConnection(previous, connection);
       job = previous;
     } else {
-      const body = new FormData();
-      body.set("model", model); body.set("prompt", prompt);
-      if (size !== undefined) body.set("size", size);
-      if (input.durationSeconds !== undefined) body.set("seconds", String(input.durationSeconds));
-      if (reference) body.set("input_reference", new Blob([new Uint8Array(reference.bytes)], { type: reference.mimeType }), `reference${extname(input.inputImagePath!).toLowerCase()}`);
+      let body: BodyInit;
+      if (openRouter) {
+        // OpenRouter video creation is JSON and asynchronous; never use the
+        // FormData/seconds request used by other OpenAI-shaped gateways.
+        body = JSON.stringify({
+          model, prompt,
+          ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
+          ...(input.resolution && /p$/.test(input.resolution) ? { resolution: input.resolution } : {}),
+          ...(size ? { size } : {}),
+          ...(input.durationSeconds !== undefined ? { duration: input.durationSeconds } : {}),
+          ...(input.generateAudio !== undefined ? { generate_audio: input.generateAudio } : {}),
+          ...(reference ? { input_references: [{ type: "image_url", image_url: { url: `data:${reference.mimeType};base64,${reference.bytes.toString("base64")}` } }] } : {}),
+        });
+      } else {
+        const form = new FormData();
+        form.set("model", model); form.set("prompt", prompt);
+        if (size !== undefined) form.set("size", size);
+        if (input.durationSeconds !== undefined) form.set("seconds", String(input.durationSeconds));
+        if (reference) form.set("input_reference", new Blob([new Uint8Array(reference.bytes)], { type: reference.mimeType }), `reference${extname(input.inputImagePath!).toLowerCase()}`);
+        body = form;
+      }
       assertNotAborted(context.signal);
       const now = Date.now();
       job = { id: newVideoJobId(), taskId: context.taskId, toolCallId: context.toolCallId, lastToolCallId: context.toolCallId,

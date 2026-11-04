@@ -12,7 +12,7 @@ export interface ResolvedApiConnection {
   baseUrl: string;
   headers?: Record<string, string>;
   timeoutMs: number;
-  protocol: "openai-compatible" | "magpie" | "mistral-ocr";
+  protocol: "openai-compatible" | "openrouter" | "magpie" | "mistral-ocr";
   model?: string;
 }
 
@@ -63,7 +63,7 @@ export async function resolveApiConnection(options: ApiProviderOptions, connecti
   let raw: ResolvedApiConnection;
   try { raw = await options.getConnection(connectionId); }
   catch { throw new ApiProviderError("configuration", "selected service connection is unavailable"); }
-  if (!raw || !["openai-compatible", "magpie", "mistral-ocr"].includes(raw.protocol)) {
+  if (!raw || !["openai-compatible", "openrouter", "magpie", "mistral-ocr"].includes(raw.protocol)) {
     throw new ApiProviderError("configuration", "unsupported service protocol");
   }
   const id = requiredText(raw.id, "service ID", 200);
