@@ -115,6 +115,21 @@ jobs:
             C:\r\out\tests\project-materials-ui-electron-result.json
             C:\r\out\tests\workspace-notes-ui-electron-result.json
             C:\r\out\tests\*-electron-failure.txt
+      # Keep this focused real-Electron check separate from the headless suite.
+      # It catches settings layout/interaction drift on PRs without running
+      # the unrelated desktop automation suite or accessing a real profile.
+      - name: Media settings UI (isolated Electron profile)
+        working-directory: C:\r
+        run: pnpm -s test:media-capabilities-ui
+
+      - name: Upload media settings screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-settings-ui
+          if-no-files-found: ignore
+          retention-days: 7
+          path: C:\r\out\tests\media-capabilities-screenshots\*.png
 
       - name: Harness quality gate
         working-directory: C:\r

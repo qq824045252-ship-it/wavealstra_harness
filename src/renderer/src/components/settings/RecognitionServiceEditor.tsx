@@ -1,22 +1,42 @@
 import type { RecognitionServiceConfig } from "@shared/builtin-capabilities";
+import { SettingsInput, SettingsSecretField } from "./SettingsPrimitives";
 
-/** The same small editor is used for both deployed recognition contracts. Secrets use the existing keyring editor. */
-export function RecognitionServiceEditor({ value, adapter, onChange }: {
+/** Retains the existing endpoint contract and privacy preference when editing an older service. */
+export function RecognitionServiceEditor({ value, adapter, disabled, secret = "", clearCredential, credentialConfigured = false, sharedCredentialNote, effectiveDataPolicy, onAllowConversation, onChange, onCredentialChange }: {
   value?: RecognitionServiceConfig;
   adapter: RecognitionServiceConfig["adapter"];
+  disabled?: boolean;
+  secret?: string;
+  clearCredential?: boolean;
+  credentialConfigured?: boolean;
+  sharedCredentialNote?: string;
+  effectiveDataPolicy?: RecognitionServiceConfig["dataPolicy"];
+  onAllowConversation?: () => void;
   onChange: (value: RecognitionServiceConfig) => void;
+  onCredentialChange: (change: { secret?: string; clear?: boolean }) => void;
 }): React.JSX.Element {
   const config = value ?? { adapter, endpoint: "", model: "", location: "local", dataPolicy: "allow-cloud", timeoutMs: 60000 };
-  const field = (key: "endpoint" | "model" | "credentialRef", label: string) => <label>{label}<input className="capability-field" value={config[key] ?? ""} onChange={e => onChange({ ...config, [key]: e.target.value })} /></label>;
-  return <div className="capability-controls">
-    {field("endpoint", "完整请求 URL")}{field("model", "模型")}{field("credentialRef", "Credential ID（密钥在下方凭据库设置）")}
-    <label>部署位置<select value={config.location} onChange={e => onChange({ ...config, location: e.target.value as RecognitionServiceConfig["location"] })}>
-      <option value="local">本机 loopback</option><option value="network">内网 HTTP</option><option value="cloud">云服务</option>
-    </select></label>
-    <label>数据策略<select value={config.dataPolicy} onChange={e => onChange({ ...config, dataPolicy: e.target.value as RecognitionServiceConfig["dataPolicy"] })}>
-      <option value="allow-cloud">允许识别正文进入当前主模型（可能为云端）</option><option value="local-only">仅本机（当前 agent 工具会拒绝执行）</option>
-    </select></label>
-    <label>超时（毫秒）<input type="number" min="1" value={config.timeoutMs} onChange={e => onChange({ ...config, timeoutMs: Number(e.target.value) })} /></label>
-    <small>{adapter === "http-asr" ? "multipart: file/model/language/prompt，返回 JSON text/language/segments；仅 PCM WAV ≤10 MiB、120 秒。" : "JSON image(base64)/model，返回 text/boxes；PNG/JPEG ≤10 MiB，坐标为输入像素。"} 检查不上传样本、不证明认证/模型就绪；实际试运行请在任务内显式调用工具。未接入麦克风。</small>
-  </div>;
+  let locationLabel = "等待填写地址";
+  try { locationLabel = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(config.endpoint).hostname) ? "本机地址" : "远程服务"; } catch { /* Save validation reports an invalid address. */ }
+  const changeEndpoint = (endpoint: string): void => {
+    let location = config.location;
+    try { location = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(endpoint).hostname) ? "local" : config.location === "network" ? "network" : "cloud"; } catch { /* Keep the saved location until there is a valid address. */ }
+    onChange({ ...config, endpoint, location });
+  };
+  return <fieldset className="recognition-service-editor" disabled={disabled}>
+    <div className="capability-form-grid">
+      <SettingsInput label="服务地址" type="url" value={config.endpoint} spellCheck={false} autoComplete="off" placeholder="完整请求地址" onChange={event => changeEndpoint(event.target.value)} />
+      <SettingsInput label="模型" value={config.model} spellCheck={false} onChange={event => onChange({ ...config, model: event.target.value })} />
+    </div>
+    <SettingsSecretField value={secret} clear={clearCredential} configured={credentialConfigured} disabled={disabled} onChange={next => onCredentialChange({ secret: next, clear: false })} onClearChange={clear => onCredentialChange({ clear, secret: "" })} />
+    {sharedCredentialNote && <p className="settings-row-desc">{sharedCredentialNote}</p>}
+    <p className="settings-row-desc">{locationLabel} · 保留现有服务接口</p>
+    {(effectiveDataPolicy ?? config.dataPolicy) === "local-only"
+      ? <div className="capability-policy-note" role="note"><p>已保留“仅限本机”的限制。当前对话无法保证识别正文只在本机处理，因此暂不能调用此服务。</p>{onAllowConversation && <button type="button" className="btn" onClick={onAllowConversation}>允许识别正文用于当前对话</button>}</div>
+      : <p className="settings-row-desc">识别正文会进入当前对话，并按当前模型设置处理。本机地址不代表后续处理也在本机。</p>}
+    <details className="capability-options">
+      <summary>连接选项</summary>
+      <SettingsInput label="等待上限（秒）" type="number" min={1} value={config.timeoutMs / 1000 || ""} onChange={event => onChange({ ...config, timeoutMs: Number(event.target.value) * 1000 })} />
+    </details>
+  </fieldset>;
 }

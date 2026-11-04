@@ -10,8 +10,10 @@ import type {
   BuiltinCapabilitiesSnapshotDto,
   BuiltinCapabilityId,
   SaveBuiltinCredentialRequest,
+  SaveBuiltinCapabilitySettingsRequest,
   TestBuiltinCapabilityResultDto,
 } from "../shared/builtin-capabilities";
+import type { CapabilityVideoJobDto } from "../shared/media-capabilities";
 import {
   TerminalIpc,
   type TerminalCloseRequest,
@@ -534,6 +536,12 @@ const api = {
       ipcRenderer.invoke(AgentIpc.getSearchProviderUsage, provider, keys),
     getBuiltinCapabilities: (): Promise<BuiltinCapabilitiesSnapshotDto> =>
       ipcRenderer.invoke(AgentIpc.getBuiltinCapabilities),
+    refreshBuiltinMediaServices: (): Promise<BuiltinCapabilitiesSnapshotDto> =>
+      ipcRenderer.invoke(AgentIpc.refreshBuiltinMediaServices),
+    listBuiltinVideoJobs: (taskId?: string): Promise<CapabilityVideoJobDto[]> =>
+      ipcRenderer.invoke(AgentIpc.listBuiltinVideoJobs, taskId),
+    saveBuiltinCapabilitySettings: (request: SaveBuiltinCapabilitySettingsRequest): Promise<BuiltinCapabilitiesSnapshotDto> =>
+      ipcRenderer.invoke(AgentIpc.saveBuiltinCapabilitySettings, request),
     saveBuiltinCapabilities: (config: BuiltinCapabilitiesConfigDto): Promise<BuiltinCapabilitiesSnapshotDto> =>
       ipcRenderer.invoke(AgentIpc.saveBuiltinCapabilities, config),
     saveBuiltinCredential: (request: SaveBuiltinCredentialRequest): Promise<BuiltinCapabilitiesSnapshotDto> =>

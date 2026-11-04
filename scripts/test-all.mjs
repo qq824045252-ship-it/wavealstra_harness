@@ -63,6 +63,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/];
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:media-capabilities-ui",
   "test:computer-use-behavior",
   "test:computer-use-agent-desktop",
   "test:workspace-notes-ui",
