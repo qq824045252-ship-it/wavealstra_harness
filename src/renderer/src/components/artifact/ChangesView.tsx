@@ -2,18 +2,21 @@ import { useMemo, useState } from "react";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { FileChange } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
-import { IconChevronDown } from "@/components/common/icons";
-import ExtensionModeDropdown from "./ExtensionModeDropdown";
+import { IconSearch } from "@/components/common/icons";
+import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
 
 const EMPTY_CHANGES: FileChange[] = [];
 
 export default function ChangesView({ floating = false }: { floating?: boolean }): React.JSX.Element {
   const artifacts = useActiveTaskArtifacts();
-  const changes = useAppStore(
-    (s) => s.tasks.find((task) => task.id === s.activeTaskId)?.fileChanges ?? EMPTY_CHANGES,
+  const currentTask = useAppStore((s) => s.tasks.find((task) => task.id === s.activeTaskId));
+  const rawChanges = currentTask?.fileChanges;
+  const changes = useMemo(
+    () => resolveTaskFileChanges(rawChanges, artifacts, currentTask?.messages),
+    [rawChanges, artifacts, currentTask?.messages],
   );
   const openArtifact = useAppStore((s) => s.openArtifact);
-  const [sectionOpen, setSectionOpen] = useState(true);
+  const [filter, setFilter] = useState("");
 
   const totals = useMemo(() => {
     let additions = 0;
@@ -25,6 +28,12 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
     return { additions, deletions, count: changes.length };
   }, [changes]);
 
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return changes;
+    return changes.filter((c) => c.name.toLowerCase().includes(q));
+  }, [changes, filter]);
+
   const openFile = (name: string): void => {
     const artifact = artifacts.find(
       (a) => a.name === name || a.name.toLowerCase() === name.toLowerCase(),
@@ -32,47 +41,30 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
     if (artifact) openArtifact(artifact.id);
   };
 
-  const section = (
-    <div className="extension-panel-artifacts changes-section">
-      <button
-        type="button"
-        className="extension-panel-header-btn changes-section-title"
-        onClick={() => setSectionOpen(!sectionOpen)}
-      >
-        <span className="changes-section-label">
-          文件变更
-          {totals.count > 0 && <span className="changes-section-count">({totals.count})</span>}
-        </span>
-        {(totals.additions > 0 || totals.deletions > 0) && (
-          <span className="changes-section-totals">
-            {totals.additions > 0 && <span className="changes-add">+{totals.additions}</span>}
-            {totals.deletions > 0 && <span className="changes-del">-{totals.deletions}</span>}
+  const listNode = (
+    <div className="extension-panel-item-list changes-file-list">
+      {filtered.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className="extension-panel-item-btn changes-file-row"
+          onClick={() => openFile(item.name)}
+          title={`${item.name}\n+${item.additions} -${item.deletions}`}
+        >
+          <FileBadge name={item.name} size={14} muted />
+          <span className="extension-artifact-name">{item.name}</span>
+          <span className="changes-row-stats">
+            {item.additions > 0 && <span className="changes-add">+{item.additions}</span>}
+            {item.deletions > 0 && <span className="changes-del">-{item.deletions}</span>}
+            {item.additions === 0 && item.deletions === 0 && (
+              <span className="changes-zero">0</span>
+            )}
           </span>
-        )}
-        <IconChevronDown size={13} className={sectionOpen ? "" : "chevron-up"} />
-      </button>
-      {sectionOpen && (
-        <div className="extension-panel-item-list changes-file-list">
-          {changes.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="extension-panel-item-btn changes-file-row"
-              onClick={() => openFile(item.name)}
-            >
-              <FileBadge name={item.name} size={14} muted />
-              <span className="extension-artifact-name">{item.name}</span>
-              <span className="changes-row-stats">
-                {item.additions > 0 && <span className="changes-add">+{item.additions}</span>}
-                {item.deletions > 0 && <span className="changes-del">-{item.deletions}</span>}
-                {item.additions === 0 && item.deletions === 0 && (
-                  <span className="changes-zero">0</span>
-                )}
-              </span>
-            </button>
-          ))}
-          {changes.length === 0 && <div className="changes-empty">暂无文件变更</div>}
-        </div>
+        </button>
+      ))}
+      {changes.length === 0 && <div className="changes-empty">当前任务暂无代码变更</div>}
+      {changes.length > 0 && filtered.length === 0 && (
+        <div className="changes-empty">未找到匹配的文件变更</div>
       )}
     </div>
   );
@@ -80,16 +72,39 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
   if (floating) {
     return (
       <div className="extension-panel-nav changes-panel-nav">
-        {section}
+        {listNode}
       </div>
     );
   }
 
   return (
     <div className="extension-body changes-view">
-      <div className="extension-panel-nav changes-panel-nav">
-        <ExtensionModeDropdown fixedMode="changes" variant="panel" />
-        {section}
+      <div className="changes-view-header">
+        <div className="changes-view-stats">
+          <span className="changes-count-label">代码变更</span>
+          <span className="changes-count-badge">{totals.count}</span>
+          {(totals.additions > 0 || totals.deletions > 0) && (
+            <span className="changes-totals-pill">
+              {totals.additions > 0 && <span className="changes-add">+{totals.additions}</span>}
+              {totals.deletions > 0 && <span className="changes-del">-{totals.deletions}</span>}
+            </span>
+          )}
+        </div>
+        {changes.length > 5 && (
+          <div className="artifacts-search-box">
+            <IconSearch size={13} className="artifacts-search-icon" />
+            <input
+              type="text"
+              className="artifacts-search-input"
+              placeholder="过滤变更文件..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+        )}
+      </div>
+      <div className="extension-panel-nav changes-panel-content">
+        {listNode}
       </div>
     </div>
   );

@@ -83,12 +83,11 @@ export default function SubagentDrawer(): React.JSX.Element | null {
     };
   }, [instanceId, refresh]);
 
-  // 已结束：短暂提示后自动关闭（不保留历史）
+  // 已结束不再强行自动关闭，保留给用户查看任务详情与历史记录的机会
+  // 用户可通过右上角 ✕ 随时手动关闭
   useEffect(() => {
-    if (!ended) return;
-    const t = setTimeout(() => closeDrawer(), 2500);
-    return () => clearTimeout(t);
-  }, [ended, closeDrawer]);
+    // 保持开放，不强行超时关闭
+  }, [ended]);
 
   const views = useMemo(() => buildViews(transcript), [transcript]);
 

@@ -1,21 +1,25 @@
-import { useRef } from "react";
-import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
-import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
+import { useMemo } from "react";
 import type { PanelMode } from "@/store/appStore";
-import { useAppStore } from "@/store/appStore";
+import { useActiveTerminalTabs, useAppStore, useVisibleTaskArtifacts } from "@/store/appStore";
 import type { Artifact } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
 import {
-  IconCheck,
   IconExpand,
+  IconFileBox,
+  IconFolder,
+  IconGitBranch,
   IconGlobe,
-  IconList,
   IconPanel,
+  IconPin,
+  IconPlus,
+  IconPuzzle,
+  IconTerminal,
   IconX,
+  IconZap,
 } from "@/components/common/icons";
-import ExtensionFlyoutContent from "./ExtensionFlyoutContent";
-import { EXTENSION_MODES, EXTENSION_MODE_LABEL } from "./extensionModes";
+import { hasActiveExecutionMessages } from "@/utils/taskFilters";
+import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
 
 interface Props {
   tabs: Artifact[];
@@ -32,85 +36,175 @@ export default function ExtensionTopBar({
   onWiden,
   onOpenTab,
   onCloseTab,
-  wsSearch = "",
 }: Props): React.JSX.Element {
   const panelMode = useAppStore((s) => s.panelMode);
-  const extensionView = useAppStore((s) => s.extensionView);
-  const extensionFlyoutOpen = useAppStore((s) => s.extensionFlyoutOpen);
-  const extensionFlyoutPinned = useAppStore((s) => s.extensionFlyoutPinned);
-  const toggleExtensionFlyout = useAppStore((s) => s.toggleExtensionFlyout);
-  const closeExtensionFlyout = useAppStore((s) => s.closeExtensionFlyout);
   const closePanel = useAppStore((s) => s.closePanel);
+  const panelPinned = useAppStore((s) => s.panelPinned);
+  const togglePanelPinned = useAppStore((s) => s.togglePanelPinned);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
   const showOverview = useAppStore((s) => s.showOverview);
+  const showArtifacts = useAppStore((s) => s.showArtifacts);
   const showWorkspace = useAppStore((s) => s.showWorkspace);
   const showGadgets = useAppStore((s) => s.showGadgets);
   const showTerminal = useAppStore((s) => s.showTerminal);
   const showBrowser = useAppStore((s) => s.showBrowser);
   const showChanges = useAppStore((s) => s.showChanges);
-  const extensionMenuOpen = useAppStore((s) => s.extensionMenuOpen);
-  const setExtensionMenuOpen = useAppStore((s) => s.setExtensionMenuOpen);
 
-  const flyoutAnchorRef = useRef<HTMLDivElement>(null);
+  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs();
+  const createTerminalTab = useAppStore((s) => s.createTerminalTab);
+  const closeTerminalTab = useAppStore((s) => s.closeTerminalTab);
+  const setActiveTerminalTabId = useAppStore((s) => s.setActiveTerminalTabId);
 
-  useDismissOnClickOutside(
-    extensionFlyoutOpen && !extensionFlyoutPinned,
-    closeExtensionFlyout,
-    flyoutAnchorRef,
-  );
-  useDismissOnClickOutside(extensionMenuOpen, () => setExtensionMenuOpen(false), flyoutAnchorRef);
+  const artifacts = useVisibleTaskArtifacts();
+  const artifactsCount = artifacts.length;
+  const workspaceFilesCount = useAppStore((s) => s.workspaceFilesCount);
+  const gadgetsCount = useAppStore((s) => s.gadgetsCount);
 
-  const displayMode = panelMode === "file" ? extensionView : panelMode;
-  const showTabs = tabs.length > 0;
-  // Native browser/artifact views paint above DOM menus regardless of z-index.
-  // The rendered overlay owns the blocker, including pinned and nested flyouts.
-  useBlockNativeSurfaces(showTabs ? extensionFlyoutOpen : extensionMenuOpen);
+  const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
+  const fileChangesCount = useMemo(() => {
+    return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
+  }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
 
-  const pickMode = (mode: PanelMode): void => {
-    if (mode === "overview") showOverview();
-    else if (mode === "workspace") showWorkspace();
-    else if (mode === "gadgets") showGadgets();
-    else if (mode === "terminal") showTerminal();
-    else if (mode === "browser") showBrowser();
-    else if (mode === "changes") showChanges();
-    setExtensionMenuOpen(false);
-  };
+  // 判定当前任务是否在执行（主 agent 或 subagent 运行中）
+  const isRunning = useMemo(() => {
+    if (!currentTask) return false;
+    return hasActiveExecutionMessages(currentTask.messages ?? []) || currentTask.status === "in_progress";
+  }, [currentTask]);
+
+  const showFileSubBar = panelMode === "file" && tabs.length > 0;
+  const showSubBar = showFileSubBar || panelMode === "terminal";
 
   return (
-    <div className="extension-top-bar">
-      <div className="extension-top-left">
-        <div className="extension-menu-anchor" ref={flyoutAnchorRef}>
+    <div className={`extension-top-bar-container ${showSubBar ? "has-sub-bar" : ""}`}>
+      {/* 第一行：主功能 Tab 栏（纯图标模式，间距舒适，高辨识度） */}
+      <div className="extension-top-bar">
+        <div className="extension-nav-tabs">
+          {/* ⚡ 概览与运行态 */}
           <button
             type="button"
-            className={`icon-btn extension-menu-btn ${showTabs && extensionFlyoutOpen ? "active" : ""}`}
-            title="菜单"
-            onClick={() => {
-              if (showTabs) toggleExtensionFlyout();
-              else setExtensionMenuOpen(!extensionMenuOpen);
-            }}
+            className={`extension-tab-btn ${panelMode === "overview" ? "active" : ""}`}
+            onClick={showOverview}
+            title="概览与运行态"
           >
-            <IconList size={16} />
+            <IconZap size={16} />
+            {isRunning && <span className="extension-tab-dot" title="正在运行中" />}
           </button>
-          {extensionMenuOpen && !showTabs && (
-            <div className="extension-mode-menu extension-top-menu" onClick={(e) => e.stopPropagation()}>
-              {EXTENSION_MODES.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`extension-mode-item ${displayMode === mode ? "active" : ""}`}
-                  onClick={() => pickMode(mode)}
-                >
-                  {EXTENSION_MODE_LABEL[mode]}
-                  {displayMode === mode && <IconCheck size={14} />}
-                </button>
-              ))}
-            </div>
-          )}
-          {showTabs && extensionFlyoutOpen && (
-            <ExtensionFlyoutContent view={extensionView} wsSearch={wsSearch} />
-          )}
+
+          {/* 📦 产物列表 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "artifacts" ? "active" : ""}`}
+            onClick={showArtifacts}
+            title={artifactsCount > 0 ? `任务产物 (${artifactsCount})` : "任务产物"}
+          >
+            <IconFileBox size={16} />
+            {artifactsCount > 0 && (
+              <span className="extension-tab-badge">
+                {artifactsCount > 99 ? "99+" : artifactsCount}
+              </span>
+            )}
+          </button>
+
+          {/* 🔀 代码变更 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "changes" ? "active" : ""}`}
+            onClick={showChanges}
+            title={fileChangesCount > 0 ? `代码变更 (${fileChangesCount})` : "代码变更"}
+          >
+            <IconGitBranch size={16} />
+            {fileChangesCount > 0 && (
+              <span className="extension-tab-badge changes">
+                {fileChangesCount > 99 ? "99+" : fileChangesCount}
+              </span>
+            )}
+          </button>
+
+          <div className="extension-nav-divider" />
+
+          {/* 📁 工作空间文件 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "workspace" ? "active" : ""}`}
+            onClick={showWorkspace}
+            title={workspaceFilesCount > 0 ? `工作空间文件 (${workspaceFilesCount})` : "工作空间文件"}
+          >
+            <IconFolder size={16} />
+            {workspaceFilesCount > 0 && (
+              <span className="extension-tab-badge">
+                {workspaceFilesCount > 99 ? "99+" : workspaceFilesCount}
+              </span>
+            )}
+          </button>
+
+          {/* 🧩 工作台 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "gadgets" ? "active" : ""}`}
+            onClick={showGadgets}
+            title={gadgetsCount > 0 ? `工作台 (${gadgetsCount})` : "工作台"}
+          >
+            <IconPuzzle size={16} />
+            {gadgetsCount > 0 && (
+              <span className="extension-tab-badge">
+                {gadgetsCount > 99 ? "99+" : gadgetsCount}
+              </span>
+            )}
+          </button>
+
+          {/* 💻 终端 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "terminal" ? "active" : ""}`}
+            onClick={showTerminal}
+            title={terminalTabs.length > 0 ? `终端 (${terminalTabs.length})` : "终端"}
+          >
+            <IconTerminal size={16} />
+            {terminalTabs.length > 0 && (
+              <span className="extension-tab-badge">
+                {terminalTabs.length > 99 ? "99+" : terminalTabs.length}
+              </span>
+            )}
+          </button>
+
+          {/* 🌐 浏览器 */}
+          <button
+            type="button"
+            className={`extension-tab-btn ${panelMode === "browser" ? "active" : ""}`}
+            onClick={showBrowser}
+            title="内置浏览器"
+          >
+            <IconGlobe size={16} />
+          </button>
         </div>
-        {showTabs && (
+
+        {/* 右侧窗口控制 */}
+        <div className="extension-top-actions">
+          <button
+            type="button"
+            className={`icon-btn ${panelExpanded ? "active" : ""}`}
+            title={panelExpanded ? "还原宽度" : "展开"}
+            onClick={onWiden}
+          >
+            <IconExpand size={15} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn ${panelPinned ? "active" : ""}`}
+            title={panelPinned ? "已钉住侧栏（切换任务时保持展开）" : "钉住侧栏（切换任务时不收起）"}
+            onClick={togglePanelPinned}
+          >
+            <IconPin size={15} fill={panelPinned ? "currentColor" : "none"} />
+          </button>
+          <button type="button" className="icon-btn" title="关闭侧栏" onClick={closePanel}>
+            <IconPanel size={15} />
+          </button>
+        </div>
+      </div>
+
+      {/* 第二行：文件预览模式下的标签栏（已按用户要求移除「返回产物」前置按钮，纯粹展示文件 Tab） */}
+      {showFileSubBar && (
+        <div className="extension-file-subbar">
           <div className="extension-top-tabs">
             {tabs.map((a) => (
               <div
@@ -146,21 +240,49 @@ export default function ExtensionTopBar({
               </div>
             ))}
           </div>
-        )}
-      </div>
-      <div className="extension-top-actions">
-        <button
-          type="button"
-          className={`icon-btn ${panelExpanded ? "active" : ""}`}
-          title={panelExpanded ? "还原宽度" : "展开"}
-          onClick={onWiden}
-        >
-          <IconExpand size={15} />
-        </button>
-        <button type="button" className="icon-btn" title="关闭侧栏" onClick={closePanel}>
-          <IconPanel size={15} />
-        </button>
-      </div>
+        </div>
+      )}
+      {/* 第二行：终端多标签横向 Tag 栏（点击加号才打开终端，支持多终端切换与管理） */}
+      {panelMode === "terminal" && (
+        <div className="extension-terminal-subbar">
+          <div className="extension-terminal-tabs">
+            {terminalTabs.map((tab) => (
+              <div
+                key={tab.id}
+                role="button"
+                tabIndex={0}
+                className={`extension-terminal-tab ${activeTerminalTabId === tab.id ? "active" : ""}`}
+                onClick={() => setActiveTerminalTabId(tab.id)}
+                onKeyDown={(e) => e.key === "Enter" && setActiveTerminalTabId(tab.id)}
+                title={tab.title}
+              >
+                <IconTerminal size={12} className="terminal-tab-icon" />
+                <span className="terminal-tab-title">{tab.title}</span>
+                <button
+                  type="button"
+                  className="terminal-tab-close"
+                  title="关闭终端"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTerminalTab(tab.id);
+                  }}
+                >
+                  <IconX size={11} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="extension-tab-add-btn"
+              title="新建终端"
+              onClick={createTerminalTab}
+            >
+              <IconPlus size={12} />
+              <span>新建终端</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

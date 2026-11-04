@@ -1,6 +1,7 @@
 import type { PanelMode } from "@/store/appStore";
 import ExtensionFlyout from "./ExtensionFlyout";
 import OverviewView from "./OverviewView";
+import ArtifactsView from "./ArtifactsView";
 import WorkspaceFilesView from "./WorkspaceFilesView";
 import ChangesView from "./ChangesView";
 import TaskGadgetsView from "./TaskGadgetsView";
@@ -18,6 +19,9 @@ export default function ExtensionFlyoutContent({ view, wsSearch = "" }: Props): 
       break;
     case "changes":
       body = <ChangesView floating />;
+      break;
+    case "artifacts":
+      body = <ArtifactsView floating />;
       break;
     case "gadgets":
       body = <TaskGadgetsView floating />;

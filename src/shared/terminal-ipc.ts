@@ -38,33 +38,40 @@ export const TerminalIpc = {
 export interface TerminalOwnerIds {
   taskId?: string;
   workspaceId?: string;
+  terminalId?: string;
 }
 
 /** 从 IPC 字段派生 owner；空字符串视为未提供 */
 export function ownerFromIds(
   ids: TerminalOwnerIds,
-): { kind: "task"; id: string } | { kind: "workspace"; id: string } | null {
+): { kind: "task"; id: string; terminalId?: string } | { kind: "workspace"; id: string; terminalId?: string } | null {
   const taskId = ids.taskId?.trim();
-  if (taskId) return { kind: "task", id: taskId };
+  const terminalId = ids.terminalId?.trim() || undefined;
+  if (taskId) return { kind: "task", id: taskId, terminalId };
   const workspaceId = ids.workspaceId?.trim();
-  if (workspaceId) return { kind: "workspace", id: workspaceId };
+  if (workspaceId) return { kind: "workspace", id: workspaceId, terminalId };
   return null;
 }
 
 /**
  * Renderer store / 事件匹配用的会话键。
  * 与主进程 PTY map 的 `task:` / `ws:` 前缀不同：renderer 用裸 id（UUID 碰撞可忽略），
- * 以便任务终端继续按 taskId 查找。
+ * 若包含 terminalId 则组合为 `${owner.id}:${terminalId}`。
  */
 export function terminalOwnerStoreKey(ids: TerminalOwnerIds): string | null {
   const owner = ownerFromIds(ids);
-  return owner?.id ?? null;
+  if (!owner) return null;
+  return owner.terminalId ? `${owner.id}:${owner.terminalId}` : owner.id;
 }
 
 export function sameTerminalOwner(a: TerminalOwnerIds, b: TerminalOwnerIds): boolean {
   const left = ownerFromIds(a);
   const right = ownerFromIds(b);
-  return Boolean(left && right && left.kind === right.kind && left.id === right.id);
+  if (!left || !right) return false;
+  if (left.kind !== right.kind || left.id !== right.id) return false;
+  // 若两端均未提供 terminalId（旧单会话兼容），视为同一归属主；只要有任一端提供了 terminalId，则必须严格相等
+  if (!left.terminalId && !right.terminalId) return true;
+  return left.terminalId === right.terminalId;
 }
 
 export interface TerminalOpenRequest extends TerminalOwnerIds {
@@ -92,6 +99,8 @@ export interface TerminalSessionInfo {
   taskId?: string;
   /** 空间终端所有者 id（任务终端为 undefined） */
   workspaceId?: string;
+  /** 多终端子标识 */
+  terminalId?: string;
   /** 每次 spawn 一个新 id；restart 后变化（renderer 据此丢弃旧会话状态） */
   sessionId: string;
   /** 主进程权威解析的工作目录：空间终端 = 空间文件夹；任务终端 = 权威任务工作目录 */

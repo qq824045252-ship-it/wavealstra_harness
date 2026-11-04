@@ -225,6 +225,24 @@ test("input: 写入正确 pty；旧 sessionId 输入被丢弃", () => {
   assert.deepEqual(h.ptys[0].writes, ["ls\r"]);
 });
 
+test("同任务下不同 terminalId 分立独立 PTY 会话", () => {
+  const h = makeHost();
+  const info1 = h.host.open({ taskId: "t1", terminalId: "term-1", cols: 80, rows: 24 });
+  const info2 = h.host.open({ taskId: "t1", terminalId: "term-2", cols: 80, rows: 24 });
+  assert.notEqual(info1.sessionId, info2.sessionId);
+  assert.equal(h.ptys.length, 2);
+
+  h.host.input({ taskId: "t1", terminalId: "term-1", sessionId: info1.sessionId, data: "echo 1\r" });
+  h.host.input({ taskId: "t1", terminalId: "term-2", sessionId: info2.sessionId, data: "echo 2\r" });
+
+  assert.deepEqual(h.ptys[0].writes, ["echo 1\r"]);
+  assert.deepEqual(h.ptys[1].writes, ["echo 2\r"]);
+
+  h.host.close({ taskId: "t1", terminalId: "term-1" });
+  assert.equal(h.ptys[0].killed, true);
+  assert.equal(h.ptys[1].killed, false);
+});
+
 test("resize: 尺寸变化调用 pty.resize；非法值钳制", () => {
   const h = makeHost();
   const info = h.host.open({ taskId: "t1", cols: 80, rows: 24 });

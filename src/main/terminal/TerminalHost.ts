@@ -42,6 +42,7 @@ import { ByteBoundedRingBuffer } from "./RingBuffer";
 import { prependEnvPath } from "./terminal-env";
 import { canonicalPathKey } from "../platform/paths";
 import { defaultShellForPlatform, useConpty } from "../platform/terminal";
+import { killProcessTree } from "../platform/processes";
 
 /** 每 owner ring buffer 字节上限（256KB） */
 export const DEFAULT_RING_MAX_BYTES = 256 * 1024;
@@ -89,11 +90,12 @@ export type TerminalHostSend = (channel: string, payload: unknown) => void;
  * 会话 map 以 ownerKey 为键；同一 owner 复用一个保活会话。
  */
 export type TerminalOwner =
-  | { kind: "task"; id: string }
-  | { kind: "workspace"; id: string };
+  | { kind: "task"; id: string; terminalId?: string }
+  | { kind: "workspace"; id: string; terminalId?: string };
 
 export function ownerKeyOf(owner: TerminalOwner): string {
-  return owner.kind === "task" ? `task:${owner.id}` : `ws:${owner.id}`;
+  const sub = owner.terminalId ? `:${owner.terminalId}` : "";
+  return (owner.kind === "task" ? `task:${owner.id}` : `ws:${owner.id}`) + sub;
 }
 
 /** 路径重绑审计：Windows 大小写/尾分隔符差异不应误判为 cwd 变化。 */
@@ -281,8 +283,16 @@ export class TerminalHost {
   close(req: TerminalCloseRequest): void {
     const owner = ownerFromRequest(req);
     if (!owner) return;
-    const session = this.sessions.get(ownerKeyOf(owner));
-    if (session) this.killSession(session, "killed");
+    if (owner.terminalId) {
+      const session = this.sessions.get(ownerKeyOf(owner));
+      if (session) this.killSession(session, "killed");
+      return;
+    }
+    for (const session of Array.from(this.sessions.values())) {
+      if (session.owner.kind === owner.kind && session.owner.id === owner.id) {
+        this.killSession(session, "killed");
+      }
+    }
   }
 
   /** 有界最近输出（Chat Context Source）；无会话返回空 */
@@ -429,6 +439,23 @@ export class TerminalHost {
       clearTimeout(session.flushTimer);
       session.flushTimer = null;
     }
+    const pid = session.pty?.pid;
+    if (pid && pid > 1) {
+      try {
+        killProcessTree({
+          pid,
+          kill: () => {
+            try {
+              session.pty?.kill();
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+    }
     if (session.pty) {
       try {
         session.pty.kill();
@@ -439,6 +466,17 @@ export class TerminalHost {
     // onExit 会置 alive=false 并投递 exit 事件（reason=killed）；这里兜底（fake pty 可能不同步触发）
     if (session.alive && reason === "disposed") {
       session.alive = false;
+    }
+    if (reason === "killed") {
+      // 兜底：若 1500ms 后 onExit 仍未被触发（如平台 ConPTY 僵死），强制置 alive=false 并投递 exit，避免主进程残留
+      setTimeout(() => {
+        if (session.alive) {
+          session.alive = false;
+          session.exitCode = session.exitCode ?? -1073741510;
+          session.exitReason = "killed";
+          this.emitExit(session);
+        }
+      }, 1500).unref();
     }
   }
 
@@ -503,5 +541,10 @@ export class TerminalHost {
 
 /** 从 session.owner 生成事件/Info 中的 owner id 字段 */
 function sessionOwnerIds(session: TerminalSession): TerminalOwnerIds {
-  return session.owner.kind === "task" ? { taskId: session.owner.id } : { workspaceId: session.owner.id };
+  const ids: TerminalOwnerIds =
+    session.owner.kind === "task" ? { taskId: session.owner.id } : { workspaceId: session.owner.id };
+  if (session.owner.terminalId) {
+    ids.terminalId = session.owner.terminalId;
+  }
+  return ids;
 }

@@ -6,19 +6,21 @@ import type { PanelMode } from "@/store/appStore";
 
 export const EXTENSION_MODES: PanelMode[] = [
   "overview",
+  "artifacts",
+  "changes",
   "workspace",
   "gadgets",
   "terminal",
   "browser",
-  "changes",
 ];
 
 export const EXTENSION_MODE_LABEL: Record<PanelMode, string> = {
   overview: "概览",
+  artifacts: "产物",
+  changes: "变更",
   workspace: "工作空间文件",
-  gadgets: "Gadgets",
+  gadgets: "工作台",
   terminal: "终端",
   browser: "浏览器",
-  changes: "变更",
-  file: "概览",
+  file: "文件预览",
 };

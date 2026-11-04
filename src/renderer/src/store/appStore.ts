@@ -201,7 +201,7 @@ const EMPTY_SOUL: Soul = {
 };
 
 export type { Theme };
-export type PanelMode = "file" | "overview" | "workspace" | "gadgets" | "terminal" | "browser" | "changes";
+export type PanelMode = "file" | "overview" | "artifacts" | "workspace" | "gadgets" | "terminal" | "browser" | "changes";
 export type StreamingSendMode = "continue" | "steer" | "interrupt";
 
 export type SettingsTab =
@@ -275,6 +275,11 @@ export interface CreateRelatedTaskOptions {
   instruction?: string;
 }
 
+export interface TerminalTabItem {
+  id: string;
+  title: string;
+}
+
 interface AppState {
   page: Page;
   theme: Theme;
@@ -332,6 +337,16 @@ interface AppState {
   activeConnectorIds: string[];
   /** 各任务扩展栏终端会话（主进程权威，renderer 只读镜像；data 流不经 store） */
   terminalSessions: Record<string, TerminalSessionInfo>;
+  /** 多终端横向标签列表（按任务/工作空间 ownerKey 隔离） */
+  terminalTabsByOwner: Record<string, { tabs: TerminalTabItem[]; activeId: string | null }>;
+  createTerminalTab: () => void;
+  closeTerminalTab: (tabId: string) => void;
+  setActiveTerminalTabId: (tabId: string) => void;
+  /** 扩展栏工作空间文件数与工作台工具数缓存（供顶栏徽标显示） */
+  workspaceFilesCount: number;
+  setWorkspaceFilesCount: (count: number) => void;
+  gadgetsCount: number;
+  setGadgetsCount: (count: number) => void;
   /** 用户显式「终端 → 加入对话」的上下文（pending；发送即消费） */
   terminalContext: TerminalContextDto | null;
   /**
@@ -350,7 +365,9 @@ interface AppState {
   settingsTab: SettingsTab;
   /** 预览面板 */
   panelOpen: boolean;
+  panelPinned: boolean;
   panelMode: PanelMode;
+  browserPreviousPanelMode?: PanelMode | null;
   /** 扩展面板视图（概览/工作空间/浏览器/变更），与 file 预览模式独立 */
   extensionView: PanelMode;
   /** 打开文件时，扩展视图以悬浮层展示 */
@@ -669,8 +686,11 @@ interface AppState {
   /** 工作区路径删除后，清掉指向该路径（或文件夹内）的产物登记 */
   removeArtifactsForWorkspacePath: (root: string, relativePath: string) => Promise<void>;
   closePanel: () => void;
+  togglePanelPinned: () => void;
   showOverview: () => void;
-  /** 聊天区「查看所有产物」：打开右侧概览主视图（非悬浮层） */
+  /** 打开右侧产物面板 */
+  showArtifacts: () => void;
+  /** 聊天区「查看所有产物」：打开右侧产物视图 */
   showAllArtifacts: () => void;
   showWorkspace: () => void;
   /** 当前任务 Gadgets：右侧栏快速查看与打开。 */
@@ -838,6 +858,24 @@ function saveSidebarExpanded(ids: string[]): void {
   try {
     if (typeof window === "undefined" || !window.localStorage) return;
     window.localStorage.setItem(SIDEBAR_EXPANDED_KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+const PANEL_PINNED_KEY = "mybuddy:panel-pinned";
+function loadPanelPinned(): boolean {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    return window.localStorage.getItem(PANEL_PINNED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+function savePanelPinned(pinned: boolean): void {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    window.localStorage.setItem(PANEL_PINNED_KEY, pinned ? "true" : "false");
   } catch {
     /* ignore storage errors */
   }
@@ -1349,6 +1387,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   selection: { ...EMPTY_SELECTION },
   chatSelections: [],
   terminalSessions: {},
+  terminalTabsByOwner: {},
+  workspaceFilesCount: 0,
+  gadgetsCount: 0,
   terminalContext: null,
   pendingRefFile: null,
   pendingRefTask: null,
@@ -1378,7 +1419,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   settingsTab: "system",
   panelOpen: false,
+  panelPinned: loadPanelPinned(),
   panelMode: "file",
+  browserPreviousPanelMode: null,
   extensionView: "overview",
   extensionFlyoutOpen: false,
   extensionFlyoutPinned: false,
@@ -1669,24 +1712,34 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setTerminalSession: (info) => {
     const ownerKey = terminalOwnerStoreKey(info) ?? "?";
-    set((s) => ({ terminalSessions: { ...s.terminalSessions, [ownerKey]: info } }));
+    const rawId = info.taskId ?? info.workspaceId;
+    set((s) => ({
+      terminalSessions: {
+        ...s.terminalSessions,
+        [ownerKey]: info,
+        ...(rawId ? { [rawId]: info } : {}),
+      },
+    }));
   },
 
   applyTerminalExit: (ev) => {
     set((s) => {
       const ownerKey = terminalOwnerStoreKey(ev) ?? "?";
-      const current = s.terminalSessions[ownerKey];
+      const rawId = ev.taskId ?? ev.workspaceId;
+      const current = s.terminalSessions[ownerKey] ?? (rawId ? s.terminalSessions[rawId] : undefined);
       // 旧会话（已 restart 被替换）的 exit 事件丢弃，避免覆盖新会话状态
       if (!current || current.sessionId !== ev.sessionId) return {};
+      const updated = {
+        ...current,
+        alive: false,
+        exitCode: ev.exitCode,
+        exitReason: ev.reason,
+      };
       return {
         terminalSessions: {
           ...s.terminalSessions,
-          [ownerKey]: {
-            ...current,
-            alive: false,
-            exitCode: ev.exitCode,
-            exitReason: ev.reason,
-          },
+          [ownerKey]: updated,
+          ...(rawId ? { [rawId]: updated } : {}),
         },
       };
     });
@@ -1713,6 +1766,107 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     return true;
   },
+
+  createTerminalTab: () => {
+    const s = get();
+    const ownerKey = currentTerminalOwnerKey(s);
+    const current = s.terminalTabsByOwner[ownerKey] ?? { tabs: [], activeId: null };
+    let nextNum = 1;
+    while (current.tabs.some((t) => t.title === `终端 ${nextNum}`)) {
+      nextNum++;
+    }
+    const newTab: TerminalTabItem = {
+      id: `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: `终端 ${nextNum}`,
+    };
+    const nextTabs = [...current.tabs, newTab];
+    set({
+      terminalTabsByOwner: {
+        ...s.terminalTabsByOwner,
+        [ownerKey]: { tabs: nextTabs, activeId: newTab.id },
+      },
+      panelOpen: true,
+      panelMode: "terminal",
+      extensionView: "terminal",
+      extensionFlyoutOpen: false,
+      panelWidth: canvasPanelWidth(s.sidebarCollapsed),
+    });
+  },
+
+  closeTerminalTab: (tabId: string) => {
+    const s = get();
+    const ownerKey = currentTerminalOwnerKey(s);
+    const current = s.terminalTabsByOwner[ownerKey] ?? { tabs: [], activeId: null };
+    const idx = current.tabs.findIndex((t) => t.id === tabId);
+    if (idx < 0) return;
+    const nextTabs = current.tabs.filter((t) => t.id !== tabId);
+    let nextActiveId = current.activeId;
+    if (current.activeId === tabId) {
+      if (nextTabs.length === 0) {
+        nextActiveId = null;
+      } else {
+        const nextIdx = Math.min(idx, nextTabs.length - 1);
+        nextActiveId = nextTabs[nextIdx].id;
+      }
+    }
+
+    // 立即更新该终端在 terminalSessions 中的状态为已结束（alive: false），
+    // 确保概览中的「后台任务」即刻反映 exit，绝不在前台残留 running 假象
+    const updatedSessions = { ...s.terminalSessions };
+    for (const [key, sess] of Object.entries(updatedSessions)) {
+      if (sess && (sess.terminalId === tabId || key.endsWith(`:${tabId}`))) {
+        updatedSessions[key] = {
+          ...sess,
+          alive: false,
+          exitCode: sess.exitCode ?? -1073741510,
+          exitReason: "killed",
+        };
+      }
+    }
+    const rawId = s.page === "workspace" && s.activeWorkspaceId ? s.activeWorkspaceId : s.activeTaskId ?? s.activeWorkspaceId;
+    if (rawId && updatedSessions[rawId]?.terminalId === tabId) {
+      updatedSessions[rawId] = {
+        ...updatedSessions[rawId],
+        alive: false,
+        exitCode: updatedSessions[rawId].exitCode ?? -1073741510,
+        exitReason: "killed",
+      };
+    }
+
+    set({
+      terminalTabsByOwner: {
+        ...s.terminalTabsByOwner,
+        [ownerKey]: { tabs: nextTabs, activeId: nextActiveId },
+      },
+      terminalSessions: updatedSessions,
+    });
+    try {
+      if (s.page === "workspace" && s.activeWorkspaceId) {
+        window.api?.terminal?.close({ workspaceId: s.activeWorkspaceId, terminalId: tabId });
+      } else if (s.activeTaskId) {
+        window.api?.terminal?.close({ taskId: s.activeTaskId, terminalId: tabId });
+      } else if (s.activeWorkspaceId) {
+        window.api?.terminal?.close({ workspaceId: s.activeWorkspaceId, terminalId: tabId });
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  setActiveTerminalTabId: (tabId: string) => {
+    const s = get();
+    const ownerKey = currentTerminalOwnerKey(s);
+    const current = s.terminalTabsByOwner[ownerKey] ?? { tabs: [], activeId: null };
+    set({
+      terminalTabsByOwner: {
+        ...s.terminalTabsByOwner,
+        [ownerKey]: { ...current, activeId: tabId },
+      },
+    });
+  },
+
+  setWorkspaceFilesCount: (count: number) => set({ workspaceFilesCount: count }),
+  setGadgetsCount: (count: number) => set({ gadgetsCount: count }),
 
   clearTerminalContext: () => {
     if (get().terminalContext) set({ terminalContext: null });
@@ -3139,14 +3293,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 
   setActiveTask: (id) => {
-    const task = get().tasks.find((t) => t.id === id);
+    const s = get();
+    const task = s.tasks.find((t) => t.id === id);
     // 3E：首个产物 tab 从 projection 取（task.artifacts 已退役；未 hydrate 时为空，hydrate 后事件补齐）
-    const first = get().artifactProjection.artifactsByTask[id]?.[0]?.id ?? null;
+    const first = s.artifactProjection.artifactsByTask[id]?.[0]?.id ?? null;
     const hasMessages = (task?.messages.length ?? 0) > 0;
     const taskModelId =
-      task?.modelId && get().models.some((model) => model.id === task.modelId && model.enabled !== false)
+      task?.modelId && s.models.some((model) => model.id === task.modelId && model.enabled !== false)
         ? task.modelId
-        : get().activeModelId;
+        : s.activeModelId;
+    const keepPanel = s.panelPinned && s.panelOpen;
     set({
       activeTaskId: id,
       // 切到具体任务 = 丢弃草稿（首条消息未发出即不存在）
@@ -3165,15 +3321,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       pendingRefTask: null,
       pendingExternalAgentContinuation: null,
       page: "chat",
-      panelOpen: false,
-      panelMode: hasMessages ? "overview" : "file",
-      extensionView: hasMessages ? "overview" : "overview",
+      panelOpen: keepPanel,
+      panelMode: keepPanel
+        ? (s.panelMode === "file" && !first ? (hasMessages ? "overview" : s.extensionView) : s.panelMode)
+        : (hasMessages ? "overview" : "file"),
+      extensionView: keepPanel ? s.extensionView : (hasMessages ? "overview" : "overview"),
       extensionFlyoutOpen: false,
       extensionFlyoutPinned: false,
       extensionMenuOpen: false,
-      panelExpanded: false,
-      panelWidth: PANEL_RAIL_WIDTH,
-      sidebarBeforePanelExpand: null,
+      panelExpanded: keepPanel ? s.panelExpanded : false,
+      panelWidth: keepPanel ? s.panelWidth : PANEL_RAIL_WIDTH,
+      sidebarBeforePanelExpand: keepPanel ? s.sidebarBeforePanelExpand : null,
       artifactTabs: first ? [first] : [],
       activeArtifactId: first,
       selectMode: false,
@@ -4961,23 +5119,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       sidebarBeforePanelExpand: null,
     })),
 
+  togglePanelPinned: () => {
+    const next = !get().panelPinned;
+    savePanelPinned(next);
+    set({ panelPinned: next });
+  },
+
   showOverview: () => {
-    const s = get();
-    const hasFileTabs = s.artifactTabs.length > 0;
     set({
       panelOpen: true,
-      panelMode: hasFileTabs ? "file" : "overview",
+      panelMode: "overview",
       extensionView: "overview",
-      extensionFlyoutOpen: hasFileTabs,
-      panelWidth: hasFileTabs ? s.panelWidth : PANEL_RAIL_WIDTH,
+      extensionFlyoutOpen: false,
+      panelWidth: PANEL_RAIL_WIDTH,
+    });
+  },
+
+  showArtifacts: () => {
+    set({
+      panelOpen: true,
+      panelMode: "artifacts",
+      extensionView: "artifacts",
+      extensionFlyoutOpen: false,
+      extensionFlyoutPinned: false,
+      panelWidth: PANEL_RAIL_WIDTH,
     });
   },
 
   showAllArtifacts: () => {
     set({
       panelOpen: true,
-      panelMode: "overview",
-      extensionView: "overview",
+      panelMode: "artifacts",
+      extensionView: "artifacts",
       extensionFlyoutOpen: false,
       extensionFlyoutPinned: false,
       panelWidth: PANEL_RAIL_WIDTH,
@@ -4985,14 +5158,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   showWorkspace: () => {
-    const s = get();
-    const hasFileTabs = s.artifactTabs.length > 0;
     set({
       panelOpen: true,
-      panelMode: hasFileTabs ? "file" : "workspace",
+      panelMode: "workspace",
       extensionView: "workspace",
-      extensionFlyoutOpen: hasFileTabs,
-      panelWidth: hasFileTabs ? s.panelWidth : PANEL_RAIL_WIDTH,
+      extensionFlyoutOpen: false,
+      panelWidth: PANEL_RAIL_WIDTH,
     });
   },
 
@@ -5011,12 +5182,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const s = get();
     const key = s.activeTaskId ?? HOME_BROWSER_KEY;
     const browserUrl = s.browserUrlByTask[key] ?? "";
+    const currentMode = s.panelMode;
+    const previousMode = currentMode !== "browser" ? currentMode : s.browserPreviousPanelMode;
     set({
       panelOpen: true,
       panelMode: "browser",
       extensionView: "browser",
       extensionFlyoutOpen: false,
       browserUrlInput: browserUrl,
+      browserPreviousPanelMode: previousMode ?? "overview",
       panelWidth: browserUrl
         ? canvasPanelWidth(s.sidebarCollapsed)
         : canvasPanelWidth(s.sidebarCollapsed),
@@ -5025,15 +5199,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   showTerminal: () => {
     const s = get();
-    const hasFileTabs = s.artifactTabs.length > 0;
     set({
       panelOpen: true,
-      // 与 Browser 一致：整面板模式。flyout 无终端视图（复用 flyout 会引入高度问题），
-      // 因此有文件 tabs 时也直接整面板切换，保证任何入口都能正确到达终端。
       panelMode: "terminal",
       extensionView: "terminal",
       extensionFlyoutOpen: false,
-      panelWidth: hasFileTabs ? s.panelWidth : canvasPanelWidth(s.sidebarCollapsed),
+      panelWidth: canvasPanelWidth(s.sidebarCollapsed),
     });
   },
 
@@ -5047,9 +5218,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return;
     }
+    const currentMode = get().panelMode;
+    const previousMode = currentMode !== "browser" ? currentMode : get().browserPreviousPanelMode;
     set((s) => ({
       browserUrlByTask: { ...s.browserUrlByTask, [key]: url },
       browserUrlInput: url,
+      browserPreviousPanelMode: previousMode ?? "gadgets",
       panelMode: "browser",
       extensionView: "browser",
       extensionFlyoutOpen: false,
@@ -5066,14 +5240,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshBrowser: () => set((s) => ({ browserFrameKey: s.browserFrameKey + 1 })),
 
   showChanges: () => {
-    const s = get();
-    const hasFileTabs = s.artifactTabs.length > 0;
     set({
       panelOpen: true,
-      panelMode: hasFileTabs ? "file" : "changes",
+      panelMode: "changes",
       extensionView: "changes",
-      extensionFlyoutOpen: hasFileTabs,
-      panelWidth: hasFileTabs ? s.panelWidth : PANEL_RAIL_WIDTH,
+      extensionFlyoutOpen: false,
+      extensionFlyoutPinned: false,
+      panelWidth: PANEL_RAIL_WIDTH,
     });
   },
 
@@ -5095,6 +5268,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const view =
       mode && mode !== "file" ? mode : defaultFlyoutViewForArtifact(artifact);
     if (view === "overview") get().showOverview();
+    else if (view === "artifacts") get().showArtifacts();
     else if (view === "workspace") get().showWorkspace();
     else if (view === "terminal") get().showTerminal();
     else if (view === "browser") get().showBrowser();
@@ -6559,4 +6733,33 @@ function guessCanvasArtifactName(content: string, kind: "html" | "svg"): string 
   const raw = titleMatch?.[1]?.replace(/\s+/g, " ").trim();
   if (raw) return raw.slice(0, 48);
   return kind === "svg" ? "流程图" : "画布";
+}
+
+export function currentTerminalOwnerKey(s: {
+  page?: string;
+  activeTaskId?: string | null;
+  activeWorkspaceId?: string | null;
+}): string {
+  if (s.page === "workspace" && s.activeWorkspaceId) {
+    return `ws:${s.activeWorkspaceId}`;
+  }
+  if (s.activeTaskId) {
+    return `task:${s.activeTaskId}`;
+  }
+  if (s.activeWorkspaceId) {
+    return `ws:${s.activeWorkspaceId}`;
+  }
+  return "default";
+}
+
+const EMPTY_TERMINAL_TABS_RECORD: { tabs: TerminalTabItem[]; activeId: string | null } = {
+  tabs: [],
+  activeId: null,
+};
+
+export function useActiveTerminalTabs(): { tabs: TerminalTabItem[]; activeId: string | null } {
+  return useAppStore((s) => {
+    const ownerKey = currentTerminalOwnerKey(s);
+    return s.terminalTabsByOwner[ownerKey] ?? EMPTY_TERMINAL_TABS_RECORD;
+  });
 }

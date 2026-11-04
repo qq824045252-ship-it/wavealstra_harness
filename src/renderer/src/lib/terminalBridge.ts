@@ -18,10 +18,10 @@ export const TERMINAL_SESSION_INVALID = "__invalid-session__";
 
 export interface InputForwarderTarget {
   /** 当前终端 owner（null = 未就绪）；taskId / workspaceId 二选一 */
-  getOwner(): { taskId?: string; workspaceId?: string } | null;
+  getOwner(): { taskId?: string; workspaceId?: string; terminalId?: string } | null;
   /** 当前会话（null/"" = 未 attach 的回放窗口；哨兵 = 已失效，均不转发） */
   getSessionId(): string | null;
-  sendInput(req: { taskId?: string; workspaceId?: string; sessionId: string; data: string }): void;
+  sendInput(req: { taskId?: string; workspaceId?: string; terminalId?: string; sessionId: string; data: string }): void;
 }
 
 /**
@@ -35,9 +35,11 @@ export function createInputForwarder(target: InputForwarderTarget): (data: strin
     const sessionId = target.getSessionId();
     const taskId = owner?.taskId?.trim();
     const workspaceId = owner?.workspaceId?.trim();
+    const terminalId = owner?.terminalId?.trim();
     if ((!taskId && !workspaceId) || !sessionId || sessionId === TERMINAL_SESSION_INVALID) return;
     target.sendInput({
       ...(taskId ? { taskId } : { workspaceId }),
+      ...(terminalId ? { terminalId } : {}),
       sessionId,
       data,
     });

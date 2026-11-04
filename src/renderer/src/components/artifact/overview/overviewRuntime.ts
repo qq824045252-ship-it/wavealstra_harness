@@ -45,6 +45,10 @@ export interface DoneSubagentVm {
   summary: string;
   /** 该实例在本 task 内的工具调用次数（去重后的聚合计数） */
   count: number;
+  /** 任务输入/要求目标 */
+  task?: string;
+  /** 完整输出详情结果 */
+  detail?: string;
 }
 
 export type BackgroundState = "running" | "completed" | "failed";
@@ -56,6 +60,7 @@ export interface BackgroundTaskVm {
   /** 仅当真实数据有 exit code 时提供；bash 工具调用无该事件 → 不伪造 */
   exitCode?: number;
   elapsedMs?: number;
+  terminalId?: string;
 }
 
 export interface RuntimeOverviewVm {
@@ -155,8 +160,27 @@ export function buildRunningSubagents(dtos: SubagentSummaryDto[], now: number): 
  * 防御性：无法提取 id 的调用直接忽略（与 ToolCallCard chip 同语义）。
  * 同一实例多次调用（复用运行中）：状态与摘要取**最后一次**（最终态），计数累计 ×N。
  */
+function extractSubagentTask(detail?: string, summary?: string): string {
+  const text = (detail || summary || "").trim();
+  if (!text) return "";
+  try {
+    const obj = JSON.parse(text);
+    if (typeof obj === "object" && obj !== null) {
+      if (typeof obj.task === "string") return obj.task;
+      if (typeof obj.prompt === "string") return obj.prompt;
+    }
+  } catch {
+    const m = text.match(/"task"\s*:\s*"([^"]+)"/);
+    if (m) return m[1];
+  }
+  return text;
+}
+
 export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
-  const map = new Map<string, { state: DoneSubagentState; summary: string; count: number }>();
+  const map = new Map<
+    string,
+    { state: DoneSubagentState; summary: string; count: number; task?: string; detail?: string }
+  >();
   for (const msg of messages) {
     for (const block of msg.blocks ?? []) {
       if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
@@ -168,11 +192,26 @@ export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
         tc.status === "success" ? "completed" : tc.status === "error" ? "failed" : "cancelled";
       const prev = map.get(id);
       const summary = pickSummary(tc, state, prev?.summary);
+      const task = extractSubagentTask(tc.detail, tc.summary);
+      const detail = tc.output || tc.detail || "";
       // 状态取最新（后一次调用覆盖前一次）；空摘要保留旧值
-      map.set(id, { state, summary, count: (prev?.count ?? 0) + 1 });
+      map.set(id, {
+        state,
+        summary,
+        count: (prev?.count ?? 0) + 1,
+        task: task || prev?.task,
+        detail: detail || prev?.detail,
+      });
     }
   }
-  return [...map.entries()].map(([id, v]) => ({ id, state: v.state, summary: v.summary, count: v.count }));
+  return [...map.entries()].map(([id, v]) => ({
+    id,
+    state: v.state,
+    summary: v.summary,
+    count: v.count,
+    task: v.task,
+    detail: v.detail,
+  }));
 }
 
 /** 集中式 subagent id 解析：统一复用 shared 单 parser（与 ToolCallCard chip 同源）。 */
@@ -202,21 +241,36 @@ export function buildBackgroundTasks(
   workspaceId?: string,
 ): BackgroundTaskVm[] {
   const out: BackgroundTaskVm[] = [];
-  // 1) 当前上下文的终端会话：空间任务优先 workspace 会话，独立任务仍按 taskId
-  const term =
-    (workspaceId ? terminalSessions?.[workspaceId] : undefined) ?? terminalSessions?.[taskId];
-  if (term) {
+  // 1) 收集当前任务/空间关联的终端会话
+  const seenSessions = new Set<string>();
+  for (const [key, term] of Object.entries(terminalSessions ?? {})) {
+    if (!term) continue;
+    const matches =
+      term.taskId === taskId ||
+      (workspaceId && term.workspaceId === workspaceId) ||
+      key === taskId ||
+      (workspaceId && key === workspaceId);
+    if (!matches) continue;
+    const sessionUniqueId = term.sessionId || key;
+    if (seenSessions.has(sessionUniqueId)) continue;
+    seenSessions.add(sessionUniqueId);
     if (term.alive) {
-      out.push({ key: `term:${taskId}`, name: shellLabel(term.shell), state: "running", elapsedMs: now - term.startedAt });
+      out.push({
+        key: `term:${key}`,
+        name: shellLabel(term.shell),
+        state: "running",
+        elapsedMs: now - term.startedAt,
+        terminalId: term.terminalId,
+      });
     } else if (term.exitCode !== null && term.exitCode !== undefined) {
       out.push({
-        key: `term:${taskId}`,
+        key: `term:${key}`,
         name: shellLabel(term.shell),
         state: term.exitCode === 0 ? "completed" : "failed",
         exitCode: term.exitCode,
+        terminalId: term.terminalId,
       });
     }
-    // !alive && 无 exitCode：无明确 lifecycle → 不展示（不伪造）
   }
   // 2) 运行中的 bash 工具调用（同步执行中的长命令；无 exit code 事件 → 不显示 exit）
   for (const msg of messages) {

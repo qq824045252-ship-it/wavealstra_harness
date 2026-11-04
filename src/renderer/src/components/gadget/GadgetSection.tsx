@@ -4,6 +4,7 @@ import type { GadgetListItem, GadgetRuntimeState, GadgetScope } from "@shared/ga
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { useAppStore } from "@/store/appStore";
+import { IconArrowUpRight, IconPlus, IconPuzzle } from "@/components/common/icons";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
@@ -13,6 +14,7 @@ interface Props {
   scope: GadgetScope;
   includeInherited?: boolean;
   title?: string;
+  hideHeader?: boolean;
 }
 
 function scopeKey(scope: GadgetScope): string {
@@ -20,10 +22,10 @@ function scopeKey(scope: GadgetScope): string {
 }
 
 function statusLabel(state: GadgetRuntimeState): string {
-  if (state.status === "running") return "Running";
-  if (state.status === "starting") return "Starting";
-  if (state.status === "error") return "Error";
-  return "Stopped";
+  if (state.status === "running") return "运行中";
+  if (state.status === "starting") return "启动中";
+  if (state.status === "error") return "异常";
+  return "已停止";
 }
 
 function gadgetApi(): NonNullable<typeof window.api>["gadget"] {
@@ -32,7 +34,7 @@ function gadgetApi(): NonNullable<typeof window.api>["gadget"] {
   return api;
 }
 
-export default function GadgetSection({ scope, includeInherited = false, title }: Props): React.JSX.Element {
+export default function GadgetSection({ scope, includeInherited = false, title, hideHeader = false }: Props): React.JSX.Element {
   const spaces = useAppStore((state) => state.spaces);
   const activeTaskId = useAppStore((state) => state.activeTaskId);
   const taskWorkspaceId = useAppStore((state) => scope.type === "task" ? state.tasks.find((task) => task.id === scope.taskId)?.spaceId : undefined);
@@ -53,6 +55,7 @@ export default function GadgetSection({ scope, includeInherited = false, title }
     try {
       const rows = await gadgetApi().list({ scope, includeInherited });
       setItems(rows);
+      useAppStore.getState().setGadgetsCount(rows.length);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -184,82 +187,200 @@ export default function GadgetSection({ scope, includeInherited = false, title }
   const renderCard = (item: GadgetListItem): React.JSX.Element => {
     const busy = busyId === item.id;
     const taskScoped = item.scope.type === "task";
-    const workspaceScoped = item.scope.type === "workspace";
     const actionOpen = openActionId === item.id;
     const closeActions = (): void => setOpenActionId(null);
+    const originName =
+      item.scope.type === "global"
+        ? "我的工作台"
+        : spaces.find((space) => space.id === item.inheritedFromWorkspaceId)?.name ?? "工作空间";
+
     return (
-      <article key={`${item.inherited ? "inherited" : "direct"}:${item.id}`} className={`gadget-card${item.inherited ? " gadget-card--inherited" : ""}`}>
-        <div className="gadget-card-main">
-          <div className="gadget-card-name">{item.name}</div>
-          {item.description && <div className="gadget-card-description">{item.description}</div>}
-          <div className="gadget-card-meta">
-            <span className={`gadget-status gadget-status--${item.runtime.status}`}>{statusLabel(item.runtime)}</span>
-            {taskScoped && <span>Temporary</span>}
-            {item.inherited && <span>From {item.scope.type === "global" ? "My Gadgets" : spaces.find((space) => space.id === item.inheritedFromWorkspaceId)?.name ?? "工作空间"}</span>}
+      <article
+        key={`${item.inherited ? "inherited" : "direct"}:${item.id}`}
+        className={`gadget-card${item.inherited ? " gadget-card--inherited" : ""}`}
+      >
+        <div className="gadget-card-top">
+          <div className="gadget-card-title-row">
+            <span className="gadget-card-icon">
+              <IconPuzzle size={14} />
+            </span>
+            <span className="gadget-card-name" title={item.name}>
+              {item.name}
+            </span>
           </div>
-          {item.runtime.error && <div className="gadget-inline-error">{item.runtime.error}</div>}
+          <div className="gadget-card-actions">
+            <button
+              type="button"
+              className="btn btn--primary btn--sm gadget-open-btn"
+              disabled={busy}
+              onClick={() => void run(item, "start")}
+              title="在侧栏浏览器中打开"
+            >
+              <IconArrowUpRight size={12} />
+              <span>打开</span>
+            </button>
+            {(!item.inherited || scope.type === "task") && (
+              <details className="gadget-action-menu" open={actionOpen}>
+                <summary
+                  className="icon-btn gadget-more-btn"
+                  aria-label={`更多操作：${item.name}`}
+                  aria-haspopup="menu"
+                  aria-expanded={actionOpen}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setOpenActionId((current) => (current === item.id ? null : item.id));
+                  }}
+                >
+                  •••
+                </summary>
+                {actionOpen && (
+                  <div className="gadget-action-menu-popover" role="menu">
+                    {item.runtime.status === "running" && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); void run(item, "restart"); }}>
+                        重新启动
+                      </button>
+                    )}
+                    {item.runtime.status === "running" && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); void run(item, "stop"); }}>
+                        停止
+                      </button>
+                    )}
+                    <button type="button" disabled={busy} onClick={() => { closeActions(); void edit(item); }}>
+                      编辑名称与描述
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => { closeActions(); setSourceItem(item); }}>
+                      编辑源码
+                    </button>
+                    {!item.inherited && taskScoped && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item, initialTarget: "workspace" }); }}>
+                        保存到工作空间
+                      </button>
+                    )}
+                    {!item.inherited && taskScoped && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); void saveToMyGadgets(item); }}>
+                        保存到我的工作台
+                      </button>
+                    )}
+                    {!item.inherited && !taskScoped && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item }); }}>
+                        移动到…
+                      </button>
+                    )}
+                    <button type="button" disabled={busy} onClick={() => { closeActions(); void saveBlueprint(item); }}>
+                      保存为 Blueprint
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => { closeActions(); void exportArtifact(item); }}>
+                      导出 Artifact
+                    </button>
+                    {!item.inherited && (
+                      <button type="button" className="gadget-danger" disabled={busy} onClick={() => { closeActions(); setPendingRemove(item); }}>
+                        删除
+                      </button>
+                    )}
+                  </div>
+                )}
+              </details>
+            )}
+          </div>
         </div>
-        <div className="gadget-card-actions">
-          <button className="btn btn--primary" disabled={busy} onClick={() => void run(item, "start")}>Open</button>
-          {!item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => setMoveItem({ item, initialTarget: "workspace" })}>Save to Workspace</button>}
-          {!item.inherited && taskScoped && <button className="btn" disabled={busy} onClick={() => void saveToMyGadgets(item)}>Save to My Gadgets</button>}
-          {!item.inherited && (taskScoped || workspaceScoped) && <button className="btn btn--ghost gadget-danger" disabled={busy} onClick={() => setPendingRemove(item)}>Delete</button>}
-          {(!item.inherited || scope.type === "task") && (
-            <details className="gadget-action-menu" open={actionOpen}>
-              <summary
-                className="btn btn--ghost"
-                aria-label={`更多操作：${item.name}`}
-                aria-haspopup="menu"
-                aria-expanded={actionOpen}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setOpenActionId((current) => current === item.id ? null : item.id);
-                }}
-              >•••</summary>
-              {actionOpen && <div className="gadget-action-menu-popover" role="menu">
-                {item.runtime.status === "running" && <button type="button" disabled={busy} onClick={() => { closeActions(); void run(item, "restart"); }}>重新启动</button>}
-                {item.runtime.status === "running" && <button type="button" disabled={busy} onClick={() => { closeActions(); void run(item, "stop"); }}>停止</button>}
-                <button type="button" disabled={busy} onClick={() => { closeActions(); void edit(item); }}>编辑名称与描述</button>
-                <button type="button" disabled={busy} onClick={() => { closeActions(); setSourceItem(item); }}>编辑源码</button>
-                {!item.inherited && !taskScoped && <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item }); }}>移动到…</button>}
-                <button type="button" disabled={busy} onClick={() => { closeActions(); void saveBlueprint(item); }}>保存为 Blueprint</button>
-                <button type="button" disabled={busy} onClick={() => { closeActions(); void exportArtifact(item); }}>导出 Artifact</button>
-                {!item.inherited && item.scope.type === "global" && <button type="button" className="gadget-danger" disabled={busy} onClick={() => { closeActions(); setPendingRemove(item); }}>删除</button>}
-              </div>}
-            </details>
+
+        <div className="gadget-card-meta">
+          <span className={`gadget-status-badge status--${item.runtime.status}`}>
+            <span className="gadget-status-dot" />
+            {statusLabel(item.runtime)}
+          </span>
+          {item.inherited && (
+            <span className="gadget-origin-tag" title={`来自 ${originName}`}>
+              来自 {originName}
+            </span>
+          )}
+          {!item.inherited && taskScoped && (
+            <span className="gadget-origin-tag temporary">当前任务临时</span>
           )}
         </div>
+
+        {item.description && <div className="gadget-card-description">{item.description}</div>}
+        {item.runtime.error && <div className="gadget-inline-error">{item.runtime.error}</div>}
       </article>
     );
   };
 
   return (
     <section className="gadget-section">
-      <div className="gadget-section-head">
-        <div>
-          <h2>{title ?? (scope.type === "global" ? "My Gadgets" : "Gadgets")}</h2>
-          <p>{scope.type === "global" ? "可在 MyBuddy 各处重复使用的个人工具。" : scope.type === "workspace" ? "为这个工作空间持续提供帮助的工具。" : "管理当前任务、工作空间与个人工具；打开后可在侧面浏览器中使用。"}</p>
+      {scope.type === "task" || hideHeader ? (
+        <div className="gadgets-view-header">
+          <div className="gadgets-view-stats">
+            <span className="gadgets-count-label">工作台</span>
+            <span className="gadgets-count-badge">{items.length}</span>
+          </div>
+          <button
+            type="button"
+            className="extension-tab-add-btn gadgets-header-add-btn"
+            title="新建工具"
+            onClick={() => {
+              setError(null);
+              setCreateOpen(true);
+            }}
+          >
+            <IconPlus size={12} />
+            <span>新建工具</span>
+          </button>
         </div>
-        <div className="gadget-section-tools">
-          {scope.type === "global" && <input className="gadget-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Gadget" aria-label="搜索 Gadget" />}
-          <button className="btn btn--primary" onClick={() => { setError(null); setCreateOpen(true); }}>New Gadget</button>
-        </div>
-      </div>
-      {error && <div className="gadget-error" role="alert">{error}<button type="button" onClick={() => setError(null)}>×</button></div>}
-      {notice && <div className="gadget-notice" role="status">{notice}<button type="button" onClick={() => setNotice(null)}>×</button></div>}
-      {visibleDirect.length === 0 && inherited.length === 0 ? (
-        <div className="gadget-empty">
-          <strong>{query.trim() ? "没有匹配的 Gadget" : scope.type === "global" ? "还没有 Gadget" : scope.type === "workspace" ? "这个工作空间还没有 Gadget" : "这个任务还没有 Gadget"}</strong>
-          {!query.trim() && <span>{scope.type === "global" ? "创建一个可重复使用的工具，或把任务 Gadget 保存到 My Gadgets。" : scope.type === "workspace" ? "为这个工作空间创建工具，或把已有 Gadget 移动到这里。" : "让 Agent 创建临时工具，随后可保存到工作空间或 My Gadgets。"}</span>}
-        </div>
-      ) : <div className="gadget-grid">{visibleDirect.map(renderCard)}</div>}
-      {includeInherited && inherited.length > 0 && (
-        <div className="gadget-inherited-group">
-          <h3>{scope.type === "task" ? "工作空间与个人工具" : "Inherited"}</h3>
-          <div className="gadget-grid">{inherited.map(renderCard)}</div>
+      ) : (
+        <div className="gadget-section-head">
+          <div>
+            <h2>{title ?? (scope.type === "global" ? "我的工作台" : "工作台")}</h2>
+            <p>{scope.type === "global" ? "可在 MyBuddy 各处重复使用的个人工具。" : "为这个工作空间持续提供帮助的工具。"}</p>
+          </div>
+          <div className="gadget-section-tools">
+            {scope.type === "global" && (
+              <input
+                className="gadget-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索工具"
+                aria-label="搜索工具"
+              />
+            )}
+            <button className="btn btn--primary" onClick={() => { setError(null); setCreateOpen(true); }}>新建工具</button>
+          </div>
         </div>
       )}
+
+      {error && <div className="gadget-error" role="alert">{error}<button type="button" onClick={() => setError(null)}>×</button></div>}
+      {notice && <div className="gadget-notice" role="status">{notice}<button type="button" onClick={() => setNotice(null)}>×</button></div>}
+
+      <div className="gadgets-panel-content">
+        {visibleDirect.length === 0 && inherited.length === 0 ? (
+          <div className="gadget-empty-state">
+            <IconPuzzle size={36} className="gadget-empty-icon" />
+            <h4 className="gadget-empty-title">当前任务暂无工作台工具</h4>
+            <p className="gadget-empty-desc">随时点击上方「新建工具」为当前任务创建轻量独立工具</p>
+          </div>
+        ) : (
+          <div className="gadget-groups-wrapper">
+            {visibleDirect.length > 0 && (
+              <div className="gadget-group">
+                <div className="gadget-group-header">
+                  <span className="gadget-group-title">当前任务</span>
+                  <span className="gadget-group-badge">{visibleDirect.length}</span>
+                </div>
+                <div className="gadget-grid">{visibleDirect.map(renderCard)}</div>
+              </div>
+            )}
+            {includeInherited && inherited.length > 0 && (
+              <div className="gadget-group">
+                <div className="gadget-group-header">
+                  <span className="gadget-group-title">空间与个人工具</span>
+                  <span className="gadget-group-badge">{inherited.length}</span>
+                </div>
+                <div className="gadget-grid">{inherited.map(renderCard)}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       {sourceItem && createPortal(<GadgetSourceDialog gadget={sourceItem} onClose={() => setSourceItem(null)} />, document.body)}
       {moveItem && (
         <GadgetMoveDialog

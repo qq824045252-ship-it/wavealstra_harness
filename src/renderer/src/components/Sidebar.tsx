@@ -872,7 +872,7 @@ export default function Sidebar(): React.JSX.Element {
             <button className="sidebar-popup-item" onClick={() => go("automation")}><IconZap size={14} /> 自动化</button>
             <button className="sidebar-popup-item" onClick={() => go("experts")}><IconPuzzle size={14} /> 插件</button>
             <div className="sidebar-popup-sep" />
-            <button className="sidebar-popup-item" onClick={() => go("gadgets")}><IconGrid size={14} /> 我的小工具</button>
+            <button className="sidebar-popup-item" onClick={() => go("gadgets")}><IconGrid size={14} /> 我的工作台</button>
             <button className="sidebar-popup-item" onClick={() => go("library")}><IconBook size={14} /> 资料库</button>
             <button className="sidebar-popup-item" onClick={() => go("files")}><IconFile size={14} /> 文件</button>
             <div className="sidebar-popup-sep" />

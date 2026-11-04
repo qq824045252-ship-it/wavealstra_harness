@@ -25,6 +25,8 @@ interface Props {
   limit?: number;
   /** 悬浮卡片 / 浏览器侧栏：与概览同一列层级 */
   variant?: "default" | "panel";
+  /** 独立面板模式，无需手风琴折叠展开，直接展示列表 */
+  standalone?: boolean;
 }
 
 /** CAD artifact 徽标：validation 状态 / 3D 预览 / 模型归属（capabilities 驱动，只读展示） */
@@ -126,6 +128,7 @@ export default function ArtifactRail({
   onSelect,
   limit = 8,
   variant = "default",
+  standalone = false,
 }: Props): React.JSX.Element {
   const [sectionOpen, setSectionOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -252,6 +255,19 @@ export default function ArtifactRail({
       onContext={(e, artifact) => setMenu({ x: e.clientX, y: e.clientY, artifact })}
     />
   ));
+
+  if (standalone) {
+    return (
+      <div className="extension-panel-artifacts extension-artifacts-standalone">
+        {notice && <div className="ws-tree-notice">{notice}</div>}
+        <div className="extension-panel-item-list">
+          {rows.length > 0 ? rows : <div className="artifact-overview-empty">这次还没有产物</div>}
+        </div>
+        {menuNode}
+        {confirmNode}
+      </div>
+    );
+  }
 
   if (isPanel) {
     return (

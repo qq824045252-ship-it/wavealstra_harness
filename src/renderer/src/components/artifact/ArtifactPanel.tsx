@@ -9,6 +9,7 @@ import ChangesView from "./ChangesView";
 import ExtensionTopBar from "./ExtensionTopBar";
 import HtmlArtifactView from "./HtmlArtifactView";
 import OverviewView from "./OverviewView";
+import ArtifactsView from "./ArtifactsView";
 import TerminalView from "./TerminalView";
 import WorkspaceFilesView from "./WorkspaceFilesView";
 import TaskGadgetsView from "./TaskGadgetsView";
@@ -154,6 +155,35 @@ export default function ArtifactPanel(): React.JSX.Element | null {
     }
   }, [panelMode, artifacts, activeArtifactId, renderLoadState, ensureArtifactRenderPayload]);
 
+  const taskCwd = useAppStore((s) => s.tasks.find((t) => t.id === activeTaskId)?.cwd);
+  const spaces = useAppStore((s) => s.spaces);
+  const setWorkspaceFilesCount = useAppStore((s) => s.setWorkspaceFilesCount);
+  const setGadgetsCount = useAppStore((s) => s.setGadgetsCount);
+
+  // 预载空间文件数与工作台工具数，供顶栏徽标及时显示
+  useEffect(() => {
+    const spaceId = taskSpaceId || activeWorkspaceId;
+    const space = spaceId ? spaces.find((s) => s.id === spaceId) : undefined;
+    const root = space?.path || taskCwd;
+    if (root && window.api?.listWorkspaceFiles) {
+      window.api
+        .listWorkspaceFiles(root)
+        .then((nodes) => setWorkspaceFilesCount(nodes.length))
+        .catch(() => {});
+    }
+    if (window.api?.gadget?.list) {
+      const scope = activeTaskId
+        ? { type: "task" as const, taskId: activeTaskId }
+        : activeWorkspaceId
+          ? { type: "workspace" as const, workspaceId: activeWorkspaceId }
+          : { type: "global" as const };
+      window.api.gadget
+        .list({ scope, includeInherited: true })
+        .then((list) => setGadgetsCount(list.length))
+        .catch(() => {});
+    }
+  }, [activeTaskId, activeWorkspaceId, taskCwd, taskSpaceId, spaces, setWorkspaceFilesCount, setGadgetsCount]);
+
   const [wsSearch] = useState("");
 
   // 原生 WebContentsView 不在 DOM 树内：非产物预览关 artifact host；非浏览器关 browser host。
@@ -230,8 +260,10 @@ export default function ArtifactPanel(): React.JSX.Element | null {
             />
           )}
         </div>
-      ) : panelMode === "overview" || panelMode === "file" ? (
+      ) : panelMode === "overview" ? (
         <OverviewView />
+      ) : panelMode === "artifacts" ? (
+        <ArtifactsView />
       ) : panelMode === "workspace" ? (
         <WorkspaceFilesView query={wsSearch} />
       ) : panelMode === "gadgets" ? (

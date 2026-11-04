@@ -150,7 +150,23 @@ export default function BrowserView(): React.JSX.Element {
     window.api?.captureMode?.exit();
     window.api?.browser?.close();
     setBrowserUrl(null);
-    closePanel();
+    const store = useAppStore.getState();
+    const prevMode = store.browserPreviousPanelMode ?? "gadgets";
+    if (prevMode === "gadgets") {
+      store.showGadgets();
+    } else if (prevMode === "overview") {
+      store.showOverview();
+    } else if (prevMode === "artifacts") {
+      store.showArtifacts();
+    } else if (prevMode === "workspace") {
+      store.showWorkspace();
+    } else if (prevMode === "terminal") {
+      store.showTerminal();
+    } else if (prevMode === "changes") {
+      store.showChanges();
+    } else {
+      store.showGadgets();
+    }
   };
 
   const navigateTo = useCallback(
@@ -166,7 +182,6 @@ export default function BrowserView(): React.JSX.Element {
 
   return (
     <div className="browser-view">
-      <ExtensionModeDropdown />
       <BrowserNavBar
         htmlEdit={{ target: "browser", modelId }}
         url={activeUrl ?? ""}

@@ -12,6 +12,7 @@ import {
   IconOpenExternal,
   IconPencil,
   IconPlus,
+  IconSearch,
   IconTrash,
 } from "@/components/common/icons";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
@@ -299,10 +300,12 @@ export default function WorkspaceFilesView({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [localFilter, setLocalFilter] = useState("");
 
   const reload = (): void => {
     if (!root) {
       setTree([]);
+      useAppStore.getState().setWorkspaceFilesCount(0);
       setLoading(false);
       return;
     }
@@ -310,7 +313,10 @@ export default function WorkspaceFilesView({
     setError("");
     void window.api
       ?.listWorkspaceFiles(root)
-      .then((nodes) => setTree(nodes))
+      .then((nodes) => {
+        setTree(nodes);
+        useAppStore.getState().setWorkspaceFilesCount(nodes.length);
+      })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => setLoading(false));
   };
@@ -321,13 +327,17 @@ export default function WorkspaceFilesView({
     setError("");
     if (!root) {
       setTree([]);
+      useAppStore.getState().setWorkspaceFilesCount(0);
       setLoading(false);
       return;
     }
     void window.api
       ?.listWorkspaceFiles(root)
       .then((nodes) => {
-        if (!disposed) setTree(nodes);
+        if (!disposed) {
+          setTree(nodes);
+          useAppStore.getState().setWorkspaceFilesCount(nodes.length);
+        }
       })
       .catch((reason: unknown) => {
         if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
@@ -340,7 +350,10 @@ export default function WorkspaceFilesView({
       void window.api
         ?.listWorkspaceFiles(root)
         .then((nodes) => {
-          if (!disposed) setTree(nodes);
+          if (!disposed) {
+            setTree(nodes);
+            useAppStore.getState().setWorkspaceFilesCount(nodes.length);
+          }
         })
         .catch(() => {
           /* 刷新失败保持当前树 */
@@ -353,12 +366,13 @@ export default function WorkspaceFilesView({
     };
   }, [root]);
 
-  const filteredTree = useMemo(() => filterTree(tree, query), [tree, query]);
+  const activeQuery = query || localFilter;
+  const filteredTree = useMemo(() => filterTree(tree, activeQuery), [tree, activeQuery]);
 
   const visibleExpanded = useMemo(() => {
-    if (!query.trim()) return expanded;
+    if (!activeQuery.trim()) return expanded;
     return new Set(collectFolderPaths(filteredTree));
-  }, [query, filteredTree, expanded]);
+  }, [activeQuery, filteredTree, expanded]);
 
   const flash = (text: string): void => {
     setNotice(text);
@@ -529,18 +543,24 @@ export default function WorkspaceFilesView({
         dropOnFolder("", e);
       }}
     >
-      {!floating && !spaceId && <ExtensionModeDropdown />}
-      {/* P6：Context/Library 主入口已移至 WorkspaceDetail，此处仅保留轻量入口 */}
-      {!floating && !spaceId && contextSpaceId && (
-        <div className="workspace-summary-strip">
-          <button type="button" className="workspace-summary-link" onClick={() => useAppStore.getState().openWorkspaceDetail(contextSpaceId)}>查看空间上下文</button>
-          <span className="workspace-summary-sep">·</span>
-          <button type="button" className="workspace-summary-link" onClick={() => useAppStore.getState().openWorkspaceDetail(contextSpaceId)}>管理资料库绑定</button>
+      <div className="workspace-view-header">
+        <div className="workspace-view-stats">
+          <span className="workspace-count-label">工作空间文件</span>
+          <span className="workspace-count-badge">{filteredTree.length}</span>
         </div>
-      )}
-      {!floating && !spaceId && !contextSpaceId && (
-        <div className="workspace-summary-strip workspace-summary-strip--muted">独立任务 · 无空间继承</div>
-      )}
+        {tree.length > 5 && (
+          <div className="artifacts-search-box">
+            <IconSearch size={13} className="artifacts-search-icon" />
+            <input
+              type="text"
+              className="artifacts-search-input"
+              placeholder="过滤文件..."
+              value={localFilter}
+              onChange={(e) => setLocalFilter(e.target.value)}
+            />
+          </div>
+        )}
+      </div>
       {notice && <div className="ws-tree-notice">{notice}</div>}
       <div className={`ws-tree-list${dropTarget === "" ? " drop-target-root" : ""}`}>
         {filteredTree.map((node) => {

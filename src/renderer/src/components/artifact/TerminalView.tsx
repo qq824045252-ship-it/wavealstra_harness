@@ -26,14 +26,16 @@ import {
 import { resolveTerminalContrastRatio, resolveTerminalTheme } from "@/lib/terminalTheme";
 import { FONT_SETTINGS_EVENT, getAppliedFontSettings } from "@/lib/fontSettings";
 import { resolveTerminalUiOwner, terminalUiSpawnKey } from "@/lib/terminalOwner";
-import { useAppStore } from "@/store/appStore";
+import { useActiveTerminalTabs, useAppStore } from "@/store/appStore";
 import {
   IconArrowUpRight,
   IconCode,
   IconEraser,
   IconFolder,
+  IconPlus,
   IconRefresh,
   IconStop,
+  IconTerminal,
   IconX,
 } from "@/components/common/icons";
 import {
@@ -69,7 +71,13 @@ function baseNameOf(p: string | undefined): string {
   return parts[parts.length - 1] ?? "";
 }
 
-export default function TerminalView(): React.JSX.Element {
+interface TerminalSessionPaneProps {
+  tabId: string;
+  tabTitle: string;
+  active: boolean;
+}
+
+function TerminalSessionPane({ tabId, tabTitle, active }: TerminalSessionPaneProps): React.JSX.Element {
   const page = useAppStore((s) => s.page);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
@@ -105,10 +113,10 @@ export default function TerminalView(): React.JSX.Element {
   const workspacePathKey = uiOwner.kind === "workspace" ? `${space?.path ?? ""}|${space?.pathMissing ? "1" : "0"}` : "";
   const ownerIds = useMemo((): TerminalOwnerIds | null => {
     if (!spawnKey) return null;
-    if (spawnKey.startsWith("ws:")) return { workspaceId: spawnKey.slice(3) };
-    if (spawnKey.startsWith("task:")) return { taskId: spawnKey.slice(5) };
+    if (spawnKey.startsWith("ws:")) return { workspaceId: spawnKey.slice(3), terminalId: tabId };
+    if (spawnKey.startsWith("task:")) return { taskId: spawnKey.slice(5), terminalId: tabId };
     return null;
-  }, [spawnKey]);
+  }, [spawnKey, tabId]);
   const sessionKey = ownerIds ? terminalOwnerStoreKey(ownerIds) : null;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -127,7 +135,10 @@ export default function TerminalView(): React.JSX.Element {
   activeTaskIdRef.current = activeTaskId ?? null;
   ownerIdsRef.current = ownerIds;
 
-  const sessionInfo = sessionKey ? terminalSessions[sessionKey] : undefined;
+  const sessionInfo =
+    (sessionKey ? terminalSessions[sessionKey] : undefined) ??
+    (ownerIds?.taskId ? terminalSessions[ownerIds.taskId] : undefined) ??
+    (ownerIds?.workspaceId ? terminalSessions[ownerIds.workspaceId] : undefined);
   const alive = Boolean(sessionInfo?.alive);
 
   const openSession = useCallback(
@@ -220,16 +231,28 @@ export default function TerminalView(): React.JSX.Element {
       () => console.warn("[terminal] 输出积压超过 8MB 安全水位，已丢弃后续输出"),
     );
     const offData = window.api.terminal.onData((ev: TerminalDataEvent) => {
+      if (sessionIdRef.current) {
+        if (ev.sessionId === sessionIdRef.current) {
+          writer.write(ev.data);
+        }
+        return;
+      }
       const current = ownerIdsRef.current;
       if (!current || !sameTerminalOwner(ev, current)) return;
-      if (sessionIdRef.current && ev.sessionId !== sessionIdRef.current) return;
+      if (ev.terminalId && current.terminalId && ev.terminalId !== current.terminalId) return;
       writer.write(ev.data);
     });
     const offExit = window.api.terminal.onExit((ev: TerminalExitEvent) => {
       useAppStore.getState().applyTerminalExit(ev);
+      if (sessionIdRef.current) {
+        if (ev.sessionId === sessionIdRef.current) {
+          term.write(`\r\n\x1b[90m[进程已退出 code=${ev.exitCode ?? "?"}]\x1b[0m\r\n`);
+        }
+        return;
+      }
       const current = ownerIdsRef.current;
       if (!current || !sameTerminalOwner(ev, current)) return;
-      if (sessionIdRef.current && ev.sessionId !== sessionIdRef.current) return;
+      if (ev.terminalId && current.terminalId && ev.terminalId !== current.terminalId) return;
       term.write(`\r\n\x1b[90m[进程已退出 code=${ev.exitCode ?? "?"}]\x1b[0m\r\n`);
     });
 
@@ -284,7 +307,21 @@ export default function TerminalView(): React.JSX.Element {
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [spawnKey, workspacePathKey]);
+  }, [spawnKey, workspacePathKey, tabId]);
+
+  useEffect(() => {
+    if (!active) return;
+    const term = termRef.current;
+    const fit = fitAddonRef.current;
+    if (term && fit) {
+      try {
+        fit.fit();
+        term.focus();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [active]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -352,9 +389,18 @@ export default function TerminalView(): React.JSX.Element {
     window.api?.terminal?.close(ids);
   }, []);
 
-  const closeTerminal = useCallback(() => {
-    useAppStore.getState().closePanel();
-  }, []);
+  useEffect(() => {
+    if (active) {
+      requestAnimationFrame(() => {
+        try {
+          fitAddonRef.current?.fit();
+          termRef.current?.focus();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+  }, [active]);
 
   const attachToChat = useCallback(async () => {
     const ids = ownerIdsRef.current;
@@ -428,11 +474,20 @@ export default function TerminalView(): React.JSX.Element {
   const shellLabel = baseNameOf(sessionInfo?.shell) || "shell";
 
   return (
-    <div className="extension-body terminal-view">
+    <div
+      className="terminal-instance-container"
+      style={{
+        display: active ? "flex" : "none",
+        flex: 1,
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+      }}
+    >
       <div className="terminal-toolbar">
         <span className="terminal-toolbar-title" title={sessionInfo?.cwd}>
           <IconCode size={13} />
-          <span className="terminal-toolbar-name">{cwdLabel}</span>
+          <span className="terminal-toolbar-name">{tabTitle} · {cwdLabel}</span>
           <span className="terminal-toolbar-shell">{shellLabel}</span>
           <span className={`terminal-dot ${alive ? "alive" : "dead"}`} title={alive ? "运行中" : "已退出"} />
         </span>
@@ -478,16 +533,6 @@ export default function TerminalView(): React.JSX.Element {
           <button type="button" className="icon-btn" title="重启终端" onClick={() => void restart()}>
             <IconRefresh size={13} />
           </button>
-          {page !== "workspace" && (
-          <button
-            type="button"
-            className="icon-btn"
-            title="关闭终端（进程在后台保活，重新打开可恢复会话）"
-            onClick={closeTerminal}
-          >
-            <IconX size={13} />
-          </button>
-          )}
         </span>
       </div>
       {error && <div className="terminal-error">{error}</div>}
@@ -501,6 +546,43 @@ export default function TerminalView(): React.JSX.Element {
       )}
       <div ref={containerRef} className="terminal-host" />
       <div className="terminal-hint">Ctrl+Shift+C 复制 · Ctrl+Shift+V 粘贴</div>
+    </div>
+  );
+}
+
+export default function TerminalView(): React.JSX.Element {
+  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs();
+  const createTerminalTab = useAppStore((s) => s.createTerminalTab);
+
+  if (terminalTabs.length === 0 || !activeTerminalTabId) {
+    return (
+      <div className="extension-body terminal-view-empty">
+        <div className="terminal-empty-placeholder">
+          <IconTerminal size={40} className="terminal-empty-icon" />
+          <h3 className="terminal-empty-title">当前未打开终端</h3>
+          <p className="terminal-empty-desc">点击下方按钮或上方标签栏「+」新建终端</p>
+          <button
+            type="button"
+            className="btn btn--primary terminal-empty-add-btn"
+            onClick={createTerminalTab}
+          >
+            <IconPlus size={14} /> 新建终端
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="extension-body terminal-view">
+      {terminalTabs.map((tab) => (
+        <TerminalSessionPane
+          key={tab.id}
+          tabId={tab.id}
+          tabTitle={tab.title}
+          active={tab.id === activeTerminalTabId}
+        />
+      ))}
     </div>
   );
 }

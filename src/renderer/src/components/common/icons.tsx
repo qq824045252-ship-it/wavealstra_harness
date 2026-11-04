@@ -78,6 +78,7 @@ import {
   SquarePlus,
   Table2,
   Target,
+  Terminal,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -231,6 +232,7 @@ export const IconArrowUpRight = wrapLucide(ArrowUpRight);
 export const IconQr = wrapLucide(QrCode);
 export const IconGlobe = wrapLucide(Globe);
 export const IconGitBranch = wrapLucide(GitBranch);
+export const IconTerminal = wrapLucide(Terminal);
 export const IconHardDrive = wrapLucide(HardDrive);
 export const IconAppWindow = wrapLucide(AppWindow);
 export const IconBarChart = wrapLucide(BarChart2);

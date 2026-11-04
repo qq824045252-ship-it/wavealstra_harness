@@ -1,7 +1,8 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, ChatMessage } from "@/types";
 import type { Artifact } from "@/types";
 import { clockTime, nonEmptyFinalTextBlocks, useAppStore } from "@/store/appStore";
+import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
 import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user-prompt-display";
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
 import { requestUserInputDisplayText } from "@shared/request-user-input-fallback";
@@ -421,10 +422,11 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const showAllChanges = useAppStore((s) => s.showAllChanges);
-  /** 任务级变更数：每条消息继承，不依赖本条 changesCount */
-  const taskChangesCount = useAppStore(
-    (s) => s.tasks.find((t) => t.id === s.activeTaskId)?.fileChanges?.length ?? 0,
-  );
+  const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === (taskId || s.activeTaskId)));
+  /** 任务级变更数：与右侧栏代码变更统一计算，防止 DB 未持久化时归零 */
+  const taskChangesCount = useMemo(() => {
+    return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
+  }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
   const selectMode = useAppStore((s) => s.selectMode);
   const isBot = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "bot");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);

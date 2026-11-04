@@ -8,7 +8,7 @@
  *   组件卸载/任务切换必须清理 timer 与订阅（taskId ref 防旧任务响应污染）。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAppStore } from "@/store/appStore";
+import { currentTerminalOwnerKey, useAppStore } from "@/store/appStore";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { ExternalAgentRunDto } from "@shared/external-agent";
 import {
@@ -38,6 +38,8 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
   const tasks = useAppStore((s) => s.tasks);
   const terminalSessions = useAppStore((s) => s.terminalSessions);
   const openSubagentDrawer = useAppStore((s) => s.openSubagentDrawer);
+  const [expandedDoneId, setExpandedDoneId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const currentTask = useMemo(() => tasks.find((t) => t.id === activeTaskId) ?? null, [tasks, activeTaskId]);
   const messages = currentTask?.messages ?? [];
@@ -145,7 +147,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
       {subagentCount > 0 && (
         <>
           <SectionTitle count={subagentCount}>子代理</SectionTitle>
-          <ul className="ro-list">
+          <ul className="ro-list ro-list--subagents">
             {vm.runningSubagents.map((s) => (
               <li key={`run:${s.id}`} className="ro-row">
                 <span className="ro-status-col">
@@ -164,22 +166,79 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                 </button>
               </li>
             ))}
-            {vm.doneSubagents.map((d) => (
-              <li key={`done:${d.id}`} className="ro-row">
-                <span className="ro-status-col">
-                  <Dot state={d.state === "completed" ? "ok" : "err"} />
-                </span>
-                <div className="ro-row-main">
-                  <span className="ro-name">
-                    {readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
+            {vm.doneSubagents.map((d) => {
+              const isExpanded = expandedDoneId === d.id;
+              return (
+                <li key={`done:${d.id}`} className={`ro-row ro-row--done ${isExpanded ? "expanded" : ""}`}>
+                  <span className="ro-status-col">
+                    <Dot state={d.state === "completed" ? "ok" : "err"} />
                   </span>
-                  <span className={`ro-label ro-label--${d.state}`}>
-                    {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}
-                  </span>
-                  <span className="ro-sub">{oneLine(d.summary, 56) || "—"}</span>
-                </div>
-              </li>
-            ))}
+                  <div
+                    className="ro-row-main ro-btn ro-btn--done"
+                    role="button"
+                    tabIndex={0}
+                    title={isExpanded ? "点击收起详情" : "点击查看该子代理任务目标与完整执行结果"}
+                    onClick={() => setExpandedDoneId(isExpanded ? null : d.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setExpandedDoneId(isExpanded ? null : d.id);
+                      }
+                    }}
+                  >
+                    <div className="ro-done-header">
+                      <span className="ro-name">
+                        {readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
+                      </span>
+                      <span className={`ro-label ro-label--${d.state}`}>
+                        {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}
+                      </span>
+                    </div>
+                    <span className="ro-sub">{oneLine(d.summary, 60) || "—"}</span>
+
+                    {/* 点击展开后的任务要求与完整输出结果 */}
+                    {isExpanded && (
+                      <div className="ro-done-expanded" onClick={(e) => e.stopPropagation()}>
+                        {d.task && (
+                          <div className="ro-detail-block">
+                            <span className="ro-detail-title">任务要求:</span>
+                            <div className="ro-detail-text">{d.task}</div>
+                          </div>
+                        )}
+                        {d.detail && (
+                          <div className="ro-detail-block">
+                            <span className="ro-detail-title">执行输出 / 结果:</span>
+                            <pre className="ro-detail-pre">{d.detail}</pre>
+                          </div>
+                        )}
+                        <div className="ro-detail-footer">
+                          {d.detail && (
+                            <button
+                              type="button"
+                              className="ro-detail-btn"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(d.detail ?? "");
+                                setCopiedId(d.id);
+                                setTimeout(() => setCopiedId((cur) => (cur === d.id ? null : cur)), 1500);
+                              }}
+                            >
+                              {copiedId === d.id ? "已复制结果" : "复制结果"}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="ro-detail-btn ro-detail-btn-primary"
+                            onClick={() => openSubagentDrawer(d.id)}
+                          >
+                            打开临时抽屉
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </>
       )}
@@ -230,26 +289,54 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
         <>
           <SectionTitle count={vm.backgroundTasks.length}>后台任务</SectionTitle>
           <ul className="ro-list">
-            {vm.backgroundTasks.map((t) => (
-              <li key={t.key} className="ro-row">
-                <span className="ro-status-col">
-                  <Dot state={t.state === "running" ? "running" : t.state === "completed" ? "ok" : "err"} />
-                </span>
-                <div className="ro-row-main">
-                  <span className="ro-name ro-name--mono">{t.name}</span>
-                  {t.state === "running" ? (
-                    <>
+            {vm.backgroundTasks.map((t) => {
+              const isRunning = t.state === "running";
+              const s = useAppStore.getState();
+              const ownerKey = currentTerminalOwnerKey(s);
+              const current = s.terminalTabsByOwner[ownerKey];
+              const hasMatchingTab = Boolean(t.terminalId && current?.tabs.some((tab) => tab.id === t.terminalId));
+              const canNavigate = isRunning && hasMatchingTab;
+
+              return (
+                <li key={t.key} className="ro-row">
+                  <span className="ro-status-col">
+                    <Dot state={isRunning ? "running" : t.state === "completed" ? "ok" : "err"} />
+                  </span>
+                  {canNavigate ? (
+                    <button
+                      type="button"
+                      className="ro-row-main ro-btn ro-btn--task"
+                      title="点击切换到该终端"
+                      onClick={() => {
+                        const store = useAppStore.getState();
+                        if (t.terminalId) {
+                          store.setActiveTerminalTabId(t.terminalId);
+                          store.showTerminal();
+                        }
+                      }}
+                    >
+                      <span className="ro-name ro-name--mono">{t.name}</span>
                       <span className="ro-label ro-label--running">running</span>
                       {t.elapsedMs !== undefined && <span className="ro-elapsed">{formatElapsed(t.elapsedMs)}</span>}
-                    </>
+                    </button>
                   ) : (
-                    <span className="ro-label ro-label--ok">
-                      {t.exitCode !== undefined ? `exit ${t.exitCode}` : "已结束"}
-                    </span>
+                    <div className="ro-row-main ro-static" title={isRunning ? "后台运行中" : "终端已结束"}>
+                      <span className="ro-name ro-name--mono">{t.name}</span>
+                      {isRunning ? (
+                        <>
+                          <span className="ro-label ro-label--running">running</span>
+                          {t.elapsedMs !== undefined && <span className="ro-elapsed">{formatElapsed(t.elapsedMs)}</span>}
+                        </>
+                      ) : (
+                        <span className="ro-label ro-label--ok">
+                          {t.exitCode !== undefined ? `exit ${t.exitCode}` : "已结束"}
+                        </span>
+                      )}
+                    </div>
                   )}
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         </>
       )}
