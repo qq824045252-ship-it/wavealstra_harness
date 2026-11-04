@@ -2,7 +2,7 @@
  * 资料库 IPC 契约。
  *
  * 资料库是独立于任务产物的知识空间：
- * - 我的文档 / 团队空间：持久化在 ~/.mybuddy/library + SQLite
+ * - 项目资料 / 工作空间资料：持久化在 ~/.mybuddy/library + SQLite；旧个人空间只为数据兼容保留
  * - 本地产物：只读投影任务 Artifact（不拷贝）
  * - MD / CSV / HTML 三种载体可互相引用（相对路径或 mybuddy-library://）
  */
@@ -38,6 +38,7 @@ export const LibraryIpc = {
   listTaskReferences: "library:listTaskReferences",
 } as const;
 
+/** 旧版本个人资料空间的固定 ID：用于迁移与只读兼容，不再是独立任务的默认资料位置。 */
 export const LIBRARY_PERSONAL_SPACE_ID = "personal";
 
 /* ---------------- 数据边界常量（单一事实源：Service/工具/IPC/UI 共用，禁止重复魔数） ---------------- */
@@ -87,7 +88,7 @@ export interface LibrarySpaceDto {
   updatedAt: number;
 }
 
-/** 组织节点：树形集合（项目/个人范围内），与内容资产 LibraryItem 严格分层 */
+/** 组织节点：树形集合（项目/工作空间或旧数据范围内），与内容资产 LibraryItem 严格分层 */
 export interface LibraryCollectionDto {
   id: string;
   spaceId: string;
