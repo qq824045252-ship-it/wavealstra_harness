@@ -718,6 +718,69 @@ async function main(): Promise<void> {
       assert.equal(f.configValue.connections!["api-router"].baseUrl, OPENROUTER_API_ROOT);
     });
 
+    await test("Baidu OCR stores two independent keys and binds its native result without leaking credentials", async () => {
+      const config = manualConfig();
+      config.ocr = { enabled: true };
+      config.connections = { "api-baidu": {
+        name: "百度 OCR", presetId: "baidu-ocr", protocol: "baidu-ocr",
+        baseUrl: "https://aip.baidubce.com", auth: "baidu-ak-sk", timeoutMs: 60000,
+      } };
+      config.mediaBindings = { ocr: { connectionId: "api-baidu", model: "general", dataPolicy: "allow-cloud" } };
+      const f = new Fixture(config);
+      assert.equal(f.manager.status("ocr").state, "needs-configuration");
+      assert.deepEqual(f.manager.services().find(option => option.id === "api-baidu")?.capabilities, ["ocr"]);
+      f.manager.save({ config: clone(config), credentials: [
+        { connectionId: "api-baidu", slot: "apiKey", secret: SECRET_A },
+        { connectionId: "api-baidu", slot: "secretKey", secret: SECRET_B },
+      ] });
+      const refs = f.configValue.connections!["api-baidu"].credentialRefs!;
+      assert(refs.apiKey && refs.secretKey && refs.apiKey !== refs.secretKey);
+      assert.equal(f.keys.get(refs.apiKey), SECRET_A);
+      assert.equal(f.keys.get(refs.secretKey), SECRET_B);
+      assert.equal(f.manager.status("ocr").state, "unchecked");
+      assert.deepEqual(f.manager.services().find(option => option.id === "api-baidu")?.credentialSlotsConfigured,
+        { apiKey: true, secretKey: true });
+      const checked = await f.manager.test("ocr");
+      assert(checked.ok); assert.equal(f.requests.length, 0, "config check does not bill or upload");
+
+      f.requestImpl = async request => {
+        const path = new URL(request.url).pathname;
+        if (path === "/oauth/2.0/token") {
+          const body = new URLSearchParams(String(request.body));
+          assert.equal(body.get("client_id"), SECRET_A);
+          assert.equal(body.get("client_secret"), SECRET_B);
+          return json({ access_token: "fixture-access-token", expires_in: 2592000 });
+        }
+        assert.equal(path, "/rest/2.0/ocr/v1/general");
+        assert.equal(new URL(request.url).searchParams.get("access_token"), "fixture-access-token");
+        assert.equal(request.headers.get("authorization"), null, "OCR is not an OpenAI Bearer call");
+        return json({ words_result: [{ words: "百度测试", location: { left: 5, top: 8, width: 30, height: 11 } }] });
+      };
+      const result = await f.runtime.ocrAdapter()!.recognize(imagePath, context("baidu-ocr"));
+      assert.equal(result.text, "百度测试");
+      assert.deepEqual(result.boxes, [{ text: "百度测试", x: 5, y: 8, width: 30, height: 11 }]);
+      assert.equal(f.manager.status("ocr").state, "ready");
+      assertNoSecrets(f.runtime.snapshot());
+      assert(!JSON.stringify(f.configValue).includes(SECRET_A));
+      assert(!JSON.stringify(f.configValue).includes(SECRET_B));
+
+      const saved = clone(f.configValue);
+      f.beforeStore = () => { throw new Error("simulated disk refusal"); };
+      assert.throws(() => f.manager.save({ config: clone(saved), credentials: [
+        { connectionId: "api-baidu", slot: "apiKey", secret: NEW_SECRET },
+        { connectionId: "api-baidu", slot: "secretKey", secret: NEW_SECRET },
+      ] }), /未保存/);
+      assert.equal(f.keys.get(refs.apiKey), SECRET_A);
+      assert.equal(f.keys.get(refs.secretKey), SECRET_B);
+      assert.deepEqual(f.configValue, saved, "failed transaction keeps the original provider and mode");
+      f.beforeStore = undefined;
+
+      f.configValue.mediaBindings!.ocr!.dataPolicy = "local-only";
+      const before = f.requests.length;
+      await assert.rejects(f.runtime.ocrAdapter()!.recognize(imagePath, context("private-ocr")), /local-only/);
+      assert.equal(f.requests.length, before, "privacy policy rejects before token or image upload");
+    });
+
     assert.equal(unexpectedNetwork, 0, "every network path must use the injected fixture transport");
     if (failures.length) throw new Error(`${failures.length} media service checks failed: ${failures.join("; ")}`);
     console.log(`media capability services: ${passed} checks passed`);

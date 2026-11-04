@@ -39,7 +39,22 @@ try {
   assert.equal(saved.mediaBindings?.ocr?.dataPolicy, "local-only");
   assert.equal(saved.imageGeneration.enabled, false);
   assert.equal(saved.textToSpeech.model, "provider/speech");
-  console.log("PASS media capability config: shared connections, stable bindings, legacy privacy and disabled preferences");
+  const baidu = store.read();
+  baidu.connections!["api-baidu"] = {
+    name: "百度 OCR", presetId: "baidu-ocr", protocol: "baidu-ocr",
+    baseUrl: "https://aip.baidubce.com", auth: "baidu-ak-sk",
+    credentialRefs: { apiKey: "media.baidu-key", secretKey: "media.baidu-secret" },
+    timeoutMs: 60000,
+  };
+  baidu.mediaBindings!.ocr = { connectionId: "api-baidu", model: "general", dataPolicy: "local-only" };
+  const baiduSaved = store.write(baidu);
+  const reopened = new BuiltinCapabilityStore(store.path).read();
+  assert.deepEqual(reopened, baiduSaved, "Baidu's two references round-trip without changing schema v1");
+  assert.deepEqual(reopened.connections!["api-baidu"].credentialRefs,
+    { apiKey: "media.baidu-key", secretKey: "media.baidu-secret" });
+  assert.equal(reopened.mediaBindings?.ocr?.model, "general");
+  assert.equal(reopened.mediaBindings?.ocr?.dataPolicy, "local-only", "Baidu does not bypass a private OCR binding");
+  console.log("PASS media capability config: shared connections, Baidu dual credentials and legacy privacy");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
