@@ -6,6 +6,7 @@ import type { MagpieGatewayConfig } from "../agent/providers/magpie";
 import type { BuiltinCapabilityRuntime, GeneratedMediaOutput, MediaCapabilityProvider, SpeechCapabilityProvider, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
 import { discoverMagpieCapabilities, type MagpieCapabilityCatalog } from "./providers/MagpieCapabilityCatalog";
+import { discoverOpenRouterCapabilities, type OpenRouterCapabilityCatalog } from "./providers/OpenRouterCapabilityCatalog";
 import { createApiMediaProvider } from "./providers/ApiMediaProvider";
 import { createApiSpeechProvider } from "./providers/ApiSpeechProvider";
 import { createApiOcrAdapter } from "./providers/ApiOcrProvider";
@@ -46,6 +47,8 @@ function location(baseUrl: string): "loopback" | "remote" {
 export class MediaCapabilityServices {
   private magpieCatalog?: { identity: string; catalog: MagpieCapabilityCatalog };
   private magpieError?: string;
+  private readonly openRouterCatalogs = new Map<string, { identity: string; catalog: OpenRouterCapabilityCatalog }>();
+  private readonly openRouterErrors = new Map<string, string>();
   private refreshing?: Promise<void>;
   private readonly lastRuns = new Map<MediaCapabilityId, { key: string; at: number }>();
 
@@ -56,6 +59,7 @@ export class MediaCapabilityServices {
     videoJobs: VideoGenerationJobStore;
     fetch?: typeof fetch;
     discover?: typeof discoverMagpieCapabilities;
+    discoverOpenRouter?: typeof discoverOpenRouterCapabilities;
   }) {}
 
   private get runtime(): BuiltinCapabilityRuntime { return this.options.runtime; }
@@ -83,6 +87,13 @@ export class MediaCapabilityServices {
       const headers = [...new Headers(config.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
       return createHash("sha256").update(JSON.stringify({ baseUrl: capabilityApiRoot(config.baseUrl), key: config.apiKey ?? "", headers })).digest("hex");
     } catch { return undefined; }
+  }
+
+  private openRouterIdentity(id: string, config = this.runtime.config()): string | undefined {
+    const connection = config.connections?.[id];
+    if (!connection || connection.protocol !== "openrouter" || connection.baseUrl !== OPENROUTER_API_ROOT || !connection.credentialRef) return undefined;
+    const secret = this.runtime.credentials.get(connection.credentialRef);
+    return secret ? createHash("sha256").update(JSON.stringify([id, connection.baseUrl, connection.credentialRef, secret])).digest("hex") : undefined;
   }
 
   services(config = this.runtime.config()): CapabilityConnectionOption[] {
@@ -113,7 +124,23 @@ export class MediaCapabilityServices {
       let baseUrl: string | undefined;
       try { baseUrl = capabilityApiRoot(connection.baseUrl); } catch { /* keep editable */ }
       const hasKey = Boolean(connection.credentialRef && this.runtime.credentials.has(connection.credentialRef));
-      result.push({ id, label: connection.name, source: "api", capabilities: connectionCapabilities(connection), models: {}, allowCustomModel: true, configured: Boolean(baseUrl) && (connection.auth === "none" || hasKey), authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key", ...(baseUrl ? { location: location(baseUrl) } : {}), detail: "已实现所选协议；模型与账号权限以服务端实际响应为准。" });
+      const identity = this.openRouterIdentity(id, config);
+      const savedCatalog = this.openRouterCatalogs.get(id);
+      const catalog = identity && savedCatalog?.identity === identity ? savedCatalog.catalog : undefined;
+      const addressValid = connection.protocol !== "openrouter" || baseUrl === OPENROUTER_API_ROOT;
+      result.push({
+        id, label: connection.name, source: "api", capabilities: connectionCapabilities(connection),
+        models: catalog?.models ?? {}, allowCustomModel: true,
+        configured: Boolean(baseUrl && addressValid) && (connection.auth === "none" || hasKey),
+        authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key",
+        ...(baseUrl ? { location: location(baseUrl) } : {}),
+        detail: connection.protocol === "openrouter"
+          ? this.openRouterErrors.get(id) ?? (catalog ? catalog.partial
+              ? "部分模型目录已更新。转写模型需手动指定，实际权限在调用时验证。"
+              : "图片、视频、语音合成和视觉模型目录已更新；转写模型请填写准确 ID。"
+            : "复用这一把 OpenRouter API Key。刷新目录会获取最新模型，不会执行付费生成。")
+          : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
+      });
     }
     for (const [id, service] of Object.entries(config.services ?? {})) {
       if (service.adapter !== "http-asr" && service.adapter !== "http-ocr") continue;
@@ -160,6 +187,22 @@ export class MediaCapabilityServices {
           if (this.magpieIdentity() === identity) this.magpieError = error instanceof Error ? error.message : "Magpie 服务目录读取失败。";
         }
       }
+      // Refresh each saved OpenRouter connection with its own key. A changed
+      // key or connection invalidates the result before any renderer projection.
+      const configured = this.runtime.config();
+      await Promise.all(Object.entries(configured.connections ?? {}).filter(([, connection]) => connection.protocol === "openrouter").map(async ([id, connection]) => {
+        const identity = this.openRouterIdentity(id, configured);
+        const key = connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
+        if (!identity || !key) return;
+        try {
+          const catalog = await (this.options.discoverOpenRouter ?? discoverOpenRouterCapabilities)(key, { fetchImpl: this.options.fetch });
+          if (this.openRouterIdentity(id) !== identity) return;
+          this.openRouterCatalogs.set(id, { identity, catalog });
+          this.openRouterErrors.delete(id);
+        } catch {
+          if (this.openRouterIdentity(id) === identity) this.openRouterErrors.set(id, "OpenRouter 模型目录暂不可用。原服务选择已保留，可手动填写模型 ID。");
+        }
+      }));
       this.resolveAutomaticImage();
     })();
     this.refreshing = pending;
@@ -176,7 +219,7 @@ export class MediaCapabilityServices {
   private automaticImageConfig(config: BuiltinCapabilitiesConfigDto): BuiltinCapabilitiesConfigDto {
     const binding = config.mediaBindings?.["image-generation"];
     if (!config.imageGeneration.enabled || binding?.selection !== "auto" || binding.connectionId) return config;
-    const candidates = this.services(config).filter((service) => service.configured && service.capabilities.includes("image-generation") && service.models["image-generation"]?.length && [MAGPIE_CONNECTION_ID, CODEX_CONNECTION_ID].includes(service.id));
+    const candidates = this.services(config).filter((service) => service.configured && service.capabilities.includes("image-generation") && service.models["image-generation"]?.length && ([MAGPIE_CONNECTION_ID, CODEX_CONNECTION_ID].includes(service.id) || config.connections?.[service.id]?.protocol === "openrouter"));
     const preferred = this.options.getDefaultProvider?.() === "magpie" ? MAGPIE_CONNECTION_ID : CODEX_CONNECTION_ID;
     candidates.sort((a, b) => Number(b.id === preferred) - Number(a.id === preferred) || a.id.localeCompare(b.id));
     const selected = candidates[0];

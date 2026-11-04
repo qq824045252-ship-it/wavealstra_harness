@@ -60,7 +60,7 @@ export interface MediaCapabilityBinding {
   dataPolicy?: "allow-cloud" | "local-only";
 }
 
-export interface CapabilityModelOption { id: string; label: string }
+export interface CapabilityModelOption { id: string; label: string; voices?: string[] }
 export interface CapabilityConnectionOption {
   id: string;
   label: string;
