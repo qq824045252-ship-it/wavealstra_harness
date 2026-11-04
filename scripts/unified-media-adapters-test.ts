@@ -424,6 +424,79 @@ try {
     assert(!server.requests.some(request => request.path.endsWith("/content")));
   });
 
+
+  await check("OpenRouter image generation and editing use the dedicated JSON endpoint", async () => {
+    server.respond((_request, response) => json(response, { data: [{ b64_json: png.toString("base64"), media_type: "image/png" }] }));
+    const provider = createApiMediaProvider(options({ getConnection: () => ({ ...connection, protocol: "openrouter" }) }));
+    const result = await provider.generateImage!({
+      prompt: "Edit a reference", model: "openrouter/image-model",
+      inputImagePaths: [imagePath], aspectRatio: "16:9",
+    }, context("openrouter-image"));
+    assert.equal(server.requests[0].method, "POST");
+    assert.equal(server.requests[0].path, "/v1/images", "never send OpenRouter requests to /images/generations");
+    assert.match(String(server.requests[0].headers["content-type"]), /^application\/json/);
+    const body = JSON.parse(server.requests[0].body.toString());
+    assert.equal(body.model, "openrouter/image-model");
+    assert.equal(body.aspect_ratio, "16:9");
+    assert.equal(body.input_references.length, 1);
+    assert.equal(body.input_references[0].type, "image_url");
+    assert.equal(body.input_references[0].image_url.url, `data:image/png;base64,${png.toString("base64")}`);
+    assert(!server.requests[0].body.toString().includes("private-reference-name"));
+    assert.deepEqual(Buffer.from(result.items[0].bytes!), png);
+    assert(!JSON.stringify(result).includes(secret));
+  });
+
+  await check("OpenRouter ASR and TTS reuse the same connection without casting chat models", async () => {
+    server.respond((_request, response) => json(response, { text: "语音已识别" }));
+    const speech = createApiSpeechProvider(options({ getConnection: () => ({ ...connection, protocol: "openrouter" }) }));
+    const transcript = await speech.speechToText!({ audioPath, model: "openrouter/transcribe-model" }, context("openrouter-asr"));
+    assert.equal(server.requests[0].path, "/v1/audio/transcriptions");
+    assert.equal((await form(server.requests[0])).get("model"), "openrouter/transcribe-model");
+    assert.equal(transcript.text, "语音已识别");
+    server.respond((_request, response) => binary(response, wav, "audio/wav"));
+    const result = await speech.textToSpeech!({ text: "你好", model: "openrouter/speech-model", voice: "nova", format: "wav" }, context("openrouter-tts"));
+    assert.equal(server.requests[0].path, "/v1/audio/speech");
+    assert.equal(JSON.parse(server.requests[0].body.toString()).voice, "nova");
+    assert.deepEqual(Buffer.from(result.items[0].bytes!), wav);
+  });
+
+  await check("OpenRouter video uses JSON submission, durable original service and no duplicate POST on resume", async () => {
+    const jobs = new VideoGenerationJobs(join(root, "openrouter-video.json"));
+    server.respond((request, response) => {
+      if (request.method === "POST") json(response, { id: "router-job-1", status: "pending" });
+      else if (request.path.endsWith("/content")) binary(response, video, "video/mp4");
+      else json(response, { id: "router-job-1", status: "completed" });
+    });
+    const apiOptions = options({ getConnection: () => ({ ...connection, protocol: "openrouter" }) });
+    const provider = createApiMediaProvider({ ...apiOptions, jobStore: jobs, polling: { intervalMs: 1, maxWaitMs: 2_000 } });
+    const result = await provider.generateVideo!({
+      model: "openrouter/video-model", prompt: "Generate a landscape",
+      aspectRatio: "16:9", resolution: "720p", durationSeconds: 6,
+      inputImagePath: imagePath, generateAudio: true,
+    }, context("openrouter-video"));
+    const request = server.requests.find(request => request.method === "POST")!;
+    assert.equal(request.path, "/v1/videos");
+    assert.match(String(request.headers["content-type"]), /^application\/json/);
+    const body = JSON.parse(request.body.toString());
+    assert.equal(body.model, "openrouter/video-model");
+    assert.equal(body.aspect_ratio, "16:9");
+    assert.equal(body.resolution, "720p");
+    assert.equal(body.duration, 6);
+    assert.equal(body.generate_audio, true);
+    assert.equal(body.input_references[0].image_url.url, `data:image/png;base64,${png.toString("base64")}`);
+    assert.equal(server.requests.filter(request => request.method === "POST").length, 1);
+    assert.deepEqual(Buffer.from(result.items[0].bytes!), video);
+    assert.equal(jobs.list("task-1")[0].connection.protocol, "openrouter");
+    const [job] = jobs.list("task-1");
+    server.respond((_request, response) => binary(response, video, "video/mp4"));
+    const restored = createApiMediaProvider({
+      ...apiOptions, jobStore: new VideoGenerationJobs(jobs.path), polling: { intervalMs: 1 },
+    });
+    const recovered = await restored.generateVideo!({ jobId: job.id }, context("video-retry"));
+    assert.deepEqual(Buffer.from(recovered.items[0].bytes!), video);
+    assert.deepEqual(server.requests.map(req => req.method + " " + req.path), ["GET /v1/videos/router-job-1/content"]);
+  });
+
   console.log(`Unified media adapters: ${count} behavior checks passed.`);
 } finally {
   await Promise.all([server.close(), other.close()]);
