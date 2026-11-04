@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { useAppStore } from "../src/renderer/src/store/appStore";
+import { prepareTestEnv } from "./test-store-harness";
 import {
   applyTemplateToDraft,
   createDraftFromTemplate,
@@ -228,12 +230,56 @@ import {
 /* ---------- 项目工作目录：Project 只拿默认目录，不污染首页 Workspace 选择 ---------- */
 {
   const modalSource = readFileSync(join(process.cwd(), "src/renderer/src/components/pages/NewProjectModal.tsx"), "utf8");
-  const storeSource = readFileSync(join(process.cwd(), "src/renderer/src/store/appStore.ts"), "utf8");
   assert.ok(modalSource.includes('ensureSpaceFromPath(projectFolder.path, projectFolder.name, null, { activate: false })'), "项目创建必须使用不激活 homeSpaceId 的目录挂载路径");
   assert.ok(modalSource.includes('updateProject?.({ id: savedProject.id, defaultSpaceId: mounted.id })'), "项目创建后必须显式写 defaultSpaceId");
   assert.ok(modalSource.includes('if (mounted?.created)'), "仅本次新建的目录记录允许失败补偿删除");
-  assert.ok(storeSource.includes('ensureSpaceFromPath: async (folderPath, name, parentId = null, options = {}) =>'), "store 必须提供可选择是否激活的统一目录挂载实现");
-  assert.ok(storeSource.includes('const activate = options.activate !== false;'), "activate=false 必须有显式语义");
-  assert.ok(storeSource.includes('get().ensureSpaceFromPath(folderPath, name, parentId, { activate: true })'), "旧 addSpaceFromPath 保持激活行为兼容");
 }
-console.log("project-creation-test: PASS");
+
+// Exercise the public actions: moving their implementation into a command module
+// must preserve non-activating project mounts and the existing activating API.
+async function verifyWorkspaceMounting(): Promise<void> {
+  prepareTestEnv();
+  const api = (globalThis as any).window.api;
+  const writes: Array<{ id: string; path?: string }> = [];
+  api.pathExists = async () => true;
+  api.db.upsertSpace = async (space: { id: string; path?: string }) => {
+    writes.push(space);
+    return { ok: true };
+  };
+  useAppStore.setState({
+    spaces: [{ id: "home-space", name: "Home", path: "C:\\home", parentId: null }],
+    homeSpaceId: "home-space",
+  });
+
+  const mounted = await useAppStore.getState().ensureSpaceFromPath("C:\\project", "Project", null, { activate: false });
+  assert.equal(mounted.created, true, "新目录创建 durable Space，调用方可据此补偿失败");
+  assert.equal(useAppStore.getState().homeSpaceId, "home-space", "项目挂载 activate=false 不改变首页 Workspace");
+  assert.equal(writes.at(-1)?.id, mounted.id, "目录必须持久化到同一个 Space id");
+  assert.equal(useAppStore.getState().spaces.find((space) => space.id === mounted.id)?.path, "C:\\project");
+
+  const reused = await useAppStore.getState().ensureSpaceFromPath("C:\\project", "Project", null, { activate: false });
+  assert.deepEqual(reused, { id: mounted.id, created: false }, "同一路径复用 durable Space，不得误报本次创建");
+  assert.equal(useAppStore.getState().spaces.length, 2, "复用目录不创建重复 Space");
+  assert.equal(useAppStore.getState().homeSpaceId, "home-space", "复用目录也遵循 activate=false");
+
+  await useAppStore.getState().ensureSpaceFromPath("C:\\project", "Project");
+  assert.equal(useAppStore.getState().homeSpaceId, mounted.id, "未指定 activate 时仍激活目录");
+  useAppStore.setState({ homeSpaceId: "home-space" });
+  const activeId = await useAppStore.getState().addSpaceFromPath("C:\\project", "Project");
+  assert.equal(activeId, mounted.id, "addSpaceFromPath 保持返回 Space id 的公开契约");
+  assert.equal(useAppStore.getState().homeSpaceId, mounted.id, "addSpaceFromPath 保持激活行为兼容");
+
+  useAppStore.setState({ homeSpaceId: "home-space" });
+  api.db.upsertSpace = async () => ({ ok: false, error: "fixture write failed" });
+  await assert.rejects(
+    useAppStore.getState().ensureSpaceFromPath("C:\\failed-project", "Failed project", null, { activate: false }),
+    /fixture write failed/,
+  );
+  assert.equal(useAppStore.getState().spaces.some((space) => space.path === "C:\\failed-project"), false, "写入失败回滚本次新建目录");
+  assert.equal(useAppStore.getState().homeSpaceId, "home-space", "失败补偿不污染首页 Workspace");
+}
+
+void verifyWorkspaceMounting().then(() => console.log("project-creation-test: PASS")).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.85",
+  "version": "0.1.86",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -10,6 +10,9 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "test:app-store-structure": "esbuild scripts/app-store-structure-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/app-store-structure-test.cjs && node scripts/test-guard.mjs out/tests/app-store-structure-test.cjs",
+    "test:app-store-runtime": "esbuild scripts/app-store-runtime-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/app-store-runtime-test.cjs && node scripts/test-guard.mjs out/tests/app-store-runtime-test.cjs",
+    "test:app-store-transactions": "esbuild scripts/app-store-transactions-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/app-store-transactions-test.cjs && node scripts/test-guard.mjs out/tests/app-store-transactions-test.cjs",
     "test:command-code-request": "esbuild scripts/command-code-request-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/command-code-request-test.mjs && node scripts/test-guard.mjs out/tests/command-code-request-test.mjs",
     "test:image-resize-assets": "esbuild scripts/image-resize-assets-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/image-resize-assets-test.cjs && node scripts/test-guard.mjs out/tests/image-resize-assets-test.cjs",
     "validate:packaged-image-resize": "node scripts/validate-packaged-image-resize.cjs",

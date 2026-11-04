@@ -20,7 +20,7 @@ import {
 } from "@/components/artifact/overview/overviewRuntime";
 import type { ChatMessage } from "@/types";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
-import type { TerminalSessionInfo } from "@shared/terminal-ipc";
+import { terminalOwnerStoreKey, type TerminalSessionInfo } from "@shared/terminal-ipc";
 
 let passed = 0;
 let failed = 0;
@@ -213,7 +213,12 @@ console.log("== 后台任务（终端会话 + bash） ==");
       { type: "tool", toolCall: { id: "tw1", tool: "write", summary: "x.ts", status: "running" as const } },
     ],
   });
-  const bg = buildBackgroundTasks([m], { "task-1": termRunning, "task-2": termDone, "task-3": termFail, "task-9": termNoLifecycle }, "task-1", NOW);
+  const bg = buildBackgroundTasks([m], {
+    "task-1": termRunning,
+    "task-2": { ...termDone, taskId: "task-2" },
+    "task-3": { ...termFail, taskId: "task-3" },
+    "task-9": { ...termNoLifecycle, taskId: "task-9" },
+  }, "task-1", NOW);
   assert(bg.length === 2, `task-1：终端 running + bash running（${bg.length}；瞬时 write 不计入）`);
   assert(bg[0].name === "pwsh" && bg[0].state === "running" && bg[0].elapsedMs === 120_000, "终端会话 basename + running + 耗时");
   assert(bg[1].name === "pnpm dev" && bg[1].state === "running", "运行中 bash 命令展示");
@@ -304,10 +309,11 @@ console.log("== task scope 隔离（纯函数输入隔离） ==");
   }
 }
 
-console.log("== 空间终端：按 workspaceId 查找会话 ==");
+console.log("== 任务与空间多终端：按归属汇总并按 sessionId 去重 ==");
 {
   const wsTerm: TerminalSessionInfo = {
     workspaceId: "ws-1",
+    terminalId: "tab-workspace",
     sessionId: "s-ws",
     cwd: "C:/Users/servi/Desktop/mybuddy",
     shell: "pwsh",
@@ -316,8 +322,37 @@ console.log("== 空间终端：按 workspaceId 查找会话 ==");
     exitReason: null,
     startedAt: NOW - 5000,
   };
-  const bg = buildBackgroundTasks([], { "ws-1": wsTerm, "task-1": termFor("task-1") }, "task-1", NOW, "ws-1");
-  assert(bg.length === 1 && bg[0].name === "pwsh" && bg[0].state === "running", "空间任务优先 workspace 会话");
+  const taskTerm: TerminalSessionInfo = { ...termFor("task-1"), terminalId: "tab-task" };
+  const bg = buildBackgroundTasks([], { "ws-1": wsTerm, "task-1": taskTerm }, "task-1", NOW, "ws-1");
+  assert(bg.length === 2 && bg.some((item) => item.name === "pwsh") && bg.some((item) => item.name === "bash"), "同时展示当前任务与绑定空间的终端");
+  assert(bg.every((item) => item.state === "running"), "任务与空间的存活会话都保留 running 状态");
+
+  const secondWorkspaceTerm: TerminalSessionInfo = {
+    ...wsTerm, sessionId: "s-ws-second", terminalId: "tab-workspace-second", shell: "zsh",
+  };
+  const foreignWorkspaceTerm: TerminalSessionInfo = {
+    ...wsTerm, workspaceId: "ws-other", sessionId: "s-ws-other", terminalId: "tab-foreign-workspace",
+  };
+  const foreignTaskTerm: TerminalSessionInfo = {
+    ...termFor("task-other"), terminalId: "tab-foreign-task",
+  };
+  const sessions: Record<string, TerminalSessionInfo> = {
+    // The store mirrors both per-tab owner keys and legacy owner aliases.
+    [terminalOwnerStoreKey(wsTerm)!]: wsTerm,
+    "ws-1": wsTerm,
+    [terminalOwnerStoreKey(taskTerm)!]: taskTerm,
+    "task-1": taskTerm,
+    [terminalOwnerStoreKey(secondWorkspaceTerm)!]: secondWorkspaceTerm,
+    [terminalOwnerStoreKey(foreignWorkspaceTerm)!]: foreignWorkspaceTerm,
+    [terminalOwnerStoreKey(foreignTaskTerm)!]: foreignTaskTerm,
+  };
+  const multi = buildBackgroundTasks([], sessions, "task-1", NOW, "ws-1");
+  assert(multi.length === 3, "同空间多标签与任务终端全部汇总，别名不重复计数");
+  assert(multi.filter((item) => item.terminalId === wsTerm.terminalId).length === 1, "空间会话的标签键与旧别名按 sessionId 去重");
+  assert(multi.filter((item) => item.terminalId === taskTerm.terminalId).length === 1, "任务会话的标签键与旧别名按 sessionId 去重");
+  assert(multi.some((item) => item.terminalId === secondWorkspaceTerm.terminalId && item.name === "zsh"), "同一空间的第二个真实会话保持独立");
+  assert(!multi.some((item) => item.terminalId === foreignWorkspaceTerm.terminalId || item.terminalId === foreignTaskTerm.terminalId), "排除其它任务与其它空间的会话");
+
   const bgTask = buildBackgroundTasks([], { "task-9": termFor("task-9") }, "task-9", NOW);
   assert(bgTask.length === 1 && bgTask[0].name === "bash", "独立任务仍按 taskId 查找");
   function termFor(taskId: string): TerminalSessionInfo {

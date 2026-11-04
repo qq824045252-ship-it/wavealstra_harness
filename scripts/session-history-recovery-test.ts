@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readAppStoreModule } from "./read-app-store-source";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { loadTaskHistoryFromSession } from "../src/main/agent/session-history";
 
@@ -78,9 +79,9 @@ try {
   }
 
   const chatView = readFileSync(join(process.cwd(), "src/renderer/src/components/chat/ChatView.tsx"), "utf8");
-  const store = readFileSync(join(process.cwd(), "src/renderer/src/store/appStore.ts"), "utf8");
+  const taskActivation = readAppStoreModule("commands/taskActivation.ts");
   assert.ok(chatView.includes("SessionHistoryRecoveryNotice"), "ChatView must surface session-file recovery diagnostics");
-  assert.ok(store.includes("sessionRecovery: history.sessionRecovery"), "renderer Task must retain the recovery summary after hydration");
+  assert.ok(taskActivation.includes("sessionRecovery: history.sessionRecovery"), "renderer Task must retain the recovery summary after hydration");
   console.log("session history recovery: PASS (bad tail, bad middle record, read-only fallback, source hash, temp cleanup, UI wiring)");
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../src/shared/mode-pro
 import { isPiCodeModeEnabled, piCodeModeExtraActiveTools, piCodeModeLabel, piCodeModeState } from "../src/shared/pi-code-mode";
 import { toNativeMcpConfig } from "../src/main/mcp/NativeMcpConfig";
 import { emptyMcpFilterResult } from "../src/main/mcp/McpModeFilter";
+import { readAppStoreSources } from "./read-app-store-source";
 const results: Array<{name:string;passed:boolean;error?:string}>=[];
 function test(name:string,run:()=>void){try{run();results.push({name,passed:true});console.log('PASS '+name)}catch(error){results.push({name,passed:false,error:String(error)});console.error('FAIL '+name+': '+error)}}
 test('missing or invalid mode defaults to working',()=>{assert.equal(DEFAULT_WELCOME_MODE,'working');for(const x of [undefined,null,'',false,'invalid'])assert.equal(resolveWelcomeMode(x),'working')});
@@ -20,5 +21,8 @@ test('live enabled state appears only for matching scene',()=>{assert.equal(piCo
 test('detached session returns to pending configuration',()=>assert.equal(piCodeModeLabel('coding',piCodeModeState('coding',null)).phase,'pending'));
 test('MCP runtime uses native extension conditionally and always loads search',()=>{const s=readFileSync('src/main/mcp/McpRuntimeService.ts','utf8');assert(s.includes('...(codeModeEnabled ? [createCodemodeExtension'));assert(s.includes('createToolSearchExtension()'));assert(!s.includes("defaultTools: ['+codemode', '+tool_search']"))});
 test('status UI observes real per-task snapshots and never starts tools',()=>{const s=readFileSync('src/renderer/src/components/chat/PiCodeModeChip.tsx','utf8');assert(s.includes('snapshot.sessionId !== taskId'));assert(s.includes('revision === eventRevision'));assert(!/\.prompt\(|\.connect\(|setActiveTools/.test(s));assert(s.includes('data-testid="pi-codemode-status"'))});
-test('task mode fallback is not coding at request/restart/remote boundaries',()=>{for(const f of ['src/main/agent/AgentService.ts','src/main/remote/RemoteTaskCommandService.ts','src/renderer/src/store/appStore.ts','src/renderer/src/components/chat/ChatView.tsx'])assert(!/\?\? "coding"/.test(readFileSync(f,'utf8')),f)});
+test('task mode fallback is not coding at request/restart/remote boundaries',()=>{
+  for(const f of ['src/main/agent/AgentService.ts','src/main/remote/RemoteTaskCommandService.ts','src/renderer/src/components/chat/ChatView.tsx'])assert(!/\?\? "coding"/.test(readFileSync(f,'utf8')),f);
+  for(const {path,source} of readAppStoreSources())assert(!/\?\?\s*["']coding["']/.test(source),path);
+});
 mkdirSync('artifacts/pi-codemode-auto',{recursive:true});writeFileSync('artifacts/pi-codemode-auto/contract-results.json',JSON.stringify({at:new Date().toISOString(),passed:results.every(t=>t.passed),results},null,2));process.exitCode=results.every(t=>t.passed)?0:1;

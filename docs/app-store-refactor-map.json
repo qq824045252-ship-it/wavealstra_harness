@@ -1,0 +1,392 @@
+{
+  "stateGroups": {
+    "appUi": [
+      "page",
+      "theme",
+      "sidebarCollapsed",
+      "libraryNav",
+      "settingsOpen",
+      "settingsTab",
+      "searchOpen",
+      "activeWorkspaceId",
+      "subagentDrawer",
+      "usageStatsOpen",
+      "apiAggregationOpen",
+      "extensionSoftwareOpen",
+      "hubMcpFocusName"
+    ],
+    "tasks": [
+      "tasks",
+      "trashedTasks",
+      "pendingRegenerations",
+      "taskFilterStatus",
+      "taskFilterTime",
+      "pinnedTaskIds",
+      "compactionByTask"
+    ],
+    "workspaces": [
+      "spaces",
+      "taskSectionCollapsed",
+      "expandedSpaceIds"
+    ],
+    "projects": [
+      "projects",
+      "activeProjectId",
+      "activeProjectTab",
+      "projectNavRequest"
+    ],
+    "activeContext": [
+      "activeTaskId",
+      "draft",
+      "branchCreatingTaskId",
+      "branchSource",
+      "branchChildren",
+      "branchError",
+      "activeModelId",
+      "modelExplicit",
+      "permissionMode",
+      "permissionExplicit",
+      "activeConnectorIds",
+      "fullAccessDuringRun",
+      "streamingSendMode",
+      "homeSpaceId",
+      "welcomeMode",
+      "modePresetId",
+      "contextUsedTokens",
+      "contextEstimated",
+      "contextWindowTokens",
+      "contextCacheHitRate",
+      "contextInputTokens",
+      "contextCacheReadTokens",
+      "contextOutputTokens"
+    ],
+    "composer": [
+      "selection",
+      "chatSelections",
+      "terminalContext",
+      "pendingRefFile",
+      "pendingRefTask",
+      "pendingExternalAgentContinuation",
+      "chatFocusTick",
+      "composerDraft",
+      "composerInsertion",
+      "selectMode",
+      "selectedMessageIds"
+    ],
+    "artifacts": [
+      "artifactProjection",
+      "artifactPolicies",
+      "artifactRenderCache",
+      "artifactRenderLoadState",
+      "artifactRenderErrors"
+    ],
+    "workbench": [
+      "workspaceFilesCount",
+      "gadgetsCount",
+      "panelOpen",
+      "panelPinned",
+      "panelMode",
+      "browserPreviousPanelMode",
+      "extensionView",
+      "extensionFlyoutOpen",
+      "extensionFlyoutPinned",
+      "extensionMenuOpen",
+      "artifactTabs",
+      "activeArtifactId",
+      "panelWidth",
+      "panelExpanded",
+      "sidebarBeforePanelExpand",
+      "browserUrlByTask",
+      "browserUrlInput",
+      "browserFrameKey"
+    ],
+    "terminal": [
+      "terminalSessions",
+      "terminalTabsByOwner"
+    ],
+    "appConfig": [
+      "conversationBranchEnabled",
+      "models",
+      "defaultModelId",
+      "modelPreferences",
+      "soul"
+    ],
+    "capabilities": [
+      "skills",
+      "marketSkills",
+      "experts",
+      "marketExperts",
+      "connectors"
+    ]
+  },
+  "actionGroups": {
+    "slices/appUi": [
+      "openWorkspaceDetail",
+      "closeWorkspaceDetail",
+      "openSubagentDrawer",
+      "closeSubagentDrawer",
+      "openUsageStats",
+      "closeUsageStats",
+      "openApiAggregation",
+      "closeApiAggregation",
+      "openExtensionSoftware",
+      "closeExtensionSoftware",
+      "toggleTheme",
+      "setTheme",
+      "setSettingsOpen",
+      "setSearchOpen"
+    ],
+    "slices/tasks": [
+      "setTaskFilterStatus",
+      "setTaskFilterTime",
+      "resetTaskFilters"
+    ],
+    "slices/workspaces": [
+      "toggleTaskSection",
+      "toggleSpaceCollapsed",
+      "setAllSpacesExpanded"
+    ],
+    "slices/projects": [
+      "closeProjectDetails",
+      "setActiveProjectTab",
+      "clearProjectNavRequest",
+      "refreshProjects"
+    ],
+    "slices/activeContext": [
+      "clearBranchError",
+      "setStreamingSendMode",
+      "setFullAccessDuringRun",
+      "setHomeSpaceId"
+    ],
+    "slices/composer": [
+      "clearChatSelection",
+      "clearTerminalContext",
+      "clearPendingRefFile",
+      "clearPendingRefTask",
+      "clearPendingExternalAgentContinuation",
+      "clearComposerDraft",
+      "clearComposerInsertion",
+      "setSelectMode",
+      "toggleMessageSelected",
+      "selectAllMessages"
+    ],
+    "slices/artifacts": [
+      "refreshArtifactPolicy",
+      "cacheArtifactRender"
+    ],
+    "slices/workbench": [
+      "setWorkspaceFilesCount",
+      "setGadgetsCount",
+      "togglePanelPinned",
+      "showOverview",
+      "showArtifacts",
+      "showAllArtifacts",
+      "showWorkspace",
+      "showGadgets",
+      "showTerminal",
+      "refreshBrowser",
+      "showChanges",
+      "showAllChanges",
+      "openExtensionFlyout",
+      "toggleExtensionFlyout",
+      "closeExtensionFlyout",
+      "toggleExtensionFlyoutPinned",
+      "setExtensionMenuOpen",
+      "setPanelMode"
+    ],
+    "slices/terminal": [
+      "setTerminalSession",
+      "applyTerminalExit",
+      "setActiveTerminalTabId"
+    ],
+    "slices/appConfig": [
+      "setModelReasoningPreference",
+      "updateSoul"
+    ],
+    "slices/capabilities": [
+      "refreshSkills",
+      "setSkillEnabled",
+      "installSkill",
+      "installSkillByPath",
+      "uninstallSkill",
+      "deleteMarketSkill",
+      "refreshExperts",
+      "installExpert",
+      "installExpertByPath",
+      "importExpertZip",
+      "uninstallExpert",
+      "deleteMarketExpert",
+      "setExpertEnabled",
+      "refreshConnectors",
+      "installConnector",
+      "importConnectorByPath",
+      "importConnectorZip",
+      "uninstallConnector",
+      "deleteMarketConnector",
+      "setConnectorEnabled"
+    ],
+    "commands/appNavigation": [
+      "setPage",
+      "openHubMcp",
+      "requestLibraryNav"
+    ],
+    "commands/projectNavigation": [
+      "openProjectDetails",
+      "requestProjectsRoot",
+      "requestProjectNav",
+      "applyProjectNavigation"
+    ],
+    "commands/taskDraft": [
+      "startProjectTask",
+      "newTask",
+      "summonExpert",
+      "setDraftProject"
+    ],
+    "commands/taskActivation": [
+      "setActiveTask"
+    ],
+    "commands/sessionConfiguration": [
+      "setWelcomeMode",
+      "setModePreset",
+      "refreshModelConfiguration",
+      "setActiveConnectors",
+      "setActiveModel",
+      "followSuggestedModel",
+      "followSuggestedPermission",
+      "setPermissionMode"
+    ],
+    "commands/taskContext": [
+      "refreshTaskExpertBinding",
+      "saveTaskExpertBinding",
+      "switchExpert",
+      "setExternalAgentPin",
+      "bindProjectContext"
+    ],
+    "commands/composerInput": [
+      "attachSelectionToChat",
+      "attachTerminalContext",
+      "attachArtifactToChat",
+      "continueExternalAgent",
+      "fillComposer",
+      "appendComposer"
+    ],
+    "commands/terminalTabs": [
+      "createTerminalTab",
+      "closeTerminalTab"
+    ],
+    "commands/relatedTasks": [
+      "shareTaskToConversation",
+      "duplicateTaskWithMode",
+      "createRelatedTask"
+    ],
+    "commands/conversationBranch": [
+      "createBranchFromMessage",
+      "refreshBranchLineage"
+    ],
+    "commands/taskLifecycle": [
+      "deleteTask",
+      "purgeArchivedContent",
+      "refreshTrashedTasks",
+      "restoreTrashedTask",
+      "setTaskStatus",
+      "renameTask",
+      "togglePinTask",
+      "archiveTask",
+      "ackTaskDone",
+      "restoreTask"
+    ],
+    "commands/sendMessage": [
+      "sendMessage"
+    ],
+    "commands/messageRevision": [
+      "deleteUserMessage",
+      "regenerateMessage"
+    ],
+    "commands/runControl": [
+      "abortActiveTask",
+      "resolveToolApproval",
+      "listTaskWriteGrants",
+      "revokeTaskWriteGrant"
+    ],
+    "commands/artifactPreview": [
+      "openArtifact",
+      "closeArtifactTab"
+    ],
+    "commands/artifactLifecycle": [
+      "removeArtifact",
+      "removeArtifactsForWorkspacePath"
+    ],
+    "commands/fileArtifacts": [
+      "openLocalFile",
+      "openLocalFolder",
+      "openWorkspaceFile",
+      "openLocalAbsoluteFile",
+      "openWorkspaceFolder",
+      "ensureCanvasArtifact"
+    ],
+    "commands/workbenchLayout": [
+      "toggleSidebar",
+      "closePanel",
+      "setPanelWidth",
+      "togglePanelExpanded"
+    ],
+    "commands/browserNavigation": [
+      "showBrowser",
+      "setBrowserUrl",
+      "navigateBrowser"
+    ],
+    "commands/workspaceLifecycle": [
+      "archiveSpace",
+      "restoreSpace",
+      "deleteSpace",
+      "addSpace",
+      "refreshSpaces",
+      "ensureSpaceFromPath",
+      "addSpaceFromPath",
+      "relocateSpace",
+      "refreshSpacePathStatus",
+      "renameSpace"
+    ],
+    "commands/workspaceMoves": [
+      "bindTaskSpace",
+      "moveSpace",
+      "moveTaskInWorkspaceTree"
+    ],
+    "runtime/initRuntime": [
+      "initRuntime"
+    ],
+    "runtime/agentProjection": [
+      "applyAgentPatch",
+      "applyAgentDeltaBatch"
+    ],
+    "runtime/artifactProjection": [
+      "hydrateArtifacts",
+      "reconcileTaskMessageArtifacts",
+      "applyArtifactSnapshot",
+      "applyArtifactCreated",
+      "applyArtifactUpdated",
+      "applyArtifactRemoved",
+      "clearArtifactTask"
+    ],
+    "runtime/artifactRender": [
+      "ensureArtifactRenderPayload"
+    ]
+  },
+  "notes": [
+    "Source: v0.1.83 commit c8de589e74464c67ba42e42c90f7d169ef205a45. This mapping covers every top-level property in the original create<AppState> factory exactly once; it does not classify module-scope exports/helpers, which must also move separately.",
+    "Keep one physical Zustand store and the existing flat public state/action API. State ownership does not require cross-domain commands to call several setters: preserve every original action function body, each existing single-set transaction, and original side-effect order during extraction.",
+    "appStore.ts is the compatibility facade only. No slice, command, runtime, pure reducer, or pure selector may import appStore.ts or the instantiated root store. Supply get/set/store/API via an injected context; use import type for shared state/contracts.",
+    "activeContext owns activeTaskId/homeSpaceId/draft and active model/permission/connector/mode values together. models/defaultModelId/modelPreferences belong to appConfig. activeProjectId and activeWorkspaceId are navigation state, not chat-context identity.",
+    "Task.messages remains the canonical renderer conversation array inside Task. pendingRegenerations and compactionByTask are task-keyed state. Pure applyPatchToMessage and history/text helpers must be shared with btwStore independently of either singleton.",
+    "Project navigation preserves requestProjectNav/projectNavRequest/applyProjectNavigation and its external dirty-form guard. Do not immediately overwrite activeProjectId when the original action queues a request. TaskDraft.projectId and Task.projectId stay in their existing structures, not duplicated in projectsSlice.",
+    "capabilities contains only installed/market skills, experts, and connectors plus their catalog-management actions. Expert summons/bindings/switching, external-agent pinning, and active connector selection belong to task commands, not capability catalogs.",
+    "initRuntime is assigned whole for mechanical extraction; subsequently decompose bootstrap/subscriptions/event routing inside runtime without changing event order, API call semantics, or Pi 1.3.0 integration. No fallback copy of the old appStore implementation should remain.",
+    "Move module-scope unsubs, pendingPinTaskIds, pendingMoveSpaceIds, pendingMoveTaskIds, deletedTaskRuntimeTombstones, pendingTaskMetadataHydrations, externalHistoryHydrations, moveChain, renderHydration, and related mutable runtime values into one per-store runtime context. Share the same moveChain between both workspace move commands and the same tombstones between deletion/restoration and event projection.",
+    "runtime/artifactProjection owns the event/snapshot reducer wrappers and message-artifact reconciliation. artifactProjection is discardable main-domain projection; artifactPolicies is display-only filtering; caches are rendering data. Do not recreate task.artifacts or turn a render cache into domain truth.",
+    "runtime/artifactRender should co-locate the existing render-hydrator closure/helper with its ensureArtifactRenderPayload action rather than leave an otherwise orphan one-line wrapper. Cache and descriptor access must use injected get/set, not facade imports.",
+    "commands/workspaceMoves keeps bindTaskSpace, moveSpace, and moveTaskInWorkspaceTree together; preserve common serialization, per-id pending guards, source/target archive checks, affected-sibling rollback, homeSpace synchronization, and unrelated concurrent message updates.",
+    "commands/taskDraft preserves the distinct original reset behavior of startProjectTask/newTask/summonExpert. Drafts remain unmaterialized until first send; do not merge reset algorithms as a refactor convenience.",
+    "Maintain active-task guards for task-specific async UI hydration, ordered batched agent deltas and unchanged references, regeneration two-phase commit, delete tombstones, Project Plan linking after first persisted send, and terminal owner/sessionId isolation. PTY data continues to bypass Zustand.",
+    "All action groups have fewer than 600 original source lines before imports/types; the largest is commands/workspaceMoves. The module count is a responsibility map, not a requirement to split each action into a file. Small slice files own their defaults and narrow state operations."
+  ]
+}

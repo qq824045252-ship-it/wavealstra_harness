@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readAppStoreModule, readAppStoreSources } from "./read-app-store-source";
 import {
   applyModeProfileResponse,
   collectDroppedLocalFiles,
@@ -501,10 +502,12 @@ void (async () => {
   assert.equal(workspaceSource.includes("ProjectLibrary"), false, "project workspace no longer embeds library");
   assert.equal(workspaceSource.includes('tab === "library"'), false, "project workspace has no library pane");
 
-  const appStoreSource = readFileSync(join(process.cwd(), "src/renderer/src/store/appStore.ts"), "utf8");
-  assert.equal(appStoreSource.includes("createProjectPlanTask"), false, "dead second task-creation path is removed");
-  assert.equal(appStoreSource.includes("setTaskSchedule"), false, "dead Task-to-Plan scheduling helper is removed");
-  assert.ok(appStoreSource.includes('relation: "CONTAINS"'), "materialized plan task records Plan CONTAINS Task");
+  for (const { path, source } of readAppStoreSources()) {
+    assert.equal(source.includes("createProjectPlanTask"), false, `${path}: dead second task-creation path is removed`);
+    assert.equal(source.includes("setTaskSchedule"), false, `${path}: dead Task-to-Plan scheduling helper is removed`);
+  }
+  const sendMessageSource = readAppStoreModule("commands/sendMessage.ts");
+  assert.ok(sendMessageSource.includes('relation: "CONTAINS"'), "materialized plan task records Plan CONTAINS Task");
 
   const chatInputSource = readFileSync(join(process.cwd(), "src/renderer/src/components/chat/ChatInput.tsx"), "utf8");
   assert.ok(chatInputSource.includes("TagPicker"), "project composer exposes TagPicker");

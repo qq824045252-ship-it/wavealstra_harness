@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { BtwUiPatch } from "../../../shared/agent-ipc";
 import type { ChatMessage } from "@/types";
-import { applyPatchToMessage, useAppStore } from "./appStore";
+import { useAppStore } from "./appStore";
+import { applyPatchToMessage } from "./app/messages/messageReducer";
 
 /**
  * BTW（By The Way，临时上下文分支）renderer 状态模型。

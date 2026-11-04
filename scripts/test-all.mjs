@@ -205,6 +205,10 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:app-store-structure",
+  "test:app-store-runtime",
+  "test:app-store-transactions",
+  "test:task-file-changes",
   "test:browser-open-guard", // 纯源码文本断言（stale preload 回归门），6/6 PASS
   "test:models-settings-overlay", // 纯源码文本断言，9/9 PASS
 ]);

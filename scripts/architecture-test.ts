@@ -33,6 +33,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import JSZip from "jszip";
 import { normalizedEditorTextHash } from "../src/shared/regenerate-hash";
+import type { Task as RendererTask } from "../src/renderer/src/types";
 
 // ---- 隔离环境：HOME/USERPROFILE 指向临时目录（必须在 import 服务前设置） ----
 const sandbox = join(tmpdir(), `mybuddy-arch-test-${Date.now()}`);
@@ -1845,7 +1846,7 @@ async function main(): Promise<void> {
       };
       const { useAppStore: storeSync } = await import("../src/renderer/src/store/appStore");
       const flushSync = (): Promise<void> => new Promise((r) => setTimeout(r, 25));
-      const mkTask = (over: Record<string, unknown>): Record<string, unknown> => ({
+      const mkTask = (over: Partial<RendererTask>): RendererTask => ({
         id: "T",
         title: "T",
         updatedAt: Date.now(),
@@ -1856,7 +1857,7 @@ async function main(): Promise<void> {
         connectorIds: [],
         ...over,
       });
-      const syncBase = {
+      const syncBase: Partial<ReturnType<typeof storeSync.getState>> = {
         activeTaskId: "T",
         draft: null,
         activeModelId: "X",

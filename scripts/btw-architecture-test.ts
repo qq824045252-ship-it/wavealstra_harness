@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readAppStoreModule } from "./read-app-store-source";
 import { AgentIpc, BtwIpc, CronIpc, GatewayIpc, McpIpc } from "../src/shared/agent-ipc";
 
 let passed = 0;
@@ -137,7 +138,8 @@ ok(Boolean(btwSection), "2.0 dedicated BTW service source loaded");
 
 // ---- 7. 系统级生命周期 / 资源释放 / 多窗口隔离（源码级红线）----
 {
-  const appStore = readFileSync(join(repo, "src/renderer/src/store/appStore.ts"), "utf8");
+  const taskLifecycle = readAppStoreModule("commands/taskLifecycle.ts");
+  const taskUiTransition = readAppStoreModule("transitions/taskUiTransition.ts");
   // 7a. 应用退出：dispose() 路径必须释放全部 BTW 会话
   ok(/this\.btwService\.disposeAll\(\);/.test(agentService), "7.1 主进程 dispose 调用 BtwSessionService disposeAll（app quit 全释放）");
   // 7b. 单会话释放四步：unsubscribe → clearQueue → abort → dispose
@@ -161,9 +163,9 @@ ok(Boolean(btwSection), "2.0 dedicated BTW service source loaded");
   ok(/\.catch\(\(\) => undefined\)/.test(btwStore), "7.13 abort/close/keepalive 的 IPC 失败被吞（不卡 UI）");
   // 7i. 删任务 → activeTaskId 切换 → ChatInput effect 销毁 BTW（链路存在）
   ok(
-    /const nextTaskId = tasks\[0\]\?\.id \?\? null/.test(appStore) &&
-      /resetTaskScopedUiState\(s, \{[\s\S]*?nextTaskId/.test(appStore) &&
-      /activeTaskId: options\.nextTaskId/.test(appStore),
+    /const nextTaskId = tasks\[0\]\?\.id \?\? null/.test(taskLifecycle) &&
+      /resetTaskScopedUiState\(s, \{[\s\S]*?nextTaskId/.test(taskLifecycle) &&
+      /activeTaskId: options\.nextTaskId/.test(taskUiTransition),
     "7.14 deleting active task updates activeTaskId through reset helper (triggers destroyIfParentChanged)",
   );
   ok(/destroyIfParentChanged\(activeTaskId\)/.test(chatInput), "7.15 ChatInput 挂载时按 activeTaskId 校验父任务（切换/删除即销毁）");

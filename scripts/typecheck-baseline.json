@@ -153,7 +153,6 @@
     "scripts/subagent-ipc-host-test.ts :: TS2554 :: Expected 1 arguments, but got 2.",
     "scripts/subagent-mapper-test.ts :: TS2339 :: Property 'output' does not exist on type 'AgentUiPatch'.",
     "scripts/svg-preview-resize-ui-test.tsx :: TS2882 :: Cannot find module or type declarations for side-effect import of '../src/renderer/src/styles/global.css'.",
-    "scripts/task-delete-panel-regression-test.ts :: TS2345 :: Argument of type '{ tasks: any[]; activeTaskId: any; panelOpen: boolean; panelMode: string; panelExpanded: boolean; artifactTabs: any[]; activeArtifactId: any; extensionFlyoutOpen: boolean; extensionFlyoutPinned: boolean; ... 7 more ...; chatSelections: any[]; } & Record<...>' is not assignable to parameter of type 'AppState | Partial<AppState> | ((state: AppState) => AppState | Partial<AppState>)'.",
     "scripts/task-expert-binding-test.ts :: TS2322 :: Type '(_args: object, _api: ToolExecutionApi<JsonValue>, ctx: Context) => Promise<{ content: { type: string; text: string; }[]; }>' is not assignable to type '(args: object, api: ToolExecutionApi<JsonValue>, context: Context) => Promise<ToolExecutionResult<JsonValue>>'.",
     "scripts/task-prompt-mode-test.ts :: TS2339 :: Property 'api' does not exist on type 'Window & typeof globalThis'.",
     "scripts/test-store-harness.ts :: TS2339 :: Property '__closeCount' does not exist on type '{ close?: () => void; }'.",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readAppStoreModule } from "./read-app-store-source";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ExternalAgentRuntime } from "../src/main/external-agent/ExternalAgentRuntime";
 import { resolveExternalAgentContinuationRunId } from "../src/shared/external-agent";
@@ -165,12 +166,13 @@ try {
   assert.ok(externalAgentRuntime.includes('"cognition.ai/requestDiagnostics": true'), "Devin advertises its diagnostics compatibility capability");
   assert.ok(externalAgentRuntime.includes('name: "windsurf"'), "Devin ACP initializes with the narrow Windsurf identity compatibility shim");
 
-  const appStore = readFileSync(join(process.cwd(), "src/renderer/src/store/appStore.ts"), "utf8");
+  const sendMessage = readAppStoreModule("commands/sendMessage.ts");
+  const taskContext = readAppStoreModule("commands/taskContext.ts");
   const chatInput = readFileSync(join(process.cwd(), "src/renderer/src/components/chat/ChatInput.tsx"), "utf8");
   const addMenu = readFileSync(join(process.cwd(), "src/renderer/src/components/chat/InputAddMenu.tsx"), "utf8");
   assert.ok(externalAgentTypes.includes("ExternalAgentPinDto"), "shared types expose the pin DTO");
-  assert.ok(appStore.includes("resolveExternalAgentContinuationRunId"), "sendMessage resolves pin continuation from message history");
-  assert.ok(appStore.includes("setExternalAgentPin"), "store exposes the pin action");
+  assert.ok(sendMessage.includes("resolveExternalAgentContinuationRunId("), "sendMessage resolves pin continuation from message history");
+  assert.ok(taskContext.includes("setExternalAgentPin:"), "task context commands expose the pin action");
   assert.ok(chatInput.includes("onPinExternalAgent"), "composer wires the pin entry");
   assert.ok(addMenu.includes("onPinExternalAgent"), "add-menu flyout exposes per-agent pin");
 

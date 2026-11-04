@@ -38,7 +38,6 @@
     "maxNew": 2500,
     "floor": 1000,
     "entries": {
-      "src/renderer/src/store/appStore.ts": 6562,
       "src/main/agent/AgentService.ts": 5992,
       "src/main/db/AppDatabase.ts": 3819,
       "src/main/index.ts": 3521,

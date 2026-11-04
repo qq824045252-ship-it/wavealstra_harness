@@ -23,6 +23,7 @@ import { GadgetIpc } from "../src/shared/gadget-ipc";
 import { BlueprintIpc } from "../src/shared/blueprint-ipc";
 import type { GadgetChangedEvent } from "../src/shared/gadget-ipc";
 import { isMyBuddyNativeExtensionToolName } from "../src/shared/native-tools";
+import { EXTENSION_MODES, EXTENSION_MODE_LABEL } from "../src/renderer/src/components/artifact/extensionModes";
 
 async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-gadget-blueprint-"));
@@ -589,12 +590,12 @@ async function main(): Promise<void> {
     const captureRenderer = readFileSync(join(process.cwd(), "src/renderer/src/components/blueprint/BlueprintCaptureDialog.tsx"), "utf8");
     const workspaceDetail = readFileSync(join(process.cwd(), "src/renderer/src/components/workspace/WorkspaceDetail.tsx"), "utf8");
     const artifactPanel = readFileSync(join(process.cwd(), "src/renderer/src/components/artifact/ArtifactPanel.tsx"), "utf8");
-    const extensionModes = readFileSync(join(process.cwd(), "src/renderer/src/components/artifact/extensionModes.ts"), "utf8");
     assert.equal(/child_process|\bspawn\s*\(/.test(gadgetRenderer), false, "renderer must not spawn Gadget runtime");
     assert.equal(captureRenderer.includes("previewCapture") && captureRenderer.includes("selectedFiles"), true, "capture UI must preview definition and expose explicit file selection");
     assert.equal(workspaceDetail.includes('"gadgets"') && workspaceDetail.includes("WorkspaceGadgetsSection"), true, "Workspace Detail must expose Gadgets");
     assert.equal(artifactPanel.includes('panelMode === "gadgets"') && artifactPanel.includes("TaskGadgetsView"), true, "right panel must expose Task Gadgets");
-    assert.equal(extensionModes.includes('"gadgets"') && extensionModes.includes('gadgets: "Gadgets"'), true, "right-panel mode menu must list Gadgets");
+    assert.equal(EXTENSION_MODES.includes("gadgets"), true, "right-panel mode menu must expose the Gadget view");
+    assert.equal(EXTENSION_MODE_LABEL.gadgets, "工作台", "Gadget navigation must use the current localized product label");
     await service.disposeAll();
     console.log("gadget-blueprint-test: ok");
   } finally {

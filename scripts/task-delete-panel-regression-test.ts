@@ -16,31 +16,27 @@ import assert from "node:assert/strict";
 import { prepareTestEnv, minimalTask, installCloseCounters } from "./test-store-harness";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
-function stateWithClosed(patch?: Record<string, unknown>): void {
-  useAppStore.setState(
-    Object.assign(
-      {
-        tasks: [],
-        activeTaskId: null,
-        panelOpen: false,
-        panelMode: "file",
-        panelExpanded: false,
-        artifactTabs: [],
-        activeArtifactId: null,
-        extensionFlyoutOpen: false,
-        extensionFlyoutPinned: false,
-        extensionMenuOpen: false,
-        sidebarCollapsed: [],
-        sidebarBeforePanelExpand: null,
-        browserUrlByTask: {},
-        browserUrlInput: "",
-        selectMode: false,
-        selectedMessageIds: [],
-        chatSelections: [],
-      },
-      patch ?? {},
-    ),
-  );
+function stateWithClosed(patch: Partial<ReturnType<typeof useAppStore.getState>> = {}): void {
+  useAppStore.setState({
+    tasks: [],
+    activeTaskId: null,
+    panelOpen: false,
+    panelMode: "file",
+    panelExpanded: false,
+    artifactTabs: [],
+    activeArtifactId: null,
+    extensionFlyoutOpen: false,
+    extensionFlyoutPinned: false,
+    extensionMenuOpen: false,
+    sidebarCollapsed: false,
+    sidebarBeforePanelExpand: null,
+    browserUrlByTask: {},
+    browserUrlInput: "",
+    selectMode: false,
+    selectedMessageIds: [],
+    chatSelections: [],
+    ...patch,
+  });
 }
 
 async function main(): Promise<void> {
@@ -89,15 +85,15 @@ async function main(): Promise<void> {
   stateWithClosed({
     tasks: [minimalTask("task-a")],
     activeTaskId: "task-a",
-    sidebarCollapsed: ["space-x"],
-    sidebarBeforePanelExpand: ["space-y"],
+    sidebarCollapsed: true,
+    sidebarBeforePanelExpand: false,
     panelOpen: true,
   });
   useAppStore.getState().deleteTask("task-a");
   const s4 = useAppStore.getState();
-  assert.deepEqual(
+  assert.equal(
     s4.sidebarCollapsed,
-    ["space-y"],
+    false,
     "删除当前任务应恢复展开面板前的 sidebarCollapsed，而不是丢弃原值",
   );
   assert.equal(s4.sidebarBeforePanelExpand, null, "sidebarBeforePanelExpand 应复位为 null");

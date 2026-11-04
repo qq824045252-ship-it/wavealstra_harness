@@ -33,8 +33,10 @@ contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", "保存为
 // 或（Active Work / Recent Artifacts）已被移除。改为断言现行的全部页签标签。
 for (const label of ["概览", "记忆", "上下文", "资料库", "文件", "Gadgets", "终端"]) contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", label, `workspace UI must include ${label}`);
 
-contains("src/renderer/src/components/gadget/GadgetSection.tsx", "Save to Workspace", "task Gadget must save to workspace");
-contains("src/renderer/src/components/gadget/GadgetSection.tsx", "Save to My Gadgets", "task Gadget must save to My Gadgets");
+contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到工作空间", "task Gadget must expose the localized save-to-workspace action");
+contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到我的工作台", "task Gadget must expose the localized personal-workbench action");
+contains("src/renderer/src/components/gadget/GadgetSection.tsx", 'setMoveItem({ item, initialTarget: "workspace" })', "workspace save must open the workspace target picker");
+contains("src/renderer/src/components/gadget/GadgetSection.tsx", 'moveScope({ gadgetId: item.id, scope: { type: "global" } })', "personal-workbench save must preserve the global Gadget scope");
 excludes("src/renderer/src/components/gadget/GadgetSection.tsx", "window.prompt(\"目标", "Gadget move must not request a raw target id");
 contains("src/renderer/src/components/gadget/GadgetMoveDialog.tsx", "WorkspacePicker", "Gadget move must reuse WorkspacePicker");
 contains("src/renderer/src/components/chat/WorkspacePicker.tsx", "effectiveArchived", "WorkspacePicker must filter effective-archived targets");
