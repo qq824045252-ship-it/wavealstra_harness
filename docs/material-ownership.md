@@ -53,6 +53,9 @@
 6. 只读调用在创建默认资料位置前被拒绝，不留下空位置。
 7. Locator 可显式临时查询未归档的直属子空间。读取对应结果需在 `library_read` 携带同一个 `explicitDirectChildSpaceId`，不持久扩大默认范围，不允许跳到兄弟或孙级空间。
 8. 语义检索或异步文档提取等待期间取消引用、移动来源或删除任务，返回结果前会重新复核范围。
+9. `project_context_pin` 只能固定当前任务已经可读的资料，不能凭条目 ID 为未引用的个人或其他工作空间资料自行增加权限。用户显式附加后可以固定；任务改绑、删除后按最新数据库归属重新解析。
+
+旧的仅传 `projectId` 的搜索、检索和目录预览入口也使用同一解析器；不再保留「项目默认可见所有个人资料」的旧规则。项目固定引用只开放被引用条目，取消固定后立即撤销对应读取范围。历史无效跨项目固定引用不会出现在 Agent 的项目上下文返回值中。
 
 ## 编辑与生命周期
 
@@ -70,6 +73,10 @@
 
 项目原有的删除生命周期保持一致：删除项目会删除该项目拥有的资料。工作空间对该项目资料的引用不会生成一份独立副本。
 
+编辑器的读取、保存和草稿同步都绑定当前资料及访问状态。切换到其他资料或只读状态时，上一份内容不能写入新的草稿键；离开后重新打开并继续编辑，旧保存请求的迟到回复不能清除新草稿。工作空间引用操作同样绑定发起操作的工作空间，切换后不会把旧引用列表回写到新页面。
+
+搜索完成后重新读取当前归属范围的元数据，结果列表、打开文档与文件夹操作共用这次快照。等待期间删除、移出引用范围或改绑归属的资料不会被旧列表补回；新进入范围的标题匹配和重命名也会更新。搜索结果更新不会触发重复检索循环，清空查询后保留最新浏览数据。
+
 ## 验收目标与测试入口
 
 | 验收目标 | 主要自动化覆盖 |
@@ -81,17 +88,29 @@
 | 目录、附件和上下文投影一致；改绑和取消引用立即生效 | `test:library-workspace-context` |
 | 原文件、版本、来源和引用生命周期保留 | `test:library-domain`、三个 Library transaction suites、`test:knowledge-lifecycle` |
 | 普通与归档工作空间删除不在失败前清理其他内容 | `test:library-owner-scope`、`test:archive-deletion` |
-| 项目和工作空间就地管理、只读引用与编辑草稿 | `test:scoped-library-manager` 及项目/工作空间 GUI 夹具 |
+| 编辑器保存失败重试、只读切换、迟到读取/保存和跨资料草稿隔离 | `test:library-document-editor`，7 项真实 React 生命周期回归 |
+| 项目和工作空间就地管理、只读引用、文件夹与任务成果副本、编辑草稿 | `test:scoped-library-manager`、`test:project-materials-dom`、`test:workspace-materials-dom`；另保留相同断言的原生 Electron GUI 夹具 |
 | 类型、生产构建与其他功能无回归 | `typecheck`、`build`、`test:all` |
 
 实际桌面验收应检查：项目内新建和导入、CSV/Markdown/HTML 编辑、文件夹移动、工作空间自有资料、父级继承、引用文件夹子树、取消引用保留原文、个人历史资料入口、任务成果保存、归档只读和删除前置检查。GUI 夹具使用临时配置和测试数据，不读取真实用户资料。
 
 生产构建和 headless 门禁不能替代真实 Electron 桌面与 Windows 安装包验收。每次交付报告应分别记录这些验证的实际执行情况。
 
-## v0.1.87 本次验证记录
+两套完整界面夹具通过 `renderer-fixture-driver.cjs` 使用同一组业务断言：默认 `pnpm -s test:project-materials-ui` / `pnpm -s test:workspace-notes-ui` 运行真实 Electron；`test:project-materials-dom` / `test:workspace-materials-dom` 显式使用已有 LinkeDOM 运行 React DOM 行为，纳入默认 headless 门禁。DOM 模式明确不验证 CSS 布局、几何可见性、像素截图、原生对话框或安装包，也不生成假截图。可选 Chromium 模式需要环境提供 Playwright 和浏览器，结果单独标记。
+
+Windows PR 验证工作流新增两套原生 Electron 夹具，并保存带后端标识的结果及截图。新增 CI 步骤不代表远程运行已通过；交付报告以实际可见的运行结果为准。
+
+## v0.1.88 本次验证记录（2026-11-04）
 
 - `pnpm -s typecheck` 通过：应用与主进程检查通过，脚本检查未增加基线外错误（现存 176 项、原基线 188 项）。没有更新错误基线以豁免问题。
 - `pnpm -s build` 通过：主进程、preload 和 renderer 均完成生产构建。
-- `pnpm -s test:all -- --jobs=2` 通过：263 项通过、0 项失败、0 项已知失败、0 项新增回归；负载敏感的性能用例单独串行执行。
-- 项目和工作空间 GUI 夹具完成打包，驱动脚本语法检查通过。
-- 未执行真实 Electron GUI 与 Windows 安装包验收：当前环境没有可用桌面显示会话，云端浏览器安全策略也拒绝打开本地验收页面。GUI 夹具编译成功不等同于界面交互通过。
+- `pnpm -s test:all -- --jobs=2` 最终通过：266 个 headless 测试入口全部通过、0 项失败、0 项已知失败、0 项新增回归；负载敏感的性能用例单独串行执行，未放宽测试失败基线。
+- `node scripts/test-all.mjs --audit` 通过：266 个 headless、46 个 GUI、27 个 NETWORK、1 个 DATASET、0 个 pending，原生 Electron 用例没有混入 headless。
+- `test:library-document-editor` 的 7 项真实 React 生命周期回归通过；`test:scoped-library-manager` 新增的 5 项延迟搜索回归通过。
+- `test:project-materials-dom` 与 `test:workspace-materials-dom` 已实际渲染 React 并执行完整业务断言，均通过并纳入全量门禁。覆盖新建、导入、编辑、移动、删除、成果副本、常用资料、引用只读、取消引用保留原文、保存失败重试、跨项目草稿恢复、归档和工作空间切换时迟到的引用请求。
+- 旧数据库补列、重启及再次启动验证通过，保留个人和项目文档的 ID、文件路径、正文、版本记录、集合和引用；仅项目检索不会自动取得未引用的个人资料。
+- 驱动脚本语法检查、工作流 YAML 解析和 `git diff --check` 通过。
+- 原生 Electron 已尝试启动，因当前环境缺少 X server / `$DISPLAY` 而失败；系统 Chromium 也在启动时被宿主拒绝 ProcessSingleton Unix socket。两者均未进入原生界面断言，没有生成截图。DOM 通过不代表 CSS 布局或原生桌面已验收。
+- 未构建、安装或验收 Windows 发行包。Windows PR 工作流已加入上述两套原生 Electron 验证，但查询本次提交时尚无可见的远程 Actions 运行结果，不宣称 CI 已通过。
+
+代码提交到 `feat/scoped-library-management`，评审入口为 [PR #13](https://github.com/qq824045252-ship-it/wavealstra_harness/pull/13)。按照用户要求小步提交，不合并 `main`。
