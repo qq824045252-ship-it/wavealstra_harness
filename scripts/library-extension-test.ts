@@ -1,7 +1,7 @@
 /**
  * LibraryExtension 运行时测试：任务/项目限域、二进制门禁、attach/detach。
  *
- * 覆盖：独立任务使用 personal；项目/工作空间任务仅自有、继承和显式引用资料，
+ * 覆盖：独立任务没有默认持久资料；项目/工作空间任务仅自有、继承和显式引用资料，
  * 且通过 itemId/spaceId 直接访问项目 B 必须被拒绝（list/search/read/attach 全路径）；
  * pdf 等非文本条目返回受管路径元数据而非 utf8 乱码。
  */
@@ -26,6 +26,8 @@ process.env.HOME = root;
 process.env.USERPROFILE = root;
 const db = new AppDatabase(join(root, "app.db"));
 const service = new LibraryService(db, { libraryRoot: join(root, "lib") });
+// 兼容旧 personal 资料的回归测试，需要显式建立旧位置。
+service.ensureReady();
 const projectService = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));
 
 // 项目 A / B 资料空间与条目
@@ -138,12 +140,12 @@ async function main(): Promise<void> {
     .find((i) => i.title === "项目A机密文档")!;
   const bSpaceId = bItem.spaceId;
 
-  /* 1. 未绑定任务（projectId null）：仅 personal */
+  /* 1. 未绑定临时任务：没有默认个人资料库，也不能写入持久资料 */
   {
     const tools = makeExtension(null);
     const list = await call(tools, "library_list", {});
     const text = list.content[0].text;
-    ok(text.includes("个人文档"), "unbound: list 含 personal");
+    ok(!text.includes("个人文档"), "unbound: list 不含历史个人文档");
     ok(!text.includes("项目A机密文档") && !text.includes("项目B机密文档"), "unbound: list 不含任何项目资料");
     const readB = await call(tools, "library_read", { id: bItem.id });
     ok(readB.isError === true && readB.content[0].text.includes("不可访问"), "unbound: 直读项目 B 条目被拒");
@@ -152,12 +154,15 @@ async function main(): Promise<void> {
     const attachB = await call(tools, "library_attach_to_task", { id: bItem.id });
     ok(attachB.isError === true, "unbound: 附加项目 B 条目被拒");
     const attachPersonal = await call(tools, "library_attach_to_task", { id: personalItem.id });
-    ok(attachPersonal.isError === undefined, "unbound: 可附加 personal 条目");
+    ok(attachPersonal.isError === true, "unbound: 临时任务不经资料工具修改历史个人资料引用");
+    const create = await call(tools, "library_create_text", { kind: "markdown", title: "临时任务不应沉淀" });
+    ok(create.isError === true && create.content[0].text.includes("独立任务"), "unbound: 默认写入不创建个人资料");
   }
 
   /* 2. 项目 A 任务：A + 先前已显式附加的 personal 可见，未引用 personal 与 B 全路径拒绝 */
   {
     const tools = makeExtension("proj-a");
+    service.attachToTask({ itemId: personalItem.id, taskId: "task-current" });
     const list = await call(tools, "library_list", {});
     const text = list.content[0].text;
     ok(text.includes("个人文档") && text.includes("项目A机密文档"), "A: list 含 personal + A");
@@ -194,9 +199,10 @@ async function main(): Promise<void> {
     ok(list.content[0].text.includes("项目B机密文档") && !list.content[0].text.includes("项目A机密文档"), "B: list 只含 B");
   }
 
-  /* 4. 二进制门禁：pdf 返回受管路径元数据，无乱码 */
+  /* 4. 二进制门禁：显式附加旧 PDF 后可按授权读取受管路径，无乱码 */
   {
-    const tools = makeExtension(null);
+    const tools = makeExtension("proj-a", "task-pdf");
+    service.attachToTask({ itemId: pdfItem.id, taskId: "task-pdf" });
     const read = await call(tools, "library_read", { id: pdfItem.id });
     ok(read.isError === undefined, "pdf: 读取不报错");
     const text = read.content[0].text;
@@ -230,7 +236,8 @@ async function main(): Promise<void> {
 
   /* 6. readonly 权限：attach/detach 拒绝，读工具不受影响（与 project_memory_* 门禁一致） */
   {
-    const tools = makeReadonlyExtension(null);
+    const tools = makeReadonlyExtension("proj-a", "task-ro");
+    service.attachToTask({ itemId: personalItem.id, taskId: "task-ro" });
     const attach = await call(tools, "library_attach_to_task", { id: personalItem.id });
     ok(attach.isError === true && attach.content[0].text.includes("只读"), "readonly: attach 拒绝");
     const detach = await call(tools, "library_detach_from_task", { id: personalItem.id });
@@ -240,7 +247,7 @@ async function main(): Promise<void> {
     const read = await call(tools, "library_read", { id: personalItem.id });
     ok(read.isError === undefined, "readonly: read 允许");
     // 非 readonly 会话 attach/detach 正常（回归）
-    const normal = makeExtension(null);
+    const normal = makeExtension("proj-a");
     const okAttach = await call(normal, "library_attach_to_task", { id: personalItem.id });
     ok(okAttach.isError === undefined, "default: attach 允许");
     const okDetach = await call(normal, "library_detach_from_task", { id: personalItem.id });
