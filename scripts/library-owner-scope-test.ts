@@ -120,8 +120,10 @@ try {
 
   assert.equal(library.defaultSpaceForTask("combined").id, p1.id, "project is the preferred save owner");
   assert.equal(library.defaultSpaceForTask("work-only").id, ownedChild.id, "workspace is the next save owner");
-  assert.equal(library.defaultSpaceForTask("standalone").id, personal.id, "standalone tasks save to personal");
-  assert(hasItem(library.listItemsForTask("standalone"), privatePersonal));
+  assert.equal(library.resolveTaskScope("standalone").defaultOwner, null, "temporary tasks have no default persistent library owner");
+  assert.throws(() => library.defaultSpaceForTask("standalone"), /独立任务没有长期资料库/);
+  assert.deepEqual(library.listItemsForTask("standalone"), [], "temporary tasks cannot automatically read legacy personal documents");
+  assert(!library.formatCatalog(36, { taskId: "standalone" }).includes(privatePersonal.title), "temporary task catalog cannot include unreferenced legacy documents");
   assert.equal(hasItem(library.listItemsForTask("project-only"), privatePersonal), false);
   assert.equal(library.resolveTaskScope("missing", "p1").defaultOwner, null, "unknown task cannot borrow a fallback project");
   assert.deepEqual(library.listItemsForTask("missing", "p1"), []);
