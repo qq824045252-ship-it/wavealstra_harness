@@ -108,7 +108,7 @@ const WELCOME_MD = `# 一分钟玩转资料库
 
 - **项目资料**：在项目内管理，供该项目的任务使用
 - **工作空间资料**：在对应工作空间管理；子工作空间可读取继承资料
-- **个人资料**：独立任务的默认保存位置；需要在项目或工作空间使用时显式引用
+- **独立任务**：临时使用任务附件和任务成果，不创建或使用默认个人资料库；长期内容归项目或工作空间
 - 任务产物可保存为长期资料；保存会保留原件及来源记录
 
 ## 怎么引用
@@ -362,6 +362,7 @@ export class LibraryService {
       for (const id of this.repo.listTextFtsCoverageUpgradeCandidates()) this.textFtsFallbackIds.add(id);
     }
   }
+  /** 仅兼容既有个人资料/旧版本数据的显式恢复入口；普通启动和查询不再创建个人资料。 */
   ensureReady(): LibrarySpaceDto {
     const existing = this.repo.getSpace(LIBRARY_PERSONAL_SPACE_ID);
     if (existing) return existing;
@@ -401,7 +402,8 @@ export class LibraryService {
     if (scope.projectId && this.isProjectArchived(scope.projectId)) return false;
     if (space.projectId) return space.projectId === scope.projectId && !this.isProjectArchived(space.projectId);
     if (space.workspaceId) return space.workspaceId === scope.workspaceId && Boolean(this.db.getSpace(space.workspaceId)) && !this.db.isSpaceEffectiveArchived(space.workspaceId);
-    return space.kind === "personal" && !scope.projectId && !scope.workspaceId;
+    // 老版本个人空间只允许显式引用读取，不允许临时任务写回。
+    return false;
   }
 
   isItemWritableInScope(item: LibraryItemDto, scope: LibraryTaskScope): boolean {
@@ -437,7 +439,11 @@ export class LibraryService {
 
   defaultSpaceForTask(taskId?: string | null, projectFallback?: string | null): LibrarySpaceDto {
     const scope = this.resolveTaskScope(taskId, projectFallback);
-    if (!scope.defaultOwner) throw new Error("无法确定有效任务的资料归属");
+    if (!scope.defaultOwner) {
+      const task = scope.taskId ? this.db.getTask(scope.taskId) : undefined;
+      if (task && !task.projectId && !task.spaceId) throw new Error("独立任务没有长期资料库，请将长期资料归入项目或工作空间");
+      throw new Error("无法确定有效任务的资料归属");
+    }
     const space = this.ensureOwnedSpace(scope.defaultOwner);
     if (!this.isSpaceWritableInScope(space, this.resolveTaskScope(taskId, projectFallback))) {
       throw new Error("当前任务的资料归属已归档或不可写");
@@ -446,7 +452,6 @@ export class LibraryService {
   }
 
   snapshot(): LibrarySnapshotDto {
-    this.ensureReady();
     const spaces = this.repo.listSpaces().map((space) => this.withOwnerName(space));
     const collections = this.repo.listCollections();
     const items = this.repo.listItems();
@@ -465,13 +470,11 @@ export class LibraryService {
   }
 
   listItems(spaceId: string, collectionId?: string | null): LibraryItemDto[] {
-    this.ensureReady();
     return this.repo.listItems(spaceId, collectionId);
   }
 
   /** 全量条目（Agent 工具用；可选按空间过滤） */
   listAllItems(spaceId?: string): LibraryItemDto[] {
-    this.ensureReady();
     return this.repo.listItems(spaceId);
   }
 
@@ -537,7 +540,6 @@ export class LibraryService {
   /* ---------------- Spaces ---------------- */
 
   createSpace(req: LibraryCreateSpaceRequest): LibrarySpaceDto {
-    this.ensureReady();
     if (req.projectId && req.workspaceId) throw new Error("资料空间只能归属于一个项目或工作空间");
     if (req.projectId && !this.projectExists(req.projectId)) {
       throw new Error("项目不存在");
@@ -588,7 +590,6 @@ export class LibraryService {
   }
 
   listProjectSpaces(projectId: string): LibrarySpaceDto[] {
-    this.ensureReady();
     return this.repo.listProjectSpaces(projectId).map((space) => this.withOwnerName(space));
   }
 
@@ -647,7 +648,6 @@ export class LibraryService {
   /* ---------------- Collections ---------------- */
 
   createCollection(req: LibraryCreateCollectionRequest): LibraryCollectionDto {
-    this.ensureReady();
     this.requireWritableSpace(req.spaceId);
     const parentId = req.parentId ?? null;
     if (parentId) this.requireCollectionInSpace(req.spaceId, parentId);
@@ -707,7 +707,6 @@ export class LibraryService {
   /* ---------------- Items ---------------- */
 
   createItem(req: LibraryCreateItemRequest): LibraryItemDto {
-    this.ensureReady();
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
     const title = limitText(safeName(req.title?.trim() || defaultTitle(req.kind)), LIBRARY_TITLE_MAX_CHARS, "标题");
@@ -738,7 +737,6 @@ export class LibraryService {
   }
 
   createUrl(req: LibraryCreateUrlRequest): LibraryItemDto {
-    this.ensureReady();
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
     const raw = req.url.trim();
@@ -969,7 +967,6 @@ export class LibraryService {
     }
   }
   importFile(req: LibraryImportFileRequest): LibraryItemDto {
-    this.ensureReady();
     const source = req.sourcePath?.trim();
     if (!source || !existsSync(source)) throw new Error("源文件不存在");
     const st = statSync(source);
@@ -1018,7 +1015,6 @@ export class LibraryService {
    */
   saveArtifact(req: LibrarySaveArtifactRequest): LibraryItemDto {
     if (req.owner !== undefined) assertArtifactSaveOwner(this.db, this.repo, req.owner, req.spaceId, req.artifactId);
-    this.ensureReady();
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
     const existing = this.repo.findBySourceArtifact(req.spaceId, req.artifactId);
@@ -1173,7 +1169,6 @@ export class LibraryService {
       itemIds?: ReadonlySet<string>;
     },
   ): LibraryListRowDto[] {
-    this.ensureReady();
     const q = query.trim();
     if (!q) return [];
     const spaces = this.repo.listSpaces();
@@ -1226,7 +1221,7 @@ export class LibraryService {
 
   /**
    * Hybrid-ready retrieval（FTS trigram + 显式排名 + metadata 过滤）：
-   * opts 缺省 = 用户级全量；显式 { projectId } = 当前项目 + 显式固定资料，无归属时才默认个人资料。
+   * opts 缺省 = 显式管理操作的全量检索；传入 projectId 后使用项目统一作用域；无归属不回落到个人空间。
    */
   retrieve(
     query: string,
@@ -1238,7 +1233,6 @@ export class LibraryService {
       limit?: number;
     },
   ): LibraryRetrievalHitDto[] {
-    this.ensureReady();
     const spaces = this.repo.listSpaces();
     const explicitScope = opts?.spaceIds !== undefined || opts?.collectionIds !== undefined || opts?.itemIds !== undefined;
     const scope = explicitScope
@@ -1739,7 +1733,7 @@ export class LibraryService {
 
   /**
    * 资料库目录摘要（仅标题/类型/位置/id，不含全文）——包括无任务预览在内，
-   * 一律按统一任务作用域限域；个人资料仅对独立任务或明确引用可见。
+   * 一律按统一任务作用域限域；独立任务不自动获得持久资料，旧资料仅按显式引用可见。
    */
   formatCatalog(limit = 36, opts?: { taskId?: string | null; projectId?: string | null; workspaceId?: string | null; toolsAvailable?: boolean }): string {
     const taskScope = this.resolveTaskScope(opts?.taskId, opts?.projectId, { workspaceFallback: opts?.workspaceId });
@@ -1747,19 +1741,14 @@ export class LibraryService {
     const retrievalHint = toolsAvailable
       ? "需要内容时用 library_search / library_read 按需读取；二进制/办公/图片条目返回受管路径，需要文件工具或预览读取，资料库不提供内联全文。"
       : "本会话不提供资料库工具；如需内容请告知用户或由主任务（在项目上下文中的任务）读取。";
-    if (!this.repo.getSpace(LIBRARY_PERSONAL_SPACE_ID)) {
-      return [
-        "## 资料库",
-        "当前范围还没有资料。用户可在对应项目或工作空间的资料页新建 Markdown / CSV / HTML，或保存任务产物。",
-        "三种载体分工：MD 决定内容，CSV 存储数据，HTML 负责表达；同空间可用相对路径互相引用。",
-      ].join("\n");
-    }
     const spaces = this.repo.listSpaces();
     const items = this.listItemsInScope(taskScope).filter((item) => item.kind !== "url");
     if (items.length === 0) {
       return [
         "## 资料库",
-        "当前范围还没有可见资料。用户可在对应项目或工作空间的资料页添加，或显式引用已有资料。",
+        taskScope.defaultOwner
+          ? "当前范围还没有可见资料。用户可在对应项目或工作空间的资料页添加，或显式引用已有资料。"
+          : "独立任务没有长期资料库；临时文件和产物放在任务内，需要长期保存的资料请归入项目或工作空间。",
         "三种载体分工：MD 决定内容，CSV 存储数据，HTML 负责表达；同空间可用相对路径互相引用。",
       ].join("\n");
     }
