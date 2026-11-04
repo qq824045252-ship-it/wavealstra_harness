@@ -165,6 +165,7 @@ export function createBaiduOcrAdapter(options: BaiduOcrOptions): ImageRecognitio
         const result = await request(url.toString(), form, signal, fetchImpl);
         if ([110, 111].includes(Number(result.error_code)) && attempt === 0) {
           if (token?.identity === identity) token = undefined;
+          if (pending?.identity === identity) pending = undefined;
           continue; // Explicit token rejection means the paid OCR call was not executed.
         }
         return parseOcr(result);

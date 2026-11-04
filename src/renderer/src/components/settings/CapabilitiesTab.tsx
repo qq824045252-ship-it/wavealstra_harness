@@ -7,7 +7,7 @@ import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
 import type { ApiCapabilityConnection, ApiCapabilityProtocol, CapabilityConnectionOption, CapabilityCredentialChange, CapabilityVideoJobDto, MediaCapabilityBinding, MediaCapabilityId } from "@shared/media-capabilities";
 import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-platform";
 import { useAppStore } from "@/store/appStore";
@@ -321,7 +321,12 @@ export default function CapabilitiesTab(): React.JSX.Element {
       ...catalog.filter(option => option.source !== "api"),
       ...Object.entries(draft?.connections ?? {}).map(([id, connection]): CapabilityConnectionOption => {
         const previous = savedOptions.get(id);
-        return { id, label: connection.name || "未命名 API 服务", source: "api", capabilities: connectionCapabilities(connection), models: previous?.models ?? {}, allowCustomModel: true, configured: previous?.configured ?? false, authState: connection.auth === "none" ? "none" : previous?.authState === "configured" ? "configured" : "missing-key", location: connectionLocation(connection.baseUrl), detail: previous?.detail };
+        return { id, label: connection.name || "未命名 API 服务", source: "api", capabilities: connectionCapabilities(connection),
+          models: connection.protocol === "baidu-ocr" ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) } : previous?.models ?? {},
+          allowCustomModel: connection.protocol !== "baidu-ocr",
+          configured: previous?.configured ?? false, credentialSlotsConfigured: previous?.credentialSlotsConfigured,
+          authState: connection.auth === "none" ? "none" : previous?.authState === "configured" ? "configured" : "missing-key",
+          location: connectionLocation(connection.baseUrl), detail: previous?.detail };
       }),
     ];
   }, [snapshot?.mediaServices, draft?.connections]);
