@@ -672,9 +672,9 @@ export interface ProjectKnowledgeHitDto {
 
 export interface ProjectKnowledgeSearchResultDto {
   taskId: string;
-  /** 任务绑定项目（null = 未绑定 → 仅 personal 范围） */
+  /** 任务绑定项目；资料范围同时包含当前工作空间与显式引用 */
   projectId: string | null;
-  scope: "project" | "personal";
+  scope: "project" | "workspace" | "personal" | "none";
   hits: ProjectKnowledgeHitDto[];
   /** 预算信息（审计/测试用） */
   budget: { requestedLimit: number; effectiveLimit: number };

@@ -192,6 +192,7 @@ const pendingAsyncChecks: Promise<void>[] = [];
 
 /* ---- TaskLibraryReference + 任务删除清理 ---- */
 {
+  db.connection.exec(`INSERT INTO tasks(id,title,status,updated_at) VALUES ('task-x','引用测试','pending',1),('task-del','待删除引用测试','pending',1)`);
   const md = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "接力文档" });
   service.attachToTask({ itemId: md.id, taskId: "task-x" });
   service.attachToTask({ itemId: md.id, taskId: "task-x" });
@@ -281,6 +282,7 @@ const pendingAsyncChecks: Promise<void>[] = [];
 /* ---- 项目删除：级联清理项目资料（personal 不受影响） ---- */
 {
   db.connection.prepare(`INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj-del', '待删项目', 1, 1)`).run();
+  db.connection.prepare(`INSERT INTO tasks(id,title,status,updated_at,project_id) VALUES ('task-proj-del','项目资料删除测试','pending',1,'proj-del')`).run();
   const space = service.createSpace({ name: "待删资料", projectId: "proj-del" });
   const folder = service.createCollection({ spaceId: space.id, name: "归档" });
   const item = service.createItem({ spaceId: space.id, collectionId: folder.id, kind: "markdown", title: "项目文档" });

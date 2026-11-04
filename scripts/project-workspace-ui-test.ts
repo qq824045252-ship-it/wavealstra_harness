@@ -424,8 +424,10 @@ void (async () => {
   assert.ok(libraryDocSource.includes("library-doc-bar"), "library document uses the compact bar");
 
   const libraryPageSource = readFileSync(join(process.cwd(), "src/renderer/src/components/pages/library/LibraryPage.tsx"), "utf8");
-  assert.ok(libraryPageSource.includes("library-compose-modal"), "library create uses the app modal");
-  assert.ok(libraryPageSource.includes("openCreateItem"), "library create asks for a title first");
+  const libraryComposeSource = readFileSync(join(process.cwd(), "src/renderer/src/components/pages/library/ScopedLibraryDialog.tsx"), "utf8");
+  assert.ok(libraryPageSource.includes("ScopedLibraryManager"), "legacy links resolve to the owner's local manager");
+  assert.ok(libraryComposeSource.includes("library-compose-modal"), "library create uses the app modal");
+  assert.ok(libraryComposeSource.includes('aria-label="资料名称"') && libraryComposeSource.includes("!value.title.trim()"), "library create asks for a title first");
   assert.equal(libraryPageSource.includes("library-prompt-mask"), false, "old library prompt overlay is gone");
 
   const memorySource = readFileSync(join(process.cwd(), "src/renderer/src/components/pages/project/ProjectMemory.tsx"), "utf8");

@@ -16,6 +16,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { createProjectContextExtension } from "../src/main/project/project-context-extension";
@@ -694,17 +695,23 @@ void (async () => {
   projects.pinProjectItem({ projectId: "proj-a", itemId: pinnedA.id });
   library.attachToTask({ itemId: aDoc.id, taskId: "task-ka" });
 
-  // 1. scope：A 任务可见 personal + A，不可见 B（3 字符查询走 FTS）
+  // 1. scope：A 任务可见本项目与显式引用，不可见 B（3 字符查询走 FTS）
   const rA = retrieval.search("task-ka", "密封圈");
   ok(rA.scope === "project" && rA.projectId === "proj-a", "A: scope=project");
   ok(rA.hits.some((h) => h.itemId === aDoc.id), "A: 命中 A 资料（FTS 正文）");
   ok(!rA.hits.some((h) => h.title.includes("B财务")), "A: 绝不命中 B 项目资料");
-  // 2. 分层：aDoc 已附加到任务 → task-explicit；pinnedA → pinned；personalDoc → plain
+  // 2. 分层：aDoc 已附加到任务 → task-explicit；pinnedA → pinned；普通本项目文档 → plain
   ok(rA.hits.find((h) => h.itemId === aDoc.id)?.tier === "task-explicit", "A: 附加条目 tier=task-explicit");
   const rPin = retrieval.search("task-ka", "固定基线");
   ok(rPin.hits.find((h) => h.itemId === pinnedA.id)?.tier === "pinned", "A: 固定引用 tier=pinned");
+  const ordinary = library.createItem({ spaceId: aSpace.id, kind: "markdown", title: "A普通知识库" });
   const rPlain = retrieval.search("task-ka", "知识库");
-  ok(rPlain.hits.find((h) => h.itemId === personalDoc.id)?.tier === "plain", "A: 普通命中 tier=plain");
+  ok(rPlain.hits.find((h) => h.itemId === ordinary.id)?.tier === "plain", "A: 普通本项目命中 tier=plain");
+  ok(!rPlain.hits.some((h) => h.itemId === personalDoc.id), "A: 未显式引用的个人资料不进入检索");
+  await assert.rejects(retrieval.read("task-ka", personalDoc.id), /可见范围/, "A: 直接itemId读取同样拒绝未经引用的个人资料");
+  library.attachToTask({ taskId: "task-ka", itemId: personalDoc.id });
+  const personalRef = retrieval.search("task-ka", "知识库");
+  ok(personalRef.hits.find((h) => h.itemId === personalDoc.id)?.tier === "task-explicit", "A: 显式附加后个人资料可检索且tier准确");
   // 同一 item 同时附加+固定 → 只出现一次且取最高层 task-explicit
   projects.pinProjectItem({ projectId: "proj-a", itemId: aDoc.id });
   const rDedup = retrieval.search("task-ka", "乙腈介质");
@@ -795,7 +802,7 @@ void (async () => {
     `知识工具集正确（${kNames.join(",")}）`,
   );
   const kSearch = await kTools.get("project_knowledge_search")!.execute("tc", { query: "密封圈" } as never);
-  ok(kSearch.isError === undefined && kSearch.content[0].text.includes("范围：personal + 当前项目"), "工具: 检索输出 scope 标注");
+  ok(kSearch.isError === undefined && kSearch.content[0].text.includes("范围：当前项目、工作空间及显式引用"), "工具: 检索输出 scope 标注");
   ok(!kSearch.content[0].text.includes("B财务"), "工具: B 内容不出现");
   const kSearchUnbound = await (() => {
     const tools2 = new Map<string, { name: string; execute: (t: string, p: never) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }>();
@@ -809,7 +816,7 @@ void (async () => {
     createProjectKnowledgeExtension({ taskId: "task-knone", retrieval })(api2);
     return tools2.get("project_knowledge_search")!.execute("tc", { query: "知识库" } as never);
   })();
-  ok(kSearchUnbound.content[0].text.includes("仅 personal"), "工具: 未绑定任务降级 personal-only 标注");
+  ok(kSearchUnbound.content[0].text.includes("范围：个人资料，独立任务"), "工具: 未绑定任务降级 personal-only 标注");
   // 10. registry：文本抽取 + 二进制 unsupported + symlink 守卫
   ok((await retrieval.getExtractionStatus(longDoc)).status === "extracted", "registry: 文本类抽取成功");
   ok((await retrieval.getExtractionStatus(binItem)).status !== "extracted", "registry: 损坏 pdf 抽取失败（降级 requiresFileAccess）");
@@ -1128,6 +1135,84 @@ void (async () => {
   ok(afterRebind.projectId === "proj-b", "改绑后 scope 跟随新项目");
   ok(afterRebind.hits.some((h) => h.title.includes("B财务")), "改绑后 B 资料可检索");
   db.upsertTask({ id: "task-ka", title: "A任务", updatedAt: 4, projectId: "proj-a", welcomeMode: "coding" });
+
+  // The second Agent retrieval family must not bypass or omit the shared workspace scope.
+  db.createSpace({ id: "knowledge-workspace", name: "Knowledge workspace" });
+  db.createSpace({ id: "knowledge-other", name: "Other workspace" });
+  const workspaceLibrary = library.ensureOwnedSpace({ type: "workspace", workspaceId: "knowledge-workspace" });
+  const otherLibrary = library.ensureOwnedSpace({ type: "workspace", workspaceId: "knowledge-other" });
+  const workspaceDoc = library.createItem({ spaceId: workspaceLibrary.id, kind: "markdown", title: "Scoped workspace knowledge" });
+  const otherDoc = library.createItem({ spaceId: otherLibrary.id, kind: "markdown", title: "Scoped workspace knowledge private" });
+  db.upsertTask({ id: "task-workspace-knowledge", title: "Workspace task", updatedAt: 1, spaceId: "knowledge-workspace", projectId: null });
+  const workspaceHits = retrieval.search("task-workspace-knowledge", "Scoped workspace knowledge");
+  ok(workspaceHits.scope === "workspace" && workspaceHits.hits.some((hit) => hit.itemId === workspaceDoc.id), "knowledge工具自动包含当前工作空间自有资料");
+  ok(!workspaceHits.hits.some((hit) => hit.itemId === otherDoc.id), "knowledge工具不进入其他未引用工作空间");
+  ok((await retrieval.read("task-workspace-knowledge", workspaceDoc.id)).item.id === workspaceDoc.id, "knowledge read与搜索范围一致");
+  await assert.rejects(retrieval.read("task-workspace-knowledge", personalDoc.id), /可见范围/);
+  ok(retrieval.search("unknown-knowledge-task", "知识库").scope === "none", "unknown knowledge task没有personal fallback");
+  await assert.rejects(retrieval.read("unknown-knowledge-task", personalDoc.id), /可见范围/);
+
+  // A slow PDF extraction must not outlive the grant that allowed it to start.
+  const delayedFolder = library.createCollection({ spaceId: LIBRARY_PERSONAL_SPACE_ID, name: "Delayed extraction references" });
+  const delayedPdf = library.importFile({
+    spaceId: LIBRARY_PERSONAL_SPACE_ID,
+    collectionId: delayedFolder.id,
+    sourcePath: join(root, "office-samples", "方案.pdf"),
+  });
+  await library.flushPendingIndexes();
+  const bindings = new WorkspaceLibraryBindingService(db);
+  const originalExtraction = library.getExtractedText;
+  type Extracted = Awaited<ReturnType<LibraryService["getExtractedText"]>>;
+  const delayExtraction = (): ((result: Extracted) => void) => {
+    let complete!: (result: Extracted) => void;
+    const pending = new Promise<Extracted>((resolve) => { complete = resolve; });
+    library.getExtractedText = () => pending;
+    return complete;
+  };
+  const extracted: Extracted = { status: "extracted", text: "delayed authorized PDF text", truncated: false };
+  try {
+    bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+    const finishAllowed = delayExtraction();
+    const allowedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    finishAllowed(extracted);
+    ok((await allowedRead).content.includes(extracted.text!), "延迟提取期间引用仍有效时正常返回正文");
+
+    for (const result of [extracted, { status: "unsupported", text: null, truncated: false } satisfies Extracted]) {
+      bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+      const finish = delayExtraction();
+      const pendingRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+      bindings.unbindCollection("knowledge-workspace", delayedFolder.id);
+      finish(result);
+      await assert.rejects(pendingRead, /可见范围/);
+      ok(true, result.status === "extracted" ? "提取期间取消文件夹引用后不返回正文" : "提取失败前已撤权时不返回受管路径");
+    }
+
+    bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+    const finishMoved = delayExtraction();
+    const movedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    db.moveTaskInWorkspaceTree({ taskId: "task-workspace-knowledge", targetSpaceId: "knowledge-other" });
+    finishMoved(extracted);
+    await assert.rejects(movedRead, /可见范围/);
+    ok(true, "提取期间任务移出引用工作空间后拒绝返回旧范围正文");
+
+    library.attachToTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    const finishDetached = delayExtraction();
+    const detachedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    library.detachFromTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    finishDetached(extracted);
+    await assert.rejects(detachedRead, /可见范围/);
+    ok(true, "提取期间解除单条任务附加后同样即时撤权");
+
+    library.attachToTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    const finishDeleted = delayExtraction();
+    const deletedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    library.deleteItem(delayedPdf.id);
+    finishDeleted(extracted);
+    await assert.rejects(deletedRead, /已删除|可见范围/);
+    ok(true, "提取期间原资料删除后不返回悬空正文或文件路径");
+  } finally {
+    library.getExtractedText = originalExtraction;
+  }
 
   })().then(() => {
     db.close();

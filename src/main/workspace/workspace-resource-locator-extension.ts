@@ -1,7 +1,7 @@
 /**
  * WorkspaceResourceLocatorExtension — R1 minimal + R3.6 mode auto/lexical/semantic
  * 冻结契约：
- * - Workspace 是 scope 权威：Current + ancestors，默认不含 sibling/child
+ * - 与 Library 工具共用任务范围：当前项目、当前/祖先 Workspace 资料及显式引用
  * - explicitDirectChild 仅 direct child + !effectiveArchived 时临时加入
  * - Search != Injection：仅返回轻量 hit，不改 PromptAssembly
  * - Source of Truth：真实 Library，索引非事实源
@@ -37,9 +37,9 @@ export function createWorkspaceResourceLocatorExtension(
       name: "search_workspace_resources",
       label: "工作空间 · 搜索资源",
       description:
-        "在当前任务的工作空间可见范围（Current Space + 祖先）搜索资料库资源。默认不搜 sibling/child；可传 explicitDirectChildSpaceId 临时扩展 workspace scope（仅限当前空间的 direct child 且未归档）。只返回轻量定位（id/space/title/filename/preview/matchedBy/score/freshness，semantic 仅定位 score=relevance），不含全文；命中后需用 library_read 读取原件。中文/中英混合走 FTS5 trigram。mode=auto(默认 lexical-first+controlled semantic fallback) | lexical | semantic。\n\nSemantic similarity only indicates retrieval relevance. It is not evidence that the resource is correct. Read the underlying source before relying on it. 语义相似度只是“可能相关”，不是事实置信度。",
+        "在与 library_list / library_read 相同的任务范围搜索资料：当前项目、当前及祖先工作空间的自有资料、显式绑定和任务/项目引用。默认不搜未引用的兄弟/子空间；可传 explicitDirectChildSpaceId 临时扩展直属且未归档的子空间。只返回轻量定位（id/space/title/filename/preview/matchedBy/score/freshness，semantic 仅定位 score=relevance），不含全文；命中后需用 library_read 读取原件，临时子空间命中须传相同 explicitDirectChildSpaceId。中文/中英混合走 FTS5 trigram。mode=auto(默认 lexical-first+controlled semantic fallback) | lexical | semantic。\n\nSemantic similarity only indicates retrieval relevance. It is not evidence that the resource is correct. Read the underlying source before relying on it. 语义相似度只是“可能相关”，不是事实置信度。",
       promptSnippet:
-        "search_workspace_resources(query, mode?, limit?, explicitDirectChildSpaceId?) — 工作空间限域搜索（Current+ancestors，仅已绑定到该 scope 且当前任务有权限的 library space 参与检索；mode 默认为 auto）",
+        "search_workspace_resources(query, mode?, limit?, explicitDirectChildSpaceId?) — 统一任务范围内检索资料（项目 + 工作空间 + 显式引用，mode 默认 auto）",
       parameters: paramsSchema,
       execute: async (
         _toolCallId: string,
@@ -84,7 +84,9 @@ export function createWorkspaceResourceLocatorExtension(
                 `- [${h.provider}/${h.matchedBy}] ${h.title} · id=${h.id} · space=${h.spaceId} · score=${h.score} · preview=${h.preview || "(title/filename 命中)"}${h.location ? " · " + h.location : ""}`,
             ),
             result.hits.length === 0 ? "（无匹配）" : "",
-            `提示：命中仅为定位，需用 library_read(id) 读取真实正文；Source of Truth 为 Library 原件。`,
+            params.explicitDirectChildSpaceId
+              ? `提示：命中仅为定位；读取临时子空间命中时请调用 library_read(id, explicitDirectChildSpaceId=${JSON.stringify(params.explicitDirectChildSpaceId)})，不会持久扩大任务范围。`
+              : "提示：命中仅为定位，需用 library_read(id) 读取真实正文；Source of Truth 为 Library 原件。",
           ];
           return {
             content: [{ type: "text" as const, text: lines.filter(Boolean).join("\n") }],

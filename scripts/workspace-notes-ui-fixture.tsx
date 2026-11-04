@@ -6,9 +6,13 @@ import WorkspaceNotesSection from "../src/renderer/src/components/workspace/Work
 import WorkspaceLibraryBindingsSection from "../src/renderer/src/components/workspace/WorkspaceLibraryBindingsSection";
 import "../src/renderer/src/styles/global.css";
 let note = { workspaceId: "vps", content: "", revision: 0, updatedAt: 0 };
-const view: any = { workspaceId: "vps", workspaceName: "VPS管理", direct: [], inherited: [],
-  addable: [{ targetType: "space", librarySpaceId: "personal", name: "我的文档", path: "资料库 / 我的文档", kind: "personal" }],
-  destinations: [{ id: "personal", name: "我的文档" }], libraryStoragePath: "C:/Users/test/.mybuddy/library" };
+const ownSpace = { id: "vps-materials", name: "VPS管理资料", kind: "team", workspaceId: "vps", createdAt: 1, updatedAt: 1 };
+const personalSpace = { id: "personal", name: "个人资料", kind: "personal", createdAt: 1, updatedAt: 1 };
+const personalItem = { id: "shared-guide", spaceId: "personal", collectionId: null, kind: "markdown", title: "公共维护说明", filename: "公共维护说明.md", mimeType: "text/markdown", sizeBytes: 20, owner: "测试用户", favorite: false, createdAt: 1, updatedAt: 1, lastVisitedAt: null };
+const library: any = { spaces: [personalSpace, ownSpace], collections: [], items: [personalItem], recent: [], artifacts: [], storage: { usedBytes: 20 }, ownerName: "测试用户" };
+const view: any = { workspaceId: "vps", workspaceName: "VPS管理", owned: [{ targetType: "space", librarySpaceId: ownSpace.id, name: ownSpace.name, kind: "team", workspaceId: "vps" }], ownedItemCount: 0, direct: [], inherited: [],
+  addable: [{ targetType: "space", librarySpaceId: "personal", name: "个人资料", path: "个人资料", kind: "personal" }],
+  destinations: [{ id: ownSpace.id, name: ownSpace.name }] };
 const test: any = { note: () => note, failSave: false, navigation: null, bound: null };
 (window as any).noteTest = test;
 (window as any).api = { workspace: {
@@ -21,6 +25,23 @@ const test: any = { note: () => note, failSave: false, navigation: null, bound: 
     createFolder: async (req: any) => { test.created = req; view.direct.push({ targetType: "collection", librarySpaceId: req.librarySpaceId, collectionId: "folder", name: req.name, path: `资料库 / 我的文档 / ${req.name}`, kind: "personal" }); return { ok: true }; },
   },
 } };
+test.library = library;
+(window as any).api.db = { listTasks: async () => [], listSpaces: async () => [{ id: "vps", name: "VPS管理", path: "C:/Work/VPS" }] };
+(window as any).api.library = {
+  snapshot: async () => structuredClone(library),
+  ensureOwnedSpace: async () => ({ ok: true, value: ownSpace }),
+  getItem: async (id: string) => library.items.find((item: any) => item.id === id) ?? null,
+  readContent: async (id: string) => ({ ok: true, value: { item: library.items.find((item: any) => item.id === id), content: "# 公共维护说明\n\n引用保留原文，只在此阅读。" } }),
+  markVisited: async (id: string) => ({ ok: true, value: library.items.find((item: any) => item.id === id) }),
+  search: async () => [],
+  createCollection: async (req: any) => {
+    test.created = req;
+    const folder = { id: "owned-folder", spaceId: req.spaceId, parentId: req.parentId ?? null, name: req.name, owner: "测试用户", createdAt: 1, updatedAt: 1 };
+    library.collections.push(folder);
+    return { ok: true, value: folder };
+  },
+  listTaskReferences: async () => ({ ok: true, value: { taskId: "", items: [] } }),
+};
 const projectNotes: Record<string, { projectId: string; content: string; revision: number; updatedAt: number }> = {};
 test.projectNotes = projectNotes;
 (window as any).api.projectNotes = {
@@ -33,7 +54,7 @@ test.projectNotes = projectNotes;
 function Fixture() {
   const [tab, setTab] = useState("notes");
   const [archived, setArchived] = useState(false);
-  return <div style={{ maxWidth: 1020, margin: "32px auto" }}><h1>VPS管理</h1><nav><button className="btn" onClick={() => setTab("notes")}>便签</button><button className="btn" onClick={() => setTab("library")}>资料库</button><button className="btn" onClick={() => setTab("project-a")}>项目 A</button><button className="btn" onClick={() => setTab("project-b")}>项目 B</button><button className="btn" onClick={() => setArchived(!archived)}>切换归档</button></nav>
+  return <div style={{ maxWidth: 1020, margin: "32px auto" }}><h1>VPS管理</h1><nav><button className="btn" onClick={() => setTab("notes")}>便签</button><button className="btn" onClick={() => setTab("library")}>资料</button><button className="btn" onClick={() => setTab("project-a")}>项目 A</button><button className="btn" onClick={() => setTab("project-b")}>项目 B</button><button className="btn" onClick={() => setArchived(!archived)}>切换归档</button></nav>
     {tab.startsWith("project-") ? <ProjectNotes key={tab} projectId={tab} archived={archived} /> : tab === "notes" ? <WorkspaceNotesSection workspaceId="vps" /> : <WorkspaceLibraryBindingsSection currentSpaceId="vps" />}</div>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

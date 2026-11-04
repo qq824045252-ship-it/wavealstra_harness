@@ -1,24 +1,24 @@
 /**
- * LibraryExtension — 资料库的 Agent 结构化工具（最小领域面，任务/项目限域）。
+ * LibraryExtension — 资料的 Agent 结构化工具（统一任务范围）。
  *
- * 隔离规则（冻结）：personal 恒可见；任务绑定 projectId 时仅 personal + 本项目空间；
- * 未绑定任务仅 personal。所有工具（list/search/read/attach/detach）在进入点做授权检查，
- * 不只过滤列表——通过 itemId/spaceId 直接访问同样拒绝。
+ * 读取：当前项目、当前/祖先工作空间、显式绑定及任务/项目引用。
+ * 写入：当前项目或当前工作空间的自有资料；继承和引用不授予源资料写权限。
+ * 所有工具共用服务端任务范围，直接传 itemId/spaceId 也不能越界。
  *
  * 二进制门禁：pdf/office/image/file 等非文本条目禁止 utf8 直读，返回结构化 metadata
  * （kind/mime/size/managedPath/source/provenance）+ 明确“需要文件/预览工具读取”。
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { LIBRARY_CONTENT_MAX_CHARS, LIBRARY_PERSONAL_SPACE_ID, LIBRARY_TITLE_MAX_CHARS, type LibraryItemDto, type LibrarySpaceDto } from "../../shared/library-ipc";
+import { LIBRARY_CONTENT_MAX_CHARS, LIBRARY_TITLE_MAX_CHARS, type LibraryItemDto, type LibrarySpaceDto } from "../../shared/library-ipc";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 import type { LibraryService } from "./LibraryService";
 
 export interface LibraryExtensionBridge {
   service: LibraryService;
-  /** 当前任务 id（attach/detach 用；空 = 仅读工具可用） */
+  /** 当前任务身份；资料归属由服务端重新解析，附加/取消引用必须具有任务身份。 */
   taskId?: string;
-  /** 当前任务绑定的 projectId（动态解析；null = 未绑定） */
+  /** 无 taskId 的受信任会话使用的项目范围；有 taskId 时以数据库绑定为准 */
   resolveProjectId?: () => string | null;
   /** 当前权限模式（readonly 禁止 attach/detach 等写操作；缺省视为非 readonly） */
   getPermissionMode?: () => import("../../shared/agent-ipc").PermissionMode;
@@ -38,6 +38,7 @@ const listParamsSchema = Type.Object(
 const readParamsSchema = Type.Object(
   {
     id: Type.String({ minLength: 1, maxLength: 100 }),
+    explicitDirectChildSpaceId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
   },
   { additionalProperties: false },
 );
@@ -74,6 +75,7 @@ function errorResult(error: unknown) {
 function spaceLabel(space: LibrarySpaceDto | null | undefined): string {
   if (!space) return "未知空间";
   if (space.kind === "personal") return "我的文档";
+  if (space.workspaceId) return `工作空间资料：${space.workspaceName ?? space.name}`;
   return space.projectName ? `项目资料：${space.projectName}` : space.name;
 }
 
@@ -90,45 +92,49 @@ function describeItem(item: LibraryItemDto, service: LibraryService): string {
 export function createLibraryExtension(bridge: LibraryExtensionBridge): ExtensionFactory {
   const service = bridge.service;
 
-  /** 任务可见项目（动态解析） */
-  const taskProjectId = (): string | null => {
+  const projectFallback = (): string | null => {
     try {
       return bridge.resolveProjectId?.() ?? null;
     } catch {
       return null;
     }
   };
+  // Resolve on every operation: rebind/unbind/archive changes apply to an existing session.
+  const taskScope = (explicitDirectChildSpaceId?: string) => service.resolveTaskScope(bridge.taskId, projectFallback(), {
+    additionalWorkspaceIds: explicitDirectChildSpaceId ? [explicitDirectChildSpaceId] : [],
+  });
 
   /** 空间可见性授权（list 按空间过滤与直接访问共用） */
   const assertSpaceVisible = (spaceId: string): LibrarySpaceDto => {
     const space = service.getSpace(spaceId);
     if (!space) throw new LibraryToolError("空间不存在");
-    if (!service.isSpaceVisibleToTask(space, taskProjectId())) {
-      throw new LibraryToolError("该空间不在当前任务可见范围（仅个人资料与当前项目资料可见）");
+    if (!service.isSpaceVisibleInScope(space, taskScope())) {
+      throw new LibraryToolError("该资料位置不在当前任务范围（仅当前项目、工作空间及显式引用可见）");
     }
     return space;
   };
 
   /** 条目可见性授权（read/attach/detach 进入点；防止 itemId 直读越界） */
-  const assertItemVisible = (id: string): LibraryItemDto => {
+  const assertItemVisible = (id: string, explicitDirectChildSpaceId?: string): LibraryItemDto => {
     const item = service.getItem(id);
     if (!item) throw new LibraryToolError(`资料条目不存在：${id}`);
-    if (!service.isItemVisibleToTask(item, taskProjectId())) {
-      throw new LibraryToolError("该条目不在当前任务可见范围（跨项目资料不可访问）");
+    if (!service.isItemVisibleInScope(item, taskScope(explicitDirectChildSpaceId))) {
+      throw new LibraryToolError("该条目不在当前任务范围，跨项目或未引用的其他资料不可访问");
     }
     return item;
   };
 
-  const requireReadable = (id: string): LibraryItemDto => {
+  const requireReadable = (id: string, explicitDirectChildSpaceId?: string): LibraryItemDto => {
     // 只读授权；folder 已由 collection 分层承担（items 中不存在）
-    return assertItemVisible(id);
+    return assertItemVisible(id, explicitDirectChildSpaceId);
   };
 
   /** 写门禁：readonly 权限模式拒绝 attach/detach（与 project_memory_* / project_context_* 一致） */
   const guardWritable = (): void => {
     if (bridge.getPermissionMode?.() === "readonly") {
-      throw new LibraryToolError("当前为只读权限模式，不能修改任务资料引用（只可读取）。");
+      throw new LibraryToolError("当前为只读权限模式，不能修改资料或任务引用（只可读取）。");
     }
+    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务不存在或资料归属不可用，不能修改资料");
   };
 
   /** 写门禁（空间级）：readonly 拒绝；目标空间所属项目归档拒绝；作用域必须对任务可见 */
@@ -140,6 +146,9 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     if (space.projectId && service.isProjectArchived(space.projectId)) {
       throw new LibraryToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     }
+    if (!service.isSpaceWritableInScope(space, taskScope())) {
+      throw new LibraryToolError("只能修改当前项目或当前工作空间的自有资料；继承和引用的源资料只读");
+    }
     return space;
   };
 
@@ -150,7 +159,18 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
   };
 
   const defaultSpaceId = (): string => {
-    return LIBRARY_PERSONAL_SPACE_ID;
+    // Guard before ensuring a destination: readonly calls must not create a library container.
+    guardWritable();
+    return service.defaultSpaceForTask(bridge.taskId, projectFallback()).id;
+  };
+
+  const targetTaskId = (requested?: string): string => {
+    if (!bridge.taskId) throw new LibraryToolError("无法确定当前任务（瞬时会话不提供附加能力）");
+    if (requested?.trim() && requested.trim() !== bridge.taskId) {
+      throw new LibraryToolError("只能修改当前任务的资料引用，不能指定其他任务");
+    }
+    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务不存在或资料归属不可用");
+    return bridge.taskId;
   };
 
   /** 文本类创建/更新返回摘要（稳定 id/space/collection/provenance；不泄露绝对路径） */
@@ -170,21 +190,16 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_list",
       label: "资料库 · 列出条目",
       description:
-        "列出当前任务可见范围的资料库条目（个人「我的文档」+ 当前项目资料；跨项目资料不可见）。可传 spaceId 限定空间、query 过滤标题、limit 截断。返回数据库实时状态（类型/标题/位置/id/路径/来源）。资料库是长期知识资产，不同于任务工作区文件。",
+        "列出当前任务可用资料：当前项目、当前及祖先工作空间的资料、显式绑定与任务/项目引用。其他项目及未引用的个人/其他空间资料不可见；独立任务使用个人资料。可传 spaceId 限定位置、query 过滤标题、limit 截断。资料与磁盘工作目录文件分开管理。",
       promptSnippet: "library_list(spaceId?, query?, limit?) — 列出当前任务可见的资料库条目",
       parameters: listParamsSchema,
       execute: async (_toolCallId: string, params: { spaceId?: string; query?: string; limit?: number }) => {
         try {
-          const visibleSpaces = service
-            .listSpaces()
-            .filter((s) => service.isSpaceVisibleToTask(s, taskProjectId()));
-          const visibleIds = new Set(visibleSpaces.map((s) => s.id));
-          let items: LibraryItemDto[];
+          const scope = taskScope();
+          let items = service.listItemsInScope(scope);
           if (params.spaceId) {
             assertSpaceVisible(params.spaceId);
-            items = service.listAllItems(params.spaceId);
-          } else {
-            items = service.listAllItems().filter((i) => visibleIds.has(i.spaceId));
+            items = items.filter((item) => item.spaceId === params.spaceId);
           }
           const q = params.query?.trim().toLowerCase();
           const filtered = q
@@ -211,7 +226,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_search",
       label: "资料库 · 搜索",
       description:
-        "在当前任务可见范围（个人 + 当前项目资料）搜索资料库：标题/文件名 + Markdown/HTML/CSV 内容全文。跨项目资料不会出现在结果中。需要正文时再用 library_read 读取。",
+        "在与 library_list / library_read 相同的当前任务范围搜索资料：当前项目、工作空间及显式引用。标题/文件名 + Markdown/HTML/CSV 内容全文。其他项目及未引用资料不会出现在结果中。需要正文时再用 library_read 读取。",
       promptSnippet: "library_search(query, limit?) — 在当前任务可见范围搜索资料库",
       parameters: Type.Object(
         {
@@ -222,7 +237,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       ),
       execute: async (_toolCallId: string, params: { query: string; limit?: number }) => {
         try {
-          const rows = service.search(params.query, { projectId: taskProjectId() }).slice(0, params.limit ?? 20);
+          const rows = service.searchInScope(params.query, taskScope()).slice(0, params.limit ?? 20);
           const lines = [
             `资料库搜索「${params.query}」（${rows.length} 条，当前任务可见范围）：`,
             ...rows.map((row) => {
@@ -242,12 +257,12 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_read",
       label: "资料库 · 读取条目",
       description:
-        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（截断上限）；URL 返回链接；PDF/Office/图片/未知文件返回结构化 metadata（类型/大小/受管路径/来源/provenance）——这些是非文本资产，需要文件/预览工具读取，资料库不提供内联全文。跨项目条目不可访问。",
-      promptSnippet: "library_read(id) — 读取资料条目（文本类返回正文，二进制类返回受管路径元数据）",
+        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（截断上限）；URL 返回链接；PDF/Office/图片/未知文件返回结构化 metadata（类型/大小/受管路径/来源/provenance）——这些是非文本资产，需要文件/预览工具读取，资料库不提供内联全文。跨项目条目不可访问。若读取 search_workspace_resources 显式扩展直属子空间后的命中，传相同 explicitDirectChildSpaceId；仅本次读取生效，兄弟、孙级或归档空间拒绝。",
+      promptSnippet: "library_read(id, explicitDirectChildSpaceId?) — 读取可见资料；临时子空间命中需携带相同子空间参数",
       parameters: readParamsSchema,
-      execute: async (_toolCallId: string, params: { id: string }) => {
+      execute: async (_toolCallId: string, params: { id: string; explicitDirectChildSpaceId?: string }) => {
         try {
-          const item = requireReadable(params.id);
+          const item = requireReadable(params.id, params.explicitDirectChildSpaceId);
           if (item.kind === "url") {
             return textResult(`[url] ${item.title}\n链接：${item.url}`, { item });
           }
@@ -283,12 +298,11 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       label: "资料库 · 附加到任务",
       description:
         "把当前任务可见范围内的资料条目显式附加到本任务（TaskLibraryReference）。附加后该条目会以结构化引用出现在本任务上下文中；不复制文件、不把整个资料库塞进上下文。跨项目条目不可附加。",
-      promptSnippet: "library_attach_to_task(id, taskId?) — 附加资料到当前/指定任务",
+      promptSnippet: "library_attach_to_task(id) — 附加可见资料到当前任务",
       parameters: attachParamsSchema,
       execute: async (_toolCallId: string, params: { id: string; taskId?: string }) => {
         try {
-          const taskId = params.taskId?.trim() || bridge.taskId;
-          if (!taskId) throw new LibraryToolError("无法确定当前任务（瞬时会话不提供附加能力）");
+          const taskId = targetTaskId(params.taskId);
           guardWritable();
           assertItemVisible(params.id);
           const ref = service.attachToTask({ itemId: params.id, taskId });
@@ -307,8 +321,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       parameters: attachParamsSchema,
       execute: async (_toolCallId: string, params: { id: string; taskId?: string }) => {
         try {
-          const taskId = params.taskId?.trim() || bridge.taskId;
-          if (!taskId) throw new LibraryToolError("无法确定当前任务（瞬时会话不提供附加能力）");
+          const taskId = targetTaskId(params.taskId);
           guardWritable();
           assertItemVisible(params.id);
           service.detachFromTask({ itemId: params.id, taskId });
@@ -319,14 +332,14 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       },
     });
 
-    /* ---------------- 写回/晋升工具面（task-scoped；个人 + 当前项目；绝不跨项目） ---------------- */
+    /* ---------------- 写回/晋升工具面（当前归属可写；引用不扩大写权限） ---------------- */
 
     pi.registerTool({
       name: "library_create_text",
       label: "资料库 · 新建文本资料",
       description:
-        "在当前任务可见范围（personal + 当前项目；未绑定任务仅 personal）新建文本类资料（markdown/html/csv）。" +
-        "spaceId 缺省为个人文档；collectionId 必须属于同一空间。创建后可带 content 正文（≤100000 字符）。" +
+        "在当前任务自有资料位置新建文本类资料（markdown/html/csv）。" +
+        "spaceId 缺省按当前项目、当前工作空间、个人文档的顺序确定；collectionId 必须属于同一位置。创建后可带 content 正文。" +
         "readonly 权限或归档项目下不可用；跨项目 space/collection 拒绝。",
       promptSnippet: "library_create_text(kind, title, content?, spaceId?, collectionId?) — 新建文本资料（md/html/csv）",
       parameters: Type.Object(
@@ -425,7 +438,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "把当前任务（或同项目任务）的产物 COPY 到资料库受管存储并晋升为长期资料（provenance 记录来源任务/产物；" +
         "同产物同空间幂等：内容变化时更新副本并记版本）。只复制不移动/删除原始产物。" +
-        "spaceId 缺省为个人文档；readonly/归档拒绝；其他项目任务的产物拒绝。",
+        "spaceId 缺省为当前项目，其次当前工作空间，否则个人文档；readonly/归档拒绝；其他项目任务的产物拒绝。",
       promptSnippet: "library_save_artifact(artifactId, spaceId?, collectionId?) — 产物晋升为长期资料（COPY + provenance）",
       parameters: Type.Object(
         {
@@ -450,7 +463,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
           }
           const scope = service.getArtifactScope(params.artifactId);
           if (!scope) throw new LibraryToolError("产物不存在");
-          const taskProjectId = bridge.resolveProjectId?.() ?? null;
+          const taskProjectId = taskScope().projectId;
           const ownTask = Boolean(bridge.taskId && scope.taskId === bridge.taskId);
           const sameProject = Boolean(taskProjectId && scope.projectId === taskProjectId);
           if (!ownTask && !sameProject) {
@@ -471,7 +484,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_create_collection",
       label: "资料库 · 新建集合",
       description:
-        "在当前任务可见空间（personal + 当前项目）新建集合（文件夹）。parentId 必须属于同一空间；" +
+        "在当前任务自有资料位置新建集合（文件夹）。默认当前项目，其次当前工作空间，否则个人文档；parentId 必须属于同一位置。" +
         "readonly/归档拒绝；跨项目空间拒绝。",
       promptSnippet: "library_create_collection(name, spaceId?, parentId?) — 新建资料集合（项目内组织）",
       parameters: Type.Object(

@@ -48,9 +48,9 @@ export class LibraryWorkspaceContextService {
     return (this.libraryInst ??= this.createLibraryService(this.db));
   }
 
-  catalog(projectId?: string | null, toolsAvailable = true): string | null {
+  catalog(projectId?: string | null, toolsAvailable = true, taskId?: string | null, workspaceId?: string | null): string | null {
     try {
-      return this.library().formatCatalog(36, { projectId: projectId ?? null, toolsAvailable });
+      return this.library().formatCatalog(36, { taskId, workspaceId, projectId: projectId ?? null, toolsAvailable });
     } catch {
       return null;
     }
@@ -66,7 +66,12 @@ export class LibraryWorkspaceContextService {
 
   attachedItemIds(taskId: string): ReadonlySet<string> {
     try {
-      return new Set(this.library().listTaskReferences(taskId).items.map((item) => item.id));
+      const library = this.library();
+      const scope = library.resolveTaskScope(taskId);
+      return new Set(library.listTaskReferences(taskId).items.filter((row) => {
+        const item = library.getItem(row.id);
+        return item && library.isItemVisibleInScope(item, scope);
+      }).map((item) => item.id));
     } catch {
       return new Set();
     }
@@ -84,7 +89,7 @@ export class LibraryWorkspaceContextService {
       projectContext: projectContextOverride === undefined
         ? this.projectContext.resolveTask(taskId)
         : projectContextOverride,
-      libraryCatalog: this.catalog(projectId, toolsAvailable),
+      libraryCatalog: this.catalog(projectId, toolsAvailable, taskId),
       libraryAttachments: this.attachments(taskId),
       libraryAttachedItemIds: this.attachedItemIds(taskId),
     };
@@ -103,7 +108,7 @@ export class LibraryWorkspaceContextService {
       case "library": {
         const library = this.library();
         const item = library.getItem(access.itemId);
-        if (!item || !library.isItemVisibleToTask(item, projectId)) throw new Error("历史资料已删除或不可见");
+        if (!item || !library.isItemVisibleInScope(item, library.resolveTaskScope(taskId))) throw new Error("历史资料已删除或不可见");
         if (access.origin === "attached" && !library.listTaskReferences(taskId).items.some(ref => ref.id === access.itemId)) {
           throw new Error("历史任务资料已取消附加");
         }
@@ -123,12 +128,13 @@ export class LibraryWorkspaceContextService {
     const projectId = task?.projectId ?? null;
     const project = this.projectContext.resolveTask(taskId);
     const library = this.library();
+    const scope = library.resolveTaskScope(taskId);
     const output: SupplementalEvidence[] = [...new ProjectNotesService(this.db).sources(taskId), ...new WorkspaceNotesService(this.db).sources(taskId)];
     const selectedItems = new Set<string>();
     const addItem = (itemId: string, origin: "attached" | "pinned" | "catalog") => {
       if (selectedItems.has(itemId)) return;
       const item = library.getItem(itemId);
-      if (!item || !library.isItemVisibleToTask(item, projectId)) return;
+      if (!item || !library.isItemVisibleInScope(item, scope)) return;
       selectedItems.add(itemId);
       output.push({
         id: `library:${item.id}`, kind: "library", revision: String(item.updatedAt),
@@ -138,7 +144,7 @@ export class LibraryWorkspaceContextService {
           : "此条目是资料引用；需要正文时通过 library_read 读取。"}`,
         validate: () => {
           const current = library.getItem(item.id);
-          if (!current || !library.isItemVisibleToTask(current, this.db.getTask(taskId)?.projectId)) throw new Error("本轮引用的资料已删除或不可见");
+          if (!current || !library.isItemVisibleInScope(current, library.resolveTaskScope(taskId))) throw new Error("本轮引用的资料已删除或不可见");
           if (origin === "attached" && !library.listTaskReferences(taskId).items.some((ref) => ref.id === item.id)) throw new Error("本轮引用的任务资料已取消附加");
           if (origin === "pinned" && projectId) this.projectContext.assertEvidenceAvailable(projectId, [], [item.id]);
         },
@@ -156,7 +162,7 @@ export class LibraryWorkspaceContextService {
         validate: () => this.projectContext.assertEvidenceAvailable(project.project.id, resourceIds),
       });
     }
-    for (const item of library.listAllItems().filter((item) => item.kind !== "url" && library.isItemVisibleToTask(item, projectId)).slice(0, 36)) {
+    for (const item of library.listItemsInScope(scope).filter((item) => item.kind !== "url").slice(0, 36)) {
       addItem(item.id, "catalog");
     }
     return output;
@@ -181,7 +187,7 @@ export class LibraryWorkspaceContextService {
   ): string[] {
     const context = this.projectContext.resolveTask(parentTaskId);
     const projectId = this.db.getTask(parentTaskId)?.projectId ?? null;
-    const catalog = projectId ? this.catalog(projectId, false) : null;
+    const catalog = this.catalog(projectId, false, parentTaskId);
     const attachments = this.attachments(parentTaskId);
     // Evidence is supplied by the transient session's own request projection.
     return mapBtwProjectContextSegments(segments.filter((segment) => !isEvidenceSegment(segment.id)), context, { catalog, attachments });

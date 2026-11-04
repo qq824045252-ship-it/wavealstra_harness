@@ -101,7 +101,7 @@ contains(globalCssPath, ".extension-top-bar", "right-panel topbar must use the c
 contains(globalCssPath, ".extension-artifact-item.active", "right-panel artifact selection must use the converged active state");
 contains(globalCssPath, ".approval-bar", "tool approval must retain a prominent warning surface");
 assert.match(globalCss, /\.artifact-panel\s*\{[^}]*\bborder-left:\s*0\s*;/s, "right panel boundary must have one visual owner");
-for (const tab of ["概览", "上下文", "资料库", "文件", "Gadgets"]) {
+for (const tab of ["概览", "上下文", "资料", "文件", "Gadgets"]) {
   contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", tab, `workspace IA must retain ${tab}`);
 }
 

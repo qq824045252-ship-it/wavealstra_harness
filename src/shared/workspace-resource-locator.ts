@@ -3,11 +3,9 @@
  *
  * 1) Workspace 是搜索 scope 权威（scopeSpaceIds = Current + ancestors，metadata 供未来 file/artifact）：
  *    默认不含 sibling/child；explicitDirectChild 仅临时扩 scopeSpaceIds。
- * 2) Library provider 真实按 Workspace Binding 限域（R1 Scope Completion）：
- *    allowed = boundLibrarySpaceIds ∩ permittedLibrarySpaceIds（两边都是 library_space_id）。
- *    - bound：Workspace scope → workspace_library_links → library_space_id（映射，非异域求交）
- *    - permitted：personal 恒可见；team 仅同 projectId
- *    - 未绑定 Workspace 的 personal 不进入默认 Locator 搜索
+ * 2) Library provider 与 library_list/search/read 和上下文共用任务范围：
+ *    当前项目 + 当前/祖先工作空间自有资料 + 显式绑定/任务附件/项目固定引用。
+ *    精确到文件夹子树或单条引用；其他项目始终不可见。独立任务默认个人资料。
  * 3) Search != Context Injection：Locator 仅返回轻量 hit，不自动注入 prompt
  * 4) Source of Truth 是真实资源：命中后用 library_read 等读取
  * 5) R1 仅 FTS5 trigram + metadata，无 embedding/vector/chunks/watcher

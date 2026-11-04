@@ -9,6 +9,7 @@ import type { TaskExecutionWorkspaceLifecycle } from "./TaskExecutionWorkspaceLi
 interface ArchivedContentDeletionOptions {
   db: AppDatabase;
   lifecycle: TaskExecutionWorkspaceLifecycle;
+  /** Reversible preparation only. Irreversible cleanup belongs in afterDeleteSpace. */
   beforeDeleteSpace?: (spaceId: string) => void | Promise<void>;
   afterDeleteSpace?: (spaceId: string) => void | Promise<void>;
   afterDeleteTask?: (task: TaskDto, sessionFiles: string[]) => void | Promise<void>;
@@ -35,6 +36,7 @@ export class ArchivedContentDeletion {
     };
     const selectedRoots = new Set<string>();
     const selectedSpaces = new Set<string>();
+    const selectedSubtrees = new Map<string, Set<string>>();
     const spaces = db.listSpaces();
     const children = new Map<string, string[]>();
     for (const space of spaces) {
@@ -53,7 +55,25 @@ export class ArchivedContentDeletion {
         selectedSpaces.add(child);
         pending.push(...(children.get(child) ?? []));
       }
+      selectedSubtrees.set(id, visited);
     }
+    // A tree with owned documents is protected as a whole. Decide this before trashing
+    // any task or deleting any Gadget, so a rejected workspace purge cannot lose its children.
+    const protectedSpaces = new Set<string>();
+    const materialFailures = new Set<string>();
+    const spacesWithMaterials = new Set([...selectedSpaces].filter((id) => db.hasWorkspaceOwnedMaterials(id)));
+    for (const [id, subtree] of selectedSubtrees) {
+      if (![...subtree].some((spaceId) => spacesWithMaterials.has(spaceId))) continue;
+      fail("space", id, "工作空间或其子空间仍有自有资料，请先迁移或清空资料后再彻底删除");
+      materialFailures.add(id);
+      for (const spaceId of subtree) protectedSpaces.add(spaceId);
+    }
+    for (const id of selectedRoots) {
+      if (!protectedSpaces.has(id)) continue;
+      selectedRoots.delete(id);
+      if (!materialFailures.has(id)) fail("space", id, "所属工作空间树仍有自有资料，本次保留整棵工作空间树");
+    }
+    for (const id of protectedSpaces) selectedSpaces.delete(id);
     const directTasks = new Set<string>();
     for (const id of request.taskIds) {
       if (!db.getTask(id)) { fail("task", id, "任务不存在，请刷新归档列表"); continue; }
@@ -128,8 +148,8 @@ export class ArchivedContentDeletion {
     for (const id of [...selectedSpaces].sort((a, b) => depth(b) - depth(a))) {
       const assertEmptyArchived = () => {
         if (!db.getSpace(id) || !isInSelectedArchivedTree(id)) throw new Error("空间已恢复或移动，已停止彻底删除");
-        if (db.getSpaceChildren(id).length || db.listTasks().some((task) => task.spaceId === id)) {
-          throw new Error("空间仍有未删除的任务或子空间，请处理失败项后重试");
+        if (db.hasSpaceDeleteBlockers(id) || db.listTasks().some((task) => task.spaceId === id)) {
+          throw new Error("空间仍有未删除的任务、子空间或自有资料，请处理失败项后重试");
         }
       };
       try {

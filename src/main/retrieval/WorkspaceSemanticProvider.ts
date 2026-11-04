@@ -1,7 +1,7 @@
 /**
  * R3.1 WorkspaceSemanticProvider — scoped semantic search (production)
  * 冻结契约：
- * - Scope 冻结：allowedLibrarySpaceIds = bound ∩ permitted 后才进 semantic，禁止全库后 filter
+ * - Scope：统一任务范围（整库/文件夹/单条引用）在 SQL 排名之前约束，禁止全库后 filter
  * - 仅定位：返回 SemanticCandidate {itemId,chunkId,chunkIndex,charOffset,score,preview}，不含全文
  * - 真模型：onnxruntime-node CPU via SemanticRuntime (lazy singleton), BGE-M3 INT8 sentence_embedding 1024d L2-normalized
  * - 无模型时：抛出 SemanticUnavailableError，绝不回退 hash（hash 仅在 tests 中通过专用 helper 使用）
@@ -30,6 +30,8 @@ export interface SemanticSearchInput {
   allowedLibrarySpaceIds: string[];
   /** 已展开到子树的文件夹 id scope */
   allowedLibraryCollectionIds?: string[];
+  /** 显式单条引用，不授予同一资料位置的其他条目 */
+  allowedLibraryItemIds?: string[];
   limit: number;
   threshold?: number; // cosine; 0 = disabled (return all)
 }
@@ -60,13 +62,14 @@ export class WorkspaceSemanticProvider {
     this.runtime = opts?.runtime ?? getSemanticRuntime(this.manager);
   }
 
-  /** 仅定位，不含全文；调用方已保证 allowedLibrarySpaceIds = bound ∩ permitted */
+  /** 仅定位，不含全文；调用方从统一任务范围提供三类明确的读取授权。 */
   async search(input: SemanticSearchInput): Promise<SemanticCandidate[]> {
     const q = input.query.trim();
     if (!q) return [];
     const allowed = [...new Set(input.allowedLibrarySpaceIds)].filter(Boolean);
     const allowedCollections = [...new Set(input.allowedLibraryCollectionIds ?? [])].filter(Boolean);
-    if (allowed.length === 0 && allowedCollections.length === 0) return [];
+    const allowedItems = [...new Set(input.allowedLibraryItemIds ?? [])].filter(Boolean);
+    if (allowed.length === 0 && allowedCollections.length === 0 && allowedItems.length === 0) return [];
     const limit = Math.max(1, Math.min(50, Math.round(input.limit ?? 10)));
     let qVec: Float32Array;
     try {
@@ -98,6 +101,10 @@ export class WorkspaceSemanticProvider {
       if (allowedCollections.length > 0) {
         scopeClauses.push(`li.collection_id IN (${allowedCollections.map(() => "?").join(",")})`);
         scopeParams.push(...allowedCollections);
+      }
+      if (allowedItems.length > 0) {
+        scopeClauses.push(`li.id IN (${allowedItems.map(() => "?").join(",")})`);
+        scopeParams.push(...allowedItems);
       }
       try {
         rows = conn.prepare(

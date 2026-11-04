@@ -567,7 +567,7 @@ export interface PreloadApi {
     restoreTrashedTask: (id: string) => Promise<TaskDto | null>;
     listTaskWriteGrants: (taskId: string) => Promise<import("../shared/external-write").TaskWriteGrantRow[]>;
     deleteTaskWriteGrant: (taskId: string, path: string) => Promise<boolean>;
-    deleteSpace: (id: string) => Promise<{ ok: true } | { ok: false; reason: string; error: string }>;
+    deleteSpace: (id: string) => Promise<{ ok: true; warning?: string } | { ok: false; reason: string; error: string }>;
     archiveSpace: (id: string, archived: boolean) => Promise<void>;
     getSoul: () => Promise<SoulDto>;
     updateSoul: (partial: Partial<SoulDto>) => Promise<SoulDto>;
@@ -747,6 +747,7 @@ export interface PreloadApi {
     listItems: (req: import("../shared/library-ipc").LibraryListItemsRequest) => Promise<import("../shared/library-ipc").LibraryItemDto[]>;
     getItem: (id: string) => Promise<import("../shared/library-ipc").LibraryItemDto | null>;
     createSpace: (req: import("../shared/library-ipc").LibraryCreateSpaceRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibrarySpaceDto } | { ok: false; error: string }>;
+    ensureOwnedSpace: (owner: import("../shared/library-ipc").LibraryOwnerScope) => Promise<{ ok: true; value: import("../shared/library-ipc").LibrarySpaceDto } | { ok: false; error: string }>;
     renameSpace: (req: import("../shared/library-ipc").LibraryRenameSpaceRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibrarySpaceDto } | { ok: false; error: string }>;
     deleteSpace: (id: string) => Promise<{ ok: true; value: void } | { ok: false; error: string }>;
     createCollection: (req: import("../shared/library-ipc").LibraryCreateCollectionRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryCollectionDto } | { ok: false; error: string }>;
@@ -764,7 +765,7 @@ export interface PreloadApi {
       collectionId?: string | null;
     }) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto[] } | { ok: false; error: string }>;
     markVisited: (id: string) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto } | { ok: false; error: string }>;
-    search: (req: { query: string }) => Promise<import("../shared/library-ipc").LibraryListRowDto[]>;
+    search: (req: import("../shared/library-ipc").LibrarySearchRequest) => Promise<import("../shared/library-ipc").LibraryListRowDto[]>;
     previewUrl: (id: string) => Promise<string>;
     showInFolder: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     createUrl: (req: import("../shared/library-ipc").LibraryCreateUrlRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto } | { ok: false; error: string }>;

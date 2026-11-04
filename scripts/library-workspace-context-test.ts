@@ -11,6 +11,7 @@ import { ProjectContextResolver } from "../src/main/project/ProjectContextResolv
 import { LibraryWorkspaceContextService } from "../src/main/agent/LibraryWorkspaceContextService";
 import { ProjectNotesService } from "../src/main/project/ProjectNotesService";
 import { WorkspaceNotesService } from "../src/main/workspace/WorkspaceNotesService";
+import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
 
@@ -50,7 +51,9 @@ function insertProject(id: string, name: string): void {
 }
 
 try {
-  db.createSpace({ id: "workspace-context", name: "Context" });
+  db.createSpace({ id: "workspace-parent", name: "Parent" });
+  db.createSpace({ id: "workspace-context", name: "Context", parentId: "workspace-parent" });
+  db.createSpace({ id: "workspace-sibling", name: "Sibling", parentId: "workspace-parent" });
   new WorkspaceNotesService(db).save({ workspaceId: "workspace-context", content: "# Manual workspace note", expectedRevision: 0 });
   insertProject("proj-a", "Project A");
   insertProject("proj-b", "Project B");
@@ -77,6 +80,15 @@ try {
     welcomeMode: "working",
   });
   library.attachToTask({ itemId: attached.id, taskId: "task-context" });
+  const ownSpace = library.ensureOwnedSpace({ type: "workspace", workspaceId: "workspace-context" });
+  const parentSpace = library.ensureOwnedSpace({ type: "workspace", workspaceId: "workspace-parent" });
+  const siblingSpace = library.ensureOwnedSpace({ type: "workspace", workspaceId: "workspace-sibling" });
+  const ownDoc = library.createItem({ spaceId: ownSpace.id, kind: "markdown", title: "Current workspace document" });
+  const inheritedDoc = library.createItem({ spaceId: parentSpace.id, kind: "markdown", title: "Inherited parent document" });
+  const siblingDoc = library.createItem({ spaceId: siblingSpace.id, kind: "markdown", title: "Hidden sibling document" });
+  const unrelatedPersonal = library.createItem({ spaceId: "personal", kind: "markdown", title: "Unreferenced personal document" });
+  const personalAttached = library.createItem({ spaceId: "personal", kind: "markdown", title: "Explicit personal attachment" });
+  library.attachToTask({ itemId: personalAttached.id, taskId: "task-context" });
   assert(context.projectionSources("task-context").some(source => source.id === "workspace-note:workspace-context" && source.text.includes("Manual workspace note")), "saved notes enter actual task evidence projection");
 
   new ProjectNotesService(db).save({ projectId: "proj-a", content: "# Shared project note", expectedRevision: 0 });
@@ -89,6 +101,22 @@ try {
   assert(first.libraryCatalog?.includes("Attached A document"));
   assert(first.libraryAttachments?.includes("Attached A document"));
   assert(first.libraryAttachedItemIds.has(attached.id));
+  assert(first.libraryCatalog?.includes(ownDoc.title) && first.libraryCatalog.includes(inheritedDoc.title), "catalog includes current and inherited workspace materials");
+  assert(first.libraryCatalog?.includes(personalAttached.title), "catalog includes an explicit personal reference");
+  assert(!first.libraryCatalog?.includes(siblingDoc.title) && !first.libraryCatalog?.includes(unrelatedPersonal.title), "catalog does not broaden references into sibling or personal libraries");
+  const projectedIds = new Set(context.projectionSources("task-context").map((source) => source.id));
+  assert(projectedIds.has(`library:${ownDoc.id}`) && projectedIds.has(`library:${inheritedDoc.id}`) && projectedIds.has(`library:${personalAttached.id}`));
+  assert(!projectedIds.has(`library:${siblingDoc.id}`) && !projectedIds.has(`library:${unrelatedPersonal.id}`), "evidence projection uses the same scope as catalog/tools");
+  const referenceFolder = library.createCollection({ spaceId: "personal", name: "Temporary reference" });
+  const referenceDoc = library.createItem({ spaceId: "personal", collectionId: referenceFolder.id, kind: "markdown", title: "Revocable reference" });
+  const bindings = new WorkspaceLibraryBindingService(db);
+  bindings.bindCollection("workspace-context", "personal", referenceFolder.id);
+  const source = context.projectionSources("task-context").find((entry) => entry.id === `library:${referenceDoc.id}`);
+  assert(source, "bound folder contributes scoped evidence");
+  source.validate();
+  bindings.unbindCollection("workspace-context", referenceFolder.id);
+  assert.throws(() => source.validate(), /不可见/, "pending evidence is revoked when its folder reference is removed");
+  assert.throws(() => context.validateEvidenceAccess("task-context", source.access), /不可见/, "restored evidence revalidates the same live scope");
 
   const trace = assemblePrompt({
     welcomeMode: "working",
@@ -184,6 +212,9 @@ try {
   assert.equal(second.projectId, "proj-b");
   assert(second.libraryCatalog?.includes("B current catalog document"));
   assert(!second.libraryCatalog?.includes("library_search"), "toolsAvailable=false catalog never advertises unavailable Library tools");
+  assert(!second.libraryAttachments?.includes(attached.title) && !second.libraryAttachedItemIds.has(attached.id), "project rebind does not leak stale attachment titles, paths or ids");
+  assert(second.libraryAttachments?.includes(personalAttached.title), "explicit personal reference survives project rebind without copying");
+  assert(!context.resolveTask("unknown-task").libraryCatalog?.includes(ownDoc.title), "unknown tasks do not gain fallback materials");
 
   console.log("library workspace context: PASS");
 } finally {

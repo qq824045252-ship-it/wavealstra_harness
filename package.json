@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.86",
+  "version": "0.1.87",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -384,7 +384,10 @@
     "test:computer-use-boundaries": "esbuild scripts/computer-use-boundaries-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-boundaries-test.cjs && node scripts/test-guard.mjs out/tests/computer-use-boundaries-test.cjs",
     "test:computer-use-behavior": "esbuild scripts/computer-use-behavior-electron-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-behavior-electron-test.cjs && electron out/tests/computer-use-behavior-electron-test.cjs",
     "test:computer-use-agent-desktop": "node scripts/computer-use-agent-desktop-test.cjs",
-    "test:task-file-changes": "esbuild scripts/task-file-changes-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/task-file-changes-test.cjs && node scripts/test-guard.mjs out/tests/task-file-changes-test.cjs"
+    "test:task-file-changes": "esbuild scripts/task-file-changes-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/task-file-changes-test.cjs && node scripts/test-guard.mjs out/tests/task-file-changes-test.cjs",
+    "test:workspace-materials-view": "esbuild scripts/workspace-materials-view-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/workspace-materials-view-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/workspace-materials-view-test.cjs",
+    "test:library-owner-scope": "esbuild scripts/library-owner-scope-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-owner-scope-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-owner-scope-test.cjs",
+    "test:scoped-library-manager": "esbuild scripts/scoped-library-manager-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/scoped-library-manager-test.cjs && node scripts/test-guard.mjs out/tests/scoped-library-manager-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

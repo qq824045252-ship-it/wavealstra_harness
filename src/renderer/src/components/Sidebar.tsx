@@ -769,6 +769,16 @@ export default function Sidebar(): React.JSX.Element {
     setPage(p);
     setPopup(null);
   };
+  const openPersonalMaterials = (): void => {
+    const state = useAppStore.getState();
+    const destination = { view: "space" as const, spaceId: "personal", folderId: null };
+    if (state.page === "projects" && state.activeProjectId) {
+      useAppStore.setState({ libraryNav: destination });
+      state.requestProjectNav({ type: "page", page: "library" });
+      return;
+    }
+    state.requestLibraryNav(destination);
+  };
 
   return (
     <aside className="sidebar">
@@ -821,6 +831,7 @@ export default function Sidebar(): React.JSX.Element {
             <div className="sidebar-tree-header">
               <span className="section-title">独立任务</span>
               <span className="sidebar-section-count">{independentTaskCount}</span>
+              <button type="button" className="sidebar-personal-materials" title="管理个人资料；项目和工作空间资料在各自页面管理" onClick={openPersonalMaterials}><IconBook size={12} /> 个人资料</button>
               <button
                 type="button"
                 className="sidebar-section-add"
@@ -873,8 +884,7 @@ export default function Sidebar(): React.JSX.Element {
             <button className="sidebar-popup-item" onClick={() => go("experts")}><IconPuzzle size={14} /> 插件</button>
             <div className="sidebar-popup-sep" />
             <button className="sidebar-popup-item" onClick={() => go("gadgets")}><IconGrid size={14} /> 我的工作台</button>
-            <button className="sidebar-popup-item" onClick={() => go("library")}><IconBook size={14} /> 资料库</button>
-            <button className="sidebar-popup-item" onClick={() => go("files")}><IconFile size={14} /> 文件</button>
+            <button className="sidebar-popup-item" onClick={() => go("files")}><IconFile size={14} /> 任务成果</button>
             <div className="sidebar-popup-sep" />
             <button className="sidebar-popup-item" onClick={() => { setSettingsOpen(true); setPopup(null); }}><IconSettings size={14} /> 设置</button>
             <button className="sidebar-popup-item" onClick={() => { openUsageStats(); setPopup(null); }}><IconBarChart size={14} /> 用量统计</button>
@@ -1015,7 +1025,7 @@ export default function Sidebar(): React.JSX.Element {
         <button className="icon-btn" title="设置" onClick={() => setSettingsOpen(true)}><IconSettings size={15} /></button>
       </div>
       <ConfirmDialog open={relocateNotice !== null} title="无法重新定位" body={relocateNotice} confirmLabel="知道了" onCancel={() => setRelocateNotice(null)} onConfirm={() => setRelocateNotice(null)} />
-      <ConfirmDialog open={confirmDeleteSpace !== null} title="删除空间？" body={confirmDeleteSpace ? (<>确定要删除空间「{confirmDeleteSpace.name}」吗？<br />仅空空间可删除：该空间下不能有子空间或任务，请先移走子空间和任务后再删除。<br />若为空空间，删除时会一并清理该空间的记忆，操作不可恢复。</>) : null} confirmLabel="删除" danger onCancel={() => setConfirmDeleteSpace(null)} onConfirm={async () => { const target = confirmDeleteSpace; setConfirmDeleteSpace(null); if (!target) return; try { await deleteSpace(target.id); } catch (err) { const msg = err instanceof Error ? err.message : String(err); if (msg.includes("非空") || msg.includes("workspace_not_empty") || msg.includes("尚有")) { setDeleteError("该空间下还有子空间或任务，请先移走子空间和任务后再删除（V2 安全语义：仅允许删除空叶子空间）。"); } else { setDeleteError(msg || "删除失败，请稍后重试"); } } }} />
+      <ConfirmDialog open={confirmDeleteSpace !== null} title="删除空间？" body={confirmDeleteSpace ? (<>确定要删除空间「{confirmDeleteSpace.name}」吗？<br />仅空空间可删除：该空间下不能有子空间、任务或自有资料，请先处理这些内容后再删除。<br />若为空空间，删除时会一并清理该空间的记忆，操作不可恢复。</>) : null} confirmLabel="删除" danger onCancel={() => setConfirmDeleteSpace(null)} onConfirm={async () => { const target = confirmDeleteSpace; setConfirmDeleteSpace(null); if (!target) return; try { await deleteSpace(target.id); } catch (err) { const msg = err instanceof Error ? err.message : String(err); if (msg.includes("非空") || msg.includes("workspace_not_empty") || msg.includes("尚有")) { setDeleteError("该空间下还有子空间、任务或自有资料，请先处理后再删除。取消资料引用不会删除原文。"); } else { setDeleteError(msg || "删除失败，请稍后重试"); } } }} />
       <ConfirmDialog open={deleteError !== null} title="无法删除" body={deleteError} confirmLabel="知道了" onCancel={() => setDeleteError(null)} onConfirm={() => setDeleteError(null)} />
       <ConfirmDialog open={dndError !== null} title="无法移动" body={dndError} confirmLabel="知道了" onCancel={() => setDndError(null)} onConfirm={() => setDndError(null)} />
       <CreateWorkspaceDialog

@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { libraryScopeWhere, type LibraryQueryScope } from "./library-query-scope";
 import type {
   LibraryCollectionDto,
   LibraryItemDto,
@@ -16,6 +17,7 @@ interface SpaceRow {
   name: string;
   kind: string;
   project_id: string | null;
+  workspace_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -84,6 +86,7 @@ function toSpace(row: SpaceRow): LibrarySpaceDto {
     name: row.name,
     kind: row.kind as LibrarySpaceKind,
     projectId: row.project_id ?? undefined,
+    workspaceId: row.workspace_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -168,7 +171,7 @@ export class LibraryRepository {
     return (
       this.db
         .prepare(
-          `SELECT id, name, kind, project_id, created_at, updated_at FROM library_spaces
+          `SELECT id, name, kind, project_id, workspace_id, created_at, updated_at FROM library_spaces
            ORDER BY CASE kind WHEN 'personal' THEN 0 ELSE 1 END, created_at, rowid`,
         )
         .all() as SpaceRow[]
@@ -179,31 +182,40 @@ export class LibraryRepository {
     return (
       this.db
         .prepare(
-          `SELECT id, name, kind, project_id, created_at, updated_at FROM library_spaces
+          `SELECT id, name, kind, project_id, workspace_id, created_at, updated_at FROM library_spaces
            WHERE project_id = ? ORDER BY created_at, rowid`,
         )
         .all(projectId) as SpaceRow[]
     ).map(toSpace);
   }
 
+  listWorkspaceSpaces(workspaceId: string): LibrarySpaceDto[] {
+    return (this.db.prepare(
+      `SELECT id, name, kind, project_id, workspace_id, created_at, updated_at FROM library_spaces
+       WHERE workspace_id = ? ORDER BY created_at, rowid`,
+    ).all(workspaceId) as SpaceRow[]).map(toSpace);
+  }
+
   getSpace(id: string): LibrarySpaceDto | null {
     const row = this.db
-      .prepare(`SELECT id, name, kind, project_id, created_at, updated_at FROM library_spaces WHERE id = ?`)
+      .prepare(`SELECT id, name, kind, project_id, workspace_id, created_at, updated_at FROM library_spaces WHERE id = ?`)
       .get(id) as SpaceRow | undefined;
     return row ? toSpace(row) : null;
   }
 
   insertSpace(space: LibrarySpaceDto): void {
+    if (space.projectId && space.workspaceId) throw new Error("资料空间只能归属于一个项目或工作空间");
     this.db
       .prepare(
-        `INSERT INTO library_spaces (id, name, kind, project_id, created_at, updated_at)
-         VALUES (@id, @name, @kind, @projectId, @createdAt, @updatedAt)`,
+        `INSERT INTO library_spaces (id, name, kind, project_id, workspace_id, created_at, updated_at)
+         VALUES (@id, @name, @kind, @projectId, @workspaceId, @createdAt, @updatedAt)`,
       )
       .run({
         id: space.id,
         name: space.name,
         kind: space.kind,
         projectId: space.projectId ?? null,
+        workspaceId: space.workspaceId ?? null,
         createdAt: space.createdAt,
         updatedAt: space.updatedAt,
       });
@@ -337,6 +349,13 @@ export class LibraryRepository {
         .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items ${order}`)
         .all() as ItemRow[]
     ).map(toItem);
+  }
+
+  listItemsInScope(scope: LibraryQueryScope): LibraryItemDto[] {
+    const where = libraryScopeWhere(scope);
+    return (this.db.prepare(
+      `SELECT ${ITEM_COLUMNS} FROM library_items WHERE ${where.sql} ORDER BY title COLLATE NOCASE, rowid`,
+    ).all(...where.params) as ItemRow[]).map(toItem);
   }
 
   /** 集合内全部条目（含子集合，递归；删除集合用） */
@@ -533,31 +552,20 @@ export class LibraryRepository {
    */
   retrieve(
     query: string,
-    opts: { spaceIds: ReadonlySet<string>; collectionIds?: ReadonlySet<string>; limit: number },
+    opts: LibraryQueryScope & { limit: number },
   ): LibraryRetrievalHitDto[] {
     const q = query.trim();
     if (!q) return [];
-    const spaceParams = [...opts.spaceIds];
-    const collectionParams = [...(opts.collectionIds ?? [])];
-    if (spaceParams.length === 0 && collectionParams.length === 0) return [];
-    const scopeClauses: string[] = [];
-    const scopeParams: string[] = [];
-    if (spaceParams.length > 0) {
-      scopeClauses.push(`space_id IN (${spaceParams.map(() => "?").join(",")})`);
-      scopeParams.push(...spaceParams);
-    }
-    if (collectionParams.length > 0) {
-      scopeClauses.push(`collection_id IN (${collectionParams.map(() => "?").join(",")})`);
-      scopeParams.push(...collectionParams);
-    }
+    const where = libraryScopeWhere(opts, "li.");
+    if (where.sql === "0") return [];
     const rows = this.db
       .prepare(
         `SELECT id, space_id, kind, title, filename, favorite, source_type, source_task_id, updated_at
-         FROM library_items
-         WHERE (${scopeClauses.join(" OR ")})
+         FROM library_items li
+         WHERE ${where.sql}
            AND kind != 'url'`,
       )
-      .all(...scopeParams) as Array<{
+      .all(...where.params) as Array<{
       id: string;
       space_id: string;
       kind: string;
@@ -581,9 +589,10 @@ export class LibraryRepository {
           .prepare(
             `SELECT item_id, bm25(library_fts) AS score,
                     snippet(library_fts, 3, '[', ']', '…', 14) AS snip
-             FROM library_fts WHERE library_fts MATCH ? ORDER BY score LIMIT ?`,
+             FROM library_fts JOIN library_items li ON li.id = library_fts.item_id
+             WHERE library_fts MATCH ? AND ${where.sql} ORDER BY score LIMIT ?`,
           )
-          .all(ftsQuery, opts.limit) as Array<{ item_id: string; score: number; snip: string | null }>;
+          .all(ftsQuery, ...where.params, opts.limit) as Array<{ item_id: string; score: number; snip: string | null }>;
         for (const f of ftsRows) ftsHits.set(f.item_id, { score: f.score, snippet: f.snip ?? "" });
       } catch {
         /* FTS 语法/分词失败 → 忽略该路，保留 exact/prefix 结果 */
@@ -688,26 +697,15 @@ export class LibraryRepository {
    */
   searchChunks(
     query: string,
-    opts: { spaceIds: ReadonlySet<string>; collectionIds?: ReadonlySet<string>; limit: number },
+    opts: LibraryQueryScope & { limit: number },
   ): Array<{ chunkId: string; itemId: string; score: number; snippet: string; charOffset: number; chunkIndex: number }> {
     const q = query.trim();
     if (!q || q.length < 3) return [];
     if (!this.tableExists("library_chunks_fts") || !this.tableExists("library_chunks")) return [];
-    const spaceParams = [...opts.spaceIds];
-    const collectionParams = [...(opts.collectionIds ?? [])];
-    if (spaceParams.length === 0 && collectionParams.length === 0) return [];
+    const where = libraryScopeWhere(opts, "li.");
+    if (where.sql === "0") return [];
     try {
       const ftsQuery = `"${q.replaceAll('"', '""')}"`;
-      const scopeClauses: string[] = [];
-      const scopeParams: string[] = [];
-      if (spaceParams.length > 0) {
-        scopeClauses.push(`li.space_id IN (${spaceParams.map(() => "?").join(",")})`);
-        scopeParams.push(...spaceParams);
-      }
-      if (collectionParams.length > 0) {
-        scopeClauses.push(`li.collection_id IN (${collectionParams.map(() => "?").join(",")})`);
-        scopeParams.push(...collectionParams);
-      }
       const rows = this.db
         .prepare(
           `SELECT c.id AS chunkId, c.item_id AS itemId, c.chunk_index AS chunkIndex, c.char_offset AS charOffset,
@@ -717,10 +715,10 @@ export class LibraryRepository {
            JOIN library_chunks c ON c.id = library_chunks_fts.chunk_id
            JOIN library_items li ON li.id = c.item_id
            WHERE library_chunks_fts MATCH ?
-             AND (${scopeClauses.join(" OR ")})
+             AND ${where.sql}
            ORDER BY score LIMIT ?`,
         )
-        .all(ftsQuery, ...scopeParams, opts.limit) as Array<{
+        .all(ftsQuery, ...where.params, opts.limit) as Array<{
         chunkId: string;
         itemId: string;
         chunkIndex: number;
