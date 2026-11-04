@@ -57,6 +57,9 @@ async function test(name, action) {
 }
 const row = (id) => `[data-capability-id="${id}"]`;
 async function check(id) {
+  if (!await evaluate(`document.querySelector(${JSON.stringify(row(id) + ' .capability-status-details')})?.open`)) {
+    await click(row(id) + ' .capability-status-details > summary');
+  }
   await click(row(id) + ' .capability-check-btn');
   await until(`!document.querySelector(${JSON.stringify(row(id) + ' .capability-check-btn')}).disabled`, 30000);
   return evaluate(`({text:document.querySelector(${JSON.stringify(row(id))}).innerText,message:document.querySelector('.capability-message')?.textContent})`);
@@ -87,6 +90,7 @@ async function check(id) {
     await until('Boolean(document.querySelector(".capabilities-page"))');
     await click('details:has([data-capability-id="terminal"]) > summary');
     await click('details:has([data-capability-id="runtime-diagnostics"]) > summary');
+    await click(row('terminal') + ' .capability-status-details > summary');
 
     await test('local tools start unverified and show only canonical bash', async () => {
       const state = await evaluate(`({terminal:document.querySelector(${JSON.stringify(row('terminal'))}).innerText,code:document.querySelector(${JSON.stringify(row('code-execution'))}).innerText,browser:document.querySelector(${JSON.stringify(row('browser'))}).innerText,diagnostics:document.querySelector(${JSON.stringify(row('runtime-diagnostics'))}).closest('details').querySelector('h3').textContent})`);
@@ -97,7 +101,7 @@ async function check(id) {
     if (invalidShell) {
       await test('failed command check remains visible after status refresh', async () => {
         const state = await check('terminal');
-        assert.match(state.text, /离线/); assert.match(state.message, /Custom shell path not found/);
+        assert.match(state.text, /连接异常/); assert.match(state.message, /Custom shell path not found/);
         assert(await evaluate('Boolean(document.querySelector(".capability-message.is-error"))'));
         const saved = await evaluate('window.api.agent.getBuiltinCapabilities()');
         assert.equal(saved.capabilities.find(item => item.id === 'terminal').state, 'offline');
