@@ -74,7 +74,7 @@ function errorResult(error: unknown) {
 
 function spaceLabel(space: LibrarySpaceDto | null | undefined): string {
   if (!space) return "未知空间";
-  if (space.kind === "personal") return "我的文档";
+  if (space.kind === "personal") return "历史资料";
   if (space.workspaceId) return `工作空间资料：${space.workspaceName ?? space.name}`;
   return space.projectName ? `项目资料：${space.projectName}` : space.name;
 }
@@ -134,7 +134,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     if (bridge.getPermissionMode?.() === "readonly") {
       throw new LibraryToolError("当前为只读权限模式，不能修改资料或任务引用（只可读取）。");
     }
-    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务不存在或资料归属不可用，不能修改资料");
+    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务没有可写的长期资料归属；独立任务不创建个人资料库，请在项目或工作空间管理长期资料");
   };
 
   /** 写门禁（空间级）：readonly 拒绝；目标空间所属项目归档拒绝；作用域必须对任务可见 */
@@ -169,7 +169,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     if (requested?.trim() && requested.trim() !== bridge.taskId) {
       throw new LibraryToolError("只能修改当前任务的资料引用，不能指定其他任务");
     }
-    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务不存在或资料归属不可用");
+    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务没有可写的长期资料归属；独立任务不提供资料引用修改");
     return bridge.taskId;
   };
 
@@ -190,7 +190,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_list",
       label: "资料库 · 列出条目",
       description:
-        "列出当前任务可用资料：当前项目、当前及祖先工作空间的资料、显式绑定与任务/项目引用。其他项目及未引用的个人/其他空间资料不可见；独立任务使用个人资料。可传 spaceId 限定位置、query 过滤标题、limit 截断。资料与磁盘工作目录文件分开管理。",
+        "列出当前任务可用资料：当前项目、当前及祖先工作空间的资料、显式绑定与任务/项目引用。其他项目及未引用的历史/其他空间资料不可见；独立任务不默认拥有长期资料库，可按任务显式附加读取旧资料。可传 spaceId 限定位置、query 过滤标题、limit 截断。资料与磁盘工作目录文件分开管理。",
       promptSnippet: "library_list(spaceId?, query?, limit?) — 列出当前任务可见的资料库条目",
       parameters: listParamsSchema,
       execute: async (_toolCallId: string, params: { spaceId?: string; query?: string; limit?: number }) => {
