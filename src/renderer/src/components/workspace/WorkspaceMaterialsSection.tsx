@@ -49,7 +49,13 @@ function ReferenceRow({ item, inheritedFrom, action, disabled, onAction, onOpen 
   </article>;
 }
 
-export default function WorkspaceMaterialsSection({ currentSpaceId, compact = false, className = "", onRegisterUnsaved, onChanged }: Props): React.JSX.Element {
+export default function WorkspaceMaterialsSection(props: Props): React.JSX.Element {
+  // A reference mutation may finish after the user has selected another workspace.
+  // Keep its lifecycle and callbacks attached to the workspace that started it.
+  return <WorkspaceMaterialsBody key={props.currentSpaceId ?? "none"} {...props} />;
+}
+
+function WorkspaceMaterialsBody({ currentSpaceId, compact = false, className = "", onRegisterUnsaved, onChanged }: Props): React.JSX.Element {
   const space = useAppStore((state) => state.spaces.find((item) => item.id === currentSpaceId));
   const [view, setView] = useState<WorkspaceLibraryBindingListView | null>(null);
   const [error, setError] = useState<string | null>(null);

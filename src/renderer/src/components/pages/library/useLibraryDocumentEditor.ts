@@ -20,20 +20,24 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
   const [notice, setNotice] = useState<string | null>(null);
   const [draftSaved, setDraftSaved] = useState(false);
   const epoch = useRef(0);
-  const savingPromise = useRef<Promise<void> | null>(null);
+  const savingPromise = useRef<{ epoch: number; promise: Promise<void> } | null>(null);
+  const loadedSource = useRef<{ access: ScopedLibraryOperations; itemId: string } | null>(null);
+  const currentPayload = loadedSource.current?.access === access && loadedSource.current.itemId === itemId ? payload : null;
   const draftKey = libraryDraftKey(libraryOwnerKey(access.scope), itemId);
-  const dirty = !access.readOnly && Boolean(payload && (title !== payload.item.title || draft !== payload.content));
-  const state = useRef({ payload, title, draft, dirty });
-  state.current = { payload, title, draft, dirty };
+  const dirty = !access.readOnly && Boolean(currentPayload && (title !== currentPayload.item.title || draft !== currentPayload.content));
+  const state = useRef({ payload: currentPayload, title, draft, dirty });
+  state.current = { payload: currentPayload, title, draft, dirty };
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
 
   useEffect(() => {
     const ticket = ++epoch.current;
-    setPayload(null); setLoadError(null); setNotice(null);
+    loadedSource.current = null;
+    setPayload(null); setLoadError(null); setNotice(null); setSaving(false); setDraftSaved(false);
     void access.read(itemId).then((next) => {
       if (ticket !== epoch.current) return;
       const restored = access.readOnly ? null : readLibraryDraft(window.sessionStorage, draftKey);
+      loadedSource.current = { access, itemId };
       setPayload(next);
       setTitle(restored?.title ?? next.item.title);
       setDraft(restored?.content ?? next.content);
@@ -46,13 +50,13 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
   }, [access, draftKey, itemId]);
 
   useEffect(() => {
-    if (!payload || access.readOnly) return;
-    const retained = syncLibraryDraft(window.sessionStorage, draftKey, dirty ? { title, content: draft, baseUpdatedAt: payload.item.updatedAt } : null);
+    if (!currentPayload || access.readOnly) return;
+    const retained = syncLibraryDraft(window.sessionStorage, draftKey, dirty ? { title, content: draft, baseUpdatedAt: currentPayload.item.updatedAt } : null);
     setDraftSaved(dirty && retained);
     if (dirty && !retained) {
       setNotice("草稿暂时无法保留，请先保存再离开。");
     }
-  }, [draftKey, payload, title, draft, dirty, access.readOnly]);
+  }, [draftKey, currentPayload, title, draft, dirty, access.readOnly]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -69,7 +73,7 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
   }, [draftKey]);
 
   const save = useCallback(async (): Promise<void> => {
-    if (savingPromise.current) return savingPromise.current;
+    if (savingPromise.current?.epoch === epoch.current) return savingPromise.current.promise;
     const current = state.current;
     if (!current.payload || !current.dirty) return;
     if (access.readOnly) throw new Error("当前资料只读");
@@ -89,8 +93,10 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
           const item = await access.writeContent(itemId, current.draft);
           next = { ...next, item, content: current.draft };
         }
-        clearLibraryDraft(window.sessionStorage, draftKey);
         if (ticket === epoch.current) {
+          // A newly mounted editor may have restored and edited this same draft
+          // while the old save was in flight. Only this live editor owns cleanup.
+          clearLibraryDraft(window.sessionStorage, draftKey);
           setPayload(next); setTitle(next.item.title); setDraft(next.content);
           setNotice("已保存"); onSavedRef.current(next.item);
         }
@@ -99,8 +105,8 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
         throw error;
       } finally { if (ticket === epoch.current) setSaving(false); }
     })();
-    savingPromise.current = work;
-    try { await work; } finally { savingPromise.current = null; }
+    savingPromise.current = { epoch: ticket, promise: work };
+    try { await work; } finally { if (savingPromise.current?.promise === work) savingPromise.current = null; }
   }, [access, draftKey, itemId]);
 
   useEffect(() => {
@@ -120,5 +126,5 @@ export function useLibraryDocumentEditor({ itemId, access, onSaved, onRegisterUn
     return () => window.removeEventListener("keydown", onKey);
   }, [access.readOnly, save]);
 
-  return { payload, title, setTitle, draft, setDraft, dirty, draftSaved, saving, save, discard, loadError, notice };
+  return { payload: currentPayload, title, setTitle, draft, setDraft, dirty, draftSaved, saving, save, discard, loadError, notice };
 }
