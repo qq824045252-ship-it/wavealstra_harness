@@ -64,6 +64,7 @@ await assert.rejects(
   error => error instanceof Error && !error.message.includes(key),
 );
 await assert.rejects(discoverOpenRouterCapabilities(""), /API Key/);
+await assert.rejects(discoverOpenRouterCapabilities(key + "\ninvalid", { fetchImpl: fakeFetch }), /API Key/);
 await assert.rejects(discoverOpenRouterCapabilities(key, { timeoutMs: 0, fetchImpl: fakeFetch }), /超时/);
 const aborted = new AbortController();
 aborted.abort(new Error(key));

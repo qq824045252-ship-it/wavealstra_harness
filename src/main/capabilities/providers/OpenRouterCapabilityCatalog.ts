@@ -81,7 +81,7 @@ export async function discoverOpenRouterCapabilities(
   key: string,
   options: OpenRouterCatalogOptions = {},
 ): Promise<OpenRouterCapabilityCatalog> {
-  if (!key?.trim() || /[\r\n]/.test(key)) throw new Error("请先配置 OpenRouter API Key");
+  if (!key?.trim() || key.length > 4096 || /[\x00-\x1f\x7f]/.test(key)) throw new Error("请先配置有效的 OpenRouter API Key");
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error("OpenRouter 目录超时设置无效");
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);

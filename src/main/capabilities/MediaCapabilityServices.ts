@@ -92,7 +92,9 @@ export class MediaCapabilityServices {
   private openRouterIdentity(id: string, config = this.runtime.config()): string | undefined {
     const connection = config.connections?.[id];
     if (!connection || connection.protocol !== "openrouter" || connection.baseUrl !== OPENROUTER_API_ROOT || !connection.credentialRef) return undefined;
-    const secret = this.runtime.credentials.get(connection.credentialRef);
+    let secret: string | null;
+    try { secret = this.runtime.credentials.get(connection.credentialRef); }
+    catch { return undefined; /* keyring may be temporarily unavailable */ }
     return secret ? createHash("sha256").update(JSON.stringify([id, connection.baseUrl, connection.credentialRef, secret])).digest("hex") : undefined;
   }
 
@@ -192,7 +194,12 @@ export class MediaCapabilityServices {
       const configured = this.runtime.config();
       await Promise.all(Object.entries(configured.connections ?? {}).filter(([, connection]) => connection.protocol === "openrouter").map(async ([id, connection]) => {
         const identity = this.openRouterIdentity(id, configured);
-        const key = connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
+        let key: string | null | undefined;
+        try { key = connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined; }
+        catch {
+          this.openRouterErrors.set(id, "无法读取 OpenRouter 凭据，请检查系统凭据库后重试。");
+          return;
+        }
         if (!identity || !key) return;
         try {
           const catalog = await (this.options.discoverOpenRouter ?? discoverOpenRouterCapabilities)(key, { fetchImpl: this.options.fetch });

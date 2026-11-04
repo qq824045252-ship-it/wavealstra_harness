@@ -16,6 +16,32 @@
 
 一个 API 连接可被多项能力复用。API 地址是根地址，通常以 `/v1` 结尾；旧识别服务继续使用其完整请求地址。密钥只保存在主进程系统凭据库：留空保留，替换或移除是明确动作。设置保存使用版本校验；凭据更新或文件写入失败会恢复已更改的密钥，恢复失败会明确报告。
 
+## 内置 Provider 预设（不限于 OpenRouter）
+
+同一套能力选择器提供多个已映射协议的 Provider，额外保留自定义 OpenAI 兼容网关；本机 NPU/Whisper 只有检测到对应运行时才显示为可用服务，不作为所有设备的前提。
+
+| Provider 预设 | 语音转文字 | OCR | 文字转语音 | 图片生成 | 视频生成 |
+| --- | --- | --- | --- | --- | --- |
+| OpenRouter（公共入口） | ✓ | 视觉 OCR | ✓ | ✓ | ✓ |
+| OpenAI 原生 API | ✓ | 视觉 OCR | ✓ | ✓ | —（旧视频接口已停用） |
+| Groq | ✓ | 视觉 OCR | ✓（Orpheus / WAV） | — | — |
+| Google Gemini OpenAI 兼容接口 | — | 视觉 OCR | — | — | — |
+| Mistral 专用 OCR | — | ✓ | — | — | — |
+| Magpie（已有连接） | 依网关目录 | — | 依网关目录 | ✓ | ✓ |
+| Codex（已有登录） | — | — | — | ✓ | — |
+| 本机 Whisper | ✓（需已安装） | — | — | — | — |
+| 自定义兼容 API | 依服务实现 | 依服务实现 | 依服务实现 | 依服务实现 | 依服务实现 |
+
+✓ 表示代码已接到对应协议入口，不代表当前模型、账户余额或权限一定可用。未知或未实现的能力不能仅凭厂商名展示为已就绪。普通用户通过五项能力中的“添加服务商”选预设，也可自建兼容接口连接。**每个 Provider 连接只需要一个 API Key**；五项能力分别用 `mediaBindings[capability].connectionId` 指向同一连接，各自保存不同的 `model`。从这个连接读密钥时只使用主进程 Keyring 内的 `credentialRef`，renderer 从不接收原始密钥。
+
+- OpenRouter 使用固定的 `https://openrouter.ai/api/v1`，图片 `POST /images`，参考图放 `input_references`，视频异步 `POST /videos` → `GET /videos/{id}` → `GET /videos/{id}/content`，转写 `POST /audio/transcriptions`，语音合成 `POST /audio/speech`，视觉 OCR `POST /chat/completions`。
+- OpenRouter 图片、视频、语音合成、语音转写、视觉 OCR 的模型列表分别来自 `/images/models`、`/videos/models`、`/models?output_modalities=speech`、`/models?output_modalities=transcription`、`/models?input_modalities=image&output_modalities=text`。目录只读取模型标识、名称和音色列表，失败时保留原引用，不把任何聊天模型的图片输入能力当作生图能力。
+- 视频创建、进度查询与结果下载独立于当前界面选择。账本保留原连接 ID、API 地址、协议、模型及工具调用 ID；密钥轮换后按原服务继续查询。超时、取消或提交结果不明时，不跨 Provider 自动重试付费生成。
+- OpenRouter 语音合成模型的 `voice` 与 `model` 绑定，切换模型清除旧音色。当前音频输出适配支持 MP3、WAV、Ogg/Opus；只提供 PCM 的模型尚不在可完整输出范围内，不能把“目录出现”解读为“已实测通过”。Groq 的 Orpheus 预设默认 WAV，并遵守其长度/音色限制。
+- OpenAI、Groq、Gemini 的这些预设只展示当前已实现且有官方接口依据的能力，不会因为一个服务宣称 OpenAI 兼容就把不支持的功能伪装成可用。开发者仍可添加自定义连接，由服务端返回来验证具体兼容性。
+
+官方协议： [OpenRouter Images](https://openrouter.ai/blog/tutorials/image-generation/)、[OpenRouter Videos](https://openrouter.ai/blog/tutorials/video-generation-api/)、[OpenRouter ASR](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/)、[OpenRouter TTS](https://openrouter.ai/blog/tutorials/text-to-speech/)、[Groq TTS](https://console.groq.com/docs/text-to-speech)。
+
 ## Magpie 与图片默认选择
 
 复用 `models.json` 中的 `providers.magpie` 地址、网关 key 和 headers；Magpie 继续管理上游身份。不会取出其上游 OAuth，也不会复制本应用 Codex OAuth 到 API 连接。
@@ -54,6 +80,8 @@ Magpie 协议核验基于官方仓库 [`yetone/magpie@f8987ce6173abacf503fb97f9b
 
 ```sh
 pnpm -s test:media-capability-config
+pnpm -s test:media-provider-presets
+pnpm -s test:openrouter-capabilities
 pnpm -s test:magpie-capabilities
 pnpm -s test:unified-media-adapters
 pnpm -s test:media-capability-services
