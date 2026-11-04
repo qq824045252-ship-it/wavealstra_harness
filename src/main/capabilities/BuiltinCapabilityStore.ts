@@ -36,10 +36,11 @@ function normalizeConnections(raw: BuiltinCapabilitiesConfigDto["connections"]):
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return connections;
   for (const [id, item] of Object.entries(raw)) {
     if (!/^api-[a-z0-9-]{1,80}$/i.test(id) || !item || typeof item !== "object") continue;
-    if (item.protocol !== "openai-compatible" && item.protocol !== "mistral-ocr") continue;
+    if (item.protocol !== "openai-compatible" && item.protocol !== "openrouter" && item.protocol !== "mistral-ocr") continue;
     connections[id] = {
       name: cleanOptionalText(item.name, 100) ?? "API 服务",
       protocol: item.protocol,
+      presetId: cleanOptionalText(item.presetId, 80),
       baseUrl: cleanOptionalText(item.baseUrl, 2000) ?? "",
       auth: item.auth === "none" ? "none" : "api-key",
       credentialRef: cleanOptionalText(item.credentialRef, 100),

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BuiltinCapabilitiesConfigDto, SaveBuiltinCapabilitySettingsRequest, TestBuiltinCapabilityResultDto, BuiltinCapabilityStatusDto } from "../../shared/builtin-capabilities";
 import { BUILTIN_CODEX_IMAGE_MODEL, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "../../shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 import type { MagpieGatewayConfig } from "../agent/providers/magpie";
 import type { BuiltinCapabilityRuntime, GeneratedMediaOutput, MediaCapabilityProvider, SpeechCapabilityProvider, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
@@ -113,7 +113,7 @@ export class MediaCapabilityServices {
       let baseUrl: string | undefined;
       try { baseUrl = capabilityApiRoot(connection.baseUrl); } catch { /* keep editable */ }
       const hasKey = Boolean(connection.credentialRef && this.runtime.credentials.has(connection.credentialRef));
-      result.push({ id, label: connection.name, source: "api", capabilities: API_PROTOCOL_CAPABILITIES[connection.protocol] ?? [], models: {}, allowCustomModel: true, configured: Boolean(baseUrl) && (connection.auth === "none" || hasKey), authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key", ...(baseUrl ? { location: location(baseUrl) } : {}), detail: "已实现所选协议；模型与账号权限以服务端实际响应为准。" });
+      result.push({ id, label: connection.name, source: "api", capabilities: connectionCapabilities(connection), models: {}, allowCustomModel: true, configured: Boolean(baseUrl) && (connection.auth === "none" || hasKey), authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key", ...(baseUrl ? { location: location(baseUrl) } : {}), detail: "已实现所选协议；模型与账号权限以服务端实际响应为准。" });
     }
     for (const [id, service] of Object.entries(config.services ?? {})) {
       if (service.adapter !== "http-asr" && service.adapter !== "http-ocr") continue;
@@ -202,7 +202,8 @@ export class MediaCapabilityServices {
       return { id, label: "Magpie", baseUrl: capabilityApiRoot(magpie.baseUrl), headers: Object.fromEntries(headers), protocol: "magpie", timeoutMs: 300_000, model };
     }
     const connection = config.connections?.[id];
-    if (!connection || !API_PROTOCOL_CAPABILITIES[connection.protocol]?.includes(capability)) throw new Error("所选服务不支持此能力。");
+    if (!connection || !connectionCapabilities(connection).includes(capability)) throw new Error("所选服务不支持此能力。");
+    if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 连接必须使用官方 API 地址和 API Key。");
     const secret = connection.auth === "api-key" && connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
     if (connection.auth === "api-key" && !secret) throw new Error("请填写此服务的 API Key。");
     return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers: secret ? { authorization: `Bearer ${secret}` } : {} };
@@ -362,6 +363,9 @@ export class MediaCapabilityServices {
     for (const [id, connection] of Object.entries(next.connections ?? {})) {
       if (!/^api-[a-z0-9-]{1,80}$/i.test(id) || !API_PROTOCOL_CAPABILITIES[connection.protocol]) throw new Error("API 服务类型无效。");
       connection.baseUrl = capabilityApiRoot(connection.baseUrl);
+      const preset = MEDIA_PROVIDER_PRESETS.find(item => item.id === connection.presetId);
+      if (connection.presetId && (!preset || preset.protocol !== connection.protocol || connection.baseUrl !== preset.baseUrl || connection.auth !== "api-key")) throw new Error("内置服务商的协议或地址不匹配；如需代理地址请另建自定义 API 服务。");
+      if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 只允许官方 HTTPS API 地址和 Key 认证。");
       if (!Number.isSafeInteger(connection.timeoutMs) || connection.timeoutMs < 1000 || connection.timeoutMs > 600_000) throw new Error("请求超时应为 1 至 600 秒。");
       connection.credentialRef = previous.connections?.[id]?.credentialRef;
     }

@@ -7,7 +7,7 @@ import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS } from "@shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
 import type { ApiCapabilityConnection, ApiCapabilityProtocol, CapabilityConnectionOption, CapabilityCredentialChange, CapabilityVideoJobDto, MediaCapabilityBinding, MediaCapabilityId } from "@shared/media-capabilities";
 import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-platform";
 import { useAppStore } from "@/store/appStore";
@@ -16,6 +16,7 @@ import "./CapabilitiesTab.css";
 
 const AUTO_SERVICE = "__automatic__";
 const ADD_SERVICE = "__add_api__";
+const ADD_PRESET_PREFIX = "__preset__:";
 const STATE_LABEL: Record<string, string> = {
   ready: "已就绪", unchecked: "待检查", disabled: "已关闭", "needs-configuration": "需要配置",
   "missing-dependency": "需要准备", offline: "连接异常", degraded: "部分可用",
@@ -27,7 +28,7 @@ const MEDIA_ROWS: Record<MediaCapabilityId, { title: string; description: string
   "image-generation": { title: "图片生成", description: "根据描述生成图片；服务支持时可使用参考图。", tool: "image_generate" },
   "video-generation": { title: "视频生成", description: "根据描述生成视频，并保存到当前任务。", tool: "video_generate" },
 };
-const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", "mistral-ocr": "Mistral OCR API" };
+const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API" };
 type CredentialDraft = Pick<CapabilityCredentialChange, "secret" | "clear">;
 const differs = (left: unknown, right: unknown): boolean => JSON.stringify(left) !== JSON.stringify(right);
 const errorText = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
@@ -227,16 +228,19 @@ function ApiConnectionEditor({ id, value, option, credentials, usedBy, disabled,
   return <fieldset className="capability-connection-fields" disabled={disabled} data-connection-id={id}>
     <div className="capability-form-grid">
       <SettingsInput label="服务名称" value={value.name} onChange={event => onChange({ ...value, name: event.target.value })} />
-      <SettingsSelect label="接口类型" value={value.protocol} onChange={event => onChange({ ...value, protocol: event.target.value as ApiCapabilityProtocol })}>
+      <SettingsSelect label="接口类型" value={value.protocol} disabled={Boolean(value.presetId)} onChange={event => {
+        const protocol = event.target.value as ApiCapabilityProtocol;
+        onChange({ ...value, protocol, ...(protocol === "openrouter" ? { baseUrl: OPENROUTER_API_ROOT, auth: "api-key" as const } : {}) });
+      }}>
         {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
       </SettingsSelect>
     </div>
-    <SettingsInput label="API 地址" type="url" value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
-    <SettingsSelect label="认证方式" value={value.auth} onChange={event => onChange({ ...value, auth: event.target.value as ApiCapabilityConnection["auth"] })}>
+    <SettingsInput label="API 地址" type="url" disabled={Boolean(value.presetId)} value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
+    <SettingsSelect label="认证方式" disabled={Boolean(value.presetId)} value={value.auth} onChange={event => onChange({ ...value, auth: event.target.value as ApiCapabilityConnection["auth"] })}>
       <option value="api-key">API Key</option><option value="none">无需认证</option>
     </SettingsSelect>
     {value.auth === "api-key" && <SettingsSecretField value={credentials?.secret ?? ""} clear={credentials?.clear} configured={option?.authState === "configured"} disabled={disabled} onChange={secret => onCredentialChange({ secret, clear: false })} onClearChange={clear => onCredentialChange({ secret: "", clear })} />}
-    <p className="settings-row-desc">{value.protocol === "mistral-ocr" ? "用于 Mistral OCR 接口。" : "使用各项能力对应的 OpenAI 兼容接口；服务商需实际提供所选接口和模型。"}{usedBy.length > 0 ? ` 当前用于：${usedBy.map(capability => MEDIA_ROWS[capability].title).join("、")}。修改此服务会应用到这些能力。` : "保存后可供上方的能力选择。"}</p>
+    <p className="settings-row-desc">{MEDIA_PROVIDER_PRESETS.find(preset => preset.id === value.presetId)?.hint ?? (value.protocol === "mistral-ocr" ? "用于 Mistral OCR 接口。" : value.protocol === "openrouter" ? "使用 OpenRouter 专用多模态接口及实时目录。" : "使用对应的 OpenAI 兼容接口；服务端需实际支持所选能力。")}{usedBy.length > 0 ? ` 当前用于：${usedBy.map(capability => MEDIA_ROWS[capability].title).join("、")}。修改此服务会应用到这些能力。` : "保存后可供上方的能力选择。"}</p>
     <details className="capability-options"><summary>连接选项</summary><SettingsInput label="等待上限（秒）" type="number" min={1} value={value.timeoutMs / 1000 || ""} onChange={event => onChange({ ...value, timeoutMs: Number(event.target.value) * 1000 })} /></details>
     <div className="capability-connection-actions"><button type="button" className="btn" disabled={disabled || usedBy.length > 0} title={usedBy.length ? "先为使用此服务的能力选择其他服务" : undefined} onClick={onRemove}>移除此服务</button></div>
   </fieldset>;
@@ -303,7 +307,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
       ...catalog.filter(option => option.source !== "api"),
       ...Object.entries(draft?.connections ?? {}).map(([id, connection]): CapabilityConnectionOption => {
         const previous = savedOptions.get(id);
-        return { id, label: connection.name || "未命名 API 服务", source: "api", capabilities: API_PROTOCOL_CAPABILITIES[connection.protocol], models: previous?.models ?? {}, allowCustomModel: true, configured: previous?.configured ?? false, authState: connection.auth === "none" ? "none" : previous?.authState === "configured" ? "configured" : "missing-key", location: connectionLocation(connection.baseUrl), detail: previous?.detail };
+        return { id, label: connection.name || "未命名 API 服务", source: "api", capabilities: connectionCapabilities(connection), models: previous?.models ?? {}, allowCustomModel: true, configured: previous?.configured ?? false, authState: connection.auth === "none" ? "none" : previous?.authState === "configured" ? "configured" : "missing-key", location: connectionLocation(connection.baseUrl), detail: previous?.detail };
       }),
     ];
   }, [snapshot?.mediaServices, draft?.connections]);
@@ -344,15 +348,21 @@ export default function CapabilitiesTab(): React.JSX.Element {
     setOpenConnections(current => new Set(current).add(id));
     requestAnimationFrame(() => document.getElementById(`capability-connection-${id}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
-  const addConnection = (capability?: MediaCapabilityId): void => {
+  const addConnection = (capability?: MediaCapabilityId, presetId?: string): void => {
+    const preset = MEDIA_PROVIDER_PRESETS.find(entry => entry.id === presetId);
+    if (preset && capability && !preset.capabilities.includes(capability)) return;
     const id = `api-${crypto.randomUUID()}`;
     changeConfig(current => {
-      const protocol = capability === "ocr" ? "mistral-ocr" : "openai-compatible";
+      const protocol = preset?.protocol ?? (capability === "ocr" ? "mistral-ocr" : "openai-compatible");
       const previous = capability ? mediaBinding(current, capability) : undefined;
       return {
         ...current,
-        connections: { ...current.connections, [id]: { name: `API 服务 ${Object.keys(current.connections ?? {}).length + 1}`, protocol, baseUrl: "", auth: "api-key", timeoutMs: 60000 } },
-        ...(capability ? { mediaBindings: { ...current.mediaBindings, [capability]: { connectionId: id, selection: "manual", ...(capability === "ocr" || capability === "speech-to-text" ? { dataPolicy: previous?.dataPolicy ?? "allow-cloud" } : {}) } } } : {}),
+        connections: { ...current.connections, [id]: {
+          name: preset?.label ?? `API 服务 ${Object.keys(current.connections ?? {}).length + 1}`,
+          protocol, ...(preset ? { presetId: preset.id } : {}),
+          baseUrl: preset?.baseUrl ?? "", auth: "api-key" as const, timeoutMs: 60000,
+        } },
+        ...(capability ? { mediaBindings: { ...current.mediaBindings, [capability]: { connectionId: id, selection: "manual" as const, ...(capability === "ocr" || capability === "speech-to-text" ? { dataPolicy: previous?.dataPolicy ?? "allow-cloud" } : {}) } } } : {}),
         ...(capability === "text-to-speech" ? { textToSpeech: { ...current.textToSpeech, voice: undefined, rate: undefined } } : {}),
       };
     });
@@ -360,6 +370,14 @@ export default function CapabilitiesTab(): React.JSX.Element {
   };
   const selectService = (id: MediaCapabilityId, selected: string): void => {
     if (selected === ADD_SERVICE) { addConnection(id); return; }
+    if (selected.startsWith(ADD_PRESET_PREFIX)) {
+      const preset = MEDIA_PROVIDER_PRESETS.find(item => item.id === selected.slice(ADD_PRESET_PREFIX.length));
+      if (!preset || !preset.capabilities.includes(id)) return;
+      const existing = Object.entries(draft?.connections ?? {}).find(([, service]) => service.presetId === preset.id);
+      if (existing) { selectService(id, existing[0]); return; }
+      addConnection(id, preset.id);
+      return;
+    }
     changeConfig(current => {
       const previous = mediaBinding(current, id);
       const service = services.find(option => option.id === selected);
@@ -474,7 +492,12 @@ export default function CapabilitiesTab(): React.JSX.Element {
               {id === "image-generation" && <option value={AUTO_SERVICE}>自动使用已登录服务{service ? `（${service.label}）` : ""}</option>}
               {hasUnknownSelection && <option value={selectedValue}>原服务暂不可用（已保留选择）</option>}
               {choices.map(option => <option key={option.id} value={option.id}>{option.label}{option.authState === "needs-login" ? "（需要登录）" : ""}</option>)}
-              <option value={ADD_SERVICE}>＋ 添加 API 服务…</option>
+              <optgroup label="添加服务商">
+                {MEDIA_PROVIDER_PRESETS.filter(preset => preset.capabilities.includes(id) && !Object.values(draft.connections ?? {}).some(connection => connection.presetId === preset.id)).map(preset =>
+                  <option key={preset.id} value={`${ADD_PRESET_PREFIX}${preset.id}`}>＋ {preset.label}</option>
+                )}
+              </optgroup>
+              <option value={ADD_SERVICE}>＋ 自定义兼容 API…</option>
             </SettingsSelect>
             {!legacy && <MediaModelField id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } } }))} />}
           </div>
