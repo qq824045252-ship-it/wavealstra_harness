@@ -8,6 +8,10 @@ export const LOCAL_WHISPER_CONNECTION_ID = "builtin-whisper";
 
 /** These presets name implemented protocols, not a promise about every server. */
 export type ApiCapabilityProtocol = "openai-compatible" | "mistral-ocr";
+export const API_PROTOCOL_CAPABILITIES: Record<ApiCapabilityProtocol, MediaCapabilityId[]> = {
+  "openai-compatible": ["speech-to-text", "ocr", "text-to-speech", "image-generation", "video-generation"],
+  "mistral-ocr": ["ocr"],
+};
 export interface ApiCapabilityConnection {
   name: string;
   protocol: ApiCapabilityProtocol;

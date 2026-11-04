@@ -26,7 +26,9 @@ export class BuiltinCredentialStore {
     try {
       return this.entry(id).getPassword();
     } catch {
-      return null;
+      // A missing entry already returns null. Locked/unavailable storage must
+      // remain an error so a settings transaction never mistakes it for absence.
+      throw new Error("无法读取系统凭据库，请解锁凭据库后重试。");
     }
   }
 
@@ -40,7 +42,8 @@ export class BuiltinCredentialStore {
     try {
       this.entry(id).deletePassword();
     } catch {
-      // Clearing a missing credential is idempotent.
+      // deletePassword returns false for a missing entry; errors are real failures.
+      throw new Error("无法从系统凭据库移除密钥，请解锁凭据库后重试。");
     }
   }
 }

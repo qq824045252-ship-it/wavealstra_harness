@@ -12,6 +12,9 @@ import { desktopPlatformLabel } from "../../shared/desktop-platform";
 import { consultDistinctModelCount } from "../../shared/multi-model-consult";
 import { BuiltinCapabilityStore } from "./BuiltinCapabilityStore";
 import { BuiltinCredentialStore } from "./BuiltinCredentialStore";
+import { capabilityConfigRevision, type MediaCapabilityServices } from "./MediaCapabilityServices";
+import { MEDIA_CAPABILITY_IDS, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
 
 export interface ToolExecutionContext {
   taskId: string;
@@ -157,6 +160,7 @@ export class BuiltinCapabilityRuntime {
   readonly store: Pick<BuiltinCapabilityStore, "read" | "write">;
   readonly credentials: Pick<BuiltinCredentialStore, "has" | "get" | "set" | "clear">;
   private readonly providers = new Map<string, AnyProvider>();
+  private mediaServices?: MediaCapabilityServices;
   private browserAvailable = false;
   private subagentAvailable = false;
   private readonly localChecks = new Map<LocalCapabilityId, {
@@ -178,6 +182,32 @@ export class BuiltinCapabilityRuntime {
     const key = `${kind}:${provider.id}`;
     this.providers.set(key, provider);
     return () => this.providers.delete(key);
+  }
+
+  attachMediaServices(services: MediaCapabilityServices): void { this.mediaServices = services; }
+
+  registeredMediaProvider(id: string): MediaCapabilityProvider | null {
+    return this.providers.get(`media:${id}`) as MediaCapabilityProvider | undefined ?? null;
+  }
+
+  registeredSpeechProvider(id: string): SpeechCapabilityProvider | null {
+    return this.providers.get(`speech:${id}`) as SpeechCapabilityProvider | undefined ?? null;
+  }
+
+  mediaModel(id: MediaCapabilityId): string | undefined {
+    const config = this.config();
+    // An explicitly selected new service never inherits another provider's model.
+    if (config.mediaBindings?.[id]) return config.mediaBindings[id]?.model;
+    return this.mediaServices?.binding(id)?.model ?? (id === "image-generation" ? config.imageGeneration.model
+      : id === "video-generation" ? config.videoGeneration.model : id === "text-to-speech" ? config.textToSpeech.model : undefined);
+  }
+
+  hasVideoJobs(taskId: string): boolean { return this.mediaServices?.hasVideoJobs(taskId) ?? false; }
+
+  async resumeVideo(jobId: string, context: ToolExecutionContext): Promise<GeneratedMediaOutput> {
+    if (!this.config().videoGeneration.enabled) throw new Error("视频生成已关闭。");
+    if (!this.mediaServices) throw new Error("此视频任务的恢复服务尚未接入。");
+    return this.mediaServices.resumeVideo(jobId, context);
   }
 
   setBrowserAvailable(available: boolean): void {
@@ -212,6 +242,7 @@ export class BuiltinCapabilityRuntime {
   saveCredential(id: BuiltinCredentialId, secret?: string, clear = false): BuiltinCapabilitiesSnapshotDto {
     if (clear) this.credentials.clear(id);
     else if (secret?.trim()) this.credentials.set(id, secret);
+    this.mediaServices?.invalidateCredentialChecks();
     return this.snapshot();
   }
 
@@ -221,12 +252,14 @@ export class BuiltinCapabilityRuntime {
   }
 
   imageProvider(): MediaCapabilityProvider | null {
+    if (this.mediaServices?.binding("image-generation")) return this.mediaServices.mediaProvider("image-generation");
     const id = this.config().imageGeneration.provider;
     const provider = id ? (this.providers.get(`media:${id}`) as MediaCapabilityProvider | undefined) : undefined;
     return provider?.generateImage ? provider : null;
   }
 
   videoProvider(): MediaCapabilityProvider | null {
+    if (this.mediaServices?.binding("video-generation")) return this.mediaServices.mediaProvider("video-generation");
     const id = this.config().videoGeneration.provider;
     const provider = id ? (this.providers.get(`media:${id}`) as MediaCapabilityProvider | undefined) : undefined;
     return provider?.generateVideo ? provider : null;
@@ -238,7 +271,9 @@ export class BuiltinCapabilityRuntime {
     const config = this.config();
     const binding = capability === "ocr" ? config.ocr : config.speechToText;
     if (!binding?.enabled) throw new Error("disabled: recognition capability disabled");
-    const service = binding.serviceId ? config.services?.[binding.serviceId] : undefined;
+    const connectionId = config.mediaBindings?.[capability]?.connectionId;
+    const serviceId = connectionId?.startsWith("legacy:") ? connectionId.slice(7) : binding.serviceId;
+    const service = serviceId ? config.services?.[serviceId] : undefined;
     if (!service || service.adapter !== adapter || !service.endpoint || !service.model || service.timeoutMs <= 0) throw new Error("configuration: select a complete recognition service");
     const url = new URL(service.endpoint);
     if (url.username || url.password || url.search) throw new Error("configuration: endpoint must not contain secrets/query");
@@ -249,6 +284,7 @@ export class BuiltinCapabilityRuntime {
 
   /** Until a private model context is available, local-only content cannot enter agent history. */
   assertRecognitionAgentPolicy(capability: "speech-to-text" | "ocr"): void {
+    if (this.mediaServices) return this.mediaServices.assertRecognitionPolicy(capability);
     const config = this.config();
     if (capability === "speech-to-text" && config.speechToText.provider !== "http-asr") return;
     const binding = capability === "ocr" ? config.ocr : config.speechToText;
@@ -259,15 +295,21 @@ export class BuiltinCapabilityRuntime {
   recordRecognitionRun(id: "speech-to-text" | "ocr"): void { this.recognitionRuns.set(id, Date.now()); }
 
   speechToTextProvider(): SpeechCapabilityProvider | null {
+    if (this.mediaServices?.binding("speech-to-text")) return this.mediaServices.speechProvider("speech-to-text");
     const id = this.config().speechToText.provider;
     const provider = id ? (this.providers.get(`speech:${id}`) as SpeechCapabilityProvider | undefined) : undefined;
     return provider?.speechToText ? provider : null;
   }
 
   textToSpeechProvider(): SpeechCapabilityProvider | null {
+    if (this.mediaServices?.binding("text-to-speech")) return this.mediaServices.speechProvider("text-to-speech");
     const id = this.config().textToSpeech.provider;
     const provider = id ? (this.providers.get(`speech:${id}`) as SpeechCapabilityProvider | undefined) : undefined;
     return provider?.textToSpeech ? provider : null;
+  }
+
+  ocrAdapter(): ImageRecognitionAdapter | null {
+    return this.mediaServices ? this.mediaServices.ocrAdapter() : this.config().ocr?.serviceId ? createHttpOcrAdapter(this) : null;
   }
 
   private providerStatus(
@@ -335,7 +377,7 @@ export class BuiltinCapabilityRuntime {
     };
     return {
       config,
-      capabilities: [
+      capabilities: ([
         simple("web", config.web.enabled, true),
         { id: "ocr", ...LABELS.ocr, enabled: config.ocr?.enabled ?? false, tools: BUILTIN_CAPABILITY_TOOLS.ocr,
           state: !config.ocr?.enabled ? "disabled" : config.ocr.serviceId && config.services?.[config.ocr.serviceId] ? "unchecked" : "needs-configuration",
@@ -369,12 +411,16 @@ export class BuiltinCapabilityRuntime {
             : config.multiModelConsult.participants.length < 2 ? "至少选择两个参与者。"
             : `${config.multiModelConsult.participants.length} 个参与者 · ${consultDistinctModelCount(config.multiModelConsult.participants)} 个模型。`,
         },
-      ],
+      ] as BuiltinCapabilityStatusDto[]).map((status) => this.mediaServices && MEDIA_CAPABILITY_IDS.includes(status.id as MediaCapabilityId)
+        ? { ...status, ...this.mediaServices.status(status.id as MediaCapabilityId) } : status),
       checkedAt: Date.now(),
+      mediaServices: this.mediaServices?.services(),
+      revision: capabilityConfigRevision(config),
     };
   }
 
   async test(id: BuiltinCapabilityStatusDto["id"]): Promise<TestBuiltinCapabilityResultDto> {
+    if (this.mediaServices && MEDIA_CAPABILITY_IDS.includes(id as MediaCapabilityId)) return this.mediaServices.test(id as MediaCapabilityId);
     const status = this.snapshot().capabilities.find((item) => item.id === id);
     if (!status) return { ok: false, state: "missing-dependency", detail: "未知能力", checkedAt: Date.now() };
     const local = this.localChecks.get(id as LocalCapabilityId);

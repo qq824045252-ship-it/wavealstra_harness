@@ -1,4 +1,4 @@
-import { createHttpOcrAdapter } from "./HttpOcrProvider";
+import { VideoJobPendingError } from "./VideoGenerationJobs";
 import { consultToolResult } from "./MultiModelConsult";
 import { consultSummary, type MultiModelConsultInput, type MultiModelConsultReport } from "../../shared/multi-model-consult";
 import { existsSync } from "node:fs";
@@ -34,7 +34,7 @@ import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
 import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
 import { runtimeProbeService, type RuntimeProbeInput } from "./RuntimeProbeService";
-import { MediaArtifactMaterializer } from "./MediaArtifactMaterializer";
+import { MediaArtifactMaterializer, MediaMaterializationPartialStateError } from "./MediaArtifactMaterializer";
 import { routeVisionForPaths, type VisionRouteResult } from "./VisionRouting";
 import { createWebAccessCapabilityExtension } from "./web-access/index";
 import { quoteBashArg, quotePowerShellLiteral, toBashPath } from "../agent/ShellArguments";
@@ -90,7 +90,10 @@ export interface BuiltinCapabilityExtensionBridge {
 }
 function errorResult(tool: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  const details = (error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object")
+  const additional = error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : undefined;
+  const details = error instanceof VideoJobPendingError
+    ? { error: message, ...additional, videoJob: { jobId: error.jobId, remoteId: error.remoteId, reason: error.reason, remoteCancelled: false } }
+    : (error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object")
     ? { error: message, details: error.details as Record<string, unknown> }
     : { error: message };
   return {
@@ -223,7 +226,8 @@ const imageGenerateSchema = Type.Object({
 }, { additionalProperties: false });
 
 const videoGenerateSchema = Type.Object({
-  prompt: Type.String({ minLength: 1, maxLength: 10_000 }),
+  prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 10_000 })),
+  job_id: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "已有视频任务的本地编号；恢复查询与下载，不重新提交生成。" })),
   negative_prompt: Type.Optional(Type.String({ maxLength: 5_000 })),
   aspect_ratio: Type.Optional(Type.String({ maxLength: 40 })),
   duration_seconds: Type.Optional(Type.Number({ minimum: 1, maximum: 120 })),
@@ -562,14 +566,17 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               width: p.width as number | undefined,
               height: p.height as number | undefined,
               count: p.count as number | undefined,
-              model: (p.model as string | undefined) ?? config.imageGeneration.model,
+              model: (p.model as string | undefined) ?? bridge.runtime.mediaModel("image-generation"),
               seed: p.seed as number | undefined,
               inputImagePaths: Array.isArray(p.input_image_paths)
                 ? (p.input_image_paths as string[]).map((item) => capabilityPath(bridge, item))
                 : undefined,
             };
             const context = toolContext(bridge, tc, signal);
-            const generated = await image.generateImage!(input, context);
+            if (!bridge.runtime.config().imageGeneration.enabled) throw new Error("图片生成已关闭。");
+            const provider = bridge.runtime.imageProvider();
+            if (!provider?.generateImage) throw new Error("请先配置图片生成服务。");
+            const generated = await provider.generateImage(input, context);
             const saved = await materializer.materialize("image", generated, context, "生成图片");
             return jsonResult(`已生成并保存 ${saved.paths.length} 张图片`, { ...generated, items: saved.paths, artifactIds: saved.artifacts.map((a) => a.id) });
           } catch (error) { return errorResult("image_generate", error); }
@@ -577,29 +584,46 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       });
     }
 
-    if (video) {
+    if (video || (config.videoGeneration.enabled && bridge.runtime.hasVideoJobs(bridge.taskId))) {
       pi.registerTool({
         name: "video_generate",
         label: "视频生成",
-        description: "从文本或任务内图片生成视频；输出下载到当前任务目录并登记 Video Artifact。",
-        promptSnippet: "video_generate(prompt, duration_seconds?, aspect_ratio?, resolution?, input_image_path?, generate_audio?)",
+        description: "从文本或任务内图片生成视频；输出下载到当前任务目录并登记 Video Artifact。返回等待中或断线错误时保留 job_id，以该编号恢复查询，不能重发原始生成请求。停止等待不代表取消远端生成。",
+        promptSnippet: "video_generate(prompt?, job_id?, duration_seconds?, aspect_ratio?, resolution?, input_image_path?)",
         parameters: videoGenerateSchema,
         execute: async (tc, p: Record<string, unknown>, signal?: AbortSignal) => {
           try {
+            if (p.job_id && Object.entries(p).some(([key, value]) => key !== "job_id" && value !== undefined)) throw new Error("恢复视频时只传 job_id；原服务和生成参数已保存在任务中。");
             const input: VideoGenerateInput = {
-              prompt: String(p.prompt),
+              prompt: typeof p.prompt === "string" ? p.prompt : undefined,
+              jobId: p.job_id as string | undefined,
               negativePrompt: p.negative_prompt as string | undefined,
               aspectRatio: p.aspect_ratio as string | undefined,
               durationSeconds: p.duration_seconds as number | undefined,
               resolution: p.resolution as string | undefined,
-              model: (p.model as string | undefined) ?? config.videoGeneration.model,
+              model: p.job_id ? undefined : (p.model as string | undefined) ?? bridge.runtime.mediaModel("video-generation"),
               seed: p.seed as number | undefined,
               inputImagePath: typeof p.input_image_path === "string" ? capabilityPath(bridge, p.input_image_path) : undefined,
               generateAudio: p.generate_audio as boolean | undefined,
             };
             const context = toolContext(bridge, tc, signal);
-            const generated = await video.generateVideo!(input, context);
-            const saved = await materializer.materialize("video", generated, context, "生成视频");
+            if (!bridge.runtime.config().videoGeneration.enabled) throw new Error("视频生成已关闭。");
+            const provider = input.jobId ? null : bridge.runtime.videoProvider();
+            if (!input.jobId && !provider?.generateVideo) throw new Error("请先配置视频生成服务。");
+            const generated = input.jobId ? await bridge.runtime.resumeVideo(input.jobId, context) : await provider!.generateVideo!(input, context);
+            let saved;
+            try { saved = await materializer.materialize("video", generated, context, "生成视频"); }
+            catch (error) {
+              if (typeof generated.metadata?.jobId === "string") {
+                const pending = new VideoJobPendingError(generated.metadata.jobId, error instanceof MediaMaterializationPartialStateError ? "artifact-partial" : "artifact-save", generated.requestId);
+                if (error instanceof MediaMaterializationPartialStateError) {
+                  pending.message = `${error.message}。请先处理残留产物，避免重复保存。\n${pending.message}`;
+                  Object.assign(pending, { details: { retainedPaths: error.retainedPaths, retainedArtifactIds: error.retainedArtifactIds } });
+                }
+                throw pending;
+              }
+              throw error;
+            }
             return jsonResult(`已生成并保存 ${saved.paths.length} 个视频`, { ...generated, items: saved.paths, artifactIds: saved.artifacts.map((a) => a.id) });
           } catch (error) { return errorResult("video_generate", error); }
         },
@@ -614,8 +638,10 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         execute: async (tc, p: { image_path: string }, signal?: AbortSignal) => {
           try {
             bridge.runtime.assertRecognitionAgentPolicy("ocr");
-            const result = await createHttpOcrAdapter(bridge.runtime).recognize(capabilityPath(bridge, p.image_path), toolContext(bridge, tc, signal));
-            return jsonResult("图片 OCR 完成（输入像素坐标；confidence 缺省为 unknown）", result);
+            const adapter = bridge.runtime.ocrAdapter();
+            if (!adapter) throw new Error("请先配置图片文字识别服务。");
+            const result = await adapter.recognize(capabilityPath(bridge, p.image_path), toolContext(bridge, tc, signal));
+            return jsonResult(result.boxes?.length ? "图片文字识别完成（含输入像素位置框）" : "图片文字提取完成（服务未提供位置框）", result);
           } catch (error) { return errorResult("ocr_file", error); }
         },
       });
@@ -632,7 +658,9 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
           try {
             if (!bridge.runtime.config().speechToText.enabled) throw new Error("disabled: speech-to-text");
             bridge.runtime.assertRecognitionAgentPolicy("speech-to-text");
-            const result = await stt.speechToText!({ audioPath: capabilityPath(bridge, p.audio_path), language: p.language, prompt: p.prompt }, toolContext(bridge, tc, signal));
+            const provider = bridge.runtime.speechToTextProvider();
+            if (!provider?.speechToText) throw new Error("请先配置转写服务。");
+            const result = await provider.speechToText({ audioPath: capabilityPath(bridge, p.audio_path), model: bridge.runtime.mediaModel("speech-to-text"), language: p.language, prompt: p.prompt }, toolContext(bridge, tc, signal));
             return jsonResult(`转写完成（${result.provider}）`, result);
           } catch (error) { return errorResult("speech_to_text", error); }
         },
@@ -649,10 +677,15 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         execute: async (tc, p: TextToSpeechInput, signal?: AbortSignal) => {
           try {
             const context = toolContext(bridge, tc, signal);
-            const generated = await tts.textToSpeech!({
+            if (!bridge.runtime.config().textToSpeech.enabled) throw new Error("文字转语音已关闭。");
+            const provider = bridge.runtime.textToSpeechProvider();
+            if (!provider?.textToSpeech) throw new Error("请先配置文字转语音服务。");
+            const current = bridge.runtime.config().textToSpeech;
+            const generated = await provider.textToSpeech({
               ...p,
-              voice: p.voice ?? config.textToSpeech.voice,
-              rate: p.rate ?? config.textToSpeech.rate,
+              model: bridge.runtime.mediaModel("text-to-speech"),
+              voice: p.voice ?? current.voice,
+              rate: p.rate ?? current.rate,
             }, context);
             const saved = await materializer.materialize("audio", generated, context, "合成语音");
             return jsonResult(`已生成并保存 ${saved.paths.length} 个音频`, { ...generated, items: saved.paths, artifactIds: saved.artifacts.map((a) => a.id) });

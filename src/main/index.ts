@@ -56,6 +56,7 @@ import type {
   SpaceDto,
   SubagentConfigDto,
   SaveBuiltinCredentialRequest,
+  SaveBuiltinCapabilitySettingsRequest,
   WebSearchConfigDto,
 } from "../shared/agent-ipc";
 import { ArtifactDomainIpc } from "../shared/artifact-ipc";
@@ -1288,6 +1289,11 @@ function registerIpc(): void {
     agentService.getSearchProviderUsage(provider, keys),
   );
   ipcMain.handle(AgentIpc.getBuiltinCapabilities, () => agentService.getBuiltinCapabilities());
+  ipcMain.handle(AgentIpc.refreshBuiltinMediaServices, () => agentService.refreshBuiltinMediaServices());
+  ipcMain.handle(AgentIpc.listBuiltinVideoJobs, (_e, taskId?: string) => agentService.listBuiltinVideoJobs(taskId));
+  ipcMain.handle(AgentIpc.saveBuiltinCapabilitySettings, (_e, request: SaveBuiltinCapabilitySettingsRequest) =>
+    agentService.saveBuiltinCapabilitySettings(request),
+  );
   ipcMain.handle(AgentIpc.saveBuiltinCapabilities, (_e, config: BuiltinCapabilitiesConfigDto) =>
     agentService.saveBuiltinCapabilities(config),
   );

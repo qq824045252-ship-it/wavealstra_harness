@@ -128,6 +128,8 @@ import {
   type BuiltinCapabilitiesSnapshotDto,
   type BuiltinCapabilityId,
   type SaveBuiltinCredentialRequest,
+  type SaveBuiltinCapabilitySettingsRequest,
+  type CapabilityVideoJobDto,
   type TestBuiltinCapabilityResultDto,
   type SubagentConfigDto,
   type UserFontDto,
@@ -282,6 +284,9 @@ import { createProjectPlanExtension } from "../project/project-plan-extension";
 import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
+import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
+import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
+import { CODEX_CONNECTION_ID } from "../../shared/media-capabilities";
 import { registerLocalCapabilityChecks } from "../capabilities/LocalCapabilityChecks";
 import { createVisionModelCapabilityProvider } from "../capabilities/VisionModelCapabilityProvider";
 import { modelSupportsImageInput, routeVisionForPaths } from "../capabilities/VisionRouting";
@@ -552,6 +557,8 @@ export class AgentService {
   private readonly userFonts = new UserFontsStore();
   /** Product-owned native tools. This is not a user-installable extension catalog. */
   readonly builtinCapabilities = new BuiltinCapabilityRuntime();
+  private readonly videoGenerationJobs = new VideoGenerationJobs(join(getMyBuddyDir(), "video-generation-jobs.json"));
+  private readonly mediaCapabilityServices: MediaCapabilityServices;
   private readonly browserAutomation = new BrowserAutomationService(() => browserHost);
   /**
    * 受管 Python 运行时（准备/绑定/执行/维护的唯一入口）。
@@ -871,6 +878,13 @@ export class AgentService {
     }));
     this.builtinCapabilities.registerProvider("speech", createLocalWhisperSpeechProvider());
     this.builtinCapabilities.registerProvider("speech", createHttpSpeechProvider(this.builtinCapabilities));
+    this.mediaCapabilityServices = new MediaCapabilityServices({
+      runtime: this.builtinCapabilities,
+      getMagpieConfig: () => this.readMagpieGatewayConfig(),
+      getDefaultProvider: () => this.settingsStore.read().defaultModelId?.split("/")[0],
+      videoJobs: this.videoGenerationJobs,
+    });
+    this.builtinCapabilities.attachMediaServices(this.mediaCapabilityServices);
     registerLocalCapabilityChecks(this.builtinCapabilities, this.browserAutomation, this.pythonRuntime);
     // 旧版连接器全局技能副本安全迁移（幂等；meta 归属校验，失败不阻断启动）
     try {
@@ -1165,6 +1179,8 @@ export class AgentService {
     });
     registerMyBuddyProviders(this.modelRuntime, { magpieConfig: () => this.readMagpieGatewayConfig() });
     await this.modelRuntime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
+    // Discovery is read-only and must not delay desktop startup or generate media.
+    void this.mediaCapabilityServices.refresh().catch(() => undefined);
     installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
     attachSubagentModelRuntime(this.modelRuntime);
     attachSubagentWorkspaceNotes(scope => {
@@ -1734,6 +1750,7 @@ export class AgentService {
           enabled:
             status.configured
             && this.modelRuntime.isUsingOAuth("openai-codex")
+            && this.mediaCapabilityServices.binding("image-generation")?.connectionId === CODEX_CONNECTION_ID
             && imageConfig.enabled,
           api: "openai-codex-images",
           metadata: { source: "builtin" },
@@ -1791,7 +1808,7 @@ export class AgentService {
     }
     const prefix = `${providerId}/`;
     const imageModelId = "openai-codex/gpt-image-2";
-    const builtinConfig = providerId === "openai-codex" ? this.builtinCapabilities.config() : undefined;
+    const builtinConfig = providerId === "openai-codex" && this.mediaCapabilityServices.binding("image-generation")?.connectionId === CODEX_CONNECTION_ID ? this.builtinCapabilities.config() : undefined;
     const previousImageEnabled = builtinConfig?.imageGeneration.enabled;
     let nextImageEnabled = previousImageEnabled;
     if (enabled) {
@@ -1927,6 +1944,8 @@ export class AgentService {
       }
       const models = await this.listModels();
       const selectedModelId = await this.applyLoginModelSelection(req.providerId, models);
+      this.mediaCapabilityServices.invalidateCredentialChecks();
+      this.mediaCapabilityServices.resolveAutomaticImage();
       return { ok: true, models, selectedModelId };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1977,6 +1996,7 @@ export class AgentService {
     if (!this.modelRuntime) return { models: await this.listModels() };
     try {
       await this.modelRuntime.logout(providerId, { signal: AbortSignal.timeout(15_000) });
+      this.mediaCapabilityServices.invalidateCredentialChecks();
     } catch (error) {
       if (!(error instanceof CredentialSynchronizationError)) throw error;
     }
@@ -3107,6 +3127,24 @@ export class AgentService {
   getBuiltinCapabilities(): BuiltinCapabilitiesSnapshotDto {
     this.builtinCapabilities.setBrowserAvailable(this.browserAutomation.available);
     return this.builtinCapabilities.snapshot();
+  }
+
+  async refreshBuiltinMediaServices(): Promise<BuiltinCapabilitiesSnapshotDto> {
+    await this.mediaCapabilityServices.refresh();
+    return this.getBuiltinCapabilities();
+  }
+
+  saveBuiltinCapabilitySettings(request: SaveBuiltinCapabilitySettingsRequest): BuiltinCapabilitiesSnapshotDto {
+    this.mediaCapabilityServices.save(request);
+    return this.getBuiltinCapabilities();
+  }
+
+  listBuiltinVideoJobs(taskId?: string): CapabilityVideoJobDto[] {
+    return this.videoGenerationJobs.list(taskId).map((job) => ({
+      id: job.id, remoteId: job.remoteId, taskId: job.taskId, connectionId: job.connection.id,
+      model: job.connection.model, status: job.state, createdAt: job.createdAt, updatedAt: job.updatedAt,
+      detail: job.lastError,
+    }));
   }
 
   saveBuiltinCapabilities(config: BuiltinCapabilitiesConfigDto): BuiltinCapabilitiesSnapshotDto {

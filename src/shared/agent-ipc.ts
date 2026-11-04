@@ -247,6 +247,9 @@ export const AgentIpc = {
   /** MyBuddy 原生工具能力（非用户插件） */
   getBuiltinCapabilities: "agent:getBuiltinCapabilities",
   saveBuiltinCapabilities: "agent:saveBuiltinCapabilities",
+  saveBuiltinCapabilitySettings: "agent:saveBuiltinCapabilitySettings",
+  refreshBuiltinMediaServices: "agent:refreshBuiltinMediaServices",
+  listBuiltinVideoJobs: "agent:listBuiltinVideoJobs",
   saveBuiltinCredential: "agent:saveBuiltinCredential",
   testBuiltinCapability: "agent:testBuiltinCapability",
   /** 内建 Subagent Capability 配置 */
@@ -260,8 +263,10 @@ export type {
   BuiltinCapabilityId,
   BuiltinCapabilityStatusDto,
   SaveBuiltinCredentialRequest,
+  SaveBuiltinCapabilitySettingsRequest,
   TestBuiltinCapabilityResultDto,
 } from "./builtin-capabilities";
+export type { CapabilityVideoJobDto } from "./media-capabilities";
 
 export const CronIpc = {
   list: "cron:list",

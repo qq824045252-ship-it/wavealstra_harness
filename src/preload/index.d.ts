@@ -11,8 +11,10 @@ import type {
   BuiltinCapabilitiesSnapshotDto,
   BuiltinCapabilityId,
   SaveBuiltinCredentialRequest,
+  SaveBuiltinCapabilitySettingsRequest,
   TestBuiltinCapabilityResultDto,
 } from "../shared/builtin-capabilities";
+import type { CapabilityVideoJobDto } from "../shared/media-capabilities";
 import type {
   AgentApproveToolRequest,
   AgentPromptRequest,
@@ -321,6 +323,9 @@ export interface PreloadApi {
     saveWebSearchConfig: (config: WebSearchConfigDto) => Promise<WebSearchConfigDto>;
     getSearchProviderUsage: (provider: string, keys: string[]) => Promise<SearchProviderKeyUsageDto[]>;
     getBuiltinCapabilities: () => Promise<BuiltinCapabilitiesSnapshotDto>;
+    refreshBuiltinMediaServices: () => Promise<BuiltinCapabilitiesSnapshotDto>;
+    listBuiltinVideoJobs: (taskId?: string) => Promise<CapabilityVideoJobDto[]>;
+    saveBuiltinCapabilitySettings: (request: SaveBuiltinCapabilitySettingsRequest) => Promise<BuiltinCapabilitiesSnapshotDto>;
     saveBuiltinCapabilities: (config: BuiltinCapabilitiesConfigDto) => Promise<BuiltinCapabilitiesSnapshotDto>;
     saveBuiltinCredential: (request: SaveBuiltinCredentialRequest) => Promise<BuiltinCapabilitiesSnapshotDto>;
     testBuiltinCapability: (id: BuiltinCapabilityId) => Promise<TestBuiltinCapabilityResultDto>;
