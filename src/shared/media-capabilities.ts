@@ -59,6 +59,9 @@ export const MEDIA_PROVIDER_PRESETS: MediaProviderPreset[] = [
 ];
 
 export function connectionCapabilities(connection: ApiCapabilityConnection): MediaCapabilityId[] {
+  // The Baidu native protocol only has the verified official preset;
+  // generic OpenAI-compatible endpoints cannot claim to implement it.
+  if (connection.protocol === "baidu-ocr" && connection.presetId !== "baidu-ocr") return [];
   const preset = MEDIA_PROVIDER_PRESETS.find((item) => item.id === connection.presetId);
   if (preset) return preset.protocol === connection.protocol ? preset.capabilities : [];
   return API_PROTOCOL_CAPABILITIES[connection.protocol] ?? [];

@@ -235,7 +235,7 @@ function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredenti
         const protocol = event.target.value as ApiCapabilityProtocol;
         onChange({ ...value, protocol, ...(protocol === "openrouter" ? { baseUrl: OPENROUTER_API_ROOT, auth: "api-key" as const } : {}) });
       }}>
-        {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
+        {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).filter(protocol => protocol !== "baidu-ocr" || value.presetId === "baidu-ocr").map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
       </SettingsSelect>
     </div>
     <SettingsInput label="API 地址" type="url" disabled={Boolean(value.presetId)} value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
