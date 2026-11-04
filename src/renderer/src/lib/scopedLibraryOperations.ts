@@ -1,4 +1,4 @@
-import type { LibraryCreateItemRequest, LibraryOwnerScope, LibraryContentDto, LibraryListRowDto } from "@shared/library-ipc";
+import type { LibraryCreateItemRequest, LibraryOwnerScope, LibraryContentDto, LibraryListRowDto, LibrarySnapshotDto } from "@shared/library-ipc";
 import {
   isLibrarySpaceOwnedBy, libraryCollectionSubtree, requireLibraryDestination, requireLibraryFolder,
   requireLibraryItem, resolveScopedLibraryLink, scopedLibrarySearchRows, scopedLibrarySnapshot,
@@ -56,10 +56,12 @@ export class ScopedLibraryOperations {
     return payload;
   }
 
-  async search(query: string): Promise<LibraryListRowDto[]> {
-    const api = this.getApi();
-    const [snapshot, hits] = await Promise.all([this.snapshot(), api.search({ query, owner: this.scope, reference: this.reference })]);
-    return scopedLibrarySearchRows(snapshot, query, hits);
+  async search(query: string): Promise<{ snapshot: LibrarySnapshotDto; rows: LibraryListRowDto[] }> {
+    const hits = await this.getApi().search({ query, owner: this.scope, reference: this.reference });
+    // A search may finish after documents were deleted, moved, or created.
+    // Return one fresh projection for both the result rows and their navigation.
+    const snapshot = await this.snapshot();
+    return { snapshot, rows: scopedLibrarySearchRows(snapshot, query, hits) };
   }
 
   async resolveLink(sourceItemId: string, href: string): Promise<string> {

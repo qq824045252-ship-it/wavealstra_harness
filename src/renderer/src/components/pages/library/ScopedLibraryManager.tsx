@@ -5,7 +5,7 @@ import { IconChevronRight, IconSearch } from "@/components/common/icons";
 import { collectDroppedLocalFiles, dataTransferHasFiles } from "@/lib/projectWorkspace";
 import {
   defaultLibraryLocation, isLibraryTaskOwnedBy, libraryFolderRow, libraryItemRow, libraryOwnerKey,
-  requireLibraryDestination, scopedLibrarySearchRows,
+  requireLibraryDestination,
   type LibraryLocation, type LibraryReferenceScope, type LibraryUnsavedGuard,
 } from "@/lib/scopedLibrary";
 import { ScopedLibraryOperations } from "@/lib/scopedLibraryOperations";
@@ -53,11 +53,18 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
   // Scope/reference identity is stable even when callers create fresh prop objects.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [ownerKey, reference?.spaceId, reference?.collectionId, reference?.itemId, props.readOnly]);
-  const [snapshot, setSnapshot] = useState<LibrarySnapshotDto | null>(null);
+  const [loadedSnapshot, setSnapshot] = useState<LibrarySnapshotDto | null>(null);
   const [location, setLocation] = useState<LibraryLocation>({ spaceId: null, collectionId: null });
   const [itemId, setItemId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<{ query: string; rows: LibraryListRowDto[] }>({ query: "", rows: [] });
+  const [hits, setHits] = useState<{
+    query: string; rows: LibraryListRowDto[]; status: "loading" | "ready" | "failed";
+    source: LibrarySnapshotDto | null; snapshot: LibrarySnapshotDto | null;
+  }>({ query: "", rows: [], status: "ready", source: null, snapshot: null });
+  // A completed search supplies the current metadata, including newly found files.
+  // Only an explicit reload changes loadedSnapshot, so accepting results cannot
+  // trigger another search. Clearing the query keeps the refreshed browsing data.
+  const snapshot = hits.source === loadedSnapshot ? hits.snapshot ?? loadedSnapshot : loadedSnapshot;
   const [typeFilter, setTypeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -121,14 +128,30 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
 
   useEffect(() => {
     let cancelled = false;
-    if (!effectiveQuery) { setHits({ query: "", rows: [] }); return; }
+    if (!effectiveQuery) { setHits((current) => ({ ...current, query: "", rows: [], status: "ready" })); return; }
+    setHits((current) => ({ ...current, query: effectiveQuery, rows: [], status: "loading" }));
+    if (!loadedSnapshot) return;
     const timeout = window.setTimeout(() => {
-      void access.search(effectiveQuery).then((rows) => {
-        if (!cancelled) setHits({ query: effectiveQuery, rows });
-      }, (error: unknown) => { if (!cancelled) report(error); });
+      void access.search(effectiveQuery).then(({ snapshot: next, rows }) => {
+        if (cancelled) return;
+        setHits({ query: effectiveQuery, rows, status: "ready", source: loadedSnapshot, snapshot: next });
+        setLocation((current) => {
+          try { requireLibraryDestination(next, current); return current; }
+          catch { return defaultLibraryLocation(next, reference); }
+        });
+        setItemId((current) => current && next.items.some((item) => item.id === current) ? current : null);
+        callbacks.current.onSnapshot?.(next);
+      }, (error: unknown) => {
+        if (cancelled) return;
+        setHits((current) => ({ query: effectiveQuery, rows: [], status: "failed", source: loadedSnapshot,
+          snapshot: current.source === loadedSnapshot ? current.snapshot : loadedSnapshot }));
+        report(error);
+      });
     }, 160);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [access, effectiveQuery, snapshot]);
+  // The reference identity is part of access and the keyed manager lifecycle.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access, effectiveQuery, loadedSnapshot]);
 
   const registerEditor = useCallback((guard: LibraryUnsavedGuard | null): void => {
     editorGuard.current = guard;
@@ -210,7 +233,9 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
     folder = snapshot?.collections.find((entry) => entry.id === folder?.parentId);
   }
   breadcrumbs.unshift({ id: rootCollectionId, name: (rootCollectionId ? snapshot?.collections.find((entry) => entry.id === rootCollectionId)?.name : space?.name) ?? name ?? "资料" });
-  const rows = !snapshot ? [] : effectiveQuery ? scopedLibrarySearchRows(snapshot, effectiveQuery, hits.query === effectiveQuery ? hits.rows : [])
+  const searching = Boolean(effectiveQuery && (hits.query !== effectiveQuery || hits.source !== loadedSnapshot || hits.status === "loading"));
+  const searchFailed = Boolean(effectiveQuery && !searching && hits.status === "failed");
+  const rows = !snapshot ? [] : effectiveQuery ? searching || searchFailed ? [] : hits.rows
     : [...snapshot.collections.filter((entry) => entry.spaceId === location.spaceId && (entry.parentId ?? null) === location.collectionId).map((entry) => libraryFolderRow(snapshot, entry)),
       ...snapshot.items.filter((entry) => entry.spaceId === location.spaceId && (Boolean(reference?.itemId) || (entry.collectionId ?? null) === location.collectionId)).map((entry) => libraryItemRow(snapshot, entry))];
   const visible = rows.filter((row) => typeFilter === "all" || row.kind === "folder" || (typeFilter === "other"
@@ -253,7 +278,9 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
           <button type="button" className="btn" disabled={busy} onClick={() => setCompose({ type: "url", location, title: "", url: "https://" })}>添加链接</button>
           <button type="button" className="btn" disabled={busy} onClick={() => void run(async () => setCompose({ type: "artifact", location, artifactId: "", artifacts: await access.artifacts() }), false)}>从任务成果保存</button>
         </div>}
-        {!visible.length ? <div className="library-empty"><strong>{effectiveQuery ? `没有匹配的${emptyName}` : rows.length ? "没有此类型的资料" : `还没有${emptyName}`}</strong>
+        {searching ? <div className="library-empty" role="status">正在搜索资料…</div>
+          : searchFailed ? <div className="library-empty">搜索失败，请刷新后重试。</div>
+          : !visible.length ? <div className="library-empty"><strong>{effectiveQuery ? `没有匹配的${emptyName}` : rows.length ? "没有此类型的资料" : `还没有${emptyName}`}</strong>
           {!readOnly && !effectiveQuery && <span>新建资料、导入文档，或把文件拖到这里。</span>}
         </div> : <ScopedLibraryRows rows={visible} busy={busy} readOnly={readOnly} onOpen={open} onDrop={drop}
           onRename={(row) => setCompose({ type: "rename", row, title: row.title })}

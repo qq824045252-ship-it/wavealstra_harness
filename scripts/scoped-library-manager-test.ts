@@ -136,8 +136,37 @@ async function main() {
   await readOnly.read("inside");
   assert.equal(calls.slice(before).filter((entry) => entry.method === "visited").length, 0);
   await assert.rejects(() => readOnly.read("outside"));
-  assert.deepEqual((await readOnly.search("body-only-match")).map((entry) => entry.id), ["inside"]);
+  assert.deepEqual((await readOnly.search("body-only-match")).rows.map((entry) => entry.id), ["inside"]);
   assert.deepEqual(calls.filter((entry) => entry.method === "search").at(-1)?.request.reference, reference);
+
+  // The result projection must observe edits made while the search IPC is pending.
+  // These use stale backend hits deliberately; the fresh scoped snapshot is authoritative.
+  for (const change of ["deleted", "moved-out", "owner-changed", "joined", "renamed"] as const) {
+    let searchState = structuredClone(seed);
+    let finish!: (rows: LibraryListRowDto[]) => void;
+    const delayed = new Promise<LibraryListRowDto[]>((resolve) => { finish = resolve; });
+    const searchAccess = new ScopedLibraryOperations(() => ({ ...api,
+      snapshot: async () => structuredClone(searchState), search: async () => delayed,
+    }), project, reference);
+    const pending = searchAccess.search(change === "joined" ? "outside" : change === "renamed" ? "body-only-match" : "inside");
+    if (change === "deleted") searchState.items = searchState.items.filter((entry) => entry.id !== "inside");
+    if (change === "moved-out") searchState.items.find((entry) => entry.id === "inside")!.collectionId = "sibling";
+    if (change === "owner-changed") searchState.spaces.find((entry) => entry.id === "project")!.projectId = "project-b";
+    if (change === "joined") searchState.items.find((entry) => entry.id === "outside")!.collectionId = "reference";
+    if (change === "renamed") Object.assign(searchState.items.find((entry) => entry.id === "inside")!, { title: "fresh title", updatedAt: 2 });
+    finish(change === "joined" ? [] : [row("inside", "stale title")]);
+    const result = await pending;
+    if (change === "joined") {
+      assert.deepEqual(result.rows.map((entry) => entry.id), ["outside"], "A newly in-scope title match is visible even if the earlier search missed it");
+      assert(result.snapshot.items.some((entry) => entry.id === "outside"), "Result navigation receives the same fresh item metadata");
+    } else if (change === "renamed") {
+      assert.deepEqual(result.rows.map((entry) => [entry.id, entry.title, entry.updatedAt]), [["inside", "fresh title", 2]]);
+      assert.equal(result.snapshot.items.find((entry) => entry.id === "inside")?.title, "fresh title");
+    } else {
+      assert.deepEqual(result.rows, [], `${change}: stale hits and old title matches cannot restore an unavailable item`);
+      assert(!result.snapshot.items.some((entry) => entry.id === "inside"), `${change}: navigation also excludes the removed item`);
+    }
+  }
 
   const readMethod = api.readContent;
   api.readContent = async (id) => {
@@ -162,7 +191,7 @@ async function main() {
   assert.equal(readLibraryDraft(storage, libraryDraftKey("project:project-b", "inside")), null, "Drafts cannot cross owners");
   assert(syncLibraryDraft(storage, key, null));
   assert.equal(readLibraryDraft(storage, key), null, "Manually restoring saved content withdraws the old draft");
-  console.log("scoped library manager: PASS (owner/reference isolation, checked CRUD, lazy ownership, source retention, scoped links, readonly, draft withdrawal)");
+  console.log("scoped library manager: PASS (owner/reference isolation, checked CRUD, lazy ownership, source retention, scoped links, readonly, fresh deferred search, draft withdrawal)");
 }
 
 void main().catch((error) => { console.error(error); process.exitCode = 1; });
