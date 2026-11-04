@@ -396,11 +396,12 @@ export class MediaCapabilityServices {
       }
     } else if (connection) adapter = createApiOcrAdapter({ getConnection: () => this.resolveApi("ocr"), fetch: this.options.fetch });
     if (!adapter) return null;
+    const selectedAdapter = adapter;
     return { recognize: async (path, context) => {
       if (!capabilityEnabled(this.runtime.config(), "ocr")) throw new Error("图片文字识别已关闭。");
       this.assertRecognitionPolicy("ocr");
       const key = this.key("ocr");
-      const result = await adapter.recognize(path, context);
+      const result = await selectedAdapter.recognize(path, context);
       this.completed("ocr", key); return result;
     } };
   }
