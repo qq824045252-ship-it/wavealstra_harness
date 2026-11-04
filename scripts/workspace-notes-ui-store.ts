@@ -1,5 +1,5 @@
 export const state: any = {
-  spaces: [{ id: "vps", name: "VPS管理", path: "C:/Work/VPS" }],
+  spaces: [{ id: "vps", name: "VPS管理", path: "C:/Work/VPS" }, { id: "other", name: "隔离空间", path: "C:/Work/Other" }],
   tasks: [],
   projects: [],
   activeTaskId: null,

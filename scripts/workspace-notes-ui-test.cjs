@@ -1,4 +1,5 @@
 const { runRendererFixture } = require('./renderer-fixture-driver.cjs');
+const { settleFramesScript } = require('./ui-capture.cjs');
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -50,6 +51,23 @@ runRendererFixture({ name: 'workspace-notes-ui', width: 1180, height: 900 }, asy
     assert.equal(await run('window.noteTest.created.spaceId'), 'vps-materials', 'new folder belongs to this workspace');
     assert.equal(await run('window.noteTest.library.collections[0].spaceId'), 'vps-materials');
     await capture('workspace-library-bindings.png');
+    // The pending write may finish for the original workspace; its old UI must
+    // not overwrite the new workspace or publish a stale onChanged callback.
+    await run(`window.noteTest.deferNextBind(); document.querySelector('.workspace-materials-add').open = true`);
+    await click('添加引用'); await wait(`window.noteTest.bindPending === true`);
+    assert.equal(await run('window.noteTest.bound.workspaceId'), 'vps');
+    await run(`window.noteTest.switchWorkspace('other')`);
+    await wait(`document.querySelector('.workspace-memory-header p')?.innerText.includes('隔离空间') && !document.body.innerText.includes('正在加载引用…')`);
+    const previousChanges = await run('window.noteTest.changeEvents.length');
+    await run('window.noteTest.finishBind()'); await wait('window.noteTest.bindCompleted === true');
+    await run(settleFramesScript);
+    assert.equal(await run('window.noteTest.changeEvents.length'), previousChanges, 'unmounted workspace must not publish a late callback');
+    assert.equal(await run(`document.querySelectorAll('.workspace-materials-references .workspace-memory-row').length`), 0, 'late binding must not replace the new workspace reference list');
+    assert(!(await run(`document.querySelector('.workspace-materials-references').innerText`)).includes('已添加引用'), 'late mutation notice must not appear in a different workspace');
+    assert.equal(await run('window.noteTest.views.vps.direct.length'), 1, 'the original workspace write still completes');
+    await run(`window.noteTest.switchWorkspace('vps')`);
+    await wait(`document.querySelector('.workspace-memory-header p')?.innerText.includes('VPS管理') && document.body.innerText.includes('取消引用')`);
+    await click('取消引用'); await wait(`document.body.innerText.includes('尚未引用其他位置的资料')`);
     await click('项目 A'); await wait(`document.querySelector('[aria-label="项目便签"]') && document.body.innerText.includes('尚无便签')`);
     await fill('Markdown 便签内容', '# 项目记录\n\n**共同维护**');
     await click('项目 B'); await wait(`document.querySelector('textarea')?.value === ''`);
@@ -75,6 +93,6 @@ runRendererFixture({ name: 'workspace-notes-ui', width: 1180, height: 900 }, asy
     await click('项目 A'); await wait(`document.querySelector('textarea')?.value.includes('合并记录')`);
     await click('切换归档'); await wait(`document.querySelector('textarea')?.disabled`);
     console.log(`PASS project notes ${fixture.backend} renderer UI: per-project draft, persistence, agent conflict, merge, preview, archive`);
-    console.log(`PASS workspace notes and materials ${fixture.backend} renderer UI: draft recovery, save retry, scoped creation, local readonly references, unlink preserves source`);
+    console.log(`PASS workspace notes and materials ${fixture.backend} renderer UI: draft recovery, save retry, scoped creation, local readonly references, unlink preserves source, pending binding stays with its original workspace`);
   } finally { /* The shared driver closes its isolated renderer and profile. */ }
 });
