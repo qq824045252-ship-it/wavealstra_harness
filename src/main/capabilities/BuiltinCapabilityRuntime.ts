@@ -53,7 +53,9 @@ export interface ImageGenerateInput {
 }
 
 export interface VideoGenerateInput {
-  prompt: string;
+  prompt?: string;
+  /** Resume a durable local video job; never submits another generation. */
+  jobId?: string;
   negativePrompt?: string;
   aspectRatio?: string;
   durationSeconds?: number;
@@ -99,6 +101,7 @@ export interface MediaCapabilityProvider {
 
 export interface SpeechToTextInput {
   audioPath: string;
+  model?: string;
   language?: string;
   prompt?: string;
 }
@@ -113,6 +116,7 @@ export interface SpeechToTextOutput {
 
 export interface TextToSpeechInput {
   text: string;
+  model?: string;
   voice?: string;
   rate?: string;
   format?: "mp3" | "wav" | "ogg";

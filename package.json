@@ -384,7 +384,8 @@
     "test:computer-use-boundaries": "esbuild scripts/computer-use-boundaries-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-boundaries-test.cjs && node scripts/test-guard.mjs out/tests/computer-use-boundaries-test.cjs",
     "test:computer-use-behavior": "esbuild scripts/computer-use-behavior-electron-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/computer-use-behavior-electron-test.cjs && electron out/tests/computer-use-behavior-electron-test.cjs",
     "test:computer-use-agent-desktop": "node scripts/computer-use-agent-desktop-test.cjs",
-    "test:task-file-changes": "esbuild scripts/task-file-changes-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/task-file-changes-test.cjs && node scripts/test-guard.mjs out/tests/task-file-changes-test.cjs"
+    "test:task-file-changes": "esbuild scripts/task-file-changes-test.ts --bundle --platform=node --format=cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/task-file-changes-test.cjs && node scripts/test-guard.mjs out/tests/task-file-changes-test.cjs",
+    "test:media-capability-config": "esbuild scripts/media-capability-config-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/media-capability-config-test.mjs && node scripts/test-guard.mjs out/tests/media-capability-config-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

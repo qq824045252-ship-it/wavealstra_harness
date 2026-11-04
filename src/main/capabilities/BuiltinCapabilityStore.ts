@@ -16,6 +16,7 @@ import {
   type BuiltinCapabilitiesConfigDto,
 } from "../../shared/builtin-capabilities";
 import { getMyBuddyDir } from "../paths";
+import { MEDIA_CAPABILITY_IDS, type ApiCapabilityConnection, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 
 const CONFIG_FILE = "capabilities.json";
 
@@ -30,6 +31,40 @@ function cleanOptionalText(value: unknown, maxLength: number): string | undefine
   return trimmed.slice(0, maxLength);
 }
 
+function normalizeConnections(raw: BuiltinCapabilitiesConfigDto["connections"]): Record<string, ApiCapabilityConnection> {
+  const connections: Record<string, ApiCapabilityConnection> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return connections;
+  for (const [id, item] of Object.entries(raw)) {
+    if (!/^api-[a-z0-9-]{1,80}$/i.test(id) || !item || typeof item !== "object") continue;
+    if (item.protocol !== "openai-compatible" && item.protocol !== "mistral-ocr") continue;
+    connections[id] = {
+      name: cleanOptionalText(item.name, 100) ?? "API 服务",
+      protocol: item.protocol,
+      baseUrl: cleanOptionalText(item.baseUrl, 2000) ?? "",
+      auth: item.auth === "none" ? "none" : "api-key",
+      credentialRef: cleanOptionalText(item.credentialRef, 100),
+      timeoutMs: Number.isFinite(item.timeoutMs) ? Math.max(1000, Math.min(600_000, item.timeoutMs)) : 120_000,
+    };
+  }
+  return connections;
+}
+
+function normalizeBindings(raw: BuiltinCapabilitiesConfigDto["mediaBindings"]): Partial<Record<MediaCapabilityId, MediaCapabilityBinding>> {
+  const bindings: Partial<Record<MediaCapabilityId, MediaCapabilityBinding>> = {};
+  if (!raw || typeof raw !== "object") return bindings;
+  for (const capability of MEDIA_CAPABILITY_IDS) {
+    const item = raw[capability];
+    if (!item || typeof item !== "object") continue;
+    bindings[capability] = {
+      connectionId: cleanOptionalText(item.connectionId, 200) ?? "",
+      model: cleanOptionalText(item.model, 300),
+      selection: item.selection === "auto" && capability === "image-generation" ? "auto" : "manual",
+      dataPolicy: item.dataPolicy === "local-only" ? "local-only" : item.dataPolicy === "allow-cloud" ? "allow-cloud" : undefined,
+    };
+  }
+  return bindings;
+}
+
 function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
   if (!raw || typeof raw !== "object") return cloneDefaults();
   const value = raw as Partial<BuiltinCapabilitiesConfigDto>;
@@ -40,6 +75,10 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
   const defaults = cloneDefaults();
   return {
     schemaVersion: 1,
+    connections: normalizeConnections(value.connections),
+    // An old schema-v1 file without bindings keeps its selected providers and
+    // explicit disabled flags. Only genuinely new defaults opt into auto image selection.
+    mediaBindings: normalizeBindings(value.mediaBindings),
     services: value.services ?? {},
     ocr: value.ocr ?? { enabled: false },
     web: { enabled: value.web?.enabled !== false },
@@ -65,6 +104,7 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
     textToSpeech: {
       enabled: value.textToSpeech?.enabled !== false,
       provider: cleanOptionalText(value.textToSpeech?.provider, 100),
+      model: cleanOptionalText(value.textToSpeech?.model, 300),
       voice: cleanOptionalText(value.textToSpeech?.voice, 200),
       rate: cleanOptionalText(value.textToSpeech?.rate, 40),
     },

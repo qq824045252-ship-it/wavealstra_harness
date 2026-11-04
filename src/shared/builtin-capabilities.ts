@@ -1,4 +1,5 @@
 import { DEFAULT_MULTI_MODEL_CONSULT_CONFIG, type MultiModelConsultConfig } from "./multi-model-consult";
+import type { ApiCapabilityConnection, CapabilityConnectionOption, CapabilityCredentialChange, MediaCapabilityBinding, MediaCapabilityId } from "./media-capabilities";
 /**
  * MyBuddy native capability contract.
  *
@@ -82,6 +83,7 @@ export interface BuiltinSpeechToTextConfig {
 export interface BuiltinTextToSpeechConfig {
   enabled: boolean;
   provider?: string;
+  model?: string;
   voice?: string;
   rate?: string;
 }
@@ -101,6 +103,8 @@ export interface BuiltinSubagentConfig {
 
 export interface BuiltinCapabilitiesConfigDto {
   schemaVersion: 1;
+  connections?: Record<string, ApiCapabilityConnection>;
+  mediaBindings?: Partial<Record<MediaCapabilityId, MediaCapabilityBinding>>;
   services?: Record<string, RecognitionServiceConfig>;
   ocr?: { enabled: boolean; serviceId?: string };
   web: BuiltinWebConfig;
@@ -135,6 +139,14 @@ export interface BuiltinCapabilitiesSnapshotDto {
   config: BuiltinCapabilitiesConfigDto;
   capabilities: BuiltinCapabilityStatusDto[];
   checkedAt: number;
+  mediaServices?: CapabilityConnectionOption[];
+  revision?: string;
+}
+
+export interface SaveBuiltinCapabilitySettingsRequest {
+  config: BuiltinCapabilitiesConfigDto;
+  credentials?: CapabilityCredentialChange[];
+  expectedRevision?: string;
 }
 
 export interface SaveBuiltinCredentialRequest {
@@ -153,6 +165,8 @@ export interface TestBuiltinCapabilityResultDto {
 
 export const DEFAULT_BUILTIN_CAPABILITIES_CONFIG: BuiltinCapabilitiesConfigDto = {
   schemaVersion: 1,
+  connections: {},
+  mediaBindings: { "image-generation": { connectionId: "", selection: "auto" } },
   web: {
     enabled: true,
   },
