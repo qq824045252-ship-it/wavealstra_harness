@@ -158,6 +158,48 @@ assert.equal(resMerged[0].name, "app.ts");
 assert.equal(resMerged[0].additions, 4); // 3 + 1
 assert.equal(resMerged[0].deletions, 3); // 2 + 1
 
+// 工具写入过的文件与打开后的产物绝对不能重复叠加全文行数
+const writeAndEditMsg: ChatMessage = {
+  id: "msg-w-1",
+  role: "assistant",
+  createdAt: 1000,
+  blocks: [
+    {
+      type: "tool",
+      toolCall: {
+        id: "call-w-1",
+        tool: "write",
+        summary: "write",
+        detail: JSON.stringify({ path: "src/doc.json", content: "a\nb\nc" }), // 3 lines
+        status: "success",
+      },
+    },
+  ],
+};
+const openedArt: Artifact = {
+  id: "art-doc-1",
+  name: "doc.json",
+  path: "src/doc.json",
+  kind: "code",
+  content: "a\nb\nc", // 3 lines
+};
+const resNoDouble = resolveTaskFileChanges([], [openedArt], [writeAndEditMsg]);
+assert.equal(resNoDouble.length, 1);
+assert.equal(resNoDouble[0].additions, 3, "additions should be 3 from write tool, not doubled to 6");
+
+// 未 hydration 的产物若带有 capabilities.lineCount，直接采用真实行数
+const unhydratedArtWithLineCount: Artifact = {
+  id: "art-line-1",
+  name: "script_output.md",
+  path: "docs/script_output.md",
+  kind: "markdown",
+  content: "", // 未 hydration
+  capabilities: { lineCount: 150 },
+};
+const resLineCount = resolveTaskFileChanges([], [unhydratedArtWithLineCount], []);
+assert.equal(resLineCount.length, 1);
+assert.equal(resLineCount[0].additions, 150, "should use lineCount from capabilities if content is empty");
+
 console.log("[test] 5. 真实会话回放测试");
 const sessionPath =
   "C:\\Users\\servi\\.mybuddy\\sessions\\--C--Users-servi-Documents-vps管理--\\2026-11-04T05-30-05-714Z_01a1a509-3211-7594-9d8e-bab61380be55.jsonl";

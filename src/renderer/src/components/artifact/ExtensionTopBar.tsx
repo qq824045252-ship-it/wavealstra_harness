@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { PanelMode } from "@/store/appStore";
 import {
   useActiveTerminalTabs,
@@ -24,7 +24,7 @@ import {
   IconZap,
 } from "@/components/common/icons";
 import { hasActiveExecutionMessages } from "@/utils/taskFilters";
-import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
+import { isCodeOrTextFile, resolveTaskFileChanges } from "@/lib/taskFileChanges";
 import TerminalTabsBar from "./TerminalTabsBar";
 
 interface Props {
@@ -63,6 +63,16 @@ export default function ExtensionTopBar({
   const allArtifacts = useActiveTaskArtifacts();
   const workspaceFilesCount = useAppStore((s) => s.workspaceFilesCount);
   const gadgetsCount = useAppStore((s) => s.gadgetsCount);
+  const ensureArtifactRenderPayload = useAppStore((s) => s.ensureArtifactRenderPayload);
+
+  // 预热未加载内容的代码/文本产物，使其行数在未被手动打开前就能自动展示真实修改量
+  useEffect(() => {
+    for (const a of allArtifacts) {
+      if (isCodeOrTextFile(a.name) && !a.content) {
+        void ensureArtifactRenderPayload(a.id);
+      }
+    }
+  }, [allArtifacts, ensureArtifactRenderPayload]);
 
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const fileChangesCount = useMemo(() => {

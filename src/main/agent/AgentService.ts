@@ -5982,11 +5982,13 @@ export class AgentService {
           }
         }
       } else {
+        const isCodeOrTextKind = ["code", "markdown", "html"].includes(preview.kind);
+        const lineCount = isCodeOrTextKind && preview.content ? preview.content.split("\n").length : undefined;
         const descriptor = await this.artifactService?.register({
           taskId,
           kind: toDomainArtifactKind(preview.kind),
           title: preview.name,
-          capabilities: { originalKind: preview.kind },
+          capabilities: { originalKind: preview.kind, ...(lineCount ? { lineCount } : {}) },
           workspaceFile: { entryFile: filePath, rootDir },
           producerMessageId: messageId || undefined,
           producerToolCallId: toolCallId,

@@ -145,6 +145,16 @@ export function extractChangeFromToolCall(
     if (typeof args.content === "string") {
       additions = args.content.split("\n").length;
       deletions = 0;
+    } else if (Array.isArray(args.edits)) {
+      // 支持 edits 数组格式: [{ oldText, newText }]
+      let totalAdd = 0;
+      let totalDel = 0;
+      for (const edit of args.edits as Array<{ oldText?: string; newText?: string }>) {
+        if (typeof edit.newText === "string") totalAdd += edit.newText.split("\n").length;
+        if (typeof edit.oldText === "string") totalDel += edit.oldText.split("\n").length;
+      }
+      additions = totalAdd || 1;
+      deletions = totalDel;
     } else if (typeof args.replacement === "string" || typeof args.target === "string") {
       additions = typeof args.replacement === "string" ? args.replacement.split("\n").length : 0;
       deletions = typeof args.target === "string" ? args.target.split("\n").length : 0;
@@ -194,7 +204,13 @@ export function resolveTaskFileChanges(
 ): FileChange[] {
   const result: Map<string, FileChange> = new Map();
 
-  const addChange = (c: { id: string; name: string; path?: string; additions: number; deletions: number }): void => {
+  const addChange = (c: {
+    id: string;
+    name: string;
+    path?: string;
+    additions: number;
+    deletions: number;
+  }): void => {
     if (!isCodeOrTextFile(c.name)) return;
     const key = (c.path || c.name).toLowerCase();
     const existing = result.get(key);
@@ -215,45 +231,8 @@ export function resolveTaskFileChanges(
     }
   };
 
-  // 1. 已记录的 rawChanges（必须是代码/文本文件）
-  for (const c of rawChanges ?? []) {
-    if (isCodeOrTextFile(c.name)) {
-      addChange({
-        id: c.id,
-        name: c.name,
-        path: c.path,
-        additions: c.additions,
-        deletions: c.deletions,
-      });
-    }
-  }
-
-  // 2. 将当前任务的代码/文本类产物作为可靠补齐
-  for (const a of artifacts) {
-    if (
-      a.kind === "image" ||
-      a.kind === "audio" ||
-      a.kind === "video" ||
-      a.kind === "pdf"
-    ) {
-      continue;
-    }
-    if (!isCodeOrTextFile(a.name)) continue;
-
-    const key = (a.path || a.name).toLowerCase();
-    if (!result.has(key)) {
-      const lines = (a.content ?? "").split("\n").length;
-      result.set(key, {
-        id: `fc-art-${a.id}`,
-        name: a.name,
-        path: a.path,
-        additions: lines > 0 ? lines : 1,
-        deletions: 0,
-      });
-    }
-  }
-
-  // 3. 从 messages 的工具调用中回溯补充修改过的代码文件
+  // 1. 优先从 messages 的工具调用中收集真实的写/改操作（write, edit, patch 等）
+  // 工具调用记录了 Agent 本次实际执行的代码修改差异（权威、细粒度统计）
   for (const msg of messages ?? []) {
     for (const block of msg.blocks ?? []) {
       if (block.type === "tool") {
@@ -270,6 +249,65 @@ export function resolveTaskFileChanges(
         }
       }
     }
+  }
+
+  // 2. 将主进程实时记录的 rawChanges 补充进去（如果尚未由工具调用记录）
+  for (const c of rawChanges ?? []) {
+    if (isCodeOrTextFile(c.name)) {
+      const key = (c.path || c.name).toLowerCase();
+      const nameKey = c.name.toLowerCase();
+      if (!result.has(key) && !result.has(nameKey)) {
+        result.set(key, {
+          id: c.id,
+          name: c.name,
+          path: c.path,
+          additions: c.additions,
+          deletions: c.deletions,
+        });
+      }
+    }
+  }
+
+  // 3. 将当前任务的代码/文本类产物作为可靠兜底补齐（例如由 bash / python 脚本生成、未走 write 工具的文件）
+  // 注意：如果文件已经在步骤 1（工具调用）或步骤 2 中记录，绝不能把产物全文行数重复累加！
+  for (const a of artifacts) {
+    if (
+      a.kind === "image" ||
+      a.kind === "audio" ||
+      a.kind === "video" ||
+      a.kind === "pdf"
+    ) {
+      continue;
+    }
+    if (!isCodeOrTextFile(a.name)) continue;
+
+    const key = (a.path || a.name).toLowerCase();
+    const nameKey = a.name.toLowerCase();
+
+    // 检查是否已被真实工具调用或变更记录覆盖
+    if (result.has(key) || result.has(nameKey)) {
+      const existing = result.get(key) || result.get(nameKey);
+      if (existing && !existing.path && a.path) {
+        existing.path = a.path;
+      }
+      continue;
+    }
+
+    // 仅在无工具调用的情况下兜底：优先使用实际内容行数，其次使用 capabilities.lineCount，兜底 1
+    let lines = 0;
+    if (a.content) {
+      lines = a.content.split("\n").length;
+    } else if (typeof a.capabilities?.lineCount === "number") {
+      lines = a.capabilities.lineCount;
+    }
+
+    result.set(key, {
+      id: `fc-art-${a.id}`,
+      name: a.name,
+      path: a.path,
+      additions: lines > 0 ? lines : 1,
+      deletions: 0,
+    });
   }
 
   return Array.from(result.values());

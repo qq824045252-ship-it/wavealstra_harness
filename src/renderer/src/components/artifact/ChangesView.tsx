@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { FileChange } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
 import { IconSearch } from "@/components/common/icons";
-import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
+import { isCodeOrTextFile, resolveTaskFileChanges } from "@/lib/taskFileChanges";
 
 export default function ChangesView({ floating = false }: { floating?: boolean }): React.JSX.Element {
   const artifacts = useActiveTaskArtifacts();
@@ -15,7 +15,17 @@ export default function ChangesView({ floating = false }: { floating?: boolean }
   );
   const openArtifact = useAppStore((s) => s.openArtifact);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
+  const ensureArtifactRenderPayload = useAppStore((s) => s.ensureArtifactRenderPayload);
   const [filter, setFilter] = useState("");
+
+  // 预热未加载内容的代码/文本产物，使其行数在未被手动打开前就能自动展示真实修改量
+  useEffect(() => {
+    for (const a of artifacts) {
+      if (isCodeOrTextFile(a.name) && !a.content) {
+        void ensureArtifactRenderPayload(a.id);
+      }
+    }
+  }, [artifacts, ensureArtifactRenderPayload]);
 
   const totals = useMemo(() => {
     let additions = 0;
