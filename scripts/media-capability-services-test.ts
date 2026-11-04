@@ -7,7 +7,7 @@ import {
   type BuiltinCapabilitiesConfigDto, type RecognitionServiceConfig,
 } from "../src/shared/builtin-capabilities";
 import {
-  CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS,
+  CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, OPENROUTER_API_ROOT,
   type ApiCapabilityConnection, type MediaCapabilityId,
 } from "../src/shared/media-capabilities";
 import { BuiltinCapabilityRuntime, type ToolExecutionContext } from "../src/main/capabilities/BuiltinCapabilityRuntime";
@@ -123,6 +123,15 @@ class Fixture {
       getMagpieConfig: () => this.magpie,
       getDefaultProvider: () => this.defaultProvider,
       discover: async config => { this.discoveryCalls.push(clone(config)); return this.discoverImpl(config); },
+      discoverOpenRouter: async () => ({
+        models: {
+          "speech-to-text": [{ id: "router/transcription", label: "Transcribe" }],
+          ocr: [{ id: "router/vision", label: "Vision" }],
+          "text-to-speech": [{ id: "router/speech", label: "Speech", voices: ["alloy", "nova"] }],
+          "image-generation": [{ id: "router/image", label: "Image" }],
+          "video-generation": [{ id: "router/video", label: "Video" }],
+        }, partial: false,
+      }),
       fetch: (async (input: string | URL | Request, init?: RequestInit) => {
         const request: CapturedRequest = { url: String(input), method: init?.method ?? "GET", headers: new Headers(init?.headers), body: init?.body };
         this.requests.push(request);
@@ -670,6 +679,43 @@ async function main(): Promise<void> {
       assert.deepEqual(f.configValue.mediaBindings!["video-generation"], binding);
       assert.equal(f.manager.status("video-generation").state, "unchecked", "success on the original service cannot certify the replacement service/model");
       assertNoSecrets(f.runtime.snapshot()); assertNoSecrets(f.jobs.list());
+    });
+
+
+    await test("OpenRouter provides five independently bound capabilities using one stored API key", async () => {
+      const config = clone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);
+      config.connections = { "api-router": {
+        name: "OpenRouter", presetId: "openrouter", protocol: "openrouter",
+        baseUrl: OPENROUTER_API_ROOT, auth: "api-key", credentialRef: "fixture-router-key", timeoutMs: 60_000,
+      } };
+      config.mediaBindings = { "image-generation": { connectionId: "", selection: "auto" } };
+      const f = new Fixture(config);
+      f.keys.set("fixture-router-key", SECRET_A);
+      const before = f.manager.services().find(item => item.id === "api-router")!;
+      assert(before.configured);
+      assert.deepEqual(before.capabilities, MEDIA_CAPABILITY_IDS);
+      assert.deepEqual(before.models, {}, "catalogue must not pretend to have been fetched");
+      await f.manager.refresh();
+      const after = f.manager.services().find(item => item.id === "api-router")!;
+      assert(after.models["image-generation"]?.some(item => item.id === "router/image"));
+      assert.deepEqual(after.models["text-to-speech"]?.[0].voices, ["alloy", "nova"]);
+      assert.equal(f.manager.binding("image-generation")?.connectionId, "api-router");
+      assert.equal(f.manager.binding("image-generation")?.model, "router/image");
+      const pinned = clone(f.manager.binding("image-generation"));
+      const imagesBefore = f.requests.length;
+      f.keys.set("fixture-router-key", SECRET_B);
+      assert.deepEqual(f.manager.services().find(item => item.id === "api-router")?.models, {},
+        "old identity's catalogue must not appear under a rotated API key");
+      await f.manager.refresh();
+      assert.deepEqual(f.manager.binding("image-generation"), pinned, "a credential change must not retarget a user's chosen model");
+      assert.equal(f.requests.length, imagesBefore, "service refresh never generates paid media");
+      assertNoSecrets(f.manager.services());
+      assertNoSecrets(f.runtime.snapshot());
+
+      const changed = clone(f.configValue);
+      changed.connections!["api-router"].baseUrl = "https://example.com/v1";
+      assert.throws(() => f.manager.save({ config: changed }), /地址|协议/);
+      assert.equal(f.configValue.connections!["api-router"].baseUrl, OPENROUTER_API_ROOT);
     });
 
     assert.equal(unexpectedNetwork, 0, "every network path must use the injected fixture transport");
