@@ -24,7 +24,6 @@ import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
-import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 
 let passed = 0;
 function ok(cond: unknown, label: string): void {
@@ -254,7 +253,7 @@ async function main(): Promise<void> {
   ok(!rebindSearch.content[0].text.includes("产物.docx"), "7. 改绑到 B 后 A 的产物不再可见");
   db.upsertTask({ id: "task-a", title: "A任务", updatedAt: 3, projectId: null, welcomeMode: "coding" });
   const unboundSearch = await call(knowA, "project_knowledge_search", { query: "生命周期产物文档乙腈" });
-  ok(unboundSearch.content[0].text.includes("范围：个人资料，独立任务"), "7b. 解绑项目且无工作空间后使用个人资料");
+  ok(unboundSearch.content[0].text.includes("无默认长期资料"), "7b. 解绑项目后独立任务没有默认资料库");
   db.upsertTask({ id: "task-a", title: "A任务", updatedAt: 4, projectId: "proj-a", welcomeMode: "coding" });
 
   /* 8. readonly/归档门禁：library/context/memory/pin/attach 一致 */
@@ -280,12 +279,12 @@ async function main(): Promise<void> {
   ok((await call(memRo, "project_memory_create", { kind: "fact", title: "x" })).isError === true, "8e. readonly: memory create 拒");
   projects.archive("proj-a", true);
   const archWrite = await call(libA, "library_create_text", { kind: "markdown", title: "x", spaceId: aSpace });
-  ok(archWrite.isError === true && archWrite.content[0].text.includes("归档") && archWrite.content[0].text.includes("个人资料不受影响"), "8f. 归档统一文案（明确 personal 不受影响）");
+  ok(archWrite.isError === true && archWrite.content[0].text.includes("归档") && archWrite.content[0].text.includes("独立任务也不提供个人资料库"), "8f. 归档统一文案（无个人资料写入退路）");
   const archPersonal = await call(libA, "library_create_text", { kind: "markdown", title: "归档期笔记" });
   ok(archPersonal.isError === true, "8g. 归档项目任务的默认写入被拒，不偷偷改存个人库");
   const personalTools = new Map<string, Tool>();
   registerExtension(createLibraryExtension({ service: library, taskId: "task-none" }), personalTools);
-  ok((await call(personalTools, "library_create_text", { kind: "markdown", title: "独立个人笔记" })).isError === undefined, "8g2. 其他独立个人任务仍可正常写入个人资料");
+  ok((await call(personalTools, "library_create_text", { kind: "markdown", title: "独立个人笔记" })).isError === true, "8g2. 独立任务不建立长期个人资料库");
   projects.archive("proj-a", false);
 
   /* 8h. 服务层长度上限（渲染器/工具/IPC 任何入口不可绕过） */
