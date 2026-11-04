@@ -21,7 +21,6 @@ export function workspaceLibraryBindingView(
   const current = ws ? workspaceById.get(ws) : undefined;
   if (!current) throw new Error("工作空间不存在");
 
-  library.ensureReady();
   const spaces = library.listSpaces();
   const byId = new Map(spaces.map((space) => [space.id, space]));
   const collections = library.listCollections();
@@ -29,7 +28,7 @@ export function workspaceLibraryBindingView(
   const spacePath = (space: LibrarySpaceDto): string => {
     if (space.projectId) return `项目资料 / ${space.projectName ?? space.name}`;
     if (space.workspaceId) return `工作空间 / ${workspaceById.get(space.workspaceId)?.name ?? space.name} / 资料`;
-    return space.kind === "personal" ? "个人资料" : `个人资料 / 历史资料 / ${space.name}`;
+    return space.kind === "personal" ? "历史资料（兼容旧版本）" : `历史资料 / ${space.name}`;
   };
   const spaceItem = (id: string): WorkspaceLibraryBindingItem | null => {
     const space = byId.get(id);
