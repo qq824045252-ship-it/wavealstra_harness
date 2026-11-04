@@ -16,6 +16,7 @@ const ROUTES = [
   ["image-generation", "/images/models"],
   ["video-generation", "/videos/models"],
   ["text-to-speech", "/models?output_modalities=speech"],
+  ["speech-to-text", "/models?output_modalities=transcription"],
   ["ocr", "/models?input_modalities=image&output_modalities=text"],
 ] as const;
 
@@ -73,8 +74,8 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 /**
  * The official OpenRouter API uses separate media catalogues. Audio
- * transcription has no equally typed dedicated catalogue; its model ID
- * remains user-selectable instead of misclassifying chat/audio-input models.
+ * transcription has its own output modality: transcription, distinct
+ * from generic audio-input chat models. Never guess capability from names.
  */
 export async function discoverOpenRouterCapabilities(
   key: string,

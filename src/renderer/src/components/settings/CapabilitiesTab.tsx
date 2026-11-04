@@ -499,7 +499,12 @@ export default function CapabilitiesTab(): React.JSX.Element {
               </optgroup>
               <option value={ADD_SERVICE}>＋ 自定义兼容 API…</option>
             </SettingsSelect>
-            {!legacy && <MediaModelField id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } } }))} />}
+            {!legacy && <MediaModelField id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({
+              ...current,
+              mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } },
+              ...(id === "text-to-speech" && mediaBinding(current, id).model !== model
+                ? { textToSpeech: { ...current.textToSpeech, voice: undefined } } : {}),
+            }))} />}
           </div>
           {id === "image-generation" && binding.selection === "auto" && <p className="settings-row-desc">{service ? `当前使用 ${service.label}；登录变化或调用失败不会自动切换服务。` : "首次发现可用的已登录图片服务后确定选择。不会重新开启已关闭的能力。"}</p>}
           {service?.authState === "needs-login" && <p className="settings-row-desc">请在模型设置中登录此服务；原有选择会保留。</p>}
@@ -507,7 +512,15 @@ export default function CapabilitiesTab(): React.JSX.Element {
           {id === "ocr" && connection?.protocol === "openai-compatible" && <p className="settings-row-desc">视觉模型提取文字，不提供位置框。</p>}
           {legacy && legacyId && <RecognitionServiceEditor value={legacy} adapter={legacy.adapter} effectiveDataPolicy={restrictive ? "local-only" : "allow-cloud"} onAllowConversation={legacy.dataPolicy !== "local-only" && binding.dataPolicy === "local-only" ? () => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: "allow-cloud" } } })) : undefined} disabled={busy} secret={credentials?.secret} clearCredential={credentials?.clear} credentialConfigured={service?.authState === "configured"} sharedCredentialNote={sharedLegacyCredentials > 1 ? "此密钥由多个识别服务共用；更新或移除会同时影响这些服务。" : undefined} onCredentialChange={change => changeCredential(binding.connectionId, change)} onChange={value => changeConfig(current => ({ ...current, services: { ...current.services, [legacyId]: value }, ...(current.mediaBindings?.[id] ? { mediaBindings: { ...current.mediaBindings, [id]: { ...current.mediaBindings[id]!, model: value.model, dataPolicy: mediaBinding(current, id).dataPolicy === "local-only" ? "local-only" : value.dataPolicy } } } : {}) }))} />}
           {privacy && !legacy && (restrictive ? <div className="capability-policy-note" role="note"><p>已保留“仅限本机”的限制。当前对话无法保证识别正文只在本机处理，因此暂不能使用此能力。</p><SettingsSelect label="识别结果用于" value={binding.dataPolicy} onChange={event => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: event.target.value as MediaCapabilityBinding["dataPolicy"] } } }))}><option value="local-only">仅限本机（对话中不可用）</option><option value="allow-cloud">当前对话（可能使用云端模型）</option></SettingsSelect></div> : <p className="settings-row-desc">识别正文会进入当前对话，并按当前模型设置处理。</p>)}
-          {id === "text-to-speech" && <div className="capability-form-grid"><SettingsInput label="声音" aria-label="文字转语音声音" value={draft.textToSpeech.voice ?? ""} placeholder="输入服务支持的声音名称" onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, voice: event.target.value || undefined } }))} /><SettingsInput label="语速" aria-label="文字转语音语速" type="number" min={0.25} max={4} step={0.05} value={draft.textToSpeech.rate ?? ""} placeholder="1（正常）" onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, rate: event.target.value || undefined } }))} /></div>}
+          {id === "text-to-speech" && <div className="capability-form-grid">
+            <div><SettingsInput label="声音" aria-label="文字转语音声音"
+              list="capability-tts-voice-options" value={draft.textToSpeech.voice ?? ""}
+              placeholder="输入或选择模型支持的音色"
+              onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, voice: event.target.value || undefined } }))} />
+              <datalist id="capability-tts-voice-options">{(service?.models["text-to-speech"]?.find(option => option.id === binding.model)?.voices ?? []).map(voice => <option value={voice} key={voice} />)}</datalist>
+            </div>
+            <SettingsInput label="语速" aria-label="文字转语音语速" type="number" min={0.25} max={4} step={0.05} value={draft.textToSpeech.rate ?? ""} placeholder="1（正常）" onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, rate: event.target.value || undefined } }))} />
+          </div>}
         </CapabilityRow>;
       })}
     </SettingsSection>

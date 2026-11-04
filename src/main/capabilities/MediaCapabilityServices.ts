@@ -136,8 +136,8 @@ export class MediaCapabilityServices {
         ...(baseUrl ? { location: location(baseUrl) } : {}),
         detail: connection.protocol === "openrouter"
           ? this.openRouterErrors.get(id) ?? (catalog ? catalog.partial
-              ? "部分模型目录已更新。转写模型需手动指定，实际权限在调用时验证。"
-              : "图片、视频、语音合成和视觉模型目录已更新；转写模型请填写准确 ID。"
+              ? "部分模型目录已更新；没有列出的能力仍可手动填写有效模型 ID。"
+              : "五项能力的模型目录已更新；以所选模型的实际权限和接口为准。"
             : "复用这一把 OpenRouter API Key。刷新目录会获取最新模型，不会执行付费生成。")
           : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
       });
