@@ -36,6 +36,8 @@ export function capabilityApiRoot(value: string): string {
   if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("API 地址须为 HTTP(S) 地址；密钥请填写在 API Key 中，不要放在地址里。");
   }
+  // Baidu's native OCR host is a root API origin, not an OpenAI /v1 endpoint.
+  if (url.origin === BAIDU_OCR_API_ROOT && url.pathname === "/") return BAIDU_OCR_API_ROOT;
   if (url.pathname === "/") url.pathname = "/v1";
   return url.toString().replace(/\/+$/, "");
 }

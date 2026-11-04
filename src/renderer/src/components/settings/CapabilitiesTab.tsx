@@ -7,7 +7,7 @@ import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
 import type { ApiCapabilityConnection, ApiCapabilityProtocol, CapabilityConnectionOption, CapabilityCredentialChange, CapabilityVideoJobDto, MediaCapabilityBinding, MediaCapabilityId } from "@shared/media-capabilities";
 import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-platform";
 import { useAppStore } from "@/store/appStore";
@@ -28,7 +28,7 @@ const MEDIA_ROWS: Record<MediaCapabilityId, { title: string; description: string
   "image-generation": { title: "图片生成", description: "根据描述生成图片；服务支持时可使用参考图。", tool: "image_generate" },
   "video-generation": { title: "视频生成", description: "根据描述生成视频，并保存到当前任务。", tool: "video_generate" },
 };
-const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API" };
+const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API", "baidu-ocr": "百度智能云 OCR API" };
 type CredentialDraft = Pick<CapabilityCredentialChange, "secret" | "clear">;
 const differs = (left: unknown, right: unknown): boolean => JSON.stringify(left) !== JSON.stringify(right);
 const errorText = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
@@ -202,27 +202,30 @@ function MediaModelField({ id, binding, service, disabled, onChange }: {
 }): React.JSX.Element {
   const listId = useId();
   const choices = service?.models[id] ?? [];
-  const label = `${MEDIA_ROWS[id].title}模型`;
+  const label = service?.id && id === "ocr" && service.models.ocr?.some(row => row.id === BAIDU_OCR_DEFAULT_MODE)
+    ? "OCR 识别模式" : `${MEDIA_ROWS[id].title}模型`;
   if (service?.allowCustomModel) return <div>
     <SettingsInput label="模型" aria-label={label} value={binding.model ?? ""} list={listId} spellCheck={false} disabled={disabled} placeholder={id === "ocr" ? "输入支持图片的模型名称" : "输入服务支持的模型名称"} onChange={event => onChange(event.target.value)} />
     {choices.length > 0 && <datalist id={listId}>{choices.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</datalist>}
   </div>;
-  return <SettingsSelect label="模型" aria-label={label} value={binding.model ?? ""} disabled={disabled || !choices.length} onChange={event => onChange(event.target.value)}>
+  return <SettingsSelect label={label === "OCR 识别模式" ? "识别模式" : "模型"} aria-label={label} value={binding.model ?? ""} disabled={disabled || !choices.length} onChange={event => onChange(event.target.value)}>
     <option value="">{service?.source === "local" ? "使用本机已安装模型" : choices.length ? "选择模型" : "服务可用后显示模型"}</option>
     {binding.model && !choices.some(choice => choice.id === binding.model) && <option value={binding.model}>{binding.model}（暂不可用）</option>}
     {choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
   </SettingsSelect>;
 }
 
-function ApiConnectionEditor({ id, value, option, credentials, usedBy, disabled, onChange, onCredentialChange, onRemove }: {
+function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredentials, usedBy, disabled, onChange, onCredentialChange, onSecretKeyCredentialChange, onRemove }: {
   id: string;
   value: ApiCapabilityConnection;
   option?: CapabilityConnectionOption;
   credentials?: CredentialDraft;
+  secretKeyCredentials?: CredentialDraft;
   usedBy: MediaCapabilityId[];
   disabled: boolean;
   onChange: (value: ApiCapabilityConnection) => void;
   onCredentialChange: (value: CredentialDraft) => void;
+  onSecretKeyCredentialChange: (value: CredentialDraft) => void;
   onRemove: () => void;
 }): React.JSX.Element {
   return <fieldset className="capability-connection-fields" disabled={disabled} data-connection-id={id}>
@@ -238,8 +241,19 @@ function ApiConnectionEditor({ id, value, option, credentials, usedBy, disabled,
     <SettingsInput label="API 地址" type="url" disabled={Boolean(value.presetId)} value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
     <SettingsSelect label="认证方式" disabled={Boolean(value.presetId)} value={value.auth} onChange={event => onChange({ ...value, auth: event.target.value as ApiCapabilityConnection["auth"] })}>
       <option value="api-key">API Key</option><option value="none">无需认证</option>
+      {value.protocol === "baidu-ocr" && <option value="baidu-ak-sk">API Key + Secret Key</option>}
     </SettingsSelect>
     {value.auth === "api-key" && <SettingsSecretField value={credentials?.secret ?? ""} clear={credentials?.clear} configured={option?.authState === "configured"} disabled={disabled} onChange={secret => onCredentialChange({ secret, clear: false })} onClearChange={clear => onCredentialChange({ secret: "", clear })} />}
+    {value.auth === "baidu-ak-sk" && <div className="capability-form-grid">
+      <SettingsSecretField label="API Key" value={credentials?.secret ?? ""} clear={credentials?.clear}
+        configured={option?.credentialSlotsConfigured?.apiKey === true} disabled={disabled}
+        onChange={secret => onCredentialChange({ secret, clear: false })}
+        onClearChange={clear => onCredentialChange({ secret: "", clear })} />
+      <SettingsSecretField label="Secret Key" value={secretKeyCredentials?.secret ?? ""} clear={secretKeyCredentials?.clear}
+        configured={option?.credentialSlotsConfigured?.secretKey === true} disabled={disabled}
+        onChange={secret => onSecretKeyCredentialChange({ secret, clear: false })}
+        onClearChange={clear => onSecretKeyCredentialChange({ secret: "", clear })} />
+    </div>}
     <p className="settings-row-desc">{MEDIA_PROVIDER_PRESETS.find(preset => preset.id === value.presetId)?.hint ?? (value.protocol === "mistral-ocr" ? "用于 Mistral OCR 接口。" : value.protocol === "openrouter" ? "使用 OpenRouter 专用多模态接口及实时目录。" : "使用对应的 OpenAI 兼容接口；服务端需实际支持所选能力。")}{usedBy.length > 0 ? ` 当前用于：${usedBy.map(capability => MEDIA_ROWS[capability].title).join("、")}。修改此服务会应用到这些能力。` : "保存后可供上方的能力选择。"}</p>
     <details className="capability-options"><summary>连接选项</summary><SettingsInput label="等待上限（秒）" type="number" min={1} value={value.timeoutMs / 1000 || ""} onChange={event => onChange({ ...value, timeoutMs: Number(event.target.value) * 1000 })} /></details>
     <div className="capability-connection-actions"><button type="button" className="btn" disabled={disabled || usedBy.length > 0} title={usedBy.length ? "先为使用此服务的能力选择其他服务" : undefined} onClick={onRemove}>移除此服务</button></div>
@@ -321,7 +335,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
     for (const provider of savedWebSearch?.searchRouting?.providers ?? []) ready.add(provider);
     return WEB_SEARCH_PROVIDER_OPTIONS.filter(provider => ready.has(provider.id)).map(provider => provider.id);
   }, [models, savedWebSearch, webSearchDraft]);
-  const credentialChanges = Object.entries(credentialDrafts).filter(([, change]) => hasCredentialChange(change)).map(([connectionId, change]) => ({ connectionId, ...change }));
+  const credentialChanges = Object.entries(credentialDrafts).filter(([, change]) => hasCredentialChange(change)).map(([key, change]) =>
+    key.endsWith("::secretKey")
+      ? { connectionId: key.slice(0, -"::secretKey".length), slot: "secretKey" as const, ...change }
+      : { connectionId: key, ...change });
   const mainPending = Boolean(draft && savedConfig && differs(draft, savedConfig)) || credentialChanges.length > 0;
   const searchPending = webSearchDraft !== null && (differs(webSearchDraft, savedWebSearch) || differs(searchPolicy, searchPolicyFromConfig(savedWebSearch ?? {})));
   const busy = saving || testing !== null || refreshing;
@@ -360,9 +377,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
         connections: { ...current.connections, [id]: {
           name: preset?.label ?? `API 服务 ${Object.keys(current.connections ?? {}).length + 1}`,
           protocol, ...(preset ? { presetId: preset.id } : {}),
-          baseUrl: preset?.baseUrl ?? "", auth: "api-key" as const, timeoutMs: 60000,
+          baseUrl: preset?.baseUrl ?? "", auth: preset?.protocol === "baidu-ocr" ? "baidu-ak-sk" as const : "api-key" as const, timeoutMs: 60000,
         } },
-        ...(capability ? { mediaBindings: { ...current.mediaBindings, [capability]: { connectionId: id, selection: "manual" as const, ...(capability === "ocr" || capability === "speech-to-text" ? { dataPolicy: previous?.dataPolicy ?? "allow-cloud" } : {}) } } } : {}),
+        ...(capability ? { mediaBindings: { ...current.mediaBindings, [capability]: { connectionId: id, selection: "manual" as const, ...(capability === "ocr" || capability === "speech-to-text" ? { dataPolicy: previous?.dataPolicy ?? "allow-cloud" } : {}),
+          ...(capability === "ocr" && preset?.protocol === "baidu-ocr" ? { model: BAIDU_OCR_DEFAULT_MODE } : {}) } } } : {}),
         ...(capability === "text-to-speech" ? { textToSpeech: { ...current.textToSpeech, voice: undefined, rate: undefined } } : {}),
       };
     });
@@ -384,7 +402,8 @@ export default function CapabilitiesTab(): React.JSX.Element {
       const modelsForCapability = service?.models[id] ?? [];
       const binding: MediaCapabilityBinding = selected === AUTO_SERVICE
         ? { connectionId: "", selection: "auto" }
-        : { connectionId: selected, selection: "manual", model: modelsForCapability.length === 1 ? modelsForCapability[0].id : undefined };
+        : { connectionId: selected, selection: "manual", model: service?.models.ocr?.some(item => item.id === BAIDU_OCR_DEFAULT_MODE) && id === "ocr"
+          ? BAIDU_OCR_DEFAULT_MODE : modelsForCapability.length === 1 ? modelsForCapability[0].id : undefined };
       if (id === "ocr" || id === "speech-to-text") {
         const targetPolicy = selected.startsWith("legacy:") ? current.services?.[selected.slice(7)]?.dataPolicy : undefined;
         binding.dataPolicy = previous.dataPolicy === "local-only" || targetPolicy === "local-only" ? "local-only" : previous.dataPolicy ?? targetPolicy ?? "allow-cloud";
@@ -477,10 +496,17 @@ export default function CapabilitiesTab(): React.JSX.Element {
         const legacy = legacyId ? draft.services?.[legacyId] : undefined;
         const connection = draft.connections?.[binding.connectionId];
         const credentials = credentialDrafts[binding.connectionId];
+        const secretKeyCredentials = credentialDrafts[`${binding.connectionId}::secretKey`];
         const ref = credentialReference(draft, binding.connectionId);
-        const pending = Boolean(savedConfig && differs(mediaConfiguration(draft, id), mediaConfiguration(savedConfig, id))) || hasCredentialChange(credentials)
+        const pending = Boolean(savedConfig && differs(mediaConfiguration(draft, id), mediaConfiguration(savedConfig, id))) || hasCredentialChange(credentials) || hasCredentialChange(secretKeyCredentials)
           || Boolean(ref && Object.entries(credentialDrafts).some(([connectionId, change]) => hasCredentialChange(change) && credentialReference(draft, connectionId) === ref));
-        const configured = connection ? Boolean(connection.baseUrl.trim() && binding.model?.trim() && (connection.auth === "none" || (!credentials?.clear && (credentials?.secret?.trim() || service?.authState === "configured")))) : service?.configured;
+        const configured = connection ? Boolean(connection.baseUrl.trim() && binding.model?.trim() && (
+          connection.auth === "none" ||
+          (connection.auth === "baidu-ak-sk"
+            ? (!credentials?.clear && (Boolean(credentials?.secret?.trim()) || service?.credentialSlotsConfigured?.apiKey === true)
+              && !secretKeyCredentials?.clear && (Boolean(secretKeyCredentials?.secret?.trim()) || service?.credentialSlotsConfigured?.secretKey === true))
+            : (!credentials?.clear && (credentials?.secret?.trim() || service?.authState === "configured")))
+        )) : service?.configured;
         const restrictive = legacy?.dataPolicy === "local-only" || binding.dataPolicy === "local-only";
         const privacy = id === "speech-to-text" || id === "ocr";
         const hasUnknownSelection = selectedValue && selectedValue !== AUTO_SERVICE && !choices.some(option => option.id === selectedValue);
@@ -508,7 +534,11 @@ export default function CapabilitiesTab(): React.JSX.Element {
           </div>
           {id === "image-generation" && binding.selection === "auto" && <p className="settings-row-desc">{service ? `当前使用 ${service.label}；登录变化或调用失败不会自动切换服务。` : "首次发现可用的已登录图片服务后确定选择。不会重新开启已关闭的能力。"}</p>}
           {service?.authState === "needs-login" && <p className="settings-row-desc">请在模型设置中登录此服务；原有选择会保留。</p>}
-          {connection && <div className="capability-service-meta"><span className="settings-row-desc">{service?.location === "loopback" ? "本机地址" : "远程服务"} · {connection.auth === "none" ? "无需认证" : credentials?.clear ? "密钥待移除" : credentials?.secret?.trim() ? "密钥待保存" : service?.authState === "configured" ? "已保存 API Key" : "需要 API Key"}</span><button type="button" className="btn" onClick={() => editConnection(binding.connectionId)}>编辑服务</button></div>}
+          {connection && <div className="capability-service-meta"><span className="settings-row-desc">{service?.location === "loopback" ? "本机地址" : "远程服务"} · {connection.auth === "none" ? "无需认证" : connection.auth === "baidu-ak-sk"
+            ? (credentials?.clear || secretKeyCredentials?.clear ? "密钥待移除"
+              : credentials?.secret?.trim() || secretKeyCredentials?.secret?.trim() ? "密钥待保存"
+              : service?.authState === "configured" ? "双密钥已保存" : "需要 API Key 和 Secret Key")
+            : credentials?.clear ? "密钥待移除" : credentials?.secret?.trim() ? "密钥待保存" : service?.authState === "configured" ? "已保存 API Key" : "需要 API Key"}</span><button type="button" className="btn" onClick={() => editConnection(binding.connectionId)}>编辑服务</button></div>}
           {id === "ocr" && connection?.protocol === "openai-compatible" && <p className="settings-row-desc">视觉模型提取文字，不提供位置框。</p>}
           {legacy && legacyId && <RecognitionServiceEditor value={legacy} adapter={legacy.adapter} effectiveDataPolicy={restrictive ? "local-only" : "allow-cloud"} onAllowConversation={legacy.dataPolicy !== "local-only" && binding.dataPolicy === "local-only" ? () => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: "allow-cloud" } } })) : undefined} disabled={busy} secret={credentials?.secret} clearCredential={credentials?.clear} credentialConfigured={service?.authState === "configured"} sharedCredentialNote={sharedLegacyCredentials > 1 ? "此密钥由多个识别服务共用；更新或移除会同时影响这些服务。" : undefined} onCredentialChange={change => changeCredential(binding.connectionId, change)} onChange={value => changeConfig(current => ({ ...current, services: { ...current.services, [legacyId]: value }, ...(current.mediaBindings?.[id] ? { mediaBindings: { ...current.mediaBindings, [id]: { ...current.mediaBindings[id]!, model: value.model, dataPolicy: mediaBinding(current, id).dataPolicy === "local-only" ? "local-only" : value.dataPolicy } } } : {}) }))} />}
           {privacy && !legacy && (restrictive ? <div className="capability-policy-note" role="note"><p>已保留“仅限本机”的限制。当前对话无法保证识别正文只在本机处理，因此暂不能使用此能力。</p><SettingsSelect label="识别结果用于" value={binding.dataPolicy} onChange={event => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: event.target.value as MediaCapabilityBinding["dataPolicy"] } } }))}><option value="local-only">仅限本机（对话中不可用）</option><option value="allow-cloud">当前对话（可能使用云端模型）</option></SettingsSelect></div> : <p className="settings-row-desc">识别正文会进入当前对话，并按当前模型设置处理。</p>)}
@@ -528,7 +558,19 @@ export default function CapabilitiesTab(): React.JSX.Element {
     <SettingsSection title="API 服务" description="连接和密钥只需设置一次。已有登录服务在模型设置中管理。">
       {Object.entries(draft.connections ?? {}).map(([id, connection]) => <details id={`capability-connection-${id}`} key={id} className="capability-connection" open={openConnections.has(id)} onToggle={event => { const open = event.currentTarget.open; setOpenConnections(current => { if (current.has(id) === open) return current; const next = new Set(current); if (open) next.add(id); else next.delete(id); return next; }); }}>
         <summary><span><strong>{connection.name || "未命名 API 服务"}</strong><span className="settings-row-desc">{PROTOCOL_LABEL[connection.protocol]}</span></span><span className="settings-disclosure-chevron" aria-hidden="true">⌄</span></summary>
-        <ApiConnectionEditor id={id} value={connection} option={snapshot?.mediaServices?.find(option => option.id === id)} credentials={credentialDrafts[id]} usedBy={connectionUsers(id)} disabled={busy} onChange={value => { changeConfig(current => ({ ...current, connections: { ...current.connections, [id]: value } })); if (value.auth === "none") setCredentialDrafts(current => { const next = { ...current }; delete next[id]; return next; }); }} onCredentialChange={value => changeCredential(id, value)} onRemove={() => { changeConfig(current => { const connections = { ...current.connections }; delete connections[id]; return { ...current, connections }; }); setCredentialDrafts(current => { const next = { ...current }; delete next[id]; return next; }); }} />
+        <ApiConnectionEditor id={id} value={connection} option={snapshot?.mediaServices?.find(option => option.id === id)}
+          credentials={credentialDrafts[id]} secretKeyCredentials={credentialDrafts[`${id}::secretKey`]}
+          usedBy={connectionUsers(id)} disabled={busy}
+          onChange={value => {
+            changeConfig(current => ({ ...current, connections: { ...current.connections, [id]: value } }));
+            if (value.auth === "none") setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
+          }}
+          onCredentialChange={value => changeCredential(id, value)}
+          onSecretKeyCredentialChange={value => changeCredential(`${id}::secretKey`, value)}
+          onRemove={() => {
+            changeConfig(current => { const connections = { ...current.connections }; delete connections[id]; return { ...current, connections }; });
+            setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
+          }} />
       </details>)}
       <div className="settings-row capability-add-service"><div className="settings-row-desc">{Object.keys(draft.connections ?? {}).length ? "可添加另一家服务，再为需要的能力选择它。" : "有服务地址和 API Key 时，可以在这里添加连接。"}</div><button type="button" className="btn" disabled={busy} onClick={() => addConnection()}>添加 API 服务</button></div>
     </SettingsSection>

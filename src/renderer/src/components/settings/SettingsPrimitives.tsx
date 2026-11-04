@@ -54,7 +54,8 @@ export function SettingsSelect({ label, hint, className = "", children, ...props
   </label>;
 }
 
-export function SettingsSecretField({ value, clear, configured, disabled, onChange, onClearChange }: {
+export function SettingsSecretField({ label = "API Key", value, clear, configured, disabled, onChange, onClearChange }: {
+  label?: string;
   value: string;
   clear?: boolean;
   configured: boolean;
@@ -62,9 +63,9 @@ export function SettingsSecretField({ value, clear, configured, disabled, onChan
   onChange: (value: string) => void;
   onClearChange: (clear: boolean) => void;
 }): React.JSX.Element {
-  const hint = clear ? "保存时移除已保存的密钥。" : value ? "已填写，保存后生效。" : configured ? "已保存；留空保留原密钥。" : "粘贴服务提供的 API Key。";
+  const hint = clear ? "保存时移除已保存的密钥。" : value ? "已填写，保存后生效。" : configured ? "已保存；留空保留原密钥。" : "粘贴服务提供的 " + label + "。";
   return <div className="settings-secret-field">
-    <SettingsInput label="API Key" type="password" value={value} autoComplete="new-password" spellCheck={false} disabled={disabled || clear} placeholder={configured ? "已保存的密钥不会显示" : "粘贴 API Key"} hint={hint} onChange={event => onChange(event.target.value)} />
+    <SettingsInput label={label} type="password" value={value} autoComplete="new-password" spellCheck={false} disabled={disabled || clear} placeholder={configured ? "已保存的密钥不会显示" : "粘贴 " + label} hint={hint} onChange={event => onChange(event.target.value)} />
     {(configured || clear) && <button type="button" className="btn settings-secret-clear" disabled={disabled} onClick={() => onClearChange(!clear)}>{clear ? "撤销移除" : "移除已保存密钥"}</button>}
   </div>;
 }
