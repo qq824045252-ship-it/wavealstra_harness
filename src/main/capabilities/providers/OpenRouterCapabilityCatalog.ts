@@ -30,7 +30,8 @@ function listedModels(value: unknown, capability: MediaCapabilityId): Capability
   const result: CapabilityModelOption[] = [];
   for (const raw of data) {
     const row = object(raw);
-    const id = row && typeof row.id === "string" ? row.id.trim() : "";
+    if (!row) continue;
+    const id = typeof row.id === "string" ? row.id.trim() : "";
     if (!id || id.length > 300 || seen.has(id)) continue;
     const architecture = object(row?.architecture);
     const input = Array.isArray(architecture?.input_modalities) ? architecture.input_modalities : [];

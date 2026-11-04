@@ -533,8 +533,6 @@ export default function CapabilitiesTab(): React.JSX.Element {
             {!legacy && <MediaModelField id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({
               ...current,
               mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } },
-              ...(id === "text-to-speech" && mediaBinding(current, id).model !== model
-                ? { textToSpeech: { ...current.textToSpeech, voice: undefined } } : {}),
             }))} />}
           </div>
           {id === "image-generation" && binding.selection === "auto" && <p className="settings-row-desc">{service ? `当前使用 ${service.label}；登录变化或调用失败不会自动切换服务。` : "首次发现可用的已登录图片服务后确定选择。不会重新开启已关闭的能力。"}</p>}

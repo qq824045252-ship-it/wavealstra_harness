@@ -321,10 +321,16 @@ async function main(): Promise<void> {
     ok((again.details as { item: { id: string } }).item.id === savedId, "A: save_artifact 幂等（同条目）");
     const saveB = await call(toolsA, "library_save_artifact", { artifactId: "art-b" });
     ok(saveB.isError === true && saveB.content[0].text.includes("不属于当前任务"), "A: 其他项目任务产物拒绝");
-    // 未绑定任务：只能晋升自己的产物
+    // 临时任务没有长期资料归属；默认目标门禁先于产物归属检查。
     const toolsNone = makeExtension(null, "task-none");
+    const beforeDeniedSave = db.connection.prepare("SELECT * FROM library_items ORDER BY id").all();
+    const beforeDeniedSpaces = service.listSpaces();
     const saveNone = await call(toolsNone, "library_save_artifact", { artifactId: "art-own" });
-    ok(saveNone.isError === true && saveNone.content[0].text.includes("不属于当前任务"), "unbound: 不能晋升其他任务产物");
+    ok(saveNone.isError === true && saveNone.content[0].text.includes("没有可写的长期资料归属"), "unbound: 无长期资料归属，不能晋升其他任务产物");
+    const saveNoneExplicit = await call(toolsNone, "library_save_artifact", { artifactId: "art-own", spaceId: aSpace });
+    ok(saveNoneExplicit.isError === true, "unbound: 显式目标不能绕过写入范围");
+    assert.deepEqual(db.connection.prepare("SELECT * FROM library_items ORDER BY id").all(), beforeDeniedSave, "拒绝晋升不创建或修改资料条目");
+    assert.deepEqual(service.listSpaces(), beforeDeniedSpaces, "拒绝晋升不创建资料空间");
 
     // create_collection / move：同空间允许；跨空间拒绝；根移动成功
     const personalColl = service.createCollection({ spaceId: LIBRARY_PERSONAL_SPACE_ID, name: "个人沉淀夹" });

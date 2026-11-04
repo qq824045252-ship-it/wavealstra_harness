@@ -259,8 +259,12 @@ export async function run(): Promise<string[]> {
   await change('[aria-label="文字转语音服务"]', "api-b");
   assert(element<HTMLInputElement>('[aria-label="文字转语音声音"]').value === "" && element<HTMLInputElement>('[aria-label="文字转语音语速"]').value === "", "A new TTS service never inherits another service's voice/rate");
   await change('[aria-label="文字转语音声音"]', "voice-b");
+  await change('[aria-label="文字转语音语速"]', "1.25");
   await change('[aria-label="文字转语音模型"]', "tts-b");
   assert(element<HTMLInputElement>('[aria-label="文字转语音声音"]').value === "voice-b", "Changing model within one service preserves its voice choice");
+  assert(element<HTMLInputElement>('[aria-label="文字转语音语速"]').value === "1.25", "Changing model within one service preserves its rate");
+  await save();
+  assert(config.textToSpeech.voice === "voice-b" && config.textToSpeech.rate === "1.25" && config.mediaBindings?.["text-to-speech"]?.model === "tts-b", "Saving a model edit persists voice and rate");
   await change('[aria-label="文字转语音服务"]', "__add_api__");
   assert(element<HTMLInputElement>('[aria-label="文字转语音声音"]').value === "", "Adding a TTS connection also clears the prior service's voice");
   passed.push("TTS voice and rate reset on connection changes, while model edits within a service preserve voice");

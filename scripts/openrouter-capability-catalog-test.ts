@@ -6,6 +6,7 @@ const key = "fixture-private-openrouter-token";
 const calls: Array<{ path: string; headers: Headers; method?: string; redirect?: RequestRedirect; signal?: AbortSignal | null }> = [];
 const catalog: Record<string, unknown> = {
   "/images/models": { data: [
+    null, false, "invalid", [], {}, { id: null },
     { id: "images/one", name: "Image One", architecture: { output_modalities: ["image"] }, secret: key },
     { id: "not-an-image", architecture: { output_modalities: ["text"] } },
   ] },

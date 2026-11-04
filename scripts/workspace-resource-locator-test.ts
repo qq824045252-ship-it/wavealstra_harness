@@ -53,8 +53,8 @@ async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void> | v
 
 async function main() {
   console.log("== §19.2 Scope：Current+Ancestors 生效、sibling 隔离、绑定继承 ==");
-  await withTmpDb(async (db) => {
-    const lib = new LibraryService(db);
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const proj = "proj-scope";
@@ -98,8 +98,8 @@ async function main() {
   });
 
   console.log("== §19.3 Child：默认隔离，显式 direct child 临时扩 scope，grandchild/archived 拒绝 ==");
-  await withTmpDb(async (db) => {
-    const lib = new LibraryService(db);
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const proj = "proj-child";
@@ -141,8 +141,8 @@ async function main() {
   });
 
   console.log("== §19.4 Permission：当前项目资料无需绑定；跨项目拒绝；Personal 须显式引用 ==");
-  await withTmpDb(async (db) => {
-    const lib = new LibraryService(db);
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const projA = "proj-a";
@@ -164,6 +164,8 @@ async function main() {
     const iBoundWrong = await mkItem(lib, libBoundWrong.id, "bound wrong", "perm marker wrong");
     const iUnboundSame = await mkItem(lib, libUnboundSame.id, "unbound same", "perm marker unbound");
 
+    // 显式恢复历史 personal 夹具；正常启动不再自动创建该空间。
+    lib.ensureReady();
     // personal 未绑定
     const iPersonalUnbound = await mkItem(lib, "personal", "personal unbound", "perm marker personal");
     await lib.flushPendingIndexes();
@@ -182,8 +184,8 @@ async function main() {
   });
 
   console.log("== §19.4b Collection Binding：只检索绑定文件夹及其子树，不泄漏同库其他目录/根目录 ==");
-  await withTmpDb(async (db) => {
-    const lib = new LibraryService(db);
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     db.createSpace(mkSpace("root", "Root", null));
@@ -214,9 +216,9 @@ async function main() {
   });
 
   console.log("== §19.5 Retrieval：中文 / 中英混合 / filename / title / body / empty / no-result / limit / determinism / short-query ==");
-  await withTmpDb(async (db) => {
+  await withTmpDb(async (db, dir) => {
     db.createSpace(mkSpace("ws", "WS", null));
-    const lib = new LibraryService(db);
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const proj = "proj-cn";
@@ -254,9 +256,9 @@ async function main() {
   });
 
   console.log("== §19.6 Source of Truth：hit 无正文，library_read 读真实源 ==");
-  await withTmpDb(async (db) => {
+  await withTmpDb(async (db, dir) => {
     db.createSpace(mkSpace("ws", "WS", null));
-    const lib = new LibraryService(db);
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const proj = "proj-sot";
@@ -276,9 +278,9 @@ async function main() {
   });
 
   console.log("== §19.7 Search ≠ Context：搜索前后 WorkspaceSharedContext digest 不变 ==");
-  await withTmpDb(async (db) => {
+  await withTmpDb(async (db, dir) => {
     db.createSpace(mkSpace("ws", "WS", null));
-    const lib = new LibraryService(db);
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     const binding = new WorkspaceLibraryBindingService(db);
     const loc = new WorkspaceResourceLocator(db, lib, binding);
     const proj = "proj-inj";

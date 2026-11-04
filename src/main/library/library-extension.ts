@@ -339,7 +339,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       label: "资料库 · 新建文本资料",
       description:
         "在当前任务自有资料位置新建文本类资料（markdown/html/csv）。" +
-        "spaceId 缺省按当前项目、当前工作空间、个人文档的顺序确定；collectionId 必须属于同一位置。创建后可带 content 正文。" +
+        "spaceId 缺省按当前项目、当前工作空间的顺序确定；独立任务没有长期资料写入位置；collectionId 必须属于同一位置。创建后可带 content 正文。" +
         "readonly 权限或归档项目下不可用；跨项目 space/collection 拒绝。",
       promptSnippet: "library_create_text(kind, title, content?, spaceId?, collectionId?) — 新建文本资料（md/html/csv）",
       parameters: Type.Object(
@@ -438,7 +438,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "把当前任务（或同项目任务）的产物 COPY 到资料库受管存储并晋升为长期资料（provenance 记录来源任务/产物；" +
         "同产物同空间幂等：内容变化时更新副本并记版本）。只复制不移动/删除原始产物。" +
-        "spaceId 缺省为当前项目，其次当前工作空间，否则个人文档；readonly/归档拒绝；其他项目任务的产物拒绝。",
+        "spaceId 缺省为当前项目，其次当前工作空间，独立任务没有长期资料写入位置；readonly/归档拒绝；其他项目任务的产物拒绝。",
       promptSnippet: "library_save_artifact(artifactId, spaceId?, collectionId?) — 产物晋升为长期资料（COPY + provenance）",
       parameters: Type.Object(
         {
@@ -484,7 +484,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_create_collection",
       label: "资料库 · 新建集合",
       description:
-        "在当前任务自有资料位置新建集合（文件夹）。默认当前项目，其次当前工作空间，否则个人文档；parentId 必须属于同一位置。" +
+        "在当前任务自有资料位置新建集合（文件夹）。默认当前项目，其次当前工作空间，独立任务没有长期资料写入位置；parentId 必须属于同一位置。" +
         "readonly/归档拒绝；跨项目空间拒绝。",
       promptSnippet: "library_create_collection(name, spaceId?, parentId?) — 新建资料集合（项目内组织）",
       parameters: Type.Object(

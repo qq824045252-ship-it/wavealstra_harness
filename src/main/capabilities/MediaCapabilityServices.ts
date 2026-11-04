@@ -266,6 +266,7 @@ export class MediaCapabilityServices {
     }
     const connection = config.connections?.[id];
     if (!connection || !connectionCapabilities(connection).includes(capability)) throw new Error("所选服务不支持此能力。");
+    if (connection.protocol === "baidu-ocr") throw new Error("百度 OCR 必须通过专用双密钥适配器调用。");
     if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 连接必须使用官方 API 地址和 API Key。");
     const secret = connection.auth === "api-key" && connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
     if (connection.auth === "api-key" && !secret) throw new Error("请填写此服务的 API Key。");
