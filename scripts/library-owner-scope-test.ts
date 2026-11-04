@@ -250,11 +250,22 @@ try {
   const oldOwner = migrationLibrary.createSpace({ name: "Existing library", projectId: "mp" });
   const oldFolder = migrationLibrary.createCollection({ spaceId: oldOwner.id, name: "Existing folder" });
   const oldItem = migrationLibrary.createItem({ spaceId: oldOwner.id, collectionId: oldFolder.id, kind: "markdown", title: "Existing preserved file" });
+  migrationLibrary.writeContent({ id: oldItem.id, content: "project historical revision" });
   migrationLibrary.writeContent({ id: oldItem.id, content: "unchanged migration payload" });
+  const oldPersonalOwner = migrationLibrary.ensureOwnedSpace({ type: "personal" });
+  const oldPersonal = migrationLibrary.createItem({ spaceId: oldPersonalOwner.id, kind: "markdown", title: "Existing personal document" });
+  migrationLibrary.writeContent({ id: oldPersonal.id, content: "personal historical revision" });
+  migrationLibrary.writeContent({ id: oldPersonal.id, content: "personal migration payload" });
   migrationLibrary.attachToTask({ itemId: oldItem.id, taskId: "mt" });
   new WorkspaceLibraryBindingService(migrating).bindCollection("mw", oldOwner.id, oldFolder.id);
   migrating.connection.prepare("INSERT INTO project_context_pins(id,project_id,item_id,created_at) VALUES ('migration-pin','mp',?,1)").run(oldItem.id);
   const oldPath = migrationLibrary.absolutePath(oldItem);
+  const oldPersonalPath = migrationLibrary.absolutePath(oldPersonal);
+  const preservedVersions = [oldItem, oldPersonal].map((entry) => ({
+    itemId: entry.id,
+    versions: migrationLibrary.listVersions(entry.id),
+  }));
+  assert(preservedVersions.every((entry) => entry.versions.length >= 2), "migration fixture includes real historical revisions");
   migrating.close();
   const raw = new Database(migrationPath);
   raw.exec("DROP INDEX uq_library_spaces_workspace; ALTER TABLE library_spaces DROP COLUMN workspace_id");
@@ -265,6 +276,15 @@ try {
   assert.equal(migrating.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
   assert.equal(migrationLibrary.getItem(oldItem.id)?.collectionId, oldFolder.id);
   assert.equal(readFileSync(oldPath, "utf8"), "unchanged migration payload");
+  assert.equal(migrationLibrary.getItem(oldPersonal.id)?.spaceId, oldPersonalOwner.id);
+  assert.equal(migrationLibrary.absolutePath(migrationLibrary.getItem(oldPersonal.id)!), oldPersonalPath);
+  assert.equal(readFileSync(oldPersonalPath, "utf8"), "personal migration payload");
+  for (const entry of preservedVersions) {
+    assert.deepEqual(migrationLibrary.listVersions(entry.itemId), entry.versions, "migration preserves historical version IDs, paths and metadata");
+    for (const version of entry.versions) assert(existsSync(version.path), "recorded version paths remain valid after migration");
+  }
+  assert(migrationLibrary.searchOwnedScope("personal migration payload", { type: "personal" }).some((entry) => entry.id === oldPersonal.id));
+  assert.equal(migrationLibrary.searchOwnedScope("personal migration payload", { type: "project", projectId: "mp" }).some((entry) => entry.id === oldPersonal.id), false, "old personal content stays isolated after migration");
   assert.equal(migrationLibrary.listTaskReferences("mt").items[0]?.id, oldItem.id);
   assert.equal(new WorkspaceLibraryBindingService(migrating).listCollectionsByWorkspace("mw")[0]?.collectionId, oldFolder.id);
   assert.equal((migrating.connection.prepare("SELECT item_id FROM project_context_pins WHERE id = 'migration-pin'").get() as { item_id: string }).item_id, oldItem.id);
@@ -274,6 +294,7 @@ try {
   migrationLibrary = new LibraryService(migrating, { libraryRoot: migrationLibraryRoot });
   assert.equal(migrationLibrary.ensureOwnedSpace({ type: "workspace", workspaceId: "mw" }).id, newOwnerId, "additive migration and lazy ownership stay idempotent after restart");
   assert.equal(migrationLibrary.ensureOwnedSpace({ type: "project", projectId: "mp" }).id, oldOwner.id);
+  for (const entry of preservedVersions) assert.deepEqual(migrationLibrary.listVersions(entry.itemId), entry.versions, "a second startup does not rewrite version history");
   migrating.close();
 
   console.log("library owner scope: PASS (ownership, exact read/write grants, scoped FTS, archive/deletion safety, additive migration)");
