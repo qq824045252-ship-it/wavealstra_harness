@@ -182,14 +182,19 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
   const bin = library.createItem({ spaceId: aSpace.id, kind: "csv", title: "对照表" });
   library.writeContent({ id: bin.id, content: "材料,适配\n氯丁橡胶,是\n" });
 
-  // FTS 正文命中（项目 A 范围）
+  // 项目预览同样按统一作用域查询；个人资料必须经精确引用。
+  const privateHits = library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 });
+  ok(!privateHits.some((h) => h.itemId === md.id), "仅项目检索不自动读取个人资料");
+  projects.pinProjectItem({ projectId: "proj-a", itemId: md.id });
   const ftsHits = library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 });
-  ok(ftsHits.some((h) => h.itemId === md.id && h.snippet.length > 0), "FTS 正文命中并带 snippet");
-  ok(ftsHits.every((h) => h.spaceId === aSpace.id || h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "检索范围 = personal + 当前项目");
-  // 项目 B 检索不得命中 A 的项目资料（personal 对 B 恒可见，属冻结规则）
+  ok(ftsHits.some((h) => h.itemId === md.id && h.snippet.length > 0), "显式固定资料 FTS 正文命中并带 snippet");
+  ok(ftsHits.every((h) => h.spaceId === aSpace.id || h.itemId === md.id), "检索范围 = 当前项目 + 精确固定资料");
   const bHits = library.retrieve("氯丁橡胶", { projectId: "proj-b", limit: 10 });
   ok(!bHits.some((h) => h.spaceId === aSpace.id), "项目 B 检索不命中 A 的项目资料");
-  ok(bHits.some((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "项目 B 检索仍可见 personal（冻结规则）");
+  ok(!bHits.some((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "项目 A 的固定引用不扩大项目 B 的个人资料权限");
+  projects.unpinProjectItem({ projectId: "proj-a", itemId: md.id });
+  ok(!library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 }).some((h) => h.itemId === md.id), "取消固定后仅项目检索即时撤权");
+  ok(library.retrieve("氯丁橡胶", { projectId: "missing-project", limit: 10 }).length === 0, "失效项目检索不会回落个人范围");
   // 标题 exact 排名优先于 FTS
   const titleHits = library.retrieve("仪表密封选型", { projectId: "proj-a", limit: 10 });
   const exact = titleHits.find((h) => h.title === "仪表密封选型");
@@ -599,9 +604,11 @@ void (async () => {
       },
       on: () => undefined,
     } as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI;
+    const taskId = `task-ctx-${projectId ?? "unbound"}-${permissionMode}`;
+    db.upsertTask({ id: taskId, title: "上下文工具测试", updatedAt: 1, projectId, welcomeMode: "coding" });
     createProjectContextExtension({
-      taskId: "task-ctx",
-      resolveProjectId: () => projectId,
+      taskId,
+      libraryService: library,
       projectService: projects,
       getPermissionMode: () => permissionMode as never,
     })(api);
@@ -640,10 +647,18 @@ void (async () => {
   // 恢复 goal 供后续断言
   projects.updateSharedContext("proj-a", { goal: "交付仪表选型方案" });
 
+  const pinHidden = await callCtx(toolsA, "project_context_pin", { itemId: personalCtxItem.id });
+  ok(pinHidden.isError === true && pinHidden.content[0].text.includes("不可见"), "A: 未引用的个人资料不能经 pin 自行授权");
+  ok(!projects.listProjectPins("proj-a").some((pin) => pin.itemId === personalCtxItem.id), "A: 拒绝的 pin 不产生持久引用");
+  library.attachToTask({ taskId: "task-ctx-proj-a-default", itemId: personalCtxItem.id });
   const pinOwn = await callCtx(toolsA, "project_context_pin", { itemId: personalCtxItem.id });
-  ok(pinOwn.isError === undefined, "A: pin personal 条目允许");
+  ok(pinOwn.isError === undefined, "A: 用户显式附加的个人资料允许 pin");
   const pinCross = await callCtx(toolsA, "project_context_pin", { itemId: bItem.id });
   ok(pinCross.isError === true && pinCross.content[0].text.includes("跨项目"), "A: pin B 条目拒绝（跨项目）");
+  db.connection.prepare("INSERT INTO project_context_pins (id,project_id,item_id,created_at) VALUES ('invalid-context-pin','proj-a',?,1)").run(bItem.id);
+  const invalidContext = await callCtx(toolsA, "project_context_get");
+  ok(!JSON.stringify(invalidContext).includes(bItem.id) && !JSON.stringify(invalidContext).includes(bItem.title), "历史无效固定引用不能泄露跨项目资料的标题/id");
+  db.connection.prepare("DELETE FROM project_context_pins WHERE id = 'invalid-context-pin'").run();
   const unpinOwn = await callCtx(toolsA, "project_context_unpin", { itemId: personalCtxItem.id });
   ok(unpinOwn.isError === undefined, "A: unpin 正常");
   ok(!projects.listProjectPins("proj-a").some((p) => p.itemId === personalCtxItem.id), "A: unpin 真实落库");
@@ -672,8 +687,20 @@ void (async () => {
 
   // pin 上限经工具同样拒绝（复用 service 上限）
   const toolsCap = makeCtxExtension("proj-cap", "default");
-  const capPin = await callCtx(toolsCap, "project_context_pin", { itemId: personalCtxItem.id });
+  const capExtra = library.createItem({ spaceId: library.listProjectSpaces("proj-cap")[0]!.id, kind: "markdown", title: "工具第 11 条" });
+  const capPin = await callCtx(toolsCap, "project_context_pin", { itemId: capExtra.id });
   ok(capPin.isError === true && capPin.content[0].text.includes("上限"), "pin 上限经工具拒绝（proj-cap 已满）");
+
+  // 工具持有的是任务身份；改绑和删除立即收紧，不能沿用创建时的项目。
+  db.upsertTask({ id: "task-ctx-proj-a-default", title: "已改绑", updatedAt: 2, projectId: "proj-b", welcomeMode: "coding" });
+  const reboundGet = await callCtx(toolsA, "project_context_get");
+  ok(reboundGet.isError === undefined && !reboundGet.content[0].text.includes("交付仪表选型方案"), "context 工具按持久任务的最新项目解析");
+  const aCtxItem = library.createItem({ spaceId: library.listProjectSpaces("proj-a")[0]!.id, kind: "markdown", title: "旧项目上下文资料" });
+  const reboundPin = await callCtx(toolsA, "project_context_pin", { itemId: aCtxItem.id });
+  ok(reboundPin.isError === true, "任务改绑后不能使用旧项目资料授权 pin");
+  db.connection.prepare("DELETE FROM tasks WHERE id = 'task-ctx-proj-a-default'").run();
+  const deletedGet = await callCtx(toolsA, "project_context_get");
+  ok(deletedGet.isError === true, "任务删除后上下文工具拒绝旧项目访问");
 })().then(() => {
   /* ---- 10. Project Knowledge Retrieval：统一层 + 工具 scope/分层/预算/生命周期 ---- */
   return (async () => {

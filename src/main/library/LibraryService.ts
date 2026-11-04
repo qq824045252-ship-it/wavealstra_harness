@@ -1163,7 +1163,7 @@ export class LibraryService {
   }
 
   /** 搜索：标题/文件名 + FTS 正文 + 短查询内容兜底（受控副本、256KB 上限、路径安全校验）。
-   *  opts 缺省 = 用户级全量（UI）；显式传 { projectId } = 按任务可见范围过滤（Agent 工具）。 */
+   *  opts 缺省 = 用户级全量（UI）；显式 { projectId } 也必须通过统一作用域解析。 */
   search(
     query: string,
     opts?: {
@@ -1178,18 +1178,12 @@ export class LibraryService {
     if (!q) return [];
     const spaces = this.repo.listSpaces();
     const explicitScope = opts?.spaceIds !== undefined || opts?.collectionIds !== undefined || opts?.itemIds !== undefined;
-    const scopeProjectId = opts === undefined ? undefined : (opts.projectId ?? null);
-    const visible = explicitScope
-      ? new Set(opts?.spaceIds ?? [])
-      : scopeProjectId === undefined
-        ? new Set(spaces.map((s) => s.id))
-        : new Set(
-            spaces.filter((s) => this.isSpaceVisibleToTask(s, scopeProjectId)).map((s) => s.id),
-          );
-    const visibleCollections = new Set(opts?.collectionIds ?? []);
-    const visibleItems = new Set(opts?.itemIds ?? []);
+    const queryScope = explicitScope
+      ? { spaceIds: new Set(opts?.spaceIds ?? []), collectionIds: opts?.collectionIds, itemIds: opts?.itemIds }
+      : opts === undefined
+        ? { spaceIds: new Set(spaces.map((space) => space.id)) }
+        : queryScopeForTask(this.resolveTaskScope(undefined, opts.projectId));
     const spaceName = new Map(spaces.map((s) => [s.id, s.name]));
-    const queryScope = { spaceIds: visible, collectionIds: visibleCollections, itemIds: visibleItems };
     const hits = this.retrieve(q, { ...queryScope, limit: 80 });
     const rows: LibraryListRowDto[] = [];
     const seen = new Set<string>();
@@ -1232,7 +1226,7 @@ export class LibraryService {
 
   /**
    * Hybrid-ready retrieval（FTS trigram + 显式排名 + metadata 过滤）：
-   * opts 缺省 = 用户级全量；显式 { projectId } = 任务可见范围（personal + 当前项目）。
+   * opts 缺省 = 用户级全量；显式 { projectId } = 当前项目 + 显式固定资料，无归属时才默认个人资料。
    */
   retrieve(
     query: string,
@@ -1246,21 +1240,13 @@ export class LibraryService {
   ): LibraryRetrievalHitDto[] {
     this.ensureReady();
     const spaces = this.repo.listSpaces();
-    const spaceIds =
-      opts?.spaceIds ??
-      (opts?.collectionIds !== undefined || opts?.itemIds !== undefined
-        ? new Set<string>()
-        : opts?.projectId === undefined
-        ? new Set(spaces.map((s) => s.id))
-        : new Set(
-            spaces.filter((s) => this.isSpaceVisibleToTask(s, opts.projectId ?? null)).map((s) => s.id),
-          ));
-    return this.repo.retrieve(query, {
-      spaceIds,
-      collectionIds: opts?.collectionIds,
-      itemIds: opts?.itemIds,
-      limit: opts?.limit ?? 10,
-    });
+    const explicitScope = opts?.spaceIds !== undefined || opts?.collectionIds !== undefined || opts?.itemIds !== undefined;
+    const scope = explicitScope
+      ? { spaceIds: new Set(opts?.spaceIds ?? []), collectionIds: opts?.collectionIds, itemIds: opts?.itemIds }
+      : opts?.projectId === undefined
+        ? { spaceIds: new Set(spaces.map((space) => space.id)) }
+        : queryScopeForTask(this.resolveTaskScope(undefined, opts.projectId));
+    return this.repo.retrieve(query, { ...scope, limit: opts?.limit ?? 10 });
   }
 
   /** FTS 索引维护：文本类条目同步标题/文件名/正文；Office/PDF 标记 pending 并异步抽取索引；
@@ -1752,12 +1738,11 @@ export class LibraryService {
   }
 
   /**
-   * 资料库目录摘要（仅标题/类型/位置/id，不含全文）——按任务可见范围限域：
-   * personal 恒可见；绑定项目仅加本项目空间；未绑定/缺省仅 personal。
+   * 资料库目录摘要（仅标题/类型/位置/id，不含全文）——包括无任务预览在内，
+   * 一律按统一任务作用域限域；个人资料仅对独立任务或明确引用可见。
    */
   formatCatalog(limit = 36, opts?: { taskId?: string | null; projectId?: string | null; workspaceId?: string | null; toolsAvailable?: boolean }): string {
-    const taskScope = opts && ("taskId" in opts || "workspaceId" in opts)
-      ? this.resolveTaskScope(opts.taskId, opts.projectId, { workspaceFallback: opts.workspaceId }) : null;
+    const taskScope = this.resolveTaskScope(opts?.taskId, opts?.projectId, { workspaceFallback: opts?.workspaceId });
     const toolsAvailable = opts?.toolsAvailable ?? true;
     const retrievalHint = toolsAvailable
       ? "需要内容时用 library_search / library_read 按需读取；二进制/办公/图片条目返回受管路径，需要文件工具或预览读取，资料库不提供内联全文。"
@@ -1770,10 +1755,7 @@ export class LibraryService {
       ].join("\n");
     }
     const spaces = this.repo.listSpaces();
-    const visible = spaces.filter((s) => taskScope ? this.isSpaceVisibleInScope(s, taskScope) : this.isSpaceVisibleToTask(s, opts?.projectId ?? null));
-    const visibleIds = new Set(visible.map((s) => s.id));
-    const items = (taskScope ? this.listItemsInScope(taskScope) : this.repo.listItems().filter((i) => visibleIds.has(i.spaceId)))
-      .filter((i) => i.kind !== "url");
+    const items = this.listItemsInScope(taskScope).filter((item) => item.kind !== "url");
     if (items.length === 0) {
       return [
         "## 资料库",
@@ -1784,9 +1766,7 @@ export class LibraryService {
     const spaceName = new Map(spaces.map((s) => [s.id, s.name]));
     const lines = [
       "## 资料库",
-      taskScope
-        ? "以下为本任务可使用的资料：归属项目、当前/祖先工作空间，以及显式引用。继承或引用只提供读取权。"
-        : "资料库是独立于任务产物的知识空间。MD 决定内容，CSV 存储数据，HTML 负责表达。",
+      "以下为本任务可使用的资料：归属项目、当前/祖先工作空间，以及显式引用。继承或引用只提供读取权。",
       retrievalHint,
       "",
     ];
@@ -1869,19 +1849,6 @@ export class LibraryService {
       ...lines,
       "这些资料由用户/任务显式附加。需要内容时用 library_read 读取文本类；二进制/办公类返回受管路径，需要文件工具或预览读取；不要假设可访问任务目录之外的任意路径。",
     ].join("\n");
-  }
-
-  /* ---------------- 任务/项目可见性（Agent 工具与目录限域共用） ---------------- */
-
-  /** personal 恒可见；team 仅当 projectId 匹配（null/undefined 表示任务未绑定项目 → 只可见 personal） */
-  isSpaceVisibleToTask(space: LibrarySpaceDto, taskProjectId: string | null | undefined): boolean {
-    if (space.kind === "personal") return true;
-    return Boolean(taskProjectId) && space.projectId === taskProjectId;
-  }
-
-  isItemVisibleToTask(item: LibraryItemDto, taskProjectId: string | null | undefined): boolean {
-    const space = this.repo.getSpace(item.spaceId);
-    return space ? this.isSpaceVisibleToTask(space, taskProjectId) : false;
   }
 
   /* ---------------- 内部 ---------------- */

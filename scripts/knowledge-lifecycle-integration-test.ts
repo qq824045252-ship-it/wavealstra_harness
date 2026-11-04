@@ -101,7 +101,7 @@ const ctxA = new Map<string, Tool>();
 registerExtension(
   createProjectContextExtension({
     taskId: "task-a",
-    resolveProjectId: () => "proj-a",
+    libraryService: library,
     projectService: projects,
     getPermissionMode: () => "default" as never,
   }),
@@ -265,7 +265,7 @@ async function main(): Promise<void> {
   );
   const ctxRo = new Map<string, Tool>();
   registerExtension(
-    createProjectContextExtension({ taskId: "task-a", resolveProjectId: () => "proj-a", projectService: projects, getPermissionMode: () => "readonly" as never }),
+    createProjectContextExtension({ taskId: "task-a", libraryService: library, projectService: projects, getPermissionMode: () => "readonly" as never }),
     ctxRo,
   );
   const memRo = new Map<string, Tool>();
