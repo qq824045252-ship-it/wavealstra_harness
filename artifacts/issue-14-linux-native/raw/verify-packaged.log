@@ -1,0 +1,4 @@
+$ node scripts/verify-packaged-app.cjs -- --app-dir release/linux-unpacked
+[verify-packaged] app dir: /workspace/scratch/443307551807/wavealstra_harness/release/linux-unpacked
+[verify-packaged] FAIL app directory not found: /workspace/scratch/443307551807/wavealstra_harness/release/linux-unpacked
+[ELIFECYCLE] Command failed with exit code 1.

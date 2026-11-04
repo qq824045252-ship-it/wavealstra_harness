@@ -1,15 +1,15 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ComputerUsePhase } from "../../../capabilities/ComputerUsePolicy";
+import { executableInPath } from "../support";
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Linux 上的「Computer Use 正在操作」用户可见反馈。
  *
- * 为什么不是叠加层：见 `../support.ts` 里 `supportsComputerUseOverlay` 的长注释——
- * Electron 透明窗口在 Wayland 上无法排除出截图、分数缩放下铺不满屏、CUL 自带的
- * indicator 没有可用控制通道。三条都经真机验证，所以这里用**通知**。
+ * Hyprland 通知独立于自动化驱动，不参与截图、坐标或动作成功判定。
+ * 没有实现窗口级高亮；任务停止使用原有运行协调器。
  *
  * 用 `hyprctl notify` 而不是 `notify-send`：
  * - `notify-send` 走 D-Bus org.freedesktop.Notifications，在 Hyprland 上通常由
@@ -82,9 +82,8 @@ interface ActivityNoticeOptions {
 
 export function createActivityNotice(options: ActivityNoticeOptions = {}): ActivityNotice {
   const runner = options.runner ?? createHyprctlNotifyRunner();
-  // 默认可用：真正的失败（没装 hyprctl / 合成器拒绝）在第一次 spawn 时被 catch 掉，
-  // 降级成 no-op，不影响自动化动作本身。
-  const available = options.available ?? true;
+  // 静态依赖和会话缺失时不承诺可见反馈；执行失败只影响通知能力。
+  let available = options.available ?? Boolean(options.runner || (executableInPath("hyprctl") && process.env.HYPRLAND_INSTANCE_SIGNATURE));
   return {
     get available(): boolean {
       return available;
@@ -96,7 +95,7 @@ export function createActivityNotice(options: ActivityNoticeOptions = {}): Activ
       void runner([
         "notify", String(presentation.icon), String(presentation.durationMs),
         presentation.color, noticeMessage(phase, target),
-      ]).catch(() => { /* hyprctl 缺失或合成器拒绝：反馈降级，不影响动作本身 */ });
+      ]).catch(() => { available = false; });
     },
   };
 }

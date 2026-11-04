@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.92",
+  "version": "0.1.93",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -136,7 +136,7 @@
     "test:computer-use-run": "esbuild scripts/computer-use-run-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-run-test.cjs --external:electron && node scripts/test-guard.mjs out/tests/computer-use-run-test.cjs",
     "test:computer-use-overlay": "esbuild scripts/computer-use-overlay-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-overlay-smoke.cjs --external:electron && electron out/tests/computer-use-overlay-smoke.cjs",
     "test:computer-automation-windows": "esbuild scripts/computer-automation-windows-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-automation-windows-smoke.cjs --external:electron && electron out/tests/computer-automation-windows-smoke.cjs",
-    "test:computer-use-linux": "esbuild scripts/computer-use-linux-smoke.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-linux-smoke.cjs --external:electron && GUARD_HOME=host node scripts/test-guard.mjs out/tests/computer-use-linux-smoke.cjs",
+    "test:computer-use-linux": "pnpm -s build:linux-computer-use && node scripts/test-guard.mjs scripts/run-linux-computer-use.cjs",
     "test:tool-image-aging": "esbuild scripts/tool-image-aging-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/tool-image-aging-test.mjs && node scripts/test-guard.mjs out/tests/tool-image-aging-test.mjs",
     "test:cache-live": "esbuild scripts/cache-live-scenarios.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-live.mjs && node out/tests/cache-live.mjs",
     "cache:evaluate": "esbuild scripts/cache-strategy-evaluation.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/cache-strategy-evaluation.mjs && node out/tests/cache-strategy-evaluation.mjs",
@@ -403,7 +403,16 @@
     "test:media-capabilities-dom": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-dom.js && node scripts/media-capabilities-dom-test.cjs",
     "prepare:officecli": "node scripts/prepare-officecli.cjs",
     "test:officecli": "esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
-    "validate:packaged-officecli": "node scripts/validate-packaged-officecli.cjs"
+    "validate:packaged-officecli": "node scripts/validate-packaged-officecli.cjs",
+    "build:linux-computer-use": "node scripts/build-linux-computer-use.mjs",
+    "test:linux-worker-packaging": "node scripts/test-guard.mjs scripts/linux-worker-packaging-test.cjs",
+    "test:atspi-driver": "esbuild scripts/atspi-driver-test.ts --bundle --platform=node --format=cjs --external:electron --packages=external --outfile=out/tests/atspi-driver-test.cjs && node scripts/test-guard.mjs out/tests/atspi-driver-test.cjs",
+    "test:atspi-transport": "pnpm -s build:linux-computer-use && esbuild scripts/atspi-transport-test.ts --bundle --platform=node --format=cjs --external:electron --packages=external --outfile=out/tests/atspi-transport-test.cjs && node scripts/test-guard.mjs out/tests/atspi-transport-test.cjs",
+    "test:computer-use-linux:packaged": "node scripts/test-guard.mjs scripts/run-linux-computer-use.cjs --app-dir release/linux-unpacked",
+    "test:linux-native-outcomes": "esbuild scripts/linux-native-outcomes-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/linux-native-outcomes-test.cjs && node scripts/test-guard.mjs out/tests/linux-native-outcomes-test.cjs",
+    "test:linux-native-backend": "esbuild scripts/linux-native-backend-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/linux-native-backend-test.cjs && node scripts/test-guard.mjs out/tests/linux-native-backend-test.cjs",
+    "test:input-guardian": "esbuild scripts/input-guardian-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/input-guardian-test.cjs && node scripts/test-guard.mjs out/tests/input-guardian-test.cjs",
+    "test:input-guardian-process": "pnpm -s build:linux-computer-use && esbuild scripts/input-guardian-process-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/input-guardian-process-test.cjs && node scripts/test-guard.mjs out/tests/input-guardian-process-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
@@ -418,6 +427,7 @@
     "better-sqlite3": "13.0.3",
     "bonjour-service": "1.4.4",
     "command-code-acp": "0.1.1",
+    "dbus-native": "0.16.3",
     "jiti": "2.7.0",
     "linkedom": "0.18.13",
     "node-pty": "1.1.0",
@@ -523,8 +533,7 @@
       "!extensions/mcp/**/repo/**",
       "node_modules/onnxruntime-node/**/*",
       "!node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**/*",
-      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*",
-      "node_modules/@agent-sh/computer-use-linux/**/*"
+      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*"
     ],
     "asarUnpack": [
       "out/main/capabilities/subagent/worker-launcher.mjs",
@@ -544,7 +553,12 @@
       "out/main/image-resize-worker.js",
       "out/main/photon_rs_bg.wasm",
       "out/main/capabilities/subagent/runtime/**/*",
-      "**/node_modules/@agent-sh/computer-use-linux/**/*"
+      "out/main/atspi-worker.cjs",
+      "out/main/linux-computer-use-runtime.json",
+      "out/main/linux-computer-use-acceptance.cjs",
+      "out/main/linux-computer-use-fixture.cjs",
+      "out/main/linux-computer-use-fixture.html",
+      "out/main/input-guardian.cjs"
     ],
     "win": {
       "icon": "build/icon.ico",
@@ -590,7 +604,6 @@
     "beforePack": "scripts/before-pack.cjs"
   },
   "optionalDependencies": {
-    "@agent-sh/computer-use-linux": "0.7.27",
     "onnxruntime-node": "1.30.0"
   }
 }

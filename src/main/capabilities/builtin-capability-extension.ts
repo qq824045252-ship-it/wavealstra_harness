@@ -27,7 +27,8 @@ import type {
 } from "./BuiltinCapabilityRuntime";
 import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutomationService";
 import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
-import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput } from "./ComputerAutomationService";
+import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput, type ComputerExecOutput } from "./ComputerAutomationService";
+import { formatComputerUseFailureEvidence, withComputerUseDeliveryEvidence } from "./ComputerUsePolicy";
 import { computerUseToolCopy } from "../platform/computer-use/support";
 import { currentPlatformId } from "../platform";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
@@ -90,6 +91,7 @@ export interface BuiltinCapabilityExtensionBridge {
 }
 function errorResult(tool: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const computerEvidence = tool === "computer_exec" ? formatComputerUseFailureEvidence(error) : "";
   const additional = error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : undefined;
   const details = error instanceof VideoJobPendingError
     ? { error: message, ...additional, videoJob: { jobId: error.jobId, remoteId: error.remoteId, reason: error.reason, remoteCancelled: false } }
@@ -97,7 +99,7 @@ function errorResult(tool: string, error: unknown) {
     ? { error: message, details: error.details as Record<string, unknown> }
     : { error: message };
   return {
-    content: [{ type: "text" as const, text: `[${tool}] ${message}` }],
+    content: [{ type: "text" as const, text: `[${tool}] ${message}${computerEvidence ? `\n\n执行证据（先回读状态，禁止重放已执行或结果未知的输入）：\n${computerEvidence}` : ""}` }],
     isError: true as const,
     details: details as Record<string, unknown>,
   };
@@ -294,7 +296,7 @@ const computerOutcomeExpectationSchema = Type.Object({
   control_name: Type.Optional(Type.String({ maxLength: 1_000 })),
   automation_id: Type.Optional(Type.String({ maxLength: 1_000 })),
   control_type: Type.Optional(Type.String({ maxLength: 200 })),
-  control_runtime_id: Type.Optional(Type.String({ maxLength: 1_000 })),
+  control_runtime_id: Type.Optional(Type.String({ maxLength: 4_096 })),
   control_class_name: Type.Optional(Type.String({ maxLength: 1_000 })),
   exact_name: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
@@ -374,13 +376,13 @@ const computerExecSchema = Type.Object({
   control_name: Type.Optional(Type.String({ maxLength: 1_000 })),
   automation_id: Type.Optional(Type.String({ maxLength: 1_000 })),
   control_type: Type.Optional(Type.String({ maxLength: 200 })),
-  control_runtime_id: Type.Optional(Type.String({ maxLength: 1_000 })),
+  control_runtime_id: Type.Optional(Type.String({ maxLength: 4_096 })),
   control_class_name: Type.Optional(Type.String({ maxLength: 1_000 })),
   exact_name: Type.Optional(Type.Boolean()),
-  client_only: Type.Optional(Type.Boolean({ default: true, description: "默认 true：返回与 click_client 坐标直接对齐的客户区 DIP 图像；false 返回含窗口边框的 window-DIP 图像。" })),
+  client_only: Type.Optional(Type.Boolean({ default: true, description: "默认 true：Windows 返回客户区 DIP 图像；false 返回含边框图像。Linux 截图是独立观察，禁止用截图像素生成输入坐标。" })),
   ensure_foreground: Type.Optional(Type.Boolean()),
   observation_id: Type.Optional(Type.String({ maxLength: 100 })),
-  max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 32, description: "UIA 控件树深度，默认 10；truncated=true 时可增大到 32。查询和 invoke/set 使用相同深度。" })),
+  max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 32, description: "UIA/AT-SPI 控件树深度，默认 10；truncated=true 表示查询预算内未遍历完，不能推断控件不存在。" })),
   max_nodes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
   max_lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "ocr_window 最多返回的文本行数，默认 80。" })),
   min_score: Type.Optional(Type.Number({ minimum: 0, maximum: 1, description: "ocr_window 最低置信度，默认 0.5。" })),
@@ -698,7 +700,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、坐标点击、OCR）时用 computer_exec，不要用本工具。",
+        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
         promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {
@@ -733,7 +735,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "ui_exec",
         label: "界面操作",
-        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口、坐标点击和 OCR 请用 computer_exec。",
+        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口和结构化控件操作请用 computer_exec。",
         promptSnippet: "ui_exec(action, target?, selector?/text?/role?/name?, value?, key?, state?)",
         parameters: uiExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
@@ -789,6 +791,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
           let input: ComputerExecInput | undefined;
           let operationSignal: AbortSignal | undefined;
+          let actionResult: ComputerExecOutput | undefined;
           try {
             const batchActions = Array.isArray(p.actions)
               ? (p.actions as Array<Record<string, unknown>>).map((step) => ({
@@ -869,6 +872,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             operationSignal = bridge.nativeExecution ? signal : computerUseRunCoordinator.scope(bridge.taskId, signal, bridge.computerRecovery?.resolveContext()?.executionId);
             operationSignal?.throwIfAborted();
             const result = await computerAutomationService.execute(input, operationSignal);
+            actionResult = result;
             operationSignal?.throwIfAborted();
             settleComputerUseResultRecovery(bridge.computerRecovery, input, result);
             if (result.screenshot) {
@@ -889,9 +893,11 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               operationSignal?.throwIfAborted();
               return imageResult;
             }
-            return jsonResult(batchActions?.length ? `批量桌面动作完成：${batchActions.length} 步` : `桌面动作完成：${String(action)}`, result);
+            return jsonResult(batchActions?.length
+              ? `批量桌面动作结果：${result.batch?.steps.filter((step) => step.ok).length ?? 0}/${batchActions.length} 步完成`
+              : `桌面动作结果：${String(action)}`, result);
           } catch (error) {
-            const failure = operationSignal?.aborted ? operationSignal.reason : error;
+            const failure = withComputerUseDeliveryEvidence(error, actionResult, operationSignal);
             if (input && !bridge.nativeExecution) {
               computerUseRunCoordinator.fail(input, operationSignal);
               recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure);

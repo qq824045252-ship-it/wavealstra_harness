@@ -113,10 +113,10 @@ const GUI_TESTS = new Set([
   "test:computer-use-run",
   "test:computer-use-overlay",
   "test:computer-automation-windows",
-  // Linux/Wayland 真机冒烟（CUL 分页 + 截图 + doctor + 可选 ydotool 输入）。
-  // 需要真实 Hyprland 会话（hyprctl + xdg-desktop-portal + AT-SPI 桥），xvfb 里跑不了，
-  // 所以归 GUI；`--allow-input` 才碰真按键，日常只读。
+  // Linux 原生 GTK/Electron 专用靶窗：AT-SPI + Hyprland/ydotool，无截图定位。
+  // 缺真实会话/依赖会非零退出；开发后端与真实发行包分别报告。
   "test:computer-use-linux",
+  "test:computer-use-linux:packaged",
 ]);
 
 const NETWORK_TESTS = new Set([
@@ -175,18 +175,17 @@ const GUI_WINDOWS_ONLY = new Set([
  * --include-gui；本表对 default / --include-gui / --include-live 全部生效，因为下面这些
  * 用例是按 host 平台探测真实后端能力的，跨平台跑必然红（实测 Windows 上两条必红）：
  *
- *   · test:platform-computer-use — detectComputerUseSupport("linux") 内部用
- *     resolveCulBinary() 默认按 process.platform 解析 computer-use-linux 原生二进制，
- *     Windows host 上"linux 支持"恒为 false，Linux 分节断言必然失败。
- *   · test:computer-use-linux — Linux 真机冒烟（hyprctl + xdg-desktop-portal + CUL），
- *     Windows 上没有对应后端实现。
+ *   · test:computer-use-linux / :packaged — Linux Hyprland/Wayland GUI 验收。
+ *   · test:atspi-transport — Linux Unix socket/D-Bus 真实传输测试，不等同于 GUI 验收。
  *
  * 标记原则：按"用例真实覆盖的后端"标，不是按"本机跑不过"标。能在两个平台都成立的断言
  * 应写成 host 无关（期望值用 join()/resolve() 拼，别写死 "/tmp/x"），不要塞进这张表。
  */
 const PLATFORM_ONLY_TESTS = new Map([
-  ["test:platform-computer-use", ["linux"]],
   ["test:computer-use-linux", ["linux"]],
+  ["test:computer-use-linux:packaged", ["linux"]],
+  ["test:atspi-transport", ["linux"]],
+  ["test:input-guardian-process", ["linux"]],
 ]);
 
 /** 当前 host 的平台 id（与 src/shared/desktop-platform 的 PlatformId 对齐）。 */

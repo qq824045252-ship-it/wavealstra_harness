@@ -1,0 +1,6 @@
+$ node scripts/test-guard.mjs scripts/run-linux-computer-use.cjs --app-dir release/linux-unpacked
+[test-guard] pid=51 cmd=node --max-old-space-size=4096 scripts/run-linux-computer-use.cjs --app-dir release/linux-unpacked mem_cap=6144MB timeout=900s poll=1500ms
+[linux-computer-use] FAIL Missing WAYLAND_DISPLAY: run from the actual Hyprland user graphical session
+[linux-computer-use] report: /workspace/scratch/443307551807/wavealstra_harness/out/tests/linux-computer-use/2026-11-04T21-20-26-596Z-packaged
+[test-guard] exit pid=51 code=1 elapsed=0s
+[ELIFECYCLE] Command failed with exit code 1.

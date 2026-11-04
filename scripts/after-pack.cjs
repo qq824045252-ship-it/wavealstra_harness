@@ -8,7 +8,8 @@ const { verifyPackagedApp, formatReport } = require('./verify-packaged-app.cjs')
  *
  * 1) Payload gate：**所有平台都跑**。一个 unpacked 树不完整的安装包绝不能被产出/接受
  *    （校验逻辑见 scripts/verify-packaged-app.cjs）。dev 模式永远有这些文件，只有这一步
- *    能抓住坏安装包。Linux 用无扩展名主程序 + 同一个 node worker 探针。
+ *    能抓住坏安装包。Linux 另用打包后的 Electron 自带 Node 实际启动 AT-SPI worker 握手。
+ *    握手不连接图形会话；真实桌面验收另行运行，不能据 payload PASS 宣称 GUI 通过。
  * 2) Windows-only：把打包 payload 的完整性级别设为 Medium（icacls）。工作区可能继承
  *    Low integrity，Windows 会以 Low 启动 EXE，Chromium 主进程无法创建 sandbox window
  *    station。只在 Windows 宿主 + win32 目标上执行。
@@ -25,7 +26,7 @@ module.exports = async function afterPack(context) {
   console.log(formatReport(appOutDir, verification));
   if (!verification.ok) {
     throw new Error(
-      'Packaged payload is incomplete: the Pi subagent runtime cannot start from this build. ' +
+      'Packaged payload verification failed: a required worker/runtime cannot start from this build. ' +
         'Fix the build (do not accept or install this package).\n' +
         verification.errors.map((error) => '  - ' + error).join('\n'),
     );

@@ -1,6 +1,16 @@
 import type { PlatformId } from "../index";
 import type { ComputerExecInput, ComputerExecOutput } from "./protocol";
 
+export type ComputerUseCapabilityName = "accessibility" | "semantic" | "bounds" | "window" | "pointer" | "keyboard" | "screenshot";
+
+/** A probe of one capability is not evidence that all operations are ready. */
+export interface ComputerUseCapabilityStatus {
+  available: boolean;
+  verified: boolean;
+  reason?: string;
+  checkedAt?: number;
+}
+
 /**
  * Computer Use backend 接口（平台无关）。
  *
@@ -21,6 +31,10 @@ export interface ComputerUseStatus {
   detail: string;
   /** Windows Automation Host 子进程 PID（仅 Windows backend 有）。 */
   hostPid?: number;
+  /** Timestamp and per-capability evidence from the most recent asynchronous probe. */
+  checkedAt?: number;
+  expiresAt?: number;
+  capabilities?: Partial<Record<ComputerUseCapabilityName, ComputerUseCapabilityStatus>>;
 }
 
 export interface ComputerUseBackend {
@@ -31,10 +45,8 @@ export interface ComputerUseBackend {
   execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput>;
   shutdown(): Promise<void>;
   /**
-   * 可选：刷新自检。Linux 的 CUL `doctor` 要 1–3 秒，不能塞进 `status()`
-   * （它被工具注册、设置页、agent 探针同步调用），所以由这里显式触发；
-   * 返回的 Promise 在结果写进缓存后 resolve，之后 `status()` 能读到更细的就绪信息
-   * （如 `can_capture_screenshots=false` 与「截图未验证」这类真实状态）。
+   * 可选：刷新会话、总线、compositor 与输入依赖的真实能力证据。
+   * status() 保持同步、轻量；异步探测不得隐式截图或发送用户输入。
    */
   refreshDiagnostics?(): void | Promise<void>;
   /**
@@ -46,5 +58,5 @@ export interface ComputerUseBackend {
    * 不动用户自己在按的（用户的按键不经过后端，后端也看不见）。
    * Windows 的 SendInput 没有跨调用按住语义，所以不实现。
    */
-  releaseHeldInput?(): Promise<{ keys: number[]; buttons: string[] }>;
+  releaseHeldInput?(taskId?: string): Promise<{ keys: number[]; buttons: string[] }>;
 }

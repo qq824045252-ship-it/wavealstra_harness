@@ -60,11 +60,19 @@ export interface WindowInfo {
   visible: boolean;
   minimized: boolean;
   foreground: boolean;
-  /** Physical screen pixels. Negative origins are valid on multi-monitor desktops. */
+  /** Geometry units. Omitted means Windows physical screen pixels for compatibility. */
+  coordinateSpace?: "screen-physical" | "hyprland-logical";
+  /** Identity of the compositor layout and live window instance when observed. */
+  layoutId?: string;
+  identityToken?: string;
+  observedAt?: number;
+  /** Whether the compositor/application mapping establishes a usable client origin. */
+  clientGeometryVerified?: boolean;
+  /** Global rectangle in coordinateSpace. Negative origins are valid. */
   windowRect: Rect;
-  /** Physical client pixels; client input is converted from DIP using scaleFactor. */
+  /** Windows: physical client pixels. Hyprland: logical client units, with explicit provenance. */
   clientRect: ClientRect;
-  /** Physical screen pixel origin of client (0,0). */
+  /** Global origin of client (0,0), in coordinateSpace. */
   clientOrigin: Point;
   dpi: number;
   scaleFactor: number;
@@ -85,6 +93,10 @@ export interface ControlInfo {
   hasKeyboardFocus: boolean;
   /** Raw UIA bounding rectangle in physical screen pixels. */
   screenBoundsPhysical?: { left: number; top: number; width: number; height: number };
+  /** Hyprland logical bounds must never be mislabeled as physical screen pixels. */
+  screenBoundsLogical?: { left: number; top: number; width: number; height: number };
+  boundsReliable?: boolean;
+  boundsSource?: "uia" | "atspi-screen" | "atspi-window";
   /** Same control rectangle normalized to the target window client-area DIP coordinate space. */
   clientBoundsDip?: { x: number; y: number; width: number; height: number };
   /** Backward-compatible alias for clientBoundsDip. */
@@ -93,10 +105,7 @@ export interface ControlInfo {
   depth?: number;
   /** 控件当前文本/值（AT-SPI `text`/`value`，Linux）；`set_control_value` 用它回读校验。 */
   text?: string;
-  /**
-   * 后端原生元素下标（Linux：CUL AT-SPI 快照里的 `element_index`）。
-   * 分页收集后用数组位置反查会错位，语义动作（invoke_control/set_control_value）必须用它。
-   */
+  /** Legacy adapter metadata only; never use this index to resolve an AT-SPI target. */
   elementIndex?: number;
 }
 
@@ -161,6 +170,11 @@ export function normalizeWindowInfo(input: unknown): WindowInfo {
     visible: Boolean(value.visible),
     minimized: Boolean(value.minimized),
     foreground: Boolean(value.foreground),
+    coordinateSpace: value.coordinateSpace === "hyprland-logical" ? "hyprland-logical" : value.coordinateSpace === "screen-physical" ? "screen-physical" : undefined,
+    layoutId: typeof value.layoutId === "string" ? value.layoutId : undefined,
+    identityToken: typeof value.identityToken === "string" ? value.identityToken : undefined,
+    observedAt: Number.isFinite(value.observedAt) ? value.observedAt : undefined,
+    clientGeometryVerified: typeof value.clientGeometryVerified === "boolean" ? value.clientGeometryVerified : undefined,
     windowRect: normalizedRect(rect),
     clientRect: { x: number(client.x), y: number(client.y), width: number(client.width), height: number(client.height) },
     clientOrigin: { x: number(origin.x), y: number(origin.y) },
@@ -356,9 +370,9 @@ export interface ComputerExecOutput {
   /**
    * AT-SPI 控件坐标是否可用于坐标点击。
    *
-   * Linux：GTK（GTK3 HiDPI / GTK4 zero-origin）实测 bounds 原点恒为 (0,0)，此时后端会把
-   * `clientBoundsDip`/`screenBoundsPhysical` 清空并置 false，模型只能走 invoke_control /
-   * set_control_value 或 ocr_window。Windows 不设置该字段。
+   * 只在来源单位、窗口客户区映射与最新布局均可验证时为 true。
+   * (0,0) 和负屏幕坐标本身合法；未知/矛盾边界不能用于输入。
+   * 缺少可靠边界时仍可尝试已支持的语义动作，不能自动回退到 OCR/截图定位。
    */
   boundsReliable?: boolean;
   screenshot?: Uint8Array;

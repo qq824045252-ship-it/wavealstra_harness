@@ -36,7 +36,7 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
   if (error.code === "STALE_OBSERVATION" && stableSelectorAvailable(input)) {
     if (!readonlyAction(input)) return {
       retry: false, reason: "stale-observation",
-      guidance: "窗口身份、尺寸或 DPI 已变化，旧坐标不再可信；重新截图或 inspect_controls，不能删除 observation_id 后重放旧输入。",
+      guidance: "窗口身份、尺寸或 DPI 已变化，旧坐标不再可信；重新读取窗口和 inspect_controls，不能删除 observation_id 后重放旧输入。",
     };
     return {
       retry: true,
@@ -78,8 +78,8 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
 
   const guidance: Partial<Record<WindowsAutomationError["code"], string>> = {
     CONTROL_AMBIGUOUS: "控件匹配不唯一；先 inspect_controls，再用 automationId/runtimeId/controlType 缩小选择器。",
-    CONTROL_NOT_FOUND: "控件已变化或不可见；重新 inspect_controls/screenshot_window 后再定位。",
-    POINT_OUTSIDE_CLIENT: "坐标已失效；禁止修补旧坐标，重新 screenshot_window 或读取新的 clientBoundsDip。",
+    CONTROL_NOT_FOUND: "控件已变化或不可见；重新 inspect_controls 后再定位。",
+    POINT_OUTSIDE_CLIENT: "坐标已失效；禁止修补旧坐标，重新读取窗口和可靠的 clientBoundsDip。",
     WINDOW_AMBIGUOUS: "窗口标题匹配不唯一；改用 HWND/PID 或更精确的 class/title。",
     WINDOW_NOT_FOUND: "目标窗口不存在；重新 list_windows/wait_for_window，不要盲点。",
     CONTROL_NOT_ACTIONABLE: "控件 disabled/offscreen 或不支持目标 pattern；重新观察并选择可操作控件。",

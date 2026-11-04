@@ -53,7 +53,7 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
 
 - **Pi 内核深度集成**（`src/main/agent/`）：完整支持 Pi 会话流式映射、Code Mode 资产包装、多模型会诊（Multi-Model Consult，`src/shared/multi-model-consult.ts`）及子代理（Sub-agent）模型分流配置。
 - **原生桌面工具箱**（`src/main/professional-tools/` 等）：
-  - Computer Use：桌面环境感知与自动化控制（Linux 端集成 `computer-use-linux`，见 `src/main/platform/computer-use/`）。
+  - Computer Use：桌面环境感知与自动化控制（Linux 端使用 TypeScript + AT-SPI / Hyprland，控件发现与输入不依赖截图；见 [Linux Computer Use](docs/linux-computer-use.md)）。
   - 本地视觉与语音：本地 PDF/图像 OCR 路径与本地 Whisper 语音转写（`src/main/voice/`）。
   - 内嵌环境：受控浏览器（`src/main/browser/`）、集成终端 PTY（`src/main/terminal/`）、HTML 编辑与办公文档 / Artifact 预览（`src/main/artifact/`）。
 - **多通道网关与远程协同**：
@@ -66,7 +66,7 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
 
 1. **云端模型依赖**：本地 OCR 与本地 Whisper 仅负责视觉/语音预处理，不等于整机完全离线运行。若未配置本地推理后端，核心对话与推理仍需配置云端大模型 API Key 或 OAuth 鉴权。
 2. **办公文档预览限制**：内置表格预览组件仅做结构与数据渲染，不会动态重算复杂 Excel 公式。
-3. **跨平台桌面控制差异**：不同操作系统下的 Computer Use 能力并不完全对等；例如在 Linux Wayland 会话下，受限于合成器安全策略，后台窗口截图等操作会显式报错失败（Fail-fast），而非静默返回黑屏。
+3. **跨平台桌面控制差异**：不同操作系统下的 Computer Use 能力并不完全对等；Linux 原生后端明确支持 Omarchy / Hyprland / Wayland；其他合成器、无可访问树或不可靠控件边界会报告具体能力限制。显式截图是独立观察能力，截图故障不会使语义操作或输入失效。
 4. **自动化测试覆盖边界**：仓库中的 `pnpm test:all` 运行的是无头棘轮测试套件（Headless Ratchet Suite，用于锁死回归门禁），测试全绿不代表真实 GUI 交互、真实 Slack 线上连接或真实硬件 OCR 已完成端到端人工验收。
 5. **插件生态兼容性**：「兼容 CodeBuddy 插件目录结构」指元数据解析与目录布局对齐，并不代表官方市场中的每一个第三方插件包均已在本项目中逐一回归测试过。
 

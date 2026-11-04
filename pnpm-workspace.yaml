@@ -18,7 +18,6 @@ allowBuilds:
   lzma-native: true
   protobufjs: true
   '@google/genai': true
-  '@agent-sh/computer-use-linux': true
   node-pty: true
   onnxruntime-node: true
 

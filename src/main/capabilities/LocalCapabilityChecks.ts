@@ -81,15 +81,15 @@ export async function checkLocalExecution(kind: "terminal" | "code-execution", p
 /**
  * 桌面操作探针：实际枚举窗口，并顺带把后端的自检刷新一次。
  *
- * Linux 的 `computer-use-linux doctor` 要 1–3 秒，所以它不能放进 `status()`
- * （工具注册/设置页会同步调用），只能在这里——用户主动点「检查」时——跑一次，
- * 让设置页随后能看到「截图未验证 / 不能截图」这类真实就绪信息，而不是永远
- * 只显示 ready。
+ * Linux 异步验证 AT-SPI/Hyprland 会话和输入依赖，分别记录证据与时效。
+ * 不在同步 status() 中阻塞，也不在就绪检查中隐式截图。
  */
 async function checkComputerUse(): Promise<unknown> {
-  const result = await computerAutomationService.execute({ action: "list_windows" });
   await computerAutomationService.refreshDiagnostics?.();
-  return result;
+  const status = computerAutomationService.status();
+  if (!status.supported) throw new Error(status.reason ?? status.detail);
+  const result = await computerAutomationService.execute({ action: "list_windows" });
+  return { result, status };
 }
 
 export function registerLocalCapabilityChecks(runtime: BuiltinCapabilityRuntime, browser: BrowserAutomationService, python: PythonRuntimeService): void {

@@ -11,5 +11,5 @@ import { createComputerUseBackend } from "../platform/computer-use/index";
 export * from "../platform/computer-use/protocol";
 export { WindowsComputerUseBackend as ComputerAutomationService } from "../platform/computer-use/windows/WindowsComputerUseBackend";
 
-/** 当前平台的 Computer Use backend（Windows=UIA 实现；Linux/macOS=unsupported）。 */
+/** 当前平台的 Computer Use backend（Windows=UIA；Linux=AT-SPI/Hyprland；macOS=unsupported）。 */
 export const computerAutomationService = createComputerUseBackend();

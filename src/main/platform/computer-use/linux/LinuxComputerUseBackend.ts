@@ -1,1710 +1,788 @@
-import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
 import { randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
-import type { ComputerUseBackend, ComputerUseStatus } from "../backend";
+import { computerUseRunCoordinator } from "../../../capabilities/ComputerUseRunCoordinator";
+import { withComputerUseDeliveryEvidence, validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
+import type { ComputerUseBackend, ComputerUseStatus, ComputerUseCapabilityName, ComputerUseCapabilityStatus } from "../backend";
 import {
-  COMPUTER_BATCH_ACTIONS,
-  ComputerUseError,
-  type ActionObservation,
-  type AppSessionInfo,
-  type ComputerBatchAction,
-  type ComputerBatchResult,
-  type ComputerBatchStep,
-  type ComputerBatchStepResult,
-  type ComputerExecAction,
-  type ComputerExecInput,
-  type ComputerExecOutput,
-  type ControlInfo,
-  type OcrLine,
-  type TargetIdentity,
-  type WindowInfo,
+  COMPUTER_BATCH_ACTIONS, ComputerUseError,
+  type AppSessionInfo, type ComputerBatchStep, type ComputerBatchStepResult,
+  type ComputerExecAction, type ComputerExecInput, type ComputerExecOutput,
+  type ComputerSemanticOutcome, type ControlInfo, type Point, type WindowInfo,
 } from "../protocol";
-import { describeLinuxOcrProvider } from "../ocr";
-import { computerUseUnsupportedMessage, detectComputerUseSupport } from "../support";
-import { resolveCulBinary, runCulDoctorAsync, type CulDoctorReport } from "./culBinary";
-import { CulMcpClient } from "./culClient";
-import {
-  CUL_TOOLS,
-  clientDipToScreenPhysical,
-  compactWindowInfo,
-  controlBoundsAreZeroOrigin,
-  controlFingerprint,
-  culFailure,
-  filterWindows,
-  findControl,
-  hasDialogRole,
-  imageScaleFromMeta,
-  looksLikeChromiumWindow,
-  matchesSelector,
-  parseTesseractTsv,
-  stripUnreliableControlBounds,
-  toControlInfo,
-  toCulKey,
-  toWindowInfo,
-  type CulAccessibilityNode,
-  type CulWindow,
-} from "./culProtocol";
-import { readHyprlandMonitors } from "./hyprlandMonitors";
-import {
-  ACCESSIBILITY_MAX_NODES,
-  ACCESSIBILITY_MAX_PAGES,
-  collectAccessibilityTree,
-  toAccessibilityPage,
-} from "./accessibilityTree";
-import { keyChordToKeycodes, YdotoolInput, type YdotoolRunner } from "./ydotool";
-import { createHyprlandWindowControl, type HyprlandWindowControl, type HyprlandWindowRect } from "./hyprlandWindows";
-
-const execFileAsync = promisify(execFile);
-
-const BATCH_MAX_STEPS = 8;
-const BATCH_SETTLE_DEFAULT_MS = 120;
-const OBSERVATION_TTL_MS = 30_000;
-const MAX_OBSERVATIONS = 64;
-const APP_SESSION_TTL_MS = 10 * 60_000;
-const MAX_APP_SESSIONS = 8;
-/** CUL 在 AT-SPI 无法分类输入框时限制 100 字符/次；按词切块避免踩线。 */
-const TYPE_TEXT_CHUNK = 90;
-const DOCTOR_TTL_MS = 60_000;
-const SCREENSHOT_MAX_EDGE = 1600;
-const SCREENSHOT_QUALITY = 70;
-/**
- * GTK 的 AT-SPI bounds 原点实测恒为 (0,0)（宽高是真的），照坐标点会稳定点到客户区左上角。
- * 这个提示会随 `inspect_controls` / `find_control` 的 detail 一起回给模型。
- */
-const ZERO_ORIGIN_BOUNDS_HINT =
-  "该窗口的 AT-SPI bounds 原点全部为 0（GTK 已知问题：GTK3 HiDPI extents / GTK4 zero-origin bounds），控件坐标已省略、不能用于 click_client：有语义动作时用 invoke_control / set_control_value，需要坐标时用 ocr_window 拿文字行坐标再点";
-
-/**
- * 需要串行执行的动作：任何可能改变焦点或输入状态的调用。
- *
- * 借鉴 LCU 的 Linux 输入队列：它把所有「可能移动焦点/输东西」的调用排进一个队列，
- * 并在真正下发前再确认一次焦点，避免两个并发调用互相穿插（后一个把焦点抢走，前一个
- * 的按键落到别的窗口）。这里在 backend 层用一条 Promise 链做同样的串行化。
- */
-const SERIALIZED_ACTIONS: ReadonlySet<string> = new Set([
-  "attach_app", "focus_window",
-  "invoke_control", "set_control_value",
-  "screenshot_window",
-  "move_window", "resize_window",
-  "move_client", "click_client", "drag_client", "scroll_client",
-  "mouse_down_client", "mouse_up_client", "drag_screen",
-  "key_press", "key_down", "key_up", "type_text", "paste_text",
-  "mouse_move", "mouse_click", "mouse_drag", "scroll",
-]);
+import { detectComputerUseSupport } from "../support";
+import { AtSpiClient } from "./atspiClient";
+import type { AtSpiDriverApi, AtSpiInspection } from "./atspiTypes";
+import { createHyprlandDesktop, createHyprlandWindowControl, hyprlandAddressFromHandle, windowGeometryIdentity, type HyprlandDesktop, type HyprlandSnapshot, type HyprlandWindowControl, type LinuxWindowInfo } from "./hyprlandWindows";
+import { containsPoint, monitorForPoint } from "./hyprlandMonitors";
+import { createGrimScreenshotProvider, type LinuxScreenshotProvider } from "./screenshotProvider";
+import { YdotoolInput, keyChordToKeycodes, type YdotoolRunner } from "./ydotool";
+import { writeWaylandClipboard } from "./clipboard";
+import { abortableDelay, boundedNumber, clientDipToLogical, errorText, filterWindows, finiteNumber, hasControlSelector, hasWindowSelector, matchesSelector, sameWindowIdentity, throwIfCancelled } from "./nativeHelpers";
 
 type MouseButton = "left" | "right" | "middle";
+interface Observation { window: LinuxWindowInfo; at: number; owner: string }
+interface AppSession { info: AppSessionInfo; owner: string }
+interface ActionContext { snapshot: HyprlandSnapshot; target?: LinuxWindowInfo; control?: ControlInfo; submitted: boolean; owner: string; clipboardChanged?: boolean }
+const OBSERVATION_TTL = 30_000;
+const SESSION_TTL = 10 * 60_000;
+const DIAGNOSTIC_TTL = 60_000;
+const INPUT_ACTIONS = new Set<ComputerExecAction>(["focus_window", "move_client", "click_client", "drag_client", "scroll_client", "mouse_down_client", "mouse_up_client", "key_down", "key_up", "paste_text", "drag_screen", "mouse_move", "mouse_click", "mouse_drag", "scroll", "key_press", "type_text", "move_window", "resize_window", "invoke_control", "set_control_value"]);
+const SCREEN_ACTIONS = new Set<ComputerExecAction>(["mouse_move", "mouse_click", "mouse_drag", "drag_screen", "scroll"]);
+const COORDINATE_ACTIONS = new Set<ComputerExecAction>(["move_client", "click_client", "drag_client", "scroll_client", "mouse_down_client", "drag_screen", "mouse_move", "mouse_click", "mouse_drag", "scroll"]);
+const NO_TARGET_ACTIONS = new Set<ComputerExecAction>(["status", "list_windows", "active_window", "screenshot", "wait_for_window", "key_up"]);
 
-interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
-interface DoctorCache { at: number; report: CulDoctorReport }
-
-function assertNotCancelled(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    const reason = signal.reason;
-    if (reason instanceof ComputerUseError) throw reason;
-    throw new ComputerUseError("REQUEST_CANCELLED", "Computer Use 操作已取消");
-  }
+export interface LinuxComputerUseBackendOptions {
+  atspi?: AtSpiDriverApi;
+  compositor?: HyprlandDesktop;
+  input?: YdotoolInput;
+  ydotoolRunner?: YdotoolRunner;
+  windowControl?: HyprlandWindowControl;
+  screenshotProvider?: LinuxScreenshotProvider;
+  /** Convenient injection for acceptance tests; never called unless screenshot/captureAfter is explicit. */
+  screenshot?: LinuxScreenshotProvider["capture"];
+  pasteViaClipboard?: (text: string, signal?: AbortSignal) => void | Promise<void>;
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
-async function checked<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  assertNotCancelled(signal);
-  try {
-    return await run();
-  } catch (error) {
-    if (signal?.aborted) {
-      throw new ComputerUseError("REQUEST_CANCELLED", "Computer Use 操作已取消");
-    }
-    throw error;
-  }
-}
-
-/** 窗口集合（handle + 标题）是否发生变化：语义动作的便宜生效判据（`list_windows` ~100ms）。 */
-function windowsChanged(before: WindowInfo[], after: WindowInfo[]): boolean {
-  const key = (windows: WindowInfo[]) => windows.map((window) => `${window.handle}:${window.title}`).sort().join("|");
-  return key(before) !== key(after);
-}
-
-function requireFinite(value: unknown, name: string): number {
-  const number = Number(value);
-  if (!Number.isFinite(number)) throw new ComputerUseError("POINT_OUTSIDE_CLIENT", `${name} 必须是有限数字`, { value });
-  return number;
-}
-
-/** Computer Use 协议的修饰键 → 键名（交给 ydotool 按 evdev keycode 按住）。 */
-function modifierKeyName(modifier: string): string {
-  switch (modifier.toLowerCase()) {
-    case "ctrl": return "Ctrl";
-    case "shift": return "Shift";
-    case "alt": return "Alt";
-    case "win": return "Super";
-    default:
-      throw new ComputerUseError("HOST_PROTOCOL_ERROR", `不认识的修饰键：${modifier}`, { modifier });
-  }
-}
-
-/** 拖拽插值/长按用的等待（可被取消时不强制打断：这些停顿都在 5 秒以内）。 */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, ms); });
-}
-
-/**
- * Linux Computer Use backend（Hyprland/Wayland，基于 computer-use-linux）。
- *
- * 功能全部委托给 `computer-use-linux`（CUL）的 MCP server：窗口枚举/聚焦走
- * Hyprland IPC，截图走 xdg-desktop-portal，输入走 uinput 绝对指针 + wtype/ydotool，
- * 无障碍树走 AT-SPI。本类只负责：
- *   1. 把 MyBuddy 的 `computer_exec` 动作映射到 CUL 工具；
- *   2. 做 DIP ↔ 物理像素 ↔ 截图图像像素的换算；
- *   3. 用本地 tesseract 做 OCR（CUL 不提供 OCR）；
- *   4. 用 ydotool 补 CUL 没有的按下/松开分离（见 `ydotool.ts`）；
- *   5. 把 AT-SPI 树翻页收全（见 `accessibilityTree.ts`）；
- *   6. 保持与 `ComputerUseBackend` 一致的状态/错误契约。
- *
- * 能力边界（Wayland 的真实限制，写在这里免得以后重新踩。**每条都经真机验证**，
- * 2026-10-27 Omarchy / Hyprland 0.56.2 / eDP-1 2160×1440 @1.6）：
- * - 没有后台截图：portal 只能截前台；`background=true` 会被显式拒绝。
- * - press/release **可以**分离：走 ydotool（`key 42:1` / `key 42:0` / `click 0x40|0x80`），
- *   状态跨进程持久；不能用 wtype（虚拟键盘协议在进程退出时释放）也不能用
- *   Hyprland 的 `hl.dsp.send_key_state`（实测不产生持久状态）。
- * - AT-SPI 对 Electron/Qt/Tauri **不是**只暴露 application/frame：树是完整的，但
- *   `get_app_state` 只内联前 ~20 个节点，且 `max_nodes` 对内联数量无效，必须用
- *   `get_tree_page` 翻页；不翻页时确实只能看到匿名 Section（所以要 ocr 兜底）。
- */
+/** Linux native runtime: persistent AT-SPI worker + compositor IPC + evdev edges. No image discovery. */
 export class LinuxComputerUseBackend implements ComputerUseBackend {
   readonly platform = "linux" as const;
-  readonly backend = "linux-cul" as const;
-
-  private client?: CulMcpClient;
-  private doctor?: DoctorCache;
-  private monitorsCache?: { at: number; monitors: Awaited<ReturnType<typeof readHyprlandMonitors>> };
-  private readonly observations = new Map<string, CachedObservation>();
-  private readonly appSessions = new Map<string, AppSessionInfo>();
+  readonly backend = "linux-atspi" as const;
+  private readonly atspi: AtSpiDriverApi;
+  private readonly compositor: HyprlandDesktop;
   private readonly input: YdotoolInput;
   private readonly windowControl: HyprlandWindowControl;
+  private readonly screenshots: LinuxScreenshotProvider;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly observations = new Map<string, Observation>();
+  private readonly sessions = new Map<string, AppSession>();
+  private readonly controlReferences = new Map<string, { observationId: string; owner: string; window: LinuxWindowInfo }>();
+  private readonly heldKeys = new Map<number, string>();
+  private readonly heldButtons = new Map<MouseButton, string>();
+  private readonly heldTargets = new Map<string, WindowInfo>();
+  private queue: Promise<unknown> = Promise.resolve();
+  private closing = false;
+  private activeController?: AbortController;
+  private recoveryPending = false;
+  private recoveryReason?: string;
+  private readonly lifetime = new AbortController();
+  private diagnostics?: { checkedAt: number; capabilities: Partial<Record<ComputerUseCapabilityName, ComputerUseCapabilityStatus>> };
   private diagnosticsRefresh?: Promise<void>;
-  /** 后端按下、尚未释放的 keycode / 鼠标按钮（任务结束或动作失败时兜底释放）。 */
-  private readonly heldKeys = new Set<number>();
-  private readonly heldButtons = new Set<MouseButton>();
-  /** 输入/焦点动作的串行队列（同 LCU 的 input queue）。 */
-  private inputLock: Promise<unknown> = Promise.resolve();
 
-  /**
-   * @param options.pasteViaClipboard 注入剪贴板写入（默认走 Electron `clipboard`）；
-   *   注入后 `paste_text` 会写剪贴板并打 Ctrl+V，而不是逐字 wtype。
-   * @param options.ydotoolRunner 注入 ydotool 执行器（单测不碰真机）。
-   */
-  constructor(private readonly options: {
-    ydotoolRunner?: YdotoolRunner;
-    pasteViaClipboard?: (text: string) => void | Promise<void>;
-    /**
-     * Hyprland 窗口几何控制（move_window/resize_window）。CUL 自己的 move_window/
-     * resize_window 在 Hyprland 上直接失败（它只有 GNOME Shell 扩展和 X11/EWMH 两条路），
-     * 所以这里走 hyprctl 的 Lua API。
-     */
-    windowControl?: HyprlandWindowControl;
-  } = {}) {
-    this.input = new YdotoolInput({ runner: options.ydotoolRunner });
+  constructor(private readonly options: LinuxComputerUseBackendOptions = {}) {
+    this.atspi = options.atspi ?? new AtSpiClient({ onUnexpectedExit: error => this.onTransportLoss(error) });
+    this.compositor = options.compositor ?? createHyprlandDesktop(undefined, { onDisconnect: error => this.onTransportLoss(error) });
+    this.input = options.input ?? new YdotoolInput({ runner: options.ydotoolRunner, onUnexpectedExit: error => this.onTransportLoss(error) });
     this.windowControl = options.windowControl ?? createHyprlandWindowControl();
+    const screenshots = options.screenshotProvider ?? createGrimScreenshotProvider();
+    this.screenshots = options.screenshot ? { probe: screenshots.probe, capture: options.screenshot } : screenshots;
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? abortableDelay;
   }
 
-
-  /** 工具注册时的可用性判定：CUL 二进制在不在（不 spawn、不阻塞）。 */
-  get available(): boolean {
-    return resolveCulBinary() !== undefined;
-  }
-
-  /**
-   * 能力状态。
-   *
-   * **不在 status() 里 spawn `computer-use-linux doctor`**：这个方法会被工具注册、
-   * 设置页和 agent 探针同步调用，而 doctor 要 1–3 秒。这里只做文件存在性判断 +
-   * 读已缓存的 doctor；缓存没有时由 `ensureDiagnostics()` 在后台补一次（不阻塞本次调用）。
-   */
+  get available(): boolean { return Boolean(this.options.compositor || detectComputerUseSupport("linux").supported); }
   status(): ComputerUseStatus {
-    const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
-    if (!binary) {
-      const support = detectComputerUseSupport("linux", { refresh: true });
-      return {
-        platform: this.platform,
-        backend: this.backend,
-        supported: false,
-        missingDependencies: support.missingDependencies,
-        installHint: support.installHint,
-        reason: support.reason,
-        detail: computerUseUnsupportedMessage(support),
-      };
-    }
-    // 首次 status() 时后台补 doctor（不 await、不阻塞）；结果下次调用可见。
-    void this.ensureDiagnostics();
-    const doctor = this.doctor?.report;
-    const readiness = doctor?.readiness as {
-      can_capture_screenshots?: boolean;
-      screenshot_capture_status?: string;
-      blockers?: string[];
-      warnings?: string[];
-    } | undefined;
-    const missingDependencies = readiness?.blockers ?? [];
-    const warnings = readiness?.warnings ?? [];
+    const support = detectComputerUseSupport("linux");
+    const stale = !this.diagnostics || this.now() - this.diagnostics.checkedAt > DIAGNOSTIC_TTL;
+    const capabilities = this.diagnostics?.capabilities;
     return {
-      platform: this.platform,
-      backend: this.backend,
-      supported: true,
-      missingDependencies,
-      reason: warnings.length > 0 ? warnings.join("；") : undefined,
-      detail: [
-        `ready (${this.backend}: computer-use-linux MCP)`,
-        `binary=${binary}`,
-        readiness?.screenshot_capture_status ? `screenshot=${readiness.screenshot_capture_status}` : undefined,
-        readiness?.can_capture_screenshots === false ? "can_capture_screenshots=false" : undefined,
-        doctor?.capabilities?.preferred?.input ? `input=${doctor.capabilities.preferred.input}` : undefined,
-        doctor?.capabilities?.window_control?.length ? `window_control=${doctor.capabilities.window_control.join(",")}` : undefined,
-        this.input.available ? "press_release=ydotool" : "press_release=unavailable",
-        this.client?.pid ? `pid=${this.client.pid}` : undefined,
-      ].filter(Boolean).join(" "),
-      hostPid: this.client?.pid,
+      platform: this.platform, backend: this.backend, supported: this.available,
+      missingDependencies: this.options.compositor ? [] : support.missingDependencies,
+      installHint: support.installHint,
+      reason: !this.available ? support.reason : stale ? "能力诊断尚未刷新或已过期；动作会独立验证实际依赖" : undefined,
+      detail: !this.available ? `Linux 原生后端不可用：${support.reason ?? "需要 Hyprland/Wayland"}` : `Linux AT-SPI / Hyprland${stale ? "（诊断待刷新）" : "（按能力报告就绪状态）"}`,
+      hostPid: this.atspi instanceof AtSpiClient ? this.atspi.pid : undefined,
+      checkedAt: this.diagnostics?.checkedAt, expiresAt: this.diagnostics ? this.diagnostics.checkedAt + DIAGNOSTIC_TTL : undefined, capabilities,
     };
   }
 
-  /**
-   * 显式跑一次 `computer-use-linux doctor` 并缓存结果（诊断/设置页用，不阻塞常规动作）。
-   */
   refreshDiagnostics(): Promise<void> {
-    return this.ensureDiagnostics({ force: true });
-  }
-
-  /** 后台刷一次 doctor（同一时刻只跑一个；失败静默，后续 status() 会重试）。 */
-  private ensureDiagnostics(options: { force?: boolean } = {}): Promise<void> {
     if (this.diagnosticsRefresh) return this.diagnosticsRefresh;
-    if (!options.force && this.doctor) return Promise.resolve();
-    const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
-    if (!binary) return Promise.resolve();
-    this.diagnosticsRefresh = (async () => {
-      try {
-        const report = await runCulDoctorAsync(binary);
-        if (report) this.doctor = { at: Date.now(), report };
-      } catch {
-        // doctor 是诊断增强，失败不影响动作；下次 status() 再试。
-      } finally {
-        this.diagnosticsRefresh = undefined;
-      }
-    })();
+    this.diagnosticsRefresh = this.probeCapabilities().finally(() => { this.diagnosticsRefresh = undefined; });
     return this.diagnosticsRefresh;
   }
-
-  async shutdown(): Promise<void> {
-    // 先释放按住状态，再关 MCP：否则一个漏掉的 key_down 会把用户桌面留在按着修饰键的状态。
-    await this.releaseHeldInput().catch(() => undefined);
-    await this.client?.close();
-    this.client = undefined;
-    this.doctor = undefined;
-    this.monitorsCache = undefined;
-    this.observations.clear();
-    this.appSessions.clear();
+  private async probeCapabilities(): Promise<void> {
+    const checkedAt = this.now();
+    const results = await Promise.allSettled([this.atspi.probe(this.lifetime.signal), this.compositor.snapshot(this.lifetime.signal), this.compositor.cursor(this.lifetime.signal), this.input.probe(), this.screenshots.probe()]);
+    const [accessibility, windows, pointer, keyboard, screenshot] = results;
+    const unavailable = (result: PromiseRejectedResult): ComputerUseCapabilityStatus => ({ available: false, verified: false, checkedAt, reason: errorText(result.reason) });
+    const a: ComputerUseCapabilityStatus = accessibility.status === "fulfilled" ? { available: accessibility.value.available, verified: accessibility.value.available, checkedAt, reason: accessibility.value.reason } : unavailable(accessibility);
+    this.diagnostics = { checkedAt, capabilities: {
+      accessibility: a,
+      semantic: { available: a.available, verified: false, checkedAt, reason: "每个目标仍须提供 Action / EditableText / Value 并经实际应用读回验证" },
+      bounds: { available: false, verified: false, checkedAt, reason: "仅目标 AT-SPI 根节点与新鲜合成器几何一致时发布控件坐标" },
+      window: windows.status === "fulfilled" ? { available: true, verified: true, checkedAt } : unavailable(windows),
+      pointer: pointer.status === "fulfilled" && windows.status === "fulfilled" ? { available: true, verified: false, checkedAt, reason: "已读到实际光标；移动会逐次读回验证" } : unavailable((pointer.status === "rejected" ? pointer : windows) as PromiseRejectedResult),
+      keyboard: keyboard.status === "fulfilled" ? keyboard.value : unavailable(keyboard),
+      screenshot: screenshot.status === "fulfilled" ? screenshot.value : unavailable(screenshot),
+    } };
+  }
+  private markCapability(name: ComputerUseCapabilityName, available: boolean, verified: boolean, reason?: string): void {
+    this.diagnostics ??= { checkedAt: this.now(), capabilities: {} };
+    this.diagnostics.capabilities[name] = { available, verified, reason, checkedAt: this.now() };
   }
 
-  async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+  execute(input: ComputerExecInput, externalSignal?: AbortSignal): Promise<ComputerExecOutput> {
     validateComputerAction(input);
-    const action = input.actions?.length ? "batch" : input.action;
-    if (!action) throw new Error("computer_exec 需要 action 或 actions");
-    if (action === "status") return { action, ...this.status() } as ComputerExecOutput;
-    // 批量里全是输入步骤；读类动作（list/inspect/ocr）不进队列，避免拖慢观察。
-    if (action === "batch" || SERIALIZED_ACTIONS.has(action)) {
-      return this.withInputLock(() => this.executeUnlocked(input, signal));
-    }
-    return this.executeUnlocked(input, signal);
-  }
-
-  private async executeUnlocked(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    if (input.actions?.length) return this.executeBatch(input, signal);
-    const restore = input.restoreForeground === true ? await this.foregroundHandle(signal) : undefined;
-    let outcome: ComputerExecOutput | undefined;
-    try {
-      outcome = await this.observeAfterIfNeeded(input, signal);
-      return outcome;
-    } finally {
-      if (restore) {
-        try {
-          await this.focusWindow(restore, signal);
-        } catch (error) {
-          if (outcome) (outcome as { restoreError?: string }).restoreError = error instanceof Error ? error.message : String(error);
-        }
-      }
-    }
-  }
-
-  /**
-   * 串行执行 + 失败清理（借鉴 LCU 的 input queue / input state）。
-   *
-   * 1. **串行**：焦点和输入是全局状态，两个并发 computer_exec 穿插会把按键打到错误窗口。
-   * 2. **失败清理**：动作抛错或被取消时，只释放「这次动作自己按下、现在还按着」的键/按钮；
-   *    之前动作已经按住的（跨动作按住是受支持的能力）保持不动，避免把用户/模型的组合键拆掉。
-   */
-  private async withInputLock<T>(task: () => Promise<T>): Promise<T> {
-    const previous = this.inputLock;
-    let release!: () => void;
-    // 占住队尾（而不是等 task 结束再改 inputLock）：失败清理也在锁内，不会和下一个动作的
-    // ydotool 写入交错。
-    this.inputLock = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    const keysBefore = new Set(this.heldKeys);
-    const buttonsBefore = new Set(this.heldButtons);
-    try {
-      return await task();
-    } catch (error) {
-      await this.releaseHeldSince(keysBefore, buttonsBefore).catch(() => undefined);
-      throw error;
-    } finally {
-      release();
-    }
-  }
-
-  /** 释放「按之前快照对比新增」的按住状态（失败清理用）。 */
-  private async releaseHeldSince(keysBefore: Set<number>, buttonsBefore: Set<MouseButton>): Promise<void> {
-    const addedKeys = [...this.heldKeys].filter((code) => !keysBefore.has(code)).reverse();
-    const addedButtons = [...this.heldButtons].filter((button) => !buttonsBefore.has(button));
-    for (const code of addedKeys) {
+    this.validateInput(input);
+    if (input.taskId) externalSignal = computerUseRunCoordinator.scope(input.taskId, externalSignal);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    externalSignal?.addEventListener("abort", abort, { once: true });
+    this.lifetime.signal.addEventListener("abort", abort, { once: true });
+    if (externalSignal?.aborted || this.lifetime.signal.aborted) controller.abort();
+    const timeoutMs = boundedNumber(input.timeoutMs, 30_000, 1, 120_000, "timeoutMs");
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    const owner = input.taskId?.trim() || "__direct__";
+    const operation = this.queue.then(async () => {
+      let result: ComputerExecOutput | undefined;
+      let prepared = input;
       try {
-        await this.input.setKeycodesHeld([code], false);
-      } catch { /* 尽力而为：ydotool 不可用时没什么可释放 */ }
-      this.heldKeys.delete(code);
-    }
-    for (const button of addedButtons) {
-      try {
-        await this.input.setButtonHeld(button, "up");
-      } catch { /* 同上 */ }
-      this.heldButtons.delete(button);
-    }
-  }
-
-  /**
-   * 释放后端记录的全部按住状态（任务结束/取消/关闭后端时调用）。
-   *
-   * ydotool 的按住状态跨进程持久，agent 漏掉 `key_up` 会把用户桌面留在「按着 Ctrl」的状态。
-   * 返回实际释放了什么，便于日志/断言。
-   */
-  async releaseHeldInput(): Promise<{ keys: number[]; buttons: string[] }> {
-    return this.withInputLock(async () => {
-      const keys = [...this.heldKeys].reverse();
-      const buttons = [...this.heldButtons] as MouseButton[];
-      this.heldKeys.clear();
-      this.heldButtons.clear();
-      for (const code of keys) {
-        try {
-          await this.input.setKeycodesHeld([code], false);
-        } catch { /* 尽力而为 */ }
-      }
-      for (const button of buttons) {
-        try {
-          await this.input.setButtonHeld(button, "up");
-        } catch { /* 尽力而为 */ }
-      }
-      return { keys, buttons: buttons as string[] };
+        this.activeController = controller;
+        if (this.recoveryPending) await this.recoverInputs();
+        throwIfCancelled(controller.signal);
+        if (this.closing) throw new ComputerUseError("HOST_UNAVAILABLE", "Linux 桌面后端正在关闭");
+        prepared = input.taskId ? computerUseRunCoordinator.prepare(input) : input;
+        result = prepared.actions ? await this.batch(prepared, owner, controller.signal) : await this.perform(prepared, owner, controller.signal);
+        throwIfCancelled(controller.signal);
+        return computerUseRunCoordinator.complete(prepared, result);
+      } catch (error) {
+        // Recovery stays inside this transaction: the next queued action cannot race release edges.
+        computerUseRunCoordinator.fail(prepared, externalSignal);
+        const cleanup = await this.releaseOwned(owner);
+        error = withComputerUseDeliveryEvidence(error, result);
+        if (timedOut) throw new ComputerUseError("REQUEST_TIMEOUT", "桌面请求已超时；已发送操作可能生效，不可盲目重试", { ...(error instanceof ComputerUseError ? this.errorDetails(error) : {}), cause: errorText(error), executed: this.errorExecution(error), cleanup });
+        if (error instanceof ComputerUseError) throw new ComputerUseError(error.code, error.message, { ...(this.errorDetails(error)), cleanup });
+        throw new ComputerUseError("HOST_PROTOCOL_ERROR", errorText(error), { cleanup });
+      } finally { if (this.activeController === controller) this.activeController = undefined; }
     });
+    this.queue = operation.catch(() => undefined);
+    return operation.finally(() => { clearTimeout(timer); externalSignal?.removeEventListener("abort", abort); this.lifetime.signal.removeEventListener("abort", abort); });
   }
 
-  /* ---------------------------------------------------------------- */
-  /* 入口：动作分发                                                     */
-  /* ---------------------------------------------------------------- */
-
-  private async observeAfterIfNeeded(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const output = await this.executeOnce(input, signal);
-    if (!input.observeAfter && !input.captureAfter) return output;
-    const target = output.window ?? this.resolveSessionWindow(input);
-    if (!target) return output;
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
-    if (!after) return output;
-    const observation: ActionObservation = {
-      targetBefore: target,
-      targetAfter: after,
-      foregroundAfter: after.foreground ? after.title : undefined,
-      focusPreserved: after.foreground,
-    };
-    output.observation = observation;
-    output.window = after;
-    return output;
+  private errorDetails(error: ComputerUseError): Record<string, unknown> {
+    return error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : {};
   }
-
-  private async executeOnce(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    assertNotCancelled(signal);
-    const action = input.action as ComputerExecAction;
-    switch (action) {
-      case "status": return { action, ...this.status() } as ComputerExecOutput;
-      case "attach_app": return this.attachApp(input, signal);
-      case "list_windows": return this.listWindows(input, signal);
-      case "active_window": return this.activeWindow(action, signal);
-      case "inspect_window": return this.inspectWindow(action, input, signal);
-      case "focus_window": return this.focusWindowFromInput(action, input, signal);
-      case "wait_for_window": return this.waitForWindow(action, input, signal);
-      case "screenshot": return this.captureScreen(action, signal);
-      case "screenshot_window": return this.captureWindow(action, input, signal);
-      case "ocr_window": return this.ocrWindow(action, input, signal);
-      case "inspect_controls": return this.inspectControls(action, input, signal);
-      case "find_control": return this.findControlAction(action, input, signal);
-      case "invoke_control": return this.invokeControl(action, input, signal, false);
-      case "set_control_value": return this.invokeControl(action, input, signal, true);
-      case "move_client": return this.pointerAction(action, input, "move", signal);
-      case "click_client": return this.pointerAction(action, input, "click", signal);
-      case "drag_client": return this.pointerAction(action, input, "drag", signal);
-      case "scroll_client": return this.pointerAction(action, input, "scroll", signal);
-      case "mouse_down_client": return this.pointerSplit(action, input, "down", signal);
-      case "mouse_up_client": return this.pointerSplit(action, input, "up", signal);
-      case "key_press": return this.keyPress(action, input, signal);
-      case "type_text": return this.typeText(action, input, signal);
-      case "paste_text": return this.pasteText(action, input, signal);
-      case "key_down": return this.keySplit(action, input, true, signal);
-      case "key_up": return this.keySplit(action, input, false, signal);
-      case "drag_screen": return this.dragScreen(action, input, signal);
-      case "move_window": return this.windowGeometryAction(action, input, signal);
-      case "resize_window": return this.windowGeometryAction(action, input, signal);
-      case "mouse_move": return this.legacyMouse(action, input, "move", signal);
-      case "mouse_click": return this.legacyMouse(action, input, "click", signal);
-      case "mouse_drag": return this.legacyMouse(action, input, "drag", signal);
-      case "scroll": return this.legacyMouse(action, input, "scroll", signal);
-      default:
-        throw new ComputerUseError("HOST_PROTOCOL_ERROR", `不支持的 computer_exec action：${String(action)}`);
+  private errorExecution(error: unknown): unknown {
+    if (!(error instanceof ComputerUseError)) return "unknown";
+    const details = this.errorDetails(error);
+    const result = details.actionResult && typeof details.actionResult === "object" ? details.actionResult as Record<string, unknown> : undefined;
+    return details.executed ?? result?.executed ?? false;
+  }
+  private validateInput(input: ComputerExecInput): void {
+    if (input.background) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "Hyprland 后端不支持后台输入或后台窗口截图");
+    for (const name of ["x", "y", "x2", "y2", "deltaX", "deltaY", "windowX", "windowY", "windowWidth", "windowHeight"] as const) if (input[name] !== undefined) finiteNumber(input[name], name);
+    boundedNumber(input.holdMs, 0, 0, 5_000, "holdMs"); boundedNumber(input.durationMs, 300, 0, 10_000, "durationMs");
+    const count = boundedNumber(input.clickCount, 1, 1, 3, "clickCount"); if (!Number.isInteger(count)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "clickCount 必须是整数");
+    const steps = boundedNumber(input.steps, 12, 1, 60, "steps"); if (!Number.isInteger(steps)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "steps 必须是整数");
+    boundedNumber(input.settleMs, 120, 0, 2_000, "settleMs");
+    if (input.key !== undefined) keyChordToKeycodes(input.key);
+    if (input.button !== undefined && !["left", "right", "middle"].includes(input.button)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "无效鼠标按钮");
+    if (input.modifiers?.some(m => !["ctrl", "shift", "alt", "win"].includes(m))) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "无效修饰键");
+    if (input.windowHandle && !hyprlandAddressFromHandle(input.windowHandle)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "windowHandle 必须是当前合成器返回的字符串地址");
+    if (input.waitState !== undefined && !["visible", "foreground", "closed"].includes(input.waitState)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "无效 waitState");
+    for (const [key, min, max] of [["maxDepth", 1, 32], ["maxNodes", 1, 5000]] as const) if (input[key] !== undefined && (!Number.isInteger(input[key]) || input[key]! < min || input[key]! > max)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${key} 必须是 ${min}..${max} 的整数`);
+    if (input.actions && (!Array.isArray(input.actions) || !input.actions.length || input.actions.length > 64)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "批处理需要 1..64 个步骤");
+    const action = input.action;
+    if (COORDINATE_ACTIONS.has(action!) && !input.observationId) throw new ComputerUseError("STALE_OBSERVATION", "坐标输入必须携带本任务最近一次窗口观察的 observationId");
+    if (["key_down", "key_up", "key_press"].includes(action ?? "") && (typeof input.key !== "string" || !input.key.trim())) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "按键动作需要 key");
+    if (["type_text", "paste_text", "set_control_value"].includes(action ?? "") && typeof input.text !== "string") throw new ComputerUseError("HOST_PROTOCOL_ERROR", "文本动作需要 text 字符串");
+    if (input.text !== undefined && input.text.length > 100_000) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "单次 text 超过 100000 字符限制");
+    if (COORDINATE_ACTIONS.has(action!) && !["scroll", "scroll_client"].includes(action!)) { finiteNumber(input.x, "x"); finiteNumber(input.y, "y"); }
+    if (["scroll", "scroll_client"].includes(action ?? "")) {
+      if ((input.x === undefined) !== (input.y === undefined)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "滚轮目标需同时提供 x/y");
+      if (input.deltaX === undefined && input.deltaY === undefined && input.notches === undefined) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "滚轮动作需要 deltaX、deltaY 或 notches");
+      for (const name of ["deltaX", "deltaY", "notches"] as const) if (input[name] !== undefined && (!Number.isInteger(input[name]) || Math.abs(input[name]!) > 120)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${name} 必须是 -120..120 整数刻度`);
+      if (input.notches !== undefined && input.deltaY !== undefined) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "notches 与 deltaY 只能提供一个，避免方向歧义");
+    }
+    if (["drag_client", "drag_screen", "mouse_drag"].includes(action ?? "")) { finiteNumber(input.x2, "x2"); finiteNumber(input.y2, "y2"); }
+    if (action === "move_window") { finiteNumber(input.windowX, "windowX"); finiteNumber(input.windowY, "windowY"); }
+    if (action === "resize_window") { if (finiteNumber(input.windowWidth, "windowWidth") <= 0 || finiteNumber(input.windowHeight, "windowHeight") <= 0) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "窗口宽高必须大于零"); }
+    if (input.expectedOutcomes?.some(check => !["target_present", "target_closed", "target_foreground", "new_window", "control_present", "control_absent"].includes(check.kind))) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "无效后置条件");
+    if (input.actions) for (const step of input.actions) {
+      if (!(COMPUTER_BATCH_ACTIONS as readonly string[]).includes(step.action)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `批处理不支持 ${step.action}`);
+      this.validateInput({ ...input, ...step, action: step.action, actions: undefined });
     }
   }
 
-  /* ---------------------------------------------------------------- */
-  /* CUL 连接与缓存                                                     */
-  /* ---------------------------------------------------------------- */
-
-  private cul(): CulMcpClient {
-    if (this.client) return this.client;
-    const binaryPath = resolveCulBinary();
-    if (!binaryPath) {
-      throw new ComputerUseError("HOST_UNAVAILABLE", computerUseUnsupportedMessage(detectComputerUseSupport("linux", { refresh: true })));
+  private remember(window: LinuxWindowInfo, owner: string, id = randomUUID()): string {
+    this.prune(); this.observations.set(id, { window: structuredClone(window), at: this.now(), owner });
+    while (this.observations.size > 64) this.observations.delete(this.observations.keys().next().value!);
+    return id;
+  }
+  private prune(): void {
+    for (const [id, o] of this.observations) if (this.now() - o.at > OBSERVATION_TTL) this.observations.delete(id);
+    for (const [ref, binding] of this.controlReferences) if (!this.observations.has(binding.observationId)) this.controlReferences.delete(ref);
+    for (const [id, s] of this.sessions) if (this.now() - s.info.lastSeenAt > SESSION_TTL) this.sessions.delete(id);
+  }
+  private resolveTarget(input: ComputerExecInput, snapshot: HyprlandSnapshot, owner: string): LinuxWindowInfo {
+    this.prune();
+    let prior: WindowInfo | undefined; let handle = input.windowHandle;
+    if (input.appSessionId) {
+      const session = this.sessions.get(input.appSessionId);
+      if (!session || session.owner !== owner) throw new ComputerUseError("STALE_OBSERVATION", "应用会话已过期或属于另一个任务");
+      prior = session.info.window; handle ??= prior.handle;
+      if (handle !== prior.handle) throw new ComputerUseError("TARGET_CHANGED", "显式目标与应用会话不一致");
     }
-    this.client = new CulMcpClient({ binaryPath });
-    return this.client;
-  }
-
-  /** 读已缓存的 doctor（TTL 内不重复 spawn）；设置页/探针要看真话时用 `refreshDiagnostics()`。 */
-  cachedDoctor(): CulDoctorReport | undefined {
-    const binary = resolveCulBinary({ envBin: process.env.MYBUDDY_CUL_BIN });
-    if (!binary) return undefined;
-    if (this.doctor && Date.now() - this.doctor.at < DOCTOR_TTL_MS) return this.doctor.report;
-    return undefined;
-  }
-
-  private async monitors(): Promise<Awaited<ReturnType<typeof readHyprlandMonitors>>> {
-    if (this.monitorsCache && Date.now() - this.monitorsCache.at < 10_000) return this.monitorsCache.monitors;
-    const monitors = await readHyprlandMonitors();
-    this.monitorsCache = { at: Date.now(), monitors };
-    return monitors;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* 窗口观察                                                          */
-  /* ---------------------------------------------------------------- */
-
-  private async readWindows(signal?: AbortSignal): Promise<WindowInfo[]> {
-    const [result, monitors] = await Promise.all([
-      checked(() => this.cul().require(CUL_TOOLS.listWindows, {}, signal), signal),
-      this.monitors(),
-    ]);
-    const windows = Array.isArray(result.data.windows) ? result.data.windows as CulWindow[] : [];
-    return windows.map((window) => toWindowInfo(window, monitors));
-  }
-
-  private resolveSessionWindow(input: ComputerExecInput): WindowInfo | undefined {
-    const sessionId = input.appSessionId?.trim();
-    if (!sessionId) return undefined;
-    return this.appSessions.get(sessionId)?.window;
-  }
-
-  private async inspectHandle(handle: string, signal?: AbortSignal): Promise<WindowInfo | undefined> {
-    const windows = await this.readWindows(signal);
-    return windows.find((window) => window.handle === String(handle));
-  }
-
-  private async listWindows(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const all = await this.readWindows(signal);
-    const filtered = filterWindows(all, input);
-    return {
-      action: "list_windows",
-      windows: filtered.map(compactWindowInfo),
-      totalWindows: all.length,
-      filtered: filtered.length !== all.length ? filtered.length : undefined,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  private async activeWindow(action: ComputerExecAction, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const [result, monitors] = await Promise.all([
-      checked(() => this.cul().require(CUL_TOOLS.focusedWindow, {}, signal), signal),
-      this.monitors(),
-    ]);
-    const raw = (result.data.focused_window ?? result.data.window) as CulWindow | undefined;
-    if (!raw) throw new ComputerUseError("WINDOW_NOT_FOUND", "当前没有聚焦窗口", result.data);
-    const window = toWindowInfo(raw, monitors);
-    return { action, window, observationId: this.remember(window), backend: this.backend } as ComputerExecOutput;
-  }
-
-  private async inspectWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const window = await this.resolveTarget(input, signal);
-    return { action, window, observationId: this.remember(window), backend: this.backend } as ComputerExecOutput;
-  }
-
-  private async focusWindowFromInput(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const window = await this.resolveTarget(input, signal);
-    await this.activateWindow(window, signal);
-    const after = await this.inspectHandle(window.handle, signal);
-    if (!after?.foreground) {
-      throw new ComputerUseError("FOCUS_FAILED", "焦点切换未生效（合成器拒绝或无权限）", { window: after ?? window });
+    if (input.observationId) {
+      const observed = this.observations.get(input.observationId);
+      if (!observed || observed.owner !== owner) throw new ComputerUseError("STALE_OBSERVATION", "观察 ID 已过期或属于另一个任务；请重新观察");
+      if (handle && handle !== observed.window.handle) throw new ComputerUseError("TARGET_CHANGED", "目标窗口与观察不一致");
+      handle = observed.window.handle; prior = observed.window;
+      if (observed.window.layoutId !== snapshot.layoutId) throw new ComputerUseError("STALE_OBSERVATION", "输出布局或缩放已经改变；请重新观察");
     }
-    return { action, window: after, observation: { targetBefore: window, targetAfter: after, focusPreserved: true, foregroundAfter: after.title }, observationId: this.remember(after), backend: this.backend } as ComputerExecOutput;
+    const hasFilters = Boolean(input.windowTitle || input.processName || input.className || input.processId !== undefined);
+    let candidates = filterWindows(snapshot.windows, input);
+    if (handle) candidates = candidates.filter(w => w.handle === hyprlandAddressFromHandle(handle!));
+    else if (!hasFilters) candidates = candidates.filter(w => w.handle === snapshot.activeHandle);
+    if (!candidates.length) throw new ComputerUseError("WINDOW_NOT_FOUND", "没有找到匹配的当前 Hyprland 窗口");
+    if (candidates.length !== 1) throw new ComputerUseError("WINDOW_AMBIGUOUS", "存在多个候选窗口；请指定读取到的 windowHandle", { candidates: candidates.map(w => ({ handle: w.handle, processId: w.processId, title: w.title })) });
+    const target = candidates[0];
+    if (prior && !sameWindowIdentity(prior, target)) throw new ComputerUseError("TARGET_CHANGED", "窗口句柄对应的进程或类已改变");
+    if (input.observationId && windowGeometryIdentity(prior!) !== windowGeometryIdentity(target)) throw new ComputerUseError("STALE_OBSERVATION", "窗口位置或尺寸已改变；请重新观察");
+    if (input.appSessionId) {
+      const s = this.sessions.get(input.appSessionId)!; s.info.window = target; s.info.lastSeenAt = this.now();
+    }
+    return target;
   }
 
-  private async focusWindow(handle: string, signal?: AbortSignal): Promise<void> {
-    const window = await this.inspectHandle(handle, signal);
-    if (window) await this.activateWindow(window, signal);
+  private async inspect(window: LinuxWindowInfo, snapshot: HyprlandSnapshot, owner: string, input: ComputerExecInput, signal?: AbortSignal): Promise<AtSpiInspection> {
+    const observationId = this.remember(window, owner);
+    try {
+      const inspection = await this.atspi.inspectWindow(window, {
+        observationId, maxNodes: input.maxNodes, maxDepth: input.maxDepth, timeoutMs: input.timeoutMs,
+        peerWindows: snapshot.windows,
+        geometry: window.clientGeometryVerified && window.geometryReliable ? { coordinateSpace: "hyprland-logical", clientLogical: { ...window.clientOrigin, width: window.clientRect.width, height: window.clientRect.height }, identity: windowGeometryIdentity(window) } : undefined,
+      }, signal);
+      for (const control of inspection.controls) this.controlReferences.set(control.runtimeId, { observationId, owner, window: structuredClone(window) });
+      while (this.controlReferences.size > 32_000) this.controlReferences.delete(this.controlReferences.keys().next().value!);
+      this.markCapability("accessibility", true, true);
+      this.markCapability("bounds", inspection.boundsReliable, inspection.boundsReliable, inspection.boundsReliable ? undefined : inspection.diagnostics.join("；"));
+      return inspection;
+    } catch (error) {
+      this.observations.delete(observationId);
+      this.markCapability("accessibility", false, false, errorText(error));
+      throw error;
+    }
+  }
+  private async selectControl(window: LinuxWindowInfo, snapshot: HyprlandSnapshot, owner: string, input: ComputerExecInput, signal?: AbortSignal): Promise<ControlInfo> {
+    if (!hasControlSelector(input)) throw new ComputerUseError("CONTROL_NOT_FOUND", "需要明确的控件选择器；请先 inspect_controls");
+    if (input.controlRuntimeId) {
+      this.prune();
+      const reference = this.controlReferences.get(input.controlRuntimeId);
+      if (!reference || reference.owner !== owner || !sameWindowIdentity(reference.window, window) || !this.observations.has(reference.observationId)) throw new ComputerUseError("STALE_OBSERVATION", "控件引用不属于本任务的新鲜窗口观察；请重新 inspect_controls");
+      if (input.observationId && reference.observationId !== input.observationId) throw new ComputerUseError("STALE_OBSERVATION", "控件与 observationId 来自不同观察");
+      const control = await this.atspi.readControl(window, input.controlRuntimeId, signal);
+      if (!matchesSelector(control, input)) throw new ComputerUseError("CONTROL_NOT_FOUND", "runtimeId 读回控件不符合额外选择器");
+      return control;
+    }
+    const tree = await this.inspect(window, snapshot, owner, input, signal);
+    const candidates = tree.controls.filter(c => matchesSelector(c, input));
+    if (!candidates.length) throw new ComputerUseError("CONTROL_NOT_FOUND", tree.truncated ? "当前树已截断，未在已读节点中找到控件；请缩小范围重新观察" : "没有匹配控件");
+    if (candidates.length !== 1 || tree.truncated) throw new ComputerUseError("CONTROL_AMBIGUOUS", "选择器无法唯一确定完整树中的控件；请使用观察返回的 runtimeId", { candidates: candidates.map(c => ({ runtimeId: c.runtimeId, name: c.name, controlType: c.controlType })) });
+    return candidates[0];
   }
 
-  private async activateWindow(window: WindowInfo, signal?: AbortSignal): Promise<void> {
-    await checked(() => this.cul().require(CUL_TOOLS.activateWindow, { window_id: Number(window.handle) }, signal), signal);
+  private onTransportLoss(error: ComputerUseError): void {
+    this.observations.clear(); this.sessions.clear(); this.controlReferences.clear();
+    this.recoveryPending = true; this.recoveryReason = error.message;
+    this.activeController?.abort(error);
+    this.markCapability("semantic", false, false, error.message);
+    const recovery = this.queue.then(() => this.recoverInputs());
+    this.queue = recovery.catch(() => undefined);
+  }
+  private async recoverInputs(): Promise<void> {
+    const result = await this.releaseOwned();
+    if (result.errors.length) throw new ComputerUseError("HOST_UNAVAILABLE", "输入清理尚未完成，暂停后续桌面动作", { cleanup: result, reason: this.recoveryReason });
+    this.recoveryPending = false; this.recoveryReason = undefined;
+  }
+  private assertOwner(owner: string, target?: WindowInfo): void {
+    if ([...this.heldKeys.values(), ...this.heldButtons.values()].some(value => value !== owner)) throw new ComputerUseError("HOST_UNAVAILABLE", "另一个任务仍持有按键或鼠标按钮，不能交叉注入输入");
+    const heldTarget = this.heldTargets.get(owner);
+    if (heldTarget && (!target || !sameWindowIdentity(heldTarget, target))) throw new ComputerUseError("TARGET_CHANGED", "按住输入期间不能切换窗口；先释放本任务持有的输入");
+  }
+  private rememberHeldTarget(owner: string, target?: WindowInfo): void {
+    if (target) this.heldTargets.set(owner, structuredClone(target));
+  }
+  private clearHeldTarget(owner: string): void {
+    if (![...this.heldKeys.values(), ...this.heldButtons.values()].includes(owner)) this.heldTargets.delete(owner);
+  }
+  private async keysDown(codes: readonly number[], owner: string, target?: WindowInfo, signal?: AbortSignal): Promise<number[]> {
+    this.assertOwner(owner, target);
+    const added = codes.filter(code => !this.heldKeys.has(code));
+    if (!added.length) return [];
+    added.forEach(code => this.heldKeys.set(code, owner)); this.rememberHeldTarget(owner, target);
+    // Reserve before dispatch: a failed/cancelled process may have sent a prefix.
+    await this.input.setKeycodesHeld(added, true, signal);
+    return added;
+  }
+  private async keysUp(codes: readonly number[], owner: string, signal?: AbortSignal): Promise<number[]> {
+    const owned = codes.filter(code => this.heldKeys.get(code) === owner);
+    if (!owned.length) return [];
+    await this.input.setKeycodesHeld(owned, false, signal);
+    owned.forEach(code => this.heldKeys.delete(code)); this.clearHeldTarget(owner);
+    return owned;
+  }
+  private async buttonDown(button: MouseButton, owner: string, target?: WindowInfo, signal?: AbortSignal): Promise<boolean> {
+    this.assertOwner(owner, target);
+    if (this.heldButtons.get(button) === owner) return false;
+    this.heldButtons.set(button, owner); this.rememberHeldTarget(owner, target);
+    await this.input.setButtonHeld(button, "down", signal); return true;
+  }
+  private async buttonUp(button: MouseButton, owner: string, signal?: AbortSignal): Promise<boolean> {
+    if (this.heldButtons.get(button) !== owner) return false;
+    await this.input.setButtonHeld(button, "up", signal);
+    this.heldButtons.delete(button); this.clearHeldTarget(owner); return true;
+  }
+  private async releaseOwned(owner?: string): Promise<{ keys: number[]; buttons: string[]; errors: string[] }> {
+    const result = { keys: [] as number[], buttons: [] as string[], errors: [] as string[] };
+    const owners = owner ? [owner] : [...new Set([...this.heldKeys.values(), ...this.heldButtons.values()])];
+    for (const current of owners) {
+      const codes = [...this.heldKeys].filter(([, value]) => value === current).map(([code]) => code);
+      try { result.keys.push(...await this.keysUp(codes, current)); } catch (error) { result.errors.push(errorText(error)); }
+      for (const [button, value] of this.heldButtons) if (value === current) {
+        try { if (await this.buttonUp(button, current)) result.buttons.push(button); } catch (error) { result.errors.push(errorText(error)); }
+      }
+    }
+    if (result.errors.length) { this.recoveryPending = true; this.recoveryReason = result.errors.join("；"); }
+    return result;
+  }
+  releaseHeldInput(taskId?: string): Promise<{ keys: number[]; buttons: string[] }> {
+    const release = this.queue.then(async () => {
+      const result = await this.releaseOwned(taskId?.trim() || undefined);
+      if (result.errors.length) throw new ComputerUseError("HOST_UNAVAILABLE", "未能释放全部输入；新输入已暂停", { cleanup: result });
+      return result;
+    });
+    this.queue = release.catch(() => undefined); return release;
   }
 
-  /**
-   * 确保目标在前台（借鉴 LCU 的 Linux 输入翻译）。
-   *
-   * Wayland 上 uinput 的点击落在「指针下面的窗口」，不认 window_id：目标在后台时点击会
-   * 打到遮挡它的窗口或另一个 workspace。LCU 的做法是「激活 → 复核焦点，失败就拒绝发送」；
-   * 这里照做——宁可明确报 FOCUS_FAILED，也不要把点击悄悄打偏。
-   */
-  private async ensureForeground(window: WindowInfo, signal?: AbortSignal): Promise<WindowInfo> {
-    if (window.foreground) return window;
-    await this.activateWindow(window, signal);
-    const fresh = await this.inspectHandle(window.handle, signal).catch(() => undefined);
-    if (!fresh) throw new ComputerUseError("WINDOW_NOT_FOUND", "激活后目标窗口消失了", { handle: window.handle });
-    if (!fresh.foreground) {
-      throw new ComputerUseError(
-        "FOCUS_FAILED",
-        "目标窗口不在前台：点击会落到别的窗口上。先确认窗口可见（没有被全屏/浮动窗口盖住），或手动切到它所在的 workspace 再重试",
-        { handle: window.handle, title: fresh.title },
-      );
+  private async guard(context: ActionContext, signal?: AbortSignal, needFocus = true, needGeometry = true): Promise<HyprlandSnapshot> {
+    throwIfCancelled(signal);
+    const fresh = await this.compositor.snapshot(signal);
+    if (fresh.layoutId !== context.snapshot.layoutId) throw new ComputerUseError("STALE_OBSERVATION", "动作期间输出布局改变，停止剩余输入");
+    if (context.target) {
+      const target = fresh.windows.find(w => w.handle === context.target!.handle);
+      if (!target || !sameWindowIdentity(context.target, target)) throw new ComputerUseError("TARGET_CHANGED", "动作期间目标窗口关闭或重建");
+      if (needGeometry && windowGeometryIdentity(context.target) !== windowGeometryIdentity(target)) throw new ComputerUseError("STALE_OBSERVATION", "动作期间目标窗口移动或尺寸变化，停止剩余坐标输入");
+      if (needFocus && (fresh.activeHandle !== target.handle || !target.visible || target.acceptsInput === false)) throw new ComputerUseError("FOCUS_FAILED", "动作期间焦点已改变，停止剩余输入");
+    }
+    if (needGeometry && context.control && context.target) {
+      const control = await this.atspi.readControl(context.target, context.control.runtimeId, signal);
+      if (!control.enabled || control.offscreen || control.boundsReliable !== true || JSON.stringify(control.clientBoundsDip) !== JSON.stringify(context.control.clientBoundsDip)) throw new ComputerUseError("STALE_OBSERVATION", "动作期间控件状态或可靠边界已改变，停止剩余坐标输入");
     }
     return fresh;
   }
-
-  private async waitForWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const timeoutMs = Math.max(500, Math.min(35_000, input.timeoutMs ?? 5_000));
-    const deadline = Date.now() + timeoutMs;
-    const state = input.waitState ?? "visible";
-    while (Date.now() < deadline) {
-      assertNotCancelled(signal);
-      const windows = await this.readWindows(signal);
-      const matched = filterWindows(windows, input);
-      const hit = state === "foreground" ? matched.find((window) => window.foreground) : matched[0];
-      if (state === "closed") {
-        if (matched.length === 0) return { action, matched: true, window: undefined, state } as unknown as ComputerExecOutput;
-      } else if (hit) {
-        return { action, matched: true, window: hit, state } as unknown as ComputerExecOutput;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+  private async foreground(context: ActionContext, input: ComputerExecInput, signal?: AbortSignal): Promise<void> {
+    if (!context.target) return;
+    if (context.target.acceptsInput === false) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "合成器报告目标窗口不接受输入");
+    if (!context.target.identityToken) throw new ComputerUseError("STALE_OBSERVATION", "窗口缺少生命周期标记，不能安全注入输入");
+    if (context.snapshot.activeHandle !== context.target.handle || !context.target.visible) {
+      if (input.ensureForeground === false) throw new ComputerUseError("FOCUS_FAILED", "目标未在前台，且 ensureForeground=false");
+      await this.compositor.focus(context.target, signal);
     }
-    throw new ComputerUseError("WAIT_TIMEOUT", `等待窗口超时（${timeoutMs}ms，state=${state}）`, { timeoutMs, state });
+    await this.guard(context, signal);
+  }
+  private point(input: ComputerExecInput, context: ActionContext, second = false): Point {
+    if (!context.target || context.target.clientGeometryVerified !== true || context.target.geometryReliable !== true) throw new ComputerUseError("STALE_OBSERVATION", "坐标输入需要经过验证的客户区几何");
+    const x = finiteNumber(second ? input.x2 : input.x, second ? "x2" : "x");
+    const y = finiteNumber(second ? input.y2 : input.y, second ? "y2" : "y");
+    const point = SCREEN_ACTIONS.has(input.action!) ? { x, y } : clientDipToLogical(context.target!, x, y);
+    const rounded = { x: Math.floor(point.x), y: Math.floor(point.y) };
+    monitorForPoint(context.snapshot.monitors, rounded);
+    if (context.target && !containsPoint({ ...context.target.clientOrigin, width: context.target.clientRect.width, height: context.target.clientRect.height }, rounded)) throw new ComputerUseError("POINT_OUTSIDE_CLIENT", "取整后的合成器点位超出目标客户区");
+    if (context.control) {
+      const rect = context.control.clientBoundsDip;
+      if (context.control.boundsReliable !== true || !rect) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "此控件缺少可靠边界；请使用可用的语义动作");
+      if (!containsPoint({ x: context.target.clientOrigin.x + rect.x, y: context.target.clientOrigin.y + rect.y, width: rect.width, height: rect.height }, rounded)) throw new ComputerUseError("POINT_OUTSIDE_CLIENT", "输入点超出刚刚验证的控件边界");
+    }
+    return rounded;
+  }
+  private async movePointer(point: Point, context: ActionContext, signal?: AbortSignal): Promise<Point> {
+    await this.guard(context, signal);
+    monitorForPoint(context.snapshot.monitors, point);
+    context.submitted = true;
+    const actual = await this.compositor.movePointer(point, signal);
+    monitorForPoint(context.snapshot.monitors, actual);
+    if (context.target && !containsPoint({ ...context.target.clientOrigin, width: context.target.clientRect.width, height: context.target.clientRect.height }, actual)) throw new ComputerUseError("POINT_OUTSIDE_CLIENT", "读回光标超出目标客户区，后续按键未下发", { executed: true, actual });
+    this.markCapability("pointer", true, true, "合成器已读回实际光标位置");
+    await this.guard(context, signal);
+    return actual;
+  }
+  private async temporaryModifiers(input: ComputerExecInput, context: ActionContext, fn: () => Promise<ComputerExecOutput>, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    const codes = (input.modifiers ?? []).flatMap(m => keyChordToKeycodes(m === "win" ? "Super" : m));
+    const added = await this.keysDown(codes, context.owner, context.target, signal);
+    return this.withInputCleanup(fn, () => this.keysUp(added, context.owner));
   }
 
-  /* ---------------------------------------------------------------- */
-  /* 截图                                                              */
-  /* ---------------------------------------------------------------- */
-
-  private async captureScreen(action: ComputerExecAction, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const result = await checked(() => this.cul().require(CUL_TOOLS.screenshot, {
-      full_screen: true, format: "jpeg", quality: SCREENSHOT_QUALITY, max_width: SCREENSHOT_MAX_EDGE, max_height: SCREENSHOT_MAX_EDGE,
-    }, signal), signal);
-    if (!result.image) throw new ComputerUseError("CAPTURE_FAILED", "CUL 没有返回截图数据", result.data);
-    const meta = result.data as { width?: number; height?: number; coordinate_width?: number; coordinate_height?: number } & Record<string, unknown>;
-    const physicalWidth = Number(meta.coordinate_width ?? 0);
-    const physicalHeight = Number(meta.coordinate_height ?? 0);
-    return {
-      action,
-      screenshot: result.image.bytes,
-      screenshotMimeType: "image/jpeg",
-      imageScale: imageScaleFromMeta(meta),
-      imageSize: { width: Number(meta.width ?? 0), height: Number(meta.height ?? 0) },
-      artifactFileName: "desktop-screenshot.jpg",
-      capture: {
-        displayId: "full-screen",
-        scaleFactor: 1,
-        captureRectPhysical: { left: 0, top: 0, right: physicalWidth, bottom: physicalHeight, width: physicalWidth, height: physicalHeight },
-        captureMode: "foreground-display-crop",
-        coordinateSpace: "client-dip-aligned-pixels",
-        mimeType: "image/jpeg",
-        imageScale: imageScaleFromMeta(meta),
-        imageSize: { width: Number(meta.width ?? 0), height: Number(meta.height ?? 0) },
-        windowRect: { left: 0, top: 0, right: physicalWidth, bottom: physicalHeight, width: physicalWidth, height: physicalHeight },
-      },
-      detail: `full screen via ${String(meta.source ?? "portal")} (${String(meta.coordinate_width)}x${String(meta.coordinate_height)} -> ${String(meta.width)}x${String(meta.height)})`,
-    } as ComputerExecOutput;
+  /** Preserve the dispatched action and its first failure when a later release also fails. */
+  private async withInputCleanup<T>(operation: () => Promise<T>, cleanup: () => Promise<unknown>): Promise<T> {
+    let result: T | undefined; let primary: unknown; let failed = false;
+    try { result = await operation(); } catch (error) { primary = error; failed = true; }
+    try { await cleanup(); }
+    catch (cleanupError) {
+      const error = failed ? primary : cleanupError;
+      const details = error instanceof ComputerUseError ? this.errorDetails(error) : {};
+      const wrapped = new ComputerUseError(error instanceof ComputerUseError ? error.code : "HOST_UNAVAILABLE", errorText(error), { ...details, executed: details.executed ?? "unknown", cleanupError: errorText(cleanupError) });
+      if (!failed && result && typeof result === "object" && "action" in result) throw withComputerUseDeliveryEvidence(wrapped, result as ComputerExecOutput);
+      throw wrapped;
+    }
+    if (failed) throw primary;
+    return result as T;
   }
 
-  private async captureWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    if (input.background) {
-      throw new ComputerUseError("CAPTURE_FAILED", "Linux（Wayland）没有后台窗口截图：portal 只能截前台窗口；请用 background=false 或改走 ocr_window", {
-        action, background: true,
-      });
+  private async perform(input: ComputerExecInput, owner: string, signal: AbortSignal): Promise<ComputerExecOutput> {
+    const action = input.action!;
+    if (action === "status") { await this.refreshDiagnostics(); return { action, ...this.status() }; }
+    if (!this.available) throw new ComputerUseError("HOST_UNAVAILABLE", this.status().detail);
+    if (action === "ocr_window") throw new ComputerUseError("OCR_UNAVAILABLE", "Linux 原生后端不包含 OCR 定位；请读取 AT-SPI 控件，或明确请求截图");
+    if (action === "mouse_up_client") {
+      const released = await this.buttonUp(input.button ?? "left", owner, signal);
+      return { action, executed: released, verified: false, releasedButton: released ? input.button ?? "left" : undefined };
     }
-    let target = await this.resolveTarget(input, signal);
-    // raise 一个平铺窗口会重排 Hyprland 布局（切 workspace / 重新平铺），客户区尺寸随之变化。
-    // 这时截出来的是「旧几何的图 + 新几何的窗口」，模型换算会全错；但重截一次就对齐了，
-    // 所以先按新几何重试一次，仍然在变才报错（不要一遇到重排就把动作判死）。
-    let result: Awaited<ReturnType<LinuxComputerUseBackend["captureWindowImage"]>> | undefined;
-    let after: WindowInfo | undefined;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      result = await this.captureWindowImage(target, input.ensureForeground !== false, signal);
-      after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
-      if (!after || (after.clientRect.width === target.clientRect.width && after.clientRect.height === target.clientRect.height)) break;
-      if (attempt === 0) target = after;
+    if (action === "key_up") {
+      const codes = keyChordToKeycodes(input.key!);
+      const released = await this.keysUp(codes, owner, signal);
+      return { action, executed: released.length > 0, verified: false, releasedKeys: released, detail: "已释放本任务记录的按键；应用效果未单独验证" };
     }
-    if (after && (after.clientRect.width !== target.clientRect.width || after.clientRect.height !== target.clientRect.height)) {
-      throw new ComputerUseError("CAPTURE_FAILED", "截图期间窗口几何发生变化（已按新几何重试一次仍不一致）", { before: target, after });
+    if (action === "wait_for_window") return this.waitForWindow(input, owner, signal);
+    const snapshot = await this.compositor.snapshot(signal);
+    if (action === "list_windows") return { action, windows: filterWindows(snapshot.windows, input), detail: "当前 Hyprland 窗口（桌面坐标为合成器逻辑像素）", coordinateSpace: "hyprland-logical", layoutId: snapshot.layoutId };
+    if (action === "active_window") {
+      const window = snapshot.windows.find(w => w.handle === snapshot.activeHandle);
+      return { action, window, observationId: window ? this.remember(window, owner) : undefined };
     }
-    return {
-      action,
-      window: after ?? target,
-      screenshot: result!.bytes,
-      screenshotMimeType: "image/jpeg",
-      imageScale: result!.imageScale,
-      imageSize: result!.imageSize,
-      artifactFileName: `window-${target.handle}.jpg`,
-      capture: result!.details,
-      observationId: this.remember(after ?? target),
-      backend: this.backend,
-      detail: `window crop via ${String(result!.source ?? "portal")}`,
-    } as ComputerExecOutput;
-  }
-
-  private async captureWindowImage(
-    window: WindowInfo,
-    raise: boolean,
-    signal?: AbortSignal,
-  ): Promise<{
-    bytes: Uint8Array;
-    imageScale: number;
-    imageSize: { width: number; height: number };
-    source?: string;
-    details: NonNullable<ComputerExecOutput["capture"]>;
-  }> {
-    const args: Record<string, unknown> = {
-      window_id: Number(window.handle),
-      format: "jpeg",
-      quality: SCREENSHOT_QUALITY,
-      max_width: SCREENSHOT_MAX_EDGE,
-      max_height: SCREENSHOT_MAX_EDGE,
-    };
-    if (raise === false) args.raise_window = false;
-    const result = await checked(() => this.cul().require(CUL_TOOLS.screenshot, args, signal), signal);
-    if (!result.image) throw new ComputerUseError("CAPTURE_FAILED", "CUL 没有返回窗口截图", { window });
-    const meta = result.data as { width?: number; height?: number; coordinate_width?: number; coordinate_height?: number; cropped_to_window?: boolean; source?: string } & Record<string, unknown>;
-    const imageScale = imageScaleFromMeta(meta);
-    const physicalWidth = Number(meta.coordinate_width ?? window.clientRect.width);
-    const physicalHeight = Number(meta.coordinate_height ?? window.clientRect.height);
-    const imageSize = { width: Number(meta.width ?? 0), height: Number(meta.height ?? 0) };
-    return {
-      bytes: result.image.bytes,
-      imageScale,
-      imageSize,
-      source: typeof meta.source === "string" ? meta.source : undefined,
-      details: {
-        displayId: `window-${window.handle}`,
-        scaleFactor: window.scaleFactor,
-        captureRectPhysical: {
-          left: window.clientOrigin.x, top: window.clientOrigin.y,
-          right: window.clientOrigin.x + physicalWidth, bottom: window.clientOrigin.y + physicalHeight,
-          width: physicalWidth, height: physicalHeight,
-        },
-        captureMode: "window-source",
-        coordinateSpace: "client-dip-aligned-pixels",
-        mimeType: "image/jpeg",
-        imageScale,
-        imageSize,
-        windowRect: window.windowRect,
-      },
-    };
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* OCR（本地 tesseract TSV）                                          */
-  /* ---------------------------------------------------------------- */
-
-  private async ocrWindow(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const descriptor = describeLinuxOcrProvider();
-    if (!descriptor?.available) {
-      throw new ComputerUseError("OCR_UNAVAILABLE", `Linux OCR 不可用：未找到 tesseract。安装：${descriptor?.installHint ?? "sudo pacman -S --needed tesseract tesseract-data-eng tesseract-data-chi_sim"}`);
+    if (COORDINATE_ACTIONS.has(action) && !input.observationId) throw new ComputerUseError("STALE_OBSERVATION", "坐标输入必须携带本任务最近一次窗口观察的 observationId");
+    const target = NO_TARGET_ACTIONS.has(action) && !hasWindowSelector(input) && !input.observationId ? undefined : this.resolveTarget(input, snapshot, owner);
+    const context: ActionContext = { snapshot, target, submitted: false, owner };
+    if (target) computerUseRunCoordinator.presentTarget(input, target, INPUT_ACTIONS.has(action) ? "acting" : "observing");
+    else computerUseRunCoordinator.presentDesktop(input, INPUT_ACTIONS.has(action) ? "acting" : "observing");
+    if (action === "attach_app") {
+      const id = randomUUID(); const info: AppSessionInfo = { id, window: structuredClone(target!), attachedAt: this.now(), lastSeenAt: this.now() };
+      this.sessions.set(id, { info, owner }); while (this.sessions.size > 64) this.sessions.delete(this.sessions.keys().next().value!);
+      return { action, window: target, appSessionId: id, appSession: info, observationId: this.remember(target!, owner) };
     }
-    const target = await this.resolveTarget(input, signal);
-    const startedAt = Date.now();
-    // OCR 要清晰度：用 PNG 原尺寸（不缩放），tesseract 对 JPEG 压缩伪影敏感。
-    const shot = await checked(() => this.cul().require(CUL_TOOLS.screenshot, {
-      window_id: Number(target.handle), format: "png", raise_window: false,
-    }, signal), signal);
-    if (!shot.image) throw new ComputerUseError("CAPTURE_FAILED", "OCR 前截图失败：需可用桌面会话与可截图的目标窗口；此错误尚未执行文字识别", { window: target });
-    const meta = shot.data as { width?: number; height?: number; coordinate_width?: number; coordinate_height?: number } & Record<string, unknown>;
-    const imageScale = imageScaleFromMeta(meta);
-    const imageWidth = Number(meta.width ?? 0);
-    const imageHeight = Number(meta.height ?? 0);
-    // 窗口截图已裁剪到窗口，因此图像像素 × imageScale = 客户区物理像素，再 /scale = DIP。
-    const dipPerImagePixel = (imageScale / (target.scaleFactor || 1));
-    const tsv = await this.runTesseract(shot.image.bytes, signal);
-    const lines = parseTesseractTsv(tsv, {
-      dipPerImagePixelX: dipPerImagePixel,
-      dipPerImagePixelY: dipPerImagePixel,
-      minScore: input.minScore ?? 0.4,
-      maxLines: Math.max(1, Math.min(200, input.maxLines ?? 80)),
-    });
-    return {
-      action,
-      window: target,
-      lines,
-      lineCount: lines.length,
-      ocr: { provider: `tesseract:${descriptor.defaultLanguages.join("+")}`, totalLines: lines.length, ms: Date.now() - startedAt },
-      imageScale,
-      imageSize: { width: imageWidth, height: imageHeight },
-      backend: this.backend,
-      detail: `tesseract ${descriptor.defaultLanguages.join("+")} on ${imageWidth}x${imageHeight} window crop`,
-    } as ComputerExecOutput;
-  }
-
-  private async runTesseract(imageBytes: Uint8Array, signal?: AbortSignal): Promise<string> {
-    const descriptor = describeLinuxOcrProvider();
-    if (!descriptor?.available) throw new ComputerUseError("OCR_UNAVAILABLE", "tesseract 不可用");
-    const path = join(tmpdir(), `mybuddy-ocr-${randomUUID()}.png`);
-    await writeFile(path, imageBytes);
+    if (action === "inspect_window") return { action, window: target, observationId: this.remember(target!, owner), coordinateSpace: "hyprland-logical", layoutId: snapshot.layoutId, detail: "已读取新鲜合成器窗口几何；inspect_controls 单独读取 AT-SPI 控件" };
+    if (["inspect_controls", "find_control"].includes(action)) {
+      if (action === "find_control" && !hasControlSelector(input)) throw new ComputerUseError("CONTROL_NOT_FOUND", "find_control 需要控件选择器");
+      const tree = await this.inspect(target!, snapshot, owner, input, signal);
+      const controls = action === "find_control" ? tree.controls.filter(c => matchesSelector(c, input)) : tree.controls;
+      if (action === "find_control" && !controls.length) throw new ComputerUseError("CONTROL_NOT_FOUND", "已读取的可访问树中没有匹配控件", { truncated: tree.truncated, observationId: tree.observationId });
+      return { action, window: target, controls, control: action === "find_control" && controls.length === 1 ? controls[0] : undefined, uiaAvailable: true, readableText: tree.readableText, treeStatus: tree.treeStatus, truncated: tree.truncated, diagnostics: tree.diagnostics, boundsReliable: tree.boundsReliable, observationId: tree.observationId, generation: tree.generation };
+    }
+    let output: ComputerExecOutput | undefined;
     try {
-      // `tesseract <image> stdout -l eng+chi_sim --psm 6 tsv`
-      const args = descriptor.buildArgs(path);
-      args.push("tsv");
-      const { stdout } = await checked(() => execFileAsync("tesseract", args, {
-        encoding: "utf8",
-        timeout: 30_000,
-        maxBuffer: 16 * 1024 * 1024,
-      }), signal);
-      return stdout;
+      if (action === "screenshot" || action === "screenshot_window") {
+        if (target && input.clientOnly === false) throw new ComputerUseError("CAPTURE_FAILED", "当前截图提供器只支持合成器客户区，不能保证包含外部装饰");
+        if (target && input.ensureForeground !== false) await this.foreground(context, input, signal);
+        if (target && !target.visible && input.ensureForeground === false) throw new ComputerUseError("WINDOW_NOT_VISIBLE", "后台或隐藏窗口无法通过屏幕裁剪获得可靠截图");
+        const fresh = await this.guard(context, signal, Boolean(target), true);
+        output = { action, window: target, ...await this.screenshots.capture({ snapshot: fresh, window: target, screenId: input.screenId, signal }), observationId: target ? this.remember(target, owner) : undefined };
+        this.markCapability("screenshot", true, true);
+      } else {
+        if (!INPUT_ACTIONS.has(action)) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `Linux 后端不支持动作 ${action}`);
+        this.assertOwner(owner, target);
+        if (COORDINATE_ACTIONS.has(action) && hasControlSelector(input)) context.control = await this.selectControl(target!, snapshot, owner, input, signal);
+        await this.foreground(context, input, signal);
+        output = await this.act(input, context, signal);
+        output = await this.afterAction(input, context, output, signal);
+      }
+      if (input.restoreForeground) await this.restoreForeground(context, output);
+      return output;
     } catch (error) {
-      throw new ComputerUseError("OCR_UNAVAILABLE", `tesseract 执行失败：${error instanceof Error ? error.message : String(error)}；请核对语言包 ${descriptor.defaultLanguages.join("+")}，安装提示：${descriptor.installHint}；不代表用户桌面损坏`);
-    } finally {
-      await rm(path, { force: true }).catch(() => undefined);
+      error = withComputerUseDeliveryEvidence(error, output);
+      let restoration: Record<string, unknown> | undefined;
+      if (input.restoreForeground && !this.heldTargets.has(owner)) { restoration = {}; await this.restoreForeground(context, restoration); }
+      if (error instanceof ComputerUseError) throw new ComputerUseError(error.code, error.message, { ...this.errorDetails(error), executed: output ? this.errorExecution(error) : this.errorDetails(error).executed ?? (context.submitted ? "unknown" : false), clipboardChanged: context.clipboardChanged ?? this.errorDetails(error).clipboardChanged, ...(restoration ? { restoration } : {}) });
+      throw new ComputerUseError("HOST_PROTOCOL_ERROR", errorText(error), { executed: context.submitted ? "unknown" : false, restoration });
     }
   }
 
-  /* ---------------------------------------------------------------- */
-  /* 无障碍树                                                           */
-  /* ---------------------------------------------------------------- */
-
-  /**
-   * 读完整 AT-SPI 树。
-   *
-   * `get_app_state` 只内联前 ~20 个节点（`accessibility_tree_truncated=true`），而
-   * `max_nodes` 对内联数量无效（实测 1000/5000/10000 都只回 12–13 个）。剩下的
-   * 节点必须用 `get_tree_page` 按服务端给的 `next_offset` 逐页取回来 —— 不翻页时
-   * Electron 应用只能看到匿名 Section，所有可交互控件都在后几页（实测 63 节点树里
-   * 10 个 Button / 1 个 Entry / 1 个 ComboBox 全在第 2、3 页）。
-   */
-  private async readAccessibilityNodes(window: WindowInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<{ nodes: ControlInfo[]; truncated: boolean; pages: number }> {
-    const first = await checked(() => this.cul().require(CUL_TOOLS.getAppState, {
-      window_id: Number(window.handle),
-      include_screenshot: false,
-      max_nodes: input.maxNodes ?? 400,
-      ...(input.maxDepth ? { max_depth: input.maxDepth } : {}),
-    }, signal), signal);
-    const firstNodes = Array.isArray(first.data.accessibility_tree)
-      ? first.data.accessibility_tree as CulAccessibilityNode[]
-      : [];
-    // CUL 把树 compact 到内联上限（实测 ~37），**即使还有节点没内联也只写
-    // `accessibility_tree_truncated: false`**，真正「一共多少节点」只在 spill 里。
-    // 不看 spill 就会漏掉整页的可交互控件（实测 Nautilus 的 10 个 grid cell 全在第 2 页）。
-    const spill = first.data.accessibility_tree_spill as { node_count?: number; inline_node_count?: number } | undefined;
-    const spillTotal = Number(spill?.node_count);
-    const collected = await collectAccessibilityTree(firstNodes, first.data.accessibility_tree_truncated === true, {
-      maxPages: ACCESSIBILITY_MAX_PAGES,
-      maxNodes: Math.max(1, Math.min(ACCESSIBILITY_MAX_NODES, input.maxNodes ?? ACCESSIBILITY_MAX_NODES)),
-      totalNodes: Number.isFinite(spillTotal) && spillTotal > 0 ? spillTotal : undefined,
-      fetchPage: async (offset) => {
-        const page = await checked(() => this.cul().require(CUL_TOOLS.getTreePage, { offset }, signal), signal);
-        return toAccessibilityPage(page.data);
-      },
-    });
-    return {
-      nodes: collected.nodes.map((node) => toControlInfo(node, window)),
-      truncated: collected.truncated,
-      pages: collected.pages,
-    };
-  }
-
-  private async inspectControls(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const target = await this.resolveTarget(input, signal);
-    const { nodes: rawNodes, truncated, pages } = await this.readAccessibilityNodes(target, input, signal);
-    const boundsReliable = !controlBoundsAreZeroOrigin(rawNodes);
-    const nodes = boundsReliable ? rawNodes : stripUnreliableControlBounds(rawNodes);
-    // 只有「翻完所有页仍然几乎没有节点」才是真的没有语义树；页数 >1 说明树是完整的。
-    const detail = [
-      rawNodes.length <= 3
-        ? looksLikeChromiumWindow(target)
-          ? "Chromium/Electron 窗口没有暴露 AT-SPI 树：这类应用要平台无障碍桥初始化才注册（启动时 GNOME_ACCESSIBILITY=1 或 AT-SPI 的 IsEnabled=true）并且带 --force-renderer-accessibility；已运行的浏览器改不了，重启时加 GNOME_ACCESSIBILITY=1 才有语义树。现在可改用 browser_exec / ui_exec，或 ocr_window + click_client；MyBuddy 自己已默认设置"
-          : "AT-SPI 没有返回可用控件（应用未启用无障碍或树确实为空）：改用 ocr_window + click_client 坐标点击"
-        : truncated
-          ? `语义树仍有 ${rawNodes.length} 个节点未收全（页数上限）；如果要找的控件不在结果里，可提高 max_nodes 或改用 ocr_window`
-          : "",
-      boundsReliable ? "" : ZERO_ORIGIN_BOUNDS_HINT,
-    ].filter(Boolean).join("；");
-    return {
-      action,
-      window: target,
-      controls: nodes,
-      uiaAvailable: nodes.length > 1,
-      truncated,
-      accessibilityPages: pages,
-      boundsReliable,
-      observationId: this.remember(target),
-      backend: this.backend,
-      detail: detail || undefined,
-    } as ComputerExecOutput;
-  }
-
-  private async findControlAction(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const target = await this.resolveTarget(input, signal);
-    const { nodes } = await this.readAccessibilityNodes(target, input, signal);
-    const boundsReliable = !controlBoundsAreZeroOrigin(nodes);
-    const found = findControl(nodes, {
-      controlRuntimeId: input.controlRuntimeId,
-      controlName: input.controlName,
-      automationId: input.automationId,
-      controlType: input.controlType,
-      controlClassName: input.controlClassName,
-      exactName: input.exactName,
-    }, { maxDepth: input.maxDepth });
-    if (!found) {
-      throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window 走坐标点击）", {
-        target: { windowTitle: input.windowTitle, controlName: input.controlName, automationId: input.automationId },
-      });
+  private async act(input: ComputerExecInput, context: ActionContext, signal: AbortSignal): Promise<ComputerExecOutput> {
+    const action = input.action!; const { target, owner } = context;
+    const result = (extra: Record<string, unknown> = {}): ComputerExecOutput => ({ action, window: target, executed: true, verified: false, detail: "输入已提交；仅应用或明确后置条件的读回能够证明任务结果", ...extra });
+    if (action === "focus_window") return result({ verified: true, detail: "已从合成器读回目标窗口为活动窗口" });
+    if (action === "invoke_control" || action === "set_control_value") {
+      const control = await this.selectControl(target!, context.snapshot, owner, input, signal);
+      if (!control.enabled) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件已禁用");
+      await this.guard(context, signal, true, false);
+      context.submitted = true;
+      const semantic = action === "invoke_control" ? await this.atspi.invoke(target!, control.runtimeId, undefined, signal) : await this.atspi.setValue(target!, control.runtimeId, input.text!, signal);
+      this.markCapability("semantic", semantic.executed !== false, semantic.verified, semantic.evidence);
+      return result({ ...semantic, control: semantic.after ?? semantic.before, detail: semantic.evidence });
     }
-    return {
-      action,
-      window: target,
-      control: boundsReliable ? found : stripUnreliableControlBounds([found])[0],
-      boundsReliable,
-      backend: this.backend,
-      detail: boundsReliable ? undefined : ZERO_ORIGIN_BOUNDS_HINT,
-    } as ComputerExecOutput;
-  }
-
-  /**
-   * 语义动���（`invoke_control` / `set_control_value`）+ 执行后复核。
-   *
-   * 真机问题（2026-10-27）：`perform_action` 返回 ok 但界面没有反应——GTK 的输入
-   * 抓取/弹窗会把这次激活吞掉（zenity 的 OK 在 set_value 之后偶发不生效）。
-   * CUL 自己对元素点击不做结果校验，所以后端补一层：
-   *
-   * 1. **精确 element_index**：用 AT-SPI 快照里的 `index`，不再用数组位置反查
-   *    （分页收集时两者可能错位，见 `ControlInfo.elementIndex`）。
-   * 2. **先复核便宜的观测**（窗口集合/标题/目标是否还在）：能判定生效就不再多读树。
-   * 3. **看不出变化时**再读一次树比较指纹；如果目标是**模态对话框**，按钮重复激活是
-   *    安全的（对话框按钮 = 确认/关闭），所以允许一次有界重试；其它控件不重试
-   *    （LCU 的结论一致：不要盲目重复点击，像 toggle/复选框会被点反）。
-   * 4. `set_control_value` 走幂等路径：回读文本不一致就重试一次并再回读，结论写进
-   *    `verified`；读不到文本时给 `undefined`（不假装成功）。
-   */
-  private async invokeControl(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal, setValue = false): Promise<ComputerExecOutput> {
-    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
-    const selector = {
-      controlRuntimeId: input.controlRuntimeId,
-      controlName: input.controlName,
-      automationId: input.automationId,
-      controlType: input.controlType,
-      controlClassName: input.controlClassName,
-      exactName: input.exactName,
-    };
-    const act = async (): Promise<{ nodes: ControlInfo[]; found: ControlInfo }> => {
-      const { nodes } = await this.readAccessibilityNodes(target, input, signal);
-      const found = findControl(nodes, selector, { maxDepth: input.maxDepth });
-      if (!found) {
-        throw new ComputerUseError("CONTROL_NOT_FOUND", "AT-SPI 树里没有匹配的控件（可用 ocr_window + click_client 走坐标点击）", { selector });
-      }
-      const index = found.elementIndex ?? this.indexForObjectRef(nodes, found);
-      if (setValue) {
-        await checked(() => this.cul().require(CUL_TOOLS.setValue, { element_index: index, value: input.text ?? "" }, signal), signal);
-      } else {
-        const args: Record<string, unknown> = { element_index: index };
-        if (input.controlName) args.name = input.controlName;
-        await checked(() => this.cul().require(CUL_TOOLS.performAction, args, signal), signal);
-      }
-      return { nodes, found };
-    };
-
-    const windowsBefore = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
-    let result = await act();
-    let after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
-    let verified: boolean | undefined;
-    let verifyDetail: string | undefined;
-    let retried = false;
-
-    if (!after) {
-      // 窗口关了 = 动作确实生效
-      verified = true;
-    } else if (setValue) {
-      let text = await this.readControlText(target, result.found, input, signal);
-      if (input.text !== undefined && text !== undefined && text !== input.text) {
-        // set_value 幂等：允许一次有界重试
-        result = await act();
-        after = await this.inspectHandle(target.handle, signal).catch(() => after);
-        text = await this.readControlText(target, result.found, input, signal);
-        retried = true;
-      }
-      if (input.text === undefined || text === undefined) {
-        verified = undefined;
-      } else {
-        verified = text === input.text;
-        if (!verified) {
-          verifyDetail = `回读文本 ${JSON.stringify(text)} 与请求 ${JSON.stringify(input.text)} 不一致${retried ? "（已重试一次）" : ""}`;
-        }
-      }
-    } else {
-      const windowsAfter = await this.readWindows(signal).catch(() => [] as WindowInfo[]);
-      if (windowsChanged(windowsBefore, windowsAfter)) {
-        verified = true;
-      } else {
-        // 便宜观测看不出变化：读树比较指纹（可能只是 a11y 内部状态变了）
-        const recheck = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
-        if (recheck && controlFingerprint(result.nodes) !== controlFingerprint(recheck.nodes)) {
-          verified = true;
-        } else if (hasDialogRole(result.nodes)) {
-          // 模态对话框按钮：被输入抓取吞掉一次很常见，重复激活是安全的（确认/关闭语义）
-          result = await act();
-          after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
-          retried = true;
-          const afterRetry = after ? await this.readWindows(signal).catch(() => [] as WindowInfo[]) : [];
-          if (!after || windowsChanged(windowsAfter, afterRetry)) {
-            verified = true;
-          } else {
-            const final = await this.readAccessibilityNodes(target, input, signal).catch(() => undefined);
-            verified = final ? controlFingerprint(result.nodes) !== controlFingerprint(final.nodes) : undefined;
-            if (verified === false) verifyDetail = "模态对话框按钮激活后仍看不出变化（已重试一次）：可能被输入抓取吞掉，请重新观察或用 expected_outcomes 验证";
+    if (action === "move_window" || action === "resize_window") {
+      await this.guard(context, signal);
+      context.submitted = true;
+      const geometry = action === "move_window" ? await this.windowControl.move(target!.handle, input.windowX!, input.windowY!, signal) : await this.windowControl.resize(target!.handle, input.windowWidth!, input.windowHeight!, signal);
+      const verified = Boolean(geometry && (action === "move_window" ? Math.abs(geometry.x - Math.round(input.windowX!)) <= 1 && Math.abs(geometry.y - Math.round(input.windowY!)) <= 1 : Math.abs(geometry.width - Math.round(input.windowWidth!)) <= 1 && Math.abs(geometry.height - Math.round(input.windowHeight!)) <= 1));
+      return result({ geometry, verified, detail: verified ? "已读回请求的窗口几何" : "窗口操作已提交，但未读回所需几何；不要据此重复操作" });
+    }
+    if (action === "key_down") {
+      await this.guard(context, signal); context.submitted = true;
+      const pressed = await this.keysDown(keyChordToKeycodes(input.key!), owner, target, signal);
+      return result({ executed: pressed.length > 0, pressedKeys: pressed, heldKeys: [...this.heldKeys].filter(([, value]) => value === owner).map(([code]) => code), detail: "按键由本任务持续持有，直到 key_up、任务结束或取消" });
+    }
+    if (action === "key_press") {
+      const codes = keyChordToKeycodes(input.key!);
+      if (codes.some(code => this.heldKeys.has(code) && ![29, 42, 54, 56, 97, 100, 125, 126].includes(code)) || codes.every(code => this.heldKeys.has(code))) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "key_press 不能重新按下本任务已持有的普通键；请先 key_up");
+      await this.guard(context, signal); context.submitted = true;
+      const pressed = await this.keysDown(codes, owner, target, signal);
+      await this.withInputCleanup(() => this.sleep(input.holdMs ?? 20, signal), () => this.keysUp(pressed, owner));
+      return result();
+    }
+    if (action === "type_text" || action === "paste_text") {
+      // Clipboard preserves Unicode/layout semantics; insertion is never converted into replacement.
+      // Ctrl+V cannot be safely added while unrelated held modifiers are active.
+      if (this.heldKeys.size || this.heldButtons.size) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "粘贴需要先释放本任务持有的按键和按钮");
+      let focused: ControlInfo | undefined;
+      try {
+        const tree = await this.inspect(target!, context.snapshot, owner, input, signal);
+        const candidates = tree.controls.filter(c => c.hasKeyboardFocus && c.text !== undefined);
+        if (candidates.length === 1) focused = candidates[0];
+      } catch (error) { if (signal.aborted) throw error; /* no semantic tree is a valid input-only case */ }
+      await this.guard(context, signal);
+      await (this.options.pasteViaClipboard ?? writeWaylandClipboard)(input.text!, signal);
+      context.clipboardChanged = true;
+      await this.guard(context, signal);
+      context.submitted = true;
+      const pressed = await this.keysDown(keyChordToKeycodes("Ctrl+V"), owner, target, signal);
+      await this.withInputCleanup(() => this.sleep(35, signal), () => this.keysUp(pressed, owner));
+      let after: ControlInfo | undefined; let readbackError: string | undefined;
+      if (focused) try { after = await this.atspi.readControl(target!, focused.runtimeId, signal); } catch (error) { readbackError = errorText(error); }
+      // Without selection/caret readback a text delta cannot prove exact insertion, especially on repeats.
+      return result({ clipboardChanged: true, pasted: true, textLength: input.text!.length, control: after, readbackError, textReadback: after?.text, detail: "已将 Unicode 文本写入剪贴板并提交 Ctrl+V；返回可用的控件文本，未推断光标或选区位置" });
+    }
+    if (action === "mouse_up_client") {
+      await this.guard(context, signal); const released = await this.buttonUp(input.button ?? "left", owner, signal);
+      return result({ executed: released, releasedButton: released ? input.button ?? "left" : undefined });
+    }
+    if (action === "scroll" || action === "scroll_client") {
+      if (input.x !== undefined || input.y !== undefined) await this.movePointer(this.point(input, context), context, signal);
+      await this.guard(context, signal); context.submitted = true;
+      const horizontal = input.deltaX ?? 0;
+      const vertical = input.notches ?? -(input.deltaY ?? 0);
+      return this.temporaryModifiers(input, context, async () => {
+        await this.guard(context, signal);
+        await this.input.scroll(horizontal, vertical, signal);
+        return result({ executed: Boolean(horizontal || vertical), horizontalNotches: horizontal, verticalNotches: vertical });
+      }, signal);
+    }
+    const point = this.point(input, context);
+    if (["move_client", "mouse_move"].includes(action)) return result({ actualPointer: await this.movePointer(point, context, signal), verified: true, detail: "已从合成器读回实际光标位置；没有发送鼠标按钮事件" });
+    if (action === "mouse_down_client") {
+      await this.movePointer(point, context, signal); await this.guard(context, signal); context.submitted = true;
+      const pressed = await this.buttonDown(input.button ?? "left", owner, target, signal);
+      return result({ pressedButton: pressed ? input.button ?? "left" : undefined, heldButtons: [...this.heldButtons].filter(([, value]) => value === owner).map(([button]) => button) });
+    }
+    if (["click_client", "mouse_click"].includes(action)) {
+      const button = input.button ?? "left";
+      if (this.heldButtons.has(button)) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "要点击的按钮已经按下；先 mouse_up_client");
+      // Always move before DOWN, including holdMs > 0. No absolute ydotool motion.
+      await this.movePointer(point, context, signal);
+      return this.temporaryModifiers(input, context, async () => {
+        const count = input.clickCount ?? 1; let completedClicks = 0;
+        try {
+          for (let index = 0; index < count; index++) {
+            await this.guard(context, signal); context.submitted = true;
+            await this.buttonDown(button, owner, target, signal);
+            await this.withInputCleanup(() => this.sleep(input.holdMs ?? 30, signal), () => this.buttonUp(button, owner));
+            completedClicks++;
+            if (index + 1 < count) await this.sleep(80, signal);
           }
-        } else {
-          verified = false;
-          verifyDetail = "看不出可观测变化：可能被弹窗/输入抓取吞掉，也可能本来就是无副作用的动作。需要确认就重新观察或加 expected_outcomes，不要盲目重复点击";
+        } catch (error) {
+          const details = error instanceof ComputerUseError ? this.errorDetails(error) : {};
+          throw new ComputerUseError(error instanceof ComputerUseError ? error.code : "HOST_PROTOCOL_ERROR", errorText(error), { ...details, executed: completedClicks ? true : details.executed ?? "unknown", completedClicks, requestedClicks: count });
         }
+        return result({ clickCount: count, completedClicks, actualPointer: point });
+      }, signal);
+    }
+    if (["drag_client", "mouse_drag", "drag_screen"].includes(action)) {
+      const endpoint = this.point(input, context, true); const button = input.button ?? "left";
+      if (this.heldButtons.has(button)) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "拖动按钮已经按下；请使用显式移动/松开完成已有手势");
+      const steps = input.steps ?? 12; const duration = input.durationMs ?? 300;
+      const path = Array.from({ length: steps }, (_, index) => ({ x: Math.floor(point.x + (endpoint.x - point.x) * (index + 1) / steps), y: Math.floor(point.y + (endpoint.y - point.y) * (index + 1) / steps) }));
+      path.forEach(p => monitorForPoint(context.snapshot.monitors, p));
+      await this.movePointer(point, context, signal);
+      return this.temporaryModifiers(input, context, async () => {
+        await this.guard(context, signal); context.submitted = true;
+        await this.buttonDown(button, owner, target, signal);
+        const start = this.now(); let actual = point; let completedSteps = 0;
+        await this.withInputCleanup(async () => {
+          try {
+          for (let i = 0; i < path.length; i++) {
+            const due = start + duration * (i + 1) / steps;
+            await this.sleep(Math.max(0, due - this.now()), signal);
+            actual = await this.movePointer(path[i], context, signal); completedSteps++;
+          }
+        } catch (error) {
+          throw new ComputerUseError(error instanceof ComputerUseError ? error.code : "HOST_PROTOCOL_ERROR", errorText(error), { ...(error instanceof ComputerUseError ? this.errorDetails(error) : {}), executed: true, completedSteps, requestedSteps: steps, actualPointer: actual, actualDurationMs: this.now() - start });
+          }
+        }, () => this.buttonUp(button, owner));
+        return result({ actualPointer: actual, completedSteps, requestedDurationMs: duration, actualDurationMs: this.now() - start });
+      }, signal);
+    }
+    throw new ComputerUseError("HOST_PROTOCOL_ERROR", `Linux 后端尚不支持 ${action}`);
+  }
+
+  private async afterAction(input: ComputerExecInput, context: ActionContext, output: ComputerExecOutput, signal: AbortSignal): Promise<ComputerExecOutput> {
+    if (!input.observeAfter && !input.captureAfter && !input.expectedOutcomes?.length) return output;
+    if (context.target) computerUseRunCoordinator.presentTarget(input, context.target, "verifying");
+    let fresh: HyprlandSnapshot;
+    try { fresh = await this.compositor.snapshot(signal); }
+    catch (error) {
+      return { ...output, observationStatus: "failed", observationError: errorText(error), semanticOutcome: input.expectedOutcomes?.length ? { status: "not_evaluable", checks: input.expectedOutcomes.map(check => ({ kind: check.kind, status: "not_evaluable", evidence: `操作后窗口读回失败：${errorText(error)}` })) } : undefined, ...(input.captureAfter ? { captureError: `未能取得新鲜截图目标：${errorText(error)}` } : {}) };
+    }
+    const targetAfter = context.target ? fresh.windows.find(w => sameWindowIdentity(context.target!, w)) : undefined;
+    const foregroundBefore = context.snapshot.windows.find(w => w.handle === context.snapshot.activeHandle);
+    const foregroundAfter = fresh.windows.find(w => w.handle === fresh.activeHandle);
+    const newWindows = fresh.windows.filter(w => !context.snapshot.windows.some(before => sameWindowIdentity(before, w)));
+    const closedWindows = context.snapshot.windows.filter(w => !fresh.windows.some(after => sameWindowIdentity(w, after)));
+    output = { ...output, observation: { targetBefore: context.target, targetAfter, foregroundBefore: foregroundBefore?.handle, foregroundAfter: foregroundAfter?.handle, focusPreserved: Boolean(foregroundBefore && foregroundAfter && sameWindowIdentity(foregroundBefore, foregroundAfter)), newWindows, closedWindows }, observationId: targetAfter ? this.remember(targetAfter, context.owner) : undefined, observationStatus: "available" };
+    try { output.semanticOutcome = await this.evaluateOutcomes(input, context, fresh, targetAfter, newWindows, signal); }
+    catch (error) { output.semanticOutcome = { status: "not_evaluable", checks: (input.expectedOutcomes ?? []).map(check => ({ kind: check.kind, status: "not_evaluable", evidence: `后置条件读回失败：${errorText(error)}` })) }; output.verificationError = errorText(error); }
+    // A passed explicit postcondition is evidence about its own requested facts.
+    // It cannot upgrade an unknown transport result into a confirmed delivery.
+    if (output.semanticOutcome.status === "passed" && output.executed === true && output.batch?.completed !== false) output.verified = true;
+    if (input.captureAfter) {
+      try {
+        if (context.target && !targetAfter) throw new ComputerUseError("WINDOW_NOT_FOUND", "操作后目标窗口已关闭");
+        if (targetAfter && (!targetAfter.visible || fresh.activeHandle !== targetAfter.handle)) throw new ComputerUseError("WINDOW_NOT_VISIBLE", "操作后目标不在可见前台，不能保证截图裁剪属于该窗口");
+        const captureContext = { ...context, snapshot: fresh, target: targetAfter };
+        const captureSnapshot = await this.guard(captureContext, signal, Boolean(targetAfter), true);
+        const capture = await this.screenshots.capture({ snapshot: captureSnapshot, window: targetAfter, signal });
+        output = { ...output, ...capture };
+        this.markCapability("screenshot", true, true);
+      } catch (error) {
+        output.captureError = errorText(error);
+        this.markCapability("screenshot", false, false, errorText(error));
       }
     }
-
-    const output: ComputerExecOutput = {
-      action,
-      window: after ?? target,
-      // 这里只回报控件身份，不回传坐标：GTK 的 bounds 原点不可信（见 ZERO_ORIGIN_BOUNDS_HINT）。
-      control: controlBoundsAreZeroOrigin(result.nodes) ? stripUnreliableControlBounds([result.found])[0] : result.found,
-      observation: after ? { targetBefore: target, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground } : undefined,
-      backend: this.backend,
-      verified,
-      detail: [retried ? "已自动重试一次" : "", verifyDetail ?? ""].filter(Boolean).join("；") || undefined,
-    };
     return output;
   }
 
-  /** 读回控件当前文本（`set_control_value` 校验；runtimeId 变了就按名字/角色兜底匹配）。 */
-  private async readControlText(target: WindowInfo, previous: ControlInfo, input: ComputerExecInput, signal?: AbortSignal): Promise<string | undefined> {
-    const { nodes } = await this.readAccessibilityNodes(target, input, signal).catch(() => ({ nodes: [] as ControlInfo[], truncated: false, pages: 0 }));
-    const found = nodes.find((node) => node.runtimeId === previous.runtimeId)
-      ?? nodes.find((node) => node.controlType === previous.controlType && node.name === previous.name);
-    return found?.text;
-  }
-
-
-  /** AT-SPI 节点的 `index` 是 CUL 树里的稳定下标；用 object_ref 反查。 */
-  private indexForObjectRef(nodes: ControlInfo[], control: ControlInfo): number {
-    const exact = nodes.findIndex((node) => node.runtimeId === control.runtimeId);
-    return exact >= 0 ? exact : 0;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* 指针输入                                                           */
-  /* ---------------------------------------------------------------- */
-
-  private async pointerAction(
-    action: ComputerExecAction,
-    input: ComputerExecInput,
-    kind: "move" | "click" | "drag" | "scroll",
-    signal?: AbortSignal,
-  ): Promise<ComputerExecOutput> {
-    const modifiers = input.modifiers ?? [];
-    // 参数校验放在最前面：不静默忽略（modifiers/holdMs 对 move 没有意义，悄悄丢掉会让
-    // 模型以为按住或长按生效了），同时保证在真正按下任何键之前就失败。
-    if (kind === "move" && (modifiers.length > 0 || (input.holdMs ?? 0) > 0)) {
-      throw new ComputerUseError(
-        "HOST_PROTOCOL_ERROR",
-        "move_client 不接受 modifiers/hold_ms：要按住修饰键点按请用 click_client 的同名参数，要长按请用 mouse_down_client + mouse_up_client",
-        { action, modifiers, holdMs: input.holdMs },
-      );
-    }
-    const target = await this.ensureForeground(await this.resolveTarget(input, signal), signal);
-    const point = clientDipToScreenPhysical(target, requireFinite(input.x, "x"), requireFinite(input.y, "y"));
-    const button = input.button ?? "left";
-    // CUL 的 click/scroll/drag 都不接受 modifier 参数，所以修饰键只能由 ydotool 真的按住
-    // （实测 `42:1`/`42:0` 跨进程持久），动作结束再释放；任何一步失败都要保证释放，
-    // 否则用户桌面会残留一个按住的修饰键（比动作失败更糟）。
-    const held = await this.holdModifiers(modifiers);
-    try {
-      switch (kind) {
-        case "move":
-          // CUL 没有单独的「移动指针」工具；`scroll pages=0` 只定位不滚动（实测 ok:true 且游标移动）。
-          await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
-          break;
-        case "click": {
-          const clickCount = Math.max(1, Math.min(3, input.clickCount ?? 1));
-          const holdMs = Math.max(0, Math.min(5_000, input.holdMs ?? 0));
-          if (holdMs > 0) {
-            // 长按：CUL 的 click 是原子的 down+up，中间没有停顿；holdMs>0 时改走
-            // ydotool 的 down → 停顿 → up（实测 0x40/0x80 跨进程持久）。
-            for (let index = 0; index < clickCount; index += 1) {
-              assertNotCancelled(signal);
-              await this.input.setButtonHeld(button, "down");
-              try {
-                await delay(holdMs);
-              } finally {
-                await this.input.setButtonHeld(button, "up");
-              }
-            }
-          } else {
-            for (let index = 0; index < clickCount; index += 1) {
-              assertNotCancelled(signal);
-              await checked(() => this.cul().require(CUL_TOOLS.click, { x: point.x, y: point.y, button, click_count: 1 }, signal), signal);
-            }
+  private async evaluateOutcomes(input: ComputerExecInput, context: ActionContext, fresh: HyprlandSnapshot, targetAfter: LinuxWindowInfo | undefined, newWindows: LinuxWindowInfo[], signal: AbortSignal): Promise<ComputerSemanticOutcome> {
+    if (!input.expectedOutcomes?.length) return { status: "not_requested", checks: [] };
+    let tree: AtSpiInspection | undefined; let treeError: string | undefined; let inspected = false;
+    const checks: ComputerSemanticOutcome["checks"] = [];
+    for (const check of input.expectedOutcomes) {
+      let status: "passed" | "failed" | "not_evaluable" = "not_evaluable"; let evidence = "缺少可验证的目标";
+      if (check.kind === "new_window") {
+        const matches = newWindows.filter(w => !check.windowTitleContains || w.title.toLowerCase().includes(check.windowTitleContains.toLowerCase()));
+        status = matches.length ? "passed" : "failed"; evidence = matches.length ? `观察到 ${matches.length} 个新窗口生命周期：${matches.map(w => w.handle).join(", ")}` : "新鲜窗口清单中没有符合条件的新窗口生命周期";
+      } else if (context.target && ["target_present", "target_closed", "target_foreground"].includes(check.kind)) {
+        const passed = check.kind === "target_present" ? Boolean(targetAfter) : check.kind === "target_closed" ? !targetAfter : Boolean(targetAfter && targetAfter.handle === fresh.activeHandle && targetAfter.visible);
+        status = passed ? "passed" : "failed"; evidence = `${context.target.handle} 的同一窗口生命周期${targetAfter ? "仍存在" : "已消失"}；活动窗口为 ${fresh.activeHandle ?? "无"}`;
+      } else if (check.kind === "control_present" || check.kind === "control_absent") {
+        if (!hasControlSelector(check)) evidence = "控件后置条件缺少明确选择器";
+        else if (!targetAfter) evidence = "目标窗口不可用，无法读取控件树";
+        else {
+          if (!inspected) {
+            inspected = true;
+            try { tree = await this.inspect(targetAfter, fresh, context.owner, { ...input, maxDepth: input.maxDepth ?? 12, maxNodes: input.maxNodes ?? 1200 }, signal); }
+            catch (error) { treeError = errorText(error); }
           }
-          break;
-        }
-        case "drag": {
-          const end = clientDipToScreenPhysical(target, requireFinite(input.x2, "x2"), requireFinite(input.y2, "y2"));
-          await this.dragPath(point, end, input, button, signal);
-          break;
-        }
-        case "scroll": {
-          const notches = input.notches ?? 0;
-          if (notches !== 0) {
-            const direction = notches > 0 ? "up" : "down";
-            const pages = Math.max(0.1, Math.abs(notches) / 3);
-            await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction, pages, x: point.x, y: point.y }, signal), signal);
+          if (!tree) evidence = `控件读回失败：${treeError ?? "未知错误"}`;
+          else {
+            // runtimeId is observation-scoped. Read that original reference instead of
+            // comparing it with the fresh inspection's newly-issued IDs.
+            let found = tree.controls.some(control => matchesSelector(control, check));
+            if (check.controlRuntimeId) {
+              try { const control = await this.selectControl(targetAfter, fresh, context.owner, check, signal); found = matchesSelector(control, check); }
+              catch (error) { evidence = `原控件引用无法读回：${errorText(error)}`; checks.push({ kind: check.kind, status: "not_evaluable", evidence }); continue; }
+            }
+            if (!found && tree.truncated) evidence = "树已截断；未发现控件不能证明控件不存在";
+            else { const passed = check.kind === "control_present" ? found : !found; status = passed ? "passed" : "failed"; evidence = found ? "在新鲜 AT-SPI 读回中找到匹配控件" : "完整 AT-SPI 读回中没有匹配控件"; }
           }
-          break;
         }
-        default: break;
       }
-    } finally {
-      await held.release();
+      checks.push({ kind: check.kind, status, evidence });
     }
-    const before = target;
-    const after = await this.inspectHandle(target.handle, signal).catch(() => undefined);
-    return {
-      action,
-      window: after ?? target,
-      observation: after
-        ? { targetBefore: before, targetAfter: after, foregroundAfter: after.foreground ? after.title : undefined, focusPreserved: after.foreground }
-        : undefined,
-      detail: `${kind} at screen px ${point.x},${point.y} (client dip ${input.x},${input.y}, scale ${target.scaleFactor})${
-        modifiers.length > 0 ? ` with ${modifiers.join("+")}` : ""
-      }`,
-      backend: this.backend,
-    } as ComputerExecOutput;
+    return { status: checks.some(check => check.status === "failed") ? "failed" : checks.some(check => check.status === "not_evaluable") ? "not_evaluable" : "passed", checks };
   }
 
-  /**
-   * 拖拽路径：`durationMs`/`steps` 有值时按插值分段移动。
-   *
-   * Wayland 下 CUL 的 `drag` 是一次性 from→to（中间没有 move 事件），部分应用会把它
-   * 当成「瞬移点击」而不是拖拽；需要真实轨迹时用 ydotool 按住按钮 + 分段移动 + 松开。
-   */
-  private async dragPath(
-    start: { x: number; y: number },
-    end: { x: number; y: number },
-    input: ComputerExecInput,
-    button: "left" | "right" | "middle",
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const steps = Math.max(1, Math.min(60, input.steps ?? 1));
-    const durationMs = Math.max(0, Math.min(10_000, input.durationMs ?? 0));
-    if (steps <= 1 && durationMs <= 0) {
-      await checked(() => this.cul().require(CUL_TOOLS.drag, { start_x: start.x, start_y: start.y, end_x: end.x, end_y: end.y }, signal), signal);
-      return;
-    }
-    const settle = durationMs > 0 ? durationMs / steps : 0;
-    // 先把指针放到起点，再按住按钮、分段移动、最后松开：中间每一步都是真 move 事件。
-    await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: start.x, y: start.y }, signal), signal);
-    await this.input.setButtonHeld(button, "down");
+  private async restoreForeground(context: ActionContext, output: Record<string, unknown>): Promise<void> {
+    const previous = context.snapshot.windows.find(w => w.handle === context.snapshot.activeHandle);
+    if (!previous || previous.handle === context.target?.handle) { output.foregroundRestored = false; output.restoreDetail = "没有不同的原前台窗口需要恢复"; return; }
+    if (this.heldTargets.has(context.owner)) { output.foregroundRestored = false; output.restoreDeferred = true; output.restoreDetail = "本任务仍持有输入；恢复前台会把持续输入带到其他窗口，请先松开"; return; }
     try {
-      for (let index = 1; index <= steps; index += 1) {
-        assertNotCancelled(signal);
-        const ratio = index / steps;
-        const x = Math.round(start.x + (end.x - start.x) * ratio);
-        const y = Math.round(start.y + (end.y - start.y) * ratio);
-        await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x, y }, signal), signal);
-        if (settle > 0) await delay(settle);
+      const signal = AbortSignal.timeout(1800);
+      const fresh = await this.compositor.snapshot(signal);
+      const current = fresh.windows.find(window => sameWindowIdentity(previous, window));
+      if (!current) throw new ComputerUseError("TARGET_CHANGED", "原前台窗口已经关闭或重建");
+      if (fresh.activeHandle !== current.handle) await this.compositor.focus(current, signal);
+      const after = await this.compositor.snapshot(signal);
+      output.foregroundRestored = after.activeHandle === current.handle && after.windows.some(window => sameWindowIdentity(current, window));
+      if (!output.foregroundRestored) throw new ComputerUseError("FOCUS_FAILED", "恢复后未读回原窗口为活动窗口");
+    } catch (error) { output.foregroundRestored = false; output.restoreError = errorText(error); }
+  }
+
+  private async waitForWindow(input: ComputerExecInput, owner: string, signal: AbortSignal): Promise<ComputerExecOutput> {
+    const state = input.waitState ?? "visible";
+    const began = this.now(); const timeoutMs = input.timeoutMs ?? 5000;
+    let original: LinuxWindowInfo | undefined;
+    let first = true;
+    for (;;) {
+      throwIfCancelled(signal);
+      const snapshot = await this.compositor.snapshot(signal);
+      let window: LinuxWindowInfo | undefined;
+      try { window = this.resolveTarget(input, snapshot, owner); }
+      catch (error) {
+        if (!(error instanceof ComputerUseError) || (error.code !== "WINDOW_NOT_FOUND" && !(state === "closed" && error.code === "TARGET_CHANGED"))) throw error;
       }
-    } finally {
-      await this.input.setButtonHeld(button, "up");
+      if (first) { original = window; first = false; }
+      const same = original ? window && sameWindowIdentity(original, window) : window;
+      const done = state === "closed" ? !same : Boolean(window && window.visible && (state !== "foreground" || snapshot.activeHandle === window.handle));
+      if (done) return { action: "wait_for_window", window, observationId: window ? this.remember(window, owner) : undefined, waitedMs: this.now() - began, waitState: state, verified: true, detail: `已从当前合成器状态验证 ${state}` };
+      if (this.now() - began >= timeoutMs) throw new ComputerUseError("WAIT_TIMEOUT", `等待窗口 ${state} 超时`, { waitedMs: this.now() - began, window });
+      await this.sleep(Math.min(100, timeoutMs - (this.now() - began)), signal);
     }
   }
 
-  /** 按住修饰键（ydotool），返回 release()；失败时立即回滚已按下的键。 */
-  private async holdModifiers(modifiers: readonly string[]): Promise<{ release: () => Promise<void> }> {
-    if (modifiers.length === 0) return { release: async () => {} };
-    const heldModifiers: string[] = [];
-    try {
-      for (const modifier of modifiers) {
-        await this.input.setKeysHeld(modifierKeyName(modifier), true);
-        heldModifiers.push(modifierKeyName(modifier));
-      }
-    } catch (error) {
-      await this.releaseModifiers(heldModifiers);
-      throw error;
-    }
-    let released = false;
-    return {
-      release: async () => {
-        if (released) return;
-        released = true;
-        await this.releaseModifiers(heldModifiers);
-      },
-    };
-  }
-
-  private async releaseModifiers(modifiers: readonly string[]): Promise<void> {
-    for (const modifier of [...modifiers].reverse()) {
-      await this.input.setKeysHeld(modifier, false).catch(() => {
-        // 释放失败不静默：上面 holdPre/post 的调用方能感知；这里只能尽力而为，
-        // 因为用户桌面残留按住的键比抛错更糟，但抛错会掩盖真实动作结果。
-      });
-    }
-  }
-
-  /**
-   * 按下/松开指针按钮（`mouse_down_client` / `mouse_up_client`）。
-   *
-   * 实测可行：`ydotool click 0x40` = 左键 down、`0x80` = 左键 up，跨进程持久
-   * （与 CUL 的 `get_app_state`/`click` 混用没问题，因为两边都写 uinput）。
-   * 指针位置用 CUL 的 `scroll pages=0` 先定位（ydotool `-a` 的坐标系是 DIP×2，不等价）。
-   */
-  private async pointerSplit(
-    action: ComputerExecAction,
-    input: ComputerExecInput,
-    phase: "down" | "up",
-    signal?: AbortSignal,
-  ): Promise<ComputerExecOutput> {
-    const resolved = await this.maybeTarget(input, signal);
-    const target = resolved ? await this.ensureForeground(resolved, signal) : undefined;
-    if (Number.isFinite(Number(input.x)) && Number.isFinite(Number(input.y)) && target) {
-      const point = clientDipToScreenPhysical(target, Number(input.x), Number(input.y));
-      await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x: point.x, y: point.y }, signal), signal);
-    }
-    const button = input.button ?? "left";
-    // 先登记再下发：如果 setButtonHeld 抛错，动作失败清理会把它当成「可能已按下」释放掉。
-    if (phase === "down") this.heldButtons.add(button as MouseButton);
-    await this.input.setButtonHeld(button, phase);
-    if (phase === "up") this.heldButtons.delete(button as MouseButton);
-    return {
-      action,
-      window: target,
-      detail: `ydotool ${button} ${phase}${target ? ` (window ${target.handle})` : ""}`,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /**
-   * 按下/松开一组键（`key_down` / `key_up`）。
-   *
-   * `key` 支持组合写法（`Ctrl+Shift`），按下按正序、松开按逆序；`hold_ms` 在
-   * `key_down` 时不生效（按住时长由后续动作/`key_up` 决定），只在 `key_press`
-   * 里用一次完整 down+up+停顿表达。
-   */
-  private async keySplit(
-    action: ComputerExecAction,
-    input: ComputerExecInput,
-    pressed: boolean,
-    signal?: AbortSignal,
-  ): Promise<ComputerExecOutput> {
-    assertNotCancelled(signal);
-    const key = input.key?.trim();
-    if (!key) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 需要 key`);
-    const target = await this.maybeTarget(input, signal);
-    // ydotool 没有 window_id 定向：按住/松开只会打到当前前台窗口，所以先聚焦目标。
-    if (target && !target.foreground) await this.focusWindow(target.handle, signal);
-    const codes = keyChordToKeycodes(key);
-    // 先登记再下发：组合键中途失败时动作失败清理会释放它可能已经按下的键。
-    if (pressed) for (const code of codes) this.heldKeys.add(code);
-    await this.input.setKeycodesHeld(codes, pressed);
-    if (!pressed) for (const code of codes) this.heldKeys.delete(code);
-    return {
-      action,
-      window: target,
-      detail: `ydotool key ${codes.join(",")}:${pressed ? 1 : 0}`,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /** 屏幕绝对坐标（legacy 桌面动作）：入参已是物理像素。 */
-  private async legacyMouse(
-    action: ComputerExecAction,
-    input: ComputerExecInput,
-    kind: "move" | "click" | "drag" | "scroll",
-    signal?: AbortSignal,
-  ): Promise<ComputerExecOutput> {
-    const x = requireFinite(input.x, "x");
-    const y = requireFinite(input.y, "y");
-    const button = input.button ?? "left";
-    if (kind === "move") {
-      await checked(() => this.cul().require(CUL_TOOLS.scroll, { direction: "down", pages: 0, x, y }, signal), signal);
-    } else if (kind === "click") {
-      await checked(() => this.cul().require(CUL_TOOLS.click, { x, y, button, click_count: Math.max(1, Math.min(3, input.clickCount ?? 1)) }, signal), signal);
-    } else if (kind === "drag") {
-      await checked(() => this.cul().require(CUL_TOOLS.drag, {
-        start_x: x, start_y: y, end_x: requireFinite(input.x2, "x2"), end_y: requireFinite(input.y2, "y2"),
-      }, signal), signal);
-    } else {
-      const notches = input.notches ?? 0;
-      if (notches !== 0) {
-        await checked(() => this.cul().require(CUL_TOOLS.scroll, {
-          direction: notches > 0 ? "up" : "down", pages: Math.max(0.1, Math.abs(notches) / 3), x, y,
-        }, signal), signal);
-      }
-    }
-    return { action, detail: `screen px ${x},${y}`, backend: this.backend } as ComputerExecOutput;
-  }
-
-  private async dragScreen(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const start = { x: requireFinite(input.x, "x"), y: requireFinite(input.y, "y") };
-    const end = { x: requireFinite(input.x2, "x2"), y: requireFinite(input.y2, "y2") };
-    await checked(() => this.cul().require(CUL_TOOLS.drag, {
-      start_x: start.x, start_y: start.y, end_x: end.x, end_y: end.y,
-    }, signal), signal);
-    return { action, detail: `screen drag ${start.x},${start.y} -> ${end.x},${end.y}`, backend: this.backend } as ComputerExecOutput;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* 窗口几何（Hyprland）                                               */
-  /* ---------------------------------------------------------------- */
-
-  /**
-   * `move_window` / `resize_window`。
-   *
-   * **不走 CUL**：CUL 的这两条在 Hyprland 上恒定失败（它只有 GNOME Shell 扩展和 X11/EMWM 两条路），
-   * 原文错误见 `hyprlandWindows.ts` 头注释。这里走 `hyprctl repl` 的 Lua API，并且回读
-   * 合成器实际采纳的几何作为证据——平铺窗口会被先转成浮窗，所以「请求 200,150」和
-   * 「实际 200,151」这种差异必须暴露给模型，不能假装成功。
-   */
-  private async windowGeometryAction(
-    action: ComputerExecAction,
-    input: ComputerExecInput,
-    signal?: AbortSignal,
-  ): Promise<ComputerExecOutput> {
-    // 先校验参数再解析目标窗口：坏参数不该先触发一次 CUL 连接/焦点变更。
-    const moving = action === "move_window";
-    if (moving) {
-      if (!Number.isFinite(Number(input.windowX)) || !Number.isFinite(Number(input.windowY))) {
-        throw new ComputerUseError(
-          "HOST_PROTOCOL_ERROR",
-          "move_window 需要 window_x 与 window_y（逻辑/布局像素，与 hyprctl clients 的 at 同域）",
-          { action },
-        );
-      }
-    } else if (!Number.isFinite(Number(input.windowWidth)) || !Number.isFinite(Number(input.windowHeight))) {
-      throw new ComputerUseError(
-        "HOST_PROTOCOL_ERROR",
-        "resize_window 需要 window_width 与 window_height（逻辑/布局像素，与 hyprctl clients 的 size 同域）",
-        { action },
-      );
-    }
-
-    const target = (await this.maybeTarget(input, signal))
-      ?? (await this.readWindows(signal)).find((window) => window.foreground);
-    if (!target) {
-      throw new ComputerUseError("WINDOW_NOT_FOUND", `${action} 需要目标窗口：请传 window_handle，或先让窗口到前台`);
-    }
-
-    const before = await this.windowControl.geometry(target.handle, signal).catch(() => undefined);
-    if (moving) {
-      const after = await this.windowControl.move(target.handle, Number(input.windowX), Number(input.windowY), signal);
-      return this.geometryOutput(action, target, before, after, `move -> ${input.windowX},${input.windowY}`);
-    }
-    const after = await this.windowControl.resize(target.handle, Number(input.windowWidth), Number(input.windowHeight), signal);
-    return this.geometryOutput(action, target, before, after, `resize -> ${input.windowWidth}x${input.windowHeight}`);
-  }
-
-  private geometryOutput(
-    action: ComputerExecAction,
-    target: WindowInfo,
-    before: HyprlandWindowRect | undefined,
-    after: HyprlandWindowRect | undefined,
-    request: string,
-  ): ComputerExecOutput {
-    if (!after) {
-      throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 已下发但读不回几何：hyprctl 没有返回该窗口的 at/size`, {
-        action,
-        windowHandle: target.handle,
-      });
-    }
-    const describe = (rect: HyprlandWindowRect): string =>
-      `at=${rect.x},${rect.y} size=${rect.width}x${rect.height}${rect.floating ? " floating" : ""}`;
-    const detail = `${request}；合成器实际：${describe(after)}${before ? `（原 ${describe(before)}）` : ""}`;
-    return {
-      action,
-      window: target,
-      detail,
-      windowGeometry: after,
-      windowGeometryBefore: before,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* 键盘输入                                                           */
-  /* ---------------------------------------------------------------- */
-
-  private async keyPress(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const key = input.key?.trim();
-    if (!key) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "key_press 需要 key");
-    const target = await this.maybeTarget(input, signal);
-    const normalized = toCulKey(key);
-    // hold_ms > 0 表示「长按」：CUL 的 press_key 是原子的 down+up，中间没有停顿，
-    // 所以长按必须走 ydotool 的 down → 停顿 → up 三步（实测 42:1/42:0 持久）。
-    const holdMs = Math.max(0, Math.min(5_000, input.holdMs ?? 0));
-    if (holdMs > 0) {
-      // 长按走 ydotool，没有 window_id 定向：必须先把目标窗口拿到前台，否则按键会打到别人窗口。
-      if (target && !target.foreground) await this.focusWindow(target.handle, signal);
-      await this.input.setKeysHeld(normalized, true).catch((error: unknown) => {
-        throw error instanceof ComputerUseError
-          ? error
-          : new ComputerUseError("HOST_UNAVAILABLE", `长按需要 ydotool：${String(error)}`, { action, key: normalized });
-      });
+  private async batch(input: ComputerExecInput, owner: string, signal: AbortSignal): Promise<ComputerExecOutput> {
+    const snapshot = await this.compositor.snapshot(signal);
+    const target = this.resolveTarget(input, snapshot, owner);
+    this.assertOwner(owner, target);
+    const context: ActionContext = { snapshot, target, submitted: false, owner };
+    const steps: Array<ComputerBatchStepResult & { executed?: unknown; verified?: unknown; errorCode?: string; errorDetails?: unknown }> = [];
+    const results: ComputerExecOutput[] = [];
+    let observationId = input.observationId;
+    let failed = false;
+    for (let index = 0; index < input.actions!.length; index++) {
+      const step: ComputerBatchStep = input.actions![index];
       try {
-        await delay(holdMs);
-      } finally {
-        await this.input.setKeysHeld(normalized, false).catch(() => {});
-      }
-      const after = target ? await this.inspectHandle(target.handle, signal).catch(() => undefined) : undefined;
-      return {
-        action,
-        window: after ?? target,
-        detail: `ydotool hold ${normalized} ${holdMs}ms${target ? ` (window ${target.handle})` : ""}`,
-        backend: this.backend,
-      } as ComputerExecOutput;
-    }
-    const args: Record<string, unknown> = { key: normalized };
-    if (target) {
-      args.window_id = Number(target.handle);
-    }
-    await checked(() => this.cul().require(CUL_TOOLS.pressKey, args, signal), signal);
-    const after = target ? await this.inspectHandle(target.handle, signal).catch(() => undefined) : undefined;
-    return {
-      action,
-      window: after ?? target,
-      detail: `press_key ${normalized}${target ? ` (window ${target.handle})` : ""}`,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /**
-   * `paste_text`：走系统剪贴板 + Ctrl+V，而不是逐字 wtype。
-   *
-   * 逐字输入在两个场景会坏：长文本要几十次 MCP 调用且中途被截断；输入法/富文本
-   * 编辑器里逐字键入会触发补全和自动格式化。Wayland 上写剪贴板用 `wl-copy`
-   * （wl-clipboard 包，Omarchy 自带；`wl-copy` 会 fork 一个常驻进程持有选区）。
-   * 剪贴板写不进去时**显式回落**到逐字输入并在 detail 里说明，不静默。
-   */
-  private async pasteText(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const text = input.text ?? "";
-    if (!text) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 需要 text`);
-    const target = await this.maybeTarget(input, signal);
-    let clipboardError: string | undefined;
-    try {
-      await this.writeClipboard(text);
-    } catch (error) {
-      clipboardError = error instanceof Error ? error.message : String(error);
-    }
-    if (clipboardError !== undefined) {
-      const typed = await this.typeText(action, input, signal);
-      return { ...typed, detail: `${typed.detail ?? ""}（剪贴板不可用，已回落逐字输入：${clipboardError}）` };
-    }
-    if (target && !target.foreground) await this.focusWindow(target.handle, signal);
-    const args: Record<string, unknown> = { key: "Ctrl+V" };
-    if (target) args.window_id = Number(target.handle);
-    await checked(() => this.cul().require(CUL_TOOLS.pressKey, args, signal), signal);
-    return {
-      action,
-      window: target,
-      completed: true,
-      typedLength: text.length,
-      totalLength: text.length,
-      pasted: true,
-      detail: `粘贴 ${text.length} 字符（wl-copy + Ctrl+V${target ? `，窗口 ${target.handle}` : ""}）`,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /** 写 Wayland 剪贴板（可注入，测试不碰真机）。 */
-  private async writeClipboard(text: string): Promise<void> {
-    if (this.options.pasteViaClipboard) {
-      await this.options.pasteViaClipboard(text);
-      return;
-    }
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "pipe"], detached: true });
-      let stderr = "";
-      let settled = false;
-      let timer: NodeJS.Timeout | undefined;
-      const fail = (error: ComputerUseError) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        reject(error);
-      };
-      const succeed = () => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        resolve();
-      };
-      child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-      child.on("error", (error) => fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 启动失败：${error.message}（安装 wl-clipboard）`)));
-      // 注意：**不要等 `close`**。wl-copy 会 fork 一个常驻进程持有选区，并继承这里的 stderr
-      // 管道；父进程退出后子进程仍持有 fd，`close` 要等所有 stdio 关闭 —— 实测 100ms 就 exit、
-      // 3 秒内 close 永不到来，用 close 会让 paste_text 一直挂到选区被替换。按 `exit` 判定。
-      child.on("exit", (code) => {
-        if (code === 0) succeed();
-        else fail(new ComputerUseError("HOST_UNAVAILABLE", `wl-copy 退出码 ${code}：${stderr.trim().slice(0, 300)}`));
-      });
-      // 兜底：连 exit 都不来（wl-copy 被塞住/无 Wayland 剪贴板）时不要无限期挂着。
-      timer = setTimeout(() => fail(new ComputerUseError("HOST_UNAVAILABLE", "wl-copy 3 秒内没有退出（剪贴板可能被占用）")), 3_000);
-      timer.unref?.();
-      child.stdin?.on("error", () => { /* 子进程可能先退出；由 exit 决定成败 */ });
-      child.stdin?.end(text);
-      child.unref();
-    });
-  }
-
-  private async typeText(action: ComputerExecAction, input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const text = input.text ?? "";
-    if (!text) throw new ComputerUseError("HOST_PROTOCOL_ERROR", `${action} 需要 text`);
-    const target = await this.maybeTarget(input, signal);
-    const chunks = chunkText(text, TYPE_TEXT_CHUNK);
-    const typed: string[] = [];
-    for (const chunk of chunks) {
-      assertNotCancelled(signal);
-      const args: Record<string, unknown> = { text: chunk };
-      if (target) args.window_id = Number(target.handle);
-      try {
-        await checked(() => this.cul().require(CUL_TOOLS.typeText, args, signal), signal);
-        typed.push(chunk);
+        throwIfCancelled(signal);
+        if (index) await this.guard(context, signal, false, true);
+        const stepInput: ComputerExecInput = { ...input, ...step, actions: undefined, action: step.action, windowHandle: target.handle, observationId, restoreForeground: false, expectedOutcomes: undefined, captureAfter: false, observeAfter: false };
+        const result = await this.perform(stepInput, owner, signal);
+        context.submitted ||= result.executed !== false;
+        results.push(result);
+        steps.push({ index, action: step.action, ok: true, detail: result.detail, executed: result.executed, verified: result.verified });
+        if (index + 1 < input.actions!.length) await this.sleep(input.settleMs ?? 120, signal);
       } catch (error) {
-        // 部分成功必须显式暴露：模型不能假设整段文本已输入。
-        if (typed.length === 0) throw error;
-        const failure = error instanceof Error ? error.message : String(error);
-        return {
-          action,
-          window: target,
-          completed: false,
-          typedLength: typed.join("").length,
-          totalLength: text.length,
-          detail: `输入到第 ${typed.length}/${chunks.length} 块时失败：${failure}`,
-          backend: this.backend,
-        } as ComputerExecOutput;
-      }
-    }
-    return {
-      action,
-      window: target,
-      completed: true,
-      typedLength: text.length,
-      totalLength: text.length,
-      detail: `${action} ${text.length} 字符（${chunks.length} 块，wtype${target ? `，窗口 ${target.handle}` : ""}）`,
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* App 会话与目标解析                                                 */
-  /* ---------------------------------------------------------------- */
-
-  private async attachApp(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const window = await this.resolveTarget({ ...input, appSessionId: undefined }, signal);
-    this.pruneSessions();
-    const session: AppSessionInfo = { id: randomUUID(), window, attachedAt: Date.now(), lastSeenAt: Date.now() };
-    this.appSessions.set(session.id, session);
-    return {
-      action: "attach_app",
-      appSessionId: session.id,
-      appSession: session,
-      window,
-      observationId: this.remember(window),
-      backend: this.backend,
-    } as ComputerExecOutput;
-  }
-
-  private pruneSessions(): void {
-    const cutoff = Date.now() - APP_SESSION_TTL_MS;
-    for (const [id, session] of this.appSessions) if (session.lastSeenAt < cutoff) this.appSessions.delete(id);
-    while (this.appSessions.size >= MAX_APP_SESSIONS) {
-      const oldest = [...this.appSessions.values()].sort((left, right) => left.lastSeenAt - right.lastSeenAt)[0];
-      if (!oldest) break;
-      this.appSessions.delete(oldest.id);
-    }
-  }
-
-  /** 与 Windows backend 一致的 target 语义：app_session_id 优先，其次 observation_id/window_handle/title/pid/class。 */
-  private async maybeTarget(input: ComputerExecInput, signal?: AbortSignal): Promise<WindowInfo | undefined> {
-    const hasTarget = Boolean(
-      input.appSessionId?.trim() || input.observationId?.trim() || input.windowHandle?.trim()
-      || input.windowTitle?.trim() || input.className?.trim() || Number.isInteger(input.processId),
-    );
-    if (!hasTarget) return undefined;
-    return this.resolveTarget(input, signal);
-  }
-
-  private async resolveTarget(input: ComputerExecInput, signal?: AbortSignal): Promise<WindowInfo> {
-    const sessionId = input.appSessionId?.trim();
-    if (sessionId) {
-      const session = this.appSessions.get(sessionId);
-      if (!session) {
-        throw new ComputerUseError("STALE_OBSERVATION", "app_session_id 已过期：请重新 attach_app", { appSessionId: sessionId });
-      }
-      session.lastSeenAt = Date.now();
-      const fresh = await this.inspectHandle(session.window.handle, signal);
-      if (!fresh) throw new ComputerUseError("WINDOW_NOT_FOUND", "会话窗口已关闭", { appSessionId: sessionId });
-      session.window = fresh;
-      return fresh;
-    }
-    const observationId = input.observationId?.trim();
-    if (observationId) {
-      const cached = this.observations.get(observationId);
-      if (!cached) throw new ComputerUseError("STALE_OBSERVATION", "observation_id 已过期：请重新 list_windows/inspect_window", { observationId });
-      return cached.window;
-    }
-    const handle = input.windowHandle?.trim();
-    if (handle) {
-      const window = await this.inspectHandle(handle, signal);
-      if (!window) throw new ComputerUseError("WINDOW_NOT_FOUND", `找不到窗口 handle=${handle}`, { handle });
-      return window;
-    }
-    const windows = await this.readWindows(signal);
-    const matched = filterWindows(windows, {
-      windowTitle: input.windowTitle,
-      className: input.className,
-      processName: input.processName,
-      processId: input.processId,
-    });
-    const identity = targetIdentity(input);
-    if (matched.length === 0) throw new ComputerUseError("WINDOW_NOT_FOUND", "没有匹配的目标窗口", { target: identity });
-    if (matched.length > 1) {
-      throw new ComputerUseError("WINDOW_AMBIGUOUS", `有 ${matched.length} 个窗口匹配，请用 window_handle 或 process_id 精确定位`, {
-        target: identity,
-        candidates: matched.map((window) => ({ handle: window.handle, title: window.title, processId: window.processId })),
-      });
-    }
-    return matched[0];
-  }
-
-  private remember(window: WindowInfo): string {
-    const id = randomUUID();
-    this.observations.set(id, { id, window, capturedAt: Date.now() });
-    const cutoff = Date.now() - OBSERVATION_TTL_MS;
-    for (const [key, entry] of this.observations) if (entry.capturedAt < cutoff) this.observations.delete(key);
-    while (this.observations.size > MAX_OBSERVATIONS) {
-      const oldest = [...this.observations.values()].sort((left, right) => left.capturedAt - right.capturedAt)[0];
-      if (!oldest) break;
-      this.observations.delete(oldest.id);
-    }
-    return id;
-  }
-
-  private async foregroundHandle(signal?: AbortSignal): Promise<string | undefined> {
-    try {
-      const windows = await this.readWindows(signal);
-      return windows.find((window) => window.foreground)?.handle;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* 批量动作                                                           */
-  /* ---------------------------------------------------------------- */
-
-  private async executeBatch(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    const steps = (input.actions ?? []).slice(0, BATCH_MAX_STEPS);
-    if (steps.length === 0) throw new ComputerUseError("HOST_PROTOCOL_ERROR", "actions 为空");
-    const settleMs = Math.max(0, Math.min(2_000, input.settleMs ?? BATCH_SETTLE_DEFAULT_MS));
-    const results: ComputerBatchStepResult[] = [];
-    let completed = true;
-    for (const [index, step] of steps.entries()) {
-      assertNotCancelled(signal);
-      const action = step.action as ComputerBatchAction;
-      if (!(COMPUTER_BATCH_ACTIONS as readonly string[]).includes(action)) {
-        results.push({ index, action, ok: false, detail: `不支持的批量动作：${action}` });
-        completed = false;
+        failed = true;
+        const details = error instanceof ComputerUseError ? this.errorDetails(error) : undefined;
+        steps.push({ index, action: step.action, ok: false, detail: errorText(error), executed: details?.executed ?? false, errorCode: error instanceof ComputerUseError ? error.code : "HOST_PROTOCOL_ERROR", errorDetails: details });
         break;
       }
-      try {
-        const output = await this.executeOnce(this.stepToInput(step, input, action), signal);
-        results.push({ index, action, ok: true, detail: output.detail });
-      } catch (error) {
-        results.push({ index, action, ok: false, detail: error instanceof Error ? error.message : String(error) });
-        completed = false;
-        break;
-      }
-      if (settleMs > 0 && index < steps.length - 1) await new Promise((resolve) => setTimeout(resolve, settleMs));
     }
-    const target = await this.maybeTarget(input, signal).catch(() => undefined);
-    const batch: ComputerBatchResult = { steps: results, settleMs, completed };
-    return { action: "batch", batch, window: target, backend: this.backend } as ComputerExecOutput;
+    const cleanup = failed ? await this.releaseOwned(owner) : undefined;
+    let output: ComputerExecOutput = { action: "batch", window: target, batch: { steps, completed: !failed, settleMs: input.settleMs ?? 120 }, stepResults: results, executed: steps.some(step => step.executed === true) ? true : steps.some(step => step.executed === "unknown") ? "unknown" : false, executionUncertain: steps.some(step => step.executed === "unknown"), verified: false, cleanup, detail: failed ? "批处理在首个失败或取消处停止；已执行步骤不会回滚或重放" : "批处理已顺序执行；每步结果保留各自的执行与验证证据" };
+    output = await this.afterAction(input, context, output, signal);
+    if (input.restoreForeground) await this.restoreForeground(context, output);
+    return output;
   }
 
-  private stepToInput(step: ComputerBatchStep, input: ComputerExecInput, action: ComputerBatchAction): ComputerExecInput {
-    return {
-      ...input,
-      actions: undefined,
-      action,
-      x: step.x,
-      y: step.y,
-      x2: step.x2,
-      y2: step.y2,
-      button: step.button,
-      deltaX: step.deltaX,
-      deltaY: step.deltaY,
-      key: step.key,
-      text: step.text,
-      clickCount: step.clickCount,
-      modifiers: step.modifiers,
-      holdMs: step.holdMs,
-      steps: step.steps,
-      durationMs: step.durationMs,
-      notches: step.notches,
-      settleMs: undefined,
-    };
+  async shutdown(): Promise<void> {
+    if (this.closing) return;
+    this.closing = true;
+    this.lifetime.abort();
+    await this.queue.catch(() => undefined);
+    const cleanup = await this.releaseOwned();
+    const results = await Promise.allSettled([this.atspi.shutdown(), this.input.shutdown(), this.compositor.shutdown?.()]);
+    this.observations.clear(); this.sessions.clear(); this.controlReferences.clear();
+    const failures = results.flatMap(result => result.status === "rejected" ? [errorText(result.reason)] : []);
+    if (cleanup.errors.length || failures.length) throw new ComputerUseError("HOST_UNAVAILABLE", "Linux 桌面后端关闭期间的输入清理或进程关闭失败", { cleanup, failures });
   }
-}
-
-function targetIdentity(input: ComputerExecInput): TargetIdentity {
-  return {
-    windowHandle: input.windowHandle?.trim() || undefined,
-    windowTitle: input.windowTitle?.trim() || undefined,
-    processId: Number.isInteger(input.processId) ? input.processId : undefined,
-    className: input.className?.trim() || undefined,
-  };
-}
-
-/** 按词边界切块（避免把一个字符的 Unicode 序列切断）。 */
-export function chunkText(text: string, size: number): string[] {
-  if (text.length <= size) return [text];
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > size) {
-    const window = rest.slice(0, size);
-    const breakAt = Math.max(window.lastIndexOf("\n"), window.lastIndexOf(" "));
-    const cut = breakAt > size / 2 ? breakAt + 1 : size;
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut);
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
 }

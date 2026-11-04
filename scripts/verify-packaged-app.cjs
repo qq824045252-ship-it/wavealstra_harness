@@ -45,6 +45,15 @@ const REQUIRED_UNPACKED_ENTRIES = [
 
 const WORKER_RUNTIME_PACKAGE = "@wavealstra/pi-worker-runtime";
 
+const REQUIRED_LINUX_UNPACKED_ENTRIES = [
+  "out/main/atspi-worker.cjs",
+  "out/main/linux-computer-use-runtime.json",
+  "out/main/input-guardian.cjs",
+  "out/main/linux-computer-use-acceptance.cjs",
+  "out/main/linux-computer-use-fixture.cjs",
+  "out/main/linux-computer-use-fixture.html",
+];
+
 /** Minimal asar header reader (offset 8: [uint32 headerSize][uint32 jsonSize][json]). */
 function readAsarIndex(asarPath) {
   const fd = fs.openSync(asarPath, "r");
@@ -148,6 +157,119 @@ function findPackagedExecutable(appDir, platform) {
   return preferred ?? candidates.sort()[0];
 }
 
+function nodeVersionAtLeast(actual, minimum) {
+  const parse = (version) => typeof version === "string" && /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  const a = parse(actual);
+  const b = parse(minimum);
+  if (!a || !b) return false;
+  for (let index = 1; index <= 3; index += 1) {
+    if (Number(a[index]) !== Number(b[index])) return Number(a[index]) > Number(b[index]);
+  }
+  return true;
+}
+
+/** Validate the runtime actually used by the shipped AT-SPI worker. No desktop probe. */
+function verifyLinuxWorkerRuntime(appDir, executable, unpackedRoot, options = {}) {
+  const errors = [];
+  const facts = {};
+  const manifestPath = path.join(unpackedRoot, "out/main/linux-computer-use-runtime.json");
+  const workerPath = path.join(unpackedRoot, "out/main/atspi-worker.cjs");
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    if (manifest.protocol !== 1 || manifest.backend !== "linux-atspi" || manifest.worker !== "atspi-worker.cjs" ||
+        manifest.inputGuardian !== "input-guardian.cjs" ||
+        !/^\d+\.\d+\.\d+$/.test(manifest.dbusNativeVersion ?? "") ||
+        !nodeVersionAtLeast(manifest.minimumNodeVersion, "24.0.0")) {
+      throw new Error("unexpected AT-SPI runtime manifest fields");
+    }
+  } catch (error) {
+    return { ok: false, errors: [`AT-SPI runtime manifest unreadable or invalid: ${error.message}`], facts };
+  }
+  if (!fs.existsSync(workerPath)) {
+    return { ok: false, errors: [`AT-SPI worker missing: ${workerPath}`], facts };
+  }
+  if (!executable) {
+    return { ok: false, errors: ["cannot validate the AT-SPI worker without the packaged Electron executable"], facts };
+  }
+  const executablePath = path.resolve(appDir, executable);
+  const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+  // Child-only environment: neither the removed backend nor a developer's Node
+  // flags may influence the shipped runtime or the parent Electron application.
+  delete env.MYBUDDY_CUL_BIN;
+  delete env.NODE_OPTIONS;
+  let run;
+  try {
+    run = (options.spawnSync ?? cp.spawnSync)(executablePath, [workerPath, "--handshake"], {
+      encoding: "utf8", timeout: 15_000, maxBuffer: 512 * 1024,
+      env, cwd: path.resolve(appDir), windowsHide: true,
+    });
+  } catch (error) {
+    return { ok: false, errors: [`packaged AT-SPI worker could not spawn: ${error.message}`], facts };
+  }
+  facts.atspiWorkerExecutable = executablePath;
+  facts.atspiWorkerExitCode = run.status;
+  facts.atspiWorkerRuntime = "packaged-electron";
+  if (run.error || run.status !== 0) {
+    errors.push(`packaged AT-SPI worker failed: ${run.error?.message ?? `exit ${run.status}`} ${String(run.stderr ?? "").trim().slice(0, 400)}`);
+  } else {
+    try {
+      const handshake = JSON.parse(String(run.stdout ?? "").trim());
+      facts.atspiWorkerHandshake = handshake;
+      if (handshake.protocol !== manifest.protocol || handshake.backend !== manifest.backend || handshake.ready !== true) {
+        errors.push("packaged AT-SPI worker did not return a ready protocol-1 linux-atspi handshake");
+      }
+      if (!nodeVersionAtLeast(handshake.nodeVersion, manifest.minimumNodeVersion)) {
+        errors.push(`packaged Electron Node ${String(handshake.nodeVersion)} is below ${manifest.minimumNodeVersion}`);
+      }
+      if (handshake.dbusNativeVersion !== manifest.dbusNativeVersion) {
+        errors.push(`packaged AT-SPI worker loaded dbus-native ${String(handshake.dbusNativeVersion)}, expected ${manifest.dbusNativeVersion}`);
+      }
+      if (!Number.isInteger(handshake.pid) || handshake.pid <= 0) errors.push("AT-SPI worker handshake omitted its process identity");
+    } catch (error) {
+      errors.push(`packaged AT-SPI worker returned an invalid handshake: ${error.message}`);
+    }
+  }
+  return { ok: errors.length === 0, errors, facts };
+}
+
+/** A guardian that cannot launch must not be accepted as a held-input safety net. */
+function verifyInputGuardianRuntime(appDir, executable, unpackedRoot, options = {}) {
+  const facts = {};
+  const errors = [];
+  const workerPath = path.join(unpackedRoot, "out/main/input-guardian.cjs");
+  if (!executable || !fs.existsSync(workerPath)) {
+    return { ok: false, errors: ["input guardian or packaged Electron executable is missing"], facts };
+  }
+  const executablePath = path.resolve(appDir, executable);
+  const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+  delete env.NODE_OPTIONS;
+  let run;
+  try {
+    run = (options.spawnSync ?? cp.spawnSync)(executablePath, [workerPath, "--handshake"], {
+      encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024,
+      env, cwd: path.resolve(appDir), windowsHide: true,
+    });
+  } catch (error) {
+    return { ok: false, errors: [`packaged input guardian could not spawn: ${error.message}`], facts };
+  }
+  facts.inputGuardianExecutable = executablePath;
+  facts.inputGuardianExitCode = run.status;
+  if (run.error || run.status !== 0) {
+    errors.push(`packaged input guardian failed: ${run.error?.message ?? `exit ${run.status}`} ${String(run.stderr ?? "").trim().slice(0, 400)}`);
+  } else {
+    try {
+      const handshake = JSON.parse(String(run.stdout ?? "").trim());
+      facts.inputGuardianHandshake = handshake;
+      if (handshake.protocol !== 1 || handshake.backend !== "linux-atspi-input-guardian" || handshake.ready !== true ||
+          !nodeVersionAtLeast(handshake.nodeVersion, "24.0.0") || !Number.isInteger(handshake.pid) || handshake.pid <= 0) {
+        errors.push("packaged input guardian returned an invalid protocol/runtime handshake");
+      }
+    } catch (error) { errors.push(`packaged input guardian returned invalid JSON: ${error.message}`); }
+  }
+  return { ok: errors.length === 0, errors, facts };
+}
+
 /**
  * Verify one packaged app directory (`.../win-unpacked` / `.../linux-unpacked`).
  * Returns `{ ok, errors: string[], facts: Record<string, unknown> }` — never throws
@@ -213,12 +335,29 @@ function verifyPackagedApp(appDir, options = {}) {
 
   // 2. the subagent/worker files must exist AND be unpacked (a child node process
   //    cannot execute a file that only lives inside the asar archive)
-  for (const rel of REQUIRED_UNPACKED_ENTRIES) {
+  const requiredWorkers = targetPlatform === "linux"
+    ? [...REQUIRED_UNPACKED_ENTRIES, ...REQUIRED_LINUX_UNPACKED_ENTRIES]
+    : REQUIRED_UNPACKED_ENTRIES;
+  for (const rel of requiredWorkers) {
     const onDisk = path.join(unpackedRoot, rel);
     const entry = files.get(rel);
     if (!entry) fail(`app.asar index has no entry for ${rel}`);
     else if (!entry.unpacked) fail(`${rel} is packed inside app.asar but must be unpacked for the subagent worker`);
     if (!fs.existsSync(onDisk)) fail(`missing unpacked file: app.asar.unpacked/${rel}`);
+  }
+
+  if (targetPlatform === "linux") {
+    const removedPayload = [...files.keys()].filter((rel) => /(?:^|\/)node_modules\/@agent-sh\/computer-use-linux(?:\/|$)/.test(rel));
+    facts.removedLinuxBackendPayloads = removedPayload.length;
+    if (removedPayload.length || fs.existsSync(path.join(unpackedRoot, "node_modules/@agent-sh/computer-use-linux"))) {
+      fail("removed computer-use-linux payload is still present in the Linux distribution");
+    }
+    const atspi = verifyLinuxWorkerRuntime(appDir, exe, unpackedRoot);
+    errors.push(...atspi.errors);
+    Object.assign(facts, atspi.facts);
+    const guardian = verifyInputGuardianRuntime(appDir, exe, unpackedRoot);
+    errors.push(...guardian.errors);
+    Object.assign(facts, guardian.facts);
   }
 
   // 3. runtime manifest must agree with the launcher's version pin
@@ -316,7 +455,7 @@ function formatReport(appDir, result) {
   lines.push(`[verify-packaged] app dir: ${appDir}`);
   for (const [key, value] of Object.entries(result.facts)) lines.push(`[verify-packaged]   ${key} = ${JSON.stringify(value)}`);
   if (result.ok) {
-    lines.push("[verify-packaged] PASS packaged payload can start the Pi subagent runtime");
+    lines.push("[verify-packaged] PASS packaged worker payloads start successfully (desktop behavior requires the separate GUI gate)");
   } else {
     for (const error of result.errors) lines.push("[verify-packaged] FAIL " + error);
   }
@@ -340,7 +479,11 @@ function resolveAppDir(repoRoot) {
   return path.join(releaseDir, process.platform === "linux" ? "linux-unpacked" : "win-unpacked");
 }
 
-module.exports = { verifyPackagedApp, formatReport, readAsarIndex, flattenAsarFiles, findPackagedExecutable, platformFromAppDir, REQUIRED_UNPACKED_ENTRIES };
+module.exports = {
+  verifyPackagedApp, formatReport, readAsarIndex, flattenAsarFiles, findPackagedExecutable,
+  platformFromAppDir, REQUIRED_UNPACKED_ENTRIES, REQUIRED_LINUX_UNPACKED_ENTRIES,
+  verifyLinuxWorkerRuntime, verifyInputGuardianRuntime, nodeVersionAtLeast,
+};
 
 if (require.main === module) {
   const repoRoot = path.resolve(__dirname, "..");

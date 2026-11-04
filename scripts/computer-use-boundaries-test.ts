@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { WindowsComputerUseBackend } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
 import { WindowsAutomationError, type WindowInfo, type ComputerExecInput } from "../src/main/platform/computer-use/protocol";
-import { verificationFor } from "../src/main/capabilities/ComputerUsePolicy";
+import { formatComputerUseFailureEvidence, verificationFor, withComputerUseDeliveryEvidence } from "../src/main/capabilities/ComputerUsePolicy";
 import { computerUseRunCoordinator as coordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
 
 const window: WindowInfo = { handle: "10", processId: 20, processName: "fixture", title: "Fixture", className: "Fixture",
@@ -50,6 +50,39 @@ async function main() {
   assert.equal(captured.semanticVerification, "not_requested", "a screenshot cannot prove a business outcome");
   const fail = verificationFor({ action: "click_client", captureAfter: true }, { action: "click_client", observationStatus: "failed" });
   assert.equal(fail.visualVerification, "failed"); assert.equal(fail.postObservation, "unavailable");
+  const deliveryFailure = withComputerUseDeliveryEvidence(new WindowsAutomationError("REQUEST_CANCELLED", "stopped after click"), {
+    action: "batch", screenshot: new Uint8Array([1]), batch: { completed: false, settleMs: 0,
+      steps: [{ index: 0, action: "click_client", ok: true }, { index: 1, action: "type_text", ok: false }] },
+  }) as WindowsAutomationError;
+  assert.equal(deliveryFailure.code, "REQUEST_CANCELLED");
+  const delivered = deliveryFailure.details as { doNotReplay: boolean; actionResult: { screenshot?: unknown; batch: { completed: boolean; steps: { ok: boolean }[] } } };
+  assert.equal(delivered.doNotReplay, true);
+  assert.equal(delivered.actionResult.batch.completed, false);
+  assert.equal(delivered.actionResult.batch.steps[0].ok, true, "post-execution cancellation must preserve already completed steps");
+  assert.equal(delivered.actionResult.screenshot, undefined, "failure evidence does not duplicate image bytes");
+  const modelEvidence = JSON.parse(formatComputerUseFailureEvidence(deliveryFailure));
+  assert.equal(modelEvidence.actionResult.batch.completed, false);
+  assert.deepEqual(modelEvidence.actionResult.batch.steps.map((step: { ok: boolean }) => step.ok), [true, false],
+    "tool content must carry partial batch evidence to providers that discard UI details");
+
+  const stopped = new AbortController();
+  stopped.abort(new WindowsAutomationError("REQUEST_CANCELLED", "Generic Stop reason"));
+  const partialFailure = new WindowsAutomationError("REQUEST_CANCELLED", "Drag stopped after a prefix", { executed: true, completedSteps: 4, requestedSteps: 12 });
+  assert.equal(withComputerUseDeliveryEvidence(partialFailure, undefined, stopped.signal), partialFailure,
+    "generic cancellation must not erase the backend's completed input prefix");
+  assert.equal(withComputerUseDeliveryEvidence(new Error("late artifact failure"), undefined, stopped.signal), stopped.signal.reason);
+  const completedFailure = withComputerUseDeliveryEvidence(new Error("late artifact failure"), { action: "click_client", executed: true }, stopped.signal) as WindowsAutomationError;
+  assert.equal((completedFailure.details as { executed: unknown }).executed, true, "outer timeout/cancellation consumers retain submitted action evidence");
+  const prefixEvidence = JSON.parse(formatComputerUseFailureEvidence(partialFailure));
+  assert.equal(prefixEvidence.executed, true); assert.equal(prefixEvidence.completedSteps, 4);
+  const boundedEvidence = formatComputerUseFailureEvidence(new WindowsAutomationError("REQUEST_TIMEOUT", "failed", {
+    executed: "unknown", actionResult: { action: "click_client", screenshot: new Uint8Array(100_000), detail: "x".repeat(50_000), controls: Array(1_000).fill({ name: "irrelevant tree" }) },
+  }));
+  assert.ok(boundedEvidence.length < 10_000);
+  assert.equal(JSON.parse(boundedEvidence).executed, "unknown");
+  assert.equal(JSON.parse(boundedEvidence).evidenceTruncated, true);
+  assert.equal(JSON.parse(boundedEvidence).actionResult.screenshot, undefined);
+  assert.equal(JSON.parse(boundedEvidence).actionResult.controls, undefined);
 
   const old = new AbortController(), fresh = new AbortController();
   coordinator.scope("owner", old.signal, "execution-old");

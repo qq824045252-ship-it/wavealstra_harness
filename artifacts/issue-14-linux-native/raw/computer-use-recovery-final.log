@@ -1,0 +1,8 @@
+$ esbuild scripts/computer-use-recovery-evidence-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/computer-use-recovery-evidence-test.mjs && node scripts/test-guard.mjs out/tests/computer-use-recovery-evidence-test.mjs
+
+  out/tests/computer-use-recovery-evidence-test.mjs  34.5kb
+
+⚡ Done in 9ms
+[test-guard] pid=63 cmd=node --max-old-space-size=4096 out/tests/computer-use-recovery-evidence-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+computer use recovery evidence: PASS (legacy Windows contracts plus 18 delivery/batch/uncertainty cases, stable provenance, main-session wiring)
+[test-guard] exit pid=63 code=0 elapsed=0s

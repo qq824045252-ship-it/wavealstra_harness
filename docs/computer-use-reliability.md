@@ -23,9 +23,10 @@ The historical optional-parameter serialization problem had already been correct
 | --- | --- | --- |
 | MyBuddy renderer, embedded browser, Artifact | `ui_exec`: DOM, role/name, CSS references, Electron input events | screenshot |
 | Windows applications | `computer_exec`: UI Automation control tree, runtime ID/automation ID, Invoke/Value patterns | OCR, screenshot and client coordinates |
-| Canvas or applications without usable accessibility controls | exposed application API where available | visual observation and coordinate input |
+| Linux Omarchy/Hyprland/Wayland | `computer_exec`: AT-SPI object references, Action/EditableText/Value; Hyprland logical geometry and cursor readback | Explicit unsupported capability when no reliable structural target exists; screenshots remain independent observation |
+| Canvas or applications without usable accessibility controls | exposed application API where available | Windows may use visual observation; Linux requires a reliable structured interface/bounds or reports unsupported |
 
-UIA is returned as structured JSON, not XML. Coordinates are an input method; vision and UIA are observation/targeting methods. They can be combined. Client-DIP coordinates from a matching window screenshot must not be confused with desktop physical pixels. The Linux backend remains CUL and retains its explicitly unsupported operations; Windows acceptance does not prove Wayland behavior.
+UIA is returned as structured JSON, not XML. Coordinates are an input method; vision and UIA are observation/targeting methods. They can be combined. Client-DIP coordinates from a matching window screenshot must not be confused with desktop physical pixels. Linux uses the TypeScript AT-SPI/Hyprland backend described in [linux-computer-use.md](linux-computer-use.md). Its discovery, targeting, input and verification paths have no screenshot/OCR fallback. Windows acceptance does not prove Wayland behavior.
 
 ## Regression coverage
 
@@ -40,3 +41,12 @@ UIA is returned as structured JSON, not XML. Coordinates are an input method; vi
 The last test scripts only the model endpoint; it does not replace the AgentService, native host, adapters or overlay. It uses an isolated HOME/userData with fake credentials. Set `MYBUDDY_DESKTOP_EXECUTABLE` to a packaged `MyBuddy.exe` to run the same chain against the actual distribution; the test verifies the packaged main bundle hash against the built source. `MYBUDDY_CU_TEST_OUT` selects the diagnostics directory. Native desktop tests must run sequentially to avoid competing for focus.
 
 These checks intentionally assert visible effects and terminal cleanup, not only returned tool success. They cover deterministic regression mechanisms, not arbitrary model planning or every third-party application's accessibility implementation.
+
+
+## Linux replacement and evidence boundaries
+
+Linux now serializes complete observe/act/verify transactions, including structured observations and batches. Window handles remain opaque Hyprland address strings. AT-SPI references include bus connection generation, unique bus/object identity, window identity and observation; queries are bounded and truncation is explicit. A successful D-Bus action reply only proves that the request was accepted. Readback failure, timeout and cancellation can leave execution unknown; none authorizes replay of a click, toggle, submit or whole batch.
+
+Linux pointer movement uses compositor logical coordinates and a real `cursorpos` readback. It does not initialize from a screenshot or multiply global coordinates by a monitor scale. A control at `(0,0)` is not rejected merely for its origin. Units, client mapping, current layout and target identity must be established before using bounds. Held key/button ownership survives successful calls and is released explicitly at task cleanup; an independent input guardian also handles parent IPC loss.
+
+The focused headless suites are `test:platform-computer-use`, `test:atspi-driver`, `test:atspi-transport`, `test:linux-native-backend`, and `test:linux-worker-packaging`. The real transport test starts isolated D-Bus daemons and fixture services; it is not a GTK/Electron desktop test. `test:computer-use-linux` and `test:computer-use-linux:packaged` are strict GUI gates with dedicated targets, capture/OCR blockers and application-side event/state assertions. They fail when the actual graphical session or a required fixture is absent. Detailed commands, evidence paths and current validation limits are recorded in [linux-computer-use.md](linux-computer-use.md).

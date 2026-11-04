@@ -1,0 +1,8 @@
+$ esbuild scripts/computer-use-run-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/computer-use-run-test.cjs --external:electron && node scripts/test-guard.mjs out/tests/computer-use-run-test.cjs
+
+  out/tests/computer-use-run-test.cjs  182.9kb
+
+⚡ Done in 18ms
+[test-guard] pid=68 cmd=node --max-old-space-size=4096 out/tests/computer-use-run-test.cjs mem_cap=6144MB timeout=900s poll=1500ms
+computer use run PASS (O-A-V, bounded recovery, scoped input/wait/capture cancellation, same-run revocation, parent isolation, run release, first-failure overlay cleanup, late failure run ownership)
+[test-guard] exit pid=68 code=0 elapsed=1s

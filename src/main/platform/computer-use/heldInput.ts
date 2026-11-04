@@ -9,7 +9,7 @@
  * `Cannot read properties of undefined`。所以中间放一层没有依赖的注册表：
  * 工厂在创建 backend 时登记，coordinator 只管调用。
  */
-type HeldInputReleaser = () => Promise<unknown>;
+type HeldInputReleaser = (taskId?: string) => Promise<unknown>;
 
 let releaser: HeldInputReleaser | undefined;
 
@@ -19,9 +19,12 @@ export function setHeldInputReleaser(next: HeldInputReleaser | undefined): void 
 }
 
 /** 任务结束/取消时调用：释放后端自己按下、现在仍按着的键和鼠标按钮。 */
-export function releaseHeldInput(): void {
-  if (!releaser) return;
-  void Promise.resolve()
-    .then(() => releaser?.())
-    .catch(() => undefined);
+export function releaseHeldInput(taskId?: string): void {
+  const release = releaser;
+  if (!release) return;
+  // Reserve the backend queue position before the next execution can enqueue
+  // a new DOWN for the same task. Deferring this call to a microtask lets old
+  // execution cleanup run after (and release) the next execution's input.
+  try { void release(taskId).catch(() => undefined); }
+  catch { /* Task cancellation remains synchronous; the backend retains failed cleanup state. */ }
 }

@@ -7,7 +7,7 @@ import {
   recordComputerUseFailureRecovery,
   settleComputerUseResultRecovery,
 } from "../src/main/agent/ComputerUseFailureRecovery";
-import { WindowsAutomationError, type WindowInfo } from "../src/main/platform/computer-use/protocol";
+import { WindowsAutomationError, type ComputerExecInput, type ComputerExecOutput, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 
 function windowFixture(): WindowInfo {
   return {
@@ -100,11 +100,119 @@ try {
   });
   assert(failures.list("task").find((item) => item.id === stale.id)?.resolvedAt, "new observation of the same HWND/PID can clear the stale-observation recovery without replaying to another window");
 
+  const openFor = (input: ComputerExecInput, code: string) => failures.list("task").find(item => !item.resolvedAt &&
+    item.target === computerUseRecoveryTarget(input) && item.causeCode === code);
+  const resolved = (id: string): boolean => Boolean(failures.list("task").find(item => item.id === id)?.resolvedAt);
+  const verified = (action: ComputerExecOutput["action"]): ComputerExecOutput => ({
+    action, executed: true, verified: true, semanticOutcome: { status: "passed", checks: [] },
+    computerUseRun: { verification: { postObservation: "verified", visualVerification: "not-required", semanticVerification: "passed" } },
+  });
+  let evidenceChecks = 0;
+  for (const [index, details, expected] of [
+    [0, { executed: true }, "known"],
+    [1, { executed: "unknown" }, "unknown"],
+    [2, { completedSteps: 4 }, "known"],
+    [3, { executed: false, completedClicks: 1 }, "known"],
+    [4, { executed: true, executionUncertain: true, completedSteps: 2 }, "unknown"],
+    [5, { actionResult: { executed: true, batch: { completed: false, steps: [{ index: 0, action: "key_press", ok: true }] } } }, "known"],
+    [6, { completedKeys: [42], unknownButtons: [0] }, "unknown"],
+    [7, { executed: false, clipboardChanged: true }, "known"],
+  ] as const) {
+    const input = { ...click, windowHandle: String(9100 + index) };
+    recordComputerUseFailureRecovery(bridge, input, new WindowsAutomationError("STALE_OBSERVATION", "changed after dispatch", details));
+    const record = openFor(input, "computer-stale-observation")!;
+    assert.equal(record.sideEffects, expected, JSON.stringify(details));
+    assert.equal(record.phase, "execute", "delivery evidence overrides pre-action error-code assumptions");
+    assert.match(record.nextAction, /do not replay/i);
+    // A later ordinary Windows result is not evidence that the delivered prefix was reconciled.
+    settleComputerUseResultRecovery(bridge, input, { action: "click_client", window: target,
+      semanticOutcome: { status: "not_requested", checks: [] },
+      computerUseRun: { verification: { postObservation: "verified", visualVerification: "not-required" } },
+    });
+    assert.equal(resolved(record.id), false, "a precondition-shaped code must not clear a dispatched prefix");
+    settleComputerUseResultRecovery(bridge, input, verified("click_client"));
+    assert.equal(resolved(record.id), true, "confirmed explicit outcome can reconcile the same stable target");
+    evidenceChecks++;
+  }
+
+  const noDispatch = { ...click, windowHandle: "9201" };
+  recordComputerUseFailureRecovery(bridge, noDispatch, new WindowsAutomationError("REQUEST_TIMEOUT", "expired in queue", { executed: false }));
+  assert.equal(openFor(noDispatch, "computer-request-timeout")!.sideEffects, "none", "an explicit unsent timeout has no input side effects");
+  recordComputerUseFailureRecovery(bridge, noDispatch, new WindowsAutomationError("REQUEST_TIMEOUT", "expired after submission", { executed: "unknown" }));
+  assert.equal(openFor(noDispatch, "computer-request-timeout")!.sideEffects, "unknown", "deduplication cannot keep an obsolete no-effect diagnosis");
+  evidenceChecks++;
+
+  const batch: ComputerExecInput = { taskId: "task", windowHandle: "9301", actions: [{ action: "key_press", key: "A" }, { action: "key_press", key: "B" }] };
+  assert.equal(computerUseRecoveryTarget(batch), "computer:batch:hwnd=9301");
+  recordComputerUseFailureRecovery(bridge, batch, new WindowsAutomationError("REQUEST_TIMEOUT", "batch delivery uncertain"));
+  const batchTimeout = openFor(batch, "computer-request-timeout")!;
+  assert.equal(batchTimeout.sideEffects, "unknown", "batch inputs are never inferred read-only because action is omitted");
+  assert.match(batchTimeout.message, /Computer Use batch/);
+  assert.doesNotMatch(batchTimeout.message, /undefined/);
+  const partialBatch: ComputerExecOutput = {
+    ...verified("batch"), executed: true, verified: false,
+    batch: { completed: false, settleMs: 0, steps: [
+      { index: 0, action: "key_press", ok: true }, { index: 1, action: "key_press", ok: false },
+    ] },
+  };
+  settleComputerUseResultRecovery(bridge, batch, partialBatch);
+  assert.equal(resolved(batchTimeout.id), false, "a returned partial batch cannot clear prior transport uncertainty");
+  const incompleteBatch = openFor(batch, "computer-batch-incomplete")!;
+  assert.equal(incompleteBatch.sideEffects, "known");
+  assert.match(incompleteBatch.message, /1 completed input steps/);
+  assert.match(incompleteBatch.nextAction, /Do not replay the batch/);
+  settleComputerUseResultRecovery(bridge, batch, { ...verified("batch"), batch: {
+    completed: true, settleMs: 0, steps: [{ index: 0, action: "key_press", ok: true }, { index: 1, action: "key_press", ok: true }],
+  } });
+  assert.equal(resolved(batchTimeout.id), true);
+  assert.equal(resolved(incompleteBatch.id), true);
+  evidenceChecks++;
+
+  const legacyBatch = { ...batch, windowHandle: "9302" };
+  recordComputerUseFailureRecovery(bridge, legacyBatch, new WindowsAutomationError("FOCUS_FAILED", "Windows stopped after first step", { batch: { completedSteps: 1, failedIndex: 1 } }));
+  assert.equal(openFor(legacyBatch, "computer-focus-failed")!.sideEffects, "known", "Windows completedSteps evidence remains supported without executed fields");
+  evidenceChecks++;
+
+  for (const [index, change] of [
+    [0, { executed: "unknown", verified: false }],
+    [1, { executed: true, verified: false }],
+    [2, { executed: true, verified: true, executionUncertain: true }],
+    [3, { executed: true, verified: true, observationStatus: "failed" }],
+    [4, { executed: true, verified: true, captureError: "optional capture failed" }],
+  ] as const) {
+    const input = { ...click, windowHandle: String(9400 + index) };
+    recordComputerUseFailureRecovery(bridge, input, new WindowsAutomationError("REQUEST_TIMEOUT", "previous uncertain click", { executed: "unknown" }));
+    const previous = openFor(input, "computer-request-timeout")!;
+    settleComputerUseResultRecovery(bridge, input, { ...verified("click_client"), ...change });
+    assert.equal(resolved(previous.id), false, `${JSON.stringify(change)} must not be upgraded by a passed semantic flag`);
+    if (index === 0 || index === 2) assert.equal(openFor(input, "computer-delivery-uncertain")!.sideEffects, "unknown");
+    settleComputerUseResultRecovery(bridge, input, verified("click_client"));
+    assert.equal(resolved(previous.id), true);
+    evidenceChecks++;
+  }
+
+  const readOnly: ComputerExecInput = { action: "inspect_window", windowHandle: "9501" };
+  recordComputerUseFailureRecovery(bridge, readOnly, new WindowsAutomationError("HOST_UNAVAILABLE", "read failed"));
+  const readFailure = openFor(readOnly, "computer-host-unavailable")!;
+  assert.equal(readFailure.sideEffects, "none");
+  settleComputerUseResultRecovery(bridge, readOnly, { action: "inspect_window", window: target });
+  assert.equal(resolved(readFailure.id), true, "legacy successful read-only output still resolves no-effect operational errors");
+  recordComputerUseFailureRecovery(bridge, readOnly, new WindowsAutomationError("HOST_UNAVAILABLE", "unexpected submitted work", { executed: "unknown" }));
+  const uncertainRead = openFor(readOnly, "computer-host-unavailable")!;
+  settleComputerUseResultRecovery(bridge, readOnly, { action: "inspect_window", window: target });
+  assert.equal(resolved(uncertainRead.id), false, "even a read-only label cannot erase explicit earlier delivery uncertainty");
+  evidenceChecks++;
+
+  const nestedTarget = computerUseRecoveryTarget({ actions: [{ action: "key_press", key: "A" }], observationId: "stale-ref" },
+    { actionResult: { window: target, executed: true } });
+  assert.equal(nestedTarget, "computer:batch:hwnd=9001|pid=101", "result-delivery wrappers retain stable window provenance");
+  evidenceChecks++;
+
   const builtin = await readFile("src/main/capabilities/builtin-capability-extension.ts", "utf8");
   const assembler = await readFile("src/main/agent/SessionExtensionAssembler.ts", "utf8");
   assert(builtin.includes("settleComputerUseResultRecovery(bridge.computerRecovery, input, result)"));
   assert(builtin.includes("recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure)"));
   assert(assembler.includes("computerRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures }"));
 
-  console.log("computer use recovery evidence: PASS (pre-action none, input timeout unknown, cancel exclusion, stable target resolution, semantic/post verification recovery, main-session wiring)");
+  console.log(`computer use recovery evidence: PASS (legacy Windows contracts plus ${evidenceChecks} delivery/batch/uncertainty cases, stable provenance, main-session wiring)`);
 } finally { db.close(); }
