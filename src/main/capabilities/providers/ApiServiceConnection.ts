@@ -14,6 +14,8 @@ export interface ResolvedApiConnection {
   timeoutMs: number;
   protocol: "openai-compatible" | "openrouter" | "magpie" | "mistral-ocr";
   model?: string;
+  /** An adapter-specific default output, separate from the persisted connection contract. */
+  speechFormat?: "mp3" | "wav";
 }
 
 /** A historical ID is supplied when resuming a video; never substitute another selected service. */
@@ -82,6 +84,7 @@ export async function resolveApiConnection(options: ApiProviderOptions, connecti
     baseUrl: normalizeApiBaseUrl(requiredText(raw.baseUrl, "service URL", 4_000)),
     headers, timeoutMs: raw.timeoutMs, protocol: raw.protocol,
     model: optionalText(raw.model, "model", 300),
+    ...(raw.speechFormat ? { speechFormat: raw.speechFormat } : {}),
   };
 }
 

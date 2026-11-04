@@ -249,7 +249,7 @@ export class MediaCapabilityServices {
     if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 连接必须使用官方 API 地址和 API Key。");
     const secret = connection.auth === "api-key" && connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
     if (connection.auth === "api-key" && !secret) throw new Error("请填写此服务的 API Key。");
-    return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers: secret ? { authorization: `Bearer ${secret}` } : {} };
+    return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers: secret ? { authorization: `Bearer ${secret}` } : {}, ...(connection.presetId === "groq" ? { speechFormat: "wav" as const } : {}) };
   }
 
   private key(id: MediaCapabilityId): string {

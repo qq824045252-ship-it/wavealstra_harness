@@ -80,7 +80,7 @@ export function createApiSpeechProvider(options: ApiProviderOptions): SpeechCapa
       const text = requiredText(input.text, "speech text", 50_000);
       const voice = requiredText(input.voice, "voice", 200);
       const speed = speechSpeed(input.rate);
-      const format = input.format ?? "mp3";
+      const format = input.format ?? connection.speechFormat ?? "mp3";
       if (!Object.hasOwn(TTS_FORMATS, format)) throw new ApiProviderError("unsupported", "unsupported speech output format");
       const requested = TTS_FORMATS[format];
       const result = await apiMedia(connection, "/audio/speech", "audio", {
