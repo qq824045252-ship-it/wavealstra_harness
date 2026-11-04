@@ -20162,23 +20162,6 @@ summary:focus-visible {
   color: var(--fg);
 }
 
-.sidebar-personal-materials {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  padding: 4px 5px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 10px;
-  cursor: pointer;
-}
-.sidebar-personal-materials:hover, .sidebar-personal-materials:focus-visible {
-  background: var(--surface-hover);
-  color: var(--fg);
-}
 
 .sidebar-nav-btn,
 .tree-row,
