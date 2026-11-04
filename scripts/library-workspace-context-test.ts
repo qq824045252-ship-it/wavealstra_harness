@@ -26,6 +26,8 @@ const repository = new ProjectRepository(db.connection);
 const projects = new ProjectService(repository, memory);
 const resolver = new ProjectContextResolver(db, repository, memory);
 const library = new LibraryService(db, { libraryRoot: join(root, "library") });
+// 旧个人空间仅在历史兼容夹具中显式创建。
+library.ensureReady();
 let memoryEnabled = true;
 
 const context = new LibraryWorkspaceContextService(
