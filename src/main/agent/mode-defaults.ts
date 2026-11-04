@@ -61,7 +61,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       prefer: ["officecli", "fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "excel", "文档", "会议"],
       demote: [],
       hide: [],
-      allow: [],
+      allow: ["officecli"],
     },
     mcpPolicy: WORKING_DENY_DRAWIO,
   },

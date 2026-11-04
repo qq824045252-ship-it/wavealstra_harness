@@ -64,9 +64,12 @@ async function main() {
   assert(skill?.enabled, 'fresh packaged app must expose the bundled skill through real IPC');
   assert(skill.filePath.startsWith(root), 'skill must be installed in the disposable profile');
   assert(fs.existsSync(path.join(path.dirname(skill.filePath), 'references/cli-operations.md')));
+  const modeResponse = await evaluate('window.api.agent.getModeProfile("working")');
+  const mode = modeResponse.result?.result?.value;
+  assert.deepEqual(mode?.policy?.presets?.find(preset => preset.id === 'general-office')?.skillPolicy?.allow, ['officecli'], 'packaged general-office default must whitelist OfficeCLI');
   assert(logs.includes('[OfficeCLI] bundled binary=' + verification.facts.officecliBinary), 'main process must select the packaged binary');
   assert(logs.includes('[OfficeCLI] skill=created'), 'startup must seed the packaged skill');
-  console.log('PASS real packaged startup, bundled binary selection, fresh-profile skill IPC and references');
+  console.log('PASS real packaged startup, bundled binary selection, skill IPC, general-office whitelist and references');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
   socket?.close();
