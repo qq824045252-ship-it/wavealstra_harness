@@ -27,7 +27,6 @@ import {
   IconArchive,
   IconBarChart,
   IconBell,
-  IconBook,
   IconBroom,
   IconChevronDown,
   IconChevronRight,
@@ -769,16 +768,6 @@ export default function Sidebar(): React.JSX.Element {
     setPage(p);
     setPopup(null);
   };
-  const openPersonalMaterials = (): void => {
-    const state = useAppStore.getState();
-    const destination = { view: "space" as const, spaceId: "personal", folderId: null };
-    if (state.page === "projects" && state.activeProjectId) {
-      useAppStore.setState({ libraryNav: destination });
-      state.requestProjectNav({ type: "page", page: "library" });
-      return;
-    }
-    state.requestLibraryNav(destination);
-  };
 
   return (
     <aside className="sidebar">
@@ -831,7 +820,6 @@ export default function Sidebar(): React.JSX.Element {
             <div className="sidebar-tree-header">
               <span className="section-title">独立任务</span>
               <span className="sidebar-section-count">{independentTaskCount}</span>
-              <button type="button" className="sidebar-personal-materials" title="管理个人资料；项目和工作空间资料在各自页面管理" onClick={openPersonalMaterials}><IconBook size={12} /> 个人资料</button>
               <button
                 type="button"
                 className="sidebar-section-add"
