@@ -16,6 +16,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { createProjectContextExtension } from "../src/main/project/project-context-extension";
@@ -60,6 +61,8 @@ const memory = new MemoryService(db, { semantic: false });
 const repository = new ProjectRepository(db.connection);
 const projects = new ProjectService(repository, memory);
 const library = new LibraryService(db, { libraryRoot: join(root, "lib") });
+// 历史数据兼容测试使用显式创建的旧个人空间；生产环境不会自动播种。
+library.ensureReady();
 const resolver = new ProjectContextResolver(db, repository, memory);
 
 for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as const) {
@@ -181,14 +184,19 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
   const bin = library.createItem({ spaceId: aSpace.id, kind: "csv", title: "对照表" });
   library.writeContent({ id: bin.id, content: "材料,适配\n氯丁橡胶,是\n" });
 
-  // FTS 正文命中（项目 A 范围）
+  // 项目预览同样按统一作用域查询；个人资料必须经精确引用。
+  const privateHits = library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 });
+  ok(!privateHits.some((h) => h.itemId === md.id), "仅项目检索不自动读取个人资料");
+  projects.pinProjectItem({ projectId: "proj-a", itemId: md.id });
   const ftsHits = library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 });
-  ok(ftsHits.some((h) => h.itemId === md.id && h.snippet.length > 0), "FTS 正文命中并带 snippet");
-  ok(ftsHits.every((h) => h.spaceId === aSpace.id || h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "检索范围 = personal + 当前项目");
-  // 项目 B 检索不得命中 A 的项目资料（personal 对 B 恒可见，属冻结规则）
+  ok(ftsHits.some((h) => h.itemId === md.id && h.snippet.length > 0), "显式固定资料 FTS 正文命中并带 snippet");
+  ok(ftsHits.every((h) => h.spaceId === aSpace.id || h.itemId === md.id), "检索范围 = 当前项目 + 精确固定资料");
   const bHits = library.retrieve("氯丁橡胶", { projectId: "proj-b", limit: 10 });
   ok(!bHits.some((h) => h.spaceId === aSpace.id), "项目 B 检索不命中 A 的项目资料");
-  ok(bHits.some((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "项目 B 检索仍可见 personal（冻结规则）");
+  ok(!bHits.some((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "项目 A 的固定引用不扩大项目 B 的个人资料权限");
+  projects.unpinProjectItem({ projectId: "proj-a", itemId: md.id });
+  ok(!library.retrieve("氯丁橡胶", { projectId: "proj-a", limit: 10 }).some((h) => h.itemId === md.id), "取消固定后仅项目检索即时撤权");
+  ok(library.retrieve("氯丁橡胶", { projectId: "missing-project", limit: 10 }).length === 0, "失效项目检索不会回落个人范围");
   // 标题 exact 排名优先于 FTS
   const titleHits = library.retrieve("仪表密封选型", { projectId: "proj-a", limit: 10 });
   const exact = titleHits.find((h) => h.title === "仪表密封选型");
@@ -200,7 +208,7 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
   const binHits = library.retrieve("对照表", { projectId: "proj-a", limit: 10 });
   const binHit = binHits.find((h) => h.itemId === bin.id);
   ok(binHit && binHit.snippet === "", "csv 命中 snippet 空（检索只给元数据，正文按需 library_read）");
-  // 未绑定任务 → 仅 personal
+  // 未绑定任务 → 无默认持久资料
   const unbound = library.retrieve("氯丁橡胶", { projectId: null, limit: 10 });
   ok(!unbound.some((h) => h.spaceId === aSpace.id), "未绑定任务检索不含项目资料");
 }
@@ -598,9 +606,11 @@ void (async () => {
       },
       on: () => undefined,
     } as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI;
+    const taskId = `task-ctx-${projectId ?? "unbound"}-${permissionMode}`;
+    db.upsertTask({ id: taskId, title: "上下文工具测试", updatedAt: 1, projectId, welcomeMode: "coding" });
     createProjectContextExtension({
-      taskId: "task-ctx",
-      resolveProjectId: () => projectId,
+      taskId,
+      libraryService: library,
       projectService: projects,
       getPermissionMode: () => permissionMode as never,
     })(api);
@@ -639,10 +649,18 @@ void (async () => {
   // 恢复 goal 供后续断言
   projects.updateSharedContext("proj-a", { goal: "交付仪表选型方案" });
 
+  const pinHidden = await callCtx(toolsA, "project_context_pin", { itemId: personalCtxItem.id });
+  ok(pinHidden.isError === true && pinHidden.content[0].text.includes("不可见"), "A: 未引用的个人资料不能经 pin 自行授权");
+  ok(!projects.listProjectPins("proj-a").some((pin) => pin.itemId === personalCtxItem.id), "A: 拒绝的 pin 不产生持久引用");
+  library.attachToTask({ taskId: "task-ctx-proj-a-default", itemId: personalCtxItem.id });
   const pinOwn = await callCtx(toolsA, "project_context_pin", { itemId: personalCtxItem.id });
-  ok(pinOwn.isError === undefined, "A: pin personal 条目允许");
+  ok(pinOwn.isError === undefined, "A: 用户显式附加的个人资料允许 pin");
   const pinCross = await callCtx(toolsA, "project_context_pin", { itemId: bItem.id });
   ok(pinCross.isError === true && pinCross.content[0].text.includes("跨项目"), "A: pin B 条目拒绝（跨项目）");
+  db.connection.prepare("INSERT INTO project_context_pins (id,project_id,item_id,created_at) VALUES ('invalid-context-pin','proj-a',?,1)").run(bItem.id);
+  const invalidContext = await callCtx(toolsA, "project_context_get");
+  ok(!JSON.stringify(invalidContext).includes(bItem.id) && !JSON.stringify(invalidContext).includes(bItem.title), "历史无效固定引用不能泄露跨项目资料的标题/id");
+  db.connection.prepare("DELETE FROM project_context_pins WHERE id = 'invalid-context-pin'").run();
   const unpinOwn = await callCtx(toolsA, "project_context_unpin", { itemId: personalCtxItem.id });
   ok(unpinOwn.isError === undefined, "A: unpin 正常");
   ok(!projects.listProjectPins("proj-a").some((p) => p.itemId === personalCtxItem.id), "A: unpin 真实落库");
@@ -671,8 +689,20 @@ void (async () => {
 
   // pin 上限经工具同样拒绝（复用 service 上限）
   const toolsCap = makeCtxExtension("proj-cap", "default");
-  const capPin = await callCtx(toolsCap, "project_context_pin", { itemId: personalCtxItem.id });
+  const capExtra = library.createItem({ spaceId: library.listProjectSpaces("proj-cap")[0]!.id, kind: "markdown", title: "工具第 11 条" });
+  const capPin = await callCtx(toolsCap, "project_context_pin", { itemId: capExtra.id });
   ok(capPin.isError === true && capPin.content[0].text.includes("上限"), "pin 上限经工具拒绝（proj-cap 已满）");
+
+  // 工具持有的是任务身份；改绑和删除立即收紧，不能沿用创建时的项目。
+  db.upsertTask({ id: "task-ctx-proj-a-default", title: "已改绑", updatedAt: 2, projectId: "proj-b", welcomeMode: "coding" });
+  const reboundGet = await callCtx(toolsA, "project_context_get");
+  ok(reboundGet.isError === undefined && !reboundGet.content[0].text.includes("交付仪表选型方案"), "context 工具按持久任务的最新项目解析");
+  const aCtxItem = library.createItem({ spaceId: library.listProjectSpaces("proj-a")[0]!.id, kind: "markdown", title: "旧项目上下文资料" });
+  const reboundPin = await callCtx(toolsA, "project_context_pin", { itemId: aCtxItem.id });
+  ok(reboundPin.isError === true, "任务改绑后不能使用旧项目资料授权 pin");
+  db.connection.prepare("DELETE FROM tasks WHERE id = 'task-ctx-proj-a-default'").run();
+  const deletedGet = await callCtx(toolsA, "project_context_get");
+  ok(deletedGet.isError === true, "任务删除后上下文工具拒绝旧项目访问");
 })().then(() => {
   /* ---- 10. Project Knowledge Retrieval：统一层 + 工具 scope/分层/预算/生命周期 ---- */
   return (async () => {
@@ -694,27 +724,33 @@ void (async () => {
   projects.pinProjectItem({ projectId: "proj-a", itemId: pinnedA.id });
   library.attachToTask({ itemId: aDoc.id, taskId: "task-ka" });
 
-  // 1. scope：A 任务可见 personal + A，不可见 B（3 字符查询走 FTS）
+  // 1. scope：A 任务可见本项目与显式引用，不可见 B（3 字符查询走 FTS）
   const rA = retrieval.search("task-ka", "密封圈");
   ok(rA.scope === "project" && rA.projectId === "proj-a", "A: scope=project");
   ok(rA.hits.some((h) => h.itemId === aDoc.id), "A: 命中 A 资料（FTS 正文）");
   ok(!rA.hits.some((h) => h.title.includes("B财务")), "A: 绝不命中 B 项目资料");
-  // 2. 分层：aDoc 已附加到任务 → task-explicit；pinnedA → pinned；personalDoc → plain
+  // 2. 分层：aDoc 已附加到任务 → task-explicit；pinnedA → pinned；普通本项目文档 → plain
   ok(rA.hits.find((h) => h.itemId === aDoc.id)?.tier === "task-explicit", "A: 附加条目 tier=task-explicit");
   const rPin = retrieval.search("task-ka", "固定基线");
   ok(rPin.hits.find((h) => h.itemId === pinnedA.id)?.tier === "pinned", "A: 固定引用 tier=pinned");
+  const ordinary = library.createItem({ spaceId: aSpace.id, kind: "markdown", title: "A普通知识库" });
   const rPlain = retrieval.search("task-ka", "知识库");
-  ok(rPlain.hits.find((h) => h.itemId === personalDoc.id)?.tier === "plain", "A: 普通命中 tier=plain");
+  ok(rPlain.hits.find((h) => h.itemId === ordinary.id)?.tier === "plain", "A: 普通本项目命中 tier=plain");
+  ok(!rPlain.hits.some((h) => h.itemId === personalDoc.id), "A: 未显式引用的个人资料不进入检索");
+  await assert.rejects(retrieval.read("task-ka", personalDoc.id), /可见范围/, "A: 直接itemId读取同样拒绝未经引用的个人资料");
+  library.attachToTask({ taskId: "task-ka", itemId: personalDoc.id });
+  const personalRef = retrieval.search("task-ka", "知识库");
+  ok(personalRef.hits.find((h) => h.itemId === personalDoc.id)?.tier === "task-explicit", "A: 显式附加后个人资料可检索且tier准确");
   // 同一 item 同时附加+固定 → 只出现一次且取最高层 task-explicit
   projects.pinProjectItem({ projectId: "proj-a", itemId: aDoc.id });
   const rDedup = retrieval.search("task-ka", "乙腈介质");
   const dedupHits = rDedup.hits.filter((h) => h.itemId === aDoc.id);
   ok(dedupHits.length === 1 && dedupHits[0]!.tier === "task-explicit", "A: 同 item 去重且取最高层");
-  // 3. 未绑定任务：仅 personal
+  // 3. 未绑定的独立任务没有默认持久资料范围。
   const rNone = retrieval.search("task-knone", "知识库");
-  ok(rNone.scope === "personal" && rNone.projectId === null, "unbound: scope=personal");
-  ok(rNone.hits.every((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "unbound: 仅 personal 命中");
-  ok(rNone.hits.some((h) => h.itemId === personalDoc.id), "unbound: personal 可检索");
+  ok(rNone.scope === "none" && rNone.projectId === null, "unbound: scope=none");
+  ok(rNone.hits.length === 0, "unbound: no persistent library hits");
+  ok(!rNone.hits.some((h) => h.itemId === personalDoc.id), "unbound: legacy personal is never inherited");
   // 4. B 任务不能搜到 A
   const rB = retrieval.search("task-kb", "密封圈");
   ok(!rB.hits.some((h) => h.itemId === aDoc.id), "B: 搜不到 A 的文档");
@@ -795,7 +831,7 @@ void (async () => {
     `知识工具集正确（${kNames.join(",")}）`,
   );
   const kSearch = await kTools.get("project_knowledge_search")!.execute("tc", { query: "密封圈" } as never);
-  ok(kSearch.isError === undefined && kSearch.content[0].text.includes("范围：personal + 当前项目"), "工具: 检索输出 scope 标注");
+  ok(kSearch.isError === undefined && kSearch.content[0].text.includes("范围：当前项目、工作空间及显式引用"), "工具: 检索输出 scope 标注");
   ok(!kSearch.content[0].text.includes("B财务"), "工具: B 内容不出现");
   const kSearchUnbound = await (() => {
     const tools2 = new Map<string, { name: string; execute: (t: string, p: never) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> }>();
@@ -809,7 +845,7 @@ void (async () => {
     createProjectKnowledgeExtension({ taskId: "task-knone", retrieval })(api2);
     return tools2.get("project_knowledge_search")!.execute("tc", { query: "知识库" } as never);
   })();
-  ok(kSearchUnbound.content[0].text.includes("仅 personal"), "工具: 未绑定任务降级 personal-only 标注");
+  ok(kSearchUnbound.content[0].text.includes("无默认长期资料"), "工具: 独立任务不自动获得个人资料标注");
   // 10. registry：文本抽取 + 二进制 unsupported + symlink 守卫
   ok((await retrieval.getExtractionStatus(longDoc)).status === "extracted", "registry: 文本类抽取成功");
   ok((await retrieval.getExtractionStatus(binItem)).status !== "extracted", "registry: 损坏 pdf 抽取失败（降级 requiresFileAccess）");
@@ -1128,6 +1164,84 @@ void (async () => {
   ok(afterRebind.projectId === "proj-b", "改绑后 scope 跟随新项目");
   ok(afterRebind.hits.some((h) => h.title.includes("B财务")), "改绑后 B 资料可检索");
   db.upsertTask({ id: "task-ka", title: "A任务", updatedAt: 4, projectId: "proj-a", welcomeMode: "coding" });
+
+  // The second Agent retrieval family must not bypass or omit the shared workspace scope.
+  db.createSpace({ id: "knowledge-workspace", name: "Knowledge workspace" });
+  db.createSpace({ id: "knowledge-other", name: "Other workspace" });
+  const workspaceLibrary = library.ensureOwnedSpace({ type: "workspace", workspaceId: "knowledge-workspace" });
+  const otherLibrary = library.ensureOwnedSpace({ type: "workspace", workspaceId: "knowledge-other" });
+  const workspaceDoc = library.createItem({ spaceId: workspaceLibrary.id, kind: "markdown", title: "Scoped workspace knowledge" });
+  const otherDoc = library.createItem({ spaceId: otherLibrary.id, kind: "markdown", title: "Scoped workspace knowledge private" });
+  db.upsertTask({ id: "task-workspace-knowledge", title: "Workspace task", updatedAt: 1, spaceId: "knowledge-workspace", projectId: null });
+  const workspaceHits = retrieval.search("task-workspace-knowledge", "Scoped workspace knowledge");
+  ok(workspaceHits.scope === "workspace" && workspaceHits.hits.some((hit) => hit.itemId === workspaceDoc.id), "knowledge工具自动包含当前工作空间自有资料");
+  ok(!workspaceHits.hits.some((hit) => hit.itemId === otherDoc.id), "knowledge工具不进入其他未引用工作空间");
+  ok((await retrieval.read("task-workspace-knowledge", workspaceDoc.id)).item.id === workspaceDoc.id, "knowledge read与搜索范围一致");
+  await assert.rejects(retrieval.read("task-workspace-knowledge", personalDoc.id), /可见范围/);
+  ok(retrieval.search("unknown-knowledge-task", "知识库").scope === "none", "unknown knowledge task没有personal fallback");
+  await assert.rejects(retrieval.read("unknown-knowledge-task", personalDoc.id), /可见范围/);
+
+  // A slow PDF extraction must not outlive the grant that allowed it to start.
+  const delayedFolder = library.createCollection({ spaceId: LIBRARY_PERSONAL_SPACE_ID, name: "Delayed extraction references" });
+  const delayedPdf = library.importFile({
+    spaceId: LIBRARY_PERSONAL_SPACE_ID,
+    collectionId: delayedFolder.id,
+    sourcePath: join(root, "office-samples", "方案.pdf"),
+  });
+  await library.flushPendingIndexes();
+  const bindings = new WorkspaceLibraryBindingService(db);
+  const originalExtraction = library.getExtractedText;
+  type Extracted = Awaited<ReturnType<LibraryService["getExtractedText"]>>;
+  const delayExtraction = (): ((result: Extracted) => void) => {
+    let complete!: (result: Extracted) => void;
+    const pending = new Promise<Extracted>((resolve) => { complete = resolve; });
+    library.getExtractedText = () => pending;
+    return complete;
+  };
+  const extracted: Extracted = { status: "extracted", text: "delayed authorized PDF text", truncated: false };
+  try {
+    bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+    const finishAllowed = delayExtraction();
+    const allowedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    finishAllowed(extracted);
+    ok((await allowedRead).content.includes(extracted.text!), "延迟提取期间引用仍有效时正常返回正文");
+
+    for (const result of [extracted, { status: "unsupported", text: null, truncated: false } satisfies Extracted]) {
+      bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+      const finish = delayExtraction();
+      const pendingRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+      bindings.unbindCollection("knowledge-workspace", delayedFolder.id);
+      finish(result);
+      await assert.rejects(pendingRead, /可见范围/);
+      ok(true, result.status === "extracted" ? "提取期间取消文件夹引用后不返回正文" : "提取失败前已撤权时不返回受管路径");
+    }
+
+    bindings.bindCollection("knowledge-workspace", LIBRARY_PERSONAL_SPACE_ID, delayedFolder.id);
+    const finishMoved = delayExtraction();
+    const movedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    db.moveTaskInWorkspaceTree({ taskId: "task-workspace-knowledge", targetSpaceId: "knowledge-other" });
+    finishMoved(extracted);
+    await assert.rejects(movedRead, /可见范围/);
+    ok(true, "提取期间任务移出引用工作空间后拒绝返回旧范围正文");
+
+    library.attachToTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    const finishDetached = delayExtraction();
+    const detachedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    library.detachFromTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    finishDetached(extracted);
+    await assert.rejects(detachedRead, /可见范围/);
+    ok(true, "提取期间解除单条任务附加后同样即时撤权");
+
+    library.attachToTask({ taskId: "task-workspace-knowledge", itemId: delayedPdf.id });
+    const finishDeleted = delayExtraction();
+    const deletedRead = retrieval.read("task-workspace-knowledge", delayedPdf.id);
+    library.deleteItem(delayedPdf.id);
+    finishDeleted(extracted);
+    await assert.rejects(deletedRead, /已删除|可见范围/);
+    ok(true, "提取期间原资料删除后不返回悬空正文或文件路径");
+  } finally {
+    library.getExtractedText = originalExtraction;
+  }
 
   })().then(() => {
     db.close();

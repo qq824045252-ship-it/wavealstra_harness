@@ -57,7 +57,7 @@ export function createWorkspaceLifecycleActions(
       const res: any = await storeContext.getApi()?.db?.deleteSpace?.(id);
       if (res && res.ok === false) {
         if (res.reason === "workspace_not_empty") {
-          throw new Error("空间非空，无法删除：请先移走子空间和任务");
+          throw new Error(res.error || "空间非空，无法删除：请先处理子空间、任务和自有资料");
         }
         throw new Error(res.error || "删除空间失败");
       }

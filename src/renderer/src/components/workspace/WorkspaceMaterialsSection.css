@@ -1,0 +1,13 @@
+.workspace-materials { display: grid; gap: 16px; min-width: 0; }
+.workspace-materials-hint { color: var(--fg-muted); font-size: 12px; line-height: 1.7; margin: 0; }
+.workspace-materials-references { display: grid; gap: 16px; padding-top: 20px; border-top: 1px solid var(--border); }
+.workspace-materials-references h3, .workspace-materials-preview-head h4 { margin: 0; font-size: 14px; }
+.workspace-materials-add { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.workspace-materials-add summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.workspace-materials-add > :not(summary) { margin-top: 12px; }
+.workspace-materials-reference-search { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.workspace-materials-reference-search input { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); }
+.workspace-materials-reference-preview { display: grid; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.workspace-materials-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-materials .workspace-memory-header p { line-height: 1.7; }
+.workspace-materials .workspace-memory-row-side { flex-wrap: wrap; }

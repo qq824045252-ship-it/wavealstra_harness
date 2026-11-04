@@ -1451,7 +1451,7 @@ export class AppDatabase {
     }
   }
 
-  /** 全新/缺失时创建 library_spaces（含 project_id 列） */
+  /** 全新/缺失时创建 library_spaces；项目和工作空间是互斥归属。 */
   private createLibrarySpacesTable(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS library_spaces (
@@ -1459,18 +1459,24 @@ export class AppDatabase {
         name TEXT NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('personal', 'team')),
         project_id TEXT,
+        workspace_id TEXT CHECK (workspace_id IS NULL OR (project_id IS NULL AND kind = 'team')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
     `);
   }
 
-  /** 老库补列：library_spaces.project_id（项目资料作用域） */
+  /** 同 schema 幂等补列，绝不为资料归属升级重建用户数据库。 */
   private ensureLibrarySpaceColumns(): void {
     const columns = this.db.pragma("table_info(library_spaces)") as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "project_id")) {
       this.db.exec("ALTER TABLE library_spaces ADD COLUMN project_id TEXT");
     }
+    if (!columns.some((column) => column.name === "workspace_id")) {
+      this.db.exec("ALTER TABLE library_spaces ADD COLUMN workspace_id TEXT CHECK (workspace_id IS NULL OR (project_id IS NULL AND kind = 'team'))");
+    }
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_library_spaces_workspace
+      ON library_spaces(workspace_id) WHERE workspace_id IS NOT NULL`);
   }
 
   /**
@@ -3418,7 +3424,7 @@ export class AppDatabase {
   }
 
   /**
-   * 普通空间删除的阻塞条件：直接子空间或仍可恢复/可见的任务。
+   * 普通空间删除的阻塞条件：直接子空间、仍可恢复/可见的任务或自有资料。
    * 已 trashed 的任务属于安全回收区残留，不应让一个视觉上已清空的空间永久无法删除。
    */
   hasSpaceDeleteBlockers(id: string): boolean {
@@ -3435,7 +3441,34 @@ export class AppDatabase {
          LIMIT 1`,
       )
       .get(id);
-    return Boolean(hasChildren || hasTasks);
+    return Boolean(hasChildren || hasTasks || this.hasWorkspaceOwnedMaterials(id));
+  }
+
+  hasWorkspaceOwnedMaterials(workspaceId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM library_spaces l
+      JOIN library_items i ON i.space_id = l.id WHERE l.workspace_id = ? LIMIT 1`).get(workspaceId));
+  }
+
+  /** 工作空间绑定只引用资料；自有资料必须先清空/迁移，不能随导航节点丢失。 */
+  private assertWorkspaceOwnedLibrariesEmpty(workspaceIds: Iterable<string>): void {
+    const find = this.db.prepare(`SELECT w.name FROM library_spaces l
+      JOIN library_items i ON i.space_id = l.id
+      LEFT JOIN spaces w ON w.id = l.workspace_id
+      WHERE l.workspace_id = ? LIMIT 1`);
+    for (const id of workspaceIds) {
+      const row = find.get(id) as { name: string | null } | undefined;
+      if (row) throw new Error(`工作空间「${row.name ?? id}」仍有自有资料，请先迁移或清空资料后再删除`);
+    }
+  }
+
+  /** 仅在已验证没有内容条目的同一删除事务中使用；同时清理其他工作空间的空库引用。 */
+  private deleteEmptyWorkspaceOwnedLibraries(workspaceId: string): void {
+    const rows = this.db.prepare("SELECT id FROM library_spaces WHERE workspace_id = ?")
+      .all(workspaceId) as Array<{ id: string }>;
+    for (const { id } of rows) {
+      this.deleteLibrarySpaceLinks(id);
+      this.db.prepare("DELETE FROM library_spaces WHERE id = ?").run(id);
+    }
   }
 
   /**
@@ -3451,10 +3484,11 @@ export class AppDatabase {
     if (this.hasSpaceDeleteBlockers(id)) {
       const space = this.db.prepare("SELECT name FROM spaces WHERE id = ?").get(id) as { name: string } | undefined;
       throw new Error(
-        `空间「${space?.name ?? id}」尚有子空间或任务，拒绝删除（V2 安全语义：请先清空，或使用 deleteSpaceTree 显式整树删除）`,
+        `空间「${space?.name ?? id}」尚有子空间、任务或自有资料，拒绝删除（请先迁移或清空资料）`,
       );
     }
     this.transaction(() => {
+      this.assertWorkspaceOwnedLibrariesEmpty([id]);
       // deleteTask 是 30 天安全回收：task 行仍保留且原 space_id 也保留。
       // 若空间只剩这些 trashed 行，删除空间前先解绑，否则 FK 会拒绝 DELETE spaces。
       // 后续若从回收区恢复，该任务应成为独立任务，因为原空间已经不存在。
@@ -3465,6 +3499,7 @@ export class AppDatabase {
         )
         .run(id);
       this.deleteWorkspaceLibraryLinks(id);
+      this.deleteEmptyWorkspaceOwnedLibraries(id);
       this.db.prepare("DELETE FROM spaces WHERE id = ?").run(id);
     });
   }
@@ -3479,11 +3514,13 @@ export class AppDatabase {
     subtree.add(id);
     const wsIds = [...subtree];
     this.transaction(() => {
+      this.assertWorkspaceOwnedLibrariesEmpty(subtree);
       const unbindTask = this.db.prepare("UPDATE tasks SET space_id = NULL, space_sort_order = 0 WHERE space_id = ?");
       const deleteSpaceStmt = this.db.prepare("DELETE FROM spaces WHERE id = ?");
       for (const sid of subtree) {
         unbindTask.run(sid);
         this.deleteWorkspaceLibraryLinks(sid);
+        this.deleteEmptyWorkspaceOwnedLibraries(sid);
         deleteSpaceStmt.run(sid);
       }
     });

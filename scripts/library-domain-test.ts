@@ -40,6 +40,10 @@ const pendingAsyncChecks: Promise<void>[] = [];
 }
 
 {
+  const fresh = service.snapshot();
+  assert.equal(fresh.spaces.some((s) => s.id === LIBRARY_PERSONAL_SPACE_ID), false, "new installations do not create a personal library on snapshot");
+  // 明确创建旧空间仅用于兼容性回归，不代表新产品有个人资料入口。
+  service.ensureReady();
   const snap = service.snapshot();
   assert.ok(snap.spaces.some((s) => s.id === LIBRARY_PERSONAL_SPACE_ID && s.kind === "personal"));
   assert.ok(snap.items.some((i) => i.title === "一分钟玩转资料库" && i.kind === "markdown"));
@@ -192,6 +196,7 @@ const pendingAsyncChecks: Promise<void>[] = [];
 
 /* ---- TaskLibraryReference + 任务删除清理 ---- */
 {
+  db.connection.exec(`INSERT INTO tasks(id,title,status,updated_at) VALUES ('task-x','引用测试','pending',1),('task-del','待删除引用测试','pending',1)`);
   const md = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "接力文档" });
   service.attachToTask({ itemId: md.id, taskId: "task-x" });
   service.attachToTask({ itemId: md.id, taskId: "task-x" });
@@ -281,6 +286,7 @@ const pendingAsyncChecks: Promise<void>[] = [];
 /* ---- 项目删除：级联清理项目资料（personal 不受影响） ---- */
 {
   db.connection.prepare(`INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj-del', '待删项目', 1, 1)`).run();
+  db.connection.prepare(`INSERT INTO tasks(id,title,status,updated_at,project_id) VALUES ('task-proj-del','项目资料删除测试','pending',1,'proj-del')`).run();
   const space = service.createSpace({ name: "待删资料", projectId: "proj-del" });
   const folder = service.createCollection({ spaceId: space.id, name: "归档" });
   const item = service.createItem({ spaceId: space.id, collectionId: folder.id, kind: "markdown", title: "项目文档" });
@@ -396,12 +402,21 @@ const pendingAsyncChecks: Promise<void>[] = [];
   db.connection.prepare(`INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj-cat', '目录项目', 1, 1)`).run();
   const space = service.createSpace({ name: "目录项目资料", projectId: "proj-cat" });
   service.createItem({ spaceId: space.id, kind: "markdown", title: "项目机密文档" });
-  service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "个人文档甲" });
+  const personalItem = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "个人文档甲" });
   const catPersonal = service.formatCatalog(36, { projectId: null });
-  assert.ok(catPersonal.includes("个人文档甲"));
+  assert.ok(!catPersonal.includes("个人文档甲"), "unbound/independent task catalog must not include legacy personal documents");
+  assert.ok(catPersonal.includes("独立任务没有长期资料库"));
   assert.ok(!catPersonal.includes("项目机密文档"), "未绑定任务不注入项目资料");
   const catProject = service.formatCatalog(36, { projectId: "proj-cat" });
-  assert.ok(catProject.includes("个人文档甲") && catProject.includes("项目机密文档"), "绑定项目可见 personal + 本项目");
+  assert.ok(catProject.includes("项目机密文档") && !catProject.includes("个人文档甲"), "仅项目预览也不能自动注入个人资料");
+  assert.deepEqual(service.search("个人文档甲", { projectId: "proj-cat" }), [], "仅项目搜索不会泄露个人资料");
+  db.connection.prepare("INSERT INTO project_context_pins(id,project_id,item_id,created_at) VALUES ('catalog-pin','proj-cat',?,1)").run(personalItem.id);
+  assert.ok(service.formatCatalog(36, { projectId: "proj-cat" }).includes("个人文档甲"), "项目预览遵循精确固定资料引用");
+  assert.deepEqual(service.search("个人文档甲", { projectId: "proj-cat" }).map((row) => row.id), [personalItem.id]);
+  db.connection.prepare("DELETE FROM project_context_pins WHERE id = 'catalog-pin'").run();
+  assert.ok(!service.formatCatalog(36, { projectId: "proj-cat" }).includes("个人文档甲"), "取消固定后预览即时撤权");
+  assert.deepEqual(service.search("个人文档甲", { projectId: "missing-project" }), [], "失效项目不可回落到个人范围");
+  assert.ok(!service.formatCatalog(36, { projectId: "missing-project" }).includes("个人文档甲"));
   const catOther = service.formatCatalog(36, { projectId: "proj-1" });
   assert.ok(!catOther.includes("项目机密文档"), "其他项目不可见");
   service.deleteSpace(space.id);

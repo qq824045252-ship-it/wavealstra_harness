@@ -231,8 +231,8 @@ export class SessionExtensionAssembler {
       }),
       createProjectContextExtension({
         taskId: input.taskId,
-        resolveProjectId,
         projectService: this.deps.project,
+        libraryService: this.deps.libraryWorkspace.library(),
         getPermissionMode: input.getPermissionMode,
       }),
       createProjectAutopilotExtension({

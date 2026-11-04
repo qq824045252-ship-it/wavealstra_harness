@@ -115,9 +115,9 @@ async function main() {
     db.createSpace(mkSpace("root", "Root", null));
     db.createSpace(mkSpace("water", "Water", "root"));
     db.createSpace(mkSpace("dust", "Dust", "root"));
-    const libWater = (lib as any).createSpace({ name: "lib-water", projectId: proj });
-    const libDust = (lib as any).createSpace({ name: "lib-dust", projectId: proj });
-    const libRoot = (lib as any).createSpace({ name: "lib-root", projectId: proj });
+    const libWater = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "water" });
+    const libDust = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "dust" });
+    const libRoot = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "root" });
     binding.bind("root", libRoot.id);
     binding.bind("water", libWater.id);
     binding.bind("dust", libDust.id);
@@ -134,7 +134,7 @@ async function main() {
     const midAnchor = `ANCHOR-WATER-${String(50).padStart(4, "0")}`;
     const res = loc.search({ query: midAnchor, taskId: "t-water" });
     ok(res.hits.some((h) => h.id === waterItem.id), "Water 中段锚点命中正确 Item");
-    ok(!res.hits.some((h) => h.id === dustItem.id), "sibling Dust 隔离（chunk 亦不泄露）");
+    ok(!loc.search({ query: "ANCHOR-DUST", taskId: "t-water" }).hits.some((h) => h.id === dustItem.id), "sibling Dust 隔离（即使查询精确命中其 chunk）");
     const hit = res.hits.find((h) => h.id === waterItem.id)!;
     ok(hit !== undefined, "hit 存在");
     // R2 location 轻量字段（不含全文）

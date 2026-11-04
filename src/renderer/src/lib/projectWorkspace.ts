@@ -250,7 +250,7 @@ export type ProjectNavDestination =
   | { type: "rail-back" }
   | { type: "rail-collapse" }
   /** §13/§14：Connector/MCP 全局管理入口（全局 Hub 页），dirty 时同样走 Unsaved Guard */
-  | { type: "page"; page: "connectors" | "mcp" };
+  | { type: "page"; page: "connectors" | "mcp" | "library" };
 
 export interface ProjectUnsavedGuard {
   dirty: boolean;

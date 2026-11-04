@@ -190,7 +190,7 @@ export interface ProjectMemoryCreateRequest {
   status?: ProjectMemoryStatus;
   tags?: string[];
   importance?: number;
-  /** 证据：library 条目 id（必须属于 personal 或当前 project） */
+  /** 证据：library 条目 id（当前项目或经显式引用授权的旧资料） */
   evidenceItemIds?: string[];
   /** 证据：来源任务 id / 产物 id（工具层注入当前 task/artifact 时校验 scope） */
   evidenceTaskId?: string;
@@ -384,9 +384,9 @@ export interface ProjectDetailsDto extends ProjectDto {
   resources: ProjectResourceDto[];
 }
 
-/** 归档项目写拒绝的统一文案（library/context/memory 写工具共用；明确 personal 不受影响） */
+/** 归档项目写拒绝的统一文案（library/context/memory 写工具共用） */
 export const ARCHIVED_PROJECT_WRITE_GUIDANCE =
-  "项目已归档（只读）：可以读取，但不能写入项目资料/上下文/记忆；个人资料不受影响。";
+  "项目已归档（只读）：可以读取，但不能写入项目资料/上下文/记忆；独立任务也不提供个人资料库作为写入退路。";
 
 /* ---------------- Project Autopilot：派生运行状态（非真源；源变化即重算） ---------------- */
 
@@ -672,9 +672,9 @@ export interface ProjectKnowledgeHitDto {
 
 export interface ProjectKnowledgeSearchResultDto {
   taskId: string;
-  /** 任务绑定项目（null = 未绑定 → 仅 personal 范围） */
+  /** 任务绑定项目；资料范围同时包含当前工作空间与显式引用 */
   projectId: string | null;
-  scope: "project" | "personal";
+  scope: "project" | "workspace" | "personal" | "none";
   hits: ProjectKnowledgeHitDto[];
   /** 预算信息（审计/测试用） */
   budget: { requestedLimit: number; effectiveLimit: number };

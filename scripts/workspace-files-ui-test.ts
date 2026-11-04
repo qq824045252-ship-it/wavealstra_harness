@@ -94,12 +94,13 @@ check("preload 暴露 copyIntoTaskWorkspace", preload.includes("copyIntoTaskWork
 const chatInput = read("src/renderer/src/components/chat/ChatInput.tsx");
 check("输入框接受工作空间文件 MIME", chatInput.includes("pathsFromWorkspaceDrop"));
 
-const libraryPage = read("src/renderer/src/components/pages/library/LibraryPage.tsx");
-check("资料库主区可拖入文件", libraryPage.includes("handleFileDrop") && libraryPage.includes("importFile"));
-check("资料库用 getPathForFile 解析拖入路径", libraryPage.includes("getPathForFile"));
-check("资料库文件夹行可接收拖入", libraryPage.includes('row.kind === "folder"') && libraryPage.includes("acceptFileDrop"));
+const libraryManager = read("src/renderer/src/components/pages/library/ScopedLibraryManager.tsx");
+const libraryRows = read("src/renderer/src/components/pages/library/ScopedLibraryRows.tsx");
+check("所属资料主区可拖入文件", libraryManager.includes("onDrop=") && libraryManager.includes("access.importFiles"));
+check("所属资料用 getPathForFile 解析拖入路径", libraryManager.includes("getPathForFile"));
+check("资料文件夹行可接收拖入", libraryRows.includes('row.kind === "folder"') && libraryRows.includes("onDrop="));
 const libraryCss = read("src/renderer/src/styles/library.css");
-check("资料库有拖入高亮样式", libraryCss.includes("library-drop-overlay") && libraryCss.includes(".library-main.drag-over"));
+check("所属资料有拖入高亮样式", libraryCss.includes("library-drop-overlay") && libraryCss.includes(".scoped-library-manager.drag-over"));
 const workspace = read("src/renderer/src/components/pages/project/ProjectWorkspace.tsx");
 check("项目工作区不再内嵌资料库页", !workspace.includes("ProjectLibrary") && !workspace.includes('tab === "library"'));
 

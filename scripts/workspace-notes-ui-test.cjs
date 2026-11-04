@@ -1,28 +1,31 @@
-const { app, BrowserWindow } = require('electron');
-const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { runRendererFixture } = require('./renderer-fixture-driver.cjs');
+const { settleFramesScript } = require('./ui-capture.cjs');
+const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
-const { writeScreenshot } = require('./ui-capture.cjs');
-const profile = mkdtempSync(join(tmpdir(), 'workspace-notes-ui-'));
-process.env.HOME = profile; process.env.USERPROFILE = profile;
-app.setPath('userData', profile);
 const output = join(__dirname, '../out/tests');
-const watchdog = setTimeout(() => { console.error('UI test timeout'); app.exit(1); }, 45000);
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1180, height: 900, webPreferences: { sandbox: true, contextIsolation: true } });
-  const run = code => win.webContents.executeJavaScript(code);
+runRendererFixture({ name: 'workspace-notes-ui', width: 1180, height: 900 }, async (fixture) => {
+  const run = code => fixture.evaluate(code);
   const wait = async code => { const deadline = Date.now() + 5000; while (!await run(code)) { if (Date.now() > deadline) throw Error('Timed out: ' + code); await new Promise(r => setTimeout(r, 40)); } };
-  const click = label => run(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)throw Error('button unavailable'); b.click()})()`);
+  const click = async (label) => {
+    const visible = fixture.backend === 'dom' ? 'window.__fixtureVisible(b)' : 'b.getClientRects().length';
+    const target = `(()=>{const scope=[...document.querySelectorAll('[role="dialog"]')].at(-1)??document;return [...scope.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)} && ${visible})})()`;
+    await wait(`${target}?.disabled === false`);
+    await run(`${target}.click()`);
+  };
   const fill = (label, value) => run(`(()=>{const e=document.querySelector('[aria-label="${label}"]');Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  const capture = async (name) => {
+    const saved = await fixture.screenshot(join(output, name));
+    if (fixture.backend !== 'dom') assert(saved, `${name} screenshot captured`);
+  };
   try {
     mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, 'workspace-notes-ui.html'), '<!doctype html><meta charset="UTF-8"><link rel="stylesheet" href="workspace-notes-ui.css"><div id="root"></div><script src="workspace-notes-ui.js"></script>');
-    await win.loadFile(join(output, 'workspace-notes-ui.html'));
+    writeFileSync(join(output, 'workspace-notes-ui.html'), '<!doctype html><html lang="zh"><head><meta charset="UTF-8"><link rel="stylesheet" href="workspace-notes-ui.css"></head><body><div id="root"></div><script src="workspace-notes-ui.js"></script></body></html>');
+    await fixture.loadFile(join(output, 'workspace-notes-ui.html'));
     await wait(`document.body.innerText.includes('尚无便签')`);
     await fill('Markdown 便签内容', '# VPS 运维记录\n\n- [ ] 每周检查备份\n\n**维护窗口**：周日 02:00\n\n| 服务 | 负责人 |\n| --- | --- |\n| 网关 | 运维组 |');
-    await click('资料库'); await wait(`document.body.innerText.includes('选择绑定位置')`);
-    assert((await run('document.body.innerText')).includes('C:/Work/VPS'));
+    await click('资料'); await wait(`document.body.innerText.includes('本空间资料')`);
+    assert((await run('document.body.innerText')).includes('磁盘上的工作文件在「文件」页管理'));
     await click('便签'); await wait(`document.querySelector('textarea')?.value.includes('VPS 运维记录')`);
     await run('window.noteTest.failSave=true'); await click('保存便签');
     await wait(`document.body.innerText.includes('模拟保存失败')`);
@@ -30,17 +33,41 @@ app.whenReady().then(async () => {
     await click('保存便签'); await wait(`document.body.innerText.includes('已保存 ·')`);
     assert((await run('window.noteTest.note().content')).includes('维护窗口'));
     await click('预览'); await wait(`!!document.querySelector('.workspace-notes-preview table')`);
-    assert(await writeScreenshot(win, join(output, 'workspace-notes-preview.png')), 'preview screenshot captured');
-    await click('资料库'); await wait(`document.body.innerText.includes('绑定整个资料库')`);
-    await click('打开位置'); assert.deepEqual(await run('window.noteTest.navigation'), { view: 'space', spaceId: 'personal', folderId: null });
-    await click('绑定整个资料库'); await wait(`document.body.innerText.includes('取消绑定')`);
-    await click('取消绑定'); await wait(`document.body.innerText.includes('绑定整个资料库')`);
-    await fill('资料库文件夹名称', '部署说明'); await click('新建文件夹并绑定');
-    await wait(`document.body.innerText.includes('资料库 / 我的文档 / 部署说明')`);
-    assert.equal(await run('window.noteTest.created.name'), '部署说明');
-    await click('打开位置'); assert.equal(await run('window.noteTest.navigation.folderId'), 'folder');
-    await click('选择 / 更换本地文件夹'); assert.equal(await run('window.noteTest.relocated'), 'vps');
-    assert(await writeScreenshot(win, join(output, 'workspace-library-bindings.png')), 'bindings screenshot captured');
+    await capture('workspace-notes-preview.png');
+    await click('资料'); await wait(`document.body.innerText.includes('本空间引用')`);
+    await run(`document.querySelector('.workspace-materials-add').open = true`);
+    await click('添加引用'); await wait(`document.body.innerText.includes('取消引用')`);
+    await click('查看资料'); await wait(`!!document.querySelector('.workspace-materials-reference-preview')`);
+    await wait(`!!document.querySelector('.workspace-materials-reference-preview button[title="公共维护说明"]')`);
+    await run(`document.querySelector('.workspace-materials-reference-preview button[title="公共维护说明"]').click()`);
+    await wait(`document.querySelector('.workspace-materials-reference-preview [aria-label="文档标题"]')?.readOnly`);
+    assert.equal(await run('window.noteTest.navigation'), null, 'reference opens locally without global navigation');
+    assert(!(await run(`document.querySelector('.workspace-materials-reference-preview').innerText`)).includes('删除资料'));
+    await click('取消引用'); await wait(`document.body.innerText.includes('尚未引用其他位置的资料')`);
+    assert.equal(await run('window.noteTest.library.items.length'), 1, 'unbinding keeps source document');
+    await click('新建文件夹'); await wait(`!!document.querySelector('[aria-label="资料名称"]')`);
+    await fill('资料名称', '部署说明'); await click('创建');
+    await wait(`window.noteTest.created?.name === '部署说明' && !document.querySelector('[role="dialog"]')`);
+    assert.equal(await run('window.noteTest.created.spaceId'), 'vps-materials', 'new folder belongs to this workspace');
+    assert.equal(await run('window.noteTest.library.collections[0].spaceId'), 'vps-materials');
+    await capture('workspace-library-bindings.png');
+    // The pending write may finish for the original workspace; its old UI must
+    // not overwrite the new workspace or publish a stale onChanged callback.
+    await run(`window.noteTest.deferNextBind(); document.querySelector('.workspace-materials-add').open = true`);
+    await click('添加引用'); await wait(`window.noteTest.bindPending === true`);
+    assert.equal(await run('window.noteTest.bound.workspaceId'), 'vps');
+    await run(`window.noteTest.switchWorkspace('other')`);
+    await wait(`document.querySelector('.workspace-memory-header p')?.innerText.includes('隔离空间') && !document.body.innerText.includes('正在加载引用…')`);
+    const previousChanges = await run('window.noteTest.changeEvents.length');
+    await run('window.noteTest.finishBind()'); await wait('window.noteTest.bindCompleted === true');
+    await run(settleFramesScript);
+    assert.equal(await run('window.noteTest.changeEvents.length'), previousChanges, 'unmounted workspace must not publish a late callback');
+    assert.equal(await run(`document.querySelectorAll('.workspace-materials-references .workspace-memory-row').length`), 0, 'late binding must not replace the new workspace reference list');
+    assert(!(await run(`document.querySelector('.workspace-materials-references').innerText`)).includes('已添加引用'), 'late mutation notice must not appear in a different workspace');
+    assert.equal(await run('window.noteTest.views.vps.direct.length'), 1, 'the original workspace write still completes');
+    await run(`window.noteTest.switchWorkspace('vps')`);
+    await wait(`document.querySelector('.workspace-memory-header p')?.innerText.includes('VPS管理') && document.body.innerText.includes('取消引用')`);
+    await click('取消引用'); await wait(`document.body.innerText.includes('尚未引用其他位置的资料')`);
     await click('项目 A'); await wait(`document.querySelector('[aria-label="项目便签"]') && document.body.innerText.includes('尚无便签')`);
     await fill('Markdown 便签内容', '# 项目记录\n\n**共同维护**');
     await click('项目 B'); await wait(`document.querySelector('textarea')?.value === ''`);
@@ -60,12 +87,12 @@ app.whenReady().then(async () => {
     await fill('Markdown 便签内容', '# 合并记录\n\n用户草稿 + **任务修改**');
     await click('保存便签'); await wait(`window.noteTest.projectNotes['project-a'].revision===3`);
     await click('预览'); await wait(`document.querySelector('.workspace-notes-preview strong')?.textContent==='任务修改'`);
-    assert(await writeScreenshot(win, join(output, 'project-notes-preview.png')));
+    await capture('project-notes-preview.png');
     await click('项目 B'); await wait(`document.querySelector('textarea')?.value === 'B 草稿'`);
     await click('撤销未保存修改'); await wait(`document.querySelector('textarea')?.value === ''`);
     await click('项目 A'); await wait(`document.querySelector('textarea')?.value.includes('合并记录')`);
     await click('切换归档'); await wait(`document.querySelector('textarea')?.disabled`);
-    console.log('PASS project notes UI: per-project draft, persistence, agent conflict, merge, preview, archive');
-    console.log('PASS workspace notes and library binding UI: draft recovery, save failure/retry, Markdown, navigation, scoped binding');
-  } finally { win.destroy(); }
-}).catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); app.quit(); });
+    console.log(`PASS project notes ${fixture.backend} renderer UI: per-project draft, persistence, agent conflict, merge, preview, archive`);
+    console.log(`PASS workspace notes and materials ${fixture.backend} renderer UI: draft recovery, save retry, scoped creation, local readonly references, unlink preserves source, pending binding stays with its original workspace`);
+  } finally { /* The shared driver closes its isolated renderer and profile. */ }
+});

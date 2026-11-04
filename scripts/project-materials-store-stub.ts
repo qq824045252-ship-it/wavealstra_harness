@@ -1,2 +1,3 @@
 export const state = { openProjectDetails: (id: string, tab: string) => { (globalThis as any).openedRecoveryProject = [id, tab]; }, refreshSpaces: async () => {}, refreshProjects: async () => {}, refreshTasks: async () => {}, startProjectTask: (request: any) => { (globalThis as any).createdProjectTask = request; }, spaces: [] as any[], tasks: [] as any[], soul: { alias: "我" }, setPage: () => { throw new Error("Project materials must not navigate to global library"); } };
 export const useAppStore = Object.assign((selector: (value: typeof state) => unknown) => selector(state), { getState: () => state });
+export const sizeLabel = (bytes: number): string => `${bytes} B`;

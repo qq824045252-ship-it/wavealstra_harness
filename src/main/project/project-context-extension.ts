@@ -3,7 +3,7 @@
  *
  * 语义（冻结）：Shared Context = 项目长期显式配置（goal/currentStage）+ 高优先级资料引用
  * （pinned library refs，只引用不复制）；Memory = 提炼认知；Library = evidence 真源。
- * 作用域一律由当前 task 绑定解析（resolveProjectId），拒绝跨项目直接 id 访问；
+ * 作用域一律由当前 task 的统一资料范围解析，拒绝跨项目直接 id 访问；
  * readonly 权限模式/归档项目禁止写入（与 project_memory_* 同门禁）。
  *
  * 工具：project_context_get / project_context_update / project_context_pin /
@@ -19,13 +19,13 @@ import {
   type ProjectSharedContextSummary,
 } from "../../shared/project-domain";
 import type { ProjectService } from "./ProjectService";
+import type { LibraryService } from "../library/LibraryService";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 
 export interface ProjectContextExtensionBridge {
   projectService: ProjectService;
+  libraryService: LibraryService;
   taskId: string;
-  /** 当前任务绑定的 projectId（动态解析；null = 未绑定） */
-  resolveProjectId: () => string | null;
   /** 当前权限模式（readonly 禁止写入；缺省视为非 readonly） */
   getPermissionMode?: () => PermissionMode;
 }
@@ -83,15 +83,27 @@ function renderContext(summary: ProjectSharedContextSummary): string {
 
 export function createProjectContextExtension(bridge: ProjectContextExtensionBridge): ExtensionFactory {
   const service = bridge.projectService;
+  const library = bridge.libraryService;
 
   const requireProject = (): string => {
-    const projectId = bridge.resolveProjectId();
+    const projectId = library.resolveTaskScope(bridge.taskId).projectId;
     if (!projectId) {
       throw new ContextToolError(
         "当前任务未绑定任何项目，无法访问项目上下文。请在项目页把任务关联到项目。",
       );
     }
     return projectId;
+  };
+
+  const visibleSummary = (summary: ProjectSharedContextSummary): ProjectSharedContextSummary => {
+    const scope = library.resolveTaskScope(bridge.taskId);
+    return {
+      ...summary,
+      pinned: summary.pinned.filter((pin) => {
+        const item = library.getItem(pin.itemId);
+        return item !== null && library.isItemVisibleInScope(item, scope);
+      }),
+    };
   };
 
   /** 写操作门禁：readonly 权限 / 归档项目 一律拒绝（与 project_memory_* 一致） */
@@ -116,7 +128,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
       execute: async () => {
         try {
           const projectId = requireProject();
-          const summary = service.getSharedContext(projectId);
+          const summary = visibleSummary(service.getSharedContext(projectId));
           return textResult(renderContext(summary), { projectId, summary });
         } catch (error) {
           return errorResult(error);
@@ -144,7 +156,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
           const patch: { goal?: string | null; currentStage?: string | null } = {};
           if (params.goal !== undefined) patch.goal = params.goal;
           if (params.currentStage !== undefined) patch.currentStage = params.currentStage;
-          const summary = service.updateSharedContext(projectId, patch);
+          const summary = visibleSummary(service.updateSharedContext(projectId, patch));
           return textResult(`已更新项目上下文（id=${projectId}）。\n${renderContext(summary)}`, { projectId, summary });
         } catch (error) {
           return errorResult(error);
@@ -156,7 +168,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
       name: "project_context_pin",
       label: "项目上下文 · 固定资料",
       description:
-        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。可 pin personal 或当前项目的条目；跨项目条目拒绝。上限 ${PROJECT_PINS_MAX} 条。readonly 权限或归档项目下不可用。`,
+        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。只接受当前任务已可见的条目；个人或其他工作空间的资料须先由用户显式引用，不能用此工具自行扩大资料范围。跨项目条目拒绝。上限 ${PROJECT_PINS_MAX} 条。readonly 权限或归档项目下不可用。`,
       promptSnippet: "project_context_pin(itemId) — 固定资料到项目上下文（引用元数据）",
       parameters: Type.Object(
         { itemId: Type.String({ minLength: 1, maxLength: 100 }) },
@@ -166,6 +178,10 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
         try {
           const projectId = requireProject();
           guardWritable(projectId);
+          const item = library.getItem(params.itemId);
+          if (!item || !library.isItemVisibleInScope(item, library.resolveTaskScope(bridge.taskId))) {
+            throw new ContextToolError("资料不存在或当前任务不可见；未引用的个人/工作空间资料和跨项目资料不能固定。");
+          }
           const pin = service.pinProjectItem({ projectId, itemId: params.itemId });
           return textResult(
             `已固定资料（id=${params.itemId}）到项目 ${projectId} 的上下文。`,

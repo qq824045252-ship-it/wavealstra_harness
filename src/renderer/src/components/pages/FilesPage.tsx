@@ -132,8 +132,8 @@ export default function FilesPage(): React.JSX.Element {
   return (
     <div className="page-scroll">
       <div className="page-container">
-        <div className="page-title">我的文件</div>
-        <div className="page-sub">快速查看任务成果，上传到云端网盘开启跨端同步。</div>
+        <div className="page-title">任务成果</div>
+        <div className="page-sub">按工作空间查看任务生成的成果；长期参考资料在项目或工作空间的「资料」中管理。</div>
 
         <div className="files-tabs">
           <button

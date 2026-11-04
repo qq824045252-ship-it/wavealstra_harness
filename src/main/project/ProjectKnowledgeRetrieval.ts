@@ -3,8 +3,8 @@
  *
  * 职责：把「Library FTS/metadata 检索 + Project pins + Task 显式附件 + 内容抽取状态」收敛成
  * 一个带 task 作用域的检索入口。所有方法以 taskId 为输入，project scope 由主进程从任务解析：
- * - 绑定项目：personal + 当前项目空间；
- * - 未绑定：仅 personal（保守降级，与 Library 工具规则一致）；
+ * - 与 Library 工具共用当前项目、工作空间及显式引用范围；
+ * - 无项目/工作空间的独立任务使用个人资料；未知任务无可见资料；
  * - 绝不含其他项目。
  *
  * 分层语义：task-explicit（本任务显式附加）> pinned（项目固定引用）> plain（普通检索）。
@@ -45,26 +45,10 @@ export interface ProjectKnowledgeReadResult {
 
 export class ProjectKnowledgeRetrieval {
   constructor(
-    private readonly db: AppDatabase,
+    _db: AppDatabase,
     private readonly library: LibraryService,
     private readonly projects: ProjectService,
   ) {}
-
-  /** task 绑定项目（null = 未绑定） */
-  private taskProjectId(taskId: string): string | null {
-    return this.db.getTask(taskId)?.projectId ?? null;
-  }
-
-  private visibleSpaceIds(taskId: string): { projectId: string | null; spaceIds: Set<string> } {
-    const projectId = this.taskProjectId(taskId);
-    const spaceIds = new Set(
-      this.library
-        .listSpaces()
-        .filter((s) => this.library.isSpaceVisibleToTask(s, projectId))
-        .map((s) => s.id),
-    );
-    return { projectId, spaceIds };
-  }
 
   /** tier：任务显式附加 > 项目固定引用 > plain（同一 item 只算最高层） */
   private tierOf(taskId: string, projectId: string | null, itemId: string): KnowledgeHitTier {
@@ -96,14 +80,16 @@ export class ProjectKnowledgeRetrieval {
     query: string,
     opts?: { limit?: number; kind?: LibraryItemKind },
   ): ProjectKnowledgeSearchResultDto {
-    const { projectId, spaceIds } = this.visibleSpaceIds(taskId);
+    const scope = this.library.resolveTaskScope(taskId);
+    const { projectId } = scope;
     const requestedLimit = Math.max(1, Math.min(Math.round(opts?.limit ?? 10), KNOWLEDGE_SEARCH_MAX_LIMIT));
-    const raw = this.library.retrieve(query, { spaceIds, limit: requestedLimit * 2 });
+    const raw = this.library.retrieveInScope(query, scope, { limit: requestedLimit * 2 });
     const hits: ProjectKnowledgeHitDto[] = [];
     for (const hit of raw) {
       if (opts?.kind && hit.kind !== opts.kind) continue;
       if (hits.length >= requestedLimit) break;
       const item = this.library.getItem(hit.itemId);
+      if (!item || !this.library.isItemVisibleInScope(item, scope)) continue;
       hits.push({
         itemId: hit.itemId,
         title: hit.title,
@@ -129,7 +115,7 @@ export class ProjectKnowledgeRetrieval {
     return {
       taskId,
       projectId,
-      scope: projectId ? "project" : "personal",
+      scope: !scope.defaultOwner ? "none" : projectId ? "project" : scope.workspaceId ? "workspace" : "personal",
       hits,
       budget: { requestedLimit, effectiveLimit: KNOWLEDGE_SEARCH_MAX_LIMIT },
     };
@@ -137,11 +123,12 @@ export class ProjectKnowledgeRetrieval {
 
   /** 作用域读取：文本类/Office/PDF 内联（≤4000 字符）；抽取失败或不可抽取 → requiresFileAccess + 受管路径；URL → 链接 */
   async read(taskId: string, itemId: string): Promise<ProjectKnowledgeReadResult> {
-    const projectId = this.taskProjectId(taskId);
+    const scope = this.library.resolveTaskScope(taskId);
+    const { projectId } = scope;
     const item = this.library.getItem(itemId);
     if (!item) throw new Error(`资料条目不存在：${itemId}`);
-    if (!this.library.isItemVisibleToTask(item, projectId)) {
-      throw new Error("该条目不在当前任务可见范围（跨项目资料不可访问）");
+    if (!this.library.isItemVisibleInScope(item, scope)) {
+      throw new Error("该条目不在当前任务可见范围（跨项目或未引用的其他资料不可访问）");
     }
     const tier = this.tierOf(taskId, projectId, itemId);
     if (item.kind === "url") {
@@ -176,6 +163,12 @@ export class ProjectKnowledgeRetrieval {
       }
     } else {
       const extracted = await this.library.getExtractedText(item);
+      // Extraction can outlive a binding, attachment, task move, or deletion. Recheck
+      // before returning either extracted content or the fallback managed-file path.
+      const current = this.library.getItem(itemId);
+      if (!current || !this.library.isItemVisibleInScope(current, this.library.resolveTaskScope(taskId))) {
+        throw new Error("资料已删除或已离开当前任务可见范围，请重新检索");
+      }
       if (extracted.status !== "extracted" || !extracted.text) {
         return {
           item,

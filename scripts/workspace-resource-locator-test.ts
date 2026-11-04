@@ -2,7 +2,7 @@
  * WorkspaceResourceLocator R1 Scope Completion — 真实 AppDatabase + LibraryService + FTS + Binding
  * 冻结契约（与主文档 §19 对齐）：
  * - Workspace 是 scope 权威：Current + ancestors，默认不含 sibling/child
- * - Library provider 真实按 Workspace Binding 限域：allowed = bound ∩ permitted（均为 library_space_id）
+ * - 与 Library 统一 task scope：当前项目 + 当前/祖先工作空间自有资料 + 精确引用
  * - explicitDirectChild 仅 direct child + !effectiveArchived 时临时加入 scope
  * - Search != Injection：仅轻量 hit，hit 不含 full content
  * - Source of Truth：真实 Library，hit 后需 library_read
@@ -16,6 +16,8 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { WorkspaceResourceLocator } from "../src/main/workspace/WorkspaceResourceLocator";
+import { WorkspaceSemanticProvider, SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, f32ToBlob } from "../src/main/retrieval/WorkspaceSemanticProvider";
+import type { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { assembleWorkspaceSharedContext } from "../src/shared/workspace-shared-context";
 import type { SpaceDto } from "../src/shared/agent-ipc";
 
@@ -65,19 +67,13 @@ async function main() {
     db.createSpace(mkSpace("dust", "Dust", "rd"));
     db.createSpace(mkSpace("erp", "ERP", null));
 
-    // Library spaces（同 project，使 permission 全通过，隔离由 binding 决定）
-    const libRoot = lib.createSpace({ name: "lib-root", projectId: proj } as any);
-    const libRd = lib.createSpace({ name: "lib-rd", projectId: proj } as any);
-    const libWater = lib.createSpace({ name: "lib-water", projectId: proj } as any);
-    const libDust = lib.createSpace({ name: "lib-dust", projectId: proj } as any);
-    const libErp = lib.createSpace({ name: "lib-erp", projectId: proj } as any);
+    // 工作空间自有资料：无需重复绑定；继承当前/祖先，兄弟保持隔离
+    const libRoot = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "root" });
+    const libRd = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "rd" });
+    const libWater = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "water" });
+    const libDust = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "dust" });
+    const libErp = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "erp" });
 
-    // 绑定：Root→root, R&D→rd, Water→water, Dust→dust, ERP→erp
-    binding.bind("root", libRoot.id);
-    binding.bind("rd", libRd.id);
-    binding.bind("water", libWater.id);
-    binding.bind("dust", libDust.id);
-    binding.bind("erp", libErp.id);
 
     const iRoot = await mkItem(lib, libRoot.id, "root doc", "shared marker root");
     const iRd = await mkItem(lib, libRd.id, "rd doc", "shared marker rd");
@@ -112,21 +108,17 @@ async function main() {
     db.createSpace(mkSpace("water", "Water", null));
     db.createSpace(mkSpace("child", "Child", "water"));
     db.createSpace(mkSpace("grand", "Grand", "child"));
-    db.createSpace(mkSpace("archchild", "ArchChild", "water", { archived: true } as any));
-    db.archiveSpace("archchild", true);
+    db.createSpace(mkSpace("archchild", "ArchChild", "water"));
 
-    const libWater = lib.createSpace({ name: "lib-water", projectId: proj } as any);
-    const libChild = lib.createSpace({ name: "lib-child", projectId: proj } as any);
-    const libGrand = lib.createSpace({ name: "lib-grand", projectId: proj } as any);
-    const libArch = lib.createSpace({ name: "lib-arch", projectId: proj } as any);
-    binding.bind("water", libWater.id);
-    binding.bind("child", libChild.id);
-    binding.bind("grand", libGrand.id);
-    binding.bind("archchild", libArch.id);
+    const libWater = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "water" });
+    const libChild = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "child" });
+    const libGrand = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "grand" });
+    const libArch = lib.ensureOwnedSpace({ type: "workspace", workspaceId: "archchild" });
 
     const iChild = await mkItem(lib, libChild.id, "child doc", "child marker");
     const iGrand = await mkItem(lib, libGrand.id, "grand doc", "grand marker");
     const iArch = await mkItem(lib, libArch.id, "arch doc", "arch marker");
+    db.archiveSpace("archchild", true);
     await lib.flushPendingIndexes();
 
     mkTask(db, "t-water", "water", proj);
@@ -148,7 +140,7 @@ async function main() {
     ok(!archHits.some((h) => h.id === iArch.id), "archived child ❌");
   });
 
-  console.log("== §19.4 Permission：Team bound+同项目 ✅ / bound+跨项目 ❌ / 同项目+未绑定 ❌；Personal bound ✅ / unbound ❌ ==");
+  console.log("== §19.4 Permission：当前项目资料无需绑定；跨项目拒绝；Personal 须显式引用 ==");
   await withTmpDb(async (db) => {
     const lib = new LibraryService(db);
     const binding = new WorkspaceLibraryBindingService(db);
@@ -180,7 +172,7 @@ async function main() {
     const hits = loc.search({ query: "perm marker", taskId: "t-perm" }).hits.map((h) => h.id);
     ok(hits.includes(iBoundSame.id), "team bound+同项目 ✅");
     ok(!hits.includes(iBoundWrong.id), "team bound+跨项目 ❌");
-    ok(!hits.includes(iUnboundSame.id), "team 同项目+未绑定 ❌");
+    ok(hits.includes(iUnboundSame.id), "当前项目资料不要求重复绑定工作空间 ✅");
     ok(!hits.includes(iPersonalUnbound.id), "personal 未绑定 ❌");
 
     // 绑定 personal 后可进入
@@ -303,6 +295,50 @@ async function main() {
     ok(searchRes.hits.length > 0, "search 有结果");
     const after = assembleWorkspaceSharedContext(sharedInput()).digest;
     eq(before, after, "search 不改变 WorkspaceSharedContext digest");
+  });
+
+  console.log("== Unified task scope：精确引用在词法/分块/语义排名前限域，未知任务拒绝 ==");
+  await withTmpDb(async (db, dir) => {
+    db.createSpace(mkSpace("scope-workspace", "Scoped", null));
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
+    lib.ensureReady();
+    mkTask(db, "scope-task", "scope-workspace", null);
+    // Unauthorized exact matches precede the authorized prefix hit. Filtering only after top-K would lose it.
+    for (let i = 0; i < 12; i++) {
+      await mkItem(lib, "personal", "scope-token", `scope-token private-${i} semantic content`);
+    }
+    const referenced = await mkItem(lib, "personal", "scope-token explicitly attached", "scope-token permitted semantic content");
+    lib.attachToTask({ taskId: "scope-task", itemId: referenced.id });
+    await lib.flushPendingIndexes();
+    const loc = new WorkspaceResourceLocator(db, lib);
+    eq(loc.search({ taskId: "scope-task", query: "scope-token", limit: 1 }).hits.map((hit) => hit.id), [referenced.id], "精确引用在SQL排名前限制，合法命中不被其他个人资料挤掉");
+    eq(loc.search({ taskId: "unknown-task", currentSpaceId: "scope-workspace", projectId: "forged", query: "scope-token" }).hits, [], "未知task不能借工作空间或项目fallback检索");
+
+    // Fixed one-hot vectors are test fixtures for SQL scoping, not a substitute production model.
+    const vector = new Float32Array(SEMANTIC_DIMENSION); vector[0] = 1;
+    const chunks = db.connection.prepare("SELECT id, hash FROM library_chunks").all() as Array<{ id: string; hash: string }>;
+    const insert = db.connection.prepare(`INSERT INTO library_chunk_embeddings
+      (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    for (const chunk of chunks) insert.run(chunk.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, chunk.hash, SEMANTIC_DIMENSION, f32ToBlob(vector), 1);
+    const runtime = { embed: async () => vector, getLoadMs: () => 0 } as unknown as SemanticRuntime;
+    const provider = new WorkspaceSemanticProvider(db, { runtime });
+    const semantic = await provider.search({ query: "semantic synonym", allowedLibrarySpaceIds: [], allowedLibraryItemIds: [referenced.id], limit: 1 });
+    eq(semantic.map((hit) => hit.itemId), [referenced.id], "语义Provider单条白名单在SQL召回前生效，不放大到整个人库");
+    const semanticLoc = new WorkspaceResourceLocator(db, lib, undefined, { semanticProvider: provider });
+    const semanticResult = await semanticLoc.searchAsync({ taskId: "scope-task", query: "unmatched semantic synonym", mode: "semantic", limit: 1 });
+    eq(semanticResult.hits.map((hit) => hit.id), [referenced.id], "Locator显式引用的语义命中与词法读取范围一致");
+
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const pausedRuntime = { embed: async () => { entered(); await waiting; return vector; }, getLoadMs: () => 0 } as unknown as SemanticRuntime;
+    const paused = new WorkspaceResourceLocator(db, lib, undefined, { semanticProvider: new WorkspaceSemanticProvider(db, { runtime: pausedRuntime }) });
+    const pending = paused.searchAsync({ taskId: "scope-task", query: "unmatched semantic synonym", mode: "semantic" });
+    await started;
+    lib.detachFromTask({ taskId: "scope-task", itemId: referenced.id });
+    release();
+    eq((await pending).hits, [], "异步语义检索期间取消引用，返回前撤销旧结果");
   });
 
   console.log(`\nResult: passed=${passed} failed=${failed}`);

@@ -15,9 +15,11 @@ import MoveWorkspaceDialog from "./MoveWorkspaceDialog";
 import { IconFolder, IconFolderOpen, IconChevronRight } from "@/components/common/icons";
 import { getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
+import type { ProjectUnsavedGuard } from "@/lib/projectWorkspace";
+import UnsavedChangesDialog from "@/components/pages/project/UnsavedChangesDialog";
 
 type Tab = "overview" | "notes" | "memory" | "context" | "library" | "files" | "gadgets" | "terminal";
-const TAB_LABELS: Record<Tab, string> = { overview: "概览", notes: "便签", memory: "记忆", context: "上下文", library: "资料库", files: "文件", gadgets: "Gadgets", terminal: "终端" };
+const TAB_LABELS: Record<Tab, string> = { overview: "概览", notes: "便签", memory: "记忆", context: "上下文", library: "资料", files: "文件", gadgets: "Gadgets", terminal: "终端" };
 
 function relativeTimeLabel(ts: number): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
@@ -39,7 +41,31 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const openWorkspaceDetail = useAppStore((state) => state.openWorkspaceDetail);
   const newTask = useAppStore((state) => state.newTask);
   const setActiveTask = useAppStore((state) => state.setActiveTask);
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTabNow] = useState<Tab>("overview");
+  const materialGuard = useRef<ProjectUnsavedGuard | null>(null);
+  const [pendingTab, setPendingTab] = useState<Tab | null>(null);
+  const [guardBusy, setGuardBusy] = useState(false);
+  const [guardError, setGuardError] = useState<string | null>(null);
+  const setTab = (next: Tab): void => {
+    if (next === tab || guardBusy) return;
+    if (tab === "library" && materialGuard.current?.dirty) { setPendingTab(next); return; }
+    setTabNow(next);
+  };
+  const finishTabChange = async (save: boolean): Promise<void> => {
+    const next = pendingTab;
+    if (!next || guardBusy) return;
+    const ownerId = activeWorkspaceId;
+    setGuardBusy(true); setGuardError(null);
+    try {
+      if (save) await materialGuard.current?.save();
+      else materialGuard.current?.discard();
+      if (useAppStore.getState().activeWorkspaceId === ownerId) { setTabNow(next); setPendingTab(null); }
+    } catch (cause) {
+      setGuardError(cause instanceof Error ? cause.message : "保存失败，请重试");
+      setPendingTab(null);
+    } finally { setGuardBusy(false); }
+  };
+  useEffect(() => { materialGuard.current = null; setPendingTab(null); setGuardError(null); }, [activeWorkspaceId]);
   const [moreOpen, setMoreOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameVal, setRenameVal] = useState("");
@@ -50,9 +76,10 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const [gadgets, setGadgets] = useState<GadgetListItem[]>([]);
   const { tabs: terminalTabs } = useActiveTerminalTabs();
   const [contextCounts, setContextCounts] = useState({ local: 0, inherited: 0 });
-  const [libraryCounts, setLibraryCounts] = useState({ direct: 0, inherited: 0 });
+  const [libraryCounts, setLibraryCounts] = useState({ owned: 0, direct: 0, inherited: 0 });
   const [memoryCounts, setMemoryCounts] = useState({ direct: 0, inherited: 0 });
   const [memoryVersion, setMemoryVersion] = useState(0);
+  const [materialsVersion, setMaterialsVersion] = useState(0);
   const moreRef = useRef<HTMLDivElement>(null);
   useDismissOnClickOutside(moreOpen, () => setMoreOpen(false), moreRef);
 
@@ -86,7 +113,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       setFileCount(filesResult.status === "fulfilled" ? countFiles(filesResult.value as WorkspaceFileNodeDto[]) : 0);
       setGadgets(gadgetResult.status === "fulfilled" ? gadgetResult.value as GadgetListItem[] : []);
       if (contextResult.status === "fulfilled" && contextResult.value) setContextCounts({ local: contextResult.value.grouped.local.length, inherited: contextResult.value.grouped.inherited.length });
-      if (libraryResult.status === "fulfilled" && libraryResult.value) setLibraryCounts({ direct: libraryResult.value.direct.length, inherited: libraryResult.value.inherited.length });
+      if (libraryResult.status === "fulfilled" && libraryResult.value) setLibraryCounts({ owned: libraryResult.value.ownedItemCount, direct: libraryResult.value.direct.length, inherited: libraryResult.value.inherited.length });
       if (memoryResult.status === "fulfilled" && memoryResult.value) {
         const hits = memoryResult.value;
         const direct = hits.filter((hit) => hit.memory.scopes.some((scope) => scope.scopeType === "workspace" && scope.scopeId === space.id)).length;
@@ -94,7 +121,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       }
     });
     return () => { cancelled = true; };
-  }, [space?.id, space?.path, space?.pathMissing, spaceTasks.map((task) => task.id).join("|"), memoryVersion]);
+  }, [space?.id, space?.path, space?.pathMissing, spaceTasks.map((task) => task.id).join("|"), memoryVersion, materialsVersion]);
 
   if (!space) return null;
   const breadcrumb = getWorkspaceBreadcrumb(spaces as any, space.id);
@@ -124,7 +151,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
           <button className="workspace-detail-more-item" onClick={() => { setMoreOpen(false); setMoveOpen(true); }}>移动</button>
           <button className="workspace-detail-more-item" onClick={() => { setMoreOpen(false); setCaptureOpen(true); }}>保存为 Blueprint</button>
           <button className="workspace-detail-more-item" onClick={() => { setMoreOpen(false); void useAppStore.getState().archiveSpace(space.id); }}>归档</button>
-          <button className="workspace-detail-more-item workspace-detail-more-item--danger" onClick={() => { setMoreOpen(false); void useAppStore.getState().deleteSpace(space.id).catch(() => undefined); }}>删除</button>
+          <button className="workspace-detail-more-item workspace-detail-more-item--danger" onClick={() => { setMoreOpen(false); void useAppStore.getState().deleteSpace(space.id).catch((error) => setGuardError(error instanceof Error ? error.message : "删除失败")); }}>删除</button>
         </div>}</div></div>
       </div>
     </header>
@@ -155,12 +182,13 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>子工作空间</h2><span>{children.length}</span></div>{children.length ? <div className="workspace-overview-flat-list">{children.map((child) => <button key={child.id} className="workspace-overview-child-row" onClick={() => openWorkspaceDetail(child.id)}><span><IconFolder size={15} />{child.name}</span><small>{tasks.filter((task) => task.spaceId === child.id && !task.archived).length} 个任务</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无子工作空间</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>最近产物</h2><span>{recentArtifacts.length}</span></div>{recentArtifacts.length ? <div className="workspace-overview-flat-list">{recentArtifacts.map((artifact) => <button key={artifact.id} className="workspace-overview-artifact-row" onClick={() => openArtifact(artifact.taskId, artifact.id)}><span>{artifact.title || "未命名产物"}</span><small>{artifact.kind} · {relativeTimeLabel(artifact.updatedAt)}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">工作空间任务产生的文件与产物会显示在这里。</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>Gadgets</h2><button className="workspace-overview-link" onClick={() => setTab("gadgets")}>查看全部</button></div>{directGadgets.length ? <div className="workspace-overview-flat-list">{directGadgets.slice(0, 3).map((gadget) => <button key={gadget.id} className="workspace-overview-gadget-row" onClick={() => setTab("gadgets")}><span>{gadget.name}</span><small>{gadget.runtime.status}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无工作空间 Gadget。</div>}</section>
-        <section className="workspace-overview-section workspace-overview-section--summaries"><button className="workspace-overview-summary-row" onClick={() => setTab("memory")}><span><strong>记忆</strong><small>{memoryCounts.direct} 当前 · {memoryCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("context")}><span><strong>上下文</strong><small>{contextCounts.local} 当前 · {contextCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("library")}><span><strong>资料库</strong><small>{libraryCounts.direct} 当前 · {libraryCounts.inherited} 继承</small></span><b>打开 →</b></button></section>
+        <section className="workspace-overview-section workspace-overview-section--summaries"><button className="workspace-overview-summary-row" onClick={() => setTab("memory")}><span><strong>记忆</strong><small>{memoryCounts.direct} 当前 · {memoryCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("context")}><span><strong>上下文</strong><small>{contextCounts.local} 当前 · {contextCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("library")}><span><strong>资料</strong><small>{libraryCounts.owned} 本空间文档 · {libraryCounts.direct} 引用 · {libraryCounts.inherited} 继承位置</small></span><b>打开 →</b></button></section>
       </div>}
       {tab === "memory" && <WorkspaceMemorySection workspaceId={space.id} />}
       {tab === "notes" && <WorkspaceNotesSection key={space.id} workspaceId={space.id} />}
       {tab === "context" && <WorkspaceSharedContextSection currentSpaceId={space.id} />}
-      {tab === "library" && <WorkspaceLibraryBindingsSection key={space.id} currentSpaceId={space.id} />}
+      {guardError && <div className="workspace-memory-error" role="alert">{guardError}</div>}
+      {tab === "library" && <WorkspaceLibraryBindingsSection key={space.id} currentSpaceId={space.id} onRegisterUnsaved={(guard) => { materialGuard.current = guard; }} onChanged={() => setMaterialsVersion((version) => version + 1)} />}
       {tab === "files" && <WorkspaceFilesStandalone spaceId={space.id} />}
       {tab === "gadgets" && <WorkspaceGadgetsSection workspaceId={space.id} />}
       {tab === "terminal" && (
@@ -173,5 +201,6 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
     {renameOpen && <div className="workspace-rename-overlay"><div className="workspace-rename-card"><div className="workspace-rename-title">重命名工作空间</div><input className="workspace-rename-input" value={renameVal} onChange={(event) => { setRenameVal(event.target.value); setRenameErr(null); }} autoFocus />{renameErr && <div className="workspace-rename-error">{renameErr}</div>}<div className="workspace-rename-actions"><button className="btn" onClick={() => setRenameOpen(false)}>取消</button><button className="btn btn--primary" onClick={() => void handleRename()}>保存</button></div></div></div>}
     {captureOpen && <BlueprintCaptureDialog workspaceId={space.id} workspaceName={space.name} onClose={() => setCaptureOpen(false)} onSaved={() => setCaptureOpen(false)} />}
     {moveOpen && <MoveWorkspaceDialog workspaceId={space.id} workspaceName={space.name} onClose={() => setMoveOpen(false)} onMoved={() => setMoveOpen(false)} />}
+    <UnsavedChangesDialog open={pendingTab !== null} busy={guardBusy} onCancel={() => setPendingTab(null)} onDiscard={() => void finishTabChange(false)} onSave={() => void finishTabChange(true)} />
   </div>;
 }

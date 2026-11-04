@@ -87,6 +87,8 @@ import {
 import { LibraryProtocol } from "./library/LibraryProtocol";
 import { LibraryService } from "./library/LibraryService";
 import { WorkspaceLibraryBindingService } from "./workspace/WorkspaceLibraryBindingService";
+import { workspaceLibraryBindingView } from "./workspace/WorkspaceLibraryBindingView";
+import { deleteEmptyWorkspace } from "./workspace/WorkspaceDeletion";
 import {
   WorkspaceLibraryBindingIpc,
   type WorkspaceLibraryBindingRequest,
@@ -219,7 +221,6 @@ import {
   getGadgetsDir,
   getMyBuddyBinDir,
   getMyBuddyDir,
-  getLibraryDir,
   getUploadsDir,
   migrateLegacyTaskWorkspacesDirs,
 } from "./paths";
@@ -1453,6 +1454,9 @@ function registerIpc(): void {
   ipcMain.handle(LibraryIpc.createSpace, (_e, req: LibraryCreateSpaceRequest) =>
     libraryResult(() => libraryService.createSpace(req)),
   );
+  ipcMain.handle(LibraryIpc.ensureOwnedSpace, (_e, owner: import("../shared/library-ipc").LibraryOwnerScope) =>
+    libraryResult(() => libraryService.ensureOwnedSpace(owner)),
+  );
   ipcMain.handle(LibraryIpc.renameSpace, (_e, req: LibraryRenameSpaceRequest) =>
     libraryResult(() => libraryService.renameSpace(req.id, req.name)),
   );
@@ -1506,7 +1510,9 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle(LibraryIpc.markVisited, (_e, id: string) => libraryResult(() => libraryService.markVisited(id)));
-  ipcMain.handle(LibraryIpc.search, (_e, req: { query: string }) => libraryService.search(req.query));
+  ipcMain.handle(LibraryIpc.search, (_e, req: import("../shared/library-ipc").LibrarySearchRequest) =>
+    req.owner ? libraryService.searchOwnedScope(req.query, req.owner, req.reference) : libraryService.search(req.query),
+  );
   ipcMain.handle(LibraryIpc.previewUrl, (_e, id: string) => libraryService.previewUrl(id));
   ipcMain.handle(LibraryIpc.showInFolder, (_e, id: string) => {
     try {
@@ -1545,122 +1551,8 @@ function registerIpc(): void {
   ipcMain.handle(WorkspaceNotesIpc.read, (_e, workspaceId: string) => workspaceNotes.read(workspaceId));
   ipcMain.handle(WorkspaceNotesIpc.save, (_e, request: import("../shared/workspace-notes").WorkspaceNoteSaveRequest) => workspaceNotes.save(request));
 
-  const workspaceLibraryBindingList = (workspaceId: string) => {
-    const ws = workspaceId?.trim();
-    const spaces = db.listSpaces();
-    const byId = new Map(spaces.map((s) => [s.id, s]));
-    const current = ws ? byId.get(ws) : undefined;
-    if (ws && !current) throw new Error("工作空间不存在");
-
-    libraryService.ensureReady();
-    const librarySpaces = libraryService.listSpaces();
-    const libraryById = new Map(librarySpaces.map((ls) => [ls.id, ls]));
-    const collections = libraryService.listCollections();
-    const collectionById = new Map(collections.map((c) => [c.id, c]));
-
-    const collectionPath = (collectionId: string): string => {
-      const parts: string[] = [];
-      const seen = new Set<string>();
-      let cursor = collectionById.get(collectionId);
-      while (cursor && !seen.has(cursor.id)) {
-        seen.add(cursor.id);
-        parts.unshift(cursor.name);
-        cursor = cursor.parentId ? collectionById.get(cursor.parentId) : undefined;
-      }
-      const root = collectionById.get(collectionId);
-      const spaceName = root ? libraryById.get(root.spaceId)?.name : undefined;
-      return [spaceName, ...parts].filter(Boolean).join(" / ");
-    };
-
-    const toSpaceItem = (librarySpaceId: string) => {
-      const ls = libraryById.get(librarySpaceId);
-      return {
-        targetType: "space" as const,
-        librarySpaceId,
-        name: ls?.name ?? librarySpaceId,
-        path: `资料库 / ${ls?.name ?? librarySpaceId}`,
-        kind: ls?.kind ?? ("team" as const),
-        projectId: ls?.projectId,
-      };
-    };
-    const toCollectionItem = (librarySpaceId: string, collectionId: string) => {
-      const ls = libraryById.get(librarySpaceId);
-      const collection = collectionById.get(collectionId);
-      return {
-        targetType: "collection" as const,
-        librarySpaceId,
-        collectionId,
-        name: collection?.name ?? collectionId,
-        path: `资料库 / ${collectionPath(collectionId)}`,
-        kind: ls?.kind ?? ("team" as const),
-        projectId: ls?.projectId,
-      };
-    };
-    const keyOf = (target: { librarySpaceId: string; collectionId?: string }) =>
-      target.collectionId ? `collection:${target.collectionId}` : `space:${target.librarySpaceId}`;
-
-    const directTargets = ws
-      ? workspaceLibraryBindingService.listTargetsByWorkspace(ws)
-      : { librarySpaceIds: [], collections: [] };
-    const direct = [
-      ...directTargets.librarySpaceIds.map(toSpaceItem),
-      ...directTargets.collections.map((t) => toCollectionItem(t.librarySpaceId, t.collectionId)),
-    ];
-    const directKeys = new Set(direct.map(keyOf));
-
-    const inheritedKeys = new Set<string>();
-    const inherited: Array<import("../shared/workspace-library-binding").WorkspaceLibraryBindingInheritedItem> = [];
-    if (ws) {
-      const ancestors = db.getSpaceAncestors(ws);
-      for (const anc of ancestors) {
-        const targets = workspaceLibraryBindingService.listTargetsByWorkspace(anc.id);
-        const items = [
-          ...targets.librarySpaceIds.map(toSpaceItem),
-          ...targets.collections.map((t) => toCollectionItem(t.librarySpaceId, t.collectionId)),
-        ];
-        for (const item of items) {
-          const key = keyOf(item);
-          if (directKeys.has(key) || inheritedKeys.has(key)) continue;
-          inheritedKeys.add(key);
-          inherited.push({
-            ...item,
-            sourceWorkspaceId: anc.id,
-            sourceWorkspaceName: anc.name ?? anc.id,
-          });
-        }
-      }
-    }
-
-    const coveredWholeSpaces = new Set<string>();
-    const coveredCollectionIds = new Set<string>();
-    for (const item of [...direct, ...inherited]) {
-      if (item.targetType === "space") {
-        coveredWholeSpaces.add(item.librarySpaceId);
-      } else if (item.collectionId) {
-        for (const id of libraryService.listCollectionSubtreeIds(item.collectionId)) coveredCollectionIds.add(id);
-      }
-    }
-
-    const addable = [
-      ...librarySpaces
-        .map((ls) => toSpaceItem(ls.id))
-        .filter((item) => !directKeys.has(keyOf(item)) && !inheritedKeys.has(keyOf(item))),
-      ...collections
-        .filter((c) => !coveredWholeSpaces.has(c.spaceId) && !coveredCollectionIds.has(c.id))
-        .map((c) => toCollectionItem(c.spaceId, c.id))
-        .filter((item) => !directKeys.has(keyOf(item)) && !inheritedKeys.has(keyOf(item))),
-    ];
-
-    return {
-      workspaceId: ws ?? "",
-      workspaceName: current ? current.name : null,
-      destinations: librarySpaces.map(ls => ({ id: ls.id, name: ls.name })),
-      libraryStoragePath: getLibraryDir(),
-      direct,
-      inherited,
-      addable,
-    };
-  };
+  const workspaceLibraryBindingList = (workspaceId: string) =>
+    workspaceLibraryBindingView(db, libraryService, workspaceLibraryBindingService, workspaceId);
 
   ipcMain.handle(WorkspaceLibraryBindingIpc.list, (_e, workspaceId: string) =>
     workspaceLibraryBindingList(workspaceId),
@@ -1668,8 +1560,11 @@ function registerIpc(): void {
 
   ipcMain.handle(WorkspaceLibraryBindingIpc.createFolder, (_e, req: { workspaceId: string; librarySpaceId: string; name: string }) =>
     libraryResult(() => db.connection.transaction(() => {
-      if (!db.getSpace(req.workspaceId)) throw new Error("工作空间不存在");
+      const workspace = db.getSpace(req.workspaceId);
+      if (!workspace) throw new Error("工作空间不存在");
+      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
       if (!req.name?.trim()) throw new Error("文件夹名称不能为空");
+      if (libraryService.getSpace(req.librarySpaceId)?.workspaceId !== workspace.id) throw new Error("请在当前工作空间的自有资料中新建文件夹");
       const folder = libraryService.createCollection({ spaceId: req.librarySpaceId, name: req.name.trim() });
       workspaceLibraryBindingService.bindCollection(req.workspaceId, req.librarySpaceId, folder.id);
     })()),
@@ -1682,7 +1577,9 @@ function registerIpc(): void {
       const collectionId = req.collectionId?.trim();
       if (!ws) throw new Error("工作空间不能为空");
       if (!ls) throw new Error("资料库空间不能为空");
-      if (!db.getSpace(ws)) throw new Error("工作空间不存在");
+      const workspace = db.getSpace(ws);
+      if (!workspace) throw new Error("工作空间不存在");
+      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
       if (!libraryService.getSpace(ls)) throw new Error("资料库空间不存在");
       if (collectionId) {
         const collection = libraryService.getCollection(collectionId);
@@ -1701,6 +1598,9 @@ function registerIpc(): void {
       const collectionId = req.collectionId?.trim();
       if (!ws) throw new Error("工作空间不能为空");
       if (!ls) throw new Error("资料库空间不能为空");
+      const workspace = db.getSpace(ws);
+      if (!workspace) throw new Error("工作空间不存在");
+      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
       if (collectionId) workspaceLibraryBindingService.unbindCollection(ws, collectionId);
       else workspaceLibraryBindingService.unbind(ws, ls);
     }),
@@ -1960,22 +1860,13 @@ function registerIpc(): void {
     return result;
   });
   ipcMain.handle(DbIpc.deleteSpace, async (_e, id: string) => {
-    try {
-      // 先复用现有空叶子约束做只读 gate，避免 DB 删除会失败时提前清理 Gadget。
-      if (db.hasSpaceDeleteBlockers(id)) {
-        const space = db.getSpace(id);
-        throw new Error(`空间「${space?.name ?? id}」尚有子空间或任务，拒绝删除`);
-      }
-      await gadgetService.deleteByWorkspace(id);
-      db.deleteSpace(id);
-      try { workGraphService.cleanupByNode("workspace", id); } catch {}
-      try { terminalHost?.close({ workspaceId: id }); } catch { /* best effort */ }
-      return { ok: true as const };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const reason = msg.includes("尚有子空间或任务") ? "workspace_not_empty" : "unknown";
-      return { ok: false as const, reason, error: msg };
-    }
+    const result = await deleteEmptyWorkspace(db, id, [
+      { name: "工作空间工具", run: () => gadgetService.deleteByWorkspace(id) },
+      { name: "空间关联", run: () => { workGraphService.cleanupByNode("workspace", id); } },
+      { name: "终端", run: () => { terminalHost?.close({ workspaceId: id }); } },
+    ]);
+    if (result.ok && result.warning) console.warn(`[WorkspaceDeletion] ${result.warning}`);
+    return result;
   });
   ipcMain.handle(DbIpc.archiveSpace, (_e, id: string, archived: boolean) => {
     db.archiveSpace(id, archived);
@@ -2981,13 +2872,11 @@ app.whenReady().then(async () => {
   archivedContentDeletion = new ArchivedContentDeletion({
     db,
     lifecycle: taskLifecycle,
-    beforeDeleteSpace: async (spaceId) => {
+    afterDeleteSpace: async (spaceId) => {
       terminalHost?.close({ workspaceId: spaceId });
-      await gadgetService.deleteByWorkspace(spaceId);
-    },
-    afterDeleteSpace: (spaceId) => {
       memoryKernel.detachAllInScope("workspace", spaceId);
       workGraphService.cleanupByNode("workspace", spaceId);
+      await gadgetService.deleteByWorkspace(spaceId);
     },
     afterDeleteTask: (task, sessionFiles) => {
       memoryKernel.detachAllInScope("task", task.id);

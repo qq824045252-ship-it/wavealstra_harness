@@ -2,7 +2,7 @@
  * 资料库 IPC 契约。
  *
  * 资料库是独立于任务产物的知识空间：
- * - 我的文档 / 团队空间：持久化在 ~/.mybuddy/library + SQLite
+ * - 项目资料 / 工作空间资料：持久化在 ~/.mybuddy/library + SQLite；旧个人空间只为数据兼容保留
  * - 本地产物：只读投影任务 Artifact（不拷贝）
  * - MD / CSV / HTML 三种载体可互相引用（相对路径或 mybuddy-library://）
  */
@@ -12,6 +12,7 @@ export const LibraryIpc = {
   listItems: "library:listItems",
   getItem: "library:getItem",
   createSpace: "library:createSpace",
+  ensureOwnedSpace: "library:ensureOwnedSpace",
   renameSpace: "library:renameSpace",
   deleteSpace: "library:deleteSpace",
   createCollection: "library:createCollection",
@@ -37,6 +38,7 @@ export const LibraryIpc = {
   listTaskReferences: "library:listTaskReferences",
 } as const;
 
+/** 旧版本个人资料空间的固定 ID：用于迁移与只读兼容，不再是独立任务的默认资料位置。 */
 export const LIBRARY_PERSONAL_SPACE_ID = "personal";
 
 /* ---------------- 数据边界常量（单一事实源：Service/工具/IPC/UI 共用，禁止重复魔数） ---------------- */
@@ -49,6 +51,12 @@ export const LIBRARY_NAME_MAX_CHARS = 100;
 export const LIBRARY_CONTENT_MAX_CHARS = 1_000_000;
 
 export type LibrarySpaceKind = "personal" | "team";
+
+/** 资料的唯一归属；绑定、任务附加与固定引用只共享读取范围，不改变归属。 */
+export type LibraryOwnerScope =
+  | { type: "personal" }
+  | { type: "project"; projectId: string }
+  | { type: "workspace"; workspaceId: string };
 
 /** 内容资产类型（不含 folder：组织节点由 LibraryCollection 承担） */
 export type LibraryItemKind =
@@ -72,11 +80,15 @@ export interface LibrarySpaceDto {
   projectId?: string;
   /** 绑定的项目名（snapshot 计算，仅展示用） */
   projectName?: string;
+  /** 工作空间自有资料；与 projectId 互斥，不等同于 workspace-library binding。 */
+  workspaceId?: string;
+  /** 归属工作空间名称（snapshot 计算，仅展示用）。 */
+  workspaceName?: string;
   createdAt: number;
   updatedAt: number;
 }
 
-/** 组织节点：树形集合（项目/个人范围内），与内容资产 LibraryItem 严格分层 */
+/** 组织节点：树形集合（项目/工作空间或旧数据范围内），与内容资产 LibraryItem 严格分层 */
 export interface LibraryCollectionDto {
   id: string;
   spaceId: string;
@@ -182,6 +194,8 @@ export interface LibraryCreateSpaceRequest {
   name: string;
   /** 绑定项目（项目资料作用域）；缺省 = 无项目（UI 不再提供无项目团队空间创建入口） */
   projectId?: string;
+  /** 工作空间归属，与 projectId 互斥；通常通过 ensureOwnedSpace 惰性创建。 */
+  workspaceId?: string;
 }
 
 export interface LibraryRenameSpaceRequest {
@@ -240,6 +254,8 @@ export interface LibrarySaveArtifactRequest {
   artifactId: string;
   spaceId: string;
   collectionId?: string | null;
+  /** 人类资料页当前归属；保存前必须以数据库中的实时任务归属再次核对来源和目标。 */
+  owner?: LibraryOwnerScope;
 }
 
 export interface LibraryFavoriteRequest {
@@ -264,6 +280,10 @@ export interface LibraryTaskReferencesDto {
 
 export interface LibrarySearchRequest {
   query: string;
+  /** 被查看资料的真实归属；缺省仍为人类全局查找。 */
+  owner?: LibraryOwnerScope;
+  /** 同一归属内进一步收窄为整个空间或文件夹子树。 */
+  reference?: { spaceId: string; collectionId?: string | null; itemId?: string };
 }
 
 export interface LibraryContentDto {

@@ -5,7 +5,8 @@ name: verify
 # 与"源码文本断言"可以长期腐烂。本工作流把 test:all 作为门禁接进回路。
 #
 # 套件分层（scripts/test-all.mjs 的 GUI/NETWORK/DATASET 分类）：
-#   - push / PR / 手动 default：两条 verify-* job 只跑 headless default 套件（不含 Electron/GUI）。
+#   - push / PR / 手动 default：两条 verify-* job 跑 headless default 套件；
+#     Windows 额外运行项目/工作空间资料的 Electron UI，避免只编译夹具就交付。
 #   - 每晚 18:00 UTC（北京 02:00）+ 手动 gui/all：额外跑 verify-windows-gui，
 #     在 windows-latest 上执行 `node scripts/test-all.mjs --include-gui`。
 #     GUI 用例（真实 Electron 窗口/Tray/桌面自动化）不进无头门禁，但必须有人定期真的跑它们。
@@ -92,6 +93,28 @@ jobs:
       - name: Build out/ (部件用例的前置产物)
         working-directory: C:\r
         run: pnpm -s build
+
+      - name: Scoped library UI (real Electron renderer)
+        working-directory: C:\r
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          pnpm -s test:project-materials-ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm -s test:workspace-notes-ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload scoped library UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scoped-library-ui-windows
+          if-no-files-found: warn
+          path: |
+            C:\r\out\tests\*-electron.png
+            C:\r\out\tests\project-materials-ui-electron-result.json
+            C:\r\out\tests\workspace-notes-ui-electron-result.json
+            C:\r\out\tests\*-electron-failure.txt
 
       - name: Harness quality gate
         working-directory: C:\r

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { LibraryService } from "../src/main/library/LibraryService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "../src/main/task/ArchivedContentDeletion";
@@ -107,6 +108,81 @@ async function main() {
       assert.deepEqual(result.deletedTaskIds, ["good"]); assert.deepEqual(result.deletedSpaceIds, []);
       assert.deepEqual(new Set(result.failures.map((failure) => failure.id)), new Set(["bad", "root"]));
       assert.ok(e.db.getTask("bad")); assert.ok(e.db.getSpace("root")); assert.ok(existsSync(bad));
+    } finally { e.close(); }
+  });
+
+  await check("owned materials protect the complete selected tree before tasks or Gadgets are touched", async () => {
+    const e = env();
+    const gadgetCleanup: string[] = [];
+    try {
+      e.db.createSpace({ id: "protected-root", name: "Protected root" });
+      e.db.createSpace({ id: "protected-docs", name: "Protected documents", parentId: "protected-root" });
+      e.db.createSpace({ id: "protected-empty", name: "Protected sibling", parentId: "protected-root" });
+      e.db.createSpace({ id: "clear-root", name: "Clear root" });
+      const rootTaskPath = e.task("protected-root-task", "protected-root");
+      const nestedTaskPath = e.task("protected-doc-task", "protected-docs");
+      const siblingTaskPath = e.task("protected-sibling-task", "protected-empty");
+      e.task("clear-task", "clear-root");
+      const library = new LibraryService(e.db, { libraryRoot: join(e.root, "library") });
+      const owner = library.ensureOwnedSpace({ type: "workspace", workspaceId: "protected-docs" });
+      const document = library.createItem({ spaceId: owner.id, kind: "markdown", title: "Keep this material" });
+      library.writeContent({ id: document.id, content: "preserved library content" });
+      const documentPath = library.absolutePath(document);
+      e.db.archiveSpace("protected-root", true);
+      e.db.archiveSpace("clear-root", true);
+      const deletion = new ArchivedContentDeletion({ db: e.db, lifecycle: e.lifecycle,
+        afterDeleteSpace: (id) => { assert.equal(e.db.getSpace(id), undefined); gadgetCleanup.push(id); },
+      });
+      const result = await deletion.purge({ spaceIds: ["protected-root", "protected-empty", "clear-root"], taskIds: [] });
+      assert.deepEqual(result.deletedTaskIds, ["clear-task"]);
+      assert.deepEqual(result.deletedSpaceIds, ["clear-root"]);
+      assert(result.failures.some((failure) => failure.id === "protected-root" && /自有资料/.test(failure.error)));
+      assert.deepEqual(e.stopped, ["clear-task"], "blocked tasks are never stopped or moved to trash");
+      assert.deepEqual(e.artifacts, ["clear-task"], "blocked tasks never start artifact cleanup");
+      assert.deepEqual(gadgetCleanup, ["clear-root"], "all Gadgets in the protected tree survive, including empty siblings");
+      for (const id of ["protected-root", "protected-docs", "protected-empty"]) assert(e.db.getSpace(id));
+      for (const id of ["protected-root-task", "protected-doc-task", "protected-sibling-task"]) assert(e.db.getTask(id));
+      for (const path of [rootTaskPath, nestedTaskPath, siblingTaskPath]) assert(existsSync(path));
+      assert.equal(readFileSync(documentPath, "utf8"), "preserved library content");
+
+      // Explicitly selecting a task is independent authorization, even when its owning tree is protected.
+      const explicit = await deletion.purge({ spaceIds: ["protected-root"], taskIds: ["protected-doc-task"] });
+      assert.deepEqual(explicit.deletedTaskIds, ["protected-doc-task"]);
+      assert.deepEqual(explicit.deletedSpaceIds, []);
+      assert(e.db.getTask("protected-root-task") && e.db.getTask("protected-sibling-task"));
+      assert.deepEqual(gadgetCleanup, ["clear-root"]);
+      assert(existsSync(documentPath));
+    } finally { e.close(); }
+  });
+
+  await check("materials appearing during asynchronous task cleanup block Gadget cleanup before space deletion", async () => {
+    let e: ReturnType<typeof env>;
+    let library: LibraryService;
+    let ownerId: string;
+    let addedDocumentPath = "";
+    const gadgetCleanup: string[] = [];
+    e = env({ onPurge: async () => {
+      await Promise.resolve();
+      e.db.archiveSpace("material-race", false);
+      const document = library.createItem({ spaceId: ownerId, kind: "markdown", title: "Added during cleanup" });
+      addedDocumentPath = library.absolutePath(document);
+      e.db.archiveSpace("material-race", true);
+    } });
+    try {
+      e.db.createSpace({ id: "material-race", name: "Material race" });
+      e.task("material-race-task", "material-race");
+      library = new LibraryService(e.db, { libraryRoot: join(e.root, "library") });
+      ownerId = library.ensureOwnedSpace({ type: "workspace", workspaceId: "material-race" }).id;
+      e.db.archiveSpace("material-race", true);
+      const deletion = new ArchivedContentDeletion({ db: e.db, lifecycle: e.lifecycle,
+        afterDeleteSpace: (id) => { assert.equal(e.db.getSpace(id), undefined); gadgetCleanup.push(id); },
+      });
+      const result = await deletion.purge({ spaceIds: ["material-race"], taskIds: [] });
+      assert.deepEqual(result.deletedTaskIds, ["material-race-task"]);
+      assert.deepEqual(result.deletedSpaceIds, []);
+      assert(result.failures.some((failure) => failure.id === "material-race" && /自有资料/.test(failure.error)));
+      assert.deepEqual(gadgetCleanup, [], "fresh blockers are rechecked before the destructive callback");
+      assert(e.db.getSpace("material-race") && existsSync(addedDocumentPath));
     } finally { e.close(); }
   });
 

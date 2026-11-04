@@ -3,7 +3,7 @@
  * 冻结契约：
  * 1) Workspace 是 scope 权威：Current + ancestors，默认不含 sibling/child
  * 2) explicitDirectChild 仅 direct child + !effectiveArchived 时临时加入，不改继承
- * 3) Library provider 真实按 Workspace Binding 限域：allowed = bound ∩ permitted（均为 library_space_id）
+ * 3) Library provider 与 list/read/catalog 共用任务资料范围（项目 + 工作空间自有/继承 + 显式引用）
  * 4) Search != Injection：仅返回轻量 hit
  * 5) Source of Truth：真实 Library，索引非事实源
  * 6) R1 仅 Library FTS5 trigram + metadata，无 embedding/vector/watcher；R2 增加 chunks 但仍 lexical
@@ -12,10 +12,8 @@
  */
 
 import type { AppDatabase } from "../db/AppDatabase";
-import { LibraryService } from "../library/LibraryService";
+import { LibraryService, type LibraryTaskScope } from "../library/LibraryService";
 import { WorkspaceLibraryBindingService } from "./WorkspaceLibraryBindingService";
-import { buildSpaceEffectiveMap } from "../../shared/workspace-tree";
-import { getSpaceAncestorsDeterministic } from "../../shared/workspace-resolver";
 import type {
   WorkspaceResourceHit,
   WorkspaceResourceSearchRequest,
@@ -28,23 +26,38 @@ import { WorkspaceSemanticProvider } from "../retrieval/WorkspaceSemanticProvide
 import { fuseHits } from "./WorkspaceResourceLocator.semantic";
 
 export class WorkspaceResourceLocator {
-  private readonly bindingService: WorkspaceLibraryBindingService;
   private readonly semanticRouter: SemanticRouter;
   private readonly semanticProvider: WorkspaceSemanticProvider;
 
   constructor(
-    private readonly db: AppDatabase,
+    db: AppDatabase,
     private readonly libraryService: LibraryService,
-    bindingService?: WorkspaceLibraryBindingService,
+    _bindingService?: WorkspaceLibraryBindingService,
     opts?: { semanticProvider?: WorkspaceSemanticProvider; semanticRouter?: SemanticRouter },
   ) {
-    this.bindingService = bindingService ?? new WorkspaceLibraryBindingService(db);
     this.semanticRouter = opts?.semanticRouter ?? new SemanticRouter();
     this.semanticProvider = opts?.semanticProvider ?? new WorkspaceSemanticProvider(db);
   }
 
   /** R3.5：异步受控语义召回入口（Lexical → Router → Semantic allowed → Fusion → aggregate by Item） */
   async searchAsync(req: WorkspaceResourceSearchRequest): Promise<WorkspaceResourceSearchResult> {
+    const result = await this.searchWithSemantic(req);
+    // Ownership or references can change while the semantic runtime is awaiting a model.
+    // SQL was already scoped before ranking; this revalidation only revokes stale grants.
+    const scope = this.resolveScope(req);
+    const hits = result.hits.filter((hit) => {
+      const item = this.libraryService.getItem(hit.id);
+      return item && this.libraryService.isItemVisibleInScope(item, scope);
+    });
+    return {
+      ...result,
+      hits,
+      scopeSpaceIds: [...scope.workspaceIds],
+      semanticTelemetry: result.semanticTelemetry ? { ...result.semanticTelemetry, resultCount: hits.length } : undefined,
+    };
+  }
+
+  private async searchWithSemantic(req: WorkspaceResourceSearchRequest): Promise<WorkspaceResourceSearchResult> {
     const semanticStart = Date.now();
     const syncResult = this.search(req);
     const mode = (req as any).mode ?? "auto";
@@ -79,10 +92,9 @@ export class WorkspaceResourceLocator {
         },
       };
     }
-    // allowed = bound ∩ permitted 已在 syncResult 的 scope 推导中以 allowedLibraryIds 形式隐含，
-    // 这里重算 allowedLibrarySpaceIds 供 Provider（禁止全库后 filter）
-    const allowed = this.resolveAllowedLibraryScope(req, syncResult.scopeSpaceIds);
-    if (allowed.spaceIds.size === 0 && allowed.collectionIds.size === 0) {
+    // Re-resolve live ownership and references before semantic recall; constrain SQL before ranking.
+    const allowed = this.resolveScope(req);
+    if (allowed.readableSpaceIds.size === 0 && allowed.readableCollectionIds.size === 0 && allowed.readableItemIds.size === 0) {
       return {
         ...syncResult,
         semanticTelemetry: {
@@ -103,8 +115,9 @@ export class WorkspaceResourceLocator {
       const semanticCandidateStart = Date.now();
       const cands = await this.semanticProvider.search({
         query: (req as any).query ?? "",
-        allowedLibrarySpaceIds: [...allowed.spaceIds],
-        allowedLibraryCollectionIds: [...allowed.collectionIds],
+        allowedLibrarySpaceIds: [...allowed.readableSpaceIds],
+        allowedLibraryCollectionIds: [...allowed.readableCollectionIds],
+        allowedLibraryItemIds: [...allowed.readableItemIds],
         limit: Math.max(1, Math.min(50, Math.round((req as any).limit ?? 10))) * 2,
       });
       const candidateCount = cands.length;
@@ -181,29 +194,12 @@ export class WorkspaceResourceLocator {
     }
   }
 
-  private resolveAllowedLibraryScope(
-    req: WorkspaceResourceSearchRequest,
-    scopeSpaceIds: string[],
-  ): { spaceIds: Set<string>; collectionIds: Set<string> } {
-    let projectId: string | null = null;
-    if ((req as any).taskId) {
-      const t = this.db.getTask((req as any).taskId);
-      projectId = t?.projectId ?? null;
-    }
-    const all = this.libraryService.listSpaces();
-    const permitted = new Set(
-      all.filter((ls) => this.libraryService.isSpaceVisibleToTask(ls as any, projectId)).map((ls) => ls.id),
-    );
-    const bound = this.bindingService.resolveTargets(scopeSpaceIds);
-    const spaceIds = new Set(bound.librarySpaceIds.filter((id) => permitted.has(id)));
-    const collectionIds = new Set<string>();
-    for (const target of bound.collections) {
-      if (!permitted.has(target.librarySpaceId) || spaceIds.has(target.librarySpaceId)) continue;
-      const collection = this.libraryService.getCollection(target.collectionId);
-      if (!collection || collection.spaceId !== target.librarySpaceId) continue;
-      for (const id of this.libraryService.listCollectionSubtreeIds(collection.id)) collectionIds.add(id);
-    }
-    return { spaceIds, collectionIds };
+  private resolveScope(req: WorkspaceResourceSearchRequest): LibraryTaskScope {
+    return this.libraryService.resolveTaskScope(req.taskId, null, {
+      // The resolver ignores this fallback when taskId was supplied, even for an unknown task.
+      workspaceFallback: req.currentSpaceId,
+      additionalWorkspaceIds: req.explicitDirectChildSpaceId ? [req.explicitDirectChildSpaceId] : [],
+    });
   }
 
   /**
@@ -229,104 +225,20 @@ export class WorkspaceResourceLocator {
       };
     }
 
-    // Resolve currentSpaceId / projectId 权威：taskId 优先，projectId 来自 task 才是 trusted
-    // - Agent/production path 必须传 taskId，projectId 从 DB task.projectId 解析，req.projectId 忽略（防伪造）
-    // - 调试入口 currentSpaceId 无 taskId 时，projectId 强制 null（不能凭空提升 team 可见性）
-    let currentSpaceId: string | null = req.currentSpaceId ?? null;
-    let projectId: string | null = null; // default untrusted null
-    if (req.taskId) {
-      const task = this.db.getTask(req.taskId);
-      if (task) {
-        currentSpaceId = task.spaceId ?? null;
-        projectId = task.projectId ?? null; // trusted: 来自 DB
-      } else {
-        // taskId 指向不存在任务：scope 空，projectId 保持 null（不信任 req.projectId）
-        currentSpaceId = null;
-        projectId = null;
-      }
-      // 显式 req.projectId 在 taskId 存在时一律忽略（防伪造 team 可见性）
-    } else {
-      // 无 taskId 的调试入口：currentSpaceId 可来自请求，但 projectId 必须 null
-      // 不能凭 req.projectId 提升 team visibility
-      projectId = null;
-    }
-
-    // Resolve allowed scope: Current + ancestors (effectiveArchived/cycle 处理)
-    const spaces = this.db.listSpaces();
-    const byId = new Map(spaces.map((s) => [s.id, s]));
-    const effectiveMap = buildSpaceEffectiveMap(spaces);
-
-    const scopeSet = new Set<string>();
-
-    const addIfValid = (sid: string | null): void => {
-      if (!sid) return;
-      const s = byId.get(sid);
-      if (!s) return;
-      if (effectiveMap.get(sid)) return; // effectiveArchived 排除
-      scopeSet.add(sid);
-    };
-
-    if (currentSpaceId) {
-      const cur = byId.get(currentSpaceId);
-      const isEffectiveArchived = currentSpaceId ? (effectiveMap.get(currentSpaceId) ?? false) : false;
-      const exists = currentSpaceId ? byId.has(currentSpaceId) : false;
-      if (exists && !isEffectiveArchived) {
-        // Current 本身
-        scopeSet.add(currentSpaceId);
-        // Ancestors
-        const ancestors = getSpaceAncestorsDeterministic(currentSpaceId, spaces);
-        for (const anc of ancestors) addIfValid(anc);
-      }
-      // explicitDirectChild 临时扩展：仅 direct child + !effectiveArchived
-      const explicit = req.explicitDirectChildSpaceId?.trim() ?? "";
-      if (explicit) {
-        const child = byId.get(explicit);
-        // 严格 direct child：child.parentId === currentSpaceId
-        if (child && child.parentId === currentSpaceId && !effectiveMap.get(explicit)) {
-          scopeSet.add(explicit);
-        }
-        // else 忽略（grandchild、sibling、archived 均不加入）
-      }
-    }
-
-    const scopeSpaceIds = [...scopeSet];
-
-    // Library provider：复用 LibraryService/Repository，不复制 FTS 算法。
-    // 分层（Permission ≠ Workspace Binding ≠ Retrieval）：
-    //   1) permittedLibraryIds —— permission 边界（personal 恒可见；team 仅同 project）
-    //   2) boundLibraryIds      —— workspace scope → bound library space（映射，非求交）
-    //   3) allowedLibraryIds    —— bound ∩ permitted（两边都是 library_space_id）
-    const allLibrarySpaces = this.libraryService.listSpaces();
-    const permittedLibraryIds = new Set(
-      allLibrarySpaces
-        .filter((ls) => this.libraryService.isSpaceVisibleToTask(ls as any, projectId))
-        .map((ls) => ls.id),
-    );
-
-    const boundTargets = this.bindingService.resolveTargets(scopeSpaceIds);
-    const allowedLibraryIds = new Set(
-      boundTargets.librarySpaceIds.filter((id) => permittedLibraryIds.has(id)),
-    );
-    const allowedCollectionIds = new Set<string>();
-    for (const target of boundTargets.collections) {
-      if (!permittedLibraryIds.has(target.librarySpaceId) || allowedLibraryIds.has(target.librarySpaceId)) continue;
-      const collection = this.libraryService.getCollection(target.collectionId);
-      if (!collection || collection.spaceId !== target.librarySpaceId) continue;
-      for (const id of this.libraryService.listCollectionSubtreeIds(collection.id)) allowedCollectionIds.add(id);
-    }
+    // Task identity, ownership, inheritance, bindings and exact item references have one resolver.
+    // req.projectId is intentionally ignored; only a persisted task can establish project authority.
+    const scope = this.resolveScope(req);
+    const scopeSpaceIds = [...scope.workspaceIds];
+    const allowedLibraryIds = scope.readableSpaceIds;
+    const allowedCollectionIds = scope.readableCollectionIds;
+    const allowedItemIds = scope.readableItemIds;
 
     const providerStart = Date.now();
     let hits: WorkspaceResourceHit[] = [];
 
-    if (allowedLibraryIds.size > 0 || allowedCollectionIds.size > 0) {
-      // 复用现有 LibraryRepository.retrieve 的 FTS5 trigram + title/prefix 逻辑，不复制。
-      // allowedLibraryIds 已是 bound ∩ permitted 的 library_space_id 白名单，这里直接传 spaceIds，
-      // 不再重复计算 permission（已在第 1 层完成），仅复用 FTS 检索。
-      const rawHits = (this.libraryService as any).retrieve(query, {
-        spaceIds: allowedLibraryIds,
-        collectionIds: allowedCollectionIds,
-        limit,
-      });
+    if (allowedLibraryIds.size > 0 || allowedCollectionIds.size > 0 || allowedItemIds.size > 0) {
+      // Scope is applied to SQL candidates before rank/limit, including single-item references.
+      const rawHits = this.libraryService.retrieveInScope(query, scope, { limit });
 
       // 映射为轻量 hit：不含 full content，仅 snippet/preview
       hits = rawHits.slice(0, limit).map((h: any) => {
@@ -361,10 +273,7 @@ export class WorkspaceResourceLocator {
       // 按现有 LibraryService.search 的 fallback 契约，短查询应回退扫描 body LIKE（256KB 上限）
       // R1 为保持不复制全文索引，短查询的 body 命中通过额外的 LIKE 扫描补充，但仍受 allowedLibraryIds 限域且不读全文
       if (hits.length < limit && query.length < 3) {
-        const fallbackRows = (this.libraryService as any).search(query, {
-          spaceIds: allowedLibraryIds,
-          collectionIds: allowedCollectionIds,
-        } as any);
+        const fallbackRows = this.libraryService.searchInScope(query, scope);
         for (const row of fallbackRows) {
           if (hits.length >= limit) break;
           if (hits.some((h) => h.id === row.id)) continue;
@@ -400,7 +309,7 @@ export class WorkspaceResourceLocator {
               snippet: string;
               charOffset: number;
               chunkIndex: number;
-            }> = repo.searchChunks(query, { spaceIds: allowedLibraryIds, collectionIds: allowedCollectionIds, limit: limit * 3 });
+            }> = repo.searchChunks(query, { spaceIds: allowedLibraryIds, collectionIds: allowedCollectionIds, itemIds: allowedItemIds, limit: limit * 3 });
             // 按 itemId 去重，取每 item 最优 chunk（bm25 最小）
             const bestByItem = new Map<string, (typeof chunkRows)[number]>();
             for (const cr of chunkRows) {
@@ -441,7 +350,7 @@ export class WorkspaceResourceLocator {
         const repo: any = (this.libraryService as any).repo ?? (this.libraryService as any).repository;
         if (repo && typeof repo.searchChunks === "function" && query.length >= 3) {
           const locRows: Array<{ chunkId: string; itemId: string; score: number; chunkIndex: number; charOffset: number }> =
-            repo.searchChunks(query, { spaceIds: allowedLibraryIds, collectionIds: allowedCollectionIds, limit: limit * 2 });
+            repo.searchChunks(query, { spaceIds: allowedLibraryIds, collectionIds: allowedCollectionIds, itemIds: allowedItemIds, limit: limit * 2 });
           const locByItem = new Map<string, (typeof locRows)[number]>();
           for (const r of locRows) {
             const prev = locByItem.get(r.itemId);

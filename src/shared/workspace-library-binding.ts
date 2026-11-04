@@ -36,6 +36,8 @@ export interface WorkspaceLibraryBindingItem {
   path?: string;
   kind: LibrarySpaceKind;
   projectId?: string;
+  /** 来源工作空间；无此字段且无 projectId 的旧资料仍可从个人资料管理。 */
+  workspaceId?: string;
 }
 
 export interface WorkspaceLibraryBindingInheritedItem extends WorkspaceLibraryBindingItem {
@@ -46,6 +48,9 @@ export interface WorkspaceLibraryBindingInheritedItem extends WorkspaceLibraryBi
 export interface WorkspaceLibraryBindingListView {
   workspaceId: string;
   workspaceName: string | null;
+  /** 当前工作空间真正拥有的资料位置，无需再绑定。 */
+  owned: WorkspaceLibraryBindingItem[];
+  ownedItemCount: number;
   direct: WorkspaceLibraryBindingItem[];
   inherited: WorkspaceLibraryBindingInheritedItem[];
   addable: WorkspaceLibraryBindingItem[];

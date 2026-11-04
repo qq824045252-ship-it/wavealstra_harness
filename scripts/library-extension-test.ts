@@ -1,7 +1,7 @@
 /**
  * LibraryExtension 运行时测试：任务/项目限域、二进制门禁、attach/detach。
  *
- * 覆盖（P1 收口）：未绑定任务仅 personal；绑定项目 A 的任务可见 personal + A，
+ * 覆盖：独立任务没有默认持久资料；项目/工作空间任务仅自有、继承和显式引用资料，
  * 且通过 itemId/spaceId 直接访问项目 B 必须被拒绝（list/search/read/attach 全路径）；
  * pdf 等非文本条目返回受管路径元数据而非 utf8 乱码。
  */
@@ -15,6 +15,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
+import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { createLibraryExtension, type LibraryExtensionBridge } from "../src/main/library/library-extension";
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 
@@ -25,6 +26,8 @@ process.env.HOME = root;
 process.env.USERPROFILE = root;
 const db = new AppDatabase(join(root, "app.db"));
 const service = new LibraryService(db, { libraryRoot: join(root, "lib") });
+// 兼容旧 personal 资料的回归测试，需要显式建立旧位置。
+service.ensureReady();
 const projectService = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));
 
 // 项目 A / B 资料空间与条目
@@ -67,7 +70,8 @@ interface RegisteredTool {
   }>;
 }
 
-function makeExtension(projectId: string | null, taskId = "task-current"): Map<string, RegisteredTool> {
+function makeExtension(projectId: string | null, taskId = "task-current", workspaceId: string | null = null): Map<string, RegisteredTool> {
+  db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now(), projectId, spaceId: workspaceId });
   const tools = new Map<string, RegisteredTool>();
   const api = {
     registerTool: (tool: never) => {
@@ -87,6 +91,7 @@ function makeExtension(projectId: string | null, taskId = "task-current"): Map<s
 
 /** readonly 权限模式的扩展（attach/detach 应被拒绝，读工具不受影响） */
 function makeReadonlyExtension(projectId: string | null, taskId = "task-current"): Map<string, RegisteredTool> {
+  db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now(), projectId, spaceId: null });
   const tools = new Map<string, RegisteredTool>();
   const api = {
     registerTool: (tool: never) => {
@@ -135,12 +140,12 @@ async function main(): Promise<void> {
     .find((i) => i.title === "项目A机密文档")!;
   const bSpaceId = bItem.spaceId;
 
-  /* 1. 未绑定任务（projectId null）：仅 personal */
+  /* 1. 未绑定临时任务：没有默认个人资料库，也不能写入持久资料 */
   {
     const tools = makeExtension(null);
     const list = await call(tools, "library_list", {});
     const text = list.content[0].text;
-    ok(text.includes("个人文档"), "unbound: list 含 personal");
+    ok(!text.includes("个人文档"), "unbound: list 不含历史个人文档");
     ok(!text.includes("项目A机密文档") && !text.includes("项目B机密文档"), "unbound: list 不含任何项目资料");
     const readB = await call(tools, "library_read", { id: bItem.id });
     ok(readB.isError === true && readB.content[0].text.includes("不可访问"), "unbound: 直读项目 B 条目被拒");
@@ -149,12 +154,15 @@ async function main(): Promise<void> {
     const attachB = await call(tools, "library_attach_to_task", { id: bItem.id });
     ok(attachB.isError === true, "unbound: 附加项目 B 条目被拒");
     const attachPersonal = await call(tools, "library_attach_to_task", { id: personalItem.id });
-    ok(attachPersonal.isError === undefined, "unbound: 可附加 personal 条目");
+    ok(attachPersonal.isError === true, "unbound: 临时任务不经资料工具修改历史个人资料引用");
+    const create = await call(tools, "library_create_text", { kind: "markdown", title: "临时任务不应沉淀" });
+    ok(create.isError === true && create.content[0].text.includes("独立任务"), "unbound: 默认写入不创建个人资料");
   }
 
-  /* 2. 项目 A 任务：personal + A 可见，B 全路径拒绝 */
+  /* 2. 项目 A 任务：A + 先前已显式附加的 personal 可见，未引用 personal 与 B 全路径拒绝 */
   {
     const tools = makeExtension("proj-a");
+    service.attachToTask({ itemId: personalItem.id, taskId: "task-current" });
     const list = await call(tools, "library_list", {});
     const text = list.content[0].text;
     ok(text.includes("个人文档") && text.includes("项目A机密文档"), "A: list 含 personal + A");
@@ -167,7 +175,13 @@ async function main(): Promise<void> {
     const readA = await call(tools, "library_read", { id: aItem.id });
     ok(readA.isError === undefined && readA.content[0].text.includes("项目A机密文档"), "A: 读 A 条目正常");
     const readPersonal = await call(tools, "library_read", { id: personalItem.id });
-    ok(readPersonal.isError === undefined, "A: 读 personal 正常");
+    ok(readPersonal.isError === undefined, "A: 读已附加的 personal 正常");
+    const unrelated = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "未经引用的个人秘密" });
+    ok(!(await call(tools, "library_list", { spaceId: LIBRARY_PERSONAL_SPACE_ID })).content[0].text.includes(unrelated.title), "A: 单条引用不会放大为整个个人库");
+    ok(!(await call(tools, "library_search", { query: "未经引用" })).content[0].text.includes(unrelated.title), "A: 搜索不含未经引用的个人资料");
+    ok((await call(tools, "library_read", { id: unrelated.id })).isError === true, "A: 直接传个人 itemId 不能绕过引用范围");
+    ok((await call(tools, "library_update_text", { id: personalItem.id, content: "不允许改写" })).isError === true, "A: 引用个人资料不授予源资料写权限");
+    ok((await call(tools, "library_attach_to_task", { id: aItem.id, taskId: "another-task" })).isError === true, "A: 不允许替其他任务修改引用");
     const attachB = await call(tools, "library_attach_to_task", { id: bItem.id });
     ok(attachB.isError === true, "A: 附加 B 条目被拒");
     const attachA = await call(tools, "library_attach_to_task", { id: aItem.id });
@@ -185,9 +199,10 @@ async function main(): Promise<void> {
     ok(list.content[0].text.includes("项目B机密文档") && !list.content[0].text.includes("项目A机密文档"), "B: list 只含 B");
   }
 
-  /* 4. 二进制门禁：pdf 返回受管路径元数据，无乱码 */
+  /* 4. 二进制门禁：显式附加旧 PDF 后可按授权读取受管路径，无乱码 */
   {
-    const tools = makeExtension(null);
+    const tools = makeExtension("proj-a", "task-pdf");
+    service.attachToTask({ itemId: pdfItem.id, taskId: "task-pdf" });
     const read = await call(tools, "library_read", { id: pdfItem.id });
     ok(read.isError === undefined, "pdf: 读取不报错");
     const text = read.content[0].text;
@@ -221,7 +236,8 @@ async function main(): Promise<void> {
 
   /* 6. readonly 权限：attach/detach 拒绝，读工具不受影响（与 project_memory_* 门禁一致） */
   {
-    const tools = makeReadonlyExtension(null);
+    const tools = makeReadonlyExtension("proj-a", "task-ro");
+    service.attachToTask({ itemId: personalItem.id, taskId: "task-ro" });
     const attach = await call(tools, "library_attach_to_task", { id: personalItem.id });
     ok(attach.isError === true && attach.content[0].text.includes("只读"), "readonly: attach 拒绝");
     const detach = await call(tools, "library_detach_from_task", { id: personalItem.id });
@@ -231,7 +247,7 @@ async function main(): Promise<void> {
     const read = await call(tools, "library_read", { id: personalItem.id });
     ok(read.isError === undefined, "readonly: read 允许");
     // 非 readonly 会话 attach/detach 正常（回归）
-    const normal = makeExtension(null);
+    const normal = makeExtension("proj-a");
     const okAttach = await call(normal, "library_attach_to_task", { id: personalItem.id });
     ok(okAttach.isError === undefined, "default: attach 允许");
     const okDetach = await call(normal, "library_detach_from_task", { id: personalItem.id });
@@ -247,7 +263,7 @@ async function main(): Promise<void> {
     const aColl = service.createCollection({ spaceId: aSpace, name: "A集合" });
     const bItem = service.listAllItems().find((i) => i.title === "项目B机密文档")!;
 
-    // create_text：personal + 当前项目允许；B 空间/集合拒绝
+    // create_text：当前项目自有资料允许；其他空间/集合拒绝
     const created = await call(toolsA, "library_create_text", {
       kind: "markdown",
       title: "A沉淀文档",
@@ -262,7 +278,7 @@ async function main(): Promise<void> {
     ok(service.readContent(createdId).content.includes("密封圈方案要点"), "A: 正文真实落库");
     ok(service.getItem(createdId)?.collectionId === aColl.id, "A: 集合归属正确");
     const crossSpace = await call(toolsA, "library_create_text", { kind: "markdown", title: "越界", spaceId: bSpace });
-    ok(crossSpace.isError === true && crossSpace.content[0].text.includes("可见范围"), "A: create_text 到 B 空间被拒");
+    ok(crossSpace.isError === true && crossSpace.content[0].text.includes("当前任务范围"), "A: create_text 到 B 空间被拒");
     const crossColl = await call(toolsA, "library_create_text", { kind: "markdown", title: "越界", collectionId: bColl.id });
     ok(crossColl.isError === true, "A: create_text 到 B 集合被拒");
 
@@ -294,13 +310,13 @@ async function main(): Promise<void> {
                 ('art-b', 'task-b', 'markdown', 'workspace-file', ?, ?, 1, '{}', 'B任务产物', 'text/markdown', 1, 1)`,
       )
       .run(pdf, artifactDir, pdf, artifactDir);
-    db.connection
-      .prepare(`INSERT INTO tasks (id, title, updated_at, project_id) VALUES ('task-current', '当前任务', 1, 'proj-a'), ('task-b', 'B任务', 1, 'proj-b')`)
-      .run();
+    db.upsertTask({ id: "task-current", title: "当前任务", updatedAt: 1, projectId: "proj-a" });
+    db.upsertTask({ id: "task-b", title: "B任务", updatedAt: 1, projectId: "proj-b" });
     const saved = await call(toolsA, "library_save_artifact", { artifactId: "art-own" });
     ok(saved.isError === undefined && saved.content[0].text.includes("来源：artifact"), "A: save_artifact 成功且 provenance 可见");
     const savedId = (saved.details as { item: { id: string } }).item.id;
     ok(service.getItem(savedId)?.sourceTaskId === "task-current", "A: provenance 含来源任务");
+    ok(service.getItem(savedId)?.spaceId === aSpace, "A: 保存产物默认归当前项目，不落入个人库");
     const again = await call(toolsA, "library_save_artifact", { artifactId: "art-own" });
     ok((again.details as { item: { id: string } }).item.id === savedId, "A: save_artifact 幂等（同条目）");
     const saveB = await call(toolsA, "library_save_artifact", { artifactId: "art-b" });
@@ -317,12 +333,12 @@ async function main(): Promise<void> {
     const collB = await call(toolsA, "library_create_collection", { name: "越界夹", spaceId: bSpace });
     ok(collB.isError === true, "A: create_collection 到 B 空间被拒");
     const collId = (collCreated.details as { collection: { id: string } }).collection.id;
-    const moveOk = await call(toolsA, "library_move", { type: "item", id: savedId, collectionId: personalColl.id });
-    ok(moveOk.isError === undefined, "A: move item 同空间成功（savedId 在 personal）");
+    const moveOk = await call(toolsA, "library_move", { type: "item", id: savedId, collectionId: aColl.id });
+    ok(moveOk.isError === undefined, "A: move item 同空间成功（savedId 归当前项目）");
     const moveCross = await call(toolsA, "library_move", { type: "item", id: savedId, collectionId: bColl.id });
     ok(moveCross.isError === true, "A: move item 到 B 集合被拒");
-    const moveCrossSpace = await call(toolsA, "library_move", { type: "item", id: savedId, collectionId: aColl.id });
-    ok(moveCrossSpace.isError === true, "A: move item 跨空间（personal→A 集合）被拒");
+    const moveCrossSpace = await call(toolsA, "library_move", { type: "item", id: savedId, collectionId: personalColl.id });
+    ok(moveCrossSpace.isError === true, "A: move item 跨归属（项目→个人集合）被拒");
     const moveCollCross = await call(toolsA, "library_move", { type: "collection", id: collId, collectionId: bColl.id });
     ok(moveCollCross.isError === true, "A: move collection 到 B 集合被拒（跨空间）");
     const moveCollOk = await call(toolsA, "library_move", { type: "collection", id: collId, collectionId: null });
@@ -341,7 +357,7 @@ async function main(): Promise<void> {
     const roUpdate = await call(toolsRo, "library_update_text", { id: savedId, content: "x" });
     ok(roUpdate.isError === true, "readonly: update_text 拒绝");
 
-    // 归档项目：写拒绝（目标=A 项目空间）、读允许（personal 不受归档影响）
+    // 归档项目：默认目标仍是该项目并拒绝写入，不偷偷降级写入个人库；读取保留
     projectService.archive("proj-a", true);
     const archCreate = await call(toolsA, "library_create_text", { kind: "markdown", title: "x", spaceId: aSpace });
     ok(archCreate.isError === true && archCreate.content[0].text.includes("归档"), "归档: 写 A 项目空间被拒");
@@ -351,10 +367,63 @@ async function main(): Promise<void> {
     assert.throws(() => service.attachToTask({ taskId: "task-current", itemId: personalItem.id }), /归档/);
     ok(service.getItem(aItem.id) !== null, "归档: LibraryService 直连写入口同样拒绝且原条目仍在");
     const archPersonal = await call(toolsA, "library_create_text", { kind: "markdown", title: "归档期个人笔记" });
-    ok(archPersonal.isError === undefined, "归档: personal 写允许（归档不锁个人空间）");
-    const archRead = await call(toolsA, "library_read", { id: personalItem.id });
+    ok(archPersonal.isError === true, "归档: 默认写明确拒绝，不改写个人库作为退路");
+    const archRead = await call(toolsA, "library_read", { id: aItem.id });
     ok(archRead.isError === undefined, "归档: read 允许");
     projectService.archive("proj-a", false);
+  }
+
+  /* 8. 工作空间资料：继承可读、直属可写；显式文件夹/单条引用不放大授权 */
+  {
+    db.connection.prepare("INSERT INTO projects(id, name, created_at, updated_at) VALUES ('empty-readonly-project', 'Readonly', 1, 1)").run();
+    const readonly = makeReadonlyExtension("empty-readonly-project", "readonly-empty-task");
+    const beforeSpaces = service.listSpaces().length;
+    ok((await call(readonly, "library_create_text", { kind: "markdown", title: "不应创建" })).isError === true, "只读任务拒绝首次创建资料");
+    ok(service.listSpaces().length === beforeSpaces, "只读请求不会为了选择默认目标偷偷创建资料位置");
+    db.createSpace({ id: "materials-parent", name: "父空间" });
+    db.createSpace({ id: "materials-child", name: "当前空间", parentId: "materials-parent" });
+    db.createSpace({ id: "materials-sibling", name: "兄弟空间", parentId: "materials-parent" });
+    db.createSpace({ id: "materials-grandchild", name: "直属子空间", parentId: "materials-child" });
+    db.createSpace({ id: "materials-deep", name: "孙空间", parentId: "materials-grandchild" });
+    const own = service.ensureOwnedSpace({ type: "workspace", workspaceId: "materials-child" });
+    const parent = service.ensureOwnedSpace({ type: "workspace", workspaceId: "materials-parent" });
+    const sibling = service.ensureOwnedSpace({ type: "workspace", workspaceId: "materials-sibling" });
+    const child = service.ensureOwnedSpace({ type: "workspace", workspaceId: "materials-grandchild" });
+    const deep = service.ensureOwnedSpace({ type: "workspace", workspaceId: "materials-deep" });
+    const parentDoc = service.createItem({ spaceId: parent.id, kind: "markdown", title: "继承资料" });
+    const siblingDoc = service.createItem({ spaceId: sibling.id, kind: "markdown", title: "兄弟独立资料" });
+    const childDoc = service.createItem({ spaceId: child.id, kind: "markdown", title: "子空间资料" });
+    const deepDoc = service.createItem({ spaceId: deep.id, kind: "markdown", title: "孙空间资料" });
+    const tools = makeExtension(null, "task-workspace", "materials-child");
+    const created = await call(tools, "library_create_text", { kind: "markdown", title: "空间自有文档", content: "工作空间自己的内容" });
+    ok(!created.isError && (created.details as { item: { spaceId: string } }).item.spaceId === own.id, "工作空间任务默认创建到本空间资料");
+    ok((await call(tools, "library_read", { id: parentDoc.id })).isError === undefined, "祖先资料可读取");
+    ok((await call(tools, "library_update_text", { id: parentDoc.id, content: "不允许" })).isError === true, "继承资料仅可读，不能修改源资料");
+    ok((await call(tools, "library_read", { id: siblingDoc.id })).isError === true, "兄弟空间资料默认不可直接读取");
+    ok((await call(tools, "library_read", { id: childDoc.id })).isError === true, "子空间资料默认不可直接读取");
+    ok((await call(tools, "library_read", { id: childDoc.id, explicitDirectChildSpaceId: "materials-grandchild" })).isError === undefined, "可显式临时读取直属子空间搜索命中");
+    ok((await call(tools, "library_read", { id: siblingDoc.id, explicitDirectChildSpaceId: "materials-sibling" })).isError === true, "临时子空间参数不能扩大到兄弟空间");
+    ok((await call(tools, "library_read", { id: deepDoc.id, explicitDirectChildSpaceId: "materials-deep" })).isError === true, "临时子空间参数不能越级到孙空间");
+    ok((await call(tools, "library_read", { id: childDoc.id })).isError === true, "临时子空间读取不持久扩大范围");
+
+    const folder = service.createCollection({ spaceId: LIBRARY_PERSONAL_SPACE_ID, name: "显式参考文件夹" });
+    const referenced = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, collectionId: folder.id, kind: "markdown", title: "引用文件夹文档" });
+    new WorkspaceLibraryBindingService(db).bindCollection("materials-parent", LIBRARY_PERSONAL_SPACE_ID, folder.id);
+    const list = await call(tools, "library_list", { spaceId: LIBRARY_PERSONAL_SPACE_ID });
+    ok(list.content[0].text.includes(referenced.title) && !list.content[0].text.includes(personalItem.title), "个人库只列出祖先显式绑定的文件夹，不放大到根目录");
+    ok((await call(tools, "library_read", { id: referenced.id })).isError === undefined, "绑定的个人文件夹条目可读");
+    ok((await call(tools, "library_update_text", { id: referenced.id, content: "不允许" })).isError === true, "引用文件夹不授予源资料写权限");
+
+    // Persisted task identity wins over a stale/forged project resolver supplied by the host.
+    const projectTools = makeExtension("proj-a", "task-rebind");
+    db.upsertTask({ id: "task-rebind", title: "重新绑定", updatedAt: 2, projectId: "proj-b" });
+    const rebound = await call(projectTools, "library_list", {});
+    ok(rebound.content[0].text.includes("项目B机密文档") && !rebound.content[0].text.includes("项目A机密文档"), "现有工具会话重绑后按数据库项目生效，不信任旧fallback");
+    db.deleteTask("task-rebind");
+    const before = service.listAllItems().length;
+    ok((await call(projectTools, "library_read", { id: bItem.id })).isError === true, "未知taskId禁止通过项目fallback读取");
+    ok((await call(projectTools, "library_create_text", { kind: "markdown", title: "不存在任务不得写入" })).isError === true, "未知taskId禁止默认写入");
+    ok(service.listAllItems().length === before, "拒绝的写入不留下新资料");
   }
 }
 

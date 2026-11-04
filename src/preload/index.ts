@@ -905,7 +905,7 @@ const api = {
       ipcRenderer.invoke(DbIpc.listTaskWriteGrants, taskId),
     deleteTaskWriteGrant: (taskId: string, path: string): Promise<boolean> =>
       ipcRenderer.invoke(DbIpc.deleteTaskWriteGrant, taskId, path),
-    deleteSpace: (id: string): Promise<{ ok: true } | { ok: false; reason: string; error: string }> =>
+    deleteSpace: (id: string): Promise<{ ok: true; warning?: string } | { ok: false; reason: string; error: string }> =>
       ipcRenderer.invoke(DbIpc.deleteSpace, id),
     archiveSpace: (id: string, archived: boolean): Promise<void> =>
       ipcRenderer.invoke(DbIpc.archiveSpace, id, archived),
@@ -1294,6 +1294,8 @@ const api = {
     getItem: (id: string): Promise<LibraryItemDto | null> => ipcRenderer.invoke(LibraryIpc.getItem, id),
     createSpace: (req: LibraryCreateSpaceRequest): Promise<{ ok: true; value: LibrarySpaceDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.createSpace, req),
+    ensureOwnedSpace: (owner: import("../shared/library-ipc").LibraryOwnerScope): Promise<{ ok: true; value: LibrarySpaceDto } | { ok: false; error: string }> =>
+      ipcRenderer.invoke(LibraryIpc.ensureOwnedSpace, owner),
     renameSpace: (req: LibraryRenameSpaceRequest): Promise<{ ok: true; value: LibrarySpaceDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.renameSpace, req),
     deleteSpace: (id: string): Promise<{ ok: true; value: void } | { ok: false; error: string }> =>
@@ -1325,7 +1327,7 @@ const api = {
       ipcRenderer.invoke(LibraryIpc.pickAndImport, req),
     markVisited: (id: string): Promise<{ ok: true; value: LibraryItemDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.markVisited, id),
-    search: (req: { query: string }): Promise<LibraryListRowDto[]> => ipcRenderer.invoke(LibraryIpc.search, req),
+    search: (req: import("../shared/library-ipc").LibrarySearchRequest): Promise<LibraryListRowDto[]> => ipcRenderer.invoke(LibraryIpc.search, req),
     previewUrl: (id: string): Promise<string> => ipcRenderer.invoke(LibraryIpc.previewUrl, id),
     showInFolder: (id: string): Promise<{ ok: true } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.showInFolder, id),

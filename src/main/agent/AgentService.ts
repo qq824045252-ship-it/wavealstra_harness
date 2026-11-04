@@ -2709,7 +2709,7 @@ export class AgentService {
       // 预览与真实会话一致：有 workspace 上下文时注入「当前任务工作目录 + 写边界」段
       // （与 createSession 的 workspace: opts.cwd 同源；无 cwd 则不注入，与现状一致）
       workspace: req.cwd?.trim() || undefined,
-      libraryCatalog: this.libraryWorkspaceContext.catalog(req.projectId ?? null, req.libraryToolsAvailable ?? true),
+      libraryCatalog: this.libraryWorkspaceContext.catalog(req.projectId ?? null, req.libraryToolsAvailable ?? true, req.taskId, req.spaceId),
       libraryReadable: req.libraryToolsAvailable ?? true,
       contextBudgetChars,
     });

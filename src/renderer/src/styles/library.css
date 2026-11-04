@@ -883,3 +883,67 @@
 .library-menu {
   padding: 8px;
 }
+
+/* Local owners use one compact content manager inside their existing page. */
+.library-page--scoped { display: block; padding: 24px 28px; overflow-y: auto; }
+.scoped-library-manager { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; min-width: 0; }
+.scoped-library-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.scoped-library-heading h3 { margin: 0; color: var(--fg); font-size: 16px; line-height: 1.4; }
+.scoped-library-heading h3 > span { display: inline-block; margin-left: 5px; color: var(--fg-muted); font-size: 12px; font-weight: 500; }
+.scoped-library-heading p { margin: 5px 0 0; color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
+.scoped-library-heading > .btn { flex-shrink: 0; }
+.scoped-library-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.scoped-library-search { display: flex; align-items: center; gap: 8px; min-width: 160px; flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; color: var(--fg-muted); background: var(--bg); }
+.scoped-library-search input { flex: 1; width: 100%; min-width: 0; border: 0; outline: 0; color: var(--fg); background: transparent; font-size: 13px; }
+.scoped-library-location { display: flex; align-items: center; gap: 8px; color: var(--fg-secondary); font-size: 12px; }
+.scoped-library-location select, .scoped-library-type { max-width: 260px; border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; color: var(--fg); background: var(--bg); font-size: 12px; }
+.scoped-library-type { margin-left: auto; }
+.scoped-library-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--fg-muted); font-size: 12px; }
+.scoped-library-breadcrumbs > span { display: inline-flex; align-items: center; gap: 4px; }
+.scoped-library-breadcrumbs button { max-width: 260px; border: 0; background: transparent; color: var(--fg-secondary); padding: 3px 5px; border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: inherit; cursor: pointer; }
+.scoped-library-breadcrumbs button:hover { background: var(--bg-hover); color: var(--fg); }
+.scoped-library-manager .library-toolbar-actions { margin: 0; gap: 6px; }
+.scoped-library-manager .library-empty { padding: 36px 12px; }
+.scoped-library-manager.drag-over { outline: 2px dashed var(--accent, #3b82f6); outline-offset: 5px; }
+.scoped-library-notice { border-radius: 8px; padding: 9px 12px; color: var(--fg-secondary); background: var(--bg-hover); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.scoped-library-notice.is-error { background: rgba(220, 65, 65, .07); color: var(--danger, #b91c1c); }
+.scoped-library-table { border-top: 1px solid var(--border); }
+.scoped-library-row { display: grid; grid-template-columns: minmax(160px, 1fr) 72px 90px 112px; align-items: center; column-gap: 12px; padding: 12px 6px; min-width: 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.scoped-library-row--head { padding-top: 9px; padding-bottom: 9px; font-size: 11px; color: var(--fg-muted); }
+.scoped-library-name { display: flex; gap: 9px; align-items: center; min-width: 0; }
+.scoped-library-name > svg { flex-shrink: 0; color: var(--fg-muted); }
+.scoped-library-name > div { min-width: 0; }
+.scoped-library-name button { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--fg); text-align: left; font-size: 13px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.scoped-library-name button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.scoped-library-name small { display: block; max-width: 100%; margin-top: 2px; color: var(--fg-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scoped-library-kind, .scoped-library-date { color: var(--fg-secondary); }
+.scoped-library-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.scoped-library-actions > .btn { min-height: 28px; padding: 4px 8px; font-size: 12px; }
+.scoped-library-row-menu { position: relative; }
+.scoped-library-row-menu summary { border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; color: var(--fg-secondary); font-size: 11px; cursor: pointer; list-style: none; }
+.scoped-library-row-menu summary::-webkit-details-marker { display: none; }
+.scoped-library-row-menu[open] summary, .scoped-library-row-menu summary:hover { background: var(--bg-hover); }
+.scoped-library-row-menu .library-menu { min-width: 130px; }
+.scoped-library-row-menu .is-danger { color: var(--danger, #b91c1c); }
+.scoped-library-manager .library-doc { min-width: 0; }
+.scoped-library-manager .library-doc-bar { gap: 12px; }
+.scoped-library-manager .library-doc-bar-left { align-items: center; flex-basis: 320px; }
+.scoped-library-manager .library-doc-bar-right { justify-content: flex-start; }
+.scoped-library-manager .library-doc-title { font-size: 18px; }
+.scoped-library-manager .library-doc-title[readonly] { cursor: default; }
+.scoped-library-manager .library-doc-back { flex-shrink: 0; font-size: 12px; }
+.scoped-library-manager .library-doc-body { min-height: 220px; }
+.scoped-library-manager .library-md-preview { padding: 22px 24px 28px; max-width: none; }
+.scoped-library-manager .library-md-preview img { max-width: 100%; height: auto; }
+.scoped-library-text { margin: 0; padding: 20px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.scoped-library-image-placeholder { display: inline-block; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; color: var(--fg-muted); font-size: 12px; }
+.project-material-pin-reader { padding: 14px; margin: 10px 0 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.project-material-pin-reader > .btn { margin-bottom: 10px; }
+@media (max-width: 700px) {
+  .library-page--scoped { padding: 16px; }
+  .scoped-library-row { grid-template-columns: minmax(120px, 1fr) 60px 108px; column-gap: 6px; }
+  .scoped-library-date, .scoped-library-row--head > span:nth-child(3) { display: none; }
+  .scoped-library-manager .library-md-preview { padding: 16px; }
+  .scoped-library-manager .library-doc-bar-left { flex-wrap: wrap; }
+  .scoped-library-manager .library-doc-body textarea { min-height: 280px; padding: 16px; }
+}

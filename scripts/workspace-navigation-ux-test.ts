@@ -31,7 +31,7 @@ contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", "保存为
 // WorkspaceDetail 的分区标签现由 TAB_LABELS 提供（中文 + Gadgets）；旧断言的
 // Overview/Context/Library/Files/Active Work/Recent Artifacts 只在 CSS 类名里出现，
 // 或（Active Work / Recent Artifacts）已被移除。改为断言现行的全部页签标签。
-for (const label of ["概览", "记忆", "上下文", "资料库", "文件", "Gadgets", "终端"]) contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", label, `workspace UI must include ${label}`);
+for (const label of ["概览", "记忆", "上下文", "资料", "文件", "Gadgets", "终端"]) contains("src/renderer/src/components/workspace/WorkspaceDetail.tsx", label, `workspace UI must include ${label}`);
 
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到工作空间", "task Gadget must expose the localized save-to-workspace action");
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到我的工作台", "task Gadget must expose the localized personal-workbench action");
