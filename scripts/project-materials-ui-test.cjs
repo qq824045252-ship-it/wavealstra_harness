@@ -1,13 +1,11 @@
-const { app, BrowserWindow } = require('electron');
-const { writeScreenshot, settleFramesScript } = require('./ui-capture.cjs');
+const { runRendererFixture } = require('./renderer-fixture-driver.cjs');
+const { settleFramesScript } = require('./ui-capture.cjs');
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 const output = join(__dirname, '../out/tests');
-app.setPath('userData', join(output, 'project-materials-profile'));
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1240, height: 850, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
-  const evaluate = async (code) => { try { return await win.webContents.executeJavaScript(code); } catch (error) { console.error('[project-materials-ui] evaluate failed:', code); throw error; } };
+runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, async (fixture) => {
+  const evaluate = async (code) => { try { return await fixture.evaluate(code); } catch (error) { console.error('[project-materials-ui] evaluate failed:', code); throw error; } };
   const wait = async (code) => {
     const deadline = Date.now() + 5000;
     while (!(await evaluate(code))) {
@@ -16,7 +14,11 @@ app.whenReady().then(async () => {
     }
   };
   const click = async (label) => {
-    await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)} && b.getClientRects().length); if(!b || b.disabled)throw Error('button unavailable'); b.click()})()`);
+    const visible = fixture.backend === 'dom' ? 'window.__fixtureVisible(b)' : 'b.getClientRects().length';
+    // A modal blocks background actions even when they use the same label.
+    const target = `(()=>{const scope=[...document.querySelectorAll('[role="dialog"]')].at(-1)??document;return [...scope.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)} && ${visible})})()`;
+    await wait(`${target}?.disabled === false`);
+    await evaluate(`${target}.click()`);
   };
   const setText = async (selector, text) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});if(!input)throw Error('input missing');const proto=input.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   const rowAction = async (title, action) => {
@@ -27,13 +29,13 @@ app.whenReady().then(async () => {
   const capture = async (name) => {
     await evaluate(settleFramesScript);
     await new Promise((accept) => setTimeout(accept, 100));
-    await writeScreenshot(win, join(output, name));
+    await fixture.screenshot(join(output, name));
   };
   try {
     mkdirSync(output, { recursive: true });
     const html = join(output, 'project-materials-ui.html');
-    writeFileSync(html, '<!doctype html><html lang="zh"><meta charset="UTF-8"><link rel="stylesheet" href="project-materials-ui.css"><div id="root"></div><script src="project-materials-ui.js"></script></html>');
-    await win.loadFile(html);
+    writeFileSync(html, '<!doctype html><html lang="zh"><head><meta charset="UTF-8"><link rel="stylesheet" href="project-materials-ui.css"></head><body><div id="root"></div><script src="project-materials-ui.js"></script></body></html>');
+    await fixture.loadFile(html);
     await wait(`document.body.innerText.includes('还没有项目资料')`);
     await wait(`document.querySelector('[aria-label="资料状态"]').innerText.includes('1/1')`);
     assert((await evaluate(`document.querySelector('[aria-label="资料状态"]').innerText`)).includes('未查看'), '没有选执行记录时不得暗示资料已被使用');
@@ -259,7 +261,6 @@ app.whenReady().then(async () => {
     await capture('task-recovery-notice.png');
     await evaluate(`window.materialTest.showRecovery('task-recovery', true)`);
     await wait(`!document.querySelector('[aria-label="任务恢复"]')`);
-    console.log('project materials Electron UI: PASS (owner CRUD, folder organization, artifact copies, pins, readonly, draft recovery, scope/errors, execution evidence, stale owner response)');
-    app.quit();
-  } catch (error) { console.error(error); app.exit(1); }
+    console.log(`project materials ${fixture.backend} renderer UI: PASS (owner CRUD, folder organization, artifact copies, pins, readonly, draft recovery, scope/errors, execution evidence, stale owner response)`);
+  } catch (error) { throw error; }
 });
