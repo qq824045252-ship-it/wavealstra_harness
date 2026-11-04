@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BuiltinCapabilitiesConfigDto, SaveBuiltinCapabilitySettingsRequest, TestBuiltinCapabilityResultDto, BuiltinCapabilityStatusDto } from "../../shared/builtin-capabilities";
 import { BUILTIN_CODEX_IMAGE_MODEL, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "../../shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_API_ROOT, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 import type { MagpieGatewayConfig } from "../agent/providers/magpie";
 import type { BuiltinCapabilityRuntime, GeneratedMediaOutput, MediaCapabilityProvider, SpeechCapabilityProvider, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
@@ -10,6 +10,7 @@ import { discoverOpenRouterCapabilities, type OpenRouterCapabilityCatalog } from
 import { createApiMediaProvider } from "./providers/ApiMediaProvider";
 import { createApiSpeechProvider } from "./providers/ApiSpeechProvider";
 import { createApiOcrAdapter } from "./providers/ApiOcrProvider";
+import { createBaiduOcrAdapter, type BaiduOcrSettings } from "./providers/BaiduOcrProvider";
 import type { ResolvedApiConnection } from "./providers/ApiServiceConnection";
 import type { VideoGenerationJobStore } from "./VideoGenerationJobs";
 
@@ -51,6 +52,7 @@ export class MediaCapabilityServices {
   private readonly openRouterErrors = new Map<string, string>();
   private refreshing?: Promise<void>;
   private readonly lastRuns = new Map<MediaCapabilityId, { key: string; at: number }>();
+  private readonly baiduOcrAdapters = new Map<string, ImageRecognitionAdapter>();
 
   constructor(private readonly options: {
     runtime: BuiltinCapabilityRuntime;
@@ -125,18 +127,27 @@ export class MediaCapabilityServices {
     for (const [id, connection] of Object.entries(config.connections ?? {})) {
       let baseUrl: string | undefined;
       try { baseUrl = capabilityApiRoot(connection.baseUrl); } catch { /* keep editable */ }
-      const hasKey = Boolean(connection.credentialRef && this.runtime.credentials.has(connection.credentialRef));
+      const slots = connection.protocol === "baidu-ocr"
+        ? { apiKey: Boolean(connection.credentialRefs?.apiKey && this.runtime.credentials.has(connection.credentialRefs.apiKey)), secretKey: Boolean(connection.credentialRefs?.secretKey && this.runtime.credentials.has(connection.credentialRefs.secretKey)) }
+        : undefined;
+      const hasKey = slots ? slots.apiKey && slots.secretKey : Boolean(connection.credentialRef && this.runtime.credentials.has(connection.credentialRef));
       const identity = this.openRouterIdentity(id, config);
       const savedCatalog = this.openRouterCatalogs.get(id);
       const catalog = identity && savedCatalog?.identity === identity ? savedCatalog.catalog : undefined;
-      const addressValid = connection.protocol !== "openrouter" || baseUrl === OPENROUTER_API_ROOT;
+      const addressValid = connection.protocol === "openrouter" ? baseUrl === OPENROUTER_API_ROOT
+        : connection.protocol === "baidu-ocr" ? baseUrl === BAIDU_OCR_API_ROOT : true;
       result.push({
         id, label: connection.name, source: "api", capabilities: connectionCapabilities(connection),
-        models: catalog?.models ?? {}, allowCustomModel: true,
+        models: connection.protocol === "baidu-ocr"
+          ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) } : catalog?.models ?? {},
+        allowCustomModel: connection.protocol !== "baidu-ocr",
         configured: Boolean(baseUrl && addressValid) && (connection.auth === "none" || hasKey),
         authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key",
+        ...(slots ? { credentialSlotsConfigured: slots } : {}),
         ...(baseUrl ? { location: location(baseUrl) } : {}),
-        detail: connection.protocol === "openrouter"
+        detail: connection.protocol === "baidu-ocr"
+          ? "百度 OCR 专用识别：API Key + Secret Key，按识别模式调用；尚未发送样本测试。"
+          : connection.protocol === "openrouter"
           ? this.openRouterErrors.get(id) ?? (catalog ? catalog.partial
               ? "部分模型目录已更新；没有列出的能力仍可手动填写有效模型 ID。"
               : "五项能力的模型目录已更新；以所选模型的实际权限和接口为准。"
@@ -348,11 +359,40 @@ export class MediaCapabilityServices {
     };
   }
 
+  private baiduSettings(connectionId: string): BaiduOcrSettings {
+    const config = this.runtime.config();
+    const binding = this.binding("ocr", config);
+    const connection = config.connections?.[connectionId];
+    if (binding?.connectionId !== connectionId || connection?.protocol !== "baidu-ocr" ||
+      connection.presetId !== "baidu-ocr" || connection.auth !== "baidu-ak-sk" ||
+      capabilityApiRoot(connection.baseUrl) !== BAIDU_OCR_API_ROOT) {
+      throw new Error("百度 OCR 服务引用已改变，请重新选择。");
+    }
+    const apiRef = connection.credentialRefs?.apiKey;
+    const secretRef = connection.credentialRefs?.secretKey;
+    const apiKey = apiRef ? this.runtime.credentials.get(apiRef) : null;
+    const secretKey = secretRef ? this.runtime.credentials.get(secretRef) : null;
+    if (!apiKey || !secretKey) throw new Error("请配置百度 OCR 的 API Key 和 Secret Key。");
+    return { apiKey, secretKey, timeoutMs: connection.timeoutMs, mode: binding.model as BaiduOcrSettings["mode"] };
+  }
+
   ocrAdapter(): ImageRecognitionAdapter | null {
     const binding = this.binding("ocr");
     if (!binding?.connectionId) return null;
-    const adapter = binding.connectionId.startsWith("legacy:") ? createHttpOcrAdapter(this.runtime)
-      : this.runtime.config().connections?.[binding.connectionId] ? createApiOcrAdapter({ getConnection: () => this.resolveApi("ocr"), fetch: this.options.fetch }) : null;
+    const connection = this.runtime.config().connections?.[binding.connectionId];
+    let adapter: ImageRecognitionAdapter | null = null;
+    if (binding.connectionId.startsWith("legacy:")) adapter = createHttpOcrAdapter(this.runtime);
+    else if (connection?.protocol === "baidu-ocr") {
+      adapter = this.baiduOcrAdapters.get(binding.connectionId) ?? null;
+      if (!adapter) {
+        const connectionId = binding.connectionId;
+        adapter = createBaiduOcrAdapter({
+          getSettings: () => this.baiduSettings(connectionId),
+          fetch: this.options.fetch,
+        });
+        this.baiduOcrAdapters.set(connectionId, adapter);
+      }
+    } else if (connection) adapter = createApiOcrAdapter({ getConnection: () => this.resolveApi("ocr"), fetch: this.options.fetch });
     if (!adapter) return null;
     return { recognize: async (path, context) => {
       if (!capabilityEnabled(this.runtime.config(), "ocr")) throw new Error("图片文字识别已关闭。");
@@ -378,7 +418,9 @@ export class MediaCapabilityServices {
     if (!service) return { state: "needs-configuration", detail: binding?.selection === "auto" ? "等待可用的已登录图片服务；可刷新目录或手动选择。" : "请选择服务并填写所需模型。" };
     const base = { provider: service.label, credentialConfigured: service.configured };
     if (!service.capabilities.includes(id)) return { ...base, state: "needs-configuration", detail: "所选服务不支持此能力，请重新选择。" };
-    if (!service.configured) return { ...base, state: "needs-configuration", detail: service.authState === "missing-key" ? "请填写此服务的 API Key。" : service.detail ?? "请完成服务配置。" };
+    if (!service.configured) return { ...base, state: "needs-configuration", detail: service.authState === "missing-key"
+      ? (config.connections?.[binding?.connectionId ?? ""]?.protocol === "baidu-ocr" ? "请填写百度 OCR 的 API Key 和 Secret Key。" : "请填写此服务的 API Key。")
+      : service.detail ?? "请完成服务配置。" };
     if (id === "ocr" || id === "speech-to-text") {
       try { this.assertRecognitionPolicy(id); } catch (error) { return { ...base, state: "needs-configuration", detail: (error as Error).message }; }
     }
@@ -397,6 +439,7 @@ export class MediaCapabilityServices {
       else if (binding.connectionId === LOCAL_WHISPER_CONNECTION_ID) await this.runtime.registeredSpeechProvider("local-whisper")?.test?.();
       else if (binding.connectionId.startsWith("legacy:")) this.runtime.recognitionService(id as "ocr" | "speech-to-text", id === "ocr" ? "http-ocr" : "http-asr");
       else if (binding.connectionId.startsWith("registered:")) { /* Configuration only: custom tests may perform inference. */ }
+      else if (id === "ocr" && this.runtime.config().connections?.[binding.connectionId]?.protocol === "baidu-ocr") this.baiduSettings(binding.connectionId);
       else this.resolveApi(id);
       return { ok: true, state: "unchecked", detail: "配置检查通过；未发送样本，实际模型权限和输出需在任务中验证。", checkedAt: Date.now() };
     } catch (error) {
@@ -414,10 +457,17 @@ export class MediaCapabilityServices {
       if (!/^api-[a-z0-9-]{1,80}$/i.test(id) || !API_PROTOCOL_CAPABILITIES[connection.protocol]) throw new Error("API 服务类型无效。");
       connection.baseUrl = capabilityApiRoot(connection.baseUrl);
       const preset = MEDIA_PROVIDER_PRESETS.find(item => item.id === connection.presetId);
-      if (connection.presetId && (!preset || preset.protocol !== connection.protocol || connection.baseUrl !== preset.baseUrl || connection.auth !== "api-key")) throw new Error("内置服务商的协议或地址不匹配；如需代理地址请另建自定义 API 服务。");
+      const expectedAuth = connection.protocol === "baidu-ocr" ? "baidu-ak-sk" : "api-key";
+      if (connection.presetId && (!preset || preset.protocol !== connection.protocol || connection.baseUrl !== preset.baseUrl || connection.auth !== expectedAuth)) throw new Error("内置服务商的协议或地址不匹配；如需代理地址请另建自定义 API 服务。");
+      if (connection.protocol === "baidu-ocr" && (connection.presetId !== "baidu-ocr" ||
+        connection.baseUrl !== BAIDU_OCR_API_ROOT || connection.auth !== "baidu-ak-sk")) throw new Error("百度 OCR 必须使用官方 HTTPS 接口和双密钥认证。");
       if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 只允许官方 HTTPS API 地址和 Key 认证。");
       if (!Number.isSafeInteger(connection.timeoutMs) || connection.timeoutMs < 1000 || connection.timeoutMs > 600_000) throw new Error("请求超时应为 1 至 600 秒。");
-      connection.credentialRef = previous.connections?.[id]?.credentialRef;
+      connection.credentialRef = connection.protocol === "baidu-ocr" ? undefined : previous.connections?.[id]?.credentialRef;
+      connection.credentialRefs = connection.protocol === "baidu-ocr" ? {
+        apiKey: previous.connections?.[id]?.credentialRefs?.apiKey,
+        secretKey: previous.connections?.[id]?.credentialRefs?.secretKey,
+      } : undefined;
     }
     for (const [id, service] of Object.entries(next.services ?? {})) {
       const old = previous.services?.[id];
@@ -431,8 +481,17 @@ export class MediaCapabilityServices {
       const legacyId = change.connectionId.startsWith("legacy:") ? change.connectionId.slice(7) : undefined;
       const connection = legacyId ? next.services?.[legacyId] : next.connections?.[change.connectionId];
       if (!connection) throw new Error("待保存密钥的服务不存在。");
-      const ref = connection.credentialRef ?? `media.${createHash("sha256").update(change.connectionId).digest("hex").slice(0,40)}`;
-      connection.credentialRef = ref;
+      let ref: string;
+      if ("protocol" in connection && connection.protocol === "baidu-ocr") {
+        const slot = change.slot ?? "apiKey";
+        if (slot !== "apiKey" && slot !== "secretKey") throw new Error("未知的百度 OCR 密钥槽位。");
+        ref = connection.credentialRefs?.[slot] ?? `media.${createHash("sha256").update(change.connectionId + ":" + slot).digest("hex").slice(0,40)}`;
+        connection.credentialRefs = { ...connection.credentialRefs, [slot]: ref };
+      } else {
+        if (change.slot && change.slot !== "apiKey") throw new Error("此服务不支持额外密钥槽位。");
+        ref = connection.credentialRef ?? `media.${createHash("sha256").update(change.connectionId).digest("hex").slice(0,40)}`;
+        connection.credentialRef = ref;
+      }
       const prior = changes.get(ref);
       if (prior && (prior.secret !== change.secret || prior.clear !== change.clear)) throw new Error("共享密钥收到不同修改，请只修改一次。");
       changes.set(ref, change);
