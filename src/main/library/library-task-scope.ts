@@ -79,8 +79,9 @@ export function resolveLibraryTaskScope(
     : undefined;
   const workspace = workspaceId ? db.getSpace(workspaceId) : undefined;
   if ((projectId && !project) || (workspaceId && !workspace)) return scope;
+  // 独立任务为临时任务，不默认拥有或读取任何持久资料位置。
   scope.defaultOwner = projectId ? { type: "project", projectId }
-    : workspaceId ? { type: "workspace", workspaceId } : { type: "personal" };
+    : workspaceId ? { type: "workspace", workspaceId } : null;
 
   if (workspace && !db.isSpaceEffectiveArchived(workspace.id)) {
     workspaceIds.add(workspace.id);
@@ -110,9 +111,6 @@ export function resolveLibraryTaskScope(
     } else if (space.workspaceId && workspaceIds.has(space.workspaceId)) {
       addSpace(space);
       if (space.workspaceId === workspaceId && !project?.archived) writableSpaceIds.add(space.id);
-    } else if (space.kind === "personal" && !projectId && !workspaceId) {
-      addSpace(space);
-      writableSpaceIds.add(space.id);
     }
   }
 
