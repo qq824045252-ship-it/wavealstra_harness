@@ -61,6 +61,8 @@ const memory = new MemoryService(db, { semantic: false });
 const repository = new ProjectRepository(db.connection);
 const projects = new ProjectService(repository, memory);
 const library = new LibraryService(db, { libraryRoot: join(root, "lib") });
+// 历史数据兼容测试使用显式创建的旧个人空间；生产环境不会自动播种。
+library.ensureReady();
 const resolver = new ProjectContextResolver(db, repository, memory);
 
 for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as const) {
@@ -206,7 +208,7 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
   const binHits = library.retrieve("对照表", { projectId: "proj-a", limit: 10 });
   const binHit = binHits.find((h) => h.itemId === bin.id);
   ok(binHit && binHit.snippet === "", "csv 命中 snippet 空（检索只给元数据，正文按需 library_read）");
-  // 未绑定任务 → 仅 personal
+  // 未绑定任务 → 无默认持久资料
   const unbound = library.retrieve("氯丁橡胶", { projectId: null, limit: 10 });
   ok(!unbound.some((h) => h.spaceId === aSpace.id), "未绑定任务检索不含项目资料");
 }
@@ -744,11 +746,11 @@ void (async () => {
   const rDedup = retrieval.search("task-ka", "乙腈介质");
   const dedupHits = rDedup.hits.filter((h) => h.itemId === aDoc.id);
   ok(dedupHits.length === 1 && dedupHits[0]!.tier === "task-explicit", "A: 同 item 去重且取最高层");
-  // 3. 未绑定任务：仅 personal
+  // 3. 未绑定的独立任务没有默认持久资料范围。
   const rNone = retrieval.search("task-knone", "知识库");
-  ok(rNone.scope === "personal" && rNone.projectId === null, "unbound: scope=personal");
-  ok(rNone.hits.every((h) => h.spaceId === LIBRARY_PERSONAL_SPACE_ID), "unbound: 仅 personal 命中");
-  ok(rNone.hits.some((h) => h.itemId === personalDoc.id), "unbound: personal 可检索");
+  ok(rNone.scope === "none" && rNone.projectId === null, "unbound: scope=none");
+  ok(rNone.hits.length === 0, "unbound: no persistent library hits");
+  ok(!rNone.hits.some((h) => h.itemId === personalDoc.id), "unbound: legacy personal is never inherited");
   // 4. B 任务不能搜到 A
   const rB = retrieval.search("task-kb", "密封圈");
   ok(!rB.hits.some((h) => h.itemId === aDoc.id), "B: 搜不到 A 的文档");
@@ -843,7 +845,7 @@ void (async () => {
     createProjectKnowledgeExtension({ taskId: "task-knone", retrieval })(api2);
     return tools2.get("project_knowledge_search")!.execute("tc", { query: "知识库" } as never);
   })();
-  ok(kSearchUnbound.content[0].text.includes("范围：个人资料，独立任务"), "工具: 未绑定任务降级 personal-only 标注");
+  ok(kSearchUnbound.content[0].text.includes("无默认长期资料"), "工具: 独立任务不自动获得个人资料标注");
   // 10. registry：文本抽取 + 二进制 unsupported + symlink 守卫
   ok((await retrieval.getExtractionStatus(longDoc)).status === "extracted", "registry: 文本类抽取成功");
   ok((await retrieval.getExtractionStatus(binItem)).status !== "extracted", "registry: 损坏 pdf 抽取失败（降级 requiresFileAccess）");
