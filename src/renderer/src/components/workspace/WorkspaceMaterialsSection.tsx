@@ -21,6 +21,7 @@ const bindingKey = (item: WorkspaceLibraryBindingItem): string => item.collectio
 export function ownerOfBinding(item: WorkspaceLibraryBindingItem): LibraryOwnerScope {
   if (item.projectId) return { type: "project", projectId: item.projectId };
   if (item.workspaceId) return { type: "workspace", workspaceId: item.workspaceId };
+  // 旧无归属资料只能作为历史引用打开，不属于新的独立任务资料库。
   return { type: "personal" };
 }
 
@@ -36,7 +37,7 @@ function ReferenceRow({ item, inheritedFrom, action, disabled, onAction, onOpen 
     <div className="workspace-memory-row-main">
       <div className="workspace-memory-row-head">
         <strong title={item.path ?? item.name}>{item.name}</strong>
-        <span className="workspace-memory-kind">{item.targetType === "collection" ? "文件夹" : item.projectId ? "项目资料" : item.workspaceId ? "空间资料" : "个人资料"}</span>
+        <span className="workspace-memory-kind">{item.targetType === "collection" ? "文件夹" : item.projectId ? "项目资料" : item.workspaceId ? "空间资料" : "历史资料"}</span>
         {inheritedFrom && <span className="workspace-memory-scope-chip is-inherited">继承 · {inheritedFrom}</span>}
       </div>
       <div className="workspace-memory-scope-note">{item.path}</div>
@@ -68,7 +69,7 @@ function WorkspaceMaterialsBody({ currentSpaceId, compact = false, className = "
   const request = useRef(0);
   const mutation = useRef(false);
   const readOnly = Boolean(space?.archived || space?.effectiveArchived);
-  const scope = useMemo<LibraryOwnerScope>(() => currentSpaceId ? { type: "workspace", workspaceId: currentSpaceId } : { type: "personal" }, [currentSpaceId]);
+  const scope = useMemo<LibraryOwnerScope>(() => ({ type: "workspace", workspaceId: currentSpaceId ?? "" }), [currentSpaceId]);
 
   const reload = useCallback(async (): Promise<void> => {
     const ticket = ++request.current;
