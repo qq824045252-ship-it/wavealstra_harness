@@ -15,6 +15,30 @@ assert.deepEqual(MEDIA_PROVIDER_PRESETS.find(p => p.id === "openrouter")?.capabi
 assert(!MEDIA_PROVIDER_PRESETS.find(p => p.id === "openai")?.capabilities.includes("video-generation"),
   "the discontinued direct OpenAI video endpoint must not be advertised");
 
+// Native task-API presets: FLUX (Black Forest Labs) and 百炼 (DashScope) cover image + video only.
+const bfl = MEDIA_PROVIDER_PRESETS.find(p => p.id === "black-forest-labs");
+assert(bfl, "the FLUX preset exists");
+assert.equal(bfl!.protocol, "black-forest-labs");
+assert.equal(bfl!.baseUrl, "https://api.bfl.ai/v1");
+assert.deepEqual(bfl!.capabilities, ["image-generation", "video-generation"]);
+assert(bfl!.models?.["image-generation"]?.some(model => model.id === "flux-3-image"), "FLUX image models are selectable");
+assert(bfl!.models?.["video-generation"]?.some(model => model.id === "flux-3-video"), "FLUX video models are selectable");
+assert.deepEqual(API_PROTOCOL_CAPABILITIES["black-forest-labs"], ["image-generation", "video-generation"]);
+
+const dashscope = MEDIA_PROVIDER_PRESETS.find(p => p.id === "dashscope");
+assert(dashscope, "the DashScope preset exists");
+assert.equal(dashscope!.protocol, "dashscope");
+assert.equal(dashscope!.baseUrl, "https://dashscope.aliyuncs.com/api/v1");
+assert.deepEqual(dashscope!.capabilities, ["image-generation", "video-generation"]);
+assert(dashscope!.models?.["video-generation"]?.length, "DashScope exposes at least one video model");
+assert.deepEqual(API_PROTOCOL_CAPABILITIES.dashscope, ["image-generation", "video-generation"]);
+assert(!API_PROTOCOL_CAPABILITIES.dashscope.includes("speech-to-text"), "native task APIs never claim audio");
+assert.deepEqual(
+  connectionCapabilities({ name: "FLUX", presetId: "black-forest-labs", protocol: "black-forest-labs", baseUrl: "https://api.bfl.ai/v1", auth: "api-key", timeoutMs: 60000 }),
+  ["image-generation", "video-generation"],
+  "a saved FLUX connection advertises exactly its two capabilities",
+);
+
 const temp = mkdtempSync(join(tmpdir(), "mybuddy-providers-"));
 try {
   const store = new BuiltinCapabilityStore(join(temp, "capabilities.json"));

@@ -30,7 +30,7 @@ const MEDIA_ROWS: Record<MediaCapabilityId, { title: string; description: string
   "image-generation": { title: "图片生成", description: "根据描述生成图片；服务支持时可使用参考图。", tool: "image_generate" },
   "video-generation": { title: "视频生成", description: "根据描述生成视频，并保存到当前任务。", tool: "video_generate" },
 };
-const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API", "baidu-ocr": "百度智能云 OCR API" };
+const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API", "baidu-ocr": "百度智能云 OCR API", "black-forest-labs": "Black Forest Labs（FLUX）原生任务 API", dashscope: "阿里云百炼（千问 / 万相）原生任务 API" };
 type CredentialDraft = Pick<CapabilityCredentialChange, "secret" | "clear">;
 const differs = (left: unknown, right: unknown): boolean => JSON.stringify(left) !== JSON.stringify(right);
 const errorText = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
@@ -291,7 +291,11 @@ function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredenti
         const protocol = event.target.value as ApiCapabilityProtocol;
         onChange({ ...value, protocol, ...(protocol === "openrouter" ? { baseUrl: OPENROUTER_API_ROOT, auth: "api-key" as const } : {}) });
       }}>
-        {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).filter(protocol => protocol !== "baidu-ocr" || value.presetId === "baidu-ocr").map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
+        {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).filter(protocol => {
+          // Native task APIs only exist behind their official preset (fixed endpoint + model family).
+          const presetOnly = protocol === "baidu-ocr" || protocol === "black-forest-labs" || protocol === "dashscope";
+          return presetOnly ? value.presetId === protocol : true;
+        }).map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
       </SettingsSelect>
     </div>
     <SettingsInput label="API 地址" type="url" disabled={Boolean(value.presetId)} value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
@@ -378,8 +382,12 @@ export default function CapabilitiesTab(): React.JSX.Element {
       ...catalog.filter(option => option.source !== "api"),
       ...Object.entries(draft?.connections ?? {}).map(([id, connection]): CapabilityConnectionOption => {
         const previous = savedOptions.get(id);
+        const presetModels = MEDIA_PROVIDER_PRESETS.find(item => item.id === connection.presetId)?.models;
         return { id, label: connection.name || "未命名 API 服务", source: "api", capabilities: connectionCapabilities(connection),
-          models: connection.protocol === "baidu-ocr" ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) } : previous?.models ?? {},
+          // A preset with fixed model families (FLUX / 百炼) shows them before the first save too.
+          models: connection.protocol === "baidu-ocr"
+            ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) }
+            : previous?.models && Object.keys(previous.models).length ? previous.models : presetModels ?? previous?.models ?? {},
           allowCustomModel: connection.protocol !== "baidu-ocr",
           configured: previous?.configured ?? false, credentialSlotsConfigured: previous?.credentialSlotsConfigured,
           authState: connection.auth === "none" ? "none" : previous?.authState === "configured" ? "configured" : "missing-key",

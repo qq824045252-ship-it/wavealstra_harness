@@ -9,6 +9,8 @@ import { LOCAL_OCR_SETUP_HINT, createLocalOcrAdapter, localOcrUnavailableMessage
 import { discoverMagpieCapabilities, type MagpieCapabilityCatalog } from "./providers/MagpieCapabilityCatalog";
 import { describeOpenRouterCatalogError, discoverOpenRouterCapabilities, type OpenRouterCapabilityCatalog } from "./providers/OpenRouterCapabilityCatalog";
 import { createApiMediaProvider } from "./providers/ApiMediaProvider";
+import { createBlackForestLabsProvider } from "./providers/BlackForestLabsProvider";
+import { createDashScopeProvider } from "./providers/DashScopeProvider";
 import { createApiSpeechProvider } from "./providers/ApiSpeechProvider";
 import { createApiOcrAdapter } from "./providers/ApiOcrProvider";
 import { createBaiduOcrAdapter, type BaiduOcrSettings } from "./providers/BaiduOcrProvider";
@@ -203,10 +205,13 @@ export class MediaCapabilityServices {
       const catalog = identity && savedCatalog?.identity === identity ? savedCatalog.catalog : undefined;
       const addressValid = connection.protocol === "openrouter" ? baseUrl === OPENROUTER_API_ROOT
         : connection.protocol === "baidu-ocr" ? baseUrl === BAIDU_OCR_API_ROOT : true;
+      const preset = connection.presetId ? MEDIA_PROVIDER_PRESETS.find(item => item.id === connection.presetId) : undefined;
+      const native = connection.protocol === "black-forest-labs" || connection.protocol === "dashscope";
       result.push({
         id, label: connection.name, source: "api", capabilities: connectionCapabilities(connection),
         models: connection.protocol === "baidu-ocr"
-          ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) } : catalog?.models ?? {},
+          ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) }
+          : native ? (preset?.models ?? {}) : catalog?.models ?? {},
         allowCustomModel: connection.protocol !== "baidu-ocr",
         configured: Boolean(baseUrl && addressValid) && (connection.auth === "none" || hasKey),
         authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key",
@@ -216,7 +221,9 @@ export class MediaCapabilityServices {
           ? "百度 OCR 专用识别：API Key + Secret Key，按识别模式调用；尚未发送样本测试。"
           : connection.protocol === "openrouter"
           ? this.openRouterErrorDetail(id, identity) ?? this.openRouterKeyProblem(id, config) ?? openRouterCatalogDetail(catalog)
-          : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
+          : native
+            ? preset?.hint ?? "使用原生异步任务接口；模型与账号权限以服务端实际响应为准。"
+            : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
       });
     }
     for (const [id, service] of Object.entries(config.services ?? {})) {
@@ -399,7 +406,9 @@ export class MediaCapabilityServices {
       const keyProblem = unusableApiKeyReason(secret);
       if (keyProblem) throw new Error(keyProblem);
     }
-    return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers: secret ? { authorization: `Bearer ${secret}` } : {}, ...(connection.presetId === "groq" ? { speechFormat: "wav" as const } : {}) };
+    // Native protocols carry the key differently: FLUX uses `x-key`, the rest use Bearer.
+    const headers: Record<string, string> = secret ? (connection.protocol === "black-forest-labs" ? { "x-key": secret } : { authorization: `Bearer ${secret}` }) : {};
+    return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers, ...(connection.presetId === "groq" ? { speechFormat: "wav" as const } : {}) };
   }
 
   private key(id: MediaCapabilityId): string {
@@ -424,14 +433,29 @@ export class MediaCapabilityServices {
     const binding = this.binding("video-generation");
     const matchingBinding = binding?.connectionId === job.connection.id && binding.model === job.connection.model;
     const key = matchingBinding ? this.key("video-generation") : undefined;
-    const provider = createApiMediaProvider({
-      id: job.connection.id, label: job.connection.label,
-      getConnection: (connectionId) => this.resolveApi("video-generation", connectionId ?? job.connection.id),
-      jobStore: this.options.videoJobs, fetch: this.options.fetch,
-    });
+    const provider = this.apiMediaProvider("video-generation", job.connection.id, job.connection.label);
     const result = await provider.generateVideo!({ jobId }, context);
     if (key) this.completed("video-generation", key);
     return result;
+  }
+
+  /**
+   * Pick the adapter that actually speaks the connection's protocol: the
+   * OpenAI-shaped one, or a native task API (FLUX / 百炼). All of them share
+   * the same credential resolution and durable video-job ledger.
+   */
+  private apiMediaProvider(id: "image-generation" | "video-generation", connectionId: string, label?: string): MediaCapabilityProvider {
+    const connection = this.runtime.config().connections?.[connectionId];
+    const options = {
+      id: connectionId,
+      label: label ?? this.services().find((service) => service.id === connectionId)?.label ?? "API 服务",
+      getConnection: (target?: string) => this.resolveApi(id, target ?? connectionId),
+      jobStore: this.options.videoJobs,
+      fetch: this.options.fetch,
+    };
+    if (connection?.protocol === "black-forest-labs") return createBlackForestLabsProvider(options);
+    if (connection?.protocol === "dashscope") return createDashScopeProvider(options);
+    return createApiMediaProvider(options);
   }
 
   mediaProvider(id: "image-generation" | "video-generation"): MediaCapabilityProvider | null {
@@ -441,7 +465,7 @@ export class MediaCapabilityServices {
     if (binding.connectionId === CODEX_CONNECTION_ID && id === "image-generation") provider = this.runtime.registeredMediaProvider(BUILTIN_CODEX_IMAGE_PROVIDER_ID);
     else if (binding.connectionId.startsWith("registered:")) provider = this.runtime.registeredMediaProvider(binding.connectionId.slice(11));
     else if (binding.connectionId === MAGPIE_CONNECTION_ID || this.runtime.config().connections?.[binding.connectionId]) {
-      provider = createApiMediaProvider({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "API 服务", getConnection: (connectionId) => this.resolveApi(id, connectionId), jobStore: this.options.videoJobs, fetch: this.options.fetch });
+      provider = this.apiMediaProvider(id, binding.connectionId);
     } else return null;
     if (!provider || (id === "image-generation" ? !provider.generateImage : !provider.generateVideo)) return null;
     return {
