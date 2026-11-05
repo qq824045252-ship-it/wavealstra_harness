@@ -87,7 +87,21 @@ diff --git a/dist/extensions/mcp/index.js b/dist/extensions/mcp/index.js
 index 8ebc6df..ed3ea8b 100644
 --- a/dist/extensions/mcp/index.js
 +++ b/dist/extensions/mcp/index.js
-@@ -232,7 +232,21 @@ export function createMcpExtension(options = {}) {
+@@ -95,9 +95,11 @@ function truncate(text, max) {
+         return text;
+     return max <= 1 ? "" : `${text.slice(0, max - 1).trimEnd()}…`;
+ }
+-/** First line of the configured description, or of the server instructions once connected. */
++/** First line of the configured description; never the connection's live instructions. */
+ function serverSummary(server) {
+-    const text = server.entry.config.description?.trim() || server.connection?.instructions || "";
++    // Config only on purpose: live instructions arrive mid-session, rewrite the system prompt, and
++    // invalidate the whole cached prompt prefix.
++    const text = server.entry.config.description?.trim() || "";
+     return (text.split("\n", 1)[0] ?? "").trim();
+ }
+ /**
+@@ -232,7 +234,21 @@ export function createMcpExtension(options = {}) {
              return work;
          };
          const listeners = new Set();
@@ -109,7 +123,7 @@ index 8ebc6df..ed3ea8b 100644
              for (const listener of listeners)
                  listener();
          };
-@@ -968,7 +982,40 @@ export function createMcpExtension(options = {}) {
+@@ -968,7 +984,40 @@ export function createMcpExtension(options = {}) {
              ensureDiscoveryActive(ctx);
              ctx.ui.notify(`Signed in to MCP server "${name}" (${server.connection?.tools.length ?? 0} tools).`, "info");
          };
@@ -151,7 +165,7 @@ index 8ebc6df..ed3ea8b 100644
              const loaded = (options.loadConfig ?? defaultLoadConfig)(ctx);
              configErrors = loaded.errors;
              projectConfig = loaded.projectConfig;
-@@ -1202,4 +1249,4 @@ function defaultLoadConfig(ctx) {
+@@ -1202,4 +1251,4 @@ function defaultLoadConfig(ctx) {
      return loadMcpConfig({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
  }
  export default createMcpExtension();

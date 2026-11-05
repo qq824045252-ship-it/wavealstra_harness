@@ -152,9 +152,29 @@ pi.ModelRuntime.create = async (...args) => {
               }
             }
             const current = runtime.getModel(model.provider, model.id);
-            const facts = (entry) => JSON.stringify([entry.api, entry.baseUrl, entry.contextWindow, entry.maxTokens, entry.input, entry.inputLimits,
-              entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams, entry.samplingParamsByThinkingLevel]);
-            if (!current || facts(current) !== facts(model)) throw new Error("子代理模型配置已变化，请重新发起任务");
+            // Key order inside nested objects must not read as a change: a catalog refresh rebuilds
+            // these objects, and plain JSON.stringify would then differ for equal config. Header values
+            // are excluded for the same reason — the gateway rotates auth on its own schedule, and that
+            // must not fail a run that already produced output. Only the header names are identity.
+            const stable = (value) => JSON.stringify(value, (_key, val) =>
+              val && typeof val === "object" && !Array.isArray(val)
+                ? Object.fromEntries(Object.keys(val).sort().map((key) => [key, val[key]]))
+                : val);
+            const identityFields = (entry) => ({
+              api: entry.api, baseUrl: entry.baseUrl, contextWindow: entry.contextWindow, maxTokens: entry.maxTokens,
+              input: entry.input, inputLimits: entry.inputLimits, reasoning: entry.reasoning,
+              thinkingLevelMap: entry.thinkingLevelMap, compat: entry.compat,
+              headerNames: entry.headers ? Object.keys(entry.headers).sort() : undefined,
+              samplingParams: entry.samplingParams, samplingParamsByThinkingLevel: entry.samplingParamsByThinkingLevel,
+            });
+            const changedFields = (a, b) => {
+              const left = identityFields(a);
+              const right = identityFields(b);
+              return Object.keys(left).filter((key) => stable(left[key]) !== stable(right[key]));
+            };
+            if (!current) throw new Error(`子代理模型 ${model.provider}/${model.id} 已不可用，请重新发起任务`);
+            const changed = changedFields(model, current);
+            if (changed.length) throw new Error(`子代理模型配置已变化（${changed.join("、")}），请重新发起任务`);
             const limits = current.inputLimits?.images;
             let total = 0;
             for (const message of ai.normalizeContext(context).messages) {

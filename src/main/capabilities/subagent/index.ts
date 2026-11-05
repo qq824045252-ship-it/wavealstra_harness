@@ -196,9 +196,12 @@ export function buildSubagentIdLine(result: Pick<SingleResult, "subagentId" | "d
 }
 
 export function getResultOutput(result: SingleResult): string {
-  const output = isFailedResult(result)
-    ? result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)"
-    : getFinalOutput(result.messages) || "(no output)";
+  // A run that produced text and then failed still carries that text in `messages`; dropping it
+  // forced the caller to redo the whole task. Keep the error line first, then what was produced.
+  const produced = getFinalOutput(result.messages);
+  const output = !isFailedResult(result)
+    ? produced || "(no output)"
+    : [result.errorMessage || result.stderr, produced ? `--- 失败前已产出的内容 ---\n${produced}` : ""].filter(Boolean).join("\n\n") || "(no output)";
   const evidence = [
     result.resolvedModel ? `Resolved model: ${result.resolvedModel}${result.resolvedThinking ? `; thinking: ${result.resolvedThinking}` : ""}` : "",
     result.model ? `Observed model: ${result.model}` : "",
