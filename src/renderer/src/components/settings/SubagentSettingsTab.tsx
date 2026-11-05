@@ -86,8 +86,8 @@ export default function SubagentSettingsTab(): React.JSX.Element {
   };
 
   return (
-    <div className="models-management-page">
-      <section className="models-usage-panel">
+    <div className="models-management-page subagent-settings-page">
+      <section className="models-usage-panel subagent-settings-panel">
         <div className="models-usage-heading">
           <div><strong>子代理设置</strong><span>配置子代理默认模型、思考偏好和执行限制。</span></div>
         </div>

@@ -1,0 +1,1 @@
+(()=>{window.__dragTrace=[];for(const type of ['mousedown','mousemove','mouseup','dragstart','dragover','drop','dragend'])document.addEventListener(type,e=>{window.__dragTrace.push({type,x:e.clientX,y:e.clientY,target:e.target.className,types:[...(e.dataTransfer?.types||[])]})},true);return 'trace installed'})()

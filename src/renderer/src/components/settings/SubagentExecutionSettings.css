@@ -207,7 +207,6 @@
   gap: 6px 10px;
   padding: 6px 8px;
   border-radius: var(--radius-sm, 6px);
-  background: var(--bg-hover);
 }
 
 .subagent-policy-candidate-label {
@@ -260,6 +259,58 @@
 
 .subagent-policy-actions .subagent-policy-hint { flex: 1 1 220px; }
 
+/* The standalone page shares the application's theme tokens and scroll container. */
+.subagent-settings-page { min-width: 0; }
+.subagent-settings-panel { min-width: 0; padding-bottom: 24px; }
+.subagent-settings-panel .models-usage-heading { margin-bottom: 16px; }
+.subagent-settings-panel .models-usage-heading strong { font-size: 15px; }
+.subagent-settings-panel .models-usage-heading span { line-height: 1.55; }
+.subagent-settings-panel .subagent-defaults-grid { gap: 16px; margin-bottom: 20px; }
+.subagent-settings-panel .models-usage-field { min-width: 0; }
+.subagent-settings-panel .models-usage-field select { width: 100%; min-width: 0; }
+.subagent-policy { border-top: 1px solid var(--border-subtle, var(--border)); padding-top: 20px; }
+.subagent-policy-summary { align-items: center; gap: 5px 10px; }
+.subagent-policy-summary strong { font-size: 14px; }
+.subagent-policy-summary > span:not(.subagent-policy-badge) { font-size: 12px; }
+.subagent-policy-body { gap: 0; margin-top: 8px; }
+.subagent-policy-section {
+  min-width: 0;
+  padding: 13px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  background: transparent;
+}
+.subagent-policy-section-head, .subagent-policy-roles-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+.subagent-policy-section-head strong, .subagent-policy-roles-head strong { color: var(--fg); font-size: 13px; }
+.subagent-policy-section-head small { color: var(--fg-muted); font-size: 11px; line-height: 1.5; }
+.subagent-policy-section-content { display: grid; gap: 8px; min-width: 0; margin-top: 8px; }
+.subagent-policy-row { display: grid; gap: 4px; }
+.subagent-policy-toggle { color: var(--fg); }
+.subagent-policy-models { gap: 6px; padding: 8px; max-height: 180px; }
+.subagent-policy-model { padding: 6px 7px; border-radius: var(--radius-sm, 6px); cursor: pointer; }
+.subagent-policy-model:hover { background: var(--bg-hover); }
+.subagent-policy-field { min-width: 0; }
+.subagent-policy-field > span { font-size: 12px; color: var(--fg); }
+.subagent-policy-role { gap: 9px; padding: 10px; background: var(--surface-main, var(--bg)); }
+.subagent-policy-role-head { flex-wrap: wrap; }
+.subagent-policy-role-head .mono-path { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.subagent-policy-candidate { padding: 8px 9px; }
+.subagent-policy-candidate-label { flex: 1 1 150px; }
+.subagent-policy-candidate-actions { flex: 0 1 auto; }
+.subagent-policy-candidate-actions .btn { min-height: 30px; padding: 4px 9px; }
+.subagent-policy-candidate-select { max-width: 100%; }
+.subagent-policy-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding: 14px 0 4px; border-top: 1px solid var(--border-subtle, var(--border)); }
+.subagent-policy-footer-copy { flex: 1 1 220px; min-width: 0; color: var(--fg-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.subagent-policy-footer-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.subagent-policy-actions > small { min-width: 0; }
 @media (max-width: 900px) {
   .models-usage-grid.subagent-defaults-grid, .subagent-policy-grid { grid-template-columns: minmax(0, 1fr); }
+  .subagent-policy-section { padding: 10px 0; }
+  .subagent-policy-footer-buttons { margin-left: 0; }
 }

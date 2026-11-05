@@ -117,137 +117,155 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
         {dirty && <span className="subagent-policy-badge">未保存</span>}
       </div>
       <div className="subagent-policy-body">
-        <div className="subagent-policy-row">
-          <label className="subagent-policy-toggle">
-            <input type="checkbox" checked={draft.restricted} disabled={saving} aria-label="限制子代理可用模型"
-              onChange={(event) => patch({ restricted: event.target.checked })} />
-            <span>限制可用模型</span>
-          </label>
-          <small>关闭时可使用应用和当前工作区启用的模型；开启后，子代理只能使用下方选中的模型。</small>
-        </div>
+        <section className="subagent-policy-section" aria-labelledby="subagent-model-limits-title">
+          <div className="subagent-policy-section-head"><strong id="subagent-model-limits-title">模型限制</strong><small>控制子代理可以使用哪些模型。</small></div>
+          <div className="subagent-policy-section-content">
+            <div className="subagent-policy-row">
+              <label className="subagent-policy-toggle">
+                <input type="checkbox" checked={draft.restricted} disabled={saving} aria-label="限制子代理可用模型"
+                  onChange={(event) => patch({ restricted: event.target.checked })} />
+                <span>限制可用模型</span>
+              </label>
+              <small>关闭时可使用应用和当前工作区启用的模型；开启后，子代理只能使用下方选中的模型。</small>
+            </div>
 
-        {!draft.restricted ? (
-          <div className="subagent-policy-hint">未设置模型限制；子代理默认模型和角色配置仍然生效。</div>
-        ) : (
-          <>
-            {draft.allowedModels.length === 0 && (
-              <div className="subagent-policy-warn" role="alert">未选择任何模型，所有子代理任务都将无法运行。</div>
-            )}
-            {models.length === 0 ? (
-              <div className="subagent-policy-warn" role="alert">当前没有启用的聊天模型，请先在模型设置中启用模型。</div>
+            {!draft.restricted ? (
+              <div className="subagent-policy-hint">未设置模型限制；子代理默认模型和角色配置仍然生效。</div>
             ) : (
-              <div className="subagent-policy-models" role="group" aria-label="子代理允许使用的模型">
-                {models.map((model) => (
-                  <label key={model.id} className="subagent-policy-model">
-                    <input type="checkbox" checked={draft.allowedModels.includes(model.id)} disabled={saving}
-                      aria-label={`允许使用 ${model.id}`} onChange={() => toggleModel(model.id)} />
-                    <span>{model.name}</span>
-                    <small>{model.id}</small>
-                  </label>
-                ))}
-              </div>
+              <>
+                {draft.allowedModels.length === 0 && (
+                  <div className="subagent-policy-warn" role="alert">未选择任何模型，所有子代理任务都将无法运行。</div>
+                )}
+                {models.length === 0 ? (
+                  <div className="subagent-policy-warn" role="alert">当前没有启用的聊天模型，请先在模型设置中启用模型。</div>
+                ) : (
+                  <div className="subagent-policy-models" role="group" aria-label="子代理允许使用的模型">
+                    {models.map((model) => (
+                      <label key={model.id} className="subagent-policy-model">
+                        <input type="checkbox" checked={draft.allowedModels.includes(model.id)} disabled={saving}
+                          aria-label={`允许使用 ${model.id}`} onChange={() => toggleModel(model.id)} />
+                        <span>{model.name}</span>
+                        <small>{model.id}</small>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {missing.length > 0 && (
+                  <div className="subagent-policy-missing">
+                    <span>以下已保存的模型当前不可用，可将其移除。</span>
+                    {missing.map((id) => (
+                      <span key={id} className="subagent-policy-chip" title={id}>
+                        {id}
+                        <button type="button" disabled={saving} aria-label={`移除 ${id}`}
+                          onClick={() => patch({ allowedModels: draft.allowedModels.filter((item) => item !== id) })}>x</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-            {missing.length > 0 && (
-              <div className="subagent-policy-missing">
-                <span>以下已保存的模型当前不可用，可将其移除。</span>
-                {missing.map((id) => (
-                  <span key={id} className="subagent-policy-chip" title={id}>
-                    {id}
-                    <button type="button" disabled={saving} aria-label={`移除 ${id}`}
-                      onClick={() => patch({ allowedModels: draft.allowedModels.filter((item) => item !== id) })}>x</button>
-                  </span>
-                ))}
-              </div>
-            )}
-          </>
-        )}
 
-        <div className="subagent-policy-grid">
-          <label className="subagent-policy-field">
-            <span>单次运行时限（秒）</span>
-            <input className="settings-input" type="number" inputMode="numeric" step={1} min={MIN_TIMEOUT_SECONDS} max={MAX_TIMEOUT_SECONDS}
-              value={draft.timeoutSeconds} disabled={saving} aria-label="子代理单次运行时限（秒）"
-              onChange={(event) => patch({ timeoutSeconds: event.target.value })} />
-            <small>从工作进程启动后开始计算整个任务的运行时间，范围为 1～3600 秒。修改仅对新任务生效。</small>
-          </label>
-          <label className="subagent-policy-field">
-            <span>时限策略</span>
-            <select className="settings-input" value={draft.allowOverride ? "allow-override" : "fixed"} disabled={saving}
-              aria-label="子代理时限策略"
-              onChange={(event) => patch({ allowOverride: event.target.value === "allow-override" })}>
-              <option value="fixed">固定使用此时限</option>
-              <option value="allow-override">允许调用方单次覆盖</option>
-            </select>
-            <small>固定时限会覆盖调用方指定的时限；允许覆盖时，调用方的设置仅对该次运行生效。</small>
-          </label>
-        </div>
-
-        <div className="subagent-policy-roles">
-          <div className="subagent-policy-roles-head">
-            <strong>角色候选模型</strong>
-            <small>按顺序检查候选模型是否已启用且被允许。服务商报错会终止运行；diverse 角色会为至少两个任务分配不同模型。</small>
           </div>
-          {draft.roles.map((role, index) => {
-            const available = models.filter((model) => !role.candidates.includes(model.id));
-            const updateCandidates = (candidates: string[]): void => patch({
-              roles: draft.roles.map((item, at) => at === index ? { ...item, candidates } : item),
-            });
-            return (
-              <div key={role.name} className="subagent-policy-role">
-                <div className="subagent-policy-role-head">
-                  <span className="mono-path">{role.name}</span>
-                  <small>{role.candidates.length} 个候选模型</small>
-                  <button className="btn" type="button" disabled={saving}
-                    onClick={() => patch({ roles: draft.roles.filter((_, item) => item !== index) })}>移除角色</button>
-                </div>
-                {role.candidates.length > 0 && <ol className="subagent-policy-candidates">
-                  {role.candidates.map((id, candidateIndex) => {
-                    const model = models.find((item) => item.id === id);
-                    const excluded = draft.restricted && !draft.allowedModels.includes(id);
-                    const move = (direction: -1 | 1): void => {
-                      const next = [...role.candidates];
-                      const target = candidateIndex + direction;
-                      [next[candidateIndex], next[target]] = [next[target], next[candidateIndex]];
-                      updateCandidates(next);
-                    };
-                    return <li key={id} className="subagent-policy-candidate">
-                      <div className="subagent-policy-candidate-label">
-                        <span>{model?.name ?? id}</span>
-                        {model && <small>{id}</small>}
-                        {!model && <small className="subagent-policy-warn">当前不可用</small>}
-                        {excluded && <small className="subagent-policy-warn">不在允许列表中</small>}
-                      </div>
-                      <div className="subagent-policy-candidate-actions">
-                        <button className="btn" type="button" disabled={saving || candidateIndex === 0} aria-label={`上移 ${role.name} 的 ${id}`} onClick={() => move(-1)}>上移</button>
-                        <button className="btn" type="button" disabled={saving || candidateIndex === role.candidates.length - 1} aria-label={`下移 ${role.name} 的 ${id}`} onClick={() => move(1)}>下移</button>
-                        <button className="btn" type="button" disabled={saving} aria-label={`移除 ${role.name} 的 ${id}`} onClick={() => updateCandidates(role.candidates.filter((_, at) => at !== candidateIndex))}>删除</button>
-                      </div>
-                    </li>;
-                  })}
-                </ol>}
-                <select className="settings-input subagent-policy-candidate-select" aria-label={`为 ${role.name} 添加候选模型`} value="" disabled={saving || available.length === 0}
-                  onChange={(event) => { if (event.target.value) updateCandidates([...role.candidates, event.target.value]); }}>
-                  <option value="">{available.length ? "选择模型并添加" : "没有更多可添加的模型"}</option>
-                  {available.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}{draft.restricted && !draft.allowedModels.includes(model.id) ? "（不在允许列表中）" : ""}</option>)}
+        </section>
+        <section className="subagent-policy-section" aria-labelledby="subagent-timeout-title">
+          <div className="subagent-policy-section-head"><strong id="subagent-timeout-title">运行时限</strong><small>设置单次任务的时限及覆盖策略。</small></div>
+          <div className="subagent-policy-section-content">
+            <div className="subagent-policy-grid">
+              <label className="subagent-policy-field">
+                <span>单次运行时限（秒）</span>
+                <input className="settings-input" type="number" inputMode="numeric" step={1} min={MIN_TIMEOUT_SECONDS} max={MAX_TIMEOUT_SECONDS}
+                  value={draft.timeoutSeconds} disabled={saving} aria-label="子代理单次运行时限（秒）"
+                  onChange={(event) => patch({ timeoutSeconds: event.target.value })} />
+                <small>从工作进程启动后开始计算整个任务的运行时间，范围为 1～3600 秒。修改仅对新任务生效。</small>
+              </label>
+              <label className="subagent-policy-field">
+                <span>时限策略</span>
+                <select className="settings-input" value={draft.allowOverride ? "allow-override" : "fixed"} disabled={saving}
+                  aria-label="子代理时限策略"
+                  onChange={(event) => patch({ allowOverride: event.target.value === "allow-override" })}>
+                  <option value="fixed">固定使用此时限</option>
+                  <option value="allow-override">允许调用方单次覆盖</option>
                 </select>
-              </div>
-            );
-          })}
-          <div className="subagent-policy-add-role">
-            <input className="settings-input" aria-label="新角色名称" placeholder="fast" value={newRole}
-              disabled={saving} onChange={(event) => setNewRole(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addRole(); } }} />
-            <button className="btn" type="button" onClick={addRole}
-              disabled={saving || !newRole.trim() || draft.roles.some((role) => role.name === newRole.trim())}>添加角色</button>
-          </div>
-        </div>
+                <small>固定时限会覆盖调用方指定的时限；允许覆盖时，调用方的设置仅对该次运行生效。</small>
+              </label>
+            </div>
 
-        <div className="subagent-policy-actions">
-          {hint && <div className="subagent-policy-hint" role="status">{hint}</div>}
-          <small>配置保存至 {config.configPath ?? "subagent.json"}。每次请求前会再次检查模型限制。</small>
-          <button className="btn" type="button" disabled={!dirty || saving} onClick={() => setDraft(saved)}>放弃更改</button>
-          <button className="btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "保存设置"}</button>
-        </div>
+          </div>
+        </section>
+        <section className="subagent-policy-section" aria-labelledby="subagent-roles-title">
+          <div className="subagent-policy-section-head"><strong id="subagent-roles-title">角色候选模型</strong></div>
+          <div className="subagent-policy-section-content">
+            <div className="subagent-policy-roles">
+              <div className="subagent-policy-roles-head">
+                <small>按顺序选择可用且被允许的模型；服务商报错会终止运行。diverse 角色为多个任务分配不同模型。</small>
+              </div>
+              {draft.roles.map((role, index) => {
+                const available = models.filter((model) => !role.candidates.includes(model.id));
+                const updateCandidates = (candidates: string[]): void => patch({
+                  roles: draft.roles.map((item, at) => at === index ? { ...item, candidates } : item),
+                });
+                return (
+                  <div key={role.name} className="subagent-policy-role">
+                    <div className="subagent-policy-role-head">
+                      <span className="mono-path">{role.name}</span>
+                      <small>{role.candidates.length} 个候选模型</small>
+                      <button className="btn" type="button" disabled={saving} aria-label={`移除角色 ${role.name}`}
+                        onClick={() => patch({ roles: draft.roles.filter((_, item) => item !== index) })}>移除角色</button>
+                    </div>
+                    {role.candidates.length > 0 && <ol className="subagent-policy-candidates">
+                      {role.candidates.map((id, candidateIndex) => {
+                        const model = models.find((item) => item.id === id);
+                        const excluded = draft.restricted && !draft.allowedModels.includes(id);
+                        const move = (direction: -1 | 1): void => {
+                          const next = [...role.candidates];
+                          const target = candidateIndex + direction;
+                          [next[candidateIndex], next[target]] = [next[target], next[candidateIndex]];
+                          updateCandidates(next);
+                        };
+                        return <li key={id} className="subagent-policy-candidate">
+                          <div className="subagent-policy-candidate-label">
+                            <span>{model?.name ?? id}</span>
+                            {model && <small>{id}</small>}
+                            {!model && <small className="subagent-policy-warn">当前不可用</small>}
+                            {excluded && <small className="subagent-policy-warn">不在允许列表中</small>}
+                          </div>
+                          <div className="subagent-policy-candidate-actions">
+                            <button className="btn" type="button" disabled={saving || candidateIndex === 0} aria-label={`上移 ${role.name} 的 ${id}`} onClick={() => move(-1)}>上移</button>
+                            <button className="btn" type="button" disabled={saving || candidateIndex === role.candidates.length - 1} aria-label={`下移 ${role.name} 的 ${id}`} onClick={() => move(1)}>下移</button>
+                            <button className="btn" type="button" disabled={saving} aria-label={`移除 ${role.name} 的 ${id}`} onClick={() => updateCandidates(role.candidates.filter((_, at) => at !== candidateIndex))}>删除</button>
+                          </div>
+                        </li>;
+                      })}
+                    </ol>}
+                    <select className="settings-input subagent-policy-candidate-select" aria-label={`为 ${role.name} 添加候选模型`} value="" disabled={saving || available.length === 0}
+                      onChange={(event) => { if (event.target.value) updateCandidates([...role.candidates, event.target.value]); }}>
+                      <option value="">{available.length ? "选择模型并添加" : "没有更多可添加的模型"}</option>
+                      {available.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}{draft.restricted && !draft.allowedModels.includes(model.id) ? "（不在允许列表中）" : ""}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
+              <div className="subagent-policy-add-role">
+                <input className="settings-input" aria-label="新角色名称" placeholder="fast" value={newRole}
+                  disabled={saving} onChange={(event) => setNewRole(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addRole(); } }} />
+                <button className="btn" type="button" onClick={addRole}
+                  disabled={saving || !newRole.trim() || draft.roles.some((role) => role.name === newRole.trim())}>添加角色</button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+        <footer className="subagent-policy-actions subagent-policy-footer">
+          <div className="subagent-policy-footer-copy">
+            {hint && <div className="subagent-policy-hint" role="status">{hint}</div>}
+            <small>配置保存至 {config.configPath ?? "subagent.json"}。每次请求前会再次检查模型限制。</small>
+          </div>
+          <div className="subagent-policy-footer-buttons">
+            <button className="btn" type="button" disabled={!dirty || saving} onClick={() => setDraft(saved)}>放弃更改</button>
+            <button className="btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "保存设置"}</button>
+          </div>
+        </footer>
       </div>
     </section>
   );

@@ -1,0 +1,1 @@
+(()=>{const e=document.elementFromPoint(110,164);return {target:e.outerHTML.slice(0,200),parents:[e.parentElement.className,e.parentElement.parentElement.className,e.parentElement.parentElement.parentElement.className]}})()
