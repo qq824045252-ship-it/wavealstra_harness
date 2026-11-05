@@ -23,9 +23,9 @@ const model = (id: string, name: string, vendor: string): any => ({
 state.activeTaskId = "task-ui";
 state.activeModelId = "deepseek/deepseek-v4.1-flash";
 state.models = [
-  model("deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "deepseek"),
-  model("openai/gpt-5", "GPT-5", "openai"),
-  model("anthropic/claude-opus-4", "Claude Opus 4", "anthropic"),
+  model("deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash · Open Design", "deepseek"),
+  model("openai/gpt-5", "GPT-5 · Codex", "openai"),
+  model("anthropic/claude-opus-4", "Claude Opus 4 · Claude", "anthropic"),
 ];
 
 const subagent = (partial: Record<string, unknown>): any => ({
@@ -74,7 +74,7 @@ state.tasks = [
 (window as any).api = {
   subagent: {
     active: async () => [
-      subagent({ subagentId: "sa-ui-1", role: "代码审查", resolvedModel: "openai/gpt-5", actualModel: "gpt-5", modelSource: "invocation", lastTask: "审查 auth 补丁" }),
+      subagent({ subagentId: "sa-ui-1", role: "代码审查", resolvedModel: "openai/gpt-5", actualModel: "GPT-5 · Codex", modelSource: "invocation", lastTask: "审查 auth 补丁" }),
       subagent({ subagentId: "sa-ui-2", role: "资料检索", resolvedModel: "anthropic/claude-opus-4", modelSource: "role", lastTask: "检索成对凭证规范" }),
       subagent({ subagentId: "sa-ui-3", role: "测试 runner", resolvedModel: "deepseek/deepseek-v4.1-flash", modelSource: "parent", lastTask: "跑 test:all" }),
     ],

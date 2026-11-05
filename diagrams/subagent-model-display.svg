@@ -37,12 +37,11 @@
   <line x1="696" y1="158" x2="716" y2="158" stroke="#8a93a3" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <rect x="718" y="116" width="206" height="84" rx="8" fill="#eef4ff" stroke="#9dbcf0"/>
-  <text x="730" y="134" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-item-head 行内 chip</text>
-  <rect x="730" y="145" width="58" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
-  <text x="736" y="158" font-family="Consolas, monospace" font-size="11" fill="#4d5868">GPT-5</text>
-  <text x="796" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#5b6472">42s</text>
-  <text x="730" y="180" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">title：模型：gpt-5 · 解析值</text>
-  <text x="730" y="194" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">openai/gpt-5 · 来源：手动指定</text>
+  <text x="730" y="134" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-item-head + .ro-model</text>
+  <rect x="730" y="145" width="132" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
+  <text x="736" y="158" font-family="Consolas, monospace" font-size="11" fill="#4d5868">DeepSeek V4.1 Flash</text>
+  <text x="730" y="180" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">首行 role · 耗时右对齐；模型独占一行</text>
+  <text x="730" y="194" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">title：模型：gpt-5 · 来源：手动指定</text>
 
   <!-- ============ Lane B：完成态子代理 ============ -->
   <rect x="20" y="228" width="920" height="132" rx="10" fill="#ffffff" stroke="#d9dee6"/>
@@ -73,11 +72,10 @@
   <line x1="696" y1="306" x2="716" y2="306" stroke="#8a93a3" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <rect x="718" y="264" width="206" height="84" rx="8" fill="#eef4ff" stroke="#9dbcf0"/>
-  <text x="730" y="282" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-done-header chip</text>
-  <rect x="730" y="293" width="58" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
-  <text x="736" y="306" font-family="Consolas, monospace" font-size="11" fill="#4d5868">GPT-5</text>
-  <text x="796" y="306" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#5b6472">已完成</text>
-  <text x="730" y="328" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">title：模型：openai/gpt-5</text>
+  <text x="730" y="282" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-done-header + 模型行</text>
+  <rect x="730" y="293" width="80" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
+  <text x="736" y="306" font-family="Consolas, monospace" font-size="11" fill="#4d5868">GPT-5 · Codex</text>
+  <text x="730" y="330" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">表头（role · 已完成）下方一行</text>
 
   <!-- ============ Lane C：主 Agent ============ -->
   <rect x="20" y="376" width="920" height="132" rx="10" fill="#ffffff" stroke="#d9dee6"/>
@@ -108,14 +106,14 @@
   <line x1="696" y1="454" x2="716" y2="454" stroke="#8a93a3" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <rect x="718" y="412" width="206" height="84" rx="8" fill="#eef4ff" stroke="#9dbcf0"/>
-  <text x="730" y="430" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-main-name chip</text>
-  <rect x="730" y="441" width="128" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
+  <text x="730" y="430" font-family="Consolas, monospace" font-size="12" font-weight="700" fill="#1f2430">.ro-main-name + 模型行</text>
+  <rect x="730" y="441" width="132" height="17" rx="4" fill="#e7ecf3" stroke="#c9d1de"/>
   <text x="736" y="454" font-family="Consolas, monospace" font-size="11" fill="#4d5868">DeepSeek V4.1 Flash</text>
-  <text x="730" y="476" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">title：模型：deepseek/…-flash</text>
+  <text x="730" y="478" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b6472">名称/状态下方一行；动作摘要再下一行</text>
 
   <!-- 复用的展示规则 -->
   <rect x="20" y="524" width="920" height="76" rx="10" fill="#fffaf0" stroke="#ead9ae"/>
   <text x="36" y="546" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" font-weight="700" fill="#7a5a00">三处共用同一套展示规则（lib/modelBadge.ts）</text>
-  <text x="36" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">短名：目录 name 优先，其次 id 末段（provider/model → model），超过 24 字符截断；模型未知时整个 chip 不渲染。</text>
-  <text x="36" y="584" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">title 永远保留完整标识 + 来源 + 解析差异；窄面板下 .ro-item-head 单行：role · chip · 耗时右对齐，chip 不换行。</text>
+  <text x="36" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">短名：目录 name 优先，其次 id 末段（provider/model → model），超过 40 字符截断；模型未知时整个模型行不渲染。</text>
+  <text x="36" y="584" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">纵向布局：名称行 → 模型行（独占整行，长名称不截断）→ 工作摘要行；title 永远保留完整标识 + 来源 + 解析差异。</text>
 </svg>

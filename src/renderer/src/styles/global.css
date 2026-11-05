@@ -13986,21 +13986,22 @@ button.font-picker-item {
 .ro-label--failed { background: #3a2222; color: #e07a7a; }
 .ro-label--cancelled { background: var(--bg-active); color: var(--fg-muted); }
 
-/* 模型短标签：并行子代理时区分「哪个模型在跑」；完整 provider/model 与来源在 title */
+/* 模型标签：独立一行显示在智能体名称下方，窄面板也放得下完整模型名；完整标识与来源在 title */
 .ro-model {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
   flex-shrink: 0;
   min-width: 0;
-  max-width: 62%;
-  padding: 0 5px;
+  max-width: 100%;
+  padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg-active);
   color: var(--fg-muted);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  line-height: 15px;
+  font-size: 11px;
+  line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

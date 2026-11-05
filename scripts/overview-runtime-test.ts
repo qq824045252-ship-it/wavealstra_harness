@@ -453,7 +453,7 @@ console.log("== 模型标识展示（主 Agent / 运行中 / 完成态） ==");
   // 纯函数边界
   assert(shortModelLabel("openai/gpt-5") === "gpt-5", "id 末段作为回退短名");
   assert(shortModelLabel("auto") === "自动选择", "占位值 auto → 自动选择（不冒充模型名）");
-  assert(shortModelLabel("provider/a-very-long-model-identifier").endsWith("…"), "超长短名截断");
+  assert(shortModelLabel("provider/this-is-an-extremely-long-model-identifier-for-testing").endsWith("…"), "超长短名截断");
   assert(modelSourceLabel("role") === "角色指定" && modelSourceLabel(undefined) === undefined, "来源文案映射/缺省");
   assert(modelBadgeTitle({ label: "x", full: "p/x", source: "手动指定" }) === "模型：p/x · 来源：手动指定", "title 带完整标识与来源");
 }

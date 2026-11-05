@@ -45,7 +45,7 @@ const SENTINEL_MODEL_LABELS: Record<string, string> = {
   diverse: "多模型并行",
 };
 
-const MODEL_LABEL_MAX = 24;
+const MODEL_LABEL_MAX = 40;
 
 /** 模型短标签：目录 name 优先，其次 id 末段（provider/model → model）；超长截断。 */
 export function shortModelLabel(model: string, displayName?: string | null): string {

@@ -34,7 +34,7 @@ function Dot({ state }: { state: "running" | "ok" | "err" }): React.JSX.Element 
   return <span className={`ro-dot ro-dot--${state}`} aria-hidden />;
 }
 
-/** 模型短标签：多子代理并行时区分「哪个模型在跑」；完整标识与来源在 title。 */
+/** 模型标签：显示在智能体名称下方一行（面板窄时也放得下完整名称）；完整标识与来源在 title。 */
 function ModelChip({ badge }: { badge?: ModelBadge }): React.JSX.Element | null {
   if (!badge) return null;
   return (
@@ -166,8 +166,8 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
           <div className="ro-main-name">
             <IconBot size={13} /> 主 Agent
             <span className={`ro-label ro-label--${vm.mainAgent.state}`}>{vm.mainAgent.label}</span>
-            <ModelChip badge={vm.mainAgent.model} />
           </div>
+          <ModelChip badge={vm.mainAgent.model} />
           {vm.mainAgent.action && <div className="ro-sub">{vm.mainAgent.action}</div>}
         </div>
       </div>
@@ -191,9 +191,9 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                     <span className="ro-name">
                       <IconUsers size={12} /> {s.role}
                     </span>
-                    <ModelChip badge={s.model} />
                     {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   </span>
+                  <ModelChip badge={s.model} />
                   <span className="ro-sub">{s.work}</span>
                 </button>
               </li>
@@ -222,11 +222,11 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                       <span className="ro-name">
                         {readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
                       </span>
-                      <ModelChip badge={d.model} />
                       <span className={`ro-label ro-label--${d.state}`}>
                         {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}
                       </span>
                     </div>
+                    <ModelChip badge={d.model} />
                     <span className="ro-sub">{oneLine(d.summary, 60) || "—"}</span>
 
                     {/* 点击展开后的任务要求与完整输出结果 */}
