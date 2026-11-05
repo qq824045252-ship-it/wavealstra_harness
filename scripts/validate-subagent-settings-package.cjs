@@ -11,7 +11,7 @@ const out = path.join(root, 'out/tests/subagent-settings-package');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-subagent-settings-'));
 const config = path.join(profile, '.mybuddy');
 for (const dir of [out, config, path.join(config, 'agents'), path.join(profile, 'appdata'), path.join(profile, 'localappdata')]) fs.mkdirSync(dir, { recursive: true });
-const report = { exe, profile, status: 'running', childRequests: 0, toolResults: [] };
+const report = { exe, profile, status: 'running', childRequests: 0, recoveryRequests: 0, toolResults: [] };
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const message = text => [{ type: 'message', id: `msg_${Date.now()}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] }];
 let responseId = 0;
@@ -25,11 +25,17 @@ const server = http.createServer(async (req, res) => {
       if (previous) { report.toolResults.push(previous.output); output = message('PARENT_DONE'); }
       else {
         const blocked = JSON.stringify(body.input).includes('BLOCK_OTHER');
-        output = [{ type: 'function_call', id: `fc_${++responseId}`, call_id: `call_${responseId}`, name: 'subagent', arguments: JSON.stringify({ agent: 'worker', task: 'Return CHILD_OK.', model: blocked ? 'fixture/other' : 'fast', isolation: 'shared', timeout_ms: 1000 }) }];
+        const recovery = JSON.stringify(body.input).includes('RECOVER_TRANSIENT');
+        output = [{ type: 'function_call', id: `fc_${++responseId}`, call_id: `call_${responseId}`, name: 'subagent', arguments: JSON.stringify({ agent: 'worker', task: recovery ? 'RECOVER_TRANSIENT: return CHILD_OK.' : 'Return CHILD_OK.', model: recovery ? 'fixture/child' : blocked ? 'fixture/other' : 'fast', isolation: 'shared', timeout_ms: recovery ? 15000 : 1000 }) }];
       }
     } else {
       assert.equal(body.model, 'child', 'blocked model reached the provider');
       report.childRequests++;
+      if (JSON.stringify(body.input).includes('RECOVER_TRANSIENT') && ++report.recoveryRequests === 1) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 'database_unavailable', message: 'Open Design: [code=database_unavailable] resolve Billing Scope: status 503: database_unavailable', param: null, type: 'api_error' }));
+        return;
+      }
       await wait(1500);
       output = message('CHILD_OK');
     }
@@ -117,8 +123,15 @@ async function prompt(id, text) {
     assert.match(await prompt('empty-list', 'RUN_ALLOWED'), /no available/); assert.equal(report.childRequests, beforeEmpty);
     await renderer(`document.querySelector('[aria-label="Restrict subagent models"]').click()`); await save();
     assert.equal((await renderer('window.api.agent.getSubagentConfig()')).allowedModels, undefined);
+    // Disable transport retries so this proves the native agent retry decision.
+    const settingsPath = path.join(config, 'settings.json');
+    const recoverySettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    recoverySettings.retry = { enabled: true, maxRetries: 2, baseDelayMs: 10, provider: { maxRetries: 0 } };
+    fs.writeFileSync(settingsPath, JSON.stringify(recoverySettings));
+    assert.match(await prompt('transient-recovery', 'RECOVER_TRANSIENT'), /CHILD_OK/);
+    assert.equal(report.recoveryRequests, 2, 'packaged child must recover from the real billing-scope 503');
     report.status = 'passed';
-    console.log('PASS packaged UI -> IPC -> subagent.json -> real worker: saved/reloaded controls, role order, allowlist/empty/reset, fixed time survives shorter call, override times out, unrelated config preserved');
+    console.log('PASS packaged UI -> IPC -> subagent.json -> real worker: saved/reloaded controls, role order, allowlist/empty/reset, fixed time survives shorter call, override times out, unrelated config preserved, billing-scope 503 recovered');
   } catch (error) { report.status = 'failed'; report.error = error.stack; console.error(error.stack); process.exitCode = 1; }
   finally {
     if (ws?.readyState === WebSocket.OPEN) { try { await evaluate(`setTimeout(()=>process.mainModule.require('electron').app.quit(),100);true`); } catch {} }

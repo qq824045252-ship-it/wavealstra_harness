@@ -1,6 +1,6 @@
 {
   "name": "wavealstra_harness",
-  "version": "0.1.106",
+  "version": "0.1.107",
   "description": "MyBuddy 形态的桌面 Agent，基于 pi SDK",
   "main": "./out/main/index.js",
   "private": false,
@@ -274,6 +274,7 @@
     "postinstall": "install-electron --no && electron-rebuild -f -w better-sqlite3,node-pty",
     "test:subagent-selection": "esbuild scripts/subagent-selection-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/subagent-selection-test.cjs && node scripts/test-guard.mjs out/tests/subagent-selection-test.cjs",
     "test:subagent-worktree": "esbuild scripts/subagent-worktree-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-worktree-test.mjs && node scripts/test-guard.mjs out/tests/subagent-worktree-test.mjs",
+    "test:subagent-failure-recovery": "node scripts/build-subagent-context.mjs && esbuild scripts/subagent-failure-recovery-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/subagent-failure-recovery-test.mjs && node scripts/test-guard.mjs out/tests/subagent-failure-recovery-test.mjs",
     "test:subagent-pstack-execution": "node scripts/build-subagent-context.mjs && esbuild scripts/subagent-pstack-execution-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-pstack-execution-test.mjs && node scripts/test-guard.mjs out/tests/subagent-pstack-execution-test.mjs",
     "test:subagent-parallel-limits": "esbuild scripts/subagent-parallel-limits-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-parallel-limits-test.mjs && node scripts/test-guard.mjs out/tests/subagent-parallel-limits-test.mjs",
     "test:subagent-agent-discovery": "esbuild scripts/subagent-agent-discovery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-agent-discovery-test.mjs && node scripts/test-guard.mjs out/tests/subagent-agent-discovery-test.mjs",
