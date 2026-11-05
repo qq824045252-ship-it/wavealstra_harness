@@ -244,6 +244,12 @@ async function main(): Promise<void> {
       db.createSpace({ id: "child", name: "子", parentId: "root" });
       db.upsertTask({ id: "t1", title: "任务", updatedAt: 1, spaceId: "root" });
       db.moveTaskInWorkspaceTree({ taskId: "t1", targetSpaceId: "child", targetSortOrder: 5000 });
+      assertStrict.equal(db.getTask("t1")?.updatedAt, 1);
+      db.upsertTask({ id: "time-peer", title: "peer", updatedAt: 17, spaceId: "child" });
+      db.moveTaskInWorkspaceTree({ taskId: "t1", targetSpaceId: "child", targetIndex: 0 });
+      assertStrict.equal(db.getTask("t1")?.updatedAt, 1);
+      assertStrict.equal(db.getTask("time-peer")?.updatedAt, 17);
+      db.moveTaskInWorkspaceTree({ taskId: "t1", targetSpaceId: "child", targetSortOrder: 5000 });
       assert(db.getTask("t1")?.spaceId === "child", "任务跨空间移动成功");
       assert(db.getTask("t1")?.spaceSortOrder === 5000, "space_sort_order 显式持久化");
       db.moveTaskInWorkspaceTree({ taskId: "t1", targetSpaceId: null });

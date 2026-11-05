@@ -227,6 +227,10 @@ export class DurableBotService {
         onSnapshot: snapshot => {
           // Projection only; this status is never consulted to resume or finish durable work.
           db.connection.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending", taskId);
+          const messageTime = snapshot.messages.at(-1)?.createdAt;
+          if (messageTime !== undefined) {
+            db.connection.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(messageTime, taskId);
+          }
           this.options.emit({ type: "durable_snapshot", taskId, snapshot });
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
           if (wasBusy && !snapshot.busy && !snapshot.queued) this.options.onSettled?.(taskId, snapshot);

@@ -2608,8 +2608,8 @@ export class AppDatabase {
       if (targetSpaceId !== null && this.isSpaceEffectiveArchived(targetSpaceId)) throw new Error("不能移动到已归档空间");
       if (input.targetSortOrder !== undefined) {
         this.db
-          .prepare("UPDATE tasks SET space_id = ?, space_sort_order = ?, updated_at = ? WHERE id = ?")
-          .run(targetSpaceId, input.targetSortOrder, Date.now(), taskId);
+          .prepare("UPDATE tasks SET space_id = ?, space_sort_order = ? WHERE id = ?")
+          .run(targetSpaceId, input.targetSortOrder, taskId);
         // P1-5 显式 sortOrder 碰撞检测 → renumber 新父
         if (targetSpaceId !== null) {
           const dupTask = this.db
@@ -2627,24 +2627,23 @@ export class AppDatabase {
         const filtered = siblings.map((r) => r.id).filter((id) => id !== taskId);
         const clamped = Math.max(0, Math.min(input.targetIndex, filtered.length));
         const newOrder = [...filtered.slice(0, clamped), taskId, ...filtered.slice(clamped)];
-        const update = this.db.prepare("UPDATE tasks SET space_sort_order = ?, updated_at = ?, space_id = ? WHERE id = ?");
-        const now = Date.now();
+        const update = this.db.prepare("UPDATE tasks SET space_sort_order = ?, space_id = ? WHERE id = ?");
         newOrder.forEach((id, idx) => {
           const sort = (idx + 1) * 1000;
-          update.run(sort, now, targetSpaceId, id);
+          update.run(sort, targetSpaceId, id);
         });
         if (oldSpaceId !== targetSpaceId && oldSpaceId !== null) this.renumberTasks(oldSpaceId);
         return;
       }
       if (targetSpaceId == null) {
-        this.db.prepare("UPDATE tasks SET space_id = NULL, space_sort_order = 0, updated_at = ? WHERE id = ?").run(Date.now(), taskId);
+        this.db.prepare("UPDATE tasks SET space_id = NULL, space_sort_order = 0 WHERE id = ?").run(taskId);
         if (oldSpaceId !== null) this.renumberTasks(oldSpaceId);
         return;
       }
       const sortOrder = this.nextTaskSortOrder(targetSpaceId);
       this.db
-        .prepare("UPDATE tasks SET space_id = ?, space_sort_order = ?, updated_at = ? WHERE id = ?")
-        .run(targetSpaceId, sortOrder, Date.now(), taskId);
+        .prepare("UPDATE tasks SET space_id = ?, space_sort_order = ? WHERE id = ?")
+        .run(targetSpaceId, sortOrder, taskId);
       if (oldSpaceId !== targetSpaceId && oldSpaceId !== null) this.renumberTasks(oldSpaceId);
     });
   }

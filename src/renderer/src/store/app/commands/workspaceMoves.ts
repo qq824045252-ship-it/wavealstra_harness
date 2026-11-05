@@ -485,7 +485,6 @@ export function createWorkspaceMovesActions(
             oldSiblingIds = new Set(oldSiblings);
           }
         }
-        const now = Date.now();
         let nextTasks: Task[] = prevTasks.map((t) => ({ ...t }));
         if (targetIndex !== undefined && targetSpaceId != null) {
           const siblings = prevTasks
@@ -515,14 +514,12 @@ export function createWorkspaceMovesActions(
                 ...t,
                 spaceId: targetSpaceId ?? undefined,
                 spaceSortOrder: orderMap.get(t.id)!,
-                updatedAt: now,
               };
             }
             if (t.id === taskId && !orderMap.has(t.id)) {
               return {
                 ...t,
                 spaceId: targetSpaceId ?? undefined,
-                updatedAt: now,
               };
             }
             return t;
@@ -552,7 +549,7 @@ export function createWorkspaceMovesActions(
         } else if (targetSpaceId == null) {
           nextTasks = nextTasks.map((t) =>
             t.id === taskId
-              ? { ...t, spaceId: undefined, spaceSortOrder: 0, updatedAt: now }
+              ? { ...t, spaceId: undefined, spaceSortOrder: 0 }
               : t,
           );
           if (oldSpaceId != null) {
@@ -590,7 +587,6 @@ export function createWorkspaceMovesActions(
                   ...t,
                   spaceId: targetSpaceId ?? undefined,
                   spaceSortOrder: curMax + 1000,
-                  updatedAt: now,
                 }
               : t,
           );
