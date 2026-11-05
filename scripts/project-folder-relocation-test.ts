@@ -21,7 +21,7 @@ const root = mkdtempSync(join(tmpdir(), "mybuddy-folder-relocation-"));
 const db = new AppDatabase(join(root, "test.db"));
 try {
   const oldPath = join(root, "old"); const newPath = join(root, "new");
-  mkdirSync(oldPath); writeFileSync(join(oldPath, "spec.txt"), "specification");
+  mkdirSync(oldPath); writeFileSync(join(oldPath, "spec.txt"), "specification".repeat(6000));
   const repository = new ProjectRepository(db.connection);
   const projects = new ProjectService(repository, {} as any);
   const project = projects.create({ name: "Relocation" });

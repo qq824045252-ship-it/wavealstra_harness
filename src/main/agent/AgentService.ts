@@ -4782,6 +4782,7 @@ export class AgentService {
       supplementalEvidence: evidenceContext?.sources ?? (() => projectSegments.filter((segment) => isEvidenceSegment(segment.id)).map((segment) => ({
         id: `project:${projectContext?.project.id}:${segment.id}`, kind: "project" as const,
         revision: projectContext?.version ?? "", text: segment.content,
+        explicitProjectReference: segment.id === "projectResources" || segment.id === "projectPinnedRefs",
         validate: () => {
           if (projectContext) this.projectContextResolver.assertEvidenceAvailable(projectContext.project.id,
             segment.id === "projectResources" ? projectContext.resources.map((resource) => resource.id) : []);

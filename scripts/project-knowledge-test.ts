@@ -216,11 +216,23 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
 /* ---- 4. Prompt assembly：Shared Context/Pinned 段、预算、去重 ---- */
 {
   const aSpace = library.listProjectSpaces("proj-a")[0]!;
+  const longTitle = "项目资料长标题".repeat(100);
+  const longItem = library.createItem({ spaceId: aSpace.id, kind: "markdown", title: longTitle });
+  assert.equal(library.readContent(longItem.id).item.title, longTitle);
+  assert.equal(library.updateItem({ id: longItem.id, title: `${longTitle}更新` }).title, `${longTitle}更新`);
+  assert.equal(library.updateTextContent({ id: longItem.id, title: longTitle, content: "完整正文" }).title, longTitle);
+  assert.equal(library.readContent(longItem.id).content, "完整正文");
+  assert.equal(library.createUrl({ spaceId: aSpace.id, url: "https://example.com", title: longTitle }).title, longTitle);
+  assert.throws(() => library.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: longTitle }), /标题不能超过/);
   const pinnedItem = library.createItem({ spaceId: aSpace.id, kind: "markdown", title: "固定文档" });
   projects.pinProjectItem({ projectId: "proj-a", itemId: pinnedItem.id });
   projects.pinProjectItem({ projectId: "proj-a", itemId: library.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "固定-个人" }).id });
 
+  const extraPins = Array.from({ length: 15 }, (_, i) => library.createItem({ spaceId: aSpace.id, kind: "markdown", title: `长期固定-${i}` }));
+  for (const item of extraPins) projects.pinProjectItem({ projectId: "proj-a", itemId: item.id });
+  ok(extraPins.every(item => projects.listProjectPins("proj-a").some(pin => pin.itemId === item.id)), "超过十条固定资料全部保存");
   const ctx = resolver.resolveProject("proj-a")!;
+  ok(extraPins.every(item => renderProjectPinnedRefs(ctx.sharedContext!)?.includes(item.id)), "全部固定引用完整渲染");
   ok(ctx.sharedContext?.goal === "交付仪表选型方案" && ctx.sharedContext.pinned.length >= 2, "resolver 产出 sharedContext");
   const shared = renderProjectSharedContext(ctx.sharedContext!);
   ok(shared && shared.includes("交付仪表选型方案") && shared.includes("方案确认中"), "Shared Context 段含 goal/stage");
@@ -364,8 +376,8 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
     projects.pinProjectItem({ projectId: "proj-cap", itemId: item.id });
   }
   const extra = library.createItem({ spaceId: capSpace.id, kind: "markdown", title: "第 11 条" });
-  ok(projects.listProjectPins("proj-cap").length === 10, "pin 达到上限 10");
-  assert.throws(() => projects.pinProjectItem({ projectId: "proj-cap", itemId: extra.id }), /上限/, "第 11 条 pin 拒绝");
+  projects.pinProjectItem({ projectId: "proj-cap", itemId: extra.id });
+  ok(projects.listProjectPins("proj-cap").length === 11, "第 11 条 pin 可保存");
   // 重复 pin 已有条目不受上限影响（幂等早退）
   const first = projects.listProjectPins("proj-cap")[0]!;
   ok(projects.pinProjectItem({ projectId: "proj-cap", itemId: first.itemId }).itemId === first.itemId, "重复 pin 幂等早退，不受上限影响");
@@ -691,7 +703,7 @@ void (async () => {
   const toolsCap = makeCtxExtension("proj-cap", "default");
   const capExtra = library.createItem({ spaceId: library.listProjectSpaces("proj-cap")[0]!.id, kind: "markdown", title: "工具第 11 条" });
   const capPin = await callCtx(toolsCap, "project_context_pin", { itemId: capExtra.id });
-  ok(capPin.isError === true && capPin.content[0].text.includes("上限"), "pin 上限经工具拒绝（proj-cap 已满）");
+  ok(capPin.isError === undefined, "工具可固定超过十条资料");
 
   // 工具持有的是任务身份；改绑和删除立即收紧，不能沿用创建时的项目。
   db.upsertTask({ id: "task-ctx-proj-a-default", title: "已改绑", updatedAt: 2, projectId: "proj-b", welcomeMode: "coding" });

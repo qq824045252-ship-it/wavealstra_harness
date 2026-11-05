@@ -88,7 +88,8 @@ async function boot(file?: string, supplemental = false) {
     memory: supplemental ? undefined : memory, enabled: () => enabled, scope: () => ({}),
     execution: () => ({ executionId: "execution", query: "calibration" }),
     supplementalEvidence: () => supplemental ? [{ id: "project:calibration", kind: "project", revision: String(supplementalRevision),
-      text: `SUPPLEMENT_v${supplementalRevision} ` + "calibration detail ".repeat(500),
+      text: `SUPPLEMENT_v${supplementalRevision} ` + "calibration detail ".repeat(500) + "END_OF_PROJECT_REFERENCE",
+      explicitProjectReference: true,
       access: { kind: "project", projectId: "calibration", resourceIds: ["original-resource"] },
       validate: () => { if (!supplementalAvailable) throw new Error("SUPPLEMENT_REVOKED"); } }] : [],
     validateEvidenceAccess: access => {
@@ -204,7 +205,8 @@ try {
 
   // Non-versioned sources retain exact clipped bytes as budget shrinks, but explicitly rebuild on restart.
   current = await boot(undefined, true); session = current.session;
-  await prompt(session, "calibration non-versioned", false);
+  const completeReference = await prompt(session, "calibration non-versioned", false);
+  assert(JSON.stringify(completeReference.input).includes("END_OF_PROJECT_REFERENCE"), "full explicit reference reaches the provider payload");
   model.contextWindow = 18000;
   await prompt(session, "calibration lower budget");
   assert.equal((ledgers(current.manager).at(-1) as any).data.additions.length, 0);

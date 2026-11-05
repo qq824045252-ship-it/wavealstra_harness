@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync, statSync, existsSync, readFileSync } from "node:fs";
+import { realpathSync, statSync, existsSync, openSync, readSync, closeSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { ProjectFolderPreview } from "../../shared/project-domain";
@@ -10,6 +10,16 @@ import { ProjectRepository } from "./ProjectRepository";
 
 const within = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`)); };
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+const hashFile = (path: string): string => {
+  const fd = openSync(path, "r");
+  try {
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let count: number;
+    while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) digest.update(buffer.subarray(0, count));
+    return digest.digest("hex");
+  } finally { closeSync(fd); }
+};
 
 /** Relink an already moved folder. Never copy, move, or delete user files. */
 export class ProjectFolderRelocation {
@@ -65,12 +75,9 @@ export class ProjectFolderRelocation {
     const references = movedReferences.map((resource) => {
       const path = resolve(target, relative(space.path!, resource.value));
       if (!existsSync(path) || !statSync(path).isFile() || !within(target, realpathSync(path))) throw new Error(`新目录缺少安全可读的文件引用：${resource.title}`);
-      const size = statSync(path).size;
-      if (size > 64 * 1024) throw new Error(`文件引用超出项目读取上限：${resource.title}`);
-      const fingerprint = hash(readFileSync(path));
+      const fingerprint = hashFile(path);
       const oldExists = existsSync(resource.value);
-      if (oldExists && statSync(resource.value).size > 64 * 1024) throw new Error(`原文件超出可核对范围：${resource.title}`);
-      if (oldExists && hash(readFileSync(resource.value)) !== fingerprint) throw new Error(`新旧文件内容不一致：${resource.title}`);
+      if (oldExists && hashFile(resource.value) !== fingerprint) throw new Error(`新旧文件内容不一致：${resource.title}`);
       return { id: resource.id, projectId: resource.project_id, title: resource.title, oldPath: resource.value, newPath: path, fingerprint, oldExists };
     });
     const targetStat = statSync(target);

@@ -706,10 +706,15 @@ export class LibraryService {
 
   /* ---------------- Items ---------------- */
 
+  private itemTitle(spaceId: string, input: string): string {
+    const title = safeName(input);
+    return this.repo.getSpace(spaceId)?.projectId ? title : limitText(title, LIBRARY_TITLE_MAX_CHARS, "标题");
+  }
+
   createItem(req: LibraryCreateItemRequest): LibraryItemDto {
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
-    const title = limitText(safeName(req.title?.trim() || defaultTitle(req.kind)), LIBRARY_TITLE_MAX_CHARS, "标题");
+    const title = this.itemTitle(req.spaceId, req.title?.trim() || defaultTitle(req.kind));
     const now = Date.now();
     const id = randomUUID();
     const ext = extForKind(req.kind);
@@ -750,7 +755,7 @@ export class LibraryService {
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("仅支持 http(s) 链接");
     }
-    const title = limitText(safeName(req.title?.trim() || url.hostname + url.pathname.replace(/\/+$/, "")), LIBRARY_TITLE_MAX_CHARS, "标题");
+    const title = this.itemTitle(req.spaceId, req.title?.trim() || url.hostname + url.pathname.replace(/\/+$/, ""));
     const now = Date.now();
     const item: LibraryItemDto = {
       id: randomUUID(),
@@ -780,7 +785,7 @@ export class LibraryService {
     this.requireWritableSpace(item.spaceId);
     const next = { ...item, updatedAt: Date.now() };
     if (req.title !== undefined) {
-      next.title = limitText(safeName(req.title), LIBRARY_TITLE_MAX_CHARS, "标题");
+      next.title = this.itemTitle(item.spaceId, req.title);
       next.filename = item.kind === "url" ? `${next.title}.url` : `${next.title}${extname(item.filename) || extForKind(item.kind)}`;
     }
     if (req.collectionId !== undefined) {
@@ -888,10 +893,10 @@ export class LibraryService {
       throw new Error("该类型是受管文件（非文本），资料库内编辑会破坏文件；请用文件/预览工具处理");
     }
     const text = req.content ?? "";
-    if (text.length > LIBRARY_CONTENT_MAX_CHARS) {
+    if (!this.repo.getSpace(item.spaceId)?.projectId && text.length > LIBRARY_CONTENT_MAX_CHARS) {
       throw new Error(`正文不能超过 ${LIBRARY_CONTENT_MAX_CHARS} 字符`);
     }
-    const title = req.title === undefined ? item.title : limitText(safeName(req.title), LIBRARY_TITLE_MAX_CHARS, "标题");
+    const title = req.title === undefined ? item.title : this.itemTitle(item.spaceId, req.title);
     const abs = this.absolutePath(item);
     let existing: string | null = null;
     if (existsSync(abs)) {

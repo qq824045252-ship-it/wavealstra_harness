@@ -15,7 +15,6 @@ import type { PermissionMode } from "../../shared/agent-ipc";
 import {
   PROJECT_CONTEXT_GOAL_MAX_CHARS,
   PROJECT_CONTEXT_STAGE_MAX_CHARS,
-  PROJECT_PINS_MAX,
   type ProjectSharedContextSummary,
 } from "../../shared/project-domain";
 import type { ProjectService } from "./ProjectService";
@@ -71,7 +70,7 @@ function renderContext(summary: ProjectSharedContextSummary): string {
   }
   if (summary.pinned.length > 0) {
     lines.push("固定资料（pinned，只引用不复制；需要内容时用 library_read 读取文本类，二进制/办公类走受管路径）：");
-    for (const pin of summary.pinned.slice(0, PROJECT_PINS_MAX)) {
+    for (const pin of summary.pinned) {
       lines.push(`- [${pin.itemKind ?? "item"}] ${clip(pin.itemTitle ?? pin.itemId, 100)} · id=${pin.itemId}`);
     }
   } else {
@@ -168,7 +167,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
       name: "project_context_pin",
       label: "项目上下文 · 固定资料",
       description:
-        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。只接受当前任务已可见的条目；个人或其他工作空间的资料须先由用户显式引用，不能用此工具自行扩大资料范围。跨项目条目拒绝。上限 ${PROJECT_PINS_MAX} 条。readonly 权限或归档项目下不可用。`,
+        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。只接受当前任务已可见的条目；个人或其他工作空间的资料须先由用户显式引用，不能用此工具自行扩大资料范围。跨项目条目拒绝。readonly 权限或归档项目下不可用。`,
       promptSnippet: "project_context_pin(itemId) — 固定资料到项目上下文（引用元数据）",
       parameters: Type.Object(
         { itemId: Type.String({ minLength: 1, maxLength: 100 }) },

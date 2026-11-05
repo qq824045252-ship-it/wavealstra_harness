@@ -21,11 +21,7 @@ import {
   type ProjectTemplateDefinition,
   type TemplateCapabilityRegistries,
 } from "@shared/project-template";
-import {
-  MAX_PROJECT_RESOURCE_BUDGET_CHARS,
-  MIN_PROJECT_RESOURCE_BUDGET_CHARS,
-  type ProjectDetailsDto,
-} from "@shared/project-domain";
+import type { ProjectDetailsDto } from "@shared/project-domain";
 import type { McpServerDto } from "@shared/agent-ipc";
 import { mergeProjectCapabilityOptions } from "@shared/project-policy-editor";
 import {
@@ -67,7 +63,6 @@ export default function NewProjectModal({
   const [mcpServers, setMcpServers] = useState<McpServerDto[]>([]);
   const [showDescription, setShowDescription] = useState(false);
   const [showCustomize, setShowCustomize] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
   const [switchKeep, setSwitchKeep] = useState(true);
@@ -85,7 +80,6 @@ export default function NewProjectModal({
     setMcpServers([]);
     setShowDescription(false);
     setShowCustomize(false);
-    setShowAdvanced(false);
     setTemplateMenuOpen(false);
     setPendingTemplateId(null);
     setSwitchKeep(true);
@@ -545,34 +539,6 @@ export default function NewProjectModal({
               {renderCapabilitySection("connectors", connectorOptions)}
               {renderCapabilitySection("mcps", mcpOptions)}
 
-              <button
-                type="button"
-                className="project-create-advanced-toggle"
-                onClick={() => setShowAdvanced((openValue) => !openValue)}
-              >
-                高级设置
-                {showAdvanced ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
-              </button>
-              {showAdvanced && (
-                <div className="project-create-advanced">
-                  <label className="new-project-field">
-                    <span className="new-project-label">Resource Budget（字符）</span>
-                    <input
-                      className="new-project-input project-description-input"
-                      type="number"
-                      min={MIN_PROJECT_RESOURCE_BUDGET_CHARS}
-                      max={MAX_PROJECT_RESOURCE_BUDGET_CHARS}
-                      step={1000}
-                      value={draft.resourceBudgetChars}
-                      onChange={(event) => patchDraft({ resourceBudgetChars: Number(event.target.value) }, "budget")}
-                    />
-                    <span className="project-create-budget-hint">
-                      {MIN_PROJECT_RESOURCE_BUDGET_CHARS.toLocaleString()} ~ {MAX_PROJECT_RESOURCE_BUDGET_CHARS.toLocaleString()}，提交时自动夹取
-                    </span>
-                  </label>
-                  <p className="project-create-advanced-hint">高级策略（deny 名单等）留待项目设置中配置。</p>
-                </div>
-              )}
             </section>
           )}
 

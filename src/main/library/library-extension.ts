@@ -10,7 +10,7 @@
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { LIBRARY_CONTENT_MAX_CHARS, LIBRARY_TITLE_MAX_CHARS, type LibraryItemDto, type LibrarySpaceDto } from "../../shared/library-ipc";
+import type { LibraryItemDto, LibrarySpaceDto } from "../../shared/library-ipc";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 import type { LibraryService } from "./LibraryService";
 
@@ -257,7 +257,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       name: "library_read",
       label: "资料库 · 读取条目",
       description:
-        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（截断上限）；URL 返回链接；PDF/Office/图片/未知文件返回结构化 metadata（类型/大小/受管路径/来源/provenance）——这些是非文本资产，需要文件/预览工具读取，资料库不提供内联全文。跨项目条目不可访问。若读取 search_workspace_resources 显式扩展直属子空间后的命中，传相同 explicitDirectChildSpaceId；仅本次读取生效，兄弟、孙级或归档空间拒绝。",
+        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（项目资料返回全文，其他资料可能截断）；URL 返回链接；PDF/Office/图片/未知文件返回结构化 metadata（类型/大小/受管路径/来源/provenance）——这些是非文本资产，需要文件/预览工具读取，资料库不提供内联全文。跨项目条目不可访问。若读取 search_workspace_resources 显式扩展直属子空间后的命中，传相同 explicitDirectChildSpaceId；仅本次读取生效，兄弟、孙级或归档空间拒绝。",
       promptSnippet: "library_read(id, explicitDirectChildSpaceId?) — 读取可见资料；临时子空间命中需携带相同子空间参数",
       parameters: readParamsSchema,
       execute: async (_toolCallId: string, params: { id: string; explicitDirectChildSpaceId?: string }) => {
@@ -282,10 +282,9 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
             ];
             return textResult(lines.filter(Boolean).join("\n"), { item, managedPath: content.managedPath });
           }
-          const preview =
-            content.content.length > 4000
-              ? `${content.content.slice(0, 4000)}\n…（内容过长，已截断前 4000 字符）`
-              : content.content;
+          const preview = service.getSpace(item.spaceId)?.projectId || content.content.length <= 4000
+            ? content.content
+            : `${content.content.slice(0, 4000)}\n…（内容过长，已截断前 4000 字符）`;
           return textResult(`[${item.kind}] ${item.title}（id=${item.id}）\n\n${preview}`, { item, content });
         } catch (error) {
           return errorResult(error);
@@ -345,8 +344,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       parameters: Type.Object(
         {
           kind: Type.Union([Type.Literal("markdown"), Type.Literal("html"), Type.Literal("csv")]),
-          title: Type.String({ minLength: 1, maxLength: LIBRARY_TITLE_MAX_CHARS }),
-          content: Type.Optional(Type.String({ maxLength: LIBRARY_CONTENT_MAX_CHARS })),
+          title: Type.String({ minLength: 1 }),
+          content: Type.Optional(Type.String()),
           spaceId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
           collectionId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
         },
@@ -406,8 +405,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       parameters: Type.Object(
         {
           id: Type.String({ minLength: 1, maxLength: 100 }),
-          content: Type.Optional(Type.String({ maxLength: LIBRARY_CONTENT_MAX_CHARS })),
-          title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+          content: Type.Optional(Type.String()),
+          title: Type.Optional(Type.String({ minLength: 1 })),
         },
         { additionalProperties: false },
       ),

@@ -172,6 +172,12 @@ async function main(): Promise<void> {
     ok(search.content[0].text.includes("项目A机密文档"), "A: search 含 A");
     const readB = await call(tools, "library_read", { id: bItem.id });
     ok(readB.isError === true && readB.content[0].text.includes("跨项目"), "A: 直读 B 条目被拒（跨项目）");
+    const longItem = service.createItem({ spaceId: aItem.spaceId, kind: "markdown", title: "长资料" });
+    const longBody = `${"长".repeat(1_000_005)}末尾标记`;
+    service.writeContent({ id: longItem.id, content: longBody });
+    assert.equal(service.readContent(longItem.id).content, longBody, "项目资料可保存超过旧上限的完整正文");
+    const longRead = await call(tools, "library_read", { id: longItem.id });
+    assert.equal(longRead.content[0].text.endsWith(longBody), true, "工具返回完整正文而非截断预览");
     const readA = await call(tools, "library_read", { id: aItem.id });
     ok(readA.isError === undefined && readA.content[0].text.includes("项目A机密文档"), "A: 读 A 条目正常");
     const readPersonal = await call(tools, "library_read", { id: personalItem.id });

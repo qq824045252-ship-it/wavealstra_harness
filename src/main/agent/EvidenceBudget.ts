@@ -32,6 +32,8 @@ export interface SupplementalEvidence {
   kind: "project" | "library" | "conversation";
   revision: string;
   text: string;
+  /** Explicit project references are projected in full, independently of the automatic evidence budget. */
+  explicitProjectReference?: boolean;
   /** Current access/deletion only; ordinary content changes wait for the next user turn. */
   validate: () => void;
   /** Historical permission check, separate from an optional stricter in-turn freshness check. */

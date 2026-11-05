@@ -38,6 +38,7 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     await fixture.loadFile(html);
     await wait(`document.body.innerText.includes('还没有项目资料')`);
     await wait(`document.querySelector('[aria-label="资料状态"]').innerText.includes('1/1')`);
+    assert(!(await evaluate(visibleText)).includes(' / 12,000 字'), '补充参考不显示字符上限');
     assert((await evaluate(`document.querySelector('[aria-label="资料状态"]').innerText`)).includes('未查看'), '没有选执行记录时不得暗示资料已被使用');
     await evaluate(`(()=>{const input=document.querySelector('input[aria-label="搜索项目资料"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'写作规范');input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     await wait(`document.body.innerText.includes('没有匹配的项目资料') && document.body.innerText.includes('写作规范')`);
@@ -138,9 +139,9 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     await evaluate(`window.materialTest.failNextPin()`);
     await click('设为常用资料');
     await wait(`document.body.innerText.includes('模拟常用资料保存失败')`);
-    assert((await evaluate(visibleText)).includes('常用资料 · 0/10'));
+    assert((await evaluate(visibleText)).includes('常用资料 · 0'));
     await click('设为常用资料');
-    await wait(`document.body.innerText.includes('常用资料 · 1/10')`);
+    await wait(`document.body.innerText.includes('常用资料 · 1')`);
     await capture('project-common-materials.png');
     assert.equal(await evaluate(`window.materialTest.calls.find(c=>c[0]==='pin')[1].projectId`), 'a');
     await click('取消常用');
@@ -219,7 +220,7 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     await evaluate(`window.materialTest.addPersonalPin(); window.materialTest.switchProject('b')`);
     await wait(`document.body.innerText.includes('设备检查单')`);
     await evaluate(`window.materialTest.switchProject('a')`);
-    await wait(`document.body.innerText.includes('常用资料 · 1/10')`);
+    await wait(`document.body.innerText.includes('常用资料 · 1')`);
     await click('个人私有资料');
     await wait(`document.querySelector('.project-material-pin-reader input[aria-label="文档标题"]')?.value === '个人私有资料'`);
     assert.equal(await evaluate(`document.querySelector('.project-material-pin-reader input[aria-label="文档标题"]').readOnly`), true);
@@ -227,7 +228,7 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     assert(!(await evaluate(`document.querySelector('.project-material-pin-reader').innerText`)).includes('设备检查单'));
     await click('关闭常用资料');
     await click('取消常用');
-    await wait(`document.body.innerText.includes('常用资料 · 0/10')`);
+    await wait(`document.body.innerText.includes('常用资料 · 0')`);
     await evaluate(`window.materialTest.archiveProject(true)`);
     await wait(`document.body.innerText.includes('已归档，只能阅读资料')`);
     assert.equal(await evaluate(`[...document.querySelectorAll('.scoped-library-manager button')].filter(b=>['新建资料','导入文档','新建文件夹','从任务成果保存'].includes(b.textContent.trim())).length`), 0);

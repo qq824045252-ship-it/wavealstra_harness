@@ -13,7 +13,6 @@ export interface ProjectMaterialSupplementalStatus {
   eligible: number;
   included: number;
   includedChars: number;
-  budgetChars: number;
 }
 
 export interface ProjectMaterialExecutionStatus {

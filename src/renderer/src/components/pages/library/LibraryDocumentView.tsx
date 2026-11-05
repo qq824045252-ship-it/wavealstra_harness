@@ -86,7 +86,7 @@ export default function LibraryDocumentView({
       <div className="library-doc-bar-left">
         <button type="button" className="btn library-doc-back" onClick={onBack}><IconChevronLeft size={15} />返回文档列表</button>
         <div className="library-doc-identity">
-          <input className="library-doc-title" maxLength={LIBRARY_TITLE_MAX_CHARS} value={title}
+          <input className="library-doc-title" maxLength={access.scope.type === "project" ? undefined : LIBRARY_TITLE_MAX_CHARS} value={title}
             readOnly={readOnly} disabled={saving} placeholder="文档标题" aria-label="文档标题"
             onChange={(event) => setTitle(event.target.value)} />
           <div className="library-doc-meta"><span>{kindLabel}</span><span className="library-doc-dot" aria-hidden />

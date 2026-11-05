@@ -131,6 +131,7 @@ export class LibraryWorkspaceContextService {
     const scope = library.resolveTaskScope(taskId);
     const output: SupplementalEvidence[] = [...new ProjectNotesService(this.db).sources(taskId), ...new WorkspaceNotesService(this.db).sources(taskId)];
     const selectedItems = new Set<string>();
+    const pinnedItemIds = new Set((project?.sharedContext?.pinned ?? []).map(pin => pin.itemId));
     const addItem = (itemId: string, origin: "attached" | "pinned" | "catalog") => {
       if (selectedItems.has(itemId)) return;
       const item = library.getItem(itemId);
@@ -138,6 +139,7 @@ export class LibraryWorkspaceContextService {
       selectedItems.add(itemId);
       output.push({
         id: `library:${item.id}`, kind: "library", revision: String(item.updatedAt),
+        explicitProjectReference: pinnedItemIds.has(item.id),
         access: { kind: "library", itemId: item.id, origin, projectId },
         text: `[${origin}] [${item.kind}] ${item.title} · id=${item.id}\n${readOnly
           ? "此条目是资料引用；本只读会话不提供资料库工具，需要正文时请告知用户或由主任务读取。"
@@ -157,6 +159,7 @@ export class LibraryWorkspaceContextService {
       const resourceIds = segment.id === "projectResources" ? project.resources.map((resource) => resource.id) : [];
       output.push({
         id: `project:${project.project.id}:${segment.id}`, kind: "project", revision: project.version,
+        explicitProjectReference: segment.id === "projectResources",
         access: { kind: "project", projectId: project.project.id, resourceIds },
         text: segment.content,
         validate: () => this.projectContext.assertEvidenceAvailable(project.project.id, resourceIds),

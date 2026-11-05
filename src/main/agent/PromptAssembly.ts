@@ -160,8 +160,6 @@ export function assembleProjectContextSegments(
 
 const SHARED_CONTEXT_GOAL_MAX_CHARS = 300;
 const SHARED_CONTEXT_STAGE_MAX_CHARS = 200;
-const PINNED_REFS_MAX_ITEMS = 10;
-const PINNED_REFS_MAX_CHARS = 1500;
 /** 项目长期指令（project 段）预算：超长截断，保留可读性（完整内容在项目配置中） */
 const PROJECT_INSTRUCTIONS_MAX_CHARS = 2000;
 
@@ -241,19 +239,14 @@ export function renderProjectPinnedRefs(
   excludeItemIds?: ReadonlySet<string>,
   libraryReadable = true,
 ): string | null {
-  const pins = summary.pinned.filter((p) => !excludeItemIds?.has(p.itemId)).slice(0, PINNED_REFS_MAX_ITEMS);
+  const pins = summary.pinned.filter((p) => !excludeItemIds?.has(p.itemId));
   if (pins.length === 0) return null;
   const guidance = libraryReadable
     ? "需要内容时用 library_read 读取文本类；二进制/办公类返回受管路径，需要文件/预览工具。"
     : "本会话为只读分支，不提供资料库工具；如需内容请告知用户或由主任务（在项目上下文中的任务）读取。";
   const lines = ["## 项目固定资料（Pinned）", `项目长期固定引用的资料条目（只引用不复制）。${guidance}`];
-  let used = lines[0]!.length + lines[1]!.length;
   for (const pin of pins) {
-    const title = clip(pin.itemTitle ?? pin.itemId, 100);
-    const line = `- [${pin.itemKind ?? "item"}] ${title} · id=${pin.itemId}`;
-    if (used + line.length > PINNED_REFS_MAX_CHARS) break;
-    used += line.length;
-    lines.push(line);
+    lines.push(`- [${pin.itemKind ?? "item"}] ${pin.itemTitle ?? pin.itemId} · id=${pin.itemId}`);
   }
   return lines.join("\n");
 }

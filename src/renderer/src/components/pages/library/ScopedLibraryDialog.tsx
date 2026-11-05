@@ -18,6 +18,7 @@ export type ScopedLibraryCompose =
 interface Props {
   value: ScopedLibraryCompose;
   snapshot: LibrarySnapshotDto;
+  unlimitedItemTitle: boolean;
   busy: boolean;
   onChange: (value: ScopedLibraryCompose) => void;
   onCancel: () => void;
@@ -26,7 +27,7 @@ interface Props {
 
 const TITLES = { item: "新建资料", folder: "新建文件夹", url: "添加链接", artifact: "从任务成果保存", rename: "重命名", move: "移动资料" };
 
-export default function ScopedLibraryDialog({ value, snapshot, busy, onChange, onCancel, onSubmit }: Props): React.JSX.Element {
+export default function ScopedLibraryDialog({ value, snapshot, unlimitedItemTitle, busy, onChange, onCancel, onSubmit }: Props): React.JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape" && !busy) onCancel(); };
     window.addEventListener("keydown", onKey);
@@ -52,7 +53,7 @@ export default function ScopedLibraryDialog({ value, snapshot, busy, onChange, o
         </label>}
         {"title" in value && <label className="new-project-field"><span className="new-project-label">名称{value.type === "url" ? "（可选）" : ""}</span>
           <input className="new-project-input" aria-label="资料名称" autoFocus={value.type !== "url"} disabled={busy} value={value.title}
-            maxLength={value.type === "folder" || (value.type === "rename" && value.row.kind === "folder") ? LIBRARY_NAME_MAX_CHARS : LIBRARY_TITLE_MAX_CHARS}
+            maxLength={value.type === "folder" || (value.type === "rename" && value.row.kind === "folder") ? LIBRARY_NAME_MAX_CHARS : unlimitedItemTitle ? undefined : LIBRARY_TITLE_MAX_CHARS}
             onChange={(event) => onChange({ ...value, title: event.target.value })} placeholder={value.type === "folder" ? "文件夹名称" : "资料名称"} />
         </label>}
         {value.type === "move" && <>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PROJECT_PINS_MAX, type ProjectContextPinDto, type ProjectDetailsDto } from "@shared/project-domain";
+import type { ProjectContextPinDto, ProjectDetailsDto } from "@shared/project-domain";
 import type { ProjectUnsavedGuard } from "@/lib/projectWorkspace";
 import ProjectBrief from "./ProjectBrief";
 import type { LibraryItemDto, LibraryOwnerScope, LibrarySnapshotDto } from "@shared/library-ipc";
@@ -44,7 +44,6 @@ export default function ProjectMaterials({ project, onRefresh, onRegisterUnsaved
     eligible: project.resources.filter((item) => item.kind !== "folder" && item.enabled).length,
     included: 0,
     includedChars: 0,
-    budgetChars: project.resourceBudgetChars,
   }));
   const [executionStatus, setExecutionStatus] = useState<ProjectMaterialExecutionStatus>({ selected: false, readCount: 0, injectedCount: 0, omitted: 0 });
   useEffect(() => {
@@ -56,15 +55,14 @@ export default function ProjectMaterials({ project, onRefresh, onRegisterUnsaved
       eligible: project.resources.filter((item) => item.kind !== "folder" && item.enabled).length,
       included: 0,
       includedChars: 0,
-      budgetChars: project.resourceBudgetChars,
     });
     setExecutionStatus({ selected: false, readCount: 0, injectedCount: 0, omitted: 0 });
   }, [project.id]);
   return <div className="project-materials-flow">
     <div className="project-cap-summary project-material-status" aria-label="资料状态">
       <span><small>项目资料</small><strong>{documentStatus.loaded ? documentStatus.total : "…"}</strong><small>长期保存 · 按需读取</small></span>
-      <span><small>常用</small><strong>{documentStatus.loaded ? documentStatus.common + "/" + PROJECT_PINS_MAX : "…"}</strong><small>提供引用，不代表正文已读取</small></span>
-      <span><small>补充参考</small><strong>{supplementalStatus.checked ? supplementalStatus.included + "/" + supplementalStatus.eligible : "待检查"}</strong><small>{supplementalStatus.checked ? "当前可注入 " + supplementalStatus.includedChars.toLocaleString("zh-CN") + " / " + supplementalStatus.budgetChars.toLocaleString("zh-CN") + " 字" : supplementalStatus.eligible + " 项启用，等待运行口径检查"}</small></span>
+      <span><small>常用</small><strong>{documentStatus.loaded ? documentStatus.common : "…"}</strong><small>提供引用，不代表正文已读取</small></span>
+      <span><small>补充参考</small><strong>{supplementalStatus.checked ? supplementalStatus.included + "/" + supplementalStatus.eligible : "待检查"}</strong><small>{supplementalStatus.checked ? "当前可注入 " + supplementalStatus.includedChars.toLocaleString("zh-CN") + " 字" : supplementalStatus.eligible + " 项启用，等待运行口径检查"}</small></span>
       <span><small>本次使用</small><strong>{executionStatus.selected ? executionStatus.readCount + executionStatus.injectedCount : "未查看"}</strong><small>{executionStatus.selected ? "读取证据 " + executionStatus.readCount + " · 注入 " + executionStatus.injectedCount + (executionStatus.omitted ? " · 另 " + executionStatus.omitted + " 项未保留" : "") : "选择任务和执行记录后显示真实证据"}</small><small>不代表模型理解或采纳</small></span>
     </div>
     <div className="project-materials-searchbar">
@@ -141,7 +139,7 @@ function ProjectDocuments({ project, query, onStatusChange, onRegisterUnsaved }:
     finally { operation.current = false; if (alive.current) setBusy(false); }
   };
   const itemActions = (item: LibraryItemDto): React.JSX.Element | null => pins.some((pin) => pin.itemId === item.id) ? null
-    : <button type="button" className="btn" disabled={busy || project.archived || pins.length >= PROJECT_PINS_MAX}
+    : <button type="button" className="btn" disabled={busy || project.archived}
         onClick={() => void setPinned(item.id, true)}>设为常用资料</button>;
   const openPin = async (itemId: string): Promise<void> => {
     if (snapshot?.items.some((item) => item.id === itemId)) {
@@ -161,7 +159,7 @@ function ProjectDocuments({ project, query, onStatusChange, onRegisterUnsaved }:
 
   return <section className="project-material-card" aria-label="项目资料">
     <div className="project-material-pins" aria-label="常用资料">
-      <span className="project-material-pins-label">常用资料 · {pins.length}/{PROJECT_PINS_MAX}</span>
+      <span className="project-material-pins-label">常用资料 · {pins.length}</span>
       {!pins.length && <span className="project-desk-hint">打开资料后可设为常用，提供引用，正文按需读取。</span>}
       {pins.map((pin) => <span className="project-material-pin" key={pin.id}>
         <button type="button" className="project-material-pin-title" disabled={busy} title={pin.note ?? pin.itemTitle}

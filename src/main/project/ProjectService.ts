@@ -13,7 +13,6 @@ import {
   PROJECT_MEMORY_TITLE_MAX_CHARS,
   PROJECT_CONTEXT_GOAL_MAX_CHARS,
   PROJECT_CONTEXT_STAGE_MAX_CHARS,
-  PROJECT_PINS_MAX,
   PROJECT_REVIEW_NOTE_MAX_CHARS,
   PROJECT_TODO_TITLE_MAX_CHARS,
   emptyProjectPolicies,
@@ -181,22 +180,19 @@ function validateResourceValue(kind: ProjectResourceDto["kind"], rawTitle: strin
   value: string;
 } {
   const title = rawTitle.trim();
-  const value = rawValue.trim();
+  const value = kind === "text" ? rawValue : rawValue.trim();
   if (!title) throw new Error("资源名称不能为空");
-  if (title.length > 120) throw new Error("资源名称不能超过 120 字符");
   if (kind === "folder") return { title, value: value || title };
-  if (!value) throw new Error("资源内容不能为空");
+  if (!value.trim()) throw new Error("资源内容不能为空");
   if (kind === "file") {
     if (!isAbsolute(value)) throw new Error("文件资源必须使用绝对路径");
     if (value.length > 4096) throw new Error("文件路径过长");
   }
   if (kind === "url") {
-    if (value.length > 4096) throw new Error("URL 过长");
     let url: URL;
     try { url = new URL(value); } catch { throw new Error("URL 格式无效"); }
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("URL 资源仅支持 http(s)");
   }
-  if (kind === "text" && value.length > 64_000) throw new Error("文本资源不能超过 64000 字符");
   return { title, value };
 }
 
@@ -674,9 +670,6 @@ export class ProjectService {
     const existingPins = this.repository.listPins(request.projectId);
     if (existingPins.some((p) => p.itemId === request.itemId)) {
       return existingPins.find((p) => p.itemId === request.itemId)!;
-    }
-    if (existingPins.length >= PROJECT_PINS_MAX) {
-      throw new Error(`项目固定资料已达上限（${PROJECT_PINS_MAX} 条），请先解除部分固定`);
     }
     const scope = this.repository.getLibraryItemScope(request.itemId);
     if (!scope) throw new Error("资料条目不存在");

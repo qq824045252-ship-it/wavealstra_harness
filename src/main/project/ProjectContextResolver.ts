@@ -19,8 +19,6 @@ import type { ProjectRepository } from "./ProjectRepository";
 import type { MemoryService } from "../memory/MemoryService";
 import { readFileSync, statSync } from "node:fs";
 
-const RESOURCE_FILE_MAX_BYTES = 64 * 1024;
-
 /** active slice 排序：先 doing，再高优先，再临近截止，最后更新时间（供上下文摘要用） */
 const PLAN_STATUS_RANK: Record<ProjectTodoStatus, number> = { doing: 0, paused: 1, todo: 2, done: 3 };
 const PLAN_PRIORITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
@@ -142,7 +140,7 @@ export class ProjectContextResolver {
   }
 
   /**
-   * Resolve explicitly configured Project resources with bounded file reads.
+   * Resolve explicitly configured Project resources; reject non-text files.
    */
   private resolveResources(project: ProjectDetailsDto): ResolvedResources {
     const resources: ResolvedProjectResource[] = [];
@@ -179,12 +177,6 @@ export class ProjectContextResolver {
             continue;
           }
           bytes = stat.size;
-          if (stat.size > RESOURCE_FILE_MAX_BYTES) {
-            const reason = "文件超过 64 KiB 限制";
-            items.push({ resourceId: resource.id, status: "too-large", included: false, chars: 0, bytes, reason });
-            warnings.push(`项目资源「${resource.title}」未加载：${reason}`);
-            continue;
-          }
           const buffer = readFileSync(resource.value);
           if (buffer.subarray(0, 8192).includes(0)) {
             const reason = "检测到二进制文件";
@@ -200,12 +192,6 @@ export class ProjectContextResolver {
             warnings.push(`项目资源「${resource.title}」未加载：${reason}`);
             continue;
           }
-        }
-        if (includedChars + content.length > project.resourceBudgetChars) {
-          const reason = `超出项目资源总预算 ${project.resourceBudgetChars} 字符`;
-          items.push({ resourceId: resource.id, status: "budget-exceeded", included: false, chars: content.length, bytes, reason });
-          warnings.push(`项目资源「${resource.title}」未加载：${reason}`);
-          continue;
         }
         includedChars += content.length;
         resources.push({

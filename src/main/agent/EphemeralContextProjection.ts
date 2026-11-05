@@ -190,7 +190,10 @@ export class EphemeralContextProjection {
       const previous = [...this.bodies.values()].find(item => item.ref.id === source.id && item.ref.revision === source.revision
         && item.ref.contentHash === contentHash && JSON.stringify(item.ref.supplemental?.access) === JSON.stringify(source.access));
       // Budget changes must not repeatedly shorten an already admitted version.
-      const text = previous?.text ?? budget.takeInitial(source.id, `[来源 ${source.id}@${source.revision}]\n${source.text}`, 4500, source.kind === "conversation");
+      const body = `[来源 ${source.id}@${source.revision}]\n${source.text}`;
+      const text = previous?.text ?? (source.explicitProjectReference
+        ? body
+        : budget.takeInitial(source.id, body, 4500, source.kind === "conversation"));
       if (!text) continue;
       selected.push({ text, validate: source.validate, validateAccess: source.validateAccess ?? source.validate,
         ref: { id: source.id, revision: source.revision, hash: digest(text), contentHash, sources: [], scenarioIds: [], profileIds: [],

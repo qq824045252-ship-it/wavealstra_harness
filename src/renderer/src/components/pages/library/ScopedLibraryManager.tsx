@@ -288,7 +288,7 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
           onDelete={setPendingDelete} onFavorite={(row) => void run(async () => { await access.favorite(row.id, !row.favorite); })} />}
       </>}
     {dragging && <div className="library-drop-overlay" aria-hidden>松开以导入到当前位置</div>}
-    {compose && snapshot && !readOnly && <ScopedLibraryDialog value={compose} snapshot={snapshot} busy={busy} onChange={setCompose} onCancel={() => setCompose(null)} onSubmit={submit} />}
+    {compose && snapshot && !readOnly && <ScopedLibraryDialog value={compose} snapshot={snapshot} unlimitedItemTitle={access.scope.type === "project"} busy={busy} onChange={setCompose} onCancel={() => setCompose(null)} onSubmit={submit} />}
     <ConfirmDialog open={Boolean(pendingDelete) && !readOnly} title={pendingDelete?.kind === "folder" ? `删除文件夹「${pendingDelete.title}」及全部内容？` : `删除资料「${pendingDelete?.title ?? ""}」？`}
       body="这会删除原资料，使用它的引用也将失效。取消引用请在引用位置操作。" confirmLabel="删除" danger onCancel={() => !busy && setPendingDelete(null)}
       onConfirm={() => { if (pendingDelete) void run(async () => { if (pendingDelete.kind === "folder") await access.deleteFolder(pendingDelete.id); else await access.deleteItem(pendingDelete.id); setPendingDelete(null); setNotice({ text: "已删除原资料" }); }); }} />

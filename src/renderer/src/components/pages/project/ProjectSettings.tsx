@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { sameProjectFormValue, type ProjectUnsavedGuard } from "@/lib/projectWorkspace";
-import {
-  MAX_PROJECT_RESOURCE_BUDGET_CHARS,
-  MIN_PROJECT_RESOURCE_BUDGET_CHARS,
-  type ProjectDetailsDto,
-} from "@shared/project-domain";
+import type { ProjectDetailsDto } from "@shared/project-domain";
 
 const NAME_MAX = 40;
 
@@ -30,7 +26,6 @@ export default function ProjectSettings({
 }: Props): React.JSX.Element {
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
-  const [resourceBudgetChars, setResourceBudgetChars] = useState(project.resourceBudgetChars);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"archive" | "delete" | null>(null);
@@ -39,25 +34,21 @@ export default function ProjectSettings({
   useEffect(() => {
     setName(project.name);
     setDescription(project.description ?? "");
-    setResourceBudgetChars(project.resourceBudgetChars);
-  }, [project.id, project.updatedAt, project.name, project.description, project.resourceBudgetChars]);
+  }, [project.id, project.updatedAt, project.name, project.description]);
 
   const savedForm = {
     name: project.name,
     description: project.description ?? "",
-    resourceBudgetChars: project.resourceBudgetChars,
   };
   const editingForm = {
     name: name.trim(),
     description: description.trim(),
-    resourceBudgetChars,
   };
   const dirty = !sameProjectFormValue(editingForm, savedForm);
 
   const discard = (): void => {
     setName(project.name);
     setDescription(project.description ?? "");
-    setResourceBudgetChars(project.resourceBudgetChars);
     setError(null);
   };
 
@@ -75,7 +66,6 @@ export default function ProjectSettings({
         id: project.id,
         name: trimmed,
         description: description.trim() || null,
-        resourceBudgetChars,
       });
       if (!result?.ok) throw new Error(result?.error ?? "保存失败");
       await onRefresh();
@@ -154,18 +144,6 @@ export default function ProjectSettings({
             value={description}
             placeholder="这个项目长期要完成什么"
             onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        <label className="new-project-field">
-          <span className="new-project-label">补充参考注入上限（字符）</span>
-          <input
-            className="new-project-input project-description-input"
-            type="number"
-            min={MIN_PROJECT_RESOURCE_BUDGET_CHARS}
-            max={MAX_PROJECT_RESOURCE_BUDGET_CHARS}
-            step={1000}
-            value={resourceBudgetChars}
-            onChange={(event) => setResourceBudgetChars(Number(event.target.value))}
           />
         </label>
         {error && <div className="project-form-error">{error}</div>}

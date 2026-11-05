@@ -432,14 +432,14 @@ try {
   const nearBudget = service.createResource({
     projectId: healthProject.id,
     kind: "text",
-    title: "Near budget",
-    value: "x".repeat(7_990),
+    title: "项目参考名称".repeat(100),
+    value: `  ${"x".repeat(70_000)}  `,
   });
   const budgetSkipped = service.createResource({
     projectId: healthProject.id,
     kind: "url",
     title: "Budget skipped",
-    value: "https://example.com/budget",
+    value: `https://example.com/${"a".repeat(5000)}`,
   });
   const missing = service.createResource({
     projectId: healthProject.id,
@@ -455,16 +455,22 @@ try {
   const tooLarge = service.createResource({ projectId: healthProject.id, kind: "file", title: "Large", value: largeFile });
   const inspection = resolver.inspectProjectResources(healthProject.id);
   assert.equal(inspection?.items.find((item) => item.resourceId === nearBudget.id)?.status, "ready");
-  assert.equal(inspection?.items.find((item) => item.resourceId === budgetSkipped.id)?.status, "budget-exceeded");
+  assert.equal(service.get(healthProject.id)?.resources.find(item => item.id === nearBudget.id)?.title, "项目参考名称".repeat(100));
+  assert.equal(resolver.resolveProject(healthProject.id)?.resources.find(item => item.id === nearBudget.id)?.title, "项目参考名称".repeat(100));
+  assert.equal(service.get(healthProject.id)?.resources.find(item => item.id === nearBudget.id)?.value, `  ${"x".repeat(70_000)}  `);
+  assert.equal(resolver.resolveProject(healthProject.id)?.resources.find(item => item.id === tooLarge.id)?.content, "z".repeat(64 * 1024 + 1));
+  assert.equal(resolver.resolveProject(healthProject.id)?.resources.find(item => item.id === budgetSkipped.id)?.content, `参考 URL：https://example.com/${"a".repeat(5000)}`);
+  assert.throws(() => service.createResource({ projectId: healthProject.id, kind: "url", title: "Invalid", value: "file:///etc/passwd" }), /http\(s\)/);
+  assert.equal(inspection?.items.find((item) => item.resourceId === budgetSkipped.id)?.status, "ready");
   assert.equal(inspection?.items.find((item) => item.resourceId === missing.id)?.status, "missing");
   assert.equal(inspection?.items.find((item) => item.resourceId === binary.id)?.status, "binary");
-  assert.equal(inspection?.items.find((item) => item.resourceId === tooLarge.id)?.status, "too-large");
+  assert.equal(inspection?.items.find((item) => item.resourceId === tooLarge.id)?.status, "ready");
   service.updateResource({ id: budgetSkipped.id, sortOrder: 0 });
   service.updateResource({ id: nearBudget.id, sortOrder: 1 });
   assert.equal(service.get(healthProject.id)?.resources[0]?.id, budgetSkipped.id, "Resource order must be persisted");
   const reordered = resolver.inspectProjectResources(healthProject.id);
   assert.equal(reordered?.items.find((item) => item.resourceId === budgetSkipped.id)?.status, "ready");
-  assert.equal(reordered?.items.find((item) => item.resourceId === nearBudget.id)?.status, "budget-exceeded");
+  assert.equal(reordered?.items.find((item) => item.resourceId === nearBudget.id)?.status, "ready");
 
   const directDelete = service.create({
     name: "Direct SQL Project",

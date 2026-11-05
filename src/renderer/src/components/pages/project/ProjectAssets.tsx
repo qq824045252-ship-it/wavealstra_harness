@@ -20,7 +20,6 @@ import {
   encodeProjectAssetDrag,
   filterProjectAssets,
   formatAssetBytes,
-  formatAssetQuota,
   formatRelativeTime,
   movableProjectAssetIds,
   PROJECT_ASSET_DRAG_TYPE,
@@ -104,9 +103,8 @@ export default function ProjectAssets({ project, onRefresh, query: sharedQuery, 
       eligible: materialResources.filter((item) => item.enabled).length,
       included: inspection?.items.filter((item) => item.included).length ?? 0,
       includedChars: inspection?.includedChars ?? 0,
-      budgetChars: inspection?.budgetChars ?? project.resourceBudgetChars,
     });
-  }, [inspection, project.resources, project.resourceBudgetChars, onStatusChange]);
+  }, [inspection, project.resources, onStatusChange]);
 
   const healthById = useMemo(
     () => new Map(inspection?.items.map((item) => [item.resourceId, item]) ?? []),
@@ -305,8 +303,8 @@ export default function ProjectAssets({ project, onRefresh, query: sharedQuery, 
         <button type="button" className="btn" disabled={busy} onClick={() => { setCompose("url"); setComposeTitle(""); setComposeValue(""); }}>
           添加链接
         </button>
-        <span className="project-asset-quota" title="补充参考进入任务上下文的字符预算，不是云盘容量">
-          {formatAssetQuota(inspection?.includedChars ?? 0, inspection?.budgetChars ?? project.resourceBudgetChars)}
+        <span className="project-asset-quota" title="当前可注入任务上下文的补充参考字符数">
+          补充参考 {inspection ? inspection.includedChars.toLocaleString("zh-CN") : "…"} 字
           {fileBytes > 0 ? ` · 文件 ${formatAssetBytes(fileBytes)}` : ""}
         </span>
         <span className="input-spacer" />

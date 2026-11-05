@@ -606,8 +606,6 @@ export interface ProjectReviewDto {
 
 /* ---------------- Project Shared Context / Pinned Library Refs ---------------- */
 
-/** 项目固定到上下文的 Library 条目（只引用不复制；item 删除/项目删除级联清理） */
-export const PROJECT_PINS_MAX = 10;
 /** Shared Context 字段长度上限（与 prompt 装配预算一致，写时即拒绝超限） */
 export const PROJECT_CONTEXT_GOAL_MAX_CHARS = 300;
 export const PROJECT_CONTEXT_STAGE_MAX_CHARS = 200;
