@@ -1,13 +1,13 @@
 {
-  "startedAt": "2026-10-09T08:54:25.248Z",
+  "startedAt": "2026-11-05T06:58:06.074Z",
   "tests": [
     {
       "name": "local tools start unverified and show only canonical bash",
       "status": "passed",
       "details": {
-        "terminal": "命令执行\n待检查\n直接使用 Pi 原生 bash；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
-        "code": "代码执行\n待检查\n执行 JavaScript、PowerShell 和受管 Python；检查不下载环境，缺少 Python 会显示部分可用\nexecute_code\n代码执行 · 受管 Python\n检查\n已接入；点击检查验证实际运行，当前尚未实测。",
-        "browser": "界面与桌面操作\n待检查\n读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标\nbrowser_exec · ui_exec · computer_exec\n浏览器 · 应用界面 · Windows 桌面\n检查\n已接入 3 项界面能力；点击检查验证实际读取。",
+        "terminal": "命令执行\n在任务中执行命令。\n待检查\nPi Bash · 任务隔离与审批\n状态与详情\n已接入；点击检查验证实际运行，当前尚未实测。\n可调用工具：bash\n检查",
+        "code": "代码执行\n执行 JavaScript、PowerShell 和受管 Python。\n待检查\n代码执行 · 受管 Python\n状态与详情",
+        "browser": "界面与桌面操作\n读取并操作浏览器、MyBuddy 界面和Windows 桌面。\n待检查\n浏览器 · 应用界面 · Windows 桌面\n状态与详情",
         "diagnostics": "开发诊断"
       }
     },
@@ -15,7 +15,7 @@
       "name": "command check actually executes and updates badge",
       "status": "passed",
       "details": {
-        "text": "命令执行\n已就绪\n直接使用 Pi 原生 bash；关闭后新会话不提供 bash\nbash\nPi Bash · 任务隔离与审批\n检查\n最近检查：已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。",
+        "text": "命令执行\n在任务中执行命令。\n已就绪\nPi Bash · 任务隔离与审批\n状态与详情\n最近检查：已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。\n可调用工具：bash\n检查",
         "message": "已实际执行 Bash 探测命令；使用 Pi 原生工具及其默认 Shell 解析。"
       }
     },
@@ -23,7 +23,7 @@
       "name": "missing Python is partial availability without installation",
       "status": "passed",
       "details": {
-        "text": "代码执行\n部分可用\n执行 JavaScript、PowerShell 和受管 Python；检查不下载环境，缺少 Python 会显示部分可用\nexecute_code\n代码执行 · 受管 Python\n检查\n最近检查：实际执行通过：JavaScript、PowerShell。受管 Python 环境尚未准备；可在 Python 设置中准备，检查不会下载安装",
+        "text": "代码执行\n执行 JavaScript、PowerShell 和受管 Python。\n部分可用\n代码执行 · 受管 Python\n状态与详情\n最近检查：实际执行通过：JavaScript、PowerShell。受管 Python 环境尚未准备；可在 Python 设置中准备，检查不会下载安装\n可调用工具：execute_code\n检查",
         "message": "实际执行通过：JavaScript、PowerShell。受管 Python 环境尚未准备；可在 Python 设置中准备，检查不会下载安装"
       }
     },
@@ -31,7 +31,7 @@
       "name": "UI and desktop probes read actual targets",
       "status": "passed",
       "details": {
-        "text": "界面与桌面操作\n部分可用\n读取并操作浏览器、MyBuddy 界面和 Windows 桌面；检查会分别读取可用目标\nbrowser_exec · ui_exec · computer_exec\n浏览器 · 应用界面 · Windows 桌面\n检查\n最近检查：实际读取通过：应用界面、Windows 桌面。浏览器：浏览器没有可读取的页面",
+        "text": "界面与桌面操作\n读取并操作浏览器、MyBuddy 界面和Windows 桌面。\n部分可用\n浏览器 · 应用界面 · Windows 桌面\n状态与详情\n最近检查：实际读取通过：应用界面、Windows 桌面。浏览器：浏览器没有可读取的页面\n可调用工具：browser_exec · ui_exec · computer_exec\n检查",
         "message": "实际读取通过：应用界面、Windows 桌面。浏览器：浏览器没有可读取的页面"
       }
     },
@@ -39,7 +39,7 @@
       "name": "runtime diagnostics reads attached renderer",
       "status": "passed",
       "details": {
-        "text": "运行诊断\n已就绪\n读取应用、浏览器与产物的运行状态和日志\nruntime_probe\n运行状态 · 日志\n检查\n最近检查：已实际读取运行状态：app、browser、artifact。",
+        "text": "运行诊断\n已就绪\n应用、浏览器与产物的运行状态\n状态与详情\n最近检查：已实际读取运行状态：app、browser、artifact。\n可调用工具：runtime_probe\n检查",
         "message": "已实际读取运行状态：app、browser、artifact。"
       }
     },
@@ -47,8 +47,8 @@
       "name": "subagent check starts trusted worker entry without model inference",
       "status": "passed",
       "details": {
-        "text": "子代理\n已就绪\n委派独立子任务；检查实际启动子代理入口，模型登录在委派时验证\nsubagent · subagent_list · subagent_steer\nSubagent Runtime\n检查\n最近检查：子代理入口已实际启动并返回版本 1.0.4；未调用模型，模型登录在委派时验证。",
-        "message": "子代理入口已实际启动并返回版本 1.0.4；未调用模型，模型登录在委派时验证。"
+        "text": "子代理\n委派有边界的独立子任务。\n已就绪\n模型登录在委派时验证。\n状态与详情\n最近检查：子代理入口已实际启动并返回版本 1.5.0；未调用模型，模型登录在委派时验证。\n可调用工具：subagent · subagent_list · subagent_steer\n检查",
+        "message": "子代理入口已实际启动并返回版本 1.5.0；未调用模型，模型登录在委派时验证。"
       }
     },
     {

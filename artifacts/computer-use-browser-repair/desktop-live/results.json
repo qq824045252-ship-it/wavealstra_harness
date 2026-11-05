@@ -1,127 +1,127 @@
 {
   "kind": "computer-use-real-provider-source-electron",
   "artifactDir": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live",
-  "model": "magpie/commandcode/z-ai/glm-5.3-flash",
-  "nonce": "fe95ee6ba529ca93",
-  "startedAt": "2026-10-16T00:22:22.521Z",
+  "model": "magpie/opendesign/deepseek-v4.1-flash",
+  "nonce": "d0bf59b989f6116e",
+  "startedAt": "2026-11-05T06:57:16.509Z",
   "tests": [
     {
       "name": "hidden-browser-screenshot-and-action",
-      "startedAt": "2026-10-16T00:22:25.043Z",
+      "startedAt": "2026-11-05T06:57:18.088Z",
       "status": "passed",
       "tools": [
         {
-          "id": "chatcmpl-tool-869eb695bd7c412d",
+          "id": "call_00_xHtrBiQcJl2GnmcKLGMs0158",
           "name": "browser_exec",
-          "summary": "navigate: http://127.0.0.1:52501",
+          "summary": "navigate: http://127.0.0.1:53132",
           "status": "success",
-          "taskId": "local-1792110145332-0",
-          "startSeq": 16,
+          "taskId": "local-1793861838356-0",
+          "startSeq": 20,
           "approval": false,
-          "endSeq": 18,
-          "output": "浏览器动作完成：navigate\n\n{\n  \"action\": \"navigate\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\"\n}"
+          "endSeq": 22,
+          "output": "浏览器动作完成：navigate\n\n{\n  \"action\": \"navigate\",\n  \"url\": \"http://127.0.0.1:53132/\",\n  \"title\": \"Screenshot acceptance fixture\"\n}"
         },
         {
-          "id": "chatcmpl-tool-b8ac22b67bd5b0a0",
+          "id": "call_00_ET_pW1SEYq79hUS89g62KlR2208",
           "name": "browser_exec",
           "summary": "screenshot",
           "status": "success",
-          "taskId": "local-1792110145332-0",
-          "startSeq": 31,
+          "taskId": "local-1793861838356-0",
+          "startSeq": 33,
           "approval": false,
-          "endSeq": 33,
-          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-cC7dc6\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1792110145332-0--0746b444dc3a6cad\\\\generated\\\\image\\\\88e42182-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MjExMDE0NTMzMi0wOjE3OTIxMTAxNDkyOTM6ejd4OGk0\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/commandcode/z-ai/glm-5.3-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
+          "endSeq": 35,
+          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:53132/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-J0EXQs\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1793861838356-0--66b4644c19869e11\\\\generated\\\\image\\\\ffeceb9b-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5Mzg2MTgzODM1Ni0wOjE3OTM4NjE4NDczNDA6NjRsZWl3\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/opendesign/deepseek-v4.1-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
         },
         {
-          "id": "chatcmpl-tool-9a10af45c14ee931",
+          "id": "call_00_Xd5JfARz7SjRhwvs69JB5406",
           "name": "browser_exec",
           "summary": "click: #fixtureButton",
           "status": "success",
-          "taskId": "local-1792110145332-0",
-          "startSeq": 46,
+          "taskId": "local-1793861838356-0",
+          "startSeq": 49,
           "approval": false,
-          "endSeq": 48,
-          "output": "浏览器动作完成：click\n\n{\n  \"action\": \"click\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"detail\": \"BUTTON: Run fixture action\"\n}"
+          "endSeq": 51,
+          "output": "浏览器动作完成：click\n\n{\n  \"action\": \"click\",\n  \"url\": \"http://127.0.0.1:53132/\",\n  \"detail\": \"BUTTON: Run fixture action\"\n}"
         },
         {
-          "id": "chatcmpl-tool-b901d3d500603f30",
+          "id": "call_00_ET_xPbpZTn5zmBlLAAGcDWc3353",
           "name": "browser_exec",
           "summary": "screenshot",
           "status": "success",
-          "taskId": "local-1792110145332-0",
-          "startSeq": 58,
+          "taskId": "local-1793861838356-0",
+          "startSeq": 62,
           "approval": false,
-          "endSeq": 60,
-          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:52501/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-cC7dc6\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1792110145332-0--0746b444dc3a6cad\\\\generated\\\\image\\\\8ae25bae-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5MjExMDE0NTMzMi0wOjE3OTIxMTAxNTUzNjk6ejlmczcz\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/commandcode/z-ai/glm-5.3-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
+          "endSeq": 64,
+          "output": "浏览器截图已保存\n\n{\n  \"action\": \"screenshot\",\n  \"url\": \"http://127.0.0.1:53132/\",\n  \"title\": \"Screenshot acceptance fixture\",\n  \"path\": \"C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-computer-use-desktop-J0EXQs\\\\profile\\\\.mybuddy\\\\task-workspaces\\\\local-1793861838356-0--66b4644c19869e11\\\\generated\\\\image\\\\bf137f3f-browser-screenshot.png\",\n  \"artifactId\": \"art-bG9jYWwtMTc5Mzg2MTgzODM1Ni0wOjE3OTM4NjE4NTg0MTI6ZHl2djlp\",\n  \"vision\": {\n    \"route\": \"native-multimodal\",\n    \"model\": \"magpie/opendesign/deepseek-v4.1-flash\"\n  }\n}\n\n截图已直接作为多模态 Tool Result 附在下方，请直接观察图片。"
         }
       ],
-      "finalText": "老板，按指定顺序完成，未使用任何被禁止的工具：\n\n- **VISUAL 标记完整文字**：`VISUAL-fe95ee6ba529ca93`（页面标题为 \"Screenshot acceptance fixture\"，蓝色背景白色大字）\n- **初始状态**：黄色按钮 \"Run fixture action\"，下方绿色状态条显示 `READY`\n- **操作后状态**：点击 `#fixtureButton`（按钮文字确认为 \"Run fixture action\"）后，绿色状态条变为 `CLICKED`，标记文字不变\n\n全部依据真实截图观察，浏览器侧栏未打开。",
-      "taskId": "local-1792110145332-0",
+      "finalText": "老板，按指定顺序完成了 4 步调用（仅 browser_exec）：\n\n1. navigate → `http://127.0.0.1:53132/`，标题 \"Screenshot acceptance fixture\"\n2. screenshot → 见第一张截图\n3. click `#fixtureButton` → 返回 `BUTTON: Run fixture action`\n4. screenshot → 见第二张截图\n\n**VISUAL 标记完整文字**：`VISUAL-d0bf59b989f6116e`\n\n**操作后状态**：\n- 操作前状态条为绿色 `READY`\n- 点击后状态条变为 `CLICKED`\n- 标题、标记文字与按钮 \"Run fixture action\" 均未变化，页面无跳转\n\n截图文件：\n- `generated/image/ffeceb9b-browser-screenshot.png`（点击前）\n- `generated/image/bf137f3f-browser-screenshot.png`（点击后）",
+      "taskId": "local-1793861838356-0",
       "result": {
         "nativeImageResults": 2,
         "nativeImages": [
           {
             "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live\\browser-native-0.png",
-            "sha256": "ff15aaddcc6f98d10d37bd2c3c4f0ca33e91d4ab604b99982dcc36783e35b1fe"
+            "sha256": "030222641c0f34d06a33237a53e23c12457d26771866510e2c22b2775e5bd185"
           },
           {
             "path": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\artifacts\\computer-use-browser-repair\\desktop-live\\browser-native-1.png",
-            "sha256": "c8e515e5a2cc3414b55e64f87400544e293af8d7288bf84037e61f529dbc04ef"
+            "sha256": "54ffae0f1160a923af49e10b6aef241a3ecf8980de33e920dedd8a51b0a65980"
           }
         ],
         "visualNonceRead": true,
         "actualFixtureClicks": 1
       },
-      "finishedAt": "2026-10-16T00:22:40.160Z"
+      "finishedAt": "2026-11-05T06:57:44.237Z"
     },
     {
       "name": "computer-stop-preserves-agent-task",
-      "startedAt": "2026-10-16T00:22:40.584Z",
+      "startedAt": "2026-11-05T06:57:44.450Z",
       "status": "passed",
       "stoppedViaRealOverlay": true,
-      "cancelledAt": 1792110163636,
+      "cancelledAt": 1793861870005,
       "tools": [
         {
-          "id": "chatcmpl-tool-afb7bfad68c9057f",
+          "id": "call_00_9y6gKGjpixhAZmeu7F4N1851",
           "name": "computer_exec",
-          "summary": "wait_for_window: Missing acceptance window fe95ee6ba529ca93",
+          "summary": "wait_for_window: Missing acceptance window d0bf59b989f6116e",
           "status": "error",
-          "taskId": "local-1792110160918-3",
-          "startSeq": 17,
+          "taskId": "local-1793861864757-3",
+          "startSeq": 18,
           "approval": false,
-          "endSeq": 19,
-          "output": "[computer_exec] 用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。"
+          "endSeq": 20,
+          "output": "[computer_exec] 用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。\n\n执行证据（先回读状态，禁止重放已执行或结果未知的输入）：\n{\"code\":\"REQUEST_CANCELLED\"}"
         },
         {
-          "id": "chatcmpl-tool-819795cc12dbfebe",
+          "id": "call_00_LlQOct7PociK0IEAPnsK7082",
           "name": "write",
-          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt",
+          "summary": "C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-J0EXQs/workspace/continued-after-computer-stop.txt",
           "status": "success",
-          "taskId": "local-1792110160918-3",
+          "taskId": "local-1793861864757-3",
           "startSeq": 33,
           "approval": false,
           "endSeq": 35,
-          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt"
+          "output": "Successfully wrote to C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-J0EXQs/workspace/continued-after-computer-stop.txt"
         }
       ],
-      "finalText": "已确认：`computer_exec(wait_for_window)` 收到取消结果后未重试，且已通过原生 `write` 创建文件 `C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-cC7dc6/workspace/continued-after-computer-stop.txt`，内容为 `CONTINUED-fe95ee6ba529ca93`。\n\n任务已继续。",
-      "taskId": "local-1792110160918-3",
+      "finalText": "老板，任务已继续。\n\n- computer_exec 返回 `REQUEST_CANCELLED`（用户停止本轮 Computer Use），未重试。\n- 已改用原生 write 创建文件：`C:/Users/servi/AppData/Local/Temp/mybuddy-computer-use-desktop-J0EXQs/workspace/continued-after-computer-stop.txt`\n- 内容：`CONTINUED-d0bf59b989f6116e`",
+      "taskId": "local-1793861864757-3",
       "result": {
         "computerUseCancelled": true,
         "parentTaskContinued": true,
         "nativeWriteAfterStop": true
       },
-      "finishedAt": "2026-10-16T00:22:48.650Z"
+      "finishedAt": "2026-11-05T06:57:58.127Z"
     }
   ],
   "status": "passed",
-  "mainBuildSha256": "b1be70f4bbad93450cd4aa0c1eac7d35956407c36c0f569b25cfaa3473813ff8",
-  "pid": 13356,
+  "mainBuildSha256": "d36bc1454eebb7cf2d9d2449de3e3b0be24eb834fc61263737108801942b0dd7",
+  "pid": 48636,
   "permissionMode": "auto (isolated localhost fixtures only)",
   "rendererErrors": [],
   "observedModels": [
-    "magpie/commandcode/z-ai/glm-5.3-flash"
+    "magpie/opendesign/deepseek-v4.1-flash"
   ],
   "temporaryCredentialsRemoved": true,
-  "finishedAt": "2026-10-16T00:23:09.616Z"
+  "finishedAt": "2026-11-05T06:58:19.123Z"
 }
