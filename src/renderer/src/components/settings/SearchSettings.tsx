@@ -3,7 +3,7 @@ import type { WebSearchPolicy, SearchMode } from "@shared/web-search";
 import { WEB_SEARCH_PROVIDER_OPTIONS } from "@shared/agent-ipc";
 import "./SearchSettings.css";
 
-const providerLabel = (id: string): string => WEB_SEARCH_PROVIDER_OPTIONS.find((option) => option.id === id)?.label ?? id;
+export const searchProviderLabel = (id: string): string => WEB_SEARCH_PROVIDER_OPTIONS.find((option) => option.id === id)?.label ?? id;
 
 export default function SearchSettings({ value, configured, disabled, onChange }: { value: WebSearchPolicy; configured: string[]; disabled?: boolean; onChange: (value: WebSearchPolicy) => void }): React.JSX.Element {
   // Configured (or already selected) providers come first; the rest stay one click away.
@@ -43,7 +43,7 @@ export default function SearchSettings({ value, configured, disabled, onChange }
         })}
       </div>
       {hidden.length > 0 && <button type="button" className="search-providers-toggle" onClick={() => setShowAll(!showAll)}>{showAll ? "收起未配置的供应商" : `显示未配置的 ${hidden.length} 家供应商`}</button>}
-      {value.mode === "fallback" && <ol className="search-order">{value.providers.map((p, i) => <li key={p} title={providerLabel(p)}><span>{providerLabel(p)}</span><button type="button" disabled={i === 0} aria-label={`上移 ${p}`} onClick={() => { const providers = [...value.providers]; [providers[i - 1], providers[i]] = [providers[i], providers[i - 1]]; onChange({ ...value, providers }); }}>↑</button></li>)}</ol>}
+      {value.mode === "fallback" && <ol className="search-order">{value.providers.map((p, i) => <li key={p} title={searchProviderLabel(p)}><span>{searchProviderLabel(p)}</span><button type="button" disabled={i === 0} aria-label={`上移 ${p}`} onClick={() => { const providers = [...value.providers]; [providers[i - 1], providers[i]] = [providers[i], providers[i - 1]]; onChange({ ...value, providers }); }}>↑</button></li>)}</ol>}
     </div>}
     <label className="search-verify" title="最多读取 5 个网页；引用原文、保留分歧，会增加等待时间和模型用量。">
       <input type="checkbox" checked={value.verifySources} onChange={e => onChange({ ...value, verifySources: e.target.checked })} />读取关键原文并核验结论<small>最多 5 页 · 更慢更贵</small>

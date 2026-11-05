@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="540" viewBox="0 0 1120 540">
+  <rect x="0" y="0" width="1120" height="540" fill="#f7f9fc"/>
+  <text x="24" y="34" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="600" fill="#1f2a37">OpenRouter 保存后自动加载模型目录（main 侧修复后的真实链路）</text>
+
+  <!-- Row 1: save call chain -->
+  <text x="24" y="66" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f766e">① 保存：发起目录发现（不让保存等待网络）</text>
+
+  <rect x="24" y="80" width="320" height="116" rx="10" fill="#ffffff" stroke="#9aa7b8"/>
+  <text x="40" y="104" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">renderer · CapabilitiesTab.save()</text>
+  <text x="40" y="130" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">saveBuiltinCapabilitySettings({</text>
+  <text x="52" y="150" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">config, credentials, expectedRevision })</text>
+  <text x="40" y="176" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">新连接的 credentialRef 在 save() 里才写入</text>
+
+  <rect x="384" y="80" width="344" height="116" rx="10" fill="#ffffff" stroke="#9aa7b8"/>
+  <text x="400" y="104" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">AgentService.saveBuiltinCapabilitySettings</text>
+  <text x="400" y="130" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f766e">mediaCapabilityServices.saveAndRefresh()</text>
+  <text x="400" y="152" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">getBuiltinCapabilities() 立即返回快照</text>
+  <text x="400" y="176" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">（此刻 models 可能仍为空，属预期）</text>
+
+  <rect x="768" y="80" width="328" height="116" rx="10" fill="#ffffff" stroke="#9aa7b8"/>
+  <text x="784" y="104" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">MediaCapabilityServices.saveAndRefresh</text>
+  <text x="784" y="130" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">save()：写凭据 → 写 config</text>
+  <text x="784" y="152" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f766e">identity 可算 → void refresh()</text>
+  <text x="784" y="176" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">发现失败不回滚配置；identity=sha256(id,baseUrl,ref,secret)</text>
+
+  <line x1="344" y1="138" x2="376" y2="138" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="728" y1="138" x2="760" y2="138" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/>
+
+  <text x="24" y="224" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#b91c1c">修复前只有 init() 与「刷新状态」触发发现：保存后 catalog 不存在 → services()[*].models 为空 → renderer 退回手输框「输入支持图片的模型名称」。</text>
+
+  <!-- Row 2: renderer refresh chain -->
+  <text x="24" y="266" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f766e">② 渲染端最短契约：保存成功后 await refreshBuiltinMediaServices()，返回的快照已含模型</text>
+
+  <rect x="24" y="280" width="320" height="116" rx="10" fill="#ffffff" stroke="#0f766e"/>
+  <text x="40" y="304" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">renderer · needsCatalogueRefresh()</text>
+  <text x="40" y="330" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">models 全空 → refreshBuiltinMediaServices()</text>
+  <text x="40" y="352" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">→ acceptStatus(snapshot)</text>
+  <text x="40" y="376" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">models[id] 非空 → SettingsSelect 下拉</text>
+
+  <rect x="384" y="280" width="344" height="116" rx="10" fill="#ffffff" stroke="#0f766e"/>
+  <text x="400" y="304" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">AgentService.refreshBuiltinMediaServices</text>
+  <text x="400" y="330" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">await mediaCapabilityServices.refresh()</text>
+  <text x="400" y="352" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">→ getBuiltinCapabilities()</text>
+  <text x="400" y="376" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">preload 契约不变：返回 Promise&lt;Snapshot&gt;</text>
+
+  <rect x="768" y="280" width="328" height="116" rx="10" fill="#ffffff" stroke="#0f766e"/>
+  <text x="784" y="304" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">refresh() 串行化与身份去重</text>
+  <text x="784" y="330" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">refreshTarget == revision → 共享在飞 pass</text>
+  <text x="784" y="352" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f766e">否则 await 后补跑一次新 revision</text>
+  <text x="784" y="376" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6778">同一 identity 的并发只发 1 次请求</text>
+
+  <line x1="344" y1="338" x2="376" y2="338" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="728" y1="338" x2="760" y2="338" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Row 3: catalog projection + failure detail -->
+  <rect x="24" y="420" width="1072" height="96" rx="10" fill="#eef6ff" stroke="#2563eb"/>
+  <text x="40" y="446" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#1f2a37">③ catalog 投影与可诊断状态（services() 只投影 identity 匹配的 catalog）</text>
+  <text x="40" y="470" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">换 Key → identity 变化 → 旧 catalog 不再投影；失败 → openRouterErrors{identity, detail}：需要 Key / HTTP 401·403 / 超时。</text>
+  <text x="40" y="492" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#334155">目录已加载但某能力 0 模型 → detail 说明「暂无可用模型」；全路由失败时抛出带 HTTP 状态的错误，映射为一句可操作提示；绑定的密钥与选择始终保留。</text>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+</svg>

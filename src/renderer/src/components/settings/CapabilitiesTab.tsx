@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { RecognitionServiceEditor } from "./RecognitionServiceEditor";
 import { SettingsInput, SettingsSecretField, SettingsSection, SettingsSelect, SettingsToggle } from "./SettingsPrimitives";
-import SearchSettings from "./SearchSettings";
+import SearchSettings, { searchProviderLabel } from "./SearchSettings";
 import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
+import type { WebSearchPolicy } from "@shared/web-search";
 import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
 import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities } from "@shared/media-capabilities";
@@ -17,6 +18,7 @@ import "./CapabilitiesTab.css";
 const AUTO_SERVICE = "__automatic__";
 const ADD_SERVICE = "__add_api__";
 const ADD_PRESET_PREFIX = "__preset__:";
+const CUSTOM_MODEL = "__custom_model__";
 const STATE_LABEL: Record<string, string> = {
   ready: "已就绪", unchecked: "待检查", disabled: "已关闭", "needs-configuration": "需要配置",
   "missing-dependency": "需要准备", offline: "连接异常", degraded: "部分可用",
@@ -33,6 +35,28 @@ type CredentialDraft = Pick<CapabilityCredentialChange, "secret" | "clear">;
 const differs = (left: unknown, right: unknown): boolean => JSON.stringify(left) !== JSON.stringify(right);
 const errorText = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
 const hasCredentialChange = (change?: CredentialDraft): boolean => Boolean(change?.clear || change?.secret?.trim());
+
+/** One live line for the collapsed row header; it never repeats the full form. */
+function searchSummary(enabled: boolean, policy: WebSearchPolicy): string {
+  if (!enabled) return "已关闭";
+  switch (policy.mode) {
+    case "parallel": return `多源同时搜索 · ${policy.providers.length} 家供应商`;
+    case "single": return policy.providers[0] ? `指定单源 · ${searchProviderLabel(policy.providers[0])}` : "指定单源 · 未选择供应商";
+    case "fallback": return `按序回退 · ${policy.providers.length} 家`;
+    default: return "自动选择可用源";
+  }
+}
+
+/** A fresh OpenRouter connection is saved before its model catalogue has been discovered. */
+function needsCatalogueRefresh(config: BuiltinCapabilitiesConfigDto, snapshot: BuiltinCapabilitiesSnapshotDto): boolean {
+  const connections = Object.entries(config.connections ?? {}).filter(([, connection]) => connection.protocol === "openrouter");
+  if (!connections.length) return false;
+  const catalogue = snapshot.mediaServices ?? [];
+  return connections.some(([id]) => {
+    const option = catalogue.find(entry => entry.id === id);
+    return !option || Object.values(option.models ?? {}).every(list => !list || list.length === 0);
+  });
+}
 
 function settingsApi() {
   const api = window.api?.agent;
@@ -135,7 +159,7 @@ function StatusBadge({ status, pending }: { status?: BuiltinCapabilityStatusDto;
   return <span className={`capability-state capability-state--${state}`}>{pending ? "待保存" : uncheckedMedia ? "已配置，未试用" : STATE_LABEL[state] ?? state}</span>;
 }
 
-function CapabilityRow({ id, title, description, tools, enabled, savedEnabled, disabled, testing, status, configurationPending = false, preventEnable = false, onToggle, onTest, children, detailsContent }: {
+function CapabilityRow({ id, title, description, tools, enabled, savedEnabled, disabled, testing, status, configurationPending = false, preventEnable = false, collapsible = false, defaultCollapsed = false, summary, checkResult, onToggle, onTest, children, detailsContent }: {
   id: BuiltinCapabilityId;
   title: string;
   description?: string;
@@ -147,19 +171,32 @@ function CapabilityRow({ id, title, description, tools, enabled, savedEnabled, d
   status?: BuiltinCapabilityStatusDto;
   configurationPending?: boolean;
   preventEnable?: boolean;
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
+  summary?: ReactNode;
+  checkResult?: { ok: boolean; detail: string } | null;
   onToggle: (enabled: boolean) => void;
   onTest: (id: BuiltinCapabilityId) => void;
   children: ReactNode;
   detailsContent?: ReactNode;
 }): React.JSX.Element {
   const pending = configurationPending || (savedEnabled !== undefined && savedEnabled !== enabled);
+  // Collapsing keeps the form mounted, so an unsaved draft is never discarded.
+  const [expanded, setExpanded] = useState(() => !collapsible || !defaultCollapsed);
+  const config = <fieldset className="capability-config-control" disabled={disabled}>{children}</fieldset>;
   return <div data-capability-id={id} className={`settings-row capability-config-row${enabled ? "" : " is-disabled"}`}>
     <div className="capability-config-header">
       <div className="capability-config-copy"><div className="settings-row-label">{title}</div>{description && <div className="settings-row-desc">{description}</div>}</div>
       <StatusBadge status={status} pending={pending} />
       <SettingsToggle on={enabled} label={`${title}开关`} disabled={disabled || (preventEnable && !enabled)} onChange={onToggle} />
     </div>
-    <fieldset className="capability-config-control" disabled={disabled}>{children}</fieldset>
+    {checkResult && <p className={`capability-check-result ${checkResult.ok ? "is-ok" : "is-error"}`} role={checkResult.ok ? "status" : "alert"}>{checkResult.ok ? "检查通过" : "检查失败"}：{checkResult.detail}</p>}
+    {collapsible
+      ? <details className="capability-config-disclosure" open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
+        <summary className="capability-config-summary"><span className="capability-config-summary-text">{summary}</span><span className="settings-disclosure-chevron" aria-hidden="true">⌄</span></summary>
+        {config}
+      </details>
+      : config}
     <details className="capability-status-details">
       <summary>状态与详情</summary>
       <div className="capability-status-body">
@@ -200,19 +237,38 @@ function MediaModelField({ id, binding, service, disabled, onChange }: {
   disabled?: boolean;
   onChange: (model: string) => void;
 }): React.JSX.Element {
-  const listId = useId();
   const choices = service?.models[id] ?? [];
+  const hasCatalogue = choices.length > 0;
+  const [custom, setCustom] = useState(false);
+  // Switching service (or its catalogue) always starts from the selectable list.
+  useEffect(() => { setCustom(false); }, [service?.id, hasCatalogue]);
   const label = service?.id && id === "ocr" && service.models.ocr?.some(row => row.id === BAIDU_OCR_DEFAULT_MODE)
     ? "OCR 识别模式" : `${MEDIA_ROWS[id].title}模型`;
-  if (service?.allowCustomModel) return <div>
-    <SettingsInput label="模型" aria-label={label} value={binding.model ?? ""} list={listId} spellCheck={false} disabled={disabled} placeholder={id === "ocr" ? "输入支持图片的模型名称" : "输入服务支持的模型名称"} onChange={event => onChange(event.target.value)} />
-    {choices.length > 0 && <datalist id={listId}>{choices.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</datalist>}
+  const placeholder = id === "ocr" ? "输入支持图片的模型名称" : "输入服务支持的模型名称";
+  if (!hasCatalogue) {
+    // Without a discovered catalogue there is nothing to select; only a free-form protocol stays editable.
+    if (!service?.allowCustomModel) return <SettingsSelect label={label === "OCR 识别模式" ? "识别模式" : "模型"} aria-label={label} value={binding.model ?? ""} disabled={disabled || !hasCatalogue} onChange={event => onChange(event.target.value)}>
+      <option value="">{service?.source === "local" ? "使用本机已安装模型" : "服务可用后显示模型"}</option>
+      {binding.model && <option value={binding.model}>{binding.model}（暂不可用）</option>}
+    </SettingsSelect>;
+    return <div>
+      <SettingsInput label="模型" aria-label={label} value={binding.model ?? ""} spellCheck={false} disabled={disabled} placeholder={placeholder} hint="尚未加载模型目录；刷新状态以加载模型目录，或直接输入模型名称。" onChange={event => onChange(event.target.value)} />
+    </div>;
+  }
+  return <div>
+    <SettingsSelect label={label === "OCR 识别模式" ? "识别模式" : "模型"} aria-label={label} value={custom ? CUSTOM_MODEL : binding.model ?? ""} disabled={disabled} onChange={event => {
+      const next = event.target.value;
+      if (next === CUSTOM_MODEL) { setCustom(true); return; }
+      setCustom(false);
+      onChange(next);
+    }}>
+      <option value="">{service?.source === "local" ? "使用本机已安装模型" : "请选择模型"}</option>
+      {!custom && binding.model && !choices.some(choice => choice.id === binding.model) && <option value={binding.model}>{binding.model}（暂不可用）</option>}
+      {choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
+      {service?.allowCustomModel && <option value={CUSTOM_MODEL}>自定义模型…</option>}
+    </SettingsSelect>
+    {custom && service?.allowCustomModel && <SettingsInput label="自定义模型" aria-label={`${label}（自定义）`} value={binding.model ?? ""} spellCheck={false} disabled={disabled} placeholder={placeholder} hint="目录里没有需要的模型时，可手动填写模型 ID。" onChange={event => onChange(event.target.value)} />}
   </div>;
-  return <SettingsSelect label={label === "OCR 识别模式" ? "识别模式" : "模型"} aria-label={label} value={binding.model ?? ""} disabled={disabled || !choices.length} onChange={event => onChange(event.target.value)}>
-    <option value="">{service?.source === "local" ? "使用本机已安装模型" : choices.length ? "选择模型" : "服务可用后显示模型"}</option>
-    {binding.model && !choices.some(choice => choice.id === binding.model) && <option value={binding.model}>{binding.model}（暂不可用）</option>}
-    {choices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
-  </SettingsSelect>;
 }
 
 function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredentials, usedBy, disabled, onChange, onCredentialChange, onSecretKeyCredentialChange, onRemove }: {
@@ -275,6 +331,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<BuiltinCapabilityId | null>(null);
+  const [checkResult, setCheckResult] = useState<{ id: BuiltinCapabilityId; ok: boolean; detail: string } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchLoadError, setSearchLoadError] = useState<string | null>(null);
@@ -361,6 +418,8 @@ export default function CapabilitiesTab(): React.JSX.Element {
 
   const changeConfig = (update: (current: BuiltinCapabilitiesConfigDto) => BuiltinCapabilitiesConfigDto): void => {
     if (saving) return;
+    // A result belongs to the configuration that was checked; editing it makes the result stale.
+    setCheckResult(null);
     setDraft(current => current ? update(current) : current);
   };
   const changeCredential = (connectionId: string, change: CredentialDraft): void => {
@@ -438,15 +497,27 @@ export default function CapabilitiesTab(): React.JSX.Element {
       if (!mounted.current) return;
       const successes: string[] = [];
       const failures: string[] = [];
+      let catalogueNotice = "";
       if (mainPending) {
-        if (capabilities.status === "fulfilled" && capabilities.value) { acceptConfig(capabilities.value); setCredentialDrafts({}); successes.push("工具能力已保存"); }
-        else failures.push(`工具能力保存失败：${capabilities.status === "rejected" ? errorText(capabilities.reason) : "没有返回配置"}`);
+        if (capabilities.status === "fulfilled" && capabilities.value) {
+          acceptConfig(capabilities.value);
+          setCredentialDrafts({});
+          successes.push("工具能力已保存");
+          // A newly added OpenRouter connection has no catalogue until it is discovered after saving.
+          if (needsCatalogueRefresh(submittedConfig, capabilities.value)) {
+            try {
+              const refreshed = await settingsApi().refreshBuiltinMediaServices();
+              if (refreshed && mounted.current) acceptStatus(refreshed);
+            } catch (reason) { catalogueNotice = `模型目录暂时未能加载：${errorText(reason)}。可稍后点「刷新状态」重试。`; }
+          }
+        } else failures.push(`工具能力保存失败：${capabilities.status === "rejected" ? errorText(capabilities.reason) : "没有返回配置"}`);
       }
       if (searchToSave) {
         if (search.status === "fulfilled" && search.value) { acceptSearch(search.value); successes.push("搜索设置已保存"); }
         else failures.push(`搜索设置保存失败：${search.status === "rejected" ? errorText(search.reason) : "没有返回配置"}`);
       }
-      if (successes.length) setMessage(`${successes.join("；")}。${failures.length ? "未成功的更改仍在表单中，重试只提交这些更改。" : "工具开关从新会话生效。"}`);
+      if (successes.length) setMessage(`${successes.join("；")}。${failures.length ? "未成功的更改仍在表单中，重试只提交这些更改。" : "工具开关从新会话生效。"}${catalogueNotice}`);
+      else if (catalogueNotice) setMessage(catalogueNotice);
       if (failures.length) setError(`${failures.join("；")}。未保存的草稿已保留。`);
     } catch (reason) { if (mounted.current) setError(`保存失败：${errorText(reason)}。草稿已保留。`); }
     finally { inFlight.current = false; if (mounted.current) setSaving(false); }
@@ -463,15 +534,20 @@ export default function CapabilitiesTab(): React.JSX.Element {
   };
   const test = async (id: BuiltinCapabilityId): Promise<void> => {
     if (inFlight.current) return;
-    inFlight.current = true; setTesting(id); setMessage(null); setError(null);
+    inFlight.current = true; setTesting(id); setMessage(null); setError(null); setCheckResult(null);
     try {
       const result = await settingsApi().testBuiltinCapability(id);
       if (!result) throw new Error("检查没有返回结果");
       if (!mounted.current) return;
+      setCheckResult({ id, ok: Boolean(result.ok), detail: result.detail });
       (result.ok ? setMessage : setError)(result.detail);
-      const next = await settingsApi().getBuiltinCapabilities();
-      if (next && mounted.current) acceptStatus(next);
-    } catch (reason) { if (mounted.current) setError(errorText(reason)); }
+      try {
+        const next = await settingsApi().getBuiltinCapabilities();
+        if (next && mounted.current) acceptStatus(next);
+      } catch { /* The check result stays valid even when the status read fails. */ }
+    } catch (reason) {
+      if (mounted.current) { setCheckResult({ id, ok: false, detail: errorText(reason) }); setError(errorText(reason)); }
+    }
     finally { inFlight.current = false; if (mounted.current) setTesting(null); }
   };
   const retrySearch = async (): Promise<void> => {
@@ -484,7 +560,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
 
   if (loading && !draft) return <div className="settings-row-desc">正在读取工具能力…</div>;
   if (!draft) return <div className="capabilities-page"><div className="capability-message is-error" role="alert">{error ?? "工具能力配置不可用"}</div><button type="button" className="btn" onClick={() => void load()}>重新读取</button></div>;
-  const rowCommon = (id: BuiltinCapabilityId, enabled: boolean) => ({ id, enabled, savedEnabled: statusById.get(id)?.enabled, disabled: busy, testing: testing === id, status: statusById.get(id), onTest: (target: BuiltinCapabilityId) => void test(target) });
+  const rowCommon = (id: BuiltinCapabilityId, enabled: boolean) => ({ id, enabled, savedEnabled: statusById.get(id)?.enabled, disabled: busy, testing: testing === id, status: statusById.get(id), checkResult: checkResult?.id === id ? checkResult : null, onTest: (target: BuiltinCapabilityId) => void test(target) });
   const connectionUsers = (connectionId: string): MediaCapabilityId[] => MEDIA_CAPABILITY_IDS.filter(id => mediaBinding(draft, id).connectionId === connectionId);
   const configChangedElsewhere = draftRevision !== undefined && snapshot?.revision !== undefined && draftRevision !== snapshot.revision;
 
@@ -579,10 +655,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
     </SettingsSection>
 
     <SettingsSection title="搜索与图像理解">
-      <CapabilityRow {...rowCommon("web", draft.web.enabled)} title="联网搜索" description={searchPolicy.mode === "parallel" ? `同时搜索 ${searchPolicy.providers.length} 家供应商` : "选择检索方式与供应商。"} tools={["web_search", "fetch_content", "source_check", "get_search_content"]} configurationPending={searchPending} onToggle={enabled => changeConfig(current => ({ ...current, web: { ...current.web, enabled } }))}>
+      <CapabilityRow {...rowCommon("web", draft.web.enabled)} title="联网搜索" description={searchPolicy.mode === "parallel" ? `同时搜索 ${searchPolicy.providers.length} 家供应商` : "选择检索方式与供应商。"} tools={["web_search", "fetch_content", "source_check", "get_search_content"]} configurationPending={searchPending} collapsible defaultCollapsed summary={searchSummary(draft.web.enabled, searchPolicy)} onToggle={enabled => changeConfig(current => ({ ...current, web: { ...current.web, enabled } }))}>
         {searchLoadError ? <div className="capability-search-error"><p className="settings-inline-error" role="alert">{searchLoadError}</p><button type="button" className="btn" disabled={busy || refreshing} onClick={() => void retrySearch()}>重新读取搜索设置</button></div> : <><SearchSettings value={searchPolicy} configured={searchProviderChoices} disabled={!draft.web.enabled || busy} onChange={setSearchPolicy} /><details className="capability-options"><summary>搜索 API Key</summary><div className="capability-form-grid">{([['tavilyApiKey', 'Tavily'], ['serperApiKey', 'Serper'], ['tinyfishApiKey', 'TinyFish'], ['braveApiKey', 'Brave']] as const).map(([key, label]) => <SettingsInput key={key} label={`${label} API Key`} type="password" autoComplete="new-password" value={webSearchDraft?.[key] ?? ""} onChange={event => setWebSearchDraft(current => ({ ...(current ?? {}), [key]: event.target.value || undefined }))} />)}</div></details></>}
       </CapabilityRow>
-      <CapabilityRow {...rowCommon("vision", draft.vision.enabled)} title="图像理解" description="为不支持图片输入的主模型选择视觉模型；用于分析图片。" tools={["describe_image"]} configurationPending={savedConfig?.vision.model !== draft.vision.model} preventEnable={!visionModels.length} onToggle={enabled => changeConfig(current => ({ ...current, vision: { ...current.vision, enabled } }))}>
+      <CapabilityRow {...rowCommon("vision", draft.vision.enabled)} title="图像理解" description="为不支持图片输入的主模型选择视觉模型；用于分析图片。" tools={["describe_image"]} configurationPending={savedConfig?.vision.model !== draft.vision.model} preventEnable={!visionModels.length} collapsible summary={draft.vision.model ? `视觉模型 · ${visionModels.find(model => model.id === draft.vision.model)?.name ?? draft.vision.model}` : "自动使用可用视觉模型"} onToggle={enabled => changeConfig(current => ({ ...current, vision: { ...current.vision, enabled } }))}>
         <SettingsSelect label="视觉模型" value={draft.vision.model ?? ""} disabled={!visionModels.length} onChange={event => changeConfig(current => ({ ...current, vision: { ...current.vision, model: event.target.value || undefined } }))}>
           <option value="">{visionModels.length ? "自动使用可用视觉模型" : "暂无支持图片输入的已启用模型"}</option>
           {draft.vision.model && !visionModels.some(model => model.id === draft.vision.model) && <option value={draft.vision.model}>{draft.vision.model}（暂不可用）</option>}

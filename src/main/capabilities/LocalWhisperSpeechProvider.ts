@@ -4,7 +4,15 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpeechCapabilityProvider, SpeechToTextInput, SpeechToTextOutput, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
-import { ensureWhisperRuntime, resolveWhisperRuntime } from "../voice/whisperAsr";
+import {
+  describeWhisperRuntime,
+  ensureWhisperRuntime,
+  formatWhisperRuntimeReport,
+  probeWhisperDependencies,
+  WHISPER_PROBE_TIMEOUT_MS,
+  type WhisperDependencyProbeResult,
+  type WhisperRuntimeReport,
+} from "../voice/whisperAsr";
 
 const RESULT_PREFIX = "__MYBUDDY_TRANSCRIBE_RESULT__";
 const TRANSCRIBE_TIMEOUT_MS = 30 * 60_000;
@@ -133,15 +141,66 @@ async function transcribeWithLocalWhisper(
   }
 }
 
-export function createLocalWhisperSpeechProvider(): SpeechCapabilityProvider {
+/** 「检查」的结构化结果：ok 与 detail 分离，便于 UI 分行内提示与诊断。 */
+export interface LocalWhisperDiagnosis {
+  ok: boolean;
+  detail: string;
+  report: WhisperRuntimeReport;
+}
+
+export interface LocalWhisperDiagnoseOptions {
+  /** 测试注入点：默认用 probeWhisperDependencies 起子进程探测。 */
+  probe?: (python: string, options: { timeoutMs?: number }) => Promise<WhisperDependencyProbeResult>;
+  timeoutMs?: number;
+}
+
+/**
+ * 检查本机 Whisper 配置并做一次「无推理」依赖探测。
+ *
+ * 只验证：路径/资源存在、解释器来源、解释器能跑起来且关键模块可导入。
+ * 不加载模型、不需要音频样本、超时有界（默认 15s）；探测失败降级为 detail 文本。
+ */
+export async function diagnoseLocalWhisper(options: LocalWhisperDiagnoseOptions = {}): Promise<LocalWhisperDiagnosis> {
+  const report = describeWhisperRuntime();
+  const summary = formatWhisperRuntimeReport(report);
+  if (!report.available) {
+    const reason = report.missingAssets.length > 0 ? `缺少 ${report.missingAssets.join("、")}` : report.detail;
+    return { ok: false, report, detail: `本机 Whisper 不可用：${reason}；${summary}` };
+  }
+  let probe: WhisperDependencyProbeResult;
+  try {
+    probe = await (options.probe ?? probeWhisperDependencies)(report.python, {
+      timeoutMs: options.timeoutMs ?? WHISPER_PROBE_TIMEOUT_MS,
+    });
+  } catch (error) {
+    probe = { ok: false, detail: `依赖探测进程异常：${error instanceof Error ? error.message : String(error)}` };
+  }
+  const version = probe.pythonVersion ? ` · Python ${probe.pythonVersion}` : "";
+  if (!probe.ok) {
+    return {
+      ok: false,
+      report,
+      detail: `本机 Whisper 配置检查通过（未运行模型推理），但依赖探测未通过：${probe.detail}；${summary}${version}`,
+    };
+  }
+  return {
+    ok: true,
+    report,
+    detail: `本机 Whisper 检查通过（未运行模型推理）：${summary}${version} · 依赖探测：${probe.detail}`,
+  };
+}
+
+export function createLocalWhisperSpeechProvider(options: LocalWhisperDiagnoseOptions = {}): SpeechCapabilityProvider {
   return {
     id: "local-whisper",
     label: "本地 Whisper · NPU",
     speechToText: transcribeWithLocalWhisper,
     async test(): Promise<string> {
-      const runtime = resolveWhisperRuntime();
-      if (!runtime.available) throw new Error(runtime.detail);
-      return `配置/依赖路径检查通过；最近真实转写：未知（需音频试运行） · ${runtime.root}`;
+      const diagnosis = await diagnoseLocalWhisper(options);
+      // 配置缺失与依赖探测失败都走失败态：抛出的错误由上层 MediaCapabilityServices.test()
+      // 的 catch 转成 ok:false 并带上原因（既有契约），不是未捕获崩溃。
+      if (!diagnosis.ok) throw new Error(diagnosis.detail);
+      return diagnosis.detail;
     },
   };
 }

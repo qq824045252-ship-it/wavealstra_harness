@@ -5,6 +5,8 @@ export const MEDIA_CAPABILITY_IDS: MediaCapabilityId[] = ["speech-to-text", "ocr
 export const CODEX_CONNECTION_ID = "builtin-codex";
 export const MAGPIE_CONNECTION_ID = "builtin-magpie";
 export const LOCAL_WHISPER_CONNECTION_ID = "builtin-whisper";
+/** Built-in on-device OCR through the OCR_NPU CLI; no model or credential is configured. */
+export const LOCAL_OCR_CONNECTION_ID = "builtin-local-ocr";
 
 /** These presets name implemented protocols, not a promise about every server. */
 export type ApiCapabilityProtocol = "openai-compatible" | "openrouter" | "mistral-ocr" | "baidu-ocr";

@@ -781,6 +781,18 @@ async function main(): Promise<void> {
       assert.equal(f.requests.length, before, "privacy policy rejects before token or image upload");
     });
 
+    await test("a local Whisper check surfaces the provider's diagnostic detail", async () => {
+      const config = manualConfig();
+      config.speechToText = { ...config.speechToText, enabled: true, provider: "local-whisper" };
+      config.mediaBindings = { "speech-to-text": { connectionId: LOCAL_WHISPER_CONNECTION_ID, selection: "manual" } };
+      const f = new Fixture(config);
+      assert.equal(f.manager.status("speech-to-text").state, "unchecked");
+      const checked = await f.manager.test("speech-to-text");
+      assert(checked.ok, checked.detail);
+      assert.match(checked.detail, /fixture local ready/, "the provider's check text must reach the caller");
+      assert.doesNotMatch(checked.detail, /未发送样本/, "a real check result must not be replaced by the generic sentence");
+    });
+
     assert.equal(unexpectedNetwork, 0, "every network path must use the injected fixture transport");
     if (failures.length) throw new Error(`${failures.length} media service checks failed: ${failures.join("; ")}`);
     console.log(`media capability services: ${passed} checks passed`);

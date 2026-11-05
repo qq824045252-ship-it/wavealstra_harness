@@ -102,6 +102,23 @@ export async function discoverOpenRouterCapabilities(
   for (const item of settled) {
     if (item.status === "fulfilled") { models[item.value.capability] = item.value.models; success++; }
   }
-  if (!success) throw new Error("OpenRouter 模型目录暂不可用；仍可手动输入已知模型 ID");
+  if (!success) {
+    // Keep the HTTP status when every route failed; the settings panel uses it
+    // to tell a rejected key apart from a network problem.
+    const failure = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    const status = failure ? /HTTP (\d{3})/.exec(failure.reason instanceof Error ? failure.reason.message : "")?.[1] : undefined;
+    throw new Error(status ? `OpenRouter 模型目录暂不可用（HTTP ${status}）；仍可手动输入已知模型 ID` : "OpenRouter 模型目录暂不可用；仍可手动输入已知模型 ID");
+  }
   return { models, partial: success !== ROUTES.length };
+}
+
+/** One actionable sentence per failure class for the settings panel. */
+export function describeOpenRouterCatalogError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/API Key/.test(message)) return "请先填写有效的 OpenRouter API Key，然后刷新模型目录。";
+  const status = /HTTP (\d{3})/.exec(message)?.[1];
+  if (status === "401" || status === "403") return `OpenRouter 拒绝了此 API Key（HTTP ${status}）；原服务选择已保留，请更换 Key 后刷新目录。`;
+  if (status) return `OpenRouter 模型目录暂不可用（HTTP ${status}）；原服务选择已保留，可手动填写模型 ID。`;
+  if (/无法连接|超时|取消/.test(message)) return "OpenRouter 模型目录读取超时或无法连接；原服务选择已保留，可手动填写模型 ID。";
+  return "OpenRouter 模型目录暂不可用；原服务选择已保留，可手动填写模型 ID。";
 }

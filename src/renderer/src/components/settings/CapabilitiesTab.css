@@ -102,6 +102,37 @@
 .capability-config-control { padding-top: 14px; }
 .capability-connection-fields { padding: 2px 0 14px; }
 
+/* Only the bulky configuration is collapsed; the row header, its status badge, the switch and the check result stay visible. */
+.capability-config-disclosure { margin-top: 10px; }
+
+.capability-config-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  color: var(--fg-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+  list-style: none;
+  cursor: pointer;
+}
+
+.capability-config-disclosure > summary::-webkit-details-marker { display: none; }
+.capability-config-disclosure > summary:hover { color: var(--fg); }
+.capability-config-summary-text { min-width: 0; overflow-wrap: anywhere; }
+.capability-config-disclosure > .capability-config-control { padding-top: 12px; }
+
+.capability-check-result {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.capability-check-result.is-ok { color: var(--success); }
+.capability-check-result.is-error { color: var(--danger); }
+
 .capability-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

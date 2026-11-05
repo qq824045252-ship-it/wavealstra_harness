@@ -3141,8 +3141,14 @@ export class AgentService {
     return this.getBuiltinCapabilities();
   }
 
+  /**
+   * Persist the draft and return immediately. A save can add an OpenRouter
+   * connection whose model catalogue only exists after discovery, so the save
+   * also starts that discovery; the renderer then calls
+   * refreshBuiltinMediaServices() to await a snapshot that contains the models.
+   */
   saveBuiltinCapabilitySettings(request: SaveBuiltinCapabilitySettingsRequest): BuiltinCapabilitiesSnapshotDto {
-    this.mediaCapabilityServices.save(request);
+    this.mediaCapabilityServices.saveAndRefresh(request);
     return this.getBuiltinCapabilities();
   }
 

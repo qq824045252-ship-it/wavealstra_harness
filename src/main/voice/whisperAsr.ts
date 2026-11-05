@@ -1,4 +1,5 @@
 import { venvPythonRelativePath } from "../platform/runtime";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -99,6 +100,149 @@ export function resolveWhisperRuntime(): WhisperRuntimePaths {
     root, python, modelDir, available, detail,
     pythonSource, environmentId, pythonVersion,
   };
+}
+
+/**
+ * 「检查」用的结构化视图：在 resolveWhisperRuntime() 之上补齐缺失项清单，
+ * 让调用方能报告 root / pythonSource / 受管环境 / modelDir / 缺什么，
+ * 而不是只拿到一句泛化文本。
+ */
+export interface WhisperRuntimeReport {
+  root: string;
+  python: string;
+  pythonSource: WhisperRuntimePaths["pythonSource"];
+  environmentId?: string;
+  pythonVersion?: string;
+  modelDir: string;
+  available: boolean;
+  /** 缺失的资源名（transcribe_wav.py / whisper-medium-int8 的目录名） */
+  missingAssets: string[];
+  detail: string;
+}
+
+export function describeWhisperRuntime(): WhisperRuntimeReport {
+  const runtime = resolveWhisperRuntime();
+  return {
+    root: runtime.root,
+    python: runtime.python,
+    pythonSource: runtime.pythonSource,
+    environmentId: runtime.environmentId,
+    pythonVersion: runtime.pythonVersion,
+    modelDir: runtime.modelDir,
+    available: runtime.available,
+    missingAssets: missingAssets(runtime.root).map(([name]) => name),
+    detail: runtime.detail,
+  };
+}
+
+/** 「检查」结果里始终出现的路径摘要（root / pythonSource / modelDir 是排障入口）。 */
+export function formatWhisperRuntimeReport(report: WhisperRuntimeReport): string {
+  const parts = [
+    `root=${report.root}`,
+    `pythonSource=${report.pythonSource}`,
+    `modelDir=${report.modelDir}`,
+  ];
+  if (report.pythonSource === "managed") {
+    parts.push(`受管环境=${report.environmentId ?? "未知"}${report.pythonVersion ? `（Python ${report.pythonVersion}）` : ""}`);
+  } else if (report.python) {
+    parts.push(`python=${report.python}`);
+  }
+  return parts.join(" · ");
+}
+
+/** 无推理依赖探测：只查解释器版本与关键模块是否可导入，不加载模型、不需要音频样本。 */
+export interface WhisperDependencyProbeResult {
+  ok: boolean;
+  detail: string;
+  pythonVersion?: string;
+  missingModules?: string[];
+}
+
+/** 转写实际会用到的顶层模块；用 find_spec 判断存在性（不 import，避免拖入重依赖）。 */
+export const WHISPER_DEPENDENCY_MODULES = ["openvino_genai", "openvino", "numpy", "soundfile"] as const;
+export const WHISPER_PROBE_TIMEOUT_MS = 15_000;
+const WHISPER_PROBE_PREFIX = "__MYBUDDY_WHISPER_PROBE__";
+const WHISPER_PROBE_SCRIPT = [
+  "import importlib.util, json, sys",
+  "names = json.loads(sys.argv[1])",
+  "missing = []",
+  "for name in names:",
+  "    try:",
+  "        found = importlib.util.find_spec(name) is not None",
+  "    except Exception:",
+  "        found = False",
+  "    if not found:",
+  "        missing.append(name)",
+  `print(${JSON.stringify(WHISPER_PROBE_PREFIX)} + json.dumps({"version": sys.version.split()[0], "missing": missing}))`,
+].join("\n");
+
+/**
+ * 用解析到的解释器跑一次有界探测（默认 15s）。任何失败都降级为可读 detail，
+ * 不抛出未处理异常——检查失败不应该打断设置页。
+ */
+export async function probeWhisperDependencies(
+  python: string,
+  options: { timeoutMs?: number } = {},
+): Promise<WhisperDependencyProbeResult> {
+  if (!python) return { ok: false, detail: "没有可用的 Python 解释器路径" };
+  const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : WHISPER_PROBE_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: WhisperDependencyProbeResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const child = spawn(python, ["-c", WHISPER_PROBE_SCRIPT, JSON.stringify([...WHISPER_DEPENDENCY_MODULES])], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* best effort */ }
+      finish({ ok: false, detail: `依赖探测超时（${Math.round(timeoutMs / 1000)}s）` });
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout = (stdout + chunk).slice(-100_000); });
+    child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-100_000); });
+    child.once("error", (error) => finish({ ok: false, detail: `无法启动解释器：${error.message}` }));
+    child.once("close", (code) => {
+      if (settled) return;
+      const line = stdout.split(/\r?\n/).find((item) => item.startsWith(WHISPER_PROBE_PREFIX));
+      if (code !== 0 || !line) {
+        const reason = (stderr.trim() || stdout.trim()).slice(-400);
+        finish({ ok: false, detail: `解释器探测失败${code == null ? "" : `（exit ${code}）`}${reason ? `：${reason}` : ""}` });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(line.slice(WHISPER_PROBE_PREFIX.length)) as { version?: unknown; missing?: unknown };
+        const version = typeof parsed.version === "string" ? parsed.version : undefined;
+        const missing = Array.isArray(parsed.missing)
+          ? parsed.missing.filter((item): item is string => typeof item === "string")
+          : [];
+        if (missing.length > 0) {
+          finish({
+            ok: false,
+            pythonVersion: version,
+            missingModules: missing,
+            detail: `缺少 Python 模块：${missing.join("、")}（Python ${version ?? "未知"}）`,
+          });
+          return;
+        }
+        finish({
+          ok: true,
+          pythonVersion: version,
+          missingModules: [],
+          detail: `Python ${version ?? "未知"}，${WHISPER_DEPENDENCY_MODULES.join(" / ")} 均可导入`,
+        });
+      } catch (error) {
+        finish({ ok: false, detail: `依赖探测输出无法解析：${error instanceof Error ? error.message : String(error)}` });
+      }
+    });
+  });
 }
 
 /**

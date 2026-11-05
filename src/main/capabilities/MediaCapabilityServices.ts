@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import type { BuiltinCapabilitiesConfigDto, SaveBuiltinCapabilitySettingsRequest, TestBuiltinCapabilityResultDto, BuiltinCapabilityStatusDto } from "../../shared/builtin-capabilities";
 import { BUILTIN_CODEX_IMAGE_MODEL, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "../../shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_API_ROOT, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_API_ROOT, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_OCR_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 import type { MagpieGatewayConfig } from "../agent/providers/magpie";
 import type { BuiltinCapabilityRuntime, GeneratedMediaOutput, MediaCapabilityProvider, SpeechCapabilityProvider, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
+import { LOCAL_OCR_SETUP_HINT, createLocalOcrAdapter, localOcrUnavailableMessage, probeLocalOcr, resolveLocalOcrCli, type LocalOcrProviderOptions } from "./LocalOcrProvider";
 import { discoverMagpieCapabilities, type MagpieCapabilityCatalog } from "./providers/MagpieCapabilityCatalog";
-import { discoverOpenRouterCapabilities, type OpenRouterCapabilityCatalog } from "./providers/OpenRouterCapabilityCatalog";
+import { describeOpenRouterCatalogError, discoverOpenRouterCapabilities, type OpenRouterCapabilityCatalog } from "./providers/OpenRouterCapabilityCatalog";
 import { createApiMediaProvider } from "./providers/ApiMediaProvider";
 import { createApiSpeechProvider } from "./providers/ApiSpeechProvider";
 import { createApiOcrAdapter } from "./providers/ApiOcrProvider";
@@ -46,13 +47,38 @@ function location(baseUrl: string): "loopback" | "remote" {
   return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(baseUrl).hostname) ? "loopback" : "remote";
 }
 
+const MEDIA_CAPABILITY_LABELS: Record<MediaCapabilityId, string> = {
+  "speech-to-text": "语音转文字",
+  ocr: "图片文字识别",
+  "text-to-speech": "文字转语音",
+  "image-generation": "图像生成",
+  "video-generation": "视频生成",
+};
+
+/**
+ * One sentence for the connection row. A loaded but empty capability list is
+ * different from a catalogue that was never fetched: the renderer shows the
+ * free-text model field in both cases, but only here can it explain why.
+ */
+function openRouterCatalogDetail(catalog: OpenRouterCapabilityCatalog | undefined): string {
+  if (!catalog) return "复用这一把 OpenRouter API Key。刷新目录会获取最新模型，不会执行付费生成。";
+  const empty = MEDIA_CAPABILITY_IDS.filter((id) => Array.isArray(catalog.models[id]) && catalog.models[id]!.length === 0);
+  const base = catalog.partial ? "部分模型目录已更新；没有列出的能力仍可手动填写有效模型 ID。" : "五项能力的模型目录已更新；以所选模型的实际权限和接口为准。";
+  return empty.length ? `${base}目录已加载，但${empty.map((id) => MEDIA_CAPABILITY_LABELS[id]).join("、")}暂无可用模型，可手动填写模型 ID。` : base;
+}
+
 /** Main-process projection: reused identities, capability bindings, and actual adapters. */
 export class MediaCapabilityServices {
   private magpieCatalog?: { identity: string; catalog: MagpieCapabilityCatalog };
   private magpieError?: string;
   private readonly openRouterCatalogs = new Map<string, { identity: string; catalog: OpenRouterCapabilityCatalog }>();
-  private readonly openRouterErrors = new Map<string, string>();
+  /** Messages are identity-scoped: an old failure is not evidence about a rotated key. */
+  private readonly openRouterErrors = new Map<string, { identity?: string; detail: string }>();
+  /** One in-flight request per connection identity, shared by concurrent passes. */
+  private readonly openRouterDiscoveries = new Map<string, Promise<OpenRouterCapabilityCatalog>>();
   private refreshing?: Promise<void>;
+  /** Configuration revision the in-flight pass was started for. */
+  private refreshTarget?: string;
   private readonly lastRuns = new Map<MediaCapabilityId, { key: string; at: number }>();
   private readonly baiduOcrAdapters = new Map<string, ImageRecognitionAdapter>();
 
@@ -64,9 +90,18 @@ export class MediaCapabilityServices {
     fetch?: typeof fetch;
     discover?: typeof discoverMagpieCapabilities;
     discoverOpenRouter?: typeof discoverOpenRouterCapabilities;
+    /** 本机 OCR 的注入点（诊断/单测）；默认走真实 CLI 解析与本地执行。 */
+    localOcr?: LocalOcrProviderOptions;
   }) {}
 
   private get runtime(): BuiltinCapabilityRuntime { return this.options.runtime; }
+
+  /** 本机 OCR 的注入选项；null 表示没有注入，使用真实解析器。 */
+  private localOcrOptions(): LocalOcrProviderOptions { return this.options.localOcr ?? {}; }
+
+  private localOcrCli(): string | undefined {
+    return (this.localOcrOptions().resolveCli ?? resolveLocalOcrCli)();
+  }
 
   /** Old schema-v1 selections remain usable and visible until deliberately changed. */
   binding(id: MediaCapabilityId, config = this.runtime.config()): MediaCapabilityBinding | undefined {
@@ -105,9 +140,11 @@ export class MediaCapabilityServices {
   services(config = this.runtime.config()): CapabilityConnectionOption[] {
     const codex = this.runtime.registeredMediaProvider(BUILTIN_CODEX_IMAGE_PROVIDER_ID);
     const codexAvailable = codex?.isAvailable?.() === true;
+    const localOcrCli = this.localOcrCli();
     const result: CapabilityConnectionOption[] = [
       { id: CODEX_CONNECTION_ID, label: "OpenAI Codex", source: "login", capabilities: ["image-generation"], models: { "image-generation": [{ id: BUILTIN_CODEX_IMAGE_MODEL, label: "GPT Image 2" }] }, allowCustomModel: false, configured: codexAvailable, authState: codexAvailable ? "signed-in" : "needs-login", location: "remote", detail: codexAvailable ? "使用本应用已登录的 Codex 账号；尚未验证当前账号的生成额度。" : "请在模型供应商中登录 Codex。" },
       { id: LOCAL_WHISPER_CONNECTION_ID, label: "本机 Whisper · NPU", source: "local", capabilities: ["speech-to-text"], models: {}, allowCustomModel: false, configured: Boolean(this.runtime.registeredSpeechProvider("local-whisper")), authState: "none", location: "loopback", detail: "在本机转写文件；识别正文会提供给当前对话模型。" },
+      { id: LOCAL_OCR_CONNECTION_ID, label: "本机 OCR · NPU", source: "local", capabilities: ["ocr"], models: {}, allowCustomModel: false, configured: Boolean(localOcrCli), authState: "none", location: "loopback", detail: localOcrCli ? `本机 NPU 识别；识别正文会进入当前对话。CLI：${localOcrCli}` : `未找到本机 OCR_NPU_CLI：${LOCAL_OCR_SETUP_HINT}` },
     ];
     const magpie = this.options.getMagpieConfig();
     if (magpie?.baseUrl || Object.values(config.mediaBindings ?? {}).some((binding) => binding?.connectionId === MAGPIE_CONNECTION_ID)) {
@@ -150,10 +187,7 @@ export class MediaCapabilityServices {
         detail: connection.protocol === "baidu-ocr"
           ? "百度 OCR 专用识别：API Key + Secret Key，按识别模式调用；尚未发送样本测试。"
           : connection.protocol === "openrouter"
-          ? this.openRouterErrors.get(id) ?? (catalog ? catalog.partial
-              ? "部分模型目录已更新；没有列出的能力仍可手动填写有效模型 ID。"
-              : "五项能力的模型目录已更新；以所选模型的实际权限和接口为准。"
-            : "复用这一把 OpenRouter API Key。刷新目录会获取最新模型，不会执行付费生成。")
+          ? this.openRouterErrorDetail(id, identity) ?? openRouterCatalogDetail(catalog)
           : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
       });
     }
@@ -184,49 +218,105 @@ export class MediaCapabilityServices {
     return result;
   }
 
+  /**
+   * Discover every saved catalogue. Passes are serialized: a concurrent caller
+   * shares the in-flight pass when it was started for the configuration that
+   * caller can see, and otherwise waits for it and runs one follow-up pass.
+   * That is what makes a save-during-discovery safe: a connection saved while
+   * the startup pass is loading is never described by the older pass.
+   */
   async refresh(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
-    const pending = (async () => {
-      const config = this.options.getMagpieConfig();
-      const identity = this.magpieIdentity(config);
-      if (config?.baseUrl) {
-        try {
-          capabilityApiRoot(config.baseUrl);
-          const catalog = await (this.options.discover ?? discoverMagpieCapabilities)(config, { fetchImpl: this.options.fetch });
-          // Never associate a response with a gateway changed during the request.
-          if (identity && this.magpieIdentity() === identity) {
-            this.magpieCatalog = { identity, catalog };
-            this.magpieError = undefined;
-          }
-        } catch (error) {
-          if (this.magpieIdentity() === identity) this.magpieError = error instanceof Error ? error.message : "Magpie 服务目录读取失败。";
-        }
-      }
-      // Refresh each saved OpenRouter connection with its own key. A changed
-      // key or connection invalidates the result before any renderer projection.
-      const configured = this.runtime.config();
-      await Promise.all(Object.entries(configured.connections ?? {}).filter(([, connection]) => connection.protocol === "openrouter").map(async ([id, connection]) => {
-        const identity = this.openRouterIdentity(id, configured);
-        let key: string | null | undefined;
-        try { key = connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined; }
-        catch {
-          this.openRouterErrors.set(id, "无法读取 OpenRouter 凭据，请检查系统凭据库后重试。");
-          return;
-        }
-        if (!identity || !key) return;
-        try {
-          const catalog = await (this.options.discoverOpenRouter ?? discoverOpenRouterCapabilities)(key, { fetchImpl: this.options.fetch });
-          if (this.openRouterIdentity(id) !== identity) return;
-          this.openRouterCatalogs.set(id, { identity, catalog });
-          this.openRouterErrors.delete(id);
-        } catch {
-          if (this.openRouterIdentity(id) === identity) this.openRouterErrors.set(id, "OpenRouter 模型目录暂不可用。原服务选择已保留，可手动填写模型 ID。");
-        }
-      }));
-      this.resolveAutomaticImage();
-    })();
+    if (this.refreshing) {
+      const revision = capabilityConfigRevision(this.runtime.config());
+      if (this.refreshTarget === revision) return this.refreshing;
+      try { await this.refreshing; } catch { /* the follow-up pass retries with the newer configuration */ }
+      return this.refresh();
+    }
+    this.refreshTarget = capabilityConfigRevision(this.runtime.config());
+    const pending = this.discoverCatalogs();
     this.refreshing = pending;
-    try { await pending; } finally { if (this.refreshing === pending) this.refreshing = undefined; }
+    try { await pending; } finally {
+      if (this.refreshing === pending) {
+        this.refreshing = undefined;
+        this.refreshTarget = undefined;
+      }
+    }
+  }
+
+  /**
+   * Persist the draft, then start discovery when the saved configuration has an
+   * OpenRouter connection whose key can be read. The save itself stays
+   * synchronous and never blocks on the network; the renderer awaits
+   * refreshBuiltinMediaServices() to receive a snapshot that contains models.
+   */
+  saveAndRefresh(request: SaveBuiltinCapabilitySettingsRequest): void {
+    this.save(request);
+    const config = this.runtime.config();
+    if (!Object.entries(config.connections ?? {}).some(([id, connection]) => connection.protocol === "openrouter" && Boolean(this.openRouterIdentity(id, config)))) return;
+    void this.refresh().catch(() => undefined);
+  }
+
+  private openRouterErrorDetail(id: string, identity: string | undefined): string | undefined {
+    const error = this.openRouterErrors.get(id);
+    return error && error.identity === identity ? error.detail : undefined;
+  }
+
+  /** One request per (connection, identity); concurrent passes await the same one. */
+  private discoverOpenRouterOnce(id: string, identity: string, key: string): Promise<OpenRouterCapabilityCatalog> {
+    const dedupeKey = `${id}:${identity}`;
+    const running = this.openRouterDiscoveries.get(dedupeKey);
+    if (running) return running;
+    const pending = (this.options.discoverOpenRouter ?? discoverOpenRouterCapabilities)(key, { fetchImpl: this.options.fetch });
+    this.openRouterDiscoveries.set(dedupeKey, pending);
+    const cleanup = (): void => { if (this.openRouterDiscoveries.get(dedupeKey) === pending) this.openRouterDiscoveries.delete(dedupeKey); };
+    void pending.then(cleanup, cleanup);
+    return pending;
+  }
+
+  private async discoverCatalogs(): Promise<void> {
+    const config = this.options.getMagpieConfig();
+    const identity = this.magpieIdentity(config);
+    if (config?.baseUrl) {
+      try {
+        capabilityApiRoot(config.baseUrl);
+        const catalog = await (this.options.discover ?? discoverMagpieCapabilities)(config, { fetchImpl: this.options.fetch });
+        // Never associate a response with a gateway changed during the request.
+        if (identity && this.magpieIdentity() === identity) {
+          this.magpieCatalog = { identity, catalog };
+          this.magpieError = undefined;
+        }
+      } catch (error) {
+        if (this.magpieIdentity() === identity) this.magpieError = error instanceof Error ? error.message : "Magpie 服务目录读取失败。";
+      }
+    }
+    // Refresh each saved OpenRouter connection with its own key. A changed
+    // key or connection invalidates the result before any renderer projection.
+    const configured = this.runtime.config();
+    await Promise.all(Object.entries(configured.connections ?? {}).filter(([, connection]) => connection.protocol === "openrouter").map(async ([id, connection]) => {
+      let key: string | null | undefined;
+      try { key = connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined; }
+      catch {
+        this.openRouterErrors.set(id, { identity: this.openRouterIdentity(id, configured), detail: "无法读取 OpenRouter 凭据，请检查系统凭据库后重试。" });
+        return;
+      }
+      const identity = this.openRouterIdentity(id, configured);
+      if (!key) {
+        // A saved connection without a readable key still keeps its selection;
+        // the row explains that a key is what unlocks the model list.
+        this.openRouterErrors.set(id, { identity, detail: "请填写此 OpenRouter 服务的 API Key，然后刷新模型目录。" });
+        return;
+      }
+      if (!identity) return;
+      try {
+        const catalog = await this.discoverOpenRouterOnce(id, identity, key);
+        if (this.openRouterIdentity(id) !== identity) return;
+        this.openRouterCatalogs.set(id, { identity, catalog });
+        this.openRouterErrors.delete(id);
+      } catch (error) {
+        if (this.openRouterIdentity(id) === identity) this.openRouterErrors.set(id, { identity, detail: describeOpenRouterCatalogError(error) });
+      }
+    }));
+    this.resolveAutomaticImage();
   }
 
   /** Only a never-resolved auto binding changes here. No inference or fallback. */
@@ -385,7 +475,11 @@ export class MediaCapabilityServices {
     const connection = this.runtime.config().connections?.[binding.connectionId];
     let adapter: ImageRecognitionAdapter | null = null;
     if (binding.connectionId.startsWith("legacy:")) adapter = createHttpOcrAdapter(this.runtime);
-    else if (connection?.protocol === "baidu-ocr") {
+    else if (binding.connectionId === LOCAL_OCR_CONNECTION_ID) {
+      const cli = this.localOcrCli();
+      if (!cli) throw new Error(localOcrUnavailableMessage());
+      adapter = createLocalOcrAdapter({ ...this.localOcrOptions(), resolveCli: () => cli });
+    } else if (connection?.protocol === "baidu-ocr") {
       adapter = this.baiduOcrAdapters.get(binding.connectionId) ?? null;
       if (!adapter) {
         const connectionId = binding.connectionId;
@@ -428,7 +522,7 @@ export class MediaCapabilityServices {
     if (id === "ocr" || id === "speech-to-text") {
       try { this.assertRecognitionPolicy(id); } catch (error) { return { ...base, state: "needs-configuration", detail: (error as Error).message }; }
     }
-    if (binding?.connectionId !== LOCAL_WHISPER_CONNECTION_ID && !binding?.connectionId.startsWith("registered:") && !binding?.model) return { ...base, state: "needs-configuration", detail: "请填写此能力使用的模型。" };
+    if (binding?.connectionId !== LOCAL_WHISPER_CONNECTION_ID && binding?.connectionId !== LOCAL_OCR_CONNECTION_ID && !binding?.connectionId.startsWith("registered:") && !binding?.model) return { ...base, state: "needs-configuration", detail: "请填写此能力使用的模型。" };
     if (id === "text-to-speech" && !binding.connectionId.startsWith("registered:") && !config.textToSpeech.voice) return { ...base, state: "needs-configuration", detail: "请填写服务支持的默认音色，或在调用时指定音色。" };
     const last = this.lastRuns.get(id);
     return { ...base, state: last?.key === this.key(id) ? "ready" : "unchecked", detail: last?.key === this.key(id) ? `最近成功使用：${new Date(last.at).toLocaleString()}。` : "配置已保存；尚未执行实际任务。检查不会发送样本或产生生成请求。" };
@@ -437,15 +531,19 @@ export class MediaCapabilityServices {
   async test(id: MediaCapabilityId): Promise<TestBuiltinCapabilityResultDto> {
     const status = this.status(id);
     if (status.state !== "ready" && status.state !== "unchecked") return { ok: false, state: status.state, detail: status.detail ?? "请完成配置。", checkedAt: Date.now() };
+    let detail = "配置检查通过；未发送样本，实际模型权限和输出需在任务中验证。";
     try {
       const binding = this.binding(id)!;
-      if (binding.connectionId === CODEX_CONNECTION_ID) await this.runtime.registeredMediaProvider(BUILTIN_CODEX_IMAGE_PROVIDER_ID)?.test?.();
-      else if (binding.connectionId === LOCAL_WHISPER_CONNECTION_ID) await this.runtime.registeredSpeechProvider("local-whisper")?.test?.();
+      // 检查结果本身就是可诊断信息（root/依赖探测），不能被通用文案覆盖；
+      // provider 未提供 test 或返回空白时保留通用文案。
+      if (binding.connectionId === CODEX_CONNECTION_ID) detail = (await this.runtime.registeredMediaProvider(BUILTIN_CODEX_IMAGE_PROVIDER_ID)?.test?.())?.trim() || detail;
+      else if (binding.connectionId === LOCAL_WHISPER_CONNECTION_ID) detail = (await this.runtime.registeredSpeechProvider("local-whisper")?.test?.())?.trim() || detail;
+      else if (binding.connectionId === LOCAL_OCR_CONNECTION_ID) detail = await probeLocalOcr(this.localOcrOptions());
       else if (binding.connectionId.startsWith("legacy:")) this.runtime.recognitionService(id as "ocr" | "speech-to-text", id === "ocr" ? "http-ocr" : "http-asr");
       else if (binding.connectionId.startsWith("registered:")) { /* Configuration only: custom tests may perform inference. */ }
       else if (id === "ocr" && this.runtime.config().connections?.[binding.connectionId]?.protocol === "baidu-ocr") this.baiduSettings(binding.connectionId);
       else this.resolveApi(id);
-      return { ok: true, state: "unchecked", detail: "配置检查通过；未发送样本，实际模型权限和输出需在任务中验证。", checkedAt: Date.now() };
+      return { ok: true, state: "unchecked", detail, checkedAt: Date.now() };
     } catch (error) {
       return { ok: false, state: "needs-configuration", detail: error instanceof Error ? error.message : "服务检查失败。", checkedAt: Date.now() };
     }
