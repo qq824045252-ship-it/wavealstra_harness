@@ -793,6 +793,23 @@ async function main(): Promise<void> {
       assert.doesNotMatch(checked.detail, /未发送样本/, "a real check result must not be replaced by the generic sentence");
     });
 
+    await test("an API key that cannot travel in an HTTP header is rejected before it reaches the keyring", () => {
+      const config = manualConfig();
+      config.imageGeneration = { ...config.imageGeneration, enabled: true };
+      config.connections = {
+        "api-bad": { name: "OpenRouter", presetId: "openrouter", protocol: "openrouter", baseUrl: OPENROUTER_API_ROOT, auth: "api-key", timeoutMs: 60000 },
+      };
+      config.mediaBindings = { "image-generation": { connectionId: "api-bad", model: "router/image", selection: "manual" } };
+      const f = new Fixture(config);
+      assert.throws(
+        () => f.manager.save({ config: clone(config), credentials: [{ connectionId: "api-bad", secret: "工具能力保存失败：未保存的草稿已保留。" }] }),
+        /请求头|中文/,
+        "Chinese text in a key must be rejected with an actionable message",
+      );
+      assert.equal(f.configValue.connections?.["api-bad"]?.credentialRef, undefined, "an unusable key is never persisted");
+      assert.equal(f.keys.size, 0, "nothing reaches the keyring");
+    });
+
     assert.equal(unexpectedNetwork, 0, "every network path must use the injected fixture transport");
     if (failures.length) throw new Error(`${failures.length} media service checks failed: ${failures.join("; ")}`);
     console.log(`media capability services: ${passed} checks passed`);

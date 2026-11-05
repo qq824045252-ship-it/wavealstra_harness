@@ -611,6 +611,8 @@ export default function CapabilitiesTab(): React.JSX.Element {
               mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } },
             }))} />}
           </div>
+          {/* API 服务没有模型目录时，把服务行的可操作原因（例如 Key 含中文）直接显示在模型控件下面。 */}
+          {service?.source === "api" && !legacy && !(service.models[id]?.length) && service.detail && <p className="settings-row-desc">{service.detail}</p>}
           {id === "image-generation" && binding.selection === "auto" && <p className="settings-row-desc">{service ? `当前使用 ${service.label}；登录变化或调用失败不会自动切换服务。` : "首次发现可用的已登录图片服务后确定选择。不会重新开启已关闭的能力。"}</p>}
           {service?.authState === "needs-login" && <p className="settings-row-desc">请在模型设置中登录此服务；原有选择会保留。</p>}
           {connection && <div className="capability-service-meta"><span className="settings-row-desc">{service?.location === "loopback" ? "本机地址" : "远程服务"} · {connection.auth === "none" ? "无需认证" : connection.auth === "baidu-ak-sk"

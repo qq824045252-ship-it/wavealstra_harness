@@ -82,7 +82,10 @@ export async function discoverOpenRouterCapabilities(
   key: string,
   options: OpenRouterCatalogOptions = {},
 ): Promise<OpenRouterCapabilityCatalog> {
-  if (!key?.trim() || key.length > 4096 || /[\x00-\x1f\x7f]/.test(key)) throw new Error("请先配置有效的 OpenRouter API Key");
+  if (!key?.trim() || key.length > 4096) throw new Error("请先配置有效的 OpenRouter API Key");
+  // The key travels in an Authorization header: Headers rejects non-ASCII text
+  // with a ByteString error, which would otherwise surface as "目录暂不可用".
+  if (/[^\x21-\x7e]/.test(key)) throw new Error("OpenRouter API Key 含中文、空格或换行等无法放进请求头的字符；请重新复制服务商提供的 Key 后保存。");
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error("OpenRouter 目录超时设置无效");
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
@@ -115,6 +118,9 @@ export async function discoverOpenRouterCapabilities(
 /** One actionable sentence per failure class for the settings panel. */
 export function describeOpenRouterCatalogError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
+  // Check the character problem before the generic "API Key" branch: a key that
+  // exists but cannot be put in a header needs a different fix than a missing one.
+  if (/请求头|ByteString|无法放进/.test(message)) return "OpenRouter API Key 含中文、空格或换行等无法放进请求头的字符；请重新复制服务商提供的 Key 后保存。";
   if (/API Key/.test(message)) return "请先填写有效的 OpenRouter API Key，然后刷新模型目录。";
   const status = /HTTP (\d{3})/.exec(message)?.[1];
   if (status === "401" || status === "403") return `OpenRouter 拒绝了此 API Key（HTTP ${status}）；原服务选择已保留，请更换 Key 后刷新目录。`;

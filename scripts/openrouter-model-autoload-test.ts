@@ -14,6 +14,7 @@ import {
 import { BuiltinCapabilityRuntime } from "../src/main/capabilities/BuiltinCapabilityRuntime";
 import { MediaCapabilityServices } from "../src/main/capabilities/MediaCapabilityServices";
 import type { OpenRouterCapabilityCatalog } from "../src/main/capabilities/providers/OpenRouterCapabilityCatalog";
+import { describeOpenRouterCatalogError, discoverOpenRouterCapabilities } from "../src/main/capabilities/providers/OpenRouterCapabilityCatalog";
 import type { VideoGenerationJob, VideoGenerationJobStore } from "../src/main/capabilities/VideoGenerationJobs";
 
 /**
@@ -289,6 +290,38 @@ async function main(): Promise<void> {
       const service = f.service();
       assert.equal(service?.authState, "missing-key");
       assert.match(service?.detail ?? "", /API Key/);
+    });
+
+    await test("a stored key that cannot travel in an HTTP header is reported instead of fetched", async () => {
+      const f = new Fixture();
+      f.saveNewConnection(KEY_A);
+      await f.manager.refresh();
+      const ref = f.configValue.connections![CONNECTION_ID].credentialRef!;
+      // The settings panel stores whatever was pasted; a value like an error
+      // message contains Chinese and would make fetch throw a ByteString error.
+      f.keys.set(ref, "工具能力保存失败：未保存的草稿已保留。");
+      const before = f.discoverCalls.length;
+      await f.manager.refresh();
+      assert.equal(f.discoverCalls.length, before, "an unusable key must not reach the network");
+      const service = f.service();
+      assert.match(service?.detail ?? "", /中文|请求头/, "the row explains why the catalogue cannot load");
+      assert.deepEqual(service?.models, {}, "no catalogue is projected for an unusable key");
+    });
+
+    await test("the discovery function rejects non-ASCII keys before sending any request", async () => {
+      let requests = 0;
+      const fetchImpl = (async () => { requests += 1; return new Response("{}", { status: 200 }); }) as typeof fetch;
+      await assert.rejects(
+        discoverOpenRouterCapabilities("工具能力保存失败：中文", { fetchImpl }),
+        /请求头|中文/,
+        "a key with Chinese characters must fail with an actionable reason",
+      );
+      assert.equal(requests, 0, "the header crash is prevented, not caught after a request");
+      assert.match(
+        describeOpenRouterCatalogError(new Error("Cannot convert argument to a ByteString because the character at index 7 has a value of 24037 which is greater than 255")),
+        /重新复制/,
+        "a low-level header error is mapped to an actionable sentence",
+      );
     });
 
     await test("main-side wiring: save starts discovery and refreshBuiltinMediaServices awaits it", () => {

@@ -47,6 +47,21 @@ function location(baseUrl: string): "loopback" | "remote" {
   return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(baseUrl).hostname) ? "loopback" : "remote";
 }
 
+/**
+ * API Key 最终会放进 Authorization 请求头，而 Headers 只接受可见 ASCII：
+ * 中文、空格或换行会让 fetch 在构造请求头时抛 ByteString 错误（用户只会看到
+ * 「模型目录暂不可用」）。这里给出可操作的中文原因，保存与使用都先过这一关。
+ */
+function unusableApiKeyReason(value: string): string | undefined {
+  // Stored keys are trimmed when saved; trim here too so an old value with
+  // accidental surrounding whitespace is not reported as a broken key.
+  const secret = value.trim();
+  if (!secret) return "请填写此服务的 API Key。";
+  if (secret.length > 4096) return "API Key 过长，请确认是否复制了完整内容。";
+  if (/[^\x21-\x7e]/.test(secret)) return "API Key 里含中文、空格或换行等无法放进请求头的字符；请重新复制服务商提供的 Key。";
+  return undefined;
+}
+
 const MEDIA_CAPABILITY_LABELS: Record<MediaCapabilityId, string> = {
   "speech-to-text": "语音转文字",
   ocr: "图片文字识别",
@@ -134,7 +149,20 @@ export class MediaCapabilityServices {
     let secret: string | null;
     try { secret = this.runtime.credentials.get(connection.credentialRef); }
     catch { return undefined; /* keyring may be temporarily unavailable */ }
-    return secret ? createHash("sha256").update(JSON.stringify([id, connection.baseUrl, connection.credentialRef, secret])).digest("hex") : undefined;
+    // A stored value that cannot travel in an HTTP header is not an identity:
+    // treating it as one would keep projecting a catalogue nothing can fetch.
+    if (!secret || unusableApiKeyReason(secret)) return undefined;
+    return createHash("sha256").update(JSON.stringify([id, connection.baseUrl, connection.credentialRef, secret])).digest("hex");
+  }
+
+  /** Stored-but-unusable Key 的可操作原因；供服务行在目录为空时直接说明。 */
+  private openRouterKeyProblem(id: string, config = this.runtime.config()): string | undefined {
+    const connection = config.connections?.[id];
+    if (!connection || connection.protocol !== "openrouter" || !connection.credentialRef) return undefined;
+    let secret: string | null;
+    try { secret = this.runtime.credentials.get(connection.credentialRef); }
+    catch { return "无法读取系统凭据库，请解锁凭据库后重试。"; }
+    return secret ? unusableApiKeyReason(secret) : undefined;
   }
 
   services(config = this.runtime.config()): CapabilityConnectionOption[] {
@@ -187,7 +215,7 @@ export class MediaCapabilityServices {
         detail: connection.protocol === "baidu-ocr"
           ? "百度 OCR 专用识别：API Key + Secret Key，按识别模式调用；尚未发送样本测试。"
           : connection.protocol === "openrouter"
-          ? this.openRouterErrorDetail(id, identity) ?? openRouterCatalogDetail(catalog)
+          ? this.openRouterErrorDetail(id, identity) ?? this.openRouterKeyProblem(id, config) ?? openRouterCatalogDetail(catalog)
           : "已实现所选协议；模型与账号权限以服务端实际响应为准。",
       });
     }
@@ -306,6 +334,13 @@ export class MediaCapabilityServices {
         this.openRouterErrors.set(id, { identity, detail: "请填写此 OpenRouter 服务的 API Key，然后刷新模型目录。" });
         return;
       }
+      const keyProblem = unusableApiKeyReason(key);
+      if (keyProblem) {
+        // Report it here instead of letting fetch throw a ByteString error that
+        // would surface as a generic "目录暂不可用".
+        this.openRouterErrors.set(id, { identity, detail: keyProblem });
+        return;
+      }
       if (!identity) return;
       try {
         const catalog = await this.discoverOpenRouterOnce(id, identity, key);
@@ -360,6 +395,10 @@ export class MediaCapabilityServices {
     if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 连接必须使用官方 API 地址和 API Key。");
     const secret = connection.auth === "api-key" && connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
     if (connection.auth === "api-key" && !secret) throw new Error("请填写此服务的 API Key。");
+    if (secret) {
+      const keyProblem = unusableApiKeyReason(secret);
+      if (keyProblem) throw new Error(keyProblem);
+    }
     return { id, label: connection.name, baseUrl: capabilityApiRoot(connection.baseUrl), protocol: connection.protocol, timeoutMs: connection.timeoutMs, model, headers: secret ? { authorization: `Bearer ${secret}` } : {}, ...(connection.presetId === "groq" ? { speechFormat: "wav" as const } : {}) };
   }
 
@@ -597,6 +636,13 @@ export class MediaCapabilityServices {
       const prior = changes.get(ref);
       if (prior && (prior.secret !== change.secret || prior.clear !== change.clear)) throw new Error("共享密钥收到不同修改，请只修改一次。");
       changes.set(ref, change);
+    }
+    // Validate key text before the credential transaction: a key that cannot be
+    // sent in an HTTP header must fail with its own reason, not as a storage error.
+    for (const change of changes.values()) {
+      if (change.clear) continue;
+      const keyProblem = unusableApiKeyReason(change.secret!.trim());
+      if (keyProblem) throw new Error(keyProblem);
     }
     const oldSecrets = new Map<string, string | null>();
     try {
