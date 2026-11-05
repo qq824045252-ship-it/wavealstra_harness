@@ -64,6 +64,13 @@ export function createMessageRevisionActions(
           }
         }
         if (lastError) throw lastError;
+        const history = await api.loadTaskHistory?.(activeTaskId);
+        if (history?.durable) {
+          get().applyAgentPatch({ type: "durable_snapshot", taskId: activeTaskId, snapshot: history.durable });
+          const remainingIds = new Set(history.messages.map(message => message.id));
+          set(state => ({ selectedMessageIds: state.selectedMessageIds.filter(id => remainingIds.has(id)) }));
+          return;
+        }
       }
 
       const remaining = task.messages.slice(0, messageIndex);
@@ -181,6 +188,7 @@ export function createMessageRevisionActions(
             t.id === pending.taskId
               ? {
                   ...t,
+                  ...(t.durable ? { botInputError: message } : {}),
                   messages: t.messages.map((m) =>
                     m.id === pending.sourceAssistantMessageId
                       ? { ...m, generateError: message }
@@ -230,7 +238,7 @@ export function createMessageRevisionActions(
           // 任务级 Active 连接器：会话重建时私有技能保持一致
           connectorIds: task.connectorIds,
         })
-        .then((result: AgentRegenerateResult | undefined) => {
+        .then(async (result: AgentRegenerateResult | undefined) => {
           // 主进程明确失败（含 navigate cancelled 等）：旧消息保留 + 用户可见错误
           if (result && !result.ok) {
             // 附上失败 code（NAVIGATION_CANCELLED / TARGET_DRIFTED / …），
@@ -238,6 +246,13 @@ export function createMessageRevisionActions(
             failPending(
               `[${result.code}] ${result.message || "重新生成失败，原回复已保留。"}`,
             );
+            return;
+          }
+          const history = await api.agent.loadTaskHistory?.(activeTaskId);
+          if (result?.ok && history?.durable) {
+            get().applyAgentPatch({ type: "durable_snapshot", taskId: activeTaskId, snapshot: history.durable });
+            const { [newAssistantMsgId]: _pending, ...pendingRegenerations } = get().pendingRegenerations;
+            set({ pendingRegenerations });
             return;
           }
           if (result?.ok && result.userEntryId) {

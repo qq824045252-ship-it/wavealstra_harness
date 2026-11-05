@@ -92,7 +92,7 @@ export class AgentLoadoutObservationService {
     taskId: string;
     userMessageId: string;
     assistantMessageId: string;
-    recommendation: AgentLoadoutRecommendationDto;
+    recommendation: Pick<AgentLoadoutRecommendationDto, "query" | "mode" | "projectId" | "workspaceId" | "tagId" | "context" | "capabilities">;
     at?: number;
   }): AgentLoadoutObservationDto {
     const at = input.at ?? Date.now();

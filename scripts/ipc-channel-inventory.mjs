@@ -10,7 +10,7 @@
  *     因为调用点写的是标识符而不是字符串。
  *  3. 支持多行调用（逐字符配平括号取第一个实参）。
  *  4. `ipcMain.handle = ...` 是猴补丁赋值，不是注册点，单独列出。
- *  5. 重复通道分 4 级：real（真重复）/ mutex（host 与 legacy 互斥）/ crossProcess / test。
+ *  5. 重复通道分 3 级：real（真重复）/ crossProcess / test。
  *     运行时动态注册（on + removeListener）单独标记 runtime。
  *
  * 用法：
@@ -179,13 +179,7 @@ function classifyDuplicates(registrations) {
     // 只有 1 次而另有 scripts/app 注册的，属跨进程同名，不是主进程重复。
     const mainEntries = entries.filter((e) => e.scope === "main");
     if (mainEntries.length >= 2) {
-      const files = mainEntries.map((e) => e.file);
-      if (
-        files.includes("src/main/agent/subagent-ipc-host.ts") &&
-        files.includes("src/main/capabilities/subagent/index.ts")
-      )
-        tiers.mutex.push(record);
-      else tiers.real.push(record);
+      tiers.real.push(record);
     } else if (entries.some((e) => e.scope === "test")) tiers.test.push(record);
     else tiers.crossProcess.push(record);
   }

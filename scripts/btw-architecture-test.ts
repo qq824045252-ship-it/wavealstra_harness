@@ -5,7 +5,7 @@
  * 1) 通道级断言：btw:event 与 agent:event / cron / gateway / mcp 通道物理隔离；
  * 2) 源码级红线扫描：BTW 生命周期方法不得触碰主任务管道
  *    （applyAgentPatch / emitPatch / registry 写 / DB 写 / sessionFile 落盘 / SessionManager.create），
- *    不得出现幽灵任务与持久化路径。源码扫描是回归守卫：一旦有人破坏隔离，测试立即失败。
+ *    持久执行记录独立于主任务消息。源码扫描仅保护通道与依赖隔离。
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -56,18 +56,12 @@ ok(Boolean(btwSection), "2.0 dedicated BTW service source loaded");
   );
   ok(!/writeFileSync|appendFileSync|copyFileSync|rmSync|mkdirSync|unlinkSync/.test(btwSection), "2.6 BTW service performs no filesystem writes");
   ok(!/setSessionFile/.test(btwSection), "2.7 BTW service never sets sessionFile");
-  ok(
-    /inMemory \? SessionManager\.inMemory\(cwd\) : SessionManager\.create\(cwd\)/.test(agentService),
-    "2.8 transient session factory still supports SessionManager.inMemory",
-  );
-  ok(
-    /createTransientSession\([\s\S]*?segments,\s*true,\s*undefined,/.test(agentService),
-    "2.9 AgentService bridge maps BTW service sessions to inMemory transient sessions",
-  );
+  ok(!/createTransientSession|createAuthoringSession/.test(agentService), "2.8 auxiliary execution has no AgentSession factory");
+  ok(/openAuxiliaryRuntime/.test(agentService) && /openRuntime/.test(btwSection), "2.9 BTW uses the shared Durable host");
   ok(/canStartBtwSession\(/.test(btwSection), "2.10 BTW session hard limit remains");
-  ok(/KEEPALIVE_TIMEOUT_MS/.test(btwSection) && /schedulePrune\(/.test(btwSection), "2.11 BTW keepalive prune remains");
-  ok(/disposeSession\(/.test(btwSection), "2.12 BTW close paths share disposeSession");
-  ok(/taskId: req\.btwId/.test(btwSection) || /taskId: btwId/.test(btwSection), "2.13 BTW patch taskId remains btwId");
+  ok(/schedulePrune\(/.test(btwSection), "2.11 BTW keepalive prune remains");
+  ok(/runtime\.close\(/.test(btwSection), "2.12 BTW closes its Durable host");
+  ok(/taskId: request\.btwId/.test(btwSection), "2.13 BTW patch taskId remains btwId");
   ok(
     /return this\.btwService\.start\(req\)/.test(agentService) &&
       /return this\.btwService\.prompt\(req\)/.test(agentService),
@@ -142,20 +136,21 @@ ok(Boolean(btwSection), "2.0 dedicated BTW service source loaded");
   const taskUiTransition = readAppStoreModule("transitions/taskUiTransition.ts");
   // 7a. 应用退出：dispose() 路径必须释放全部 BTW 会话
   ok(/this\.btwService\.disposeAll\(\);/.test(agentService), "7.1 主进程 dispose 调用 BtwSessionService disposeAll（app quit 全释放）");
-  // 7b. 单会话释放四步：unsubscribe → clearQueue → abort → dispose
-  ok(/entry\.unsubscribe\(\);/.test(btwSection), "7.2 释放时先取消 session 订阅（无监听器残留）");
-  ok(/entry\.session\.clearQueue\(\);/.test(btwSection), "7.3 释放时清空队列");
-  ok(/entry\.session\.abort\(\);/.test(btwSection), "7.4 释放时 abort 在途生成");
-  ok(/entry\.session\.dispose\(\);/.test(btwSection), "7.5 释放时 dispose session");
+  // Explicit stop and application shutdown have distinct native semantics.
+  const closeMethod = btwSection.slice(btwSection.indexOf("  async close("), btwSection.indexOf("  keepalive("));
+  const disposeMethod = btwSection.slice(btwSection.indexOf("  disposeAll("), btwSection.indexOf("  private schedulePrune("));
+  ok(/runtime\.abort\(/.test(closeMethod), "7.2 explicit close cancels execution");
+  ok(/runtime\.close\(/.test(closeMethod), "7.3 explicit close releases host resources");
+  ok(!/\.abort\(/.test(disposeMethod), "7.4 application shutdown preserves pending execution");
+  ok(/runtime\.close\(/.test(disposeMethod), "7.5 application shutdown closes host");
   // 7c. prune 定时器生命周期：最后一个会话释放后清理，不泄漏
   ok(/clearTimeout\(this\.pruneTimer\);/.test(btwSection), "7.6 prune 定时器在会话清空后取消");
   ok(/pruneTimer = null;/.test(btwSection), "7.7 prune 定时器引用复位");
   // 7d. keepalive 按 btwId 精确匹配（多窗口互不抢心跳）
-  ok(/new Set\(btwIds\)/.test(btwSection) && /ids\.has\(btwId\)/.test(btwSection), "7.8 keepalive 仅续命调用方声明的 btwId（窗口间不互抢）");
+  ok(/for \(const id of ids\)/.test(btwSection) && /this\.sessions\.get\(id\)/.test(btwSection), "7.8 keepalive 仅续命调用方声明的 btwId（窗口间不互抢）");
   // 7e. 父任务校验：未知父任务拒绝创建（不隐式建任务）
   ok(/BTW 父任务不存在/.test(btwSection), "7.9 startBtw 对未知父任务抛错（不静默创建）");
-  // 7f. 上下文降级语义：父任务已删除（无 live 无 DB）时基础上下文为 []，不继承错误项目/任务
-  ok(/if \(!task\) return \[\];/.test(btwSection), "7.10 父任务不存在时基础上下文降级为空（不静默继承错误配置）");
+  ok(/if \(!task\) throw new Error/.test(btwSection), "7.10 missing parent fails closed");
   // 7g. renderer 侧：keepalive 定时器在会话关闭后自清（不泄漏）
   ok(/clearInterval\(keepaliveTimer\);/.test(btwStore), "7.11 renderer keepalive 定时器自清");
   ok(/keepaliveTimer = null;/.test(btwStore), "7.12 renderer keepalive 引用复位");
@@ -168,9 +163,9 @@ ok(Boolean(btwSection), "2.0 dedicated BTW service source loaded");
       /activeTaskId: options\.nextTaskId/.test(taskUiTransition),
     "7.14 deleting active task updates activeTaskId through reset helper (triggers destroyIfParentChanged)",
   );
-  ok(/destroyIfParentChanged\(activeTaskId\)/.test(chatInput), "7.15 ChatInput 挂载时按 activeTaskId 校验父任务（切换/删除即销毁）");
-  // 7j. 主任务删除后 BTW 独立存活：BTW 区块无 registry 写、无对父任务会话的强依赖
-  ok(!/this\.deps\.registry\.set\(/.test(btwSection), "7.16 BTW 不向 registry 注册（父任务删除不影响，无幽灵条目）");
+  ok(/destroyIfParentChanged\(activeTaskId\)/.test(chatInput), "7.15 ChatInput 挂载时按 activeTaskId 校验父任务（切换/删除即结束当前观察）");
+  // 7j. BTW 无主任务 registry 写；父任务权限由辅助宿主绑定检查
+  ok(!/this\.deps\.registry\.set\(/.test(btwSection), "7.16 BTW 不向 registry 注册（无幽灵条目）");
 }
 
 console.log(`[btw-architecture-test] passed=${passed} failed=0`);

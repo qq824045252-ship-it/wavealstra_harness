@@ -7,11 +7,34 @@ import { applyPatchToMessage } from "../messages/messageReducer";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
 import type { AgentDeltaPatch } from "../types";
 import { hydrateTaskMetadataFromDb } from "./taskHydration";
+import { applyDurableDelta } from "../../../../../../shared/src/durable-sync";
+import type { DurableBotDelta, DurableBotState } from "../../../../../shared/durable-bot";
+import type { ChatMessageDto } from "../../../../../shared/agent-ipc";
 
 export function createAgentProjectionActions(
   storeContext: AppContext,
 ): Pick<AppActions, "applyAgentPatch" | "applyAgentDeltaBatch"> {
   const { get, set } = storeContext;
+  const resync = (taskId: string, delta: DurableBotDelta): void => {
+    const queue = storeContext.runtime.durableResyncs.get(taskId);
+    if (queue) { queue.push(delta); if (queue.length > 256) queue.shift(); return; }
+    const buffered = [delta];
+    const initialEpoch = get().tasks.find(task => task.id === taskId)?.durable?.epoch;
+    storeContext.runtime.durableResyncs.set(taskId, buffered);
+    void (async () => {
+      try {
+        const history = await storeContext.getApi()?.agent?.loadTaskHistory?.(taskId);
+        if (!history?.durable) throw new Error("未取得持久会话的完整状态");
+        const currentEpoch = get().tasks.find(task => task.id === taskId)?.durable?.epoch;
+        if (currentEpoch === initialEpoch || currentEpoch === history.durable.epoch) get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
+        storeContext.runtime.durableResyncs.delete(taskId);
+        for (const pending of buffered) get().applyAgentPatch({ type: "durable_delta", taskId, delta: pending });
+      } catch (error) {
+        storeContext.runtime.durableResyncs.delete(taskId);
+        set(state => ({ tasks: state.tasks.map(task => task.id === taskId ? { ...task, historyError: `会话同步失败：${error instanceof Error ? error.message : String(error)}` } : task) }));
+      }
+    })();
+  };
   return {
     applyAgentPatch: (patch) => {
       // deleteTask is an explicit lifecycle boundary. Main may still emit queued/terminal events while aborting;
@@ -34,6 +57,15 @@ export function createAgentProjectionActions(
         return;
       }
 
+      if (patch.type === "durable_delta") {
+        if (storeContext.runtime.durableResyncs.has(patch.taskId)) { resync(patch.taskId, patch.delta); return; }
+        const known = get().tasks.find(task => task.id === patch.taskId)?.durable;
+        const result = applyDurableDelta<ChatMessageDto, DurableBotState>(known, patch.delta);
+        if (result.kind === "resync") resync(patch.taskId, patch.delta);
+        else if (result.kind === "applied") get().applyAgentPatch({ type: "durable_snapshot", taskId: patch.taskId, snapshot: result.snapshot });
+        return;
+      }
+
       if (patch.type === "durable_snapshot") {
         const snapshot = patch.snapshot;
         const known = get().tasks.find((task) => task.id === patch.taskId);
@@ -42,8 +74,18 @@ export function createAgentProjectionActions(
           known.durable.revision >= snapshot.revision
         )
           return;
-        const messages: ChatMessage[] = snapshot.messages.map((message) => ({
+        const priorRows = new Map(known?.durable?.epoch === snapshot.epoch ? known.durable.messages.map(message => [message.id, message]) : []);
+        const priorMessages = new Map(known?.messages.map(message => [message.id, message]));
+        const messages: ChatMessage[] = snapshot.messages.map((message) => {
+          const previous = priorMessages.get(message.id);
+          if (previous && (priorRows.get(message.id) === message || (message.projectionVersion !== undefined && priorRows.get(message.id)?.projectionVersion === message.projectionVersion))) return previous;
+          return {
           id: message.id,
+          executionId: previous?.executionId,
+          interactions: previous?.interactions,
+          artifactIds: previous?.artifactIds,
+          changesCount: previous?.changesCount,
+          entryId: message.entryId,
           role: message.role,
           createdAt: message.createdAt,
           modelName: message.modelName,
@@ -68,14 +110,24 @@ export function createAgentProjectionActions(
             message.role === "assistant" && message.text
               ? [{ type: "text", text: message.text }]
               : undefined,
-        }));
+          };
+        });
+        if (!known?.durable || known.durable.epoch === snapshot.epoch) {
+          const projectedIds = new Set(messages.map(message => message.id));
+          for (const previous of known?.messages ?? []) {
+            if (!previous.interactions?.length || projectedIds.has(previous.id)) continue;
+            const next = messages.findIndex(message => message.createdAt > previous.createdAt);
+            messages.splice(next < 0 ? messages.length : next, 0, { ...previous, streaming: false });
+          }
+        }
         set((state) => {
           const prior = state.tasks.find((task) => task.id === patch.taskId);
           const task: Task = {
             ...prior,
             id: patch.taskId,
-            welcomeMode: "bot",
+            welcomeMode: prior?.welcomeMode,
             durable: snapshot,
+            historyError: undefined,
             messages,
             title:
               prior?.title ??
@@ -275,7 +327,7 @@ export function createAgentProjectionActions(
               role: "assistant",
               blocks: [],
               createdAt: Date.now(),
-              streaming: patch.type !== "assistant_end",
+              streaming: patch.type !== "assistant_end" && patch.type !== "conversation_interaction_snapshot",
               modelName:
                 patch.type === "assistant_start" ? patch.modelName : undefined,
             };

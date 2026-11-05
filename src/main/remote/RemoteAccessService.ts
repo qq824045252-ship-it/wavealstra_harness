@@ -191,12 +191,12 @@ export class RemoteAccessService {
     };
   }
 
-  async history(taskId: string) {
+  async history(taskId: string, beforeEntryId?: number) {
     if (!this.db.getTask(taskId)) return null;
     // 与桌面端 loadTaskHistory IPC 一致：ACP 外部 Agent 的轮次存在
     // external_agent_runs 而非 builtin session 文件，必须合入否则手机端看不到
     const [nativeHistory, externalHistory] = await Promise.all([
-      this.agent.loadTaskHistory(taskId),
+      this.agent.loadTaskHistory(taskId, beforeEntryId),
       Promise.resolve(this.externalAgent?.history(taskId) ?? { messages: [], runs: [] }),
     ]);
     // 外部 Agent 消息 → 手机端投影时补上 acp 运行信息（ACP 权限卡片与续聊都依赖它）

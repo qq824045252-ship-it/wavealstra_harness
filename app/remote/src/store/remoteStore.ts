@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { applyDurableDelta } from '@mybuddy/shared'
 import { reconcileLiveMessagesWithHistory, type LiveRemoteMessage } from './remoteTimeline'
 import { reduceRemotePatch } from './remotePatch'
 export { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory } from './remoteTimeline'
@@ -7,6 +8,7 @@ import type {
   RemoteConversationInteractionAnswer, RemoteEventEnvelope, RemoteHistoryMessage,
   RemoteNotification, RemoteRuntimeSnapshot, RemoteTaskHistory, RemoteTaskSummary,
   RemoteWelcomeMode,
+  RemoteDurableSnapshot, RemoteDurableDelta, RemoteDurableState,
 } from '@mybuddy/shared'
 import { RemoteApiError, RemoteClient } from '../api/RemoteClient'
 import { checkRemoteService, normalizeRemoteAddress } from '../api/connectionSetup'
@@ -120,7 +122,7 @@ interface State {
   initialize(): Promise<void>
   resync(): Promise<void>
   resume(): Promise<void>
-  syncTask(taskId: string): Promise<void>
+  syncTask(taskId: string, beforeEntryId?: number): Promise<void>
   connect(baseUrl: string, token: string): Promise<void>
   connectDiscovered(baseUrl: string): Promise<boolean>
   connectByUrl(rawUrl: string, code: string, deviceName?: string): Promise<void>
@@ -274,6 +276,7 @@ let serverOffsetMs = 0
 let lastResumeAt = 0
 const taskSyncRevisions = new Map<string, number>()
 const taskEventRevisions = new Map<string, number>()
+const durableResyncs = new Map<string, { client: RemoteClient; buffered: RemoteDurableDelta[] }>()
 /** 最近一次成功拉取历史的时刻（ms）与当时的事件序号；用于判断缓存是否仍可信 */
 const historyFetchedAt = new Map<string, number>()
 const historyFetchedEventRevision = new Map<string, number>()
@@ -807,7 +810,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       // P1 修复：SSE 的 user_message 只带 text 不带 attachments——SSE 先到时这里必须 merge
       // 补上附件，否则「拍照直接发送」在 AI 回答的几秒内显示空白用户气泡。
       set((state) => {
-        if (result.task.welcomeMode === 'bot') return resetTransientOverrides()
+        if (result.receipt) return resetTransientOverrides()
         const fallback: RemoteHistoryMessage = {
           id: result.userMessageId,
           role: 'user',
@@ -1020,7 +1023,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       saveLastActiveTaskId(result.task.id)
       // P1 修复：同 send() —— SSE user_message 不带 attachments，这里 merge 补齐而非整体 ?? 覆盖
       set((state) => {
-        if (result.task.welcomeMode === 'bot') return { activeTaskId: result.task.id, ...resetTransientOverrides() }
+        if (result.receipt) return { activeTaskId: result.task.id, ...resetTransientOverrides() }
         const fallback: RemoteHistoryMessage = {
           id: result.userMessageId,
           role: 'user',
@@ -1117,13 +1120,14 @@ export const useRemoteStore = create<State>((set, get) => ({
 }))
 
 /** Read-side synchronization must never navigate or reset composer selections. */
-async function syncTaskHistory(taskId: string): Promise<void> {
+async function syncTaskHistory(taskId: string, beforeEntryId?: number): Promise<void> {
   const client = useRemoteStore.getState().client
   if (!client) return
   const revision = (taskSyncRevisions.get(taskId) ?? 0) + 1
   taskSyncRevisions.set(taskId, revision)
   const eventRevision = taskEventRevisions.get(taskId) ?? 0
-  const [history, runtime] = await Promise.all([client.history(taskId), client.runtime(taskId)])
+  const initialEpoch = useRemoteStore.getState().histories[taskId]?.durable?.epoch
+  const [history, runtime] = await Promise.all([client.history(taskId, beforeEntryId), client.runtime(taskId)])
   if (useRemoteStore.getState().client !== client || taskSyncRevisions.get(taskId) !== revision) return
   historyFetchedAt.set(taskId, Date.now())
   historyFetchedEventRevision.set(taskId, taskEventRevisions.get(taskId) ?? 0)
@@ -1133,11 +1137,13 @@ async function syncTaskHistory(taskId: string): Promise<void> {
   useRemoteStore.setState(state => {
     const newer = (taskEventRevisions.get(taskId) ?? 0) !== eventRevision
     if (history.durable) {
-      if (newer) return state;
+      const current = state.histories[taskId]?.durable;
+      if (current && current.epoch !== initialEpoch && current.epoch !== history.durable.epoch) return state;
+      if (current?.epoch === history.durable.epoch && current.revision > history.durable.revision) return state;
       return {
         histories: { ...state.histories, [taskId]: history },
         live: { ...state.live, [taskId]: {} },
-        runtimes: { ...state.runtimes, [taskId]: { ...runtime, busy: history.durable.busy, pendingActions: [] } },
+        runtimes: { ...state.runtimes, [taskId]: { ...(newer ? state.runtimes[taskId] ?? runtime : runtime), busy: history.durable.busy } },
       };
     }
     const settled = { ...(state.live[taskId] ?? {}) }
@@ -1197,6 +1203,50 @@ function scheduleRemoteSync(): void {
   }, 150)
 }
 
+function projectDurableSnapshot(taskId: string, snapshot: RemoteDurableSnapshot): void {
+  useRemoteStore.setState(current => {
+    const previous = current.histories[taskId]?.durable;
+    if (previous?.epoch === snapshot.epoch && previous.revision >= snapshot.revision) return current;
+    const previousHistory = current.histories[taskId];
+    return {
+      histories: { ...current.histories, [taskId]: { ...previousHistory, taskId, messages: snapshot.messages, durable: snapshot, historyError: undefined } },
+      live: { ...current.live, [taskId]: {} },
+      runtimes: { ...current.runtimes, [taskId]: { ...(current.runtimes[taskId] ?? { taskId, pendingActions: [], interactions: [], activeGoal: null }), busy: snapshot.busy } },
+    };
+  });
+}
+
+function receiveDurableDelta(taskId: string, delta: RemoteDurableDelta): void {
+  const state = useRemoteStore.getState();
+  const queue = durableResyncs.get(taskId);
+  if (queue?.client === state.client) { queue.buffered.push(delta); if (queue.buffered.length > 256) queue.buffered.shift(); return; }
+  const applied = applyDurableDelta<RemoteHistoryMessage, RemoteDurableState>(state.histories[taskId]?.durable, delta);
+  if (applied.kind === 'applied') { projectDurableSnapshot(taskId, applied.snapshot); return; }
+  if (applied.kind === 'stale' || !state.client) return;
+  const request = { client: state.client, buffered: [delta] };
+  const initialEpoch = state.histories[taskId]?.durable?.epoch;
+  durableResyncs.set(taskId, request);
+  void (async () => {
+    try {
+      const [history, runtime] = await Promise.all([request.client.history(taskId), request.client.runtime(taskId)]);
+      if (useRemoteStore.getState().client !== request.client || durableResyncs.get(taskId) !== request) return;
+      if (!history.durable) throw new Error('未取得持久会话的完整状态');
+      const currentEpoch = useRemoteStore.getState().histories[taskId]?.durable?.epoch;
+      if (currentEpoch === initialEpoch || currentEpoch === history.durable.epoch) projectDurableSnapshot(taskId, history.durable);
+      useRemoteStore.setState(current => {
+        const existing = current.runtimes[taskId];
+        const interactions = new Map(runtime.interactions.map(interaction => [interaction.id, interaction]));
+        for (const interaction of existing?.interactions ?? []) if ((interactions.get(interaction.id)?.version ?? 0) < interaction.version) interactions.set(interaction.id, interaction);
+        return { runtimes: { ...current.runtimes, [taskId]: { ...runtime, ...existing, interactions: [...interactions.values()] } } };
+      });
+      durableResyncs.delete(taskId);
+      for (const pending of request.buffered) receiveDurableDelta(taskId, pending);
+    } catch (error) {
+      if (useRemoteStore.getState().client === request.client) useRemoteStore.setState({ error: `会话同步失败：${error instanceof Error ? error.message : String(error)}` });
+    } finally { if (durableResyncs.get(taskId) === request) durableResyncs.delete(taskId); }
+  })();
+}
+
 export function applyEvent(event: RemoteEventEnvelope): void {
   const state = useRemoteStore.getState()
   if (event.type === 'resync_required' || event.type === 'notification.changed' || event.type === 'task.changed') {
@@ -1225,19 +1275,11 @@ export function applyEvent(event: RemoteEventEnvelope): void {
   taskEventRevisions.set(taskId, (taskEventRevisions.get(taskId) ?? 0) + 1)
   if (patch.type === 'durable_snapshot' && patch.snapshot) {
     const snapshot = patch.snapshot as import('@mybuddy/shared').RemoteDurableSnapshot;
-    useRemoteStore.setState(current => {
-      const previous = current.histories[taskId]?.durable;
-      if (previous?.epoch === snapshot.epoch && previous.revision >= snapshot.revision) return current;
-      // durable_snapshot 只携带消息与运行态：保留已由 history 建立的产物清单，
-      // 否则每次快照都会清空 imageArtifacts，使同一批图片反复消失/重现。
-      const previousHistory = current.histories[taskId];
-      return {
-        histories: { ...current.histories, [taskId]: { taskId, messages: snapshot.messages, durable: snapshot,
-          ...(previousHistory?.imageArtifacts ? { imageArtifacts: previousHistory.imageArtifacts } : {}) } },
-        live: { ...current.live, [taskId]: {} },
-        runtimes: { ...current.runtimes, [taskId]: { taskId, busy: snapshot.busy, pendingActions: [], interactions: [], activeGoal: null } },
-      };
-    });
+    projectDurableSnapshot(taskId, snapshot);
+    return;
+  }
+  if (patch.type === 'durable_delta' && patch.delta) {
+    receiveDurableDelta(taskId, patch.delta as RemoteDurableDelta);
     return;
   }
   if (patch.type === 'conversation_interaction_snapshot' && patch.interaction && typeof patch.interaction === 'object') {

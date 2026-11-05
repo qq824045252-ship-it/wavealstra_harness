@@ -15,11 +15,13 @@
  * - 错误率 = error/errorMessage 非空调用行 / 调用行数；TTFT/TPS 平均仅统计非 null 样本；
  *   sessions = distinct session_file+source_kind，不重复放大。
  */
+export interface UsageKnownFields { input: boolean; output: boolean; cacheRead: boolean; cacheWrite: boolean; cost: boolean }
 export interface UsageEventRow {
+  known?: UsageKnownFields;
   entryId: string;
   taskId: string | null;
   sessionFile: string | null;
-  sourceKind: string; // main | subagent | btw
+  sourceKind: string; // main | subagent | btw | auxiliary
   sourceDetail: string | null;
   provider: string | null;
   model: string | null;
@@ -45,6 +47,7 @@ export interface UsageEventRow {
 }
 
 export interface UsageSummaryVm {
+  known?: UsageKnownFields;
   totalTokens: number;
   input: number;
   output: number;
@@ -66,6 +69,7 @@ export interface UsageSummaryVm {
 }
 
 export interface ProviderModelStat {
+  known?: UsageKnownFields;
   provider: string;
   model: string;
   calls: number;
@@ -109,14 +113,14 @@ export function isErrorRow(row: UsageEventRow): boolean {
 }
 
 /**
- * 参与"调用"口径的行 = 模型调用行（main/btw/subagent assistant message）。
+ * 参与"调用"口径的行 = 模型调用行（main/btw/subagent/auxiliary assistant message）。
  * 排除：compaction/toolresult 开销行（pi getSessionStats 计入 tokens/cost 但不计调用）
  * 与 dispose 安全结算行（stopReason=disposed：请求已开始但 pi 未持久化 assistant message，
  * PI 权威统计不将其计为调用）。
  */
 export function isCallRow(row: UsageEventRow): boolean {
   return (
-    (row.sourceKind === "main" || row.sourceKind === "btw" || row.sourceKind === "subagent") &&
+    (row.sourceKind === "main" || row.sourceKind === "btw" || row.sourceKind === "subagent" || row.sourceKind === "auxiliary") &&
     row.stopReason !== "disposed"
   );
 }
@@ -373,6 +377,7 @@ function computeTurns(callRows: UsageEventRow[]): number {
  * cacheWrite>0）分母>0 → 返回 0（对齐 pi 显示 0%）。
  */
 export function cacheHitRate(rows: UsageEventRow[]): number | null {
+  if (rows.some(row => row.known && (!row.known.input || !row.known.cacheRead || !row.known.cacheWrite))) return null;
   const cacheRead = sum(rows.map((r) => r.cacheRead));
   const uncached = sum(rows.map((r) => r.inputTokens + r.cacheWrite));
   const denom = cacheRead + uncached;
@@ -400,6 +405,8 @@ export function summarizeRows(rows: UsageEventRow[], _userTurnsBySession?: Reado
     ? sum(rows.map((r) => r.cacheWrite1h ?? 0))
     : null;
   return {
+    known: { input: rows.every(row => row.known?.input !== false), output: rows.every(row => row.known?.output !== false),
+      cacheRead: rows.every(row => row.known?.cacheRead !== false), cacheWrite: rows.every(row => row.known?.cacheWrite !== false), cost: rows.every(row => row.known?.cost !== false) },
     totalTokens: sum(rows.map((r) => r.totalTokens)),
     input: sum(rows.map((r) => r.inputTokens)),
     output: sum(rows.map((r) => r.outputTokens)),
@@ -446,6 +453,7 @@ export function groupByProviderModel(rows: UsageEventRow[]): ProviderModelStat[]
         wallMs: null,
         errors: 0,
         cacheHitRate: null,
+        known: { input: true, output: true, cacheRead: true, cacheWrite: true, cost: true },
         _ttft: [],
         _tps: [],
         _wall: [],
@@ -453,6 +461,10 @@ export function groupByProviderModel(rows: UsageEventRow[]): ProviderModelStat[]
       map.set(key, stat);
     }
     stat.calls += 1;
+    if (r.known && stat.known) {
+      stat.known.input &&= r.known.input; stat.known.output &&= r.known.output;
+      stat.known.cacheRead &&= r.known.cacheRead; stat.known.cacheWrite &&= r.known.cacheWrite; stat.known.cost &&= r.known.cost;
+    }
     stat.input += r.inputTokens;
     stat.output += r.outputTokens;
     stat.cacheRead += r.cacheRead;
@@ -471,7 +483,7 @@ export function groupByProviderModel(rows: UsageEventRow[]): ProviderModelStat[]
     s.tps = avg(s._tps);
     s.wallMs = avg(s._wall);
     const denom = s.cacheRead + s.input + s.cacheWrite;
-    s.cacheHitRate = denom > 0 ? s.cacheRead / denom : null;
+    s.cacheHitRate = denom > 0 && s.known?.input !== false && s.known?.cacheRead !== false && s.known?.cacheWrite !== false ? s.cacheRead / denom : null;
     delete (s as { _ttft?: number[] })._ttft;
     delete (s as { _tps?: number[] })._tps;
     delete (s as { _wall?: number[] })._wall;
@@ -544,13 +556,13 @@ export function toCsv(rows: UsageEventRow[]): string {
       r.sourceKind,
       r.provider ?? "",
       r.model ?? "",
-      r.inputTokens,
-      r.outputTokens,
-      r.cacheRead,
-      r.cacheWrite,
+      r.known?.input === false ? "unknown" : r.inputTokens,
+      r.known?.output === false ? "unknown" : r.outputTokens,
+      r.known?.cacheRead === false ? "unknown" : r.cacheRead,
+      r.known?.cacheWrite === false ? "unknown" : r.cacheWrite,
       r.reasoningTokens ?? "",
-      r.totalTokens,
-      r.costTotal.toFixed(6),
+      r.known && (!r.known.input || !r.known.output || !r.known.cacheRead || !r.known.cacheWrite) ? "unknown" : r.totalTokens,
+      r.known?.cost === false ? "unknown" : r.costTotal.toFixed(6),
       r.stopReason ?? "",
       isErrorRow(r) ? "1" : "0",
       r.ttftMs ?? "",

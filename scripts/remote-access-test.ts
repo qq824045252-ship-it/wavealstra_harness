@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import "fake-indexeddb/auto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -341,11 +343,11 @@ try {
   assert.equal((await fetch(`${base}/v1/tasks/t/actions/a/respond`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ decision: "deny", pad: "x".repeat(512 * 1024) }) })).status, 413);
 
   // P0-2：模型 / 权限模式 / 附件随 prompt 原样透传到命令层
-  const richPrompt = { text: "hi", modelId: "model-x", permissionMode: "auto", attachments: [{ name: "a.png", data: Buffer.from("file-bytes").toString("base64"), mimeType: "image/png" }] };
+  const richPrompt = { operationId: randomUUID(), text: "hi", modelId: "model-x", permissionMode: "auto", attachments: [{ name: "a.png", data: Buffer.from("file-bytes").toString("base64"), mimeType: "image/png" }] };
   assert.equal((await fetch(`${base}/v1/tasks`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(richPrompt) })).status, 201);
   assert.deepEqual(capturedPrompt, richPrompt, "modelId / permissionMode / attachments 必须原样到达命令层");
   // P1：纯附件消息合法（text 空串 + 附件）；纯空白文本且无附件必须 400
-  const pureAttachment = { text: "", attachments: [{ name: "photo.jpg", data: Buffer.from("jpeg-bytes").toString("base64"), mimeType: "image/jpeg" }] };
+  const pureAttachment = { operationId: randomUUID(), text: "", attachments: [{ name: "photo.jpg", data: Buffer.from("jpeg-bytes").toString("base64"), mimeType: "image/jpeg" }] };
   assert.equal((await fetch(`${base}/v1/tasks`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(pureAttachment) })).status, 201, "纯附件消息（拍照直接发送）必须被接受");
   assert.equal((capturedPrompt as { attachments?: unknown[] }).attachments?.length, 1);
   assert.equal((await fetch(`${base}/v1/tasks`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ text: "   " }) })).status, 400, "空文本且无附件必须 400");
@@ -390,11 +392,12 @@ try {
     let failNextPrompt = false;
     const agent = {
       getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id],
+      findSubmission: async () => undefined,
       prompt: (req: Record<string, unknown>) => {
         prompts.push(req);
-        // 模拟 agent runtime 异步失败（preflight 拒绝 / provider 抛错），detached catch 负责回滚
+        // Admission failure reaches HTTP before success is returned.
         if (failNextPrompt) { failNextPrompt = false; return Promise.reject(new Error("agent runtime boom")); }
-        return Promise.resolve({ queued: true });
+        return Promise.resolve({ queued: true, receipt: { taskId: req.taskId, operationId: req.userMessageId, submissionId: 1, status: "placed" } });
       },
       listModels: () => Promise.resolve(models),
       isTaskBusy: () => false,
@@ -404,30 +407,30 @@ try {
     const commands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);
 
     for (const [welcomeMode, modePresetId] of [['working', 'general-office'], ['coding', 'custom-dev'], ['bot', 'native'], ['bot', 'codemode']] as const) {
-      const result = await commands.createAndPrompt({ text: 'selected configuration', welcomeMode, modePresetId });
+      const result = await commands.createAndPrompt({ operationId: randomUUID(), text: 'selected configuration', welcomeMode, modePresetId });
       assert.equal(result.task.welcomeMode, welcomeMode);
       assert.equal(result.task.modePresetId, modePresetId);
       assert.equal(prompts.at(-1)?.welcomeMode, welcomeMode);
       assert.equal(prompts.at(-1)?.modePresetId, modePresetId);
     }
     const beforeInvalid = savedTasks.size;
-    await assert.rejects(() => commands.createAndPrompt({ text: 'wrong tag', welcomeMode: 'bot', modePresetId: 'general-office' }), RemoteValidationError);
+    await assert.rejects(() => commands.createAndPrompt({ operationId: randomUUID(), text: 'wrong tag', welcomeMode: 'bot', modePresetId: 'general-office' }), RemoteValidationError);
     assert.equal(savedTasks.size, beforeInvalid, 'invalid mode/tag must not create a task or invoke the runtime');
 
     // P0：readonly 任务、手机端未显式覆盖权限 → 不写回任务（权限保持 readonly），agent 收到 readonly
     savedTasks.set("t-ro", { id: "t-ro", title: "RO", updatedAt: 1, permissionMode: "readonly", modelId: undefined, sessionFile: "s.jsonl", welcomeMode: "coding" });
     upsertCalls.length = 0;
-    await commands.promptExisting("t-ro", { text: "hi" });
+    await commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi" });
     assert.equal(upsertCalls.length, 0, "未显式覆盖权限时必须保持任务 readonly，不得写回 default");
     assert.equal((prompts.at(-1) as { permissionMode?: string }).permissionMode, "readonly", "agent 必须收到任务自身的 readonly 权限");
 
     // P0：用户在手机上显式切到 auto → 写回任务并生效
-    await commands.promptExisting("t-ro", { text: "hi", permissionMode: "auto" });
+    await commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi", permissionMode: "auto" });
     assert.equal(upsertCalls.length, 1, "显式覆盖权限必须写回任务");
     assert.equal(upsertCalls[0].permissionMode, "auto");
 
     // P1：纯附件消息（text 空串）到达 agent，附件真实落盘
-    await commands.promptExisting("t-ro", { text: "", attachments: [{ name: "photo.jpg", data: Buffer.from("jpeg-bytes").toString("base64") }] });
+    await commands.promptExisting("t-ro", { operationId: randomUUID(), text: "", attachments: [{ name: "photo.jpg", data: Buffer.from("jpeg-bytes").toString("base64") }] });
     const lastPrompt = prompts.at(-1) as { text: string; attachments?: Array<{ name: string; path: string }> };
     assert.equal(lastPrompt.text, "");
     assert.equal(lastPrompt.attachments?.length, 1);
@@ -435,7 +438,7 @@ try {
 
     // P2：附件超 4MB 原始字节 → RemoteValidationError，且历史附件不被连带删除
     await assert.rejects(
-      () => commands.promptExisting("t-ro", { text: "hi", attachments: [{ name: "big.bin", data: Buffer.alloc(4 * 1024 * 1024 + 1).toString("base64") }] }),
+      () => commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi", attachments: [{ name: "big.bin", data: Buffer.alloc(4 * 1024 * 1024 + 1).toString("base64") }] }),
       (error: unknown) => error instanceof RemoteValidationError,
       "超限附件必须是校验错误而非 500",
     );
@@ -443,32 +446,38 @@ try {
 
     // 模型白名单：available=false（Provider 未认证）的模型不允许远程指定
     await assert.rejects(
-      () => commands.promptExisting("t-ro", { text: "hi", modelId: "vendor/unauthed" }),
+      () => commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi", modelId: "vendor/unauthed" }),
       (error: unknown) => error instanceof RemoteValidationError,
       "未认证模型必须被可执行白名单拒绝",
     );
-    await commands.promptExisting("t-ro", { text: "hi", modelId: "vendor/ok" });
+    await commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi", modelId: "vendor/ok" });
 
     // P1：纯附件新任务标题兜底取附件名；cleanupRemoteUploads 删除任务附件目录
-    const created = await commands.createAndPrompt({ text: "", attachments: [{ name: "cam.jpg", data: Buffer.from("x").toString("base64") }] });
+    const created = await commands.createAndPrompt({ operationId: randomUUID(), text: "", attachments: [{ name: "cam.jpg", data: Buffer.from("x").toString("base64") }] });
     assert.equal(created.task.title, "附件：cam.jpg", "纯附件新任务标题应取附件名");
     assert.equal(existsSync(join(uploadsRoot, created.task.id)), true);
     await cleanupRemoteUploads(created.task.id, uploadsRoot);
     assert.equal(existsSync(join(uploadsRoot, created.task.id)), false, "cleanupRemoteUploads 必须删除任务附件目录");
 
-    // P1/P2：HTTP 已 201 返回后 agent 异步失败（detached catch 路径）→ 无 session 的任务行与附件目录一并清理
+    // Failed admission cannot report HTTP success; retain its stable task/input for safe retry.
     failNextPrompt = true;
-    const asyncFailed = await commands.createAndPrompt({ text: "hi", attachments: [{ name: "cam2.jpg", data: Buffer.from("x").toString("base64") }] });
-    assert.equal(existsSync(join(uploadsRoot, asyncFailed.task.id)), true, "201 返回时附件应已落盘");
-    await new Promise((resolve) => setTimeout(resolve, 20)); // 等 detached catch + cleanup 完成
-    assert.equal(savedTasks.has(asyncFailed.task.id), false, "agent 异步失败后无 session 的任务必须被删除");
-    assert.equal(existsSync(join(uploadsRoot, asyncFailed.task.id)), false, "agent 异步失败后附件目录必须被清理（不得留孤儿目录）");
+    const retryInput = { operationId: randomUUID(), text: "hi", attachments: [{ name: "cam2.jpg", data: Buffer.from("x").toString("base64") }] };
+    const beforeRetry = savedTasks.size;
+    await assert.rejects(commands.createAndPrompt(retryInput), /agent runtime boom/);
+    const rejectedPrompt = prompts.at(-1)!;
+    const reopenedCommands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);
+    const retry = await reopenedCommands.createAndPrompt(retryInput);
+    assert.equal(savedTasks.size, beforeRetry + 1, "lost response or retry reuses the original task");
+    assert.equal(retry.userMessageId, rejectedPrompt.userMessageId);
+    assert.deepEqual(prompts.at(-1)?.attachments, rejectedPrompt.attachments, "retry reuses immutable attachment paths");
+    assert.equal(retry.receipt.operationId, retry.userMessageId);
+    await cleanupRemoteUploads(retry.task.id, uploadsRoot);
 
     // P1：附件写盘失败时任务的模型/权限不得半提交（先附件后 upsert 的事务顺序）
     savedTasks.set("t-ro", { id: "t-ro", title: "RO", updatedAt: 1, permissionMode: "readonly", modelId: undefined, sessionFile: "s.jsonl", welcomeMode: "coding" });
     const upsertsBefore = upsertCalls.length;
     await assert.rejects(
-      () => commands.promptExisting("t-ro", { text: "hi", permissionMode: "auto", attachments: [{ name: "big2.bin", data: Buffer.alloc(4 * 1024 * 1024 + 1).toString("base64") }] }),
+      () => commands.promptExisting("t-ro", { operationId: randomUUID(), text: "hi", permissionMode: "auto", attachments: [{ name: "big2.bin", data: Buffer.alloc(4 * 1024 * 1024 + 1).toString("base64") }] }),
       (error: unknown) => error instanceof RemoteValidationError,
       "超限附件仍必须是校验错误",
     );
@@ -477,7 +486,7 @@ try {
 
     // P2：新任务创建失败（模型校验抛错）→ 任务行回滚，remote-uploads 不留新任务目录
     const savedBefore = new Set(savedTasks.keys());
-    const failedCreate = await commands.createAndPrompt({ text: "hi", modelId: "vendor/unauthed" }).then(() => undefined, (error: unknown) => error);
+    const failedCreate = await commands.createAndPrompt({ operationId: randomUUID(), text: "hi", modelId: "vendor/unauthed" }).then(() => undefined, (error: unknown) => error);
     assert.ok(failedCreate instanceof RemoteValidationError);
     assert.deepEqual([...savedTasks.keys()].filter((id) => !savedBefore.has(id)), [], "失败的新任务必须回滚任务行");
     assert.deepEqual(readdirSync(uploadsRoot).filter((entry) => entry !== "t-ro"), [], "失败的新任务不得残留附件目录");
@@ -499,6 +508,24 @@ try {
     const stubClient = new RemoteClient("http://127.0.0.1:9", "stub-token");
 
     try {
+      const operationIds: string[] = [];
+      let loseResponse = true;
+      route = async (_url, init) => {
+        const request: unknown = JSON.parse(String(init?.body));
+        assert(request && typeof request === 'object' && 'operationId' in request && typeof request.operationId === 'string');
+        operationIds.push(request.operationId);
+        if (loseResponse) { loseResponse = false; throw new TypeError('response lost after admission'); }
+        return jsonResponse({ task: { id: 'retry-task' }, userMessageId: 'retry-user', assistantMessageId: 'retry-assistant', queued: true,
+          receipt: { taskId: 'retry-task', operationId: request.operationId, submissionId: 17, status: 'placed' } });
+      };
+      const once = new RemoteClient('http://retry-fixture', 'token');
+      await assert.rejects(once.createTask({ text: 'one logical input' }), /response lost/);
+      const reconnected = new RemoteClient('http://retry-fixture', 'token');
+      await reconnected.createTask({ text: 'one logical input' });
+      await reconnected.createTask({ text: 'one logical input' });
+      assert.equal(operationIds[0], operationIds[1], 'lost response and client reconstruction must reuse persisted operation id');
+      assert.notEqual(operationIds[1], operationIds[2], 'a new send after acknowledged receipt gets a new operation id');
+
       useRemoteStore.setState({ client: stubClient, activeTaskId: "t1", sending: false, creating: false, live: {} });
 
       // P1：prompt POST 成功后 runtime 刷新失败 → send() 必须成功 resolve（消息已提交，不得恢复草稿）

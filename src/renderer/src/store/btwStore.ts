@@ -1,8 +1,11 @@
 import { create } from "zustand";
-import type { BtwUiPatch } from "../../../shared/agent-ipc";
+import type { BtwStartRequest, BtwUiPatch, ChatMessageDto } from "../../../shared/agent-ipc";
+import type { DurableBotSnapshot, DurableBotDelta, DurableBotState } from "../../../shared/durable-bot";
+import { applyDurableDelta } from "../../../../shared/src/durable-sync";
 import type { ChatMessage } from "@/types";
 import { useAppStore } from "./appStore";
 import { applyPatchToMessage } from "./app/messages/messageReducer";
+import { historyMessageToChatMessage } from "./app/messages/historyMapper";
 
 /**
  * BTW（By The Way，临时上下文分支）renderer 状态模型。
@@ -11,8 +14,8 @@ import { applyPatchToMessage } from "./app/messages/messageReducer";
  * - 消息只存在于本 store 的 ephemeral messages，绝不写入 Task.messages；
  * - 补丁只经独立 btw:event 通道进入 applyBtwPatch，绝不经过 applyAgentPatch 的任务 reducer；
  * - 消息/会话 id 使用 btw-* 前缀，与主任务 id 空间隔离；
- * - 不写 sessionFile / DB / memory；app 重载/重启即消失（主进程另有 keepalive 超时回收）；
- * - 切换父任务即销毁（不漂移、不恢复）。
+ * - 执行记录由主进程持久保存；本地仅保存观察身份，重载后重新读取；
+ * - 切换父任务结束观察；显式关闭才取消执行。
  */
 
 let btwIdCounter = 0;
@@ -21,6 +24,41 @@ const btwRand = (): string => Math.random().toString(36).slice(2, 8);
 const nextBtwId = (): string => `btw-${Date.now().toString(36)}-${btwIdCounter++}-${btwRand()}`;
 const nextBtwMsgId = (kind: "u" | "a"): string =>
   `btw-${kind}-${Date.now().toString(36)}-${btwIdCounter++}-${btwRand()}`;
+
+const btwObservationKey = (parentTaskId: string): string => `mybuddy.btw.observation:${parentTaskId}`;
+function savedBtwObservation(parentTaskId: string): { request: BtwStartRequest; pending?: BtwPendingSend } | undefined {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(btwObservationKey(parentTaskId)) ?? "null");
+    if (!value || typeof value !== "object" || !("btwId" in value) || typeof value.btwId !== "string" || !value.btwId.startsWith("btw-")
+      || !("parentTaskId" in value) || value.parentTaskId !== parentTaskId) return undefined;
+    const request: BtwStartRequest = { btwId: value.btwId, parentTaskId,
+      ...("modelId" in value && typeof value.modelId === "string" ? { modelId: value.modelId } : {}),
+      ...("welcomeMode" in value && (value.welcomeMode === "working" || value.welcomeMode === "coding" || value.welcomeMode === "bot") ? { welcomeMode: value.welcomeMode } : {}) };
+    const pending = "pending" in value ? value.pending : undefined;
+    return { request, ...(pending && typeof pending === "object" && "text" in pending && typeof pending.text === "string"
+      && "userMessageId" in pending && typeof pending.userMessageId === "string" && "assistantMessageId" in pending && typeof pending.assistantMessageId === "string"
+      ? { pending: { text: pending.text, userMessageId: pending.userMessageId, assistantMessageId: pending.assistantMessageId } } : {}) };
+  } catch { return undefined; }
+}
+function saveBtwObservation(request: BtwStartRequest, pending?: BtwPendingSend): void {
+  try { localStorage.setItem(btwObservationKey(request.parentTaskId), JSON.stringify({ ...request, ...(pending ? { pending } : {}) })); } catch { /* Host execution still persists if browser storage is unavailable. */ }
+}
+let btwResync: { btwId: string; buffered: DurableBotDelta[] } | undefined;
+
+function reattachBtw(request: BtwStartRequest): void {
+  ensureBtwEventBridge(); startKeepalive();
+  const generation = btwStartGeneration;
+  void window.api?.btw?.start(request).then(() => {
+    const state = useBtwStore.getState();
+    if (generation !== btwStartGeneration || state.btwId !== request.btwId || !state.active) return;
+    useBtwStore.setState({ ready: true, starting: false, pendingSend: null });
+    if (state.pendingSend) promptBtwTurn(request.btwId, state.pendingSend.text, state.pendingSend.userMessageId, state.pendingSend.assistantMessageId);
+  }).catch((error: unknown) => {
+    if (generation !== btwStartGeneration || useBtwStore.getState().btwId !== request.btwId) return;
+    btwResync = undefined;
+    useBtwStore.setState({ starting: false, ready: false, error: `BTW 同步失败：${error instanceof Error ? error.message : String(error)}` });
+  });
+}
 
 /** 带回主线的结论长度上限：填 Composer 的是精简结论，不是整段历史 */
 const BRING_BACK_ANSWER_MAX_CHARS = 1000;
@@ -40,8 +78,7 @@ export function btwComposerSendInput(btwActive: boolean, btwText: string): strin
 
 /**
  * BTW 生成超时（ms）：streaming 超过该时长没有任何补丁/终态到达时，
- * renderer 侧兜底 settle（本地结束 streaming + 通知主进程 abort），
- * 防止 abort/失败终态极端丢失时会话永久卡 streaming。
+ * renderer 重新读取持久状态，观察超时不取消后台执行。
  */
 export const BTW_STREAMING_TIMEOUT_MS = 10 * 60_000;
 
@@ -76,8 +113,20 @@ function promptBtwTurn(
   assistantMessageId: string,
   attempt = 0,
 ): void {
+  const observation = useBtwStore.getState();
+  const pendingSend = { text, userMessageId, assistantMessageId };
+  if (observation.btwId === btwId && observation.startRequest) {
+    useBtwStore.setState({ pendingSend });
+    saveBtwObservation(observation.startRequest, pendingSend);
+  }
   void window.api?.btw
     ?.prompt({ btwId, text, userMessageId, assistantMessageId })
+    .then(() => {
+      const state = useBtwStore.getState();
+      if (state.btwId !== btwId || state.pendingSend?.userMessageId !== userMessageId || !state.startRequest) return;
+      useBtwStore.setState({ pendingSend: null });
+      saveBtwObservation(state.startRequest);
+    })
     .catch((err: unknown) => {
       const now = useBtwStore.getState();
       // 会话身份守卫：若已 close 或已切换到新 BTW（btwId 变化），本次失败与当前会话无关
@@ -110,18 +159,12 @@ function promptBtwTurn(
     });
 }
 
-/** 超时兜底：本地 settle 滞留 streaming（不等待主进程），并通知主进程 abort */
+/** Observation timeout requests a fresh snapshot; it never cancels execution. */
 function settleStalledStream(btwId: string): void {
-  useBtwStore.setState((s) => {
-    if (!s.active || s.btwId !== btwId || !s.streaming) return s;
-    return {
-      streaming: false,
-      streamingSince: null,
-      messages: s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
-      error: s.error ?? "BTW 生成超时，已自动停止（可继续追问或关闭）",
-    };
-  });
-  void window.api?.btw?.abort?.(btwId).catch(() => undefined);
+  const state = useBtwStore.getState();
+  if (!state.active || state.btwId !== btwId || !state.startRequest) return;
+  useBtwStore.setState({ streamingSince: Date.now(), notice: "正在重新同步 BTW 进度…" });
+  reattachBtw(state.startRequest);
 }
 
 function textOf(msg: ChatMessage, onlyFinal: boolean): string {
@@ -239,8 +282,10 @@ interface BtwState {
   /** 已带回主线的最后一轮用户消息 id（幂等去重） */
   lastBringBackUserMsgId: string | null;
   btwId: string | null;
-  /** 创建时点击的主任务 id（切换即销毁） */
+  /** 观察所属的主任务 id；切换后按原身份重附着。 */
   parentTaskId: string | null;
+  startRequest: BtwStartRequest | null;
+  durable?: DurableBotSnapshot;
   /** 快照时刻（点击 BTW 的瞬间） */
   snapshotAt: number;
   /** BTW 自己的临时消息集合（绝不写入 Task.messages） */
@@ -263,7 +308,7 @@ interface BtwState {
   bringBackToComposer: () => void;
   /** 只消费 btw:event 通道的补丁；btwId 不匹配一律丢弃 */
   applyBtwPatch: (patch: BtwUiPatch) => void;
-  /** 父任务切换（或回到首页）时销毁 BTW */
+  /** 父任务切换时停止观察，进入其他任务时恢复其已有观察。 */
   destroyIfParentChanged: (activeTaskId: string | null) => void;
 }
 
@@ -278,6 +323,7 @@ export const useBtwStore = create<BtwState>((set, get) => ({
   lastBringBackUserMsgId: null,
   btwId: null,
   parentTaskId: null,
+  startRequest: null,
   snapshotAt: 0,
   messages: [],
   streaming: false,
@@ -291,6 +337,8 @@ export const useBtwStore = create<BtwState>((set, get) => ({
     if (!task || (task.messages.length === 0 && !task.sessionFile)) return;
     if (get().active) return;
     const btwId = nextBtwId();
+    const startRequest: BtwStartRequest = { btwId, parentTaskId: task.id, modelId: app.activeModelId, welcomeMode: task.welcomeMode ?? app.welcomeMode };
+    saveBtwObservation(startRequest);
     const gen = ++btwStartGeneration;
     set({
       active: true,
@@ -303,6 +351,8 @@ export const useBtwStore = create<BtwState>((set, get) => ({
       lastBringBackUserMsgId: null,
       btwId,
       parentTaskId: task.id,
+      startRequest,
+      durable: undefined,
       snapshotAt: Date.now(),
       messages: [],
       streaming: false,
@@ -319,11 +369,9 @@ export const useBtwStore = create<BtwState>((set, get) => ({
         welcomeMode: task.welcomeMode ?? app.welcomeMode,
       })
       .then(() => {
-        // start 已完成；若期间已被 close / 切换任务 / 再次 start（代际变化），
-        // 补发 close 清理主进程刚创建的会话，避免孤儿滞留到 keepalive 超时。
+        // A stale observer cannot reacquire a closed or switched view.
         const st = get();
         if (gen !== btwStartGeneration || !st.active || st.btwId !== btwId) {
-          void window.api?.btw?.close?.(btwId).catch(() => undefined);
           return;
         }
         // 会话就绪：若首轮发送已排队（start 在途时用户发送），自动补发（同一对消息 id，UI 无感）
@@ -403,6 +451,8 @@ export const useBtwStore = create<BtwState>((set, get) => ({
     const st = get();
     if (!st.active || !st.btwId) return;
     const btwId = st.btwId;
+    if (st.parentTaskId) { try { localStorage.removeItem(btwObservationKey(st.parentTaskId)); } catch { /* Optional browser persistence. */ } }
+    btwResync = undefined;
     // 使在途 start 回调失效（其 then 分支会补发 close 清理主进程会话）
     btwStartGeneration += 1;
     // 先清本地状态（UI 立即退出），再通知主进程 abort+dispose；不等待主进程完成
@@ -417,6 +467,8 @@ export const useBtwStore = create<BtwState>((set, get) => ({
       lastBringBackUserMsgId: null,
       btwId: null,
       parentTaskId: null,
+      startRequest: null,
+      durable: undefined,
       snapshotAt: 0,
       messages: [],
       streaming: false,
@@ -460,8 +512,32 @@ export const useBtwStore = create<BtwState>((set, get) => ({
   },
 
   applyBtwPatch: (patch) => {
+    const current = get();
+    if (!current.active || !current.btwId || patch.btwId !== current.btwId) return;
+    if (patch.type === "durable_delta") {
+      if (btwResync?.btwId === patch.btwId) { btwResync.buffered.push(patch.delta); if (btwResync.buffered.length > 256) btwResync.buffered.shift(); return; }
+      const result = applyDurableDelta<ChatMessageDto, DurableBotState>(current.durable, patch.delta);
+      if (result.kind === "applied") get().applyBtwPatch({ type: "durable_snapshot", taskId: patch.taskId, btwId: patch.btwId, snapshot: result.snapshot });
+      else if (result.kind === "resync" && current.startRequest) {
+        btwResync = { btwId: patch.btwId, buffered: [patch.delta] };
+        reattachBtw(current.startRequest);
+      }
+      return;
+    }
     set((s) => {
       if (!s.active || !s.btwId || patch.btwId !== s.btwId) return s;
+      if (patch.type === "durable_snapshot") {
+        if (s.durable?.epoch === patch.snapshot.epoch && s.durable.revision >= patch.snapshot.revision) return s;
+        const previous = new Map(s.durable?.messages.map(message => [message.id, message]));
+        const displayed = new Map(s.messages.map(message => [message.id, message]));
+        return { ...s, durable: patch.snapshot, started: s.started || patch.snapshot.messages.length > 0,
+          messages: patch.snapshot.messages.map(message => {
+            const prior = displayed.get(message.id);
+            return prior && previous.get(message.id) === message ? prior : { ...historyMessageToChatMessage(message), streaming: message.streaming,
+              presentationKey: message.presentationKey, generationStats: message.generationStats };
+          }), streaming: patch.snapshot.busy,
+          streamingSince: patch.snapshot.busy ? s.streamingSince ?? Date.now() : null, error: patch.snapshot.error ?? null };
+      }
       if (!("messageId" in patch) || !patch.messageId) return s;
       const { messageId } = patch;
       let messages = s.messages;
@@ -489,12 +565,27 @@ export const useBtwStore = create<BtwState>((set, get) => ({
         error,
       };
     });
+    if (patch.type === "durable_snapshot" && btwResync?.btwId === patch.btwId) {
+      const pending = btwResync.buffered; btwResync = undefined;
+      for (const delta of pending) get().applyBtwPatch({ type: "durable_delta", taskId: patch.taskId, btwId: patch.btwId, delta });
+    }
   },
 
   destroyIfParentChanged: (activeTaskId) => {
     const st = get();
     if (st.active && st.parentTaskId !== null && st.parentTaskId !== activeTaskId) {
-      st.close();
+      btwStartGeneration++;
+      btwResync = undefined;
+      set({ active: false, ready: false, starting: false, btwId: null, parentTaskId: null, startRequest: null, durable: undefined, messages: [], streaming: false, streamingSince: null, pendingSend: null });
+    }
+    if (!get().active && activeTaskId) {
+      const saved = savedBtwObservation(activeTaskId);
+      if (!saved) return;
+      const { request } = saved;
+      btwStartGeneration++;
+      set({ active: true, starting: true, ready: false, started: true, collapsed: false, btwId: request.btwId, parentTaskId: request.parentTaskId,
+        startRequest: request, pendingSend: saved.pending ?? null, durable: undefined, snapshotAt: Date.now(), messages: [], streaming: false, error: null, notice: null, lastBringBackUserMsgId: null });
+      reattachBtw(request);
     }
   },
 }));

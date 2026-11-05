@@ -1,427 +1,162 @@
 import { DEFAULT_WELCOME_MODE } from "../../shared/mode-profile";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type {
-  AgentUiPatch,
-  AssembleModePreviewRequest,
-  AssemblyTraceDto,
-  BtwPromptRequest,
-  BtwStartRequest,
-} from "../../shared/agent-ipc";
+import type { AgentUiPatch, AssembleModePreviewRequest, AssemblyTraceDto, BtwPromptRequest, BtwStartRequest, TaskHistoryDto } from "../../shared/agent-ipc";
 import { BTW_MAX_SESSIONS, canStartBtwSession } from "../../shared/btw-policy";
 import { normalizeSingleExpertId } from "../../shared/expert-id";
-import { mapPiEventToPatches, type MapperContext } from "../../shared/pi-event-mapper";
-import type { RecordLiveInput, UsageStatsService } from "../usage/UsageStatsService";
-import { PerformanceTracker } from "../usage/PerformanceTracker";
-import { GenerationSpeedTracker } from "../usage/GenerationSpeedTracker";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import type { TaskExecutionWorkspace } from "../task/TaskExecutionWorkspace";
 import type { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
-import type { SessionRegistry } from "./SessionRegistry";
-import { loadTaskHistoryFromSession } from "./session-history";
+import type { DurableBotRuntime } from "./durable/DurableBotRuntime";
+import type { DurableBotSnapshot } from "../../shared/durable-bot";
+import { durableDelta } from "../../../shared/src/durable-sync";
 
 const BTW_SYSTEM_ROLE = `## BTW 临时只读对话
-你正处于 MyBuddy 的 BTW 临时对话中（By The Way，临时岔题）。规则：
-1. 本次讨论基于主对话的冻结快照，结论不会自动写回主对话；用户可自行选择「带回主线」。
-2. 这是只读会话：只能读取/检索/分析（工具仅 read/grep/find/ls），绝不修改项目文件、不执行任何写操作。
-3. 支持多轮追问：基于快照与前面讨论继续，回答直接、可执行。
-4. 若用户要求「带回主线」，只需给出清晰、可直接作为主线继续使用的结论。`;
-
-interface BtwSessionEntry {
-  btwId: string;
-  parentTaskId: string;
-  session: AgentSession;
-  unsubscribe: () => void;
-  cwd: string;
-  createdAt: number;
-  lastSeenAt: number;
-  assistantMessageId: string | null;
-  turnStartedAt: number;
-  turnEnded: boolean;
-  usageTracker: PerformanceTracker;
-  usageModelId?: string;
-}
+你正处于 MyBuddy 的 BTW 临时对话中（By The Way，临时岔题）。
+1. 基于发起时主对话的冻结快照讨论；结论不会自动写回主对话，用户可选择「带回主线」。
+2. 只读会话：只读取、检索、分析，绝不修改项目文件或执行写操作。
+3. 支持多轮追问；回答直接、可执行。
+4. 要求「带回主线」时给出清晰、可直接作为主线继续使用的结论。`;
 
 export interface BtwSessionServiceDependencies {
   db: AppDatabase;
-  registry: SessionRegistry;
   settings: AppSettingsStore;
   taskWorkspace: TaskExecutionWorkspace;
   libraryWorkspace: LibraryWorkspaceContextService;
-  usageStats: UsageStatsService;
   resolveTaskExecutionWorkspaceCwd: (taskId: string) => string;
   assembleModePreview: (request: AssembleModePreviewRequest) => AssemblyTraceDto;
-  createTransientSession: (input: {
-    cwd: string;
-    segments: string[];
-    parentTaskId: string;
-    snapshot: string;
-  }) => Promise<AgentSession>;
-  setSessionModel: (session: AgentSession, modelId: string) => Promise<void>;
-  applySessionReasoningPreference: (
-    session: AgentSession,
-    preference: NonNullable<BtwStartRequest["reasoningPreference"]>,
-  ) => void;
+  history: (taskId: string, beforeEntryId?: number) => Promise<TaskHistoryDto>;
+  openRuntime: (input: BtwStartRequest & { cwd: string; segments: string[]; snapshot: string; onSnapshot: (snapshot: DurableBotSnapshot) => void }) => Promise<DurableBotRuntime>;
   emitPatch: (btwId: string, patch: AgentUiPatch) => void;
-  usageMessageFromEvent: (
-    message: RecordLiveInput["message"] | { provider?: string | null; model?: string | null; responseModel?: string | null },
-    session: AgentSession,
-    myBuddyModelId?: string | null,
-  ) => RecordLiveInput["message"];
 }
+interface BtwSessionEntry { parentTaskId: string; runtime: DurableBotRuntime; lastSeenAt: number }
 
-function formatBtwSnapshot(pairs: Array<{ role: "user" | "assistant"; text: string }>): string {
-  const MAX_CHARS = 24_000;
-  const MAX_TURNS = 60;
-  const trimmed = pairs.slice(-MAX_TURNS);
+function formatBtwSnapshot(messages: TaskHistoryDto["messages"]): string {
   const parts: string[] = [];
-  let total = 0;
-  let truncated = false;
-  for (let i = trimmed.length - 1; i >= 0; i -= 1) {
-    const pair = trimmed[i]!;
-    const label = pair.role === "user" ? "用户" : "助手";
-    const block = `${label}: ${pair.text}`;
-    if (total + block.length > MAX_CHARS) {
-      truncated = true;
-      continue;
-    }
-    parts.unshift(block);
-    total += block.length;
+  let size = 0;
+  for (const message of messages.slice(-60).reverse()) {
+    const block = `${message.role === "user" ? "用户" : "助手"}: ${message.text}`;
+    if (size + block.length > 24_000) break;
+    parts.unshift(block); size += block.length;
   }
-  if (parts.length === 0) {
-    return "## 主对话上下文快照（BTW 发起时刻冻结）\n（主对话暂无可用消息）";
-  }
-  const head = `## 主对话上下文快照（BTW 发起时刻冻结）\n以下是你本次临时讨论所基于的主对话内容；快照后主对话的任何变化与本次讨论无关。${truncated ? "（快照过长，已截断，仅保留最近部分）" : ""}`;
-  return `${head}\n\n${parts.join("\n\n")}`;
+  return "## 主对话上下文快照（BTW 发起时刻冻结）\n快照之后主对话的变化与本次讨论无关。\n\n" + (parts.join("\n\n") || "（暂无可用消息）");
 }
 
+/** Product identity and observation only; Durable owns execution, queues and recovery. */
 export class BtwSessionService {
   private readonly sessions = new Map<string, BtwSessionEntry>();
-  private readonly userTurnCounters = new Map<string, number>();
+  private readonly opening = new Map<string, Promise<void>>();
+  private readonly closing = new Map<string, Promise<void>>();
   private pruneTimer: ReturnType<typeof setTimeout> | null = null;
-  private static readonly KEEPALIVE_TIMEOUT_MS = 90_000;
-  private static readonly PRUNE_INTERVAL_MS = 10_000;
-
   constructor(private readonly deps: BtwSessionServiceDependencies) {}
 
-  private settleTurn(btwId: string, messageId: string | null, error?: string): void {
-    if (!messageId) return;
-    this.deps.emitPatch(btwId, {
-      type: "text_delta",
-      taskId: btwId,
-      messageId,
-      delta: error ? `（BTW 已中止：${error}）` : "（BTW 已停止生成）",
-      final: true,
-    });
-    this.deps.emitPatch(btwId, {
-      type: "assistant_end",
-      taskId: btwId,
-      messageId,
-      error,
-    });
+  private async snapshot(parentTaskId: string): Promise<string> {
+    let history = await this.deps.history(parentTaskId);
+    if (history.historyError) throw new Error(history.historyError);
+    while (history.messages.length < 60 && history.durable?.historyBefore !== undefined) {
+      history = await this.deps.history(parentTaskId, history.durable.historyBefore);
+      if (history.historyError) throw new Error(history.historyError);
+    }
+    return formatBtwSnapshot(history.messages);
   }
 
-  private buildSnapshot(parentTaskId: string): string {
-    const live = this.deps.registry.get(parentTaskId);
-    const pairs: Array<{ role: "user" | "assistant"; text: string }> = [];
-    if (live?.session) {
-      for (const message of live.session.messages) {
-        if (message.role === "user") {
-          const content = (message as { content?: unknown }).content;
-          const text = typeof content === "string"
-            ? content
-            : Array.isArray(content)
-              ? content
-                  .filter((part) => part && typeof part === "object" && (part as { type?: string }).type === "text")
-                  .map((part) => (part as { text?: string }).text ?? "")
-                  .join("")
-              : "";
-          if (text.trim()) pairs.push({ role: "user", text });
-        } else if (message.role === "assistant") {
-          const content = (message as { content?: unknown }).content;
-          const text = Array.isArray(content)
-            ? content
-                .filter((part) => part && typeof part === "object" && (part as { type?: string }).type === "text")
-                .map((part) => (part as { text?: string }).text ?? "")
-                .join("")
-            : "";
-          if (text.trim()) pairs.push({ role: "assistant", text });
-        }
-      }
-    } else {
-      const row = this.deps.db.getTask(parentTaskId);
-      if (row?.sessionFile) {
-        try {
-          const history = loadTaskHistoryFromSession(row.sessionFile);
-          for (const message of history.messages) {
-            if (message.text?.trim()) pairs.push({ role: message.role, text: message.text });
-          }
-        } catch (err) {
-          console.warn("[BtwSessionService] BTW 快照回退 jsonl 失败", err);
-        }
-      }
-    }
-    return formatBtwSnapshot(pairs);
-  }
-
-  private buildBaseContext(parentTaskId: string): string[] {
-    const live = this.deps.registry.get(parentTaskId);
-    if (live?.runtimeAssembly?.segments?.length) {
-      return this.deps.libraryWorkspace.renderBtwProjectContextSegments(
-        live.runtimeAssembly.segments,
-        parentTaskId,
-      );
-    }
+  private baseContext(parentTaskId: string, cwd: string): string[] {
     const task = this.deps.db.getTask(parentTaskId);
-    if (!task) return [];
-    try {
-      const connectorIds =
-        this.deps.registry.get(parentTaskId)?.connectorIds ??
-        this.deps.settings.read().taskConnectorIds?.[parentTaskId] ??
-        [];
-      const cwd =
-        task.cwd ??
-        (task.spaceId ? this.deps.db.getSpace(task.spaceId)?.path : undefined) ??
-        this.deps.taskWorkspace.resolveTaskExecutionWorkspaceDir(parentTaskId);
-      const assembly = this.deps.assembleModePreview({
-        welcomeMode: task.welcomeMode ?? DEFAULT_WELCOME_MODE,
-        projectId: task.projectId,
-        modePresetId: task.modePresetId,
-        expertId: normalizeSingleExpertId(task.expertId),
-        connectorIds,
-        permissionMode: task.permissionMode,
-        spaceId: task.spaceId,
-        cwd,
-        libraryToolsAvailable: false,
-      });
-      return this.deps.libraryWorkspace.renderBtwProjectContextSegments(assembly.segments, parentTaskId);
-    } catch (err) {
-      console.warn("[BtwSessionService] BTW 基础上下文重装配失败，回退仅对话快照", err);
-      return [];
+    if (!task) throw new Error("BTW 父任务不存在");
+    const assembly = this.deps.assembleModePreview({
+      welcomeMode: task.welcomeMode ?? DEFAULT_WELCOME_MODE, projectId: task.projectId,
+      modePresetId: task.modePresetId, expertId: normalizeSingleExpertId(task.expertId),
+      connectorIds: this.deps.settings.read().taskConnectorIds?.[parentTaskId] ?? [],
+      permissionMode: "readonly", spaceId: task.spaceId, cwd, libraryToolsAvailable: false,
+    });
+    return this.deps.libraryWorkspace.renderBtwProjectContextSegments(assembly.segments, parentTaskId);
+  }
+
+  async start(request: BtwStartRequest): Promise<void> {
+    await this.closing.get(request.btwId);
+    const active = this.sessions.get(request.btwId);
+    if (active) {
+      if (active.parentTaskId !== request.parentTaskId) throw new Error("BTW 会话不属于当前任务");
+      active.lastSeenAt = Date.now();
+      this.deps.emitPatch(request.btwId, { type: "durable_snapshot", taskId: request.btwId, snapshot: active.runtime.snapshot });
+      await active.runtime.refresh(); return;
     }
+    const opening = this.opening.get(request.btwId);
+    if (opening) { await opening; return this.start(request); }
+    const pending = this.open(request);
+    this.opening.set(request.btwId, pending);
+    try { await pending; } finally { this.opening.delete(request.btwId); }
+  }
+
+  private async open(request: BtwStartRequest): Promise<void> {
+    if (!canStartBtwSession(this.sessions.size + this.opening.size, false)) throw new Error(`BTW 会话数量已达上限（${BTW_MAX_SESSIONS}）`);
+    if (!this.deps.db.getTask(request.parentTaskId)) throw new Error("BTW 父任务不存在");
+    const cwd = this.deps.resolveTaskExecutionWorkspaceCwd(request.parentTaskId);
+    let previous: DurableBotSnapshot | undefined;
+    const runtime = await this.deps.openRuntime({ ...request, cwd,
+      segments: [...this.baseContext(request.parentTaskId, cwd), `## 当前任务工作目录\n${cwd}`, BTW_SYSTEM_ROLE],
+      snapshot: await this.snapshot(request.parentTaskId),
+      onSnapshot: snapshot => {
+        const { epoch: _epoch, revision: _revision, messages: _messages, ...state } = snapshot;
+        this.deps.emitPatch(request.btwId, previous?.epoch === snapshot.epoch
+          ? { type: "durable_delta", taskId: request.btwId, delta: durableDelta(previous, snapshot, state) }
+          : { type: "durable_snapshot", taskId: request.btwId, snapshot });
+        previous = snapshot;
+      },
+    });
+    this.sessions.set(request.btwId, { runtime, parentTaskId: request.parentTaskId, lastSeenAt: Date.now() });
+    runtime.resume();
+    this.schedulePrune();
+  }
+
+  async prompt(request: BtwPromptRequest): Promise<void> {
+    await this.opening.get(request.btwId);
+    const entry = this.sessions.get(request.btwId);
+    if (!entry) throw new Error("BTW 会话不存在或已销毁");
+    entry.lastSeenAt = Date.now();
+    const submission = await entry.runtime.submit(request.text, request.userMessageId, "followUp",
+      { text: request.text, displayText: request.text, attachments: [] });
+    await entry.runtime.reply(submission);
+  }
+
+  async abort(btwId: string): Promise<void> {
+    await this.opening.get(btwId);
+    const entry = this.sessions.get(btwId);
+    if (entry) { await entry.runtime.abort(); entry.lastSeenAt = Date.now(); }
+  }
+
+  async close(btwId: string): Promise<void> {
+    await this.opening.get(btwId);
+    const entry = this.sessions.get(btwId);
+    if (!entry) return;
+    this.sessions.delete(btwId);
+    const closing = (async () => { try { await entry.runtime.abort(); } finally { await entry.runtime.close(); } })();
+    this.closing.set(btwId, closing);
+    try { await closing; } finally { this.closing.delete(btwId); }
+  }
+
+  keepalive(ids: string[]): void {
+    for (const id of ids) { const entry = this.sessions.get(id); if (entry) entry.lastSeenAt = Date.now(); }
+  }
+
+  disposeAll(): void {
+    if (this.pruneTimer) clearTimeout(this.pruneTimer);
+    this.pruneTimer = null;
+    for (const entry of this.sessions.values()) void entry.runtime.close().catch(error => console.warn("[BTW] close failed", error));
+    this.sessions.clear();
   }
 
   private schedulePrune(): void {
     if (this.pruneTimer) return;
     this.pruneTimer = setTimeout(() => {
       this.pruneTimer = null;
-      const now = Date.now();
-      const stale: string[] = [];
-      for (const [btwId, entry] of this.sessions) {
-        if (now - entry.lastSeenAt > BtwSessionService.KEEPALIVE_TIMEOUT_MS) stale.push(btwId);
+      for (const [id, entry] of this.sessions) if (Date.now() - entry.lastSeenAt > 90_000) {
+        if (entry.runtime.snapshot.busy || entry.runtime.snapshot.queued > 0) continue;
+        this.sessions.delete(id);
+        const closing = entry.runtime.close();
+        this.closing.set(id, closing);
+        void closing.catch(error => console.warn("[BTW] detach failed", error)).finally(() => this.closing.delete(id));
       }
-      for (const btwId of stale) {
-        console.warn(`[BtwSessionService] BTW 心跳超时，回收孤儿会话：${btwId}`);
-        this.disposeSession(btwId);
-      }
-      if (this.sessions.size > 0) this.schedulePrune();
-    }, BtwSessionService.PRUNE_INTERVAL_MS);
-  }
-
-  private disposeSession(btwId: string): void {
-    const entry = this.sessions.get(btwId);
-    if (!entry) return;
-    this.sessions.delete(btwId);
-    this.userTurnCounters.delete(btwId);
-    try {
-      const sample = entry.usageTracker.settlePending(Date.now(), "disposed");
-      if (sample) {
-        this.deps.usageStats.recordLive({
-          taskId: btwId,
-          sessionFile: null,
-          sourceKind: "btw",
-          sourceDetail: entry.parentTaskId,
-          sample,
-          message: {},
-        });
-      }
-    } catch (err) {
-      console.warn(`[usage] btw settle 失败: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    try { entry.unsubscribe(); } catch { /* ignore */ }
-    try { entry.session.clearQueue(); } catch { /* ignore */ }
-    try { void entry.session.abort(); } catch { /* ignore */ }
-    try { void entry.session.dispose(); } catch { /* ignore */ }
-    if (this.sessions.size === 0 && this.pruneTimer) {
-      clearTimeout(this.pruneTimer);
-      this.pruneTimer = null;
-    }
-  }
-
-  disposeAll(): void {
-    for (const btwId of [...this.sessions.keys()]) this.disposeSession(btwId);
-  }
-
-  async start(req: BtwStartRequest): Promise<void> {
-    if (this.sessions.has(req.btwId)) this.disposeSession(req.btwId);
-    if (!canStartBtwSession(this.sessions.size, this.sessions.has(req.btwId))) {
-      throw new Error(`BTW 会话数量已达上限（${BTW_MAX_SESSIONS}），请关闭部分 BTW 会话后重试`);
-    }
-    const row = this.deps.db.getTask(req.parentTaskId);
-    if (!row) throw new Error(`BTW 父任务不存在：${req.parentTaskId}`);
-
-    const cwd = this.deps.resolveTaskExecutionWorkspaceCwd(req.parentTaskId);
-    const baseContext = this.buildBaseContext(req.parentTaskId);
-    const snapshot = this.buildSnapshot(req.parentTaskId);
-    const segments = [...baseContext, `## 当前任务工作目录\n${cwd}`, BTW_SYSTEM_ROLE];
-    const session = await this.deps.createTransientSession({ cwd, segments, parentTaskId: req.parentTaskId, snapshot });
-
-    if (req.modelId) {
-      try {
-        await this.deps.setSessionModel(session, req.modelId);
-      } catch (err) {
-        console.warn("[BtwSessionService] BTW setModel failed", err);
-      }
-    }
-    if (req.reasoningPreference && req.reasoningPreferenceModelId) {
-      const actualModelId = session.model?.provider && session.model?.id
-        ? `${session.model.provider}/${session.model.id}`
-        : undefined;
-      if (actualModelId === req.reasoningPreferenceModelId) {
-        this.deps.applySessionReasoningPreference(session, req.reasoningPreference);
-      }
-    }
-
-    const entry: BtwSessionEntry = {
-      btwId: req.btwId,
-      parentTaskId: req.parentTaskId,
-      session,
-      cwd,
-      createdAt: Date.now(),
-      lastSeenAt: Date.now(),
-      assistantMessageId: null,
-      turnStartedAt: 0,
-      turnEnded: true,
-      unsubscribe: () => undefined,
-      usageTracker: new PerformanceTracker(),
-      usageModelId:
-        req.modelId ??
-        this.deps.db.getTask(req.parentTaskId)?.modelId ??
-        this.deps.settings.read().defaultModelId ??
-        undefined,
-    };
-    const usageTracker = entry.usageTracker;
-    const generationSpeed = new GenerationSpeedTracker();
-    const mapperCtx: MapperContext = {
-      taskId: req.btwId,
-      messageId: "",
-      startedAt: 0,
-    };
-    this.userTurnCounters.set(req.btwId, 0);
-
-    entry.unsubscribe = session.subscribe((event) => {
-      if (event.type === "turn_start") {
-        const turnIndex = (event as { turnIndex?: number }).turnIndex ?? 0;
-        const now = (event as { timestamp?: number }).timestamp ?? Date.now();
-        usageTracker.onTurnStart(turnIndex, now);
-      } else if (event.type === "message_update") {
-        usageTracker.onMessageUpdate(event.assistantMessageEvent?.type ?? "", Date.now());
-      } else if (event.type === "message_start" && event.message.role === "user") {
-        this.userTurnCounters.set(req.btwId, (this.userTurnCounters.get(req.btwId) ?? 0) + 1);
-      } else if (event.type === "message_end" && event.message.role === "assistant") {
-        const sample = usageTracker.onMessageEnd(Date.now(), event.message);
-        if (sample) {
-          try {
-            this.deps.usageStats.recordLive({
-              taskId: req.btwId,
-              sessionFile: null,
-              sourceKind: "btw",
-              sourceDetail: req.parentTaskId,
-              sample,
-              message: this.deps.usageMessageFromEvent(event.message, session, entry.usageModelId),
-              modelId: entry.usageModelId,
-              userTurn: this.userTurnCounters.get(req.btwId) ?? null,
-            });
-          } catch (err) {
-            console.warn(`[usage] btw recordLive 失败: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-      } else if (event.type === "agent_settled") {
-        usageTracker.onSettled();
-      }
-
-      const live = this.sessions.get(req.btwId);
-      if (!live || live.assistantMessageId == null) return;
-      mapperCtx.messageId = live.assistantMessageId;
-      mapperCtx.modelName = session.model?.name ?? session.model?.id;
-      mapperCtx.startedAt = live.turnStartedAt;
-      const stats = generationSpeed.onEvent(event, live.assistantMessageId);
-      if (stats) {
-        this.deps.emitPatch(req.btwId, {
-          type: "generation_stats",
-          taskId: req.btwId,
-          messageId: live.assistantMessageId,
-          stats,
-        });
-      }
-      for (const patch of mapPiEventToPatches(event, mapperCtx)) {
-        this.deps.emitPatch(req.btwId, patch);
-      }
-      if (event.type === "agent_settled") live.turnEnded = true;
-    });
-
-    this.sessions.set(req.btwId, entry);
-    this.schedulePrune();
-    console.log(`[BtwSessionService] BTW 会话已创建：btwId=${req.btwId} parent=${req.parentTaskId} turns=${snapshot.length}`);
-  }
-
-  async prompt(req: BtwPromptRequest): Promise<void> {
-    const entry = this.sessions.get(req.btwId);
-    if (!entry) throw new Error("BTW 会话不存在或已销毁");
-    if (entry.session.isStreaming) throw new Error("BTW 仍在生成中，请稍候");
-
-    entry.assistantMessageId = req.assistantMessageId;
-    entry.turnStartedAt = Date.now();
-    entry.turnEnded = false;
-    entry.lastSeenAt = Date.now();
-    this.deps.emitPatch(req.btwId, {
-      type: "assistant_start",
-      taskId: req.btwId,
-      messageId: req.assistantMessageId,
-      modelName: entry.session.model?.name ?? entry.session.model?.id,
-    });
-    try {
-      await entry.session.prompt(req.text);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!entry.turnEnded) {
-        this.deps.emitPatch(req.btwId, {
-          type: "assistant_end",
-          taskId: req.btwId,
-          messageId: req.assistantMessageId,
-          error: message,
-        });
-      }
-    }
-  }
-
-  async abort(btwId: string): Promise<void> {
-    const entry = this.sessions.get(btwId);
-    if (!entry) return;
-    try { entry.session.clearQueue(); } catch { /* ignore */ }
-    try {
-      await entry.session.abort();
-    } catch (err) {
-      console.warn("[BtwSessionService] BTW abort failed", err);
-    }
-    if (!entry.turnEnded) {
-      this.settleTurn(btwId, entry.assistantMessageId);
-      entry.turnEnded = true;
-    }
-    entry.lastSeenAt = Date.now();
-  }
-
-  async close(btwId: string): Promise<void> {
-    const entry = this.sessions.get(btwId);
-    if (!entry) return;
-    if (entry.session.isStreaming && !entry.turnEnded) this.settleTurn(btwId, entry.assistantMessageId);
-    this.disposeSession(btwId);
-  }
-
-  keepalive(btwIds: string[]): void {
-    const ids = new Set(btwIds);
-    for (const [btwId, entry] of this.sessions) {
-      if (ids.has(btwId)) entry.lastSeenAt = Date.now();
-    }
+      if (this.sessions.size) this.schedulePrune();
+    }, 10_000);
   }
 }

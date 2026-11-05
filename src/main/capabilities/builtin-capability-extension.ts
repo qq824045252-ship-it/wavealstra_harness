@@ -65,6 +65,7 @@ export interface BuiltinCapabilityExtensionBridge {
   markArtifactEmitted?: (path: string) => void;
   getProducerMessageId: () => string | undefined;
   getIsolationLevel: () => IsolationLevel | unknown;
+  getExecutionRunId?: () => string | undefined;
   /** Evidence for the optional execute_code capability; Pi core tools do not use this bridge. */
   shellVerification?: VerifiedProcessBridge;
   /** Task-scoped Computer Use recovery evidence; execution policy remains in ComputerAutomationService. */
@@ -797,6 +798,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
           let input: ComputerExecInput | undefined;
           let operationSignal: AbortSignal | undefined;
+          let finishToolScope: (() => void) | undefined;
           let actionResult: ComputerExecOutput | undefined;
           try {
             const batchActions = Array.isArray(p.actions)
@@ -827,7 +829,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               action,
               actions: batchActions?.length ? batchActions : undefined,
               settleMs: p.settle_ms as number | undefined,
-              taskId: bridge.nativeExecution ? undefined : bridge.taskId,
+              taskId: bridge.taskId,
               x: p.x as number | undefined,
               y: p.y as number | undefined,
               x2: p.x2 as number | undefined,
@@ -875,7 +877,11 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               observeAfter: p.observe_after as boolean | undefined,
               captureAfter: p.capture_after as boolean | undefined,
             };
-            operationSignal = bridge.nativeExecution ? signal : computerUseRunCoordinator.scope(bridge.taskId, signal, bridge.computerRecovery?.resolveContext()?.executionId);
+            if (bridge.nativeExecution) {
+              const scoped = computerUseRunCoordinator.scopeTool(bridge.taskId, signal, bridge.getExecutionRunId?.());
+              operationSignal = scoped.signal;
+              finishToolScope = scoped.finish;
+            } else operationSignal = computerUseRunCoordinator.scope(bridge.taskId, signal, bridge.computerRecovery?.resolveContext()?.executionId);
             operationSignal?.throwIfAborted();
             const result = await computerAutomationService.execute(input, operationSignal);
             actionResult = result;
@@ -904,12 +910,12 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               : `桌面动作结果：${String(action)}`, result);
           } catch (error) {
             const failure = withComputerUseDeliveryEvidence(error, actionResult, operationSignal);
-            if (input && !bridge.nativeExecution) {
+            if (input) {
               computerUseRunCoordinator.fail(input, operationSignal);
               recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure);
             }
             return errorResult("computer_exec", failure);
-          }
+          } finally { finishToolScope?.(); }
         },
       });
     }

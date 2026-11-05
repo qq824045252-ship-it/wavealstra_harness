@@ -34,8 +34,8 @@ assert(
   "WebAccess source is product-owned under src/main/capabilities",
 );
 assert(
-  existsSync(join(repo, "src", "main", "capabilities", "subagent", "index.ts")),
-  "Subagent source is product-owned under src/main/capabilities",
+  existsSync(join(repo, "src", "main", "agent", "durable", "DurableSubagents.ts")),
+  "Subagent execution is product-owned under the Durable host",
 );
 assert(
   !existsSync(join(repo, "extensions", "web-access")),
@@ -57,8 +57,8 @@ assert(
 );
 const agentSource = readFileSync(join(repo, "src", "main", "agent", "AgentService.ts"), "utf-8");
 assert(
-  agentSource.includes("noExtensions: true"),
-  "Pi automatic disk extension discovery remains disabled",
+  !agentSource.includes("new DefaultResourceLoader(") && !agentSource.includes("createAgentSession("),
+  "Main execution does not instantiate the SDK disk resource loader",
 );
 
 console.log("== electron-builder extension packaging is MCP-only ==");

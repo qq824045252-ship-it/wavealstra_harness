@@ -1,9 +1,14 @@
 import { Type } from "typebox";
+import { createHash } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import { createMcpAuthProvider, type ModelRuntime, type McpServerConfig, type LoadedMcpConfig, type McpOAuthCredentialStore } from "@earendil-works/pi-coding-agent";
 import { McpClient, StdioTransport, StreamableHttpTransport, toLlmContent, type AuthProvider, type Tool } from "@earendil-works/pi-mcp";
 import { defineTool, type ToolRegistration, type JsonObject } from "@earendil-works/pi-durable";
+import { z } from "zod";
+import type { Context } from "@earendil-works/chord/context";
+import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
+import { receiptContractSchema, type ExternalEffectRecovery, type ReceiptIntent, type EffectEvidence } from "./DurableEffectRecovery";
 
 function expand(value: string): string {
   return value.replace(/\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
@@ -16,7 +21,8 @@ function strings(input?: Record<string, string>): Record<string, string> | undef
   return input && Object.fromEntries(Object.entries(input).map(([key, value]) => [key, expand(value)]));
 }
 const namespace = (name: string) => name.replace(/[^a-zA-Z0-9_]/g, "_");
-const toolName = (server: string, name: string) => "mcp__" + namespace(server) + "__" + namespace(name);
+export const durableMcpToolName = (server: string, name: string) => "mcp__" + namespace(server) + "__" + namespace(name);
+const toolName = durableMcpToolName;
 function visible(server: McpServerConfig, name: string): boolean {
   const overrides = server.toolExposure ?? {};
   const pattern = Object.keys(overrides).find(key => new RegExp("^" + key.split("*").map(part => part.replace(/[.*+?^{}$()|[\]\\]/g, "\\$&")).join(".*") + "$").test(name));
@@ -30,10 +36,11 @@ interface Server {
   error?: string;
   connectMs?: number;
   listToolsMs?: number;
+  identity?: string;
 }
 
 /** Task-scoped native Pi transports. Discovery and invocation are ordinary Durable ToolTasks. */
-export class DurableMcp {
+export class DurableMcp implements ExternalEffectRecovery {
   readonly tools: ToolRegistration[] = [];
   readonly errors: string[] = [];
   private readonly servers = new Map<string, Server>();
@@ -135,9 +142,19 @@ export class DurableMcp {
       const started = performance.now();
       try {
         const server = state.config;
-        const transport = "command" in server
-          ? new StdioTransport({ command: expand(server.command), args: server.args?.map(expand), env: strings(server.env), cwd: server.cwd ? expand(server.cwd) : this.cwd })
-          : new StreamableHttpTransport({ url: expand(server.url), headers: strings(server.headers), authProvider: await this.auth(name, server, this.credentials, this.models) });
+        let transport: StdioTransport | StreamableHttpTransport;
+        let connectionIdentity: unknown;
+        if ("command" in server) {
+          const address = { command: expand(server.command), args: server.args?.map(expand), env: strings(server.env), cwd: server.cwd ? expand(server.cwd) : this.cwd };
+          connectionIdentity = address;
+          transport = new StdioTransport(address);
+        } else {
+          const address = { url: expand(server.url), headers: strings(server.headers) };
+          connectionIdentity = [address, server.auth, server.oauth];
+          transport = new StreamableHttpTransport({ ...address, authProvider: await this.auth(name, server, this.credentials, this.models) });
+        }
+        // Persist only the digest; endpoint, environment and configured account changes invalidate old receipts.
+        state.identity = createHash("sha256").update(JSON.stringify(connectionIdentity)).digest("hex");
         if (this.closed) throw new Error("MCP host is closed");
         await client.connect(transport);
         state.connectMs = Math.round(performance.now() - started);
@@ -198,6 +215,65 @@ export class DurableMcp {
       { type: "toolCall", id: "mcp", name: tool.name, arguments: args as JsonObject });
     const result = await this.servers.get(server)!.client!.callTool(tool.name, validated, { signal: context.abortSignal });
     return { output: toLlmContent(result), isError: result.isError === true };
+  }
+
+  async prepare(name: string, args: JsonObject, operationId: string, context: Context, origin?: { server: string; tool: string }) {
+    const candidates = [...this.servers.keys()].filter(id => name.startsWith(`mcp__${namespace(id)}__`));
+    if (!origin && candidates.length > 1) throw new Error("业务回执的 MCP 服务器名称有歧义");
+    const server = origin?.server ?? candidates[0];
+    if (!server) return undefined;
+    const catalog = await awaitWithContext(this.catalog(server), context);
+    const matches = catalog.filter(item => origin ? item.name === origin.tool || toolName(server, item.name) === origin.tool : toolName(server, item.name) === name);
+    if (matches.length > 1) throw new Error("业务回执的 MCP 工具名称有歧义");
+    const tool = matches[0];
+    if (!tool || tool._meta?.["mybuddy/recovery"] === undefined) return undefined;
+    const contract = receiptContractSchema.parse(tool._meta["mybuddy/recovery"]);
+    this.receiptTool(catalog, server, contract.receiptTool, contract.receiptArgument);
+    const properties = z.record(z.string(), z.unknown()).parse(tool.inputSchema.properties);
+    if (!z.object({ type: z.literal("string") }).safeParse(properties[contract.idempotencyArgument]).success) {
+      throw new Error("MCP 恢复声明的幂等字段必须是已声明的字符串参数");
+    }
+    const serverIdentity = this.servers.get(server)?.identity;
+    if (!serverIdentity) throw new Error("业务回执缺少服务器连接身份");
+    return { arguments: { ...args, [contract.idempotencyArgument]: operationId },
+      intent: { kind: "receipt" as const, server, serverIdentity, tool: tool.name, operationId, contract } };
+  }
+
+  private receiptTool(catalog: Tool[], server: string, name: string, argument: string): Tool {
+    const receipt = catalog.find(tool => tool.name === name);
+    const classification = classifyMcpToolCall(toolName(server, name), {}, [...this.servers.keys()]);
+    if (!receipt || receipt.annotations?.readOnlyHint !== true || receipt.annotations.destructiveHint === true
+      || !classification?.clearlyReadonly || classification.dangerous || classification.decision.isLocalWrite) {
+      throw new Error("业务回执查询必须是当前服务器可见、明确只读的工具");
+    }
+    const properties = z.record(z.string(), z.unknown()).parse(receipt.inputSchema.properties);
+    if (!z.object({ type: z.literal("string") }).safeParse(properties[argument]).success) throw new Error("业务回执查询缺少操作身份参数");
+    return receipt;
+  }
+
+  async verify(intent: ReceiptIntent, context: Context): Promise<EffectEvidence> {
+    const base: EffectEvidence = { status: "inconclusive", verifierId: "durable-business-receipt",
+      canonicalTarget: `${intent.server}/${intent.tool}/${intent.operationId}`, expected: { operationId: intent.operationId, completed: intent.contract.completedValues }, observed: {}, checkedAt: Date.now() };
+    try {
+      const catalog = await awaitWithContext(this.catalog(intent.server), context);
+      if (this.servers.get(intent.server)?.identity !== intent.serverIdentity) throw new Error("业务回执服务器配置已变化，不能自动确认旧操作");
+      const origin = catalog.find(tool => tool.name === intent.tool);
+      const current = receiptContractSchema.parse(origin?._meta?.["mybuddy/recovery"]);
+      if (JSON.stringify(current) !== JSON.stringify(intent.contract)) throw new Error("业务回执契约已变化，不能自动确认旧操作");
+      const receipt = this.receiptTool(catalog, intent.server, current.receiptTool, current.receiptArgument);
+      const args = { [current.receiptArgument]: intent.operationId };
+      const validated = validateToolArguments({ name: receipt.name, description: receipt.description ?? "", parameters: Type.Unsafe(receipt.inputSchema) },
+        { type: "toolCall", id: intent.operationId, name: receipt.name, arguments: args });
+      const result = await this.servers.get(intent.server)!.client!.callTool(receipt.name, validated,
+        { signal: AbortSignal.any([...(context.abortSignal ? [context.abortSignal] : []), AbortSignal.timeout(10_000)]) });
+      if (result.isError) throw new Error("业务回执查询失败");
+      const record = z.record(z.string(), z.unknown()).parse(result.structuredContent);
+      const echoed = record[current.operationIdField];
+      const status = record[current.statusField];
+      if (echoed !== intent.operationId || typeof status !== "string") throw new Error("业务回执未匹配原操作身份");
+      return { ...base, status: current.completedValues.includes(status) ? "passed" : current.failedValues.includes(status) ? "failed" : "inconclusive",
+        observed: { operationId: echoed, status, receiptTool: receipt.name }, checkedAt: Date.now() };
+    } catch (error) { return { ...base, observed: { error: error instanceof Error ? error.message : String(error) }, checkedAt: Date.now() }; }
   }
 
   private async auth(name: string, server: Extract<McpServerConfig, { url: string }>, credentials: McpOAuthCredentialStore, models: ModelRuntime): Promise<AuthProvider | undefined> {

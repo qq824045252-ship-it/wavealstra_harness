@@ -34,8 +34,25 @@ try {
   assert.equal(await answerPromise, "a");
   assert.equal(interactions.respond(pending.id, "b").ok, false);
 
+  const durableContext = { ...ctx, executionId: "durable:task-a:conversation:tool" };
+  const question = { title: "重启后继续选择", kind: "confirm" as const };
+  const observation = new AbortController();
+  const detached = interactions.requestDurable(durableContext, question, { key: "stable-call", signal: observation.signal });
+  const durablePending = interactions.listByTask("task-a").find(item => item.executionId === durableContext.executionId)!;
+  const detachedResult = assert.rejects(detached, /交互观察已结束/);
+  observation.abort();
+  await detachedResult;
+  const restarted = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), emit);
+  assert.equal(restarted.listByTask("task-a").find(item => item.id === durablePending.id)?.status, "pending");
+  const resumed = restarted.requestDurable(durableContext, question, { key: "stable-call" });
+  assert.equal(restarted.respond(durablePending.id, true).ok, true);
+  assert.equal(await resumed, true);
+  assert.equal(await restarted.requestDurable(durableContext, question, { key: "stable-call" }), true, "completed answer is reused after native replay");
+  await assert.rejects(() => restarted.requestDurable(durableContext, { ...question, title: "a different question" }, { key: "stable-call" }), /不同问题/);
+  assert.equal(interactions.listByTask("task-a").filter(item => item.executionId === durableContext.executionId).length, 1);
+
   const messageIdMap = new Map([["assistant-a", "assistant-child"]]);
-  assert.equal(interactions.cloneTerminal("task-a", "task-b", messageIdMap), 1);
+  assert.equal(interactions.cloneTerminal("task-a", "task-b", messageIdMap), 2);
   assert.equal(interactions.listByTask("task-b")[0]?.status, "resolved");
 
   const created = goals.create({ taskId: "task-a", title: "交付", criteria: [{ text: "类型检查通过" }] });
@@ -55,7 +72,7 @@ try {
 
   assert.ok(patches.some((patch) => patch.type === "conversation_interaction_snapshot"));
   assert.ok(patches.some((patch) => patch.type === "conversation_goal_snapshot"));
-  assert.equal(interactions.deleteFrom("task-a", 0), 1);
+  assert.equal(interactions.deleteFrom("task-a", 0), 2);
   assert.equal(interactions.listByTask("task-a").length, 0);
   console.log("conversation runtime tests: ok");
 } finally {

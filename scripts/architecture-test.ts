@@ -19,7 +19,7 @@
  * K2. F3 chip 过滤 / settings.json 持久化 / assemblyDirty 标记（无新 DB schema）
  * L. 旧版 Connector 全局技能副本安全迁移（幂等、meta 归属、不误删共享/孤儿）
  * M. AgentService 集成：F1 regenerate 全链保留 / F3 dirty / P3-3 释放+detach /
- *    P3-1 预览同源 / P3-2 重名诊断 / P3-4 disabled expert gate（fake session + 真实 registry）
+ *    P3-1 预览同源 / P3-2 重名诊断 / P3-4 disabled expert gate（真实 Durable 宿主）
  * N. 收口回归：P1 重启兜底矩阵 / P2 预览 dirty 守卫 / shadowed cwd 对齐 /
  *    settings.json 原子写 + 损坏保留 / trash→purge taskConnectorIds 生命周期 /
  *    三 Mode + 5+1 受管 provider / 私有技能不污染 Global Skill Center
@@ -1175,22 +1175,23 @@ async function main(): Promise<void> {
     svc.uninstall("demo3");
   }
 
-  /* ================= M. AgentService 集成（F1/F3/P3-1/P3-3/P3-4 真实 registry + fake session） ================= */
+  /* ================= M. AgentService 集成（F1/F3/P3-1/P3-3/P3-4 真实 Durable 存储与模型边界夹具） ================= */
   console.log("\nM. AgentService 集成回归（F1 regenerate / F3 dirty / P3 释放/预览/disabled expert）");
   {
     const { AppDatabase } = await import("../src/main/db/AppDatabase");
-    const { AgentService } = await import("../src/main/agent/AgentService");
     const { ExpertService } = await import("../src/main/experts/ExpertService");
     const { SkillsService } = await import("../src/main/skills/SkillsService");
     const { ConnectorService } = await import("../src/main/connectors/ConnectorService");
     const { collectSessionSkillPaths } = await import("../src/main/agent/sessionSkillPaths");
-    type SessionEntry = import("../src/main/agent/SessionRegistry").SessionEntry;
 
     const db = new AppDatabase();
-    const agent = new AgentService(db);
+    const { createAgentDurableFixture } = await import("./agent-durable-fixture");
+    const fixture = await createAgentDurableFixture(sandbox, db);
+    const { agent, requests } = fixture;
     const runtimeRequirements = (agent as unknown as {
       runtimeRequirements: { ensurePresetReady: (preset?: unknown) => Promise<void> };
-    }).runtimeRequirements;    const expertSvc = new ExpertService();
+    }).runtimeRequirements;
+    const expertSvc = new ExpertService();
     const skillsSvc = new SkillsService();
 
     // 全局技能 alpha（重名诊断用）；连接器 demoX（F3/预览用）；专家 demo-expert（私有 alpha/beta）
@@ -1209,437 +1210,55 @@ async function main(): Promise<void> {
     write(join(pkgDir, "skills", "beta", "SKILL.md"), skillMd("beta"));
     expertSvc.installByPath(pkgDir);
 
-    const { SessionManager: FixtureSessionManager } = await import("@earendil-works/pi-coding-agent");
-    const makeFakeSession = () => {
-      const counters = { promptCalls: 0 };
-      let nativeOverride: InstanceType<typeof FixtureSessionManager> | undefined;
-      let fixtureManager = FixtureSessionManager.inMemory(sandbox);
-      let fixtureSignature = "";
-      const session = {
-        isStreaming: false,
-        pendingAssistantTurns: [],
-        promptQueueEpoch: 0,
-        promptSubmissionTail: Promise.resolve(),
-        pendingApprovals: new Map(),
-        sessionFile: "fake.jsonl",
-        sessionManager: undefined as InstanceType<typeof FixtureSessionManager> | undefined,
-        messages: [],
-        model: undefined,
-        dispose: () => {},
-        getContextUsage: () => null,
-        getUserMessagesForForking: () => [{ entryId: "e1", text: "regenerated text" }],
-        navigateTree: async () => ({ cancelled: false, editorText: "regenerated text" }),
-        prompt: async () => {
-          counters.promptCalls += 1;
-        },
-        setModel: async () => {},
-        setThinkingLevel: () => {},
-      };
-      // Source now uses Pi's selected branch rather than the all-tree forking list.
-      // Keep legacy fixture message setters but project them into a real SessionManager.
-      Object.defineProperty(session, "sessionManager", {
-        get: () => {
-          if (nativeOverride) return nativeOverride;
-          const targets = session.getUserMessagesForForking();
-          const signature = JSON.stringify(targets);
-          if (signature !== fixtureSignature) {
-            fixtureManager = FixtureSessionManager.inMemory(sandbox);
-            for (const target of targets) fixtureManager.appendMessage({ role: "user", content: target.text, timestamp: Date.now() });
-            fixtureSignature = signature;
-          }
-          return fixtureManager;
-        },
-        set: (value: InstanceType<typeof FixtureSessionManager> | undefined) => { nativeOverride = value; },
-      });
-      return { session, counters };
-    };
-    const makeEntry = (
-      taskId: string,
-      cwd: string,
-      connectorIds: string[],
-      session: ReturnType<typeof makeFakeSession>["session"],
-    ): SessionEntry =>
-      ({
-        taskId,
-        session,
-        unsubscribe: () => {},
-        cwd,
-        welcomeMode: "coding",
-        permissionMode: "default",
-        expertId: undefined,
-        connectorIds,
-        assemblyDirty: false,
-        pendingAssistantTurns: [],
-        promptSubmissionTail: Promise.resolve(),
-        promptQueueEpoch: 0,
-        pendingApprovals: new Map(),
-      }) as unknown as SessionEntry;
-
-    // ---- F1：regenerate 全链保留 connectorIds（修复前：内层 prompt 缺参 → 误判重建 → 丢技能） ----
-    const regCwd = agent.resolveTaskExecutionWorkspaceCwd("reg-task");
-    const reg = makeFakeSession();
-    agent.registry.set(makeEntry("reg-task", regCwd, ["demoX"], reg.session));
-    await agent.regenerate({
-      taskId: "reg-task",
-      requestId: "regen-req-f1",
-      userMessageIndex: 0,
-      assistantMessageId: "regen-1",
-      sourceAssistantMessageId: "src-1",
-      sourceUserMessageId: "src-u1",
-    });
-    const after = agent.registry.get("reg-task");
-    assert(!!after, "F1：regenerate 后会话仍在 registry（未错误重建）");
-    assert(after!.session === reg.session, "F1：regenerate 未重建（同一会话对象）");
-    assert(
-      JSON.stringify(after!.connectorIds) === JSON.stringify(["demoX"]),
-      "F1：regenerate 后 connectorIds 保留（私有技能不会丢）",
-    );
-    assert(reg.counters.promptCalls === 1, "F1：内层 prompt 恰执行一次（无额外重建轮）");
-
-    // Stored prompts contain runtime tails that the renderer deliberately hides.
-    const retryRequest = { taskId: "reg-task", requestId: "context-retry", userMessageIndex: 0,
-      assistantMessageId: "context-reply", sourceAssistantMessageId: "context-source",
-      sourceUserMessageId: "context-user", expectedUserTextHash: normalizedEditorTextHash("hello") };
-    const savedPrompt = agent.prompt;
-    const savedTargets = reg.session.getUserMessagesForForking;
-    const savedNavigate = reg.session.navigateTree;
-    let navigations = 0;
-    let retried = 0;
-    try {
-      agent.prompt = async (request) => {
-        retried++;
-        assert(request.userMessageId === "context-user", "重试准备失败后的回放保留 UI 源用户身份");
-        assert(request.text.includes("## "), "校验展示文本不丢弃传给模型的原始上下文");
-        return { queued: false };
-      };
-      for (const tail of ["## 引用文件：\nfixture.txt", "## 用户附带文件\n- file: C:/fixture.txt", "## 用户附带的终端上下文\noutput"]) {
-        const text = `hello\n\n${tail}`;
-        reg.session.getUserMessagesForForking = () => [{ entryId: "e1", text }];
-        reg.session.navigateTree = async () => { navigations++; return { cancelled: false, editorText: text }; };
-        const result = await agent.regenerate(retryRequest);
-        assert(result.ok, "附加文件/终端上下文的失败回复仍实际进入重试请求");
-      }
-      // Memory-like user text is not silently stripped by a legacy heading heuristic.
-      reg.session.getUserMessagesForForking = () => [{ entryId: "e1", text: "hello\n\n## MyBuddy 内部运行时上下文（非用户原文）\nuser-authored text" }];
-      const literalMemory = await agent.regenerate(retryRequest);
-      assert(!literalMemory.ok && literalMemory.code === "TARGET_DRIFTED", "用户写下的 Memory 标题不是可静默丢弃的注入块");
-      const drifted = await agent.regenerate({ ...retryRequest, expectedUserTextHash: normalizedEditorTextHash("different user text") });
-      assert(!drifted.ok && drifted.code === "TARGET_DRIFTED", "真正变化的用户文本仍拒绝重试");
-      assert(navigations === 3 && retried === 3, "漂移拒绝发生在会话回退前，且不发模型请求");
-
-      // Exercise the same AgentService entry point against the installed SDK,
-      // including repeated provider errors and eventual recovery.
-      const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
-      const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai/compat");
-      const sdkSettings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
-      const loader = new DefaultResourceLoader({ cwd: regCwd, agentDir: sandbox, settingsManager: sdkSettings,
-        noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true });
-      await loader.reload();
-      const model: any = { id: "fixture", provider: "fixture", api: "openai-completions", name: "fixture",
-        baseUrl: "http://invalid.invalid", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 100,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-      let providerCalls = 0;
-      let providerFails = true;
-      const runtime: any = { hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "fixture" } }),
-        getModel: () => model, streamSimple: () => {
-          providerCalls++;
-          const stream = createAssistantMessageEventStream();
-          const response: any = { role: "assistant", content: providerFails ? [] : [{ type: "text", text: "Recovered" }],
-            api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
-            stopReason: providerFails ? "error" : "stop", errorMessage: providerFails ? "Connection error." : undefined,
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-          if (!providerFails) stream.push({ type: "start", partial: response });
-          stream.push(providerFails ? { type: "error", reason: "error", error: response } : { type: "done", reason: "stop", message: response });
-          stream.end();
-          return stream;
-        } };
-      const { session: sdk } = await createAgentSession({ cwd: regCwd, agentDir: sandbox, model, modelRuntime: runtime,
-        settingsManager: sdkSettings, sessionManager: SessionManager.create(regCwd, sandbox), resourceLoader: loader, noTools: "builtin" });
-      try {
-        await sdk.bindExtensions({ mode: "rpc" });
-        await sdk.prompt("hello\n\n## 用户附带文件\n- fixture.txt");
-        reg.session.sessionManager = sdk.sessionManager;
-        reg.session.getUserMessagesForForking = () => sdk.getUserMessagesForForking();
-        reg.session.navigateTree = async () => sdk.navigateTree(sdk.getUserMessagesForForking()[0].entryId) as any;
-        agent.prompt = async (request) => { await sdk.prompt(request.text); return { queued: false }; };
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const result = await agent.regenerate({ ...retryRequest, assistantMessageId: `sdk-retry-${attempt}` });
-          assert(result.ok && !sdk.isStreaming, "真实 SDK 连接失败后通过主进程重试，不被 hash 拦截或留下 streaming 锁");
-        }
-        providerFails = false;
-        const recovered = await agent.regenerate({ ...retryRequest, assistantMessageId: "sdk-recovered" });
-        assert(recovered.ok && providerCalls === 5, "首次失败、三次手动重试和网络恢复各调用一次 provider");
-        assert(sdk.messages.at(-1)?.role === "assistant" && (sdk.messages.at(-1) as any).stopReason === "stop",
-          "同一会话恢复成功，不必另发用户消息");
-      } finally { sdk.dispose(); }
-    } finally {
-      agent.prompt = savedPrompt;
-      reg.session.sessionManager = undefined;
-      reg.session.getUserMessagesForForking = savedTargets;
-      reg.session.navigateTree = savedNavigate;
-    }
-
-    // 首次连接准备失败，没有 user entry / sessionFile：重试应再次进入真实 prompt 主路径。
-    const savedGateForRetry = runtimeRequirements.ensurePresetReady;
-    let connectionAttempts = 0;
-    runtimeRequirements.ensurePresetReady = async () => { connectionAttempts++; throw new Error("fixture connection failure"); };
-    try {
-      await agent.prompt({ taskId: "retry-preflight", text: "hello", userMessageId: "retry-user", assistantMessageId: "retry-source" }).catch(() => {});
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const result = await agent.regenerate({ taskId: "retry-preflight", requestId: `retry-${attempt}`, userMessageIndex: 0,
-          assistantMessageId: `retry-new-${attempt}`, sourceAssistantMessageId: "retry-source", sourceUserMessageId: "retry-user" });
-        assert(!result.ok && result.code === "PROMPT_FAILED" && result.message.includes("fixture connection failure"), "未入会话的失败原请求可以再次连接，不被 SESSION_NOT_FOUND 跳过");
-      }
-      assert(connectionAttempts === 4, "首次失败加三次重新生成均实际进入连接准备");
-      const rejected = await agent.regenerate({ taskId: "retry-preflight", requestId: "wrong-user", userMessageIndex: 0,
-        assistantMessageId: "wrong-new", sourceAssistantMessageId: "retry-source", sourceUserMessageId: "other-user" });
-      assert(!rejected.ok && connectionAttempts === 4, "不允许跨用户消息回放原请求");
-    } finally { runtimeRequirements.ensurePresetReady = savedGateForRetry; }
-
-    // “继续”在首轮尚未进入 SDK streaming 的准备阶段也必须等待。
-    const originalGate = runtimeRequirements.ensurePresetReady;
-    let releasePreparation!: () => void;
-    const preparation = new Promise<void>((resolve) => { releasePreparation = resolve; });
-    let preparations = 0;
-    runtimeRequirements.ensurePresetReady = async () => {
-      preparations += 1;
-      if (preparations === 1) await preparation;
-    };
-    const firstPrompt = agent.prompt({ taskId: "reg-task", text: "first", assistantMessageId: "first", userMessageId: "u-first", connectorIds: ["demoX"] });
-    const followPrompt = agent.prompt({ taskId: "reg-task", text: "later", assistantMessageId: "later", userMessageId: "u-later", connectorIds: ["demoX"], streamingBehavior: "followUp" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert(preparations === 1, "继续必须等待当前 prompt 完整结束，不能提前准备或修改会话");
-    releasePreparation();
-    await Promise.all([firstPrompt, followPrompt]);
-    runtimeRequirements.ensurePresetReady = originalGate;
-    assert(preparations === 2, "当前执行结束后，继续请求才进入处理");
-
-    // 引导越过等待中的继续，仍交给 SDK steer；继续必须等原执行结束。
-    const originalSessionPrompt = reg.session.prompt;
-    let started!: () => void;
-    let complete!: () => void;
-    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
-    const completion = new Promise<void>((resolve) => { complete = resolve; });
-    const deliveries: string[] = [];
-    reg.session.clearQueue = () => ({ steering: [], followUp: [] });
-    reg.session.prompt = async (text, options) => {
-      deliveries.push(text);
-      if (text === "running") {
-        reg.session.isStreaming = true;
-        options.preflightResult?.(true);
-        started();
-        await completion;
-        reg.session.isStreaming = false;
-      } else {
-        if (text === "steering") assert(options.streamingBehavior === "steer", "引导使用 SDK steer，不 abort");
-        options.preflightResult?.(true);
-      }
-    };
-    const request = (text: string, streamingBehavior?: "steer" | "followUp") => agent.prompt({
-      taskId: "reg-task", text, assistantMessageId: text, userMessageId: `u-${text}`, connectorIds: ["demoX"], streamingBehavior,
-    });
-    const running = request("running");
-    await startedPromise;
-    const waiting = request("waiting", "followUp");
-    const waitingSecond = request("waiting-second", "followUp");
-    await request("steering", "steer");
-    assert(deliveries.join(",") === "running,waiting,waiting-second,steering", "所有显式输入先交给 Pi；消费顺序由原生队列决定");
-    complete();
-    await Promise.all([running, waiting, waitingSecond]);
-    assert(deliveries.join(",") === "running,waiting,waiting-second,steering", "结束后不再由 MyBuddy 补发、重放或重排输入");
-    reg.session.prompt = originalSessionPrompt;
-    agent.registry.get("reg-task")!.pendingAssistantTurns = [];
-
-    // SDK confirms preflight for queued steering before a user entry exists.
-    // Stop discards that queue; regenerate must replay the original trusted request.
-    const queuedFixture = makeFakeSession();
-    const queuedTask = "stop-queued-regenerate";
-    const queuedEntry = makeEntry(queuedTask, agent.resolveTaskExecutionWorkspaceCwd(queuedTask), [], queuedFixture.session);
-    queuedEntry.pendingExternalWrites = new Map();
-    queuedEntry.assistantMessageId = "running-before-stop";
-    queuedFixture.session.isStreaming = true;
-    const replayed: string[] = [];
-    queuedFixture.session.getUserMessagesForForking = () => [];
-    Object.assign(queuedFixture.session, {
-      clearQueue: () => ({ steering: [], followUp: [] }),
-      abort: async () => { queuedFixture.session.isStreaming = false; },
-      prompt: async (text: string, options: { preflightResult?: (ok: boolean) => void }) => {
-        replayed.push(text);
-        options.preflightResult?.(true);
-      },
-    });
-    agent.registry.set(queuedEntry);
-    await agent.prompt({ taskId: queuedTask, text: "queued original", userMessageId: "queued-user", assistantMessageId: "queued-assistant", streamingBehavior: "steer" });
-    await agent.abort(queuedTask);
-    const retriedQueue = await agent.regenerate({ taskId: queuedTask, requestId: "queued-retry", userMessageIndex: 3, sourceUserMessageId: "queued-user", sourceAssistantMessageId: "queued-assistant", assistantMessageId: "queued-recovered" });
-    assert(retriedQueue.ok && replayed.join(",") === "queued original,queued original", "停止清队列后重新生成必须回放尚未写入会话的原始消息");
-
-    // 首轮准备期间停止：即使尚无 registry，也要取消等待中的继续。
-    let releaseCancelledPreparation!: () => void;
-    const cancelledPreparation = new Promise<void>((resolve) => { releaseCancelledPreparation = resolve; });
-    let cancelledPreparations = 0;
-    runtimeRequirements.ensurePresetReady = async () => { cancelledPreparations += 1; await cancelledPreparation; };
-    const cancelledFirst = agent.prompt({ taskId: "cancel-preparation", text: "first", assistantMessageId: "cancel-first", userMessageId: "cancel-u1" });
-    const cancelledNext = agent.prompt({ taskId: "cancel-preparation", text: "next", assistantMessageId: "cancel-next", userMessageId: "cancel-u2", streamingBehavior: "followUp" });
-    await new Promise((resolve) => setImmediate(resolve));
-    await agent.abort("cancel-preparation");
-    releaseCancelledPreparation();
-    await Promise.all([cancelledFirst, cancelledNext]);
-    runtimeRequirements.ensurePresetReady = originalGate;
-    assert(cancelledPreparations === 1 && !agent.registry.get("cancel-preparation"), "停止取消准备中与排队中的请求，不再创建会话");
-
-    const approvalSession = makeFakeSession();
-    const approvalEntry = makeEntry("abort-approval", agent.resolveTaskExecutionWorkspaceCwd("abort-approval"), [], approvalSession.session);
-    let releaseTool!: (approved: boolean) => void;
-    let releaseExternal!: (decision: { kind: string }) => void;
-    const toolApproval = new Promise<boolean>((resolve) => { releaseTool = resolve; });
-    const externalApproval = new Promise<{ kind: string }>((resolve) => { releaseExternal = resolve; });
-    approvalEntry.pendingApprovals.set("tool", releaseTool);
-    approvalEntry.pendingExternalWrites = new Map([["external", releaseExternal]]);
-    approvalSession.session.clearQueue = () => ({ steering: [], followUp: [] });
-    approvalSession.session.abort = async () => { await Promise.all([toolApproval, externalApproval]); };
-    agent.registry.set(approvalEntry);
-    let abortFinished = false;
-    const aborting = agent.abort("abort-approval").then(() => { abortFinished = true; });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert(abortFinished, "打断先解除挂起审批，不能等待 SDK idle 造成互相等待");
-    // 失败时也释放测试 Promise，避免回归测试自身卡死。
-    releaseTool(false);
-    releaseExternal({ kind: "deny" });
-    await aborting;
-    assert(await toolApproval === false && (await externalApproval).kind === "deny", "打断拒绝工具审批与外部写授权");
-
-    // ---- Problem Three 5.4/5.6：regenerate 返回类型化失败，navigate 取消等不得伪装成功 ----
-    // SESSION_NOT_FOUND：无 entry 且无 DB 会话
-    const noEntryRes = await agent.regenerate({
-      taskId: "rg-absent-task-a",
-      requestId: "req-absent",
-      userMessageIndex: 0,
-      assistantMessageId: "rg-absent-1",
-      sourceAssistantMessageId: "src-x",
-      sourceUserMessageId: "src-u-x",
-    });
-    assert(
-      noEntryRes?.ok === false && noEntryRes?.code === "SESSION_NOT_FOUND",
-      "Problem Three：无会话记录 → SESSION_NOT_FOUND（不静默成功）",
-    );
-    // TARGET_NOT_FOUND：userMessageIndex 越界
-    const tfSession = makeFakeSession();
-    const tfCwd = agent.resolveTaskExecutionWorkspaceCwd("rg-target-task");
-    agent.registry.set(makeEntry("rg-target-task", tfCwd, [], tfSession.session));
-    const tfRes = await agent.regenerate({
-      taskId: "rg-target-task",
-      requestId: "req-target",
-      userMessageIndex: 5, // 越界（fake 只有 1 条用户消息）
-      assistantMessageId: "rg-target-1",
-      sourceAssistantMessageId: "src-y",
-      sourceUserMessageId: "src-u-y",
-    });
-    assert(
-      tfRes?.ok === false && tfRes?.code === "TARGET_NOT_FOUND",
-      "Problem Three：userMessageIndex 越界 → TARGET_NOT_FOUND",
-    );
-    // NAVIGATION_CANCELLED：navigateTree cancelled 必须是失败，绝不伪装成功
-    const ncSession = makeFakeSession();
-    ncSession.session.navigateTree = async () => ({ cancelled: true });
-    const ncCwd = agent.resolveTaskExecutionWorkspaceCwd("rg-cancel-task");
-    agent.registry.set(makeEntry("rg-cancel-task", ncCwd, [], ncSession.session));
-    const ncRes = await agent.regenerate({
-      taskId: "rg-cancel-task",
-      requestId: "req-cancel",
-      userMessageIndex: 0,
-      assistantMessageId: "rg-cancel-1",
-      sourceAssistantMessageId: "src-z",
-      sourceUserMessageId: "src-u-z",
-    });
-    assert(
-      ncRes?.ok === false && ncRes?.code === "NAVIGATION_CANCELLED",
-      "Problem Three：navigateTree.cancelled → NAVIGATION_CANCELLED（不是成功）",
-    );
-    assert(
-      ncSession.counters.promptCalls === 0,
-      "Problem Three：navigate 取消时不执行内层 prompt（不生成新回复）",
-    );
-
-    // prompt 的类型化拒绝必须透传，否则 renderer 永久等待 assistant_start。
-    const originalPrompt = agent.prompt;
-    try {
-      agent.prompt = async () => ({
-        queued: false,
-        error: { code: "STREAMING_BEHAVIOR_REQUIRED", message: "会话仍在生成" },
-      });
-      const rejected = await agent.regenerate({
-        taskId: "reg-task",
-        requestId: "req-prompt-rejected",
-        userMessageIndex: 0,
-        assistantMessageId: "regen-rejected",
-        sourceAssistantMessageId: "src-1",
-        sourceUserMessageId: "src-u1",
-      });
-      assert(rejected.ok === false && rejected.code === "PROMPT_FAILED"
-        && rejected.message.includes("STREAMING_BEHAVIOR_REQUIRED"),
-      "regenerate 不得将 prompt 返回的拒绝伪装成成功");
-    } finally {
-      agent.prompt = originalPrompt;
-    }
-
-    // ---- P3-3：switchExpert 记录 desired，交由下一轮空闲输入的“安全提升”重建 ----
-    // 契约变更（0.1.17）：switchExpert 改为 saveTaskExpertBinding，不再立即 releaseIfIdle。
-    // 理由见 AgentService.saveTaskExpertBinding：Pi 可能在已受理请求仍在准备附件时报 idle，
-    // 此处 dispose 会撕掉正在使用的会话；改为下一轮装配指纹变化时重建。
-    const mcpSessions = (agent.mcpRuntime as unknown as { sessions: Map<string, { extensions: unknown[]; bus: { clear(): void } }> }).sessions;
-    mcpSessions.set("reg-task", { extensions: [], bus: { clear: () => {} } });
-    // 新实现经 ExpertService 校验来源专家存在，并强制任务行存在；补齐 fixture。
-    db.upsertTask({ id: "reg-task", title: "Reg task", updatedAt: 2, spaceId: null, welcomeMode: "coding" });
-    db.upsertTask({ id: "busy-task", title: "Busy task", updatedAt: 3, spaceId: null, welcomeMode: "coding" });
-    const e1Dir = join(sandbox, "expert-pkg-e1");
-    write(join(e1Dir, ".codebuddy-plugin", "plugin.json"), JSON.stringify({ name: "e1", displayName: { zh: "E1" } }));
-    write(join(e1Dir, "agents", "e1.md"), "---\nname: e1\ndescription: e1\n---\n# E1\n");
-    expertSvc.installByPath(e1Dir);
-
-    await agent.switchExpert({ taskId: "reg-task", expertId: null });
-    assert(agent.getTaskExpertBinding("reg-task").desired?.sourceExpertId == null, "P3-3：切换专家记录 desired=null");
-    assert(agent.registry.get("reg-task") !== undefined, "P3-3：空闲切换专家不再立即释放会话（延迟到下一轮安全提升）");
-
-    // 忙（流式）会话：切换专家同样只更新 binding，不打断流式会话；下一轮空闲 prompt 重建
-    const busy = makeFakeSession();
-    const busyCwd = agent.resolveTaskExecutionWorkspaceCwd("busy-task");
-    const busyEntry = makeEntry("busy-task", busyCwd, [], busy.session);
-    busy.session.isStreaming = true;
-    agent.registry.set(busyEntry);
-    await agent.switchExpert({ taskId: "busy-task", expertId: "e1" });
-    assert(agent.getTaskExpertBinding("busy-task").desired?.sourceExpertId === "e1", "忙时切换专家 → 记录 desired=e1");
-    assert(
-      agent.registry.get("busy-task")?.session.isStreaming === true,
-      "忙时切换专家不打断流式会话（延迟到空闲后重建）",
-    );
-
-    // ---- Problem Two 4.5：流式会话未显式指定 streamingBehavior → 主进程明确拒绝 ----
-    const guardCwd = agent.resolveTaskExecutionWorkspaceCwd("guard-task");
-    const guardEntry = makeEntry("guard-task", guardCwd, [], makeFakeSession().session);
-    guardEntry.session.isStreaming = true;
-    agent.registry.set(guardEntry);
-    const guardResult = await agent.prompt({
-      taskId: "guard-task",
-      text: "还在跑，但没给 behavior",
-      assistantMessageId: "guard-1",
-      userMessageId: "guard-u1",
-    });
-    assert(
-      guardResult?.queued === false &&
-        guardResult?.error?.code === "STREAMING_BEHAVIOR_REQUIRED",
-      "Problem Two 4.5：流式 + 未指定 streamingBehavior → 拒绝（不静默默认 followUp）",
-    );
-
-    // ---- F3：setConnectorEnabled 标记所有装配该连接器的会话 dirty（忙/闲统一，下一轮 prompt 重建） ----
-    agent.registry.set(makeEntry("t3", regCwd, ["demoX"], makeFakeSession().session));
-    agent.registry.set(makeEntry("t4", regCwd, [], makeFakeSession().session));
+    db.upsertTask({ id: "reg-task", title: "Native regeneration", updatedAt: 1, welcomeMode: "coding" });
+    const initial = { taskId: "reg-task", text: "hello\n\n## 用户附带文件\n- fixture.txt", displayText: "hello",
+      userMessageId: "reg-user", assistantMessageId: "reg-answer", connectorIds: ["demoX"] };
+    await fixture.prompt(initial);
+    assert(requests.at(-1)?.instructions.includes("gamma"), "连接器私有技能进入原生模型请求");
+    const history = await agent.loadTaskHistory("reg-task");
+    const user = history.messages.find(message => message.role === "user")!;
+    const retry = { taskId: "reg-task", requestId: "native-regenerate", userMessageIndex: 0,
+      sourceUserMessageId: user.id, sourceUserEntryId: user.entryId, sourceAssistantMessageId: "reg-answer",
+      assistantMessageId: "regenerated", expectedUserTextHash: normalizedEditorTextHash("hello") };
+    const before = requests.length;
+    const missingTask = await agent.regenerate({ ...retry, taskId: "missing-task" });
+    assert(!missingTask.ok && missingTask.code === "SESSION_NOT_FOUND", "不存在的任务返回明确错误");
+    const missingTarget = await agent.regenerate({ ...retry, sourceUserEntryId: undefined, userMessageIndex: 99 });
+    assert(!missingTarget.ok && missingTarget.code === "TARGET_NOT_FOUND", "不存在的用户消息返回明确错误");
+    const wrongUser = await agent.regenerate({ ...retry, sourceUserMessageId: "different-user" });
+    assert(!wrongUser.ok && wrongUser.code === "TARGET_DRIFTED" && requests.length === before, "禁止跨用户消息重新生成");
+    const drifted = await agent.regenerate({ ...retry, expectedUserTextHash: normalizedEditorTextHash("changed") });
+    assert(!drifted.ok && drifted.code === "TARGET_DRIFTED" && requests.length === before, "原始输入漂移时拒绝重新生成，不调用模型");
+    const regenerated = await agent.regenerate(retry);
+    assert(regenerated.ok, "原生分支按展示文本校验重新生成，保留附件上下文");
+    const receipt = await agent.findSubmission("reg-task", `regenerate:${retry.requestId}`);
+    if (!receipt?.receipt) throw new Error("Missing regeneration receipt");
+    await agent.waitForSubmission(receipt.receipt);
+    const after = requests.length;
+    assert(after === before + 1, "重新生成恰执行一次原生模型调用");
+    assert(requests.at(-1)?.instructions.includes("gamma"), "重新生成保留连接器私有技能");
+    assert((await agent.regenerate(retry)).ok && requests.length === after, "重试原生回执不会重复生成");
     agent.setConnectorEnabled("demoX", false);
-    assert(agent.registry.get("t3")?.assemblyDirty === true, "F3：含 demoX 的会话被标记 assemblyDirty");
-    assert(agent.registry.get("t4")?.assemblyDirty !== true, "F3：未装配 demoX 的会话不受影响");
+    await fixture.prompt({ ...initial, userMessageId: "disabled-user", assistantMessageId: "disabled-answer" });
+    assert(!requests.at(-1)?.instructions.includes("gamma"), "停用连接器后下一轮移除私有技能");
     agent.setConnectorEnabled("demoX", true);
-    assert(agent.registry.get("t3")?.assemblyDirty === true, "F3：重新启用同样触发重建（技能面一致）");
+    await fixture.prompt({ ...initial, userMessageId: "enabled-user", assistantMessageId: "enabled-answer" });
+    assert(requests.at(-1)?.instructions.includes("gamma"), "重新启用后下一轮恢复连接器技能");
+
+    db.upsertTask({ id: "retry-preflight", title: "Preflight retry", updatedAt: 1, welcomeMode: "coding" });
+    const prepare = runtimeRequirements.ensurePresetReady;
+    const preflight = { taskId: "retry-preflight", text: "retry", userMessageId: "preflight-user", assistantMessageId: "preflight-answer" };
+    runtimeRequirements.ensurePresetReady = async () => { throw new Error("fixture connection failure"); };
+    try {
+      await agent.prompt(preflight).then(() => { throw new Error("preflight unexpectedly accepted"); }, error => {
+        assert(error instanceof Error && error.message.includes("fixture connection failure"), "准备失败明确返回错误");
+      });
+      assert(!await agent.findSubmission(preflight.taskId, preflight.userMessageId), "准备失败不产生虚假回执");
+    } finally { runtimeRequirements.ensurePresetReady = prepare; }
+    await fixture.prompt(preflight);
+    const beforeRepeat = requests.length;
+    await fixture.prompt(preflight);
+    assert(requests.length === beforeRepeat, "准备恢复后同一操作身份只执行一次");
 
     // ---- P3-1/F/G：预览携带 Tag + 专家 + 连接器；effective 与 createSession 同源；重名诊断 ----
     const profile = (
@@ -1723,7 +1342,7 @@ async function main(): Promise<void> {
       "E：重新启用后私有技能恢复",
     );
 
-    agent.dispose();
+    await fixture.close();
     db.close();
   }
 
@@ -2205,173 +1824,19 @@ async function main(): Promise<void> {
       "N7：Task/BTW/Locator 留在 context service；Memory 只由 Pi request hook 注入",
     );
 
-    // ---- N8. Main Session extension wiring 归一到 SessionExtensionAssembler ----
-    const extensionAssemblerSource = readFileSync("src/main/agent/SessionExtensionAssembler.ts", "utf8");
-    assert(
-      agentSource.includes("this.sessionExtensions.build({") && agentSource.includes("extensionFactories,"),
-      "N8：createSession 只消费 SessionExtensionAssembler 的 factory 列表",
-    );
-    assert(
-      !/createVerifiedWriteExtension|createVerifiedEditExtension|createTaskWorkspaceGuardExtension|createTaskBashIsolationExtension|createFileBackupExtension/.test(extensionAssemblerSource),
-      "N8：Pi 核心工具不再装配宿主覆盖、路径门禁、Shell 改写或自动备份",
-    );
-    assert(
-      !/conversationTodos|conversationPlans|ConversationTodoService|ConversationPlanService/.test(extensionAssemblerSource + agentSource),
-      "N8：聊天 Todo/Plan 服务不再进入主会话装配",
-    );
-    const movedFactories = [
-      "createConversationRuntimeExtension",
-      "createBuiltinCapabilityExtension",
-      "createMcpSideEffectExtension",
-      "createPermissionExtension",
-      "createGadgetAgentExtension",
-      "createProjectEventExtension",
-      "createLibraryExtension",
-      "createWorkspaceResourceLocatorExtension",
-      "createWorkGraphAgentExtension",
-      "createProjectKnowledgeExtension",
-    ];
-    // Durable registers the native capability extension separately; this contract covers ordinary sessions.
-    const ordinarySessionSource = agentSource.slice(
-      agentSource.indexOf("private async createSession("),
-      agentSource.indexOf("private async maybeEmitArtifact("),
-    );
-    assert(
-      movedFactories.every((factory) => !(factory === "createBuiltinCapabilityExtension" ? ordinarySessionSource : agentSource).includes(`${factory}(`)),
-      "N8：Main Session factory 构造细节不回流 AgentService",
-    );
-    assert(
-      movedFactories.every((factory) => extensionAssemblerSource.includes(`${factory}(`)),
-      "N8：SessionExtensionAssembler 装配产品 Conversation/Capability/Domain factory",
-    );
-    const buildSlice = extensionAssemblerSource.slice(
-      extensionAssemblerSource.indexOf("async build("),
-      extensionAssemblerSource.indexOf("private conversationCapabilityFactories("),
-    );
-    const groupOrder = [
-      "...this.conversationCapabilityFactories(",
-      "...this.mcpPermissionFactories(",
-      "...this.domainFactories(",
-    ].map((needle) => buildSlice.indexOf(needle));
-    const mcpSlice = extensionAssemblerSource.slice(
-      extensionAssemblerSource.indexOf("private mcpPermissionFactories("),
-      extensionAssemblerSource.indexOf("private domainFactories("),
-    );
-    const domainSlice = extensionAssemblerSource.slice(
-      extensionAssemblerSource.indexOf("private domainFactories("),
-      extensionAssemblerSource.indexOf("private projectFactories("),
-    );
-    const ordered = (source: string, needles: string[]) => {
-      const indexes = needles.map((needle) => source.indexOf(needle));
-      return indexes.every((index) => index >= 0) &&
-        indexes.every((index, i) => i === 0 || index > indexes[i - 1]!);
-    };
-    assert(
-      groupOrder.every((index) => index >= 0) &&
-        groupOrder.every((index, i) => i === 0 || index > groupOrder[i - 1]!) &&
-        ordered(mcpSlice, ["getInlineExtensions({", "createMcpSideEffectExtension(", "createPermissionExtension("]) &&
-        ordered(domainSlice, [
-          "...this.projectFactories(",
-          "createLibraryExtension(",
-          "createWorkspaceResourceLocatorExtension(",
-          "createWorkGraphAgentExtension(",
-          "createProjectKnowledgeExtension(",
-        ]),
-      "N8：extension 注册顺序保持 runtime/capability → MCP/product permission → domain",
-    );
-
-    // ---- N9. Session approval bridge is isolated from AgentService ----
-    const approvalBridgeSource = readFileSync("src/main/agent/SessionApprovalBridge.ts", "utf8");
-    assert(
-      agentSource.includes("this.sessionApprovals.create(opts.taskId, opts.cwd, effPermission, isolatedSourceRoots)") &&
-        agentSource.includes("this.sessionApprovals.addWriteGrant(req.taskId, canonical)") &&
-        agentSource.includes("this.sessionApprovals.removeWriteGrant(taskId, path)"),
-      "N9 SessionApprovalBridge owns live approval state",
-    );
-    assert(
-      !agentSource.includes("sessionWriteGrantListeners") &&
-        !agentSource.includes("sessionWritePolicies") &&
-        !agentSource.includes("new TaskFileAccessPolicy({"),
-      "N9 approval policy implementation does not flow back into AgentService",
-    );
-    assert(
-      approvalBridgeSource.includes("requestExternalWriteApproval") &&
-        approvalBridgeSource.includes("grantedExternalWriteToolCalls") &&
-        approvalBridgeSource.includes("pendingApprovals") &&
-        approvalBridgeSource.includes("pendingExternalWrites"),
-      "N9 bridge unifies external-write/tool approvals and dedupe",
-    );
-
-    // ---- N10. Main session lifecycle side effects are isolated from AgentService ----
-    const lifecycleSource = readFileSync("src/main/agent/SessionLifecycleManager.ts", "utf8");
-    assert(
-      agentSource.includes("this.sessionLifecycle.attachExtensions(opts.taskId, agentResult.extensionsResult, mcpPreview.enabled") &&
-        agentSource.includes("this.sessionLifecycle.cleanupFailedCreate(opts.taskId, agentResult?.session)") &&
-        agentSource.includes("this.sessionLifecycle.commit(entry)"),
-      "N10 SessionLifecycleManager owns release/cleanup/commit side effects",
-    );
-    assert(
-      !agentSource.includes("private releaseSession(") &&
-        !agentSource.includes("this.mcpRuntime.detachSession(opts.taskId)") &&
-        !agentSource.includes("this.registry.set(entry)"),
-      "N10 lifecycle implementation does not flow back into AgentService",
-    );
-    assert(
-      lifecycleSource.includes("release(taskId: string)") &&
-        lifecycleSource.includes("invalidateAll()") &&
-        lifecycleSource.includes("cleanupFailedCreate(") &&
-        lifecycleSource.includes("disposeAll()"),
-      "N10 lifecycle manager covers release/dirty/failure/dispose paths",
-    );
-
-    // ---- N11. Prompt execution/submission state machines stay outside AgentService ----
-    const promptExecutionSource = readFileSync("src/main/agent/PromptExecutionCoordinator.ts", "utf8");
-    const promptSubmissionSource = readFileSync("src/main/agent/PromptSubmissionCoordinator.ts", "utf8");
-    assert(
-      agentSource.includes("this.promptExecution.execute(request, {") &&
-        agentSource.includes("this.promptSubmission.begin(entry, {") &&
-        agentSource.includes("this.promptSubmission.acquire(entry, submission)") &&
-        agentSource.includes("this.promptSubmission.enqueue(entry, submission, {") ,
-      "N11 prompt execution/submission coordination stays outside AgentService",
-    );
-    assert(
-      !agentSource.includes("new PromptRunRegistry(") &&
-        !agentSource.includes("new PromptRetryRegistry(") &&
-        !agentSource.includes("predecessors.map((previous) => previous.done)") &&
-        !agentSource.includes("acquirePromptSubmission(entry)") &&
-        !agentSource.includes("replacePendingSteerTurns(entry)") &&
-        !agentSource.includes("queueAssistantTurn("),
-      "N11 run/retry/predecessor/queue primitives do not flow back into AgentService",
-    );
-    assert(
-      promptExecutionSource.includes("new PromptRunRegistry()") &&
-        promptExecutionSource.includes("new PromptRetryRegistry<AgentPromptRequest>(200)") &&
-        !promptExecutionSource.includes("previous.done") &&
-        promptExecutionSource.includes("previous.ready") &&
-        !promptExecutionSource.includes("previous.waitingFollowUp") &&
-        promptSubmissionSource.includes("queueEpoch") &&
-        !promptSubmissionSource.includes("steerGeneration") &&
-        !promptSubmissionSource.includes("replacePendingSteerTurns(entry)") &&
-        promptSubmissionSource.includes("acquirePromptSubmission(entry)"),
-      "N11 admission metadata never overrides Pi continuation or native queue semantics",
-    );
-    // ---- N12. Main session event projection stays outside AgentService ----
-    const sessionEventSource = readFileSync("src/main/agent/SessionEventCoordinator.ts", "utf8");
-    assert(
-      agentSource.includes("this.sessionEvents.attach(opts.taskId, opts.cwd, session)") &&
-        sessionEventSource.includes("return session.subscribe((event) => {") &&
-        sessionEventSource.includes("activateNextAssistantTurn(entry, Date.now())") &&
-        sessionEventSource.includes('event.type === "tool_execution_end"') &&
-        sessionEventSource.includes('event.type === "agent_settled"'),
-      "N12 SessionEventCoordinator owns main-session event projection",
-    );
-    assert(
-      !agentSource.includes("const usageTracker = new PerformanceTracker()") &&
-        !agentSource.includes("const generationSpeed = new GenerationSpeedTracker()") &&
-        !agentSource.includes("activateNextAssistantTurn(entry, Date.now())") &&
-        !agentSource.includes("session.subscribe((event) => {") ,
-      "N12 event routing/usage projection does not flow back into AgentService",
-    );
+    // Native lifecycle ownership: product adapters must not recreate SDK task runners.
+    const durableSource = readFileSync("src/main/agent/durable/DurableBotService.ts", "utf8");
+    const runtimeSource = readFileSync("src/main/agent/durable/DurableBotRuntime.ts", "utf8");
+    assert(!agentSource.includes("createAgentSession(") && !agentSource.includes("new DefaultResourceLoader("),
+      "主执行入口不创建第二套 SDK 会话或磁盘扩展加载器");
+    assert(agentSource.includes("return this.durableBots.prompt(req,") && agentSource.includes("return this.durableBots.regenerate(req)"),
+      "主入口和重新生成统一提交到 Durable");
+    assert(agentSource.includes("this.sessionExtensions.durableExtensions({") && agentSource.includes("createDurableToolPolicy({"),
+      "产品领域工具与实际权限接到同一 Durable 执行边界");
+    assert(durableSource.includes("onProjected: snapshot =>") && runtimeSource.includes("this.options.onProjected?.(snapshot)"),
+      "生命周期终态等待原生记录完成投影");
+    assert(durableSource.includes("submission.wait(context)") && durableSource.includes("await this.invalidate(taskId, open)"),
+      "持久回执等待与执行宿主释放由 Durable 适配集中维护");
 
     // ---- N13. BTW runtime stays in dedicated service ----
     const btwServiceSource = readFileSync("src/main/agent/BtwSessionService.ts", "utf8");
@@ -2390,7 +1855,7 @@ async function main(): Promise<void> {
         !agentSource.includes("buildBtwBaseContext(") &&
         btwServiceSource.includes("canStartBtwSession(") &&
         btwServiceSource.includes("private schedulePrune()") &&
-        btwServiceSource.includes("private disposeSession(") &&
+        btwServiceSource.includes("async close(btwId:") &&
         btwServiceSource.includes("formatBtwSnapshot("),
       "N13 BtwSessionService owns snapshot, lifecycle, prune and isolation state",
     );

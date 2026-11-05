@@ -110,6 +110,11 @@ type RuntimeContextSnapshotRecordInput = Omit<
 export class RuntimeContextSnapshotRepository {
   constructor(private readonly db: Database.Database) {}
 
+  recordOnce(input: RuntimeContextSnapshotRecordInput & { executionId: string }): RuntimeContextSnapshotDto {
+    const row = this.db.prepare("SELECT * FROM task_runtime_context_snapshots WHERE task_id = ? AND execution_id = ? LIMIT 1").get(input.taskId, input.executionId) as SnapshotRow | undefined;
+    return row ? mapRow(row) : this.record(input);
+  }
+
   record(input: RuntimeContextSnapshotRecordInput): RuntimeContextSnapshotDto {
     const id = `rsnap_${randomUUID()}`;
     const resolvedInstructions = compactRuntimeAuditInstructions(input.resolvedInstructions);

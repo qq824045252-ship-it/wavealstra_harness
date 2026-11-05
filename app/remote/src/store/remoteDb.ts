@@ -11,9 +11,9 @@
  * 设计取舍：
  *   - 用浏览器原生 IndexedDB，不引入 SQLite 插件：Capacitor WebView 原生支持，
  *     零新依赖，不需要 Android 侧 gradle 配置，也不需要处理数据库文件路径与升级。
- *   - 只存服务端投影（RemoteTaskHistory / RemoteTaskSummary），不存凭据——凭据仍走
+ *   - 保存服务端投影及尚未拿到回执的输入身份，不存凭据——凭据仍走
  *     原有 credentialStore 的加密存储，避免把 token 复制进另一个存储介质。
- *   - 全部操作失败即降级为「无缓存」：任何 IndexedDB 异常都不得阻断主流程。
+ *   - 投影缓存失败可降级；发送身份必须先保存成功，避免断线重试产生重复任务。
  */
 import type { RemoteBootstrap, RemoteRuntimeSnapshot, RemoteTaskHistory, RemoteTaskSummary } from '@mybuddy/shared'
 
@@ -101,6 +101,45 @@ export async function saveTaskList(serverKey: string, bootstrap: RemoteBootstrap
   } catch {
     /* 缓存失败不得影响主流程 */
   }
+}
+
+/** Persist before POST: a lost response or app restart reuses the same business input identity. */
+export async function pendingPromptOperation(serverKey: string, route: string, serializedInput: string): Promise<{ key: string; operationId: string }> {
+  const db = await openDatabase()
+  if (!db) throw new Error('无法保存发送回执身份，请恢复本机存储后重试')
+  const key = JSON.stringify(['pending-prompt', serverKey, route])
+  const tx = db.transaction(STORE_META, 'readwrite')
+  const finished = transactionDone(tx)
+  const store = tx.objectStore(STORE_META)
+  const operations = storedPromptOperations(await requestToPromise(store.get(key)))
+  const prior = operations.find(item => item.serializedInput === serializedInput)
+  const operationId = prior
+    ? prior.operationId
+    : Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, '0')).join('')
+  if (!prior) operations.push({ operationId, serializedInput })
+  store.put({ key, operations })
+  if (!await finished) throw new Error('无法保存发送回执身份，请重试')
+  return { key, operationId }
+}
+
+export async function acknowledgePromptOperation(key: string, operationId: string): Promise<void> {
+  const db = await openDatabase()
+  if (!db) return
+  const tx = db.transaction(STORE_META, 'readwrite')
+  const finished = transactionDone(tx)
+  const store = tx.objectStore(STORE_META)
+  const operations = storedPromptOperations(await requestToPromise(store.get(key))).filter(item => item.operationId !== operationId)
+  if (operations.length) store.put({ key, operations })
+  else store.delete(key)
+  await finished
+}
+
+function storedPromptOperations(value: unknown): Array<{ operationId: string; serializedInput: string }> {
+  if (!value || typeof value !== 'object' || !('operations' in value) || !Array.isArray(value.operations)) return []
+  return value.operations.flatMap((item: unknown) => item && typeof item === 'object'
+    && 'operationId' in item && typeof item.operationId === 'string'
+    && 'serializedInput' in item && typeof item.serializedInput === 'string'
+    ? [{ operationId: item.operationId, serializedInput: item.serializedInput }] : [])
 }
 
 /** 读取任务列表快照；键不匹配（换服务器）时返回 null */

@@ -92,7 +92,30 @@ async function launch(){
   socket.addEventListener('message',e=>{const r=JSON.parse(e.data),p=pending.get(r.id);if(!p)return;pending.delete(r.id);clearTimeout(p.timer);r.error?p.reject(Error(JSON.stringify(r.error))):p.resolve(r.result);});
   await rpc('Runtime.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
   await until(()=>evaluate('Boolean(window.api?.agent&&document.querySelector("textarea"))'),'app ready');
-  await evaluate('window.__botEvents=[];window.__botErrors=[];window.api.agent.onEvent(e=>window.__botEvents.push(e));window.addEventListener("error",e=>window.__botErrors.push(e.message));true');
+  await evaluate(`window.__botEvents=[];window.__botRawEvents=[];window.__botSnapshots=new Map();window.__botReads=new Map();window.__botErrors=[];
+    window.__observeBot=(event,replayed=false)=>{
+      if(!replayed)window.__botRawEvents.push(event);
+      let projected=event;
+      if(event.type==='durable_snapshot')window.__botSnapshots.set(event.taskId,event.snapshot);
+      if(event.type==='durable_delta'){
+        const before=window.__botSnapshots.get(event.taskId),delta=event.delta;
+        if(before?.epoch===delta.epoch&&before.revision>=delta.revision)return;
+        if(!before||before.epoch!==delta.epoch||before.revision!==delta.baseRevision){
+          let queued=window.__botReads.get(event.taskId);
+          if(queued){queued.push(event);return;}
+          queued=[event];window.__botReads.set(event.taskId,queued);
+          window.api.agent.loadTaskHistory(event.taskId).then(history=>{
+            window.__observeBot({type:'durable_snapshot',taskId:event.taskId,snapshot:history.durable},true);
+            window.__botReads.delete(event.taskId);queued.forEach(item=>window.__observeBot(item,true));
+          }).catch(error=>{window.__botReads.delete(event.taskId);window.__botErrors.push(String(error));});return;
+        }
+        const rows=new Map(before.messages.map(message=>[message.id,message]));
+        delta.removed.forEach(id=>rows.delete(id));delta.upserts.forEach(message=>rows.set(message.id,message));
+        const snapshot={...delta.state,epoch:delta.epoch,revision:delta.revision,messages:(delta.order??before.messages.map(message=>message.id)).map(id=>rows.get(id))};
+        window.__botSnapshots.set(event.taskId,snapshot);projected={type:'durable_snapshot',taskId:event.taskId,snapshot};
+      }
+      window.__botEvents.push(projected);
+    };window.api.agent.onEvent(event=>window.__observeBot(event));window.addEventListener('error',e=>window.__botErrors.push(e.message));true`);
 }
 async function close(){if(socket){try{await rpc('Browser.close');}catch{}socket.close();socket=null;}if(proc){await wait(500);if(proc.exitCode===null)cp.execFileSync('C:/Windows/System32/taskkill.exe',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});proc=null;}if(log!==undefined){fs.closeSync(log);log=undefined;}}
 async function click(selector,text){const end=Date.now()+15000;for(;;){const ok=await evaluate(`(()=>{const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!e)return false;e.click();return true})()`);if(ok)return true;if(Date.now()>end){const available=await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map(e=>e.textContent.trim())`);throw Error('Missing '+text+' available='+JSON.stringify(available));}await wait(200);}}
@@ -533,6 +556,8 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   report.tests.push('new Gateway namespace renders Bot/native, preserves project, executes native tools despite readonly/Code Mode request; old Gateway record untouched');
   report.executable=process.env.MYBUDDY_DESKTOP_EXECUTABLE||require('electron');
   if(process.env.MYBUDDY_DESKTOP_EXECUTABLE)report.buildSha256=require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(path.dirname(report.executable),'resources/app.asar'))).digest('hex');
+  report.transport=await evaluate(`(()=>{const events=window.__botRawEvents;return {full:events.filter(e=>e.type==='durable_snapshot').length,delta:events.filter(e=>e.type==='durable_delta').length,invalidDelta:events.some(e=>e.type==='durable_delta'&&('messages' in e.delta||'messages' in e.delta.state))}})()`);
+  assert(report.transport.delta>0&&!report.transport.invalidDelta,'streamed IPC must carry changed rows rather than full loaded history');
   report.requests=requests.length;report.taskId=taskId;report.status='passed';
 }catch(error){report.status='failed';report.error=error.stack;try{
   report.body=await evaluate('document.body.innerText.slice(-5000)');report.events=await evaluate('window.__botEvents.slice(-4)');

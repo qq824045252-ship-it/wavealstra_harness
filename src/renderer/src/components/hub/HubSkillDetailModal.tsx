@@ -1,3 +1,4 @@
+import { beginAuxiliaryOperation } from "@/features/auxiliary-operations";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Skill } from "@/types";
 import type {
@@ -149,9 +150,11 @@ export function HubSkillDetailModal({ skill, onClose, onApplied }: Props): React
     if (busy) return;
     setBusy("eval"); setError("");
     try {
-      const result = await window.api?.agent?.runSkillEvals?.({ skillId: skill.id });
+      const operation = await beginAuxiliaryOperation("skill-eval", { skillId: skill.id, contentHash: detail?.contentHash });
+      const result = await window.api?.agent?.runSkillEvals?.({ skillId: skill.id, requestId: operation.requestId });
       if (!result) throw new Error("Eval API 未返回结果");
       setEvalResult(result);
+      operation.complete();
       setTab("evals");
       try { await loadDetail(); } catch (refreshError) {
         setError(`Eval 已完成并保存，但详情刷新失败：${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
@@ -165,7 +168,8 @@ export function HubSkillDetailModal({ skill, onClose, onApplied }: Props): React
     if (busy) return;
     setBusy("improve"); setError("");
     try {
-      const result = await window.api?.agent?.generateSkillImprovementDraft?.({ skillId: skill.id });
+      const operation = await beginAuxiliaryOperation("skill-improvement", { skillId: skill.id, contentHash: detail?.contentHash });
+      const result = await window.api?.agent?.generateSkillImprovementDraft?.({ skillId: skill.id, requestId: operation.requestId });
       if (!result) throw new Error("Improve API 未返回结果");
       setEvalResult(result.eval);
       setDraft(result.draft);
@@ -173,6 +177,7 @@ export function HubSkillDetailModal({ skill, onClose, onApplied }: Props): React
       setPositive(result.draft.triggerExamples.join("\n"));
       setNegative(result.draft.nonTriggerExamples.join("\n"));
       setTab("quality");
+      operation.complete();
       try { await loadDetail(); } catch (refreshError) {
         setError(`改进草稿已生成，但详情刷新失败：${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
       }

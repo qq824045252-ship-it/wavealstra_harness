@@ -311,7 +311,8 @@ async function main(): Promise<void> {
     const runEvents: Array<{ projectId: string; summary: { runId: string; jobName: string; status: "success" | "failed"; error?: string } }> = [];
     const cronPrompts: Array<{ expertId?: string }> = [];
     const fakeAgent = {
-      prompt: async (req: { expertId?: string }): Promise<void> => { cronPrompts.push(req); },
+      prompt: async (req: { expertId?: string }) => { cronPrompts.push(req); return { receipt: { status: "accepted" } }; },
+      waitForSubmission: async () => ({ receipt: { status: "done" } }),
       loadTaskHistory: async (): Promise<{ messages: Array<{ role: string; text: string }> }> => ({
         messages: [{ role: "assistant", text: "巡检完成" }],
       }),

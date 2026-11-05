@@ -3,6 +3,7 @@ import { WindowsComputerUseBackend } from "../src/main/platform/computer-use/win
 import { WindowsAutomationError, type WindowInfo, type ComputerExecInput } from "../src/main/platform/computer-use/protocol";
 import { formatComputerUseFailureEvidence, verificationFor, withComputerUseDeliveryEvidence } from "../src/main/capabilities/ComputerUsePolicy";
 import { computerUseRunCoordinator as coordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
+import { setHeldInputReleaser } from "../src/main/platform/computer-use/heldInput";
 
 const window: WindowInfo = { handle: "10", processId: 20, processName: "fixture", title: "Fixture", className: "Fixture",
   visible: true, minimized: false, foreground: true, dpi: 96, scaleFactor: 1,
@@ -98,6 +99,27 @@ async function main() {
   assert.equal(toolScope.aborted, true);
   assert.throws(() => coordinator.scope("nested", nestedParent.signal, "same-execution"), code("REQUEST_CANCELLED"));
   coordinator.endTask("nested");
+
+  const releasedOwners: Array<string | undefined> = [];
+  setHeldInputReleaser(async owner => { releasedOwners.push(owner); });
+  try {
+    const firstTool = new AbortController();
+    const firstNativeScope = coordinator.scopeTool("native-held", firstTool.signal, "native-run");
+    assert.equal(coordinator.scope("native-held", firstNativeScope.signal), firstNativeScope.signal, "backend must reuse the native tool scope without another lifetime listener");
+    firstNativeScope.finish();
+    firstTool.abort(); // Pi ends every ToolTask context after successful execution.
+    assert.deepEqual(releasedOwners, [], "a successful key_down tool must keep its held input for the next native tool");
+    const secondTool = new AbortController();
+    const secondNativeScope = coordinator.scopeTool("native-held", secondTool.signal, "native-run");
+    assert.equal(secondNativeScope.signal.aborted, false);
+    secondTool.abort();
+    secondNativeScope.finish();
+    assert.deepEqual(releasedOwners, ["native-held"], "cancellation releases only this task's held inputs");
+    const terminal = coordinator.scopeTool("native-terminal", undefined, "terminal-run");
+    terminal.finish();
+    coordinator.endTask("native-terminal");
+    assert.deepEqual(releasedOwners, ["native-held", "native-terminal"], "run completion releases physical input independently of individual tool completion");
+  } finally { setHeldInputReleaser(undefined); }
 
   let unblock!: () => void, started!: () => void;
   const gate = new Promise<void>(r => { unblock = r; }); const entered = new Promise<void>(r => { started = r; });

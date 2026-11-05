@@ -1,7 +1,6 @@
 import { DEFAULT_WELCOME_MODE } from "../../shared/mode-profile";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
   AssembleModePreviewRequest,
   EnhancePromptRequest,
@@ -93,11 +92,10 @@ export interface PromptEnhancementServiceDependencies {
   runtimeSnapshots: RuntimeContextSnapshotRepository;
   modeProfiles: ModeProfileStore;
   assembleModePreview: (request: AssembleModePreviewRequest) => { skillFilter: { visible: string[] } };
-  createTransientSession: (input: { cwd: string; segments: string[] }) => Promise<AgentSession>;
-  setSessionModel: (session: AgentSession, modelId: string) => Promise<void>;
+  generate: (input: { requestId?: string; taskId?: string; cwd: string; segments: string[]; prompt: string; modelId?: string }) => Promise<string>;
 }
 
-/** Owns prompt-enhance validation, environment projection, transient session execution and cleanup. */
+/** Validates the enhancement request and assembles its frozen environment for Durable. */
 export class PromptEnhancementService {
   private static readonly MAX_CONCURRENT = 2;
   private inflight = 0;
@@ -136,32 +134,10 @@ export class PromptEnhancementService {
             tag: req.tag,
             expertId: req.expertId,
           });
-      const session = await this.deps.createTransientSession({
-        cwd,
-        segments: [...environment, ENHANCE_SYSTEM_ROLE],
-      });
-      try {
-        if (req.modelId) {
-          try {
-            await this.deps.setSessionModel(session, req.modelId);
-          } catch (err) {
-            console.warn("[PromptEnhancementService] enhance setModel failed", err);
-          }
-        }
-        try {
-          const levels = session.getAvailableThinkingLevels().map(String);
-          if (levels.includes("off")) {
-            session.setThinkingLevel("off" as Parameters<typeof session.setThinkingLevel>[0]);
-          }
-        } catch { /* keep model/runtime default */ }
-        await session.prompt(`## 用户原始输入\n${input}`);
-        const raw = (session.getLastAssistantText() ?? "").trim();
-        if (!raw) throw new Error("提示词增强未返回结果，请重试");
-        return { text: sanitizeEnhancedPrompt(raw) };
-      } finally {
-        try { session.clearQueue(); } catch { /* ignore */ }
-        try { void session.dispose(); } catch { /* ignore */ }
-      }
+      const raw = await this.deps.generate({ requestId: req.requestId, taskId: req.taskId, cwd, segments: [...environment, ENHANCE_SYSTEM_ROLE],
+        prompt: `## 用户原始输入\n${input}`, modelId: req.modelId });
+      if (!raw.trim()) throw new Error("提示词增强未返回结果，请重试");
+      return { text: sanitizeEnhancedPrompt(raw) };
     } finally {
       this.inflight -= 1;
     }

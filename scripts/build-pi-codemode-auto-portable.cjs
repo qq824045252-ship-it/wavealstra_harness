@@ -18,7 +18,7 @@ function fingerprint() { const files = []; function walk(dir) { for (const e of 
         files.push(f);
 } } for (const d of ['src', 'shared/src', 'app/remote/src', 'patches'])
     if (fs.existsSync(d))
-        walk(d); for (const f of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'electron.vite.config.ts', 'app/remote/package.json', 'shared/package.json', 'scripts/build-pi-codemode-assets.mjs', 'scripts/build-subagent-runtime.mjs', 'scripts/build-subagent-context.mjs'])
+        walk(d); for (const f of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'electron.vite.config.ts', 'app/remote/package.json', 'shared/package.json', 'scripts/build-pi-codemode-assets.mjs', 'scripts/build-subagent-runtime.mjs'])
     if (fs.existsSync(f))
         files.push(f); files.sort(); const h = crypto.createHash('sha256'); for (const f of files)
     h.update(f).update(fs.readFileSync(f)); return h.digest('hex'); }

@@ -1,19 +1,7 @@
 #!/usr/bin/env node
-/**
- * Packaged-payload acceptance for the Pi subagent runtime (build gate).
- *
- * Why this exists: the subagent worker is a *separate node process* that executes
- * files from `resources/app.asar.unpacked/out/main/capabilities/subagent/**`.
- * If the payload is packed into app.asar only, or if the unpacked tree is missing
- * (truncated copy, pruned directory, interrupted pack), the app still launches and
- * chats fine — only subagents die with
- * "安装包缺少原生 Pi 子代理 Runtime，请重新构建应用".
- * Dev mode (`out/`) always has these files, so no dev test can catch it.
- *
- * This script is both:
- *   - a CLI gate:  node scripts/verify-packaged-app.cjs [--app-dir <win-unpacked|linux-unpacked>] [--launch]
- *   - a module used by scripts/after-pack.cjs (every platform), so electron-builder
- *     refuses to produce/accept a package whose payload cannot start the subagent worker.
+/** Package acceptance: unpacked payload, native Durable child/receipt recovery,
+ * CodeMode/image workers, platform dependencies and optional application startup.
+ * The native probe runs with packaged Electron Node and an isolated temporary profile.
  */
 "use strict";
 
@@ -33,17 +21,13 @@ const REQUIRED_UNPACKED_ENTRIES = [
   "out/main/capabilities/subagent/runtime/pi-runtime.mjs",
   "out/main/capabilities/subagent/runtime/package.json",
   "out/main/capabilities/subagent/worker-launcher.mjs",
-  "out/main/capabilities/subagent/vendor/context-projection.mjs",
-  "out/main/capabilities/subagent/vendor/command-code.mjs",
-  "out/main/capabilities/subagent/vendor/cache-request-trace.mjs",
-  "out/main/agent/request-transport.mjs",
   "out/main/codemode-worker.cjs",
   "out/main/image-resize-worker.js",
   "out/main/quickjs.wasm",
   "out/main/photon_rs_bg.wasm",
 ];
 
-const WORKER_RUNTIME_PACKAGE = "@wavealstra/pi-worker-runtime";
+const WORKER_RUNTIME_PACKAGE = "@wavealstra/pi-durable-probe";
 
 const REQUIRED_LINUX_UNPACKED_ENTRIES = [
   "out/main/atspi-worker.cjs",
@@ -89,18 +73,6 @@ function readLauncherPin(launcherPath) {
   const source = fs.readFileSync(launcherPath, "utf8");
   const match = source.match(/const EXPECTED_PI_VERSION = "([^"]+)"/);
   return match ? match[1] : null;
-}
-
-function findNode() {
-  const fromPath = (process.env.PATH ?? process.env.Path ?? "")
-    .split(path.delimiter)
-    .filter(Boolean)
-    .map((dir) => path.join(dir, process.platform === "win32" ? "node.exe" : "node"))
-    .find((candidate) => fs.existsSync(candidate));
-  if (fromPath) return fromPath;
-  const programFiles = process.env.ProgramFiles ?? (process.platform === "win32" ? "C:\\Program Files" : "");
-  const bundled = programFiles ? path.join(programFiles, "nodejs", process.platform === "win32" ? "node.exe" : "node") : "";
-  return bundled && fs.existsSync(bundled) ? bundled : null;
 }
 
 /**
@@ -377,13 +349,13 @@ function verifyPackagedApp(appDir, options = {}) {
     }
   }
 
-  // 4. functional: start the packaged subagent worker exactly as the app does
+  // 4. execute native owned-child admission, a tool effect and receipt recovery from the packaged runtime
   const runtimeEntry = path.join(unpackedRoot, "out/main/capabilities/subagent/runtime/pi-runtime.mjs");
   if (fs.existsSync(launcher) && fs.existsSync(runtimeEntry)) {
-    const node = findNode();
+    const node = exe && fs.existsSync(path.join(appDir, exe)) ? path.join(appDir, exe) : undefined;
     facts.node = node;
     if (!node) {
-      fail("no system node executable found; the subagent worker cannot be started on this machine");
+      fail("packaged Electron executable is missing; native Durable acceptance cannot run");
     } else {
       // Redirect to files instead of pipes: piped stdio can be denied under confined
       // runtimes (EPERM on named pipes) and can deadlock on large output.
@@ -393,11 +365,12 @@ function verifyPackagedApp(appDir, options = {}) {
       const fdErr = fs.openSync(errPath, "w");
       let probe;
       try {
-        probe = cp.spawnSync(node, [launcher, runtimeEntry, "--version"], {
+        probe = cp.spawnSync(node, [launcher, runtimeEntry, "--verify-durable"], {
           stdio: ["ignore", fdOut, fdErr],
           timeout: 60_000,
           windowsHide: true,
           cwd: appDir,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
         });
       } finally {
         fs.closeSync(fdOut);
@@ -408,13 +381,18 @@ function verifyPackagedApp(appDir, options = {}) {
       fs.rmSync(outPath, { force: true });
       fs.rmSync(errPath, { force: true });
       facts.workerExitCode = probe.status;
-      facts.workerVersion = stdout.trim();
+      let nativeProbe;
+      try { nativeProbe = JSON.parse(stdout.trim().split(/\r?\n/).at(-1)); } catch {}
+      facts.workerVersion = nativeProbe?.version;
+      facts.durableProbe = nativeProbe;
       if (probe.error) {
         fail(`packaged subagent worker could not be spawned: ${probe.error.message}`);
       } else if (probe.status !== 0) {
         fail(`packaged subagent worker failed to start (exit ${probe.status}): ${stderr.trim().slice(0, 400)}`);
       } else if (pin && facts.workerVersion !== pin) {
         fail(`packaged subagent worker reported version ${JSON.stringify(facts.workerVersion)}, expected ${pin}`);
+      } else if (nativeProbe?.runtime !== "pi-durable" || nativeProbe.ownedChild !== true || nativeProbe.recoveredReceipt !== true || nativeProbe.effectCount !== 1) {
+        fail("packaged Durable child, effect or restored receipt acceptance failed");
       }
     }
   }

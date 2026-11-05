@@ -207,13 +207,19 @@ export interface RemoteDurableSnapshot {
   conversationId: string
   toolMode: 'native' | 'codemode'
   busy: boolean
+  status?: 'idle' | 'running' | 'queued' | 'retrying' | 'waiting_input' | 'stopped' | 'failed' | 'completed'
+  historyBefore?: number
   queued: number
   pendingInputs: Array<{ id: string; mode: 'steer' | 'followUp'; text: string }>
   retry?: { at: number; error: string }
   compacting: boolean
   messages: RemoteHistoryMessage[]
   error?: string
+  outcome?: 'completed' | 'failed' | 'aborted'
 }
+
+export type RemoteDurableState = Omit<RemoteDurableSnapshot, 'epoch' | 'revision' | 'messages'>
+export type RemoteDurableDelta = import('./durable-sync').DurableStreamDelta<RemoteHistoryMessage, RemoteDurableState>
 
 export interface RemotePendingAction {
   taskId: string
@@ -372,6 +378,8 @@ export interface RemoteAttachmentInput {
 }
 
 export interface RemotePromptRequest {
+  /** One business input, persisted by the client before POST and reused after a lost response. */
+  operationId: string
   text: string
   spaceId?: string
   projectId?: string
@@ -390,6 +398,9 @@ export interface RemotePromptResponse {
   userMessageId: string
   assistantMessageId: string
   queued: boolean
+  receipt: { taskId: string; operationId: string; submissionId: number; status: 'queued' | 'placed' | 'done' | 'unanswered' }
+  cancelled?: boolean
+  error?: { code: string; message: string }
 }
 
 export interface RemoteApprovalRequest {

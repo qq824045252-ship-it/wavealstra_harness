@@ -3,6 +3,7 @@ import type { Skill } from "@/types";
 import type { ExpertDto } from "@shared/agent-ipc";
 import type { ExpertDetailDto } from "@shared/expert-binding";
 import { ExpertCapabilityFields } from "./ExpertCapabilityFields";
+import { beginAuxiliaryOperation, type AuxiliaryOperation } from "@/features/auxiliary-operations";
 import "@/styles/expert-editor.css";
 
 type Props = {
@@ -35,10 +36,11 @@ export function HubAuthoringModal(props: Props): React.JSX.Element {
   const committedExpert = useRef<ExpertDto | null>(null);
   const generation = useRef(0);
   const generationRequest = useRef<string | null>(null);
+  const generationOperation = useRef<AuxiliaryOperation | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; generation.current += 1; if (generationRequest.current) void window.api?.agent.cancelExpertAuthoring(generationRequest.current).catch(() => {}); };
+    return () => { mounted.current = false; generation.current += 1; };
   }, []);
   useEffect(() => {
     if (mode !== "expert" || !props.expertId) return;
@@ -56,6 +58,7 @@ export function HubAuthoringModal(props: Props): React.JSX.Element {
   const cancelGeneration = (): void => {
     const requestId = generationRequest.current;
     generation.current += 1; generationRequest.current = null; setGenerating(false);
+    generationOperation.current?.complete(); generationOperation.current = null;
     if (requestId) void window.api?.agent.cancelExpertAuthoring(requestId).catch((err) => setError(String(err)));
   };
   const generateDraft = async (): Promise<void> => {
@@ -63,15 +66,18 @@ export function HubAuthoringModal(props: Props): React.JSX.Element {
     const token = ++generation.current;
     setGenerating(true); setError("");
     try {
+      const operation = await beginAuxiliaryOperation(`authoring-${mode}`, { intent: intent.trim() });
+      if (!mounted.current || token !== generation.current) return;
+      const requestId = operation.requestId;
+      generationRequest.current = requestId;
+      generationOperation.current = operation;
       if (mode === "skill") {
-        const draft = await window.api?.agent?.generateSkillAuthoringDraft?.({ intent: intent.trim() });
+        const draft = await window.api?.agent?.generateSkillAuthoringDraft?.({ intent: intent.trim(), requestId });
         if (!mounted.current || token !== generation.current) return;
         if (!draft) throw new Error("Meta Skill 未返回 Skill 草稿");
         setName(draft.name); setDescription(draft.description); setInstructions(draft.instructions);
         setPositive(draft.triggerExamples.join("\n")); setNegative(draft.nonTriggerExamples.join("\n"));
       } else {
-        const requestId = crypto.randomUUID?.() ?? `expert-${Date.now()}-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
-        generationRequest.current = requestId;
         const draft = await window.api?.agent?.generateExpertAuthoringDraft?.({ intent: intent.trim(), requestId });
         if (!mounted.current || token !== generation.current) return;
         if (!draft) throw new Error("Meta Skill 未返回专家草稿");
@@ -79,8 +85,9 @@ export function HubAuthoringModal(props: Props): React.JSX.Element {
         const available = new Set(props.skills.flatMap((skill) => [skill.id, skill.name]));
         setSkillIds(draft.skillIds.filter((id) => available.has(id)));
       }
+      operation.complete();
     } catch (err) { if (mounted.current && token === generation.current) setError(err instanceof Error ? err.message : String(err)); }
-    finally { if (mounted.current && token === generation.current) { setGenerating(false); generationRequest.current = null; } }
+    finally { if (mounted.current && token === generation.current) { setGenerating(false); generationRequest.current = null; generationOperation.current = null; } }
   };
   const submit = async (): Promise<void> => {
     if (!canSubmit) return;
@@ -108,7 +115,7 @@ export function HubAuthoringModal(props: Props): React.JSX.Element {
       <div className="mcp-auth-title">{editing ? "查看 / 编辑专家模板" : mode === "expert" ? "创建专家" : "创建 Skill"}</div>
       {mode === "expert" ? <div className="expert-editor-scope">{editing ? "修改的是可复用专家模板。已绑定的任务保留各自身份；在任务中选择“同步模板”才采用新版。" : "创建可复用的专家模板；角色说明和能力会在绑定时保存到任务。"}</div> : <div className="mcp-auth-hint">创建结构化 Skill 包，新 Skill 默认停用，确认后再启用。</div>}
       {loading ? <div>正在读取专家模板…</div> : <>
-        {!editing && <><div className="expert-editor-inline"><textarea className="mcp-auth-input" rows={3} value={intent} disabled={fieldsLocked} onChange={(e) => setIntent(e.target.value)} placeholder={mode === "expert" ? "描述你希望专家长期负责什么（也可直接填写下方字段）" : "描述你希望重复完成的能力"} /><button type="button" className="btn" disabled={!intent.trim() || fieldsLocked} onClick={() => void generateDraft()}>{generating ? "生成中…" : mode === "skill" ? "AI 评估 / 草稿" : "AI 生成草稿"}</button>{mode === "expert" && generating && <button type="button" className="btn" onClick={cancelGeneration}>取消生成</button>}</div><div className="mcp-auth-hint">{mode === "expert" ? "AI 草稿可选；生成后请检查角色说明和能力，再点击创建。" : "Meta Skill 先判断应新建、复用、改进还是不创建；生成草稿不会直接写文件。"}</div></>}
+        {!editing && <><div className="expert-editor-inline"><textarea className="mcp-auth-input" rows={3} value={intent} disabled={fieldsLocked} onChange={(e) => setIntent(e.target.value)} placeholder={mode === "expert" ? "描述你希望专家长期负责什么（也可直接填写下方字段）" : "描述你希望重复完成的能力"} /><button type="button" className="btn" disabled={!intent.trim() || fieldsLocked} onClick={() => void generateDraft()}>{generating ? "生成中…" : mode === "skill" ? "AI 评估 / 草稿" : "AI 生成草稿"}</button>{generating && <button type="button" className="btn" onClick={cancelGeneration}>取消生成</button>}</div><div className="mcp-auth-hint">{mode === "expert" ? "AI 草稿可选；生成后请检查角色说明和能力，再点击创建。" : "Meta Skill 先判断应新建、复用、改进还是不创建；生成草稿不会直接写文件。"}</div></>}
         <label className="expert-editor-field"><span className="mcp-auth-hint">{mode === "expert" ? "专家名称" : "Name"} *</span><input className="mcp-auth-input" value={name} disabled={fieldsLocked} onChange={(e) => setName(e.target.value)} /></label>
         <label className="expert-editor-field"><span className="mcp-auth-hint">{mode === "expert" ? "专家定位" : "Intent"} *</span><textarea className="mcp-auth-input" rows={2} value={description} disabled={fieldsLocked} onChange={(e) => setDescription(e.target.value)} /></label>
         <label className="expert-editor-field"><span className="mcp-auth-hint">{mode === "expert" ? "角色说明" : "Workflow / Boundary / Output Contract"} *</span><textarea className="mcp-auth-input" rows={8} value={instructions} disabled={fieldsLocked} onChange={(e) => setInstructions(e.target.value)} placeholder="职责、工作方式、判断原则、输出要求…" /></label>

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, open, realpath, rename, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, realpath, rename, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 
 export type SubagentIsolation = "auto" | "shared" | "worktree";
@@ -12,6 +13,8 @@ export interface PrepareSubagentWorkspaceOptions {
   writable: boolean;
   baseDir: string;
   signal?: AbortSignal;
+  /** Stable durable call identity; retries inspect the same provisioning receipt. */
+  operationId?: string;
 }
 
 export type PreparedSubagentWorkspace =
@@ -96,18 +99,53 @@ export async function prepareSubagentWorkspace(options: PrepareSubagentWorkspace
     signal?.throwIfAborted();
     throw new Error(`Subagent worktree isolation requires a Git working tree: ${cwd}`, { cause: error });
   }
-  if (await git(repository, ["status", "--porcelain=v1", "--untracked-files=all"], signal)) {
-    throw new Error(`Subagent worktree isolation requires a clean repository, including untracked files: ${repository}. Commit or stash changes, or explicitly select shared isolation.`);
-  }
   const baseCommit = await git(repository, ["rev-parse", "--verify", "HEAD^{commit}"], signal);
   const relativeCwd = path.relative(repository, cwd);
   if (path.isAbsolute(relativeCwd) || relativeCwd === ".." || relativeCwd.startsWith(`..${path.sep}`)) {
     throw new Error(`Subagent cwd is outside its Git repository: ${cwd}`);
   }
+  if (!options.operationId && await git(repository, ["status", "--porcelain=v1", "--untracked-files=all"], signal)) {
+    throw new Error(`Subagent worktree isolation requires a clean repository, including untracked files: ${repository}. Commit or stash changes, or explicitly select shared isolation.`);
+  }
   signal?.throwIfAborted();
   await mkdir(path.resolve(options.baseDir), { recursive: true });
   const baseDir = await realpath(options.baseDir);
-  const allocation = await mkdtemp(path.join(baseDir, "subagent-"));
+  const allocation = options.operationId
+    ? path.join(baseDir, `durable-${createHash("sha256").update(options.operationId).digest("hex")}`)
+    : await mkdtemp(path.join(baseDir, "subagent-"));
+  if (options.operationId) {
+    await mkdir(allocation, { recursive: true });
+    const receiptPath = path.join(allocation, "receipt.json");
+    let receiptText: string | undefined;
+    try { receiptText = await readFile(receiptPath, "utf8"); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (receiptText !== undefined) {
+      const saved: unknown = JSON.parse(receiptText);
+      if (!saved || typeof saved !== "object" || !("sourceCwd" in saved) || saved.sourceCwd !== cwd
+        || !("root" in saved) || saved.root !== path.join(allocation, "worktree")
+        || !("cwd" in saved) || saved.cwd !== path.join(allocation, "worktree", relativeCwd)
+        || !("repository" in saved) || saved.repository !== repository
+        || !("baseCommit" in saved) || typeof saved.baseCommit !== "string"
+        || !("branch" in saved) || typeof saved.branch !== "string"
+        || !("state" in saved)) throw new Error(`Invalid subagent workspace receipt: ${receiptPath}`);
+      if (saved.state !== "ready") {
+        // An interrupted git operation is a side effect with an uncertain outcome. Never repeat it.
+        throw new Error(`Subagent workspace provisioning needs reconciliation: ${receiptPath} (${String(saved.state)})`);
+      }
+      if (await realpath(saved.root) !== saved.root || await realpath(saved.cwd) !== saved.cwd) {
+        throw new Error(`Subagent workspace path changed: ${receiptPath}`);
+      }
+      if (path.resolve(await git(saved.cwd, ["rev-parse", "--show-toplevel"], signal)) !== saved.root) {
+        throw new Error(`Subagent workspace no longer belongs to its receipt: ${receiptPath}`);
+      }
+      return { kind: "worktree", cwd: saved.cwd, root: saved.root, repository, baseCommit: saved.baseCommit, branch: saved.branch, receiptPath };
+    }
+  }
+  if (await git(repository, ["status", "--porcelain=v1", "--untracked-files=all"], signal)) {
+    throw new Error(`Subagent worktree isolation requires a clean repository, including untracked files: ${repository}. Commit or stash changes, or explicitly select shared isolation.`);
+  }
   const root = path.join(allocation, "worktree");
   const workspace: WorktreeWorkspace = {
     kind: "worktree",

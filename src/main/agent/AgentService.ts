@@ -11,19 +11,29 @@ import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
+import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
+import { openDurableAuxiliary, type DurableAuxiliaryBinding } from "./durable/DurableAuxiliaryRuntime";
+import { DurableSkillProjection, durableInputAuditSchema, type DurableInputAudit } from "./durable/DurableSkillProjection";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotRuntime";
+import type { DurableBotSnapshot } from "../../shared/durable-bot";
+import { setSubagentIpcBackend } from "./subagent-ipc-host";
+import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
+import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
+import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
+import { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
 import { durableText } from "./durable/DurableTurnProjection";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
 import type { LocalWorkflowBridge } from "../capabilities/local-workflow-extension";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
 import { resolveConversationBranchSourceRoots } from "./session-branch";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
-import { createPiConsultSession, runMultiModelConsult, type ConsultWorkerControls } from "../capabilities/MultiModelConsult";
+import { type ConsultWorkerControls } from "../capabilities/MultiModelConsult";
 import { ExecutionFailureRepository } from "./ExecutionFailureRepository";
-import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionRequestGuard, withModelInvocationSettings } from "./ModelInvocationAdmission";
+import { installModelInvocationAdmission, setSessionRequestGuard, withModelInvocationSettings } from "./ModelInvocationAdmission";
 import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralContextProjection";
 import { EvidenceBudget, isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
 import { bindLegacyMemoryHistory } from "./LegacyMemorySummaryRecovery";
-import { attachSubagentModelRuntime, attachSubagentWorkspaceNotes, stopSubagentsForModelScopeChange } from "../capabilities/subagent/index";
 import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
@@ -41,7 +51,6 @@ import { GenerationSpeedTracker } from "../usage/GenerationSpeedTracker";
 import { UsageStatsService, type RecordLiveInput } from "../usage/UsageStatsService";
 import { applyMyBuddyModelAttribution } from "../../shared/usage-stats";
 import {
-  createAgentSession,
   CredentialSynchronizationError,
   DefaultResourceLoader,
   ModelRuntime,
@@ -54,11 +63,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   AgentIpc,
+  SubagentIpc,
   BtwIpc,
   DbIpc,
   type AgentApproveToolRequest,
   type AgentPromptRequest,
   type AgentPromptResult,
+  type AgentSubmissionReceipt,
   type AgentRegenerateRequest,
   type AgentRegenerateResult,
   type AgentDeleteUserMessageRequest,
@@ -249,6 +260,9 @@ import {
   type RuntimeContextPolicyInput,
 } from "./RuntimeContextResolver";
 import { RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
+import { TaskDiagnosticsRepository } from "./TaskDiagnosticsRepository";
+import { observeCacheRequestTraces } from "./CacheRequestTrace";
+import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
 import { ConversationInteractionService } from "./ConversationInteractionService";
 import { ConversationGoalRepository } from "./ConversationGoalRepository";
@@ -432,11 +446,6 @@ function bumpSkillPatchVersion(value: string): string {
   return `${Number(match[1])}.${Number(match[2])}.${Number(match[3]) + 1}`;
 }
 
-export interface AgentServiceDependencies {
-  /** Test seam at the SDK boundary; all MyBuddy createSession assembly still runs. */
-  createAgentSession?: typeof createAgentSession;
-}
-
 /** 展示用掩码：保留头尾 4 位，绝不回传完整 key */
 function maskApiKeySecret(key: string): string {
   if (key.length <= 8) return "••••";
@@ -550,6 +559,8 @@ export class AgentService {
   private readonly projectContextResolver: ProjectContextResolver;
   private readonly projectService: ProjectService;
   private readonly runtimeSnapshots: RuntimeContextSnapshotRepository;
+  private readonly taskDiagnostics: TaskDiagnosticsRepository;
+  private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
   private readonly executionFailures: ExecutionFailureRepository;
@@ -577,10 +588,10 @@ export class AgentService {
   private readonly memoryOrganization: MemoryOrganizationService;
   private readonly memoryPipeline: MemoryPipelineManager;
   private readonly skillEffectiveness: MemorySkillEffectivenessService;
+  private readonly durableSkills: DurableSkillProjection;
   private readonly skillRevision: MemorySkillRevisionService;
   private readonly libraryWorkspaceContext: LibraryWorkspaceContextService;
   private readonly sessionExtensions: SessionExtensionAssembler;
-  private readonly createAgentSessionFactory: typeof createAgentSession;
   private durableBots: DurableBotService | undefined;
   private durableModels: ModelRuntime | undefined;
   private readonly emittedArtifactPaths = new Map<string, Set<string>>();
@@ -683,8 +694,9 @@ export class AgentService {
   constructor(
     private readonly db: AppDatabase,
     taskWorkspace?: TaskExecutionWorkspace,
-    dependencies: AgentServiceDependencies = {},
+    dependencies: { models?: ModelRuntime } = {},
   ) {
+    this.modelRuntime = dependencies.models ?? null;
     this.expertBindings = new TaskExpertBindingService(db, this.expertsService, {
       resolveSkillDirectory: (id) => {
         const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
@@ -721,9 +733,14 @@ export class AgentService {
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection);
+    this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection);
+    this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
     this.conversationInteractions = new ConversationInteractionService(
       new ConversationInteractionRepository(db.connection),
-      (patch) => this.emitPatch(patch),
+      patch => {
+        this.emitPatch(patch);
+        if (patch.type === "conversation_interaction_snapshot") void this.durableBots?.refresh(patch.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
+      },
     );
     this.conversationGoals = new ConversationGoalService(
       new ConversationGoalRepository(db.connection),
@@ -733,12 +750,7 @@ export class AgentService {
     this.executionAttempts = new ExecutionAttemptRepository(db.connection);
     recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
     this.loadoutObservations = new AgentLoadoutObservationService(db);
-    const createSession = dependencies.createAgentSession ?? createAgentSession;
-    this.createAgentSessionFactory = async (options) => {
-      const result = await createSession(options);
-      bindSessionModelAdmission(result.session);
-      return result;
-    };
+    this.durableSkills = new DurableSkillProjection(this.loadoutObservations, this.skillEffectiveness);
     this.mcpRuntime = new McpRuntimeService();
     this.sessionLifecycle = new SessionLifecycleManager({
       endComputerUse: (taskId, executionId) => computerUseRunCoordinator.endTask(taskId, "failed", executionId),
@@ -781,76 +793,30 @@ export class AgentService {
         this.maybeEmitArtifact(session, taskId, messageId, event),
     });
     this.btwService = new BtwSessionService({
-      db: this.db,
-      registry: this.registry,
-      settings: this.settingsStore,
-      taskWorkspace: this.taskWorkspace,
+      db: this.db, settings: this.settingsStore, taskWorkspace: this.taskWorkspace,
       libraryWorkspace: this.libraryWorkspaceContext,
-      usageStats: this.usageStats,
-      resolveTaskExecutionWorkspaceCwd: (taskId) => this.resolveTaskExecutionWorkspaceCwd(taskId),
-      assembleModePreview: (request) => this.assembleModePreview(request),
-      createTransientSession: async ({ cwd, segments, parentTaskId, snapshot }) => {
-        const runtime = await this.createTransientSession(
-          "",
-          cwd,
-          null,
-          undefined,
-          segments,
-          true,
-          undefined,
-          this.db.getTask(parentTaskId)?.projectId
-            ? { resolveProjectId: () => this.db.getTask(parentTaskId)?.projectId ?? null }
-            : null,
-          {
-            scope: () => {
-              const task = this.db.getTask(parentTaskId);
-              if (!task) throw new Error("BTW 父任务已移除");
-              return { taskId: parentTaskId, projectId: task.projectId ?? undefined, workspaceId: task.spaceId ?? undefined };
-            },
-            sources: () => [{
-              id: `conversation:${parentTaskId}`, kind: "conversation", revision: createHash("sha256").update(snapshot).digest("hex"),
-              text: snapshot,
-              validate: () => { if (!this.db.getTask(parentTaskId)) throw new Error("BTW 父任务已移除"); },
-            }, ...this.libraryWorkspaceContext.projectionSources(parentTaskId, true)],
-          },
-        );
-        return runtime.session;
+      resolveTaskExecutionWorkspaceCwd: taskId => this.resolveTaskExecutionWorkspaceCwd(taskId),
+      assembleModePreview: request => this.assembleModePreview(request),
+      history: (taskId, before) => {
+        if (!this.durableBots) throw new Error("执行服务尚未初始化");
+        return this.durableBots.history(taskId, before);
       },
-      setSessionModel: async (session, modelId) => {
-        if (!this.modelRuntime) return;
-        const model = await this.resolveEnabledModel(modelId, session.settingsManager);
-        if (!model) throw new Error(`模型 ${modelId} 不在当前任务的 Pi 启用范围内`);
-        await session.setModel(model);
-      },
-      applySessionReasoningPreference: (session, preference) => {
-        this.applySessionReasoningPreference(session, preference);
-      },
-      emitPatch: (btwId, patch) => {
-        broadcast(BtwIpc.event, { ...patch, btwId } satisfies BtwUiPatch);
-      },
-      usageMessageFromEvent: (message, session, modelId) =>
-        this.usageMessageFromEvent(message, session, modelId),
-    });    this.promptEnhancement = new PromptEnhancementService({
-      db: this.db,
-      registry: this.registry,
-      settings: this.settingsStore,
-      taskWorkspace: this.taskWorkspace,
-      expertsService: this.expertsService,
-      projectContextResolver: this.projectContextResolver,
-      runtimeSnapshots: this.runtimeSnapshots,
-      modeProfiles: this.modeProfiles,
-      assembleModePreview: (request) => this.assembleModePreview(request),
-      createTransientSession: async ({ cwd, segments }) => {
-        const runtime = await this.createTransientSession("", cwd, null, undefined, segments, true, []);
-        return runtime.session;
-      },
-      setSessionModel: async (session, modelId) => {
-        if (!this.modelRuntime) return;
-        const model = await this.resolveEnabledModel(modelId, session.settingsManager);
-        if (!model) throw new Error(`模型 ${modelId} 不在当前任务的 Pi 启用范围内`);
-        await session.setModel(model);
-      },
-    });    this.sessionExtensions = new SessionExtensionAssembler({
+      openRuntime: async request => (await this.openAuxiliaryRuntime({ id: request.btwId, kind: "btw", parentTaskId: request.parentTaskId,
+        cwd: request.cwd, instructions: request.segments.join("\n\n"), snapshot: request.snapshot, modelId: request.modelId,
+        reasoningPreference: request.reasoningPreference, reasoningPreferenceModelId: request.reasoningPreferenceModelId,
+        onSnapshot: request.onSnapshot })).runtime,
+      emitPatch: (btwId, patch) => broadcast(BtwIpc.event, { ...patch, btwId } satisfies BtwUiPatch),
+    });
+    this.promptEnhancement = new PromptEnhancementService({
+      db: this.db, registry: this.registry, settings: this.settingsStore, taskWorkspace: this.taskWorkspace,
+      expertsService: this.expertsService, projectContextResolver: this.projectContextResolver,
+      runtimeSnapshots: this.runtimeSnapshots, modeProfiles: this.modeProfiles,
+      assembleModePreview: request => this.assembleModePreview(request),
+      generate: request => this.runAuxiliaryText({ id: `enhance:${request.requestId ?? randomUUID()}`, kind: "prompt-enhance",
+        parentTaskId: request.taskId, cwd: request.cwd || process.cwd(), instructions: request.segments.join("\n\n"),
+        modelId: request.modelId, prompt: request.prompt, thinking: "off" }),
+    });
+    this.sessionExtensions = new SessionExtensionAssembler({
       db: this.db,
       memory: this.memoryService,
       project: this.projectService,
@@ -1042,11 +1008,15 @@ export class AgentService {
   }
 
   respondConversationInteraction(interactionId: string, answer: ConversationInteractionAnswer): ConversationInteractionMutationResult {
-    return this.conversationInteractions.respond(interactionId, answer);
+    const result = this.conversationInteractions.respond(interactionId, answer);
+    if (result.ok) void this.durableBots?.refresh(result.interaction.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
+    return result;
   }
 
   cancelConversationInteraction(interactionId: string): ConversationInteractionMutationResult {
-    return this.conversationInteractions.cancel(interactionId);
+    const result = this.conversationInteractions.cancel(interactionId);
+    if (result.ok) void this.durableBots?.refresh(result.interaction.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
+    return result;
   }
 
   createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult {
@@ -1178,82 +1148,83 @@ export class AgentService {
     this.settingsStore.migrateShellPreferences();
     const azureMigration = migratePiAzureProvider(getMyBuddyDir(), this.db.connection);
     if (azureMigration.files || azureMigration.selections) console.log("[AgentService] Pi Azure provider migrated", azureMigration);
-    this.modelRuntime = await ModelRuntime.create({
+    const suppliedModels = Boolean(this.modelRuntime);
+    this.modelRuntime ??= await ModelRuntime.create({
       authPath: getAuthPath(),
       modelsPath: getModelsPath(),
       allowModelNetwork: true,
       refreshOnCreate: false,
     });
     registerMyBuddyProviders(this.modelRuntime, { magpieConfig: () => this.readMagpieGatewayConfig() });
-    await this.modelRuntime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
+    await this.modelRuntime.refresh({ allowNetwork: !suppliedModels, signal: AbortSignal.timeout(15_000) });
     // Discovery is read-only and must not delay desktop startup or generate media.
-    void this.mediaCapabilityServices.refresh().catch(() => undefined);
+    if (!suppliedModels) void this.mediaCapabilityServices.refresh().catch(() => undefined);
     installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
-    attachSubagentModelRuntime(this.modelRuntime);
-    attachSubagentWorkspaceNotes(scope => {
-      const entry = this.registry.values().find(item => item.session.sessionManager.getSessionId() === scope);
-      return entry ? [new ProjectNotesService(this.db).forSubagent(entry.taskId), new WorkspaceNotesService(this.db).forSubagent(entry.taskId)].filter(Boolean).join("\n\n") : "";
-    });
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();
-    // Same Pi models/auth files, with no MyBuddy request-admission wrappers on Bot execution.
-    this.durableModels = await ModelRuntime.create({ authPath: getAuthPath(), modelsPath: getModelsPath(), refreshOnCreate: false });
-    registerMyBuddyProviders(this.durableModels, { magpieConfig: () => this.readMagpieGatewayConfig() });
-    await this.durableModels.refresh({ allowNetwork: false });
+    this.durableModels = this.modelRuntime;
+    setSubagentIpcBackend(durableSubagentIpcBackend);
     this.durableBots = new DurableBotService({
       expertBindings: this.expertBindings,
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       defaultModel: () => this.settingsStore.read().defaultModelId,
+      prepareTask: request => this.prepareDurableTask(request),
+      mcpSelection: task => this.durableAssembly(task).mcpFilter.enabled,
+      toolAllowed: (task, name) => this.durableToolAllowed(task, name),
       toolMode: task => {
         if (isGatewayBotTaskId(task.id)) return "native";
-        const preset = resolveModePreset(this.modeProfiles.getProfile("bot").policy, task.modePresetId);
+        const preset = resolveModePreset(this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode)).policy, task.modePresetId);
         return preset?.botToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
       instructions: task => this.botInstructions(task),
+      waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
+      onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
       onSettled: (taskId, snapshot) => {
+        computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
         if (!message) return;
         this.emitTaskLifecycle(snapshot.outcome === "failed" ? { kind: "failed", taskId, assistantMessageId: message.id, error: snapshot.error ?? "Durable 执行未完成" }
           : { kind: "completed", taskId, assistantMessageId: message.id });
       },
-      onEntries: (taskId, entries) => {
-        let turn = 0, index = 0;
+      onResponse: (taskId, message, info) => this.recordDurableUsage(taskId, message, info),
+      onTool: event => this.taskDiagnostics.observeTool(event),
+      observedUsage: (taskId, conversationId) => this.taskDiagnostics.usageForConversation(taskId, conversationId),
+      onRequest: (taskId, info) => {
+        if (info.sourceKind !== "main") return;
+        this.durableSkills.started(taskId, info.conversationId);
+        const task = this.db.getTask(taskId);
+        if (!task) return;
+        const assembly = this.durableAssembly(task);
+        this.runtimeSnapshots.recordOnce({ taskId, executionId: `durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
+          userMessageId: `durable-run-${info.generationTaskId}`, assistantMessageId: `durable-generation-${info.generationTaskId}`,
+          status: "running", startedAt: Date.now(), workingDirectory: task.cwd,
+          assemblyHash: fingerprintRuntimeAssembly(assembly), modelId: task.modelId, permissionMode: task.permissionMode,
+          mode: resolveWelcomeMode(task.welcomeMode), tagId: task.modePresetId ?? undefined, projectId: task.projectId ?? undefined,
+          resolvedInstructions: assembly.segments, resolvedCapabilities: assembly.capabilities ?? [], warnings: assembly.warnings });
+      },
+      onEntries: (taskId, entries, info) => {
+        if (info.sourceKind === "main") this.durableSkills.entries(taskId, info.conversationId, entries);
         for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
-          if (entry.kind === "pi.user") turn++;
+          if (!entry.byTaskId) continue;
           for (const message of entry.model ?? []) {
             if (message.role !== "assistant") continue;
-            this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${entry.conversationId}`,
-              persistedEntryId: `durable:${taskId}:${entry.conversationId}:${entry.id}`, sourceKind: "main", sourceDetail: "pi-durable",
-              userTurn: turn, message,
-              sample: { turnIndex: ++index, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
-                ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null },
-            });
+            this.recordDurableUsage(taskId, message, { conversationId: String(entry.conversationId), generationTaskId: entry.byTaskId, sourceKind: info.sourceKind });
+            this.db.connection.prepare("UPDATE task_runtime_context_snapshots SET assistant_message_id = ? WHERE task_id = ? AND execution_id = ?")
+              .run(`durable-${entry.id}`, taskId, `durable:${taskId}:${entry.conversationId}:${entry.byTaskId}`);
           }
         }
       },
-      tools: async (task, cwd) => durableDomainTools([
-        ...this.sessionExtensions.domainExtensions(task.id, this.settingsStore.read().memoryEnabled, this.gadgetService),
-        createBuiltinCapabilityExtension({ taskId: task.id, taskRoot: cwd, nativeExecution: true,
-          runtime: this.builtinCapabilities, browser: this.browserAutomation,
-          artifactService: () => this.artifactService, getProducerMessageId: () => this.durableBots?.lastAssistantId(task.id),
-          getIsolationLevel: () => "none",
-        }),
-      ], { cwd, models: this.durableModels! }),
-      evidence: (task, messages) => {
-        const query = durableText([...messages].reverse().find(message => message.role === "user")?.content);
-        const modelId = task.modelId ?? this.settingsStore.read().defaultModelId ?? "";
-        const model = this.durableModels?.getModel(modelId.slice(0, modelId.indexOf("/")), modelId.slice(modelId.indexOf("/") + 1));
-        const budget = model ? new EvidenceBudget(model, 0) : undefined;
-        const memory = this.settingsStore.read().memoryEnabled
-          ? projectMemoryContext(this.memoryService, { ...resolveTaskMemoryScope(task.id, task), query,
-            includeInherited: true, statuses: ["active"], trackRecall: false, budgetChars: budget?.memoryCap }).text : "";
-        const memoryText = budget ? budget.takeInitial("memory", memory, budget.memoryCap) : memory;
-        const materials = this.libraryWorkspaceContext.projectionSources(task.id).map(source => budget ? budget.takeInitial(source.id, source.text, 4500) : source.text);
-        return [memoryText, ...materials].filter(Boolean).join("\n\n");
-      },
+      tools: (task, cwd, recovery) => this.durableTaskTools(task, cwd, recovery),
+      evidenceProjection: task => ({
+        memory: this.memoryService,
+        enabled: () => this.settingsStore.read().memoryEnabled,
+        supplementalEvidence: () => this.libraryWorkspaceContext.projectionSources(task.id),
+        validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access),
+        scope: () => resolveTaskMemoryScope(task.id, this.db.getTask(task.id)),
+      }),
       onTurns: (taskId, turns) => {
         if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled) return;
         let extract = false;
@@ -1263,9 +1234,16 @@ export class AgentService {
         // A separate background consumer of committed evidence. It never steers or blocks Bot execution.
         void this.queuePendingMemoryExtraction([taskId]).catch(error => console.warn("[Durable] Memory extraction failed", error));
       },
+      auditInput: request => this.durableInputAudit(request),
       prepareInput: request => {
-        if (request.connectorIds) this.settingsStore.setTaskConnectorIds(request.taskId, request.connectorIds);
-        return this.appendSelectionContexts(this.appendTerminalContext(request.text, request.terminalContext), request.selections, request.selection);
+        let text = request.text;
+        const command = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
+        if (command) {
+          const skill = this.durableInputAudit(request).skills.find(item => item.id === command[1] || item.name === command[1]);
+          if (!skill) throw new Error(`当前任务未授权 Skill：${command[1]}`);
+          text = `# Skill: ${skill.name}\n${readFileSync(skill.path, "utf8")}\n\n${command[2] ?? ""}`;
+        }
+        return this.appendSelectionContexts(this.appendTerminalContext(text, request.terminalContext), request.selections, request.selection);
       },
       prepareImages: async request => {
         const attachments = request.attachments?.filter(item => isImageAttachment(item.name, item.path)) ?? [];
@@ -1341,25 +1319,155 @@ export class AgentService {
   }
 
   private botInstructions(task: TaskDto): string {
-    const profile = this.modeProfiles.getProfile("bot");
-    const preset = resolveModePreset(profile.policy, task.modePresetId);
-    const project = this.projectContextResolver.resolveTask(task.id);
-    const soul = this.db.getSoul();
+    const assembly = this.durableAssembly(task);
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
     const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
     return [
-      `You are ${identity?.name || soul.name || "MyBuddy"}, operating in Bot mode on Pi Durable. Assist with the user's current task across research, office work, programming and tool use.`, identity ? "" : soul.persona,
-      ...profile.blocks.map(block => `## ${block.label}\n${block.content}`),
-      preset?.promptAddon,
-      project?.instructions ? `## Project instructions\n${project.instructions}` : "",
-      project?.sharedContext ? `## Project context\n${JSON.stringify(project.sharedContext)}` : "",
-      identity ? this.boundExpertPrompt(identity) : "",
-      `## Working directory\n${task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id)}`,
+      ...assembly.appendParts,
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
+        .filter(s => assembly.skillFilter.visible.includes(s.name))
         .map(s => `- ${s.name}: ${s.description} (${s.filePath})`).join("\n"),
     ].filter(Boolean).join("\n\n");
+  }
+
+  private durableInputAudit(request: AgentPromptRequest): DurableInputAudit {
+    const task = this.db.getTask(request.taskId);
+    if (!task) throw new Error("任务不存在");
+    const assembly = this.durableAssembly(task);
+    const identity = this.expertBindings.active(task.id);
+    const connectors = this.expertConnectorIds(task.id);
+    const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
+    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos
+      .filter(skill => skill.enabled && skill.filePath && assembly.skillFilter.visible.includes(skill.name))
+      .map(skill => ({ id: skill.id, name: skill.name, path: skill.filePath!, learned: this.skillsService.getLearnedSkillMetadataForFile(skill.filePath!) }));
+    return durableInputAuditSchema.parse(JSON.parse(JSON.stringify({ userMessageId: request.userMessageId,
+      assistantMessageId: request.assistantMessageId, cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills,
+      recommendation: this.loadoutService.resolve(task.id, request.text, assembly, connectors, identity?.sourceExpertId) })));
+  }
+
+  private recordDurableUsage(taskId: string, message: import("@earendil-works/pi-ai").AssistantMessage,
+    info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }): void {
+    this.runtimeSnapshots.finish(`durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
+      message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed", message.errorMessage);
+    this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${info.conversationId}`,
+      reportedUsage: this.taskDiagnostics.usageForGeneration(taskId, info.conversationId, info.generationTaskId),
+      persistedEntryId: `durable:${taskId}:${info.conversationId}:generation:${info.generationTaskId}:${message.timestamp}`,
+      sourceKind: info.sourceKind, sourceDetail: "pi-durable", message, userTurn: null,
+      sample: { turnIndex: info.generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
+        ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
+  }
+
+  private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();
+
+  private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
+    const getPermissionMode = () => this.db.getTask(task.id)?.permissionMode ?? task.permissionMode ?? "default";
+    const providerIds = this.durableAssembly(task).mcpFilter.enabled;
+    const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
+      writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
+    const sessionPolicy = getPolicy();
+    const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
+      interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
+      providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
+      toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
+    const skillPaths = this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId, this.expertConnectorIds(task.id));
+    const domain = await durableDomainTools(this.sessionExtensions.durableExtensions({
+      taskId: task.id, taskRoot: cwd, memoryEnabled: this.settingsStore.read().memoryEnabled,
+      gadgetService: this.gadgetService, getPermissionMode, requestApproval: policy.requestApproval,
+      builtinCapability: {
+        nativeExecution: true, runtime: this.builtinCapabilities, browser: this.browserAutomation,
+        localWorkflow: this.localWorkflow ? { ...this.localWorkflow, getPermissionMode } : undefined,
+        artifactService: () => this.artifactService,
+        getProducerMessageId: () => currentDurableExecutionContext()?.assistantMessageId ?? this.durableBots?.lastAssistantId(task.id),
+        getIsolationLevel: () => this.getShellIsolationLevel(), pythonRuntime: this.pythonRuntime,
+        resolveSkillScript: path => this.skillsService.resolveSkillScriptOwner(path, cwd, skillPaths),
+        skillAuthoring: { assess: (intent, modelId) => this.assessSkillAuthoring({ intent, modelId }),
+          create: (intent, forceCreate, modelId) => this.createSkillFromMeta({ intent, forceCreate, modelId }) },
+        consult: (id, input, signal, onUpdate) => {
+          const config = this.builtinCapabilities.config().multiModelConsult;
+          const key = `${task.id}:${id}`;
+          return runDurableMultiModelConsult({ id, taskId: task.id, input, config, signal, onUpdate,
+            onControls: controls => { this.consultWorkers.set(key, controls); },
+            createSession: (participant, workerSignal, onToolLimit, stableConfig) => createDurableConsultSession({
+              participant, cwd, agentDir: getMyBuddyDir(), runtime: this.durableModels!,
+              parentSettings: createAgentSettingsManager(cwd, getMyBuddyDir()), policy: sessionPolicy,
+              readProjectFiles: stableConfig.readProjectFiles, maxToolCalls: stableConfig.maxToolCalls, timeoutMs: stableConfig.timeoutSeconds * 1000,
+              signal: workerSignal, onToolLimit, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled }),
+          }).finally(() => { this.consultWorkers.delete(key); });
+        },
+      },
+    }), { cwd, models: this.durableModels!, taskId: task.id });
+    const consultHooks = createDurableConsultToolHooks({ policy: sessionPolicy, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled });
+    const toolHooks: NonNullable<typeof domain.toolHooks> = {
+      beforeTool: async (call, api, context) => {
+        const consultation = await consultHooks.beforeTool?.(call, api, context);
+        if (consultation && "block" in consultation) return consultation;
+        const forwarded = consultation?.arguments ? { ...call, arguments: consultation.arguments } : call;
+        return await policy.hooks.beforeTool?.(forwarded, api, context) ?? consultation;
+      },
+      afterTool: async (call, result, api, context) => {
+        const observed = await policy.hooks.afterTool?.(call, result, api, context);
+        return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
+      },
+    };
+    return { ...domain, toolHooks, tools: [...domain.tools,
+      ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
+        workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
+        onChange: () => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(SubagentIpc.event); },
+      })] };
+  }
+
+  private durableAssembly(task: TaskDto): AssemblyTraceDto {
+    const connectorIds = this.settingsStore.getTaskConnectorIds(task.id);
+    const key = JSON.stringify([task.welcomeMode, task.projectId, task.spaceId, task.cwd, task.modePresetId, task.expertId, task.permissionMode, connectorIds, this.expertBindings.active(task.id)?.revision]);
+    const cached = this.durableAssemblies.get(task.id);
+    if (cached?.key === key) return cached.assembly;
+    const assembly = this.assembleModePreview({ taskId: task.id, welcomeMode: resolveWelcomeMode(task.welcomeMode),
+      projectId: task.projectId, spaceId: task.spaceId ?? undefined, cwd: task.cwd,
+      modePresetId: task.modePresetId, expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId,
+      connectorIds, permissionMode: task.permissionMode });
+    this.durableAssemblies.set(task.id, { key, assembly });
+    return assembly;
+  }
+
+  private durableToolAllowed(task: TaskDto, name: string): boolean {
+    const selection = resolveSessionToolSelection(task.permissionMode ?? "default", this.durableAssembly(task).toolPolicy, this.builtinCapabilities.config());
+    if (["subagent", "subagent_list", "subagent_steer"].includes(name) && !this.builtinCapabilities.config().subagent.enabled) return false;
+    return !(selection.excludeTools ?? []).some(tool => tool.toLowerCase() === name.toLowerCase());
+  }
+
+  private async prepareDurableTask(request: AgentPromptRequest): Promise<AgentPromptRequest> {
+    this.durableAssemblies.delete(request.taskId);
+    assertSingleExpertId(request.expertId);
+    const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId);
+    this.expertBindings.ensureLegacy(request.taskId);
+    const task = this.db.getTask(request.taskId);
+    if (!task) throw new Error("任务不存在");
+    const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
+    const profile = this.modeProfiles.getProfile(welcomeMode);
+    const preset = resolveModePreset(profile.policy, request.modePresetId ?? task.modePresetId);
+    const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile,
+      projectContext: this.projectContextResolver.resolveTask(task.id), preset,
+      expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? request.expertId ?? task.expertId,
+      connectorIds: this.expertConnectorIds(task.id, request.connectorIds),
+      ...this.runtimeCapabilityAvailability(request.expertId ?? task.expertId, request.connectorIds, task.id) });
+    const requiredMcpIds = new Set([...(preset?.providerMcpIds ?? []), ...(this.expertBindings.active(task.id)?.mcpIds ?? [])]);
+    const requiredMcpDecisions = requiredMcpIds.size ? this.mcpRuntime.previewMcpFilter(welcomeMode,
+      resolved.runtimePolicy.mcpPolicy, resolved.mcpPolicySources).capabilities.filter(decision => requiredMcpIds.has(decision.id) && !decision.enabled) : [];
+    this.emitPatch({ type: "capability_notices", taskId: task.id,
+      notices: capabilityPolicyNotices([resolved.expertDecision, ...resolved.connectorDecisions, ...requiredMcpDecisions]) });
+    const permissionMode = resolveEffectivePermission(request.permissionMode ?? task.permissionMode,
+      resolved.effectiveProfile.policy.suggestedPermissionMode, this.settingsStore.read().permissionMode ?? "default");
+    await ensurePresetRuntimeReadyWithRecovery({ failures: this.executionFailures, taskId: task.id,
+      assistantMessageId: request.assistantMessageId, preset, ensureReady: () => this.runtimeRequirements.ensurePresetReady(preset) });
+    await this.memoryWriteQueue;
+    const connectorIds = resolved.connectorDecisions.filter(item => item.enabled).map(item => item.id);
+    this.settingsStore.setTaskConnectorIds(request.taskId, connectorIds);
+    this.durableAssemblies.delete(request.taskId);
+    return { ...request, cwd, welcomeMode, permissionMode,
+      expertId: resolved.expertDecision?.enabled === false ? undefined : request.expertId,
+      connectorIds };
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
@@ -2059,47 +2167,6 @@ export class AgentService {
     return this.skillAuthoringService.validateSkillPackage(path);
   }
 
-  /**
-   * Authoring generator session is deliberately separate from createTransientSession: no project/global
-   * Skills, context files, prompt templates, themes, extensions, tools, or APPEND_SYSTEM inheritance.
-   * This keeps Meta Skill generation reproducible without changing BTW/Enhance contracts.
-   */
-  private async createAuthoringSession(systemPrompt: string): Promise<AgentSession> {
-    if (!this.modelRuntime) throw new Error("模型运行时尚未初始化");
-    const cwd = process.cwd();
-    const agentDir = getMyBuddyDir();
-    const settingsManager = createAgentSettingsManager(cwd, agentDir);
-    const loader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager,
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      systemPromptOverride: () => systemPrompt,
-      appendSystemPromptOverride: () => [],
-    });
-    await loader.reload();
-    const selection = await this.resolvePiModelSelection(undefined, settingsManager);
-    if (settingsManager.getEnabledModels() !== undefined && !selection.model) {
-      throw new Error("Pi enabledModels 当前没有可用模型");
-    }
-    const result = await this.createAgentSessionFactory({
-      cwd,
-      agentDir,
-      modelRuntime: this.modelRuntime,
-      model: selection.model,
-      scopedModels: selection.scopedModels,
-      sessionManager: SessionManager.inMemory(cwd),
-      settingsManager,
-      resourceLoader: loader,
-      tools: [],
-    });
-    return result.session;
-  }
-
   private static readonly AUTHORING_GENERATE_MAX_CONCURRENT = 1;
   private authoringGenerateInflight = 0;
   private readonly authoringRequests = new Map<string, (reason: string) => void>();
@@ -2109,50 +2176,23 @@ export class AgentService {
   }
 
   private async runAuthoringGenerator(systemPrompt: string, userPrompt: string, modelId?: string, requestId?: string): Promise<string> {
-    if (this.authoringGenerateInflight >= AgentService.AUTHORING_GENERATE_MAX_CONCURRENT) {
-      throw new Error("Authoring 生成任务正在进行，请稍后再试");
+    const invocation = currentDurableInvocation();
+    const key = `${requestId ?? invocation?.execution.executionId ?? randomUUID()}:${createHash("sha256").update(systemPrompt).digest("hex")}`;
+    const existing = this.auxiliaryTextResults.get(`authoring:${key}`);
+    if (existing) {
+      if (existing.parentTaskId !== invocation?.execution.taskId) throw new Error("辅助请求不属于当前任务");
+      return existing.result;
     }
-    if (!this.modelRuntime) throw new Error("模型运行时尚未初始化");
+    if (this.authoringGenerateInflight >= AgentService.AUTHORING_GENERATE_MAX_CONCURRENT) throw new Error("Authoring 生成任务正在进行，请稍后再试");
     this.authoringGenerateInflight += 1;
-    let session: AgentSession | undefined;
-    let cancelled = false;
-    let stop!: (reason: string) => void;
-    const cancellation = new Promise<never>((_resolve, reject) => {
-      stop = reason => {
-        cancelled = true;
-        void session?.abort().catch(() => {});
-        reject(new Error(reason));
-      };
-    });
+    const controller = new AbortController();
+    const stop = (reason: string) => controller.abort(new Error(reason));
     if (requestId) this.authoringRequests.set(requestId, stop);
-    const timer = setTimeout(() => stop("草稿生成超时，已释放生成任务；可以重试或手动填写"), 120_000);
     try {
-      const work = (async () => {
-        session = await this.createAuthoringSession(systemPrompt);
-        try {
-          if (cancelled) throw new Error("草稿生成已取消");
-          if (modelId) {
-            const model = await this.resolveEnabledModel(modelId, session.settingsManager);
-            if (!model) throw new Error(`模型 ${modelId} 不在当前 Pi 启用范围内`);
-            await session.setModel(model);
-          }
-          try {
-            const levels = session.getAvailableThinkingLevels();
-            await session.setThinkingLevel(levels.includes("low") ? "low" : levels[0]);
-          } catch { /* model default */ }
-          if (cancelled) throw new Error("草稿生成已取消");
-          await session.prompt(userPrompt);
-          const raw = (session.getLastAssistantText() ?? "").trim();
-          if (!raw) throw new Error("Meta Skill 未返回草稿");
-          return raw;
-        } finally {
-          try { session.clearQueue(); } catch { /* best effort */ }
-          try { void session.dispose(); } catch { /* best effort */ }
-        }
-      })();
-      return await Promise.race([work, cancellation]);
+      return await this.runAuxiliaryText({ id: `authoring:${key}`, kind: "authoring",
+        parentTaskId: invocation?.execution.taskId, cwd: invocation?.cwd ?? process.cwd(), instructions: systemPrompt,
+        prompt: userPrompt, modelId, thinking: "low", signal: controller.signal, observationSignal: invocation?.context.abortSignal });
     } finally {
-      clearTimeout(timer);
       if (requestId && this.authoringRequests.get(requestId) === stop) this.authoringRequests.delete(requestId);
       this.authoringGenerateInflight -= 1;
     }
@@ -2180,6 +2220,7 @@ export class AgentService {
       SKILL_AUTHORING_ASSESS_META_PROMPT,
       `## 用户需求\n${intent.slice(0, 8000)}\n\n## 已安装 Skill Atlas\n${JSON.stringify(atlas, null, 2)}`,
       input.modelId,
+      input.requestId,
     );
     return parseSkillAuthoringAssessment(raw, allowedSkillIds);
   }
@@ -2337,8 +2378,9 @@ export class AgentService {
     const markdown = fullMarkdown.slice(0, 30_000);
     const raw = await this.runAuthoringGenerator(
       SKILL_TRIGGER_EVAL_PROMPT,
-      `## Target SKILL.md\n${markdown}\n\n## Eval cases（不含 expected oracle）\n${JSON.stringify(definitions.map((item, index) => ({ index, prompt: item.prompt })), null, 2)}`,
+      `## Target content hash\n${skillContentHash}\n\n## Target SKILL.md\n${markdown}\n\n## Eval cases（不含 expected oracle）\n${JSON.stringify(definitions.map((item, index) => ({ index, prompt: item.prompt })), null, 2)}`,
       input.modelId,
+      input.requestId,
     );
     const decisions = parseSkillEvalDecisions(raw, definitions.length);
     const cases = definitions.map((definition, index) => {
@@ -2368,15 +2410,16 @@ export class AgentService {
     if (!skill?.filePath) throw new Error(`未找到可改进 Skill：${input.skillId}`);
     const blocked = this.skillImprovementBlockedReason(skill);
     if (blocked) throw new Error(blocked);
-    const evalResult = await this.runSkillEvals({ skillId: skill.id, modelId: input.modelId });
+    const evalResult = await this.runSkillEvals({ skillId: skill.id, modelId: input.modelId, requestId: input.requestId });
     const currentMarkdown = this.skillAuthoringService.readSkillMarkdown(skill.filePath);
     const baseContentHash = createHash("sha256").update(currentMarkdown).digest("hex");
     const markdown = currentMarkdown.slice(0, 30_000);
     const definitions = this.skillAuthoringService.readSkillEvalCases(dirname(skill.filePath));
     const raw = await this.runAuthoringGenerator(
       SKILL_IMPROVEMENT_META_PROMPT,
-      `## Current SKILL.md\n${markdown}\n\n## Current eval cases\n${JSON.stringify(definitions, null, 2)}\n\n## Latest eval result\n${JSON.stringify(evalResult, null, 2)}`,
+      `## Current content hash\n${baseContentHash}\n\n## Current SKILL.md\n${markdown}\n\n## Current eval cases\n${JSON.stringify(definitions, null, 2)}\n\n## Latest eval result\n${JSON.stringify({ ...evalResult, evaluatedAt: undefined }, null, 2)}`,
       input.modelId,
+      input.requestId,
     );
     return { draft: parseSkillAuthoringDraft(raw), eval: evalResult, baseContentHash };
   }
@@ -2913,6 +2956,11 @@ export class AgentService {
     return this.runtimeSnapshots.list(taskId, limit);
   }
 
+  getTaskDiagnostics(taskId: string, limit = 200, offset = 0): TaskDiagnosticsDto {
+    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
+    return this.taskDiagnostics.list(taskId, limit, offset);
+  }
+
   clearRuntimeContextSnapshots(taskId?: string): number {
     if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
     return this.runtimeSnapshots.clear(taskId);
@@ -3080,7 +3128,7 @@ export class AgentService {
       this.notifyMemoryChanged({ scope: "settings" });
     }
     if (JSON.stringify(previous.enabledModels) !== JSON.stringify(next.enabledModels)) {
-      stopSubagentsForModelScopeChange();
+      stopDurableSubagentsForModelScopeChange();
       for (const entry of this.registry.values()) {
         await entry.session.settingsManager.reload();
         entry.session.setScopedModels(await this.resolvePiModelScope(entry.session.settingsManager));
@@ -3798,71 +3846,27 @@ export class AgentService {
     const operation = this.manualCompactions.get(taskId);
     if (!operation) return false; // Do not stop an automatic compaction and its running task.
     operation.cancelled = true;
-    this.registry.get(taskId)?.session.abortCompaction();
+    void this.durableBots?.abortCompaction(taskId).catch(error => console.warn("[Durable] Cannot cancel compaction", taskId, error));
     return true;
   }
 
   async compactTask(taskId: string): Promise<TaskCompactionResultDto> {
-    if (this.durableBots?.owns(taskId)) {
-      try { await this.durableBots.compact(taskId); return { ok: true, state: { taskId, status: "completed", reason: "manual" } }; }
-      catch (error) { return { ok: false, code: "COMPACTION_FAILED", state: { taskId, status: "failed", message: String(error) } }; }
-    }
-    if (typeof taskId !== "string" || !taskId.trim()) throw new Error("taskId 非法");
-    if (this.isTaskBusy(taskId)) return { ok: false, code: "TASK_BUSY",
-      state: { taskId, status: "skipped", message: "任务正在执行或整理上下文，请结束后再压缩。" } };
-    const row = this.db.getTask(taskId);
-    const live = this.registry.get(taskId);
-    const sessionFile = live?.session.sessionFile ?? row?.sessionFile;
-    if (!row || !sessionFile || !sessionFileExists(sessionFile)) return { ok: false, code: "NO_SESSION",
-      state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话。" } };
-    // Acquire synchronously before any await; prompt/regenerate/branch recheck this lock.
+    if (!this.durableBots || !this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
+    if (this.manualCompactions.has(taskId) || this.durableBots.busy(taskId)) return { ok: false, code: "TASK_BUSY", state: { taskId, status: "skipped", message: "任务正在执行" } };
     const operation = { cancelled: false };
     this.manualCompactions.set(taskId, operation);
-    const operationId = randomUUID();
-    this.publishCompactionState({ taskId, operationId, reason: "manual", status: "running" });
-    let session: AgentSession | undefined;
+    this.publishCompactionState({ taskId, status: "running", reason: "manual" });
     try {
-      await this.memoryWriteQueue;
-      if (operation.cancelled) throw new Error("压缩已取消");
-      if (!this.db.getTask(taskId) || !sessionFileExists(sessionFile)) throw new Error("会话已删除或不可读，未创建新会话。");
-      const current = this.registry.get(taskId);
-      const cwd = this.resolveTaskExecutionWorkspaceCwd(taskId);
-      // Same factory as prompt: persisted canonical task scope, Pi model/runtime and extensions.
-      const entry = current ?? await this.createSession({ taskId, cwd, sessionFile,
-        spaceId: row.spaceId ?? undefined, welcomeMode: row.welcomeMode ?? DEFAULT_WELCOME_MODE, modelId: row.modelId,
-        permissionMode: row.permissionMode, expertId: row.expertId, modePresetId: row.modePresetId,
-        connectorIds: this.settingsStore.read().taskConnectorIds?.[taskId] ?? [],
-        projectContext: this.projectContextResolver.resolveTask(taskId),
-      });
-      session = entry.session;
-      if (operation.cancelled) {
-        const state: TaskCompactionStatusDto = { taskId, operationId, reason: "manual", status: "cancelled", message: "已取消压缩，原上下文保留。" };
-        this.publishCompactionState(state); return { ok: true, state };
-      }
-      this.applyCompactionReserveForModel(session);
-      // Eligibility and cut points belong to the public Pi compact() API.
-      const result = await session.compact();
-      const state: TaskCompactionStatusDto = { taskId, operationId, reason: "manual", status: "completed",
-        tokensBefore: result.tokensBefore, estimatedTokensAfter: result.estimatedTokensAfter };
+      await this.durableBots.compact(taskId);
+      const state: TaskCompactionStatusDto = { taskId, status: operation.cancelled ? "cancelled" : "completed", reason: "manual" };
       this.publishCompactionState(state);
-      return { ok: true, state };
+      return { ok: !operation.cancelled, state };
     } catch (error) {
-      if (error instanceof Error && /^(Already compacted|Nothing to compact)/.test(error.message)) {
-        const state: TaskCompactionStatusDto = { taskId, operationId, reason: "manual", status: "skipped", message: "历史不足或刚完成压缩，无需再次压缩。" };
-        this.publishCompactionState(state); return { ok: true, state };
-      }
-      const state: TaskCompactionStatusDto = { taskId, operationId, reason: "manual",
-        status: operation.cancelled ? "cancelled" : "failed",
-        message: operation.cancelled ? "已取消压缩，原上下文保留。" : error instanceof Error ? error.message : String(error) };
+      const state: TaskCompactionStatusDto = { taskId, status: operation.cancelled ? "cancelled" : "failed", reason: "manual", message: String(error) };
       this.publishCompactionState(state);
-      return { ok: operation.cancelled, code: operation.cancelled ? undefined : "COMPACTION_FAILED", state };
-    } finally {
-      this.manualCompactions.delete(taskId);
-      // Also covers cold sessions with no assistantMessageId and cancellation/failure.
-      if (session) this.emitContextUsage(taskId, session);
-    }
+      return { ok: false, code: "COMPACTION_FAILED", state };
+    } finally { this.manualCompactions.delete(taskId); }
   }
-
   getContextUsage(taskId: string): ContextUsageDto | null {
     if (this.durableBots?.owns(taskId)) return this.durableBots.contextUsage(taskId);
     const entry = this.registry.get(taskId);
@@ -3919,8 +3923,8 @@ export class AgentService {
     );
   }
 
-  async loadTaskHistory(taskId: string): Promise<TaskHistoryDto> {
-    if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId);
+  async loadTaskHistory(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId);
     const row = this.db.listTasks().find((t) => t.id === taskId);
     if (!row?.sessionFile) return { messages: [] };
     try {
@@ -3970,564 +3974,24 @@ export class AgentService {
   private readonly promptSubmission = new PromptSubmissionCoordinator();
 
   async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean }): Promise<AgentPromptResult> {
-    if (this.durableBots?.owns(req.taskId)) {
-      return this.durableBots.prompt(req, options?.durableAdmissionOnly);
-    }
-    if (this.manualCompactions.has(req.taskId)) return { queued: false, error: { code: "SESSION_COMPACTING", message: "正在手动压缩，请完成或取消压缩后再发送。" } };
-    const streamingBehavior = resolvePromptCompactionBehavior(req.streamingBehavior,
-      this.registry.get(req.taskId)?.session.isCompacting);
-    const request = streamingBehavior === req.streamingBehavior ? req : { ...req, streamingBehavior };
-    return this.promptExecution.execute(request, {
-      announceUserMessage: (request) => {
-        this.emitPatch({
-          type: "user_message",
-          taskId: request.taskId,
-          messageId: request.userMessageId,
-          text: (request.displayText ?? request.text).trim(),
-          createdAt: Date.now(),
-        });
-      },
-      settleCancelled: (request) => {
-        this.settleCancelledAssistantTurn(request.taskId, request.assistantMessageId);
-      },
-      execute: (request, run, markReady) => this.promptInternal(request, run, markReady),
-    });
-  }
-  private async promptInternal(req: AgentPromptRequest, run: PromptRunState, ready: () => void): Promise<AgentPromptResult> {
-    await this.refreshExternalModelConfig();
-    // P0 §7.1：先建立并绑定 canonical cwd。之后只使用该局部变量；req.cwd 被忽略（Renderer 无目录决定权）。
-    const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, req.taskId, req.assistantMessageId);
-    this.expertBindings.ensureLegacy(req.taskId);
-    const priorSession = this.registry.get(req.taskId);
-    if (!priorSession || (!priorSession.session.isStreaming && priorSession.session.isIdle !== false && priorSession.pendingAssistantTurns.length === 0)) {
-      const binding = this.expertBindings.promote(req.taskId);
-      if (binding) this.emitPatch({ type: "expert_binding", taskId: req.taskId, binding });
-    }
-    const taskConfig = this.db.getTask(req.taskId);
-    const taskBinding = this.expertBindings.get(req.taskId);
-    const activeIdentity = taskBinding?.active;
-    // 调用方显式传入的 expertId 必须先过「已移除的 Expert Team 命名空间」边界校验，再被任务级
-    // binding 覆盖。0.1.17 引入 binding 覆盖后，team:* 会被静默吸收而不再是显式拒绝
-    // （新增于 3261a43，导致 runtime-skill-loader-test T1 由通过转为失败）；这里恢复该边界。
-    assertSingleExpertId(req.expertId);
-    // 审计契约（§5-8）：执行快照必须保留「本轮请求的 Expert」决定，即使它被项目策略拒绝。
-    // 旧实现只要存在 binding 行就无条件改用 activeIdentity：当 legacy 专家导入失败被清空
-    // （binding 行存在但 desired/active 都为 null）时，显式传入的 expertId 会被吞掉，
-    // 快照里连一条 project_policy_denied 的 expert 决定都不会留下（test:project-agent）。
-    // 回退顺序：已生效的 binding → binding 的 desired → 本轮显式请求。
-    const explicitExpertId = req.expertId;
-    req = {
-      ...req,
-      expertId: taskBinding
-        ? activeIdentity?.sourceExpertId ?? taskBinding.desired?.sourceExpertId ?? explicitExpertId
-        : explicitExpertId,
-      connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds),
-    };
-    const welcomeMode = resolveWelcomeMode(req.welcomeMode, taskConfig?.welcomeMode);
-    const projectContext = this.projectContextResolver.resolveTask(req.taskId);
-    const gatingProfile = this.modeProfiles.getProfile(welcomeMode);
-    const gatingPreset = resolveModePreset(
-      gatingProfile.policy,
-      req.modePresetId ?? taskConfig?.modePresetId,
-    );
-    const requestedExpertId = assertSingleExpertId(req.expertId) ?? null;
-    const gatingContext = resolveRuntimeContextPolicy({
-      welcomeMode,
-      profile: gatingProfile,
-      projectContext,
-      preset: gatingPreset,
-      expertId: requestedExpertId,
-      connectorIds: req.connectorIds,
-      ...this.runtimeCapabilityAvailability(requestedExpertId, req.connectorIds, req.taskId),
-    });
-    const { expertDecision, connectorDecisions } = gatingContext;
-    const effectiveExpertId = expertDecision?.enabled === false ? null : requestedExpertId;
-    const requiredMcpIds = new Set([...(gatingPreset?.providerMcpIds ?? []), ...(activeIdentity?.mcpIds ?? [])]);
-    const requiredMcpDecisions = requiredMcpIds.size
-      ? this.mcpRuntime
-          .previewMcpFilter(
-            welcomeMode,
-            gatingContext.runtimePolicy.mcpPolicy,
-            gatingContext.mcpPolicySources,
-          )
-          .capabilities.filter((decision) => requiredMcpIds.has(decision.id) && !decision.enabled)
-      : [];
-    this.emitPatch({
-      type: "capability_notices",
-      taskId: req.taskId,
-      // Avoid noise from background mode filtering: only explicitly required
-      // Tag providers surface as chat notices. Inspector may show the full trace.
-      notices: capabilityPolicyNotices([
-        expertDecision,
-        ...connectorDecisions,
-        ...requiredMcpDecisions,
-      ]),
-    });
-    // 声明式 runtime requirement：preset/Tag 激活即 prewarm（异步），
-    // 真正发送任务前 preflight gate（未 ready 先 ensureReady；失败在任务开始前明确报错）
-    await ensurePresetRuntimeReadyWithRecovery({
-      failures: this.executionFailures, taskId: req.taskId, assistantMessageId: req.assistantMessageId, preset: gatingPreset,
-      ensureReady: () => this.runtimeRequirements.ensurePresetReady(gatingPreset),
-    });
-    await this.memoryWriteQueue;
-    if (run.cancelled) {
-      this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId);
-      return { queued: false, cancelled: true };
-    }
-    const permissionMode = req.permissionMode;
-    const workspaceBefore = await snapshotWorkspace(cwd);
-    this.emittedArtifactPaths.set(req.taskId, new Set());
-
-    let entry = this.registry.get(req.taskId);
-    if (
-      entry &&
-      (normalizePathForComparison(entry.cwd) !== normalizePathForComparison(cwd) ||
-        (entry.spaceId ?? undefined) !== (req.spaceId ?? undefined))
-    ) {
-      // §7.3：旧 session cwd 与 canonical 不一致 → 重建；卡死 streaming 时先 abort
-      if (entry.session.isStreaming) {
-        await this.abortTask(req.taskId, run);
-        entry = this.registry.get(req.taskId);
-      }
-      if (entry) {
-        this.sessionLifecycle.release(req.taskId);
-        entry = undefined;
-      }
-    }
-    // 装配输入变更（专家切换 / Active Connector 增删 / enabled 变更标记的 dirty）：空闲会话直接释放，
-    // 下一轮走统一 createSession 全量重新装配（persona + 私有技能 + MCP + Model/Permission 一致）；
-    // 忙（流式/排队中）先标记脏，空闲后的下一轮 prompt 再重建。
-    const explicitSkillName = req.text.trim().match(/^\/skill:([^\s]+)(?:\s|$)/i)?.[1];
-    // Baseline = full capability set that already passed Runtime Policy and explicit user scope.
-    const baselineAssembly = this.assembleModePreview({
-      taskId: req.taskId,
-      welcomeMode,
-      projectId: taskConfig?.projectId,
-      modePresetId: req.modePresetId ?? taskConfig?.modePresetId,
-      expertId: requestedExpertId,
-      connectorIds: req.connectorIds,
-      permissionMode: req.permissionMode ?? taskConfig?.permissionMode,
-      spaceId: req.spaceId ?? taskConfig?.spaceId,
-      cwd,
-    });
-    const loadoutRecommendation = this.loadoutService.resolve(
-      req.taskId,
-      req.text,
-      baselineAssembly,
-      req.connectorIds ?? [],
-      requestedExpertId,
-    );
-    const effectiveLoadout = resolveEffectiveLoadoutSelection(loadoutRecommendation, {
-      enableNarrowing: activeIdentity ? false : undefined,
-      explicitSkillId: explicitSkillName,
-      requiredMcpIds: [...requiredMcpIds],
-    });
-    const loadoutSelection = effectiveLoadout.effectiveSelection;
-
-    const assemblyChanged = assemblyInputsChanged(
-      entry,
-      requestedExpertId,
-      req.connectorIds,
-      projectContext?.version,
-    );
-    const currentAssembly = entry
-      ? this.assembleModePreview({
-          taskId: req.taskId,
-          welcomeMode,
-          projectId: taskConfig?.projectId,
-          modePresetId: req.modePresetId ?? taskConfig?.modePresetId,
-          expertId: requestedExpertId,
-          connectorIds: req.connectorIds,
-          permissionMode: req.permissionMode ?? taskConfig?.permissionMode,
-          spaceId: req.spaceId ?? taskConfig?.spaceId,
-          cwd,
-        }, loadoutSelection)
-      : null;
-    const previousAssemblyHash = entry?.runtimeAssemblyHash ??
-      (entry?.runtimeAssembly ? fingerprintRuntimeAssembly(entry.runtimeAssembly) : undefined);
-    const fingerprintChanged = Boolean(
-      previousAssemblyHash &&
-      currentAssembly &&
-      previousAssemblyHash !== fingerprintRuntimeAssembly(currentAssembly),
-    );
-    if (
-      entry &&
-      !entry.session.isStreaming && entry.session.isIdle !== false &&
-      entry.pendingAssistantTurns.length === 0 &&
-      (assemblyChanged || fingerprintChanged)
-    ) {
-      this.sessionLifecycle.release(req.taskId);
-      entry = undefined;
-    } else if (entry && (assemblyChanged || fingerprintChanged)) {
-      entry.assemblyDirty = true;
-      entry.requestedExpertId = requestedExpertId ?? undefined;
-    }
-    const existingTask = this.db.listTasks().find((t) => t.id === req.taskId);
-    if (!entry) {
-      // P1：重启 explicit 语义兜底 —— 已有真实会话的任务未显式传值时沿用上次生效值
-      // （优先于 Tag/Mode 建议，避免重启后 UI/DB 显示值与真实 session 漂移）；
-      // 新任务 / 未锁定任务（无 sessionFile）返回 undefined，仍走 显式 > 建议 > 默认 链。
-      const restartFallback = resolveSessionRestartFallback(
-        { modelId: req.modelId, permissionMode },
-        existingTask,
-      );
-      entry = await this.createSession({
-        taskId: req.taskId,
-        cwd,
-        spaceId: req.spaceId,
-        welcomeMode,
-        permissionMode: permissionMode ?? restartFallback.permissionMode,
-        modelId: req.modelId ?? restartFallback.modelId,
-        sessionFile: req.sessionFile ?? existingTask?.sessionFile,
-        expertId: requestedExpertId,
-        modePresetId: req.modePresetId ?? existingTask?.modePresetId,
-        connectorIds: req.connectorIds,
-        projectContext,
-        loadoutSelection,
-      });
-    } else {
-      // 未显式传权限时保留会话现有权限（不覆盖用户显式选择）
-      if (permissionMode) entry.permissionMode = permissionMode;
-      if (!entry.session.isStreaming && entry.session.isIdle !== false) entry.welcomeMode = welcomeMode;
-    }
-
-    const promptStartedAt = Date.now();
-    if (entry.session.isStreaming && req.modelId && req.modelId !== this.sessionModelKey(entry.session)) {
-      throw new Error("当前轮次正在运行，请结束后再切换模型");
-    }
-    const conversationExecutionId = `execution-${randomUUID()}`;
-    if (entry.session.isStreaming && req.streamingBehavior === "steer" && entry.executionId) {
-      this.conversationInteractions.cancelExecution(entry.executionId, "用户已通过新消息继续对话");
-    }
-    const submissionStart = this.promptSubmission.begin(entry, {
-      streamingBehavior: req.streamingBehavior,
-      assistantMessageId: req.assistantMessageId,
-      executionId: conversationExecutionId,
-      startedAt: promptStartedAt,
-    });
-    if (!submissionStart.ok) return { queued: false, error: submissionStart.error };
-    const submission = submissionStart.context;
-    const wasStreaming = submission.wasStreaming;
-    const streamingBehavior = submission.behavior;
-
-    // Apply the intended model after submission intent is fixed; usage attribution follows MyBuddy selection.
-    const intendedModelId =
-      req.modelId ?? existingTask?.modelId ?? entry.usageModelId ?? this.settingsStore.read().defaultModelId;
-    const modelSelectionSource = req.modelId ? "explicit" : existingTask?.modelId ? "task_selection"
-      : entry.modelDiagnostic?.source ?? (entry.usageModelId ? "session_selection" : intendedModelId ? "global_default" : "restored_or_sdk");
-    if (intendedModelId) entry.usageModelId = intendedModelId;
-    if (!wasStreaming && intendedModelId && this.modelRuntime) {
-      const currentKey = this.sessionModelKey(entry.session);
-      if (req.modelId || currentKey !== intendedModelId || entry.session.model !== this.resolveModel(intendedModelId)) {
-        const applied = await this.applySessionModel(entry.session, intendedModelId);
-        if (!applied && req.modelId) throw new Error(`无法使用指定模型 ${intendedModelId}`);
-        if (!applied) entry.usageModelId = this.sessionModelKey(entry.session);
-      }
-    }
-
-    // 方案 C：按当前会话模型窗口动态设置压缩阈值（reserveTokens = 窗口 × (1 − 触发比例)）。
-    // 每次 prompt 前执行：模型切换/会话重建后立即生效，不同窗口模型在同一比例触发；
-    // 经 applyOverrides 只改内存合并视图，不落盘 pi settings.json。
-    this.applyCompactionReserveForModel(entry.session);
-
-    const actualReasoningModelId = this.sessionModelKey(entry.session);
-    const requestedReasoningPreference =
-      req.reasoningPreference
-      && req.reasoningPreferenceModelId
-      && req.reasoningPreferenceModelId === actualReasoningModelId
-        ? req.reasoningPreference
-        : undefined;
-    if (!wasStreaming) this.applySessionReasoningPreference(entry.session, requestedReasoningPreference);
-    entry.modelDiagnostic = diagnoseSessionModel({
-      requested: intendedModelId, actual: entry.session.model,
-      source: modelSelectionSource,
-      reasoning: entry.session.thinkingLevel,
-    });
-    console.info("[AgentService] session model diagnostic", entry.modelDiagnostic);
-
-    const modelName = entry.session.model?.name ?? entry.session.model?.id;
-    if (!wasStreaming) {
-      this.emitPatch({
-        type: "assistant_start",
-        taskId: req.taskId,
-        messageId: req.assistantMessageId,
-        executionId: conversationExecutionId,
-        modelName,
-      });
-    }
-
-    let promptText = req.text;
-    // 图片入口统一按当前 Session 模型能力路由：主模型支持 image 时原生直传；否则委托内建 Vision 转文本。
-    const imageAttachments = req.attachments?.filter((a) => a.path?.trim() && isImageAttachment(a.name, a.path)) ?? [];
-    const nativeMultimodal = modelSupportsImageInput(entry.session.model);
-    const attachmentImages = nativeMultimodal && imageAttachments.length
-      ? await loadAttachmentImages(imageAttachments)
-      : [];
-    const attachmentVision = !nativeMultimodal && imageAttachments.length
-      ? await routeVisionForPaths({
-          model: entry.session.model,
-          provider: this.builtinCapabilities.visionProvider(),
-          imagePaths: imageAttachments.map((item) => item.path.trim()),
-          prompt: "请准确描述用户上传的图片，提取可见文本、界面状态、关键对象和与当前请求直接相关的细节。不要猜测不可见内容。",
-          context: {
-            taskId: req.taskId,
-            taskRoot: entry.cwd,
-            toolCallId: `attachment-vision-${req.userMessageId}`,
-            producerMessageId: req.assistantMessageId,
-          },
-        })
-      : nativeMultimodal
-        ? { route: "native-multimodal" as const }
-        : undefined;
-
-    if (req.attachments?.length) {
-      const routeLabel = attachmentVision?.route === "native-multimodal"
-        ? "图片，主模型原生多模态直读"
-        : attachmentVision?.route === "delegated-vision"
-          ? "图片，已由内部 Vision 委托模型转为视觉描述"
-          : "图片，当前主模型不支持图片且委托 Vision 不可用";
-      const lines = req.attachments
-        .filter((a) => a.path?.trim())
-        .map((a) => isImageAttachment(a.name, a.path)
-          ? `- ${a.name}: ${a.path}（${routeLabel}）`
-          : `- ${a.name}: ${a.path}`);
-      const delegatedDescriptions = attachmentVision?.route === "delegated-vision"
-        ? (attachmentVision.descriptions ?? []).map((item, index) =>
-            `### 图片 ${index + 1}: ${item.imagePath}\n${item.text}`,
-          ).join("\n\n")
-        : "";
-      const visionContext = delegatedDescriptions
-        ? `\n\n## 内部 Vision 视觉描述\n${delegatedDescriptions}`
-        : attachmentVision?.route === "vision-unavailable"
-          ? `\n\n> 图片视觉识别不可用：${attachmentVision.error ?? "当前主模型不支持图片输入，且没有可用的委托 Vision。"}\n> 不要声称已经看见图片内容。`
-          : "";
-      if (lines.length) {
-        promptText = `${req.text}\n\n## 用户附带文件\n${lines.join("\n")}${visionContext}\n请优先使用以上已提供的图片内容/视觉描述；其它文件再按需使用工具读取路径。`;
-      } else if (attachmentImages.length) {
-        promptText = `${req.text}\n\n（用户附带了 ${attachmentImages.length} 张图片，已由当前多模态主模型直接接收。）`;
-      }
-    }
-    // 「加入聊天」抓取元素：逐个用 main 侧可信记录解析；页面变化后的失效引用不注入
-    promptText = await this.appendSelectionContexts(promptText, req.selections, req.selection);
-    // 「终端 → 加入对话」：显式附加上下文（untrusted 标注，不自动收集）
-    promptText = this.appendTerminalContext(promptText, req.terminalContext);
-    // Memory is projected by the request context hook; user history never carries it.
-    const conversationGoal = this.conversationGoals.getLive(req.taskId);
-    if (conversationGoal) {
-      const criteria = conversationGoal.criteria.slice(0, 12)
-        .map((criterion) => `- [${criterion.status}] ${criterion.text}`)
-        .join("\n");
-      const goalContext = [
-        "## 当前 Task 的对话 Goal（跨轮目标）",
-        `目标：${conversationGoal.title}`,
-        `状态：${conversationGoal.status}`,
-        conversationGoal.description ? `说明：${conversationGoal.description}` : "",
-        criteria ? `成功标准：\n${criteria}` : "",
-        conversationGoal.progressSummary ? `当前进展：${conversationGoal.progressSummary}` : "",
-        "需要用户决策时使用 request_user_input。不要修改 Project Goal/Todo。",
-      ].filter(Boolean).join("\n").slice(0, 4000);
-      promptText = `${promptText}\n\n${goalContext}`;
-    }
-    const releasePromptSubmission = await this.promptSubmission.acquire(entry, submission);
-    try {
-      const options: PromptOptions = {};
-      if (attachmentImages.length) options.images = attachmentImages;
-      if (wasStreaming) options.streamingBehavior = streamingBehavior;
-      const queueState = this.promptSubmission.enqueue(entry, submission, {
-        onCancelledTurn: (messageId) => this.settleCancelledAssistantTurn(req.taskId, messageId),
-      });
-      if (queueState !== "ready") return { queued: false };
-      let runtimeExecutionId: string | undefined;
-      if (entry.runtimeAssembly) {
-        try {
-          runtimeExecutionId = this.runtimeSnapshots.record({
-            workingDirectory: entry.cwd,
-            executionId: conversationExecutionId,
-            taskId: req.taskId,
-            userMessageId: req.userMessageId,
-            assistantMessageId: req.assistantMessageId,
-            status: "running",
-            startedAt: promptStartedAt,
-            assemblyHash: entry.runtimeAssemblyHash ?? fingerprintRuntimeAssembly(entry.runtimeAssembly),
-            modelId: entry.session.model?.id ?? req.modelId,
-            permissionMode: entry.permissionMode,
-            mode: entry.welcomeMode ?? welcomeMode,
-            tagId: entry.runtimeTagId,
-            projectId: entry.runtimeProjectId,
-            projectUpdatedAt: entry.runtimeProjectUpdatedAt,
-            resolvedInstructions: entry.runtimeAssembly.segments,
-            resolvedCapabilities: entry.runtimeAssembly.capabilities ?? [],
-            warnings: entry.runtimeAssembly.warnings,
-          }).executionId;
-        } catch (snapshotError) {
-          console.warn("[AgentService] runtime context snapshot failed", snapshotError);
-        }
-      }
-      const turnLoadoutRecommendation = entry.runtimeAssembly
-        ? this.loadoutService.resolve(req.taskId, req.text, entry.runtimeAssembly, entry.connectorIds ?? req.connectorIds, entry.expertId ?? null)
-        : undefined;
-      const turnLoadout = turnLoadoutRecommendation
-        ? resolveEffectiveLoadoutSelection(turnLoadoutRecommendation, {
-            explicitSkillId: explicitSkillName,
-            requiredMcpIds: [...requiredMcpIds],
-          })
-        : undefined;
-      if (turnLoadout && entry.skillReadiness) {
-        entry.skillReadiness = diagnoseSkillReadiness({
-          recommendation: turnLoadout,
-          installedIds: entry.installedSkillIds ?? [],
-          whitelistIds: entry.skillFiles?.map(skill => skill.id) ?? [],
-          readIds: [],
-        });
-      }
-      const explicitLearned = explicitSkillName
-        ? entry.learnedSkills?.find((skill) => skill.skillId.toLowerCase() === explicitSkillName.toLowerCase())
-        : undefined;
-      let preflightObserved = false;
-      let acceptedDisposition: "started" | "queued" | "handled" | undefined;
-      options.preflightResult = (disposition) => {
-        acceptedDisposition = disposition;
-        releasePromptSubmission?.();
-        // Pi 0.99 reports how an accepted prompt was dispatched ("started" / "queued" / "handled").
-        // Rejected prompts do not invoke this hook, so every callback value is an accepted preflight.
-        // Keep the original request until message_start(user) proves model exposure; abort can still discard the queue.
-        ready();
-        if (preflightObserved) return;
-        preflightObserved = true;
-        if (turnLoadout) {
-          try {
-            this.loadoutObservations.recordAcceptedTurn({
-              taskId: req.taskId, userMessageId: req.userMessageId, assistantMessageId: req.assistantMessageId, recommendation: turnLoadout, at: Date.now(),
-            });
-          } catch (error) {
-            console.warn("[AgentService] loadout observation failed", error);
-          }
-        }
-        if (wasStreaming) {
-          // A queued steer/follow-up is accepted here, but it has not been exposed to the model yet.
-          // Preserve only the explicit command intent; exposure/invocation are written when the turn activates.
-          if (explicitLearned) entry.pendingSkillCommands?.set(req.assistantMessageId, explicitLearned.skillId);
-          return;
-        }
-        this.skillEffectiveness.recordExposure({
-          taskId: req.taskId,
-          assistantMessageId: req.assistantMessageId,
-          skills: entry.learnedSkills ?? [],
-          at: Date.now(),
-        });
-        if (explicitLearned) {
-          this.skillEffectiveness.markInvoked({
-            taskId: req.taskId,
-            assistantMessageId: req.assistantMessageId,
-            skill: explicitLearned,
-            kind: "command",
-            at: Date.now(),
-          });
-          this.loadoutObservations.markSkillUsed(req.taskId, req.assistantMessageId, explicitLearned.skillId);
-        }
-      };
-      if (this.settingsStore.read().memoryEnabled) {
-        this.pendingMemoryTurns.set(req.assistantMessageId, {
-          taskId: req.taskId,
-          spaceId: req.spaceId ?? entry.spaceId,
-          userMessageId: req.userMessageId,
-          userText: req.text,
-        });
-      }
-      if (run.cancelled) {
-        this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId);
-        return { queued: false, cancelled: true };
-      }
-      await entry.session.prompt(promptText, options);
-      // The provider can retain a transport error when abort closes its SSE
-      // iterator. The accepted user cancellation owns this turn's outcome.
-      if (run.cancelled) {
-        this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
-        return { queued: false, cancelled: true };
-      }
-      if (!preflightObserved && !wasStreaming) {
-        options.preflightResult?.("started");
-      }
-      if (acceptedDisposition === "handled") {
-        this.promptSubmission.removeQueuedTurn(entry, req.assistantMessageId);
-      }
-      if (acceptedDisposition === "queued") {
-        // SDK 在流式期间只确认消息已进入 steer/followUp 队列，真正完成由后续
-        // message_start/agent_settled 事件驱动，不能在这里执行轮次收尾。
-        return { queued: true };
-      }
-      // Provider 错误通过 SDK 状态返回，不一定 reject prompt()。
-      if (entry.session.state?.errorMessage) throw new Error(entry.session.state.errorMessage);
-      resolvePromptFailureRecovery(this.executionFailures, req.taskId, this.sessionModelKey(entry.session) ?? intendedModelId);
-      if (runtimeExecutionId) this.runtimeSnapshots.finish(runtimeExecutionId, "completed");
-      this.skillEffectiveness.markTurnOutcome(req.taskId, req.assistantMessageId, "completed");
-      this.loadoutObservations.markOutcome(req.taskId, req.assistantMessageId, "completed");
-      await this.emitChangedArtifacts(
-        req.taskId,
-        req.assistantMessageId,
-        cwd,
-        workspaceBefore,
-      );
-      this.emitContextUsage(req.taskId, entry.session);
-      // 兜底：若 agent_settled 事件未映射到 UI，这里再发一次 assistant_end，
-      // 避免定时任务等主进程直驱场景卡在 streaming / 空完成态。
-      // Artifact flushing may outlive this turn. Never borrow the mutable next-turn identity.
-      const completedMessageId = req.assistantMessageId;
-      const completedDurationMs = Date.now() - promptStartedAt;
-      if (!this.lifecycleTerminalAssistantIds.has(completedMessageId)) {
-        this.emitPatch({
-          type: "assistant_end",
-          taskId: req.taskId,
-          messageId: completedMessageId,
-          durationMs: completedDurationMs,
-        });
-      }
-      computerUseRunCoordinator.endTask(req.taskId, "completed", conversationExecutionId);
-      this.emitTaskLifecycle({
-        kind: "completed",
-        taskId: req.taskId,
-        assistantMessageId: completedMessageId,
-        durationMs: completedDurationMs,
-      });
-      return { queued: false };
-    } catch (err) {
-      if (run.cancelled) {
-        this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
-        return { queued: false, cancelled: true };
-      }
-      recordPromptFailureRecovery({ failures: this.executionFailures, taskId: req.taskId, executionId: conversationExecutionId,
-        assistantMessageId: req.assistantMessageId, modelKey: this.sessionModelKey(entry.session) ?? intendedModelId, error: err });
-      this.pendingMemoryTurns.delete(req.assistantMessageId);
-      const message = err instanceof Error ? err.message : String(err);
-      this.runtimeSnapshots.finishByAssistantMessage(req.taskId, req.assistantMessageId, "failed", message);
-      this.conversationInteractions.cancelExecution(conversationExecutionId, message);
-      this.skillEffectiveness.markTurnOutcome(req.taskId, req.assistantMessageId, "failed");
-      this.loadoutObservations.markOutcome(req.taskId, req.assistantMessageId, "failed");
-      if (wasStreaming) this.promptSubmission.removeQueuedTurn(entry, req.assistantMessageId);
-
-      const failedMessageId = req.assistantMessageId;
-      const failedDurationMs = Date.now() - promptStartedAt;
-      this.emitPatch({
-        type: "assistant_end",
-        taskId: req.taskId,
-        messageId: failedMessageId,
-        durationMs: failedDurationMs,
-        error: message,
-      });
-      computerUseRunCoordinator.endTask(req.taskId, "failed", conversationExecutionId);
-      this.emitTaskLifecycle({
-        kind: "failed",
-        taskId: req.taskId,
-        assistantMessageId: failedMessageId,
-        error: message,
-        durationMs: failedDurationMs,
-      });
-      throw err;
-    } finally {
-      releasePromptSubmission?.();
-    }
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true);
   }
 
+  async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.findSubmission(taskId, operationId);
+  }
+
+  async submissionStatus(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.submissionStatus(receipt);
+  }
+
+  async waitForSubmission(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.submissionStatus(receipt, true);
+  }
   /**
    * 删除一条用户消息，并把当前会话叶子永久切到它之前。
    * Session JSONL 保持 append-only：旧分支仍作为历史记录存在，但通过一个不参与上下文的
@@ -4535,354 +3999,147 @@ export class AgentService {
    * 因而被删消息及其后的 assistant/tool 内容不会再次进入模型上下文。
    */
   async deleteUserMessage(req: AgentDeleteUserMessageRequest): Promise<void> {
-    if (this.durableBots?.owns(req.taskId)) throw new Error("Durable 会话保留持久执行记录，请新建 Bot 对话以重新开始。");
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.memoryWriteQueue;
-    const live = this.registry.get(req.taskId);
-    if (this.isTaskBusy(req.taskId)) {
-      throw new Error("任务仍在运行，请先停止生成后再删除消息");
-    }
-
-    const row = this.db.listTasks().find((item) => item.id === req.taskId);
-    const sessionFile = live?.session.sessionFile ?? row?.sessionFile;
-    if (!sessionFile) return; // 尚未形成持久会话时，renderer 本地删除即可。
-
-    const cwd = this.resolveTaskExecutionWorkspaceCwd(req.taskId);
-    const sessionManager = live?.session.sessionManager ?? SessionManager.open(sessionFile, undefined, cwd);
-    const userEntries = getVisibleSessionUserMessages(sessionManager);
-    const selected = req.entryId ? userEntries.find((entry) => entry.entryId === req.entryId) : userEntries[req.userMessageIndex];
-    const target = selected ? sessionManager.getEntry(selected.entryId) : undefined;
-    if (!target) throw new Error("找不到要删除的用户消息");
-
-    if (target.parentId) sessionManager.branch(target.parentId);
-    else sessionManager.resetLeaf();
-    sessionManager.appendCustomEntry("mybuddy_deleted_user_message", {
-      deletedEntryId: target.id,
-      deletedAt: Date.now(),
-    });
-    const deletedFrom = Date.parse(target.timestamp) || 0;
-    if (deletedFrom > 0) {
-      this.conversationInteractions.deleteFrom(req.taskId, deletedFrom);
-    }
-
-    // live Agent 仍持有旧 state；直接释放，下一轮从新 leaf 重建，避免旧消息残留在内存上下文。
-    if (live) this.sessionLifecycle.release(req.taskId);
+    const deletedFrom = await this.durableBots.deleteUserMessage(req);
+    if (deletedFrom) this.conversationInteractions.deleteFrom(req.taskId, deletedFrom);
   }
 
-  /**
-   * 重新生成：把会话回退到第 userMessageIndex 条用户消息（0-based），
-   * 丢弃其后所有内容（旧分支留在 jsonl 中但不参与上下文），然后重新生成回复。
-   * 复用 prompt() 的完整链路（模型/思考等级/权限/产物/记忆提取）。
-   */
   async regenerate(req: AgentRegenerateRequest): Promise<AgentRegenerateResult> {
-    const fail = (code: NonNullable<AgentRegenerateResult & { ok: false }>["code"], message: string): AgentRegenerateResult => {
-      // 所有失败分支统一留痕：fail 路径此前全部静默，用户侧「重新生成失败」无任何日志可查
-      console.warn(`[AgentService] regenerate failed task=${req.taskId} code=${code} message=${message}`);
-      return {
-        ok: false,
-        requestId: req.requestId,
-        code,
-        message,
-      };
-    };
-    const taskId = req.taskId;
-    if (this.durableBots?.owns(taskId)) return fail("SESSION_BUSY", "Durable 会话请直接发送新的指令；原执行记录会保留。");
-    if (this.manualCompactions.has(taskId) || this.registry.get(taskId)?.session.isCompacting) return fail("SESSION_BUSY", "正在整理上下文，请结束后再重新生成。");
-    const replayUnsubmitted = async (): Promise<AgentRegenerateResult | null> => {
-      const original = this.promptExecution.retryRequest(req.sourceAssistantMessageId);
-      if (original?.taskId !== taskId || original.userMessageId !== req.sourceUserMessageId) return null;
-      const replay = await this.prompt({
-        ...original,
-        assistantMessageId: req.assistantMessageId,
-        modelId: req.modelId ?? original.modelId,
-        reasoningPreference: req.reasoningPreference ?? original.reasoningPreference,
-        reasoningPreferenceModelId: req.reasoningPreferenceModelId ?? original.reasoningPreferenceModelId,
-        permissionMode: req.permissionMode ?? original.permissionMode,
-        streamingBehavior: undefined,
-        announceUserMessage: false,
-      });
-      if (replay.error) return fail("PROMPT_FAILED", replay.error.message);
-      const replaySession = this.registry.get(taskId)?.session;
-      return { ok: true, requestId: req.requestId, assistantMessageId: req.assistantMessageId,
-        sessionFile: replaySession?.sessionFile,
-        userEntryId: replaySession ? getVisibleSessionUserMessages(replaySession.sessionManager).at(-1)?.entryId : undefined };
-    };
-    try {
-      // 已有活跃会话：等待上一轮记忆提取完成后再动会话，避免并发写 jsonl
-      await this.memoryWriteQueue;
-
-      // P0 §7.4：regenerate 同样重新解析并绑定 canonical cwd（忽略 existing.cwd / req.cwd）
-      const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, taskId, req.assistantMessageId);
-      const existing = this.db.listTasks().find((t) => t.id === taskId);
-      // 重新生成不能因为「任务里记录的模型坐标已下线」就硬失败：这里先自愈成可用模型；
-      // 用户在界面上显式选择的模型（req.modelId）仍走严格校验。
-      const usablePersistedModelId = await this.repairedTaskModelId(existing);
-      // 重建会话时回传原 Active 连接器（其 Private Skills 已随旧会话装配过）。
-      // F1：内层 prompt() 必须携带同一份 connectorIds，否则装配检测会把「一致」误判为「变更”并错误重建。
-      const prevConnectorIds = this.registry.get(taskId)?.connectorIds;
-      let entry = this.registry.get(taskId);
-      const regenConnectorIds = resolveRegenerateConnectorIds(
-        req.connectorIds,
-        entry?.connectorIds,
-        prevConnectorIds,
-      );
-
-      // §7.3：旧 entry cwd 与 canonical 不一致 → 重建
-      if (entry && normalizePathForComparison(entry.cwd) !== normalizePathForComparison(cwd)) {
-        // 卡死的 isStreaming 先 abort/强制丢弃，避免永远无法 regenerate
-        if (entry.session.isStreaming) {
-          await this.abort(taskId);
-          entry = this.registry.get(taskId);
-        }
-        if (entry) {
-          this.sessionLifecycle.release(taskId);
-          entry = undefined;
-        }
-      }
-
-      // 卡在「生成中」时先中止，再 regenerate（模型无首包时用户最容易点重试）
-      if (entry?.session.isStreaming) {
-        await this.abort(taskId);
-        entry = this.registry.get(taskId);
-      }
-
-      const unsubmittedReplay = await replayUnsubmitted();
-      if (unsubmittedReplay) return unsubmittedReplay;
-
-      if (!entry) {
-        if (!existing?.sessionFile) {
-          return fail("SESSION_NOT_FOUND", "会话记录不存在，无法重新生成。");
-        }
-        entry = await this.createSession({
-          taskId,
-          cwd,
-          spaceId: existing.spaceId ?? undefined,
-          welcomeMode: existing.welcomeMode ?? req.welcomeMode ?? DEFAULT_WELCOME_MODE,
-          permissionMode: existing.permissionMode ?? req.permissionMode ?? "default",
-          modelId: usablePersistedModelId ?? req.modelId,
-          sessionFile: existing.sessionFile,
-          expertId: existing.expertId ?? req.expertId,
-          modePresetId: existing.modePresetId ?? req.modePresetId,
-          connectorIds: regenConnectorIds,
-        });
-      }
-
-      if (entry.session.isStreaming) {
-        // abort 后仍 streaming：强制丢弃会话，下一轮 createSession 打开
-        this.sessionLifecycle.release(taskId);
-        if (!existing?.sessionFile) {
-          return fail("SESSION_BUSY", "当前正在生成回复且无法中止，请完全退出应用后重试。");
-        }
-        entry = await this.createSession({
-          taskId,
-          cwd,
-          spaceId: existing.spaceId ?? undefined,
-          welcomeMode: existing.welcomeMode ?? req.welcomeMode ?? DEFAULT_WELCOME_MODE,
-          permissionMode: existing.permissionMode ?? req.permissionMode ?? "default",
-          modelId: usablePersistedModelId ?? req.modelId,
-          sessionFile: existing.sessionFile,
-          expertId: existing.expertId ?? req.expertId,
-          modePresetId: existing.modePresetId ?? req.modePresetId,
-          connectorIds: regenConnectorIds,
-        });
-      }
-
-      const userMessages = getVisibleSessionUserMessages(entry.session.sessionManager);
-      const target = req.sourceUserEntryId
-        ? userMessages.find((message) => message.entryId === req.sourceUserEntryId)
-        : userMessages[req.userMessageIndex];
-      if (!target) {
-        return fail("TARGET_NOT_FOUND", "找不到要重新生成的消息。");
-      }
-
-      // History exposes the user text without injected runtime context. Compare
-      // that same projection before navigation, so a rejected retry cannot move the leaf.
-      if (req.expectedUserTextHash &&
-        normalizedEditorTextHash(target.displayText) !== req.expectedUserTextHash) {
-        return fail("TARGET_DRIFTED", "所选消息已变化，请刷新后重试。");
-      }
-
-      if (!target.text.trim()) return fail("NO_EDITABLE_CONTENT", "该消息没有可重新生成的内容。");
-      // Pi navigateTree is a no-op for the current leaf. A no-context checkpoint
-      // lets Pi handle the user-to-parent navigation even for a user-only child.
-      // Otherwise prompt() would append the same user twice.
-      if (entry.session.sessionManager.getLeafId() === target.entryId) {
-        entry.session.sessionManager.appendCustomEntry("mybuddy_regenerate_checkpoint", { targetEntryId: target.entryId });
-      }
-      const result = await entry.session.navigateTree(target.entryId, { summarize: false });
-      // navigateTree.cancelled 绝不能当作成功：没有导航成功就绝不开新回复
-      if (result.cancelled) {
-        return fail("NAVIGATION_CANCELLED", "重新生成被取消，原回复已保留。");
-      }
-      let editorText = (result.editorText ?? "").trim();
-      // SDK navigateTree 在「目标 entry 已是当前叶子」时 no-op 且不填 editorText；
-      // 此时树已在目标位置，直接用 getUserMessagesForForking 返回的原文文本（target.text）。
-      // 否则会误报 NO_EDITABLE_CONTENT，导致「重新生成失败，原回复已保留」无日志静默失败。
-      if (!editorText) {
-        editorText = (target.text ?? "").trim();
-      }
-      if (!editorText) {
-        return fail("NO_EDITABLE_CONTENT", "该消息没有可重新生成的内容。");
-      }
-
-      // 回退后的上下文起点不变，只换一轮新回复：复用 prompt() 全套流程。
-      // 会话文件保持不变（旧分支仍留在 jsonl 中，只是叶子指针移到分支点）。
-      const promptResult = await this.prompt({
-        taskId,
-        text: editorText,
-        modelId: req.modelId ?? usablePersistedModelId,
-        reasoningPreference: req.reasoningPreference,
-        reasoningPreferenceModelId: req.reasoningPreferenceModelId,
-        permissionMode: req.permissionMode ?? entry.permissionMode ?? "default",
-        welcomeMode: req.welcomeMode ?? entry.welcomeMode ?? DEFAULT_WELCOME_MODE,
-        spaceId: req.spaceId ?? entry.spaceId ?? existing?.spaceId ?? undefined,
-        assistantMessageId: req.assistantMessageId,
-        userMessageId: req.sourceUserMessageId,
-        // regenerate 复用原 user 节点，只生成新 assistant；禁止制造第二个用户气泡。
-        announceUserMessage: false,
-        sessionFile: entry.session.sessionFile ?? existing?.sessionFile,
-        expertId: entry.expertId ?? req.expertId,
-        // F1：全链保留 Active 连接器（与重建路径同一份值，装配检测不再误判变更）
-        connectorIds: regenConnectorIds,
-      });
-      if (promptResult.error) {
-        return fail("PROMPT_FAILED", `[${promptResult.error.code}] ${promptResult.error.message}`);
-      }
-      return {
-        ok: true,
-        requestId: req.requestId,
-        assistantMessageId: req.assistantMessageId,
-        sessionFile: entry.session.sessionFile ?? existing?.sessionFile,
-        userEntryId: getVisibleSessionUserMessages((this.registry.get(taskId) ?? entry).session.sessionManager).at(-1)?.entryId,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("[AgentService] regenerate failed", err);
-      return fail("PROMPT_FAILED", message || "重新生成失败，原回复已保留。");
-    }
+    if (!this.durableBots) return { ok: false, requestId: req.requestId, code: "SESSION_NOT_FOUND", message: "执行服务尚未初始化" };
+    await this.memoryWriteQueue;
+    return this.durableBots.regenerate(req);
   }
+  private readonly auxiliaryRuntimes = new Set<DurableBotRuntime>();
+  private readonly auxiliaryTextResults = new Map<string, { parentTaskId?: string; result: Promise<string> }>();
 
-  private async createTransientSession(
-    rolePrompt: string,
-    cwd: string,
-    projectContext?: ResolvedProjectContext | null,
-    roleSourceId?: string,
-    /** 附加系统提示段（BTW 快照等）；默认 []，团队路径不受影响 */
-    extraSegments: string[] = [],
-    /** 内存态会话（SessionManager.inMemory，persist=false）：绝不落盘 sessionFile（BTW 用） */
-    inMemory = false,
-    /** 工具白名单覆盖：默认只读 read/grep/find/ls；Prompt Enhance 传 []（纯文本改写，无工具） */
-    toolsOverride?: string[],
-    /**
-     * 只读 Project 共享上下文能力面（团队子会话 / BTW 用）：
-     * 注入 project_plan_list/get + unified memory_search/get/history（白名单只读，写工具不可见）。
-     * null = 不注入。
-     */
-    sharedContextReadOnly?: { resolveProjectId: () => string | null } | null,
-    evidenceContext?: { scope: () => ProjectionScope; sources: () => SupplementalEvidence[] },
-  ): Promise<{ session: AgentSession; resolvedInstructions: AssemblyTraceDto["segments"] }> {
-    const agentDir = getMyBuddyDir();
-    const settingsManager = createAgentSettingsManager(cwd, agentDir);
-    const projectSegments = assembleProjectContextSegments(projectContext, {
-      planReadOnly: Boolean(sharedContextReadOnly),
-      // 团队/BTW 瞬时会话不注册 library_* 工具：pinned 文案不提示不存在的工具
-      libraryReadable: false,
-    });
-    const expertContent = rolePrompt.trim();
-    const extra = extraSegments.filter((s) => s?.trim());
-    const resolvedInstructions: AssemblyTraceDto["segments"] = [
-      ...projectSegments.filter((segment) => !isEvidenceSegment(segment.id)),
-      ...extra.map((content, index) => ({
-        id: `btw-extra-${index}`,
-        title: "附加上下文",
-        source: "extra" as const,
-        chars: content.length,
-        content,
-      })),
-      {
-        id: "expert",
-        title: "专家角色",
-        source: "expert",
-        sourceId: roleSourceId,
-        chars: expertContent.length,
-        content: expertContent,
+  private async openAuxiliaryRuntime(input: {
+    id: string; kind: DurableAuxiliaryBinding["kind"]; parentTaskId?: string; cwd: string; instructions: string; snapshot?: string; prompt?: string;
+    modelId?: string; thinking?: "off" | "low"; reasoningPreference?: BtwStartRequest["reasoningPreference"];
+    reasoningPreferenceModelId?: string; onSnapshot?: (snapshot: DurableBotSnapshot) => void;
+  }) {
+    const models = this.durableModels;
+    if (!models) throw new Error("模型运行时尚未初始化");
+    const opened = await openDurableAuxiliary({ agentDir: getMyBuddyDir(), id: input.id, models,
+      initialize: async () => {
+        const parent = input.parentTaskId ? this.db.getTask(input.parentTaskId) : undefined;
+        if (input.parentTaskId && !parent) throw new Error("辅助会话所属任务已移除");
+        const settings = createAgentSettingsManager(input.cwd, getMyBuddyDir());
+        const selection = await this.resolvePiModelSelection(input.modelId ?? parent?.modelId, settings);
+        const model = selection.model;
+        if (!model) throw new Error("Pi enabledModels 当前没有可用模型");
+        if (input.modelId && input.modelId !== `${model.provider}/${model.id}`) throw new Error("辅助会话所选模型不在当前可用模型范围内");
+        const levels = getSupportedThinkingLevels(model);
+        const preferred = input.reasoningPreference && input.reasoningPreferenceModelId === `${model.provider}/${model.id}`
+          ? this.nativeReasoningLevel(model, input.reasoningPreference)
+          : input.thinking ?? settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
+        return { id: input.id, kind: input.kind, parentTaskId: input.parentTaskId,
+          parentCwd: parent ? this.resolveTaskExecutionWorkspaceCwd(parent.id) : undefined,
+          projectId: parent?.projectId ?? undefined, workspaceId: parent?.spaceId ?? undefined,
+          cwd: input.cwd, instructions: input.instructions, snapshot: input.snapshot, input: input.prompt,
+          model: { provider: model.provider, modelId: model.id },
+          thinking: preferred && levels.includes(preferred) ? preferred : levels[0],
+          ...(input.kind === "btw" ? {} : { deadline: Date.now() + 120_000 }) };
       },
-    ];
-    const baseTools = toolsOverride ?? ["read", "grep", "find", "ls"];
-    const transientMemoryEnabled = this.settingsStore.read().memoryEnabled;
-    const contextProjection = new EphemeralContextProjection({
-      registerRequestGuard: setSessionRequestGuard,
-      memory: this.memoryService,
-      enabled: () => Boolean(evidenceContext || sharedContextReadOnly) && this.settingsStore.read().memoryEnabled,
-      scope: evidenceContext?.scope ?? (() => ({ projectId: sharedContextReadOnly?.resolveProjectId() ?? projectContext?.project.id })),
-      supplementalEvidence: evidenceContext?.sources ?? (() => projectSegments.filter((segment) => isEvidenceSegment(segment.id)).map((segment) => ({
-        id: `project:${projectContext?.project.id}:${segment.id}`, kind: "project" as const,
-        revision: projectContext?.version ?? "", text: segment.content,
-        explicitProjectReference: segment.id === "projectResources" || segment.id === "projectPinnedRefs",
-        validate: () => {
-          if (projectContext) this.projectContextResolver.assertEvidenceAvailable(projectContext.project.id,
-            segment.id === "projectResources" ? projectContext.resources.map((resource) => resource.id) : []);
-        },
-      }))),
+      runtime: async binding => {
+        if (binding.kind !== input.kind || binding.parentTaskId !== input.parentTaskId) throw new Error("辅助会话身份与请求不一致");
+        if (binding.kind === "authoring" && binding.input !== input.prompt) throw new Error("生成请求的参考资料已变化，请重新发起请求");
+        const validate = () => {
+          if (!binding.parentTaskId) return;
+          const task = this.db.getTask(binding.parentTaskId);
+          if (!task || this.db.isTaskEffectiveArchived(task.id)
+            || (task.projectId ?? undefined) !== binding.projectId || (task.spaceId ?? undefined) !== binding.workspaceId
+            || resolvedPathKey(this.resolveTaskExecutionWorkspaceCwd(task.id)) !== resolvedPathKey(binding.parentCwd ?? binding.cwd)) throw new Error("辅助会话的任务作用域已变化，请重新发起");
+        };
+        validate();
+        const readOnly = binding.kind === "btw";
+        const shared = readOnly && binding.parentTaskId ? await durableDomainTools([
+          ...(binding.projectId ? [createProjectPlanExtension({ taskId: binding.parentTaskId, resolveProjectId: () => { validate(); return binding.projectId ?? null; },
+            service: this.projectService, getPermissionMode: () => "readonly" })] : []),
+          createMemoryExtension({ taskId: binding.parentTaskId, service: this.memoryService, readOnly: true,
+            getPermissionMode: () => "readonly", resolveProjectId: () => { validate(); return binding.projectId ?? null; },
+            resolveWorkspaceId: () => binding.workspaceId ?? null }),
+        ], { cwd: binding.cwd, models, taskId: binding.parentTaskId }) : { tools: [], contextHooks: [] };
+        const allowed = new Set(readOnly ? ["read", "ls", "find", "grep", "project_plan_list", "project_plan_get", "memory_search", "memory_get", "memory_history"] : []);
+        const permit = (name: string) => allowed.has(name) && (!name.startsWith("memory_") || this.settingsStore.read().memoryEnabled);
+        const usage = (message: import("@earendil-works/pi-ai").AssistantMessage, conversationId: string, generationTaskId: number) => {
+          this.usageStats.recordLive({ taskId: binding.parentTaskId ?? null, sessionFile: `auxiliary:${binding.id}:${conversationId}`,
+            persistedEntryId: `auxiliary:${binding.id}:${conversationId}:generation:${generationTaskId}:${message.timestamp}`,
+            sourceKind: binding.kind === "btw" ? "btw" : "auxiliary", sourceDetail: binding.kind, message, userTurn: null,
+            reportedUsage: this.taskDiagnostics.usageForGeneration(binding.parentTaskId, conversationId, generationTaskId, `${binding.kind}:${binding.id}`),
+            sample: { turnIndex: generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
+              ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
+        };
+        const evidenceProjection: DurableBotOptions["evidenceProjection"] = readOnly && binding.parentTaskId ? {
+          memory: this.memoryService, enabled: () => this.settingsStore.read().memoryEnabled,
+          scope: () => { validate(); return { taskId: binding.parentTaskId, projectId: binding.projectId, workspaceId: binding.workspaceId }; },
+          supplementalEvidence: () => [{ id: `conversation:${binding.parentTaskId}`, kind: "conversation",
+            revision: createHash("sha256").update(binding.snapshot ?? "").digest("hex"), text: binding.snapshot ?? "", validate },
+            ...this.libraryWorkspaceContext.projectionSources(binding.parentTaskId!, true)],
+          validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(binding.parentTaskId!, access),
+        } : undefined;
+        return {
+          onSnapshot: input.onSnapshot ?? (() => {}),
+          onTool: event => this.taskDiagnostics.observeTool(event),
+          tools: readOnly ? [...createDurableReadOnlyTools(binding.cwd), ...shared.tools.filter(tool => allowed.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }))] : [],
+          toolAllowed: permit,
+          toolHooks: { beforeTool: async call => {
+            validate();
+            if (!permit(call.name)) return { block: "该辅助会话没有此工具权限" };
+            if (!["read", "ls", "find", "grep"].includes(call.name)) return;
+            const policy = new TaskFileAccessPolicy({ taskId: binding.parentTaskId ?? binding.id, taskRoot: binding.cwd });
+            const path = policy.assertAllowed("read", typeof call.arguments.path === "string" ? call.arguments.path : ".");
+            return { arguments: { ...call.arguments, path } };
+          } },
+          contextHooks: [() => { validate(); return undefined; }, ...shared.contextHooks],
+          evidenceProjection,
+          onResponse: (message, identity) => usage(message, identity.conversationId, identity.generationTaskId),
+          onEntries: entries => { for (const entry of entries) if (entry.byTaskId !== undefined) for (const message of entry.model ?? [])
+            if (message.role === "assistant") usage(message, String(entry.conversationId), entry.byTaskId); },
+        };
+      },
     });
-    const tools = sharedContextReadOnly
-      ? [
-          ...baseTools,
-          "project_plan_list",
-          "project_plan_get",
-          ...(transientMemoryEnabled ? ["memory_search", "memory_get", "memory_history"] : []),
-        ]
-      : baseTools;
-    const loader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager,
-      // 瞬时会话不挂 MCP 扩展（noExtensions），不创建 McpRuntime EventBus——
-      // 避免无 attachSession 对应物的 bus 永久滞留（P2 生命周期泄漏）。
-      appendSystemPrompt: resolvedInstructions.map((segment) => segment.content),
-      noExtensions: true,
-      // 只读 Project 共享上下文工具面：extension factory 注册全部工具，但白名单 tools
-      // 只放行各 list/get → 模型可见/可调用面 = 只读（写工具在能力面不存在）。
-      extensionFactories: [contextProjection.extension, ...(sharedContextReadOnly
-        ? [
-            createProjectPlanExtension({
-              taskId: "transient",
-              resolveProjectId: sharedContextReadOnly.resolveProjectId,
-              service: this.projectService,
-              getPermissionMode: () => "readonly",
-            }),
-            ...(transientMemoryEnabled ? [createMemoryExtension({
-              taskId: "transient",
-              service: this.memoryService,
-              readOnly: true,
-              getPermissionMode: () => "readonly",
-              resolveProjectId: sharedContextReadOnly.resolveProjectId,
-            })] : []),
-          ]
-        : [])],
-    });
-    await loader.reload();
-    const selection = await this.resolvePiModelSelection(undefined, settingsManager);
-    if (settingsManager.getEnabledModels() !== undefined && !selection.model) {
-      throw new Error("Pi enabledModels 当前没有可用模型");
-    }
-    const agentResult = await this.createAgentSessionFactory({
-      cwd,
-      agentDir,
-      modelRuntime: this.modelRuntime!,
-      model: selection.model,
-      scopedModels: selection.scopedModels,
-      // BTW 用 inMemory：persist=false，任何消息都不会写 sessionFile；
-      // 团队只读成员维持 SessionManager.create（既有行为不变）。
-      sessionManager: inMemory ? SessionManager.inMemory(cwd) : SessionManager.create(cwd),
-      settingsManager,
-      resourceLoader: loader,
-      tools,
-    });
-    contextProjection.attach(agentResult.session);
-    await agentResult.session.bindExtensions({});
-    return { session: agentResult.session, resolvedInstructions };
+    this.auxiliaryRuntimes.add(opened.runtime);
+    opened.runtime.harness.subscribeClose(() => this.auxiliaryRuntimes.delete(opened.runtime));
+    return opened;
   }
 
+  private runAuxiliaryText(input: Parameters<AgentService["executeAuxiliaryText"]>[0]): Promise<string> {
+    const existing = this.auxiliaryTextResults.get(input.id);
+    if (existing) {
+      if (existing.parentTaskId !== input.parentTaskId) throw new Error("辅助请求不属于当前任务");
+      return existing.result;
+    }
+    const result = this.executeAuxiliaryText(input);
+    this.auxiliaryTextResults.set(input.id, { parentTaskId: input.parentTaskId, result });
+    return result.finally(() => this.auxiliaryTextResults.delete(input.id));
+  }
+
+  private async executeAuxiliaryText(input: Parameters<AgentService["openAuxiliaryRuntime"]>[0] & { prompt: string; signal?: AbortSignal; observationSignal?: AbortSignal }): Promise<string> {
+    const { runtime, binding } = await this.openAuxiliaryRuntime(input);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => { void runtime.abort().catch(() => {}); };
+    const detach = () => { void runtime.close().catch(() => {}); };
+    input.signal?.addEventListener("abort", stop, { once: true });
+    input.observationSignal?.addEventListener("abort", detach, { once: true });
+    try {
+      if (input.signal?.aborted) { await runtime.abort(); input.signal.throwIfAborted(); }
+      input.observationSignal?.throwIfAborted();
+      const submission = await runtime.submit(binding.input ?? input.prompt, `${binding.id}:input`);
+      const status = await submission.status(BACKGROUND_CONTEXT);
+      if (status.status !== "done" && status.status !== "unanswered" && binding.deadline) {
+        const remaining = binding.deadline - Date.now();
+        if (remaining <= 0) { await runtime.abort(); throw new Error("草稿生成已超时"); }
+        timer = setTimeout(stop, remaining);
+      }
+      return await runtime.reply(submission);
+    } finally {
+      if (timer) clearTimeout(timer);
+      input.signal?.removeEventListener("abort", stop);
+      input.observationSignal?.removeEventListener("abort", detach);
+      await runtime.close();
+    }
+  }
 
   /** 会话 tokens 累计（input/cacheRead/cacheWrite/output）；失败或空会话 → null */
   private sessionTokenTotals(
@@ -5086,8 +4343,10 @@ export class AgentService {
   }
 
   setPermissionMode(req: AgentSetPermissionModeRequest): boolean {
+    const task = this.db.getTask(req.taskId);
+    if (task) this.db.upsertTask({ ...task, permissionMode: req.permissionMode });
     const entry = this.registry.get(req.taskId);
-    if (!entry) return false;
+    if (!entry) return Boolean(task);
 
     const pendingToolCallIds = this.registry.setPermissionMode(req.taskId, req.permissionMode);
     if (entry.permissionMode === "auto") this.pendingActions.removeTask(req.taskId);
@@ -5111,6 +4370,7 @@ export class AgentService {
   }
 
   dispose(): void {
+    this.stopDiagnosticObservation();
     this.memoryDisposed = true;
     this.memoryOrganization.pauseActive();
     this.pendingMemoryTurns.clear();
@@ -5118,6 +4378,7 @@ export class AgentService {
     this.sessionLifecycle.disposeAll();
 
     this.btwService.disposeAll();
+    for (const runtime of this.auxiliaryRuntimes) void runtime.close().catch(error => console.warn("[Auxiliary] shutdown failed", error));
     // P3：释放无头会话 / 事件总线 / UI waiter（McpRuntimeService.dispose 幂等；应用退出路径调用）
     this.mcpRuntime.dispose();
   }
@@ -5466,462 +4727,6 @@ export class AgentService {
       model: attributed.model,
       responseModel: attributed.responseModel,
     };
-  }
-
-  private async createSession(opts: {
-    taskId: string;
-    cwd: string;
-    spaceId?: string;
-    welcomeMode: WelcomeMode;
-    permissionMode?: PermissionMode;
-    modelId?: string;
-    sessionFile?: string;
-    expertId?: string | null;
-    modePresetId?: string | null;
-    /** 当前会话激活的连接器 id（其 Private Skills 进入候选技能集） */
-    connectorIds?: string[];
-    /** Main-process resolved context; Renderer never supplies Project runtime content. */
-    projectContext?: ResolvedProjectContext | null;
-    /** Query-aware subset selected from policy-allowed/current capabilities. */
-    loadoutSelection?: AgentLoadoutEffectiveSelectionDto;
-  }) {
-    // P0 §7.2 修订：cwd 必须与权威 root 一致（隔离 task-workspaces 或 Space.path）
-    this.assertSessionCwd(opts.taskId, opts.cwd);
-    const identity = this.expertBindings.active(opts.taskId);
-    opts = { ...opts, connectorIds: this.expertConnectorIds(opts.taskId, opts.connectorIds) };
-    const agentDir = getMyBuddyDir();
-    const settingsManager = createAgentSettingsManager(opts.cwd, agentDir);
-    const soul = this.db.getSoul();
-    const memoryEnabled = this.settingsStore.read().memoryEnabled;
-    const libraryWorkspaceContext = this.libraryWorkspaceContext.resolveTask(opts.taskId, true, opts.projectContext);
-    const projectContext = libraryWorkspaceContext.projectContext;
-
-    const profile = this.modeProfiles.getProfile(opts.welcomeMode);
-    // base ModeProfile + 选中 preset 合成 effective prompt / skill / mcp policy。
-    // 未知 preset → 回落 base（不静默切到其它 preset）。
-    const preset = resolveModePreset(profile.policy, opts.modePresetId);
-    // Session assembly also triggers best-effort prewarm; send-time gate stays authoritative.
-    this.runtimeRequirements.prewarmPreset(preset);
-    const resolvedContext = resolveRuntimeContextPolicy({
-      welcomeMode: opts.welcomeMode,
-      profile,
-      projectContext,
-      preset,
-      expertId: opts.expertId,
-      connectorIds: opts.connectorIds,
-      ...this.runtimeCapabilityAvailability(opts.expertId, opts.connectorIds, opts.taskId),
-    });
-    const effProfile = resolvedContext.effectiveProfile;
-    const { expertDecision, connectorDecisions } = resolvedContext;
-    const selectedConnectorIds = opts.loadoutSelection
-      ? new Set(opts.loadoutSelection.connectorIds.map((id) => id.toLowerCase()))
-      : null;
-    const effectiveConnectorDecisions = connectorDecisions.map((item) =>
-      item.enabled && selectedConnectorIds && !selectedConnectorIds.has(item.id.toLowerCase())
-        ? { ...item, enabled: false, reason: "loadout_not_selected" }
-        : item,
-    );
-    const effectiveExpertId = expertDecision?.enabled === false ? null : opts.expertId;
-    const effectiveConnectorIds = effectiveConnectorDecisions.filter((item) => item.enabled).map((item) => item.id);
-    const policyMcpPreview = this.mcpRuntime.previewMcpFilter(
-      opts.welcomeMode,
-      effProfile.policy.mcpPolicy,
-      resolvedContext.mcpPolicySources,
-    );
-    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, this.boundMcpSelection(opts.taskId, opts.loadoutSelection?.mcpIds));
-    // 权限解析：显式 > Tag/Preset 建议 > Mode/base 建议 > 系统默认。
-    // 建议值只作兜底，绝不覆盖调用方显式传入的权限。
-    const settingsSnapshot = this.settingsStore.read();
-    const effPermission = resolveEffectivePermission(
-      opts.permissionMode,
-      effProfile.policy.suggestedPermissionMode,
-      settingsSnapshot.permissionMode ?? "default",
-    );
-    const piEnabledModels = settingsManager.getEnabledModels();
-    const piScopedModels = piEnabledModels !== undefined
-      ? await this.resolvePiModelScope(settingsManager)
-      : [];
-    if (piEnabledModels !== undefined && piScopedModels.length === 0) {
-      throw new Error("Pi enabledModels 当前没有可用模型，请先在模型设置中启用至少一个模型");
-    }
-    const enabledModelKeys = piEnabledModels !== undefined
-      ? new Set(piScopedModels.map((item) => `${item.model.provider}/${item.model.id}`))
-      : null;
-    const isModelAvailable = (id: string) => {
-      const model = this.resolveModel(id);
-      if (!model) return false;
-      return enabledModelKeys
-        ? enabledModelKeys.has(`${model.provider}/${model.id}`)
-        : true;
-    };
-    const resolvedSessionModelId = resolveEffectiveModelId(
-      opts.modelId,
-      effProfile.policy.suggestedModelId,
-      isModelAvailable,
-      (() => {
-        const provider = settingsManager.getDefaultProvider();
-        const model = settingsManager.getDefaultModel();
-        return provider && model ? `${provider}/${model}` : "";
-      })(),
-    );
-    const resolvedSessionModel = resolvedSessionModelId
-      ? this.resolveModel(resolvedSessionModelId)
-      : await this.resolveAutomaticModel(piEnabledModels !== undefined ? piScopedModels : undefined);
-    const resolvedModelContextWindow = resolvedSessionModel?.contextWindow;
-    const sessionContextBudgetChars = derivePromptContextCharBudget(resolvedModelContextWindow);
-
-    await this.runtimeRequirements.prepareManagedProviders(
-      preset,
-      opts.modePresetId,
-      mcpPreview.enabled,
-    );
-    let expertPrompt: string | null = null;
-    if ((identity && expertDecision?.enabled !== false) || effectiveExpertId) {
-      try {
-        expertPrompt = identity ? this.boundExpertPrompt(identity) : this.expertsService.getRolePrompt(effectiveExpertId!).prompt;
-      } catch (error) {
-        console.warn("[AgentService] expert role injection failed", error);
-      }
-    }
-    // 候选技能 = 全局 + 当前专家 Private Skills + 激活连接器 Private Skills（统一经 skillPolicy 过滤）。
-    // 只读取当前选中专家 / 当前激活连接器的私有技能，不扫描其它已安装专家的。
-    const sessionSkillPaths = this.expertSkillPaths(opts.taskId, effectiveExpertId, effectiveConnectorIds, expertDecision?.enabled !== false);
-    const taskScope = this.db.getTask(opts.taskId);
-    const runtimeSkills = this.resolveSkillsForContext(
-      opts.cwd,
-      sessionSkillPaths,
-      {
-        projectId: opts.projectContext?.project.id ?? taskScope?.projectId,
-        workspaceId: opts.spaceId ?? taskScope?.spaceId,
-      },
-    );
-    const selectedSkillIds = opts.loadoutSelection
-      ? new Set(opts.loadoutSelection.skillIds.map((id) => id.toLowerCase()))
-      : null;
-    const installedSkills = runtimeSkills.dtos.filter(
-      (skill) => !selectedSkillIds || selectedSkillIds.has(skill.id.toLowerCase()),
-    );
-    const skills = installedSkills.map((skill) => ({
-      id: skill.id,
-      name: skill.name,
-      description: skill.description,
-      enabled: skill.enabled,
-    }));
-    const capabilityTrace: ResolvedCapabilityDto[] = [
-      ...(expertDecision ? [expertDecision] : []),
-      ...effectiveConnectorDecisions,
-      ...mcpPreview.capabilities,
-    ];
-    const assembly = assemblePrompt({
-      ephemeralEvidence: true,
-      welcomeMode: opts.welcomeMode,
-      profile: effProfile,
-      soul: { name: soul.name, alias: soul.alias, persona: soul.persona },
-      expertPrompt,
-      projectContext,
-      capabilityTrace,
-      skillPolicySources: resolvedContext.skillPolicySources,
-      permissionMode: effPermission,
-      platform: currentNodePlatform,
-      memoryEnabled,
-      skills,
-      disableSkillFilter: this.settingsStore.read().skillModeFilterEnabled === false,
-      mcpFilter: {
-        enabled: mcpPreview.enabled,
-        hidden: mcpPreview.hidden,
-        reasons: mcpPreview.reasons,
-        policyMode: effProfile.policy.mcpPolicy.mode,
-      },
-      modePreset: preset
-        ? { id: preset.id, label: preset.label, content: preset.promptAddon ?? "" }
-        : null,
-      workspace: opts.cwd,
-      libraryCatalog: libraryWorkspaceContext.libraryCatalog,
-      libraryAttachments: libraryWorkspaceContext.libraryAttachments,
-      libraryAttachedItemIds: libraryWorkspaceContext.libraryAttachedItemIds,
-      contextBudgetChars: sessionContextBudgetChars,
-    });
-    const branchInfo = this.db.getConversationBranchInfo(opts.taskId);
-    const isolatedSourceRoots = branchInfo && branchInfo.workspaceStrategy !== "shared_space"
-      ? resolveConversationBranchSourceRoots(opts.sessionFile, opts.cwd) : [];
-    const branchWorkspaceNote = isolatedSourceRoots.length ? [
-      "## 独立对话分支的文件位置",
-      `当前唯一任务工作目录：${opts.cwd}`,
-      "继承的聊天、工具输出和绝对路径记录的是来源任务，不是当前副本。文件操作优先用相对路径，由当前工作目录解析。",
-      `来源任务目录（不是当前写入目标）：${isolatedSourceRoots.join("；")}`,
-      "文件副本是创建分支时的快照，不是历史版本回滚。",
-    ].join("\n") : "";
-    const appendParts = branchWorkspaceNote ? [...assembly.appendParts, branchWorkspaceNote] : assembly.appendParts;
-    // Pi `tools` 是封闭白名单：不能传内置 allowlist，否则 web_search 等扩展工具会被丢掉。
-    // 用户明确配置的工具可用范围交给 Pi excludeTools。
-    const builtinConfig = this.builtinCapabilities.config();
-    const toolSelection = resolveSessionToolSelection(effPermission, effProfile.policy.toolPolicy, builtinConfig);
-    const contextProjection = new EphemeralContextProjection({
-      registerRequestGuard: setSessionRequestGuard,
-      memory: this.memoryService,
-      enabled: () => this.settingsStore.read().memoryEnabled,
-      supplementalEvidence: () => this.libraryWorkspaceContext.projectionSources(opts.taskId),
-      validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(opts.taskId, access),
-      scope: () => {
-        const task = this.db.getTask(opts.taskId);
-        return resolveTaskMemoryScope(opts.taskId, task);
-      },
-      execution: () => {
-        const entry = this.registry.get(opts.taskId);
-        const pending = entry?.assistantMessageId ? this.pendingMemoryTurns.get(entry.assistantMessageId) : undefined;
-        return { executionId: entry?.executionId, userTurnId: pending?.userMessageId, query: pending?.userText };
-      },
-    });
-    const extraFactories = [contextProjection.extension];
-
-    // P1-A/B：Final Allowed Skill Set（唯一真相）——assembly.skillFilter.visible 是
-    // Mode → Project → Tag 策略链过滤后的最终允许技能名；它同时是目录段与 loader 的
-    // 唯一来源（Invariant 1：SDK loader skills === RuntimePolicy allowed skills）。
-    const finalAllowedSkillNames = new Set(assembly.skillFilter.visible);
-    const learnedSkills = installedSkills
-      .filter((skill) => skill.source === "memory-learned" && finalAllowedSkillNames.has(skill.name))
-      .map((skill) => this.skillsService.getLearnedSkillMetadata(skill.id))
-      .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
-      .map((skill) => ({
-        skillId: skill.skillId,
-        candidateId: skill.candidateId,
-        sourceMemoryIds: skill.sourceMemoryIds,
-      }));
-
-    const approvalBridge = this.sessionApprovals.create(opts.taskId, opts.cwd, effPermission, isolatedSourceRoots);
-    const {
-      sessionPolicy,
-      getPermissionMode: getLivePermissionMode,
-      requestExternalWriteApproval,
-      requestApproval: requestApprovalOnce,
-    } = approvalBridge;
-    const extensionFactories = await this.sessionExtensions.build({
-      taskId: opts.taskId,
-      taskRoot: opts.cwd,
-      welcomeMode: opts.welcomeMode,
-      modePresetId: opts.modePresetId,
-      memoryEnabled,
-      subagentEnabled: builtinConfig.subagent.enabled,
-      sessionPolicy,
-      getPermissionMode: getLivePermissionMode,
-      requestExternalWriteApproval,
-      requestApproval: requestApprovalOnce,
-      resolveConversationContext: () => {
-        const current = this.registry.get(opts.taskId);
-        if (!current?.executionId || !current.assistantMessageId) return undefined;
-        return {
-          taskId: opts.taskId,
-          executionId: current.executionId,
-          assistantMessageId: current.assistantMessageId,
-        };
-      },
-      builtinCapability: {
-        localWorkflow: this.localWorkflow ? { ...this.localWorkflow, getPermissionMode: getLivePermissionMode } : undefined,
-        runtime: this.builtinCapabilities,
-        consult: (id, input, signal, onUpdate) => {
-          const config = this.builtinCapabilities.config().multiModelConsult;
-          const controlKey = `${opts.taskId}:${id}`;
-          return runMultiModelConsult({
-            id, taskId: opts.taskId, input, config, signal, onUpdate,
-            // Live per-participant terminate switch: exposed to the UI so one stuck model can be
-            // ended directly instead of holding the whole consultation until its timeout.
-            onControls: (controls) => { this.consultWorkers.set(controlKey, controls); },
-            createSession: (participant, workerSignal, onToolLimit) => createPiConsultSession({
-              participant, cwd: opts.cwd, agentDir, runtime: this.modelRuntime!,
-              parentSettings: settingsManager, policy: sessionPolicy,
-              readProjectFiles: config.readProjectFiles, maxToolCalls: config.maxToolCalls,
-              signal: workerSignal, onToolLimit,
-              isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled,
-            }),
-          }).finally(() => { this.consultWorkers.delete(controlKey); });
-        },
-        browser: this.browserAutomation,
-        artifactService: () => this.artifactService,
-        markArtifactEmitted: (filePath) => this.emittedArtifactPaths.get(opts.taskId)?.add(filePath.toLowerCase()),
-        getProducerMessageId: () => this.registry.get(opts.taskId)?.assistantMessageId,
-        getIsolationLevel: () => this.getShellIsolationLevel(),
-        pythonRuntime: this.pythonRuntime,
-        resolveSkillScript: (scriptPath) =>
-          this.skillsService.resolveSkillScriptOwner(scriptPath, opts.cwd, sessionSkillPaths),
-        skillAuthoring: {
-          assess: (intent, modelId) => this.assessSkillAuthoring({ intent, modelId }),
-          create: (intent, forceCreate, modelId) => this.createSkillFromMeta({ intent, forceCreate, modelId }),
-        },
-      },
-      mcp: {
-        mcpPolicy: effProfile.policy.mcpPolicy,
-        mcpFilter: mcpPreview,
-        providerIds: mcpPreview.enabled,
-        ensureRuntimeReady: async (providerId) => {
-          await this.runtimeRequirements.ensureProviderReady(providerId);
-        },
-      },
-      gadgetService: this.gadgetService,
-      extraFactories,
-    });
-    const loader = new DefaultResourceLoader({
-      cwd: opts.cwd,
-      agentDir,
-      settingsManager,
-      // P2：bus 以 taskId 立即注册；createSession 失败路径由 try/catch 统一 detachSession 释放
-      eventBus: this.mcpRuntime.createEventBus(opts.taskId),
-      appendSystemPrompt: appendParts,
-      // P1-B：Expert/Connector Private Skills 目录进入 SDK discovery（候选来源）
-      additionalSkillPaths: sessionSkillPaths,
-      additionalPromptTemplatePaths: [getPromptsDir()],
-      // P1-A：SDK 默认 discovery 的结果必须收敛到最终允许集，否则被 Tag 拒绝的
-      // Global Skill 会绕过 MyBuddy 目录过滤重新进入 system prompt（硬门禁，非软约束）
-      skillsOverride: (base) => filterLoaderSkills(
-        { skills: runtimeSkills.skills, diagnostics: [...base.diagnostics, ...runtimeSkills.diagnostics] },
-        finalAllowedSkillNames,
-      ),
-      // Product capabilities are compiled and injected through extensionFactories.
-      // Pi disk-extension discovery stays disabled: ~/.mybuddy/plugins/extensions is not
-      // an executable product capability surface.
-      noExtensions: true,
-      extensionFactories,
-    });
-    // P2：loader → attachSession 之间的任何失败（reload/工厂/bind）都释放已注册的
-    // EventBus（createEventBus 已按 taskId 注册），避免 createSession 失败路径泄漏。
-    let agentResult: Awaited<ReturnType<typeof createAgentSession>> | undefined;
-    let session: AgentSession;
-    let sessionModelId: string | undefined = resolvedSessionModelId;
-    try {
-      await loader.reload();
-      const loadedExtensions = loader.getExtensions();
-      for (const err of loadedExtensions.errors) {
-        console.warn(`[AgentService] 扩展加载失败 ${err.path}: ${err.error}`);
-      }
-
-      const modelRuntime = this.modelRuntime!;
-      const { existsSync } = await import("node:fs");
-      const sessionManager =
-        opts.sessionFile && existsSync(opts.sessionFile)
-          ? SessionManager.open(opts.sessionFile, undefined, opts.cwd)
-          : SessionManager.create(opts.cwd);
-
-      const agentResultResolved = await this.createAgentSessionFactory({
-        cwd: opts.cwd,
-        agentDir,
-        modelRuntime,
-        model: resolvedSessionModel,
-        scopedModels: piEnabledModels !== undefined ? piScopedModels : undefined,
-        sessionManager,
-        settingsManager,
-        resourceLoader: loader,
-        excludeTools: toolSelection.excludeTools,
-      });
-      agentResult = agentResultResolved;
-      session = agentResultResolved.session;
-      bindLegacyMemoryHistory(session, () => this.memoryService.historicalUserInputs(session.sessionFile ?? session.sessionId, opts.taskId));
-      contextProjection.attach(session);
-
-      // 模型解析：显式 > Tag/Preset 建议（须可解析）> UI 全局默认。无效建议安全降级，不阻塞会话创建。
-      if (sessionModelId && this.modelRuntime) {
-        const applied = await this.applySessionModel(session, sessionModelId);
-        if (!applied) {
-          // 可观测性（无 UI 面）：生效模型不可解析（如 provider 已移除）→ 回退 SDK jsonl 恢复/默认；
-          // DB/UI 保留上次值，下一轮成功解析后经回同步收敛。
-          console.warn(`[AgentService] 生效模型不可解析（回退 SDK 恢复/默认）：${sessionModelId}`);
-        }
-      }
-
-      this.applyCompactionReserveForModel(session);
-
-      // 绑定扩展运行时：触发扩展的 session_start（Pi 原生 MCP 在此初始化），
-      // 并把 UI 桥注入（OAuth/通知 → 前端）。
-      await session.bindExtensions({
-        uiContext: this.mcpRuntime.getUiBridge(),
-        mode: "rpc",
-      });
-      // Native defaultTools overrides are cleared by SettingsManager.reload().
-      // Activate the scene tools through Pi after binding, alongside the existing tool selection.
-      activateResolvedSessionTools(session, toolSelection, opts.welcomeMode);
-      const activeTools = session.getActiveToolNames();
-      if (!activeTools.includes("web_search")) {
-        const registered = session.getAllTools().map((tool) => tool.name);
-        console.warn(
-          `[AgentService] web_search 未进入会话工具表 task=${opts.taskId} registered=[${registered.join(",")}] errors=${loadedExtensions.errors.length}`,
-        );
-      }
-      // MCP：登记扩展（含 mcp 工具定义）供连接/授权操作
-      this.sessionLifecycle.attachExtensions(opts.taskId, agentResult.extensionsResult, mcpPreview.enabled, { session, welcomeMode: opts.welcomeMode });
-    } catch (err) {
-      this.sessionLifecycle.cleanupFailedCreate(opts.taskId, agentResult?.session);
-      throw err;
-    }
-
-    const unsubscribe = this.sessionEvents.attach(opts.taskId, opts.cwd, session);
-
-    const existing = this.db.listTasks().find((t) => t.id === opts.taskId);
-    const usageModelId =
-      sessionModelId ?? opts.modelId ?? existing?.modelId ?? this.settingsStore.read().defaultModelId ?? undefined;
-    const entry: SessionEntry = {
-      taskId: opts.taskId,
-      session,
-      unsubscribe,
-      cwd: opts.cwd,
-      spaceId: opts.spaceId,
-      projectContextVersion: projectContext?.version,
-      runtimeAssembly: assembly,
-      runtimeAssemblyHash: fingerprintRuntimeAssembly(assembly),
-      runtimeProjectId: projectContext?.project.id,
-      runtimeProjectUpdatedAt: projectContext?.project.updatedAt,
-      runtimeTagId: preset?.id,
-      welcomeMode: opts.welcomeMode,
-      permissionMode: effPermission,
-      expertId: effectiveExpertId ?? undefined,
-      requestedExpertId: opts.expertId ?? undefined,
-      connectorIds: opts.connectorIds,
-      modelDiagnostic: diagnoseSessionModel({
-        requested: resolvedSessionModelId, actual: session.model, reasoning: session.thinkingLevel,
-        source: opts.modelId ? "explicit_or_task" : resolvedSessionModelId === effProfile.policy.suggestedModelId
-          ? "mode_suggestion" : resolvedSessionModelId ? "global_default" : "restored_or_sdk",
-      }),
-      installedSkillIds: runtimeSkills.dtos.map(skill => skill.id),
-      skillFiles: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name) && skill.filePath)
-        .map(skill => ({ id: skill.id, path: skill.filePath! })),
-      skillReadiness: diagnoseSkillReadiness({
-        recommendation: this.loadoutService.resolve(opts.taskId, "", assembly, opts.connectorIds, opts.expertId),
-        installedIds: runtimeSkills.dtos.map(skill => skill.id),
-        whitelistIds: runtimeSkills.dtos.filter(skill => finalAllowedSkillNames.has(skill.name)).map(skill => skill.id),
-        readIds: [],
-      }),
-      mcpProviderIds: mcpPreview.enabled,
-      learnedSkills,
-      pendingSkillCommands: new Map<string, string>(),
-      usageModelId,
-      pendingAssistantTurns: [],
-      promptSubmissionTail: Promise.resolve(),
-      promptQueueEpoch: 0,
-      pendingApprovals: new Map<string, (approved: boolean) => void>(),
-      pendingExternalWrites: new Map<string, (decision: ExternalWriteDecision) => void>(),
-      grantedExternalWriteToolCalls: new Set<string>(),
-    };
-    this.sessionLifecycle.commit(entry);
-
-    // 保留已有标题（CronService 会先 upsert job.name）；勿用「新任务」覆盖
-    const placeholderTitle = opts.taskId.startsWith("gw-")
-      ? "助理消息"
-      : opts.taskId.startsWith("cron-")
-        ? "定时任务"
-        : "新任务";
-    this.db.upsertTask({
-      id: opts.taskId,
-      title: existing?.title?.trim() || placeholderTitle,
-      spaceId: opts.spaceId ?? existing?.spaceId,
-      updatedAt: Date.now(),
-      sessionFile: session.sessionFile,
-      cwd: opts.cwd,
-      welcomeMode: opts.welcomeMode,
-      // 落库 MyBuddy 选择的模型，不用 pi session.model
-      modelId: usageModelId,
-      permissionMode: effPermission,
-      expertId: opts.expertId ?? existing?.expertId,
-      modePresetId: opts.modePresetId ?? existing?.modePresetId,
-    });
-
-    return entry;
   }
 
   private async maybeEmitArtifact(

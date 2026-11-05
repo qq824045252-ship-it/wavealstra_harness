@@ -249,19 +249,19 @@ async function main(): Promise<void> {
   {
     const agent = readFileSync("src/main/agent/AgentService.ts", "utf-8");
     const orchestrator = readFileSync("src/main/professional-tools/RuntimeRequirementOrchestrator.ts", "utf-8");
-    const extensionAssembler = readFileSync("src/main/agent/SessionExtensionAssembler.ts", "utf-8");
-    const preparePos = agent.indexOf("this.runtimeRequirements.prepareManagedProviders(");
-    const assemblePos = agent.indexOf("this.sessionExtensions.build({", preparePos);
+    const durable = readFileSync("src/main/agent/durable/DurableBotService.ts", "utf-8");
+    const preparePos = durable.indexOf("request = await this.prepareRequest(request)");
+    const assemblePos = durable.indexOf("await this.configureRequest(open, request)", preparePos);
     assert(
-      preparePos >= 0 && assemblePos > preparePos && extensionAssembler.includes("this.deps.mcpRuntime.getInlineExtensions({"),
-      "createSession 在 extension/MCP 装配前强制 managed runtime gate",
+      preparePos >= 0 && assemblePos > preparePos && agent.includes("ensureReady: () => this.runtimeRequirements.ensurePresetReady(preset)"),
+      "Durable 在工具/MCP 装配前强制 managed runtime gate",
     );
     assert(orchestrator.includes("if (!allowed.has(providerId))"), "orchestrator 先验证 effective MCP policy 真正放行 provider");
     assert(orchestrator.includes("if (!prepared.ok)"), "orchestrator prepare 失败会阻止 session，不 silent fallback");
     // 建会话不再对 penpot 自动 open（避免每次弹浏览器）；open 仅按需
     const createSessionSlice = agent.slice(
-      agent.indexOf("private async createSession"),
-      agent.indexOf("private async createSession") + 8000,
+      agent.indexOf("private async prepareDurableTask("),
+      agent.indexOf("async releaseDurableTask("),
     );
     assert(
       !createSessionSlice.includes('providerId === "penpot"') &&

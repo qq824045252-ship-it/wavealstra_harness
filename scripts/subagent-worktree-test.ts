@@ -79,6 +79,18 @@ async function main(): Promise<void> {
     assert.equal(explicit.cwd, await realpath(explicit.cwd));
     assert.equal(explicit.baseCommit, head);
 
+    const durable = await prepareSubagentWorkspace({ ...options, operationId: "durable-call-1" });
+    assert.equal(durable.kind, "worktree");
+    if (durable.kind !== "worktree") throw new Error("Expected durable worktree");
+    await writeFile(path.join(durable.cwd, "shared.txt"), "durable worker\n");
+    await writeFile(path.join(cwd, "later-user-change.txt"), "root changed after dispatch");
+    assert.deepEqual(await prepareSubagentWorkspace({ ...options, operationId: "durable-call-1" }), durable);
+    assert.equal(await readFile(path.join(durable.cwd, "shared.txt"), "utf8"), "durable worker\n");
+    const receipt = JSON.parse(await readFile(durable.receiptPath, "utf8"));
+    await writeFile(durable.receiptPath, JSON.stringify({ ...receipt, state: "intent" }));
+    await assert.rejects(prepareSubagentWorkspace({ ...options, operationId: "durable-call-1" }), /needs reconciliation/);
+    await writeFile(durable.receiptPath, JSON.stringify(receipt));
+    await rm(path.join(cwd, "later-user-change.txt"));
     const allocationCount = readdirSync(baseDir).length;
     assert.deepEqual(await prepareSubagentWorkspace({ ...options, writable: false }), { kind: "shared", cwd });
     assert.deepEqual(await prepareSubagentWorkspace({ ...options, parallel: false }), { kind: "shared", cwd });

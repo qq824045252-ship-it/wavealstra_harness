@@ -73,7 +73,7 @@ export type BtwUiPatch = AgentUiPatch & { btwId: string };
  * - 与 BTW 完全独立：BTW 是临时岔题问答，Enhance 是就地改写未发送输入；
  * - 不产生正式消息、不入任务历史/记忆、不改变主 Agent 会话；
  * - 主进程构建受控 system instruction；renderer 不暴露任意 prompt 执行能力；
- * - 底层复用 transient in-memory 会话（createTransientSession），但业务接口独立。
+ * - 使用独立的 Durable 辅助会话，以持久操作身份恢复结果。
  */
 export const EnhanceIpc = {
   prompt: "enhance:prompt",
@@ -83,6 +83,7 @@ export const EnhanceIpc = {
 export type EnhanceSurface = "chat" | "new-task";
 
 export interface EnhancePromptRequest {
+  requestId?: string;
   /** 触发面：chat（任务内）| new-task（草稿态） */
   surface: EnhanceSurface;
   /** 用户原始输入（textarea 当前文本，未经发送） */
@@ -111,6 +112,8 @@ export interface EnhancePromptResult {
 
 export const AgentIpc = {
   prompt: "agent:prompt",
+  submissionStatus: "agent:submissionStatus",
+  waitForSubmission: "agent:waitForSubmission",
   /** 重新生成：回退到某轮用户消息并重新生成回复 */
   regenerate: "agent:regenerate",
   /** 删除用户消息：从该消息前建立新分支，确保其及后续内容不再进入上下文 */
@@ -227,6 +230,7 @@ export const AgentIpc = {
   assembleModePreview: "agent:assembleModePreview",
   /** Read-only projection of the next authoritative Task runtime resolution. */
   inspectRuntimeContext: "agent:inspectRuntimeContext",
+  getTaskDiagnostics: "agent:getTaskDiagnostics",
   listAgentLoadoutObservations: "agent:listAgentLoadoutObservations",
   listRuntimeContextSnapshots: "agent:listRuntimeContextSnapshots",
   clearRuntimeContextSnapshots: "agent:clearRuntimeContextSnapshots",
@@ -720,7 +724,15 @@ export interface AgentPromptRequest {
   connectorIds?: string[];
 }
 
+export interface AgentSubmissionReceipt {
+  taskId: string;
+  operationId: string;
+  submissionId: number;
+  status: "queued" | "placed" | "done" | "unanswered";
+}
+
 export interface AgentPromptResult {
+  receipt?: AgentSubmissionReceipt;
   cancelled?: boolean;
   /** true 表示消息只完成入队，Agent 仍在执行；不是 assistant 完成信号。 */
   queued: boolean;
@@ -940,6 +952,7 @@ export type RuntimeAuditInstructionDto = import("./mode-profile").AssemblySegmen
 
 export type AgentUiPatch =
   | { type: "durable_snapshot"; taskId: string; snapshot: import("./durable-bot").DurableBotSnapshot }
+  | { type: "durable_delta"; taskId: string; delta: import("./durable-bot").DurableBotDelta }
   | { type: "expert_binding"; taskId: string; binding: import("./expert-binding").TaskExpertBindingDto }
   | { type: "compaction_status"; taskId: string; state: import("./compaction").TaskCompactionStatusDto }
   | {
@@ -1156,6 +1169,7 @@ export interface SkillEvalCaseResultDto extends SkillEvalDefinitionDto {
 }
 
 export interface SkillEvalRunRequest {
+  requestId?: string;
   skillId: string;
   modelId?: string;
 }
@@ -1179,6 +1193,7 @@ export interface SkillEvalRunResultDto {
 }
 
 export interface SkillImprovementGenerateRequest {
+  requestId?: string;
   skillId: string;
   modelId?: string;
 }
@@ -1246,6 +1261,7 @@ export interface SkillDetailDto {
 }
 
 export interface SkillAuthoringGenerateRequest {
+  requestId?: string;
   intent: string;
   modelId?: string;
 }
@@ -2005,6 +2021,8 @@ export interface ChatToolCallDto {
 }
 
 export interface ChatMessageDto {
+  /** Immutable presentation revision within one Durable runtime epoch. Live rows omit it. */
+  projectionVersion?: number;
   streaming?: boolean;
   /** Stable native generation identity across partial and committed snapshots; presentation only. */
   presentationKey?: string;
@@ -2256,6 +2274,7 @@ export interface UsageSummaryDto {
 }
 
 export interface UsageDrilldownRowDto {
+  known?: import("./usage-stats").UsageKnownFields;
   provider: string;
   model: string;
   calls: number;
@@ -2307,6 +2326,7 @@ export interface UsageSkillStatDto {
 
 /** 用量面板一次拉取的视图（窗口汇总 + 近 53 周活跃度）。 */
 export interface UsageDashboardDto {
+  known?: import("./usage-stats").UsageKnownFields;
   rangeDays: number;
   from: string;
   to: string;

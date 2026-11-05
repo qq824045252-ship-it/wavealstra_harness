@@ -5,10 +5,12 @@ import { join, extname, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
-import { McpOAuthCredentialStore, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentPromptRequest, AgentPromptResult, AgentUiPatch, SessionHistoryRecoveryDto, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
+import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, SessionHistoryRecoveryDto, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
+import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
+import { durableDelta } from "../../../../shared/src/durable-sync";
 import { isGatewayBotTaskId } from "../../../shared/gateway-task";
 import type { AppDatabase } from "../../db/AppDatabase";
 import { McpConfigService } from "../../mcp/McpConfigService";
@@ -18,14 +20,19 @@ import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
+import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
+import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
+import { durableContentText } from "./DurableHistoryProjection";
 import { DurableMcp } from "./DurableMcp";
+import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
-import { SessionFailed, type EntryRecord } from "@earendil-works/pi-durable";
-import type { Message } from "@earendil-works/pi-ai";
+import { SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
+import type { ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 interface BotModelRepair { from: string; to: string }
@@ -47,17 +54,28 @@ export interface DurableBotServiceOptions {
   resolveCwd: (taskId: string) => string;
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
-  tools?: (task: TaskDto, cwd: string) => Promise<DurableDomainTools>;
+  evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions;
+  tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
+  mcpSelection?: (task: TaskDto) => readonly string[];
+  toolAllowed?: (task: TaskDto, name: string) => boolean;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
-  onEntries?: (taskId: string, entries: readonly EntryRecord[]) => void;
+  onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
+  onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  onRequest?: (taskId: string, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  onTool?: (event: ToolDiagnosticEvent) => void;
+  observedUsage?: (taskId: string, conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
+  waitingForInput?: (taskId: string) => boolean;
   onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void;
+  onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
   defaultModel: () => string | undefined;
   emit: (patch: AgentUiPatch) => void;
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
-  prepareInput?: (request: AgentPromptRequest) => Promise<string>;
+  prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
+  auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
+  prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
   expertBindings?: TaskExpertBindingService;
 }
 
@@ -84,7 +102,7 @@ export class DurableBotService {
   }
 
   owns(taskId: string): boolean {
-    return this.options.db.getTask(taskId)?.welcomeMode === "bot" || Boolean(this.binding(taskId));
+    return Boolean(this.options.db.getTask(taskId) || this.binding(taskId));
   }
   busy(taskId: string): boolean {
     const snapshot = this.opened.get(taskId)?.runtime.snapshot;
@@ -149,6 +167,7 @@ export class DurableBotService {
     if (open.closing) return open.closing;
     if (this.opened.get(taskId) === open) this.opened.delete(taskId);
     const closing = (async () => {
+      this.options.onRelease?.(taskId);
       await open.runtime.close();
       await open.refreshingMcp?.promise.catch(() => {});
       await Promise.allSettled([open.mcp, ...open.retiredMcp].map(mcp => mcp.close()));
@@ -176,8 +195,7 @@ export class DurableBotService {
     const { db, agentDir, models } = this.options;
     this.options.expertBindings?.ensureLegacy(taskId);
     const task = db.getTask(taskId);
-    if (!task || task.welcomeMode !== "bot") throw new Error("任务不是 Bot，不能切换其执行后端");
-    if (task.sessionFile) throw new Error("旧 Pi 会话不能作为 Durable 检查点，请创建 Bot 任务");
+    if (!task) throw new Error("任务不存在");
     const prior = this.binding(taskId);
     const cwd = prior?.cwd ?? this.options.resolveCwd(taskId);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
@@ -193,24 +211,42 @@ export class DurableBotService {
       // write/edit records restore their cards independently of this workspace diff baseline.
       let workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
       let projected = "";
-      let wasBusy = false;
       // 打开会话/读历史不是「发请求」：模型目录暂时解析不到也不能阻断，先沿用任务记录的坐标。
       const resolvedModel = await this.resolveTaskModelForOpen(task);
       const selected = resolvedModel?.target;
       const modelRepair = resolvedModel?.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
-      const domain = await this.domainToolsForOpen(task, cwd);
+      const domain = await this.options.tools?.(task, cwd, mcp);
       const base = this.options.assetsDir?.replace(/([\\/])app\.asar(?=[\\/])/, "$1app.asar.unpacked");
       const wasm = base && join(base, "quickjs.wasm");
       const worker = base && join(base, "codemode-worker.cjs");
-      const runtime = await DurableBotRuntime.open({ directory, cwd, models,
+      const initialHistory = async () => {
+        const legacy = task.sessionFile ? SessionManager.open(task.sessionFile, undefined, cwd) : undefined;
+        return legacy ? {
+          messages: convertToLlm(legacy.getBranch().flatMap(entry => entry.type === "message" ? [entry.message] : [])),
+          context: convertToLlm(legacy.buildSessionContext().messages),
+        } : undefined;
+      };
+      const projectionCheckpoint = db.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id = ?").get(taskId) as { entry_id: number } | undefined;
+      let previousSnapshot: DurableBotSnapshot | undefined;
+      let settledKey: string | undefined;
+      const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
+        projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
+        toolAllowed: name => this.options.toolAllowed?.(db.getTask(taskId) ?? task, name) ?? true,
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
+        toolHooks: domain?.toolHooks,
         restoreTools: names => mcp.restoreTools(names),
         prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
-        onEntries: entries => this.options.onEntries?.(taskId, entries),
+        onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
+        onResponse: (message, info) => this.options.onResponse?.(taskId, message, info),
+        onRequest: info => this.options.onRequest?.(taskId, info),
+        onTool: this.options.onTool,
+        observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },
+        waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
+        evidenceProjection: this.options.evidenceProjection?.(task),
         onTurns: turns => {
           if (!this.options.onTurns || !turns.length) return;
           db.connection.transaction(() => {
@@ -231,10 +267,12 @@ export class DurableBotService {
           if (messageTime !== undefined) {
             db.connection.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(messageTime, taskId);
           }
-          this.options.emit({ type: "durable_snapshot", taskId, snapshot });
+          const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = snapshot;
+          this.options.emit(previousSnapshot?.epoch === snapshot.epoch
+            ? { type: "durable_delta", taskId, delta: durableDelta(previousSnapshot, snapshot, state) }
+            : { type: "durable_snapshot", taskId, snapshot });
+          previousSnapshot = snapshot;
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
-          if (wasBusy && !snapshot.busy && !snapshot.queued) this.options.onSettled?.(taskId, snapshot);
-          wasBusy = snapshot.busy;
           const signature = snapshot.messages.at(-1)?.id ?? "";
           if (!snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
@@ -245,6 +283,13 @@ export class DurableBotService {
             this.projections.set(taskId, projection);
           }
         },
+        onProjected: snapshot => {
+          const key = `${snapshot.conversationId}:${snapshot.messages.at(-1)?.id ?? ""}:${snapshot.outcome ?? ""}`;
+          if (!snapshot.busy && !snapshot.queued && snapshot.outcome && key !== settledKey) {
+            settledKey = key;
+            this.options.onSettled?.(taskId, snapshot);
+          }
+        },
       });
       return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), ...(modelRepair ? { modelRepair } : {}) };
     } catch (error) { await mcp.close(); throw error; }
@@ -252,7 +297,8 @@ export class DurableBotService {
 
   private mcpConfiguration(taskId: string) {
     const config = this.config.loadRuntimeConfig();
-    const selected = this.options.expertBindings?.active(taskId)?.mcpIds;
+    const task = this.options.db.getTask(taskId);
+    const selected = task && this.options.mcpSelection ? this.options.mcpSelection(task) : this.options.expertBindings?.active(taskId)?.mcpIds;
     const selectedConfig = selected === undefined ? config : {
       ...config, mcpServers: Object.fromEntries(Object.entries(config.mcpServers ?? {}).filter(([id]) => selected.includes(id))),
     };
@@ -307,25 +353,22 @@ export class DurableBotService {
     }
   }
 
-  /** 打开会话时构建域工具/上下文钩子；单个扩展工厂失败也不能让历史打不开。 */
-  private async domainToolsForOpen(task: TaskDto, cwd: string): Promise<DurableDomainTools | undefined> {
-    try { return await this.options.tools?.(task, cwd); }
-    catch (error) {
-      console.warn(`[Durable] 任务 ${task.id} 的扩展工具装配失败，先以 MCP 工具打开会话（发请求时会重新装配）：${failureText(error)}`);
-      return undefined;
-    }
-  }
-
-  private async admit(request: AgentPromptRequest) {
+  private async prepareRequest(request: AgentPromptRequest): Promise<AgentPromptRequest> {
+    request = await this.options.prepareTask?.(request) ?? request;
     await this.options.models.refresh({ allowNetwork: false });
     this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("Bot 任务不存在");
     // Product selections are durable task configuration, never global scene state.
     this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId,
+      permissionMode: request.permissionMode ?? task.permissionMode,
+      welcomeMode: request.welcomeMode ?? task.welcomeMode,
       expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
       modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() });
-    return this.withRecovery(request.taskId, async open => {
+    return request;
+  }
+
+  private async configureRequest(open: OpenBot, request: AgentPromptRequest): Promise<BotModelResolution["target"]> {
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
       if (await open.runtime.isIdle()) {
@@ -341,14 +384,30 @@ export class DurableBotService {
       open.modelRepair = resolvedModel.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
-      const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd);
+      const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd, mcp);
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
-        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? []);
+        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks);
+      return resolvedModel.target;
+  }
+
+  private async admit(request: AgentPromptRequest) {
+    // Committed retries retain their original configuration and input preparation.
+    if (this.binding(request.taskId)) {
+      const existing = await this.withRecovery(request.taskId, async open => {
+        const record = await this.findSubmissionRecord(open, request.userMessageId);
+        const submission = record && await open.runtime.harness.submission(record.id, context);
+        return submission ? { submission, open } : undefined;
+      });
+      if (existing) return existing;
+    }
+    request = await this.prepareRequest(request);
+    return this.withRecovery(request.taskId, async open => {
+      const model = await this.configureRequest(open, request);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
       const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];
       if (this.options.prepareImages) {
-        const images = await this.options.prepareImages(request);
+        const images = await this.options.prepareImages({ ...request, modelId: modelKey(model) });
         content.push(...images.images);
         if (images.text) content.push({ type: "text", text: images.text });
       }
@@ -357,22 +416,72 @@ export class DurableBotService {
         if (mime && !this.options.prepareImages) content.push({ type: "image", mimeType: mime, data: readFileSync(attachment.path).toString("base64") });
         content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
       }
+      const audit = this.options.auditInput?.(request);
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
-        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [] });
+        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [], ...(audit ? { audit } : {}) });
       return { submission, open };
     });
   }
 
   private async admitTracked(request: AgentPromptRequest) {
-    const prior = this.admissionTails.get(request.taskId) ?? Promise.resolve();
-    const pending = prior.catch(() => {}).then(() => this.admit(request));
-    this.admissionTails.set(request.taskId, pending);
-    const admissions = this.admissions.get(request.taskId) ?? new Set();
-    admissions.add(pending); this.admissions.set(request.taskId, admissions);
+    return this.trackAdmission(request.taskId, () => this.admit(request));
+  }
+
+  private trackAdmission<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+    const prior = this.admissionTails.get(taskId) ?? Promise.resolve();
+    const pending = prior.catch(() => {}).then(operation);
+    this.admissionTails.set(taskId, pending);
+    const admissions = this.admissions.get(taskId) ?? new Set();
+    admissions.add(pending); this.admissions.set(taskId, admissions);
     return pending.finally(() => {
       admissions.delete(pending);
-      if (!admissions.size) this.admissions.delete(request.taskId);
-      if (this.admissionTails.get(request.taskId) === pending) this.admissionTails.delete(request.taskId);
+      if (!admissions.size) this.admissions.delete(taskId);
+      if (this.admissionTails.get(taskId) === pending) this.admissionTails.delete(taskId);
+    });
+  }
+
+  async deleteUserMessage(request: AgentDeleteUserMessageRequest): Promise<number> {
+    return this.trackAdmission(request.taskId, async () => {
+      const open = await this.open(request.taskId);
+      const selected = await findDurableUserEntry(open.runtime.conversation, request, context);
+      const timestamp = selected.entry.model?.find(message => message.role === "user")?.timestamp ?? 0;
+      await open.runtime.forkAt(selected.previous?.id);
+      await this.release(request.taskId);
+      await this.open(request.taskId);
+      return timestamp;
+    });
+  }
+
+  async regenerate(request: AgentRegenerateRequest): Promise<AgentRegenerateResult> {
+    return this.trackAdmission(request.taskId, async () => {
+      const fail = (code: Extract<AgentRegenerateResult, { ok: false }>["code"], message: string): AgentRegenerateResult => ({ ok: false, requestId: request.requestId, code, message });
+      try {
+        if (!this.options.db.getTask(request.taskId)) return fail("SESSION_NOT_FOUND", "任务不存在");
+        const open = await this.open(request.taskId);
+        const operationId = `regenerate:${request.requestId}`;
+        const existing = await open.runtime.conversation.commit(tx => tx.submissionByRequest(open.runtime.conversation.id, operationId), context);
+        if (existing?.type === "input") return { ok: true, requestId: request.requestId, assistantMessageId: request.assistantMessageId, userEntryId: existing.entry && String(existing.entry) };
+        if (!await open.runtime.isIdle()) return fail("SESSION_BUSY", "任务仍在执行，请先停止生成");
+        const selected = await findDurableUserEntry(open.runtime.conversation, { entryId: request.sourceUserEntryId, userMessageIndex: request.userMessageIndex }, context);
+        const user = selected.entry.model?.find(message => message.role === "user");
+        if (!user) return fail("TARGET_NOT_FOUND", "找不到所选用户输入");
+        const metadata = open.runtime.inputMetadata(selected.entry.id);
+        if (request.sourceUserMessageId !== `durable-${selected.entry.id}` && request.sourceUserMessageId !== metadata?.audit?.userMessageId) {
+          return fail("TARGET_DRIFTED", "所选用户消息身份已变化，请刷新对话");
+        }
+        const displayText = metadata?.displayText ?? durableContentText(user.content);
+        if (request.expectedUserTextHash && normalizedEditorTextHash(displayText) !== request.expectedUserTextHash) return fail("TARGET_DRIFTED", "所选输入已发生变化，请刷新对话");
+        const prepared = await this.prepareRequest({ ...request, text: displayText, displayText, userMessageId: operationId });
+        await this.configureRequest(open, prepared);
+        const audit = this.options.auditInput?.(prepared);
+        await open.runtime.forkForRegeneration(selected.previous?.id, { operationId, content: user.content,
+          metadata: { ...(metadata ?? { text: displayText, displayText, attachments: [] }), ...(audit ? { audit } : {}) } });
+        await this.release(request.taskId);
+        const submission = await (await this.open(request.taskId)).runtime.resumeRegeneration();
+        if (!submission) throw new Error("重新生成回执不存在");
+        const state = await submission.status(context);
+        return { ok: true, requestId: request.requestId, assistantMessageId: request.assistantMessageId, userEntryId: state.entry && String(state.entry) };
+      } catch (error) { return fail(error instanceof DurableUserEntryNotFoundError ? "TARGET_NOT_FOUND" : "PROMPT_FAILED", failureText(error)); }
     });
   }
 
@@ -396,23 +505,72 @@ export class DurableBotService {
     }
   }
 
-  async prompt(request: AgentPromptRequest, admissionOnly = false): Promise<AgentPromptResult> {
-    const { submission, open } = await this.admitTracked(request);
+  async submit(request: AgentPromptRequest): Promise<AgentPromptResult> {
+    const { submission } = await this.admitTracked(request);
     const state = await submission.status(context);
-    if (admissionOnly) return { queued: state.status !== "done" };
-    if (state.status === "queued") return { queued: true };
-    const settled = await submission.wait(context);
-    await open.runtime.refresh();
-    if (settled.status === "unanswered" && settled.reason !== "aborted") return { queued: false, error: { code: "DURABLE_UNANSWERED", message: settled.reason } };
-    if (open.runtime.snapshot.outcome === "failed") return { queued: false, error: { code: "DURABLE_FAILED", message: open.runtime.snapshot.error ?? "Durable 执行未完成" } };
-    return { queued: false };
+    return submissionResult(request.taskId, state);
   }
 
-  async history(taskId: string): Promise<TaskHistoryDto> {
-    if (!this.binding(taskId)) return { messages: [] };
+  /** Inspect an accepted input before an adapter validates or changes mutable task configuration. */
+  async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
+    if (!operationId) throw new Error("无效执行身份");
+    await this.admissionTails.get(taskId)?.catch(() => {});
+    if (!this.binding(taskId)) return undefined;
+    return this.withRecovery(taskId, async open => {
+      const record = await this.findSubmissionRecord(open, operationId);
+      return record?.type === "input" ? submissionResult(taskId, record) : undefined;
+    });
+  }
+
+  private findSubmissionRecord(open: OpenBot, operationId: string): Promise<SubmissionRecord | undefined> {
+    return open.runtime.conversation.commit(async tx => {
+      const current = await tx.submissionByRequest(open.runtime.conversation.id, operationId);
+      if (current) return current;
+      let cursor: Cursor | undefined;
+      do {
+        const page = await tx.scanConversations({}, 200, cursor);
+        for (const conversation of page.items) {
+          if (conversation.owner || conversation.id === open.runtime.conversation.id) continue;
+          const prior = await tx.submissionByRequest(conversation.id, operationId);
+          if (prior) return prior;
+        }
+        cursor = page.next;
+      } while (cursor);
+      return undefined;
+    }, context);
+  }
+
+  async submissionStatus(receipt: AgentSubmissionReceipt, wait = false): Promise<AgentPromptResult> {
+    if (!Number.isSafeInteger(receipt.submissionId) || receipt.submissionId <= 0 || !receipt.operationId) throw new Error("无效执行回执");
+    return this.withRecovery(receipt.taskId, async open => {
+      const submission = await open.runtime.harness.submission(receipt.submissionId as SubmissionId, context);
+      if (!submission) throw new Error("执行回执不存在");
+      const state = await submission.status(context);
+      if (state.requestId !== receipt.operationId || state.type !== "input") throw new Error("执行回执不属于该任务或操作");
+      const result = wait ? await submission.wait(context) : state;
+      if (wait) await open.runtime.refresh();
+      const response = submissionResult(receipt.taskId, result);
+      if (result.status === "done" && result.type === "input") {
+        const entry = await open.runtime.conversation.commit(tx => tx.entry(result.answer), context);
+        const answer = entry?.model?.find(message => message.role === "assistant");
+        if (!answer || answer.stopReason === "error" || answer.stopReason === "aborted" || answer.stopReason === "length" || !answer.content.some(block => block.type === "text" && block.text.trim())) {
+          return { ...response, cancelled: answer?.stopReason === "aborted", error: { code: "DURABLE_FAILED", message: answer?.errorMessage ?? "该次输入未产生完整回复" } };
+        }
+      }
+      return response;
+    });
+  }
+
+  async prompt(request: AgentPromptRequest, admissionOnly = true): Promise<AgentPromptResult> {
+    const accepted = await this.submit(request);
+    return admissionOnly || !accepted.receipt ? accepted : this.submissionStatus(accepted.receipt, true);
+  }
+
+  async history(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+    if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
     try {
       const recovered = await this.withRecovery(taskId, async open => {
-        const snapshot = await open.runtime.refresh();
+        const snapshot = beforeEntryId === undefined ? await open.runtime.refresh() : await open.runtime.loadEarlier(beforeEntryId);
         return { runtime: open.runtime, snapshot, modelRepair: open.modelRepair };
       });
       await this.projections.get(taskId);
@@ -429,12 +587,18 @@ export class DurableBotService {
       return { messages: [], cwd: this.binding(taskId)?.cwd, historyError: describeDurableHistoryFailure(error) };
     }
   }
+  async refresh(taskId: string): Promise<void> {
+    const open = this.opened.get(taskId);
+    if (open) await open.runtime.refresh();
+  }
   async abort(taskId: string): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.
     await Promise.allSettled([...(this.admissions.get(taskId) ?? [])]);
-    if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort());
+    try { if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort()); }
+    finally { this.options.onRelease?.(taskId); }
   }
   async compact(taskId: string): Promise<void> { await this.withRecovery(taskId, open => open.runtime.compact()); }
+  async abortCompaction(taskId: string): Promise<boolean> { return await this.opened.get(taskId)?.runtime.abortCompaction() ?? false; }
   async purge(taskId: string): Promise<void> {
     if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");
     await this.release(taskId);
@@ -455,6 +619,16 @@ export class DurableBotService {
     this.closing = true;
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
+}
+
+function submissionResult(taskId: string, state: SubmissionRecord): AgentPromptResult {
+  const receipt: AgentSubmissionReceipt = { taskId, operationId: state.requestId ?? "", submissionId: state.id, status: state.status };
+  if (state.status === "unanswered") {
+    return state.reason === "aborted"
+      ? { receipt, queued: false, cancelled: true }
+      : { receipt, queued: false, error: { code: "DURABLE_UNANSWERED", message: typeof state.detail === "string" ? state.detail : state.reason } };
+  }
+  return { receipt, queued: state.status !== "done" };
 }
 
 /** 修复过损坏日志时，把「已恢复 + 已备份」的事实告诉用户，而不是静默继续。 */

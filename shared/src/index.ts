@@ -13,3 +13,4 @@ export interface AppInfo {
 
 export * from './remote-contract'
 export * from './user-prompt-display'
+export * from './durable-sync'

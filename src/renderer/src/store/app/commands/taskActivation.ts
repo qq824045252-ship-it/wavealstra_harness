@@ -184,13 +184,15 @@ export function createTaskActivationActions(
       // （首次 hydrate 时 Main 侧一次性 legacy migration，见 ArtifactDomainSetup.ensureTaskLegacyMigrated）
       if (
         !hasMessages ||
-        get().tasks.find((task) => task.id === id)?.welcomeMode === "bot"
+        get().tasks.find((task) => task.id === id)?.durable !== undefined
       ) {
         void storeContext
           .getApi()
           ?.agent?.loadTaskHistory?.(id)
           .then(async (history) => {
             if (history.durable) {
+              const current = get().tasks.find(candidate => candidate.id === id)?.durable;
+              if (current && current.epoch !== task?.durable?.epoch && current.epoch !== history.durable.epoch) return;
               get().applyAgentPatch({
                 type: "durable_snapshot",
                 taskId: id,
@@ -222,6 +224,7 @@ export function createTaskActivationActions(
                   ? { activeModelId: repairedModelId }
                   : {}),
               }));
+              hydrateConversationRuntime();
               return;
             }
             const combinedHistoryMessages = history.messages ?? [];

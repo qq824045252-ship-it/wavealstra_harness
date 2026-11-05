@@ -8,12 +8,15 @@ export async function abortTask(
   taskId: string,
 ): Promise<void> {
   const { get, set } = storeContext;
-  if (get().tasks.find((task) => task.id === taskId)?.welcomeMode === "bot") {
+  const owner = get().tasks.find((task) => task.id === taskId);
+  const externalRun = owner?.messages.some(message => message.externalAgent && message.streaming);
+  if (!externalRun && (owner?.durable || owner?.botPendingSubmission || owner?.welcomeMode === "bot")) {
     await storeContext.getApi()?.agent?.abort?.(taskId);
     const history = await storeContext
       .getApi()
       ?.agent?.loadTaskHistory?.(taskId);
-    if (history?.durable)
+    const current = get().tasks.find(task => task.id === taskId)?.durable;
+    if (history?.durable && (!current || current.epoch === owner?.durable?.epoch || current.epoch === history.durable.epoch))
       get().applyAgentPatch({
         type: "durable_snapshot",
         taskId,

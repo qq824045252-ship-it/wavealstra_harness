@@ -17,6 +17,7 @@ import ChatProjectCrumb from "./ChatProjectCrumb";
 import WorkspaceCrumb from "./WorkspaceCrumb";
 import RuntimeStatusChips from "./RuntimeStatusChips";
 import TaskWriteGrantsMenu from "./TaskWriteGrantsMenu";
+import TaskDiagnosticsButton from "./TaskDiagnosticsButton";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
@@ -327,7 +328,7 @@ function ShareBar(): React.JSX.Element {
   const selectAll = useAppStore((s) => s.selectAllMessages);
   const setSelectMode = useAppStore((s) => s.setSelectMode);
 
-  const allIds = (task?.welcomeMode === "bot" ? botMessagePresentation(task.messages) : task?.messages ?? []).map((m) => m.id);
+  const allIds = (task?.durable || task?.welcomeMode === "bot" ? botMessagePresentation(task.messages) : task?.messages ?? []).map((m) => m.id);
   const allSelected = allIds.length > 0 && selectedIds.length === allIds.length;
 
   return (
@@ -542,6 +543,8 @@ export default function ChatView(): React.JSX.Element {
     return "运行时策略";
   };
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState<string>();
   const [taskMenuOpen, setTaskMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
@@ -558,9 +561,9 @@ export default function ChatView(): React.JSX.Element {
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
   useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
 
-  const displayMessages = useMemo(() => task?.welcomeMode === "bot"
+  const displayMessages = useMemo(() => task?.durable !== undefined || task?.welcomeMode === "bot"
     ? botMessagePresentation(task.messages, task.durable?.pendingInputs) : task?.messages ?? [],
-    [task?.messages, task?.welcomeMode, task?.durable?.pendingInputs]);
+    [task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
   const lastMessage = displayMessages[messageCount - 1];
@@ -837,9 +840,8 @@ export default function ChatView(): React.JSX.Element {
   const sidePanelButton = <button className={`icon-btn ${panelOpen ? "toggled" : ""}`} title={panelOpen ? "关闭侧栏" : "打开概览"}
     onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
 
-  // Bot tasks are materialized on submission. Their first durable snapshot may
-  // arrive after runtime startup; an empty projection is already a conversation.
-  if (!task || (task.welcomeMode !== "bot" && task.messages.length === 0 && !task.sessionFile)) {
+  // Admission and errors remain visible before the first native message arrives.
+  if (!task || (task.welcomeMode !== "bot" && task.messages.length === 0 && !task.sessionFile && !task.durable && !task.botPendingSubmission && !task.botInputError)) {
     const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
@@ -849,6 +851,7 @@ export default function ChatView(): React.JSX.Element {
             {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
             {draftSpaceId ? <WorkspaceCrumb spaceId={draftSpaceId} /> : null}
             <div className="chat-header-sub" />
+            {task && <TaskDiagnosticsButton taskId={task.id} />}
             {task && sidePanelButton}
           </div>
         )}
@@ -888,6 +891,7 @@ export default function ChatView(): React.JSX.Element {
           )}
           <RuntimeStatusChips modePresetId={task.modePresetId} />
           <div className="input-spacer" />
+          <TaskDiagnosticsButton taskId={task.id} />
           {sidePanelButton}
         </div>
         <div className="chat-scroll">
@@ -899,8 +903,8 @@ export default function ChatView(): React.JSX.Element {
           </div>}
           {!task.botPendingSubmission && !task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
-            <div className="empty-block-title">{task.welcomeMode === "bot" ? "Bot 会话" : "正在加载历史对话…"}</div>
-            <div style={{ fontSize: 12.5 }}>{task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
+            <div className="empty-block-title">{task.durable || task.welcomeMode === "bot" ? "会话" : "正在加载历史对话…"}</div>
+            <div style={{ fontSize: 12.5 }}>{task.durable || task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
           </div>}
           {task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }} role="alert" data-testid="history-error">
@@ -973,6 +977,7 @@ export default function ChatView(): React.JSX.Element {
           </span>
         )}
           <RuntimeStatusChips modePresetId={task.modePresetId} />
+        <TaskDiagnosticsButton taskId={task.id} />
         <button className="icon-btn" title="搜索">
           <IconSearch size={15} />
         </button>
@@ -1051,6 +1056,25 @@ export default function ChatView(): React.JSX.Element {
               </div>
             </div>
           )}
+          {task.durable?.historyBefore !== undefined && <button type="button" className="durable-history-earlier" disabled={loadingEarlier}
+            onClick={async () => {
+              if (loadingEarlier) return;
+              const taskId = task.id;
+              const element = scrollRef.current;
+              const height = element?.scrollHeight ?? 0;
+              const top = element?.scrollTop ?? 0;
+              setLoadingEarlier(true); setHistoryLoadError(undefined);
+              try {
+                if (!window.api?.agent) throw new Error("主进程 Agent API 未就绪");
+                const history = await window.api.agent.loadTaskHistory(taskId, task.durable?.historyBefore);
+                if (history.historyError) throw new Error(history.historyError);
+                const current = useAppStore.getState().tasks.find(candidate => candidate.id === taskId)?.durable;
+                if (history.durable && (!current || current.epoch === task.durable?.epoch || current.epoch === history.durable.epoch)) useAppStore.getState().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
+                requestAnimationFrame(() => { if (element && scrollRef.current === element) applyProgrammaticScrollTop(top + element.scrollHeight - height); });
+              } catch (error) { setHistoryLoadError(error instanceof Error ? error.message : String(error)); }
+              finally { setLoadingEarlier(false); }
+            }}>{loadingEarlier ? "正在加载历史…" : "加载更早的消息"}</button>}
+          {historyLoadError && <div role="alert">{historyLoadError}</div>}
           <MessageList
             taskId={task.id}
             key={task.id}
@@ -1090,7 +1114,11 @@ export default function ChatView(): React.JSX.Element {
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
       {task.durable && <div className="durable-bot-state" role="status">
         {task.durable.compacting && <div>Pi Durable 正在压缩上下文</div>}
-        {task.durable.retry && <div>Pi Durable 正在重试：{task.durable.retry.error}</div>}
+        {task.durable.retry && <div>正在重试：{task.durable.retry.error}</div>}
+        {task.durable.status === "waiting_input" && <div>等待你回答，关闭窗口后仍可继续</div>}
+        {task.durable.status === "queued" && <div>已接收，等待执行</div>}
+        {task.durable.status === "stopped" && <div>已停止</div>}
+        {task.durable.status === "failed" && <div role="alert">执行失败：{task.durable.error ?? "请查看执行记录"}</div>}
       </div>}
       {selectMode ? (
         <ShareBar />

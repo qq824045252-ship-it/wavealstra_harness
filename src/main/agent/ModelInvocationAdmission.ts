@@ -7,9 +7,11 @@ import {
 import { resolveModelScopeWithDiagnostics, type AgentSession, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createRequestTransport } from "./request-transport.mjs";
 import { startCacheRequestTrace, sessionTraceBoundary, type CacheTraceBoundary } from "./CacheRequestTrace";
+import type { ModelExecutionIdentity } from "./CacheRequestTracer";
 
 // Request-local settings only. Pi still owns configuration, parsing and the model catalog.
 const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: () => void; boundary?: () => CacheTraceBoundary }>();
+const requestIdentity = new AsyncLocalStorage<(identity: ModelExecutionIdentity) => void>();
 const installed = new WeakSet<ModelRuntime>();
 const boundSessions = new WeakSet<AgentSession>();
 const requestGuards = new WeakMap<AgentSession, () => () => void>();
@@ -18,6 +20,9 @@ const sessionsByManager = new WeakMap<object, AgentSession>();
 export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: () => void, boundary?: () => CacheTraceBoundary): T {
   return invocationSettings.run({ settings, validate, boundary: boundary ?? invocationSettings.getStore()?.boundary }, operation);
 }
+
+/** Native hosts annotate the already-observed request while Pi builds its provider payload. */
+export function identifyModelInvocation(identity: ModelExecutionIdentity): void { requestIdentity.getStore()?.(identity); }
 
 export function setSessionRequestGuard(session: AgentSession, capture: () => () => void): void {
   requestGuards.set(session, capture);
@@ -116,13 +121,14 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
             await options?.onProviderStreamEvent?.(data, eventModel);
           },
           onPayload: async (payload: unknown, payloadModel: Model<TApi>) => {
-            const replacement = await options?.onPayload?.(payload, payloadModel);
+            const replacement = await requestIdentity.run(identity => { trace?.identify(identity); }, () => options?.onPayload?.(payload, payloadModel));
             await validate();
             trace?.payload(replacement === undefined ? payload : replacement);
             return replacement;
           },
         } as TOptions;
         for await (const event of dispatch(guardedOptions)) {
+          if (event.type.endsWith('_delta') || event.type === 'done') trace?.firstResponse();
           if (event.type === 'done') trace?.result(event.message);
           else if (event.type === 'error') trace?.result(event.error);
           stream.push(event);

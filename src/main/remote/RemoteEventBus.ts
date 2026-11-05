@@ -16,6 +16,8 @@ export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, 
       return { ...patch };
     case "durable_snapshot":
       return { ...patch, snapshot: { ...patch.snapshot, messages: patch.snapshot.messages.map(mapRemoteHistoryMessage) } };
+    case "durable_delta":
+      return { ...patch, delta: { ...patch.delta, upserts: patch.delta.upserts.map(mapRemoteHistoryMessage) } };
     case "user_message":
       return { type: patch.type, taskId: patch.taskId, messageId: patch.messageId, text: patch.text, createdAt: patch.createdAt };
     case "assistant_start":

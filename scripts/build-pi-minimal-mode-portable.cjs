@@ -38,7 +38,7 @@ function fingerprint() {
     for (const d of ['src', 'shared/src', 'app/remote/src', 'patches'])
         if (fs.existsSync(d))
             walk(d);
-    for (const f of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'electron.vite.config.ts', 'app/remote/package.json', 'shared/package.json', 'scripts/build-pi-codemode-assets.mjs', 'scripts/build-subagent-runtime.mjs', 'scripts/build-subagent-context.mjs'])
+    for (const f of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'electron.vite.config.ts', 'app/remote/package.json', 'shared/package.json', 'scripts/build-pi-codemode-assets.mjs', 'scripts/build-subagent-runtime.mjs'])
         if (fs.existsSync(f))
             files.push(f);
     files.sort();

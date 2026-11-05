@@ -50,7 +50,9 @@ try {
     libraryWorkspace: { library: () => unused, resourceLocator: () => unused },
   } as any);
   const names = ["workspace_notes_read", "workspace_notes_save", "project_notes_read", "project_notes_save"];
-  const registered = await durableDomainTools(assembler.domainExtensions("task", false, null));
+  const registered = await durableDomainTools(assembler.domainExtensions("task", false, null, {
+    getPermissionMode: () => "auto", requestApproval: async () => true,
+  }));
   for (const name of names) assert(registered.tools.some(tool => tool.name === name), "actual task assembly must register " + name);
   for (const mode of ["native", "codemode"] as const) {
     const cwd = join(root, mode); await mkdir(cwd);
@@ -76,8 +78,8 @@ try {
         assert(++requests < 8, "tool sequence must settle");
         if (mode === "native" && requests <= calls.length) return call(...calls[requests - 1]);
         if (mode === "codemode" && requests === 1) return call("codemode", { code: `
-          const w = JSON.parse((await tools.workspace_notes_read({})).content[0].text);
-          const p = JSON.parse((await tools.project_notes_read({})).content[0].text);
+          const w = JSON.parse(await tools.workspace_notes_read({}));
+          const p = JSON.parse(await tools.project_notes_read({}));
           text(await tools.workspace_notes_save({content: "Workspace written by codemode", expectedRevision:w.revision}));
           text(await tools.project_notes_save({content: "Project written by codemode", expectedRevision:p.revision}));
         ` });

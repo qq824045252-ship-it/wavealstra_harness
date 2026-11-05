@@ -993,6 +993,8 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.prompt, async (_e, req: AgentPromptRequest) => {
     return await agentService.prompt(req);
   });
+  ipcMain.handle(AgentIpc.submissionStatus, (_e, receipt: import("../shared/agent-ipc").AgentSubmissionReceipt) => agentService.submissionStatus(receipt));
+  ipcMain.handle(AgentIpc.waitForSubmission, (_e, receipt: import("../shared/agent-ipc").AgentSubmissionReceipt) => agentService.waitForSubmission(receipt));
   ipcMain.handle(AgentIpc.regenerate, async (_e, req: AgentRegenerateRequest) => {
     return await agentService.regenerate(req);
   });
@@ -1336,9 +1338,9 @@ function registerIpc(): void {
   ipcMain.handle(UsageIpc.dashboard, (_e, rangeDays: number) =>
     agentService.usageStats.dashboard(clampRange(rangeDays)),
   );
-  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string) => {
+  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: number) => {
     const [nativeHistory, externalHistory] = await Promise.all([
-      agentService.loadTaskHistory(taskId),
+      agentService.loadTaskHistory(taskId, beforeEntryId),
       Promise.resolve(externalAgentRuntime?.history(taskId) ?? { messages: [], runs: [] }),
     ]);
     if (!externalHistory.messages.length) return nativeHistory;
@@ -1380,6 +1382,9 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.assembleModePreview, (_e, req) => agentService.assembleModePreview(req));
   ipcMain.handle(AgentIpc.inspectRuntimeContext, (_e, taskId: string) =>
     agentService.inspectRuntimeContext(taskId),
+  );
+  ipcMain.handle(AgentIpc.getTaskDiagnostics, (_e, taskId: string, limit?: number, offset?: number) =>
+    agentService.getTaskDiagnostics(taskId, limit, offset),
   );
   ipcMain.handle(AgentIpc.listAgentLoadoutObservations, (_e, taskId: string, limit?: number) =>
     agentService.listAgentLoadoutObservations(taskId, limit),

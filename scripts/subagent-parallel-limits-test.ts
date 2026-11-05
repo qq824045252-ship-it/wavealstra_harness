@@ -16,7 +16,7 @@ import {
   MAX_PARALLEL_TASKS,
   parallelPerTaskOutputCap,
   resolveParallelLimits,
-} from "../src/main/capabilities/subagent/index";
+} from "../src/main/capabilities/subagent/shared";
 
 let passed = 0;
 function ok(label: string): void { passed += 1; console.log(`  ✓ ${label}`); }

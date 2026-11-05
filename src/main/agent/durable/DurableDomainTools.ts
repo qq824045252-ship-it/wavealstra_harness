@@ -1,19 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ModelRegistry, type ModelRuntime, type ExtensionAPI, type ExtensionContext, type ToolDefinition, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import { defineEntry, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId } from "@earendil-works/pi-durable";
+import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId, type ToolHooks } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
+import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
 
 type NativeApi = Parameters<ToolRegistration["execute"]>[1];
 type NativeContext = Parameters<ToolRegistration["execute"]>[2];
-interface CapabilityContext { cwd: string; models: ModelRuntime }
+interface CapabilityContext { cwd: string; models: ModelRuntime; taskId?: string }
 
 /** 扩展的 context 钩子（改写每次请求的模型上下文），由 Durable 的 beforeRequest 钩子执行。 */
 export type DurableContextHook = (messages: readonly Message[]) => Promise<{ messages: readonly Message[] } | undefined> | { messages: readonly Message[] } | undefined;
 
 export interface DurableDomainTools {
   tools: ToolRegistration[];
+  toolHooks?: Partial<ToolHooks>;
   /** 供 DurableBotRuntime 在 beforeRequest 里按序执行；不由 ToolTask 执行，也不影响打开历史。 */
   contextHooks: DurableContextHook[];
 }
@@ -32,18 +34,26 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
     registerTool(tool: ToolDefinition) {
       tools.push({ name: tool.name, description: tool.description, parameters: tool.parameters,
         // Data writes must never be repeated after a crash with an unknown outcome.
-        replay: "unsafe",
+        replay: capabilities?.taskId && (tool.name === "request_user_input" || tool.name === "multi_model_consult") ? "safe" : "unsafe",
         execute: async (args, native, context) => {
           const conversationId = await presentationConversation(native, context);
-          return invocation.run({ native, context, conversationId, writes: [] }, async () => {
+          const execute = () => invocation.run({ native, context, conversationId, writes: [] }, async () => {
             const extensionContext = capabilities ? await capabilityContext(native, context, capabilities, conversationId) : undefined;
             try {
               const result = await tool.execute(native.callId, args, context.abortSignal,
                 update => { for (const block of update.content ?? []) if (block.type === "text") native.output(block.text); },
                 extensionContext as Parameters<typeof tool.execute>[4]);
+              context.abortSignal?.throwIfAborted();
               return { output: result.content, isError: result.isError, details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
             } finally { await Promise.all(invocation.getStore()!.writes); }
           });
+          if (!capabilities?.taskId) return execute();
+          const execution = await durableExecutionContext(capabilities.taskId, native, context);
+          const cwd = (await native.agent(context)).cwd;
+          if (!cwd) throw new Error("工具执行缺少宿主绑定的工作目录");
+          const live = await native.snapshot(LiveDoc, conversationId, context);
+          const runId = `durable-run:${capabilities.taskId}:${conversationId}:${live?.run?.first ?? live?.run?.inputs[0] ?? native.taskId}`;
+          return withDurableExecution({ execution, cwd, runId, native, context }, execute);
         },
       });
     },
@@ -106,9 +116,10 @@ async function capabilityContext(native: NativeApi, context: NativeContext, opti
     const data = entry.data as unknown as StoredSearchData;
     if (data?.id) storeResult(data.id, data);
   }
-  const reader = { getBranch: () => branch, getSessionId: () => String(conversationId), getCwd: () => options.cwd };
+  const cwd = agent.cwd ?? options.cwd;
+  const reader = { getBranch: () => branch, getSessionId: () => String(conversationId), getCwd: () => cwd };
   bindNativeSummaryRuntime(reader, options.models);
-  return { cwd: options.cwd, hasUI: false,
+  return { cwd, hasUI: false,
     model: agent.model ? options.models.getModel(agent.model.provider === "azure-openai-responses" ? "azure" : agent.model.provider, agent.model.modelId) : undefined,
     modelRegistry: new ModelRegistry(options.models), sessionManager: reader,
     isProjectTrusted: () => true,

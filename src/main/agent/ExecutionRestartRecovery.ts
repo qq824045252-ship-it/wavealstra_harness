@@ -13,14 +13,15 @@ export function recoverInterruptedExecutions(attempts: ExecutionAttemptRepositor
   for (const attempt of interrupted) {
     // Retained historical Pi attempts are closed for audit only. Native Pi
     // execution does not revive the retired host recovery/verification flow.
-    if (BUILTIN_TOOL_NAMES.has(attempt.toolName) || attempt.toolName === "terminal") continue;
+    const durable = attempt.executionId.startsWith("durable:");
+    if (!durable && (BUILTIN_TOOL_NAMES.has(attempt.toolName) || attempt.toolName === "terminal")) continue;
     failures.record({
       taskId: attempt.taskId,
       executionId: attempt.executionId,
       assistantMessageId: attempt.assistantMessageId,
-      causeCode: "application-restarted",
+      causeCode: durable ? "durable-tool-interrupted" : "application-restarted",
       phase: "recover",
-      recovery: "recoverable",
+      recovery: durable ? "requires-user-action" : "recoverable",
       sideEffects: "unknown",
       target: recoveryTargetForAttempt(attempt),
       message: `${attempt.toolName} was interrupted by an application restart. Partial side effects may exist.`,

@@ -213,9 +213,8 @@ const policySrc = readFileSync(join(repo, "src/renderer/src/features/prompt-enha
     enhanceEnd > enhanceStart ? enhanceEnd : enhanceStart + 6000,
   );
   ok(
-    /this\.deps\.createTransientSession\(\{[\s\S]*?cwd,[\s\S]*?segments:/.test(enhanceSection) &&
-      /createTransientSession\("", cwd, null, undefined, segments, true, \[\]\)/.test(agentService),
-    "D2 enhance service uses AgentService bridge with inMemory=true + empty tool allowlist",
+    /this\.deps\.generate\(/.test(enhanceSection) && /kind: "prompt-enhance"/.test(agentService),
+    "D2 enhance service uses the durable auxiliary execution bridge",
   );
   ok(/MAX_CONCURRENT/.test(promptEnhancementService), "D3 dedicated service owns concurrency cap");
   ok(

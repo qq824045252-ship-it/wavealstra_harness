@@ -58,6 +58,9 @@ export class RemoteEventStream {
             return
           }
           if (reset || event.id <= this.lastEventId) return
+          if (this.lastEventId > 0 && event.id !== this.lastEventId + 1) {
+            this.onEvent({ ...event, type: 'resync_required', payload: { reason: 'event_gap' } })
+          }
           this.lastEventId = event.id
           this.onEvent(event)
         }, () => {

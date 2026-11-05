@@ -48,4 +48,7 @@ assert.equal(JSON.stringify(records),before,"Pending rows cannot be persisted in
 const consumed = botMessagePresentation([...records,user("native-delivered"),reply("native-answer")],[]);
 assert(!consumed.some(message=>message.pendingBehavior),"A consumed native inbox leaves no pending reply rows");
 assert.equal(consumed.length,projected.length+2);
+const interaction = { id: "question", taskId: "task", executionId: "tool-execution", assistantMessageId: "step-1", kind: "confirm" as const, title: "Continue?", options: [], status: "resolved" as const, answer: true, version: 2, createdAt: 2 };
+const answered = botMessagePresentation([records[0], { ...records[1], interactions: [interaction] }, records[3]]);
+assert.deepEqual(answered[1].interactions, [interaction], "A completed turn retains questions asked by earlier tool steps");
 console.log("PASS: Bot reply grouping, ordered process, tool deduplication, artifacts, turn boundaries and stable row identity");

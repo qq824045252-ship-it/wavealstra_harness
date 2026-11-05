@@ -19,6 +19,7 @@ import type {
   AgentApproveToolRequest,
   AgentPromptRequest,
   AgentPromptResult,
+  AgentSubmissionReceipt,
   AgentRegenerateRequest,
   AgentRegenerateResult,
   AgentDeleteUserMessageRequest,
@@ -242,6 +243,8 @@ export interface PreloadApi {
   startNativeDrag: (filePaths: string | string[]) => void;
   agent: {
     prompt: (req: AgentPromptRequest) => Promise<AgentPromptResult>;
+    submissionStatus: (receipt: AgentSubmissionReceipt) => Promise<AgentPromptResult>;
+    waitForSubmission: (receipt: AgentSubmissionReceipt) => Promise<AgentPromptResult>;
     regenerate: (req: AgentRegenerateRequest) => Promise<AgentRegenerateResult>;
     deleteUserMessage: (req: AgentDeleteUserMessageRequest) => Promise<void>;
     abort: (taskId: string) => Promise<void>;
@@ -333,7 +336,7 @@ export interface PreloadApi {
     getSubagentConfig: () => Promise<SubagentConfigDto>;
     saveSubagentConfig: (config: SubagentConfigPatch) => Promise<SubagentConfigDto>;
     getContextUsage: (taskId: string) => Promise<ContextUsageDto | null>;
-    loadTaskHistory: (taskId: string) => Promise<TaskHistoryDto>;
+    loadTaskHistory: (taskId: string, beforeEntryId?: number) => Promise<TaskHistoryDto>;
     listLoginProviders: () => Promise<import("../shared/agent-ipc").LoginProviderDto[]>;
     setProviderEnabled: (providerId: string, enabled: boolean) => Promise<ModelInfoDto[]>;
     listCredentials: () => Promise<import("../shared/agent-ipc").CredentialInfoDto[]>;
@@ -360,6 +363,7 @@ export interface PreloadApi {
     openModeFile: (id: WelcomeMode, target: ModeBlockId | "policy") => Promise<string>;
     assembleModePreview: (req: AssembleModePreviewRequest) => Promise<AssemblyTraceDto>;
     inspectRuntimeContext: (taskId: string) => Promise<RuntimeContextInspectionDto>;
+    getTaskDiagnostics: (taskId: string, limit?: number, offset?: number) => Promise<import("../shared/task-diagnostics").TaskDiagnosticsDto>;
     listAgentLoadoutObservations: (taskId: string, limit?: number) => Promise<AgentLoadoutObservationDto[]>;
     listRuntimeContextSnapshots: (taskId: string, limit?: number) => Promise<RuntimeContextSnapshotDto[]>;
     clearRuntimeContextSnapshots: (taskId?: string) => Promise<number>;

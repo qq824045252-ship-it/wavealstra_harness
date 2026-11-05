@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionVerificationResult } from "../../shared/execution-verification";
@@ -50,10 +50,24 @@ export class ExecutionAttemptRepository {
   constructor(private readonly db: Database.Database) {}
 
   begin(input: ExecutionAttemptBegin): ExecutionAttempt {
+    return this.insert(input, `attempt-${randomUUID()}`);
+  }
+
+  beginDurable(input: ExecutionAttemptBegin): ExecutionAttempt {
+    return this.findDurable(input, input.toolCallId) ?? this.insert(input, durableAttemptId(input, input.toolCallId));
+  }
+
+  findDurable(context: ConversationExecutionContext, toolCallId: string): ExecutionAttempt | undefined {
+    const row = this.db.prepare("SELECT record_json FROM execution_attempts WHERE id=?")
+      .get(durableAttemptId(context, toolCallId)) as { record_json: string } | undefined;
+    return row ? JSON.parse(row.record_json) as ExecutionAttempt : undefined;
+  }
+
+  private insert(input: ExecutionAttemptBegin, id: string): ExecutionAttempt {
     const record: ExecutionAttempt = {
       ...input,
       protocolVersion: 1,
-      id: `attempt-${randomUUID()}`,
+      id,
       startedAt: Date.now(),
       status: "running",
       phase: "executing",
@@ -65,6 +79,18 @@ export class ExecutionAttemptRepository {
       VALUES (?,?,?,?,?,?,?,?,?)`).run(record.id, record.taskId, record.executionId,
       record.assistantMessageId, record.toolCallId, record.target, record.status, JSON.stringify(record), record.startedAt);
     return record;
+  }
+
+  /** A recovered native result can settle an attempt marked uncertain during startup. */
+  settleDurable(record: ExecutionAttempt): void {
+    if (record.id !== durableAttemptId(record, record.toolCallId)) throw new Error("Invalid durable execution identity");
+    const prior = this.findDurable(record, record.toolCallId);
+    if (!prior) throw new Error("Durable execution attempt is missing");
+    if (prior.status === "running") { this.update(record); return; }
+    if (prior.status !== "inconclusive" || prior.causeCode !== "application-restarted") return;
+    if (record.status === "passed" && !this.hasMatchingVerification(record)) throw new Error("Durable result has no matching verifier evidence");
+    this.db.prepare("UPDATE execution_attempts SET status=?,record_json=?,finished_at=? WHERE id=? AND status='inconclusive'")
+      .run(record.status, JSON.stringify(record), record.finishedAt ?? null, record.id);
   }
 
   update(record: ExecutionAttempt): void {
@@ -108,4 +134,11 @@ export class ExecutionAttemptRepository {
     }
     return recovered;
   }
+}
+
+function durableAttemptId(context: ConversationExecutionContext, toolCallId: string): string {
+  if (!context.executionId.startsWith("durable:")) throw new Error("Durable execution identity is required");
+  return `attempt-durable-${createHash("sha256").update(JSON.stringify([
+    context.taskId, context.executionId, context.assistantMessageId, toolCallId,
+  ])).digest("hex")}`;
 }

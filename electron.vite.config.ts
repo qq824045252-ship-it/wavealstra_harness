@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import type { Plugin } from "vite";
-import { buildSubagentContext } from "./scripts/build-subagent-context.mjs";
 import { buildSubagentRuntime } from "./scripts/build-subagent-runtime.mjs";
 import { buildPiCodemodeAssets } from "./scripts/build-pi-codemode-assets.mjs";
 import { buildPiImageResizeAssets } from "./scripts/build-pi-image-resize-assets.mjs";
@@ -45,14 +44,13 @@ export default defineConfig({
     // 二次 vite 版本的类型系统差异（electron-vite 嵌套 vite vs 项目根 vite）
     // 使 Plugin 类型互不兼容，收窄为 never 消除误报，运行行为不变
     plugins: [shimNodeSqlite() as never, {
-      name: "subagent-worker-entry",
+      name: "durable-runtime-assets",
       async generateBundle() {
-        await buildSubagentContext(__dirname);
         for (const asset of await buildSubagentRuntime(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiCodemodeAssets(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiImageResizeAssets(__dirname)) this.emitFile(asset);
         for (const asset of await buildLinuxComputerUseAssets(__dirname)) this.emitFile(asset);
-        for (const fileName of ["capabilities/subagent/worker-launcher.mjs", "capabilities/subagent/vendor/context-projection.mjs", "capabilities/subagent/vendor/command-code.mjs", "capabilities/subagent/vendor/cache-request-trace.mjs", "capabilities/subagent/vendor/execution-policy.mjs", "agent/request-transport.mjs"]) {
+        for (const fileName of ["capabilities/subagent/worker-launcher.mjs"]) {
           const outputName = fileName;
           this.emitFile({ type: "asset", fileName: outputName, source: readFileSync(resolve(__dirname, "src/main", fileName), "utf8") });
         }

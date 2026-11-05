@@ -13,6 +13,7 @@
  * - context 的 taskId/projectId/spaceId 变化 → 清 undo/notice、使在途失效。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { beginAuxiliaryOperation } from "../auxiliary-operations";
 import {
   buildFingerprint,
   canTriggerEnhance,
@@ -180,7 +181,9 @@ export function usePromptEnhance(
         try {
           const enhanceApi = window.api?.enhance?.prompt;
           if (!enhanceApi) throw new Error("enhance bridge unavailable");
+          const operation = await beginAuxiliaryOperation("prompt-enhance", { context: reqContext, source, modelId });
           const res = await enhanceApi({
+            requestId: operation.requestId,
             surface: reqContext.surface,
             input: source,
             ...(reqContext.taskId ? { taskId: reqContext.taskId } : {}),
@@ -206,6 +209,7 @@ export function usePromptEnhance(
           }
           // apply：调用方写回文本 + 记录 undo（applied 不弹 toast，✨ + 恢复原文即反馈）
           onApplyRef.current(enhanced);
+          operation.complete();
           setUndo({ original: source, applied: enhanced });
           inflightRef.current = false;
           setStatus("applied");

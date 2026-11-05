@@ -4,8 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { parseFrontmatterCompat } from "./compat.ts";
+import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -69,7 +68,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatterCompat<Record<string, string>>(content);
+		let parsed: { frontmatter: Record<string, string>; body: string };
+		try { parsed = parseFrontmatter<Record<string, string>>(content); }
+		catch { continue; }
+		const { frontmatter, body } = parsed;
 
 		if (!frontmatter.name || !frontmatter.description) {
 			continue;

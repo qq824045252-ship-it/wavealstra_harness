@@ -19,6 +19,7 @@ import type {
   RemoteRuntimeSnapshot,
   RemoteTaskHistory,
 } from '@mybuddy/shared'
+import { acknowledgePromptOperation, pendingPromptOperation } from '../store/remoteDb'
 
 export class RemoteApiError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -56,16 +57,16 @@ export class RemoteClient {
   modelSettings() { return this.get<RemoteModelSetting[]>('/v1/models/settings') }
   setModelEnabled(id: string, enabled: boolean) { return this.post<RemoteModelSetting[]>('/v1/models/settings', { id, enabled }) }
   refreshModels() { return this.post<RemoteModelRefreshResult>('/v1/models/refresh', {}) }
-  history(taskId: string) { return this.get<RemoteTaskHistory>(`/v1/tasks/${encodeURIComponent(taskId)}/history`) }
+  history(taskId: string, beforeEntryId?: number) { return this.get<RemoteTaskHistory>(`/v1/tasks/${encodeURIComponent(taskId)}/history${beforeEntryId === undefined ? '' : `?beforeEntryId=${beforeEntryId}`}`) }
   runtime(taskId: string) { return this.get<RemoteRuntimeSnapshot>(`/v1/tasks/${encodeURIComponent(taskId)}/runtime`) }
   notifications() { return this.get<RemoteNotification[]>('/v1/notifications?limit=100') }
-  createTask(request: RemotePromptRequest) { return this.post<RemotePromptResponse>('/v1/tasks', request) }
+  createTask(request: Omit<RemotePromptRequest, 'operationId'>) { return this.submitPrompt('/v1/tasks', request) }
   /** 新任务第一轮直接交给 ACP 外部 Agent（契约字段名是 acpAgentId，本地用 agentId 复用请求类型） */
   createAcpTask(request: RemoteAcpCreateRequest) {
     const { agentId, ...rest } = request
     return this.post<RemoteAcpCreateResponse>('/v1/tasks', { ...rest, acpAgentId: agentId })
   }
-  prompt(taskId: string, request: RemotePromptRequest) { return this.post<RemotePromptResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/prompt`, request) }
+  prompt(taskId: string, request: Omit<RemotePromptRequest, 'operationId'>) { return this.submitPrompt(`/v1/tasks/${encodeURIComponent(taskId)}/prompt`, request) }
   abort(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/abort`, {}) }
   /** 「已结束」绿点确认：打开任务 = 已查看。电脑端写 tasks.done_acked_at，多设备共享同一状态。 */
   ackDone(taskId: string) { return this.post(`/v1/tasks/${encodeURIComponent(taskId)}/ackDone`, {}) }
@@ -139,6 +140,12 @@ export class RemoteClient {
 
   private get<T>(path: string): Promise<T> {
     return fetch(`${this.baseUrl}${path}`, { headers: this.headers(), cache: 'no-store', signal: AbortSignal.timeout(20_000) }).then(RemoteClient.read<T>)
+  }
+  private async submitPrompt(path: string, request: Omit<RemotePromptRequest, 'operationId'>): Promise<RemotePromptResponse> {
+    const pending = await pendingPromptOperation(this.baseUrl, path, JSON.stringify(request))
+    const result = await this.post<RemotePromptResponse>(path, { ...request, operationId: pending.operationId })
+    if (result.receipt) await acknowledgePromptOperation(pending.key, pending.operationId).catch(() => undefined)
+    return result
   }
   private post<T = { ok: true }>(path: string, body: unknown): Promise<T> {
     return fetch(`${this.baseUrl}${path}`, {

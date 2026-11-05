@@ -1,0 +1,140 @@
+import { basename } from "node:path";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
+import type { ChatMessageDto } from "../../../shared/agent-ipc";
+import type { DurableBotSnapshot } from "../../../shared/durable-bot";
+
+export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; audit?: import("./DurableSkillProjection").DurableInputAudit };
+type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
+type ToolResult = Extract<Message, { role: "toolResult" }>;
+export type InterruptedNested = { ownerId: string; message: ToolResult; toolTaskId: TaskId };
+
+export function durableContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter(part => part?.type === "text").map(part => part.text).join("");
+}
+
+/** Immutable entries are converted once. A result replaces only its owning assistant row. */
+export class DurableHistoryProjection {
+  private readonly entries = new Map<number, EntryRecord>();
+  private readonly rows = new Map<string, ChatMessageDto>();
+  private readonly owners = new Map<string, string>();
+  private readonly presentationRows = new Map<string, string>();
+  private readonly rowIndices = new Map<string, number>();
+  private readonly results = new Map<string, ToolResult>();
+  private ordered: ChatMessageDto[] = [];
+  private dirty = false;
+  private latestStatusEntry = 0;
+  private latestInputEntry = 0;
+  private newestEntry?: number;
+  private oldestEntry?: number;
+  readonly children = new Map<string, number>();
+  readonly interrupted: InterruptedNested[] = [];
+  error?: string;
+  outcome?: DurableBotSnapshot["outcome"];
+  turnStartedAt?: number;
+
+  get newest(): number | undefined { return this.newestEntry; }
+  get oldest(): number | undefined { return this.oldestEntry; }
+  has(entryId: number): boolean { return this.entries.has(entryId); }
+  ownerId(callId: string): string | undefined { return this.owners.get(callId); }
+  row(id: string): ChatMessageDto | undefined { return this.rows.get(id); }
+  presentationId(key: string): string | undefined { return this.presentationRows.get(key); }
+  index(id: string): number | undefined { return this.rowIndices.get(id); }
+  get messages(): ChatMessageDto[] {
+    if (this.dirty) {
+      this.ordered = [...this.rows.values()].sort((a, b) => Number(a.id.slice(8)) - Number(b.id.slice(8)));
+      this.rowIndices.clear();
+      this.ordered.forEach((row, index) => this.rowIndices.set(row.id, index));
+      this.dirty = false;
+    }
+    return this.ordered;
+  }
+
+  merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>): EntryRecord[] {
+    const fresh = entries.filter(entry => !this.entries.has(entry.id)).sort((a, b) => a.id - b.id);
+    for (const entry of fresh) {
+      this.entries.set(entry.id, entry);
+      this.newestEntry = Math.max(this.newestEntry ?? entry.id, entry.id);
+      this.oldestEntry = Math.min(this.oldestEntry ?? entry.id, entry.id);
+      const id = `durable-${entry.id}`;
+      for (const message of entry.model ?? []) {
+        if (message.role === "user" && (entry.kind === "pi.user" || entry.kind === "mybuddy.user")) {
+          const input = metadata.get(entry.id);
+          this.rows.set(id, { id, projectionVersion: 1, entryId: String(entry.id), role: "user", text: input?.displayText ?? durableContentText(message.content), attachments: input?.attachments, createdAt: message.timestamp });
+          this.dirty = true;
+          if (entry.id >= this.latestInputEntry) { this.latestInputEntry = entry.id; this.turnStartedAt = message.timestamp; }
+          if (entry.id >= this.latestStatusEntry) { this.latestStatusEntry = entry.id; this.outcome = undefined; this.error = undefined; }
+        } else if (message.role === "assistant") {
+          const user = [...this.entries.values()].filter(item => item.id <= entry.id && (item.kind === "pi.user" || item.kind === "mybuddy.user")).sort((a, b) => b.id - a.id)[0];
+          const startedAt = user?.model?.find(item => item.role === "user")?.timestamp ?? message.timestamp;
+          const row = assistantRow(id, entry.byTaskId, message, timing[`${entry.byTaskId}:${message.timestamp}`], startedAt);
+          this.rows.set(id, row); this.dirty = true;
+          if (row.presentationKey) this.presentationRows.set(row.presentationKey, id);
+          for (const tool of row.tools ?? []) {
+            this.owners.set(tool.id, id);
+            const result = this.results.get(tool.id);
+            if (result) this.applyResult(result);
+          }
+          if (entry.id >= this.latestStatusEntry) {
+            this.latestStatusEntry = entry.id;
+            this.error = message.stopReason === "error" ? message.errorMessage : undefined;
+            this.outcome = message.stopReason === "stop" ? "completed" : message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : undefined;
+          }
+        } else if (message.role === "toolResult") {
+          this.results.set(message.toolCallId, message);
+          this.applyResult(message);
+          const ownerId = this.owners.get(message.toolCallId);
+          if (ownerId && message.toolName === "codemode" && message.isError && !resultDetails(message)?.calls?.length && entry.byTaskId !== undefined) {
+            this.interrupted.push({ ownerId, message, toolTaskId: entry.byTaskId });
+          }
+        }
+      }
+    }
+    return fresh;
+  }
+
+  replace(row: ChatMessageDto): ChatMessageDto {
+    const next = { ...row, projectionVersion: (this.rows.get(row.id)?.projectionVersion ?? 0) + 1 };
+    this.rows.set(row.id, next);
+    this.dirty = true;
+    return next;
+  }
+
+  private applyResult(message: ToolResult): void {
+    const ownerId = this.owners.get(message.toolCallId);
+    const owner = ownerId && this.rows.get(ownerId);
+    if (!owner) return;
+    const details = resultDetails(message);
+    const calls = (details?.calls ?? []).map((call, index) => nestedToolRow(message.toolCallId, call, index));
+    const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId
+      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: message.details === undefined ? tool.detail : JSON.stringify(message.details) } : tool);
+    for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
+    if (details?.conversationId && message.toolName === "codemode") this.children.set(message.toolCallId, details.conversationId);
+    const artifacts = details?.imagePaths?.map(path => ({ id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "" }));
+    this.replace({ ...owner, tools, ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
+  }
+}
+
+export function assistantRow(id: string, taskId: TaskId | undefined, message: AssistantMessage, completedAt?: number, startedAt = message.timestamp, streaming = false): ChatMessageDto {
+  return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1 } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
+    durationMs: completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined,
+    generationStats: { phase: streaming ? "generating" : "complete", startedAt, updatedAt: completedAt ?? message.timestamp,
+      tps: null, estimated: false, outputTokens: message.usage.output, ttftMs: null,
+      ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
+    text: durableContentText(message.content) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
+    thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
+    tools: message.content.filter(item => item.type === "toolCall").map(call => ({ id: call.id, tool: call.name, summary: JSON.stringify(call.arguments), status: "running" })),
+    modelName: message.model, createdAt: message.timestamp, streaming,
+  };
+}
+
+export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string };
+export function nestedToolRow(parentCallId: string, call: NestedCallDetail, index: number): ToolRow {
+  return { id: typeof call.id === "number" ? `${parentCallId}/c${call.id}` : `${parentCallId}:nested:${call.id ?? String(index)}`, parentToolCallId: parentCallId, tool: call.name,
+    summary: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}), status: call.status === "error" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
+}
+function resultDetails(message: ToolResult): { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined {
+  return message.details as { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined;
+}

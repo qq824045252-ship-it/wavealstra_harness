@@ -6,7 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteAcpAgentSummary, RemoteAcpPermissionOption, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
 
 /** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
 const EMPTY_MESSAGE_IMAGES: RemoteImageArtifact[] = []
@@ -23,37 +23,8 @@ import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
 import './styles/app.css'
 
-/** ACP 权限选项 → 手机端短标签：优先表达「范围」而不是照搬英文原文（与桌面端同一套规则） */
-export function acpOptionLabel(option: RemoteAcpPermissionOption): string {
-  const raw = option.name.trim()
-  if (option.kind.startsWith('reject')) return '拒绝'
-  if (/bypass/i.test(raw)) return '自动放行'
-  if (!option.kind.endsWith('always')) return option.kind.startsWith('allow') ? '允许一次' : raw || '允许'
-  const scope = /all projects?/i.test(raw)
-    ? '所有项目'
-    : /(?:this|current) project/i.test(raw)
-      ? '当前项目'
-      : /(?:this|current) session/i.test(raw)
-        ? '本次会话'
-        : /(?:this|current) command/i.test(raw)
-          ? '此命令'
-          : ''
-  if (scope) return `${scope}始终允许`
-  return '始终允许'
-}
-
-/** ACP run 状态 → 手机端短标签（只描述传输/执行状态，不代表业务正确性） */
-export function acpStatusLabel(status: string): string {
-  switch (status) {
-    case 'starting': return '启动中'
-    case 'working': return '执行中'
-    case 'blocked': return '等待授权'
-    case 'completed': return '已完成'
-    case 'failed': return '失败'
-    case 'cancelled': return '已停止'
-    default: return status
-  }
-}
+import { acpOptionLabel, acpStatusLabel } from './lib/acpLabels'
+export { acpOptionLabel, acpStatusLabel } from './lib/acpLabels'
 
 export function handleBackNavigation(): boolean {  const s = useRemoteStore.getState()
   if (s.taskSetupSection) { s.setTaskSetupSection(null); return true }
@@ -352,6 +323,8 @@ function ChatPage() {
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const isNearBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const [earlierError, setEarlierError] = useState<string | null>(null)
   // 发送时记录「当前用户气泡数」，等新气泡真正渲染（数量 +1）再锚定置顶。
   // 不能再用一次性 flag：回复中追加提问时，旧回复的 text_delta 会抢跑 effect、
   // 把 flag 消耗在旧气泡上，导致新提问沉底（用户反馈 bug）。
@@ -613,6 +586,19 @@ function ChatPage() {
           className="chat-timeline"
           onScroll={handleScroll}
         >
+          {durable?.historyBefore !== undefined && <button type="button" disabled={loadingEarlier} onClick={async () => {
+            if (loadingEarlier) return
+            const element = timelineRef.current, taskId = activeTaskId
+            const height = element?.scrollHeight ?? 0, top = element?.scrollTop ?? 0
+            isNearBottomRef.current = false
+            setLoadingEarlier(true); setEarlierError(null)
+            try {
+              await useRemoteStore.getState().syncTask(taskId, durable.historyBefore)
+              requestAnimationFrame(() => { if (element && timelineRef.current === element) element.scrollTop = top + element.scrollHeight - height })
+            } catch (error) { setEarlierError(error instanceof Error ? error.message : String(error)) }
+            finally { setLoadingEarlier(false) }
+          }}>{loadingEarlier ? '正在加载历史…' : '加载更早的消息'}</button>}
+          {earlierError && <div role="alert">{earlierError}</div>}
           {messages.map((message) => {
             if (message.role === 'user') {
               return (

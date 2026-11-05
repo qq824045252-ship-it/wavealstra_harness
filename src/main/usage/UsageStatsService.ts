@@ -50,9 +50,10 @@ export const LIVE_PREFIX = "live:";
 export const SUBAGENT_PREFIX = "sub:";
 
 export interface RecordLiveInput {
+  reportedUsage?: import("../../shared/task-diagnostics").ReportedTokenUsage & { costTotal: number | null };
   taskId: string | null;
   sessionFile: string | null;
-  sourceKind: "main" | "btw" | "subagent";
+  sourceKind: "main" | "btw" | "subagent" | "auxiliary";
   sourceDetail?: string | null;
   sample: Omit<PerfSample, "requestStartedAt"> & { requestStartedAt: number | null };
   /** Immutable native ledger identity, when the caller projects a persisted backend. */
@@ -244,14 +245,24 @@ export function parseSubagentArchive(text: string): SubagentArchiveEntry[] {
 }
 
 export class UsageStatsService {
-  constructor(private readonly db: Database) {}
+  private coverageAvailable = true;
+  constructor(private readonly db: Database) {
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
+        input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
+    } catch { this.coverageAvailable = false; }
+  }
 
   // ---------- live 投影 ----------
 
   recordLive(input: RecordLiveInput): void {
     const { sample, message } = input;
     const sessionFile = input.sessionFile ?? null;
-    const usage = message.usage ?? null;
+    const reported = input.reportedUsage;
+    const usage = reported ? { ...message.usage, input: reported.input ?? 0, output: reported.output ?? 0,
+      cacheRead: reported.cacheRead ?? 0, cacheWrite: reported.cacheWrite ?? 0,
+      totalTokens: (reported.input ?? 0) + (reported.output ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0),
+      cost: { ...message.usage?.cost, total: reported.costTotal ?? 0 } } : message.usage ?? null;
     const attributed = applyMyBuddyModelAttribution(message, input.modelId);
     const entryId = input.persistedEntryId ?? `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
     const total =
@@ -312,6 +323,10 @@ export class UsageStatsService {
         turnIndex: sample.turnIndex,
         userTurn: input.userTurn ?? null,
       });
+    if (reported && this.coverageAvailable) try {
+      this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
+        .run(entryId, Number(reported.input !== null), Number(reported.output !== null), Number(reported.cacheRead !== null), Number(reported.cacheWrite !== null), Number(reported.costTotal !== null));
+    } catch { /* Unknown coverage must not affect a completed model call. */ }
   }
 
   /** subagent 实例结束归档（usage-archive.jsonl → 事实表；key = sub:{id}:{finishedAt}，
@@ -366,7 +381,7 @@ export class UsageStatsService {
       args.push(...opts.sourceKinds);
     }
     const sql = `SELECT
-        entry_id AS entryId, task_id AS taskId, session_file AS sessionFile,
+        e.entry_id AS entryId, task_id AS taskId, session_file AS sessionFile,
         source_kind AS sourceKind, source_detail AS sourceDetail,
         provider, model, response_model AS responseModel, ts,
         input_tokens AS inputTokens, output_tokens AS outputTokens,
@@ -375,11 +390,28 @@ export class UsageStatsService {
         stop_reason AS stopReason, error_message AS errorMessage,
         ttft_ms AS ttftMs, decode_ms AS decodeMs, generation_tps AS generationTps, model_wall_ms AS modelWallMs,
         turn_index AS turnIndex, user_turn AS userTurn,
-        response_id AS responseId, backfilled
-      FROM usage_events
+        response_id AS responseId, backfilled,
+        ${this.coverageAvailable ? "c.input_known AS inputKnown,c.output_known AS outputKnown,c.cache_read_known AS cacheReadKnown,c.cache_write_known AS cacheWriteKnown,c.cost_known AS costKnown" : "NULL AS inputKnown,NULL AS outputKnown,NULL AS cacheReadKnown,NULL AS cacheWriteKnown,NULL AS costKnown"}
+      FROM usage_events e ${this.coverageAvailable ? "LEFT JOIN usage_event_coverage c ON c.entry_id=e.entry_id" : ""}
       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY ts ASC`;
-    return this.db.prepare(sql).all(...args) as UsageEventRow[];
+    const rows = this.db.prepare<unknown[], UsageEventRow & { inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null; cacheWriteKnown: number | null; costKnown: number | null }>(sql).all(...args);
+    return rows.map(row => {
+      const known = {
+      input: row.inputKnown === null ? row.sourceDetail !== "pi-durable" && row.inputTokens > 0 : row.inputKnown === 1,
+      output: row.outputKnown === null ? row.sourceDetail !== "pi-durable" && row.outputTokens > 0 : row.outputKnown === 1,
+      cacheRead: row.cacheReadKnown === null ? row.sourceDetail !== "pi-durable" && row.cacheRead > 0 : row.cacheReadKnown === 1,
+      cacheWrite: row.cacheWriteKnown === null ? row.sourceDetail !== "pi-durable" && row.cacheWrite > 0 : row.cacheWriteKnown === 1,
+      cost: row.costKnown === null ? row.sourceDetail !== "pi-durable" && row.costTotal > 0 : row.costKnown === 1,
+      };
+      const inputTokens = known.input ? row.inputTokens : 0;
+      const outputTokens = known.output ? row.outputTokens : 0;
+      const cacheRead = known.cacheRead ? row.cacheRead : 0;
+      const cacheWrite = known.cacheWrite ? row.cacheWrite : 0;
+      return { ...row, known, inputTokens, outputTokens, cacheRead, cacheWrite,
+        totalTokens: known.input && known.output && known.cacheRead && known.cacheWrite ? row.totalTokens : inputTokens + outputTokens + cacheRead + cacheWrite,
+        costTotal: known.cost ? row.costTotal : 0 };
+    });
   }
 
   summarize(rangeDays: number): ReturnType<typeof summarizeRows> {
@@ -412,6 +444,7 @@ export class UsageStatsService {
    * 面板一次拉取：窗口内汇总 + 近 53 周活跃度/连续天数 + skills + 模型明细。
    */
   dashboard(rangeDays: number): {
+    known?: import("../../shared/usage-stats").UsageKnownFields;
     rangeDays: number;
     from: string;
     to: string;
@@ -454,6 +487,7 @@ export class UsageStatsService {
     const dailyPeakTokens = rangeDaysActivity.reduce((m, d) => Math.max(m, d.tokens), 0);
     const runs = summary.turns;
     return {
+      known: summary.known,
       rangeDays,
       from: localDayKey(since),
       to: localDayKey(now),

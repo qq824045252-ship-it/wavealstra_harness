@@ -6,16 +6,24 @@
  * - btw:event 补丁按 btwId 路由，id 不匹配一律丢弃（不进主任务 reducer）；
  * - 多轮追问：Q1→A1→Q2→A2 在同一个 BTW session 内；
  * - 关闭即销毁：close 后状态清空、后续补丁丢弃、主进程 close 被调用；
- * - 切换父任务自动销毁（不漂移、不恢复）；
+ * - 切换父任务停止观察，切回使用原身份恢复；
  * - 带回主线只填主 Composer（composerDraft），不直接写 Task.messages；
  * - 消息/会话 id 使用 btw-* 前缀，与主任务 id 空间隔离。
  */
 import assert from "node:assert/strict";
 import type { BtwUiPatch } from "../src/shared/agent-ipc";
 import { BTW_MAX_SESSIONS, canStartBtwSession } from "../src/shared/btw-policy";
+import type { DurableBotSnapshot } from "../src/shared/durable-bot";
+import { durableDelta } from "../shared/src/durable-sync";
 
 // ---- Node 环境桩：window.api.btw 调用全部捕获；setInterval 不真实运行（避免挂起）----
 const btwCalls: Record<string, unknown[][]> = { start: [], prompt: [], abort: [], close: [], keepalive: [] };
+const browserStorage = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+  getItem: (key: string) => browserStorage.get(key) ?? null,
+  setItem: (key: string, value: string) => { browserStorage.set(key, value); },
+  removeItem: (key: string) => { browserStorage.delete(key); },
+} });
 (globalThis as unknown as { window: unknown }).window = {
   api: {
     btw: {
@@ -64,6 +72,7 @@ function mkTask(id: string, messages: ChatMessage[], sessionFile?: string): Task
 
 /** 重置两个 store 到干净状态 */
 function reset(): void {
+  browserStorage.clear();
   useAppStore.setState({
     tasks: [],
     activeTaskId: null,
@@ -80,6 +89,8 @@ function reset(): void {
     lastBringBackUserMsgId: null,
     btwId: null,
     parentTaskId: null,
+    startRequest: null,
+    durable: undefined,
     snapshotAt: 0,
     messages: [],
     streaming: false,
@@ -157,7 +168,7 @@ function ok(cond: unknown, label: string): void {
   useBtwStore.getState().send("Q1");
   const { btwId, messages } = useBtwStore.getState();
   const asstId = messages[1]!.id;
-  const patch = (p: Omit<BtwUiPatch, "btwId">): BtwUiPatch => ({ ...p, btwId: btwId! });
+  const patch = (p: BtwUiPatch extends infer P ? P extends BtwUiPatch ? Omit<P, "btwId"> : never : never): BtwUiPatch => ({ ...p, btwId: btwId! });
   // 错误 btwId 一律丢弃
   useBtwStore.getState().applyBtwPatch({
     type: "text_delta",
@@ -224,19 +235,20 @@ function ok(cond: unknown, label: string): void {
   ok(useBtwStore.getState().messages.length === 0, "6.6 关闭后补丁被丢弃");
 }
 
-// ---- 场景 7：切换父任务自动销毁（不漂移、不恢复）----
+// ---- 场景 7：切换父任务仅停止观察，切回恢复原身份 ----
 {
   reset();
   useAppStore.setState({ tasks: [mainTask, mkTask("t2", [mkUserMessage("m2", "另一个任务")])], activeTaskId: "t1" });
   useBtwStore.getState().start();
   useBtwStore.getState().send("Q1");
+  const originalBtwId = useBtwStore.getState().btwId;
   ok(useBtwStore.getState().active, "7.1 BTW 已激活");
   useBtwStore.getState().destroyIfParentChanged("t2");
   const st = useBtwStore.getState();
-  ok(!st.active && st.messages.length === 0, "7.2 切换任务 → 自动销毁");
-  ok(btwCalls.close.length >= 1, "7.3 主进程会话被关闭（含在途 start 的补发 close）");
+  ok(!st.active && st.messages.length === 0, "7.2 切换任务 → 清理观察界面");
+  ok(btwCalls.close.length === 0 && btwCalls.abort.length === 0, "7.3 停止观察不取消后台执行");
   useBtwStore.getState().destroyIfParentChanged("t1");
-  ok(useBtwStore.getState().active === false, "7.4 不恢复");
+  ok(useBtwStore.getState().active && useBtwStore.getState().btwId === originalBtwId, "7.4 原会话身份恢复");
 }
 
 // ---- 场景 8：带回主线只填 Composer（问题+精简结论），不写 Task.messages ----
@@ -536,7 +548,7 @@ async function scenarioSendWhileStartingQueuesAndReplays(): Promise<void> {
   deferredStart.resolve();
   await new Promise((r) => setTimeout(r, 0));
   st = useBtwStore.getState();
-  ok(st.ready && !st.starting && st.pendingSend === null, "18.7 start 完成、会话就绪、队列清空");
+  ok(st.ready && !st.starting && st.pendingSend?.userMessageId === st.messages[0]?.id, "18.7 start 完成、会话就绪、补发等待持久回执");
   ok(btwCalls.prompt.length === 2, "18.8 自动补发同一轮 prompt");
   ok(st.messages.length === 2 && st.messages[1]!.id === asstMsgId, "18.9 消息无重复、id 不变");
   ok(st.error === null, "18.10 全程无错误暴露");
@@ -634,7 +646,7 @@ async function scenarioBtwIdUniqueness(): Promise<void> {
   ok(seen.size === rounds, "22.2 全部 btwId 无重复（多窗口同毫秒也不碰撞）");
 }
 
-// ---- 场景 23：回首页（activeTaskId=null）→ BTW 自动销毁，不漂移 ----
+// ---- 场景 23：回首页（activeTaskId=null）→ BTW 停止观察，不漂移 ----
 async function scenarioDestroyOnHome(): Promise<void> {
   reset();
   useAppStore.setState({ tasks: [mainTask], activeTaskId: "t1" });
@@ -644,9 +656,39 @@ async function scenarioDestroyOnHome(): Promise<void> {
   // 模拟回到首页 / 删除当前任务（activeTaskId → null）
   useBtwStore.getState().destroyIfParentChanged(null);
   const st = useBtwStore.getState();
-  ok(!st.active && st.messages.length === 0 && st.btwId === null, "23.2 回首页即销毁（不漂移、不恢复）");
+  ok(!st.active && st.messages.length === 0 && st.btwId === null, "23.2 回首页即清理观察界面");
+  ok(btwCalls.close.length === 0 && btwCalls.abort.length === 0, "23.2b 回首页不取消执行");
   // 主任务消息不受影响
   ok(useAppStore.getState().tasks.find((t) => t.id === "t1")!.messages.length === 1, "23.3 Task.messages 未被污染");
+}
+
+async function scenarioDurableDeltaAndReattach(): Promise<void> {
+  reset(); useAppStore.setState({ tasks: [mainTask], activeTaskId: "t1" });
+  useBtwStore.getState().start();
+  const btwId = useBtwStore.getState().btwId!;
+  const first: DurableBotSnapshot = { backend: "pi-durable", epoch: "btw-epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true,
+    queued: 0, pendingInputs: [], compacting: false, messages: [{ id: "reply", role: "assistant", text: "1", createdAt: 1 }] };
+  const next = (revision: number): DurableBotSnapshot => ({ ...first, revision, messages: [{ ...first.messages[0], text: String(revision) }] });
+  const delta = (from: number, to: number) => {
+    const full = next(to), { messages: _messages, epoch: _epoch, revision: _revision, ...state } = full;
+    return durableDelta(next(from), full, state);
+  };
+  const apply = useBtwStore.getState().applyBtwPatch;
+  apply({ type: "durable_snapshot", taskId: btwId, btwId, snapshot: first });
+  apply({ type: "durable_delta", taskId: btwId, btwId, delta: delta(1, 2) });
+  ok(useBtwStore.getState().durable?.revision === 2, "24.1 BTW 接收增量");
+  const reads = btwCalls.start.length;
+  apply({ type: "durable_delta", taskId: btwId, btwId, delta: delta(3, 4) });
+  apply({ type: "durable_delta", taskId: btwId, btwId, delta: delta(4, 5) });
+  ok(btwCalls.start.length === reads + 1, "24.2 revision缺失只发一次重附着请求");
+  apply({ type: "durable_snapshot", taskId: btwId, btwId, snapshot: next(4) });
+  ok(useBtwStore.getState().durable?.revision === 5, "24.3 全量重同步后补齐在途增量");
+  useBtwStore.setState({ active: false, btwId: null, parentTaskId: null, startRequest: null, durable: undefined, messages: [] });
+  useBtwStore.getState().destroyIfParentChanged("t1");
+  ok(useBtwStore.getState().btwId === btwId, "24.4 renderer状态重建仍使用持久观察身份");
+  useBtwStore.getState().close();
+  ok(browserStorage.size === 0, "24.5 显式关闭才清除观察身份");
+  await new Promise(resolve => setTimeout(resolve, 0));
 }
 
 void scenarioStartInFlightClose()
@@ -659,6 +701,7 @@ void scenarioStartInFlightClose()
   .then(() => scenarioStreamingTimeoutPolicy())
   .then(() => scenarioBtwIdUniqueness())
   .then(() => scenarioDestroyOnHome())
+  .then(() => scenarioDurableDeltaAndReattach())
   .then(() => {
     console.log(`[btw-isolation-test] passed=${passed} failed=0`);
   })

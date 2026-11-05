@@ -4,6 +4,7 @@ import { z } from "zod";
 const ATTACHMENT_DATA_MAX = 4_000_000;
 
 export const remotePromptSchema = z.object({
+  operationId: z.string().regex(/^[a-zA-Z0-9_-]{8,200}$/).optional(),
   // P1 修复：纯附件消息（拍照直接发送）允许 text 为空，但 text 与 attachments 不能同时为空
   text: z.string().trim().max(100_000),
   spaceId: z.string().trim().min(1).max(200).optional(),
@@ -23,6 +24,9 @@ export const remotePromptSchema = z.object({
     mimeType: z.string().trim().min(1).max(100).optional(),
   }).strict()).max(4).optional(),
 }).strict().superRefine((value, ctx) => {
+  if (!value.acpAgentId && !value.operationId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["operationId"], message: "缺少输入操作身份，请更新远程客户端" });
+  }
   if (!value.text && !(value.attachments?.length)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["text"], message: "消息与附件不能同时为空" });
   }

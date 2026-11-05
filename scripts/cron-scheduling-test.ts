@@ -37,7 +37,10 @@ async function main() {
   let preparing = false;
   const agent: CronAgent = {
     getAppSettings: () => ({}),
-    resolveAvailableModelId: async id => ({ modelId: id }),
+    resolveAvailableModelId: async id => {
+      if (historyBarrier) { preparing = true; await historyBarrier.promise; }
+      return { modelId: id };
+    },
     isTaskBusy: () => busy,
     listSkills: () => [], listConnectors: () => [],
     loadTaskHistory: async taskId => {
@@ -50,8 +53,10 @@ async function main() {
       if (!empty) history.set(req.taskId, [...(history.get(req.taskId) ?? []), {
         id: `native-${prompts.length}`, entryId: `entry-${prompts.length}`, role: "assistant", text: "done", createdAt: Date.now(),
       }]);
-      return { queued: false, cancelled };
+      return { queued: true, cancelled, receipt: { taskId: req.taskId, operationId: req.userMessageId, submissionId: prompts.length, status: "queued" } };
     },
+    waitForSubmission: async receipt => ({ queued: false, receipt: { ...receipt, status: "done" },
+      ...(empty ? { error: { code: "DURABLE_FAILED", message: "本轮模型未返回有效内容" } } : {}) }),
   };
   let cron = new CronService(db, agent);
   const job = (id: string, extra: Partial<CronJobDto> = {}): CronJobDto => ({
@@ -104,7 +109,7 @@ async function main() {
     busy = false;
 
     for (const action of ["pause", "cancel"] as const) {
-      const scheduled = cron.createForTask("source", root, { name: action, prompt: "check", scheduleType: "every", scheduleExpr: "1h", timezone: "UTC", target: "current-task" });
+      const scheduled = cron.createForTask("source", root, { name: action, prompt: "check", scheduleType: "every", scheduleExpr: "1h", timezone: "UTC", target: "new-task" });
       preparing = false; historyBarrier = barrier();
       await cron.runNow(scheduled.id);
       await until(() => preparing, "preparation");
@@ -129,6 +134,9 @@ async function main() {
 
     cron.upsert(job("resume", { restartPolicy: "resume" }));
     cron.upsert(job("pause", { restartPolicy: "pause" }));
+    const savedRequest: AgentPromptRequest = { taskId: "source", text: "saved prompt", userMessageId: "cron-saved-input", assistantMessageId: "cron-saved-assistant", permissionMode: "readonly" };
+    db.insertCronRun({ id: "saved", jobId: "resume", taskId: "source", startedAt: 1, status: "running" });
+    db.connection.prepare("INSERT INTO cron_run_inputs VALUES (?, ?)").run("saved", JSON.stringify({ request: savedRequest, newTask: false, job: { id: "resume", name: "Original schedule" } }));
     db.insertCronRun({ id: "interrupted", jobId: "resume", startedAt: 1, status: "running" });
     cron.stop(); db.close();
     db = new AppDatabase(dbPath);
@@ -136,6 +144,9 @@ async function main() {
     assert.equal(db.getCronJob("pause")?.enabled, false);
     assert.equal(db.getCronJob("resume")?.enabled, true);
     assert.equal(db.listCronRuns().find(run => run.id === "interrupted")?.status, "error");
+    await until(() => db.listCronRuns().find(run => run.id === "saved")?.status === "success", "saved receipt resumed");
+    assert.deepEqual(prompts.at(-1), savedRequest, "restart resubmits the persisted operation identity and input");
+    assert.equal(db.getTask("source")?.title, "Keep title", "editing the plan target cannot rename its original task on recovery");
     assert.ok((cron.list().find(item => item.id === "resume")?.nextRunAt ?? 0) > Date.now());
     assert.equal(db.getTask("source")?.cwd, root);
     console.log("PASS cron: real SQLite/reopen, timers, 90s, busy, cancellation during await, quota, deadline, restart, task scope/context");

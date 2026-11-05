@@ -171,15 +171,15 @@ try {
     assert.equal(held, 1, "unsafe tool is not replayed after restart");
     assert(seen.length >= 3 && seen.every(item => item.identity === "stable-old-identity"), "resumed generation and all pre-existing queued inputs retain active identity");
     assert.equal(bindings.get("durable")!.pending, true);
-    await service.prompt(request("new-input-after-idle"));
+    await service.prompt(request("new-input-after-idle"), false);
     assert.equal(bindings.active("durable")!.revision, nextBot.desired!.revision);
     assert.equal(seen.at(-1)!.identity, "stable-new-identity");
     assert(seen.at(-1)!.mcp.includes("other") && !seen.at(-1)!.mcp.includes("selected") && !seen.at(-1)!.mcp.includes("disabled"));
     assert(patches.some(patch => patch.type === "expert_binding" && patch.binding.active?.revision === nextBot.desired!.revision && !patch.binding.pending));
     await service.compact("durable");
-    await service.prompt(request("after-compaction"));
+    await service.prompt(request("after-compaction"), false);
     assert.equal(seen.at(-1)!.identity, "stable-new-identity", "compaction regenerates the active identity section");
-    await service.prompt({ ...request("codemode-scope-probe"), modePresetId: "codemode" });
+    await service.prompt({ ...request("codemode-scope-probe"), modePresetId: "codemode" }, false);
     const denied = (await service.history("durable")).messages.flatMap(message => message.tools ?? []).filter(tool => tool.tool === "codemode");
     assert(denied.some(tool => tool.status === "error"), "Code Mode rejects an explicitly requested MCP server removed from active identity");
     console.log("PASS Durable binding stays stable through tools, queue and restart; idle input promotes identity/MCP and compaction retains it");

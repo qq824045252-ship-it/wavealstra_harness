@@ -7,7 +7,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { IconX, IconDownload, IconRefresh } from "@/components/common/icons";
 import type { UsageDashboardDto, UsageDailyCellDto } from "../../../../shared/agent-ipc";
+import type { UsageKnownFields } from "../../../../shared/usage-stats";
 import { barHeights, mondayIndex, weeklyTotals } from "@shared/usage-stats";
+
+const allTokensKnown = (known?: UsageKnownFields) => !known || known.input && known.output && known.cacheRead && known.cacheWrite;
+const fmtKnown = (value: number, known?: boolean) => known === false ? "未知" : fmtZh(value);
+const fmtKnownTotal = (value: number, known?: UsageKnownFields) => allTokensKnown(known) ? fmtZh(value) : value > 0 ? `已知 ${fmtZh(value)}` : "未知";
 
 const RANGES = [
   { days: 1, label: "今天" },
@@ -53,7 +58,7 @@ function fmtDuration(ms: number): string {
 }
 
 function fmtPct(p: number | null): string {
-  return p === null ? "—" : `${trimNum(p * 100, 0)}%`;
+  return p === null ? "未知" : `${trimNum(p * 100, 0)}%`;
 }
 
 function heatLevel(tokens: number, max: number): number {
@@ -314,7 +319,7 @@ export default function UsageStatsModal(): React.JSX.Element | null {
         {data && (
           <div className="us-body">
             <div className="us-kpis">
-              <Kpi icon="☰" value={fmtZh(data.totalTokens)} label="累计 tokens" />
+              <Kpi icon="☰" value={fmtKnownTotal(data.totalTokens, data.known)} label="累计 tokens" />
               <Kpi icon="⌃" value={fmtZh(data.dailyPeakTokens)} label="单日峰值 tokens" />
               <Kpi icon="◷" value={fmtDuration(data.longestTaskMs)} label="最长任务" />
               <Kpi icon="🔥" value={`${data.currentStreakDays} 天`} label="当前连续" />
@@ -369,23 +374,23 @@ export default function UsageStatsModal(): React.JSX.Element | null {
                 items={[
                   { label: "总会话数", value: fmtZh(data.sessions) },
                   { label: "总运行数", value: fmtZh(data.runs) },
-                  { label: "平均 tokens / 运行", value: fmtZh(data.avgTokensPerRun) },
+                  { label: "平均 tokens / 运行", value: allTokensKnown(data.known) ? fmtZh(data.avgTokensPerRun) : "未知" },
                   { label: "最长任务", value: fmtDuration(data.longestTaskMs) },
                 ]}
               />
               <StatGrid
                 title="Token 指标"
                 items={[
-                  { label: "输入 tokens", value: fmtZh(data.input) },
-                  { label: "输出 tokens", value: fmtZh(data.output) },
-                  { label: "缓存读取 tokens", value: fmtZh(data.cacheRead) },
-                  { label: "缓存写入 tokens", value: fmtZh(data.cacheWrite) },
+                  { label: "输入 tokens", value: fmtKnown(data.input, data.known?.input) },
+                  { label: "输出 tokens", value: fmtKnown(data.output, data.known?.output) },
+                  { label: "缓存读取 tokens", value: fmtKnown(data.cacheRead, data.known?.cacheRead) },
+                  { label: "缓存写入 tokens", value: fmtKnown(data.cacheWrite, data.known?.cacheWrite) },
                 ]}
               />
               <StatGrid
                 title="Cache 指标"
                 items={[
-                  { label: "缓存 tokens", value: fmtZh(data.cacheRead + data.cacheWrite) },
+                  { label: "缓存 tokens", value: data.known?.cacheRead === false || data.known?.cacheWrite === false ? "未知" : fmtZh(data.cacheRead + data.cacheWrite) },
                   { label: "Cache 命中率", value: fmtPct(data.cacheHitRate) },
                 ]}
               />
@@ -460,15 +465,15 @@ export default function UsageStatsModal(): React.JSX.Element | null {
                             <div className="us-model-prov">{m.provider}</div>
                           </div>
                           <div className="us-model-total">
-                            <div>{fmtZh(m.totalTokens)}</div>
+                            <div>{fmtKnownTotal(m.totalTokens, m.known)}</div>
                             <div className="us-model-total-hint">总 tokens</div>
                           </div>
                         </div>
                         <div className="us-model-metrics">
-                          <span>输入 {fmtZh(m.input)}</span>
-                          <span>输出 {fmtZh(m.output)}</span>
-                          <span>缓存读取 {fmtZh(m.cacheRead)}</span>
-                          <span>缓存写入 {fmtZh(m.cacheWrite)}</span>
+                          <span>输入 {fmtKnown(m.input, m.known?.input)}</span>
+                          <span>输出 {fmtKnown(m.output, m.known?.output)}</span>
+                          <span>缓存读取 {fmtKnown(m.cacheRead, m.known?.cacheRead)}</span>
+                          <span>缓存写入 {fmtKnown(m.cacheWrite, m.known?.cacheWrite)}</span>
                           <span className="us-model-hit">缓存命中率 {fmtPct(m.cacheHitRate)}</span>
                           <span className="us-model-calls">{m.calls}次</span>
                         </div>
@@ -481,7 +486,7 @@ export default function UsageStatsModal(): React.JSX.Element | null {
 
             <div className="us-note">
               数字按所选时间窗口统计（今天 = 当日 0 点起）。模型按 MyBuddy 所选模型记账。Token /
-              费用含压缩摘要，但不计为调用。费用为 Provider 估算。
+              费用含压缩摘要，但不计为调用。费用按目录单价估算。供应商未报告的字段显示未知；有缺失时，总量和趋势只显示已知部分。
             </div>
           </div>
         )}

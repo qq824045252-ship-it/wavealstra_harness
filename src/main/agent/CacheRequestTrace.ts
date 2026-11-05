@@ -6,8 +6,14 @@ export type { CacheTraceBoundary, CacheTraceRecord, CacheTraceSink } from './Cac
 
 let logger: RuntimeLogger | undefined;
 let tracer: CacheRequestTracer | undefined;
+export type DiagnosticModel = { provider: string; id: string; api: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+const observers = new Set<(record: CacheTraceRecord, model: DiagnosticModel) => void>();
+export function observeCacheRequestTraces(observer: (record: CacheTraceRecord, model: DiagnosticModel) => void): () => void {
+  observers.add(observer);
+  return () => observers.delete(observer);
+}
 
-/** The host owns the one rotating log; workers send only keyed metadata over RPC. */
+/** The host owns the rotating request log; diagnostics observers receive the same metadata. */
 export function writeCacheRequestTrace(record: CacheTraceRecord): void {
   if (process.env.MYBUDDY_CACHE_TRACE === '0') return;
   try {
@@ -17,10 +23,12 @@ export function writeCacheRequestTrace(record: CacheTraceRecord): void {
   } catch { /* Observation cannot affect the model or worker lifecycle. */ }
 }
 
-export function startCacheRequestTrace(model: { provider: string; id: string; api: string }, sessionId?: string, boundary?: CacheTraceBoundary) {
-  if (process.env.MYBUDDY_CACHE_TRACE === '0') return;
+export function startCacheRequestTrace(model: DiagnosticModel, sessionId?: string, boundary?: CacheTraceBoundary) {
+  if (process.env.MYBUDDY_CACHE_TRACE === '0' && observers.size === 0) return;
   try {
     tracer ??= new CacheRequestTracer(record => writeCacheRequestTrace({ ...record, source: 'main' }));
-    return tracer.start(model, sessionId, boundary);
+    return tracer.start(model, sessionId, boundary, record => {
+      for (const observe of observers) { try { observe(record, model); } catch { /* diagnostics cannot fail a model call */ } }
+    });
   } catch { return; }
 }

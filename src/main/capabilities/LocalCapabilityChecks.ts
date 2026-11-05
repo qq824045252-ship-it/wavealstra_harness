@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { getAgentBashShellPath } from "../agent-shell-settings";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../../shared/builtin-capabilities";
 import type { PythonRuntimeService } from "../runtime/PythonRuntimeService";
@@ -15,13 +16,11 @@ import type { BrowserAutomationService } from "./BrowserAutomationService";
 import { uiAutomationService } from "./UiAutomationService";
 import { computerAutomationService } from "./ComputerAutomationService";
 import { runtimeProbeService } from "./RuntimeProbeService";
-import { resolveBuiltinSubagentInvocation } from "./subagent/index";
 import { getMyBuddyDir } from "../paths";
 import { platformShellLanguageIds } from "../platform/shell-tools";
 import { computerUseToolCopy } from "../platform/computer-use/support";
 import { currentPlatformId } from "../platform";
 
-const execFileAsync = promisify(execFile);
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 
 function output(result: { content: Array<{ type: string; text?: string }>; isError?: boolean }): string {
@@ -119,10 +118,16 @@ export function registerLocalCapabilityChecks(runtime: BuiltinCapabilityRuntime,
     return { state: "ready", detail: `已实际读取运行状态：${available.map((state) => state.target).join("、")}。` };
   }, () => ({ available: runtimeProbeService.anyAvailable() }));
   runtime.registerLocalCheck("subagent", async () => {
-    const invocation = resolveBuiltinSubagentInvocation();
-    if (!invocation) throw new Error("无法定位子代理 Node / Pi Runtime。");
-    const result = await execFileAsync(invocation.command, [...invocation.args, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 32_768 });
-    if (!result.stdout.trim()) throw new Error("子代理 Runtime 未返回版本信息。");
-    return { state: "ready", detail: `子代理入口已实际启动并返回版本 ${result.stdout.trim().slice(0, 80)}；未调用模型，模型登录在委派时验证。` };
+    const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(),
+      models: () => { throw new Error("本地内核检查不应调用模型"); } }, BACKGROUND_CONTEXT);
+    try {
+      const conversation = await harness.root(BACKGROUND_CONTEXT);
+      const input = { type: "write" as const, requestId: "capability-check", entry: { kind: "mybuddy.probe", data: "subagent" } };
+      const first = await conversation.submit(input, BACKGROUND_CONTEXT);
+      const repeated = await conversation.submit(input, BACKGROUND_CONTEXT);
+      const entries = await conversation.entries({ order: "ascending" }, 10, undefined, BACKGROUND_CONTEXT);
+      if (first.id !== repeated.id || entries.items.length !== 1) throw new Error("Durable 内核回执或历史检查失败");
+      return { state: "ready", detail: "共享执行内核已实际启动，并验证回执去重与历史读取；未调用模型，模型登录在委派时验证。" };
+    } finally { await harness.close(BACKGROUND_CONTEXT); }
   });
 }

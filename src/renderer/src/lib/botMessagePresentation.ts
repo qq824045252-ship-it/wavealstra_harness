@@ -31,6 +31,7 @@ export function botMessagePresentation(
       }
     }
     const artifactIds = [...new Set(replies.flatMap(reply => reply.artifactIds ?? []))];
+    const interactions = [...new Map(replies.flatMap(reply => reply.interactions ?? []).map(interaction => [interaction.id, interaction])).values()];
     result.push({ ...last, blocks,
       sourceMessageIds: [...new Set(replies.flatMap(reply => [reply.id, ...reply.sourceMessageIds ?? []]))],
       presentationKey: `durable-turn-${userId ?? first.presentationKey ?? first.id}`,
@@ -38,6 +39,7 @@ export function botMessagePresentation(
       modelName: [...replies].reverse().find(reply => reply.modelName)?.modelName,
       streaming: replies.some(reply => reply.streaming),
       artifactIds: artifactIds.length ? artifactIds : undefined,
+      interactions: interactions.length ? interactions : undefined,
     });
     replies = [];
   };

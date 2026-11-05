@@ -288,44 +288,45 @@ try {
   const historyTool = history.messages.flatMap((m) => m.tools ?? []).find((t) => t.id === "unit");
   check("Pi session replay preserves full raw answers and traces", () => { assert(historyTool?.consult); assert.equal(historyTool.consult.workers[0]!.answer, report.workers[0]!.answer); assert.equal(historyTool.consult.workers[0]!.tools.length, 1); });
   check("UI request is explicit and scoped to one message", () => { assert.match(requestConsultForMessage("original task"), /仅本条消息/); assert(requestConsultForMessage("original task").endsWith("original task")); });
-  // Execute the actual post-await completion fragment with a blocked artifact flush.
-  // This catches mutable-entry reuse without constructing an Electron host or inventing another runtime.
-  const serviceSource = readFileSync(join(process.cwd(), "src/main/agent/AgentService.ts"), "utf8");
-  const afterPrompt = serviceSource.indexOf("await entry.session.prompt(promptText, options)");
-  const completionStart = serviceSource.indexOf("await this.emitChangedArtifacts(", afterPrompt);
-  const completionEnd = serviceSource.indexOf("    } catch (err) {", completionStart);
-  assert(completionStart > afterPrompt && completionEnd > completionStart);
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const finishTurn = new AsyncFunction("req", "entry", "cwd", "workspaceBefore", "promptStartedAt", "computerUseRunCoordinator", "conversationExecutionId", serviceSource.slice(completionStart, completionEnd));
-  const computerEnds: string[] = [];
-  const computerUse = { endTask: (_task: string, _outcome: string, executionId: string) => computerEnds.push(executionId) };
-  const oldRequest = { taskId: "same-task", assistantMessageId: "old-answer" };
-  const entry = { assistantMessageId: "old-answer", startedAt: Date.now(), session: {} };
-  let finishArtifacts: () => void = () => undefined;
-  const oldArtifacts = new Promise<void>((resolve) => { finishArtifacts = resolve; });
-  const terminalPatches: Array<{ messageId: string }> = [];
-  const terminalLife: Array<{ assistantMessageId: string }> = [];
-  const completionOwner = {
-    lifecycleTerminalAssistantIds: new Set<string>(),
-    emitChangedArtifacts: async (_taskId: string, messageId: string) => { assert.equal(messageId, "old-answer"); await oldArtifacts; },
-    emitContextUsage: () => undefined,
-    emitPatch: (patch: { messageId: string }) => terminalPatches.push(patch),
-    emitTaskLifecycle: (event: { assistantMessageId: string }) => terminalLife.push(event),
+  // A delayed artifact projection must not settle or rename a later native turn.
+  const previousHome = process.env.HOME;
+  const previousProfile = process.env.USERPROFILE;
+  process.env.HOME = root; process.env.USERPROFILE = root;
+  const { AppDatabase } = await import("../src/main/db/AppDatabase");
+  const { createAgentDurableFixture } = await import("./agent-durable-fixture");
+  const db = new AppDatabase(join(root, "lifecycle.db"));
+  const fixture = await createAgentDurableFixture(root, db);
+  let releaseArtifacts: () => void = () => {};
+  const blockedArtifacts = new Promise<void>(resolve => { releaseArtifacts = resolve; });
+  let artifactStarted: () => void = () => {};
+  const started = new Promise<void>(resolve => { artifactStarted = resolve; });
+  const artifactMessages: string[] = [];
+  const terminalMessages: string[] = [];
+  const projection = fixture.agent as unknown as { emitChangedArtifacts(taskId: string, messageId: string, cwd: string, before: Map<string, string>): Promise<void> };
+  const emitArtifacts = projection.emitChangedArtifacts.bind(fixture.agent);
+  projection.emitChangedArtifacts = async (taskId, messageId, cwd, before) => {
+    artifactMessages.push(messageId);
+    if (artifactMessages.length === 1) { artifactStarted(); await blockedArtifacts; }
+    await emitArtifacts(taskId, messageId, cwd, before);
   };
-  const flushing = finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now(), computerUse, "old-execution");
-  entry.assistantMessageId = "new-answer";
-  finishArtifacts();
-  await flushing;
-  check("late artifact flush cannot end the following message", () => { assert.deepEqual(terminalPatches.map((patch) => patch.messageId), ["old-answer"]); assert.deepEqual(terminalLife.map((event) => event.assistantMessageId), ["old-answer"]); });
-  terminalPatches.length = 0;
-  completionOwner.lifecycleTerminalAssistantIds.add("old-answer");
-  await finishTurn.call(completionOwner, oldRequest, entry, workspace, {}, Date.now(), computerUse, "old-execution");
-  check("an already settled SDK reply emits no duplicate fallback end", () => assert.equal(terminalPatches.length, 0));
-  const failureStart = serviceSource.indexOf("const failedMessageId =", completionEnd);
-  const failureEnd = serviceSource.indexOf("      throw err;", failureStart) + "      throw err;".length;
-  const failTurn = new Function("req", "entry", "promptStartedAt", "wasStreaming", "err", "computerUseRunCoordinator", "conversationExecutionId", "const message = err.message;" + serviceSource.slice(failureStart, failureEnd));
-  assert.throws(() => failTurn.call(completionOwner, oldRequest, entry, Date.now(), false, new Error("late flush failure"), computerUse, "old-execution"), /late flush failure/);
-  check("late completion and failure close only their captured Computer Use execution", () => assert.deepEqual(computerEnds, ["old-execution", "old-execution", "old-execution"]));
-  check("late failure also retains its original message identity", () => assert.equal(terminalPatches.at(-1)?.messageId, "old-answer"));
+  fixture.agent.setTaskLifecycleListener(event => {
+    if (event.kind === "completed" || event.kind === "failed") terminalMessages.push(event.assistantMessageId);
+  });
+  try {
+    db.upsertTask({ id: "lifecycle", title: "Lifecycle", updatedAt: 1, welcomeMode: "coding" });
+    await fixture.prompt({ taskId: "lifecycle", text: "first", userMessageId: "first-user", assistantMessageId: "first-answer" });
+    await started;
+    const first = (await fixture.agent.loadTaskHistory("lifecycle")).messages.filter(message => message.role === "assistant").at(-1)!.id;
+    await fixture.prompt({ taskId: "lifecycle", text: "second", userMessageId: "second-user", assistantMessageId: "second-answer" });
+    const second = (await fixture.agent.loadTaskHistory("lifecycle")).messages.filter(message => message.role === "assistant").at(-1)!.id;
+    releaseArtifacts();
+    await fixture.agent.releaseDurableTask("lifecycle");
+    check("late native artifact projection keeps each original message identity", () => assert.deepEqual(artifactMessages, [first, second]));
+    check("native lifecycle settles each receipt once independently of artifact delays", () => assert.deepEqual(terminalMessages, [first, second]));
+  } finally {
+    releaseArtifacts(); await fixture.close(); db.close();
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+  }
   console.log(JSON.stringify({ suite: "multi-model-consult-offline", result: "PASS", checks: checks.length, passed: checks }, null, 2));
 } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }

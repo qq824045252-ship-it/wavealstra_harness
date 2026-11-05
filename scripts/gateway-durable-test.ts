@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, unlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,9 +7,11 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { GatewayService } from "../src/main/gateway/GatewayService";
+import { RemoteTaskCommandService } from "../src/main/remote/RemoteTaskCommandService";
 import { gatewayBotTaskId } from "../src/shared/gateway-task";
 import { GATEWAY_ROOT_SPACE_ID, GATEWAY_ROOT_SPACE_NAME, gatewayChannelSpaceId } from "../src/main/gateway/gateway-task-space";
 
@@ -41,8 +43,9 @@ const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:as
   });return stream;
 }};
 models.completeSimple=(m:any,c:any,o:any)=>models.streamSimple(m,c,o).result();
-const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:()=>"codemode",
-  instructions:()=>"fixture",tools:async()=>({ tools:[hold], contextHooks:[] }),emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
+let failAssembly = false;
+const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:task=>task.welcomeMode === "bot" ? "codemode" : "native",
+  instructions:()=>"fixture",tools:async()=>{ if (failAssembly) throw new Error("FIXTURE_POLICY_UNAVAILABLE"); return { tools:[hold], contextHooks:[] }; },emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
 let durable=createService();
 const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
@@ -119,9 +122,89 @@ try{
 
   const suspended=durable.runGatewayTurn(request("HOLD_RESTART")).catch(error=>error);
   await until(()=>held.has("HOLD_RESTART"));const effectsBeforeRestart=effects;await durable.close();assert((await suspended) instanceof Error);
-  durable=createService();assert.equal(await durable.runGatewayTurn(request("HOLD_RESTART")),"ANSWER:HOLD_RESTART");assert.equal(effects,effectsBeforeRestart);
+  durable=createService(); failAssembly=true;
+  const requestsBeforeUnavailablePolicy=requests;
+  await assert.rejects(durable.runGatewayTurn(request("HOLD_RESTART")),/FIXTURE_POLICY_UNAVAILABLE/);
+  assert.equal(requests,requestsBeforeUnavailablePolicy,"recovery cannot execute with missing permission hooks");
+  failAssembly=false;
+  assert.equal(await durable.runGatewayTurn(request("HOLD_RESTART")),"ANSWER:HOLD_RESTART");assert.equal(effects,effectsBeforeRestart);
   const afterRestart=requests;assert.equal(await durable.runGatewayTurn(request("SECOND")),"ANSWER:SECOND");assert.equal(requests,afterRestart);
   assert.deepEqual(db.getTask(legacy!.id),legacy);
   console.log("PASS checkpoint/reopen reacquires native receipts, with no unsafe replay, no duplicate old input and no legacy migration");
+  db.upsertTask({ id: "desktop-receipt", title: "Desktop", welcomeMode: "working", permissionMode: "auto", updatedAt: 1 });
+  const accepted = await durable.prompt({ taskId: "desktop-receipt", text: "DESKTOP", userMessageId: "desktop-operation", assistantMessageId: "desktop-assistant" });
+  assert(accepted.receipt);
+  assert.equal((await durable.submissionStatus(accepted.receipt, true)).receipt?.status, "done");
+  const afterDesktop = requests;
+  const retried = await durable.prompt({ taskId: "desktop-receipt", text: "CHANGED RETRY", userMessageId: "desktop-operation", assistantMessageId: "retry-assistant", modelId: "missing/model" });
+  assert.equal(retried.receipt?.submissionId, accepted.receipt.submissionId);
+  assert.equal(requests, afterDesktop);
+  const beforeFork = await durable.history("desktop-receipt");
+  const user = beforeFork.messages.find(message => message.role === "user")!;
+  const regeneration = { taskId: "desktop-receipt", requestId: "regen-operation", userMessageIndex: 0, assistantMessageId: "regenerated", sourceAssistantMessageId: "desktop-assistant", sourceUserMessageId: user.id, sourceUserEntryId: user.entryId };
+  assert.equal((await durable.regenerate(regeneration)).ok, true);
+  await until(async () => !(await durable.history("desktop-receipt")).durable?.busy);
+  const afterRegenerate = requests;
+  assert.equal((await durable.regenerate(regeneration)).ok, true);
+  assert.equal(requests, afterRegenerate);
+  assert.equal((await durable.history("desktop-receipt")).messages.filter(message => message.role === "user").length, 1);
+  await durable.deleteUserMessage({ taskId: "desktop-receipt", userMessageIndex: 0 });
+  assert.equal((await durable.history("desktop-receipt")).messages.length, 0);
+  assert.equal((await durable.submissionStatus(accepted.receipt, true)).receipt?.status, "done", "a receipt remains queryable after the visible branch changes");
+  await durable.release("desktop-receipt");
+  assert.equal((await durable.history("desktop-receipt")).messages.length, 0);
+  const old = SessionManager.create(root);
+  old.appendMessage({ role: "user", content: "EXISTING", timestamp: 1 });
+  old.appendMessage({ role: "assistant", content: [{ type: "text", text: "Existing answer" }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "stop", timestamp: 2 });
+  const oldFile = old.getSessionFile()!;
+  const oldBytes = readFileSync(oldFile, "utf8");
+  db.upsertTask({ id: "desktop-import", title: "Existing", welcomeMode: "coding", sessionFile: oldFile, updatedAt: 1 });
+  assert.equal(durable.owns("desktop-import"), true);
+  assert.deepEqual((await durable.history("desktop-import")).messages.map(message => message.text), ["EXISTING", "Existing answer"]);
+  assert.equal(readFileSync(oldFile, "utf8"), oldBytes);
+  await durable.release("desktop-import");
+  db.upsertTask({ ...db.getTask("desktop-import")!, sessionFile: join(root, "unavailable-old-session.jsonl") });
+  assert.deepEqual((await durable.history("desktop-import")).messages.map(message => message.text), ["EXISTING", "Existing answer"], "native recovery never reopens the legacy import source");
+  console.log("PASS desktop receipts, retry identity, native regeneration/deletion and non-destructive history import");
+
+  const uploads = join(root, "remote-uploads");
+  const remoteAgent = {
+    prompt: (input: Parameters<typeof durable.prompt>[0]) => durable.prompt(input),
+    findSubmission: (taskId: string, operationId: string) => durable.findSubmission(taskId, operationId),
+    listModels: async () => (await models.getAvailable()).map((entry: typeof model) => ({ id: `${entry.provider}/${entry.id}`, enabled: true, available: true })),
+    isTaskBusy: (taskId: string) => durable.busy(taskId), listPendingActions: () => [],
+  };
+  const remote = new RemoteTaskCommandService(db, remoteAgent as never,
+    { read: () => ({ permissionMode: "default" }), getTaskConnectorIds: () => [] } as never, { get: () => undefined }, uploads);
+  const remoteInput = { operationId: "remote-stable-operation", text: "REMOTE_RECEIPT", modelId: "fixture/native", permissionMode: "auto" as const,
+    attachments: [{ name: "source.txt", data: Buffer.from("uploaded once").toString("base64") }] };
+  const firstRemote = await remote.createAndPrompt(remoteInput);
+  await durable.submissionStatus(firstRemote.receipt, true);
+  db.upsertTask({ ...db.getTask(firstRemote.task.id)!, permissionMode: "readonly" });
+  const attached = join(uploads, firstRemote.task.id, readdirSync(join(uploads, firstRemote.task.id))[0]!);
+  unlinkSync(attached);
+  const beforeRemoteRetry = requests;
+  await durable.release(firstRemote.task.id);
+  const available = models.getAvailable, getModel = models.getModel;
+  models.getAvailable = async () => []; models.getModel = () => undefined;
+  remote.invalidateModelCache();
+  try {
+    const retriedRemote = await remote.createAndPrompt(remoteInput);
+    assert.equal(retriedRemote.receipt.submissionId, firstRemote.receipt.submissionId);
+    assert.equal(retriedRemote.receipt.status, "done");
+    assert.equal(retriedRemote.queued, false);
+    assert.equal(db.getTask(firstRemote.task.id)?.permissionMode, "readonly", "accepted remote retry cannot restore stale auto permission");
+    assert.equal(existsSync(attached), false, "accepted remote retry cannot recreate or rewrite old attachments");
+    assert.equal(requests, beforeRemoteRetry, "receipt lookup after reopen cannot invoke a removed model");
+  } finally { models.getAvailable = available; models.getModel = getModel; }
+  assert.equal((await durable.findSubmission("desktop-receipt", "desktop-operation"))?.receipt?.submissionId, accepted.receipt.submissionId,
+    "operation lookup must retain receipts from the old visible branch");
+  const afterDeletedBranch = requests;
+  const retriedDeleted = await durable.prompt({ taskId: "desktop-receipt", text: "OLD_INPUT_RETRY", userMessageId: "desktop-operation",
+    assistantMessageId: "ignored-deleted-retry", permissionMode: "auto", modelId: "missing/model" });
+  assert.equal(retriedDeleted.receipt?.submissionId, accepted.receipt.submissionId);
+  assert.equal(requests, afterDeletedBranch, "retrying an old branch input never invokes the model again");
+  assert.equal((await durable.history("desktop-receipt")).messages.length, 0, "retrying a receipt cannot restore deleted visible history");
+  console.log("PASS remote lost-response retry reads native receipt before permissions, models or attachments change");
 }finally{await gateway.stop();await durable.close();db.close();}
 console.log("GATEWAY_DURABLE_TESTS_PASSED",root);

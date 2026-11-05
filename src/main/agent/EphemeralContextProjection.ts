@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { MemoryService } from "../memory/MemoryService";
 import type { MemorySearchRequest } from "../../shared/memory-kernel";
 import { projectMemoryContext, renderMemoryEvidence, MEMORY_EVIDENCE_RENDERER, type MemoryEvidenceBlock } from "./MemoryContextProjection";
@@ -42,12 +42,29 @@ interface Turn {
   selected: SelectedEvidence[];
 }
 
+export type EvidenceProjectionEntry =
+  | { type: "message"; id: string; message: AgentMessage }
+  | { type: "custom"; id: string; customType: string; data?: unknown }
+  | { type: "compaction"; id: string }
+  | Exclude<SessionEntry, { type: "message" | "custom" | "compaction" }>;
+
+/** The ledger needs canonical provenance and append-only metadata, not a second agent session. */
+export interface EvidenceProjectionHost {
+  readonly model: AgentSession["model"];
+  getContextUsage(): { tokens: number | null } | undefined;
+  readonly sessionManager: {
+    getBranch(fromId?: string): EvidenceProjectionEntry[];
+    buildSessionProjection(): { entries: Array<{ sourceEntry: EvidenceProjectionEntry; messages: AgentMessage[] }> };
+    appendCustomEntry(customType: string, data: unknown): string;
+  };
+}
+
 /** Canonical entries own provenance; this object owns only request-time bodies.
  * Durable custom entries contain versions/hashes/access witnesses, never evidence text.
  * Old projected bytes stay fixed until their canonical anchors leave Pi's context.
  */
 export class EphemeralContextProjection {
-  private session?: AgentSession;
+  private session?: EvidenceProjectionHost;
   private turn?: Turn;
   private ticket?: object;
   private failure?: Error;
@@ -98,28 +115,34 @@ export class EphemeralContextProjection {
   };
 
   attach(session: AgentSession): void {
-    this.session = session;
-    this.options.registerRequestGuard(session, () => {
-      const ticket = this.ticket;
-      const failure = this.failure;
-      return () => {
-        if (this.disposed || ticket !== this.ticket) throw new Error("请求所属的上下文投影已结束");
-        if (failure) throw failure;
-        if (this.failure) throw this.failure;
-        if (this.turn) {
-          if (`${session.model?.provider}/${session.model?.id}` !== this.turn.modelKey
-            || scopeKey(this.options.scope()) !== this.turn.scopeStamp) throw new Error("本轮模型或上下文作用域已变化，请重新发起执行");
-          for (const item of this.turn.selected) item.validate?.();
-        }
-        this.validateHistory(this.records());
-      };
-    });
+    this.attachHost(session);
+    this.options.registerRequestGuard(session, () => this.captureRequestGuard());
     const dispose = session.dispose.bind(session);
     session.dispose = () => { this.dispose(); dispose(); };
   }
 
+  attachHost(session: EvidenceProjectionHost): void { this.session = session; }
+
+  projectContext(messages: readonly AgentMessage[]): { messages: AgentMessage[] } | undefined { return this.project([...messages]); }
+
+  captureRequestGuard(): () => void {
+    const ticket = this.ticket;
+    const failure = this.failure;
+    return () => {
+      if (this.disposed || ticket !== this.ticket) throw new Error("请求所属的上下文投影已结束");
+      if (failure) throw failure;
+      if (this.failure) throw this.failure;
+      if (this.turn) {
+        if (`${this.session?.model?.provider}/${this.session?.model?.id}` !== this.turn.modelKey
+          || scopeKey(this.options.scope()) !== this.turn.scopeStamp) throw new Error("本轮模型或上下文作用域已变化，请重新发起执行");
+        for (const item of this.turn.selected) item.validate?.();
+      }
+      this.validateHistory(this.records());
+    };
+  }
+
   private clearTurn(): void { this.ticket = undefined; this.turn = undefined; this.failure = undefined; }
-  private dispose(): void { this.disposed = true; this.clearTurn(); this.bodies.clear(); this.accessChecks.clear(); }
+  dispose(): void { this.disposed = true; this.clearTurn(); this.bodies.clear(); this.accessChecks.clear(); }
   private blockKey(ref: EvidenceRef): string { return digest(ref); }
 
   private records(fromId?: string): Array<{ id: string; record: LedgerRecord }> {

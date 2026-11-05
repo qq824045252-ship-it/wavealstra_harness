@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import { reportedTokenUsage, unknownTokenUsage } from './ReportedTokenUsage';
+import type { DiagnosticSource } from '../../shared/task-diagnostics';
 
 // This observer never rewrites requests, retries them, or saves request content.
 // Content digests are keyed per process. Different epochs are not comparable.
@@ -30,6 +32,7 @@ type Snapshot = { request: string; attempt: number; hash: string; inputHash: str
 export type CacheTraceSink = (record: Json) => void;
 export type CacheTraceBoundary = { sessionId?: string; leafId?: string | null; userId?: string;
   compactionId?: string; ledgerId?: string; resetId?: string; operation?: string };
+export type ModelExecutionIdentity = { taskId?: string; conversationId: string; generationTaskId: number; sourceKind: DiagnosticSource; executionScope?: string };
 
 export function sessionTraceBoundary(session: AgentSession, operation: string): CacheTraceBoundary {
   try {
@@ -53,8 +56,10 @@ export class CacheRequestTracer {
   private digest(value: unknown): string {
     return createHmac('sha256', this.key).update(JSON.stringify(value) ?? 'undefined').digest('hex');
   }
-  private emit(record: Json): void {
-    try { this.sink({ version: 1, epoch: this.epoch, at: Date.now(), sequence: ++this.sequence, ...record }); } catch { /* observation cannot fail a request */ }
+  private emit(record: Json): Json {
+    const event = { version: 1, epoch: this.epoch, at: Date.now(), sequence: ++this.sequence, ...record };
+    try { this.sink(event); } catch { /* observation cannot fail a request */ }
+    return event;
   }
   private fields(value: Json, allowed: Set<string>, omit: Set<string> = new Set()): Record<string, string> {
     const result: Record<string, string> = {};
@@ -88,7 +93,13 @@ export class CacheRequestTracer {
       fields: this.fields(body, FIELDS, new Set([field])), bytes };
   }
 
-  start(model: { provider: string; id: string; api: string }, sessionId?: string, boundary?: CacheTraceBoundary) {
+  start(model: { provider: string; id: string; api: string }, sessionId?: string, boundary?: CacheTraceBoundary, observer?: CacheTraceSink) {
+    const emit = (value: Json, privateDiagnostic?: Json) => { const record = this.emit(value); try { observer?.({ ...record, ...privateDiagnostic }); } catch { /* observation cannot fail a request */ } };
+    const startedAt = Date.now();
+    const startedClock = performance.now();
+    let firstResponseAt: number | null = null;
+    let reported = unknownTokenUsage();
+    let usageSource: string | null = null;
     const request = randomUUID();
     const session = sessionId || boundary?.sessionId;
     // No global chain for unbound calls: unrelated requests must never share a baseline.
@@ -103,11 +114,12 @@ export class CacheRequestTracer {
         reset: boundary.resetId ? this.digest(boundary.resetId) : null } : undefined };
     let attempts = 0;
     let payloadSnapshot: Snapshot | undefined;
+    emit({ ...base, event: 'started', startedAt });
     const capture = (payload: unknown, stage: 'provider' | 'http', attempt: number, extras: Json = {}) => {
       try {
         const now = this.snapshot(payload, request, attempt);
         if (!now) {
-          this.emit({ ...base, event: 'request', stage, attempt, coverage: 'unsupported-or-over-limit', ...extras });
+          emit({ ...base, event: 'request', stage, attempt, coverage: 'unsupported-or-over-limit', ...extras });
           // Skipped observations cannot silently bridge a gap in the chain.
           if (sessionHash) this.previous.delete(`${sessionHash}/${stage}/${boundary?.operation ?? 'unbound'}`);
           return undefined;
@@ -122,7 +134,7 @@ export class CacheRequestTracer {
         const prefix = before?.complete && now.complete ? shared === before.inputCount : null;
         const changedItemFields = oldItem && newItem ? [...new Set([...Object.keys(oldItem.fields), ...Object.keys(newItem.fields)])]
           .filter(key => oldItem.fields[key] !== newItem.fields[key]) : [];
-        this.emit({ ...base, event: 'request', stage, attempt, coverage: now.complete ? 'complete' : 'partial',
+        emit({ ...base, event: 'request', stage, attempt, coverage: now.complete ? 'complete' : 'partial',
           bytes: now.bytes, bodyHash: now.hash, inputHash: now.inputHash, inputCount: now.inputCount,
           // Full bounded vectors allow independent offline checking; field hashes only for the first difference.
           items: now.items.map(({ fields: _fields, ...item }) => item), fields: now.fields,
@@ -137,25 +149,29 @@ export class CacheRequestTracer {
         return now;
       } catch {
         if (sessionHash) this.previous.delete(`${sessionHash}/${stage}/${boundary?.operation ?? 'unbound'}`);
-        this.emit({ ...base, event: 'request', stage, attempt, coverage: 'observation-failed' });
+        emit({ ...base, event: 'request', stage, attempt, coverage: 'observation-failed' });
         return undefined;
       }
     };
     return {
+      identify: (identity: ModelExecutionIdentity) => { emit({ ...base, event: 'execution', ...identity }); },
+      firstResponse: () => { if (firstResponseAt === null) { firstResponseAt = Date.now(); emit({ ...base, event: 'first-response' }); } },
       payload: (payload: unknown) => { payloadSnapshot = capture(payload, 'provider', 0); },
       providerEvent: (data: unknown) => {
         try {
+          const observed = reportedTokenUsage(data);
+          if (observed) { reported = { ...reported, ...observed.values }; usageSource = observed.source; }
           const event = object(data);
           if (typeof event?.type !== 'string' || !RESPONSE_TERMINALS.has(event.type)) return;
           const response = object(event.response);
           const usage = object(response?.usage);
           const details = object(usage?.input_tokens_details);
-          this.emit({ ...base, event: 'provider-usage', terminal: event.type,
+          emit({ ...base, event: 'provider-usage', terminal: event.type,
             responseStatus: typeof response?.status === 'string' && RESPONSE_STATUSES.has(response.status) ? response.status : 'unknown',
             usagePresent: usage !== undefined, cachedTokensPresent: details !== undefined && Object.hasOwn(details, 'cached_tokens'),
             usage: { inputTokens: finiteNumber(usage?.input_tokens), outputTokens: finiteNumber(usage?.output_tokens),
               totalTokens: finiteNumber(usage?.total_tokens), cachedTokens: finiteNumber(details?.cached_tokens) } });
-        } catch { this.emit({ ...base, event: 'provider-usage', coverage: 'observation-failed' }); }
+        } catch { emit({ ...base, event: 'provider-usage', coverage: 'observation-failed' }); }
       },
       sent: (input: RequestInfo | URL, init?: RequestInit) => {
         const attempt = ++attempts;
@@ -178,17 +194,19 @@ export class CacheRequestTracer {
         } catch { capture(undefined, 'http', attempt); }
         return attempt;
       },
-      received: (attempt: number, status: number | null) => { this.emit({ ...base, event: 'http-result', attempt, status }); },
-      result: (message: { responseId?: string; responseModel?: string; stopReason: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }) => {
+      received: (attempt: number, status: number | null) => { emit({ ...base, event: 'http-result', attempt, status }); },
+      result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }) => {
         try {
           const u = message.usage;
-          this.emit({ ...base, event: 'result', attempts,
+          emit({ ...base, event: 'result', attempts, startedAt, firstResponseAt, modelMs: Math.max(0, performance.now() - startedClock),
+            reportedUsage: reported, usageSource,
             responseHash: message.responseId ? plainHash(message.responseId) : null,
             responseModelHash: message.responseModel ? this.digest(message.responseModel) : null,
             outcome: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(message.stopReason) ? message.stopReason : 'other',
             usage: u ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : null,
-            hitRate: u && u.input + u.cacheRead + u.cacheWrite > 0 ? u.cacheRead / (u.input + u.cacheRead + u.cacheWrite) : null });
-        } catch { this.emit({ ...base, event: 'result', attempts, outcome: 'observation-failed' }); }
+            hitRate: u && u.input + u.cacheRead + u.cacheWrite > 0 ? u.cacheRead / (u.input + u.cacheRead + u.cacheWrite) : null },
+          message.errorMessage ? { error: message.errorMessage.slice(0, 2000) } : undefined);
+        } catch { emit({ ...base, event: 'result', attempts, outcome: 'observation-failed' }); }
       },
     };
   }

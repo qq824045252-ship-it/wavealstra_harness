@@ -288,7 +288,7 @@ async function main(): Promise<void> {
   );
   const btwServiceSrc = readFileSync(join(repo, "src/main/agent/BtwSessionService.ts"), "utf8");
   const btwCtx = btwServiceSrc.slice(
-    btwServiceSrc.indexOf("private buildBaseContext("),
+    btwServiceSrc.indexOf("private baseContext("),
     btwServiceSrc.indexOf("private schedulePrune("),
   );
   const promptAssemblySrc = readFileSync(
@@ -300,9 +300,9 @@ async function main(): Promise<void> {
     promptAssemblySrc.indexOf("export function assemblePrompt("),
   );
   ok(
-    (btwCtx.match(/this\.deps\.libraryWorkspace\.renderBtwProjectContextSegments\(/g) ?? []).length >= 2 &&
+    btwCtx.includes("this.deps.libraryWorkspace.renderBtwProjectContextSegments(") &&
       /\.filter\(\(s\) => s\.id !== "workspace"\)/.test(btwMapper),
-    "G5 BTW live/reassembled contexts share mapper; mapper filters workspace to avoid duplicate injection",
+    "G5 BTW uses the shared context mapper, which filters duplicate workspace injection",
   );
   const policySrc = readFileSync(
     join(repo, "src/main/security/TaskFileAccessPolicy.ts"),

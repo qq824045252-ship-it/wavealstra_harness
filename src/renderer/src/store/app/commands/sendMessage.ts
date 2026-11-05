@@ -99,6 +99,8 @@ export function createSendMessageActions(
               }
             : undefined));
 
+      const isDurable = !effectiveExternalAgent;
+
       // 显式 vs 默认契约（P0）：用户显式选择过才作为 explicit 传主进程，否则 undefined，
       // 由主进程按 Tag 建议 → Mode 建议 → 系统默认链解析；createRelatedTask 等已解析场景
       // 通过 explicitOverrides 直接注入（等价于显式）。
@@ -235,8 +237,8 @@ export function createSendMessageActions(
                 // 同步「已公告专家」：有专家则记下，无则清空（取消后再次引用可再贴）
                 lastAnnouncedExpertId: nextAnnouncedExpertId,
                 updatedAt: Date.now(),
-                messages: isBot ? x.messages : [...x.messages, userMsg, reply],
-                ...(isBot
+                messages: isDurable ? x.messages : [...x.messages, userMsg, reply],
+                ...(isDurable
                   ? {
                       botInputError: undefined,
                       botPendingSubmission: {
@@ -351,7 +353,7 @@ export function createSendMessageActions(
         return;
       }
       if (!api?.agent) {
-        if (isBot) {
+        if (isDurable) {
           set((state) => ({
             tasks: state.tasks.map((item) =>
               item.id === activeTaskId
@@ -410,7 +412,7 @@ export function createSendMessageActions(
           // 主进程明确拒绝（如会话仍在生成但未指定 streamingBehavior）：给出用户可见错误，
           // 不静默吞掉。仅当本地确已插入空 assistant 壳时才以 error 结束它（诚实暴露失败）。
           if (result?.error) {
-            if (isBot) {
+            if (isDurable) {
               set((state) => ({
                 tasks: state.tasks.map((item) =>
                   item.id === activeTaskId
@@ -440,7 +442,7 @@ export function createSendMessageActions(
           // steer/followUp 的 Promise 只表示“已入队”，绝不能据此结束 UI 流式态。
           // result 为空兼容热更新期间尚未重启的旧主进程；流式投递按 queued 处理更安全。
           const queued = result?.queued ?? Boolean(streamingBehavior);
-          if (!queued) {
+          if (!isDurable && !queued) {
             const currentTask = get().tasks.find(
               (item) => item.id === activeTaskId,
             );
@@ -488,7 +490,7 @@ export function createSendMessageActions(
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
-          if (isBot) {
+          if (isDurable) {
             set((state) => ({
               tasks: state.tasks.map((item) =>
                 item.id === activeTaskId
@@ -506,7 +508,7 @@ export function createSendMessageActions(
           });
         })
         .finally(() => {
-          if (isBot)
+          if (isDurable)
             set((state) => ({
               tasks: state.tasks.map((item) =>
                 item.id === activeTaskId &&

@@ -1,36 +1,9 @@
-/**
- * Runtime Skill Policy 硬门禁回归测试（P1-A / P1-B）。
- *
- * 验证不变量：SDK ResourceLoader 最终加载的技能集合 === RuntimePolicy 最终允许的技能集合。
- *
- * 用真实 AgentService.createSession 装配链（Mode → Project → Tag → Expert/Connector 候选
- * → skillPolicy → Final Allowed Set），在 SDK 边界拦截 createAgentSession，直接读取
- * ResourceLoader.getSkills()（AgentSession/system prompt 的唯一技能来源），断言：
- *
- * [1] Global Skill 允许 → loader 包含
- * [2] Global Skill 被 Tag 拒绝 → loader 不存在（且 SDK 技能 XML 不含）
- * [3] Expert Private Skill 允许 → loader 包含
- * [4] Expert Private Skill 被拒绝 → loader 不存在（Expert 不拥有权限）
- * [5] Connector Private Skill 允许 → loader 包含
- * [6] Connector Private Skill 被拒绝 → loader 不存在（Connector 不拥有权限）
- * [7] Expert 无法越权：附带 X+Y，Tag 只允许 X → loader = [X]
- * [8] 切 Tag 后 runtime fingerprint 变化 → 旧 session 释放重建 → 新 loader 只含新允许集
- *
- * 以及 matcher 收敛（P3）纯函数语义回归。
- *
- * 运行：pnpm test:runtime-skill-loader
- */
-import assert from "node:assert/strict";
+/** Native Durable skill-policy, learned-skill invocation, loadout and scope regression fixture. */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-  formatSkillsForPrompt,
-  ModelRuntime,
-  type CreateAgentSessionOptions,
-  type CreateAgentSessionResult,
-  type ResourceLoader,
-} from "@earendil-works/pi-coding-agent";
+import { createAgentDurableFixture, verifySkillProjectionRecovery } from "./agent-durable-fixture";
+
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-skill-loader-"));
 process.env.USERPROFILE = root;
@@ -144,7 +117,7 @@ async function main(): Promise<void> {
   write(join(connDir, "skills", "c-deny", "SKILL.md"), skillMd("c-deny"));
   new ConnectorService().install("demo-connector");
 
-  /* ---------- AgentService + SDK 边界 seam ---------- */
+  /* ---------- AgentService + 原生 Durable provider fixture ---------- */
   db.upsertTask({
     id: "skill-task",
     title: "Skill runtime",
@@ -152,83 +125,18 @@ async function main(): Promise<void> {
     welcomeMode: "coding",
   });
 
-  let sdkCalls = 0;
-  const capturedLoaders: Array<ResourceLoader | null> = [];
-  const capturedSessions: unknown[] = [];
-  let submittedPrompt = "";
-  let rejectNextPreflight = false;
-  const makeFakeSession = (sdkOptions: CreateAgentSessionOptions) => {
-    let subscriber: ((event: any) => void) | null = null;
-    let pendingPromptReject: ((error: Error) => void) | null = null;
-    const session = {
-      sessionManager: sdkOptions.sessionManager ?? {},
-      settingsManager: sdkOptions.settingsManager,
-      modelRuntime: sdkOptions.modelRuntime,
-      agent: { streamFunction: () => { throw new Error("fixture must not invoke a provider"); } },
-      compact: async () => ({}),
-      abortCompaction: () => {},
-      refreshContext: () => {},
-      navigateTree: async () => ({}),
-      isStreaming: false,
-      model: undefined,
-      messages: [],
-      sessionFile: join(root, "skill-session.jsonl"),
-      prompt: async (text: string, options?: { preflightResult?: (disposition: "started") => void }) => {
-        submittedPrompt = text;
-        if (rejectNextPreflight) {
-          rejectNextPreflight = false;
-          throw new Error("fixture preflight rejected");
-        }
-        options?.preflightResult?.("started");
-      },
-      abort: async () => {
-        const reject = pendingPromptReject;
-        pendingPromptReject = null;
-        reject?.(new Error("fixture team aborted"));
-      },
-      clearQueue: () => ({ steering: [], followUp: [] }),
-      getLastAssistantText: () => "[]",
-      setModel: async () => {},
-      setThinkingLevel: () => {},
-      getContextUsage: () => null,
-      bindExtensions: async () => {},
-      subscribe: (cb: (event: any) => void) => { subscriber = cb; return () => { subscriber = null; }; },
-      emitEvent: (event: any) => subscriber?.(event),
-      dispose: () => {},
-      getActiveToolNames: () => [],
-      getAllTools: () => [],
-      setActiveToolsByName: () => {},
-    };
-    return session;
-  };
-  const createSessionAtSdkBoundary = async (
-    options: CreateAgentSessionOptions = {},
-  ): Promise<CreateAgentSessionResult> => {
-    sdkCalls += 1;
-    const session = makeFakeSession(options);
-    capturedSessions.push(session);
-    capturedLoaders.push(options.resourceLoader ?? null);
-    return {
-      session: session as unknown as CreateAgentSessionResult["session"],
-      extensionsResult: {
-        extensions: [],
-        errors: [],
-        runtime: {},
-      } as unknown as CreateAgentSessionResult["extensionsResult"],
-    };
-  };
-
-  const agent = new AgentService(
-    db,
-    new TaskExecutionWorkspace(join(root, "task-workspaces")),
-    { createAgentSession: createSessionAtSdkBoundary },
-  );
-
-  (agent as any).modelRuntime = await ModelRuntime.create({
-    authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"),
-    allowModelNetwork: false, refreshOnCreate: false,
+  let readSkillPath: string | undefined;
+  const fixture = await createAgentDurableFixture(root, db, request => {
+    const reverseUser = [...request.messages].reverse().findIndex(message => message.role === "user");
+    const latestUser = reverseUser < 0 ? -1 : request.messages.length - 1 - reverseUser;
+    if (readSkillPath && !request.messages.slice(latestUser + 1).some(message => message.role === "toolResult")) {
+      return [{ type: "toolCall", id: "learned-read-1", name: "read", arguments: { path: readSkillPath } }];
+    }
+    return [{ type: "text", text: "[]" }];
   });
-
+  const { agent, requests } = fixture;
+  try {
+  let turnNumber = 0;
   const baseProfile = agent.getModeProfile("coding");
   const savePreset = (preset: {
     id: string;
@@ -246,20 +154,12 @@ async function main(): Promise<void> {
     });
   };
 
-  const loaderNames = (): string[] =>
-    (capturedLoaders[capturedLoaders.length - 1]?.getSkills().skills ?? []).map((s) => s.name).sort();
-
-  const prompt = (modePresetId: string): Promise<{ queued: boolean }> =>
-    agent.prompt({
-      taskId: "skill-task",
-      text: "run",
-      assistantMessageId: `a-${sdkCalls + 1}`,
-      userMessageId: `u-${sdkCalls + 1}`,
-      welcomeMode: "coding",
-      modePresetId,
-      expertId: "demo-expert",
-      connectorIds: ["demo-connector"],
-    });
+  const loaderNames = () => fixture.skills().map(skill => skill.name).sort();
+  const prompt = (modePresetId: string) => {
+    const number = ++turnNumber;
+    return fixture.prompt({ taskId: "skill-task", text: "run", assistantMessageId: `a-${number}`, userMessageId: `u-${number}`,
+      welcomeMode: "coding", modePresetId, expertId: "demo-expert", connectorIds: ["demo-connector"] });
+  };
 
   /* ================= [1][2] Global Skill：允许进入 / 拒绝消失 ================= */
   console.log("\n[1][2] Global Skill 硬门禁");
@@ -270,15 +170,15 @@ async function main(): Promise<void> {
       skillPolicy: { prefer: [], demote: [], hide: [], allow: ["g-ok", "e-ok", "c-ok", "learned-runtime-ok"] },
     });
     const result = await prompt("skill-gate");
-    assert(result.queued === false, "第一次 prompt 进入 createSession（SDK seam 被调用）");
-    assert(sdkCalls === 1, "createSession 恰好一次");
+    assert(result.queued === false, "第一次 prompt 进入 Durable（native receipt 已完成）");
+    assert(requests.length === 1, "first native provider request is observed");
     const names = loaderNames();
-    assert(names.includes("g-ok"), "[1] 允许的 Global Skill g-ok 进入 SDK loader");
+    assert(names.includes("g-ok"), "[1] 允许的 Global Skill g-ok 进入 模型技能声明");
     assert(!names.includes("g-deny"), "[2] 被 Tag 拒绝的 Global Skill g-deny 不在 loader");
-    const xml = formatSkillsForPrompt(capturedLoaders[capturedLoaders.length - 1]!.getSkills().skills);
+    const xml = requests.at(-1)!.instructions;
     assert(
       !xml.includes("g-deny"),
-      "[2] SDK 技能 XML（system prompt 素材）不含 g-deny",
+      "[2] 模型技能声明（system prompt 素材）不含 g-deny",
     );
   }
 
@@ -289,27 +189,16 @@ async function main(): Promise<void> {
     assert(Boolean(exposure), "[E1] enabled + allowed learned Skill 在 Pi preflight 接受后记录 exposure");
     assert(exposure?.invoked_at == null, "[E1] exposure 不等于 invocation");
     assert(exposure?.outcome === "completed", "[E1] accepted turn 收敛 completed outcome");
-    const firstSession = capturedSessions[0] as { emitEvent: (event: any) => void };
-    firstSession.emitEvent({
-      type: "tool_execution_start",
-      toolCallId: "learned-read-1",
-      toolName: "read",
-      args: { path: learnedInstalled.filePath },
-    });
-    firstSession.emitEvent({
-      type: "tool_execution_end",
-      toolCallId: "learned-read-1",
-      toolName: "read",
-      result: { content: [{ type: "text", text: "learned skill body" }] },
-      isError: false,
-    });
+    readSkillPath = learnedInstalled.filePath;
+    await fixture.prompt({ taskId: "skill-task", text: "read the allowed skill", userMessageId: "u-read", assistantMessageId: "a-read", modePresetId: "skill-gate", permissionMode: "auto" });
+    readSkillPath = undefined;
     const invoked = db.connection.prepare(
-      "SELECT invocation_kind,tool_call_id FROM memory_skill_effectiveness WHERE task_id='skill-task' AND assistant_message_id='a-1' AND skill_id='learned-runtime-ok'",
+      "SELECT invocation_kind,tool_call_id FROM memory_skill_effectiveness WHERE task_id='skill-task' AND assistant_message_id='a-read' AND skill_id='learned-runtime-ok'",
     ).get() as { invocation_kind: string | null; tool_call_id: string | null } | undefined;
     assert(invoked?.invocation_kind === "read", "[E1b] 成功 read learned SKILL.md 才升级为 read invocation");
     assert(invoked?.tool_call_id === "learned-read-1", "[E1b] read invocation 保留真实 toolCallId");
     const loadoutObs = db.connection.prepare(
-      "SELECT outcome,used_skill_ids_json FROM agent_loadout_observations WHERE task_id='skill-task' AND assistant_message_id='a-1'",
+      "SELECT outcome,used_skill_ids_json FROM agent_loadout_observations WHERE task_id='skill-task' AND assistant_message_id='a-read'",
     ).get() as { outcome: string; used_skill_ids_json: string } | undefined;
     assert(Boolean(loadoutObs), "[L1] accepted prompt records Loadout observation");
     assert(loadoutObs?.outcome === "completed", "[L1] Loadout observation follows turn outcome");
@@ -339,15 +228,15 @@ async function main(): Promise<void> {
       JSON.stringify(names) === JSON.stringify(["c-ok", "e-ok", "g-ok", "learned-runtime-ok"]),
       "[7] loader 技能集合 == 最终允许集（唯一 source of truth）",
     );
-    const xml = formatSkillsForPrompt(capturedLoaders[capturedLoaders.length - 1]!.getSkills().skills);
-    assert(!xml.includes("e-deny") && !xml.includes("c-deny"), "SDK 技能 XML 不含任何被拒私有技能");
+    const xml = requests.at(-1)!.instructions;
+    assert(!xml.includes("e-deny") && !xml.includes("c-deny"), "模型技能声明 不含任何被拒私有技能");
   }
 
   /* ================= [8] 切 Tag → fingerprint 变化 → 重建 → 新 loader ================= */
   console.log("\n[8] Tag 变化后 Session Runtime 重建");
   {
-    const beforeHash = agent.registry.get("skill-task")?.runtimeAssemblyHash;
-    const beforeSession = capturedSessions[0];
+    const beforeHash = agent.listRuntimeContextSnapshots("skill-task")[0]?.assemblyHash;
+    const beforeConversation = (await agent.loadTaskHistory("skill-task")).durable?.conversationId;
     // 同一 preset id，allow 收窄为 g-ok only
     savePreset({
       id: "skill-gate",
@@ -356,10 +245,10 @@ async function main(): Promise<void> {
     });
     const result = await prompt("skill-gate");
     assert(result.queued === false, "第二次 prompt 完成");
-    assert(sdkCalls === 2, "Tag 变更触发 session 重建（createSession 再次执行）");
-    const afterHash = agent.registry.get("skill-task")?.runtimeAssemblyHash;
+
+    const afterHash = agent.listRuntimeContextSnapshots("skill-task")[0]?.assemblyHash;
     assert(beforeHash !== afterHash, "runtime fingerprint 随允许技能集变化");
-    assert(capturedSessions[1] !== beforeSession, "旧 session 被释放，新 session 对象生效");
+    assert((await agent.loadTaskHistory("skill-task")).durable?.conversationId === beforeConversation, "policy refresh keeps the native conversation identity");
     const names = loaderNames();
     assert(
       JSON.stringify(names) === JSON.stringify(["g-ok"]),
@@ -367,10 +256,10 @@ async function main(): Promise<void> {
     );
     assert(!names.includes("e-ok") && !names.includes("c-ok"), "[8] 重建后私有技能随 Tag 收窄消失");
     assert(
-      !formatSkillsForPrompt(capturedLoaders[capturedLoaders.length - 1]!.getSkills().skills).includes(
+      !requests.at(-1)!.instructions.includes(
         "e-ok",
       ),
-      "[8] 重建后 SDK 技能 XML 不含被移除技能",
+      "[8] 重建后 模型技能声明 不含被移除技能",
     );
   }
 
@@ -385,19 +274,18 @@ async function main(): Promise<void> {
       label: "Skill Gate",
       skillPolicy: { prefer: [], demote: [], hide: [], allow: ["g-ok", "learned-runtime-ok"] },
     });
-    rejectNextPreflight = true;
     let rejected = false;
     try {
-      await agent.prompt({
+      await fixture.prompt({
         taskId: "skill-task",
-        text: "run rejected",
+        text: "/skill:denied-preflight run rejected",
         assistantMessageId: "a-preflight-reject",
         userMessageId: "u-preflight-reject",
         welcomeMode: "coding",
         modePresetId: "skill-gate",
       });
     } catch (error) {
-      rejected = String(error).includes("fixture preflight rejected");
+      rejected = String(error).includes("当前任务未授权 Skill");
     }
     assert(rejected, "[E3] fixture 确实走 Pi preflight reject");
     const rejectedExposure = db.connection.prepare(
@@ -409,7 +297,7 @@ async function main(): Promise<void> {
     ).get() as { n: number };
     assert(rejectedLoadout.n === 0, "[L2] preflight reject 不产生 Loadout observation");
 
-    const commandResult = await agent.prompt({
+    const commandResult = await fixture.prompt({
       taskId: "skill-task",
       text: "/skill:learned-runtime-ok run explicitly",
       assistantMessageId: "a-command",
@@ -432,10 +320,10 @@ async function main(): Promise<void> {
   /* ================= [T1] Removed Expert Team namespace is a hard API boundary ================= */
   console.log("\n[T1] Removed Expert Team API boundary");
   {
-    const callsBefore = sdkCalls;
+    const callsBefore = requests.length;
     let message = "";
     try {
-      await agent.prompt({
+      await fixture.prompt({
         taskId: "skill-task", text: "legacy team request", assistantMessageId: "a-legacy-team", userMessageId: "u-legacy-team",
         welcomeMode: "coding", expertId: "team:legacy-review-team",
       });
@@ -443,7 +331,7 @@ async function main(): Promise<void> {
       message = error instanceof Error ? error.message : String(error);
     }
     assert(message.includes("Expert teams are no longer supported"), "[T1] direct prompt with team:* is explicitly rejected");
-    assert(sdkCalls === callsBefore, "[T1] rejected team:* request never reaches SDK session creation");
+    assert(requests.length === callsBefore, "[T1] rejected team:* request never reaches provider request");
   }
 
   /* ================= [L7] Learned Skill reusable scope is a hard runtime boundary ================= */
@@ -475,7 +363,7 @@ async function main(): Promise<void> {
     });
 
     db.upsertTask({ id: "scope-task-b", title: "Sibling task", spaceId: "scope-b", projectId: "scope-proj-b", updatedAt: Date.now(), welcomeMode: "coding" });
-    await agent.prompt({
+    await fixture.prompt({
       taskId: "scope-task-b", text: "run scoped workflow", assistantMessageId: "a-scope-b", userMessageId: "u-scope-b",
       welcomeMode: "coding", modePresetId: "scope-gate",
     });
@@ -484,7 +372,7 @@ async function main(): Promise<void> {
     assert(!scopedNames.includes("learned-scope-project"), "[L7] different Project cannot see Project learned Skill");
 
     db.upsertTask({ id: "scope-task-child", title: "Child task", spaceId: "scope-a-child", projectId: "scope-proj-a", updatedAt: Date.now(), welcomeMode: "coding" });
-    await agent.prompt({
+    await fixture.prompt({
       taskId: "scope-task-child", text: "run scoped workflow", assistantMessageId: "a-scope-child", userMessageId: "u-scope-child",
       welcomeMode: "coding", modePresetId: "scope-gate",
     });
@@ -519,11 +407,11 @@ async function main(): Promise<void> {
       id: "scope-collision-task", title: "Collision task B", spaceId: "scope-collision-space", projectId: "scope-proj-b",
       modePresetId: "scope-collision-gate", updatedAt: Date.now(), welcomeMode: "coding",
     });
-    await agent.prompt({
+    await fixture.prompt({
       taskId: "scope-collision-task", text: "run collision workflow", assistantMessageId: "a-scope-collision", userMessageId: "u-scope-collision",
       welcomeMode: "coding", modePresetId: "scope-collision-gate",
     });
-    const collisionSkill = capturedLoaders[capturedLoaders.length - 1]?.getSkills().skills.find((skill) => skill.name === "scope-collision");
+    const collisionSkill = fixture.skills().find(skill => skill.name === "scope-collision");
     assert(Boolean(collisionSkill), "[L8] same-named Project skill survives when Global learned Skill is out of scope");
     assert(collisionSkill?.filePath.toLowerCase().includes(join(".pi", "skills", "scope-collision").toLowerCase()), "[L8] loader selects Project skill, not out-of-scope learned winner");
     assert(collisionSkill?.filePath !== outOfScope.filePath, "[L8] out-of-scope learned Skill never occupies first-wins slot");
@@ -644,8 +532,10 @@ async function main(): Promise<void> {
     );
   }
 
+  await verifySkillProjectionRecovery(db, root, fixture.models);
   console.log(`\n[runtime-skill-loader-test] passed=${passed} failed=${failed}`);
-  if (failed > 0) process.exit(1);
+  if (failed > 0) throw new Error(`${failed} skill runtime assertions failed`);
+  } finally { await fixture.close(); db.close(); }
 }
 
 await main().catch((err) => {

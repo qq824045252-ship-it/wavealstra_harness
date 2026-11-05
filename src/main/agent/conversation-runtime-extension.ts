@@ -4,11 +4,14 @@ import type { ConversationGoalService } from "./ConversationGoalService";
 import type { ConversationInteractionService } from "./ConversationInteractionService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import { projectLegacyExecutionControlHistory } from "./LegacyExecutionControlHistory";
+import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
 
 export interface ConversationRuntimeBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
   interaction: ConversationInteractionService;
   goal: ConversationGoalService;
+  requestInteraction?: (context: ConversationExecutionContext, request: ConversationInteractionRequest,
+    signal: AbortSignal, toolCallId: string) => Promise<ConversationInteractionAnswer>;
 }
 
 const goalStatus = Type.Union([
@@ -30,6 +33,15 @@ function requireContext(bridge: ConversationRuntimeBridge): ConversationExecutio
   const context = bridge.resolveContext();
   if (!context) throw new Error("当前没有可绑定的对话执行上下文");
   return context;
+}
+
+async function requestInteraction(bridge: ConversationRuntimeBridge, context: ConversationExecutionContext,
+  request: ConversationInteractionRequest, signal: AbortSignal, toolCallId: string): Promise<ConversationInteractionAnswer> {
+  if (bridge.requestInteraction) return bridge.requestInteraction(context, request, signal, toolCallId);
+  const onAbort = () => bridge.interaction.cancelExecution(context.executionId, "当前执行已中止");
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try { return await bridge.interaction.request(context, request); }
+  finally { signal?.removeEventListener("abort", onAbort); }
 }
 
 export function createConversationRuntimeExtension(bridge: ConversationRuntimeBridge): ExtensionFactory {
@@ -62,22 +74,13 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
         allowCustom: Type.Optional(Type.Boolean()),
         customPlaceholder: Type.Optional(Type.String({ maxLength: 160 })),
       }, { additionalProperties: false }),
-      execute: async (_id, params: any, signal: AbortSignal) => {
-        let executionId: string | undefined;
+      execute: async (id, params: ConversationInteractionRequest, signal: AbortSignal) => {
         try {
           const context = requireContext(bridge);
-          executionId = context.executionId;
           if (signal?.aborted) throw new Error("当前执行已中止");
-          const onAbort = () => bridge.interaction.cancelExecution(context.executionId, "当前执行已中止");
-          signal?.addEventListener("abort", onAbort, { once: true });
-          try {
-            const answer = await bridge.interaction.request(context, params);
-            return result(`用户已回答：${JSON.stringify(answer)}`, { answer });
-          } finally {
-            signal?.removeEventListener("abort", onAbort);
-          }
+          const answer = await requestInteraction(bridge, context, params, signal, id);
+          return result(`用户已回答：${JSON.stringify(answer)}`, { answer });
         } catch (error) {
-          if (executionId && signal?.aborted) bridge.interaction.cancelExecution(executionId);
           return failure("request_user_input", error);
         }
       },
@@ -155,20 +158,17 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
         summary: Type.String({ minLength: 1, maxLength: 1600 }),
         evidence: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 12 })),
       }, { additionalProperties: false }),
-      execute: async (_id, params: { summary: string; evidence?: string[] }, signal: AbortSignal) => {
+      execute: async (id, params: { summary: string; evidence?: string[] }, signal: AbortSignal) => {
         try {
           const context = requireContext(bridge);
           const goal = bridge.goal.getLive(context.taskId);
           if (!goal) throw new Error("当前 Task 没有进行中的 Goal");
           if (signal?.aborted) throw new Error("当前执行已中止");
-          const onAbort = () => bridge.interaction.cancelExecution(context.executionId, "当前执行已中止");
-          signal?.addEventListener("abort", onAbort, { once: true });
-          let answer: unknown;
-          try { answer = await bridge.interaction.request(context, {
+          const answer = await requestInteraction(bridge, context, {
             kind: "confirm",
             title: `确认完成 Goal「${goal.title}」？`,
             description: [params.summary, ...(params.evidence ?? [])].join("\n"),
-          }); } finally { signal?.removeEventListener("abort", onAbort); }
+          }, signal, id);
           if (signal?.aborted) throw new Error("当前执行已中止");
           if (answer !== true) return result("用户暂未确认完成 Goal，Goal 保持原状态。", { confirmed: false });
           const updated = bridge.goal.update({ goalId: goal.id, status: "achieved", progressSummary: params.summary });

@@ -164,21 +164,13 @@ async function main(): Promise<void> {
   const exportedPrivateMd = await zip.file(privateSkillMdEntry!)!.async("string");
   assert.doesNotMatch(exportedPrivateMd, /disable-model-invocation:/, "exported Private Skill must stay independently active");
 
-  // Architecture contract: Meta Skill generation uses an isolated, in-memory, tool-free resource loader.
-  const agentServiceSource = readFileSync(join(process.cwd(), "src", "main", "agent", "AgentService.ts"), "utf-8");
-  for (const contract of [
-    "noExtensions: true",
-    "noSkills: true",
-    "noPromptTemplates: true",
-    "noThemes: true",
-    "noContextFiles: true",
-    "systemPromptOverride: () => systemPrompt",
-    "appendSystemPromptOverride: () => []",
-    "SessionManager.inMemory(cwd)",
-    "tools: []",
-  ]) {
-    assert.match(agentServiceSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `Authoring isolation contract missing: ${contract}`);
-  }
+  const agentServiceSource = readFileSync(join(process.cwd(), "src/main/agent/AgentService.ts"), "utf8");
+  const authoring = agentServiceSource.slice(agentServiceSource.indexOf("private async runAuthoringGenerator("), agentServiceSource.indexOf("private skillAtlasSnapshot("));
+  assert(authoring.includes('kind: "authoring"') && authoring.includes("instructions: systemPrompt"), "authoring persists its isolated instructions and identity");
+  const auxiliary = agentServiceSource.slice(agentServiceSource.indexOf("private async openAuxiliaryRuntime("), agentServiceSource.indexOf("private runAuxiliaryText("));
+  assert(auxiliary.includes('const readOnly = binding.kind === "btw"') && auxiliary.includes('const allowed = new Set(readOnly ?') && auxiliary.includes('] : [])'), "authoring has an empty tool allowlist");
+  assert(auxiliary.includes("toolAllowed: permit") && auxiliary.includes("if (!permit(call.name))"), "authoring blocks tools at both discovery and execution");
+  assert(!agentServiceSource.includes("new DefaultResourceLoader("), "authoring cannot discover disk extensions or context files");
 
   console.log("[skill-authoring-test] authoring assertions passed");
 }

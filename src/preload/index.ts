@@ -98,6 +98,7 @@ import {
   type AgentApproveToolRequest,
   type AgentPromptRequest,
   type AgentPromptResult,
+  type AgentSubmissionReceipt,
   type AgentRegenerateRequest,
   type AgentRegenerateResult,
   type AgentDeleteUserMessageRequest,
@@ -385,6 +386,8 @@ const api = {
   agent: {
     prompt: (req: AgentPromptRequest): Promise<AgentPromptResult> =>
       ipcRenderer.invoke(AgentIpc.prompt, req),
+    submissionStatus: (receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> => ipcRenderer.invoke(AgentIpc.submissionStatus, receipt),
+    waitForSubmission: (receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> => ipcRenderer.invoke(AgentIpc.waitForSubmission, receipt),
     regenerate: (req: AgentRegenerateRequest): Promise<AgentRegenerateResult> =>
       ipcRenderer.invoke(AgentIpc.regenerate, req),
     deleteUserMessage: (req: AgentDeleteUserMessageRequest): Promise<void> =>
@@ -555,8 +558,8 @@ const api = {
       ipcRenderer.invoke(AgentIpc.saveSubagentConfig, config),
     getContextUsage: (taskId: string): Promise<ContextUsageDto | null> =>
       ipcRenderer.invoke(AgentIpc.getContextUsage, taskId),
-    loadTaskHistory: (taskId: string): Promise<TaskHistoryDto> =>
-      ipcRenderer.invoke(AgentIpc.loadTaskHistory, taskId),
+    loadTaskHistory: (taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> =>
+      ipcRenderer.invoke(AgentIpc.loadTaskHistory, taskId, beforeEntryId),
     listLoginProviders: (): Promise<LoginProviderDto[]> =>
       ipcRenderer.invoke(AgentIpc.listLoginProviders),
     setProviderEnabled: (providerId: string, enabled: boolean): Promise<ModelInfoDto[]> =>
@@ -597,6 +600,8 @@ const api = {
       ipcRenderer.invoke(AgentIpc.assembleModePreview, req),
     inspectRuntimeContext: (taskId: string): Promise<RuntimeContextInspectionDto> =>
       ipcRenderer.invoke(AgentIpc.inspectRuntimeContext, taskId),
+    getTaskDiagnostics: (taskId: string, limit?: number, offset?: number): Promise<import("../shared/task-diagnostics").TaskDiagnosticsDto> =>
+      ipcRenderer.invoke(AgentIpc.getTaskDiagnostics, taskId, limit, offset),
     listAgentLoadoutObservations: (taskId: string, limit?: number): Promise<AgentLoadoutObservationDto[]> =>
       ipcRenderer.invoke(AgentIpc.listAgentLoadoutObservations, taskId, limit),
     listRuntimeContextSnapshots: (taskId: string, limit?: number): Promise<RuntimeContextSnapshotDto[]> =>

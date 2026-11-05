@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 472,
-  "allRegistrations": 483,
-  "uniqueChannels": 468,
+  "mainRegistrations": 471,
+  "allRegistrations": 482,
+  "uniqueChannels": 471,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -40,6 +40,7 @@
     "agent:getSearchProviderUsage",
     "agent:getSkillDetail",
     "agent:getSubagentConfig",
+    "agent:getTaskDiagnostics",
     "agent:getTaskExpertBinding",
     "agent:getWebSearchConfig",
     "agent:importConnectorByPath",
@@ -105,6 +106,7 @@
     "agent:startRuntimeRequirement",
     "agent:stopConsultWorker",
     "agent:stopRuntimeRequirement",
+    "agent:submissionStatus",
     "agent:switchExpert",
     "agent:testBuiltinCapability",
     "agent:uninstallConnector",
@@ -113,6 +115,7 @@
     "agent:updateAppSettings",
     "agent:updateExpert",
     "agent:validateSkillPackage",
+    "agent:waitForSubmission",
     "artifact-domain:get",
     "artifact-domain:list",
     "artifact-domain:readContent",
@@ -485,48 +488,12 @@
   "unresolved": [],
   "duplicates": {
     "real": [],
-    "mutex": [
-      {
-        "channel": "subagent:active",
-        "entries": [
-          "src/main/agent/subagent-ipc-host.ts:140",
-          "src/main/capabilities/subagent/index.ts:658",
-          "scripts/subagent-ipc-host-test.ts:86"
-        ],
-        "foreign": [
-          "scripts/subagent-ipc-host-test.ts:86"
-        ]
-      },
-      {
-        "channel": "subagent:transcript",
-        "entries": [
-          "src/main/agent/subagent-ipc-host.ts:141",
-          "src/main/capabilities/subagent/index.ts:650"
-        ],
-        "foreign": []
-      },
-      {
-        "channel": "subagent:steer",
-        "entries": [
-          "src/main/agent/subagent-ipc-host.ts:144",
-          "src/main/capabilities/subagent/index.ts:652"
-        ],
-        "foreign": []
-      },
-      {
-        "channel": "subagent:cancel",
-        "entries": [
-          "src/main/agent/subagent-ipc-host.ts:147",
-          "src/main/capabilities/subagent/index.ts:656"
-        ],
-        "foreign": []
-      }
-    ],
+    "mutex": [],
     "crossProcess": [
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2133",
+          "src/main/index.ts:2142",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -536,7 +503,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2137",
+          "src/main/index.ts:2146",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -546,7 +513,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2141",
+          "src/main/index.ts:2150",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -556,7 +523,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2152",
+          "src/main/index.ts:2161",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -566,7 +533,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2156",
+          "src/main/index.ts:2165",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -576,7 +543,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2160",
+          "src/main/index.ts:2169",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -586,7 +553,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2164",
+          "src/main/index.ts:2173",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [
@@ -594,11 +561,22 @@
         ]
       }
     ],
-    "test": []
+    "test": [
+      {
+        "channel": "subagent:active",
+        "entries": [
+          "src/main/agent/subagent-ipc-host.ts:140",
+          "scripts/subagent-ipc-host-test.ts:92"
+        ],
+        "foreign": [
+          "scripts/subagent-ipc-host-test.ts:92"
+        ]
+      }
+    ]
   },
   "counts": {
     "realDuplicates": 0,
-    "mutexDuplicates": 4,
+    "mutexDuplicates": 0,
     "crossProcessDuplicates": 7
   }
 }

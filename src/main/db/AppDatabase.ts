@@ -3707,6 +3707,11 @@ export class AppDatabase {
       .run(Date.now(), "应用退出中断执行，未自动重放");
   }
 
+  listRunningCronRuns(): CronRunDto[] {
+    const rows = this.db.prepare("SELECT id, job_id, task_id, started_at FROM cron_runs WHERE status = 'running'").all() as Array<{ id: string; job_id: string; task_id: string | null; started_at: number }>;
+    return rows.map(row => ({ id: row.id, jobId: row.job_id, taskId: row.task_id ?? undefined, startedAt: row.started_at, status: "running" }));
+  }
+
   listCronRuns(limit = 50, jobIds?: string[]): CronRunDto[] {
     const rows = this.db
       .prepare(`SELECT * FROM cron_runs ${jobIds ? `WHERE job_id IN (${jobIds.map(() => "?").join(",")})` : ""} ORDER BY started_at DESC LIMIT ?`)

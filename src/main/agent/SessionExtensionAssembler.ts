@@ -21,7 +21,6 @@ import type { ProjectService } from "../project/ProjectService";
 import { MANAGED_RUNTIME_DANGEROUS_TOOLS } from "../security/McpSideEffectPolicy";
 import type { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
-import { createBuiltinSubagentExtension } from "../capabilities/builtin-subagent";
 import { createLibraryExtension } from "../library/library-extension";
 import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
@@ -37,6 +36,7 @@ import { createPermissionExtension } from "./permission-extension";
 import type { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
 import type { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
+import { currentDurableExecutionContext, currentDurableExecutionCwd, currentDurableInvocation, currentDurableRunId } from "./durable/DurableExecutionContext";
 
 export type SessionApprovalRequest = Parameters<Parameters<typeof createPermissionExtension>[0]["requestApproval"]>[0];
 export type SessionBuiltinCapabilityBridge = Omit<
@@ -80,6 +80,9 @@ export interface SessionExtensionAssemblyInput {
   extraFactories?: InlineExtension[];
 }
 
+export type DurableExtensionAssemblyInput = Pick<SessionExtensionAssemblyInput,
+  "taskId" | "taskRoot" | "memoryEnabled" | "gadgetService" | "getPermissionMode" | "requestApproval" | "builtinCapability">;
+
 /**
  * Single owner for main-session extension registration and ordering.
  * AgentService supplies live bridges; this class owns factory construction and domain wiring.
@@ -91,12 +94,18 @@ export class SessionExtensionAssembler {
 
   constructor(private readonly deps: SessionExtensionAssemblerDependencies) {}
 
-  /** Data capabilities only. Durable supplies scheduling and tool execution; no session policy hooks. */
-  domainExtensions(taskId: string, memoryEnabled: boolean, gadgetService: GadgetService | null): InlineExtension[] {
-    return this.domainFactories({ taskId, memoryEnabled, gadgetService,
-      getPermissionMode: () => "auto", requestApproval: async () => true,
-    }, () => this.deps.db.getTask(taskId)?.projectId ?? null,
+  domainExtensions(taskId: string, memoryEnabled: boolean, gadgetService: GadgetService | null,
+    policy: Pick<SessionExtensionAssemblyInput, "getPermissionMode" | "requestApproval">): InlineExtension[] {
+    return this.domainFactories({ taskId, memoryEnabled, gadgetService, ...policy }, () => this.deps.db.getTask(taskId)?.projectId ?? null,
     () => this.deps.db.getTask(taskId)?.spaceId ?? null);
+  }
+
+  /** Product operations and evidence use native call identity; Durable owns their lifecycle. */
+  durableExtensions(input: DurableExtensionAssemblyInput): InlineExtension[] {
+    return [
+      ...this.conversationCapabilityFactories({ ...input, resolveConversationContext: currentDurableExecutionContext }, true),
+      ...this.domainExtensions(input.taskId, input.memoryEnabled, input.gadgetService, input),
+    ];
   }
 
   async build(input: SessionExtensionAssemblyInput): Promise<InlineExtension[]> {
@@ -104,7 +113,6 @@ export class SessionExtensionAssembler {
     const resolveWorkspaceId = () => this.deps.db.getTask(input.taskId)?.spaceId ?? null;
 
     return [
-      ...(input.subagentEnabled ? [createBuiltinSubagentExtension()] : []),
       ...this.conversationCapabilityFactories(input),
       ...this.mcpPermissionFactories(input),
       ...this.domainFactories(input, resolveProjectId, resolveWorkspaceId),
@@ -112,17 +120,28 @@ export class SessionExtensionAssembler {
     ];
   }
 
-  private conversationCapabilityFactories(input: SessionExtensionAssemblyInput): InlineExtension[] {
+  private conversationCapabilityFactories(input: Pick<SessionExtensionAssemblyInput,
+    "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability">, durable = false): InlineExtension[] {
     return [
       createConversationRuntimeExtension({
         resolveContext: input.resolveConversationContext,
         interaction: this.deps.conversationInteractions,
         goal: this.deps.conversationGoals,
+        ...(durable ? { requestInteraction: async (context, request, signal, toolCallId) => {
+          const active = currentDurableInvocation();
+          if (!active || active.execution.taskId !== input.taskId) throw new Error("交互缺少当前任务的持久执行身份");
+          const answer = this.deps.conversationInteractions.requestDurable(context, request, {
+            key: toolCallId, signal,
+            onPending: interaction => { void active.native.details({ interactionId: interaction.id, waitingForInput: true }, active.context).catch(() => {}); },
+          });
+          return answer;
+        } } : {}),
       }),
       createBuiltinCapabilityExtension({
         taskId: input.taskId,
-        taskRoot: input.taskRoot,
+        get taskRoot() { return durable ? currentDurableExecutionCwd() ?? input.taskRoot : input.taskRoot; },
         ...input.builtinCapability,
+        ...(durable ? { getExecutionRunId: currentDurableRunId } : {}),
         shellVerification: { resolveContext: input.resolveConversationContext, attempts: this.deps.executionAttempts, failures: this.deps.executionFailures },
         computerRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },
         uiRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },

@@ -4,6 +4,9 @@ import type { AppContext } from "../src/renderer/src/store/app/context";
 import type { AppState } from "../src/renderer/src/store/app/types";
 import type { Task } from "../src/renderer/src/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
+import type { DurableBotSnapshot } from "../src/shared/durable-bot";
+import { durableDelta } from "../shared/src/durable-sync";
+import type { TaskHistoryDto } from "../src/shared/agent-ipc";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -537,6 +540,21 @@ async function fileChangeProjectionPreservesWorkspacePath(): Promise<void> {
   assert.equal(updated.messages[0].changesCount, 1);
 }
 
+async function durableSnapshotsRetainInteractionCards(): Promise<void> {
+  const { useAppStore: api } = store();
+  api.setState({ tasks: [task("task", { messages: [], welcomeMode: "working" })] });
+  const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: "first", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+    messages: [{ id: "durable-1", role: "assistant", text: "", streaming: true, createdAt: 2 }] };
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot });
+  const interaction = { id: "question", taskId: "task", executionId: "execution", assistantMessageId: "durable-1", kind: "confirm" as const, title: "Continue?", options: [], status: "pending" as const, version: 1, createdAt: 2 };
+  api.getState().applyAgentPatch({ type: "conversation_interaction_snapshot", taskId: "task", messageId: "durable-1", executionId: "execution", interaction });
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: { ...snapshot, revision: 2 } });
+  assert.deepEqual(api.getState().tasks[0].messages[0].interactions, [interaction], "Live native snapshots must not erase permission or user-input cards");
+  assert.equal(api.getState().tasks[0].welcomeMode, "working", "A shared runtime does not change the task's product mode");
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: { ...snapshot, epoch: "fork", revision: 1, messages: [] } });
+  assert.equal(api.getState().tasks[0].messages.length, 0, "A branch snapshot must not resurrect removed interaction rows");
+}
+
 async function main(): Promise<void> {
   const tests = [
     activationIsAtomicAndLateReadsStayWithTheirOwner,
@@ -547,6 +565,8 @@ async function main(): Promise<void> {
     asyncBranchRetryStopsTheCapturedTask,
     asyncDeletionRetryStopsTheCapturedTask,
     fileChangeProjectionPreservesWorkspacePath,
+    durableSnapshotsRetainInteractionCards,
+    durableRevisionGapReadsOnceAndReplaysBufferedUpdates,
   ];
   for (const test of tests) {
     await test();
@@ -555,6 +575,34 @@ async function main(): Promise<void> {
   console.log(
     `[app-store-transactions] ${tests.length} behavior groups passed`,
   );
+}
+
+async function durableRevisionGapReadsOnceAndReplaysBufferedUpdates(): Promise<void> {
+  const history = deferred<TaskHistoryDto>();
+  let reads = 0;
+  const { useAppStore: api } = store({ agent: { loadTaskHistory: () => { reads++; return history.promise; } } });
+  api.setState({ tasks: [task("task", { messages: [] })] });
+  const first: DurableBotSnapshot = { backend: "pi-durable", epoch: "epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+    messages: [{ id: "old", role: "user", text: "history", createdAt: 1, projectionVersion: 1 }, { id: "live", role: "assistant", text: "1", createdAt: 2 }] };
+  const snapshot = (revision: number): DurableBotSnapshot => ({ ...first, revision, messages: [first.messages[0], { ...first.messages[1], text: String(revision) }] });
+  const delta = (base: DurableBotSnapshot, next: DurableBotSnapshot) => {
+    const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = next;
+    return durableDelta(base, next, state);
+  };
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: first });
+  const stableRow = api.getState().tasks[0].messages[0];
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(first, snapshot(2)) });
+  assert.equal(api.getState().tasks[0].messages[0], stableRow, "unchanged message conversion is reused across a delta");
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(3), snapshot(4)) });
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(4), snapshot(5)) });
+  assert.equal(reads, 1, "a gap starts one explicit full-history read");
+  assert.equal(api.getState().tasks[0].durable?.revision, 2, "missing revisions cannot be applied approximately");
+  history.resolve({ messages: snapshot(4).messages, durable: snapshot(4) });
+  await tick();
+  assert.equal(api.getState().tasks[0].durable?.revision, 5, "events received during resynchronization are replayed after the snapshot");
+  assert.equal(api.getState().tasks[0].messages.at(-1)?.finalBlocks?.[0].type, "text");
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(3), snapshot(4)) });
+  assert.equal(reads, 1, "replayed stale packets are ignored");
 }
 
 void main().catch((error) => {

@@ -67,6 +67,11 @@ export class ConversationInteractionRepository {
     return row ? mapRow(row) : undefined;
   }
 
+  listPendingByExecution(executionId: string): ConversationInteractionDto[] {
+    return (this.db.prepare("SELECT * FROM conversation_interactions WHERE execution_id=? AND status='pending' ORDER BY created_at, rowid")
+      .all(executionId) as Row[]).map(mapRow);
+  }
+
   expireAllPending(): ConversationInteractionDto[] {
     const rows = this.db.prepare("SELECT * FROM conversation_interactions WHERE status='pending'").all() as Row[];
     const settle = this.db.prepare(

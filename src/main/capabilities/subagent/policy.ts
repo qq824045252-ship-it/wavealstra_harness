@@ -2,13 +2,11 @@
  * policy.ts — 子代理工具权限策略（C）。
  *
  * 设计原则：
- * - 子代理是独立进程，宿主无法在运行中弹出审批 → 子代理只能带「预授权」策略运行。
- * - 引擎级 --tools/--exclude-tools 是唯一真实强制面（子进程没有 MyBuddy 的
- *   permission-extension；扩展无法 hook 子进程工具调用）。
+ * - 工具名单在创建 Durable 子会话时固化；宿主工具 hook 继续执行当前权限与路径检查。
  * - 角色 frontmatter 显式 tools = 显式授权（与已有角色配置兼容）。
  * - 无 tools frontmatter 时不再默认「全部工具」：默认是**只读分析集**（最小权限）；
- *   bash/write/edit 均需显式授权（bash 是高权限工具：可执行任意命令、无审批）。
- * - 递归工具恒排除（硬上限另有 env 深度门禁）。
+ *   bash/write/edit 均需显式授权。
+ * - 递归工具恒排除；Durable 分派器还验证调用方不是子代理。
  * - tightenPolicy：策略永不自动变宽；宿主 permissionMode 变更（auto→default/readonly）
  *   时按更严模式收敛（详见 P1-2）。
  */
@@ -81,11 +79,10 @@ export interface ToolPolicyInput {
 
 export interface ToolPolicyResult {
   /**
-   * 传给子进程的 --tools 白名单；null = 不设白名单（仅 auto 模式，
-   * 但 recursion 工具仍经 --exclude-tools 排除）。
+   * 子会话工具白名单；null = 继承宿主可调用工具（仅 auto 模式，仍排除 excludeTools）。
    */
   tools: string[] | null;
-  /** 传给子进程的 --exclude-tools（恒含 recursion 工具 + denyTools） */
+  /** 恒含 recursion 工具 + denyTools。 */
   excludeTools: string[];
   /** 被策略剔除的工具（诊断展示用） */
   denied: string[];
@@ -129,7 +126,7 @@ export function computeChildTools(input: ToolPolicyInput): ToolPolicyResult {
   const final = unique(base.filter((t) => !deny.has(t)));
   const denied = unique(base.filter((t) => deny.has(t)));
   return {
-    tools: final.length > 0 ? final : null,
+    tools: final,
     excludeTools: unique([...RECURSION_TOOLS, ...(input.denyTools ?? [])]),
     denied,
     explicit,

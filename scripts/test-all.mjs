@@ -207,6 +207,12 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:durable-projection",
+  "test:durable-sync",
+  "test:durable-tool-policy",
+  "test:task-diagnostics",
+  "test:durable-subagent",
+  "test:durable-consult",
   "test:app-store-structure",
   "test:app-store-runtime",
   "test:app-store-transactions",

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
 import type {
   ConversationInteractionAnswer,
@@ -16,21 +16,60 @@ type Waiter = {
 };
 
 export class ConversationInteractionService {
-  private readonly waiters = new Map<string, Waiter>();
+  private readonly waiters = new Map<string, Set<Waiter>>();
 
   constructor(
     private readonly repo: ConversationInteractionRepository,
     private readonly emit: (patch: AgentUiPatch) => void,
-  ) {
-    this.repo.expireAllPending();
-  }
+  ) {}
 
   request(ctx: ConversationExecutionContext, request: ConversationInteractionRequest): Promise<ConversationInteractionAnswer> {
     if (this.repo.pendingByExecution(ctx.executionId)) throw new Error("当前执行已经在等待用户回答");
     const interaction = this.repo.insert(this.normalize(ctx, request));
     this.publish(interaction);
-    return new Promise<ConversationInteractionAnswer>((resolve, reject) => {
-      this.waiters.set(interaction.id, { resolve, reject });
+    return this.wait(interaction);
+  }
+
+  /** The native tool identity survives replay; cancelling an observer never settles the question. */
+  requestDurable(ctx: ConversationExecutionContext, request: ConversationInteractionRequest, options: {
+    key: string;
+    signal?: AbortSignal;
+    onPending?: (interaction: ConversationInteractionDto) => void;
+  }): Promise<ConversationInteractionAnswer> {
+    if (options.signal?.aborted) return Promise.reject(new Error("交互观察已结束"));
+    const id = durableInteractionId(ctx, options.key);
+    const candidate = { ...this.normalize(ctx, request), id };
+    const prior = this.repo.get(id);
+    if (prior && interactionRequestKey(prior) !== interactionRequestKey(candidate)) {
+      return Promise.reject(new Error("同一持久交互身份不能用于不同问题"));
+    }
+    const interaction = prior ?? this.repo.insert(candidate);
+    if (interaction.status === "resolved") {
+      return interaction.answer === undefined ? Promise.reject(new Error("交互缺少已保存的回答")) : Promise.resolve(interaction.answer);
+    }
+    if (interaction.status !== "pending") return Promise.reject(new Error("交互已取消或过期"));
+    this.publish(interaction);
+    options.onPending?.(interaction);
+    return this.wait(interaction, options.signal);
+  }
+
+  private wait(interaction: ConversationInteractionDto, signal?: AbortSignal): Promise<ConversationInteractionAnswer> {
+    return new Promise((resolve, reject) => {
+      const waiters = this.waiters.get(interaction.id) ?? new Set<Waiter>();
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+        waiters.delete(waiter);
+        if (!waiters.size) this.waiters.delete(interaction.id);
+      };
+      const waiter: Waiter = {
+        resolve: answer => { cleanup(); resolve(answer); },
+        reject: error => { cleanup(); reject(error); },
+      };
+      const onAbort = () => waiter.reject(new Error("交互观察已结束"));
+      waiters.add(waiter);
+      this.waiters.set(interaction.id, waiters);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 
@@ -43,9 +82,7 @@ export class ConversationInteractionService {
     const interaction = this.repo.settle(id, "resolved", answer);
     if (!interaction) return { ok: false, code: "already_resolved", message: "该交互已经结束" };
     this.publish(interaction);
-    const waiter = this.waiters.get(id);
-    this.waiters.delete(id);
-    waiter?.resolve(answer);
+    for (const waiter of [...this.waiters.get(id) ?? []]) waiter.resolve(answer);
     return { ok: true, interaction };
   }
 
@@ -56,15 +93,16 @@ export class ConversationInteractionService {
     const interaction = this.repo.settle(id, "cancelled");
     if (!interaction) return { ok: false, code: "already_resolved", message: "该交互已经结束" };
     this.publish(interaction);
-    const waiter = this.waiters.get(id);
-    this.waiters.delete(id);
-    waiter?.reject(new Error(reason));
+    for (const waiter of [...this.waiters.get(id) ?? []]) waiter.reject(new Error(reason));
     return { ok: true, interaction };
   }
 
   cancelExecution(executionId: string, reason?: string): void {
-    const pending = this.repo.pendingByExecution(executionId);
-    if (pending) this.cancel(pending.id, reason ?? "当前执行已中止");
+    for (const pending of this.repo.listPendingByExecution(executionId)) this.cancel(pending.id, reason ?? "当前执行已中止");
+  }
+
+  cancelTask(taskId: string, reason = "当前任务已由用户停止"): void {
+    for (const pending of this.repo.listByTask(taskId)) if (pending.status === "pending") this.cancel(pending.id, reason);
   }
 
   listByTask(taskId: string): ConversationInteractionDto[] { return this.repo.listByTask(taskId); }
@@ -134,6 +172,15 @@ export class ConversationInteractionService {
       interaction,
     });
   }
+}
+
+function durableInteractionId(ctx: ConversationExecutionContext, key: string): string {
+  return `interaction-durable-${createHash("sha256").update(JSON.stringify([ctx.taskId, ctx.executionId, key])).digest("hex")}`;
+}
+
+function interactionRequestKey(value: ConversationInteractionDto): string {
+  return JSON.stringify([value.taskId, value.executionId, value.assistantMessageId, value.kind, value.title,
+    value.description, value.options, value.minSelections, value.maxSelections, value.allowCustom, value.customPlaceholder]);
 }
 
 function validateAnswer(interaction: ConversationInteractionDto, answer: ConversationInteractionAnswer): string | undefined {

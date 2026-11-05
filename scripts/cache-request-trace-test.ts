@@ -7,7 +7,7 @@ import { normalizeContext, type Model } from '@earendil-works/pi-ai';
 import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { stream } from '../node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js';
 import { CacheRequestTracer } from '../src/main/agent/CacheRequestTrace';
-import { installModelInvocationAdmission } from '../src/main/agent/ModelInvocationAdmission';
+import { identifyModelInvocation, installModelInvocationAdmission } from '../src/main/agent/ModelInvocationAdmission';
 import { createRequestTransport } from '../src/main/agent/request-transport.mjs';
 
 const records: any[] = [];
@@ -54,9 +54,12 @@ retryTrace.result({stopReason:'stop',usage:{input:75000,cacheRead:25000,cacheWri
 const changedRetryId=records.at(-1).request;
 assert(!JSON.stringify(records).includes(secret),'no source, URL, header, cache key, response ID, or unknown field-name plaintext');
 const otherRecords:any[]=[];const other=new CacheRequestTracer(record=>otherRecords.push(record));
-other.start(model,'main').payload(payload);
-assert.notEqual(tracer.epoch,other.epoch);assert.notEqual(records[0].bodyHash,otherRecords[0].bodyHash,'per-process HMAC domains must differ');
-assert.equal(otherRecords[0].previous,null);
+const otherTrace = other.start(model,'main'); otherTrace.payload(payload);
+otherTrace.sent('https://example.invalid', {body: JSON.stringify(payload)});
+const otherHttp = otherRecords.find(record => record.event === 'request' && record.stage === 'http');
+const firstHttp = records.find(record => record.event === 'request' && record.stage === 'http');
+assert.notEqual(tracer.epoch,other.epoch);assert.notEqual(firstHttp.bodyHash,otherHttp.bodyHash,'per-process HMAC domains must differ');
+assert.equal(otherHttp.previous,null);
 console.log('PASS first changed item/field, tool changes, user boundaries, isolation, gaps and keyed redaction');
 
 let sendCount=0, validations=0;
@@ -88,7 +91,7 @@ const fakeFetch=async(_url:any,init:any)=>{
     {status:200,headers:{'content-type':'text/event-stream'}});
 };
 const message=await runtime.streamSimple(model,context,{apiKey:secret,sessionId:nativeSession,maxRetries:1,fetch:fakeFetch,
-  onPayload:(p:any)=>{payloadCalls++;return {...p,instructions:secret}}}).result();
+  onPayload:(p:any)=>{payloadCalls++;identifyModelInvocation({taskId:'fixture-task',conversationId:'fixture-conversation',generationTaskId:7,sourceKind:'subagent'});return {...p,instructions:secret}}}).result();
 assert.equal(message.stopReason,'stop',message.errorMessage);assert.equal(message.usage.cacheRead,24704);
 assert.equal(fetchCalls,2);assert.equal(payloadCalls,1);assert.equal(bodies[0],bodies[1]);
 assert.equal(JSON.parse(bodies[0]!).instructions,secret,'caller replacement must reach actual fetch unchanged');
@@ -97,6 +100,9 @@ assert.equal(native.filter(r=>r.stage==='provider').length,1);
 assert.deepEqual(native.filter(r=>r.event==='http-result').map(r=>r.status),[503,200]);
 assert(native.filter(r=>r.stage==='http').every(r=>r.adapterMatch===true));
 assert.equal(native.find(r=>r.event==='result').attempts,2);
+const identity = native.find(r=>r.event==='execution');
+assert.equal(identity?.taskId,'fixture-task');assert.equal(identity?.conversationId,'fixture-conversation');assert.equal(identity?.generationTaskId,7);
+assert.equal(identity?.request,native.find(r=>r.event==='result').request,'product execution and transport diagnostics share one request record');
 assert.equal(native.find(r=>r.event==='result').responseHash,createHash('sha256').update('resp_trace_fixture').digest('hex'));
 assert(!JSON.stringify(native).includes(secret));
 const rawNative = native.find(r=>r.event==='provider-usage');

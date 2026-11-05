@@ -253,7 +253,8 @@ export class RemoteAccessServer {
         }
         const { acpAgentId: _acpAgentId, ...nativeRequest } = body;
         void _acpAgentId;
-        const result = await this.options.commands.createAndPrompt(nativeRequest);
+        if (!nativeRequest.operationId) throw new RemoteValidationError("缺少输入操作身份");
+        const result = await this.options.commands.createAndPrompt({ ...nativeRequest, operationId: nativeRequest.operationId });
         return replyJson(201, result);
       }
       const imageMatch = /^\/v1\/tasks\/([^/]+)\/artifacts\/([^/]+)\/image$/.exec(path);
@@ -284,7 +285,10 @@ export class RemoteAccessServer {
           return replyJson(200, { ok: true });
         }
         if (request.method === "GET" && action === "history") {
-          const result = await this.options.service.history(taskId);
+          const cursor = url.searchParams.get("beforeEntryId");
+          const beforeEntryId = cursor === null ? undefined : Number(cursor);
+          if (beforeEntryId !== undefined && (!Number.isSafeInteger(beforeEntryId) || beforeEntryId < 1)) return replyJson(400, errorBody("invalid_request", "无效历史游标"));
+          const result = await this.options.service.history(taskId, beforeEntryId);
           return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "任务不存在"));
         }
         if (request.method === "GET" && action === "runtime") {
@@ -292,7 +296,9 @@ export class RemoteAccessServer {
           return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "任务不存在"));
         }
         if (request.method === "POST" && action === "prompt") {
-          const result = await this.options.commands.promptExisting(taskId, remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT)));
+          const body = remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT));
+          if (!body.operationId) throw new RemoteValidationError("缺少输入操作身份");
+          const result = await this.options.commands.promptExisting(taskId, { ...body, operationId: body.operationId });
           return replyJson(200, result);
         }
         // ACP 外部 Agent：在电脑端起真实 ACP 进程执行本轮（长任务，流式结果走 /v1/events）

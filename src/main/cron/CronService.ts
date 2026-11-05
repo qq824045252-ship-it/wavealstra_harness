@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
+import { z } from "zod";
 import {
   CronIpc,
   type CronJobDto,
   type CronRunDto,
   type AgentPromptRequest,
   type AgentPromptResult,
+  type AgentSubmissionReceipt,
   type TaskHistoryDto,
 } from "../../shared/agent-ipc";
 import { assertSingleExpertId, normalizeSingleExpertId } from "../../shared/expert-id";
@@ -13,8 +15,22 @@ import { parseCronExecution } from "../../shared/cron-execution";
 import type { AppDatabase } from "../db/AppDatabase";
 import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer, type SegmentedTimer } from "./CronSchedule";
 
+const storedCronInput = z.object({
+  taskId: z.string().min(1), text: z.string(), userMessageId: z.string().min(1), assistantMessageId: z.string().min(1),
+  permissionMode: z.enum(["default", "auto", "readonly"]).optional(), welcomeMode: z.enum(["working", "coding", "bot"]).optional(),
+  spaceId: z.string().optional(), modelId: z.string().optional(), expertId: z.string().optional(),
+  modePresetId: z.string().nullable().optional(), connectorIds: z.array(z.string()).optional(),
+});
+const storedCronRun = z.object({
+  request: storedCronInput,
+  newTask: z.boolean(),
+  job: z.object({ id: z.string(), name: z.string(), projectId: z.string().optional() }),
+});
+type RunJob = z.infer<typeof storedCronRun>["job"];
+
 export interface CronAgent {
   prompt(request: AgentPromptRequest): Promise<AgentPromptResult>;
+  waitForSubmission(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult>;
   loadTaskHistory(taskId: string): Promise<TaskHistoryDto>;
   isTaskBusy(taskId: string): boolean;
   getAppSettings(): { defaultModelId?: string | null };
@@ -88,13 +104,19 @@ export class CronService {
       status: "success" | "failed";
       error?: string;
     }) => void,
-  ) {}
+  ) {
+    db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
+      run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL)`);
+  }
 
   start(): void {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
-    this.db.recoverCronRuns();
+    for (const run of this.db.listRunningCronRuns()) {
+      this.runningJobs.add(run.jobId);
+      void this.resumeRun(run);
+    }
     for (const job of this.db.listCronJobs()) {
       if (!job.enabled) continue;
       const unavailable = this.unavailableReason(job);
@@ -288,8 +310,6 @@ export class CronService {
       if (!opts?.force && withinEffectiveRange(latest) === "before") return;
 
       const targetId = latest.target?.kind === "task" ? latest.target.taskId : undefined;
-      const previous = targetId ? await this.agent.loadTaskHistory(targetId) : undefined;
-      const previousIds = new Set(previous?.messages.map(message => message.entryId ?? message.id));
       // 当前任务由 AgentService 读取自己的模型与上下文，不用计划的快照覆盖。
       const requestedModelId = targetId ? undefined : latest.modelId?.trim() || this.agent.getAppSettings().defaultModelId || undefined;
       const resolved = requestedModelId ? await this.agent.resolveAvailableModelId(requestedModelId) : undefined;
@@ -317,28 +337,28 @@ export class CronService {
       };
       if (newTask) this.db.upsertTask(task);
       run = { id: randomUUID(), jobId: job.id, taskId, startedAt: Date.now(), status: "running" };
-      this.db.insertCronRun(run);
-      this.db.touchCronLastRun(job.id);
-      broadcast(CronIpc.event, { type: "run", run });
-      const result = await this.agent.prompt({
+      const request: AgentPromptRequest = {
         taskId, text: this.composePrompt(latest),
         permissionMode: task.permissionMode ?? "default",
         welcomeMode: task.welcomeMode, spaceId: task.spaceId ?? undefined,
         modelId: task.modelId, expertId: task.expertId, modePresetId: target?.modePresetId,
-        assistantMessageId: `asst-${randomUUID()}`, userMessageId: `user-${randomUUID()}`,
-      });
-      if (result?.error) throw new Error(result.error.message);
-      if (result?.cancelled) throw new Error("执行已取消");
-      if (result?.queued) throw new Error("执行只完成入队，未完成");
-      const history = await this.agent.loadTaskHistory(taskId);
-      if (task.welcomeMode === "bot" && history.durable?.outcome !== "completed") {
-        throw new Error(history.durable?.error ?? "Durable 任务未完成");
-      }
-      const produced = history.messages.some(message => message.role === "assistant" &&
-        !previousIds.has(message.entryId ?? message.id) && message.text.trim());
-      if (!produced) throw new Error("本轮模型未返回有效内容");
+        connectorIds: target ? undefined : latest.connectorIds,
+        assistantMessageId: `cron-${run.id}-assistant`, userMessageId: `cron-${run.id}-input`,
+      };
+      const pendingRun = run;
+      this.db.connection.transaction(() => {
+        this.db.insertCronRun(pendingRun);
+        this.db.connection.prepare("INSERT INTO cron_run_inputs VALUES (?, ?)").run(pendingRun.id, JSON.stringify({
+          request, newTask, job: { id: latest!.id, name: latest!.name, projectId: latest!.projectId },
+        }));
+      })();
+      this.db.touchCronLastRun(job.id);
+      broadcast(CronIpc.event, { type: "run", run });
+      await this.runInput(request);
+      if (this.stopped) return;
       this.finishRun(latest, run, "success", newTask);
     } catch (error) {
+      if (this.stopped && run) return;
       if (!latest) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (!run && this.db.getCronJob(job.id)) {
@@ -357,7 +377,45 @@ export class CronService {
     }
   }
 
-  private finishRun(job: CronJobDto, run: CronRunDto, status: "success" | "error", newTask: boolean, error?: string): void {
+  private async runInput(request: AgentPromptRequest): Promise<void> {
+    const accepted = await this.agent.prompt(request);
+    if (accepted.error) throw new Error(accepted.error.message);
+    if (accepted.cancelled) throw new Error("执行已取消");
+    if (!accepted.receipt) throw new Error("执行服务未返回持久回执");
+    const result = await this.agent.waitForSubmission(accepted.receipt);
+    if (result.error) throw new Error(result.error.message);
+    if (result.cancelled) throw new Error("执行已取消");
+    if (result.queued || result.receipt?.status !== "done") throw new Error("该次输入尚未完成");
+  }
+
+  private async resumeRun(run: CronRunDto): Promise<void> {
+    const job = this.db.getCronJob(run.jobId);
+    let saved: z.infer<typeof storedCronRun> | undefined;
+    try {
+      if (!job || !run.taskId) throw new Error("找不到待恢复的计划或任务");
+      const stored = this.db.connection.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get(run.id) as { request_json: string } | undefined;
+      if (!stored) throw new Error("旧运行未保存操作身份，不能自动重放");
+      saved = storedCronRun.parse(JSON.parse(stored.request_json));
+      const { request } = saved;
+      if (request.taskId !== run.taskId || request.userMessageId !== `cron-${run.id}-input`) throw new Error("计划运行的操作身份不一致");
+      if (saved.job.id !== run.jobId) throw new Error("计划运行的来源身份不一致");
+      await this.runInput(request);
+      if (!this.stopped) this.finishRun(saved.job, run, "success", saved.newTask);
+    } catch (error) {
+      if (!this.stopped) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (saved) this.finishRun(saved.job, run, "error", saved.newTask, message);
+        else if (job) this.finishRun(job, run, "error", false, message);
+        else this.db.finishCronRun(run.id, "error", message);
+      }
+    } finally {
+      this.runningJobs.delete(run.jobId);
+      const current = this.db.getCronJob(run.jobId);
+      if (current?.enabled && !this.stopped) this.arm(current);
+    }
+  }
+
+  private finishRun(job: RunJob, run: CronRunDto, status: "success" | "error", newTask: boolean, error?: string): void {
     this.db.finishCronRun(run.id, status, error, run.taskId);
     if (newTask && run.taskId) {
       const task = this.db.getTask(run.taskId);
@@ -383,7 +441,7 @@ export class CronService {
     return undefined;
   }
 
-  private notifyRun(job: CronJobDto, runId: string, taskId: string, status: "success" | "failed", error?: string): void {
+  private notifyRun(job: RunJob, runId: string, taskId: string, status: "success" | "failed", error?: string): void {
     try {
       this.runNotificationSink?.({
         runId,
@@ -400,7 +458,7 @@ export class CronService {
   }
 
   /** 项目 run 摘要钩子（fail-open：不改变既有执行语义；未绑定项目/无钩子时 no-op） */
-  private notifyProjectRun(job: CronJobDto, runId: string, status: "success" | "failed", error?: string): void {
+  private notifyProjectRun(job: RunJob, runId: string, status: "success" | "failed", error?: string): void {
     if (!job.projectId) return;
     try {
       this.projectRunSink?.(job.projectId, { runId, jobName: job.name, status, error });

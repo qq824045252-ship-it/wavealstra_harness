@@ -25,6 +25,20 @@ export class ComputerUseRunCoordinator {
   private readonly runs = new Map<string, RunState>();
   private readonly scopeOwners = new WeakMap<AbortSignal, RunState>();
 
+  /** Native task signals end after each successful tool; held inputs belong to the whole run. */
+  scopeTool(taskId: string, toolSignal?: AbortSignal, executionId?: string): { signal: AbortSignal; finish: () => void } {
+    toolSignal?.throwIfAborted();
+    const runSignal = this.scope(taskId, undefined, executionId);
+    const state = this.runs.get(taskId)!;
+    const signal = toolSignal ? AbortSignal.any([toolSignal, runSignal]) : runSignal;
+    this.scopeOwners.set(signal, state);
+    const onAbort = () => {
+      if (this.runs.get(taskId) === state) this.endTask(taskId, "failed", executionId);
+    };
+    toolSignal?.addEventListener("abort", onAbort, { once: true });
+    return { signal, finish: () => toolSignal?.removeEventListener("abort", onAbort) };
+  }
+
   scope(taskId: string, agentSignal?: AbortSignal, executionId?: string): AbortSignal {
     agentSignal?.throwIfAborted();
     const previous = this.runs.get(taskId);

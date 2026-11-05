@@ -358,7 +358,10 @@ async function main(): Promise<void> {
     assert(settingsSource.includes('tab === "extensions" && <CapabilitiesTab />'));
     const agentSource = readFileSync(join(process.cwd(), "src/main/agent/AgentService.ts"), "utf8");
     assert(!agentSource.includes("loadUserExtensionFactories("), "product session must not load arbitrary disk extensions");
-    assert(agentSource.includes("modelSupportsImageInput(entry.session.model)"), "attachment image routing must inspect the actual session model");
+    const imagePreparation = agentSource.slice(agentSource.indexOf("prepareImages: async request =>"), agentSource.indexOf("thinking: (task, request) =>"));
+    assert(imagePreparation.includes("this.durableModels?.getModel(") && imagePreparation.includes("modelSupportsImageInput(model)"), "attachment image routing must inspect the resolved Durable model");
+    const durableSource = readFileSync(join(process.cwd(), "src/main/agent/durable/DurableBotService.ts"), "utf8");
+    assert(durableSource.includes("prepareImages({ ...request, modelId: modelKey(model) })"), "attachment routing receives the configured model after catalog repair");
     assert(agentSource.includes("routeVisionForPaths({"), "text-only attachment routing must use delegated Vision fallback");
     const extensionAssemblerSource = readFileSync(join(process.cwd(), "src/main/agent/SessionExtensionAssembler.ts"), "utf8");
     assert(!extensionAssemblerSource.includes("loadLegacyCapabilityFactories("), "session assembler must not load legacy disk capabilities");
