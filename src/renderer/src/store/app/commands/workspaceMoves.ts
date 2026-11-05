@@ -428,7 +428,7 @@ export function createWorkspaceMovesActions(
           }
         }
         // 计算受影响 sibling 集合用于精确回滚
-        if (targetIndex !== undefined && targetSpaceId != null) {
+        if (targetIndex !== undefined) {
           const siblings = prevTasks
             .filter((t) => (t.spaceId ?? null) === targetSpaceId)
             .sort((a, b) => {
@@ -486,15 +486,15 @@ export function createWorkspaceMovesActions(
           }
         }
         let nextTasks: Task[] = prevTasks.map((t) => ({ ...t }));
-        if (targetIndex !== undefined && targetSpaceId != null) {
+        if (targetIndex !== undefined) {
           const siblings = prevTasks
-            .filter((t) => (t.spaceId ?? null) === targetSpaceId)
+            .filter(t => (t.spaceId ?? null) === targetSpaceId)
             .sort((a, b) => {
-              const ao = a.spaceSortOrder ?? 0;
-              const bo = b.spaceSortOrder ?? 0;
-              if (ao !== bo) return ao - bo;
-              if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
-              return a.id.localeCompare(b.id);
+              const pinned = Number(Boolean(b.isFavorited)) - Number(Boolean(a.isFavorited));
+              if (pinned) return pinned;
+              const ao = a.spaceSortOrder ?? 0, bo = b.spaceSortOrder ?? 0;
+              const explicit = Number(bo > 0) - Number(ao > 0);
+              return explicit || ao - bo || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
             });
           const filtered = siblings
             .map((t) => t.id)

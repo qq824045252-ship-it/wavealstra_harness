@@ -104,8 +104,7 @@ function hasExplicitOrder(node: WorkspaceTreeNode): boolean {
  *
  * 注意：
  * - space 的 fallback 与冻结 DB getSpaceChildren 的 ORDER BY sort_order ASC, created_at ASC, id ASC 保持一致，不使用 name 改写结构排序。
- * - task 的 updatedAt DESC（新在前）与 DB renumberTasks 的 updated_at ASC（旧在前，分配持久 slot 时的稳定锚点）有意不同；
- *   前者为展示排序，后者为显式化时的分配顺序，冻结 DB 语义不改，仅以注释明确（ADR-2，见 AppDatabase.renumberTasks）。
+ * - Task drag insertion uses this displayed sibling order in both renderer and database.
  */
 export function compareMixed(a: WorkspaceTreeNode, b: WorkspaceTreeNode): number {
   const aPinned = a.kind === "task" && a.isFavorited ? 1 : 0;
@@ -352,33 +351,8 @@ export function isSpaceDescendant(
   return false;
 }
 
-/**
- * mixed 同父下：根据视觉 mixed 插入位置计算同类 targetIndex（strict DB targetIndex 契约）。
- *
- * 严格映射语义（P1-1 + P3-1）：
- * - parentChildrenMixed：该父下直接子列表（已按 compareMixed 排序，来自 getChildrenMixed）
- * - draggedId：被拖拽节点 id（需从列表中排除后再计算，避免 off-by-one）
- * - dropMixedIndex：视觉插入位置 0..filteredLength（filtered = 排除 dragged 后的列表， clamped 到该范围）
- * - draggedKind：被拖拽种类（space/task），仅统计同类兄第数并映射到 DB 秩。
- * - 返回值：DB 层的 `targetIndex`（同父同类 siblings 中的插入序号 0..kindCount），直接传给
- *   `AppDatabase.moveSpace` / `moveTaskInWorkspaceTree` 的 `targetIndex`，由 DB 侧按
- *   `ORDER BY sort_order ASC, created_at ASC, id ASC`（space）或
- *   `ORDER BY space_sort_order ASC, updated_at ASC, id ASC`（task，忽略 isFavorited）
- *   重排为 1000 步进，重启稳定。
- *
- * 产品语义冻结：
- * - space：无 pin，直接计数（视觉与 DB 一致）。
- * - task 无 pin 非全同序：直接对过滤后视觉列表计数（显式/隐式混排下视觉计数即 DB 期望，§33 兼容）；全同序（全隐式或同显式值）时与 pin 同路按 DB 秩推导，避免 DESC/ASC 分叉（P3-1）。
- * - task 有 pin：pin 仅 presentation priority，不改写 sortOrder。此时视觉顺序（pinned 置顶）与 DB
- *   顺序（忽略 isFavorited）分离，计数会 off-by-N。需以视觉插入点邻近的同类前驱/后继在 DB 顺序中的秩推导：
- *   - 头部连续 space 段：视觉在首个 task 之前的所有插入点（tasksBefore==0）均视为首部，返回 0。
- *   - 尾部连续 space 段（P3-1）：视觉在最后一个 task 之后的所有插入点（tasksBefore==taskCount，含尾部连续
- *     spaces 内任意位置）均视为末尾，返回 taskCount（append）。此前仅处理 clamped==0 / clamped==filtered.length
- *     两个绝对边缘，未覆盖“最后一个 task 之后但仍有尾部 spaces”的中段尾，pin 场景下会退化为 pred 的 DB 秩+1
- *     而非 append，导致错位；现以 tasksBefore 判定统一修正。
- *   - 中段（tasksBefore∈[1,taskCount-1]）：按最近视觉后继 task 在 DB 顺序中的秩推导；若后继为
- *     null（理论上仅尾部，已被上一条捕获），则回退为末尾。该映射与 AppDatabase 的 DB 排序同构，
- *     保证 pin+space 交错时视觉拖拽落点与 DB siblings 精确一致。
+/** Convert a drop position into a same-kind index in the displayed sibling order.
+ * Both the optimistic update and database insertion must use that same order.
  */
 export function mixedIndexToKindIndex(
   parentChildrenMixed: WorkspaceTreeNode[],
@@ -395,46 +369,7 @@ export function mixedIndexToKindIndex(
     }
     return count;
   }
-  // task：pin-aware 映射到 DB 秩（spaceSortOrder ASC, updatedAt ASC, id ASC）
-  const tasksInFiltered = filtered.filter((n) => n.kind === "task") as Extract<WorkspaceTreeNode, { kind: "task" }> [];
-  if (tasksInFiltered.length === 0) return 0;
-  // 绝对边缘
-  if (clamped === 0) return 0;
-  if (clamped === filtered.length) return tasksInFiltered.length;
-  // 无 pin 且非全同序时，视觉计数即 DB 期望（显式混排下视觉计数即 DB 期望，§33 兼容）
-  // 但全同序（如全隐式 spaceSortOrder==0 或同显式值）时，compareMixed 的 updatedAt DESC 与 DB ASC 分叉，需按 DB 秩推导（P3-1）
-  const hasPinned = filtered.some((n) => n.kind === "task" && (n as Extract<WorkspaceTreeNode, { kind: "task" }>).isFavorited);
-  const firstOrder = tasksInFiltered[0]!.spaceSortOrder;
-  const allSameOrder = tasksInFiltered.every((t) => t.spaceSortOrder === firstOrder);
-  if (!hasPinned && !allSameOrder) {
-    let count = 0;
-    for (let i = 0; i < clamped; i++) {
-      if (filtered[i]!.kind === "task") count++;
-    }
-    return count;
-  }
-  // pin 或全同序（全隐式）场景：需将视觉插入点映射到 DB 秩
-  // 先以任务计数判定头/尾连续 space 段（P3-1 语义：头/尾均视为首/末，不以 succ 的 DB 秩偏移）
-  let tasksBefore = 0;
-  for (let i = 0; i < clamped; i++) if (filtered[i]!.kind === "task") tasksBefore++;
-  if (tasksBefore === 0) return 0; // 头部连续 spaces：首部
-  if (tasksBefore === tasksInFiltered.length) return tasksInFiltered.length; // 尾部连续 spaces：末尾（append）
-  // 中段：按视觉后继在 DB 中的秩（与 AppDatabase.renumberTasks / moveTaskInWorkspaceTree 一致，忽略 isFavorited）
-  const dbOrdered = [...tasksInFiltered].sort((a, b) => {
-    if (a.spaceSortOrder !== b.spaceSortOrder) return a.spaceSortOrder - b.spaceSortOrder;
-    if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
-    return a.id.localeCompare(b.id);
-  });
-  let succ: Extract<WorkspaceTreeNode, { kind: "task" }> | null = null;
-  for (let i = clamped; i < filtered.length; i++) {
-    if (filtered[i]!.kind === "task") { succ = filtered[i] as Extract<WorkspaceTreeNode, { kind: "task" }>; break; }
-  }
-  if (succ) {
-    const idx = dbOrdered.findIndex((t) => t.id === succ!.id);
-    return idx === -1 ? tasksInFiltered.length : idx;
-  }
-  // 理论上仅尾部已在 tasksBefore 捕获；此处兜底末尾
-  return tasksInFiltered.length;
+  return filtered.slice(0, clamped).filter(node => node.kind === "task").length;
 }
 
 /**

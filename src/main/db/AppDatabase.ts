@@ -2620,9 +2620,11 @@ export class AppDatabase {
         if (oldSpaceId !== targetSpaceId && oldSpaceId !== null) this.renumberTasks(oldSpaceId);
         return;
       }
-      if (input.targetIndex !== undefined && targetSpaceId !== null) {
+      if (input.targetIndex !== undefined) {
         const siblings = this.db
-          .prepare("SELECT id FROM tasks WHERE space_id = ? ORDER BY space_sort_order ASC, updated_at ASC, id ASC")
+          .prepare(`SELECT id FROM tasks WHERE space_id IS ?
+            ORDER BY is_favorited DESC, CASE WHEN space_sort_order > 0 THEN 0 ELSE 1 END,
+            space_sort_order ASC, updated_at DESC, id ASC`)
           .all(targetSpaceId) as Array<{ id: string }>;
         const filtered = siblings.map((r) => r.id).filter((id) => id !== taskId);
         const clamped = Math.max(0, Math.min(input.targetIndex, filtered.length));

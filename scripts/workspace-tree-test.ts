@@ -1272,9 +1272,9 @@ async function main(): Promise<void> {
       const tree = buildWorkspaceTree(spaces, tasks);
       const parentChildren = getChildrenMixed("r", spaces, tasks); // visual: tPin,tA,tB
       assert(parentChildren.map((c) => c.id).join(",") === "tPin,tA,tB", `视觉 tPin,tA,tB 实际 ${parentChildren.map((c) => c.id).join(",")}`);
-      // 拖 tB (visual idx2) 插入到 tPin 与 tA 之间 (mixed 1) → DB 应为 tA 前 (0)，而旧逻辑会返回 1
+      // Drag tB between the pinned task and tA; preserve the displayed insertion point.
       const ti1 = mixedIndexToKindIndex(parentChildren, "tB", "task", 1);
-      assert(ti1 === 0, `tB→ tPin/tA 间 DB 0 实际 ${ti1}`);
+      assert(ti1 === 1, `tB→ tPin/tA 间 visual 1 实际 ${ti1}`);
       // 拖 tA 插入到末尾 (mixed 3) → DB 末尾 (在 tPin 后 DB 2?)
       // filtered [tPin,tB] DB [tB(2000),tPin(3000)] -> 末尾应 2? 但 tA 被移除后 DB [tB,tPin] 长度2，末尾 index 2
       const ti2 = mixedIndexToKindIndex(parentChildren, "tA", "task", 3);
@@ -1289,10 +1289,10 @@ async function main(): Promise<void> {
       db.upsertTask({ id: "tPin", title: "置顶", updatedAt: 100, spaceId: "r", spaceSortOrder: 3000, isFavorited: true });
       db.upsertTask({ id: "tA", title: "A", updatedAt: 10, spaceId: "r", spaceSortOrder: 1000 });
       db.upsertTask({ id: "tB", title: "B", updatedAt: 20, spaceId: "r", spaceSortOrder: 2000 });
-      // 使用 pin 修正后的 targetIndex 0 移动 tB 到首位
+      // Save the displayed insertion point.
       db.moveTaskInWorkspaceTree({ taskId: "tB", targetSpaceId: "r", targetIndex: ti1 });
       const order = db.connection.prepare("SELECT id, space_sort_order FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC, updated_at ASC, id ASC").all() as any[];
-      assert(order[0].id === "tB", `DB 首位 tB 实际 ${order[0].id}`);
+      assert(order.map(r => r.id).join(",") === "tPin,tB,tA", "保存应保留视觉落点 tPin,tB,tA");
       // 重启后 selector 仍 pin 置顶且 DB 顺序稳定
       const tasksDto: TaskDto[] = db.listTasks().filter((t) => t.spaceId === "r") as any;
       const treeAfter = buildWorkspaceTree([{ id: "r", name: "根", parentId: null, sortOrder: 1000, createdAt: 1 }], tasksDto);
@@ -1506,12 +1506,12 @@ async function main(): Promise<void> {
       // 中段：视觉 tPin 与 s1 之间插入 tB（pin 场景下应映射到 DB 中 tA 之前，即 0）
       const midDrop = 1; // tPin(0) 之后
       const midIdx = mixedIndexToKindIndex(parentChildren, "tB", "task", midDrop);
-      assert(midIdx === 0, `中段 tB→0 实际 ${midIdx}`);
+      assert(midIdx === 1, `中段 tB→1 实际 ${midIdx}`);
       // 真实 DB 落点验证：按上述 tail/mid 计算的 targetIndex 执行 move，校验 DB 顺序与重启稳定
-      // 中段：tB → 0（首位）
+      // Insert tB after the pinned task.
       db.moveTaskInWorkspaceTree({ taskId: "tB", targetSpaceId: "r", targetIndex: midIdx });
       let order = db.connection.prepare("SELECT id FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC").all() as any[];
-      assert(order[0].id === "tB", `中段 DB 首位 tB 实际 ${order[0].id}`);
+      assert(order.map(r => r.id).join(",") === "tPin,tB,tA", "中段保存应为 tPin,tB,tA");
       // 尾部：tA → append
       const tailTarget = mixedIndexToKindIndex(getChildrenMixed("r", spacesDto, tasksDto), "tA", "task", tailDrop);
       // 重新以最新 DB 的 spacesDto 更新后移动 tA 到尾部
@@ -1740,88 +1740,32 @@ async function main(): Promise<void> {
       reopen.close();
     }
 
-    console.log("== 49) P3-1 全隐式首次拖拽：无 pin 全 0 时按 DB ASC 推导，避免 DESC 分叉 ==");
-    {
-      // 全隐式：spaceSortOrder 全 0，updatedAt 不同，visual DESC vs DB ASC
-      const spaces: SpaceDto[] = [{ id: "r", name: "根", parentId: null, sortOrder: 1000, createdAt: 1 }];
-      const tasks: TaskDto[] = [
-        { id: "tA", title: "A", updatedAt: 300, spaceId: "r", spaceSortOrder: 0 },
-        { id: "tB", title: "B", updatedAt: 200, spaceId: "r", spaceSortOrder: 0 },
-        { id: "tC", title: "C", updatedAt: 100, spaceId: "r", spaceSortOrder: 0 },
-      ];
-      const tree = buildWorkspaceTree(spaces, tasks);
-      const parentChildren = tree.find((n) => n.id === "r")!.children; // visual DESC: tA(300), tB(200), tC(100)
-      assert(parentChildren.map((c) => c.id).join(",") === "tA,tB,tC", `visual DESC tA,tB,tC 实际 ${parentChildren.map((c) => c.id).join(",")}`);
-      // DB order ASC: tC(100), tB(200), tA(300)
-      const dbOrdered = [...tasks].sort((a, b) => a.updatedAt - b.updatedAt).map((t) => t.id).join(",");
-      assert(dbOrdered === "tC,tB,tA", `DB ASC tC,tB,tA 实际 ${dbOrdered}`);
-      // 拖动 tA (visual 首位) 到 visual tB 与 tC 之间（clamped 2 in filtered without tA => [tB,tC] insert 1）
-      // 简单计数会得 1，但 DB succ 为 tC (visual 后继) -> DB rank 0
-      const ti = mixedIndexToKindIndex(parentChildren, "tA", "task", 2);
-      // 过滤 tA 后 [tB,tC], clamped2 => 插入到末尾? 实际上 filtered without tA = [tB,tC], clamped2 =2 => 末尾 => taskCount 2
-      // 更能体现分叉的是插入到 tB 与 tC 之间：parentChildren without tA is [tB,tC], insert at 1 (between)
-      const tiBetween = mixedIndexToKindIndex(parentChildren, "tA", "task", 1);
-      // visual [tA,tB,tC], 拖 tA 到 index1 (tA 原位后一位？) 需要更清晰：拖 tC 到 tA 与 tB 之间
-      const ti2 = mixedIndexToKindIndex(parentChildren, "tC", "task", 1); // tC 原在末尾，拖到 1 (tA 后，tB 前)
-      // filtered without tC = [tA,tB], clamped1 => tasksBefore 1, succ=tB, db rank of tB =1
-      // 简单计数也会得 1，相同；需构造带 spaces 的混合使分叉更明显：visual [s1, tA, s2, tB, tC] 全 0 隐式但 spaces explicit 1000/2000
-      const spaces2: SpaceDto[] = [
-        { id: "r", name: "根", parentId: null, sortOrder: 1000, createdAt: 1 },
-        { id: "s1", name: "S1", parentId: "r", sortOrder: 1000, createdAt: 2 },
-        { id: "s2", name: "S2", parentId: "r", sortOrder: 2000, createdAt: 3 },
-      ];
-      const tasks2: TaskDto[] = [
-        { id: "tA", title: "A", updatedAt: 300, spaceId: "r", spaceSortOrder: 0 },
-        { id: "tB", title: "B", updatedAt: 200, spaceId: "r", spaceSortOrder: 0 },
-        { id: "tC", title: "C", updatedAt: 100, spaceId: "r", spaceSortOrder: 0 },
-      ];
-      const tree2 = buildWorkspaceTree([...spaces2], tasks2);
-      const pc2 = tree2.find((n) => n.id === "r")!.children; // visual: s1(1000) < s2(2000) < tasks DESC tA,tB,tC? 实际 compareMixed explicit space 在前，implicit task 按 DESC，所以 s1,s2 先，再 tA,tB,tC
-      assert(pc2.map((c) => c.id).join(",") === "s1,s2,tA,tB,tC", `mixed s1,s2,tA,tB,tC 实际 ${pc2.map((c) => c.id).join(",")}`);
-      // 拖 tC 到 s1 与 s2 之间（visual index1）-> tasksBefore 0 -> 应为 0 (首部) 按 P3-1 全隐式走 DB 秩也应 0
-      const tiS = mixedIndexToKindIndex(pc2, "tC", "task", 1);
-      assert(tiS === 0, `全隐式 tC->s1/s2间 0 实际 ${tiS}`);
-      // 拖 tA 到 tB 与 tC 之间（visual index 4 in pc2: s1(0),s2(1),tA(2),tB(3),tC(4) => between tB(3) and tC(4) => clamp4）
-      // filtered without tA = [s1,s2,tB,tC], clamp4 => tB(3)后, tC前? 实际上 clamp4 在过滤后 [s1,s2,tB,tC] length4 => 末尾? 需精确
-      // 简化：直接验证全隐式下插入到 tB 与 tC 之间应映射到 DB 0 而非 2
-      // 构造 parentChildren = [tA,tB,tC] 无 spaces，拖 tC 到 tA 与 tB 之间 (index1)
-      const simpleParent = buildWorkspaceTree([{ id: "r", name: "根", parentId: null, sortOrder: 1000, createdAt: 1 }], tasks).find((n) => n.id === "r")!.children;
-      const tiSimple = mixedIndexToKindIndex(simpleParent, "tC", "task", 1); // tC 原末尾，拖到 1 (tA 后)
-      // filtered without tC = [tA,tB], clamp1 => tasksBefore1, succ=tB, db rank of tB =1 => 1
-      // 简单计数也 1，仍相同；最能体现分叉的是拖 tA 到 tB 与 tC 之间：
-      const tiA = mixedIndexToKindIndex(simpleParent, "tA", "task", 2); // tA 首位拖到 2 (tB 后，tC 前)
-      // filtered without tA = [tB,tC], clamp2 => tasksBefore2 ==2 ==taskCount => append 2，但 simple counting 也会 2？
-      // 实际上 allSameOrder 时 tasksBefore==taskCount 会返回 append 2，simple 计数在 tB,tC 之间 clamp1 会得 1，但 append 逻辑已处理尾部
-      // 我们验证 P3-1 修复后，插入到 tB 与 tC 之间（visual）应映射到 DB 的 tC 位置 0
-      const pcSimple = simpleParent; // [tA,tB,tC]
-      const tiBetween2 = mixedIndexToKindIndex(pcSimple, "tB", "task", 1); // 拖 tB 到 1 (tA后)? 原 tB 在 1，拖到 1 是 no-op？ 改拖 tA 到 2 (tC前)
-      // 为避免 no-op，拖 tA (原 0) 到 2 (tB后，tC前) => filtered [tB,tC], clamp2 => tasksBefore2==2 => append 2 => 2
-      // 而旧 simple counting 在 filtered [tB,tC] 上 clamp2 的任务计数也是 2，仍相同
-      // 真正分叉需 spaces 混合：pc2 中拖 tA 到 s1/s2 之间已测 0，新逻辑与 simple 都 0 巧合
-      // 我们直接断言 P3-1 新逻辑下，拖动隐式任务到任意非首尾位置，其 targetIndex 为 DB succ 秩而非 visual 计数
-      // 用 DB succ 验证：拖 tC 到 1，其 succ=tB 的 DB rank 1，符合
-      assert(tiSimple === 0, `全隐式 tC->1 按 DB 秩应 0 实际 ${tiSimple}`);
-      // 真实 DB 首次拖拽与重启稳定
-      const dbPath = join(dir, "p31-first-drag.db");
-      const db = new AppDatabase(dbPath);
-      db.createSpace({ id: "r", name: "根" });
-      db.upsertTask({ id: "tA", title: "A", updatedAt: 300, spaceId: "r", spaceSortOrder: 0 });
-      db.upsertTask({ id: "tB", title: "B", updatedAt: 200, spaceId: "r", spaceSortOrder: 0 });
-      db.upsertTask({ id: "tC", title: "C", updatedAt: 100, spaceId: "r", spaceSortOrder: 0 });
-      // 首次拖拽：tC 到首位 (targetIndex 0) -> renumber 后 tC 应首位
-      db.moveTaskInWorkspaceTree({ taskId: "tC", targetSpaceId: "r", targetIndex: 0 });
-      let order = db.connection.prepare("SELECT id FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC").all() as any[];
-      assert(order[0].id === "tC", `首次拖拽 tC 首位 实际 ${order.map((r: any) => r.id).join(",")}`);
-      // 再拖 tA 到末尾
-      db.moveTaskInWorkspaceTree({ taskId: "tA", targetSpaceId: "r", targetIndex: 2 });
-      order = db.connection.prepare("SELECT id FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC").all() as any[];
-      assert(order[2].id === "tA", `tA 末尾 实际 ${order.map((r: any) => r.id).join(",")}`);
-      const snap = order.map((r: any) => r.id).join(",");
-      db.close();
-      const reopen = new AppDatabase(dbPath);
-      const snap2 = (reopen.connection.prepare("SELECT id FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC").all() as any[]).map((r: any) => r.id).join(",");
-      assert(snap === snap2, `重启稳定 ${snap} vs ${snap2}`);
-      reopen.close();
+    // Exercise every first-drag insertion through the actual mapper, database and selector.
+    for (const root of [false, true]) {
+      for (const dragged of ["A", "B", "C"]) {
+        for (const slot of [0, 1, 2]) {
+          const file = join(dir, `drop-${root}-${dragged}-${slot}.db`);
+          let database = new AppDatabase(file);
+          if (!root) database.createSpace({ id: "drop-space", name: "drop" });
+          const parent = root ? null : "drop-space";
+          for (const [index, id] of ["A", "B", "C"].entries()) {
+            database.upsertTask({ id, title: id, spaceId: parent, updatedAt: 300 - index * 100, spaceSortOrder: 0 });
+          }
+          const spaces = database.listSpaces();
+          const children = getChildrenMixed(parent, spaces, database.listTasks());
+          const targetIndex = mixedIndexToKindIndex(children, dragged, "task", slot);
+          database.moveTaskInWorkspaceTree({ taskId: dragged, targetSpaceId: parent, targetIndex });
+          const expected = ["A", "B", "C"].filter(id => id !== dragged);
+          expected.splice(slot, 0, dragged);
+          const readOrder = () => getChildrenMixed(parent, database.listSpaces(), database.listTasks()).filter(node => node.kind === "task").map(node => node.id);
+          assertStrict.deepEqual(readOrder(), expected);
+          assertStrict.deepEqual(database.listTasks().sort((a,b) => a.id.localeCompare(b.id)).map(task => task.updatedAt), [300, 200, 100]);
+          database.close();
+          database = new AppDatabase(file);
+          assertStrict.deepEqual(readOrder(), expected);
+          database.close();
+        }
+      }
     }
 
     console.log("== 50) P3-3 getVirtualSlice 边界与 overscan ==");
