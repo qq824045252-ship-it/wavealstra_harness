@@ -10,11 +10,21 @@
  *   + 运行中的 bash 工具调用（无 exit code 事件 → 不伪造 exit）。
  *
  * 约定：所有解析均防御性；无法可靠判断的字段宁缺毋伪造。
+ *
+ * 模型展示（「这是哪个模型在跑」）：主 Agent 用任务级 activeModelId + 目录名称；
+ * 运行中子代理用运行时记录的 actualModel/resolvedModel（含来源）；
+ * 完成态子代理从工具结果的结构化证据行解析；拿不到就不显示，不猜。
  */
 import type { ChatMessage } from "@/types";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { TerminalSessionInfo } from "@shared/terminal-ipc";
 import { extractSubagentIdFromToolResult } from "@shared/subagent-model-config";
+import {
+  buildModelBadge,
+  parseModelEvidenceFromOutput,
+  subagentModelBadge,
+  type ModelBadge,
+} from "@/lib/modelBadge";
 
 // ---------- 类型 ----------
 
@@ -26,6 +36,8 @@ export interface MainAgentVm {
   label: string;
   /** 一行动作摘要（如「正在实现 WebAccess」）；无则 undefined */
   action?: string;
+  /** 当前任务模型（任务级 activeModelId；无则不显示） */
+  model?: ModelBadge;
 }
 
 export interface RunningSubagentVm {
@@ -33,7 +45,8 @@ export interface RunningSubagentVm {
   role: string;
   work: string;
   elapsedMs: number;
-  model?: string;
+  /** 该实例真正使用的模型（actual/resolved 记录值；拿不到则不显示） */
+  model?: ModelBadge;
 }
 
 export type DoneSubagentState = "completed" | "failed" | "cancelled";
@@ -49,6 +62,8 @@ export interface DoneSubagentVm {
   task?: string;
   /** 完整输出详情结果 */
   detail?: string;
+  /** 工具结果证据行解析出的模型（无证据则不显示） */
+  model?: ModelBadge;
 }
 
 export type BackgroundState = "running" | "completed" | "failed";
@@ -78,6 +93,10 @@ export interface OverviewInputs {
   activeSubagents: SubagentSummaryDto[];
   terminalSessions: Record<string, TerminalSessionInfo>;
   now: number;
+  /** 主 Agent 当前模型（任务级 activeModelId + 目录名称；仅展示用） */
+  mainModel?: { id?: string; name?: string };
+  /** 模型 id → 目录展示名（只用于 badge 短标签，不参与运行判断） */
+  modelNames?: Record<string, string>;
 }
 
 // ---------- 纯工具 ----------
@@ -111,28 +130,33 @@ export function oneLine(text: string, max = 64): string {
 
 // ---------- 主 Agent ----------
 
-export function buildMainAgent(messages: ChatMessage[]): MainAgentVm {
+export function buildMainAgent(
+  messages: ChatMessage[],
+  mainModel?: { id?: string; name?: string },
+): MainAgentVm {
+  const model = buildModelBadge(mainModel?.id, { displayName: mainModel?.name });
+  const withModel = (vm: MainAgentVm): MainAgentVm => (model ? { ...vm, model } : vm);
   // 最后一条消息是 user：agent 尚未开始响应（无 streaming 标记可区分）→ 等待
   if (messages.length > 0 && messages[messages.length - 1].role === "user") {
-    return { state: "idle", label: "等待" };
+    return withModel({ state: "idle", label: "等待" });
   }
   // 从后往前找最后一条 assistant 消息（其 streaming 标志是主 Agent 运行态）
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
     const running = msg.streaming === true;
-    if (!running) return { state: "idle", label: "空闲" };
+    if (!running) return withModel({ state: "idle", label: "空闲" });
     // 动作摘要：最近一个运行中 tool call（从后往前）
     for (let b = (msg.blocks ?? []).length - 1; b >= 0; b--) {
       const block = msg.blocks[b];
       if (block.type === "tool" && block.toolCall.status === "running") {
         const summary = oneLine(block.toolCall.summary || block.toolCall.tool, 48);
-        return { state: "working", label: "运行中", action: summary ? `正在 ${summary}` : undefined };
+        return withModel({ state: "working", label: "运行中", action: summary ? `正在 ${summary}` : undefined });
       }
     }
-    return { state: "working", label: "运行中", action: "正在生成回复…" };
+    return withModel({ state: "working", label: "运行中", action: "正在生成回复…" });
   }
-  return { state: "idle", label: "等待" };
+  return withModel({ state: "idle", label: "等待" });
 }
 
 // ---------- 子代理 ----------
@@ -142,7 +166,11 @@ function isActiveInstance(dto: SubagentSummaryDto): boolean {
   return dto.status === "running" || (dto.status === "idle" && dto.workerAlive === true);
 }
 
-export function buildRunningSubagents(dtos: SubagentSummaryDto[], now: number): RunningSubagentVm[] {
+export function buildRunningSubagents(
+  dtos: SubagentSummaryDto[],
+  now: number,
+  modelNames?: Record<string, string>,
+): RunningSubagentVm[] {
   return (dtos ?? [])
     .filter(isActiveInstance)
     .map((d) => ({
@@ -150,7 +178,7 @@ export function buildRunningSubagents(dtos: SubagentSummaryDto[], now: number): 
       role: readableRole(d.subagentId, d.role),
       work: oneLine(d.lastTask || (d.status === "running" ? "运行中" : "等待工具调用"), 56) || "运行中",
       elapsedMs: now - (d.lastPromptAt ?? d.createdAt ?? now),
-      model: d.model,
+      model: subagentModelBadge(d, modelNames),
     }));
 }
 
@@ -176,10 +204,13 @@ function extractSubagentTask(detail?: string, summary?: string): string {
   return text;
 }
 
-export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
+export function buildDoneSubagents(
+  messages: ChatMessage[],
+  modelNames?: Record<string, string>,
+): DoneSubagentVm[] {
   const map = new Map<
     string,
-    { state: DoneSubagentState; summary: string; count: number; task?: string; detail?: string }
+    { state: DoneSubagentState; summary: string; count: number; task?: string; detail?: string; model?: ModelBadge }
   >();
   for (const msg of messages) {
     for (const block of msg.blocks ?? []) {
@@ -194,6 +225,11 @@ export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
       const summary = pickSummary(tc, state, prev?.summary);
       const task = extractSubagentTask(tc.detail, tc.summary);
       const detail = tc.output || tc.detail || "";
+      // 模型只认工具结果里的结构化证据行（Resolved/Observed model）；无证据保留旧值
+      const evidenceModel = parseModelEvidenceFromOutput(tc.output);
+      const model =
+        buildModelBadge(evidenceModel, { displayName: evidenceModel ? modelNames?.[evidenceModel] : undefined }) ??
+        prev?.model;
       // 状态取最新（后一次调用覆盖前一次）；空摘要保留旧值
       map.set(id, {
         state,
@@ -201,6 +237,7 @@ export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
         count: (prev?.count ?? 0) + 1,
         task: task || prev?.task,
         detail: detail || prev?.detail,
+        model,
       });
     }
   }
@@ -211,6 +248,7 @@ export function buildDoneSubagents(messages: ChatMessage[]): DoneSubagentVm[] {
     count: v.count,
     task: v.task,
     detail: v.detail,
+    model: v.model,
   }));
 }
 
@@ -299,14 +337,14 @@ export function shellLabel(shell: string | undefined): string {
 // ---------- 总入口 ----------
 
 export function buildRuntimeOverview(inputs: OverviewInputs): RuntimeOverviewVm {
-  const { taskId, workspaceId, messages, activeSubagents, terminalSessions, now } = inputs;
-  const runningSubagents = buildRunningSubagents(activeSubagents ?? [], now);
+  const { taskId, workspaceId, messages, activeSubagents, terminalSessions, now, mainModel, modelNames } = inputs;
+  const runningSubagents = buildRunningSubagents(activeSubagents ?? [], now, modelNames);
   // 同 id 复用运行中：done 旧记录让位给 running（当前活跃状态优先，避免双条目）
   const runningIds = new Set(runningSubagents.map((s) => s.id));
   return {
-    mainAgent: buildMainAgent(messages ?? []),
+    mainAgent: buildMainAgent(messages ?? [], mainModel),
     runningSubagents,
-    doneSubagents: buildDoneSubagents(messages ?? []).filter((d) => !runningIds.has(d.id)),
+    doneSubagents: buildDoneSubagents(messages ?? [], modelNames).filter((d) => !runningIds.has(d.id)),
     backgroundTasks: buildBackgroundTasks(messages ?? [], terminalSessions ?? {}, taskId, now, workspaceId),
   };
 }

@@ -77,6 +77,7 @@ const GUI_TESTS = new Set([
   "test:project-materials-ui",
   "test:project-activity-ui",
   "test:consult-card-ui",
+  "test:overview-model-ui",
   "test:settings-records-ui",
   "test:svg-preview-resize",
   "test:consult-selection",

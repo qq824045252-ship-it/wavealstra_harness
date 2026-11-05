@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SubagentTranscriptDto } from "../../../../shared/agent-ipc";
 import { useAppStore } from "@/store/appStore";
+import { modelBadgeTitle, subagentModelBadge } from "@/lib/modelBadge";
 import { IconX, IconArrowUp } from "@/components/common/icons";
 
 interface TranscriptView {
@@ -90,6 +91,18 @@ export default function SubagentDrawer(): React.JSX.Element | null {
   }, [ended]);
 
   const views = useMemo(() => buildViews(transcript), [transcript]);
+  const models = useAppStore((s) => s.models);
+  // 抽屉里也标出该实例真实使用的模型（与侧边栏同一套事实来源）
+  const modelBadge = useMemo(() => {
+    const record = transcript?.record;
+    if (!record) return undefined;
+    const names: Record<string, string> = {};
+    for (const model of models ?? []) {
+      const id = (model?.id ?? "").trim();
+      if (id) names[id] = model.name;
+    }
+    return subagentModelBadge(record, names);
+  }, [transcript?.record, models]);
 
   if (!drawer) return null;
 
@@ -126,6 +139,11 @@ export default function SubagentDrawer(): React.JSX.Element | null {
         <div className="sa-drawer-head">
           <div className="sa-drawer-title">
             <span className="sa-item-role">{transcript?.record?.role ?? "subagent"}</span>
+            {modelBadge && (
+              <span className="sa-model" title={modelBadgeTitle(modelBadge)}>
+                {modelBadge.label}
+              </span>
+            )}
             <span className="sa-item-id">{instanceId}</span>
             {!ended && <span className="sa-status sa-status--running">Running</span>}
             {ended && <span className="sa-status sa-status--warn">已结束</span>}

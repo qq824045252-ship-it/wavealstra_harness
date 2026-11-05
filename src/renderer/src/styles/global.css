@@ -13923,9 +13923,11 @@ button.font-picker-item {
 .ro-main-name {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   font-size: 13px;
   font-weight: 600;
+  min-width: 0;
 }
 
 .ro-main-info {
@@ -13983,6 +13985,45 @@ button.font-picker-item {
 .ro-label--idle, .ro-label--ok, .ro-label--completed { background: #223a28; color: #6fd08a; }
 .ro-label--failed { background: #3a2222; color: #e07a7a; }
 .ro-label--cancelled { background: var(--bg-active); color: var(--fg-muted); }
+
+/* 模型短标签：并行子代理时区分「哪个模型在跑」；完整 provider/model 与来源在 title */
+.ro-model {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: 62%;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--fg-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 行首信息行：role + 模型 + 耗时同一行；名称可让位，chip/耗时不被压扁 */
+.ro-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ro-item-head .ro-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.ro-item-head .ro-elapsed {
+  margin-left: auto;
+  flex-shrink: 0;
+}
 
 .ro-empty {
   padding: 4px 2px 6px 20px;
@@ -19537,6 +19578,7 @@ html[data-theme="dark"] .input-expert-chip {
 .sa-item--active { background: var(--bg-active, #232323); outline: 1px solid var(--accent, #4a90d9); }
 .sa-item-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .sa-item-role { font-weight: 600; font-size: 13px; }
+.sa-model { display: inline-flex; align-items: center; max-width: 200px; padding: 0 6px; border: 1px solid var(--border, #2a2a2a); border-radius: 4px; background: var(--bg-active, #232323); color: var(--text-muted, #888); font-family: var(--font-mono, monospace); font-size: 11px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 .sa-item-id { color: var(--text-muted, #888); font-size: 11px; font-family: var(--font-mono, monospace); margin-top: 2px; word-break: break-all; }
 .sa-item-task { font-size: 12px; color: var(--text-dim, #aaa); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sa-item-meta { font-size: 11px; color: var(--text-muted, #888); margin-top: 6px; }
@@ -20556,6 +20598,12 @@ html[data-theme="dark"] .task-item.active {
 .ro-label--failed {
   background: color-mix(in srgb, var(--danger) 13%, transparent);
   color: var(--danger);
+}
+
+.ro-model {
+  background: var(--surface-active, var(--bg-active));
+  border-color: var(--border-subtle, var(--border));
+  color: var(--fg-muted);
 }
 
 .panel-resize-handle,
@@ -23842,6 +23890,13 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ro-done-header .ro-name {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .ro-done-expanded {

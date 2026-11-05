@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { currentTerminalOwnerKey, useAppStore } from "@/store/appStore";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { ExternalAgentRunDto } from "@shared/external-agent";
+import { modelBadgeTitle, type ModelBadge } from "@/lib/modelBadge";
 import {
   buildRuntimeOverview,
   formatElapsed,
@@ -33,16 +34,41 @@ function Dot({ state }: { state: "running" | "ok" | "err" }): React.JSX.Element 
   return <span className={`ro-dot ro-dot--${state}`} aria-hidden />;
 }
 
+/** 模型短标签：多子代理并行时区分「哪个模型在跑」；完整标识与来源在 title。 */
+function ModelChip({ badge }: { badge?: ModelBadge }): React.JSX.Element | null {
+  if (!badge) return null;
+  return (
+    <span className="ro-model" title={modelBadgeTitle(badge)}>
+      {badge.label}
+    </span>
+  );
+}
+
 export default function RuntimeObservatory(): React.JSX.Element | null {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const tasks = useAppStore((s) => s.tasks);
   const terminalSessions = useAppStore((s) => s.terminalSessions);
+  const activeModelId = useAppStore((s) => s.activeModelId);
+  const models = useAppStore((s) => s.models);
   const openSubagentDrawer = useAppStore((s) => s.openSubagentDrawer);
   const [expandedDoneId, setExpandedDoneId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const currentTask = useMemo(() => tasks.find((t) => t.id === activeTaskId) ?? null, [tasks, activeTaskId]);
   const messages = currentTask?.messages ?? [];
+  // 模型目录 id → 展示名：只用于把 provider/model 显示成用户认识的名字
+  const modelNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const model of models ?? []) {
+      const id = (model?.id ?? "").trim();
+      if (id) map[id] = model.name;
+    }
+    return map;
+  }, [models]);
+  const mainModel = useMemo(
+    () => ({ id: activeModelId, name: activeModelId ? modelNames[activeModelId] : undefined }),
+    [activeModelId, modelNames],
+  );
 
   // 运行中子代理（主进程按当前 session scope 过滤；事件驱动刷新）
   const [activeSubagents, setActiveSubagents] = useState<SubagentSummaryDto[]>([]);
@@ -109,8 +135,10 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
         activeSubagents,
         terminalSessions,
         now,
+        mainModel,
+        modelNames,
       }),
-    [activeTaskId, currentTask?.spaceId, messages, activeSubagents, terminalSessions, now],
+    [activeTaskId, currentTask?.spaceId, messages, activeSubagents, terminalSessions, now, mainModel, modelNames],
   );
   const hasRunning =
     vm.runningSubagents.length > 0 || activeExternalAgents.length > 0 || vm.backgroundTasks.some((t) => t.state === "running");
@@ -138,6 +166,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
           <div className="ro-main-name">
             <IconBot size={13} /> 主 Agent
             <span className={`ro-label ro-label--${vm.mainAgent.state}`}>{vm.mainAgent.label}</span>
+            <ModelChip badge={vm.mainAgent.model} />
           </div>
           {vm.mainAgent.action && <div className="ro-sub">{vm.mainAgent.action}</div>}
         </div>
@@ -158,10 +187,13 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                   title="打开临时 Chat（steer / 中止）"
                   onClick={() => openSubagentDrawer(s.id)}
                 >
-                  <span className="ro-name">
-                    <IconUsers size={12} /> {s.role}
+                  <span className="ro-item-head">
+                    <span className="ro-name">
+                      <IconUsers size={12} /> {s.role}
+                    </span>
+                    <ModelChip badge={s.model} />
+                    {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   </span>
-                  {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   <span className="ro-sub">{s.work}</span>
                 </button>
               </li>
@@ -190,6 +222,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                       <span className="ro-name">
                         {readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
                       </span>
+                      <ModelChip badge={d.model} />
                       <span className={`ro-label ro-label--${d.state}`}>
                         {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}
                       </span>

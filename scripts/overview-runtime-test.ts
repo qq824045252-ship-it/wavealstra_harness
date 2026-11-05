@@ -21,6 +21,7 @@ import {
 import type { ChatMessage } from "@/types";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import { terminalOwnerStoreKey, type TerminalSessionInfo } from "@shared/terminal-ipc";
+import { modelBadgeTitle, modelSourceLabel, shortModelLabel } from "../src/renderer/src/lib/modelBadge";
 
 let passed = 0;
 let failed = 0;
@@ -358,6 +359,103 @@ console.log("== 任务与空间多终端：按归属汇总并按 sessionId 去�
   function termFor(taskId: string): TerminalSessionInfo {
     return { taskId, sessionId: taskId, cwd: "C:/p", shell: "bash", alive: true, exitCode: null, exitReason: null, startedAt: NOW - 1000 };
   }
+}
+
+console.log("== 模型标识展示（主 Agent / 运行中 / 完成态） ==");
+{
+  // 主 Agent：任务级 activeModelId + 目录名称
+  const withModel = buildMainAgent([], { id: "deepseek/deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" });
+  assert(withModel.model?.label === "DeepSeek V4.1 Flash", `主 Agent 用目录名显示（${withModel.model?.label}）`);
+  assert(withModel.model?.full === "deepseek/deepseek-v4.1-flash", "主 Agent title 保留完整 id");
+  assert(buildMainAgent([]).model === undefined, "无 activeModelId → 不伪造模型");
+
+  // 运行中子代理：实测值优先，解析值进 note，来源映射成可读文案
+  const running = buildRunningSubagents(
+    [
+      subagentDto({
+        subagentId: "sa-model-1",
+        status: "running",
+        resolvedModel: "openai/gpt-5",
+        actualModel: "gpt-5",
+        modelSource: "invocation",
+      }),
+      subagentDto({ subagentId: "sa-model-2", status: "running", resolvedModel: "deepseek/deepseek-v4.1-flash", modelSource: "parent" }),
+      subagentDto({ subagentId: "sa-model-3", status: "running" }),
+    ],
+    NOW,
+    { "openai/gpt-5": "GPT-5", "deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash" },
+  );
+  const m1 = running.find((s) => s.id === "sa-model-1")!;
+  assert(m1.model?.label === "GPT-5" && m1.model?.full === "gpt-5", "实测模型优先，名称取解析值对应的目录名");
+  assert(m1.model?.note === "解析值 openai/gpt-5", "实测与解析不一致时保留解析值（不静默丢弃）");
+  assert(m1.model?.source === "手动指定", `来源 invocation → 手动指定（${m1.model?.source}）`);
+  const m2 = running.find((s) => s.id === "sa-model-2")!;
+  assert(m2.model?.label === "DeepSeek V4.1 Flash" && m2.model?.source === "继承父模型", "继承父模型也有模型标签");
+  assert(running.find((s) => s.id === "sa-model-3")!.model === undefined, "无模型记录 → 不显示（宁缺毋伪造）");
+
+  // 完成态：只认工具结果里的结构化证据行
+  const doneMessages = [
+    msg({
+      id: "m-model",
+      blocks: [
+        {
+          type: "tool",
+          toolCall: {
+            id: "tm1",
+            tool: "subagent",
+            summary: "subagent",
+            status: "success" as const,
+            output: `\n> subagent: sa-done-model\nResolved model: openai/gpt-5; thinking: high\nObserved model: gpt-5\n\nDONE`,
+          },
+        },
+        {
+          type: "tool",
+          toolCall: {
+            id: "tm2",
+            tool: "subagent",
+            summary: "subagent",
+            status: "success" as const,
+            output: "\n> subagent: sa-done-model\n没有任何证据行",
+          },
+        },
+        {
+          type: "tool",
+          toolCall: {
+            id: "tm3",
+            tool: "subagent",
+            summary: "subagent",
+            status: "success" as const,
+            output: "\n> subagent: sa-done-nomodel\nDONE",
+          },
+        },
+      ],
+    }),
+  ];
+  const done = buildDoneSubagents(doneMessages, { "openai/gpt-5": "GPT-5" });
+  const doneModel = done.find((d) => d.id === "sa-done-model")!;
+  assert(doneModel.model?.label === "GPT-5" && doneModel.model?.full === "openai/gpt-5", "完成态从证据行解析 Resolved model");
+  assert(doneModel.count === 2, "后续无证据调用不破坏聚合计数");
+  assert(done.find((d) => d.id === "sa-done-nomodel")!.model === undefined, "无证据行 → 完成态不猜模型");
+
+  // 总入口透传：mainModel + modelNames 一次装配
+  const overview = buildRuntimeOverview({
+    taskId: "task-model",
+    messages: [],
+    activeSubagents: [subagentDto({ subagentId: "sa-ov", status: "running", resolvedModel: "openai/gpt-5" })],
+    terminalSessions: {},
+    now: NOW,
+    mainModel: { id: "openai/gpt-5", name: "GPT-5" },
+    modelNames: { "openai/gpt-5": "GPT-5" },
+  });
+  assert(overview.mainAgent.model?.label === "GPT-5", "总入口透传主 Agent 模型");
+  assert(overview.runningSubagents[0].model?.label === "GPT-5", "总入口透传子代理模型");
+
+  // 纯函数边界
+  assert(shortModelLabel("openai/gpt-5") === "gpt-5", "id 末段作为回退短名");
+  assert(shortModelLabel("auto") === "自动选择", "占位值 auto → 自动选择（不冒充模型名）");
+  assert(shortModelLabel("provider/a-very-long-model-identifier").endsWith("…"), "超长短名截断");
+  assert(modelSourceLabel("role") === "角色指定" && modelSourceLabel(undefined) === undefined, "来源文案映射/缺省");
+  assert(modelBadgeTitle({ label: "x", full: "p/x", source: "手动指定" }) === "模型：p/x · 来源：手动指定", "title 带完整标识与来源");
 }
 
 console.log("== 纯函数（elapsed / 截断 / role / id 解析） ==");
