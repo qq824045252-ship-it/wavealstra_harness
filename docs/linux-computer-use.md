@@ -65,6 +65,8 @@ Window handles remain strings even when they look like numbers. Hyprland geometr
 
 The client origin, CSD/frame decorations, window-relative AT-SPI coordinates and output scaling are separate facts. If the driver cannot reconcile them, bounds are unavailable; there is no guessed offset or `scale=1` fallback. `(0,0)` and negative global origins are valid locations, not generic signs of invalid data. Empty rectangles and contradictions are invalid.
 
+A logical native frame does not prove the units of a `DocumentWeb` subtree. Some native-Wayland Electron exporters return device-pixel document extents under a logical frame. The driver reconciles a single complete document viewport with both compositor dimensions before converting its descendants, and runs hit tests in each queried object's own coordinate domain. `atspi.coordinateScale` and `coordinateRoot` record that proof; the viewport is reread before reusing it. Partial, nested or contradictory document mappings do not publish reliable pointer bounds. Raw AT-SPI extents remain available for diagnosis. No DOM geometry is used as an input locator.
+
 Coordinate input carries a recent observation and rechecks the window identity, geometry, layout and actual foreground window immediately before injection. Window movement, resizing, layout changes and target reconstruction invalidate stale evidence. A move is followed by compositor cursor readback. Long presses first position the pointer. Drags send an interpolated trajectory over a real duration; one teleport is not a drag.
 
 The headless geometry fixtures cover mixed/fractional scales, negative origins, output transforms, multiple displays and layout change. The GUI report records the displays actually present. Synthetic fixtures do not establish that those hardware configurations were tested.
@@ -157,6 +159,8 @@ Default reports go to `out/tests/linux-computer-use/<timestamp>-<dev|packaged>/`
 `test:computer-use-linux` and `test:computer-use-linux:packaged` are explicitly GUI tests. Windows-only GUI suites remain Windows-only. `test:atspi-transport` is a Linux headless **real D-Bus wire fixture**; it starts isolated daemons/services and is not evidence of an actual GTK/Wayland session. `test:input-guardian-process` is a Linux headless child-process lifecycle fixture, including parent death; its fake input sink is not evidence of kernel/desktop delivery. A missing graphical session or a forbidden D-Bus socket is a nonzero failure, not `SKIP` with a successful exit. No test baseline should be expanded to hide these failures.
 
 ## Final integration evidence
+
+Version **0.1.98** passed the targeted development and normal packaged-main desktop gates on 2026-11-05 on Hyprland 0.57.0 / Electron 44.5.1 at output scale 1.6. Both runs received all five expected clicks and passed the complete 23-check Linux input gate, including GTK and Electron Unicode paths. See the [repair, scoped checks, retained evidence and package hashes](../artifacts/linux-input-0.1.98/validation.md). This fixes mixed native-frame/document coordinate units; partial or nested document mappings still fail closed for pointer bounds. Full/unrelated suites were intentionally not run for this repair.
 
 Version **0.1.93** was checked on 2026-11-04 UTC / 2026-11-05 Asia/Shanghai against an implementation based on `21e9ce5aa7bb55429990fc1251fa52c63e65eb64`. The [final validation record and retained raw evidence](../artifacts/issue-14-linux-native/validation.md) distinguish completed checks from blocked acceptance.
 

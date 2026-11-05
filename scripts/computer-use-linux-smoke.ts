@@ -14,9 +14,11 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { LinuxComputerUseBackend } from "../src/main/platform/computer-use/linux/LinuxComputerUseBackend";
+import { createHyprlandWindowControl } from "../src/main/platform/computer-use/linux/hyprlandWindows";
 import { executableInPath } from "../src/main/platform/computer-use/support";
 import { ComputerUseError, type ComputerExecInput, type ComputerExecOutput, type ControlInfo, type WindowInfo } from "../src/main/platform/computer-use/protocol";
 import type { LinuxScreenshotProvider } from "../src/main/platform/computer-use/linux/screenshotProvider";
+import type { AtSpiControlInfo } from "../src/main/platform/computer-use/linux/atspiTypes";
 
 const command = promisify(execFile);
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,9 +64,12 @@ async function check(name: string, run: () => Promise<unknown> | unknown): Promi
 interface FixtureState {
   semanticCount: number; clicks: number; doubleClicks: number; holds: number[];
   modifiers: Array<{ ctrl: boolean; shift: boolean; alt: boolean; meta: boolean }>;
-  pressedKeys: string[]; keyEvents: Array<{ key: string; down: boolean }>;
+  pressedKeys: string[]; pressedCodes: string[];
+  keyEvents: Array<{ key: string; down: boolean; [key: string]: unknown }>; focusEvents: Array<Record<string, unknown>>;
   pointerDown: boolean; dragMoves: number; dragDelta: number[]; dragDuration: number;
   text: string; scrollTop: number; popupOpen: boolean;
+  pointerEvents: Array<{ sequence: number; type: string; target: unknown; client: { x: number; y: number }; screen: { x: number; y: number }; [key: string]: unknown }>;
+  pointerEventSequence: number; pointerEventsDropped: number; diagnostics: Record<string, unknown>;
 }
 interface ElectronFixture {
   child: ChildProcessWithoutNullStreams;
@@ -169,9 +174,22 @@ function denyCaptureCommands(): void {
 }
 const forbiddenCalls = (): string[] => existsSync(captureAudit) ? readFileSync(captureAudit, "utf8").trim().split(/\r?\n/).filter(Boolean) : [];
 const isButton = (control: ControlInfo): boolean => /button/i.test(control.controlType);
-const isEditable = (control: ControlInfo): boolean =>
-  (control as ControlInfo & { interfaces?: string[] }).interfaces?.includes("org.a11y.atspi.EditableText") === true ||
-  control.patterns.some((name) => /^(Value|EditableText)$/.test(name));
+function textWritePath(control: ControlInfo): "atspi-editable-text" | "atspi-value" | "atspi-focus-clipboard" | undefined {
+  if (!control.enabled) return undefined;
+  const { interfaces = [], states = [] } = control as Partial<AtSpiControlInfo>;
+  if (interfaces.includes("org.a11y.atspi.EditableText")) return "atspi-editable-text";
+  if (interfaces.includes("org.a11y.atspi.Value")) return "atspi-value";
+  // Electron's editable Text control need not export EditableText/Value. Match
+  // the existing backend focus-and-paste contract, not an invented pattern.
+  if ((interfaces.includes("org.a11y.atspi.Text") || control.patterns.includes("Text")) &&
+    states.includes("editable") && control.keyboardFocusable) return "atspi-focus-clipboard";
+  return undefined;
+}
+const isEditable = (control: ControlInfo): boolean => textWritePath(control) !== undefined;
+const isGtkEditableText = (control: ControlInfo): boolean => textWritePath(control) === "atspi-editable-text";
+const textControlEvidence = (control: ControlInfo) => ({
+  ...control, writePath: textWritePath(control),
+});
 async function inspectTarget(target = window): Promise<ComputerExecOutput> {
   const result = await backend!.execute({ action: "inspect_controls", windowHandle: target.handle, taskId, maxDepth: 24, maxNodes: 1200 });
   assert.equal(result.truncated, false, "fixture tree must be fully traversed before claiming unique controls");
@@ -183,15 +201,55 @@ function named(tree: ComputerExecOutput, name: string, predicate: (control: Cont
   assert.equal(matches.length, 1, `expected exactly one ${name}: ${JSON.stringify(matches)}; observed controls: ${JSON.stringify((tree.controls ?? []).map(({ name, controlType, patterns }) => ({ name, controlType, patterns })))}`);
   return matches[0];
 }
+const pointerActions: Array<Record<string, unknown>> = [];
+report.pointerActions = pointerActions;
+const pointerState = (state: FixtureState) => ({
+  clicks: state.clicks, doubleClicks: state.doubleClicks, holds: state.holds, modifiers: state.modifiers,
+  pressedKeys: state.pressedKeys, pressedCodes: state.pressedCodes, keyEvents: state.keyEvents, focusEvents: state.focusEvents,
+  pointerDown: state.pointerDown, pointerEventSequence: state.pointerEventSequence,
+  pointerEventsDropped: state.pointerEventsDropped, pointerEvents: state.pointerEvents, diagnostics: state.diagnostics,
+});
+async function observedPointer(input: ComputerExecInput, tree: ComputerExecOutput, control: ControlInfo, coordinateSpace: "client-logical" | "screen-logical"): Promise<ComputerExecOutput> {
+  const target = tree.window ?? window;
+  const evidence: Record<string, unknown> = {
+    index: pointerActions.length + 1, startedAt: new Date().toISOString(), coordinateSpace,
+    request: input, control, target,
+    // Derived for comparison only; never use DOM geometry to choose an input point.
+    requestedScreenLogical: { x: input.x! + (coordinateSpace === "client-logical" ? target.clientOrigin.x : 0),
+      y: input.y! + (coordinateSpace === "client-logical" ? target.clientOrigin.y : 0) },
+  };
+  pointerActions.push(evidence);
+  evidence.applicationBefore = await fixture!.state().then(pointerState, (error: unknown) => ({ error: String(error) }));
+  try {
+    const result = await backend!.execute(input);
+    evidence.result = result;
+    return result;
+  } catch (error) {
+    evidence.error = { message: String(error), ...(error instanceof ComputerUseError ? { code: error.code, details: error.details } : {}) };
+    throw error;
+  } finally {
+    // Both observations are read-only and also run after a rejected input. Preserve
+    // the primary failure if diagnostic collection itself is unavailable.
+    const [application, compositor] = await Promise.all([
+      fixture!.state().then(pointerState, (error: unknown) => ({ error: String(error) })),
+      command("hyprctl", ["-j", "cursorpos"], { timeout: 2_000 }).then(({ stdout }) => ({
+        observedAt: new Date().toISOString(), coordinateSpace: "hyprland-logical", position: JSON.parse(stdout),
+      }), (error: unknown) => ({ error: String(error) })).catch((error: unknown) => ({ error: String(error) })),
+    ]);
+    evidence.applicationAfter = application; evidence.compositorPointerAfter = compositor;
+    evidence.finishedAt = new Date().toISOString();
+  }
+}
 async function pointer(name: string, action: ComputerExecInput["action"], extra: Partial<ComputerExecInput> = {}): Promise<ComputerExecOutput> {
   const tree = await inspectTarget();
+  if (!report.firstPointerInspection) report.firstPointerInspection = tree;
   const control = named(tree, name, name === "Scroll area" ? (item) => !/text|label/i.test(item.controlType) : isButton);
   assert.equal(control.boundsReliable, true, `${name}: pointer input needs verified AT-SPI bounds; observed=${JSON.stringify(control)}`);
   const bounds = control.clientBoundsDip;
   assert.ok(bounds && bounds.width > 0 && bounds.height > 0);
-  return backend!.execute({ action, windowHandle: window.handle, taskId,
+  return observedPointer({ action, windowHandle: window.handle, taskId,
     observationId: tree.observationId, controlRuntimeId: control.runtimeId,
-    x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, ...extra });
+    x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, ...extra }, tree, control, "client-logical");
 }
 async function screenPointer(name: string, action: ComputerExecInput["action"], extra: Partial<ComputerExecInput> = {}): Promise<ComputerExecOutput> {
   const tree = await inspectTarget();
@@ -201,9 +259,9 @@ async function screenPointer(name: string, action: ComputerExecInput["action"], 
   assert.ok(bounds && bounds.width > 0 && bounds.height > 0, "screen actions need explicit logical bounds");
   const x = bounds.left + bounds.width / 2; const y = bounds.top + bounds.height / 2;
   const drag = action === "drag_screen" || action === "mouse_drag";
-  return backend!.execute({ action, windowHandle: window.handle, taskId, observationId: tree.observationId,
+  return observedPointer({ action, windowHandle: window.handle, taskId, observationId: tree.observationId,
     controlRuntimeId: drag ? undefined : control.runtimeId,
-    x, y, ...(drag ? { x2: x + 55, y2: y + 12 } : {}), ...extra });
+    x, y, ...(drag ? { x2: x + 55, y2: y + 12 } : {}), ...extra }, tree, control, "screen-logical");
 }
 async function semantic(name: string, action: "invoke_control" | "set_control_value", text?: string): Promise<ComputerExecOutput> {
   const tree = await inspectTarget();
@@ -280,7 +338,9 @@ async function main(): Promise<void> {
     await pointer("Pointer target", "click_client", { holdMs: 350 });
     await pointer("Pointer target", "click_client", { modifiers: ["ctrl"] });
     const after = await fixture!.state();
-    assert.equal(after.clicks - before.clicks, 5);
+    report.pointerClickCheck = { expectedClicks: 5, receivedClicks: after.clicks - before.clicks,
+      before: pointerState(before), after: pointerState(after), actionIndexes: pointerActions.map((entry) => entry.index) };
+    assert.equal(after.clicks - before.clicks, 5, "all five clicks must reach Pointer target; see pointerClickCheck and pointerActions in acceptance-report.json for DOM targets/client/screen coordinates, AT-SPI bounds, requests and compositor cursor readback");
     assert.ok(after.doubleClicks > before.doubleClicks);
     assert.ok(after.holds.some((duration) => duration >= 300), "long press must spend real time with the button down");
     assert.ok(after.modifiers.some((modifiers) => modifiers.ctrl));
@@ -299,18 +359,28 @@ async function main(): Promise<void> {
     assert.ok(gtk.pid);
     const target = await windowFor(gtk.pid, gtkTitle);
     const marker = "GTK 中文 🧪 café Ω";
+    const writes: Array<Record<string, unknown>> = [];
+    report.gtkTextWrites = writes;
     for (let index = 0; index < 2; index += 1) {
       const tree = await inspectTarget(target);
-      const entries = (tree.controls ?? []).filter(isEditable);
-      report.gtkEntries = entries.map(control => ({ name: control.name, controlType: control.controlType, enabled: control.enabled, text: control.text, patterns: control.patterns, states: (control as ControlInfo & { states?: string[] }).states }));
-      assert.equal(entries.length, 2, "the dedicated GTK form must export its two editable fields");
+      const entries = (tree.controls ?? []).filter(isGtkEditableText);
+      report.gtkEntries = entries.map(textControlEvidence);
+      assert.equal(entries.length, 2, "the dedicated GTK form must export its two EditableText fields");
       const next = entries.find((control) => control.text !== marker);
       assert.ok(next);
+      const write: Record<string, unknown> = { requestedText: marker, before: textControlEvidence(next) };
+      writes.push(write);
       const result = await backend!.execute({ action: "set_control_value", windowHandle: target.handle, taskId,
         observationId: tree.observationId, controlRuntimeId: next.runtimeId, text: marker });
+      write.result = result;
       assert.equal(result.verified, true);
     }
     const tree = await inspectTarget(target);
+    const readback = (tree.controls ?? []).filter(isGtkEditableText);
+    report.gtkTextReadback = readback.map(textControlEvidence);
+    assert.equal(readback.length, 2);
+    assert.ok(readback.every((control) => control.text === marker && (control as AtSpiControlInfo).textTruncated !== true),
+      "both GTK fields must retain complete AT-SPI Unicode readback before submitting the application");
     const okay = (tree.controls ?? []).filter((control) => isButton(control) && /^(OK|Ok)$/.test(control.name ?? ""));
     assert.equal(okay.length, 1, "GTK form must expose exactly one OK action");
     const invoked = await backend!.execute({ action: "invoke_control", windowHandle: target.handle, taskId,
@@ -323,14 +393,28 @@ async function main(): Promise<void> {
     return { bridgeConditions: { GTK_A11Y: "atspi", NO_AT_BRIDGE: "0" }, stdout: gtkOutput.trimEnd(), executed: invoked.executed, backendVerified: invoked.verified, applicationExitCode: exit };
   });
   await backend.execute({ action: "focus_window", windowHandle: window.handle, taskId });
-  await check("Electron semantic invoke and Chinese/Unicode set/readback reach the real application", async () => {
+  await check("Electron invoke and Chinese/Unicode text replacement reach the real application", async () => {
     await semantic("Semantic counter", "invoke_control");
     assert.equal((await fixture!.state()).semanticCount, 1);
+    const tree = await inspectTarget();
+    const control = named(tree, "Unicode input", isEditable);
     const text = "中文输入 🧪 café Ω\n第二行";
-    const written = await semantic("Unicode input", "set_control_value", text);
-    assert.equal(written.verified, true, "successful editable-text return must be followed by matching text readback");
-    assert.equal((await fixture!.state()).text, text);
-    return { count: 1, text, semanticWriteVerified: written.verified };
+    const evidence: Record<string, unknown> = { requestedText: text, before: textControlEvidence(control) };
+    report.electronTextCheck = evidence;
+    const written = await backend!.execute({ action: "set_control_value", windowHandle: window.handle, taskId,
+      observationId: tree.observationId, controlRuntimeId: control.runtimeId, text });
+    evidence.result = written;
+    const state = await fixture!.state();
+    evidence.applicationReadback = { text: state.text, diagnostics: state.diagnostics };
+    assert.equal(written.verified, true, "text replacement must have complete matching AT-SPI readback, including the focus/clipboard path");
+    assert.equal(written.control?.text, text, "AT-SPI must read back the complete Chinese/Unicode value");
+    assert.notEqual((written.control as AtSpiControlInfo | undefined)?.textTruncated, true);
+    if (textWritePath(control) === "atspi-focus-clipboard") {
+      assert.equal(written.pasted, true, "Text-only Electron controls must exercise verified focus plus clipboard replacement");
+      assert.equal(written.control?.hasKeyboardFocus, true);
+    }
+    assert.equal(state.text, text, "the application must independently retain the exact Unicode value");
+    return evidence;
   });
   await check("keyboard and mouse down persist until explicit up, including intervening observation", async () => {
     await backend!.execute({ action: "key_down", key: "Shift", windowHandle: window.handle, taskId });
@@ -382,17 +466,25 @@ async function main(): Promise<void> {
     const tree = await inspectTarget(); const control = named(tree, "Unicode input", isEditable);
     assert.ok(control.boundsReliable && control.clientBoundsDip);
     const bounds = control.clientBoundsDip;
-    await backend!.execute({ action: "click_client", windowHandle: window.handle, taskId, observationId: tree.observationId,
-      x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 });
+    await observedPointer({ action: "click_client", windowHandle: window.handle, taskId, observationId: tree.observationId,
+      controlRuntimeId: control.runtimeId, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }, tree, control, "client-logical");
+    const evidence: Record<string, unknown> = { before: textControlEvidence(control) };
+    report.keyboardTextCheck = evidence;
     await backend!.execute({ action: "key_press", key: "Ctrl+A", windowHandle: window.handle, taskId });
     const text = "键盘粘贴 🧪 Unicode αβ";
-    await backend!.execute({ action: "type_text", text, windowHandle: window.handle, taskId });
-    assert.equal((await fixture!.state()).text, text);
+    evidence.requestedTyped = text;
+    evidence.typeResult = await backend!.execute({ action: "type_text", text, windowHandle: window.handle, taskId });
+    const typedState = await fixture!.state();
+    evidence.typedReadback = { text: typedState.text, diagnostics: typedState.diagnostics };
+    assert.equal(typedState.text, text);
     await backend!.execute({ action: "key_press", key: "Ctrl+A", windowHandle: window.handle, taskId });
     const pasted = "粘贴路径 🧪 второй";
-    await backend!.execute({ action: "paste_text", text: pasted, windowHandle: window.handle, taskId });
-    assert.equal((await fixture!.state()).text, pasted);
-    return { typed: text, pasted };
+    evidence.requestedPasted = pasted;
+    evidence.pasteResult = await backend!.execute({ action: "paste_text", text: pasted, windowHandle: window.handle, taskId });
+    const pastedState = await fixture!.state();
+    evidence.pastedReadback = { text: pastedState.text, diagnostics: pastedState.diagnostics };
+    assert.equal(pastedState.text, pasted);
+    return evidence;
   });
   await check("popup controls are reobserved and semantically operated", async () => {
     await semantic("Open popup", "invoke_control");
@@ -444,15 +536,30 @@ async function main(): Promise<void> {
   });
   await check("a partial batch preserves the first input and stops after geometry changes", async () => {
     const observed = await backend!.execute({ action: "inspect_window", windowHandle: window.handle, taskId });
-    assert.ok(observed.observationId);
+    assert.ok(observed.observationId && observed.window);
+    const externalWindow = createHyprlandWindowControl();
+    const originalGeometry = await externalWindow.geometry(window.handle);
+    assert.ok(originalGeometry);
+    const evidence: Record<string, unknown> = { originalGeometry };
+    report.partialBatchCheck = evidence;
     const before = await fixture!.state();
     const received = (state: FixtureState, key: string): number => state.keyEvents.filter((event) => event.key === key && event.down).length;
     const pending = backend!.execute({ windowHandle: window.handle, taskId, observationId: observed.observationId, settleMs: 1000,
       actions: [{ action: "key_press", key: "F6" }, { action: "key_press", key: "F7" }] });
     await waitFor(async () => received(await fixture!.state(), "F6") === received(before, "F6") + 1, "first batch key reaches the fixture");
-    await fixture!.call("resize");
+    // On Wayland BrowserWindow.setSize is only a client request and may leave
+    // compositor geometry unchanged. Change this owned window externally to the
+    // backend's running queue, and prove the guard's actual precondition.
+    const requested = { width: originalGeometry.width - 20, height: originalGeometry.height - 20 };
+    evidence.requested = requested;
+    const resized = await externalWindow.resize(window.handle, requested.width, requested.height);
+    evidence.resizedGeometry = resized;
     const result = await pending;
     const after = await fixture!.state();
+    evidence.result = result;
+    evidence.applicationAfter = { keyEvents: after.keyEvents, pressedKeys: after.pressedKeys, diagnostics: after.diagnostics };
+    assert.ok(resized && resized.width === requested.width && resized.height === requested.height,
+      "the compositor must actually resize the owned fixture before testing batch invalidation");
     assert.equal(result.batch?.completed, false, "changed geometry must stop the remaining batch");
     assert.equal(result.batch?.steps[0]?.ok, true);
     assert.equal(result.batch?.steps[1]?.ok, false);

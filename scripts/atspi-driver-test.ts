@@ -13,6 +13,7 @@ const APP = ":1.77";
 const APP_PATH = "/org/test/app";
 const FRAME = APP_PATH + "/frame";
 const GROUP = FRAME + "/group";
+const DOCUMENT = FRAME + "/document";
 const EDIT = FRAME + "/edit";
 const BUTTON = FRAME + "/button";
 const SLIDER = FRAME + "/slider";
@@ -58,6 +59,8 @@ interface FixtureNode {
   origin?: { x: number; y: number };
   screenBounds?: AtSpiRect | null;
   windowBounds?: AtSpiRect | null;
+  /** Fixture-only units for hit regions; never exposed to the driver. */
+  unitsPerDip?: number;
   text?: string;
   value?: number;
 }
@@ -204,8 +207,12 @@ class Fixture {
         const x = Number(body[0]) - (body[2] === 0 ? origin.x : 0);
         const y = Number(body[1]) - (body[2] === 0 ? origin.y : 0);
         const child = node.children.find((candidate) => {
-          const r = this.node(candidate).bounds;
-          return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+          const childNode = this.node(candidate);
+          // A native ancestor receives logical coordinates even when its child
+          // DocumentWeb exports pixels. Compare in the queried object's domain.
+          const ratio = (node.unitsPerDip ?? 1) / (childNode.unitsPerDip ?? 1);
+          const r = childNode.bounds;
+          return x >= r.x * ratio && x < (r.x + r.width) * ratio && y >= r.y * ratio && y < (r.y + r.height) * ratio;
         });
         return [APP, child ?? path];
       }
@@ -248,6 +255,33 @@ async function withDriver(callback: (driver: AtSpiDriver, fixture: Fixture, wind
   const driver = fixture.driver();
   try { await callback(driver, fixture, windowFixture()); }
   finally { await driver.shutdown(); }
+}
+
+function configureDocumentFixture(fixture: Fixture, window: WindowInfo, unitsPerDip: 1 | 1.6 = 1.6): void {
+  Object.assign(window, {
+    windowRect: { left: -100, top: 80, right: 800, bottom: 780, width: 900, height: 700 },
+    clientRect: { x: 0, y: 0, width: 900, height: 700 }, dpi: 153.6, scaleFactor: 1.6,
+  });
+  const viewport = { x: 0, y: 0, width: 900 * unitsPerDip, height: 700 * unitsPerDip };
+  Object.assign(fixture.nodes.get(FRAME)!, {
+    children: [DOCUMENT], bounds: { x: 0, y: 0, width: 900, height: 700 }, origin: { x: 0, y: 0 },
+  });
+  fixture.nodes.set(DOCUMENT, {
+    name: "Web viewport", role: 95, parent: FRAME, children: [GROUP],
+    states: stateWords([8, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT],
+    bounds: { ...viewport }, origin: { x: 0, y: 0 }, unitsPerDip,
+  });
+  fixture.nodes.set(GROUP, {
+    name: "Document content", role: 49, parent: DOCUMENT, children: [EDIT, BUTTON],
+    states: stateWords([8, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { ...viewport }, unitsPerDip,
+  });
+  Object.assign(fixture.nodes.get(EDIT)!, {
+    parent: GROUP, unitsPerDip, bounds: { x: 40 * unitsPerDip, y: 60 * unitsPerDip, width: 200 * unitsPerDip, height: 40 * unitsPerDip },
+  });
+  Object.assign(fixture.nodes.get(BUTTON)!, {
+    parent: GROUP, unitsPerDip,
+    bounds: unitsPerDip === 1 ? { x: 203, y: 178, width: 160, height: 48 } : { x: 324, y: 285, width: 257, height: 78 },
+  });
 }
 
 async function main(): Promise<void> {
@@ -356,6 +390,140 @@ async function main(): Promise<void> {
     const tree = await driver.inspectWindow(window, { peerWindows: [window] });
     assert.equal(tree.boundsReliable, false);
     assert(tree.controls.every((control) => control.clientBoundsDip === undefined));
+  }));
+  await test("Full DocumentWeb viewport proves pixel descendants against both compositor axes", () => withDriver(async (driver, fixture, window) => {
+    configureDocumentFixture(fixture, window);
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const document = tree.controls.find(control => control.atspi.objectPath === DOCUMENT)!;
+    const button = tree.controls.find(control => control.name === "Send")!;
+    const edit = tree.controls.find(control => control.name === "Message")!;
+    assert.equal(document.atspi.role, 95);
+    assert.deepEqual(document.atspi.windowBounds, { x: 0, y: 0, width: 1440, height: 1120 });
+    assert.equal(document.boundsReliable, true);
+    assert.deepEqual(document.clientBoundsDip, { x: 0, y: 0, width: 900, height: 700 });
+    assert.equal(button.boundsReliable, true, button.atspi.boundsReason);
+    assert.deepEqual(button.atspi.windowBounds, { x: 324, y: 285, width: 257, height: 78 });
+    assert.deepEqual(button.atspi.screenBounds, button.atspi.windowBounds);
+    assert.deepEqual(button.clientBoundsDip, { x: 202.5, y: 178.125, width: 160.625, height: 48.75 });
+    assert.deepEqual(button.screenBoundsLogical, { left: 102.5, top: 258.125, width: 160.625, height: 48.75 });
+    assert.equal(button.screenBoundsPhysical, undefined);
+    assert.equal(button.atspi.coordinateScale, 1.6);
+    assert.deepEqual(button.atspi.coordinateRoot, { busName: APP, objectPath: DOCUMENT });
+    // Observed DOM bounds have subpixel precision; the AT-SPI integer rectangle
+    // encloses them. The proof must retain that quantization, not invent DOM data.
+    const observedDom = { x: 202.656, y: 178.486, width: 160, height: 48 };
+    for (const key of ["x", "y", "width", "height"] as const) {
+      assert(Math.abs(button.clientBoundsDip![key] - observedDom[key]) < 1, key + " must agree with observed DOM within pixel quantization");
+    }
+    assert.equal(edit.boundsReliable, true, edit.atspi.boundsReason);
+    assert.deepEqual(edit.clientBoundsDip, { x: 40, y: 60, width: 200, height: 40 });
+    const fresh = await driver.readControl(window, button.runtimeId);
+    assert.deepEqual(fresh.clientBoundsDip, button.clientBoundsDip);
+    assert.equal(fresh.atspi.coordinateScale, 1.6);
+    assert.deepEqual(fresh.atspi.coordinateRoot, button.atspi.coordinateRoot);
+  }));
+  await test("Ancestor hit tests and sibling Contains use each candidate's coordinate domain", () => withDriver(async (driver, fixture, window) => {
+    configureDocumentFixture(fixture, window);
+    for (const path of [FRAME, DOCUMENT, GROUP]) fixture.selfHitTestPaths.add(path);
+    const nativeSibling = FRAME + "/native_overlap_trap";
+    fixture.nodes.get(FRAME)!.children.push(nativeSibling);
+    fixture.nodes.set(nativeSibling, {
+      name: "Native sibling at raw-only point", role: 29, parent: FRAME, children: [],
+      states: stateWords([8, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { x: 430, y: 300, width: 50, height: 50 },
+    });
+    const documentSibling = DOCUMENT + "/pixel_overlap_trap";
+    fixture.nodes.get(DOCUMENT)!.children.push(documentSibling);
+    fixture.nodes.set(documentSibling, {
+      name: "Pixel sibling at logical-only point", role: 29, parent: DOCUMENT, children: [], unitsPerDip: 1.6,
+      states: stateWords([8, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { x: 270, y: 190, width: 30, height: 30 },
+    });
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const button = tree.controls.find(control => control.name === "Send")!;
+    assert.equal(button.boundsReliable, true, button.atspi.boundsReason);
+    assert.deepEqual(button.clientBoundsDip, { x: 202.5, y: 178.125, width: 160.625, height: 48.75 });
+    const hasPoint = (path: string, member: string, x: number, y: number): boolean => fixture.calls.some(call =>
+      call.path === path && call.member === member && call.body?.[0] === x && call.body?.[1] === y && call.body?.[2] === 1);
+    for (const path of [GROUP, DOCUMENT]) {
+      assert(hasPoint(path, "GetAccessibleAtPoint", 452, 324), path + " must receive the raw pixel center");
+      assert(hasPoint(path, "Contains", 452, 324), path + " must contain the raw pixel center");
+    }
+    assert(hasPoint(BUTTON, "Contains", 452, 324));
+    assert(hasPoint(FRAME, "GetAccessibleAtPoint", 282, 202), "native ancestor hit test must receive logical coordinates");
+    assert(hasPoint(FRAME, "Contains", 282, 202), "native ancestor Contains must receive logical coordinates");
+    assert(hasPoint(nativeSibling, "Contains", 282, 202), "native sibling overlap query must use logical coordinates");
+    assert(hasPoint(documentSibling, "Contains", 452, 324), "document sibling overlap query must use pixels");
+    assert.equal(hasPoint(FRAME, "Contains", 452, 324), false, "never forward pixel coordinates into the native frame");
+    assert.equal(hasPoint(documentSibling, "Contains", 282, 202), false, "never forward logical coordinates into a pixel sibling");
+  }));
+  await test("A logical DocumentWeb tree on a fractional-scale monitor is not divided again", () => withDriver(async (driver, fixture, window) => {
+    configureDocumentFixture(fixture, window, 1);
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const button = tree.controls.find(control => control.name === "Send")!;
+    const edit = tree.controls.find(control => control.name === "Message")!;
+    assert.equal(window.scaleFactor, 1.6);
+    assert.equal(button.boundsReliable, true, button.atspi.boundsReason);
+    assert.deepEqual(button.clientBoundsDip, fixture.nodes.get(BUTTON)!.bounds);
+    assert.equal(button.atspi.coordinateScale, 1);
+    assert.equal(edit.boundsReliable, true, edit.atspi.boundsReason);
+    assert.deepEqual(edit.clientBoundsDip, fixture.nodes.get(EDIT)!.bounds);
+  }));
+  const unsafeDocuments: Array<{ name: string; change: (fixture: Fixture, window: WindowInfo) => void }> = [
+    { name: "different horizontal and vertical scales", change: fixture => { fixture.nodes.get(DOCUMENT)!.bounds.height = 1050; } },
+    { name: "partial viewport with a uniform but unproven ratio", change: fixture => { fixture.nodes.get(DOCUMENT)!.bounds = { x: 0, y: 0, width: 720, height: 560 }; } },
+    { name: "full-size viewport displaced from the client origin", change: fixture => { fixture.nodes.get(DOCUMENT)!.bounds.x = 16; } },
+    { name: "missing viewport extents", change: fixture => { Object.assign(fixture.nodes.get(DOCUMENT)!, { windowBounds: null, screenBounds: null }); } },
+    { name: "contradictory viewport screen and window dimensions", change: fixture => { fixture.nodes.get(DOCUMENT)!.screenBounds = { x: 0, y: 0, width: 900, height: 700 }; } },
+    { name: "a logical-sized WINDOW viewport contradicting its pixel SCREEN extent", change: fixture => { fixture.nodes.get(DOCUMENT)!.windowBounds = { x: 0, y: 0, width: 900, height: 700 }; } },
+    { name: "unverified compositor geometry", change: (_fixture, window) => { window.clientGeometryVerified = false; } },
+    { name: "monitor scale inconsistent with the full viewport", change: (_fixture, window) => { window.scaleFactor = 2; } },
+    { name: "unavailable scale evidence", change: (_fixture, window) => { window.scaleFactor = Number.NaN; } },
+    { name: "contradictory descendant screen and window origins", change: fixture => {
+      for (const path of [BUTTON, EDIT]) fixture.nodes.get(path)!.screenBounds = { ...fixture.nodes.get(path)!.bounds, x: 0 };
+    } },
+    { name: "a nested partial DocumentWeb inside a proven outer viewport", change: fixture => {
+      Object.assign(fixture.nodes.get(GROUP)!, { role: 95, bounds: { x: 160, y: 96, width: 640, height: 480 } });
+    } },
+    { name: "nested full DocumentWeb viewports without a multi-boundary proof", change: fixture => { fixture.nodes.get(GROUP)!.role = 95; } },
+  ];
+  for (const scenario of unsafeDocuments) {
+    await test("Document pixels stay uncertified with " + scenario.name, () => withDriver(async (driver, fixture, window) => {
+      configureDocumentFixture(fixture, window);
+      scenario.change(fixture, window);
+      const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+      for (const name of ["Send", "Message"]) {
+        const control = tree.controls.find(candidate => candidate.name === name)!;
+        assert.equal(control.boundsReliable, false, scenario.name + ": " + name);
+        assert.equal(control.atspi.boundsReliable, false);
+        assert.equal(control.clientBoundsDip, undefined);
+        assert.equal(control.screenBoundsLogical, undefined);
+        assert(control.atspi.boundsReason);
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }));
+  }
+  await test("Changed DocumentWeb proof cannot be reused when the button's raw rectangle is unchanged", () => withDriver(async (driver, fixture, window) => {
+    configureDocumentFixture(fixture, window);
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const button = tree.controls.find(control => control.name === "Send")!;
+    assert.equal(button.boundsReliable, true, button.atspi.boundsReason);
+    const unchangedRaw = { ...fixture.nodes.get(BUTTON)!.bounds };
+    // No signal is emitted: readControl must revalidate the geometry evidence,
+    // not merely trust that the leaf rectangle and native frame are unchanged.
+    fixture.nodes.get(DOCUMENT)!.bounds.height = 1000;
+    const outcome = await driver.readControl(window, button.runtimeId).then(
+      control => ({ status: "read" as const, control }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    if (outcome.status === "read") {
+      assert.equal(outcome.control.boundsReliable, false, "changed DocumentWeb dimensions must invalidate cached coordinate proof");
+      assert.equal(outcome.control.clientBoundsDip, undefined);
+      assert.equal(outcome.control.screenBoundsLogical, undefined);
+    } else {
+      assert(outcome.error instanceof ComputerUseError);
+      assert.equal(outcome.error.code, "STALE_OBSERVATION");
+    }
+    assert.deepEqual(fixture.nodes.get(BUTTON)!.bounds, unchangedRaw);
+    assert.deepEqual(fixture.mutations, []);
   }));
   await test("Same-PID same-title windows bind by exact distinct geometry", () => withDriver(async (driver, fixture, first) => {
     const path = APP_PATH + "/second";

@@ -90,6 +90,13 @@ interface ControlReference {
   control: AtSpiControlInfo;
   createdAt: number;
   invalidReason?: string;
+  /** The observed viewport that proves this control's coordinate units. */
+  coordinateRoot?: NodeSnapshot;
+}
+
+interface CoordinateDomain {
+  scale: number;
+  document?: NodeSnapshot;
 }
 
 interface Connection {
@@ -684,11 +691,60 @@ export class AtSpiDriver implements AtSpiDriverApi {
     while (this.references.size >= MAX_REFERENCE_COUNT) this.references.delete(this.references.keys().next().value!);
   }
 
+  /**
+   * Chromium's native frame can publish logical extents while its DocumentWeb
+   * subtree publishes device pixels, even for WINDOW coordinates. A frame match
+   * alone does not certify descendants. Prove the document's units against both
+   * dimensions of the compositor viewport; never divide solely by monitor scale.
+   * Embedded/partial or contradictory viewports remain semantically accessible
+   * but cannot provide pointer coordinates until their mapping is known.
+   */
+  private coordinateDomain(node: NodeSnapshot, binding: WindowBinding, snapshots: Map<string, NodeSnapshot>): CoordinateDomain | undefined {
+    let current: NodeSnapshot | undefined = node;
+    let document: NodeSnapshot | undefined;
+    const visited = new Set<string>();
+    while (current) {
+      const key = refKey(current.ref);
+      if (visited.has(key)) return undefined;
+      visited.add(key);
+      if (current.roleName === "document web") {
+        // Nested documents need a separate viewport/clip mapping; the outer
+        // viewport alone cannot prove their units or lifetime.
+        if (document) return undefined;
+        document = current;
+      }
+      if (sameRef(current.ref, binding.ref)) break;
+      current = current.parent ? snapshots.get(refKey(current.parent)) : undefined;
+    }
+    if (!current) return undefined;
+    if (!document) return { scale: 1 };
+    const geometry = binding.geometry?.clientLogical;
+    if (!geometry || !binding.windowCoordinates || !document.windowBounds) return undefined;
+    const viewport = { x: 0, y: 0, width: geometry.width, height: geometry.height };
+    if (sameRectangle(document.windowBounds, viewport)) {
+      const screen = document.screenBounds;
+      if (!screen || !near(screen.width, viewport.width) || !near(screen.height, viewport.height) ||
+        !(near(screen.x, 0) && near(screen.y, 0) || near(screen.x, geometry.x) && near(screen.y, geometry.y))) return undefined;
+      return { scale: 1, document };
+    }
+    const scale = binding.window.scaleFactor;
+    if (!Number.isFinite(scale) || scale <= 0 || scale === 1) return undefined;
+    const pixels = { x: 0, y: 0, width: geometry.width * scale, height: geometry.height * scale };
+    // The observed Wayland document reports local SCREEN as well as WINDOW
+    // extents. Do not invent a physical global origin for other exporters.
+    if (!sameRectangle(document.windowBounds, pixels) || !sameRectangle(document.screenBounds, document.windowBounds)) return undefined;
+    return { scale, document };
+  }
+
   private async hitTest(binding: WindowBinding, target: NodeSnapshot, bounds: AtSpiRect, source: "atspi-screen" | "atspi-window", snapshots: Map<string, NodeSnapshot>, budget: Budget): Promise<boolean> {
     const coordType = source === "atspi-screen" ? 0 : 1;
     const global = binding.geometry!.clientLogical;
-    const x = Math.floor(bounds.x + bounds.width / 2 + (coordType === 0 ? global.x : 0));
-    const y = Math.floor(bounds.y + bounds.height / 2 + (coordType === 0 ? global.y : 0));
+    const pointFor = (node: NodeSnapshot): [number, number, number] | undefined => {
+      const domain = this.coordinateDomain(node, binding, snapshots);
+      if (!domain || (coordType === 0 && domain.scale !== 1)) return undefined;
+      return [Math.floor((bounds.x + bounds.width / 2) * domain.scale + (coordType === 0 ? global.x : 0)),
+        Math.floor((bounds.y + bounds.height / 2) * domain.scale + (coordType === 0 ? global.y : 0)), coordType];
+    };
     const path: NodeSnapshot[] = [target];
     let current = target;
     const visited = new Set<string>();
@@ -737,7 +793,9 @@ export class AtSpiDriver implements AtSpiDriverApi {
     // cannot create an infinite descent loop.
     for (const candidate of path.slice(1)) {
       if (!candidate.interfaces.includes(COMPONENT)) continue;
-      const raw = await this.request(candidate.ref, COMPONENT, "GetAccessibleAtPoint", "iiu", [x, y, coordType], budget);
+      const point = pointFor(candidate);
+      if (!point) return false;
+      const raw = await this.request(candidate.ref, COMPONENT, "GetAccessibleAtPoint", "iiu", point, budget);
       const parsed = reference(raw, candidate.ref.busName);
       if (!parsed) continue;
       const hit = await this.canonical(parsed, budget);
@@ -753,7 +811,9 @@ export class AtSpiDriver implements AtSpiDriverApi {
     // complete, and no sibling contains the same point.
     for (const candidate of path) {
       if (!candidate.interfaces.includes(COMPONENT)) continue;
-      const contains = await this.request(candidate.ref, COMPONENT, "Contains", "iiu", [x, y, coordType], budget);
+      const point = pointFor(candidate);
+      if (!point) return false;
+      const contains = await this.request(candidate.ref, COMPONENT, "Contains", "iiu", point, budget);
       if (contains !== true) return false;
     }
     for (let index = 0; index < path.length - 1; index += 1) {
@@ -764,7 +824,9 @@ export class AtSpiDriver implements AtSpiDriverApi {
       for (const sibling of siblings) {
         if (sameRef(sibling.ref, branch.ref)) continue;
         if (!sibling.interfaces.includes(COMPONENT)) return false;
-        const overlaps = await this.request(sibling.ref, COMPONENT, "Contains", "iiu", [x, y, coordType], budget);
+        const point = pointFor(sibling);
+        if (!point) return false;
+        const overlaps = await this.request(sibling.ref, COMPONENT, "Contains", "iiu", point, budget);
         if (overlaps === true) return false;
       }
     }
@@ -775,6 +837,11 @@ export class AtSpiDriver implements AtSpiDriverApi {
     const geometry = binding.geometry?.clientLogical;
     if (!geometry || (!binding.windowCoordinates && !binding.screenCoordinates)) {
       control.atspi.boundsReason = "无法证明 AT-SPI 单位/原点与目标客户区逻辑坐标一致";
+      return;
+    }
+    const domain = this.coordinateDomain(node, binding, snapshots);
+    if (!domain) {
+      control.atspi.boundsReason = "无法证明文档子树的坐标单位与合成器视口一致";
       return;
     }
     let candidate: AtSpiRect | undefined;
@@ -789,12 +856,20 @@ export class AtSpiDriver implements AtSpiDriverApi {
       control.atspi.boundsReason = "控件没有可靠的 Component bounds";
       return;
     }
+    if (domain.scale !== 1) {
+      if (source !== "atspi-window" || !sameRectangle(node.screenBounds, node.windowBounds)) {
+        control.atspi.boundsReason = "文档像素坐标的 screen/window 原点不一致";
+        return;
+      }
+      candidate = { x: candidate.x / domain.scale, y: candidate.y / domain.scale,
+        width: candidate.width / domain.scale, height: candidate.height / domain.scale };
+    }
     if (candidate.x < 0 || candidate.y < 0 || candidate.width <= 0 || candidate.height <= 0 ||
       candidate.x + candidate.width > geometry.width + 1.5 || candidate.y + candidate.height > geometry.height + 1.5) {
       control.atspi.boundsReason = "控件矩形为空、被裁剪或超出已验证客户区";
       return;
     }
-    if (binding.screenCoordinates && node.screenBounds && node.windowBounds &&
+    if (domain.scale === 1 && binding.screenCoordinates && node.screenBounds && node.windowBounds &&
       !sameRectangle(node.screenBounds, { ...node.windowBounds, x: geometry.x + node.windowBounds.x, y: geometry.y + node.windowBounds.y })) {
       control.atspi.boundsReason = "AT-SPI screen 与 window 坐标互相矛盾";
       return;
@@ -811,6 +886,8 @@ export class AtSpiDriver implements AtSpiDriverApi {
     control.atspi.boundsReliable = true;
     control.atspi.boundsSource = source;
     control.atspi.boundsReason = undefined;
+    control.atspi.coordinateScale = domain.scale;
+    control.atspi.coordinateRoot = domain.document?.ref;
   }
 
   async probe(signal?: AbortSignal): Promise<AtSpiProbeResult> {
@@ -943,7 +1020,8 @@ export class AtSpiDriver implements AtSpiDriverApi {
     this.pruneReferences();
     for (const control of controls) {
       while (this.references.size >= MAX_REFERENCE_COUNT) this.references.delete(this.references.keys().next().value!);
-      this.references.set(control.runtimeId, { binding, node: snapshots.get(refKey(control.atspi))!, control, createdAt: binding.capturedAt });
+      this.references.set(control.runtimeId, { binding, node: snapshots.get(refKey(control.atspi))!, control, createdAt: binding.capturedAt,
+        coordinateRoot: control.atspi.coordinateRoot ? snapshots.get(refKey(control.atspi.coordinateRoot)) : undefined });
     }
     const root = controls.find((control) => sameRef(control.atspi, binding.ref));
     if (!root) throw new ComputerUseError("CONTROL_NOT_FOUND", "窗口可访问对象在读取过程中消失", { diagnosticCode: "WINDOW_TREE_UNREADABLE" });
@@ -980,6 +1058,14 @@ export class AtSpiDriver implements AtSpiDriverApi {
       record.binding.screenCoordinates && !sameRectangle(root.screenBounds, record.binding.root.screenBounds)) {
       throw new ComputerUseError("STALE_OBSERVATION", "所属 AT-SPI 窗口坐标已变化");
     }
+    if (record.coordinateRoot) {
+      const viewport = await this.readNode(record.coordinateRoot.ref, budget, 0);
+      if (viewport.role !== record.coordinateRoot.role || !sameRef(viewport.parent, record.coordinateRoot.parent) ||
+        !sameRectangle(viewport.windowBounds, record.coordinateRoot.windowBounds) ||
+        !sameRectangle(viewport.screenBounds, record.coordinateRoot.screenBounds)) {
+        throw new ComputerUseError("STALE_OBSERVATION", "文档视口坐标证明已变化；请重新观察");
+      }
+    }
     let current: AtSpiObjectReference | undefined = record.node.ref;
     const seen = new Set<string>();
     for (let depth = 0; current && depth < MAX_PARENT_DEPTH; depth += 1) {
@@ -1013,6 +1099,8 @@ export class AtSpiDriver implements AtSpiDriverApi {
       control.atspi.boundsReliable = record.control.atspi.boundsReliable;
       control.atspi.boundsSource = record.control.atspi.boundsSource;
       control.atspi.boundsReason = record.control.atspi.boundsReason;
+      control.atspi.coordinateScale = record.control.atspi.coordinateScale;
+      control.atspi.coordinateRoot = record.control.atspi.coordinateRoot;
     }
     return { node, control };
   }

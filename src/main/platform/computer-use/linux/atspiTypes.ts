@@ -49,6 +49,9 @@ export interface AtSpiControlInfo extends ControlInfo {
     boundsSource?: "atspi-screen" | "atspi-window";
     boundsReliable: boolean;
     boundsReason?: string;
+    /** Raw document units per compositor logical pixel, verified from its viewport. */
+    coordinateScale?: number;
+    coordinateRoot?: AtSpiObjectReference;
   };
 }
 

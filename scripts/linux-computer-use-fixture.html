@@ -26,9 +26,30 @@
 <script>
   const state = {
     semanticCount: 0, clicks: 0, doubleClicks: 0, holds: [], modifiers: [],
-    pressedKeys: [], keyEvents: [], pointerDown: false,
+    keyEvents: [], focusEvents: [], pointerDown: false,
     dragMoves: 0, dragDelta: [0, 0], dragDuration: 0,
+    pointerEvents: [], pointerEventSequence: 0, pointerEventsDropped: 0,
   };
+  const describeTarget = (target) => target instanceof Element ? {
+    tag: target.tagName.toLowerCase(), id: target.id,
+    role: target.getAttribute('role'), ariaLabel: target.getAttribute('aria-label'),
+    clientRect: target.getBoundingClientRect().toJSON(),
+  } : { tag: null, id: null };
+  // Observe all targets, including misses outside the intended button. These DOM
+  // coordinates are diagnostic only; the runner obtains input targets from AT-SPI.
+  for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointercancel', 'click', 'dblclick', 'contextmenu', 'wheel']) {
+    document.addEventListener(type, (event) => {
+      state.pointerEvents.push({
+        sequence: ++state.pointerEventSequence, type, timeStamp: event.timeStamp,
+        observedAt: Date.now(), trusted: event.isTrusted, target: describeTarget(event.target),
+        client: { x: event.clientX, y: event.clientY }, screen: { x: event.screenX, y: event.screenY },
+        button: event.button, buttons: event.buttons, detail: event.detail,
+        pointerType: event.pointerType, deltaX: event.deltaX, deltaY: event.deltaY,
+        ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, meta: event.metaKey,
+      });
+      if (state.pointerEvents.length > 240) { state.pointerEvents.shift(); state.pointerEventsDropped += 1; }
+    }, { capture: true, passive: true });
+  }
   document.getElementById('semantic').addEventListener('click', () => {
     state.semanticCount += 1;
     document.getElementById('counter').textContent = `Semantic count ${state.semanticCount}`;
@@ -44,14 +65,36 @@
   });
   pointer.addEventListener('click', () => { state.clicks += 1; });
   pointer.addEventListener('dblclick', () => { state.doubleClicks += 1; });
+  // Layout state can change event.key between down/up (e.g. Shift → CapsLock).
+  // Pair physical codes and retain the first keydown label, including repeats.
+  const pressedKeysByCode = new Map();
+  const keyEvidence = (event, down) => ({
+    key: event.key, code: event.code, location: event.location, keyCode: event.keyCode,
+    down, repeat: event.repeat, isComposing: event.isComposing, trusted: event.isTrusted,
+    timeStamp: event.timeStamp, observedAt: Date.now(), defaultPrevented: event.defaultPrevented,
+    ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, meta: event.metaKey,
+    shiftModifier: event.getModifierState('Shift'), target: describeTarget(event.target),
+    activeElement: describeTarget(document.activeElement), documentHasFocus: document.hasFocus(),
+  });
   document.addEventListener('keydown', (event) => {
-    if (!state.pressedKeys.includes(event.key)) state.pressedKeys.push(event.key);
-    state.keyEvents.push({ key: event.key, down: true, ctrl: event.ctrlKey, shift: event.shiftKey });
-  });
+    if (!pressedKeysByCode.has(event.code)) pressedKeysByCode.set(event.code, event.key);
+    state.keyEvents.push(keyEvidence(event, true));
+  }, { capture: true, passive: true });
   document.addEventListener('keyup', (event) => {
-    state.pressedKeys = state.pressedKeys.filter((key) => key !== event.key);
-    state.keyEvents.push({ key: event.key, down: false, ctrl: event.ctrlKey, shift: event.shiftKey });
+    pressedKeysByCode.delete(event.code);
+    state.keyEvents.push(keyEvidence(event, false));
+  }, { capture: true, passive: true });
+  const observeFocus = (event, scope) => state.focusEvents.push({
+    type: event.type, scope, timeStamp: event.timeStamp, observedAt: Date.now(), trusted: event.isTrusted,
+    target: describeTarget(event.target), relatedTarget: describeTarget(event.relatedTarget),
+    activeElement: describeTarget(document.activeElement), documentHasFocus: document.hasFocus(),
   });
+  for (const type of ['focus', 'blur', 'focusin', 'focusout']) {
+    document.addEventListener(type, (event) => observeFocus(event, 'document'), { capture: true, passive: true });
+  }
+  for (const type of ['focus', 'blur']) {
+    window.addEventListener(type, (event) => { if (event.target === window) observeFocus(event, 'window'); }, { capture: true, passive: true });
+  }
   const drag = document.getElementById('drag');
   let start;
   drag.addEventListener('pointerdown', (event) => {
@@ -71,9 +114,18 @@
   document.getElementById('popup-close').addEventListener('click', () => document.getElementById('popup').close());
   window.fixtureSnapshot = () => ({
     ...JSON.parse(JSON.stringify(state)),
+    pressedKeys: [...new Set(pressedKeysByCode.values())], pressedCodes: [...pressedKeysByCode.keys()],
     text: document.getElementById('unicode').value,
     scrollTop: document.getElementById('scroll').scrollTop,
     popupOpen: document.getElementById('popup').open,
+    diagnostics: {
+      observedAt: Date.now(), documentHasFocus: document.hasFocus(), activeElement: describeTarget(document.activeElement),
+      viewport: { width: window.innerWidth, height: window.innerHeight, outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+        screenX: window.screenX, screenY: window.screenY, devicePixelRatio: window.devicePixelRatio,
+        visualViewport: window.visualViewport && { width: window.visualViewport.width, height: window.visualViewport.height,
+          offsetLeft: window.visualViewport.offsetLeft, offsetTop: window.visualViewport.offsetTop, scale: window.visualViewport.scale } },
+      targets: Object.fromEntries(['pointer', 'unicode', 'drag', 'scroll'].map((id) => [id, describeTarget(document.getElementById(id))])),
+    },
   });
   window.fixtureRebuildInput = () => {
     const old = document.getElementById('unicode');
