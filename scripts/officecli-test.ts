@@ -17,6 +17,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 
 const require = createRequire(import.meta.url);
 const { verifyOfficeCli } = require(resolve('scripts/verify-officecli.cjs'));
+const { receiptName } = require(resolve('scripts/prepare-officecli.cjs'));
 const root = mkdtempSync(join(tmpdir(), "officecli-integration-"));
 process.env.HOME = root;
 process.env.USERPROFILE = root;
@@ -64,7 +65,8 @@ try {
 
   // Optional local binary smoke; CI's headless gate never downloads binaries.
   const local = join(repo, 'vendor/officecli', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'officecli.exe' : 'officecli');
-  if (existsSync(local)) {
+  const localReceipt = join(dirname(local), receiptName);
+  if (existsSync(local) && existsSync(localReceipt)) {
     const resources = join(root, 'accepted/resources');
     mkdirSync(join(resources, 'officecli'), { recursive: true });
     cpSync(local, join(resources, 'officecli', process.platform === 'win32' ? 'officecli.exe' : 'officecli'));
@@ -109,6 +111,6 @@ try {
     assert(execFileSync('officecli', ['view', word, 'text'], { env, cwd: root, encoding: 'utf8' }).includes('MyBuddy OfficeCLI integration'));
     execFileSync('officecli', ['validate', word], { env, cwd: root });
     console.log('OfficeCLI packaged binary: task Bash, execute_code, child PATH and DOCX/XLSX/PPTX create/validate passed');
-  } else console.log('OfficeCLI binary smoke skipped: build-time asset not prepared (packaged gate requires it)');
+  } else console.log(`SKIP OfficeCLI local binary smoke: build-time asset not prepared (${!existsSync(local) ? 'binary missing' : 'integrity receipt missing'}); local binary not accepted; packaged gate still requires verified assets`);
   console.log('OfficeCLI skill discovery, permission filtering, disable preservation and payload rejection passed');
 } finally { rmSync(root, { recursive: true, force: true }); }

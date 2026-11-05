@@ -374,11 +374,10 @@ export interface SubagentSummaryDto {
   lastTask?: string;
   depth: number;
   workerAlive: boolean;
-  /** 最终生效模型/思考（三级优先级解析）+ 来源 + 子进程实证值 */
   resolvedModel?: string;
   resolvedThinking?: string;
-  modelSource?: "role" | "default" | "global";
-  thinkingSource?: "transport";
+  modelSource?: "invocation" | "parent" | "role" | "default" | "global";
+  thinkingSource?: "invocation" | "transport";
   actualModel?: string;
   actualThinking?: string;
 }

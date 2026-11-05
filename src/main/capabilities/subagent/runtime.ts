@@ -82,8 +82,8 @@ export interface RunPromptOptions {
   /** 最终生效思考强度（pi CLI 档位或 null=不传） */
   thinking?: string;
   /** 模型/思考来源（record 持久化 + UI 诊断） */
-  modelSource?: "role" | "default" | "global";
-  thinkingSource?: "transport";
+  modelSource?: SubagentRecord["modelSource"];
+  thinkingSource?: SubagentRecord["thinkingSource"];
   /** P1-2：计算 toolArgs 时的宿主 permissionMode（记录为 toolPolicyMode 收敛基准） */
   permissionMode?: string;
   toolArgs: { tools: string[] | null; excludeTools: string[] };
@@ -102,6 +102,7 @@ export interface SpawnConfig {
   roleSource: SubagentRecord["roleSource"];
   roleDescription: string;
   project: string;
+  sourceProject?: string;
   depth: number;
   model?: string;
   subagentId?: string;
@@ -320,14 +321,8 @@ export class SubagentRuntime {
 
   ensureSubagent(cfg: SpawnConfig): SubagentRecord {
     const id = cfg.subagentId ? safeId(cfg.subagentId) : `${safeId(cfg.role)}-${shortId()}`;
-    const existing = this.get(id, cfg.scope);
-    if (existing) {
-      // 同 scope 且实例仍 active：复用（同一父 Task 内 active reuse）
-      return existing;
-    }
-    // 同 id 但属于其它 scope（跨 Task）：禁止复用
     if (this.records.some((r) => r.subagentId === id)) {
-      throw new Error(`subagentId ${id} 已属于其它父 Task，禁止跨任务复用`);
+      throw new Error(`subagentId ${id} 已存在；请使用新的 ID，或通过 subagent_steer 引导活动实例`);
     }
     const record = createRecord({
       subagentId: id,
@@ -336,6 +331,7 @@ export class SubagentRuntime {
       roleSource: cfg.roleSource,
       roleDescription: cfg.roleDescription,
       project: cfg.project,
+      sourceProject: cfg.sourceProject,
       depth: cfg.depth,
       model: cfg.model,
     });
@@ -449,7 +445,7 @@ export class SubagentRuntime {
     if (firstSpawn && opts.systemPromptFile) {
       spawnArgs.push("--append-system-prompt", opts.systemPromptFile);
     }
-    const env: NodeJS.ProcessEnv = { ...this.env, PI_SUBAGENT_DEPTH: String(record.depth) };
+    const env: NodeJS.ProcessEnv = { ...this.env, PI_SUBAGENT_DEPTH: String(record.depth), MYBUDDY_SUBAGENT_POLICY_CWD: record.sourceProject ?? record.project };
 
     const degraded = false;
     const attemptArgs = spawnArgs;
@@ -645,7 +641,7 @@ export class SubagentRuntime {
     try {
       const admit = async () => {
         opts.signal?.throwIfAborted();
-        await this.validateModel?.(opts.model ?? record.resolvedModel ?? record.model, record.project);
+        await this.validateModel?.(opts.model ?? record.resolvedModel ?? record.model, record.sourceProject ?? record.project);
         if (generation !== this.shutdownGeneration || !this.get(recordId)) throw new Error("子代理模型准入已失效");
       };
       await admit();
@@ -657,6 +653,9 @@ export class SubagentRuntime {
       });
       worker = w;
       await admit();
+      if (opts.thinkingSource === "invocation" && opts.thinking !== (actualThinking ?? this.get(recordId)?.actualThinking)) {
+        throw new Error(`子代理实际思考档位与显式请求不一致：请求 ${opts.thinking}，实际 ${actualThinking ?? this.get(recordId)?.actualThinking ?? "unknown"}`);
+      }
       // 思考强度归一化诊断：pi 按模型档位归一化（如 low→high）时明确提示
       if (opts.thinking && actualThinking && actualThinking !== opts.thinking) {
         diagnostics.push(
@@ -820,7 +819,7 @@ export class SubagentRuntime {
   async steer(
     recordId: string,
     instruction: string,
-    opts: { permissionMode?: string; resolvedModel?: string; resolvedThinking?: string; modelSource?: "role" | "default" | "global"; thinkingSource?: "transport" } = {},
+    opts: { permissionMode?: string; resolvedModel?: string; resolvedThinking?: string; modelSource?: SubagentRecord["modelSource"]; thinkingSource?: SubagentRecord["thinkingSource"] } = {},
   ): Promise<SteerResult> {
     return this.withRecordLock(recordId, () => this.steerLocked(recordId, instruction, opts));
   }
@@ -828,7 +827,7 @@ export class SubagentRuntime {
   private async steerLocked(
     recordId: string,
     instruction: string,
-    opts: { permissionMode?: string; resolvedModel?: string; resolvedThinking?: string; modelSource?: "role" | "default" | "global"; thinkingSource?: "transport" } = {},
+    opts: { permissionMode?: string; resolvedModel?: string; resolvedThinking?: string; modelSource?: SubagentRecord["modelSource"]; thinkingSource?: SubagentRecord["thinkingSource"] } = {},
   ): Promise<SteerResult> {
     const record = this.get(recordId);
     if (!record) {
@@ -837,7 +836,7 @@ export class SubagentRuntime {
     const worker = this.workerFor(record);
     const generation = this.shutdownGeneration;
     const runningModel = record.resolvedModel ?? record.model;
-    await this.validateModel?.(worker?.state === "running" ? runningModel : opts.resolvedModel ?? runningModel, record.project);
+    await this.validateModel?.(worker?.state === "running" ? runningModel : opts.resolvedModel ?? runningModel, record.sourceProject ?? record.project);
     if (generation !== this.shutdownGeneration || !this.get(recordId)) throw new Error("子代理模型准入已失效");
     if (worker?.state === "running" && opts.resolvedModel && opts.resolvedModel !== runningModel) {
       throw new Error("子代理运行中不能切换模型，请结束当前执行后重试");

@@ -1,0 +1,4 @@
+ts	phase	decision	why	evidence	result
+2026-11-05T09:30:00+08:00	frame	Keep main checkout and preserve unrelated SVG; use read-only explorers	Repository requires main; exploration does not need shared writes	AGENTS.md:4	open
+2026-11-05T09:30:00+08:00	baseline	Treat execute smoke as module-load coverage only	Test passes despite worker rejecting nonexistent smoke model	scripts/subagent-execute-smoke.ts	INCONCLUSIVE for successful worker execution
+2026-11-05T09:30:00+08:00	memory	Continue without shared memory	Gateway reports no profile for current directory	shared-memory context tool result	unavailable

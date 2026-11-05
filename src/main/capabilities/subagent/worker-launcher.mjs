@@ -60,7 +60,7 @@ if (pi.VERSION !== EXPECTED_PI_VERSION) throw new Error(`子代理需要 Pi ${EX
   ({ loadExtensionFromFactory } = await import(pathToFileURL(join(dirname(cliPath), 'core/extensions/loader.js')).href));
   ({ writeRawStdout } = await import(pathToFileURL(join(dirname(cliPath), 'core/output-guard.js')).href));
 }
-const settings = pi.SettingsManager.create(process.cwd(), pi.getAgentDir());
+const settings = pi.SettingsManager.create(process.env.MYBUDDY_SUBAGENT_POLICY_CWD || process.cwd(), pi.getAgentDir());
 const createRuntime = pi.ModelRuntime.create.bind(pi.ModelRuntime);
 const invocationGuard = new AsyncLocalStorage();
 const cacheTracer = process.env.MYBUDDY_CACHE_TRACE === '0' ? undefined : new CacheRequestTracer(record => {

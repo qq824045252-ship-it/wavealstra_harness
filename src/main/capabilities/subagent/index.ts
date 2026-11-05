@@ -23,7 +23,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { assertModelAdmission } from "../../agent/ModelInvocationAdmission";
 import { type ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { AgentConfig, AgentScope } from "./agents.ts";
@@ -32,11 +32,14 @@ import {
   getAgentDirCompat,
   getConfigDirNameCompat,
   getMarkdownThemeCompat,
-  withFileMutationQueueCompat,
   parseFrontmatterCompat,
+  withFileMutationQueueCompat,
 } from "./compat.ts";
 import { computeChildTools, type ToolPolicyResult } from "./policy.ts";
-import { canonicalSubagentModelReference, resolveSubagentModelThinking } from "./config.ts";
+import { resolveSubagentSelection } from "./selection.ts";
+import { prepareSubagentWorkspace, type PreparedSubagentWorkspace, type SubagentIsolation } from "./worktree.ts";
+import type { ModelReasoningPreferenceDto } from "../../../shared/model-metadata";
+import { READONLY_TOOLS } from "./policy.ts";
 import {
   buildContextBlock,
   appendWorkspaceNotes,
@@ -125,6 +128,10 @@ export interface SingleResult {
   workerReused?: boolean;
   /** 模型解析/降级诊断（如裸名解析、模型降级） */
   diagnostics?: string[];
+  workspace?: PreparedSubagentWorkspace;
+  requestedModel?: string;
+  resolvedModel?: string;
+  resolvedThinking?: string;
 }
 
 interface SubagentDetails {
@@ -163,10 +170,17 @@ export function isFailedResult(result: SingleResult): boolean {
 }
 
 export function getResultOutput(result: SingleResult): string {
-  if (isFailedResult(result)) {
-    return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
-  }
-  return getFinalOutput(result.messages) || "(no output)";
+  const output = isFailedResult(result)
+    ? result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)"
+    : getFinalOutput(result.messages) || "(no output)";
+  const evidence = [
+    result.resolvedModel ? `Resolved model: ${result.resolvedModel}${result.resolvedThinking ? `; thinking: ${result.resolvedThinking}` : ""}` : "",
+    result.model ? `Observed model: ${result.model}` : "",
+    result.workspace?.kind === "worktree"
+      ? `Retained worktree: ${result.workspace.cwd}\nBranch: ${result.workspace.branch}\nBase: ${result.workspace.baseCommit}\nReceipt: ${result.workspace.receiptPath}` : "",
+    ...(result.diagnostics ?? []),
+  ].filter(Boolean);
+  return [...evidence, output].join("\n\n");
 }
 
 function getFinalOutput(messages: MessageLike[]): string {
@@ -359,49 +373,15 @@ async function validateSubagentModel(modelId: string | undefined, cwd: string): 
   await assertModelAdmission(runtime, SettingsManager.create(cwd, getAgentDirCompat()), model);
 }
 
-/**
- * Enforce Pi's native enabledModels scope for explicit Subagent --model.
- * No MyBuddy model filter is reimplemented here: Pi ModelRuntime + Pi resolver are authoritative.
- */
-async function resolveScopedSubagentModel(
-  requestedModel: string | undefined,
-  cwd: string,
-): Promise<{ model?: string; diagnostics: string[] }> {
-  const agentDir = getAgentDirCompat();
-  const settingsManager = SettingsManager.create(cwd, agentDir);
+async function scopedSubagentModels(cwd: string) {
   const modelRuntime = hostModelRuntime;
   if (!modelRuntime) throw new Error("Subagent 的共享 Pi ModelRuntime 尚未初始化");
-  const patterns = settingsManager.getEnabledModels();
-  if (patterns === undefined) {
-    const available = await modelRuntime.getAvailable();
-    const model = available.find((item) => `${item.provider}/${item.id}` === requestedModel) ?? available[0];
-    if (!model) throw new Error("Subagent 没有可用模型");
-    return { model: `${model.provider}/${model.id}`, diagnostics: [] };
-  }
-  const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRuntime);
-  const allowed = new Map(
-    scopedModels.map((item) => [`${item.model.provider}/${item.model.id}`, item.model]),
-  );
-
-  if (requestedModel && allowed.has(requestedModel)) {
-    return {
-      model: requestedModel,
-      diagnostics: diagnostics.map((item) => item.message),
-    };
-  }
-
-  const fallback = scopedModels[0]?.model;
-  if (!fallback) throw new Error("Subagent 的 Pi enabledModels 范围为空，不能回退到范围外模型");
-  return {
-    model: fallback ? `${fallback.provider}/${fallback.id}` : undefined,
-    diagnostics: [
-      ...diagnostics.map((item) => item.message),
-      fallback
-        ? `Subagent 模型 ${requestedModel} 不在 Pi enabledModels 范围内，已回退 ${fallback.provider}/${fallback.id}`
-        : `Subagent 模型 ${requestedModel} 不在 Pi enabledModels 范围内，且当前 scope 无可用模型`,
-    ],
-  };
+  const patterns = SettingsManager.create(cwd, getAgentDirCompat()).getEnabledModels();
+  if (patterns === undefined) return { models: await modelRuntime.getAvailable(), diagnostics: [] as string[] };
+  const scope = await resolveModelScopeWithDiagnostics(patterns, modelRuntime);
+  return { models: scope.scopedModels.map((item) => item.model), diagnostics: scope.diagnostics.map((item) => item.message) };
 }
+
 
 // ---------- 系统提示文件 ----------
 
@@ -570,7 +550,7 @@ function createIpcBackend(rt: SubagentRuntime): SubagentIpcBackend {
         return { ok: false, delivered: "queued", message: `subagent 已结束或不属于当前任务（${subagentId}），请创建新的 subagent` };
       }
       let steerOpts: Parameters<typeof rt.steer>[2] = { permissionMode: loadHostPermissionMode() };
-      const resolved = await resolveForRecord(record, loadSubagentConfig(), loadHostDefaults(record.project));
+      const resolved = await resolveForRecord(record);
       steerOpts = { ...steerOpts, resolvedModel: resolved.model, resolvedThinking: resolved.thinking,
         modelSource: resolved.modelSource, thinkingSource: resolved.thinkingSource };
       const res = await rt.steer(subagentId, instruction.trim(), steerOpts);
@@ -702,55 +682,36 @@ function toSummaryDto(r: SubagentRecord): Record<string, unknown> {
   };
 }
 
-/**
- * 为已有 record 重新解析模型/思考 transport（配置变更后 steer/reuse 必须感知）。
- * role 仅覆盖模型；reasoning override 始终来自宿主 native defaultReasoning 的派生 transport。
- */
-async function resolveForRecord(
-  record: SubagentRecord,
-  config: SubagentConfig,
-  host: ReturnType<typeof loadHostDefaults>,
-): Promise<{ model?: string; thinking?: string; modelSource?: "role" | "default" | "global"; thinkingSource?: "transport"; diagnostics: string[] }> {
-  let roleModel: string | undefined;
-  try {
-    const base =
-      record.roleSource === "project" && record.project
-        ? path.join(record.project, getConfigDirNameCompat(), "agents")
-        : path.join(getAgentDirCompat(), "agents");
-    const file = path.join(base, `${record.role.replace(/[^\w.-]+/g, "_")}.md`);
-    if (fs.existsSync(file)) {
-      const { frontmatter } = parseFrontmatterCompat<Record<string, string>>(fs.readFileSync(file, "utf-8"));
-      roleModel = frontmatter.model;
-    }
-  } catch {
-    /* role 文件缺失 → 走 default/global */
-  }
-  const resolved = resolveSubagentModelThinking({
-    roleModel,
-    defaultModel: config.defaultModel,
-    transportThinking: config.transportThinking,
-    transportThinkingModelId: config.transportThinkingModelId,
-    globalDefaultModel: host.defaultModelId,
-    globalDefaultProvider: host.defaultProvider,
-  });
-  const scopedSelection = await resolveScopedSubagentModel(resolved.model ?? undefined, record.project || process.cwd());
-  const resolvedModel = scopedSelection.model;
-  const resolvedThinking =
-    resolvedModel && canonicalSubagentModelReference(config.transportThinkingModelId?.trim() ?? "") === resolvedModel
-      ? resolved.thinking ?? undefined
-      : undefined;
+async function resolveForRecord(record: SubagentRecord) {
+  const model = record.resolvedModel ?? record.model;
+  await validateSubagentModel(model, record.sourceProject ?? record.project);
   return {
-    model: resolvedModel,
-    thinking: resolvedThinking,
-    modelSource: resolved.modelSource ?? undefined,
-    thinkingSource: resolvedThinking ? resolved.thinkingSource ?? undefined : undefined,
-    diagnostics: [...resolved.diagnostics, ...scopedSelection.diagnostics],
+    model, thinking: record.resolvedThinking,
+    modelSource: record.modelSource, thinkingSource: record.thinkingSource,
+    diagnostics: [] as string[],
   };
 }
 
 // ---------- 参数 schema ----------
 
+const ExecutionFields = {
+  model: Type.Optional(Type.String({ minLength: 1, description: "Exact provider/model, or inherit-parent/auto for the current parent model. An unavailable explicit choice fails; it never switches models." })),
+  reasoning: Type.Optional(Type.Object({
+    enabled: Type.Optional(Type.Boolean()),
+    effort: Type.Optional(Type.String({ minLength: 1 })),
+    budgetTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+  }, { additionalProperties: false, description: "Native reasoning preference. Unsupported or lossy subprocess settings fail explicitly." })),
+  isolation: Type.Optional(StringEnum(["auto", "shared", "worktree"] as const, { description: "auto isolates parallel write-capable tasks in retained Git worktrees. worktree requires a clean repository. shared explicitly opts into the supplied cwd." })),
+};
+
+interface DelegatedExecutionOptions {
+  model?: string;
+  reasoning?: ModelReasoningPreferenceDto;
+  isolation?: SubagentIsolation;
+}
+
 const TaskItem = Type.Object({
+  ...ExecutionFields,
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task handoff: goal; allowed file scope; constraints; known facts with source paths; acceptance commands/conditions; artifact paths. Return conclusion, changed files, execution evidence, unverified items" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
@@ -758,6 +719,7 @@ const TaskItem = Type.Object({
 });
 
 const ChainItem = Type.Object({
+  ...ExecutionFields,
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
@@ -770,6 +732,7 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 const SubagentParams = Type.Object({
+  ...ExecutionFields,
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
   task: Type.Optional(Type.String({ description: "Task handoff: goal; allowed scope; constraints; facts/source paths; acceptance commands; artifact paths (single mode)" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
@@ -818,107 +781,141 @@ async function runDelegatedStep(params: {
   signal: AbortSignal | undefined;
   onUpdate: ((partial: AgentToolResult<SubagentDetails>) => void) | undefined;
   makeDetails: (results: SingleResult[]) => SubagentDetails;
-  /** 父 Task 作用域 */
   taskScope: string;
+  execution?: DelegatedExecutionOptions;
+  parentModelId?: string;
+  parallel?: boolean;
 }): Promise<SingleResult> {
   const { runtime, agent, task, cwd, subagentId, step, config, hostPermissionMode, parentDepth, timeoutMs, signal, onUpdate, makeDetails, taskScope } = params;
-
-  const policy: ToolPolicyResult = computeChildTools({
-    roleTools: agent.tools,
-    permissionMode: config.permissionMode ?? hostPermissionMode,
-    allowTools: config.allowTools,
-    denyTools: config.denyTools,
-    confirmTools: config.confirmTools ?? [...DEFAULT_CONFIRM_TOOLS],
-  });
-
-  // 模型优先级：role frontmatter > subagent.json default > MyBuddy global；reasoning transport 必须与最终 modelId 绑定。
-  const host = loadHostDefaults(cwd);
-  const resolved = resolveSubagentModelThinking({
-    roleModel: agent.model,
-    defaultModel: config.defaultModel,
-    transportThinking: config.transportThinking,
-    transportThinkingModelId: config.transportThinkingModelId,
-    globalDefaultModel: host.defaultModelId,
-    globalDefaultProvider: host.defaultProvider,
-  });
-  const scopedSelection = await resolveScopedSubagentModel(resolved.model ?? undefined, cwd ?? process.cwd());
-  const resolvedModel = scopedSelection.model;
-  const resolvedDiagnostics = [...resolved.diagnostics, ...scopedSelection.diagnostics];
-  const resolvedThinking =
-    resolvedModel && canonicalSubagentModelReference(config.transportThinkingModelId?.trim() ?? "") === resolvedModel
-      ? resolved.thinking ?? undefined
-      : undefined;
-
-  const record = runtime.ensureSubagent({
-    scope: taskScope,
-    subagentId,
-    role: agent.name,
-    roleSource: agent.source,
-    roleDescription: agent.description,
-    project: cwd ?? ".",
-    depth: parentDepth + 1,
-    model: agent.model,
-  });
-
-  // 首次创建会话才需要系统提示文件
+  let workspace: PreparedSubagentWorkspace | undefined;
   let promptFile: string | null = null;
-  if (!record.sessionId && agent.systemPrompt.trim()) {
-    const diagnostic = inspectSharedContext(cwd ?? process.cwd());
-    console.info("[subagent] shared-context", { injected: diagnostic.injected, bytes: diagnostic.bytes, reason: diagnostic.reason });
-    const shared = diagnostic.text;
-    const contextBlock = buildContextBlock({
-      cwd: cwd ?? process.cwd(),
-      roleName: agent.name,
-      roleDescription: agent.description,
-      tools: policy.tools,
+  let instanceId = "";
+  try {
+    signal?.throwIfAborted();
+
+    const policy: ToolPolicyResult = computeChildTools({
+      roleTools: agent.tools,
       permissionMode: config.permissionMode ?? hostPermissionMode,
-      deniedTools: policy.denied,
-      sharedContext: shared,
-      sharedContextStatus: diagnostic,
-      depth: parentDepth + 1,
+      allowTools: config.allowTools,
+      denyTools: config.denyTools,
+      confirmTools: config.confirmTools ?? [...DEFAULT_CONFIRM_TOOLS],
     });
-    promptFile = await writeSystemPromptFile(agent, contextBlock);
-  }
 
-  const outcome = await runtime.runPrompt(record.subagentId, {
-    task: appendWorkspaceNotes(task, workspaceNotesForScope?.(taskScope) ?? ""),
-    timeoutMs,
-    signal,
-    systemPromptFile: promptFile ?? undefined,
-    // 模型优先级在 config.ts 解析；reasoning transport 仅在绑定 modelId 一致时传给 Pi。
-    // resolved 已 provider 限定（或 null=用子进程全局默认），裸名歧义有诊断
-    model: resolvedModel,
-    thinking: resolvedThinking,
-    modelSource: resolved.modelSource ?? undefined,
-    thinkingSource: resolvedThinking ? resolved.thinkingSource ?? undefined : undefined,
-    permissionMode: config.permissionMode ?? hostPermissionMode,
-    toolArgs: { tools: policy.tools, excludeTools: policy.excludeTools },
-    onUpdate: (snapshot) => {
-      if (!onUpdate) return;
-      const partial: SingleResult = {
-        agent: agent.name,
-        agentSource: agent.source,
-        task,
-        subagentId: record.subagentId,
-        status: snapshot.status,
-        exitCode: -1,
-        messages: snapshot.messages,
-        stderr: "",
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-        model: agent.model,
-        step,
-      };
-      onUpdate({
-        content: [{ type: "text", text: snapshot.finalText || "(running...)" }],
-        details: makeDetails([partial]),
+    const sourceCwd = path.resolve(cwd ?? process.cwd());
+    const host = loadHostDefaults(sourceCwd);
+    const scoped = await scopedSubagentModels(sourceCwd);
+    const resolved = resolveSubagentSelection({
+      invocation: params.execution,
+      parentModelId: params.parentModelId,
+      defaults: {
+        roleModel: agent.model,
+        defaultModel: config.defaultModel,
+        transportThinking: config.transportThinking,
+        transportThinkingModelId: config.transportThinkingModelId,
+        globalDefaultModel: host.defaultModelId,
+        globalDefaultProvider: host.defaultProvider,
+      },
+      availableModels: scoped.models.map((model) => ({
+        id: `${model.provider}/${model.id}`,
+        metadata: { source: "pi" as const, reasoning: model.reasoning, reasoningOptions: [{ type: "effort" as const, values: getSupportedThinkingLevels(model) }] },
+      })),
+    });
+    const resolvedModel = resolved.model;
+    const resolvedThinking = resolved.thinking ?? undefined;
+    const resolvedDiagnostics = [...resolved.diagnostics, ...scoped.diagnostics];
+    await validateSubagentModel(resolvedModel, sourceCwd);
+    workspace = await prepareSubagentWorkspace({
+      cwd: sourceCwd,
+      isolation: params.execution?.isolation,
+      parallel: params.parallel ?? false,
+      writable: policy.tools === null || policy.tools.some((tool) => !policy.excludeTools.includes(tool) && !(READONLY_TOOLS as readonly string[]).includes(tool)),
+      baseDir: path.join(getAgentDirCompat(), "subagent-worktrees"),
+      signal,
+    });
+    signal?.throwIfAborted();
+
+    if (agent.systemPrompt.trim()) {
+      const diagnostic = inspectSharedContext(sourceCwd);
+      console.info("[subagent] shared-context", { injected: diagnostic.injected, bytes: diagnostic.bytes, reason: diagnostic.reason });
+      const shared = diagnostic.text;
+      const contextBlock = buildContextBlock({
+        cwd: workspace.cwd,
+        roleName: agent.name,
+        roleDescription: agent.description,
+        tools: policy.tools,
+        permissionMode: config.permissionMode ?? hostPermissionMode,
+        deniedTools: policy.denied,
+        sharedContext: shared,
+        sharedContextStatus: diagnostic,
+        depth: parentDepth + 1,
       });
-    },
-  });
+      promptFile = await writeSystemPromptFile(agent, contextBlock);
+    }
 
-  if (promptFile) cleanupTempFile(promptFile);
-  const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step });
-  if (resolvedDiagnostics.length > 0) result.diagnostics = resolvedDiagnostics;
-  return result;
+    const workerTask = appendWorkspaceNotes(task, workspaceNotesForScope?.(taskScope) ?? "");
+    signal?.throwIfAborted();
+    const record = runtime.ensureSubagent({
+      scope: taskScope, subagentId,
+      role: agent.name, roleSource: agent.source, roleDescription: agent.description,
+      project: workspace.cwd, sourceProject: sourceCwd,
+      depth: parentDepth + 1, model: resolvedModel,
+    });
+    instanceId = record.subagentId;
+    const outcome = await runtime.runPrompt(record.subagentId, {
+      task: workerTask,
+      timeoutMs,
+      signal,
+      systemPromptFile: promptFile ?? undefined,
+      model: resolvedModel,
+      thinking: resolvedThinking,
+      modelSource: resolved.modelSource ?? undefined,
+      thinkingSource: resolvedThinking ? resolved.thinkingSource ?? undefined : undefined,
+      permissionMode: config.permissionMode ?? hostPermissionMode,
+      toolArgs: { tools: policy.tools, excludeTools: policy.excludeTools },
+      onUpdate: (snapshot) => {
+        if (!onUpdate) return;
+        const partial: SingleResult = {
+          agent: agent.name,
+          agentSource: agent.source,
+          task,
+          subagentId: record.subagentId,
+          status: snapshot.status,
+          exitCode: -1,
+          messages: snapshot.messages,
+          stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+          model: resolvedModel,
+          workspace,
+          resolvedModel,
+          resolvedThinking,
+          step,
+        };
+        onUpdate({
+          content: [{ type: "text", text: snapshot.finalText || "(running...)" }],
+          details: makeDetails([partial]),
+        });
+      },
+    });
+
+    const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step });
+    result.workspace = workspace;
+    result.requestedModel = params.execution?.model;
+    result.resolvedModel = resolvedModel;
+    result.resolvedThinking = resolvedThinking;
+    result.diagnostics = [...(result.diagnostics ?? []), ...resolvedDiagnostics];
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      agent: agent.name, agentSource: agent.source, task, step,
+      subagentId: instanceId, status: signal?.aborted ? "cancelled" : "failed", exitCode: 1,
+      messages: [], stderr: message, errorMessage: message, workspace,
+      requestedModel: params.execution?.model,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    };
+  } finally {
+    if (promptFile) cleanupTempFile(promptFile);
+  }
 }
 
 export default function (pi: any) {
@@ -948,12 +945,12 @@ export default function (pi: any) {
     name: "subagent",
     label: "Subagent",
     description: [
-      "Delegate bounded subtasks to a persistent specialized subagent (isolated pi session).",
+      "Delegate bounded subtasks to task-scoped disposable Pi workers. Each invocation has a new session; terminal workers and transcripts are removed.",
       "Modes: single (agent+task), parallel (tasks array, up to " + MAX_PARALLEL_TASKS + " tasks, " + MAX_CONCURRENCY + " running concurrently, the rest queued), chain (sequential, {previous} placeholder).",
-      "Delegation policy: create a NEW subagent for bounded, independent, long-running subtasks; REUSE via subagentId (same persistent session/history) when continuing related work; use subagent_steer to guide a running or idle subagent; do the work yourself for trivial questions (each subagent run costs a cold start).",
+      "Select model and native reasoning per single call or per tasks/chain item. Exact provider/model choices fail when unavailable; inherit-parent/auto uses the current parent's model, not global defaults. Same-model workers are not cross-model review. Unsupported reasoning transport fails explicitly.",
       "Context boundary: the subagent inherits ONLY cwd + role system prompt + your task text. Project shared context / memory / plan / tag / skill / expert / connector policies are NOT inherited — compress and pass needed context inside the task (unknown stays unknown, no fabrication).",
       "Permissions: subagent tool sets are derived from the host permission mode; default (no tools frontmatter) is a READ-ONLY analysis set (read/ls/find/grep). bash/write/edit require explicit tools frontmatter or allowTools — bash is a HIGH-PRIVILEGE tool (arbitrary command execution, no approval in subagent); recursion is hard-capped and subagent tools are disabled inside subagents.",
-      "Persistence: each subagentId maps to a durable pi session (restart-safe); results are queryable via subagent_list; steerable via subagent_steer.",
+      "isolation:auto creates separate retained Git worktrees for parallel write-capable tasks. A clean committed repository is required; dirty or non-Git input fails before launch, without snapshotting. isolation:shared explicitly opts into shared cwd. Worktrees and branches are never automatically merged or deleted; result text/details contain receipts after success or failure. subagent_list shows active workers only; subagent_steer guides active work without changing its selected model.",
       `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")} and ${path.join(getAgentDirCompat(), "plugins", "agents")}).`,
       `To enable project-local agents in ${getConfigDirNameCompat()}/agents, set agentScope: "both" (or "project").`,
       "Per-task timeout: param timeout_ms (1..3600s) > subagent.json timeoutMs > 600s default; on timeout the process is aborted then killed.",
@@ -994,6 +991,7 @@ export default function (pi: any) {
       };
 
       const parentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0") || 0;
+      const parentModelId = ctx.model?.provider && ctx.model?.id ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
       const makeDetailsFn =
         (mode: "single" | "parallel" | "chain") =>
         (results: SingleResult[]): SubagentDetails => ({
@@ -1046,23 +1044,6 @@ export default function (pi: any) {
       }
 
       const taskScope = resolveScope(ctx);
-      const runStep = (a: AgentConfig, t: string, cwd_: string | undefined, sid: string | undefined, step: number | undefined) =>
-        runDelegatedStep({
-          runtime,
-          agent: a,
-          task: t,
-          cwd: cwd_ ?? ctx.cwd,
-          subagentId: sid,
-          step,
-          config,
-          hostPermissionMode,
-          parentDepth,
-          timeoutMs: taskTimeoutMs,
-          signal,
-          onUpdate,
-          makeDetails: makeDetailsFn(hasChain ? "chain" : hasTasks ? "parallel" : "single"),
-          taskScope,
-        });
 
       // ---- chain ----
       if (params.chain && params.chain.length > 0) {
@@ -1090,15 +1071,15 @@ export default function (pi: any) {
           const result = await runDelegatedStep({
             runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
             config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate: chainUpdate,
-            makeDetails: makeDetailsFn("chain"), taskScope,
+            makeDetails: makeDetailsFn("chain"), taskScope, execution: { ...params, ...step }, parentModelId,
           });
           results.push(result);
           if (isFailedResult(result)) {
-            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }], details: makeDetailsFn("chain")(results), isError: true };
+            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}):\n${results.map((result, index) => `Step ${index + 1}:\n${getResultOutput(result)}`).join("\n\n")}` }], details: makeDetailsFn("chain")(results), isError: true };
           }
           previousOutput = getFinalOutput(result.messages);
         }
-        return { content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }], details: makeDetailsFn("chain")(results) };
+        return { content: [{ type: "text", text: results.map((result, index) => `Step ${index + 1}:\n${getResultOutput(result)}`).join("\n\n") }], details: makeDetailsFn("chain")(results) };
       }
 
       // ---- parallel ----
@@ -1136,7 +1117,7 @@ export default function (pi: any) {
             onUpdate: (partial) => {
               if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
             },
-            makeDetails: makeDetailsFn("parallel"), taskScope,
+            makeDetails: makeDetailsFn("parallel"), taskScope, execution: { ...params, ...t }, parentModelId, parallel: true,
           });
           allResults[index] = result;
           emitParallelUpdate();
@@ -1150,7 +1131,7 @@ export default function (pi: any) {
           const status = isFailedResult(r) ? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}` : "completed";
           return `### [${r.agent}] ${status} (id: ${r.subagentId})\n\n${output}`;
         });
-        return { content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }], details: makeDetailsFn("parallel")(results) };
+        return { content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }], details: makeDetailsFn("parallel")(results), isError: successCount !== results.length };
       }
 
       // ---- single ----
@@ -1163,14 +1144,14 @@ export default function (pi: any) {
         const result = await runDelegatedStep({
           runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,
           config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate,
-          makeDetails: makeDetailsFn("single"), taskScope,
+          makeDetails: makeDetailsFn("single"), taskScope, execution: params, parentModelId,
         });
         // 结果文本携带 instanceId（主对话 chip 可据此打开临时 Chat；实例在返回后已销毁）
         const idLine = `\n\n> subagent: ${result.subagentId}（本次任务内临时实例，已结束）`;
         if (isFailedResult(result)) {
           return { content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}${idLine}` }], details: makeDetailsFn("single")([result]), isError: true };
         }
-        return { content: [{ type: "text", text: `${getFinalOutput(result.messages) || "(no output)"}${idLine}` }], details: makeDetailsFn("single")([result]) };
+        return { content: [{ type: "text", text: `${getResultOutput(result)}${idLine}` }], details: makeDetailsFn("single")([result]) };
       }
 
       const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
@@ -1393,9 +1374,8 @@ export default function (pi: any) {
           isError: true,
         };
       }
-      // 重解析模型/思考：default/global 配置变更后 steer 也感知（role override 优先）
       let steerOpts: Parameters<typeof runtime.steer>[2] = { permissionMode: loadHostPermissionMode() };
-      const resolved = await resolveForRecord(record, loadSubagentConfig(), loadHostDefaults(record.project));
+      const resolved = await resolveForRecord(record);
       steerOpts = { ...steerOpts, resolvedModel: resolved.model, resolvedThinking: resolved.thinking,
         modelSource: resolved.modelSource, thinkingSource: resolved.thinkingSource };
       const res = await runtime.steer(params.subagentId, params.instruction, steerOpts);

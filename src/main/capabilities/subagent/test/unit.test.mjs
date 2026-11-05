@@ -2,7 +2,7 @@
  * unit.test.mjs — Subagent 扩展单元 + fixture 集成测试（Task-scoped disposable）。
  *
  * 核心覆盖：create→running→steer→result→全清理；failed/cancelled/timedout 清理；
- * 父 Task 结束清理多 child；同 scope active reuse / 跨 scope 拒绝；terminal 后拒绝；
+ * 父 Task 结束清理多 child；活动 ID 重复拒绝；terminal 后拒绝；
  * 并发互斥无双 spawn；gcLegacy 迁移；权限/模型/思考/waiter 回归。
  */
 import { EventEmitter } from "node:events";
@@ -251,8 +251,13 @@ console.log("== 同 scope active reuse / 跨 scope 拒绝 ==");
   const runtime = makeRuntime(baseDir);
   runtime.gcLegacy();
   const r1 = runtime.ensureSubagent({ scope: "task-X", role: "fixture", roleSource: "user", roleDescription: "d", project: process.cwd(), depth: 1, subagentId: "shared-id" });
-  const r1b = runtime.ensureSubagent({ scope: "task-X", role: "fixture", roleSource: "user", roleDescription: "d", project: process.cwd(), depth: 1, subagentId: "shared-id" });
-  assert(r1 === r1b, "同 scope 同 id → 复用同一 active 实例");
+  let sameRejected = false;
+  try {
+    runtime.ensureSubagent({ scope: "task-X", role: "fixture", roleSource: "user", roleDescription: "d", project: process.cwd(), depth: 1, subagentId: "shared-id" });
+  } catch {
+    sameRejected = true;
+  }
+  assert(sameRejected && runtime.get(r1.subagentId) === r1, "同 scope 同 id → 拒绝且保留原实例");
   let crossRejected = false;
   try {
     runtime.ensureSubagent({ scope: "task-Y", role: "fixture", roleSource: "user", roleDescription: "d", project: process.cwd(), depth: 1, subagentId: "shared-id" });

@@ -48,6 +48,7 @@ export interface SubagentRecord {
   roleSource: "user" | "project" | "unknown";
   roleDescription: string;
   project: string;
+  sourceProject?: string;
   status: SubagentStatus;
   createdAt: number;
   updatedAt: number;
@@ -74,8 +75,8 @@ export interface SubagentRecord {
   toolPolicyAt?: number;
   resolvedModel?: string;
   resolvedThinking?: string;
-  modelSource?: "role" | "default" | "global";
-  thinkingSource?: "transport";
+  modelSource?: "invocation" | "parent" | "role" | "default" | "global";
+  thinkingSource?: "invocation" | "transport";
   actualModel?: string;
   actualThinking?: string;
   depth: number;
@@ -90,6 +91,7 @@ export function createRecord(input: {
   roleSource: SubagentRecord["roleSource"];
   roleDescription: string;
   project: string;
+  sourceProject?: string;
   depth: number;
   model?: string;
 }): SubagentRecord {
@@ -101,6 +103,7 @@ export function createRecord(input: {
     roleSource: input.roleSource,
     roleDescription: input.roleDescription,
     project: input.project,
+    sourceProject: input.sourceProject,
     status: "idle",
     createdAt: now,
     updatedAt: now,

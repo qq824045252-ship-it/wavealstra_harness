@@ -69,11 +69,17 @@ test('a failed refresh leaves the old cache intact', async t => {
   assert.deepEqual(fs.readFileSync(file), data);
 });
 
-test('packaged cross-platform binary is checked against the build receipt, not the package receipt', async t => {
-  const root = fixture(t), vendorRoot = path.join(root, 'vendor'), data = Buffer.from('verified');
-  await prepareOfficeCli(key, { vendorRoot, fetch: upstream(data).fetch });
+test('packaged binary is checked against the build receipt, not the package receipt', async t => {
+  const nativeTarget = process.platform === 'win32' && process.arch === 'x64';
+  const root = fixture(t), vendorRoot = path.join(root, 'vendor');
+  const data = nativeTarget ? fs.readFileSync(process.execPath) : Buffer.from('verified');
   const resources = makeResources(root, data);
-  assert.deepEqual(verifyOfficeCli(resources, 'win32', 'x64', { vendorRoot }).errors, []);
+  assert.match(verifyOfficeCli(resources, 'win32', 'x64', { vendorRoot }).errors.join('\n'), /missing or invalid OfficeCLI build integrity receipt/);
+  await prepareOfficeCli(key, { vendorRoot, fetch: upstream(data).fetch });
+  const verified = verifyOfficeCli(resources, 'win32', 'x64', { vendorRoot });
+  assert.deepEqual(verified.errors, []);
+  if (nativeTarget) assert.equal(verified.facts.officecliVersion, process.version);
+  else assert.equal(verified.facts.officecliVersion, undefined);
   const binary = path.join(resources, 'officecli', 'officecli.exe');
   fs.writeFileSync(binary, 'tampered');
   fs.writeFileSync(path.join(resources, 'officecli', receiptName), JSON.stringify({ key, asset, tag: 'v9.8.7', sha256: digest(Buffer.from('tampered')) }));

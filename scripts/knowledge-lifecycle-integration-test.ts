@@ -24,6 +24,7 @@ import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
+import { LIBRARY_CONTENT_MAX_CHARS, LIBRARY_NAME_MAX_CHARS, LIBRARY_TITLE_MAX_CHARS } from "../src/shared/library-ipc";
 
 let passed = 0;
 function ok(cond: unknown, label: string): void {
@@ -287,13 +288,21 @@ async function main(): Promise<void> {
   ok((await call(personalTools, "library_create_text", { kind: "markdown", title: "独立个人笔记" })).isError === true, "8g2. 独立任务不建立长期个人资料库");
   projects.archive("proj-a", false);
 
-  /* 8h. 服务层长度上限（渲染器/工具/IPC 任何入口不可绕过） */
-  assert.throws(() => library.createItem({ spaceId: aSpace, kind: "markdown", title: "长".repeat(201) }), /标题不能超过 200/);
-  assert.throws(() => library.createCollection({ spaceId: aSpace, name: "长".repeat(101) }), /集合名称不能超过 100/);
-  const capText = library.createItem({ spaceId: aSpace, kind: "markdown", title: "上限文本" });
-  assert.throws(() => library.writeContent({ id: capText.id, content: "x".repeat(1_000_001) }), /正文不能超过 1000000/);
-  const capTitle = library.createItem({ spaceId: aSpace, kind: "markdown", title: "长".repeat(200) });
-  ok(capTitle.title.length === 200, "8h2. 标题恰好 200 允许");
+  db.connection.prepare("INSERT INTO spaces (id, name, created_at, updated_at) VALUES (?, ?, 1, 1)").run("limits-workspace", "长度边界工作空间");
+  const cappedSpace = library.createSpace({ name: "工作空间资料", workspaceId: "limits-workspace" });
+  const longTitle = "长".repeat(LIBRARY_TITLE_MAX_CHARS + 1);
+  const longContent = "x".repeat(LIBRARY_CONTENT_MAX_CHARS + 1);
+  assert.throws(() => library.createItem({ spaceId: cappedSpace.id, kind: "markdown", title: longTitle }), new RegExp(`标题不能超过 ${LIBRARY_TITLE_MAX_CHARS}`));
+  assert.throws(() => library.createCollection({ spaceId: aSpace, name: "长".repeat(LIBRARY_NAME_MAX_CHARS + 1) }), new RegExp(`集合名称不能超过 ${LIBRARY_NAME_MAX_CHARS}`));
+  const capText = library.createItem({ spaceId: cappedSpace.id, kind: "markdown", title: "上限文本" });
+  assert.throws(() => library.writeContent({ id: capText.id, content: longContent }), new RegExp(`正文不能超过 ${LIBRARY_CONTENT_MAX_CHARS}`));
+  const capTitle = library.createItem({ spaceId: cappedSpace.id, kind: "markdown", title: "长".repeat(LIBRARY_TITLE_MAX_CHARS) });
+  ok(capTitle.title.length === LIBRARY_TITLE_MAX_CHARS, "8h. 工作空间资料保留标题与正文上限，标题恰好上限允许");
+  const projectLong = library.createItem({ spaceId: aSpace, kind: "markdown", title: longTitle });
+  library.writeContent({ id: projectLong.id, content: longContent });
+  assert.equal(library.readContent(projectLong.id).item.title, longTitle);
+  assert.equal(library.readContent(projectLong.id).content, longContent);
+  ok(true, "8h2. 项目资料完整保留超出非项目上限的标题与正文");
 
   /* 8i. pdfjs 噪音抑制：抽取期间已知噪音不入 console.warn，真实 warn 放行，抽取后恢复
    *  （collector 必须先于导入安装：fire-and-forget 抽取在导入时启动，过滤器叠加在 collector 之上） */

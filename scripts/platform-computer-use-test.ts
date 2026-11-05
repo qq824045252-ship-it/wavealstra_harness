@@ -151,11 +151,37 @@ await check("linux gets activity notices where the overlay is unavailable", () =
   assert.equal(supportsComputerUseActivityNotice("macos"), false);
 });
 
-await check("OCR candidates contain no personal absolute paths", () => {
-  for (const candidate of [...ocrInstallCandidates(), ...ocrSearchCandidates().filter((c): c is string => Boolean(c))]) {
-    assert.doesNotMatch(candidate, /^[A-Za-z]:\\Users\\/i, `personal Windows path leaked: ${candidate}`);
-    assert.doesNotMatch(candidate, /\/Users\//, `personal macOS path leaked: ${candidate}`);
-    assert.doesNotMatch(candidate, /servi/i, `personal path leaked: ${candidate}`);
+await check("OCR candidates derive only from configured environment and current directory", () => {
+  const dir = fakePathDir([]);
+  const previousCwd = process.cwd();
+  const keys = ["LOCALAPPDATA", "ProgramFiles", "MYBUDDY_OCR_CLI"] as const;
+  const previous = keys.map((key) => [key, process.env[key]] as const);
+  try {
+    process.chdir(dir);
+    for (const key of keys) delete process.env[key];
+    const repositoryCli = join(dir, "tools", "OCR_NPU", "OCR_NPU_CLI.exe");
+    assert.deepEqual(ocrInstallCandidates(), [repositoryCli]);
+    assert.deepEqual(ocrSearchCandidates(), [undefined, repositoryCli, "windows-ocr.ps1"]);
+
+    const localAppData = join(dir, "local-app-data");
+    const programFiles = join(dir, "program-files");
+    const configuredCli = join(dir, "configured", "OCR_NPU_CLI.exe");
+    process.env.LOCALAPPDATA = localAppData;
+    process.env.ProgramFiles = programFiles;
+    process.env.MYBUDDY_OCR_CLI = configuredCli;
+    const installed = [
+      join(localAppData, "Programs", "OCR_NPU", "OCR_NPU_CLI.exe"),
+      join(programFiles, "OCR_NPU", "OCR_NPU_CLI.exe"),
+      repositoryCli,
+    ];
+    assert.deepEqual(ocrInstallCandidates(), installed);
+    assert.deepEqual(ocrSearchCandidates(), [configuredCli, ...installed, "windows-ocr.ps1"]);
+  } finally {
+    process.chdir(previousCwd);
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 
