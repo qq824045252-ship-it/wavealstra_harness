@@ -274,6 +274,10 @@ export function resolveEffectiveLoadoutSelection(
   const pickKind = (kind: AgentLoadoutCapabilityKind, forcedIds: Set<string> = new Set()): string[] => {
     const group = active.filter((item) => item.kind === kind);
     if (!group.length) return [];
+    // Skills always fill to the Runtime Policy ceiling. Query-signal narrowing keeps long-tail skills out
+    // of the catalogue, and a whitelisted name without its description is not enough to load it reliably.
+    // Expert, connector and MCP selection keep the query-aware narrowing.
+    if (kind === "skill") return stableIds(group.map((item) => item.id));
     const recommended = group.filter((item) => item.recommended || forcedIds.has(item.id.toLowerCase()));
     if (!querySignal && forcedIds.size === 0) return stableIds(group.map((item) => item.id));
     if (!recommended.length) return stableIds(group.map((item) => item.id));
