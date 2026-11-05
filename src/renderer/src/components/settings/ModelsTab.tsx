@@ -15,6 +15,7 @@ import {
   validateSubagentReasoningPreference,
 } from "@shared/subagent-model-config";
 import ModelEditorModal from "./models/ModelEditorModal";
+import SubagentExecutionSettings from "./SubagentExecutionSettings";
 import ProviderAuthSection from "./models/ProviderAuthSection";
 import {
   API_OPTIONS,
@@ -276,14 +277,16 @@ export default function ModelsTab(): React.JSX.Element {
       const next = await window.api?.agent?.updateAppSettings?.({ defaultModelId: modelId });
       const savedId = next?.defaultModelId ?? modelId;
       setDefaultModelId(savedId);
-      if (subagentConfig && !subagentConfig.defaultModel && subagentConfig.defaultReasoning) {
-        const refreshedSubagent = await window.api?.agent?.saveSubagentConfig?.({
-          ...subagentConfig,
-          globalDefaultModelId: savedId,
-        });
-        if (refreshedSubagent) setSubagentConfig(refreshedSubagent);
-      } else {
-        setSubagentConfig((current) => current ? { ...current, globalDefaultModelId: savedId } : current);
+      const currentSubagent = await window.api?.agent?.getSubagentConfig?.();
+      if (currentSubagent) setSubagentConfig(currentSubagent);
+      if (currentSubagent && !currentSubagent.defaultModel && currentSubagent.defaultReasoning) {
+        try {
+          const refreshed = await window.api?.agent?.saveSubagentConfig?.({ expectedRevision: currentSubagent.revision });
+          if (refreshed) setSubagentConfig(refreshed);
+        } catch (error) {
+          setHint(`Main default saved. Subagent reasoning could not be refreshed: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
       }
       setHint("主对话默认模型已更新；当前任务模型不会被强制切换");
     } catch (error) {
@@ -312,7 +315,7 @@ export default function ModelsTab(): React.JSX.Element {
     setUsageSaving(true);
     setHint("");
     try {
-      const next = await window.api?.agent?.saveSubagentConfig?.(merged);
+      const next = await window.api?.agent?.saveSubagentConfig?.({ defaultModel: merged.defaultModel, defaultReasoning: merged.defaultReasoning, expectedRevision: subagentConfig.revision });
       if (next) setSubagentConfig(next);
       setHint(validation.problems.length
         ? validation.problems.join("；")
@@ -358,10 +361,9 @@ export default function ModelsTab(): React.JSX.Element {
     }
     if (subagentConfig?.defaultModel && !ids.has(subagentConfig.defaultModel)) {
       const next = await window.api?.agent?.saveSubagentConfig?.({
-        ...subagentConfig,
         defaultModel: undefined,
         defaultReasoning: undefined,
-        globalDefaultModelId: nextDefault || undefined,
+        expectedRevision: subagentConfig.revision,
       });
       if (next) setSubagentConfig(next);
     }
@@ -885,7 +887,7 @@ export default function ModelsTab(): React.JSX.Element {
                 <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
               ))}
             </select>
-            <small>角色 frontmatter 的 model: 仍可覆盖；不可用模型运行时会 fail closed / fallback。</small>
+            <small>Role frontmatter model: still overrides this default. A default is not a restriction; use the execution limits below to allow only specific models.</small>
           </label>
 
           <div className="models-usage-field">
@@ -912,6 +914,13 @@ export default function ModelsTab(): React.JSX.Element {
             )}
           </div>
         </div>
+        {subagentConfig && (
+          <SubagentExecutionSettings
+            models={selectableModels}
+            config={subagentConfig}
+            onSaved={setSubagentConfig}
+          />
+        )}
       </section>
 
       <div className="models-provider-layout">

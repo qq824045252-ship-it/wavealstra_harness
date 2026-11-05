@@ -9,12 +9,13 @@ export async function buildSubagentContext(root = dirname(dirname(fileURLToPath(
     ["src/main/agent/EphemeralContextProjection.ts", "context-projection.mjs"],
     ["src/main/agent/providers/command-code.ts", "command-code.mjs"],
     ["src/main/agent/CacheRequestTracer.ts", "cache-request-trace.mjs"],
+    ["src/shared/subagent-execution-policy.ts", "execution-policy.mjs"],
   ]) {
     const outfile = join(root, "src/main/capabilities/subagent/vendor", filename);
     const result = await build({
       entryPoints: [join(root, entry)],
       outfile, bundle: true, platform: "node", format: "esm", target: "node20",
-      packages: "external", write: false, metafile: true, legalComments: "none", logLevel: "silent",
+      packages: filename === "execution-policy.mjs" ? "bundle" : "external", write: false, metafile: true, legalComments: "none", logLevel: "silent",
     });
     // All Pi runtime objects belong to the CLI's
     // existing native modules; a new runtime import would split their identities.

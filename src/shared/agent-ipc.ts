@@ -1,3 +1,4 @@
+import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
 import type { CronExecutionSettings } from "./cron-execution";
 import type { TaskModelRecommendations } from "./task-model-recommendations";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
@@ -1525,7 +1526,8 @@ export interface WebSearchRoutingDto {
 export type SubagentScopeDto = "user" | "project" | "both";
 
 /** ~/.mybuddy/subagent.json 内容（subagent 扩展配置） */
-export interface SubagentConfigDto {
+export interface SubagentConfigDto extends SubagentExecutionPolicy {
+  revision: string;
   /** 默认角色来源：仅用户级 / 仅项目级 / 两者（工具调用参数可覆盖） */
   agentScope?: SubagentScopeDto;
   /** 运行项目级角色前是否弹窗确认（仅交互模式） */
@@ -1541,6 +1543,10 @@ export interface SubagentConfigDto {
   /** 配置文件绝对路径（主进程返回时填充；保存时无需传入） */
   configPath?: string;
 }
+
+export type SubagentConfigPatch = Omit<SubagentConfigDto, "revision" | "configPath" | "globalDefaultModelId"> & {
+  expectedRevision: string;
+};
 
 /**
  * 同一 Provider 多 API Key 池中单个 key 的运行时状态（UI 展示用）。

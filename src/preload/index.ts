@@ -169,6 +169,7 @@ import {
   type RuntimeContextInspectionDto,
   type RuntimeContextSnapshotDto,
   type SubagentConfigDto,
+  type SubagentConfigPatch,
   type WebSearchConfigDto,
   type SearchProviderKeyUsageDto,
   type McpDiscoveryDto,
@@ -550,7 +551,7 @@ const api = {
       ipcRenderer.invoke(AgentIpc.testBuiltinCapability, id),
     getSubagentConfig: (): Promise<SubagentConfigDto> =>
       ipcRenderer.invoke(AgentIpc.getSubagentConfig),
-    saveSubagentConfig: (config: SubagentConfigDto): Promise<SubagentConfigDto> =>
+    saveSubagentConfig: (config: SubagentConfigPatch): Promise<SubagentConfigDto> =>
       ipcRenderer.invoke(AgentIpc.saveSubagentConfig, config),
     getContextUsage: (taskId: string): Promise<ContextUsageDto | null> =>
       ipcRenderer.invoke(AgentIpc.getContextUsage, taskId),

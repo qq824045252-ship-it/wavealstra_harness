@@ -28,6 +28,10 @@ const server = createServer(async (request, response) => {
     assert(request.url?.endsWith("/responses"));
     assert(["a", "b"].includes(body.model));
     calls.push({ model: body.model, body: text });
+    if (text.includes("slow-response")) await new Promise(done => setTimeout(done, 1500));
+    if (text.includes("revoke-allowlist")) {
+      writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({ allowedModels: [] }));
+    }
     if (text.includes("provider-failure-fixture") && text.includes("function_call_output")) {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "provider-failure-fixture", type: "invalid_request_error" } }));
@@ -202,6 +206,36 @@ try {
   }
   assert.equal(spawns.length, spawnCountBeforeCollision, "colliding IDs must not start a second worker");
   assert.equal(serverError, undefined);
+  const policyPath = join(agentDir, "subagent.json");
+  const restricted = { allowedModels: ["fixture/a"], roles: { fast: ["fixture/b", "fixture/a"], diverse: ["fixture/a", "fixture/b"] }, timeoutMs: 4000, timeoutPolicy: "fixed" };
+  writeFileSync(policyPath, JSON.stringify(restricted));
+  const spawnCount = spawns.length;
+  for (const model of ["fixture/b", "inherit-parent", "auto"]) {
+    const blocked = await invoke({ agent: "worker", task: "parent-selection-only", model, isolation: "shared" });
+    assert(blocked.isError, text(blocked));
+  }
+  const blockedPanel = await invoke({ tasks: [1, 2].map(() => ({ agent: "worker", task: "parent-selection-only", model: "diverse" })), isolation: "shared" });
+  assert(blockedPanel.isError, text(blockedPanel));
+  assert.equal(spawns.length, spawnCount, "all disallowed sources must fail before spawn");
+  const fixed = await invoke({ chain: [{ agent: "worker", task: "parent-selection-only slow-response", model: "fast" }], isolation: "shared", timeout_ms: 1000 });
+  assert(!fixed.isError, text(fixed));
+  assert.equal(fixed.details?.results[0].resolvedModel, "fixture/a");
+  assert.equal(fixed.details?.results[0].timeoutMs, 4000);
+  assert.equal(fixed.details?.results[0].timeoutSource, "settings");
+  writeFileSync(policyPath, JSON.stringify({ ...restricted, timeoutPolicy: "allow-override" }));
+  const overridden = await invoke({ agent: "worker", task: "parent-selection-only slow-response", model: "fast", isolation: "shared", timeout_ms: 1000 });
+  assert.equal(overridden.details?.results[0].status, "timedout", text(overridden));
+  assert.equal(overridden.details?.results[0].timeoutMs, 1000);
+  assert.equal(overridden.details?.results[0].timeoutSource, "invocation");
+  writeFileSync(policyPath, JSON.stringify(restricted));
+  const beforeRevocation = calls.length;
+  const revoked = await invoke({ agent: "worker", task: "revoke-allowlist", model: "fast", isolation: "shared" });
+  assert(revoked.isError, text(revoked));
+  assert.match(text(revoked), /blocked by Settings/);
+  assert.equal(calls.length, beforeRevocation + 1, "worker must stop before another provider request after revocation");
+  writeFileSync(policyPath, "{broken");
+  await assert.rejects(() => invoke({ agent: "worker", task: "must not run", isolation: "shared" }), /JSON|position|property/);
+  console.log("PASS registered workers: allowed models on all selection paths, fixed vs per-call limits, live revocation and malformed settings fail closed");
   console.log("PASS real registered subagent and Pi workers: strict rejection, model/reasoning selection, isolation defaults, retained success/failure work, registry cleanup, parent inheritance, normalized ID collision rejection");
 } finally {
   extension?.getRuntime().shutdownAll();

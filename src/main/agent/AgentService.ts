@@ -1,3 +1,4 @@
+import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
 import { evaluatedTaskModel } from "../../shared/task-model-recommendations";
 import { SkillTrialLedger } from "./SkillTrialLedger";
@@ -33,7 +34,7 @@ import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { BrowserWindow, shell } from "electron";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { PerformanceTracker } from "../usage/PerformanceTracker";
@@ -133,6 +134,7 @@ import {
   type CapabilityVideoJobDto,
   type TestBuiltinCapabilityResultDto,
   type SubagentConfigDto,
+  type SubagentConfigPatch,
   type UserFontDto,
   type WebSearchConfigDto,
   type ApiKeyPoolStateDto,
@@ -3287,7 +3289,9 @@ export class AgentService {
   getSubagentConfig(): SubagentConfigDto {
     const path = join(getMyBuddyDir(), "subagent.json");
     try {
-      const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      const content = readFileSync(path, "utf-8");
+      const raw = JSON.parse(content) as Record<string, unknown>;
+      const execution = parseSubagentExecutionPolicy(raw);
       const scope = raw.agentScope;
       const confirm = raw.confirmProjectAgents;
       const disabled = raw.disabledAgents;
@@ -3310,6 +3314,8 @@ export class AgentService {
         ? defaultReasoning
         : undefined;
       return {
+        ...execution,
+        revision: createHash("sha256").update(content).digest("hex"),
         agentScope: scope === "project" || scope === "both" || scope === "user" ? scope : undefined,
         confirmProjectAgents: typeof confirm === "boolean" ? confirm : undefined,
         disabledAgents: Array.isArray(disabled)
@@ -3320,8 +3326,9 @@ export class AgentService {
         globalDefaultModelId: this.readSettingsDefaultModelId(),
         configPath: path,
       };
-    } catch {
-      return { configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId() };
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      return { configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId(), revision: createHash("sha256").update("").digest("hex") };
     }
   }
 
@@ -3358,15 +3365,26 @@ export class AgentService {
   }
 
   /** 保存 Subagent：defaultReasoning 为产品真源，transportThinking 仅为 Pi CLI 内部派生值。 */
-  saveSubagentConfig(config: SubagentConfigDto): SubagentConfigDto {
+  saveSubagentConfig(config: SubagentConfigPatch): SubagentConfigDto {
     const path = join(getMyBuddyDir(), "subagent.json");
     let merged: Record<string, unknown> = {};
+    let content = "";
     try {
-      merged = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    } catch {
-      merged = {};
+      content = readFileSync(path, "utf-8");
+      merged = JSON.parse(content) as Record<string, unknown>;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
+    if (config.expectedRevision !== createHash("sha256").update(content).digest("hex")) {
+      throw new Error("Subagent settings changed elsewhere. Reload the model settings before saving.");
+    }
+    parseSubagentExecutionPolicy(merged);
+    const execution = parseSubagentExecutionPolicy(config);
     const next: Record<string, unknown> = { ...merged };
+    for (const key of SUBAGENT_POLICY_KEYS) {
+      if (key in config) next[key] = execution[key];
+    }
+    parseSubagentExecutionPolicy(next);
     if (config.agentScope !== undefined) next.agentScope = config.agentScope;
     if (config.confirmProjectAgents !== undefined) next.confirmProjectAgents = config.confirmProjectAgents;
     if (config.disabledAgents !== undefined) next.disabledAgents = config.disabledAgents;
@@ -3399,7 +3417,13 @@ export class AgentService {
       console.warn("[AgentService] Subagent reasoning transport limitations", derived.problems.join("; "));
     }
 
-    writeFileSync(path, JSON.stringify(next, null, 2), "utf-8");
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: "utf-8", mode: 0o600, flag: "wx" });
+      renameSync(temporary, path);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
     return this.getSubagentConfig();
   }
 

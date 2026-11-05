@@ -212,6 +212,78 @@ console.log("== failed / cancelled / timedout 同样清理 ==");
   rmSync(baseDir, { recursive: true, force: true });
 }
 
+console.log("== 运行中退出诊断 / 排空 / 脱敏 ==");
+{
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-sa-exit-"));
+  const runtime = makeRuntime(baseDir);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...values) => warnings.push(values.join(" "));
+  try {
+    const rec = runtime.ensureSubagent({ scope: "task-exit", role: "fixture", roleSource: "user", roleDescription: "d", project: baseDir, depth: 1 });
+    const out = await runtime.runPrompt(rec.subagentId, { task: "CRASH_STDERR", timeoutMs: 5_000, toolArgs: policy });
+    assert(out.status === "failed" && out.errorMessage?.includes("code=1"), "ready 后 stderr + exit 1 → failed，保留退出码");
+    assert(out.errorMessage?.includes("Error: fixture worker lost its transport 接続失败"), "崩溃结果保留完整 stderr 原因（含无换行尾部）");
+    assert(out.errorMessage?.includes("[redacted]") && !out.errorMessage.includes("fixture-private-"), "崩溃结果中的凭据已脱敏");
+    assert(out.errorMessage?.length <= 4_200, "崩溃诊断长度有界");
+    assert(warnings.join("\n").length <= 4_200 && !warnings.join("\n").includes("fixture-private-"), "runtime 日志有界且无裸凭据");
+    assert(runtime.recordsSnapshot.length === 0 && runtime.debugWorkerCount(rec.subagentId) === 0, "崩溃后实例和 worker 清理");
+
+    const completed = runtime.ensureSubagent({ scope: "task-exit", role: "fixture", roleSource: "user", roleDescription: "d", project: baseDir, depth: 1 });
+    const result = await runtime.runPrompt(completed.subagentId, { task: "SETTLE_EXIT", timeoutMs: 5_000, toolArgs: policy });
+    assert(result.status === "completed" && result.finalText === "FIXTURE_ANSWER:SETTLE_EXIT", "退出前无换行 agent_settled 排空后仍是 completed");
+    assert(result.errorMessage === undefined && result.usage.output === 20, "退出保留最终消息和用量，无崩溃诊断");
+
+    const timeout = runtime.ensureSubagent({ scope: "task-exit", role: "fixture", roleSource: "user", roleDescription: "d", project: baseDir, depth: 1 });
+    const timedout = await runtime.runPrompt(timeout.subagentId, { task: "NEVER", timeoutMs: 100, toolArgs: policy });
+    assert(timedout.status === "timedout" && timedout.errorMessage?.includes("子代理超时") && !timedout.errorMessage.includes("意外退出"), "timedout 与运行中崩溃仍区分");
+  } finally {
+    console.warn = originalWarn;
+    runtime.shutdownAll();
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+}
+{
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-sa-stderr-"));
+  const diagnostics = [];
+  const child = spawnRpcChild({ command: process.execPath, args: [join(here, "fixture-rpc-child.mjs")], cwd: baseDir, env: { ...process.env }, onStderr: (text) => diagnostics.push(text) });
+  let sawPendingReason = false;
+  child.child.stderr.on("data", () => {
+    if (child.stderrTail.endsWith("Error: fixture worker lost its transport 接続失败")) sawPendingReason = true;
+  });
+  try {
+    const ready = child.waitFor((ev) => ev.type === "response" && ev.command === "get_state", 5_000);
+    child.send({ type: "get_state" });
+    assert((await ready)?.success === true, "真实子进程先报告 ready");
+    child.send({ type: "prompt", message: "CRASH_STDERR" });
+    const exit = await child.exited;
+    assert(sawPendingReason, "进程关闭前可读取无换行 stderr 尾部，保留启动诊断能力");
+    assert(exit.code === 1 && child.stderrTail.endsWith("Error: fixture worker lost its transport 接続失败"), "exited 在 stderr 完整排空之后 resolve");
+    assert(child.stderrTail.length <= 4_000 && child.stderrTail.includes("[redacted]") && !child.stderrTail.includes("fixture-private-"), "RPC tail 有界并脱敏跨 chunk 凭据和超长行");
+    assert(diagnostics.length > 0 && diagnostics.every((text) => text.length <= 4_000 && !text.includes("fixture-private-")), "onStderr 不广播原始凭据或无界 chunk");
+  } finally {
+    child.kill();
+    await child.exited;
+    child.cancelWaiters();
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+}
+
+console.log("== spawn 失败仍结束等待 ==");
+{
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-sa-spawn-"));
+  const child = spawnRpcChild({ command: join(baseDir, "missing-worker"), args: [], cwd: baseDir, env: { ...process.env } });
+  let timer;
+  try {
+    const exit = await Promise.race([child.exited, new Promise((resolve) => { timer = setTimeout(() => resolve("TIMEOUT"), 5_000); })]);
+    assert(exit !== "TIMEOUT" && exit.code !== 0 && child.spawnError?.code === "ENOENT", "不存在的程序经 error / close 返回 ENOENT，不悬挂");
+  } finally {
+    clearTimeout(timer);
+    child.kill();
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+}
+
 console.log("== 父 Task 结束清理多个 child（cleanupTask） ==");
 {
   const baseDir = mkdtempSync(join(tmpdir(), "pi-sa-ct-"));

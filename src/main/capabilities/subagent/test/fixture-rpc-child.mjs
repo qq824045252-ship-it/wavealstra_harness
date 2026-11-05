@@ -87,6 +87,23 @@ function handle(cmd) {
       break;
     case "prompt": {
       const text = String(cmd.message ?? "");
+      if (text === "CRASH_STDERR") {
+        process.stderr.write("warning: diagnostic padding\n".repeat(300));
+        process.stderr.write("Authorization: Bear", () => {
+          setTimeout(() => {
+            process.stderr.write(
+              'er fixture-private-bearer\n{"api_key":"fixture-private-api-key","token":"fixture-private-json-token"}\n' +
+              "error: token=fixture-private-token\n" +
+              "https://user:" + "fixture-private-url@example.invalid/worker\n" +
+              [["-----BEGIN", "PRIVATE", "KEY-----"].join(" "), "fixture-private-pem", ["-----END", "PRIVATE", "KEY-----"].join(" "), ""].join("\n") +
+              "password=" + "fixture-private-long-secret".repeat(400) + "\n" +
+              "Error: fixture worker lost its transport 接続失败",
+              () => process.exit(1),
+            );
+          }, 20);
+        });
+        return;
+      }
       if (text.includes("CRASH")) {
         // 模拟子代理进程崩溃
         process.exit(7);
@@ -114,7 +131,9 @@ function handle(cmd) {
       setTimeout(() => {
         settledPrompts.push(text);
         appendTranscript("assistant", text);
-        process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\n");
+        process.stdout.write(JSON.stringify({ type: "agent_settled" }) + (text === "SETTLE_EXIT" ? "" : "\n"), () => {
+          if (text === "SETTLE_EXIT") process.exit(0);
+        });
       }, wait);
       break;
     }

@@ -458,11 +458,6 @@ export class SubagentRuntime {
         onCacheTrace: (metadata) => writeCacheRequestTrace({ ...metadata, source: 'subagent',
           sessionHash: createHash('sha256').update(record.subagentId).digest('hex'),
           parentSessionHash: createHash('sha256').update(record.scope).digest('hex') }),
-        onStderr: (text) => {
-          if (/error|warning|failed/i.test(text)) {
-            console.warn(`[subagent:${record.subagentId}] ${text}`);
-          }
-        },
       });
       const worker: Worker = {
         recordId: record.subagentId,
@@ -727,7 +722,8 @@ export class SubagentRuntime {
       if (race?.crashed) {
         // 子代理进程意外退出（非超时/中止）
         crashed = true;
-        crashInfo = `子代理进程意外退出（code=${String(race.code ?? "")} signal=${String(race.signal ?? "")}）`;
+        const tail = w.child.stderrTail.trim();
+        crashInfo = `子代理进程意外退出（code=${String(race.code ?? "")} signal=${String(race.signal ?? "")}）${tail ? `\n${tail}` : ""}`;
         this.workers.delete(recordId);
       } else if (race === null) {
         if (opts.signal?.aborted) cancelled = true;

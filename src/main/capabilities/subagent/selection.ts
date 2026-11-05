@@ -141,7 +141,7 @@ export function resolveSubagentSelection(input: SubagentSelectionInput): Subagen
       throw new Error(
         `Subagent model role "${DIVERSE_SUBAGENT_ROLE}" requires a parallel or chain fan-out; a single task would silently run one model.`,
       );
-    } else if ((roleCandidates = input.roles?.[reference]) !== undefined) {
+    } else if (input.roles && Object.hasOwn(input.roles, reference) && (roleCandidates = input.roles[reference]) !== undefined) {
       const picked = resolveRoleCandidate(roleCandidates, input.availableModels);
       if (!picked) {
         throw new Error(

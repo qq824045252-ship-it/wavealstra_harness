@@ -16,6 +16,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
+import { SubagentStderr } from "./stderr";
 
 export const RPC_KILL_GRACE_MS = 5_000;
 
@@ -70,8 +71,9 @@ export class JsonlLineBuffer {
 
 export interface RpcChild {
   readonly pid: number;
+  /** stdout/stderr 排空且最后一帧已派发后才 resolve。 */
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-  /** stderr 尾部（诊断用，最多 4KB） */
+  /** 已脱敏的 stderr 尾部，最多 4000 字符。 */
   readonly stderrTail: string;
   /** spawn 错误（ENOENT/EINVAL 等；无错误为 null） */
   readonly spawnError: Error | null;
@@ -110,7 +112,7 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
   const waiters: Array<{ pred: (e: RpcEvent) => boolean; start: number; resolve: (e: RpcEvent | null) => void; timer: NodeJS.Timeout }> = [];
   let settled = false;
   let killed = false;
-  let stderrTail = "";
+  const stderr = new SubagentStderr(opts.onStderr);
   let spawnError: Error | null = null;
 
   const lineBuffer = new JsonlLineBuffer();
@@ -119,7 +121,8 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
     if (!ev) return;
     handleEvent(ev);
   };
-  child.stdout?.on("data", (d) => lineBuffer.push(d.toString()));
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (text: string) => lineBuffer.push(text));
 
   function handleEvent(ev: RpcEvent): void {
     if (ev.type === 'mybuddy_cache_trace') {
@@ -217,13 +220,14 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
       if (done) return;
       done = true;
       settled = true;
+      stderr.flush();
+      lineBuffer.flush();
       resolve({ code, signal });
     };
     // 必须挂 error 监听：ENOENT 等 spawn 错误若无监听器会以未处理异常崩掉宿主进程
     child.on("close", (code, signal) => finish(code, signal));
     child.on("error", (err) => {
       spawnError = err;
-      finish(null, null);
     });
   });
 
@@ -253,13 +257,8 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
     }
   }
 
-  child.stderr?.on("data", (d: Buffer) => {
-    const text = d.toString().trim();
-    if (text) {
-      stderrTail = (stderrTail + text + "\n").slice(-4000);
-      opts.onStderr?.(text);
-    }
-  });
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (text: string) => stderr.push(text));
 
   return {
     pid: child.pid ?? -1,
@@ -274,7 +273,7 @@ export function spawnRpcChild(opts: RpcChildOptions): RpcChild {
     closeStdin,
     child,
     get stderrTail() {
-      return stderrTail;
+      return stderr.tail;
     },
     get spawnError() {
       return spawnError;

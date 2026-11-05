@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { createRequestTransport } from "../../agent/request-transport.mjs";
 import { EphemeralContextProjection } from "./vendor/context-projection.mjs";
 import { commandCodeProvider } from "./vendor/command-code.mjs";
+import { assertSubagentModelAllowed, parseSubagentExecutionPolicy } from "./vendor/execution-policy.mjs";
 import { CacheRequestTracer, sessionTraceBoundary } from "./vendor/cache-request-trace.mjs";
 
 const EXPECTED_PI_VERSION = "1.3.0";
@@ -131,6 +132,11 @@ pi.ModelRuntime.create = async (...args) => {
             await settings.reload();
             const errors = settings.drainErrors();
             if (errors.length) throw new Error(`子代理 Pi 设置读取失败：${errors[0].error.message}`);
+            const policyPath = join(pi.getAgentDir(), "subagent.json");
+            let subagentPolicy = {};
+            try { subagentPolicy = JSON.parse(readFileSync(policyPath, "utf8")); }
+            catch (error) { if (error.code !== "ENOENT") throw error; }
+            assertSubagentModelAllowed(parseSubagentExecutionPolicy(subagentPolicy), `${model.provider}/${model.id}`);
             const patterns = settings.getEnabledModels();
             if (patterns !== undefined) {
               const { scopedModels } = await pi.resolveModelScopeWithDiagnostics(patterns, runtime);

@@ -17,6 +17,7 @@
  *   subagent_steer  当前父 Task active 实例的引导（已结束 → 明确拒绝）
  */
 
+import { assertSubagentModelAllowed, DEFAULT_SUBAGENT_TIMEOUT_MS, filterSubagentModels, parseSubagentExecutionPolicy, resolveSubagentTimeout, type SubagentExecutionPolicy } from "../../../shared/subagent-execution-policy";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -85,7 +86,7 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
  * （任务少时仍是每任务 50KB，行为不变）。
  */
 const PER_PARALLEL_TOTAL_OUTPUT_CAP = 400 * 1024;
-export const DEFAULT_TASK_TIMEOUT_MS = 600_000;
+export const DEFAULT_TASK_TIMEOUT_MS = DEFAULT_SUBAGENT_TIMEOUT_MS;
 
 export const DEFAULT_CONFIRM_TOOLS = ["write", "edit"] as const;
 
@@ -140,6 +141,8 @@ export interface SingleResult {
   /** 命中的 subagent.json 角色别名与候选清单（未命中角色时为空） */
   modelRole?: string;
   roleCandidates?: string[];
+  timeoutMs?: number;
+  timeoutSource?: "settings" | "invocation";
 }
 
 interface SubagentDetails {
@@ -184,6 +187,7 @@ export function getResultOutput(result: SingleResult): string {
   const evidence = [
     result.resolvedModel ? `Resolved model: ${result.resolvedModel}${result.resolvedThinking ? `; thinking: ${result.resolvedThinking}` : ""}` : "",
     result.model ? `Observed model: ${result.model}` : "",
+    result.timeoutMs ? `Run time limit: ${result.timeoutMs / 1000}s (${result.timeoutSource})` : "",
     result.workspace?.kind === "worktree"
       ? `Retained worktree: ${result.workspace.cwd}\nBranch: ${result.workspace.branch}\nBase: ${result.workspace.baseCommit}\nReceipt: ${result.workspace.receiptPath}` : "",
     ...(result.diagnostics ?? []),
@@ -281,11 +285,10 @@ export function resolveParallelLimits(input?: { maxParallelTasks?: unknown; maxC
   return { maxParallelTasks, maxConcurrency };
 }
 
-interface SubagentConfig {
+interface SubagentConfig extends SubagentExecutionPolicy {
   agentScope?: AgentScope;
   confirmProjectAgents?: boolean;
   disabledAgents?: string[];
-  timeoutMs?: number;
   allowTools?: string[];
   denyTools?: string[];
   confirmTools?: string[];
@@ -300,23 +303,6 @@ interface SubagentConfig {
   maxParallelTasks?: number;
   /** subagent.json 可选：同时运行的 worker 数（只能 ≤ 100 且 ≤ maxParallelTasks） */
   maxConcurrency?: number;
-  /** subagent.json 可选：角色名 → 候选模型（按优先级）；产品侧解析，不依赖外部脚本 */
-  roles?: Record<string, string[]>;
-}
-
-function parseRoleModelConfig(value: unknown): Record<string, string[]> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const roles: Record<string, string[]> = {};
-  for (const [name, candidates] of Object.entries(value as Record<string, unknown>)) {
-    const key = name.trim();
-    if (!key || !Array.isArray(candidates)) continue;
-    const list = candidates
-      .filter((entry): entry is string => typeof entry === "string")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    if (list.length > 0) roles[key] = list;
-  }
-  return Object.keys(roles).length > 0 ? roles : undefined;
 }
 
 function loadSubagentConfig(): SubagentConfig {
@@ -325,17 +311,14 @@ function loadSubagentConfig(): SubagentConfig {
     const scope = raw.agentScope;
     const confirm = raw.confirmProjectAgents;
     const disabled = raw.disabledAgents;
-    const timeout = raw.timeoutMs;
+    const execution = parseSubagentExecutionPolicy(raw);
     const strList = (v: unknown): string[] | undefined =>
       Array.isArray(v) ? v.filter((d): d is string => typeof d === "string") : undefined;
     return {
       agentScope: scope === "project" || scope === "both" || scope === "user" ? scope : undefined,
       confirmProjectAgents: typeof confirm === "boolean" ? confirm : undefined,
       disabledAgents: strList(disabled),
-      timeoutMs:
-        typeof timeout === "number" && Number.isFinite(timeout) && timeout >= 1000
-          ? Math.min(Math.floor(timeout), 3_600_000)
-          : undefined,
+      ...execution,
       allowTools: strList(raw.allowTools),
       denyTools: strList(raw.denyTools),
       confirmTools: strList(raw.confirmTools),
@@ -353,9 +336,9 @@ function loadSubagentConfig(): SubagentConfig {
       // 原样保留，交给 resolveParallelLimits 统一做上限与交叉约束（并发 ≤ 任务数）
       maxParallelTasks: typeof raw.maxParallelTasks === "number" ? raw.maxParallelTasks : undefined,
       maxConcurrency: typeof raw.maxConcurrency === "number" ? raw.maxConcurrency : undefined,
-      roles: parseRoleModelConfig(raw.roles),
     };
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     return {};
   }
 }
@@ -396,6 +379,7 @@ async function validateSubagentModel(modelId: string | undefined, cwd: string): 
   const runtime = hostModelRuntime;
   const model = runtime?.getModels().find((candidate) => `${candidate.provider}/${candidate.id}` === modelId);
   if (!runtime || !model) throw new Error("Subagent 缺少已准入的 Pi 模型");
+  assertSubagentModelAllowed(loadSubagentConfig(), `${model.provider}/${model.id}`);
   await assertModelAdmission(runtime, SettingsManager.create(cwd, getAgentDirCompat()), model);
 }
 
@@ -410,14 +394,14 @@ async function scopedSubagentModels(cwd: string) {
 
 
 function subagentModelOptions(models: Awaited<ReturnType<typeof scopedSubagentModels>>["models"]): SubagentModelOptionLike[] {
-  return models.map((model) => ({
+  return filterSubagentModels(models.map((model) => ({
     id: `${model.provider}/${model.id}`,
     metadata: {
       source: "pi" as const,
       reasoning: model.reasoning,
       reasoningOptions: [{ type: "effort" as const, values: getSupportedThinkingLevels(model) }],
     },
-  }));
+  })), loadSubagentConfig());
 }
 
 async function resolveDiverseAssignments(input: {
@@ -805,7 +789,7 @@ const SubagentParams = Type.Object({
     Type.String({ description: "Persistent subagent id: reuse an existing one (same session/history) or create with this id" }),
   ),
   timeout_ms: Type.Optional(
-    Type.Integer({ description: "Per-task timeout in ms (1s..3600s). Default: config timeoutMs or 600s.", minimum: 1000, maximum: 3_600_000 }),
+    Type.Integer({ description: "Requested total run time in ms (1s..3600s). Honored only if Settings > Models > Subagent execution limits allows per-call overrides. Fixed settings take precedence; default 600s.", minimum: 1000, maximum: 3_600_000 }),
   ),
 });
 
@@ -836,7 +820,7 @@ async function runDelegatedStep(params: {
   config: SubagentConfig;
   hostPermissionMode: "default" | "readonly" | "auto";
   parentDepth: number;
-  timeoutMs: number;
+  timeout: ReturnType<typeof resolveSubagentTimeout>;
   signal: AbortSignal | undefined;
   onUpdate: ((partial: AgentToolResult<SubagentDetails>) => void) | undefined;
   makeDetails: (results: SingleResult[]) => SubagentDetails;
@@ -845,7 +829,8 @@ async function runDelegatedStep(params: {
   parentModelId?: string;
   parallel?: boolean;
 }): Promise<SingleResult> {
-  const { runtime, agent, task, cwd, subagentId, step, config, hostPermissionMode, parentDepth, timeoutMs, signal, onUpdate, makeDetails, taskScope } = params;
+  const { runtime, agent, task, cwd, subagentId, step, config, hostPermissionMode, parentDepth, signal, onUpdate, makeDetails, taskScope } = params;
+  const { timeoutMs } = params.timeout;
   let workspace: PreparedSubagentWorkspace | undefined;
   let promptFile: string | null = null;
   let instanceId = "";
@@ -945,6 +930,7 @@ async function runDelegatedStep(params: {
           workspace,
           resolvedModel,
           resolvedThinking,
+          ...params.timeout,
           step,
         };
         onUpdate({
@@ -955,6 +941,7 @@ async function runDelegatedStep(params: {
     });
 
     const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step });
+    Object.assign(result, params.timeout);
     result.workspace = workspace;
     result.requestedModel = params.execution?.model;
     result.resolvedModel = resolvedModel;
@@ -968,7 +955,7 @@ async function runDelegatedStep(params: {
     return {
       agent: agent.name, agentSource: agent.source, task, step,
       subagentId: instanceId, status: signal?.aborted ? "cancelled" : "failed", exitCode: 1,
-      messages: [], stderr: message, errorMessage: message, workspace,
+      messages: [], stderr: message, errorMessage: message, workspace, ...params.timeout,
       requestedModel: params.execution?.model,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
     };
@@ -1012,14 +999,15 @@ export default function (pi: any) {
       "isolation:auto creates separate retained Git worktrees for parallel write-capable tasks. A clean committed repository is required; dirty or non-Git input fails before launch, without snapshotting. isolation:shared explicitly opts into shared cwd. Worktrees and branches are never automatically merged or deleted; result text/details contain receipts after success or failure. subagent_list shows active workers only; subagent_steer guides active work without changing its selected model.",
       `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")} and ${path.join(getAgentDirCompat(), "plugins", "agents")}).`,
       `To enable project-local agents in ${getConfigDirNameCompat()}/agents, set agentScope: "both" (or "project").`,
-      "Per-task timeout: param timeout_ms (1..3600s) > subagent.json timeoutMs > 600s default; on timeout the process is aborted then killed.",
+      "Model choices must satisfy the subagent allowed-model list in Settings > Models > Subagent execution limits, including explicit, parent, role, and diverse selections.",
+      "Total run time uses fixed settings (default 600s). timeout_ms is honored only when timeoutPolicy=allow-override; on timeout the worker is aborted then killed. Results report the effective limit and source.",
     ].join(" "),
     parameters: SubagentParams,
 
     async execute(_toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
       const config = loadSubagentConfig();
       const hostPermissionMode = loadHostPermissionMode();
-      const taskTimeoutMs = params.timeout_ms ?? config.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
+      const timeout = resolveSubagentTimeout(config, params.timeout_ms);
       const agentScope: AgentScope = params.agentScope ?? config.agentScope ?? "user";
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const disabled = new Set(config.disabledAgents ?? []);
@@ -1143,7 +1131,7 @@ export default function (pi: any) {
             : undefined;
           const result = await runDelegatedStep({
             runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
-            config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate: chainUpdate,
+            config, hostPermissionMode, parentDepth, timeout, signal, onUpdate: chainUpdate,
             makeDetails: makeDetailsFn("chain"), taskScope,
             execution: {
               ...params,
@@ -1212,7 +1200,7 @@ export default function (pi: any) {
           }
           const result = await runDelegatedStep({
             runtime, agent, task: t.task, cwd: t.cwd ?? ctx.cwd, subagentId: t.subagentId, step: undefined,
-            config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal,
+            config, hostPermissionMode, parentDepth, timeout, signal,
             onUpdate: (partial) => {
               if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
             },
@@ -1254,7 +1242,7 @@ export default function (pi: any) {
         }
         const result = await runDelegatedStep({
           runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,
-          config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate,
+          config, hostPermissionMode, parentDepth, timeout, signal, onUpdate,
           makeDetails: makeDetailsFn("single"), taskScope, execution: params, parentModelId,
         });
         // 结果文本携带 instanceId（主对话 chip 可据此打开临时 Chat；实例在返回后已销毁）

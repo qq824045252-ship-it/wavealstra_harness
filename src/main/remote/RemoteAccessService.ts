@@ -157,7 +157,7 @@ export class RemoteAccessService {
           }
           const subagent = this.agent.getSubagentConfig();
           if (subagent.defaultModel && !selectableIds.has(subagent.defaultModel)) {
-            this.agent.saveSubagentConfig({ ...subagent, defaultModel: undefined, defaultReasoning: undefined, globalDefaultModelId: defaultId || undefined });
+            this.agent.saveSubagentConfig({ expectedRevision: subagent.revision, defaultModel: undefined, defaultReasoning: undefined });
           }
         }
       } finally {

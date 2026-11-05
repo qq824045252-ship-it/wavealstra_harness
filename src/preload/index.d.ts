@@ -84,6 +84,7 @@ import type {
   SkillImprovementGenerateRequest,
   SkillPackageValidationDto,
   SubagentConfigDto,
+  SubagentConfigPatch,
   WebSearchConfigDto,
   SearchProviderKeyUsageDto,
   McpDiscoveryDto,
@@ -330,7 +331,7 @@ export interface PreloadApi {
     saveBuiltinCredential: (request: SaveBuiltinCredentialRequest) => Promise<BuiltinCapabilitiesSnapshotDto>;
     testBuiltinCapability: (id: BuiltinCapabilityId) => Promise<TestBuiltinCapabilityResultDto>;
     getSubagentConfig: () => Promise<SubagentConfigDto>;
-    saveSubagentConfig: (config: SubagentConfigDto) => Promise<SubagentConfigDto>;
+    saveSubagentConfig: (config: SubagentConfigPatch) => Promise<SubagentConfigDto>;
     getContextUsage: (taskId: string) => Promise<ContextUsageDto | null>;
     loadTaskHistory: (taskId: string) => Promise<TaskHistoryDto>;
     listLoginProviders: () => Promise<import("../shared/agent-ipc").LoginProviderDto[]>;

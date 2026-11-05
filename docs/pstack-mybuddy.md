@@ -58,6 +58,19 @@ When `reasoning` is omitted, a saved subagent reasoning transport can apply if i
 
 The schema lives in [index.ts](../src/main/capabilities/subagent/index.ts). Selection, role resolution, and diverse assignment live in [selection.ts](../src/main/capabilities/subagent/selection.ts). Native preference validation lives in [subagent-model-config.ts](../src/shared/subagent-model-config.ts).
 
+## Subagent execution settings
+
+Open **Settings → Models → Subagent execution limits**. These controls save to `~/.mybuddy/subagent.json` and apply to subsequent runs without restarting the app. A running app built before these controls were introduced needs a normal restart into the updated build.
+
+- **Limit subagent models** intersects the checked list with enabled models in the app and workspace. An unset `allowedModels` permits every model in that scope; `[]` blocks all subagents. The limit applies to explicit choices, parent inheritance, role defaults, role candidates, and diverse panels. Workers recheck it before requests. The default-model dropdown alone is not a model restriction.
+- **Role candidates** edits the ordered `roles` lists. A provider error ends the run; it does not try a different candidate. `diverse` requires enough distinct allowed models for the panel.
+- **Total run limit in seconds** stores `timeoutMs`. The default is 600 seconds, and valid settings range from 1 to 3600 seconds. The limit starts when the ready worker receives its task and includes model calls and tool execution. It is not an idle timeout and does not reset on progress.
+- **Fixed at this value** is the default `timeoutPolicy`. It ignores per-call `timeout_ms`. **Callers may override each run** stores `allow-override` and permits that parameter to replace the configured duration. Each result reports `timeoutMs` and `timeoutSource`.
+
+Settings saves submit only changed fields, reject stale revisions, and atomically replace the file. Invalid configuration fails explicitly instead of removing restrictions. A runtime worker crash returns a bounded, redacted stderr tail with its exit code. API errors, cancellations, and timeouts remain distinct results.
+
+The shared contract is [subagent-execution-policy.ts](../src/shared/subagent-execution-policy.ts). [subagent-settings-test.ts](../scripts/subagent-settings-test.ts) checks selection and duration policy. [validate-subagent-settings-package.cjs](../scripts/validate-subagent-settings-package.cjs) drives the actual packaged settings page, saves and reloads controls, rejects stale writes, and verifies real worker requests against a local provider.
+
 ## Subagent workspace isolation
 
 `isolation` accepts these values.

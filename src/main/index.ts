@@ -57,6 +57,7 @@ import type {
   EnhancePromptRequest,
   SpaceDto,
   SubagentConfigDto,
+  SubagentConfigPatch,
   SaveBuiltinCredentialRequest,
   SaveBuiltinCapabilitySettingsRequest,
   WebSearchConfigDto,
@@ -1308,7 +1309,7 @@ function registerIpc(): void {
     agentService.testBuiltinCapability(id),
   );
   ipcMain.handle(AgentIpc.getSubagentConfig, () => agentService.getSubagentConfig());
-  ipcMain.handle(AgentIpc.saveSubagentConfig, (_e, config: SubagentConfigDto) =>
+  ipcMain.handle(AgentIpc.saveSubagentConfig, (_e, config: SubagentConfigPatch) =>
     agentService.saveSubagentConfig(config),
   );
   ipcMain.handle(AgentIpc.getContextUsage, (_e, taskId: string) =>
