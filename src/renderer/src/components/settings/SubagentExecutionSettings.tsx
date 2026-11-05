@@ -13,7 +13,7 @@ interface Draft {
   allowedModels: string[];
   timeoutSeconds: string;
   allowOverride: boolean;
-  roles: Array<{ name: string; text: string }>;
+  roles: Array<{ name: string; candidates: string[] }>;
 }
 
 function draftFrom(config: SubagentConfigDto): Draft {
@@ -25,22 +25,12 @@ function draftFrom(config: SubagentConfigDto): Draft {
     allowedModels: Array.isArray(config.allowedModels) ? [...config.allowedModels] : [],
     timeoutSeconds: String(seconds),
     allowOverride: config.timeoutPolicy === "allow-override",
-    roles: Object.entries(config.roles ?? {}).map(([name, ids]) => ({ name, text: ids.join("\n") })),
+    roles: Object.entries(config.roles ?? {}).map(([name, ids]) => ({ name, candidates: [...new Set(ids.map(id => id.trim()).filter(Boolean))] })),
   };
 }
 
-/** Candidate order is priority order, so the parsed list keeps document order. */
-function candidatesOf(text: string): string[] {
-  const seen = new Set<string>();
-  for (const line of text.split(/\r?\n/)) {
-    const id = line.trim();
-    if (id) seen.add(id);
-  }
-  return [...seen];
-}
-
 function rolesOf(draft: Draft): Record<string, string[]> {
-  return Object.fromEntries(draft.roles.map(role => [role.name, candidatesOf(role.text)]));
+  return Object.fromEntries(draft.roles.map(role => [role.name, role.candidates]));
 }
 
 function draftKey(draft: Draft): string {
@@ -115,7 +105,7 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
   const addRole = (): void => {
     const name = newRole.trim();
     if (!name || draft.roles.some((role) => role.name === name)) return;
-    patch({ roles: [...draft.roles, { name, text: "" }] });
+    patch({ roles: [...draft.roles, { name, candidates: [] }] });
     setNewRole("");
   };
 
@@ -195,28 +185,51 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
         <div className="subagent-policy-roles">
           <div className="subagent-policy-roles-head">
             <strong>角色候选模型</strong>
-            <small>每行填写一个模型 ID，按顺序检查模型是否已启用且被允许。服务商报错会终止运行；diverse 角色会为至少两个任务分配不同模型。</small>
+            <small>按顺序检查候选模型是否已启用且被允许。服务商报错会终止运行；diverse 角色会为至少两个任务分配不同模型。</small>
           </div>
           {draft.roles.map((role, index) => {
-            const candidates = candidatesOf(role.text);
-            const unknown = candidates.filter((id) => !knownIds.has(id));
+            const available = models.filter((model) => !role.candidates.includes(model.id));
+            const updateCandidates = (candidates: string[]): void => patch({
+              roles: draft.roles.map((item, at) => at === index ? { ...item, candidates } : item),
+            });
             return (
               <div key={role.name} className="subagent-policy-role">
                 <div className="subagent-policy-role-head">
                   <span className="mono-path">{role.name}</span>
-                  <small>{candidates.length} 个候选模型</small>
+                  <small>{role.candidates.length} 个候选模型</small>
                   <button className="btn" type="button" disabled={saving}
-                    onClick={() => patch({ roles: draft.roles.filter((_, item) => item !== index) })}>移除</button>
+                    onClick={() => patch({ roles: draft.roles.filter((_, item) => item !== index) })}>移除角色</button>
                 </div>
-                <textarea className="settings-input full subagent-policy-textarea" rows={3} spellCheck={false}
-                  disabled={saving} aria-label={`${role.name} 的候选模型`} placeholder={"每行一个模型 ID，例如：\nprovider/model-id"}
-                  value={role.text}
-                  onChange={(event) => patch({
-                    roles: draft.roles.map((item, at) => (at === index ? { ...item, text: event.target.value } : item)),
-                  })} />
-                {unknown.length > 0 && (
-                  <small className="subagent-policy-warn">当前设备不可用： {unknown.join(", ")}</small>
-                )}
+                {role.candidates.length > 0 && <ol className="subagent-policy-candidates">
+                  {role.candidates.map((id, candidateIndex) => {
+                    const model = models.find((item) => item.id === id);
+                    const excluded = draft.restricted && !draft.allowedModels.includes(id);
+                    const move = (direction: -1 | 1): void => {
+                      const next = [...role.candidates];
+                      const target = candidateIndex + direction;
+                      [next[candidateIndex], next[target]] = [next[target], next[candidateIndex]];
+                      updateCandidates(next);
+                    };
+                    return <li key={id} className="subagent-policy-candidate">
+                      <div className="subagent-policy-candidate-label">
+                        <span>{model?.name ?? id}</span>
+                        {model && <small>{id}</small>}
+                        {!model && <small className="subagent-policy-warn">当前不可用</small>}
+                        {excluded && <small className="subagent-policy-warn">不在允许列表中</small>}
+                      </div>
+                      <div className="subagent-policy-candidate-actions">
+                        <button className="btn" type="button" disabled={saving || candidateIndex === 0} aria-label={`上移 ${role.name} 的 ${id}`} onClick={() => move(-1)}>上移</button>
+                        <button className="btn" type="button" disabled={saving || candidateIndex === role.candidates.length - 1} aria-label={`下移 ${role.name} 的 ${id}`} onClick={() => move(1)}>下移</button>
+                        <button className="btn" type="button" disabled={saving} aria-label={`移除 ${role.name} 的 ${id}`} onClick={() => updateCandidates(role.candidates.filter((_, at) => at !== candidateIndex))}>删除</button>
+                      </div>
+                    </li>;
+                  })}
+                </ol>}
+                <select className="settings-input subagent-policy-candidate-select" aria-label={`为 ${role.name} 添加候选模型`} value="" disabled={saving || available.length === 0}
+                  onChange={(event) => { if (event.target.value) updateCandidates([...role.candidates, event.target.value]); }}>
+                  <option value="">{available.length ? "选择模型并添加" : "没有更多可添加的模型"}</option>
+                  {available.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}{draft.restricted && !draft.allowedModels.includes(model.id) ? "（不在允许列表中）" : ""}</option>)}
+                </select>
               </div>
             );
           })}
