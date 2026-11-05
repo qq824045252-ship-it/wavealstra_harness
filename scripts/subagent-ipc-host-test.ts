@@ -63,15 +63,21 @@ async function main(): Promise<void> {
 
   console.log("== backend 接管 ==");
   slot.setBackend({
-    active: () => [{ subagentId: "sa-1" }],
-    transcript: (id: string) => ({ record: { subagentId: id }, entries: [1], ended: false }),
+    active: () => [{ subagentId: "sa-1", displayName: "皮卡丘" }],
+    transcript: (id: string) => ({ record: { subagentId: id, displayName: "皮卡丘" }, entries: [1], ended: false }),
     steer: async () => ({ ok: true, delivered: "rpc-steer", message: "ok" }),
     cancel: async () => ({ ok: true, message: "cancelled" }),
   });
-  const active = handleSubagentActive() as Array<{ subagentId: string }>;
+  const active = handleSubagentActive() as Array<{ subagentId: string; displayName?: string }>;
   assert(active[0]?.subagentId === "sa-1", "active 委托 backend");
-  const live = handleSubagentTranscript("sa-1") as { ended: boolean; entries: unknown[] };
+  assert(active[0]?.displayName === "皮卡丘", "active DTO 透传 displayName");
+  const live = handleSubagentTranscript("sa-1") as {
+    ended: boolean;
+    entries: unknown[];
+    record?: { displayName?: string } | null;
+  };
   assert(live.ended === false && live.entries.length === 1, "transcript 委托 backend");
+  assert(live.record?.displayName === "皮卡丘", "transcript DTO 透传 displayName");
   const steered = (await handleSubagentSteer("sa-1", "x")) as { ok: boolean };
   assert(steered.ok === true, "steer 委托 backend");
   const cancelled = (await handleSubagentCancel("sa-1")) as { ok: boolean };

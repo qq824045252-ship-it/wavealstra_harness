@@ -45,6 +45,8 @@ export interface SubagentRecord {
   /** 父 Task 作用域（pi 会话 sessionId；MyBuddy task↔session 1:1）——跨 task 禁止复用 */
   scope: string;
   role: string;
+  /** 可选显示名（纯展示；允许中文；不参与唯一性、文件名、worker 参数） */
+  displayName?: string;
   roleSource: "user" | "project" | "unknown";
   roleDescription: string;
   project: string;
@@ -88,6 +90,7 @@ export function createRecord(input: {
   subagentId: string;
   scope: string;
   role: string;
+  displayName?: string;
   roleSource: SubagentRecord["roleSource"];
   roleDescription: string;
   project: string;
@@ -100,6 +103,7 @@ export function createRecord(input: {
     subagentId: input.subagentId,
     scope: input.scope,
     role: input.role,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
     roleSource: input.roleSource,
     roleDescription: input.roleDescription,
     project: input.project,

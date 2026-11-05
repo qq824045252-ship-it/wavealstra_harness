@@ -177,6 +177,75 @@ console.log("== 完成态子代理（task 内短暂记录） ==");
   assert(buildDoneSubagents([]).length === 0, "空消息 → 空");
 }
 
+console.log("== displayName（显示层字段） ==");
+{
+  // 运行中：displayName 与 role 并存，渲染层优先 displayName
+  const running = buildRunningSubagents(
+    [subagentDto({ subagentId: "sa-dn-1", role: "scout", displayName: "皮卡丘" })],
+    NOW,
+  );
+  assert(running[0].displayName === "皮卡丘" && running[0].role === "scout", "运行中 displayName 与 role 并存");
+  const runningNoName = buildRunningSubagents([subagentDto({ subagentId: "sa-dn-2", role: "scout" })], NOW);
+  assert(runningNoName[0].displayName === undefined, "无 displayName → undefined（渲染回退 role）");
+
+  // 完成态：从文本桥解析；摘要不得泄漏标记行
+  const done = buildDoneSubagents([
+    msg({
+      id: "dn-1",
+      blocks: [
+        {
+          type: "tool",
+          toolCall: {
+            id: "tc-dn",
+            tool: "subagent",
+            summary: "subagent",
+            status: "success" as const,
+            output: `\n\n> subagent-name: 皮卡丘\n> subagent: sa-dn-3（本次任务内临时实例，已结束）\n\n结果正文`,
+          },
+        },
+      ],
+    }),
+  ]);
+  assert(done[0].displayName === "皮卡丘", `完成态解析 displayName（${done[0].displayName}）`);
+  assert(done[0].summary === "结果正文", `摘要不包含标记行（${done[0].summary}）`);
+  assert(done[0].id === "sa-dn-3", "id 解析不受名字行影响");
+
+  // 后一次调用没有名字 → 保留旧显示名
+  const doneTwo = buildDoneSubagents([
+    msg({
+      id: "dn-2",
+      blocks: [
+        {
+          type: "tool",
+          toolCall: { id: "t1", tool: "subagent", summary: "s", status: "success" as const, output: "> subagent-name: 旧名\n> subagent: sa-dn-4\n正文一" },
+        },
+        { type: "tool", toolCall: { id: "t2", tool: "subagent", summary: "s", status: "success" as const, output: "> subagent: sa-dn-4\n正文二" } },
+      ],
+    }),
+  ]);
+  assert(doneTwo[0].displayName === "旧名", "无新名字的后续调用保留旧显示名");
+
+  // 并行输出：header 行后带名字行
+  const parallel = buildDoneSubagents([
+    msg({
+      id: "dn-3",
+      blocks: [
+        {
+          type: "tool",
+          toolCall: {
+            id: "t3",
+            tool: "subagent",
+            summary: "s",
+            status: "success" as const,
+            output: "### [scout] completed (id: sa-dn-5)\n> subagent-name: 皮卡丘\n\n结果",
+          },
+        },
+      ],
+    }),
+  ]);
+  assert(parallel[0].id === "sa-dn-5" && parallel[0].displayName === "皮卡丘", "并行 header 后的名字行也能解析");
+}
+
 console.log("== 后台任务（终端会话 + bash） ==");
 {
   const termRunning: TerminalSessionInfo = {

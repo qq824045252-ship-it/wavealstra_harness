@@ -343,6 +343,8 @@ export const SubagentIpc = {
 export interface SubagentSummaryDto {
   subagentId: string;
   role: string;
+  /** 可选显示名（纯展示，允许中文；不参与身份/唯一性/文件名） */
+  displayName?: string;
   roleSource: "user" | "project" | "unknown";
   roleDescription: string;
   project: string;

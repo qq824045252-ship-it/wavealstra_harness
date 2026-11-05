@@ -18,7 +18,7 @@
 import type { ChatMessage } from "@/types";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { TerminalSessionInfo } from "@shared/terminal-ipc";
-import { extractSubagentIdFromToolResult } from "@shared/subagent-model-config";
+import { extractSubagentDisplayNameFromToolResult, extractSubagentIdFromToolResult } from "@shared/subagent-model-config";
 import {
   buildModelBadge,
   parseModelEvidenceFromOutput,
@@ -43,6 +43,8 @@ export interface MainAgentVm {
 export interface RunningSubagentVm {
   id: string;
   role: string;
+  /** 可选显示名（允许中文）；有则优先展示，id 仍用于操作 */
+  displayName?: string;
   work: string;
   elapsedMs: number;
   /** 该实例真正使用的模型（actual/resolved 记录值；拿不到则不显示） */
@@ -54,6 +56,8 @@ export type DoneSubagentState = "completed" | "failed" | "cancelled";
 export interface DoneSubagentVm {
   id: string;
   state: DoneSubagentState;
+  /** 可选显示名（从工具结果文本解析；允许中文） */
+  displayName?: string;
   /** 结果摘要（finalText/错误首行截断） */
   summary: string;
   /** 该实例在本 task 内的工具调用次数（去重后的聚合计数） */
@@ -176,6 +180,7 @@ export function buildRunningSubagents(
     .map((d) => ({
       id: d.subagentId,
       role: readableRole(d.subagentId, d.role),
+      displayName: typeof d.displayName === "string" && d.displayName.trim() ? d.displayName.trim() : undefined,
       work: oneLine(d.lastTask || (d.status === "running" ? "运行中" : "等待工具调用"), 56) || "运行中",
       elapsedMs: now - (d.lastPromptAt ?? d.createdAt ?? now),
       model: subagentModelBadge(d, modelNames),
@@ -210,7 +215,15 @@ export function buildDoneSubagents(
 ): DoneSubagentVm[] {
   const map = new Map<
     string,
-    { state: DoneSubagentState; summary: string; count: number; task?: string; detail?: string; model?: ModelBadge }
+    {
+      state: DoneSubagentState;
+      summary: string;
+      count: number;
+      task?: string;
+      detail?: string;
+      model?: ModelBadge;
+      displayName?: string;
+    }
   >();
   for (const msg of messages) {
     for (const block of msg.blocks ?? []) {
@@ -219,6 +232,7 @@ export function buildDoneSubagents(
       if (tc.status === "pending_approval" || tc.status === "running") continue; // 未终结：运行中由 IPC 侧覆盖
       const id = extractSubagentId(tc.output, tc.detail);
       if (!id) continue;
+      const displayName = extractSubagentDisplayNameFromToolResult("subagent", tc.output, tc.detail);
       const state: DoneSubagentState =
         tc.status === "success" ? "completed" : tc.status === "error" ? "failed" : "cancelled";
       const prev = map.get(id);
@@ -238,12 +252,14 @@ export function buildDoneSubagents(
         task: task || prev?.task,
         detail: detail || prev?.detail,
         model,
+        displayName: displayName ?? prev?.displayName,
       });
     }
   }
   return [...map.entries()].map(([id, v]) => ({
     id,
     state: v.state,
+    displayName: v.displayName,
     summary: v.summary,
     count: v.count,
     task: v.task,
@@ -261,7 +277,7 @@ export function extractSubagentId(output: string | undefined, detail: string | u
 function pickSummary(tc: { output?: string }, state: DoneSubagentState, prev?: string): string {
   const output = (tc.output ?? "").trim();
   if (output) {
-    const lines = output.split("\n").filter((l) => !/^\s*>\s*subagent:/.test(l) && l.trim());
+    const lines = output.split("\n").filter((l) => !/^\s*>\s*(?:subagent-name|subagent):/.test(l) && l.trim());
     const last = lines.length > 0 ? lines[lines.length - 1] : "";
     if (last) return oneLine(last, 64);
   }

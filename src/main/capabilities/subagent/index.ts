@@ -44,7 +44,10 @@ import {
 } from "./selection.ts";
 import { prepareSubagentWorkspace, type PreparedSubagentWorkspace, type SubagentIsolation } from "./worktree.ts";
 import type { ModelReasoningPreferenceDto } from "../../../shared/model-metadata";
-import type { SubagentModelOptionLike } from "../../../shared/subagent-model-config";
+import {
+  normalizeSubagentDisplayName,
+  type SubagentModelOptionLike,
+} from "../../../shared/subagent-model-config";
 import { READONLY_TOOLS } from "./policy.ts";
 import {
   buildContextBlock,
@@ -122,6 +125,8 @@ export interface SingleResult {
   agentSource: "user" | "project" | "unknown";
   task: string;
   subagentId: string;
+  /** 可选显示名（纯展示；允许中文；不参与身份/文件名/worker 参数） */
+  displayName?: string;
   status: SubagentStatus;
   exitCode: number;
   messages: MessageLike[];
@@ -154,7 +159,7 @@ interface SubagentDetails {
 
 function outcomeToResult(
   outcome: RunOutcome,
-  base: { agent: string; agentSource: SingleResult["agentSource"]; task: string; step?: number },
+  base: { agent: string; agentSource: SingleResult["agentSource"]; task: string; step?: number; displayName?: string },
 ): SingleResult {
   const failed = outcome.status !== "completed";
   return {
@@ -162,6 +167,7 @@ function outcomeToResult(
     agentSource: base.agentSource,
     task: base.task,
     subagentId: outcome.subagentId,
+    displayName: base.displayName,
     status: outcome.status,
     exitCode: failed ? 1 : 0,
     messages: outcome.messages,
@@ -178,6 +184,15 @@ function outcomeToResult(
 
 export function isFailedResult(result: SingleResult): boolean {
   return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+/**
+ * single 模式结果尾部的 id / 显示名标记行。
+ * 名字行走同一条文本桥，但只在实例真实存在时输出（避免失败在创建前留下孤立标记）。
+ */
+export function buildSubagentIdLine(result: Pick<SingleResult, "subagentId" | "displayName">): string {
+  const nameLine = result.displayName && result.subagentId ? `> subagent-name: ${result.displayName}\n` : "";
+  return `\n\n${nameLine}> subagent: ${result.subagentId}（本次任务内临时实例，已结束）`;
 }
 
 export function getResultOutput(result: SingleResult): string {
@@ -696,6 +711,7 @@ function toSummaryDto(r: SubagentRecord): Record<string, unknown> {
   return {
     subagentId: r.subagentId,
     role: r.role,
+    displayName: r.displayName,
     roleSource: r.roleSource,
     roleDescription: r.roleDescription,
     project: r.project,
@@ -753,12 +769,25 @@ interface DelegatedExecutionOptions {
   isolation?: SubagentIsolation;
 }
 
+/**
+ * 显示名参数（单任务 / tasks[] / chain[] 三处共用）。
+ * 纯展示字段：允许中文；不参与身份、唯一性、文件名或 worker 参数。
+ */
+const DisplayNameField = Type.Optional(
+  Type.String({
+    // 不做 minLength：空串在归一化阶段变成 undefined（回退 role/id），不因空值拒绝整次委派。
+    maxLength: 200,
+    description: "Display-only name shown in the subagent list and panel (any language, e.g. 皮卡丘). Identity stays the ASCII subagentId; duplicates allowed; steering still uses subagentId.",
+  }),
+);
+
 const TaskItem = Type.Object({
   ...ExecutionFields,
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task handoff: goal; allowed file scope; constraints; known facts with source paths; acceptance commands/conditions; artifact paths. Return conclusion, changed files, execution evidence, unverified items" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
+  displayName: DisplayNameField,
 });
 
 const ChainItem = Type.Object({
@@ -767,6 +796,7 @@ const ChainItem = Type.Object({
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
+  displayName: DisplayNameField,
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -788,6 +818,7 @@ const SubagentParams = Type.Object({
   subagentId: Type.Optional(
     Type.String({ description: "Persistent subagent id: reuse an existing one (same session/history) or create with this id" }),
   ),
+  displayName: DisplayNameField,
   timeout_ms: Type.Optional(
     Type.Integer({ description: "Requested total run time in ms (1s..3600s). Honored only if Settings > Models > Subagent execution limits allows per-call overrides. Fixed settings take precedence; default 600s.", minimum: 1000, maximum: 3_600_000 }),
   ),
@@ -816,6 +847,8 @@ async function runDelegatedStep(params: {
   task: string;
   cwd: string | undefined;
   subagentId: string | undefined;
+  /** 可选显示名（原始输入，函数内归一化） */
+  displayName?: string;
   step: number | undefined;
   config: SubagentConfig;
   hostPermissionMode: "default" | "readonly" | "auto";
@@ -830,6 +863,7 @@ async function runDelegatedStep(params: {
   parallel?: boolean;
 }): Promise<SingleResult> {
   const { runtime, agent, task, cwd, subagentId, step, config, hostPermissionMode, parentDepth, signal, onUpdate, makeDetails, taskScope } = params;
+  const displayName = normalizeSubagentDisplayName(params.displayName);
   const { timeoutMs } = params.timeout;
   let workspace: PreparedSubagentWorkspace | undefined;
   let promptFile: string | null = null;
@@ -897,7 +931,7 @@ async function runDelegatedStep(params: {
     const workerTask = appendWorkspaceNotes(task, workspaceNotesForScope?.(taskScope) ?? "");
     signal?.throwIfAborted();
     const record = runtime.ensureSubagent({
-      scope: taskScope, subagentId,
+      scope: taskScope, subagentId, displayName,
       role: agent.name, roleSource: agent.source, roleDescription: agent.description,
       project: workspace.cwd, sourceProject: sourceCwd,
       depth: parentDepth + 1, model: resolvedModel,
@@ -921,6 +955,7 @@ async function runDelegatedStep(params: {
           agentSource: agent.source,
           task,
           subagentId: record.subagentId,
+          displayName,
           status: snapshot.status,
           exitCode: -1,
           messages: snapshot.messages,
@@ -940,7 +975,7 @@ async function runDelegatedStep(params: {
       },
     });
 
-    const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step });
+    const result = outcomeToResult(outcome, { agent: agent.name, agentSource: agent.source, task, step, displayName });
     Object.assign(result, params.timeout);
     result.workspace = workspace;
     result.requestedModel = params.execution?.model;
@@ -954,7 +989,8 @@ async function runDelegatedStep(params: {
     const message = error instanceof Error ? error.message : String(error);
     return {
       agent: agent.name, agentSource: agent.source, task, step,
-      subagentId: instanceId, status: signal?.aborted ? "cancelled" : "failed", exitCode: 1,
+      subagentId: instanceId, displayName,
+      status: signal?.aborted ? "cancelled" : "failed", exitCode: 1,
       messages: [], stderr: message, errorMessage: message, workspace, ...params.timeout,
       requestedModel: params.execution?.model,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -1131,6 +1167,7 @@ export default function (pi: any) {
             : undefined;
           const result = await runDelegatedStep({
             runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
+            displayName: step.displayName,
             config, hostPermissionMode, parentDepth, timeout, signal, onUpdate: chainUpdate,
             makeDetails: makeDetailsFn("chain"), taskScope,
             execution: {
@@ -1200,6 +1237,7 @@ export default function (pi: any) {
           }
           const result = await runDelegatedStep({
             runtime, agent, task: t.task, cwd: t.cwd ?? ctx.cwd, subagentId: t.subagentId, step: undefined,
+            displayName: t.displayName,
             config, hostPermissionMode, parentDepth, timeout, signal,
             onUpdate: (partial) => {
               if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
@@ -1228,7 +1266,8 @@ export default function (pi: any) {
         const summaries = results.map((r) => {
           const output = truncateParallelOutput(getResultOutput(r), outputCap);
           const status = isFailedResult(r) ? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}` : "completed";
-          return `### [${r.agent}] ${status} (id: ${r.subagentId})\n\n${output}`;
+          const nameLine = r.displayName && r.subagentId ? `\n> subagent-name: ${r.displayName}` : "";
+          return `### [${r.agent}] ${status} (id: ${r.subagentId})${nameLine}\n\n${output}`;
         });
         return { content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }], details: makeDetailsFn("parallel")(results), isError: successCount !== results.length };
       }
@@ -1244,9 +1283,10 @@ export default function (pi: any) {
           runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,
           config, hostPermissionMode, parentDepth, timeout, signal, onUpdate,
           makeDetails: makeDetailsFn("single"), taskScope, execution: params, parentModelId,
+          displayName: params.displayName,
         });
         // 结果文本携带 instanceId（主对话 chip 可据此打开临时 Chat；实例在返回后已销毁）
-        const idLine = `\n\n> subagent: ${result.subagentId}（本次任务内临时实例，已结束）`;
+        const idLine = buildSubagentIdLine(result);
         if (isFailedResult(result)) {
           return { content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}${idLine}` }], details: makeDetailsFn("single")([result]), isError: true };
         }

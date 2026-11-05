@@ -40,6 +40,7 @@ async function main(): Promise<void> {
   const subagentModule = (await jiti.import(join(process.cwd(), "src", "main", "capabilities", "subagent", "index"))) as {
     default: (pi: unknown) => void;
     attachSubagentModelRuntime: (runtime: unknown) => void;
+    buildSubagentIdLine?: (result: { subagentId: string; displayName?: string }) => string;
   };
   const factory = subagentModule.default;
 
@@ -87,6 +88,19 @@ async function main(): Promise<void> {
   const workerText = worker.content?.[0]?.text ?? "";
   assert(!/taskScope is not defined/i.test(workerText), `worker 不再 ReferenceError（${workerText.slice(0, 120)}）`);
   assert(!/Cannot find module/i.test(workerText), "worker 不得出现 Capability 模块路径错误");
+
+  // displayName：纯显示字段，结果文本通过 `> subagent-name:` 桥接到完成态列表。
+  // 本用例没有可用默认模型 → 失败发生在 ensure 之前，不允许留下孤立名字行。
+  const named = await sub.execute("c4", { agent: "worker", task: "ping", displayName: "皮卡丘" }, undefined, undefined, ctx);
+  const namedText = named.content?.[0]?.text ?? "";
+  assert(!namedText.includes("subagent-name"), "实例未创建时不输出孤立 displayName 标记");
+  const markerLine = subagentModule.buildSubagentIdLine?.({ subagentId: "pikachu-abc", displayName: "皮卡丘" }) ?? "";
+  assert(
+    markerLine.includes("> subagent-name: 皮卡丘") && markerLine.includes("> subagent: pikachu-abc"),
+    `标记行同时携带名字与 id（${markerLine.slice(0, 80)}）`,
+  );
+  const noNameLine = subagentModule.buildSubagentIdLine?.({ subagentId: "pikachu-abc" }) ?? "";
+  assert(!noNameLine.includes("subagent-name") && noNameLine.includes("> subagent: pikachu-abc"), "未传名字 → 不输出名字行");
 
   rmSync(sandbox, { recursive: true, force: true });
   console.log(`\n结果: passed=${passed} failed=${failed}`);

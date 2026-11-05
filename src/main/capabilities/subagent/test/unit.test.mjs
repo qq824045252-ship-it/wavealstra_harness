@@ -115,8 +115,12 @@ console.log("== registry 纯函数（active-only） ==");
 {
   const rec = createRecord({ subagentId: "sa-1", scope: "task-1", role: "w", roleSource: "user", roleDescription: "d", project: "C:/p", depth: 1 });
   assert(rec.scope === "task-1" && rec.status === "idle", "创建含 scope");
-  const done = applyOutcome({ ...rec, status: "running" }, { status: "completed", usage: { input: 10, turns: 1 } });
+  assert(rec.displayName === undefined, "未传 displayName → 不写入字段");
+  const named = createRecord({ subagentId: "sa-2", scope: "task-1", role: "w", displayName: "皮卡丘", roleSource: "user", roleDescription: "d", project: "C:/p", depth: 1 });
+  assert(named.displayName === "皮卡丘", "displayName 原样存入（允许中文）");
+  const done = applyOutcome({ ...rec, status: "running", displayName: "皮卡丘" }, { status: "completed", usage: { input: 10, turns: 1 } });
   assert(done.status === "completed" && done.usage.input === 10, "applyOutcome 累加（terminal 后由调用方移除）");
+  assert(done.displayName === "皮卡丘", "applyOutcome 保留 displayName");
 }
 
 console.log("== rpc 帧解析 ==");
@@ -337,6 +341,22 @@ console.log("== 同 scope active reuse / 跨 scope 拒绝 ==");
     crossRejected = true;
   }
   assert(crossRejected, "跨 Task 同 id → 拒绝");
+  runtime.shutdownAll();
+  rmSync(baseDir, { recursive: true, force: true });
+}
+
+console.log("== displayName 透传（SpawnConfig → record，身份不变） ==");
+{
+  const baseDir = mkdtempSync(join(tmpdir(), "pi-sa-dn-"));
+  const runtime = makeRuntime(baseDir);
+  runtime.gcLegacy();
+  const rec = runtime.ensureSubagent({
+    scope: "task-D", role: "fixture", roleSource: "user", roleDescription: "d",
+    project: process.cwd(), depth: 1, displayName: "皮卡丘",
+  });
+  assert(rec.displayName === "皮卡丘", "ensureSubagent 写入 displayName（允许中文）");
+  assert(/^[a-zA-Z0-9_-]+$/.test(rec.subagentId), `subagentId 仍为 ASCII 安全字符（${rec.subagentId}）`);
+  assert(!rec.subagentId.includes("皮卡丘"), "显示名不进入 subagentId");
   runtime.shutdownAll();
   rmSync(baseDir, { recursive: true, force: true });
 }

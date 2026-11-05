@@ -176,3 +176,42 @@ export function extractSubagentIdFromToolResult(
     ?? text.match(/\(id: ([a-zA-Z0-9_-]+)\)/);
   return match?.[1] ?? match?.[2] ?? null;
 }
+
+/** displayName 最大长度（码点）。显示层字段，不参与身份。 */
+export const SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS = 32;
+
+/**
+ * 归一化子代理显示名：纯展示字段，允许中文。
+ * 去控制/格式字符（换行、RTL 覆盖、零宽等，防排版欺骗），折叠空白，按码点截断（不拆 emoji）。
+ * 空值返回 undefined，调用方回退到 role / subagentId。
+ */
+export function normalizeSubagentDisplayName(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw
+    // 保留 ZWJ，其余格式字符与换行一律转空格（emoji 组合序列不被拆散）
+    .replace(/[\p{Cc}\p{Cf}]/gu, (ch) => (ch === "\u200d" ? ch : " "))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return undefined;
+  const codePoints = Array.from(cleaned);
+  if (codePoints.length <= SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS) return cleaned;
+  return codePoints
+    .slice(0, SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS)
+    .join("")
+    .trim() || undefined;
+}
+
+/**
+ * 从工具结果文本解析 displayName（与 subagentId 同一条文本桥）。
+ * 结果里以 `> subagent-name: <name>` 标记；缺失返回 null。
+ */
+export function extractSubagentDisplayNameFromToolResult(
+  tool: string,
+  output: string | undefined,
+  detail: string | undefined,
+): string | null {
+  if (tool !== "subagent") return null;
+  const text = `${output ?? ""}\n${detail ?? ""}`;
+  const match = text.match(/^\s*>\s*subagent-name:\s*(.+)$/m);
+  return normalizeSubagentDisplayName(match?.[1]) ?? null;
+}

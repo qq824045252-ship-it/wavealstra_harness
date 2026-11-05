@@ -188,8 +188,8 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                   onClick={() => openSubagentDrawer(s.id)}
                 >
                   <span className="ro-item-head">
-                    <span className="ro-name">
-                      <IconUsers size={12} /> {s.role}
+                    <span className="ro-name" title={s.displayName ? `id: ${s.id}` : undefined}>
+                      <IconUsers size={12} /> {s.displayName || s.role}
                     </span>
                     {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   </span>
@@ -219,8 +219,8 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                     }}
                   >
                     <div className="ro-done-header">
-                      <span className="ro-name">
-                        {readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
+                      <span className="ro-name" title={d.displayName ? `id: ${d.id}` : undefined}>
+                        {d.displayName || readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
                       </span>
                       <span className={`ro-label ro-label--${d.state}`}>
                         {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}

@@ -101,6 +101,8 @@ export interface SpawnConfig {
   role: SubagentRecord["role"];
   roleSource: SubagentRecord["roleSource"];
   roleDescription: string;
+  /** 可选显示名（调用方已归一化；纯展示） */
+  displayName?: string;
   project: string;
   sourceProject?: string;
   depth: number;
@@ -328,6 +330,7 @@ export class SubagentRuntime {
       subagentId: id,
       scope: cfg.scope,
       role: cfg.role,
+      displayName: cfg.displayName,
       roleSource: cfg.roleSource,
       roleDescription: cfg.roleDescription,
       project: cfg.project,

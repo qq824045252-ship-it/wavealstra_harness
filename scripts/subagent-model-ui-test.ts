@@ -5,9 +5,12 @@
  * only and must never invent model capabilities.
  */
 import {
+  extractSubagentDisplayNameFromToolResult,
   extractSubagentIdFromToolResult,
   modelOptionLabel,
+  normalizeSubagentDisplayName,
   resolveSubagentReasoningAfterModelSwitch,
+  SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS,
   targetSubagentModel,
   validateSubagentReasoningPreference,
   type SubagentModelOptionLike,
@@ -218,6 +221,36 @@ assert(
   "parallel/chain summary extracts id",
 );
 assert(extractSubagentIdFromToolResult("bash", "subagent: xyz", undefined) === null, "non-subagent tool ignored");
+
+console.log("== subagent displayName ==");
+assert(normalizeSubagentDisplayName("皮卡丘") === "皮卡丘", "中文显示名原样保留");
+assert(normalizeSubagentDisplayName("  Pikachu  ") === "Pikachu", "trim 首尾空白");
+assert(normalizeSubagentDisplayName("皮卡\n丘") === "皮卡 丘", `换行转空格（${normalizeSubagentDisplayName("皮卡\n丘")}）`);
+assert(normalizeSubagentDisplayName("a\u202Eb") === "a b", "RTL 覆盖字符被中和");
+assert(normalizeSubagentDisplayName("") === undefined, "空串 → undefined");
+assert(normalizeSubagentDisplayName("   ") === undefined, "纯空白 → undefined");
+assert(normalizeSubagentDisplayName(undefined) === undefined, "非字符串 → undefined");
+{
+  const long = "字".repeat(SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS + 8);
+  const normalized = normalizeSubagentDisplayName(long);
+  assert(Array.from(normalized ?? "").length === SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS, "按码点截断到上限");
+  const emoji = "🙂".repeat(SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS + 2);
+  const emojiNormalized = Array.from(normalizeSubagentDisplayName(emoji) ?? "");
+  assert(emojiNormalized.length === SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS && emojiNormalized.every((ch) => ch === "🙂"), "截断不拆 emoji");
+}
+assert(
+  extractSubagentDisplayNameFromToolResult(
+    "subagent",
+    "\n> subagent-name: 皮卡丘\n> subagent: scout-k9rvzv（结束）",
+    undefined,
+  ) === "皮卡丘",
+  "结果文本解析 displayName",
+);
+assert(
+  extractSubagentDisplayNameFromToolResult("subagent", "> subagent: scout-k9rvzv", undefined) === null,
+  "无名字行 → null（渲染回退 id/role）",
+);
+assert(extractSubagentDisplayNameFromToolResult("bash", "> subagent-name: 皮卡丘", undefined) === null, "非 subagent 工具忽略名字行");
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);
 if (failed > 0) process.exit(1);

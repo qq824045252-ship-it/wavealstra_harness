@@ -138,7 +138,11 @@ export default function SubagentDrawer(): React.JSX.Element | null {
       <div className="sa-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="sa-drawer-head">
           <div className="sa-drawer-title">
-            <span className="sa-item-role">{transcript?.record?.role ?? "subagent"}</span>
+            <span className="sa-item-role">
+              {transcript?.record?.displayName
+                ? `${transcript.record.displayName} · ${transcript.record.role}`
+                : transcript?.record?.role ?? "subagent"}
+            </span>
             {modelBadge && (
               <span className="sa-model" title={modelBadgeTitle(modelBadge)}>
                 {modelBadge.label}

@@ -34,6 +34,19 @@ The provider/model names above are placeholders. An explicit `model` requires a 
 
 Without a `model` argument, selection uses the role's model, then the saved subagent default, then the global default. Unavailable configured defaults fall through with diagnostics. Selection fails if none is usable. Omitting `model` is not inheritance.
 
+### Display names
+
+`displayName` is an optional display-only name for a single task, or per entry in `tasks` / `chain`. It accepts any language and appears in the task's subagent list and panel. The ASCII `subagentId` remains the only identity: steering, file names, worker arguments, and duplicate detection all keep using it, so names may repeat. Input is normalized (trimmed, control and format characters removed, 32 code points max). When omitted, the UI falls back to the role for running workers and to the id for finished ones.
+
+```typescript
+{
+	agent: "scout",
+	subagentId: "pikachu",
+	displayName: "皮卡丘",
+	task: "Read the target module and report findings."
+}
+```
+
 ### Model roles
 
 `~/.mybuddy/subagent.json` may declare `roles`, a map from a role name to an ordered candidate list. Passing that role name as `model` lets the product pick the first candidate that exists in the native model scope.
