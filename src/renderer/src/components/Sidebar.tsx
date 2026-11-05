@@ -511,7 +511,9 @@ export default function Sidebar(): React.JSX.Element {
       const siblingsKind = originalChildren.filter((n) => n.kind === activeDragged.kind).map((n) => n.id);
       return siblingsKind.indexOf(activeDragged.id);
     })();
-    if (curKindIdx !== -1 && targetIndex === curKindIdx) {
+    // Task targetIndex is a database rank; curKindIdx is a visual rank.
+    // They differ for implicit time ordering and pinned tasks.
+    if (activeDragged.kind === "space" && curKindIdx !== -1 && targetIndex === curKindIdx) {
       setDragged(null);
       return;
     }
