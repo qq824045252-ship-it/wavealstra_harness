@@ -766,26 +766,6 @@ export default function ModelsTab(): React.JSX.Element {
 
   return (
     <div className="models-management-page">
-      <section className="models-usage-panel">
-        <div className="models-default-row">
-          <label className="models-default-row-label" htmlFor="models-default-model">主对话默认</label>
-          <select
-            id="models-default-model"
-            className="models-default-row-select"
-            value={defaultModelId}
-            disabled={usageSaving || selectableModels.length === 0}
-            onChange={(event) => void saveGlobalDefaultModel(event.target.value)}
-          >
-            {!defaultModelId && <option value="">请选择默认模型</option>}
-            {defaultModelInvalid && <option value={defaultModelId}>不可用 · {defaultModelId}</option>}
-            {selectableModels.map((model) => (
-              <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
-            ))}
-          </select>
-          <small className="models-default-row-hint">新任务和未显式指定模型的执行使用此模型。</small>
-        </div>
-      </section>
-
       <div className="models-provider-layout">
       <aside className="models-provider-rail">
         <div className="models-provider-rail-title">模型提供商</div>
@@ -802,7 +782,29 @@ export default function ModelsTab(): React.JSX.Element {
         </button>
       </aside>
 
-      <section ref={detailRef} className="models-provider-detail">
+      <div className="models-provider-main">
+        <div className="models-provider-toolbar">
+          <small className="models-default-hint" id="models-default-hint">新任务和未显式指定模型的执行使用此模型。</small>
+          <div className="models-default-control">
+            <label className="models-default-label" htmlFor="models-default-model">主对话默认</label>
+            <select
+              id="models-default-model"
+              className="models-default-select"
+              aria-describedby="models-default-hint"
+              value={defaultModelId}
+              disabled={usageSaving || selectableModels.length === 0}
+              onChange={(event) => void saveGlobalDefaultModel(event.target.value)}
+            >
+              {!defaultModelId && <option value="">请选择默认模型</option>}
+              {defaultModelInvalid && <option value={defaultModelId}>不可用 · {defaultModelId}</option>}
+              {selectableModels.map((model) => (
+                <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <section ref={detailRef} className="models-provider-detail">
         {creatingProvider ? (
           <>
             <div className="models-provider-detail-head">
@@ -952,7 +954,8 @@ export default function ModelsTab(): React.JSX.Element {
             {hint && <div className="memory-status models-provider-hint">{hint}</div>}
           </>
         )}
-      </section>
+        </section>
+      </div>
 
       {editorOpen && editingEntry && (
         <ModelEditorModal
