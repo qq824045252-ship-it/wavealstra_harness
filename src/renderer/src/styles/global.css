@@ -21388,7 +21388,9 @@ html[data-theme="dark"] .extension-artifact-item.active {
 }
 
 .models-usage-panel {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding: 13px 20px 14px;
   border-bottom: 1px solid var(--border-subtle, var(--border));
   background: var(--surface-main, var(--bg-panel));
@@ -21434,6 +21436,55 @@ html[data-theme="dark"] .extension-artifact-item.active {
   white-space: nowrap;
 }
 
+.models-recommendations {
+  margin-bottom: 12px;
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 8px;
+}
+
+.models-recommendations summary {
+  padding: 9px 11px;
+  color: var(--fg-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.models-recommendations summary span {
+  margin-left: 5px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.models-recommendations-content {
+  display: grid;
+  gap: 10px;
+  padding: 0 11px 11px;
+}
+
+.models-recommendations-content p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.models-recommendations-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.models-recommendations-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.models-recommendations-content > button {
+  justify-self: start;
+}
+
 .models-usage-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -21453,7 +21504,8 @@ html[data-theme="dark"] .extension-artifact-item.active {
   color: var(--fg-secondary);
 }
 
-.models-usage-field select {
+.models-usage-field select,
+.models-recommendations-row input {
   width: 100%;
   min-width: 0;
   height: 32px;
@@ -22185,6 +22237,7 @@ html[data-theme="dark"] .extension-artifact-item.active {
   .models-usage-heading { align-items: flex-start; }
   .models-usage-heading > div { flex-direction: column; align-items: flex-start; gap: 2px; }
   .models-usage-grid { grid-template-columns: 1fr; gap: 9px; }
+  .models-recommendations-row { grid-template-columns: 1fr; }
   .models-usage-field small { min-height: 0; }
   .models-provider-layout { grid-template-columns: 190px minmax(0, 1fr); }
   .models-provider-detail { padding: 16px 18px 20px; }

@@ -45,7 +45,7 @@
   display: grid;
   gap: 10px;
   margin-top: 10px;
-  max-height: min(42vh, 340px);
+  max-height: min(58vh, 520px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
@@ -86,7 +86,7 @@
 
 .subagent-policy-models {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
   gap: 4px 12px;
   max-height: 168px;
   overflow-y: auto;
@@ -216,7 +216,12 @@
   gap: 8px;
 }
 
-.subagent-policy-add-role input { width: 160px; }
+.subagent-policy-add-role input { width: min(100%, 220px); flex: 1 1 140px; }
+.subagent-policy-add-role { flex-wrap: wrap; }
+.subagent-policy-model > span,
+.subagent-policy-actions > small { overflow-wrap: anywhere; }
+.subagent-policy-summary:focus-visible,
+.subagent-policy-chip button:focus-visible { outline: 2px solid var(--accent, var(--fg)); outline-offset: 2px; }
 
 .subagent-policy-warn {
   font-size: 11.5px;

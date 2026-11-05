@@ -842,18 +842,33 @@ export default function ModelsTab(): React.JSX.Element {
           </div>
           <span className="models-usage-count">{selectableModels.length} 个可用聊天模型</span>
         </div>
-        <details><summary>经评测的场景推荐（可选）</summary>
-          <p>仅用于新会话；显式任务模型优先。只填已完成对照评测的报告路径；样本不足请保持空白。选择模型可能改变成本，任务上下文将发送到所选 provider。</p>
-          {(["coding", "working"] as const).map(mode => <div key={mode}>
-            <label>{mode}<select value={taskRecommendations[mode]?.modelId ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: e.target.value, evidencePath: taskRecommendations[mode]?.evidencePath ?? "" } })}>
-              <option value="">不启用推荐</option>{selectableModels.map(model => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
-            </select></label>
-            <input placeholder="对照评测报告路径" value={taskRecommendations[mode]?.evidencePath ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: taskRecommendations[mode]?.modelId ?? "", evidencePath: e.target.value } })} />
-          </div>)}
-          <button className="btn" onClick={async () => {
-            const saved = await window.api?.agent?.updateAppSettings?.({ taskModelRecommendations: taskRecommendations });
-            setTaskRecommendations(saved?.taskModelRecommendations ?? {});
-          }}>保存场景推荐</button>
+        <details className="models-recommendations">
+          <summary>场景模型推荐 <span>可选</span></summary>
+          <div className="models-recommendations-content">
+            <p>仅用于新会话，任务中明确指定的模型优先。请填写已完成对照评测的报告路径；样本不足时留空。所选模型可能影响成本，任务上下文会发送给对应服务商。</p>
+            <div className="models-recommendations-grid">
+              {([{ mode: "coding", label: "编程场景" }, { mode: "working", label: "工作场景" }] as const).map(({ mode, label }) => (
+                <div className="models-recommendations-row" key={mode}>
+                  <label className="models-usage-field">
+                    <span>{label}模型</span>
+                    <select value={taskRecommendations[mode]?.modelId ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: e.target.value, evidencePath: taskRecommendations[mode]?.evidencePath ?? "" } })}>
+                      <option value="">不启用推荐</option>
+                      {taskRecommendations[mode]?.modelId && !selectableModels.some(model => model.id === taskRecommendations[mode]?.modelId) && <option value={taskRecommendations[mode]?.modelId}>不可用 · {taskRecommendations[mode]?.modelId}</option>}
+                      {selectableModels.map(model => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
+                    </select>
+                  </label>
+                  <label className="models-usage-field">
+                    <span>对照评测报告路径</span>
+                    <input placeholder="填写报告路径" value={taskRecommendations[mode]?.evidencePath ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: taskRecommendations[mode]?.modelId ?? "", evidencePath: e.target.value } })} />
+                  </label>
+                </div>
+              ))}
+            </div>
+            <button className="btn" type="button" onClick={async () => {
+              const saved = await window.api?.agent?.updateAppSettings?.({ taskModelRecommendations: taskRecommendations });
+              setTaskRecommendations(saved?.taskModelRecommendations ?? {});
+            }}>保存场景推荐</button>
+          </div>
         </details>
         <div className="models-usage-grid">
           <label className="models-usage-field">
@@ -887,7 +902,7 @@ export default function ModelsTab(): React.JSX.Element {
                 <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
               ))}
             </select>
-            <small>Role frontmatter model: still overrides this default. A default is not a restriction; use the execution limits below to allow only specific models.</small>
+            <small>角色配置中指定的模型仍会优先使用。默认模型不限制可选范围；如需限制，请在下方执行限制中设置。</small>
           </label>
 
           <div className="models-usage-field">
