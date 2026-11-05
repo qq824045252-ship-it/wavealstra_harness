@@ -61,10 +61,14 @@ async function main(): Promise<void> {
     getModels: () => [fakeModel],
   });
 
-  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> }> = [];
+  type ExecuteResult = {
+    content?: Array<{ text?: string }>;
+    isError?: boolean;
+    details?: { results?: Array<{ subagentId?: string; displayName?: string }> };
+  };
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<ExecuteResult> }> = [];
   factory({
-    registerTool: (t: { name: string; execute: (...args: unknown[]) => Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> }) =>
-      tools.push(t),
+    registerTool: (t: { name: string; execute: (...args: unknown[]) => Promise<ExecuteResult> }) => tools.push(t),
     on: () => undefined,
   });
   const sub = tools.find((t) => t.name === "subagent");
@@ -83,6 +87,8 @@ async function main(): Promise<void> {
   const defText = def.content?.[0]?.text ?? "";
   assert(!/taskScope is not defined/i.test(defText), `default 别名不再 ReferenceError（${defText.slice(0, 120)}）`);
   assert(!/Cannot find module/i.test(defText), "default worker 不得出现 Capability 模块路径错误");
+  const autoName = def.details?.results?.[0]?.displayName ?? "";
+  assert(autoName.length > 0 && /[\u4e00-\u9fff]/.test(autoName), `未传 displayName → 自动分配中文名（${autoName}）`);
 
   const worker = await sub.execute("c3", { agent: "worker", task: "ping" }, undefined, undefined, ctx);
   const workerText = worker.content?.[0]?.text ?? "";
@@ -94,6 +100,7 @@ async function main(): Promise<void> {
   const named = await sub.execute("c4", { agent: "worker", task: "ping", displayName: "皮卡丘" }, undefined, undefined, ctx);
   const namedText = named.content?.[0]?.text ?? "";
   assert(!namedText.includes("subagent-name"), "实例未创建时不输出孤立 displayName 标记");
+  assert(named.details?.results?.[0]?.displayName === "皮卡丘", "显式 displayName 覆盖自动分配");
   const markerLine = subagentModule.buildSubagentIdLine?.({ subagentId: "pikachu-abc", displayName: "皮卡丘" }) ?? "";
   assert(
     markerLine.includes("> subagent-name: 皮卡丘") && markerLine.includes("> subagent: pikachu-abc"),

@@ -43,6 +43,7 @@ import {
   resolveSubagentSelection,
 } from "./selection.ts";
 import { prepareSubagentWorkspace, type PreparedSubagentWorkspace, type SubagentIsolation } from "./worktree.ts";
+import { resolveBatchDisplayNames } from "./display-names.ts";
 import type { ModelReasoningPreferenceDto } from "../../../shared/model-metadata";
 import {
   normalizeSubagentDisplayName,
@@ -193,6 +194,14 @@ export function isFailedResult(result: SingleResult): boolean {
 export function buildSubagentIdLine(result: Pick<SingleResult, "subagentId" | "displayName">): string {
   const nameLine = result.displayName && result.subagentId ? `> subagent-name: ${result.displayName}\n` : "";
   return `\n\n${nameLine}> subagent: ${result.subagentId}（本次任务内临时实例，已结束）`;
+}
+
+/** 当前 Task 内 active 子代理已占用的显示名（自动分配时避开）。 */
+function activeDisplayNames(runtime: SubagentRuntime, scope: string): string[] {
+  return runtime
+    .listActive(scope)
+    .map((record) => record.displayName)
+    .filter((name): name is string => Boolean(name));
 }
 
 export function getResultOutput(result: SingleResult): string {
@@ -780,7 +789,7 @@ const DisplayNameField = Type.Optional(
   Type.String({
     // 不做 minLength：空串在归一化阶段变成 undefined（回退 role/id），不因空值拒绝整次委派。
     maxLength: 200,
-    description: "Display-only name shown in the subagent list and panel (any language, e.g. 皮卡丘). Identity stays the ASCII subagentId; duplicates allowed; steering still uses subagentId.",
+    description: "Display-only name shown in the subagent list and panel (any language, e.g. 皮卡丘). Omit to auto-assign a random unused Gen-1 Pokémon name in Simplified Chinese. Identity stays the ASCII subagentId; duplicates allowed; steering still uses subagentId.",
   }),
 );
 
@@ -1034,6 +1043,7 @@ export default function (pi: any) {
       "Modes: single (agent+task), parallel (tasks array, up to " + MAX_PARALLEL_TASKS + " tasks, " + MAX_CONCURRENCY + " running concurrently, the rest queued), chain (sequential, {previous} placeholder).",
       "Select model and native reasoning per single call or per tasks/chain item. Exact provider/model choices fail when unavailable; inherit-parent/auto uses the current parent's model, not global defaults. Same-model workers are not cross-model review. Unsupported reasoning transport fails explicitly.",
       "Context boundary: the subagent inherits ONLY cwd + role system prompt + your task text. Project shared context / memory / plan / tag / skill / expert / connector policies are NOT inherited — compress and pass needed context inside the task (unknown stays unknown, no fabrication).",
+      "Display names: every subagent gets a human-readable displayName automatically — a random unused Gen-1 Pokémon name in Simplified Chinese — unless you pass displayName for the call or for individual tasks/chain items. It is display-only: subagentId remains the identity used by subagent_steer, results, transcripts, and worker arguments.",
       "Permissions: subagent tool sets are derived from the host permission mode; default (no tools frontmatter) is a READ-ONLY analysis set (read/ls/find/grep). bash/write/edit require explicit tools frontmatter or allowTools — bash is a HIGH-PRIVILEGE tool (arbitrary command execution, no approval in subagent); recursion is hard-capped and subagent tools are disabled inside subagents.",
       "isolation:auto creates separate retained Git worktrees for parallel write-capable tasks. A clean committed repository is required; dirty or non-Git input fails before launch, without snapshotting. isolation:shared explicitly opts into shared cwd. Worktrees and branches are never automatically merged or deleted; result text/details contain receipts after success or failure. subagent_list shows active workers only; subagent_steer guides active work without changing its selected model.",
       `Default agent scope is "user" (from ${path.join(getAgentDirCompat(), "agents")} and ${path.join(getAgentDirCompat(), "plugins", "agents")}).`,
@@ -1130,9 +1140,12 @@ export default function (pi: any) {
       }
 
       const taskScope = resolveScope(ctx);
+      // 自动显示名：避开当前 Task 内 active 子代理已占用的名字（显式 displayName 仍然优先）。
+      const reservedDisplayNames = activeDisplayNames(runtime, taskScope);
 
       // ---- chain ----
       if (params.chain && params.chain.length > 0) {
+        const chainDisplayNames = resolveBatchDisplayNames(params.chain, reservedDisplayNames);
         const results: SingleResult[] = [];
         let previousOutput = "";
         let diverseAssignments: string[] | null = null;
@@ -1170,7 +1183,7 @@ export default function (pi: any) {
             : undefined;
           const result = await runDelegatedStep({
             runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
-            displayName: step.displayName,
+            displayName: chainDisplayNames[i],
             config, hostPermissionMode, parentDepth, timeout, signal, onUpdate: chainUpdate,
             makeDetails: makeDetailsFn("chain"), taskScope,
             execution: {
@@ -1199,6 +1212,7 @@ export default function (pi: any) {
       if (params.tasks && params.tasks.length > 0) {
         if (params.tasks.length > limits.maxParallelTasks)
           return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${limits.maxParallelTasks} (concurrency ${limits.maxConcurrency}).` }], details: makeDetailsFn("parallel")([]) };
+        const taskDisplayNames = resolveBatchDisplayNames(params.tasks, reservedDisplayNames);
         const allResults: SingleResult[] = new Array(params.tasks.length);
         let diverseAssignments: string[] | null = null;
         if (wantsDiverseRole(params.model) || params.tasks.some((t: any) => wantsDiverseRole(t.model))) {
@@ -1240,7 +1254,7 @@ export default function (pi: any) {
           }
           const result = await runDelegatedStep({
             runtime, agent, task: t.task, cwd: t.cwd ?? ctx.cwd, subagentId: t.subagentId, step: undefined,
-            displayName: t.displayName,
+            displayName: taskDisplayNames[index],
             config, hostPermissionMode, parentDepth, timeout, signal,
             onUpdate: (partial) => {
               if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
@@ -1282,11 +1296,12 @@ export default function (pi: any) {
           const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
           return { content: [{ type: "text", text: unknownAgentMessage(params.agent) }], details: makeDetailsFn("single")([]) };
         }
+        const singleDisplayName = resolveBatchDisplayNames([params], reservedDisplayNames)[0];
         const result = await runDelegatedStep({
           runtime, agent, task: params.task, cwd: params.cwd ?? ctx.cwd, subagentId: params.subagentId, step: undefined,
           config, hostPermissionMode, parentDepth, timeout, signal, onUpdate,
           makeDetails: makeDetailsFn("single"), taskScope, execution: params, parentModelId,
-          displayName: params.displayName,
+          displayName: singleDisplayName,
         });
         // 结果文本携带 instanceId（主对话 chip 可据此打开临时 Chat；实例在返回后已销毁）
         const idLine = buildSubagentIdLine(result);

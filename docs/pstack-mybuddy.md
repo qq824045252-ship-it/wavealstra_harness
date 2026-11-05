@@ -36,7 +36,9 @@ Without a `model` argument, selection uses the role's model, then the saved suba
 
 ### Display names
 
-`displayName` is an optional display-only name for a single task, or per entry in `tasks` / `chain`. It accepts any language and appears in the task's subagent list and panel. The ASCII `subagentId` remains the only identity: steering, file names, worker arguments, and duplicate detection all keep using it, so names may repeat. Input is normalized (trimmed, control and format characters removed, 32 code points max). When omitted, the UI falls back to the role for running workers and to the id for finished ones.
+`displayName` is an optional display-only name for a single task, or per entry in `tasks` / `chain`. It accepts any language and appears in the task's subagent list and panel. The ASCII `subagentId` remains the only identity: steering, file names, worker arguments, and duplicate detection all keep using it, so names may repeat. Input is normalized (trimmed, control and format characters removed, 32 code points max).
+
+When omitted, the product assigns a name automatically: a random unused entry from the 151 Gen-1 species in Simplified Chinese (for example 皮卡丘), avoiding display names already held by active subagents in the same task. A batch may only be unique up to those 151 names; larger concurrent batches repeat names, and that is harmless because identity never depends on the display name. An explicit `displayName` always overrides the automatic pick.
 
 ```typescript
 {
