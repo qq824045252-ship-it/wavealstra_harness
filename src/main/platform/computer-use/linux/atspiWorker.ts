@@ -24,7 +24,7 @@ function isRequest(value: unknown): value is AtSpiWorkerRequest {
   if (!value || typeof value !== "object") return false;
   const request = value as Record<string, unknown>;
   if (!Number.isSafeInteger(request.id) || Number(request.id) <= 0 || typeof request.method !== "string") return false;
-  return ["probe", "inspectWindow", "readControl", "invoke", "setValue", "shutdown", "cancel"].includes(request.method);
+  return ["probe", "inspectWindow", "readControl", "focus", "invoke", "setValue", "shutdown", "cancel"].includes(request.method);
 }
 
 async function main(): Promise<void> {
@@ -83,6 +83,7 @@ async function main(): Promise<void> {
           case "probe": result = await driver.probe(controller.signal); break;
           case "inspectWindow": result = await driver.inspectWindow(request.window, request.options, controller.signal); break;
           case "readControl": result = await driver.readControl(request.window, request.runtimeId, controller.signal); break;
+          case "focus": result = await driver.focus(request.window, request.runtimeId, controller.signal); break;
           case "invoke": result = await driver.invoke(request.window, request.runtimeId, request.actionName, controller.signal); break;
           case "setValue": result = await driver.setValue(request.window, request.runtimeId, request.text, controller.signal); break;
         }

@@ -46,7 +46,7 @@ export function resolveAtSpiWorkerPath(explicit?: string): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
-function isMutation(method: RpcMethod): boolean { return method === "invoke" || method === "setValue"; }
+function isMutation(method: RpcMethod): boolean { return method === "focus" || method === "invoke" || method === "setValue"; }
 
 export function validateAtSpiHandshake(value: unknown): AtSpiHandshake {
   const handshake = value as Partial<AtSpiHandshake> | null;
@@ -281,6 +281,10 @@ export class AtSpiClient implements AtSpiDriverApi {
 
   async readControl(window: WindowInfo, runtimeId: string, signal?: AbortSignal): Promise<AtSpiControlInfo> {
     return await this.rpc({ method: "readControl", window, runtimeId }, signal);
+  }
+
+  async focus(window: WindowInfo, runtimeId: string, signal?: AbortSignal): Promise<AtSpiSemanticResult> {
+    return await this.rpc({ method: "focus", window, runtimeId }, signal);
   }
 
   async invoke(window: WindowInfo, runtimeId: string, actionName?: string, signal?: AbortSignal): Promise<AtSpiSemanticResult> {

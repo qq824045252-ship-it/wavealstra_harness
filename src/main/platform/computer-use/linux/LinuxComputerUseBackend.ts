@@ -10,7 +10,7 @@ import {
 } from "../protocol";
 import { detectComputerUseSupport } from "../support";
 import { AtSpiClient } from "./atspiClient";
-import type { AtSpiDriverApi, AtSpiInspection } from "./atspiTypes";
+import type { AtSpiControlInfo, AtSpiDriverApi, AtSpiInspection } from "./atspiTypes";
 import { createHyprlandDesktop, createHyprlandWindowControl, hyprlandAddressFromHandle, windowGeometryIdentity, type HyprlandDesktop, type HyprlandSnapshot, type HyprlandWindowControl, type LinuxWindowInfo } from "./hyprlandWindows";
 import { containsPoint, monitorForPoint } from "./hyprlandMonitors";
 import { createGrimScreenshotProvider, type LinuxScreenshotProvider } from "./screenshotProvider";
@@ -25,6 +25,8 @@ interface ActionContext { snapshot: HyprlandSnapshot; target?: LinuxWindowInfo; 
 const OBSERVATION_TTL = 30_000;
 const SESSION_TTL = 10 * 60_000;
 const DIAGNOSTIC_TTL = 60_000;
+const ATSPI_EDITABLE_TEXT = "org.a11y.atspi.EditableText";
+const ATSPI_VALUE = "org.a11y.atspi.Value";
 const INPUT_ACTIONS = new Set<ComputerExecAction>(["focus_window", "move_client", "click_client", "drag_client", "scroll_client", "mouse_down_client", "mouse_up_client", "key_down", "key_up", "paste_text", "drag_screen", "mouse_move", "mouse_click", "mouse_drag", "scroll", "key_press", "type_text", "move_window", "resize_window", "invoke_control", "set_control_value"]);
 const SCREEN_ACTIONS = new Set<ComputerExecAction>(["mouse_move", "mouse_click", "mouse_drag", "drag_screen", "scroll"]);
 const COORDINATE_ACTIONS = new Set<ComputerExecAction>(["move_client", "click_client", "drag_client", "scroll_client", "mouse_down_client", "drag_screen", "mouse_move", "mouse_click", "mouse_drag", "scroll"]);
@@ -267,7 +269,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
       throw error;
     }
   }
-  private async selectControl(window: LinuxWindowInfo, snapshot: HyprlandSnapshot, owner: string, input: ComputerExecInput, signal?: AbortSignal): Promise<ControlInfo> {
+  private async selectControl(window: LinuxWindowInfo, snapshot: HyprlandSnapshot, owner: string, input: ComputerExecInput, signal?: AbortSignal): Promise<AtSpiControlInfo> {
     if (!hasControlSelector(input)) throw new ComputerUseError("CONTROL_NOT_FOUND", "需要明确的控件选择器；请先 inspect_controls");
     if (input.controlRuntimeId) {
       this.prune();
@@ -505,8 +507,50 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     if (action === "focus_window") return result({ verified: true, detail: "已从合成器读回目标窗口为活动窗口" });
     if (action === "invoke_control" || action === "set_control_value") {
       const control = await this.selectControl(target!, context.snapshot, owner, input, signal);
-      if (!control.enabled) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件已禁用");
+      if (!control.enabled) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件自身或其父链处于 disabled/insensitive 状态");
       await this.guard(context, signal, true, false);
+      if (action === "set_control_value" && !control.interfaces.includes(ATSPI_EDITABLE_TEXT) && !control.interfaces.includes(ATSPI_VALUE)) {
+        // Chromium/Electron can expose an editable, focusable Text control without
+        // EditableText or Value. Use the control's own Component.GrabFocus, then
+        // replace its contents through Ctrl+A/Ctrl+V and verify Text readback.
+        if (!control.states.includes("editable") || !control.keyboardFocusable) {
+          throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件没有 EditableText/Value，且未同时声明 editable 与 focusable；拒绝猜测输入目标");
+        }
+        if (this.heldKeys.size || this.heldButtons.size) throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件文本替换需要先释放本任务持有的按键和按钮");
+        const focus = await this.atspi.focus(target!, control.runtimeId, signal);
+        if (focus.executed !== false) context.submitted = true;
+        await this.guard(context, signal, true, false);
+        await this.sleep(35, signal);
+        const focused = await this.atspi.readControl(target!, control.runtimeId, signal);
+        if (!focused.enabled || !focused.keyboardFocusable || !focused.states.includes("editable") || !focused.hasKeyboardFocus) {
+          throw new ComputerUseError("FOCUS_FAILED", "AT-SPI Component.GrabFocus 后未能读回目标输入框为 focused；未发送键盘文本", { focus, control: focused });
+        }
+        await (this.options.pasteViaClipboard ?? writeWaylandClipboard)(input.text!, signal);
+        context.clipboardChanged = true;
+        await this.guard(context, signal, true, false);
+        context.submitted = true;
+        const chord = async (key: string): Promise<void> => {
+          const pressed = await this.keysDown(keyChordToKeycodes(key), owner, target, signal);
+          await this.withInputCleanup(() => this.sleep(35, signal), () => this.keysUp(pressed, owner));
+        };
+        await chord("Ctrl+A");
+        await this.guard(context, signal, true, false);
+        const selected = await this.atspi.readControl(target!, control.runtimeId, signal);
+        if (!selected.enabled || !selected.hasKeyboardFocus || !selected.states.includes("editable")) {
+          throw new ComputerUseError("FOCUS_FAILED", "Ctrl+A 后输入焦点或 editable 状态离开目标控件；为避免向其他窗口粘贴，已停止");
+        }
+        await chord("Ctrl+V");
+        let after: AtSpiControlInfo | undefined;
+        let readbackError: string | undefined;
+        try { after = await this.atspi.readControl(target!, control.runtimeId, signal); }
+        catch (error) { readbackError = errorText(error); }
+        const verified = after?.text !== undefined && after.textTruncated !== true && after.text === input.text;
+        const evidence = verified
+          ? "目标 Component.GrabFocus + Ctrl+A/Ctrl+V 后，AT-SPI Text 完整回读与请求值一致"
+          : "已通过目标焦点提交 Ctrl+A/Ctrl+V，但没有完整匹配的 AT-SPI Text 回读；执行与验证状态分别保留";
+        this.markCapability("semantic", true, verified, evidence);
+        return result({ executed: true, verified, control: after ?? focused, textReadback: after?.text, textLength: input.text!.length, clipboardChanged: true, pasted: true, readbackError, focus, detail: evidence });
+      }
       context.submitted = true;
       const semantic = action === "invoke_control" ? await this.atspi.invoke(target!, control.runtimeId, undefined, signal) : await this.atspi.setValue(target!, control.runtimeId, input.text!, signal);
       this.markCapability("semantic", semantic.executed !== false, semantic.verified, semantic.evidence);

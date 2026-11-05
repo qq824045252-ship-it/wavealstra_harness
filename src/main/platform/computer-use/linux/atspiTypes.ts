@@ -89,6 +89,8 @@ export interface AtSpiDriverApi {
   probe(signal?: AbortSignal): Promise<AtSpiProbeResult>;
   inspectWindow(window: WindowInfo, options?: AtSpiInspectOptions, signal?: AbortSignal): Promise<AtSpiInspection>;
   readControl(window: WindowInfo, runtimeId: string, signal?: AbortSignal): Promise<AtSpiControlInfo>;
+  /** Request AT-SPI Component.GrabFocus and verify the resulting focused state. */
+  focus(window: WindowInfo, runtimeId: string, signal?: AbortSignal): Promise<AtSpiSemanticResult>;
   invoke(window: WindowInfo, runtimeId: string, actionName?: string, signal?: AbortSignal): Promise<AtSpiSemanticResult>;
   setValue(window: WindowInfo, runtimeId: string, text: string, signal?: AbortSignal): Promise<AtSpiSemanticResult>;
   shutdown(): Promise<void>;
@@ -107,6 +109,7 @@ export type AtSpiWorkerRequest =
   | { id: number; method: "probe" }
   | { id: number; method: "inspectWindow"; window: WindowInfo; options?: AtSpiInspectOptions }
   | { id: number; method: "readControl"; window: WindowInfo; runtimeId: string }
+  | { id: number; method: "focus"; window: WindowInfo; runtimeId: string }
   | { id: number; method: "invoke"; window: WindowInfo; runtimeId: string; actionName?: string }
   | { id: number; method: "setValue"; window: WindowInfo; runtimeId: string; text: string }
   | { id: number; method: "shutdown" }

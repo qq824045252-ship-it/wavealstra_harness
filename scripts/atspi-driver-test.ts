@@ -12,6 +12,7 @@ import type { AtSpiRect, AtSpiWorkerRequest } from "../src/main/platform/compute
 const APP = ":1.77";
 const APP_PATH = "/org/test/app";
 const FRAME = APP_PATH + "/frame";
+const GROUP = FRAME + "/group";
 const EDIT = FRAME + "/edit";
 const BUTTON = FRAME + "/button";
 const SLIDER = FRAME + "/slider";
@@ -37,6 +38,13 @@ function stateWords(indices: number[]): number[] {
   const words = [0, 0];
   for (const index of indices) words[Math.floor(index / 32)] = (words[Math.floor(index / 32)] | (1 << (index % 32))) >>> 0;
   return words;
+}
+function withState(words: number[], index: number, active: boolean): number[] {
+  const next = [...words];
+  const word = Math.floor(index / 32);
+  const bit = 1 << (index % 32);
+  next[word] = active ? (next[word] | bit) >>> 0 : (next[word] & ~bit) >>> 0;
+  return next;
 }
 
 interface FixtureNode {
@@ -81,6 +89,7 @@ class Fixture {
   readonly calls: AtSpiMessage[] = [];
   readonly buses: FakeBus[] = [];
   readonly mutations: string[] = [];
+  readonly selfHitTestPaths = new Set<string>();
   failTextRead = false;
   mutationHook?: (message: AtSpiMessage) => void;
   queryHook?: (message: AtSpiMessage) => void;
@@ -164,6 +173,21 @@ class Fixture {
       if (member === "GetChildren") return node.children.map((child) => [APP, child]);
     }
     if (iface === COMPONENT) {
+      if (member === "GrabFocus") {
+        for (const candidate of this.nodes.values()) candidate.states = withState(candidate.states, 12, false);
+        node.states = withState(node.states, 12, true);
+        this.mutations.push("focus");
+        this.mutationHook?.(message);
+        return true;
+      }
+      if (member === "Contains") {
+        assert.equal(message.signature, "iiu");
+        const origin = this.root(path).origin ?? { x: 0, y: 0 };
+        const x = Number(body[0]) - (body[2] === 0 ? origin.x : 0);
+        const y = Number(body[1]) - (body[2] === 0 ? origin.y : 0);
+        const r = node.bounds;
+        return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+      }
       if (member === "GetExtents") {
         assert.equal(message.signature, "u");
         const mode = body[0];
@@ -175,6 +199,7 @@ class Fixture {
       }
       if (member === "GetAccessibleAtPoint") {
         assert.equal(message.signature, "iiu");
+        if (this.selfHitTestPaths.has(path)) return [APP, path];
         const origin = this.root(path).origin ?? { x: 0, y: 0 };
         const x = Number(body[0]) - (body[2] === 0 ? origin.x : 0);
         const y = Number(body[1]) - (body[2] === 0 ? origin.y : 0);
@@ -266,6 +291,47 @@ async function main(): Promise<void> {
       });
     });
   });
+  await test("GTK sensitive state replaces missing enabled and inherits disabled ancestors", () => withDriver(async (driver, fixture, window) => {
+    fixture.nodes.get(EDIT)!.states = stateWords([7, 11, 24, 25, 30]); // editable/focusable/sensitive, deliberately no enabled
+    fixture.nodes.get(FRAME)!.states = stateWords([1, 24, 25, 30]); // sensitive parent, deliberately no enabled
+    let tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    assert.equal(tree.controls.find(control => control.name === "Message")!.enabled, true);
+    fixture.nodes.get(FRAME)!.states = stateWords([1, 25, 30]); // insensitive parent; child still reports sensitive
+    tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const edit = tree.controls.find(control => control.name === "Message")!;
+    assert.equal(edit.enabled, false);
+    await assert.rejects(driver.setValue(window, edit.runtimeId, "must not write"), /不可编辑/);
+    fixture.nodes.get(FRAME)!.states = stateWords([1, 24, 25, 30]);
+    fixture.nodes.get(EDIT)!.states = stateWords([7, 11, 25, 30]); // child itself insensitive
+    tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    assert.equal(tree.controls.find(control => control.name === "Message")!.enabled, false);
+    assert.deepEqual(fixture.mutations, []);
+  }));
+  await test("Component.GrabFocus is read back as the target's focused state", () => withDriver(async (driver, fixture, window) => {
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const edit = tree.controls.find(control => control.name === "Message")!;
+    const result = await driver.focus(window, edit.runtimeId);
+    assert.equal(result.executed, true);
+    assert.equal(result.verified, true);
+    assert.equal(result.after?.hasKeyboardFocus, true);
+    assert.deepEqual(fixture.mutations, ["focus"]);
+  }));
+  await test("Ancestor-only GetAccessibleAtPoint can use Component.Contains only with unique sibling geometry", () => withDriver(async (driver, fixture, window) => {
+    fixture.nodes.get(FRAME)!.children = [GROUP];
+    fixture.nodes.set(GROUP, { name: "Generic container", role: 49, parent: FRAME, children: [BUTTON], states: stateWords([8, 11, 24, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { x: 0, y: 0, width: 800, height: 600 } });
+    fixture.nodes.get(BUTTON)!.parent = GROUP;
+    fixture.selfHitTestPaths.add(GROUP);
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const button = tree.controls.find(control => control.name === "Send")!;
+    assert.equal(button.boundsReliable, true);
+    assert.deepEqual(button.clientBoundsDip, { x: 0, y: 0, width: 100, height: 30 });
+    fixture.nodes.get(GROUP)!.children.push(GROUP + "/overlap");
+    fixture.nodes.set(GROUP + "/overlap", { name: "Overlapping sibling", role: 29, parent: GROUP, children: [], states: stateWords([8, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { x: 0, y: 0, width: 100, height: 30 } });
+    const overlapped = await driver.inspectWindow(window, { peerWindows: [window] });
+    const unsafe = overlapped.controls.find(control => control.name === "Send")!;
+    assert.equal(unsafe.boundsReliable, false);
+    assert.equal(unsafe.clientBoundsDip, undefined);
+  }));
   await test("Legitimate zero-origin control and negative-origin window have certified logical bounds", () => withDriver(async (driver, _fixture, window) => {
     const tree = await driver.inspectWindow(window, { peerWindows: [window] });
     assert.equal(tree.controls.length, 4);

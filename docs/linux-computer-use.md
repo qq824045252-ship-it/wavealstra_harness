@@ -12,12 +12,12 @@ The Linux driver uses the application's Electron/TypeScript/Node stack. It does 
 | --- | --- | --- |
 | Application/window discovery | Hyprland `clients`, `activewindow`, monitors; AT-SPI application/frame objects | A supported session and installed `hyprctl` are only static prerequisites. IPC and actual window objects must still be read. |
 | Accessibility tree | Current user's session D-Bus → `org.a11y.Bus.GetAddress()` → separate accessibility bus | Missing bus service, failed connection, no exported application tree, an empty exported tree, a truncated query and a missing target have different diagnostics. |
-| Semantic controls | `Action.DoAction`, `EditableText.SetTextContents`, supported `Value` operations | The exact bus/object/window reference is checked. D-Bus acceptance by itself does not establish the user's intended outcome. |
-| Text readback | AT-SPI Text / EditableText / Value and explicit outcome checks | A matching value can verify a write. A readback error is not evidence that the target closed successfully. |
-| Reliable control bounds | AT-SPI screen/window extents reconciled with fresh compositor client geometry | Missing, ambiguous, stale or contradictory units/origins prevent coordinate input. Semantic operations can remain available. |
+| Semantic controls | `Action.DoAction`, `EditableText.SetTextContents`, supported `Value` operations, `Component.GrabFocus` | The exact bus/object/window reference and effective state through the parent chain are checked. D-Bus acceptance by itself does not establish the user's intended outcome. |
+| Text readback | AT-SPI Text / EditableText / Value and explicit outcome checks | A matching value can verify a write. Text-only Electron controls can use verified focus plus Ctrl+A/Ctrl+V; missing readback never becomes a success claim. |
+| Reliable control bounds | AT-SPI screen/window extents, `GetAccessibleAtPoint`, `Component.Contains` and sibling-overlap checks reconciled with fresh compositor client geometry | Missing, ambiguous, stale or contradictory units/origins, ancestor-only hits without unique containment, or overlapping siblings prevent coordinate input. Semantic operations can remain available. |
 | Window control | Hyprland focus and supported move/resize dispatch interfaces, with readback | Handles stay opaque `0x…` strings. Unsupported compositor/version behavior produces an error. |
 | Pointer | Hyprland logical movement and actual `cursorpos`; ydotool button/wheel edges | The compositor's observed position must match before a button is pressed. No absolute ydotool-position calibration or screenshot initialization is used. |
-| Keyboard and text input | ydotool key edges; AT-SPI semantic writing where selected; explicit UTF-8 Wayland clipboard transfer | A reachable daemon/socket and a healthy input guardian are required. Chinese and Unicode are tested at the application. Unknown partial outcomes are not replayed. |
+| Keyboard and text input | ydotool key edges; AT-SPI semantic writing, or verified `Component.GrabFocus` plus Ctrl+A/Ctrl+V for editable Text-only controls; explicit UTF-8 Wayland clipboard transfer | A reachable daemon/socket and a healthy input guardian are required. The fallback requires `editable`, `focusable`, effective sensitivity and focused-state readback. Chinese/Unicode is verified only when AT-SPI Text returns the exact complete value. Unknown partial outcomes are not replayed. |
 | Screenshot | Independent `grim` provider, only on explicit screenshot or `capture_after` request | A missing or failed provider does not disable semantic or input capabilities. This is visible-region observation, not background window capture or a locator. |
 | Activity feedback / Stop | Hyprland phase notices and the existing task/run coordinator | Notifications do not prove that input succeeded. Linux does not claim Windows-style window highlighting. |
 
@@ -87,13 +87,23 @@ Chromium/Electron must export its accessibility tree. The application already re
 | Application absent from the accessible desktop | Verify its accessibility bridge/settings and query budget. Distinguish this from an exported but empty frame. |
 | Ambiguous frame/window match | Refresh both structural and compositor observations; use exact identities. Do not choose the closest title. |
 | `STALE_OBSERVATION`, rebuilt object or different bus generation | Reobserve and resolve a new target. Do not replay a previous action automatically. |
-| Bounds unavailable or contradictory | Use an explicitly supported semantic action, or report that this target's coordinate capability is unavailable. |
+| Bounds unavailable or contradictory | Use an explicitly supported semantic action, or report that this target's coordinate capability is unavailable. An ancestor-only `GetAccessibleAtPoint` result is not accepted from bounds alone: `Component.Contains` must confirm the target and its ancestor path, and no observed sibling may contain the same point. |
 | `ydotoold` unavailable / socket refused | Fix the actual daemon, socket and permissions, then refresh diagnostics. File existence alone is insufficient. |
 | Cursor readback differs from requested point | Reject button injection. Inspect layout/compositor behavior; do not calibrate by taking a screenshot. |
 | D-Bus action accepted, but readback fails | Execution may have occurred; verification is unknown. An absent readback is not proof of successful close/submit. |
 | Cancelled/timed-out mutation | First inspect the current result. The remote application may already have processed the request. |
 | Optional `capture_after` fails | Preserve the already-executed action and report the capture error separately. Do not resubmit the input. |
 | Unsupported compositor / XWayland target | Report the explicit support boundary. Do not claim a fallback is native Wayland. |
+
+## Omarchy follow-up from 2026-11-05
+
+The user's real Omarchy run on Hyprland **0.57.0**, 1.6 output scale (2160×1440 physical / 1350×900 logical), exposed three issues after the 0.1.93 implementation:
+
+- GTK editable controls can publish `sensitive` without `enabled`; a child may remain sensitive while a parent is insensitive. The driver now derives actionability from either positive state on the control **and every ancestor through the target frame**. Missing both states or an insensitive ancestor fails closed.
+- Chromium/Electron can expose an `editable`, `focusable` Text control without `EditableText` or `Value`. `set_control_value` now requests `Component.GrabFocus`, reads back `focused`, replaces through Ctrl+A/Ctrl+V and verifies the complete AT-SPI Text value. If focus cannot be confirmed, no keyboard text is sent. If Text readback is unavailable, the result remains unverified.
+- Chromium/Electron may return an ancestor from `GetAccessibleAtPoint`. The driver now probes the exact target-to-window ancestor path and uses the AT-SPI `Component.Contains` method only as a constrained fallback: every Component on the path must contain the point, the observed sibling set must be complete, and no sibling may contain the same point. Ambiguous or incomplete geometry remains non-actionable; the driver never treats a rectangle alone as proof of a click target.
+
+The code and regression fixtures for these changes are a response to the user's observations, **not yet a new Omarchy acceptance result**. The user must rebuild/run the development and packaged GUI suites on the same machine and record whether Electron's actual Text readback and pointer hit certification pass. Keep issue #14 open until that real retest is recorded.
 
 ## Build, packaging and acceptance commands
 

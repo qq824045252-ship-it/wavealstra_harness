@@ -631,7 +631,7 @@ export class AtSpiDriver implements AtSpiDriverApi {
       automationId: node.accessibleId || undefined,
       name: node.name || undefined, controlType: controlType(node),
       frameworkId: "AT-SPI",
-      enabled: node.states.includes("enabled") && !node.states.includes("defunct"),
+      enabled: (node.states.includes("enabled") || node.states.includes("sensitive")) && !node.states.includes("defunct"),
       offscreen: !node.states.includes("visible") || !node.states.includes("showing"),
       keyboardFocusable: node.states.includes("focusable"), hasKeyboardFocus: node.states.includes("focused"),
       patterns, depth, text: node.text, value: node.value, textTruncated: node.textTruncated,
@@ -643,6 +643,37 @@ export class AtSpiDriver implements AtSpiDriverApi {
         boundsReliable: false, boundsReason: "尚未通过 AT-SPI 坐标与命中测试校验",
       },
     };
+  }
+
+  /**
+   * AT-SPI providers do not all publish the same state vocabulary. GTK commonly
+   * exports SENSITIVE without ENABLED. Treat either active state as the node's
+   * positive capability, but require it on every node up to the target window.
+   * This also prevents a sensitive child under an insensitive container from
+   * being treated as actionable.
+   */
+  private async effectiveEnabled(node: NodeSnapshot, binding: WindowBinding, snapshots: Map<string, NodeSnapshot>, budget: Budget): Promise<boolean> {
+    let currentRef = node.ref;
+    let states = node.states;
+    const visited = new Set<string>();
+    for (let depth = 0; depth < MAX_PARENT_DEPTH; depth += 1) {
+      if (states.includes("defunct") || (!states.includes("enabled") && !states.includes("sensitive"))) return false;
+      if (sameRef(currentRef, binding.ref)) return true;
+      const key = refKey(currentRef);
+      if (visited.has(key)) return false;
+      visited.add(key);
+      let parent = snapshots.get(key)?.parent;
+      if (!parent) {
+        const raw = await this.request(currentRef, PROPERTIES, "Get", "ss", [ACCESSIBLE, "Parent"], budget);
+        const parsed = reference(raw, currentRef.busName);
+        parent = parsed ? await this.canonical(parsed, budget) : undefined;
+      }
+      if (!parent) return false;
+      currentRef = await this.canonical(parent, budget);
+      const cached = snapshots.get(refKey(currentRef));
+      states = cached?.states ?? atSpiStateNames(await this.request(currentRef, ACCESSIBLE, "GetState", undefined, undefined, budget));
+    }
+    return false;
   }
 
   private pruneReferences(): void {
@@ -658,37 +689,86 @@ export class AtSpiDriver implements AtSpiDriverApi {
     const global = binding.geometry!.clientLogical;
     const x = Math.floor(bounds.x + bounds.width / 2 + (coordType === 0 ? global.x : 0));
     const y = Math.floor(bounds.y + bounds.height / 2 + (coordType === 0 ? global.y : 0));
-    let current = binding.ref;
+    const path: NodeSnapshot[] = [target];
+    let current = target;
     const visited = new Set<string>();
-    for (let depth = 0; depth < 24; depth += 1) {
-      if (visited.has(refKey(current))) return false;
-      visited.add(refKey(current));
-      const raw = await this.request(current, COMPONENT, "GetAccessibleAtPoint", "iiu", [x, y, coordType], budget);
-      const parsed = reference(raw, current.busName);
-      if (!parsed) return false;
-      const hit = await this.canonical(parsed, budget);
-      if (sameRef(hit, target.ref)) return true;
-      // A text child inside a button is evidence for the button's hit area.
-      let ancestor: AtSpiObjectReference | undefined = hit;
-      const seen = new Set<string>();
-      for (let step = 0; ancestor && step < MAX_PARENT_DEPTH; step += 1) {
-        if (sameRef(ancestor, target.ref)) return true;
-        if (sameRef(ancestor, binding.ref) || seen.has(refKey(ancestor))) break;
-        seen.add(refKey(ancestor));
-        const cached = snapshots.get(refKey(ancestor));
-        if (cached) ancestor = cached.parent;
-        else {
-          const rawParent = await this.request(ancestor, PROPERTIES, "Get", "ss", [ACCESSIBLE, "Parent"], budget);
-          const parent = reference(rawParent, ancestor.busName);
-          ancestor = parent ? await this.canonical(parent, budget) : undefined;
-        }
+    while (!sameRef(current.ref, binding.ref) && path.length <= MAX_PARENT_DEPTH) {
+      const key = refKey(current.ref);
+      if (visited.has(key)) return false;
+      visited.add(key);
+      let parent = current.parent;
+      if (!parent) {
+        const rawParent = await this.request(current.ref, PROPERTIES, "Get", "ss", [ACCESSIBLE, "Parent"], budget);
+        const parsed = reference(rawParent, current.ref.busName);
+        parent = parsed ? await this.canonical(parsed, budget) : undefined;
       }
-      if (sameRef(hit, current)) return false;
-      const hitNode = snapshots.get(refKey(hit));
-      if (hitNode && !hitNode.interfaces.includes(COMPONENT)) return false;
-      current = hit;
+      if (!parent) return false;
+      const canonicalParent = await this.canonical(parent, budget);
+      const parentNode = snapshots.get(refKey(canonicalParent));
+      if (!parentNode) return false;
+      path.push(parentNode);
+      current = parentNode;
     }
-    return false;
+    if (!sameRef(path[path.length - 1]?.ref, binding.ref)) return false;
+
+    const ancestorKeys = new Set(path.slice(1).map(node => refKey(node.ref)));
+    const isTargetOrDescendant = async (ref: AtSpiObjectReference): Promise<boolean> => {
+      let cursor = ref;
+      const seen = new Set<string>();
+      for (let depth = 0; depth < MAX_PARENT_DEPTH; depth += 1) {
+        if (sameRef(cursor, target.ref)) return true;
+        const key = refKey(cursor);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        let parent = snapshots.get(key)?.parent;
+        if (!parent) {
+          const rawParent = await this.request(cursor, PROPERTIES, "Get", "ss", [ACCESSIBLE, "Parent"], budget);
+          const parsed = reference(rawParent, cursor.busName);
+          parent = parsed ? await this.canonical(parsed, budget) : undefined;
+        }
+        if (!parent) return false;
+        cursor = await this.canonical(parent, budget);
+      }
+      return false;
+    };
+
+    // Probe from the nearest parent outward. An ancestor-only result is not
+    // mistaken for the target, and a provider returning the same container
+    // cannot create an infinite descent loop.
+    for (const candidate of path.slice(1)) {
+      if (!candidate.interfaces.includes(COMPONENT)) continue;
+      const raw = await this.request(candidate.ref, COMPONENT, "GetAccessibleAtPoint", "iiu", [x, y, coordType], budget);
+      const parsed = reference(raw, candidate.ref.busName);
+      if (!parsed) continue;
+      const hit = await this.canonical(parsed, budget);
+      if (await isTargetOrDescendant(hit)) return true;
+      if (ancestorKeys.has(refKey(hit))) continue;
+      return false;
+    }
+
+    // Chromium/Electron can expose a correct Component tree and extents while
+    // GetAccessibleAtPoint stops at a generic ancestor. Component.Contains is
+    // an independent AT-SPI hit-region query. Accept only when the target and
+    // each Component ancestor contain the point, the observed sibling set is
+    // complete, and no sibling contains the same point.
+    for (const candidate of path) {
+      if (!candidate.interfaces.includes(COMPONENT)) continue;
+      const contains = await this.request(candidate.ref, COMPONENT, "Contains", "iiu", [x, y, coordType], budget);
+      if (contains !== true) return false;
+    }
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const branch = path[index];
+      const parent = path[index + 1];
+      const siblings = [...snapshots.values()].filter(node => sameRef(node.parent, parent.ref));
+      if (siblings.length < parent.childCount || !siblings.some(node => sameRef(node.ref, branch.ref))) return false;
+      for (const sibling of siblings) {
+        if (sameRef(sibling.ref, branch.ref)) continue;
+        if (!sibling.interfaces.includes(COMPONENT)) return false;
+        const overlaps = await this.request(sibling.ref, COMPONENT, "Contains", "iiu", [x, y, coordType], budget);
+        if (overlaps === true) return false;
+      }
+    }
+    return true;
   }
 
   private async certifyBounds(node: NodeSnapshot, binding: WindowBinding, control: AtSpiControlInfo, snapshots: Map<string, NodeSnapshot>, budget: Budget): Promise<void> {
@@ -829,6 +909,19 @@ export class AtSpiDriver implements AtSpiDriverApi {
     }
     truncated ||= queue.length > 0;
     this.assertBindingCurrent(binding);
+    // Derive actionability from the node and its complete parent chain. This is
+    // intentionally separate from bounds: a control can be semantically usable
+    // even when pointer targeting cannot be certified.
+    for (const control of controls) {
+      const node = snapshots.get(refKey(control.atspi));
+      if (!node) { control.enabled = false; continue; }
+      try { control.enabled = await this.effectiveEnabled(node, binding, snapshots, budget); }
+      catch (error) {
+        if (budget.signal?.aborted) throw new ComputerUseError("REQUEST_CANCELLED", "AT-SPI 有效控件状态查询已取消");
+        control.enabled = false;
+        diagnostics.push("无法确认控件及父链的 sensitive/enabled 状态，已拒绝操作：" + errorText(error));
+      }
+    }
     // Bounds are independent from semantic capability. The bounded hit tests
     // reject contradictory coordinates, including broken all-zero exporters,
     // without declaring a legitimate (0,0) or negative screen origin invalid.
@@ -910,6 +1003,7 @@ export class AtSpiDriver implements AtSpiDriverApi {
     }
     if (record.invalidReason) throw new ComputerUseError("STALE_OBSERVATION", record.invalidReason);
     const control = this.makeControl(node, record.binding, record.control.depth, record.control.runtimeId);
+    control.enabled = await this.effectiveEnabled(node, record.binding, new Map(), budget);
     if (sameRectangle(node.windowBounds, record.node.windowBounds) && sameRectangle(node.screenBounds, record.node.screenBounds)) {
       control.clientBoundsDip = record.control.clientBoundsDip;
       control.screenBoundsLogical = record.control.screenBoundsLogical;
@@ -946,6 +1040,7 @@ export class AtSpiDriver implements AtSpiDriverApi {
       this.assertBindingCurrent(record.binding);
       if (record.invalidReason) throw new Error(record.invalidReason);
       const after = this.makeControl(node, record.binding, record.control.depth, record.control.runtimeId);
+      after.enabled = await this.effectiveEnabled(node, record.binding, new Map(), budget);
       let verified = false;
       let evidence: string;
       if (expectedText !== undefined) {
@@ -968,6 +1063,50 @@ export class AtSpiDriver implements AtSpiDriverApi {
         evidence: "动作可能已发生，但回读失败；结果未知，不得把读取失败推断为窗口已关闭或自动重试",
         readbackError: [dispatchError ? errorText(dispatchError) : undefined, errorText(error)].filter(Boolean).join("；"),
       };
+    }
+  }
+
+  private async focusResult(record: ControlReference, before: AtSpiControlInfo, executed: boolean | "unknown", signal?: AbortSignal, dispatchError?: unknown): Promise<AtSpiSemanticResult> {
+    const budget = this.budget(undefined, 3_000);
+    try {
+      this.assertBindingCurrent(record.binding);
+      if (record.invalidReason) throw new Error(record.invalidReason);
+      const node = await this.readNode(record.node.ref, budget, 4_096);
+      if (node.role !== record.node.role || node.accessibleId !== record.node.accessibleId ||
+        !sameRef(node.parent, record.node.parent) && (node.parent !== undefined || record.node.parent !== undefined)) {
+        throw new ComputerUseError("STALE_OBSERVATION", "聚焦后的控件身份或父子关系已变化");
+      }
+      await this.verifyAncestry(record, budget);
+      this.assertBindingCurrent(record.binding);
+      if (record.invalidReason) throw new Error(record.invalidReason);
+      const after = this.makeControl(node, record.binding, record.control.depth, record.control.runtimeId);
+      after.enabled = await this.effectiveEnabled(node, record.binding, new Map(), budget);
+      const verified = after.hasKeyboardFocus;
+      let evidence = verified ? "Component.GrabFocus 后读回 focused 状态" : "Component.GrabFocus 已返回，但未从控件状态确认焦点";
+      if (dispatchError) evidence += "；发送返回异常，已只读回查且未重放：" + errorText(dispatchError);
+      if (signal?.aborted) evidence += "；调用已取消，焦点请求可能已发生";
+      return { executed, verified, before, after, evidence, readbackError: dispatchError ? errorText(dispatchError) : undefined };
+    } catch (error) {
+      return { executed, verified: false, before, evidence: "焦点请求可能已发生，但 focused 状态回读失败；不会自动重试", readbackError: [dispatchError ? errorText(dispatchError) : undefined, errorText(error)].filter(Boolean).join("；") };
+    }
+  }
+
+  async focus(window: WindowInfo, runtimeId: string, signal?: AbortSignal): Promise<AtSpiSemanticResult> {
+    const record = this.requireReference(window, runtimeId);
+    const budget = this.budget(signal, 8_000);
+    const { node, control: before } = await this.freshControl(record, budget, true);
+    if (!before.enabled || before.offscreen || !before.keyboardFocusable || !node.interfaces.includes(COMPONENT)) {
+      throw new ComputerUseError("CONTROL_NOT_ACTIONABLE", "控件不可聚焦，或缺少可用的 AT-SPI Component 接口");
+    }
+    this.requireReference(window, runtimeId);
+    let dispatched = false;
+    try {
+      const result = await this.request(node.ref, COMPONENT, "GrabFocus", undefined, undefined, budget, () => { dispatched = true; });
+      if (result !== true) return { executed: false, verified: false, before, evidence: "AT-SPI Component.GrabFocus 明确返回 false" };
+      return await this.focusResult(record, before, true, signal);
+    } catch (error) {
+      if (!dispatched) throw error;
+      return await this.focusResult(record, before, "unknown", signal, error);
     }
   }
 

@@ -15,7 +15,8 @@ export function createLinuxFixture() {
   const state = {
     time: 1_000, windows: [window], monitors, activeHandle: handle as string | undefined, layoutId: monitorLayoutId(monitors), cursor: { x: -1400, y: 120 },
     edges: [] as string[][], moves: [] as Array<Point & { time: number }>, focusCalls: [] as string[], sleepCalls: [] as number[], clipboard: [] as string[],
-    captureCalls: 0, inspectCalls: 0, invokeCalls: 0, setValueCalls: 0, snapshotCalls: 0,
+    captureCalls: 0, inspectCalls: 0, invokeCalls: 0, setValueCalls: 0, focusCalls: 0, snapshotCalls: 0,
+    replaceOnPaste: false,
     treeUnavailable: false, treeTruncated: false, captureFailure: false, invokeVerified: false, text: "", semanticMode: "normal" as "normal" | "unknown" | "close",
     controls: [] as AtSpiControlInfo[],
     snapshotHook: undefined as undefined | (() => void | Promise<void>),
@@ -44,7 +45,18 @@ export function createLinuxFixture() {
       controls.forEach(control => refs.set(control.runtimeId, structuredClone(control)));
       return { controls, observationId, boundsReliable: true, diagnostics: [], generation: "test", windowRef: "fixture-window", readableText: state.text, truncated: state.treeTruncated, treeStatus: state.treeTruncated ? "truncated" : controls.length ? "available" : "empty" } as AtSpiInspection;
     },
-    async readControl(_window, runtimeId, signal) { throwIfCancelled(signal); const control = refs.get(runtimeId); if (!control) throw new ComputerUseError("STALE_OBSERVATION", "fixture stale reference"); const current = { ...structuredClone(control), text: state.text }; return state.readControlHook?.(current) ?? current; },
+    async readControl(_window, runtimeId, signal) { throwIfCancelled(signal); const control = refs.get(runtimeId); if (!control) throw new ComputerUseError("STALE_OBSERVATION", "fixture stale reference"); const current = { ...structuredClone(control), text: state.text, hasKeyboardFocus: control.states.includes("focused") }; return state.readControlHook?.(current) ?? current; },
+    async focus(target, runtimeId, signal) {
+      throwIfCancelled(signal); state.focusCalls++;
+      const before = await atspi.readControl(target, runtimeId, signal);
+      for (const [id, control] of refs) {
+        const states = control.states.filter(value => value !== "focused");
+        if (id === runtimeId) states.push("focused");
+        refs.set(id, { ...control, states, hasKeyboardFocus: id === runtimeId });
+      }
+      const after = await atspi.readControl(target, runtimeId, signal);
+      return { executed: true, verified: after.hasKeyboardFocus, before, after, evidence: "fixture Component.GrabFocus focused readback" };
+    },
     async invoke(target, runtimeId, _action, signal) { throwIfCancelled(signal); state.invokeCalls++; const before = await atspi.readControl(target, runtimeId, signal); if (state.semanticMode === "unknown") return { executed: "unknown", verified: false, before, evidence: "fixture timeout after submission", readbackError: "timed out" }; if (state.semanticMode === "close") state.windows = state.windows.filter(w => w.handle !== target.handle); return { executed: true, verified: state.invokeVerified, before, after: before, evidence: state.invokeVerified ? "fixture explicitly verified" : "fixture invoked with no semantic delta" }; },
     async setValue(target, runtimeId, text, signal) { throwIfCancelled(signal); state.setValueCalls++; const before = await atspi.readControl(target, runtimeId, signal); state.text = text; const after = await atspi.readControl(target, runtimeId, signal); return { executed: true, verified: after.text === text, before, after, evidence: "fixture exact text readback" }; },
     async shutdown() {},
@@ -56,7 +68,7 @@ export function createLinuxFixture() {
     windowControl: { async move(_handle, x, y) { window.clientOrigin = { x, y }; window.windowRect = { left: x, top: y, right: x + window.clientRect.width, bottom: y + window.clientRect.height, width: window.clientRect.width, height: window.clientRect.height }; return { x, y, width: window.clientRect.width, height: window.clientRect.height, floating: true }; }, async resize(_handle, width, height) { window.clientRect.width = width; window.clientRect.height = height; return { ...window.clientOrigin, width, height, floating: true }; }, async geometry() { return { ...window.clientOrigin, width: window.clientRect.width, height: window.clientRect.height, floating: true }; } },
     now: () => state.time,
     sleep: async (ms, signal) => { throwIfCancelled(signal); state.sleepCalls.push(ms); state.time += ms; await state.sleepHook?.(ms); throwIfCancelled(signal); },
-    pasteViaClipboard: text => { state.clipboard.push(text); state.text += text; },
+    pasteViaClipboard: text => { state.clipboard.push(text); },
   });
   const observe = (taskId?: string) => backend.execute({ action: "inspect_window", windowHandle: handle, taskId });
   const inspect = (taskId?: string) => backend.execute({ action: "inspect_controls", windowHandle: handle, taskId });

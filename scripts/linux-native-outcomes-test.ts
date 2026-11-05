@@ -70,7 +70,7 @@ class Fixture {
         });
         return { controls, readableText: this.labels.join("\n"), truncated: this.truncated, diagnostics: [], generation: "fixture-bus", windowRef: "fixture-window", observationId, boundsReliable: false, treeStatus: this.truncated ? "truncated" : controls.length ? "available" : "empty" };
       },
-      readControl: read, invoke: mutate, setValue: mutate, shutdown: async () => {},
+      readControl: read, focus: mutate, invoke: mutate, setValue: mutate, shutdown: async () => {},
     };
     this.backend = new LinuxComputerUseBackend({
       compositor, atspi, sleep: async () => {},

@@ -142,6 +142,31 @@ async function main() {
     const semantic = await f.backend.execute({ action: "set_control_value", windowHandle: f.handle, controlRuntimeId: read.controls![0].runtimeId, text: "你好🌍" });
     assert.equal(semantic.verified, true); assert.equal(f.state.text, "你好🌍"); assert.equal(f.state.captureCalls, 0);
   });
+  await check("set_control_value focuses and replaces Electron Text-only controls through keyboard/clipboard", async f => {
+    f.state.text = "old content that must be replaced";
+    f.state.controls = [{ runtimeId: "electron-text-only", controlType: "Edit", name: "Unicode input", enabled: true, offscreen: false, keyboardFocusable: true, hasKeyboardFocus: false, patterns: ["TextPattern"], text: f.state.text, boundsReliable: false, interfaces: ["org.a11y.atspi.Accessible", "org.a11y.atspi.Component", "org.a11y.atspi.Text"], states: ["editable", "focusable", "sensitive", "visible"] } as any];
+    f.state.inputHook = args => {
+      if (args.includes("29:1") && args.includes("30:1")) f.state.replaceOnPaste = true;
+      if (args.includes("29:1") && args.includes("47:1")) {
+        const pasted = f.state.clipboard.at(-1) ?? "";
+        f.state.text = f.state.replaceOnPaste ? pasted : f.state.text + pasted;
+        f.state.replaceOnPaste = false;
+      }
+    };
+    const read = await f.inspect();
+    const control = read.controls!.find(item => item.name === "Unicode input")!;
+    const value = "中文输入 🧪 café Ω\n第二行";
+    const result = await f.backend.execute({ action: "set_control_value", windowHandle: f.handle, controlRuntimeId: control.runtimeId, text: value });
+    assert.equal(f.state.focusCalls, 1);
+    assert.equal(f.state.setValueCalls, 0);
+    assert.deepEqual(f.state.clipboard, [value]);
+    assert.equal(f.state.text, value);
+    assert.equal(result.executed, true);
+    assert.equal(result.verified, true);
+    assert.equal(result.textReadback, value);
+    assert.deepEqual(f.state.edges, [["key", "29:1", "30:1"], ["key", "30:0", "29:0"], ["key", "29:1", "47:1"], ["key", "47:0", "29:0"]]);
+    assert.equal(f.state.captureCalls, 0);
+  });
   await check("Unicode insertion uses clipboard and preserves semantic uncertainty", async f => {
     const result = await f.backend.execute({ action: "type_text", windowHandle: f.handle, text: "中文 e\u0301 😀" });
     assert.equal(f.state.clipboard[0], "中文 e\u0301 😀"); assert.equal(result.pasted, true); assert.equal(result.verified, false); assert.equal(f.state.captureCalls, 0);
