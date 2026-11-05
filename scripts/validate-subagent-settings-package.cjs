@@ -54,7 +54,7 @@ async function setControl(label, value) {
   await renderer(`(()=>{const el=document.querySelector('[aria-label=${JSON.stringify(label)}]');if(!el)throw Error('Control absent: '+${JSON.stringify(label)});const prototype=el.tagName==='SELECT'?HTMLSelectElement.prototype:el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 }
 async function clickText(selector, text) { await renderer(`(()=>{const el=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!el)throw Error('Button absent: '+${JSON.stringify(text)});el.click()})()`); }
-async function save() { await clickText('.subagent-policy button', 'Save limits'); await until(`document.querySelector('.subagent-policy [role=status]')?.textContent==='Execution limits saved.'`); }
+async function save() { await clickText('.subagent-policy button', '保存设置'); await until(`document.querySelector('.subagent-policy [role=status]')?.textContent==='执行限制已保存。'`); }
 async function prompt(id, text) {
   await renderer(`window.api.db.upsertTask({id:${JSON.stringify(id)},title:${JSON.stringify(id)},updatedAt:Date.now(),modelId:'fixture/parent',permissionMode:'auto',welcomeMode:'working'})`);
   const result = await renderer(`window.api.agent.prompt({taskId:${JSON.stringify(id)},text:${JSON.stringify(text)},modelId:'fixture/parent',permissionMode:'auto',userMessageId:${JSON.stringify(id+'-user')},assistantMessageId:${JSON.stringify(id+'-assistant')}})`);
@@ -69,7 +69,7 @@ async function prompt(id, text) {
     fs.writeFileSync(path.join(config, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-responses', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'local-fixture-only', models } } }));
     fs.writeFileSync(path.join(config, 'auth.json'), '{}');
     fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'parent', enabledModels: models.map(m => 'fixture/'+m.id), memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, proxyUrl: '', retry: { enabled: false } }));
-    fs.writeFileSync(path.join(config, 'subagent.json'), JSON.stringify({ defaultModel: 'fixture/child', roles: { fast: ['fixture/other', 'fixture/child'] }, allowTools: ['read'], maxConcurrency: 2 }));
+    fs.writeFileSync(path.join(config, 'subagent.json'), JSON.stringify({ defaultModel: 'fixture/child', roles: { fast: ['fixture/other'] }, allowTools: ['read'], maxConcurrency: 2 }));
     fs.writeFileSync(path.join(config, 'agents/worker.md'), '---\nname: worker\ndescription: Local acceptance worker\ntools: read\n---\nReturn the requested text.\n');
     const reservation = net.createServer(); await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve)); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
     const env = { ...process.env, HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, 'appdata'), LOCALAPPDATA: path.join(profile, 'localappdata'), PI_CODING_AGENT_DIR: config };
@@ -87,13 +87,13 @@ async function prompt(id, text) {
     assert(report.identity.packaged);
     await renderer(`document.querySelector('.sidebar-user-main').click()`);
     await clickText('.sidebar-popup-item', '设置');
-    await clickText('.settings-nav-btn', '模型');
+    await clickText('.settings-nav-btn', '子代理设置');
     await until(`Boolean(document.querySelector('[data-testid=subagent-policy]'))`);
-    await renderer(`document.querySelector('[aria-label="Restrict subagent models"]').click()`);
-    await renderer(`document.querySelector('[aria-label="Allow fixture/child"]').click()`);
-    await setControl('Subagent run time limit in seconds', '5');
-    await setControl('Subagent time limit policy', 'fixed');
-    await setControl('fast candidate models', 'fixture/other\nfixture/child');
+    await renderer(`document.querySelector('[aria-label="限制子代理可用模型"]').click()`);
+    await renderer(`document.querySelector('[aria-label="允许使用 fixture/child"]').click()`);
+    await setControl('子代理单次运行时限（秒）', '5');
+    await setControl('子代理时限策略', 'fixed');
+    await setControl('为 fast 添加候选模型', 'fixture/child');
     await save();
     const saved = await renderer('window.api.agent.getSubagentConfig()');
     assert.equal(saved.timeoutMs, 5000); assert.equal(saved.timeoutPolicy, 'fixed'); assert.deepEqual(saved.allowedModels, ['fixture/child']); assert.deepEqual(saved.roles.fast, ['fixture/other', 'fixture/child']);
@@ -102,26 +102,29 @@ async function prompt(id, text) {
     assert(conflict, "stale snapshots must not clear the allowed-model list");
     assert.deepEqual((await renderer("window.api.agent.getSubagentConfig()")).allowedModels, ["fixture/child"]);
     const disk = JSON.parse(fs.readFileSync(path.join(config, 'subagent.json'))); assert.equal(disk.maxConcurrency, 2); assert.deepEqual(disk.allowTools, ['read']);
-    await clickText('.settings-nav-btn', '系统设置'); await clickText('.settings-nav-btn', '模型');
-    await until(`document.querySelector('[aria-label="Subagent run time limit in seconds"]')?.value==='5'`);
-    assert.equal(await renderer(`document.querySelector('[aria-label="Allow fixture/child"]').checked`), true);
-    await setControl("Subagent run time limit in seconds", "");
-    assert.equal(await renderer(`document.querySelector('[aria-label="Subagent run time limit in seconds"]').value`), "");
-    await clickText(".subagent-policy button", "Save limits");
-    await until(`document.querySelector(".subagent-policy [role=status]")?.textContent.includes("whole number")`);
+    await clickText('.settings-nav-btn', '系统设置'); await clickText('.settings-nav-btn', '子代理设置');
+    await until(`document.querySelector('[aria-label="子代理单次运行时限（秒）"]')?.value==='5'`);
+    assert.equal(await renderer(`document.querySelector('[aria-label="允许使用 fixture/child"]').checked`), true);
+    await setControl("子代理单次运行时限（秒）", "");
+    assert.equal(await renderer(`document.querySelector('[aria-label="子代理单次运行时限（秒）"]').value`), "");
+    await clickText(".subagent-policy button", "保存设置");
+    await until(`document.querySelector(".subagent-policy [role=status]")?.textContent.includes("整数秒")`);
     assert.equal((await renderer("window.api.agent.getSubagentConfig()")).timeoutMs, 5000);
-    await setControl("Subagent run time limit in seconds", "5");
-    await evaluate(`(async()=>{const image=await settingsWindow.capturePage();process.mainModule.require('node:fs').writeFileSync(${JSON.stringify(path.join(out, 'settings.png'))},image.toPNG());return true})()`);
-    assert.match(await prompt('fixed-limit', 'RUN_ALLOWED'), /CHILD_OK[\s\S]*Run time limit: 5s \(settings\)/);
+    await setControl("子代理单次运行时限（秒）", "5");
+    const fixedOutput = await prompt('fixed-limit', 'RUN_ALLOWED');
+    assert.match(fixedOutput, /CHILD_OK/);
+    assert.match(fixedOutput, /Run time limit: 5s \(settings\)/);
     const beforeBlocked = report.childRequests;
     assert.match(await prompt('blocked-model', 'BLOCK_OTHER'), /unavailable|blocked/); assert.equal(report.childRequests, beforeBlocked);
-    await setControl('Subagent time limit policy', 'allow-override'); await save();
-    assert.match(await prompt('override-limit', 'RUN_ALLOWED'), /超时[\s\S]*Run time limit: 1s \(invocation\)/);
-    await renderer(`document.querySelector('[aria-label="Allow fixture/child"]').click()`); await save();
+    await setControl('子代理时限策略', 'allow-override'); await save();
+    const timeoutOutput = await prompt('override-limit', 'RUN_ALLOWED');
+    assert.match(timeoutOutput, /超时/);
+    assert.match(timeoutOutput, /Run time limit: 1s \(invocation\)/);
+    await renderer(`document.querySelector('[aria-label="允许使用 fixture/child"]').click()`); await save();
     assert.deepEqual((await renderer('window.api.agent.getSubagentConfig()')).allowedModels, []);
     const beforeEmpty = report.childRequests;
     assert.match(await prompt('empty-list', 'RUN_ALLOWED'), /no available/); assert.equal(report.childRequests, beforeEmpty);
-    await renderer(`document.querySelector('[aria-label="Restrict subagent models"]').click()`); await save();
+    await renderer(`document.querySelector('[aria-label="限制子代理可用模型"]').click()`); await save();
     assert.equal((await renderer('window.api.agent.getSubagentConfig()')).allowedModels, undefined);
     // Disable transport retries so this proves the native agent retry decision.
     const settingsPath = path.join(config, 'settings.json');
@@ -130,6 +133,10 @@ async function prompt(id, text) {
     fs.writeFileSync(settingsPath, JSON.stringify(recoverySettings));
     assert.match(await prompt('transient-recovery', 'RECOVER_TRANSIENT'), /CHILD_OK/);
     assert.equal(report.recoveryRequests, 2, 'packaged child must recover from the real billing-scope 503');
+    report.window = await evaluate(`({visible:settingsWindow.isVisible(),minimized:settingsWindow.isMinimized(),bounds:settingsWindow.getBounds()})`);
+    await evaluate(`settingsWindow.webContents.setBackgroundThrottling(false);true`);
+    await renderer(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))`);
+    await evaluate(`(async()=>{const image=await settingsWindow.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});process.mainModule.require('node:fs').writeFileSync(${JSON.stringify(path.join(out, 'settings.png'))},image.toPNG());return true})()`);
     report.status = 'passed';
     console.log('PASS packaged UI -> IPC -> subagent.json -> real worker: saved/reloaded controls, role order, allowlist/empty/reset, fixed time survives shorter call, override times out, unrelated config preserved, billing-scope 503 recovered');
   } catch (error) { report.status = 'failed'; report.error = error.stack; console.error(error.stack); process.exitCode = 1; }

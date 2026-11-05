@@ -14,7 +14,7 @@ index 3901bfc4bc6dee0eb45a209dbcbdb59d6c55d054..25baa46eb1eeba01c626cede2baf78b5
              if (!slot)
                  continue;
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index d33b8069b80bc454b0db59a221aba9332d522bf3..154f05a984257cfeb04ce2f20095a0a8bb26b088 100644
+index d33b8069b80bc454b0db59a221aba9332d522bf3..3cbc89a9264f6ecb58c08cd776be5f145e101d9b 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
 @@ -15,7 +15,6 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
@@ -33,7 +33,7 @@ index d33b8069b80bc454b0db59a221aba9332d522bf3..154f05a984257cfeb04ce2f20095a0a8
 +    // down. Only an explicit 5xx database_unavailable code overrides the generic
 +    // billing veto; real quota/budget errors above always remain terminal.
 +    if (/billing/i.test(errorMessage)) {
-+        const response = /^\s*(?:500|502|503|504):\s*(\{[\s\S]*\})\s*$/.exec(errorMessage);
++        const response = /^\s*(?:[^\r\n{}]+ API error \((?:500|502|503|504)\)|(?:500|502|503|504)):\s*(\{[\s\S]*\})\s*$/.exec(errorMessage);
 +        if (!response)
 +            return false;
 +        try {

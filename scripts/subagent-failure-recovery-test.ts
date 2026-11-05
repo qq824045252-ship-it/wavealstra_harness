@@ -27,14 +27,15 @@ async function test(name: string, run: () => Promise<number | void> | void) {
     console.error(`FAIL ${name}: ${String(error)}`);
   }
 }
-const requestSchema = z.object({
-  model: z.string(),
-  messages: z.array(z.object({ role: z.string(), content: z.unknown().optional() }).passthrough()),
-});
+const requestSchema = z.union([
+  z.object({ model: z.string(), messages: z.array(z.object({ role: z.string(), content: z.unknown().optional() }).passthrough()) }),
+  z.object({ model: z.string(), input: z.array(z.object({ type: z.string().optional(), output: z.unknown().optional() }).passthrough()) }),
+]);
 type Scenario = "recover" | "exhaust" | "quota" | "reorder" | "drift" | "cancel";
+type FixtureApi = "openai-completions" | "openai-responses";
 
-async function runWorker(scenario: Scenario): Promise<number> {
-  const agentDir = join(root, scenario);
+async function runWorker(scenario: Scenario, api: FixtureApi): Promise<number> {
+  const agentDir = join(root, `${scenario}-${api}`);
   const workspace = join(agentDir, "workspace");
   mkdirSync(workspace, { recursive: true });
   writeFileSync(join(workspace, "evidence.txt"), "EXISTING_WORK\n");
@@ -49,10 +50,13 @@ async function runWorker(scenario: Scenario): Promise<number> {
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const body = requestSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       requests++;
-      const continuation = body.messages.some(message => message.role === "tool");
+      const toolResults = "messages" in body
+        ? body.messages.filter(message => message.role === "tool").map(message => message.content)
+        : body.input.filter(item => item.type === "function_call_output").map(item => item.output);
+      const continuation = toolResults.length > 0;
       if (continuation) {
         continuations++;
-        assert(body.messages.some(message => typeof message.content === "string" && message.content.includes("EXISTING_WORK")), "retry retains tool result");
+        assert(toolResults.some(content => typeof content === "string" && content.includes("EXISTING_WORK")), "retry retains tool result");
         if (scenario === "quota" || scenario === "exhaust" || scenario === "cancel" || (scenario === "recover" && continuations === 1)) {
           response.writeHead(scenario === "quota" ? 429 : 503, { "content-type": "application/json" });
           response.end(JSON.stringify(scenario === "quota"
@@ -64,6 +68,17 @@ async function runWorker(scenario: Scenario): Promise<number> {
         rewriteConfig(scenario === "drift");
       }
       response.writeHead(200, { "content-type": "text/event-stream" });
+      if (api === "openai-responses") {
+        const output = [
+          { type: "message", id: `msg_${requests}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: continuation ? "RECOVERED_OK" : "WORK_STARTED", annotations: [] }] },
+          ...continuation ? [] : [{ type: "function_call", id: "read_once", call_id: "read-once", name: "read", arguments: JSON.stringify({ path: "evidence.txt" }) }],
+        ];
+        for (const [index, item] of output.entries()) {
+          for (const type of ["response.output_item.added", "response.output_item.done"]) response.write(`data: ${JSON.stringify({ type, output_index: index, item })}\n\n`);
+        }
+        response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `response_${requests}`, model: body.model, status: "completed", output, usage: { input_tokens: 20, output_tokens: 10 } } })}\n\n`);
+        return;
+      }
       const chunk = (delta: unknown, finish_reason: string | null) => response.write(`data: ${JSON.stringify({
         id: `fixture-${requests}`, object: "chat.completion.chunk", created: 1, model: body.model,
         choices: [{ index: 0, delta, finish_reason }],
@@ -86,7 +101,7 @@ async function runWorker(scenario: Scenario): Promise<number> {
     compat: { supportsStore: false, supportsDeveloperRole: false },
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
-  const config = { providers: { fixture: { api: "openai-completions", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-fixture-only", models: [model] } } };
+  const config = { providers: { fixture: { api, baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-fixture-only", models: [model] } } };
   const modelsPath = join(agentDir, "models.json");
   writeFileSync(modelsPath, JSON.stringify(config));
   rewriteConfig = drift => {
@@ -155,6 +170,8 @@ try {
     });
     for (const [errorMessage, expected] of [
       [databaseMessage, true],
+      [`fixture API error (503): ${JSON.stringify(databaseError)}`, true],
+      [`fixture API error (401): ${JSON.stringify(databaseError)}`, false],
       [`503: ${JSON.stringify({ error: databaseError })}`, true],
       ["503: Billing service unavailable", false],
       [databaseMessage.replace("database_unavailable", "insufficient_quota"), false],
@@ -168,8 +185,10 @@ try {
     }
     assert.equal(isRetryableAssistantError(failedMessage(databaseMessage, "aborted")), false);
   });
-  for (const scenario of ["recover", "exhaust", "quota", "reorder", "drift", "cancel"] satisfies Scenario[]) {
-    await test(`real worker ${scenario}`, () => runWorker(scenario));
+  for (const api of ["openai-completions", "openai-responses"] satisfies FixtureApi[]) {
+    for (const scenario of ["recover", "exhaust", "quota", "reorder", "drift", "cancel"] satisfies Scenario[]) {
+      await test(`real worker ${api} ${scenario}`, () => runWorker(scenario, api));
+    }
   }
 } finally {
   const output = resolve("out/diagnostics/subagent-failure-recovery");
