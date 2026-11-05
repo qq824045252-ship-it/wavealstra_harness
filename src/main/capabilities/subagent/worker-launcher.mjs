@@ -134,7 +134,14 @@ pi.ModelRuntime.create = async (...args) => {
             const patterns = settings.getEnabledModels();
             if (patterns !== undefined) {
               const { scopedModels } = await pi.resolveModelScopeWithDiagnostics(patterns, runtime);
-              if (!scopedModels.some(({ model: allowed }) => allowed.provider === model.provider && allowed.id === model.id)) {
+              if (!scopedModels.some(({ model: allowed }) => allowed.provider === model.provider && allowed.id === model.id) &&
+                  !patterns.some((pattern) => {
+                    // A pattern naming this exact model is the authorization, even when this child cannot
+                    // resolve it into the scoped list (unknown virtual ids report a no-match diagnostic).
+                    // getModel plus the config comparison below still rejects a model this child cannot serve.
+                    const base = String(pattern).replace(/:(?:max|xhigh|high|medium|low|none)$/i, "");
+                    return base === `${model.provider}/${model.id}` || base === model.id;
+                  })) {
                 throw new Error(`子代理模型 ${model.provider}/${model.id} 已不在当前允许范围内`);
               }
             }
