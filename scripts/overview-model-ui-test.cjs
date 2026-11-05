@@ -32,13 +32,24 @@ runRendererFixture({ name: 'overview-model-ui', width: 420, height: 640 }, async
   );
   await fixture.loadFile(html);
 
-  // 主 Agent 1 + 运行中 3 + 完成态 1
-  await wait(`document.querySelectorAll('.ro-model').length === 5`);
+  // 主 Agent 1 + 运行中 4 + 完成态 1
+  await wait(`document.querySelectorAll('.ro-model').length === 6`);
 
   const text = await evaluate('document.body.innerText');
   for (const expected of ['主 Agent', '代码审查', '资料检索', '测试 runner', 'DeepSeek V4.1 Flash · Open Design', 'GPT-5 · Codex', 'Claude Opus 4 · Claude']) {
     assert(text.includes(expected), `面板应显示「${expected}」`);
   }
+
+  // displayName（允许中文）：运行中与完成态都优先展示，id 仍用于操作/悬停
+  assert(text.includes('皮卡丘'), '运行中子代理显示 displayName（皮卡丘）');
+  assert(text.includes('杰尼龟'), '完成态子代理显示 displayName（杰尼龟）');
+  const runningNames = await evaluate(`[...document.querySelectorAll('.ro-list--subagents .ro-name')].map((el) => el.textContent.trim())`);
+  assert(runningNames.includes('皮卡丘'), `displayName 出现在运行中行（${runningNames.join(' | ')}）`);
+  assert(!runningNames.some((name) => name.includes('情报分析')), '有 displayName 时运行中行以 displayName 取代 role');
+  const nameTitle = await evaluate(`document.querySelector('.ro-list--subagents .ro-name[title]')?.title ?? ''`);
+  assert(nameTitle === 'id: sa-ui-4', `displayName 行的 title 保留完整 id（${nameTitle}）`);
+  const doneNames = await evaluate(`[...document.querySelectorAll('.ro-row--done .ro-name')].map((el) => el.textContent.trim())`);
+  assert(doneNames.some((name) => name.includes('杰尼龟')), `完成态行显示 displayName（${doneNames.join(' | ')}）`);
 
   // 用户反馈的回归点：模型名放在智能体下方独立一行，完整展示（不被截断成「· 0…」）
   const mainLayout = await evaluate(

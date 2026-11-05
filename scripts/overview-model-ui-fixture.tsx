@@ -62,7 +62,7 @@ state.tasks = [
               tool: "subagent",
               summary: "subagent",
               status: "success",
-              output: "\n> subagent: sa-ui-done\nResolved model: openai/gpt-5; thinking: high\n\n审查完成：未发现阻断问题",
+              output: "\n> subagent-name: 杰尼龟\n> subagent: sa-ui-done\nResolved model: openai/gpt-5; thinking: high\n\n审查完成：未发现阻断问题",
             },
           },
         ],
@@ -77,6 +77,8 @@ state.tasks = [
       subagent({ subagentId: "sa-ui-1", role: "代码审查", resolvedModel: "openai/gpt-5", actualModel: "GPT-5 · Codex", modelSource: "invocation", lastTask: "审查 auth 补丁" }),
       subagent({ subagentId: "sa-ui-2", role: "资料检索", resolvedModel: "anthropic/claude-opus-4", modelSource: "role", lastTask: "检索成对凭证规范" }),
       subagent({ subagentId: "sa-ui-3", role: "测试 runner", resolvedModel: "deepseek/deepseek-v4.1-flash", modelSource: "parent", lastTask: "跑 test:all" }),
+      // displayName：纯显示字段（允许中文），渲染层优先于 role/id
+      subagent({ subagentId: "sa-ui-4", role: "情报分析", displayName: "皮卡丘", resolvedModel: "openai/gpt-5", modelSource: "role", lastTask: "汇总竞品情报" }),
     ],
     onEvent: () => () => {},
   },
