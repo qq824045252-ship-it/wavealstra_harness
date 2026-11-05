@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="652" viewBox="0 0 1160 652" role="img" aria-labelledby="title desc">
+  <title id="title">Terra 缓存诊断：可复现的工具声明扰动与稳定请求偶发未命中</title>
+  <desc id="desc">上半部分显示 tool_search 激活工具后，默认 Pi 将新工具加入顶层 tools，新增工具边界的五次请求命中率为零到39.21%，提前加载和增量声明保持较高命中。下半部分显示工具表与历史前缀不变时仍观测到一次原始缓存零值，同一请求体和全部请求头重发五次均命中，具体服务端机制未定。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#415574"/></marker>
+    <style>text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#18273d} .title{font-size:25px;font-weight:700}.head{font-size:18px;font-weight:700}.body{font-size:15px}.small{font-size:13px;fill:#53647d}.code{font-family:Consolas,monospace;font-size:15px}.line{stroke:#415574;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1160" height="652" rx="18" fill="#f5f7fb"/>
+  <text x="32" y="43" class="title">工具声明变化解释了部分损失，不能解释全部零缓存</text>
+  <text x="32" y="70" class="small">2026-11-05 · gpt-6.1-terra · 60 次受控调用 + 10 次原样重发 · 原始 usage 与 Pi 计量逐次核验</text>
+  <rect x="24" y="92" width="1112" height="260" rx="12" fill="#ffffff" stroke="#ccd6e4"/>
+  <text x="44" y="123" class="head">已验证：工具声明策略影响新增工具时的缓存复用</text>
+  <rect x="44" y="146" width="250" height="93" rx="10" fill="#edf3fc" stroke="#a8bddb"/>
+  <text x="61" y="173" class="code">tool_search → setActiveTools</text>
+  <text x="61" y="199" class="code">system.toolsAdded = [B]</text>
+  <text x="61" y="223" class="small">历史请求和当前源码对应</text>
+  <path d="M294 191 H329" class="line"/>
+  <rect x="341" y="146" width="328" height="93" rx="10" fill="#fff1e5" stroke="#e5b782"/>
+  <text x="360" y="175" class="body">Pi 默认重新发送完整工具表</text>
+  <text x="360" y="202" class="code">tools: [A] → [A, B]</text>
+  <text x="360" y="224" class="small">input 的既有消息前缀保持不变</text>
+  <path d="M669 191 H706" class="line"/>
+  <rect x="718" y="146" width="392" height="93" rx="10" fill="#fff1e5" stroke="#e5b782"/>
+  <text x="737" y="174" class="head">新增工具边界：0%–39.21%</text>
+  <text x="737" y="201" class="body">五轮中三轮为零，另两轮保留部分缓存</text>
+  <text x="737" y="224" class="small">不能表述为“一改 tools 就必然全部清零”</text>
+  <rect x="44" y="258" width="1066" height="73" rx="9" fill="#edf8f2" stroke="#add5bd"/>
+  <text x="62" y="286" class="body">对照：提前声明 A+B，新增工具时命中率中位数 98.68%；使用 additional_tools，为 97.70%。</text>
+  <text x="62" y="311" class="small">增量臂同时保留中途 system 消息；新工具实际调用、计算结果正确。仅验证本次路由与新增工具情形。</text>
+  <rect x="24" y="370" width="1112" height="241" rx="12" fill="#ffffff" stroke="#ccd6e4"/>
+  <text x="44" y="402" class="head">已验证：声明与前缀稳定仍可能未命中，具体原因未定位</text>
+  <rect x="44" y="423" width="310" height="103" rx="10" fill="#edf3fc" stroke="#a8bddb"/>
+  <text x="62" y="450" class="body">顶层字段和全部请求头未变</text>
+  <text x="62" y="477" class="body">既有 input 前缀完整保留</text>
+  <text x="62" y="503" class="code">cached_tokens: 0</text>
+  <path d="M354 475 H391" class="line"/>
+  <rect x="403" y="423" width="341" height="103" rx="10" fill="#edf8f2" stroke="#add5bd"/>
+  <text x="422" y="451" class="body">原 JSON 与 SDK 可见请求头重发</text>
+  <text x="422" y="477" class="head">五次均恢复缓存命中</text>
+  <text x="422" y="503" class="small">排除“这份内容稳定触发零值”的说法</text>
+  <path d="M744 475 H781" class="line" stroke-dasharray="5 4"/>
+  <rect x="793" y="423" width="317" height="103" rx="10" fill="#faf7ef" stroke="#b99b51" stroke-dasharray="6 4"/>
+  <text x="812" y="451" class="head">未验证的服务端环节</text>
+  <text x="812" y="477" class="body">缓存放置、逐出、路由或计量</text>
+  <text x="812" y="503" class="small">当前证据不能在这些假说间归责</text>
+  <text x="44" y="561" class="body">历史 Terra #6 同样保持工具表和消息前缀；本轮另用合成数据复现，避免仅凭相邻工具调用推因果。</text>
+  <text x="44" y="587" class="small">实线为本地请求及返回结果证据；虚线框为尚未定位的内部机制。图不表示服务端实际 token 排列顺序。</text>
+  <text x="32" y="637" class="small">来源：cache-independent-20261105/summary.json、history-evidence.json；此轮仅诊断，未修改产品行为或模型配置。</text>
+</svg>

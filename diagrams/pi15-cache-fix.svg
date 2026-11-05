@@ -4,21 +4,21 @@
 <rect width="1000" height="680" fill="#f7f9fc"/>
 <g font-family="Microsoft YaHei,Arial,sans-serif" fill="#182635">
 <text x="32" y="42" font-size="25" font-weight="700">工具发现后，保留已经发送的前缀</text>
-<text x="32" y="72" font-size="14">已验证：Pi 1.5.0 · Magpie → codex/gpt-6.1-terra · 3轮 / 30次真实请求 · 无重试</text>
+<text x="32" y="72" font-size="14">已验证：Pi 1.5.0 · Magpie → codex/gpt-6.1-terra · 3轮 / 30次真实请求 · 无客户端重试</text>
 <rect x="32" y="96" width="448" height="268" rx="10" fill="#fff1ef" stroke="#d6a19b"/>
 <rect x="520" y="96" width="448" height="268" rx="10" fill="#eaf6ef" stroke="#83b899"/>
 <text x="52" y="127" font-size="18" font-weight="700">对照：完整 tools 随发现而增长</text>
 <text x="540" y="127" font-size="18" font-weight="700">产品：已知 Codex 路由继承增量能力</text>
-<text x="52" y="165" font-size="15">顶层 tools = [sum, tool_search]</text>
-<text x="540" y="165" font-size="15">input 首段 additional_tools = [sum, search]</text>
+<text x="52" y="165" font-size="15">顶层 tools = [fixture_sum, tool_search]</text>
+<text x="540" y="165" font-size="13">input 首段 additional_tools = [fixture_sum, tool_search]</text>
 <path d="M245 180 V215" stroke="#526273" stroke-width="2" marker-end="url(#arrow)"/>
 <path d="M735 180 V215" stroke="#526273" stroke-width="2" marker-end="url(#arrow)"/>
-<text x="52" y="243" font-size="15">tool_search 发现并加载 weighted</text>
-<text x="540" y="243" font-size="15">tool_search 发现并加载 weighted</text>
+<text x="52" y="243" font-size="15">tool_search 发现并加载 fixture_weighted</text>
+<text x="540" y="243" font-size="15">tool_search 发现并加载 fixture_weighted</text>
 <path d="M245 257 V288" stroke="#526273" stroke-width="2" marker-end="url(#arrow)"/>
 <path d="M735 257 V288" stroke="#526273" stroke-width="2" marker-end="url(#arrow)"/>
-<text x="52" y="313" font-size="15">顶层 tools = [sum, tool_search, weighted]</text>
-<text x="540" y="313" font-size="15">input 末端追加 additional_tools = [weighted]</text>
+<text x="52" y="305" font-size="13">顶层 tools = [fixture_sum, tool_search,<tspan x="52" dy="19">fixture_weighted]</tspan></text>
+<text x="540" y="313" font-size="13">input 末端追加 additional_tools = [fixture_weighted]</text>
 <text x="52" y="342" font-size="14" fill="#87392f">实际观测：tools 字段变化</text>
 <text x="540" y="342" font-size="14" fill="#206442">实际观测：旧 input 前缀和顶层字段保留</text>
 <text x="32" y="399" font-size="18" font-weight="700">工具加载后的首个请求：上游原始 cached_tokens</text>

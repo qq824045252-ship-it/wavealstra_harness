@@ -1,0 +1,12 @@
+ts	phase	decision	why	evidence	result
+2026-11-05T03:36:56Z	frame	复用既有服务并保留入口修改	main-only；服务外另造定时器不能满足持久恢复	out/diagnostics/pstack-native-entry/status.txt	已快进main，原修改已恢复
+2026-11-05T03:36:57Z	baseline	策略模型终端基线通过	先确认已有实现再补缺口	out/diagnostics/pstack-native-entry	selection=0 skills=0 terminal=0
+2026-11-05T03:36:58Z	design	拒绝工具外层内存调度器；采用服务内状态	独立方案遗漏持久恢复；原task与新task用判别联合	src/main/cron/CronService.ts	google方案部分采用；fast/parent超时
+2026-11-05T03:36:59Z	implementation	父接管失败代理的调度半成品	代理400退出，缺DTO和测试且仍有cancel fallback	src/main/cron/CronService.ts	未验收，修复中
+2026-11-05T04:20:52.001Z	verify	使用真实终端及本地模型夹具	不把 fake PTY、SDK seam 或编译当作实际执行	scripts/task-terminal-live-test.ts; scripts/local-workflow-integration-test.ts	ConPTY 与真实 AgentService/Pi 请求通过
+2026-11-05T04:20:52.001Z	root-cause	保留已退出 PTY 句柄并修正 ConPTY 枚举时序	跳过已退出 shell 的 kill 会遗留 conhost；关闭控制台后才枚举会 AttachConsole 失败	patches/node-pty.patch; terminal-live.txt	实时子进程终止与用户终端保留通过
+2026-11-05T04:20:52.001Z	root-cause	修正 headless 包入口而非增加 import 兼容分支	发布包 module 字段指向不存在路径；Node ESM 与打包器入口不同	patches/@xterm__headless.patch	ESM、CJS、Vite 构建通过
+2026-11-05T04:20:52.001Z	skills	修改既有 poteto-mode 与角色说明	Meta Skill 评估 improve-existing；不新增同类技能	out/diagnostics/pstack-native-entry/installed-backup/manifest.json	原字节和安装后 hash 已保存
+2026-11-05T04:20:52.001Z	review	父执行 thermos，独立评审未完成	Gemini 显式 reasoning 被拒；默认 reasoning worker 退出 code=1	subagent tool receipts	未伪称多模型评审通过
+2026-11-05T04:20:52.001Z	release	定向提交并暂存无关变更后构建	发行包不能夹带未提交的 Pi lock 修复	d732e27; out/diagnostics/pstack-native-entry/release-stash.txt	已开始对已提交代码验收
+2026-11-05T04:33:45.241Z	release	接受 0.1.99 实际 Windows 包并推送 main	287 项门禁、实包工具链和快捷方式回读通过	out/diagnostics/pstack-native-entry/accepted-release.json; 001521f	未重启现有实例；无关源码和入口诊断资料已恢复

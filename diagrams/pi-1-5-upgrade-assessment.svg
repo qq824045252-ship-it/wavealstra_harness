@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="610" viewBox="0 0 1160 610" role="img" aria-labelledby="title desc">
+<title id="title">先升级 Pi 1.5，再重测剩余缓存问题</title><desc id="desc">发布包代码对照已确认工具声明变化；产品迁移与真机验收仍待执行。升级包含补丁迁移和工具参数兼容，不承诺解决服务端偶发未命中或所有子代理失败。</desc>
+<defs><style>text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#1c2d42}.title{font-size:25px;font-weight:700}.h{font-size:18px;font-weight:700}.p{font-size:15px}.s{font-size:13px;fill:#506379}.a{stroke:#456987;stroke-width:2;fill:none;marker-end:url(#arrow)}</style><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#456987"/></marker></defs>
+<rect width="1160" height="610" rx="16" fill="#f5f8fc"/>
+<text x="30" y="43" class="title">先迁移运行时基线，再决定哪些缓存改动仍然需要</text>
+<text x="30" y="71" class="s">实线：已读发布包源码或已跑离线对照　　虚线：尚待产品实施与验收</text>
+<rect x="28" y="96" width="342" height="174" rx="10" fill="#ffffff" stroke="#b5c8dc"/>
+<text x="46" y="130" class="h">当前 Pi 1.3.0</text>
+<text x="46" y="161" class="p">删除或重定义后失去增量锚定</text>
+<text x="46" y="188" class="p">再新增工具 → 顶层 tools 又变化</text>
+<text x="46" y="222" class="s">同一合成历史，实际调用发布包函数</text>
+<text x="46" y="247" class="s">此处验证声明行为，不是缓存命中率</text>
+<path class="a" d="M373 180H405"/>
+<rect x="421" y="96" width="342" height="174" rx="10" fill="#edf8f1" stroke="#95bca1"/>
+<text x="439" y="130" class="h">目标 Pi 1.5.0</text>
+<text x="439" y="161" class="p">additions：只折叠到最后非新增变更</text>
+<text x="439" y="188" class="p">changes：沿历史传递工具变更</text>
+<text x="439" y="222" class="s">新增工具不再反复改写既有声明前缀</text>
+<text x="439" y="247" class="s">另含工具顺序稳定与 Terra 目录更新</text>
+<rect x="795" y="96" width="337" height="174" rx="10" fill="#fff4e6" stroke="#d4b88b"/>
+<text x="813" y="130" class="h">迁移中必须适配</text>
+<text x="813" y="161" class="p">coding-agent 补丁存在不适用 hunk</text>
+<text x="813" y="188" class="p">Pi 根入口不再导出 TypeBox</text>
+<text x="813" y="222" class="s">参数改用 pi-schema 校验与转换</text>
+<text x="813" y="247" class="s">主进程与打包 worker 版本需一致</text>
+<path class="a" d="M594 272V304"/>
+<rect x="28" y="320" width="342" height="168" rx="10" fill="#eef5ff" stroke="#638bb2" stroke-dasharray="6 4"/>
+<text x="46" y="354" class="h">独立升级，不夹带缓存改造</text>
+<text x="46" y="385" class="p">对齐依赖、重制必要嵌入补丁</text>
+<text x="46" y="412" class="p">适配导入与校验行为</text>
+<text x="46" y="447" class="s">保留原来的实验与 1.3 证据作基线</text>
+<text x="46" y="473" class="s">当前仅评估，项目依赖尚未修改</text>
+<path class="a" d="M373 403H405"/>
+<rect x="421" y="320" width="342" height="168" rx="10" fill="#eef5ff" stroke="#638bb2" stroke-dasharray="6 4"/>
+<text x="439" y="354" class="h">产品与真实包验收</text>
+<text x="439" y="385" class="p">工具搜索、权限、恢复与压缩</text>
+<text x="439" y="412" class="p">Code Mode、MCP OAuth、子代理</text>
+<text x="439" y="447" class="s">核对 Magpie 的实际 compat 与请求</text>
+<text x="439" y="473" class="s">官方 Terra 目录不等于自定义路由能力</text>
+<path class="a" d="M766 403H779"/>
+<rect x="795" y="320" width="337" height="168" rx="10" fill="#eef5ff" stroke="#638bb2" stroke-dasharray="6 4"/>
+<text x="813" y="354" class="h">同用例重测，再谈剩余改造</text>
+<text x="813" y="385" class="p">新增 / 删除 / 重定义工具</text>
+<text x="813" y="412" class="p">稳定声明、WS 恢复、任务完成率</text>
+<text x="813" y="447" class="s">不把跨版本首次请求当作连续缓存</text>
+<text x="813" y="473" class="s">不预先承诺偶发 miss 或超时已修复</text>
+<rect x="28" y="514" width="1104" height="68" rx="10" fill="#ffffff" stroke="#b5c8dc"/>
+<text x="46" y="543" class="h">评估结论：值得先升级；属于需要适配和验收的运行时迁移。</text>
+<text x="46" y="568" class="s">已完成：发布包与补丁检查、真实工具声明函数离线对照。未完成：1.5 产品构建、桌面验收、真实模型缓存复测。</text>
+</svg>

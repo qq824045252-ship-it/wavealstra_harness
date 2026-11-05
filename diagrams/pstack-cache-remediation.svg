@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="668" viewBox="0 0 1160 668" role="img" aria-labelledby="t d">
+<title id="t">pstack 与缓存问题的分层处理建议</title><desc id="d">将子代理执行、工具声明与传输恢复分成三个改进位置。每行左侧是已经观察的事实，右侧是讨论中的方案和验收。保留必要压缩，评价任务完成而非单独追求缓存百分比。</desc>
+<defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#45617e"/></marker><style>text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#182b41}.title{font-size:25px;font-weight:700}.h{font-size:18px;font-weight:700}.p{font-size:15px}.s{font-size:13px;fill:#52657b}.arrow{stroke:#45617e;stroke-width:2;fill:none;marker-end:url(#a)}</style></defs>
+<rect width="1160" height="668" rx="16" fill="#f5f8fc"/>
+<text x="30" y="40" class="title">解决可控的重复工作，同时保留必要的缓存失效边界</text>
+<text x="30" y="68" class="s">左侧：历史记录或源码已核验　　虚线框：建议设计，尚未实施　　不承诺零缓存失效</text>
+<text x="38" y="107" class="h">已观察的问题</text><text x="414" y="107" class="h">建议的控制位置与行为</text><text x="853" y="107" class="h">验收目标</text>
+<rect x="26" y="125" width="315" height="137" rx="10" fill="#ffffff" stroke="#bbcbdc"/>
+<text x="43" y="156" class="h">子代理：高命中仍超时</text><text x="43" y="185" class="p">已有 timeout、过程消息和 usage</text><text x="43" y="210" class="p">两个 scout 多轮探索后仍未完成</text><text x="43" y="239" class="s">timeout、HTTP 400、进程退出分开处理</text>
+<path d="M343 191H386" class="arrow"/>
+<rect x="400" y="125" width="394" height="137" rx="10" fill="#edf6ff" stroke="#648bb5" stroke-dasharray="6 4"/>
+<text x="418" y="156" class="h">子代理 runtime</text><text x="418" y="185" class="p">任务范围与预算 → 软收尾 → 硬终止</text><text x="418" y="210" class="p">持续收集消息 → 固化结果 → 清理 worker</text><text x="418" y="239" class="s">返回已证实结论、证据引用与未完成项</text>
+<path d="M795 191H829" class="arrow"/>
+<rect x="843" y="125" width="291" height="137" rx="10" fill="#eff8f2" stroke="#b5d7bf"/>
+<text x="861" y="156" class="h">未完成也可接手</text><text x="861" y="185" class="p">有证据的结果不丢失</text><text x="861" y="210" class="p">失败不冒充完成</text><text x="861" y="239" class="s">减少后续重复调查</text>
+<rect x="26" y="280" width="315" height="137" rx="10" fill="#ffffff" stroke="#bbcbdc"/>
+<text x="43" y="311" class="h">工具：顶层声明中途变化</text><text x="43" y="340" class="p">tool_search 激活新工具</text><text x="43" y="365" class="p">当前兼容路径回发完整 tools</text><text x="43" y="394" class="s">Terra 增量声明已有微实验支持</text>
+<path d="M343 346H386" class="arrow"/>
+<rect x="400" y="280" width="394" height="137" rx="10" fill="#edf6ff" stroke="#648bb5" stroke-dasharray="6 4"/>
+<text x="418" y="311" class="h">按已验证路由声明能力</text><text x="418" y="340" class="p">保留中途 system + additional_tools</text><text x="418" y="365" class="p">删除、schema 重定义显式记录重建边界</text><text x="418" y="394" class="s">固定入口的 Code Mode 另行验证</text>
+<path d="M795 346H829" class="arrow"/>
+<rect x="843" y="280" width="291" height="137" rx="10" fill="#eff8f2" stroke="#b5d7bf"/>
+<text x="861" y="311" class="h">真实产品路径可用</text><text x="861" y="340" class="p">新增工具正确执行</text><text x="861" y="365" class="p">权限变化立即生效</text><text x="861" y="394" class="s">新增声明保留历史复用</text>
+<rect x="26" y="435" width="315" height="137" rx="10" fill="#ffffff" stroke="#bbcbdc"/>
+<text x="43" y="466" class="h">传输：WebSocket 失败后下降</text><text x="43" y="495" class="p">provider 指纹相同</text><text x="43" y="520" class="p">最终发送与恢复过程仍有盲区</text><text x="43" y="549" class="s">不能据此判定缓存服务内部故障</text>
+<path d="M343 501H386" class="arrow"/>
+<rect x="400" y="435" width="394" height="137" rx="10" fill="#edf6ff" stroke="#648bb5" stroke-dasharray="6 4"/>
+<text x="418" y="466" class="h">连接恢复与脱敏追踪</text><text x="418" y="495" class="p">logical request → attempt → WS / SSE</text><text x="418" y="520" class="p">关联 continuation、最终形状与原始 usage</text><text x="418" y="549" class="s">只读计算指纹；不重复执行已有工具副作用</text>
+<path d="M795 501H829" class="arrow"/>
+<rect x="843" y="435" width="291" height="137" rx="10" fill="#eff8f2" stroke="#b5d7bf"/>
+<text x="861" y="466" class="h">恢复正确且可解释</text><text x="861" y="495" class="p">不丢、不重复有效结果</text><text x="861" y="520" class="p">区分已知变更与未知 miss</text><text x="861" y="549" class="s">不因单次 miss 自动切模型</text>
+<rect x="26" y="591" width="1108" height="55" rx="9" fill="#fff5e5" stroke="#ddc29a"/>
+<text x="44" y="614" class="p">保留必要压缩：摘要替换历史是可解释的边界，不把删去的旧输入都算成缓存损失。</text>
+<text x="44" y="636" class="s">共同指标：任务验收结果、完成耗时、全部已观测输入与输出、重做量；缓存命中率用于解释成本来源。</text>
+</svg>

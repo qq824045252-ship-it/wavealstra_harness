@@ -1,0 +1,15 @@
+ts	phase	decision	why	evidence	result
+2026-11-05T13:46:00+08:00	frame	独立升级Pi1.5并修复主任务缓存，不修改子代理策略	用户授权升级和零缓存修复，明确排除子代理业务	goal-871b60fc-494f-4595-989a-abf3d9ccd07b	open
+2026-11-05T13:46:00+08:00	baseline	保留既有产物和未跟踪文件，记录当前HEAD为1fa634c	共享主分支含其他工作，不能混入本次发布	git:1fa634c	VERIFIED
+2026-11-05T13:46:00+08:00	baseline	升级前类型门禁通过，脚本历史错误不计作新增	先区分升级回归与已有基线	job:pwsh-d15adf2187404248	VERIFIED exit0
+2026-11-05T13:46:00+08:00	plan	补丁迁移与缓存行为验证分配独立写范围，lead处理依赖和产品适配	减少共享文件冲突，先验证失败再实现	team:task-3;team:task-4	open
+2026-11-05T13:46:00+08:00	cache	不以显式缓存选项或自动重发掩盖稳定前缀下的零缓存	旧样本raw cached_tokens明确为零，重复命中不能解释首次机制	out/diagnostics/cache-independent-20261105/findings.md	VERIFIED boundary
+2026-11-05T06:51:14.800Z	migration	升级六个直接Pi依赖并迁移两份补丁和Durable接口	只支持1.5，保留原有作用域与恢复行为	out/diagnostics/pi15-cache-fix/migration/migration-report.md	tests green
+2026-11-05T06:51:14.800Z	cache	仅已知Magpie Codex Responses路由继承增量工具能力，显式配置优先	工具发现不能重写已有请求前缀	scripts/pi15-cache-regression-test.ts	6 groups pass
+2026-11-05T06:51:14.800Z	trace	保留raw计量存在性并区分零、缺失与失败	未知计量不能被当作显式零	scripts/cache-request-trace-test.ts	tests green
+2026-11-05T06:51:14.800Z	live	主实验30请求保留全部零值与首请求	对照工具扩展边界3次零，产品对应3次17408；稳定边界双方均非零	out/diagnostics/pi15-cache-fix/verification/live-review.md	VERIFIED limited sample
+2026-11-05T06:51:14.800Z	gate	逐项修复首次全门禁的5个失败，未修改基线	区分升级契约变化与真实产品默认目录漂移	job:pwsh-b7eb5ae2b90045e7	289 pass;0 fail
+2026-11-05T06:51:14.800Z	source	提交限定源码与测试为2270d88并准备源码快照	并发界面工作存在，原计划隔离构建输入	git:2270d88	committed;product build not started
+2026-11-05T06:51:14.800Z	scope	按用户最新要求仅测试，停止构建、发布和快捷方式步骤	用户明确要求不要构建，仅测试	goal-871b60fc-494f-4595-989a-abf3d9ccd07b@revision2	no product build;no packaged acceptance
+2026-11-05T06:51:14.800Z	verify	复测类型、实际Pi协议和已有图片Worker资产	新测试分支完成后保留可回读退出码	out/diagnostics/pi15-cache-fix/final-test-exits.json	all exit0;174 historical script diagnostics;0 new
+2026-11-05T06:51:14.800Z	evidence	更正图中无重试为无客户端重试并写真实工具名	网关内部尝试不可见，避免扩大已证范围	diagrams/pi15-cache-fix.svg	report wording corrected

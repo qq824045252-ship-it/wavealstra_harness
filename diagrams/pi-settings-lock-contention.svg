@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="410" viewBox="0 0 1080 410">
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker></defs>
+<rect width="1080" height="410" rx="12" fill="#f8fafc"/>
+<g font-family="Segoe UI,Microsoft YaHei,sans-serif" fill="#172033">
+<text x="30" y="37" font-size="23" font-weight="700">Pi 设置锁竞争：工作树隔离后，全局设置仍共享</text>
+<text x="30" y="64" font-size="14" fill="#475569">已验证：两个原生 SettingsManager 读进程即可复现 EPERM，无模型请求、无子代理调度。</text>
+<g fill="#e0edff" stroke="#93b6e8"><rect x="30" y="94" width="175" height="60" rx="8"/><rect x="30" y="183" width="175" height="60" rx="8"/></g>
+<text x="47" y="119" font-size="16">worker A / 工作树 A</text><text x="47" y="142" font-size="13">读取模型准入设置</text>
+<text x="47" y="208" font-size="16">worker B / 工作树 B</text><text x="47" y="231" font-size="13">读取模型准入设置</text>
+<path d="M205 124H230V169H255M205 213H230V169" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="255" y="111" width="244" height="118" rx="8" fill="#fff" stroke="#94a3b8"/>
+<text x="273" y="139" font-size="16">同一全局 settings.json</text><text x="273" y="166" font-size="14">FileSettingsStorage.withLock</text><text x="273" y="190" font-size="14">mkdir settings.json.lock</text><text x="273" y="213" font-size="14">读完后 rmdir 释放锁</text>
+<path d="M499 169H540" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="540" y="111" width="225" height="118" rx="8" fill="#fff3df" stroke="#d79a36"/>
+<text x="558" y="139" font-size="16">并发 mkdir 返回 EPERM</text><text x="558" y="167" font-size="14">旧重试条件仅包含 ELOCKED</text><text x="558" y="194" font-size="14">EPERM 立即进入设置错误队列</text><text x="558" y="216" font-size="12">具体内核 / 杀软影响未做归因</text>
+<path d="M765 169H805" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="805" y="111" width="244" height="118" rx="8" fill="#ffe9e7" stroke="#d88c85"/>
+<text x="823" y="140" font-size="16">assertModelAdmission</text><text x="823" y="168" font-size="14">发现 drainErrors() 非空</text><text x="823" y="195" font-size="14">拒绝调用，当前 worker 失败</text>
+<rect x="30" y="274" width="1019" height="106" rx="8" fill="#e6f4ec" stroke="#74aa8b"/>
+<text x="48" y="302" font-size="16" font-weight="600">修复：补入现有有限重试，不绕过设置读取或模型准入</text>
+<text x="48" y="329" font-size="14">仅 Windows + EPERM + syscall=mkdir + 当前 settings.json.lock 路径；沿用最多 10 次、间隔 20ms 的原有预算。</text>
+<text x="48" y="357" font-size="14">边界：持续权限失败仍报错；高频持续竞争仍可能耗尽预算并返回 ELOCKED。本次并行 worker 集成复跑通过。</text>
+</g></svg>

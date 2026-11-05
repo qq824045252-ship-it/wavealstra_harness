@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc">
+<title id="title">Pi MCP 摘要变化与推荐修复边界</title>
+<desc id="desc">已验证的当前链路：连接完成后 instructions 参与 serverSummary，下一次 before_agent_start 更新 mcp_servers；在不支持会话中系统消息的适配路径中，变化合并到请求第零项，使后续相同历史不再属于连续前缀。推荐仅让摘要依赖配置描述，实时 instructions 继续供工具搜索和命名空间查询使用。</desc>
+<defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#475569"/></marker><marker id="g" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#15803d"/></marker></defs>
+<rect width="1120" height="660" fill="#f8fafc"/>
+<g font-family="Segoe UI, Microsoft YaHei, sans-serif" fill="#0f172a">
+<text x="30" y="38" font-size="23" font-weight="700">稳定摘要的数据源，保留实时工具目录</text>
+<text x="30" y="64" font-size="14" fill="#475569">实线表示源码与离线探针已验证；绿色虚线表示推荐方案，尚未修改产品实现。</text>
+<rect x="24" y="86" width="1072" height="228" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="44" y="117" font-size="17" font-weight="700">当前机制 · 已验证</text>
+<g font-size="14">
+<rect x="44" y="143" width="226" height="78" rx="7" fill="#fff7ed" stroke="#fdba74"/>
+<text x="59" y="168">连接完成后赋值</text><text x="59" y="192" font-family="Consolas, monospace">connection.instructions</text>
+<path d="M270 181H307" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+<rect x="318" y="143" width="208" height="78" rx="7" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="334" y="168" font-family="Consolas, monospace">serverSummary()</text><text x="334" y="192">配置为空时读取实时说明</text>
+<path d="M526 181H564" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+<rect x="575" y="143" width="209" height="78" rx="7" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="591" y="168" font-family="Consolas, monospace">before_agent_start</text><text x="591" y="192">重新渲染 mcp_servers</text>
+<path d="M784 181H822" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+<rect x="833" y="143" width="240" height="78" rx="7" fill="#fff1f2" stroke="#fda4af"/>
+<text x="850" y="168">适配器折叠系统消息</text><text x="850" y="192">请求 items[0] 随之变化</text>
+<text x="44" y="253">适用条件：supportsMidConvoSystemMessages 为 false 的路径。</text>
+<text x="44" y="280" fill="#9f1239">探针结果：25 项历史逐项相同；第 0 项变化，sharedItems = 0。这里未测量服务端命中 token。</text>
+</g>
+<rect x="24" y="334" width="1072" height="300" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="44" y="367" font-size="17" font-weight="700">推荐边界 · 只取消摘要的 live fallback</text>
+<g font-size="14">
+<rect x="44" y="393" width="226" height="78" rx="7" fill="#f0fdf4" stroke="#86efac"/>
+<text x="59" y="419" font-family="Consolas, monospace">entry.config.description</text><text x="59" y="443">缺省为空，不等待连接</text>
+<path d="M270 431H307" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#g)"/>
+<rect x="318" y="393" width="208" height="78" rx="7" fill="#f0fdf4" stroke="#86efac"/>
+<text x="334" y="419" font-family="Consolas, monospace">serverSummary()</text><text x="334" y="443">只由配置决定</text>
+<path d="M526 431H564" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#g)"/>
+<rect x="575" y="393" width="209" height="78" rx="7" fill="#f0fdf4" stroke="#86efac"/>
+<text x="591" y="419" font-family="Consolas, monospace">mcp_servers</text><text x="591" y="443">仍反映显式配置变化</text>
+<path d="M784 431H822" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#g)"/>
+<rect x="833" y="393" width="240" height="78" rx="7" fill="#f0fdf4" stroke="#86efac"/>
+<text x="850" y="419">后台连接不再改写摘要</text><text x="850" y="443">消除本次缓存断点</text>
+<rect x="44" y="505" width="226" height="70" rx="7" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="59" y="532" font-family="Consolas, monospace">connection.instructions</text><text x="59" y="554">继续实时更新</text>
+<path d="M270 541H307" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+<rect x="318" y="505" width="466" height="70" rx="7" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="334" y="532" font-family="Consolas, monospace">tool.namespace.instructions</text><text x="334" y="554">tool_search 检索 / codemode describeNamespace 查询</text>
+<text x="44" y="606" fill="#475569">不冻结服务器集合或执行检查。新增、禁用及 exposure 变更仍应生效，也仍可能改变请求前缀。</text>
+</g>
+</g>
+</svg>
