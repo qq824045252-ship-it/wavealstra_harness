@@ -15,7 +15,7 @@ export function createLinuxFixture() {
   const state = {
     time: 1_000, windows: [window], monitors, activeHandle: handle as string | undefined, layoutId: monitorLayoutId(monitors), cursor: { x: -1400, y: 120 },
     edges: [] as string[][], moves: [] as Array<Point & { time: number }>, focusCalls: [] as string[], sleepCalls: [] as number[], clipboard: [] as string[],
-    captureCalls: 0, inspectCalls: 0, invokeCalls: 0, setValueCalls: 0, focusCalls: 0, snapshotCalls: 0,
+    captureCalls: 0, inspectCalls: 0, invokeCalls: 0, setValueCalls: 0, atspiFocusCalls: 0, snapshotCalls: 0,
     replaceOnPaste: false,
     treeUnavailable: false, treeTruncated: false, captureFailure: false, invokeVerified: false, text: "", semanticMode: "normal" as "normal" | "unknown" | "close",
     controls: [] as AtSpiControlInfo[],
@@ -47,7 +47,7 @@ export function createLinuxFixture() {
     },
     async readControl(_window, runtimeId, signal) { throwIfCancelled(signal); const control = refs.get(runtimeId); if (!control) throw new ComputerUseError("STALE_OBSERVATION", "fixture stale reference"); const current = { ...structuredClone(control), text: state.text, hasKeyboardFocus: control.states.includes("focused") }; return state.readControlHook?.(current) ?? current; },
     async focus(target, runtimeId, signal) {
-      throwIfCancelled(signal); state.focusCalls++;
+      throwIfCancelled(signal); state.atspiFocusCalls++;
       const before = await atspi.readControl(target, runtimeId, signal);
       for (const [id, control] of refs) {
         const states = control.states.filter(value => value !== "focused");

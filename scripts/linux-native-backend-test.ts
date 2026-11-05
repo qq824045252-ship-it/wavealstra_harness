@@ -157,7 +157,7 @@ async function main() {
     const control = read.controls!.find(item => item.name === "Unicode input")!;
     const value = "中文输入 🧪 café Ω\n第二行";
     const result = await f.backend.execute({ action: "set_control_value", windowHandle: f.handle, controlRuntimeId: control.runtimeId, text: value });
-    assert.equal(f.state.focusCalls, 1);
+    assert.equal(f.state.atspiFocusCalls, 1);
     assert.equal(f.state.setValueCalls, 0);
     assert.deepEqual(f.state.clipboard, [value]);
     assert.equal(f.state.text, value);
