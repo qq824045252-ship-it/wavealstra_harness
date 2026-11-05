@@ -150,6 +150,7 @@ const NETWORK_TESTS = new Set([
 const DATASET_TESTS = new Set([
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
+  "test:task-terminal:live",
 ]);
 
 /**

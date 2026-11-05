@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ModelReasoningPreferenceDto } from "../src/shared/model-metadata";
 import type { SubagentModelOptionLike } from "../src/shared/subagent-model-config";
-import { resolveSubagentSelection, type SubagentSelectionInput } from "../src/main/capabilities/subagent/selection";
+import { assignDiverseModels, resolveSubagentSelection, type SubagentSelectionInput } from "../src/main/capabilities/subagent/selection";
 
 const availableModels: SubagentModelOptionLike[] = [
   { id: "native/effort", metadata: { source: "pi", reasoningOptions: [{ type: "effort", values: ["none", "low", "high", "xhigh", "ultra"] }] } },
@@ -80,4 +80,57 @@ const input: SubagentSelectionInput = { availableModels, defaults: { ...defaults
 const before = JSON.stringify(input);
 resolveSubagentSelection(input);
 assert.equal(JSON.stringify(input), before);
+
+// ---- subagent.json roles：产品侧解析角色名 → 候选清单（不依赖外部脚本）----
+const roles = {
+  fast: ["native/effort", "native/plain"],
+  strong: ["native/missing", "native/toggle"],
+  unavailable: ["native/gone", "other/model"],
+  diverse: ["native/effort", "native/toggle", "native/plain"],
+};
+const roleSelect = (overrides: Partial<SubagentSelectionInput> = {}) =>
+  resolveSubagentSelection({ availableModels, defaults, roles, ...overrides });
+
+const fastRole = roleSelect({ invocation: { model: "fast" } });
+assert.equal(fastRole.model, "native/effort");
+assert.equal(fastRole.modelSource, "role-map");
+assert.equal(fastRole.modelRole, "fast");
+assert.deepEqual(fastRole.roleCandidates, ["native/effort", "native/plain"]);
+// 第一个候选不可用时按优先级顺延，而不是报错
+const strongRole = roleSelect({ invocation: { model: "strong" } });
+assert.equal(strongRole.model, "native/toggle");
+assert.equal(strongRole.modelSource, "role-map");
+// 候选全部不可用：明确报错，不回退到全局默认模型
+assert.throws(() => roleSelect({ invocation: { model: "unavailable" } }), /no available model.*native\/gone/s);
+// 未配置的角色名仍按显式 provider/id 校验
+assert.throws(() => roleSelect({ invocation: { model: "fast" }, roles: {} }), /provider\/id/);
+assert.throws(() => select({ invocation: { model: "fast" } }), /provider\/id/);
+// 角色名可与推理偏好一起使用，校验仍走现有 metadata
+assert.equal(roleSelect({ invocation: { model: "fast", reasoning: { effort: "low" } } }).thinking, "low");
+// diverse 是扇出保留角色名：单任务直接报错，不退化为同模型
+assert.throws(() => roleSelect({ invocation: { model: "diverse" } }), /requires a parallel or chain fan-out/);
+
+const diverseModels = assignDiverseModels({ candidates: roles.diverse, availableModels, taskCount: 3, mode: "parallel" });
+assert.deepEqual(diverseModels, ["native/effort", "native/toggle", "native/plain"]);
+assert.equal(new Set(diverseModels).size, 3);
+// 去重 + 跳过不可用候选后仍能凑够数量
+assert.deepEqual(
+  assignDiverseModels({ candidates: ["native/effort", "native/effort", "native/gone", "native/off"], availableModels, taskCount: 2, mode: "chain" }),
+  ["native/effort", "native/off"],
+);
+// 数量不足：报错并说明差距，绝不静默重复同一模型
+assert.throws(
+  () => assignDiverseModels({ candidates: ["native/effort", "native/gone"], availableModels, taskCount: 2, mode: "parallel" }),
+  /needs 2 distinct available models.*got 1/s,
+);
+assert.throws(
+  () => assignDiverseModels({ candidates: [], availableModels, taskCount: 2, mode: "parallel" }),
+  /roles\.diverse/,
+);
+assert.throws(() => assignDiverseModels({
+  candidates: ["one/routed/shared-model", "two/shared-model"],
+  availableModels: [{ id: "one/routed/shared-model" }, { id: "two/shared-model" }],
+  taskCount: 2, mode: "parallel",
+}), /got 1/);
+assert.throws(() => assignDiverseModels({ candidates: roles.diverse, availableModels, taskCount: 1, mode: "parallel" }), /at least two/);
 console.log("subagent-selection tests passed");

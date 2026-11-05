@@ -64,7 +64,7 @@ export class PromptExecutionCoordinator {
       run.waitingFollowUp = false;
       if (run.cancelled) {
         callbacks.settleCancelled(request);
-        return { queued: false };
+        return { queued: false, cancelled: true };
       }
       return await callbacks.execute(request, run, run.markReady);
     } finally {

@@ -1,3 +1,4 @@
+import type { CronExecutionSettings } from "./cron-execution";
 import type { TaskModelRecommendations } from "./task-model-recommendations";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
@@ -718,6 +719,7 @@ export interface AgentPromptRequest {
 }
 
 export interface AgentPromptResult {
+  cancelled?: boolean;
   /** true 表示消息只完成入队，Agent 仍在执行；不是 assistant 完成信号。 */
   queued: boolean;
   /**
@@ -1773,7 +1775,7 @@ export interface AuthLogoutResult {
   models: ModelInfoDto[];
 }
 
-export interface CronJobDto {
+export interface CronJobDto extends CronExecutionSettings {
   id: string;
   name: string;
   prompt: string;
@@ -1809,6 +1811,8 @@ export interface CronJobDto {
   nextRunAt?: number;
   /** 所属项目；缺省 = 全局自动化（不绑定项目） */
   projectId?: string;
+  /** 已开始的执行次数，来自运行记录，编辑计划不会重置。 */
+  runCount?: number;
 }
 
 export interface CronRunDto {

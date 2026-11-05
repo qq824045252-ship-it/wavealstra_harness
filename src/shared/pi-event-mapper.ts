@@ -123,6 +123,8 @@ function summarizeToolInput(tool: string, input: unknown): { summary: string; de
 
 function isDangerousTool(tool: string, input: unknown): boolean {
   if (tool === "execute_code") return true;
+  if (tool === "terminal_exec") return !["list", "read"].includes(String((input as { action?: string })?.action));
+  if (tool === "automation_exec") return !["list", "runs"].includes(String((input as { action?: string })?.action));
   if (tool === "browser_exec") {
     const action = String((input as { action?: string })?.action ?? "");
     return action === "click" || action === "fill" || action === "press";
@@ -138,6 +140,7 @@ function isDangerousTool(tool: string, input: unknown): boolean {
 }
 
 function isSideEffectTool(tool: string, input: unknown): boolean {
+  if (tool === "terminal_exec" || tool === "automation_exec") return isDangerousTool(tool, input);
   if ((MUTATING_BUILTIN_TOOLS as readonly string[]).includes(tool)) {
     return true;
   }

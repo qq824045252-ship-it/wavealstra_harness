@@ -13,6 +13,7 @@ import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextPro
 import { durableDomainTools } from "./durable/DurableDomainTools";
 import { durableText } from "./durable/DurableTurnProjection";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
+import type { LocalWorkflowBridge } from "../capabilities/local-workflow-extension";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
 import { resolveConversationBranchSourceRoots } from "./session-branch";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
@@ -557,6 +558,11 @@ export class AgentService {
   private readonly userFonts = new UserFontsStore();
   /** Product-owned native tools. This is not a user-installable extension catalog. */
   readonly builtinCapabilities = new BuiltinCapabilityRuntime();
+  private localWorkflow?: Omit<LocalWorkflowBridge, "getPermissionMode">;
+
+  setLocalWorkflowServices(services: Omit<LocalWorkflowBridge, "getPermissionMode">): void {
+    this.localWorkflow = services;
+  }
   private readonly videoGenerationJobs = new VideoGenerationJobs(join(getMyBuddyDir(), "video-generation-jobs.json"));
   private readonly mediaCapabilityServices: MediaCapabilityServices;
   private readonly browserAutomation = new BrowserAutomationService(() => browserHost);
@@ -4037,7 +4043,7 @@ export class AgentService {
     await this.memoryWriteQueue;
     if (run.cancelled) {
       this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId);
-      return { queued: false };
+      return { queued: false, cancelled: true };
     }
     const permissionMode = req.permissionMode;
     const workspaceBefore = await snapshotWorkspace(cwd);
@@ -4401,14 +4407,14 @@ export class AgentService {
       }
       if (run.cancelled) {
         this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId);
-        return { queued: false };
+        return { queued: false, cancelled: true };
       }
       await entry.session.prompt(promptText, options);
       // The provider can retain a transport error when abort closes its SSE
       // iterator. The accepted user cancellation owns this turn's outcome.
       if (run.cancelled) {
         this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
-        return { queued: false };
+        return { queued: false, cancelled: true };
       }
       if (!preflightObserved && !wasStreaming) {
         options.preflightResult?.("started");
@@ -4458,7 +4464,7 @@ export class AgentService {
     } catch (err) {
       if (run.cancelled) {
         this.settleCancelledAssistantTurn(req.taskId, req.assistantMessageId, false);
-        return { queued: false };
+        return { queued: false, cancelled: true };
       }
       recordPromptFailureRecovery({ failures: this.executionFailures, taskId: req.taskId, executionId: conversationExecutionId,
         assistantMessageId: req.assistantMessageId, modelKey: this.sessionModelKey(entry.session) ?? intendedModelId, error: err });
@@ -4905,6 +4911,7 @@ export class AgentService {
    * 避免「当前正在生成回复」永久挡 regenerate/发消息。
    */
   async abort(taskId: string): Promise<void> {
+    this.localWorkflow?.terminal.closeTask(taskId);
     if (this.durableBots?.owns(taskId)) return this.durableBots.abort(taskId);
     if (this.manualCompactions.has(taskId)) { this.abortCompaction(taskId); return; }
     return this.abortTask(taskId);
@@ -5681,6 +5688,7 @@ export class AgentService {
         };
       },
       builtinCapability: {
+        localWorkflow: this.localWorkflow ? { ...this.localWorkflow, getPermissionMode: getLivePermissionMode } : undefined,
         runtime: this.builtinCapabilities,
         consult: (id, input, signal, onUpdate) => {
           const config = this.builtinCapabilities.config().multiModelConsult;

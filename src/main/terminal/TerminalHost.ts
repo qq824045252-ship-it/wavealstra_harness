@@ -41,8 +41,9 @@ import { applyShellIsolationSpawnContext } from "../security/TaskExecutionIsolat
 import { ByteBoundedRingBuffer } from "./RingBuffer";
 import { prependEnvPath } from "./terminal-env";
 import { canonicalPathKey } from "../platform/paths";
-import { defaultShellForPlatform, useConpty } from "../platform/terminal";
-import { killProcessTree } from "../platform/processes";
+import { defaultShellForPlatform, terminateTerminalProcess, useConpty } from "../platform/terminal";
+
+import { TerminalScreen, type TerminalScreenResult } from "./TerminalScreen";
 
 /** 每 owner ring buffer 字节上限（256KB） */
 export const DEFAULT_RING_MAX_BYTES = 256 * 1024;
@@ -169,6 +170,7 @@ interface TerminalSession {
   pending: string[];
   pendingBytes: number;
   flushTimer: NodeJS.Timeout | null;
+  screen?: TerminalScreen;
 }
 
 /** 平台默认 shell（Windows 优先 pwsh，回退 powershell.exe）——实现见 platform/terminal。 */
@@ -225,13 +227,25 @@ export class TerminalHost {
     return this.sessions.has(ownerKeyOf(owner));
   }
 
+  getInfo(owner: TerminalOwner): TerminalSessionInfo | null {
+    const session = this.sessions.get(ownerKeyOf(owner));
+    if (!session) return null;
+    return this.toInfo(session);
+  }
+
+  async readScreen(req: { owner: TerminalOwner }): Promise<TerminalScreenResult | null> {
+    const session = this.sessions.get(ownerKeyOf(req.owner));
+    if (!session || !session.screen) return null;
+    return session.screen.read();
+  }
+
   /**
    * 打开（spawn 或 attach）：
    * - 存活会话 → 回放 ring 尾部（data 事件），更新尺寸，返回信息
    * - 死亡/不存在 → spawn 新会话
    * resolveCwd / resolveWorkspaceCwd 抛错（任务已删除 / 空间未绑定文件夹）→ 异常向上抛，invoke 拒绝。
    */
-  open(req: TerminalOpenRequest): TerminalSessionInfo {
+  open(req: TerminalOpenRequest, trackScreen?: boolean): TerminalSessionInfo {
     const owner = ownerFromRequest(req);
     if (!owner) throw new Error("terminal:open 必须提供 taskId 或 workspaceId");
     const key = ownerKeyOf(owner);
@@ -244,40 +258,48 @@ export class TerminalHost {
       this.replay(existing);
       return this.toInfo(existing);
     }
-    if (existing?.alive && existing.pty) this.killSession(existing, "killed");
-    const session = this.spawn(owner, req.cols, req.rows, resolvedCwd);
+    if (existing) this.killSession(existing, "killed");
+    const session = this.spawn(owner, req.cols, req.rows, resolvedCwd, trackScreen);
     return this.toInfo(session);
   }
 
   /** 杀当前会话并 spawn 新会话（新 sessionId、清空 ring） */
-  restart(req: TerminalOpenRequest): TerminalSessionInfo {
+  restart(req: TerminalOpenRequest, trackScreen?: boolean): TerminalSessionInfo {
     const owner = ownerFromRequest(req);
     if (!owner) throw new Error("terminal:restart 必须提供 taskId 或 workspaceId");
     const key = ownerKeyOf(owner);
     const existing = this.sessions.get(key);
     if (existing) this.killSession(existing, "killed");
-    return this.toInfo(this.spawn(owner, req.cols, req.rows));
+    return this.toInfo(this.spawn(owner, req.cols, req.rows, undefined, trackScreen));
   }
 
-  input(req: TerminalInputRequest): void {
+  input(req: TerminalInputRequest): boolean {
     const owner = ownerFromRequest(req);
-    if (!owner) return;
+    if (!owner) return false;
     const session = this.sessions.get(ownerKeyOf(owner));
-    if (!session || !session.alive || !session.pty) return;
-    if (session.sessionId !== req.sessionId) return; // 旧会话输入丢弃
+    if (!session?.alive || !session.pty || session.sessionId !== req.sessionId) return false;
     try {
       session.pty.write(req.data);
+      return true;
     } catch {
-      /* pty 已关闭等竞态：忽略 */
+      return false;
     }
   }
 
-  resize(req: TerminalResizeRequest): void {
+  resize(req: TerminalResizeRequest): boolean {
     const owner = ownerFromRequest(req);
-    if (!owner) return;
+    if (!owner) return false;
     const session = this.sessions.get(ownerKeyOf(owner));
-    if (!session || session.sessionId !== req.sessionId || !session.pty) return;
-    this.resizePty(session, req.cols, req.rows);
+    if (!session?.alive || session.sessionId !== req.sessionId || !session.pty) return false;
+    return this.resizePty(session, req.cols, req.rows);
+  }
+
+  release(owner: TerminalOwner): void {
+    const key = ownerKeyOf(owner);
+    const session = this.sessions.get(key);
+    if (!session) return;
+    this.killSession(session, "killed");
+    this.sessions.delete(key);
   }
 
   close(req: TerminalCloseRequest): void {
@@ -312,10 +334,12 @@ export class TerminalHost {
     for (const session of this.sessions.values()) {
       if (session.flushTimer) clearTimeout(session.flushTimer);
       session.flushTimer = null;
-      if (session.pty) {
+      session.screen?.dispose();
+      session.screen = undefined;
+      if (session.pty && !session.killRequested) {
         session.killRequested = true;
         try {
-          session.pty.kill();
+          terminateTerminalProcess(session.pty);
         } catch {
           /* ignore */
         }
@@ -330,7 +354,7 @@ export class TerminalHost {
   /* 内部实现                                                            */
   /* ------------------------------------------------------------------ */
 
-  private spawn(owner: TerminalOwner, cols: number, rows: number, resolvedCwd?: string): TerminalSession {
+  private spawn(owner: TerminalOwner, cols: number, rows: number, resolvedCwd?: string, trackScreen?: boolean): TerminalSession {
     // 1) 权威 cwd：失败（任务不存在 / 空间未绑定文件夹）→ 抛错，不降级
     const cwd = resolvedCwd ?? this.resolveOwnerCwd(owner);
     // 2) shell：terminalShellPath 终端偏好 → 平台默认
@@ -366,6 +390,7 @@ export class TerminalHost {
       pending: [],
       pendingBytes: 0,
       flushTimer: null,
+      screen: trackScreen ? new TerminalScreen(cols, rows) : undefined,
     };
 
     let pty: PtyLike;
@@ -393,9 +418,11 @@ export class TerminalHost {
     this.sessions.set(ownerKeyOf(owner), session);
 
     pty.onData((data) => {
+      if (session.killRequested || this.sessions.get(ownerKeyOf(owner)) !== session) return;
       session.ring.push(data);
       session.pending.push(data);
       session.pendingBytes += Buffer.byteLength(data, "utf8");
+      session.screen?.write(data);
       this.scheduleFlush(session);
     });
     pty.onExit((event) => {
@@ -420,48 +447,33 @@ export class TerminalHost {
     return this.deps.resolveWorkspaceCwd(owner.id);
   }
 
-  private resizePty(session: TerminalSession, cols: number, rows: number): void {
+  private resizePty(session: TerminalSession, cols: number, rows: number): boolean {
     const nextCols = Math.max(2, Math.floor(cols) || session.cols);
     const nextRows = Math.max(1, Math.floor(rows) || session.rows);
-    if (nextCols === session.cols && nextRows === session.rows) return;
-    session.cols = nextCols;
-    session.rows = nextRows;
+    if (nextCols === session.cols && nextRows === session.rows) return true;
     try {
       session.pty?.resize(nextCols, nextRows);
+      session.screen?.resize(nextCols, nextRows);
+      session.cols = nextCols;
+      session.rows = nextRows;
+      return true;
     } catch {
-      /* ignore */
+      return false;
     }
   }
 
   private killSession(session: TerminalSession, reason: "killed" | "disposed"): void {
+    const alreadyClosing = session.killRequested;
     session.killRequested = true;
     if (session.flushTimer) {
       clearTimeout(session.flushTimer);
       session.flushTimer = null;
     }
-    const pid = session.pty?.pid;
-    if (pid && pid > 1) {
-      try {
-        killProcessTree({
-          pid,
-          kill: () => {
-            try {
-              session.pty?.kill();
-            } catch {
-              /* ignore */
-            }
-          },
-        });
-      } catch {
-        /* ignore */
-      }
-    }
+    session.screen?.dispose();
+    session.screen = undefined;
+    if (alreadyClosing) return;
     if (session.pty) {
-      try {
-        session.pty.kill();
-      } catch {
-        /* ignore */
-      }
+      try { terminateTerminalProcess(session.pty); } catch { /* 进程已退出 */ }
     }
     // onExit 会置 alive=false 并投递 exit 事件（reason=killed）；这里兜底（fake pty 可能不同步触发）
     if (session.alive && reason === "disposed") {

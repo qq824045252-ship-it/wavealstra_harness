@@ -123,7 +123,7 @@ const USER_BASE = basePolicy({
     prefer: ["bot", "ui"],
     demote: ["deploy"],
     hide: [],
-    allow: ["ardot", "ardot-design-assistant", "image-to-ui", "image-understanding-native"],
+    allow: ["ardot", "ardot-design-generator", "ardot-design-assistant", "image-to-ui", "image-understanding-native"],
   },
   mcpPolicy: {
     mode: "hard",

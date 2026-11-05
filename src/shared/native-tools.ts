@@ -49,6 +49,8 @@ export const NATIVE_CAPABILITY_TOOL_NAMES = [
   "ui_exec",
   "computer_exec",
   "runtime_probe",
+  "automation_exec",
+  "terminal_exec",
   "execute_code",
   "multi_model_consult",
   "skill_authoring_assess",

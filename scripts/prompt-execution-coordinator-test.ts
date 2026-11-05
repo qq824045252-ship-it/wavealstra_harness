@@ -172,7 +172,7 @@ async function main(): Promise<void> {
     coordinator.cancel("task-1", currentRun);
     resolveCurrent();
     await currentPromise;
-    assert.deepEqual(await queuedPromise, { queued: false });
+    assert.deepEqual(await queuedPromise, { queued: false, cancelled: true });
     assert.equal(queuedExecuted, false);
     assert.deepEqual(cancelled, ["assistant-cancel-me"]);
   }

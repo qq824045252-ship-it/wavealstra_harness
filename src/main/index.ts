@@ -181,6 +181,7 @@ import { WorkspaceSharedContextService } from "./workspace/WorkspaceSharedContex
 import { SelectionStore } from "./artifact/SelectionStore";
 import { WebArtifactRuntime } from "./artifact/WebArtifactRuntime";
 import { CronService } from "./cron/CronService";
+import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
 import { GadgetRepository } from "./gadget/GadgetRepository";
 import { GadgetStorage } from "./gadget/GadgetStorage";
@@ -2848,6 +2849,7 @@ app.whenReady().then(async () => {
       }
       // Ordinary trash retains lifecycle's best-effort handling; explicit archive purge uses strict shutdown.
       const errors: string[] = [];
+      cronService?.disableTask(taskId);
       try { await agentService.releaseTaskForDeletion(taskId); }
       catch (error) { errors.push(`任务会话：${error instanceof Error ? error.message : String(error)}`); }
       // 终端：任务删除/归档 → kill 该任务 PTY（cwd 即将移入回收区）
@@ -3281,6 +3283,7 @@ app.whenReady().then(async () => {
   gatewayService.setTrashedWorkspaceRestorer((taskId) => {
     taskLifecycle.restore(taskId);
   });
+  agentService.setLocalWorkflowServices({ cron: cronService, terminal: new TaskTerminalService(terminalHost) });
   cronService.start();
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels();

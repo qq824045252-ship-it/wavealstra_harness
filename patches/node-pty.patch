@@ -33,3 +33,55 @@ index 1ac5758bedd8cf54f32280dea4e4aeb5afdee30d..9a3553e630337678b3ddcdf1f4746bd5
              },
              'msvs_settings': {
                  # Specify this setting here to override a setting from somewhere
+diff --git a/lib/windowsPtyAgent.js b/lib/windowsPtyAgent.js
+index a358ffb177357e177661033c1b092f9c9d0e5f5a..1341ce890227324e0db235d178a87f230e2eaa70 100644
+--- a/lib/windowsPtyAgent.js
++++ b/lib/windowsPtyAgent.js
+@@ -137,7 +137,8 @@ var WindowsPtyAgent = /** @class */ (function () {
+             if (!this._useConptyDll) {
+                 this._inSocket.readable = false;
+                 this._outSocket.readable = false;
+-                this._getConsoleProcessList().then(function (consoleProcessList) {
++                var processList = this._exitCode === undefined ? this._getConsoleProcessList() : Promise.resolve([]);
++                processList.then(function (consoleProcessList) {
+                     consoleProcessList.forEach(function (pid) {
+                         try {
+                             process.kill(pid);
+@@ -146,9 +147,9 @@ var WindowsPtyAgent = /** @class */ (function () {
+                             // Ignore if process cannot be found (kill ESRCH error)
+                         }
+                     });
++                    _this._ptyNative.kill(_this._pty, _this._useConptyDll);
++                    _this._conoutSocketWorker.dispose();
+                 });
+-                this._ptyNative.kill(this._pty, this._useConptyDll);
+-                this._conoutSocketWorker.dispose();
+             }
+             else {
+                 // Close the input write handle to signal the end of session.
+diff --git a/src/windowsPtyAgent.ts b/src/windowsPtyAgent.ts
+index d7054449516f0c9a62af351c2caa17331206d530..79fe66c172b509f05bce169dd6acc0ca9747d099 100644
+--- a/src/windowsPtyAgent.ts
++++ b/src/windowsPtyAgent.ts
+@@ -144,7 +144,8 @@ export class WindowsPtyAgent {
+       if (!this._useConptyDll) {
+         this._inSocket.readable = false;
+         this._outSocket.readable = false;
+-        this._getConsoleProcessList().then(consoleProcessList => {
++        const processList = this._exitCode === undefined ? this._getConsoleProcessList() : Promise.resolve([]);
++        processList.then(consoleProcessList => {
+           consoleProcessList.forEach((pid: number) => {
+             try {
+               process.kill(pid);
+@@ -152,9 +153,9 @@ export class WindowsPtyAgent {
+               // Ignore if process cannot be found (kill ESRCH error)
+             }
+           });
++          (this._ptyNative as IConptyNative).kill(this._pty, this._useConptyDll);
++          this._conoutSocketWorker.dispose();
+         });
+-        (this._ptyNative as IConptyNative).kill(this._pty, this._useConptyDll);
+-        this._conoutSocketWorker.dispose();
+       } else {
+         // Close the input write handle to signal the end of session.
+         this._inSocket.destroy();

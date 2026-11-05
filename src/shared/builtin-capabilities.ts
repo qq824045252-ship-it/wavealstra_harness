@@ -200,7 +200,7 @@ export const BUILTIN_CAPABILITY_TOOLS: Record<BuiltinCapabilityId, string[]> = {
   "text-to-speech": ["text_to_speech"],
   browser: ["browser_exec", "ui_exec", "computer_exec"],
   "runtime-diagnostics": ["runtime_probe"],
-  terminal: ["bash"],
+  terminal: ["bash", "terminal_exec"],
   "code-execution": ["execute_code"],
   subagent: ["subagent", "subagent_list", "subagent_steer"],
   "multi-model-consult": ["multi_model_consult"],

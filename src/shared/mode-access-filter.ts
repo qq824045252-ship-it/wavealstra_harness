@@ -1,10 +1,15 @@
 /**
  * 场景模式 · 技能 / MCP 名单匹配（纯函数，主进程与渲染层共用）。
  * 与 SkillPolicy / McpModeFilter 规则对齐，供 UI「+」菜单等按 welcomeMode 收窄列表。
- * 匹配语义统一收敛到 runtime-policy 的 matchesSkillPolicyNeedles / matchesPolicyKeyword。
+ * 硬名单（hide / allow）走 runtime-policy 的 matchesSkillIdentityNeedles；
+ * 排序（prefer / demote）走 matchesSkillPolicyNeedles。
  */
 import type { ModeMcpPolicy, ModeSkillPolicy, WelcomeMode } from "./mode-profile";
-import { matchesPolicyKeyword, matchesSkillPolicyNeedles } from "./runtime-policy";
+import {
+  matchesPolicyKeyword,
+  matchesSkillIdentityNeedles,
+  matchesSkillPolicyNeedles,
+} from "./runtime-policy";
 
 /** 名称子串/精确匹配（大小写不敏感） */
 export function nameMatchesPolicy(hay: string, needles: string[]): boolean {
@@ -22,19 +27,16 @@ export interface SkillAccessRef {
 }
 
 /**
- * 列表勾选写入的是技能 id；同时兼容旧策略子串。
- * 优先精确匹配 id/name/command，再回退 includes（与 runtime-policy 唯一实现一致）。
+ * 硬名单匹配（hide / allow）：与主进程 resolveSkillCapability 语义一致。
+ * 列表勾选写入的是技能 id；裸 keyword 只允许精确身份，子串需显式 `keyword:`。
  */
 export function skillMatchesPolicy(skill: SkillAccessRef, needles: string[]): boolean {
-  return matchesSkillPolicyNeedles(
-    {
-      id: skill.id,
-      name: skill.name,
-      description: skill.description,
-      command: skill.command,
-    },
-    needles,
-  );
+  return matchesSkillIdentityNeedles(skill, needles);
+}
+
+/** 排序/推荐匹配（prefer / demote）：保留精确 + 子串语义。 */
+export function skillMatchesRankingPolicy(skill: SkillAccessRef, needles: string[]): boolean {
+  return matchesSkillPolicyNeedles(skill, needles);
 }
 
 /**
@@ -93,8 +95,8 @@ export function sortSkillsByModePolicy<T extends SkillAccessRef>(
   const rest: T[] = [];
   const demoted: T[] = [];
   for (const s of skills) {
-    if (skillMatchesPolicy(s, prefer)) preferred.push(s);
-    else if (skillMatchesPolicy(s, demote)) demoted.push(s);
+    if (skillMatchesRankingPolicy(s, prefer)) preferred.push(s);
+    else if (skillMatchesRankingPolicy(s, demote)) demoted.push(s);
     else rest.push(s);
   }
   return [...preferred, ...rest, ...demoted];

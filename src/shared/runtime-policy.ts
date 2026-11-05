@@ -111,30 +111,67 @@ export function matchesPolicyKeyword(hay: string, needles: string[]): boolean {
   });
 }
 
+/** 显式关键词 needle 前缀：`keyword:bro` 表示子串匹配，而不是技能身份。 */
+export const SKILL_KEYWORD_NEEDLE_PREFIX = "keyword:";
+
+function splitSkillNeedle(raw: string): { keyword: boolean; value: string } {
+  const trimmed = raw.trim();
+  if (trimmed.toLowerCase().startsWith(SKILL_KEYWORD_NEEDLE_PREFIX)) {
+    return { keyword: true, value: trimmed.slice(SKILL_KEYWORD_NEEDLE_PREFIX.length).trim() };
+  }
+  return { keyword: false, value: trimmed };
+}
+
+function skillKeywordBlob(skill: SkillCapabilityRef): string {
+  return [skill.id, skill.name ?? "", skill.command ?? "", skill.description ?? ""]
+    .filter((part) => part.length > 0)
+    .join(" ")
+    .toLowerCase();
+}
+
+function skillHasIdentity(skill: SkillCapabilityRef, value: string): boolean {
+  const id = skill.id.toLowerCase();
+  const name = (skill.name ?? "").toLowerCase();
+  const cmd = (skill.command ?? "").toLowerCase();
+  return id === value || name === value || (cmd.length > 0 && cmd === value);
+}
+
 /**
- * 技能策略名单匹配（唯一业务语义实现）。
- * Mode / Project / Tag 的 hide/allow/prefer/demote 与 UI（+ 菜单）可见性共用。
- * 语义（保持历史行为）：
+ * 硬名单匹配（hide / allow）：只接受稳定技能身份。
  * - 大小写不敏感；needle 先 trim；
- * - 精确命中优先：id / name / command（command 非空时）；
- * - 回退子串：id+name+command+description 拼接 blob includes。
+ * - 裸 needle = id / name / command 精确命中；
+ * - `keyword:<词>` = 显式声明的子串匹配（旧行为需显式标注，不再隐式扩散）。
+ * 短名单词（如 `bro`）不得靠 description 子串命中别的技能。
+ */
+export function matchesSkillIdentityNeedles(
+  skill: SkillCapabilityRef,
+  needles: string[],
+): boolean {
+  if (needles.length === 0) return false;
+  return needles.some((item) => {
+    const { keyword, value } = splitSkillNeedle(item);
+    const needle = value.toLowerCase();
+    if (!needle) return false;
+    if (skillHasIdentity(skill, needle)) return true;
+    return keyword && skillKeywordBlob(skill).includes(needle);
+  });
+}
+
+/**
+ * 排序/推荐匹配（prefer / demote）：保留历史的「精确优先 + 子串回退」语义。
+ * 这是唯一允许 description 子串命中的维度；硬名单请用 matchesSkillIdentityNeedles。
  */
 export function matchesSkillPolicyNeedles(
   skill: SkillCapabilityRef,
   needles: string[],
 ): boolean {
   if (needles.length === 0) return false;
-  const id = skill.id.toLowerCase();
-  const name = (skill.name ?? "").toLowerCase();
-  const cmd = (skill.command ?? "").toLowerCase();
-  const blob = [skill.id, skill.name ?? "", skill.command ?? "", skill.description ?? ""]
-    .filter((part) => part.length > 0)
-    .join(" ")
-    .toLowerCase();
+  const blob = skillKeywordBlob(skill);
   return needles.some((item) => {
-    const needle = item.trim().toLowerCase();
+    const { value } = splitSkillNeedle(item);
+    const needle = value.toLowerCase();
     if (!needle) return false;
-    if (id === needle || name === needle || (cmd && cmd === needle)) return true;
+    if (skillHasIdentity(skill, needle)) return true;
     return blob.includes(needle);
   });
 }
@@ -292,12 +329,12 @@ export function resolveSkillCapability(
   for (const source of sources) {
     const policy = source.policy;
     if (!policy) continue;
-    if (matchesSkillPolicyNeedles(ref, policy.hide)) {
+    if (matchesSkillIdentityNeedles(ref, policy.hide)) {
       traces.push({ source: source.source, sourceId: source.sourceId, decision: "denied" });
       return { id, kind: "skill", enabled: false, sources: traces, reason: `${source.source}_policy_denied` };
     }
     if (policy.allow.length > 0) {
-      const allowed = matchesSkillPolicyNeedles(ref, policy.allow);
+      const allowed = matchesSkillIdentityNeedles(ref, policy.allow);
       traces.push({ source: source.source, sourceId: source.sourceId, decision: allowed ? "allowed" : "denied" });
       if (!allowed) {
         return { id, kind: "skill", enabled: false, sources: traces, reason: `${source.source}_policy_not_allowed` };

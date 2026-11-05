@@ -27,13 +27,10 @@ export interface SkillFilterResult {
 }
 
 /**
- * 列表勾选写入的是技能 id；同时兼容旧策略子串。
- * 优先精确匹配 id/name，再回退 includes。
- */
-/**
  * 按 ModeProfile.skillPolicy 过滤/排序技能目录。
  * hide（限制）> allow 白名单 > modes 限制 > demote 排序靠后 > prefer 靠前。
  * allow 非空：仅保留命中项；空 allow = 不启用白名单。
+ * prefer / demote 是关键词语义（允许 description 子串）；hide / allow 是身份语义。
  */
 export function filterSkillsForMode(
   skills: SkillRef[],
@@ -129,7 +126,7 @@ export function formatSkillCatalogSection(
     lines.push(`白名单：${filter.allow.join(", ")}（仅匹配项可见）`);
   }
   if (filter.hide.length > 0) {
-    lines.push(`限制/隐藏关键词：${filter.hide.join(", ")}`);
+    lines.push(`限制/隐藏：${filter.hide.join(", ")}`);
   }
   if (filter.visible.length === 0) {
     lines.push("（当前无已安装且可见的技能）");

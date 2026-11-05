@@ -32,13 +32,31 @@ The provider/model names above are placeholders. An explicit `model` requires a 
 
 `model: "inherit-parent"` and `model: "auto"` select the current parent model. They fail if the parent model is missing or unavailable. They inherit the model only, not the parent's reasoning preference. Multiple workers on that same model do not constitute a multi-model review.
 
-Without a `model` argument, selection uses the role's model, then the saved subagent default, then the global default. Unavailable configured defaults fall through with diagnostics. Selection fails if none is usable.
+Without a `model` argument, selection uses the role's model, then the saved subagent default, then the global default. Unavailable configured defaults fall through with diagnostics. Selection fails if none is usable. Omitting `model` is not inheritance.
+
+### Model roles
+
+`~/.mybuddy/subagent.json` may declare `roles`, a map from a role name to an ordered candidate list. Passing that role name as `model` lets the product pick the first candidate that exists in the native model scope.
+
+```json
+{
+  "roles": {
+    "fast": ["provider/light-model"],
+    "strong": ["provider/strong-model-a", "provider/strong-model-b"],
+    "diverse": ["provider/model-a", "provider/model-b", "provider/model-c"]
+  }
+}
+```
+
+A role resolves only through its declared candidates. When none is available the call fails with the candidate list. It does not fall back to a default model, and the product never scores or guesses a model from names, context length, or output limits. The result reports `resolvedModel`, `modelRole`, `roleCandidates`, `resolvedThinking`, `modelSource`, and the worker's `actualModel`, so the caller can confirm what the worker ran.
+
+An unconfigured name is treated as an explicit `provider/model` reference and fails its format or availability check. `roles.diverse` is reserved for fan-out: with `model: "diverse"` on `tasks` or `chain`, each task receives a different available candidate. If the number of distinct available candidates is smaller than the task count, the tool refuses to run instead of repeating one model across a panel. A single-task call with `model: "diverse"` fails for the same reason. A diverse panel requires at least two tasks and cannot mix diverse selection with explicit models. Provider and routing prefixes are ignored when comparing terminal model names. This rejects aliases with the same model name; it cannot verify an opaque gateway\'s upstream implementation.
 
 The native `reasoning` object has optional `enabled`, `effort`, and `budgetTokens` fields. An explicit preference must be supported by the selected model and represented losslessly by the current Pi worker transport. Supported effort values map to CLI thinking levels. Unsupported values, conflicting fields, and empty preferences fail. `budgetTokens` and toggle-only `{ enabled: true }` fail because this transport cannot represent them losslessly. They do not silently select another effort or the model default.
 
 When `reasoning` is omitted, a saved subagent reasoning transport can apply if it is valid and bound to the selected model. Otherwise the worker uses the model default. Omission does not copy the parent's effort.
 
-The schema lives in [index.ts](../src/main/capabilities/subagent/index.ts). Selection and strict errors live in [selection.ts](../src/main/capabilities/subagent/selection.ts). Native preference validation lives in [subagent-model-config.ts](../src/shared/subagent-model-config.ts).
+The schema lives in [index.ts](../src/main/capabilities/subagent/index.ts). Selection, role resolution, and diverse assignment live in [selection.ts](../src/main/capabilities/subagent/selection.ts). Native preference validation lives in [subagent-model-config.ts](../src/shared/subagent-model-config.ts).
 
 ## Subagent workspace isolation
 
@@ -56,6 +74,16 @@ Worktrees use separate branches based on the source commit. Their files and bran
 
 Workspace creation and receipts live in [worktree.ts](../src/main/capabilities/subagent/worktree.ts). Execution and results live in [index.ts](../src/main/capabilities/subagent/index.ts). Pi worker startup and model readback live in [runtime.ts](../src/main/capabilities/subagent/runtime.ts). The trusted Pi entry is [worker-launcher.mjs](../src/main/capabilities/subagent/worker-launcher.mjs).
 
+## Skill policy needles
+
+Mode, project, and tag skill policies separate hard lists from ranking lists.
+
+- `hide` and `allow` match skill identity only. A needle matches when it equals the skill `id`, `name`, or `command`, case-insensitive after trimming. A short list word cannot become a substring rule, so `allow: ["bro"]` no longer admits `ego-browser` through its description.
+- `prefer` and `demote` keep the historical ranking semantics: identity first, then a case-insensitive substring over `id`, `name`, `command`, and `description`.
+- Any needle may opt into substring matching with the `keyword:` prefix. `keyword:arch` matches `archify`; a bare `arch` does not. Stored policies that relied on the old implicit substring behavior in `hide` or `allow` must be rewritten as `keyword:<needle>`; nothing converts them silently.
+
+The main-process decision and the renderer `+` menu read the same functions. Hard lists use `matchesSkillIdentityNeedles`, ranking uses `matchesSkillPolicyNeedles`, both in [runtime-policy.ts](../src/shared/runtime-policy.ts). The UI filter is [mode-access-filter.ts](../src/shared/mode-access-filter.ts); the catalog text and skill filtering are in [SkillPolicy.ts](../src/main/agent/SkillPolicy.ts).
+
 ## Other pstack capability mappings
 
 These tools are registered conditionally. Their presence depends on the configured capability and service availability.
@@ -67,7 +95,11 @@ These tools are registered conditionally. Their presence depends on the configur
 
 The registration conditions, schemas, and descriptions are in [builtin-capability-extension.ts](../src/main/capabilities/builtin-capability-extension.ts).
 
-Cursor `/loop` and Cursor cloud agents are not MyBuddy capabilities supplied by these mappings. A local worktree does not create a cloud agent. A repeated prompt does not establish a durable `/loop` implementation.
+`automation_exec` provides local task-owned scheduling with create, list, runs, pause, resume, and cancel. It reuses CronService and SQLite run history. Targets distinguish continuing the current task from creating a new task. The current task keeps its model, permissions, workspace, and conversation. New tasks follow the normal task-workspace resolver. Intervals such as `90s` are elapsed durations, not converted calendar expressions. Busy targets skip a tick without queueing. Quotas and deadlines stop future runs. Restart policy either resumes future ticks without catch-up or pauses the job. Cancellation stops future starts, not a turn already in progress.
+
+`terminal_exec` provides open, list, read, input, resize, and close for model-owned PTYs. Generated terminal IDs and session IDs bind every operation to its source task. Reads return the ANSI-parsed screen, cursor, size, and exit state. A bounded literal wait reports matched, timeout, or exited. Each task can own four active terminals. Stopping the task cleans its model terminals without closing user terminals. The terminal capability flag and permission policy apply.
+
+The tools appear only when the application has registered their services. An older running process does not gain them through a skill edit. Scheduling requires the local application to remain running. There is no execution while the application is closed or the machine is asleep. Neither local scheduling nor a worktree provides Cursor cloud execution. Do not substitute a long shell sleep for persistent scheduling.
 
 A GitHub MCP configured as read-only remains read-only. A skill cannot grant it write access. GitHub writes through `gh` require an available CLI, suitable authentication, and authorization for the requested write. This reference does not assert that `gh` is installed or authenticated.
 
@@ -79,5 +111,9 @@ These scripts define the corresponding checks. This reference does not report an
 - [subagent-worktree-test.ts](../scripts/subagent-worktree-test.ts) covers workspace isolation and retained provisioning receipts.
 - [subagent-pstack-execution-test.ts](../scripts/subagent-pstack-execution-test.ts) exercises the registered tool and real Pi workers against a local fixture provider. It checks distinct models, reasoning in provider requests, isolated writes, receipts, and parent selection.
 - [subagent-model-ui-test.ts](../scripts/subagent-model-ui-test.ts) covers saved native preferences and CLI transport limits.
+- [cron-scheduling-test.ts](../scripts/cron-scheduling-test.ts) covers real SQLite, timers, cancellation races, quotas, deadlines, restart policy, and task scope with a fixture agent.
+- [local-workflow-integration-test.ts](../scripts/local-workflow-integration-test.ts) executes a real timed AgentService and Pi session against a local HTTP fixture provider. It verifies tool registration, permissions, persisted output, and the authoritative task directory.
+- [task-terminal-live-test.ts](../scripts/task-terminal-live-test.ts) drives a real TUI and checks screen rendering, input, resize, Ctrl-C, exit, active child cleanup, and preservation of a separate user terminal. Windows and Linux require separate executions.
+- [validate-local-workflow-package.cjs](../scripts/validate-local-workflow-package.cjs) starts the actual packaged app with an isolated profile. Its local provider calls the real terminal and scheduling tools, then verifies scheduled continuation and the Automation page.
 
 The script commands are declared in [package.json](../package.json).

@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { currentPlatformId, type PlatformId } from "./index";
+import { killProcessTree, type KillableChild } from "./processes";
 
 export interface DefaultShellDeps {
   exists?(path: string): boolean;
@@ -53,6 +54,12 @@ export function defaultShellForPlatform(
     return windowsPowerShellPath(env, platform);
   }
   return env.SHELL || posixDefaultShell(platform);
+}
+
+export function terminateTerminalProcess(pty: KillableChild, platform: PlatformId = currentPlatformId): void {
+  // ConPTY 的 kill 同时释放已退出 shell 遗留的原生句柄，不能按进程存活省略。
+  if (platform !== "windows" && pty.pid) killProcessTree(pty, { platform });
+  pty.kill();
 }
 
 /** 终端后端是否使用 ConPTY（仅 Windows 有）。 */

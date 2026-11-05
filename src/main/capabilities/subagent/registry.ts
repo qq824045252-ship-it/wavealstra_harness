@@ -75,7 +75,7 @@ export interface SubagentRecord {
   toolPolicyAt?: number;
   resolvedModel?: string;
   resolvedThinking?: string;
-  modelSource?: "invocation" | "parent" | "role" | "default" | "global";
+  modelSource?: "invocation" | "role-map" | "parent" | "role" | "default" | "global";
   thinkingSource?: "invocation" | "transport";
   actualModel?: string;
   actualThinking?: string;

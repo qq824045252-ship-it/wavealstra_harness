@@ -1,71 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
-import { Cron } from "croner";
 import {
   CronIpc,
   type CronJobDto,
   type CronRunDto,
-  type PermissionMode,
+  type AgentPromptRequest,
+  type AgentPromptResult,
+  type TaskHistoryDto,
 } from "../../shared/agent-ipc";
 import { assertSingleExpertId, normalizeSingleExpertId } from "../../shared/expert-id";
-import type { AgentService } from "../agent/AgentService";
+import { parseCronExecution } from "../../shared/cron-execution";
 import type { AppDatabase } from "../db/AppDatabase";
+import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer, type SegmentedTimer } from "./CronSchedule";
+
+export interface CronAgent {
+  prompt(request: AgentPromptRequest): Promise<AgentPromptResult>;
+  loadTaskHistory(taskId: string): Promise<TaskHistoryDto>;
+  isTaskBusy(taskId: string): boolean;
+  getAppSettings(): { defaultModelId?: string | null };
+  resolveAvailableModelId(id: string): Promise<{ modelId: string; repairedFrom?: string } | undefined>;
+  listSkills(): Array<{ id: string; name: string }>;
+  listConnectors(): Array<{ id: string; name: string; installedSkillNames?: string[] }>;
+}
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, payload);
-  }
-}
-
-function everyToCron(expr: string): string | null {
-  const m = /^(\d+)([smhd])$/i.exec(expr.trim());
-  if (!m) return null;
-  const n = Number(m[1]);
-  const u = m[2].toLowerCase();
-  if (u === "s") return n >= 60 ? `*/${Math.floor(n / 60)} * * * * *` : `*/${n} * * * * *`;
-  if (u === "m") return `0 */${n} * * * *`;
-  if (u === "h") return `0 0 */${n} * * *`;
-  if (u === "d") return `0 0 0 */${n} * *`;
-  return null;
-}
-
-/** 是否处于生效区间内（两端含边界） */
-function withinEffectiveRange(job: CronJobDto, now = Date.now()): "ok" | "before" | "after" {
-  if (job.effectiveFrom != null && now < job.effectiveFrom) return "before";
-  if (job.effectiveTo != null && now > job.effectiveTo) return "after";
-  return "ok";
-}
-
-function computeNextRunAt(job: CronJobDto): number | undefined {
-  if (!job.enabled) return undefined;
-  if (withinEffectiveRange(job) === "after") return undefined;
-
-  if (job.scheduleType === "at") {
-    const at = new Date(job.scheduleExpr).getTime();
-    if (Number.isNaN(at) || at <= Date.now()) return undefined;
-    if (withinEffectiveRange(job, at) !== "ok") return undefined;
-    return at;
-  }
-
-  let pattern = job.scheduleExpr;
-  if (job.scheduleType === "every") {
-    const converted = everyToCron(job.scheduleExpr);
-    if (!converted) return undefined;
-    pattern = converted;
-  }
-
-  try {
-    const cron = new Cron(pattern, {
-      timezone: job.timezone || "Asia/Shanghai",
-    });
-    const runs = cron.nextRuns(32);
-    for (const d of runs) {
-      const t = d.getTime();
-      if (withinEffectiveRange(job, t) === "ok") return t;
-    }
-    return undefined;
-  } catch {
-    return undefined;
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
   }
 }
 
@@ -108,11 +68,15 @@ function buildExecutionPrompt(
 }
 
 export class CronService {
-  private readonly timers = new Map<string, Cron>();
+  private readonly timers = new Map<string, SegmentedTimer>();
+  private readonly runningJobs = new Set<string>();
+  private readonly revisions = new Map<string, number>();
+  private stopped = false;
+  private started = false;
 
   constructor(
     private readonly db: AppDatabase,
-    private readonly agent: AgentService,
+    private readonly agent: CronAgent,
     /** 项目 run 摘要钩子（可选注入）：project-bound job 完成/失败时调用一次；只传摘要+stable ref，不传敏感输出 */
     private readonly projectRunSink?: (projectId: string, summary: { runId: string; jobName: string; status: "success" | "failed"; error?: string }) => void,
     private readonly runNotificationSink?: (summary: {
@@ -127,21 +91,30 @@ export class CronService {
   ) {}
 
   start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.stopped = false;
+    this.db.recoverCronRuns();
     for (const job of this.db.listCronJobs()) {
       if (!job.enabled) continue;
-      const unavailable = this.projectUnavailableReason(job.projectId);
-      if (unavailable) {
+      const unavailable = this.unavailableReason(job);
+      if (unavailable || job.restartPolicy === "pause") {
         this.db.setCronEnabled(job.id, false);
         console.info(`[CronService] disabled project job ${job.id}: ${unavailable}`);
         continue;
       }
-      this.arm(job);
+      try { validateSchedule(job); this.arm(job); }
+      catch (error) {
+        this.setEnabled(job.id, false);
+        console.warn("[CronService] invalid persisted schedule", job.id, error);
+      }
     }
   }
 
   stop(): void {
-    for (const t of this.timers.values()) t.stop();
-    this.timers.clear();
+    this.stopped = true;
+    this.started = false;
+    for (const id of this.revisions.keys()) this.disarm(id);
   }
 
   list(): CronJobDto[] {
@@ -152,8 +125,41 @@ export class CronService {
     return this.db.listCronRuns(limit);
   }
 
+  listForTask(taskId: string): CronJobDto[] {
+    return this.list().filter(job => job.sourceTaskId === taskId);
+  }
+
+  runsForTask(taskId: string, limit = 50): CronRunDto[] {
+    return this.db.listCronRuns(Math.max(1, Math.min(200, limit)), this.listForTask(taskId).map(job => job.id));
+  }
+
+  createForTask(taskId: string, cwd: string, input: Pick<CronJobDto,
+    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy"
+  > & { target: "current-task" | "new-task" }): CronJobDto {
+    const task = this.db.getTask(taskId);
+    if (!task || task.archived) throw new Error("来源任务不存在或已归档");
+    if (this.listForTask(taskId).filter(job => job.enabled).length >= 20) throw new Error("每个任务最多启用 20 个计划");
+    return this.upsert({
+      ...input, id: randomUUID(), sourceTaskId: taskId,
+      target: input.target === "current-task" ? { kind: "task", taskId } : { kind: "new-task" },
+      enabled: true, createdAt: Date.now(), updatedAt: Date.now(), cwd,
+      permissionMode: task.permissionMode ?? "default", welcomeMode: task.welcomeMode,
+      projectId: task.projectId ?? undefined, spaceId: task.spaceId ?? undefined,
+      modelId: task.modelId, expertId: task.expertId,
+    });
+  }
+
+  changeForTask(taskId: string, id: string, action: "pause" | "resume" | "cancel"): void {
+    const job = this.db.getCronJob(id);
+    if (!job || job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
+    if (action === "cancel") this.remove(id);
+    else this.setEnabled(id, action === "resume");
+  }
+
   upsert(job: CronJobDto): CronJobDto {
     assertSingleExpertId(job.expertId);
+    validateSchedule(job);
+    parseCronExecution({ sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy });
     const now = Date.now();
     const existing = this.db.getCronJob(job.id);
     const next: CronJobDto = {
@@ -162,12 +168,13 @@ export class CronService {
       updatedAt: now,
       projectId: job.projectId ?? existing?.projectId,
     };
-    const unavailable = this.projectUnavailableReason(next.projectId);
+    const unavailable = this.unavailableReason(next);
     if (unavailable) throw new Error(unavailable);
-    delete (next as { nextRunAt?: number }).nextRunAt;
+    delete next.nextRunAt;
+    delete next.runCount;
     this.db.upsertCronJob(next);
     this.disarm(next.id);
-    if (next.enabled) this.arm(next);
+    if (next.enabled) this.arm(this.db.getCronJob(next.id) ?? next);
     const enriched = withNextRun(this.db.getCronJob(next.id) ?? next);
     broadcast(CronIpc.event, { type: "upsert", job: enriched });
     return enriched;
@@ -177,13 +184,14 @@ export class CronService {
     const job = this.db.getCronJob(id);
     if (!job) return;
     if (enabled) {
-      const unavailable = this.projectUnavailableReason(job.projectId);
+      const unavailable = this.unavailableReason(job);
       if (unavailable) throw new Error(unavailable);
+      validateSchedule(job);
     }
     this.db.setCronEnabled(id, enabled);
     this.disarm(id);
     if (enabled) this.arm({ ...job, enabled: true });
-    broadcast(CronIpc.event, { type: "upsert", job: withNextRun({ ...job, enabled }) });
+    broadcast(CronIpc.event, { type: "upsert", job: withNextRun(this.db.getCronJob(id) ?? { ...job, enabled }) });
   }
 
   remove(id: string): void {
@@ -202,6 +210,12 @@ export class CronService {
     }
   }
 
+  disableTask(taskId: string): void {
+    for (const job of this.db.listCronJobs()) {
+      if (job.sourceTaskId === taskId || (job.target?.kind === "task" && job.target.taskId === taskId)) this.setEnabled(job.id, false);
+    }
+  }
+
   /** 项目永久删除时同步删除所属 job（run history 由数据库外键级联）。 */
   removeProject(projectId: string): void {
     for (const job of this.db.listCronJobs().filter((item) => item.projectId === projectId)) {
@@ -216,7 +230,7 @@ export class CronService {
   async runNow(id: string): Promise<void> {
     const job = this.db.getCronJob(id);
     if (!job) throw new Error(`cron job not found: ${id}`);
-    const unavailable = this.projectUnavailableReason(job.projectId);
+    const unavailable = this.unavailableReason(job);
     if (unavailable) throw new Error(unavailable);
     void this.execute(job, { force: true }).catch((err) => {
       console.error("[CronService] runNow failed", id, err);
@@ -225,60 +239,20 @@ export class CronService {
 
   private arm(job: CronJobDto): void {
     this.disarm(job.id);
-
-    if (job.effectiveTo != null && Date.now() > job.effectiveTo) {
-      console.info("[CronService] skip arm (expired)", job.id);
+    if (this.stopped) return;
+    const nextRun = computeNextRunAt(job);
+    if (nextRun === undefined) {
+      this.setEnabled(job.id, false);
       return;
     }
-
-    if (job.scheduleType === "at") {
-      const at = new Date(job.scheduleExpr);
-      if (Number.isNaN(at.getTime()) || at.getTime() <= Date.now()) return;
-      if (withinEffectiveRange(job, at.getTime()) !== "ok") {
-        console.info("[CronService] skip arm at (outside effective range)", job.id);
-        return;
-      }
-      const delay = at.getTime() - Date.now();
-      const handle = setTimeout(() => {
-        void this.execute(job);
-      }, delay);
-      this.timers.set(
-        job.id,
-        {
-          stop: () => clearTimeout(handle),
-        } as unknown as Cron,
-      );
-      return;
-    }
-
-    let pattern = job.scheduleExpr;
-    if (job.scheduleType === "every") {
-      const converted = everyToCron(job.scheduleExpr);
-      if (!converted) {
-        console.warn("[CronService] invalid every expr", job.scheduleExpr);
-        return;
-      }
-      pattern = converted;
-    }
-
-    try {
-      const cron = new Cron(
-        pattern,
-        {
-          timezone: job.timezone || "Asia/Shanghai",
-          protect: true,
-        },
-        () => {
-          void this.execute(job);
-        },
-      );
-      this.timers.set(job.id, cron);
-    } catch (err) {
-      console.warn("[CronService] failed to arm", job.id, err);
-    }
+    const timer = scheduleTimer(nextRun, () => {
+      void this.execute(job).catch((error) => console.error("[CronService] timer failed", job.id, error));
+    });
+    this.timers.set(job.id, timer);
   }
 
   private disarm(id: string): void {
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
     const t = this.timers.get(id);
     if (t) {
       try {
@@ -291,176 +265,122 @@ export class CronService {
   }
 
   private async execute(job: CronJobDto, opts?: { force?: boolean }): Promise<void> {
-    const persisted = this.db.getCronJob(job.id) ?? job;
-    const latest: CronJobDto = { ...persisted, expertId: normalizeSingleExpertId(persisted.expertId) };
-    if (!latest.enabled && !opts?.force) return;
-
-    const unavailable = this.projectUnavailableReason(latest.projectId);
-    if (unavailable) {
-      this.db.setCronEnabled(latest.id, false);
-      this.disarm(latest.id);
-      await this.recordSkipped(latest, unavailable);
-      broadcast(CronIpc.event, { type: "upsert", job: withNextRun({ ...latest, enabled: false }) });
-      return;
-    }
-
-    const range = withinEffectiveRange(latest);
-    if (!opts?.force && range !== "ok") {
-      const reason =
-        range === "before" ? "未到生效日期，已跳过" : "已过生效日期，已跳过";
-      await this.recordSkipped(latest, reason);
-      if (range === "after") {
-        this.db.setCronEnabled(latest.id, false);
-        this.disarm(latest.id);
-        broadcast(CronIpc.event, {
-          type: "upsert",
-          job: { ...latest, enabled: false },
-        });
-      }
-      return;
-    }
-
-    const runId = randomUUID();
-    const taskId = `cron-${latest.id}-${Date.now()}`;
-    const permissionMode: PermissionMode = latest.permissionMode ?? "auto";
-    const welcomeMode =
-      latest.welcomeMode === "coding" || latest.welcomeMode === "bot"
-        ? latest.welcomeMode
-        : "working";
-    // 默认模型：任务未指定时走应用默认，避免空 model 导致秒退空回复。
-    // 定时任务的坐标可能已被模型目录淘汰（网关路由重组）：先解析成当前存在的模型，并把修复写回
-    // cron_jobs.model_id，否则每次运行都会从旧坐标重造一条注定失败的任务。
-    const requestedModelId =
-      latest.modelId?.trim() ||
-      this.agent.getAppSettings?.()?.defaultModelId ||
-      undefined;
-    const resolved = requestedModelId ? await this.agent.resolveAvailableModelId(requestedModelId) : undefined;
-    const modelId = resolved?.modelId ?? requestedModelId;
-    if (latest.modelId?.trim() && resolved?.repairedFrom) {
-      console.warn(`[CronService] 定时任务 ${latest.id} 的模型 ${resolved.repairedFrom} 已不在模型目录中，改用 ${resolved.modelId}`);
-      this.db.upsertCronJob({ ...latest, modelId });
-    }
-
-    // 必须先落库任务（正确标题），再广播 run；否则 UI 竞态拿到「定时任务」占位标题，
-    // 且 agent 事件到达时侧栏还没有 task，流式补丁会被丢弃。
-    this.db.upsertTask({
-      id: taskId,
-      title: latest.name,
-      spaceId: latest.spaceId ?? null,
-      projectId: latest.projectId,
-      status: "in_progress",
-      updatedAt: Date.now(),
-      modelId,
-      permissionMode,
-      expertId: latest.expertId,
-      welcomeMode,
-    });
-
-    const run: CronRunDto = {
-      id: runId,
-      jobId: latest.id,
-      startedAt: Date.now(),
-      status: "running",
-      taskId,
-    };
-    this.db.insertCronRun(run);
-    this.db.touchCronLastRun(latest.id);
-    broadcast(CronIpc.event, { type: "run", run });
-
-    const assistantMessageId = `asst-${randomUUID()}`;
-    const userMessageId = `user-${randomUUID()}`;
-    const promptText = this.composePrompt(latest);
-
+    if (this.stopped || this.runningJobs.has(job.id)) return;
+    this.runningJobs.add(job.id);
+    const revision = this.revisions.get(job.id);
+    let run: CronRunDto | undefined;
+    let latest = this.db.getCronJob(job.id);
+    let newTask = false;
     try {
-      const result = await this.agent.prompt({
-        taskId,
-        text: promptText,
-        permissionMode,
-        welcomeMode,
-        spaceId: latest.spaceId,
-        modelId,
-        expertId: latest.expertId,
-        assistantMessageId,
-        userMessageId,
-      });
-
-      if (welcomeMode === "bot" && result?.error) throw new Error(result.error.message);
-      // 校验是否真有助手产出（空回复 / 秒退 视为失败，避免 UI 显示「已完成 0ms」空白）
-      const history = await this.agent.loadTaskHistory(taskId);
-      if (welcomeMode === "bot" && history.durable?.outcome !== "completed") {
-        throw new Error(history.durable?.error ?? "Durable 任务未完成或已取消");
-      }
-      const assistantText = (history.messages ?? [])
-        .filter((m) => m.role === "assistant")
-        .map((m) => (m.text ?? "").trim())
-        .join("\n")
-        .trim();
-      if (!assistantText) {
-        const errMsg = "模型未返回有效内容（请检查模型配置与网络后重试）";
-        this.db.finishCronRun(runId, "error", errMsg, taskId);
-        this.db.upsertTask({
-          id: taskId,
-          title: latest.name,
-          spaceId: latest.spaceId ?? null,
-          projectId: latest.projectId,
-          status: "failed",
-          updatedAt: Date.now(),
-          modelId,
-          permissionMode,
-          expertId: latest.expertId,
-          welcomeMode,
-        });
-        broadcast(CronIpc.event, {
-          type: "run",
-          run: { ...run, status: "error", error: errMsg, finishedAt: Date.now() },
-        });
-        this.notifyProjectRun(latest, runId, "failed", errMsg);
-        this.notifyRun(latest, runId, taskId, "failed", errMsg);
+      if (!latest || (!latest.enabled && !opts?.force)) return;
+      latest = { ...latest, expertId: normalizeSingleExpertId(latest.expertId) };
+      const unavailable = this.unavailableReason(latest);
+      if (unavailable) {
+        await this.recordSkipped(latest, unavailable);
+        this.setEnabled(job.id, false);
         return;
       }
+      if ((latest.maxRuns != null && (latest.runCount ?? 0) >= latest.maxRuns) ||
+        withinEffectiveRange(latest) === "after") {
+        this.setEnabled(job.id, false);
+        return;
+      }
+      if (!opts?.force && withinEffectiveRange(latest) === "before") return;
 
-      this.db.finishCronRun(runId, "success", undefined, taskId);
-      // 再次写回标题：createSession / bindTaskExecutionWorkspaceCwd 可能把标题改成「定时任务」
-      this.db.upsertTask({
-        id: taskId,
-        title: latest.name,
-        spaceId: latest.spaceId ?? null,
-        projectId: latest.projectId,
-        status: "completed",
-        updatedAt: Date.now(),
-        modelId,
-        permissionMode,
-        expertId: latest.expertId,
-        welcomeMode,
+      const targetId = latest.target?.kind === "task" ? latest.target.taskId : undefined;
+      const previous = targetId ? await this.agent.loadTaskHistory(targetId) : undefined;
+      const previousIds = new Set(previous?.messages.map(message => message.entryId ?? message.id));
+      // 当前任务由 AgentService 读取自己的模型与上下文，不用计划的快照覆盖。
+      const requestedModelId = targetId ? undefined : latest.modelId?.trim() || this.agent.getAppSettings().defaultModelId || undefined;
+      const resolved = requestedModelId ? await this.agent.resolveAvailableModelId(requestedModelId) : undefined;
+      if (this.stopped || this.revisions.get(job.id) !== revision) return;
+      const persisted = this.db.getCronJob(job.id);
+      if (!persisted || (!persisted.enabled && !opts?.force) || withinEffectiveRange(persisted) === "after") return;
+      const currentUnavailable = this.unavailableReason(persisted);
+      if (currentUnavailable) {
+        await this.recordSkipped(persisted, currentUnavailable);
+        this.setEnabled(job.id, false);
+        return;
+      }
+      const target = targetId ? this.db.getTask(targetId) : undefined;
+      if (targetId && this.agent.isTaskBusy(targetId)) {
+        await this.recordSkipped(persisted, "目标任务正忙，已跳过，未排队");
+        return;
+      }
+      const taskId = targetId ?? `cron-${latest.id}-${randomUUID()}`;
+      newTask = !targetId;
+      const task = target ?? {
+        id: taskId, title: latest.name, spaceId: latest.spaceId ?? null, projectId: latest.projectId,
+        status: "in_progress", updatedAt: Date.now(), cwd: latest.cwd,
+        modelId: resolved?.modelId ?? requestedModelId, permissionMode: latest.permissionMode ?? "auto",
+        expertId: latest.expertId, welcomeMode: latest.welcomeMode ?? "working",
+      };
+      if (newTask) this.db.upsertTask(task);
+      run = { id: randomUUID(), jobId: job.id, taskId, startedAt: Date.now(), status: "running" };
+      this.db.insertCronRun(run);
+      this.db.touchCronLastRun(job.id);
+      broadcast(CronIpc.event, { type: "run", run });
+      const result = await this.agent.prompt({
+        taskId, text: this.composePrompt(latest),
+        permissionMode: task.permissionMode ?? "default",
+        welcomeMode: task.welcomeMode, spaceId: task.spaceId ?? undefined,
+        modelId: task.modelId, expertId: task.expertId, modePresetId: target?.modePresetId,
+        assistantMessageId: `asst-${randomUUID()}`, userMessageId: `user-${randomUUID()}`,
       });
-      broadcast(CronIpc.event, {
-        type: "run",
-        run: { ...run, status: "success", finishedAt: Date.now() },
-      });
-      this.notifyProjectRun(latest, runId, "success");
-      this.notifyRun(latest, runId, taskId, "success");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.db.finishCronRun(runId, "error", message, taskId);
-      this.db.upsertTask({
-        id: taskId,
-        title: latest.name,
-        spaceId: latest.spaceId ?? null,
-        projectId: latest.projectId,
-        status: "failed",
-        updatedAt: Date.now(),
-        modelId,
-        permissionMode,
-        expertId: latest.expertId,
-        welcomeMode,
-      });
-      broadcast(CronIpc.event, {
-        type: "run",
-        run: { ...run, status: "error", error: message, finishedAt: Date.now() },
-      });
-      this.notifyProjectRun(latest, runId, "failed", message);
-      this.notifyRun(latest, runId, taskId, "failed", message);
+      if (result?.error) throw new Error(result.error.message);
+      if (result?.cancelled) throw new Error("执行已取消");
+      if (result?.queued) throw new Error("执行只完成入队，未完成");
+      const history = await this.agent.loadTaskHistory(taskId);
+      if (task.welcomeMode === "bot" && history.durable?.outcome !== "completed") {
+        throw new Error(history.durable?.error ?? "Durable 任务未完成");
+      }
+      const produced = history.messages.some(message => message.role === "assistant" &&
+        !previousIds.has(message.entryId ?? message.id) && message.text.trim());
+      if (!produced) throw new Error("本轮模型未返回有效内容");
+      this.finishRun(latest, run, "success", newTask);
+    } catch (error) {
+      if (!latest) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!run && this.db.getCronJob(job.id)) {
+        run = { id: randomUUID(), jobId: job.id, startedAt: Date.now(), status: "running" };
+        this.db.insertCronRun(run);
+      }
+      if (run) this.finishRun(latest, run, "error", newTask, message);
+    } finally {
+      this.runningJobs.delete(job.id);
+      const current = this.db.getCronJob(job.id);
+      if (current?.enabled && !this.stopped && this.revisions.get(job.id) === revision) {
+        if ((!opts?.force && current.scheduleType === "at") ||
+          (current.maxRuns != null && (current.runCount ?? 0) >= current.maxRuns)) this.setEnabled(job.id, false);
+        else this.arm(current);
+      }
     }
+  }
+
+  private finishRun(job: CronJobDto, run: CronRunDto, status: "success" | "error", newTask: boolean, error?: string): void {
+    this.db.finishCronRun(run.id, status, error, run.taskId);
+    if (newTask && run.taskId) {
+      const task = this.db.getTask(run.taskId);
+      if (task) this.db.upsertTask({ ...task, title: job.name, status: status === "success" ? "completed" : "failed", updatedAt: Date.now() });
+    }
+    broadcast(CronIpc.event, { type: "run", run: { ...run, status, error, finishedAt: Date.now() } });
+    this.notifyProjectRun(job, run.id, status === "success" ? "success" : "failed", error);
+    if (run.taskId) this.notifyRun(job, run.id, run.taskId, status === "success" ? "success" : "failed", error);
+  }
+
+  private unavailableReason(job: CronJobDto): string | undefined {
+    const project = this.projectUnavailableReason(job.projectId);
+    if (project) return project;
+    if (job.sourceTaskId) {
+      const source = this.db.getTask(job.sourceTaskId);
+      if (!source || source.archived) return "来源任务不存在或已归档，自动化已停用";
+    }
+    if (job.target?.kind === "task") {
+      const target = this.db.getTask(job.target.taskId);
+      if (!target || target.archived) return "目标任务不存在或已归档，自动化已停用";
+      return this.projectUnavailableReason(target.projectId ?? undefined);
+    }
+    return undefined;
   }
 
   private notifyRun(job: CronJobDto, runId: string, taskId: string, status: "success" | "failed", error?: string): void {

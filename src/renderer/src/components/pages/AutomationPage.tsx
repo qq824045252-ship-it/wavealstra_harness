@@ -654,6 +654,10 @@ export default function AutomationPage({
         spaceId: form.spaceId ?? undefined,
         cwd: space?.path,
         enabled: existing?.enabled ?? true,
+        sourceTaskId: existing?.sourceTaskId,
+        target: existing?.target,
+        maxRuns: existing?.maxRuns,
+        restartPolicy: existing?.restartPolicy,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         permissionMode: form.permissionMode,
@@ -886,6 +890,13 @@ export default function AutomationPage({
             {job.id}
           </span>
           <span className="auto-row-schedule">{formatScheduleLabel(job)}</span>
+          {job.sourceTaskId && <span className="auto-row-id" title={`Source task: ${job.sourceTaskId}`}>
+            {job.target?.kind === "task" ? "Continue task" : "New task"} · {job.sourceTaskId}
+          </span>}
+          <span className="auto-row-id" title="Runs only while MyBuddy is open. Missed runs are skipped.">
+            {job.restartPolicy === "pause" ? "Pause on restart" : "Resume future runs"}
+            {job.maxRuns != null ? ` · ${job.runCount ?? 0}/${job.maxRuns} runs` : ""}
+          </span>
         </button>
         <div className="auto-row-right">
           <span className={`auto-row-next ${running || launching ? "running" : ""}`}>

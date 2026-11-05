@@ -36,9 +36,14 @@ import {
   withFileMutationQueueCompat,
 } from "./compat.ts";
 import { computeChildTools, type ToolPolicyResult } from "./policy.ts";
-import { resolveSubagentSelection } from "./selection.ts";
+import {
+  assignDiverseModels,
+  DIVERSE_SUBAGENT_ROLE,
+  resolveSubagentSelection,
+} from "./selection.ts";
 import { prepareSubagentWorkspace, type PreparedSubagentWorkspace, type SubagentIsolation } from "./worktree.ts";
 import type { ModelReasoningPreferenceDto } from "../../../shared/model-metadata";
+import type { SubagentModelOptionLike } from "../../../shared/subagent-model-config";
 import { READONLY_TOOLS } from "./policy.ts";
 import {
   buildContextBlock,
@@ -132,6 +137,9 @@ export interface SingleResult {
   requestedModel?: string;
   resolvedModel?: string;
   resolvedThinking?: string;
+  /** 命中的 subagent.json 角色别名与候选清单（未命中角色时为空） */
+  modelRole?: string;
+  roleCandidates?: string[];
 }
 
 interface SubagentDetails {
@@ -292,6 +300,23 @@ interface SubagentConfig {
   maxParallelTasks?: number;
   /** subagent.json 可选：同时运行的 worker 数（只能 ≤ 100 且 ≤ maxParallelTasks） */
   maxConcurrency?: number;
+  /** subagent.json 可选：角色名 → 候选模型（按优先级）；产品侧解析，不依赖外部脚本 */
+  roles?: Record<string, string[]>;
+}
+
+function parseRoleModelConfig(value: unknown): Record<string, string[]> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const roles: Record<string, string[]> = {};
+  for (const [name, candidates] of Object.entries(value as Record<string, unknown>)) {
+    const key = name.trim();
+    if (!key || !Array.isArray(candidates)) continue;
+    const list = candidates
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (list.length > 0) roles[key] = list;
+  }
+  return Object.keys(roles).length > 0 ? roles : undefined;
 }
 
 function loadSubagentConfig(): SubagentConfig {
@@ -328,6 +353,7 @@ function loadSubagentConfig(): SubagentConfig {
       // 原样保留，交给 resolveParallelLimits 统一做上限与交叉约束（并发 ≤ 任务数）
       maxParallelTasks: typeof raw.maxParallelTasks === "number" ? raw.maxParallelTasks : undefined,
       maxConcurrency: typeof raw.maxConcurrency === "number" ? raw.maxConcurrency : undefined,
+      roles: parseRoleModelConfig(raw.roles),
     };
   } catch {
     return {};
@@ -382,6 +408,39 @@ async function scopedSubagentModels(cwd: string) {
   return { models: scope.scopedModels.map((item) => item.model), diagnostics: scope.diagnostics.map((item) => item.message) };
 }
 
+
+function subagentModelOptions(models: Awaited<ReturnType<typeof scopedSubagentModels>>["models"]): SubagentModelOptionLike[] {
+  return models.map((model) => ({
+    id: `${model.provider}/${model.id}`,
+    metadata: {
+      source: "pi" as const,
+      reasoning: model.reasoning,
+      reasoningOptions: [{ type: "effort" as const, values: getSupportedThinkingLevels(model) }],
+    },
+  }));
+}
+
+async function resolveDiverseAssignments(input: {
+  mode: "parallel" | "chain";
+  cwd: string | undefined;
+  roles: Record<string, string[]> | undefined;
+  requestedModels: Array<string | undefined>;
+}): Promise<string[]> {
+  if (input.requestedModels.some(model => !wantsDiverseRole(model))) {
+    throw new Error("A diverse panel must select diverse for every task; mixed explicit selections are not a verified diverse panel");
+  }
+  const scoped = await scopedSubagentModels(path.resolve(input.cwd ?? process.cwd()));
+  return assignDiverseModels({
+    candidates: input.roles?.[DIVERSE_SUBAGENT_ROLE] ?? [],
+    availableModels: subagentModelOptions(scoped.models),
+    taskCount: input.requestedModels.length,
+    mode: input.mode,
+  });
+}
+
+function wantsDiverseRole(model: string | undefined): boolean {
+  return model?.trim() === DIVERSE_SUBAGENT_ROLE;
+}
 
 // ---------- 系统提示文件 ----------
 
@@ -815,10 +874,8 @@ async function runDelegatedStep(params: {
         globalDefaultModel: host.defaultModelId,
         globalDefaultProvider: host.defaultProvider,
       },
-      availableModels: scoped.models.map((model) => ({
-        id: `${model.provider}/${model.id}`,
-        metadata: { source: "pi" as const, reasoning: model.reasoning, reasoningOptions: [{ type: "effort" as const, values: getSupportedThinkingLevels(model) }] },
-      })),
+      availableModels: subagentModelOptions(scoped.models),
+      roles: config.roles,
     });
     const resolvedModel = resolved.model;
     const resolvedThinking = resolved.thinking ?? undefined;
@@ -902,6 +959,8 @@ async function runDelegatedStep(params: {
     result.requestedModel = params.execution?.model;
     result.resolvedModel = resolvedModel;
     result.resolvedThinking = resolvedThinking;
+    result.modelRole = resolved.modelRole;
+    result.roleCandidates = resolved.roleCandidates;
     result.diagnostics = [...(result.diagnostics ?? []), ...resolvedDiagnostics];
     return result;
   } catch (error) {
@@ -1049,6 +1108,20 @@ export default function (pi: any) {
       if (params.chain && params.chain.length > 0) {
         const results: SingleResult[] = [];
         let previousOutput = "";
+        let diverseAssignments: string[] | null = null;
+        if (wantsDiverseRole(params.model) || params.chain.some((step: any) => wantsDiverseRole(step.model))) {
+          try {
+            diverseAssignments = await resolveDiverseAssignments({
+              mode: "chain",
+              cwd: ctx.cwd,
+              roles: config.roles,
+              requestedModels: params.chain.map((step: { model?: string }) => step.model ?? params.model),
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text", text: message }], details: makeDetailsFn("chain")([]), isError: true };
+          }
+        }
         for (let i = 0; i < params.chain.length; i++) {
           const step = params.chain[i];
           const agent = resolveAgent(step.agent);
@@ -1071,8 +1144,20 @@ export default function (pi: any) {
           const result = await runDelegatedStep({
             runtime, agent, task: taskWithContext, cwd: step.cwd ?? ctx.cwd, subagentId: step.subagentId, step: i + 1,
             config, hostPermissionMode, parentDepth, timeoutMs: taskTimeoutMs, signal, onUpdate: chainUpdate,
-            makeDetails: makeDetailsFn("chain"), taskScope, execution: { ...params, ...step }, parentModelId,
+            makeDetails: makeDetailsFn("chain"), taskScope,
+            execution: {
+              ...params,
+              ...step,
+              ...(diverseAssignments && (wantsDiverseRole(step.model) || (!step.model && wantsDiverseRole(params.model)))
+                ? { model: diverseAssignments[i] }
+                : {}),
+            },
+            parentModelId,
           });
+          if (diverseAssignments) {
+            result.modelRole = DIVERSE_SUBAGENT_ROLE;
+            result.roleCandidates = config.roles?.[DIVERSE_SUBAGENT_ROLE];
+          }
           results.push(result);
           if (isFailedResult(result)) {
             return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}):\n${results.map((result, index) => `Step ${index + 1}:\n${getResultOutput(result)}`).join("\n\n")}` }], details: makeDetailsFn("chain")(results), isError: true };
@@ -1087,6 +1172,20 @@ export default function (pi: any) {
         if (params.tasks.length > limits.maxParallelTasks)
           return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${limits.maxParallelTasks} (concurrency ${limits.maxConcurrency}).` }], details: makeDetailsFn("parallel")([]) };
         const allResults: SingleResult[] = new Array(params.tasks.length);
+        let diverseAssignments: string[] | null = null;
+        if (wantsDiverseRole(params.model) || params.tasks.some((t: any) => wantsDiverseRole(t.model))) {
+          try {
+            diverseAssignments = await resolveDiverseAssignments({
+              mode: "parallel",
+              cwd: ctx.cwd,
+              roles: config.roles,
+              requestedModels: params.tasks.map((task: { model?: string }) => task.model ?? params.model),
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text", text: message }], details: makeDetailsFn("parallel")([]), isError: true };
+          }
+        }
         for (let i = 0; i < params.tasks.length; i++) {
           const t = params.tasks[i];
           allResults[i] = {
@@ -1117,8 +1216,20 @@ export default function (pi: any) {
             onUpdate: (partial) => {
               if (partial.details?.results[0]) { allResults[index] = partial.details.results[0]; emitParallelUpdate(); }
             },
-            makeDetails: makeDetailsFn("parallel"), taskScope, execution: { ...params, ...t }, parentModelId, parallel: true,
+            makeDetails: makeDetailsFn("parallel"), taskScope,
+            execution: {
+              ...params,
+              ...t,
+              ...(diverseAssignments && (wantsDiverseRole(t.model) || (!t.model && wantsDiverseRole(params.model)))
+                ? { model: diverseAssignments[index] }
+                : {}),
+            },
+            parentModelId, parallel: true,
           });
+          if (diverseAssignments) {
+            result.modelRole = DIVERSE_SUBAGENT_ROLE;
+            result.roleCandidates = config.roles?.[DIVERSE_SUBAGENT_ROLE];
+          }
           allResults[index] = result;
           emitParallelUpdate();
           return result;

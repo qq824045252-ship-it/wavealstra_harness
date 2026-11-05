@@ -1,3 +1,4 @@
+import { registerLocalWorkflowTools, type LocalWorkflowBridge } from "./local-workflow-extension";
 import { VideoJobPendingError } from "./VideoGenerationJobs";
 import { consultToolResult } from "./MultiModelConsult";
 import { consultSummary, type MultiModelConsultInput, type MultiModelConsultReport } from "../../shared/multi-model-consult";
@@ -52,6 +53,7 @@ import type { PythonEnvironmentSpec } from "../../shared/python-runtime";
 import type { SkillScriptOwner } from "../skills/SkillsService";
 
 export interface BuiltinCapabilityExtensionBridge {
+  localWorkflow?: LocalWorkflowBridge;
   /** Durable owns execution; keep product capabilities without session gates/recovery or execute_code. */
   nativeExecution?: boolean;
   consult?: (id: string, input: MultiModelConsultInput, signal: AbortSignal | undefined, onUpdate: (report: MultiModelConsultReport) => void) => Promise<MultiModelConsultReport>;
@@ -458,6 +460,10 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
     // A sliding screenshot window rewrites earlier provider input and destroys
     // prompt-prefix reuse even when the canonical session file is unchanged.
 
+    if (bridge.localWorkflow) registerLocalWorkflowTools(pi, {
+      taskId: bridge.taskId, taskRoot: bridge.taskRoot, services: bridge.localWorkflow,
+      terminalEnabled: config.execution.terminalEnabled,
+    });
     if (config.web.enabled) createWebAccessCapabilityExtension(pi);
 
     if (config.multiModelConsult.enabled && bridge.consult) {

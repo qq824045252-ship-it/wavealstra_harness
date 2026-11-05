@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
@@ -1689,7 +1690,8 @@ export class AppDatabase {
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        last_run_at INTEGER
+        last_run_at INTEGER,
+        execution_json TEXT
       );
 
       CREATE TABLE IF NOT EXISTS cron_runs (
@@ -2154,6 +2156,9 @@ export class AppDatabase {
     }
     if (!cronColumnNames.has("project_id")) {
       this.db.exec("ALTER TABLE cron_jobs ADD COLUMN project_id TEXT");
+    }
+    if (!cronColumnNames.has("execution_json")) {
+      this.db.exec("ALTER TABLE cron_jobs ADD COLUMN execution_json TEXT");
     }
 
     const soul = this.db.prepare("SELECT id FROM soul WHERE id = 1").get();
@@ -3578,24 +3583,35 @@ export class AppDatabase {
 
   listCronJobs(): CronJobDto[] {
     const rows = this.db
-      .prepare(`SELECT * FROM cron_jobs ORDER BY updated_at DESC`)
+      .prepare(`
+        SELECT c.*,
+               (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND status != 'skipped') AS run_count
+        FROM cron_jobs c
+        ORDER BY c.updated_at DESC
+      `)
       .all() as Array<Record<string, unknown>>;
     return rows.map((r) => this.rowToCronJob(r));
   }
 
   upsertCronJob(job: CronJobDto): void {
+    const executionJson = JSON.stringify({
+      sourceTaskId: job.sourceTaskId,
+      target: job.target,
+      maxRuns: job.maxRuns,
+      restartPolicy: job.restartPolicy,
+    });
     this.db
       .prepare(
         `INSERT INTO cron_jobs (
            id, name, prompt, schedule_type, schedule_expr, timezone,
            space_id, cwd, enabled, created_at, updated_at, last_run_at,
            permission_mode, welcome_mode, model_id, expert_id, skill_ids_json, connector_ids_json,
-           effective_from, effective_to, project_id
+           effective_from, effective_to, project_id, execution_json
          ) VALUES (
            @id, @name, @prompt, @scheduleType, @scheduleExpr, @timezone,
            @spaceId, @cwd, @enabled, @createdAt, @updatedAt, @lastRunAt,
            @permissionMode, @welcomeMode, @modelId, @expertId, @skillIdsJson, @connectorIdsJson,
-           @effectiveFrom, @effectiveTo, @projectId
+           @effectiveFrom, @effectiveTo, @projectId, @executionJson
          )
          ON CONFLICT(id) DO UPDATE SET
            name=excluded.name, prompt=excluded.prompt,
@@ -3607,7 +3623,7 @@ export class AppDatabase {
            expert_id=excluded.expert_id, skill_ids_json=excluded.skill_ids_json,
            connector_ids_json=excluded.connector_ids_json,
            effective_from=excluded.effective_from, effective_to=excluded.effective_to,
-           project_id=excluded.project_id`,
+           project_id=excluded.project_id, execution_json=excluded.execution_json`,
       )
       .run({
         id: job.id,
@@ -3631,6 +3647,7 @@ export class AppDatabase {
         effectiveFrom: job.effectiveFrom ?? null,
         effectiveTo: job.effectiveTo ?? null,
         projectId: job.projectId ?? null,
+        executionJson,
       });
   }
 
@@ -3646,9 +3663,12 @@ export class AppDatabase {
   }
 
   getCronJob(id: string): CronJobDto | undefined {
-    const row = this.db.prepare(`SELECT * FROM cron_jobs WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const row = this.db.prepare(`
+      SELECT c.*,
+             (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND status != 'skipped') AS run_count
+      FROM cron_jobs c
+      WHERE c.id = ?
+    `).get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToCronJob(row) : undefined;
   }
 
@@ -3682,10 +3702,15 @@ export class AppDatabase {
       .run(Date.now(), status, error ?? null, taskId ?? null, id);
   }
 
-  listCronRuns(limit = 50): CronRunDto[] {
+  recoverCronRuns(): void {
+    this.db.prepare("UPDATE cron_runs SET status = 'error', finished_at = ?, error = ? WHERE status = 'running'")
+      .run(Date.now(), "应用退出中断执行，未自动重放");
+  }
+
+  listCronRuns(limit = 50, jobIds?: string[]): CronRunDto[] {
     const rows = this.db
-      .prepare(`SELECT * FROM cron_runs ORDER BY started_at DESC LIMIT ?`)
-      .all(limit) as Array<Record<string, unknown>>;
+      .prepare(`SELECT * FROM cron_runs ${jobIds ? `WHERE job_id IN (${jobIds.map(() => "?").join(",")})` : ""} ORDER BY started_at DESC LIMIT ?`)
+      .all(...(jobIds ?? []), limit) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: String(r.id),
       jobId: String(r.job_id),
@@ -3836,6 +3861,8 @@ export class AppDatabase {
   }
 
   private rowToCronJob(r: Record<string, unknown>): CronJobDto {
+    const execution = parseCronExecution(r.execution_json ? JSON.parse(String(r.execution_json)) : {});
+
     return {
       id: String(r.id),
       name: String(r.name),
@@ -3858,6 +3885,8 @@ export class AppDatabase {
       effectiveFrom: r.effective_from != null ? Number(r.effective_from) : undefined,
       effectiveTo: r.effective_to != null ? Number(r.effective_to) : undefined,
       projectId: (r.project_id as string | null) ?? undefined,
+      ...execution,
+      runCount: typeof r.run_count === "number" ? r.run_count : undefined,
     };
   }
 }

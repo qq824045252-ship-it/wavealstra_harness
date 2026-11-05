@@ -45,7 +45,7 @@ const { ExpertService } = await import("../src/main/experts/ExpertService");
 const { ConnectorService } = await import("../src/main/connectors/ConnectorService");
 const { SkillsService } = await import("../src/main/skills/SkillsService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");
-const { matchesSkillPolicyNeedles } = await import("../src/shared/runtime-policy");
+const { matchesSkillPolicyNeedles, matchesSkillIdentityNeedles } = await import("../src/shared/runtime-policy");
 const { skillMatchesPolicy, nameMatchesPolicy } = await import("../src/shared/mode-access-filter");
 // 插件目录已迁移到 ~/.mybuddy/plugins/**（PluginStorage v1）。测试必须写入真实目录 getter，
 // 否则文件落在迁移前的旧路径上，ConnectorService/SkillsService 永远找不到。
@@ -591,6 +591,57 @@ async function main(): Promise<void> {
     assert(nameMatchesPolicy("serena", ["serena"]), "nameMatchesPolicy exact");
     assert(nameMatchesPolicy("my-serena", ["serena"]), "nameMatchesPolicy includes");
     assert(!nameMatchesPolicy("serena", ["penpot"]), "nameMatchesPolicy 不命中");
+  }
+
+  /* ================= 硬名单不再被子串扩散（Phase 1） ================= */
+  console.log("\n硬名单语义（matchesSkillIdentityNeedles / skillMatchesPolicy）");
+  {
+    const egoBrowser = { id: "ego-browser", name: "ego-browser", description: "Browser automation for logged-in sites" };
+    const archify = { id: "archify", name: "archify", description: "Architecture and workflow diagrams" };
+    assert(
+      !matchesSkillIdentityNeedles(egoBrowser, ["bro"]),
+      "allow 里的短 ID `bro` 不再子串命中 ego-browser",
+    );
+    assert(
+      !matchesSkillIdentityNeedles(archify, ["architect"]),
+      "allow 里的 `architect` 不再子串命中 archify",
+    );
+    assert(
+      matchesSkillPolicyNeedles(archify, ["architect"]),
+      "prefer/demote 关键词仍保留子串语义",
+    );
+    assert(
+      matchesSkillIdentityNeedles({ id: "bro", name: "Bro", description: "restate" }, ["BRO"]),
+      "硬名单 id 精确命中且大小写不敏感",
+    );
+    assert(
+      matchesSkillIdentityNeedles({ id: "git-review", name: "Git Review" }, ["git review"]),
+      "硬名单 name 精确命中",
+    );
+    assert(
+      matchesSkillIdentityNeedles({ id: "x", name: "y", command: "alpha" }, ["alpha"]),
+      "硬名单 command 精确命中",
+    );
+    assert(
+      !matchesSkillIdentityNeedles(archify, ["arch"]),
+      "硬名单不默认子串",
+    );
+    assert(
+      matchesSkillIdentityNeedles(archify, ["keyword:arch"]),
+      "显式 keyword: 前缀保留子串（旧配置可迁移）",
+    );
+    assert(
+      !matchesSkillIdentityNeedles(archify, ["keyword:"]),
+      "空 keyword 前缀不命中",
+    );
+    assert(
+      !skillMatchesPolicy(egoBrowser, ["bro"]),
+      "UI + 菜单可见性与主进程一致（硬名单身份匹配）",
+    );
+    assert(
+      matchesSkillIdentityNeedles(egoBrowser, ["EGO-BROWSER"]),
+      "硬名单 id 大小写不敏感（ego-browser）",
+    );
   }
 
   console.log(`\n[runtime-skill-loader-test] passed=${passed} failed=${failed}`);
