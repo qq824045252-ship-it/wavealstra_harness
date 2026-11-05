@@ -86,13 +86,14 @@ try {
   const { DurableBotService } = await import("../src/main/agent/durable/DurableBotService");
   const { BACKGROUND_CONTEXT: context } = await import("@earendil-works/chord/context");
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai/compat");
-  const { getCurrentTools, Type } = await import("@earendil-works/pi-ai");
+  const { getCurrentTools } = await import("@earendil-works/pi-ai");
+  const { Type } = await import("typebox");
   const { defineTool } = await import("@earendil-works/pi-durable");
   const model: any = { id: "fixture", provider: "fixture", name: "fixture", api: "openai-completions", input: ["text"],
     contextWindow: 128000, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const seen: Array<{ identity: string; mcp: string }> = [];
   let held = 0, generations = 0;
-  const fixtureModels: any = { refresh: async () => {}, getModel: () => model, getAvailable: async () => [model],
+  const fixtureModels: any = { getAuth: async () => undefined, refresh: async () => {}, getModel: () => model, getAvailable: async () => [model],
     streamSimple: (_model: any, input: any) => {
       const stream = createAssistantMessageEventStream();
       void Promise.resolve().then(() => {
@@ -126,7 +127,7 @@ try {
         if (ctx.abortSignal.aborted) reject(new Error("aborted"));
         else ctx.abortSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });
-      return { content: [{ type: "text", text: "unreachable" }] };
+      return { output: [{ type: "text", text: "unreachable" }] };
     },
   });
   const cwd = join(sandbox, "bot-cwd"); mkdirSync(cwd);

@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
+import type { ConversationId, DocumentId } from "@earendil-works/pi-durable";
 import { repairDurableJsonlLog } from "../src/main/agent/durable/DurableLogRepair";
 import { claimDurableStorageLease, DurableStorageOwnedError } from "../src/main/agent/durable/DurableStorageLease";
 import { openDurableStorage, isJsonlCorruption } from "../src/main/agent/durable/DurableStorage";
@@ -31,11 +33,12 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** 用真实库写一段合法日志，然后模拟第二个写入者交错追加重复 seq 的提交。 */
 async function buildCorruptedLog(directory: string): Promise<{ mainLines: number; duplicates: number[] }> {
   const storage = await openNodeJsonlStorage(directory, ctx, { fsync: false });
-  await storage.commit([
-    { type: "conversation", value: { id: 1 } },
-    { type: "document.create", record: { id: 2, kind: "fixture.doc", scope: { kind: "conversation", conversationId: 1 }, history: "latest", fork: "initial" }, content: { kind: "base", version: 1, value: {} } },
-  ] as any, ctx);
-  await storage.commit([{ type: "document.change", id: 2, content: { version: 1, kind: "delta", ops: [["s", ["turn", "first"], 1]] } }] as any, ctx);
+  const conversationId = 1 as ConversationId, documentId = 2 as DocumentId;
+  await commitWrites(storage, [
+    { type: "conversation", value: { id: conversationId } },
+    { type: "document.create", record: { id: documentId, kind: "fixture.doc", scope: { kind: "conversation", conversationId }, history: "latest", fork: "initial" }, content: { kind: "base", version: 1, value: { turn: {} } } },
+  ], ctx);
+  await commitWrites(storage, [{ type: "document.change", id: documentId, content: { version: 1, kind: "delta", ops: [["s", ["turn", "first"], 1]] } }], ctx);
   await storage.close(ctx);
 
   const mainPath = join(directory, "main.jsonl");
@@ -75,6 +78,9 @@ console.log("repair:", JSON.stringify({ ...report!, directory: "<dir>", backupDi
 const storage = await openNodeJsonlStorage(corrupt, ctx, { fsync: false });
 const conversations = await storage.scanConversations({}, 10, undefined, ctx);
 assert.equal(conversations.items.length, 1);
+const document = await storage.findDocument({ kind: "fixture.doc", scope: { kind: "conversation", conversationId: conversations.items[0].id } }, "current", ctx);
+assert(document, "the committed document address survives repair");
+assert.deepEqual((await storage.document(document.id, "current", ctx))?.value, { turn: { first: 1 } }, "repair preserves the base and its committed delta");
 const sequences = readFileSync(join(corrupt, "main.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line).seq);
 assert.deepEqual(sequences, [...sequences].sort((a, b) => a - b), "commit seq must be strictly increasing after repair");
 assert(repairDurableJsonlLog(corrupt) === undefined, "second repair must be a no-op");

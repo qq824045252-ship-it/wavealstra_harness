@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import { getCurrentTools, Type } from "@earendil-works/pi-ai";
+import { getCurrentTools } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
@@ -24,7 +25,7 @@ const usage={input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input
 const held=new Map<string,()=>void>();let effects=0,requests=0;
 const hold=defineTool({name:"fixture_hold",description:"isolated unsafe side effect",parameters:Type.Object({key:Type.String()}),replay:"unsafe",
   execute:async(args,_api,context)=>{effects++;await new Promise<void>((resolve,reject)=>{held.set(args.key,resolve);context.abortSignal?.addEventListener("abort",()=>reject(Error("interrupted")),{once:true});});return {output:[{type:"text",text:"done"}]};}});
-const models:any={refresh:async()=>{},getAvailable:async()=>[model],getModel:()=>model,streamSimple:(_model:any,context:any)=>{
+const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async()=>[model],getModel:()=>model,streamSimple:(_model:any,context:any)=>{
   requests++;const stream=createAssistantMessageEventStream();
   queueMicrotask(()=>{
     const names=getCurrentTools(context.messages).map(tool=>tool.name);assert(names.includes("write"));assert(!names.includes("codemode"));

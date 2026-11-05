@@ -5,7 +5,7 @@
  *
  * 用真实 AgentService.createSession 装配链（Mode → Project → Tag → Expert/Connector 候选
  * → skillPolicy → Final Allowed Set），在 SDK 边界拦截 createAgentSession，直接读取
- * DefaultResourceLoader.getSkills()（AgentSession/system prompt 的唯一技能来源），断言：
+ * ResourceLoader.getSkills()（AgentSession/system prompt 的唯一技能来源），断言：
  *
  * [1] Global Skill 允许 → loader 包含
  * [2] Global Skill 被 Tag 拒绝 → loader 不存在（且 SDK 技能 XML 不含）
@@ -29,7 +29,7 @@ import {
   ModelRuntime,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
-  type DefaultResourceLoader,
+  type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-skill-loader-"));
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   });
 
   let sdkCalls = 0;
-  const capturedLoaders: Array<DefaultResourceLoader | null> = [];
+  const capturedLoaders: Array<ResourceLoader | null> = [];
   const capturedSessions: unknown[] = [];
   let submittedPrompt = "";
   let rejectNextPreflight = false;

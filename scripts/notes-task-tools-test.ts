@@ -18,7 +18,7 @@ process.env.HOME = root; process.env.USERPROFILE = root;
 const model: any = { id: "fixture", name: "fixture", provider: "fixture", api: "openai-completions", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const ref = { provider: model.provider, modelId: model.id };
 function models(reply: (context: any, options: any) => any): any {
-  const api: any = { getModel: () => model, streamSimple: (_model: any, context: any, options: any) => {
+  const api: any = { getAuth: async () => undefined, getModel: () => model, streamSimple: (_model: any, context: any, options: any) => {
     const stream = createAssistantMessageEventStream();
     void Promise.resolve().then(() => reply(context, options)).then(content => {
       const stopReason = content.some((c: any) => c.type === "toolCall") ? "toolUse" : "stop";

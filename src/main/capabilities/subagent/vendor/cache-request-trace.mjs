@@ -59,7 +59,24 @@ var KINDS = /* @__PURE__ */ new Set([
   "configuration_update"
 ]);
 var ROLES = /* @__PURE__ */ new Set(["system", "developer", "user", "assistant", "tool"]);
-var AFFINITY_HEADERS = ["session_id", "conversation_id", "x-session-id", "x-client-session-id", "user-agent", "openai-beta"];
+var AFFINITY_HEADERS = [
+  "session_id",
+  "conversation_id",
+  "x-session-id",
+  "x-client-session-id",
+  "user-agent",
+  "openai-beta",
+  "authorization",
+  "api-key",
+  "x-api-key",
+  "openai-organization",
+  "openai-project",
+  "chatgpt-account-id"
+];
+var RESPONSE_TERMINALS = /* @__PURE__ */ new Set(["response.completed", "response.incomplete", "response.failed"]);
+var RESPONSE_STATUSES = /* @__PURE__ */ new Set(["completed", "incomplete", "failed", "cancelled", "in_progress", "queued"]);
+var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+var finiteNumber = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
 var plainHash = (value) => createHash("sha256").update(value).digest("hex");
 function sessionTraceBoundary(session, operation) {
   try {
@@ -82,6 +99,7 @@ var CacheRequestTracer = class {
   constructor(sink) {
     this.sink = sink;
   }
+  sink;
   epoch = randomUUID();
   key = randomBytes(32);
   previous = /* @__PURE__ */ new Map();
@@ -215,22 +233,54 @@ var CacheRequestTracer = class {
       payload: (payload) => {
         payloadSnapshot = capture(payload, "provider", 0);
       },
+      providerEvent: (data) => {
+        try {
+          const event = object(data);
+          if (typeof event?.type !== "string" || !RESPONSE_TERMINALS.has(event.type)) return;
+          const response = object(event.response);
+          const usage = object(response?.usage);
+          const details = object(usage?.input_tokens_details);
+          this.emit({
+            ...base,
+            event: "provider-usage",
+            terminal: event.type,
+            responseStatus: typeof response?.status === "string" && RESPONSE_STATUSES.has(response.status) ? response.status : "unknown",
+            usagePresent: usage !== void 0,
+            cachedTokensPresent: details !== void 0 && Object.hasOwn(details, "cached_tokens"),
+            usage: {
+              inputTokens: finiteNumber(usage?.input_tokens),
+              outputTokens: finiteNumber(usage?.output_tokens),
+              totalTokens: finiteNumber(usage?.total_tokens),
+              cachedTokens: finiteNumber(details?.cached_tokens)
+            }
+          });
+        } catch {
+          this.emit({ ...base, event: "provider-usage", coverage: "observation-failed" });
+        }
+      },
       sent: (input, init) => {
         const attempt = ++attempts;
         try {
+          const suppliedHeaders = init?.headers ?? (input instanceof Request ? input.headers : void 0);
+          const headers = suppliedHeaders === void 0 ? void 0 : new Headers(suppliedHeaders);
+          const entries = headers ? [...headers.entries()].sort(([a], [b]) => a.localeCompare(b)) : void 0;
+          const headerEvidence = {
+            headersScope: "sdk-fetch-arguments",
+            headersHash: entries ? this.digest(entries) : null,
+            headersCount: entries?.length ?? null,
+            affinityHash: headers ? this.digest(AFFINITY_HEADERS.map((key) => [key, headers.get(key)])) : null
+          };
           if (typeof init?.body !== "string" || Buffer.byteLength(init.body) > MAX_BYTES) {
-            capture(void 0, "http", attempt);
+            capture(void 0, "http", attempt, headerEvidence);
             return attempt;
           }
-          const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : void 0));
-          const affinity = AFFINITY_HEADERS.map((key) => [key, headers.get(key)]);
           const payload = JSON.parse(init.body);
           capture(payload, "http", attempt, {
+            ...headerEvidence,
             wireBytes: Buffer.byteLength(init.body),
             wireHash: this.digest(init.body),
             adapterMatch: payloadSnapshot ? payloadSnapshot.hash === this.digest(payload) : null,
-            endpointHash: this.digest(input instanceof Request ? input.url : String(input)),
-            affinityHash: this.digest(affinity)
+            endpointHash: this.digest(input instanceof Request ? input.url : String(input))
           });
         } catch {
           capture(void 0, "http", attempt);

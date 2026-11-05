@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   CodemodeSandbox, renderDeclarations,
   type CodemodeJsonSchema, type CodemodeOutputItem, type CodemodeSandboxOptions, type CodemodeTool,
@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { persistDurableImages } from "./DurableImages";
 
-const Store = defineDoc({ kind: "mybuddy.codemode-store", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ values: {} as JsonObject }) });
+const Store = defineDoc({ kind: "mybuddy.codemode-store", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false, initial: () => ({ values: {} as JsonObject }) });
 
 /** One nested call the UI projects from the Code Mode result details. */
 export type CodemodeCallDetail = {

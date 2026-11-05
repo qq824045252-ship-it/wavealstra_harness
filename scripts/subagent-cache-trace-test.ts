@@ -88,15 +88,21 @@ try {
   assert(!JSON.stringify(records).includes(work)); assert(!JSON.stringify(records).includes(parent));
   const { summarizeCacheTraces } = await import(pathToFileURL(resolve('scripts/cache-trace-audit.mjs')).href);
   const report = summarizeCacheTraces(records);
-  assert.equal(report.calls, 4); assert.equal(report.classificationCounts['stable-prefix-low-cache'], 1);
+  assert.equal(report.calls, 4);
+  assert.equal(report.classificationCounts['raw-cache-usage-missing'], 3);
+  assert.equal(report.classificationCounts['request-failed'], 1);
+  assert(report.requests.every((r: any) => r.cacheReadState === 'missing' && r.rawUsage === null),
+    'child workers have no raw provider-event hook; normalized zero is not evidence of explicit raw zero');
+  assert.deepEqual(report.requests.map((r: any) => r.usage.cacheRead), [0, 0, 99000, 0],
+    'raw telemetry gaps must preserve native normalized accounting');
   assert(report.requests.every((r: any) => !r.retryChanged && r.adapterMatches.every((v: boolean) => v === true)));
   assert.deepEqual(report.requests.map((r: any) => r.httpStatuses), [[200], [503], [200], [200]]);
   assert.equal(report.requests[1].historyUncachedTokens, null, 'an unbilled provider error is not a cache loss');
-  assert.equal(report.requests[3].historyUncachedTokens, 100000);
+  assert.equal(report.requests[3].historyUncachedTokens, null, 'unobserved raw cache usage cannot establish historical cache loss');
   const parentReport = JSON.parse(execFileSync(process.execPath, ['scripts/cache-trace-audit.mjs', '--session', parent], { encoding: 'utf8' }));
   assert.equal(parentReport.calls, 4, 'parent lookup finds children without preserving child session files');
   assert(parentReport.requests.every((r: any) => r.source === 'subagent' && r.parentSessionHash === hash(parent)));
-  console.log('PASS real child RPC: repeated reads, unchanged prefixes, 503 retry, forced cache miss, correlation and cleanup');
+  console.log('PASS real child RPC: repeated reads, unchanged prefixes, 503 retry, preserved usage, raw telemetry gaps, correlation and cleanup');
   const before = logRecords().length;
   disabled = true; env.MYBUDDY_CACHE_TRACE = '0';
   const off = runtime.ensureSubagent({ scope: parent, subagentId: 'reviewer-trace-disabled', role: 'reviewer', roleSource: 'user',

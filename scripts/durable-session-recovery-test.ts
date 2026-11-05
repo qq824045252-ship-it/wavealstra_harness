@@ -21,6 +21,7 @@ const ref = { provider: model.provider, modelId: model.id };
 function models(replies: string[]): any {
   let index = 0;
   const api: any = {
+    getAuth: async () => undefined,
     getModel: () => model,
     streamSimple: () => {
       const stream = createAssistantMessageEventStream();

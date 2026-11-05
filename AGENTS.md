@@ -4,7 +4,7 @@
 - Git workflow: use `main` as the only active local branch and commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. The release workflow below is standing authorization for its scoped commit and push; otherwise push only when explicitly requested.
 - Typecheck: `pnpm -s typecheck`
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
-- **只支持当前 Pi 版本（1.3.0）**：旧版本（0.99.x / 0.99.2 / 1.0.x）的迁移与兼容测试已删除，不要为旧版本重新引入兼容层或迁移用例。版本 pin 在 `src/main/capabilities/subagent/worker-launcher.mjs` 的 `EXPECTED_PI_VERSION`，测试从那里读取，不要硬编码。
+- **只支持当前 Pi 版本（1.5.0）**：旧版本（0.99.x / 0.99.2 / 1.0.x）的迁移与兼容测试已删除，不要为旧版本重新引入兼容层或迁移用例。版本 pin 在 `src/main/capabilities/subagent/worker-launcher.mjs` 的 `EXPECTED_PI_VERSION`，测试从那里读取，不要硬编码。
 - **Full gate: `pnpm -s test:all`**（default 套件 = headless；当前数量以 `--list` 为准）。`scripts/test-all.mjs` 把 `test:*` 显式分为 headless / GUI / NETWORK / DATASET（+ pending 桶，当前为空），default 只跑 headless；`node scripts/test-all.mjs --list` 看分类，`--audit` 做分类自检。它是**棘轮**：`scripts/test-baseline.json` 里的已知失败会被打印但放行，任何*新增*失败都会让门禁失败；修好后删掉基线条目（`pnpm -s test:all:update-baseline` 会重写，但不要用它掩盖回归）。
 - **GUI/桌面套件必须真机跑**：`pnpm -s test:all:gui`（= default + GUI；需要真实桌面会话，先 `pnpm -s build` 供 consult-entry / startup perf 使用）。`pnpm -s test:all:live` 放行全部（含联网/远程/数据集用例）。CI 有独立的 `verify-windows-gui`（每晚 + 手动）跑 GUI 套件。
 - 性能敏感用例（`test:core-performance*`）在 `test:all` 里走串行池，避免并行争用把启动 p95 推过预算；不要把它们并回并行池。

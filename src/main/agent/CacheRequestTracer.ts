@@ -15,7 +15,12 @@ const ITEM_FIELDS = new Set(['type', 'role', 'id', 'call_id', 'name', 'arguments
 const KINDS = new Set(['message', 'reasoning', 'function_call', 'function_call_output', 'custom_tool_call',
   'custom_tool_call_output', 'tool_search_call', 'tool_search_output', 'additional_tools', 'configuration_update']);
 const ROLES = new Set(['system', 'developer', 'user', 'assistant', 'tool']);
-const AFFINITY_HEADERS = ['session_id', 'conversation_id', 'x-session-id', 'x-client-session-id', 'user-agent', 'openai-beta'];
+const AFFINITY_HEADERS = ['session_id', 'conversation_id', 'x-session-id', 'x-client-session-id', 'user-agent', 'openai-beta',
+  'authorization', 'api-key', 'x-api-key', 'openai-organization', 'openai-project', 'chatgpt-account-id'];
+const RESPONSE_TERMINALS = new Set(['response.completed', 'response.incomplete', 'response.failed']);
+const RESPONSE_STATUSES = new Set(['completed', 'incomplete', 'failed', 'cancelled', 'in_progress', 'queued']);
+const object = (value: unknown): Json | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : undefined;
+const finiteNumber = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
 const plainHash = (value: string) => createHash('sha256').update(value).digest('hex');
 type Json = Record<string, unknown>;
 export type CacheTraceRecord = Json;
@@ -138,19 +143,38 @@ export class CacheRequestTracer {
     };
     return {
       payload: (payload: unknown) => { payloadSnapshot = capture(payload, 'provider', 0); },
+      providerEvent: (data: unknown) => {
+        try {
+          const event = object(data);
+          if (typeof event?.type !== 'string' || !RESPONSE_TERMINALS.has(event.type)) return;
+          const response = object(event.response);
+          const usage = object(response?.usage);
+          const details = object(usage?.input_tokens_details);
+          this.emit({ ...base, event: 'provider-usage', terminal: event.type,
+            responseStatus: typeof response?.status === 'string' && RESPONSE_STATUSES.has(response.status) ? response.status : 'unknown',
+            usagePresent: usage !== undefined, cachedTokensPresent: details !== undefined && Object.hasOwn(details, 'cached_tokens'),
+            usage: { inputTokens: finiteNumber(usage?.input_tokens), outputTokens: finiteNumber(usage?.output_tokens),
+              totalTokens: finiteNumber(usage?.total_tokens), cachedTokens: finiteNumber(details?.cached_tokens) } });
+        } catch { this.emit({ ...base, event: 'provider-usage', coverage: 'observation-failed' }); }
+      },
       sent: (input: RequestInfo | URL, init?: RequestInit) => {
         const attempt = ++attempts;
         try {
+          const suppliedHeaders = init?.headers ?? (input instanceof Request ? input.headers : undefined);
+          const headers = suppliedHeaders === undefined ? undefined : new Headers(suppliedHeaders);
+          const entries = headers ? [...headers.entries()].sort(([a], [b]) => a.localeCompare(b)) : undefined;
+          const headerEvidence = { headersScope: 'sdk-fetch-arguments',
+            headersHash: entries ? this.digest(entries) : null, headersCount: entries?.length ?? null,
+            affinityHash: headers ? this.digest(AFFINITY_HEADERS.map(key => [key, headers.get(key)])) : null };
           // Native HTTP SDKs pass JSON strings. Never consume or tee an arbitrary request stream.
           if (typeof init?.body !== 'string' || Buffer.byteLength(init.body) > MAX_BYTES) {
-            capture(undefined, 'http', attempt); return attempt;
+            capture(undefined, 'http', attempt, headerEvidence); return attempt;
           }
-          const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-          const affinity = AFFINITY_HEADERS.map(key => [key, headers.get(key)]);
           const payload: unknown = JSON.parse(init.body);
-          capture(payload, 'http', attempt, { wireBytes: Buffer.byteLength(init.body), wireHash: this.digest(init.body),
+          capture(payload, 'http', attempt, { ...headerEvidence,
+            wireBytes: Buffer.byteLength(init.body), wireHash: this.digest(init.body),
             adapterMatch: payloadSnapshot ? payloadSnapshot.hash === this.digest(payload) : null,
-            endpointHash: this.digest(input instanceof Request ? input.url : String(input)), affinityHash: this.digest(affinity) });
+            endpointHash: this.digest(input instanceof Request ? input.url : String(input)) });
         } catch { capture(undefined, 'http', attempt); }
         return attempt;
       },

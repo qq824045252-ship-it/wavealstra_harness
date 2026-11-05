@@ -1,6 +1,7 @@
 /**
  * 永久资产断言：pi image-resize worker 与 photon wasm 被 emit 进 out/main，
  * 且运行时可真实工作（worker 加载後能完成 resize），wasm 字节级等于包源。
+ * MYBUDDY_IMAGE_TEST_APP 指定发行包目录时，必须用包内 MyBuddy.exe 的 Electron Node 运行。
  *
  * 断言点：
  * 1. out/main/image-resize-worker.js / out/main/photon_rs_bg.wasm 存在且非空；
@@ -19,9 +20,8 @@ import { deflateSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 
 const root = resolve(__dirname, "..", ".."); // 入参 --outfile 固定 out/tests/*.cjs，向上两级 = 工作区根
-const outMain = join(root, "out", "main");
 
-function assert(condition: unknown, message: string): void {
+function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error("image-resize 资产断言失败: " + message);
   }
@@ -79,6 +79,21 @@ function crc32(bytes: Buffer): number {
 }
 
 async function main(): Promise<void> {
+  const { extractFile, listPackage, statFile }: typeof import("@electron/asar") = createRequire(join(root, "package.json"))("@electron/asar");
+  const requestedApp = process.env.MYBUDDY_IMAGE_TEST_APP;
+  assert(requestedApp === undefined || requestedApp.trim().length > 0, "显式 app 目录不能为空");
+  const appDir = requestedApp === undefined ? undefined : realpathSync(resolve(requestedApp));
+  const archivePath = appDir ? join(appDir, "resources", "app.asar") : undefined;
+  const outMain = appDir ? join(appDir, "resources", "app.asar.unpacked", "out", "main") : join(root, "out", "main");
+  if (appDir && archivePath) {
+    assert(realpathSync(process.execPath) === realpathSync(join(appDir, "MyBuddy.exe")), "必须使用指定包的 MyBuddy.exe 执行测试");
+    assert(typeof process.versions.electron === "string", "发行包验收必须运行于 Electron Node");
+    assert(process.env.ELECTRON_RUN_AS_NODE === "1", "发行包验收需要 ELECTRON_RUN_AS_NODE=1");
+    for (const entry of ["out/main/image-resize-worker.js", "out/main/photon_rs_bg.wasm", "out/main/capabilities/subagent/runtime/chunks/photon_rs_bg.wasm"]) {
+      assert(statFile(archivePath, entry).unpacked === true, "实际 asar 索引必须标记 unpacked: " + entry);
+    }
+  }
+  console.log("[target]", JSON.stringify({ appDir: appDir ?? null, archivePath: archivePath ?? null, outMain, actualExe: process.execPath, node: process.versions.node, electron: process.versions.electron ?? null }));
   const workerPath = join(outMain, "image-resize-worker.js");
   const wasmPath = join(outMain, "photon_rs_bg.wasm");
   const workerSource = readFileSync(workerPath);
@@ -98,7 +113,6 @@ async function main(): Promise<void> {
 
   // 3. wasm 头与字节级一致性（SHA-256 与源一致；源从 pi 依赖图解析）
   assert(wasmOut.subarray(0, 4).toString("hex") === "0061736d", "wasm 文件头 \\0asm");
-  const rootRequire = createRequire(join(root, "package.json"));
   const piRoot = realpathSync(join(root, "node_modules", "@earendil-works", "pi-coding-agent"));
   const piRequire = createRequire(join(piRoot, "package.json"));
   const wasmSourcePath = join(
@@ -131,10 +145,12 @@ async function main(): Promise<void> {
   console.log("[asarUnpack]", unpack.filter((p) => p.startsWith("out/main/image-resize") || p.includes("photon")).join(", "));
 
   // 5. 主包运行时查找文件名未漂移
-  const mainIndex = readFileSync(join(outMain, "index.js"), "utf8");
+  const mainIndex = archivePath ? extractFile(archivePath, "out/main/index.js").toString("utf8") : readFileSync(join(outMain, "index.js"), "utf8");
   assert(mainIndex.includes('"./image-resize-worker.js"'), "主包以 ./image-resize-worker.js 相对 __filename 查找 worker");
   assert(mainIndex.includes('"photon_rs_bg.wasm"'), "主包引用 photon_rs_bg.wasm 文件名");
-  const loaderChunks = readdirSync(outMain).filter((name) => name.startsWith("photon_rs-"));
+  const loaderChunks = archivePath
+    ? listPackage(archivePath, { isPack: false }).map((entry) => entry.replaceAll("\\", "/")).filter((entry) => /^\/out\/main\/photon_rs-[^/]+$/.test(entry)).map((entry) => entry.slice("/out/main/".length))
+    : readdirSync(outMain).filter((name) => name.startsWith("photon_rs-"));
   assert(loaderChunks.length === 1, "主包 photon loader chunk 恰好一个: " + loaderChunks.join(","));
 
   // 6. 功能级：worker 真实加载 wasm 完成一次 resize
@@ -160,6 +176,18 @@ async function main(): Promise<void> {
   assert((resized.height ?? Infinity) <= 40, `height<=40 (实际 ${resized.height})`);
   assert(!!resized.data && resized.mimeType === "image/png", "返回 PNG base64 数据");
   console.log("[worker]", `100x200 -> ${resized.width}x${resized.height}, wasResized=${resized.wasResized}, mimeType=${resized.mimeType}`);
+  const outputPng = Buffer.from(resized.data, "base64");
+  assert(outputPng.length >= 24 && outputPng.subarray(0, 8).equals(png.subarray(0, 8)), "返回数据含实际 PNG 签名与 IHDR");
+  assert(outputPng.toString("ascii", 12, 16) === "IHDR", "返回 PNG 首块为 IHDR");
+  assert(outputPng.readUInt32BE(16) === resized.width && outputPng.readUInt32BE(20) === resized.height, "实际 PNG 尺寸与 worker 元数据一致");
+  console.log("IMAGE_RESIZE_EVIDENCE " + JSON.stringify({
+    mode: appDir ? "packaged-electron-node" : "development-node", appDir: appDir ?? null,
+    actualExe: realpathSync(process.execPath), node: process.versions.node, electron: process.versions.electron ?? null,
+    archivePath: archivePath ?? null, workerPath, wasmPath, workerSha256: sha256(workerSource), wasmSha256: outputHash,
+    sourceWasmSha256: sha256(wasmSource), runtimeWasmSha256: sha256(subagentRuntimeWasm), mainIndexSha256: sha256(Buffer.from(mainIndex)),
+    input: { width: 100, height: 200 }, limits: { maxWidth: 40, maxHeight: 40 },
+    output: { width: outputPng.readUInt32BE(16), height: outputPng.readUInt32BE(20), wasResized: resized.wasResized, mimeType: resized.mimeType, sha256: sha256(outputPng) },
+  }));
   console.log("PASS image-resize-assets");
 }
 

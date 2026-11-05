@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import { createMcpAuthProvider, type ModelRuntime, type McpServerConfig, type LoadedMcpConfig, type McpOAuthCredentialStore } from "@earendil-works/pi-coding-agent";

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import { getCurrentTools, Type } from "@earendil-works/pi-ai";
+import { getCurrentTools } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-durable";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
@@ -24,7 +25,7 @@ console.log("Isolated test directory:", root);
 const model: any = { id: "fixture", name: "fixture", provider: "fixture", api: "openai-completions", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const ref = { provider: model.provider, modelId: model.id };
 function models(reply: (context: any, options: any) => any): any {
-  const api: any = { getModel: () => model, streamSimple: (_model: any, context: any, options: any) => {
+  const api: any = { getAuth: async () => undefined, getModel: () => model, streamSimple: (_model: any, context: any, options: any) => {
     const stream = createAssistantMessageEventStream();
     void Promise.resolve().then(() => reply(context, options)).then(content => {
       const stopReason = content.some((c: any) => c.type === "toolCall") ? "toolUse" : "stop";
@@ -75,6 +76,47 @@ for (const mode of ["native", "codemode"] as const) {
   assert.equal(reopened.snapshot.messages.at(-1)?.text,"complete");
   await reopened.close();
   console.log("PASS",mode,"real native tools, no artifact blacklist, deduplication and reopen");
+}
+{
+  const cwd = join(root, "document-semantics"); await mkdir(cwd);
+  let code = 'store("n",1);';
+  const api = models(context => {
+    const last = context.messages.at(-1);
+    if (last?.role !== "toolResult") return call("codemode", { code });
+    assert.equal(last.isError, false, JSON.stringify(last.content));
+    return text("document turn complete");
+  });
+  const options = { directory: join(cwd, "state"), cwd, model: ref, toolMode: "codemode" as const, instructions: () => "fixture", onSnapshot: () => {}, models: api };
+  let runtime = await DurableBotRuntime.open(options);
+  try {
+    for (const n of [1, 2]) {
+      code = `store("n",${n});`;
+      const metadata = { text: `raw-${n}`, displayText: `visible-${n}`, attachments: [{ name: `file-${n}`, path: join(cwd, `file-${n}`) }] };
+      assert.equal((await (await runtime.submit(metadata.text, `document-${n}`, "followUp", metadata)).wait(ctx)).status, "done");
+    }
+    await runtime.conversation.waitForIdle(ctx);
+    const history = await runtime.conversation.entries({ order: "ascending" }, 100, undefined, ctx);
+    const firstAnswer = history.items.find(entry => entry.kind === "pi.assistant" && entry.model?.some(message => message.role === "assistant" && message.stopReason === "stop"));
+    assert(firstAnswer);
+    const fork = await runtime.conversation.fork(firstAnswer.id, { ownership: { kind: "ownerless" } }, ctx);
+    code = 'if(load("n")!==2)throw Error("fork must copy current state"); store("n",3);';
+    assert.equal((await (await fork.submit({ type: "input", content: "fork", requestId: "fork" }, ctx)).wait(ctx)).status, "done");
+    await fork.waitForIdle(ctx);
+    const sibling = await runtime.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { cwd, model: ref, tools: (await runtime.conversation.agent(ctx)).tools } }, ctx);
+    code = 'if(load("n")!==undefined)throw Error("conversation store leaked"); store("n",9);';
+    assert.equal((await (await sibling.submit({ type: "input", content: "sibling", requestId: "sibling" }, ctx)).wait(ctx)).status, "done");
+    await sibling.waitForIdle(ctx);
+    const before = (await runtime.refresh()).messages;
+    assert.deepEqual(before.filter(message => message.role === "user").map(message => message.text), ["visible-1", "visible-2"]);
+    assert.deepEqual(before.filter(message => message.role === "user").map(message => message.attachments?.[0].name), ["file-1", "file-2"]);
+    assert(before.filter(message => message.role === "assistant").every(message => message.durationMs !== undefined));
+    await runtime.close();
+    runtime = await DurableBotRuntime.open(options);
+    assert.deepEqual(runtime.snapshot.messages, before, "input display metadata, response timing and complete history survive reopen");
+    code = 'if(load("n")!==2)throw Error("reopen lost root store or fork/sibling mutated it"); text(load("n"));';
+    assert.equal((await (await runtime.submit("read persisted store", "document-reopen")).wait(ctx)).status, "done");
+  } finally { await runtime.close(); }
+  console.log("PASS conversation documents preserve current forks, isolate siblings and restore store, input metadata, timing and history");
 }
 if (process.platform === "win32") for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode + "-powershell"); await mkdir(cwd);
@@ -202,7 +244,7 @@ for (const mode of ["native", "codemode"] as const) {
     assert(input, "persisted user image reaches provider context before and after reopen");
     if (restored) return text("image reopen complete");
     if (++requests === 1) return mode === "native" ? call("read", { path: "input.png" })
-      : call("codemode", { code: 'const r=await tools.read({path:"input.png"}); const img=r.content.find(c=>c.type==="image"); if(!img)throw Error("Image missing"); image(img); image(img);' });
+      : call("codemode", { code: 'const r=await tools.read({path:"input.png"}); const img=r.content; if(img.type!=="image")throw Error("Image missing"); image(img); image(img);' });
     outputImages = context.messages.filter((message: any) => message.role === "toolResult").flatMap((message: any) => message.content.filter((part: any) => part.type === "image"));
     assert(outputImages.length >= (mode === "codemode" ? 2 : 1), "native read and Code Mode forward actual image blocks");
     return text("image complete");
@@ -560,6 +602,7 @@ for (const mode of ["native", "codemode"] as const) {
   const magpie = (id: string, name: string): any => ({ ...model, provider: "magpie", id, name });
   const catalogModels = [magpie("workbuddy/glm-5.3-flash", "GLM-5.3-Flash · WorkBuddy"), magpie("workbuddy/deepseek-v4.1-flash", "Deepseek-V4.1-Flash · WorkBuddy")];
   const modelsStub: any = {
+    getAuth: async () => undefined,
     getModel: (provider: string, id: string) => catalogModels.find(candidate => candidate.provider === provider && candidate.id === id),
     getModels: () => catalogModels, getAvailable: async () => catalogModels, refresh: async () => ({}),
   };
@@ -613,7 +656,7 @@ for (const mode of ["native", "codemode"] as const) {
   db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "bot", modelId: storedModel, cwd, updatedAt: Date.now() });
   const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
   await mkdir(directory, { recursive: true });
-  const emptyModels: any = { getModel: () => undefined, getModels: () => [], getAvailable: async () => [], refresh: async () => ({}) };
+  const emptyModels: any = { getAuth: async () => undefined, getModel: () => undefined, getModels: () => [], getAvailable: async () => [], refresh: async () => ({}) };
   const service = new DurableBotService({ db, agentDir, mcpDir: join(agentDir, "mcp"), models: emptyModels,
     // 扩展工厂自身抛错同样不能阻断只读历史；发请求时才严格重新装配。
     tools: () => { throw new Error("extension factory boom"); },

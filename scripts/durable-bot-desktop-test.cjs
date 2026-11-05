@@ -42,7 +42,7 @@ const server=http.createServer(async(req,res)=>{
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_MEMORY_NATIVE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'memory_search',arguments:'{}'};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_MCP_REFRESH'))tool=!recent.some(m=>m.role==='tool')?{name:'mcp_list_tools',arguments:JSON.stringify({server:'added'})}
     :!recent.some(m=>m.role==='assistant'&&m.tool_calls?.some(t=>t.function.name==='mcp_call_tool'))?{name:'mcp_call_tool',arguments:JSON.stringify({server:'added',tool:'read_seed',arguments:{}})}:undefined;
-  if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'codemode',arguments:JSON.stringify({code:'const r=await tools.read({path:'+JSON.stringify(imageInput)+'}); const img=r.content.find(c=>c.type==="image"); if(!img)throw Error("Image missing"); image(img); image(img);'})};
+  if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE'))tool=recent.some(m=>m.role==='tool')?undefined:{name:'codemode',arguments:JSON.stringify({code:'const r=await tools.read({path:'+JSON.stringify(imageInput)+'}); const img=r.content; if(img.type!=="image")throw Error("Image missing"); image(img); image(img);'})};
   if(JSON.stringify(body.messages[lastUser]).includes('BOT_IMAGE_REOPEN'))tool=undefined;
   // Pi may append a user-role evidence message after the actual input; fixture selection
   // must still recognize the real continuation instead of markers inside injected memory.

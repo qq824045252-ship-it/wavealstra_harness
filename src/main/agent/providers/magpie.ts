@@ -1,4 +1,5 @@
 import type { Api, ApiKeyAuth, Model, ModelThinkingLevel, Provider, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelsModelConfig } from "../ModelsConfigStore";
 
 export const MAGPIE_PROVIDER_ID = "magpie";
@@ -18,15 +19,25 @@ export type MagpieModelApi = "anthropic-messages" | "openai-completions" | "open
 export type MagpieModel = Model<MagpieModelApi>;
 type PiProviderSdk = Pick<typeof import("@earendil-works/pi-ai"), "createProvider">;
 
-/** Magpie accepts Responses strict:false. If omitted, Codex normalizes optional
- * parameters into required dummy values. Apply at ModelRuntime dispatch: Pi's
- * composer bypasses a provider's stream implementation before its first catalog
- * refresh, when the native provider has no models for that API yet. */
+/** Preserve native Codex tool deltas through Magpie's Responses route. Only these
+ * two capabilities transfer; retention and other protocol choices stay local.
+ * Strict support keeps Pi's default strict:false declaration on this gateway. */
 export function magpieResponsesModel<TApi extends Api>(model: Model<TApi>): Model<TApi> {
   if (model.provider !== MAGPIE_PROVIDER_ID || model.api !== "openai-responses") return model;
   const compat = (model as Model<"openai-responses">).compat;
-  if (compat?.supportsStrictMode !== undefined) return model;
-  return { ...model, compat: { ...compat, supportsStrictMode: true } } as Model<TApi>;
+  const native = model.id.startsWith("codex/")
+    ? getBuiltinModels("openai-codex").find(entry => entry.id === model.id.slice(6))?.compat
+    : undefined;
+  const supportsAdditionalTools = compat?.supportsAdditionalTools ?? native?.supportsAdditionalTools;
+  const supportsMidConvoSystemMessages = compat?.supportsMidConvoSystemMessages ?? native?.supportsMidConvoSystemMessages;
+  if (compat?.supportsStrictMode !== undefined
+    && compat.supportsAdditionalTools === supportsAdditionalTools
+    && compat.supportsMidConvoSystemMessages === supportsMidConvoSystemMessages) return model;
+  return { ...model, compat: {
+    ...compat, supportsStrictMode: compat?.supportsStrictMode ?? true,
+    ...(supportsAdditionalTools !== undefined ? { supportsAdditionalTools } : {}),
+    ...(supportsMidConvoSystemMessages !== undefined ? { supportsMidConvoSystemMessages } : {}),
+  } } as Model<TApi>;
 }
 
 const CATALOG_TIMEOUT_MS = 15_000;

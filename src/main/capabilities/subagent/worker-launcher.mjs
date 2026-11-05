@@ -10,7 +10,7 @@ import { commandCodeProvider } from "./vendor/command-code.mjs";
 import { assertSubagentModelAllowed, parseSubagentExecutionPolicy } from "./vendor/execution-policy.mjs";
 import { CacheRequestTracer, sessionTraceBoundary } from "./vendor/cache-request-trace.mjs";
 
-const EXPECTED_PI_VERSION = "1.3.0";
+const EXPECTED_PI_VERSION = "1.5.0";
 
 const requestedCli = realpathSync(resolve(process.argv[2] ?? ""));
 const bundled = requestedCli.endsWith('/pi-runtime.mjs') || requestedCli.endsWith('\\pi-runtime.mjs');

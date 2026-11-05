@@ -128,7 +128,10 @@ try {
     try {
       await session.bindExtensions({ mode: "rpc" });
       assert(session.getAllTools().some(tool => tool.name === "gadget_list"));
-      assert(!session.getActiveToolNames().includes("gadget_list"), "current Pi restores the persisted subset before host reconciliation");
+      const resumed = session.getActiveToolNames();
+      assert(resumed.includes("gadget_list"), "Pi activates extension tools never mentioned in the saved branch");
+      assert(resumed.includes("gadget_update"), "the host exclusion must remove a tool Pi actually activated");
+      assert(!resumed.includes("bash"), "new extension tools must not reset the persisted native selection");
       activateResolvedSessionTools(session, { excludeTools: ["gadget_update"] }, "working");
       const active = session.getActiveToolNames();
       for (const name of ["gadget_list", "gadget_read", "gadget_open"]) assert(active.includes(name), name + " must be active after resume");
@@ -137,10 +140,10 @@ try {
       const result = await invoke(session, "gadget_list", {}, "resumed-list");
       assert(!result.isError); assert.equal(lists, 1);
       assert(declaredTools.includes("gadget_list"), "the actual provider request must declare the tool, not only register it");
-      return { active, declared: declaredTools, lists };
+      return { resumed, active, declared: declaredTools, lists };
     } finally { session.dispose(); }
   });
-  await test("restored session keeps native persisted active tools over settings.defaultTools (Pi 1.3.0 semantics)", async () => {
+  await test("restored session keeps native persisted active tools over settings.defaultTools", async () => {
     const sessionDir = join(root, "restore-sessions");
     const manager = SessionManager.create(cwd, sessionDir);
     const historicalTools = [createReadToolDefinition(cwd), createWriteToolDefinition(cwd), createEditToolDefinition(cwd), createBashToolDefinition(cwd)]
@@ -167,7 +170,7 @@ try {
     const { session: restored } = await createAgentSession(options);
     try {
       await restored.bindExtensions({ mode: "rpc" });
-      assert.deepEqual(restored.getActiveToolNames(), [...names], "Pi 1.3.0 restores the session-level active tools instead of taking settings.defaultTools");
+      assert.deepEqual(restored.getActiveToolNames(), [...names], "Pi restores the session-level active tools instead of taking settings.defaultTools");
       assert.deepEqual(getCurrentTools(restoredManager.buildSessionContext().messages).map((tool) => tool.name), [...names],
         "the assertion does not erase history to manufacture the selected tool set");
       return { historicalTools: historicalNames, defaultTools: settings.getDefaultTools(),

@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   createAssistantMessageEventStream, type Api, type AssistantMessage,
   type AssistantMessageEventStream, type Context, type Model, normalizeContext,
-  type ModelsRequestTransforms, type ProviderRequestOptions, type ProviderHeaders,
+  type ModelsRequestTransforms, type ProviderRequestOptions, type ProviderHeaders, type StreamOptions,
 } from "@earendil-works/pi-ai";
 import { resolveModelScopeWithDiagnostics, type AgentSession, type ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createRequestTransport } from "./request-transport.mjs";
@@ -74,7 +74,7 @@ function assertImageCounts(model: Model<Api>, context: Context): void {
 export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackSettings: () => SettingsManager, traceFactory: typeof startCacheRequestTrace = startCacheRequestTrace): void {
   if (installed.has(runtime)) return;
   installed.add(runtime);
-  function guarded<TApi extends Api, TOptions extends ProviderRequestOptions<Model<TApi>> & ModelsRequestTransforms>(
+  function guarded<TApi extends Api, TOptions extends ProviderRequestOptions<Model<TApi>> & ModelsRequestTransforms & Pick<StreamOptions, 'onProviderStreamEvent'>>(
     model: Model<TApi>, context: Context, options: TOptions | undefined,
     dispatch: (options: TOptions) => AssistantMessageEventStream,
   ): AssistantMessageEventStream {
@@ -110,6 +110,10 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
             // Authentication and user approvals may have awaited since entry.
             await validate();
             return transformed;
+          },
+          onProviderStreamEvent: async (data: unknown, eventModel: Model<Api>) => {
+            try { trace?.providerEvent(data); } catch { /* observation cannot fail a request */ }
+            await options?.onProviderStreamEvent?.(data, eventModel);
           },
           onPayload: async (payload: unknown, payloadModel: Model<TApi>) => {
             const replacement = await options?.onPayload?.(payload, payloadModel);

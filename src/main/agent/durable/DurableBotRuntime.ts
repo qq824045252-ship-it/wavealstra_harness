@@ -25,11 +25,11 @@ import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
 
 type BotInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }> };
-const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current",
+const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ requests: {} as Record<string, BotInputMetadata> }),
 });
 // Display telemetry lives with Durable, never in the task scheduler or renderer clock.
-const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, scope: "conversation", history: "latest", fork: "current",
+const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ completed: {} as Record<string, number> }),
 });
 
@@ -97,7 +97,7 @@ export class DurableBotRuntime {
   private observeSession(): void {
     this.harness.subscribeClose(() => {
       this.closeBegun = true;
-      void this.harness.closed.then(end => { if (end.reason === "failed") this.markFailure(end.error); });
+      void this.harness.closed.then(end => { if (end.kind === "failed") this.markFailure(end.error); });
     });
   }
   private markFailure(error: unknown): void {
@@ -123,7 +123,7 @@ export class DurableBotRuntime {
     // Wait for that close so the failure is recorded and callers always see SessionFailed.
     if (this.closeBegun) {
       const end = await this.harness.closed;
-      if (end.reason === "failed") this.markFailure(end.error);
+      if (end.kind === "failed") this.markFailure(end.error);
     }
     if (this.failed) throw new SessionFailed(this.failure);
     throw error;
