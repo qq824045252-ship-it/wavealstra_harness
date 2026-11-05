@@ -1,9 +1,8 @@
-/* Subagent execution limits inside the Models usage panel. Kept in its own file so the
-   provider layout below it never inherits these rules. */
+.models-usage-grid.subagent-defaults-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .subagent-policy {
-  margin-top: 12px;
-  border-top: 1px solid var(--border-subtle, var(--border));
-  padding-top: 10px;
   min-width: 0;
 }
 
@@ -12,12 +11,8 @@
   align-items: baseline;
   flex-wrap: wrap;
   gap: 4px 9px;
-  cursor: pointer;
-  list-style: none;
   min-width: 0;
 }
-
-.subagent-policy-summary::-webkit-details-marker { display: none; }
 
 .subagent-policy-summary strong {
   font-size: 13px;
@@ -40,15 +35,10 @@
   font-weight: 600;
 }
 
-/* The page is a fixed-height flex column; bound the disclosure so the provider detail keeps room. */
 .subagent-policy-body {
   display: grid;
-  gap: 10px;
-  margin-top: 10px;
-  max-height: min(58vh, 520px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 4px;
+  gap: 16px;
+  margin-top: 16px;
 }
 
 .subagent-policy-row {
@@ -248,5 +238,5 @@
 .subagent-policy-actions .subagent-policy-hint { flex: 1 1 220px; }
 
 @media (max-width: 900px) {
-  .subagent-policy-grid { grid-template-columns: minmax(0, 1fr); }
+  .models-usage-grid.subagent-defaults-grid, .subagent-policy-grid { grid-template-columns: minmax(0, 1fr); }
 }

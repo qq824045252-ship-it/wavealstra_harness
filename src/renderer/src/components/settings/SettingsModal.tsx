@@ -31,6 +31,7 @@ import {
 } from "@/components/common/icons";
 import "./RecordManagement.css";
 import ModelsTab from "./ModelsTab";
+import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
 import CapabilitiesTab from "./CapabilitiesTab";
@@ -66,6 +67,7 @@ const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }
   { id: "memory", icon: IconClock, label: "记忆" },
   { id: "archive", icon: IconArchive, label: "归档管理" },
   { id: "models", icon: IconGrid, label: "模型" },
+  { id: "subagent", icon: IconBlocks, label: "子代理设置" },
   { id: "assistant", icon: IconLink, label: "助理设置" },
   { id: "acp", icon: IconPuzzle, label: "ACP 管理" },
   { id: "data", icon: IconFile, label: "数据管理" },
@@ -1450,6 +1452,7 @@ const TAB_TITLE: Record<SettingsTab, string> = {
   memory: "记忆",
   archive: "归档管理",
   models: "模型",
+  subagent: "子代理设置",
   assistant: "助理设置",
   acp: "ACP 管理",
   data: "数据管理",
@@ -1498,6 +1501,7 @@ export default function SettingsModal(): React.JSX.Element {
             {tab === "memory" && <MemoryTab />}
             {tab === "archive" && <ArchivesTab />}
             {tab === "models" && <ModelsTab />}
+            {tab === "subagent" && <SubagentSettingsTab />}
             {tab === "assistant" && <AssistantTab />}
             {tab === "acp" && <AcpTab />}
             {tab === "data" && <DataTab />}

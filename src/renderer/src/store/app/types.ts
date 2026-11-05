@@ -40,6 +40,7 @@ export type SettingsTab =
   | "memory"
   | "archive"
   | "models"
+  | "subagent"
   | "assistant"
   | "acp"
   | "data"

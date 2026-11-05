@@ -64,7 +64,6 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
   const [saving, setSaving] = useState(false);
   const [hint, setHint] = useState("");
   const [newRole, setNewRole] = useState("");
-  const [open, setOpen] = useState(true);
   const savedRef = useRef(saved);
 
   // A parent refresh adopts the new saved config only when the draft has no unsaved edits.
@@ -121,12 +120,12 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
   };
 
   return (
-    <details className="subagent-policy" open={open} onToggle={(event) => setOpen(event.currentTarget.open)} data-testid="subagent-policy">
-      <summary className="subagent-policy-summary">
+    <section className="subagent-policy" data-testid="subagent-policy">
+      <div className="subagent-policy-summary">
         <strong>子代理执行限制</strong>
         <span>设置子代理可用的模型和单次任务的运行时限。</span>
         {dirty && <span className="subagent-policy-badge">未保存</span>}
-      </summary>
+      </div>
       <div className="subagent-policy-body">
         <div className="subagent-policy-row">
           <label className="subagent-policy-toggle">
@@ -145,7 +144,7 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
               <div className="subagent-policy-warn" role="alert">未选择任何模型，所有子代理任务都将无法运行。</div>
             )}
             {models.length === 0 ? (
-              <div className="subagent-policy-warn" role="alert">当前没有启用的聊天模型，请先在上方启用模型。</div>
+              <div className="subagent-policy-warn" role="alert">当前没有启用的聊天模型，请先在模型设置中启用模型。</div>
             ) : (
               <div className="subagent-policy-models" role="group" aria-label="子代理允许使用的模型">
                 {models.map((model) => (
@@ -237,6 +236,6 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
           <button className="btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "保存设置"}</button>
         </div>
       </div>
-    </details>
+    </section>
   );
 }

@@ -8,14 +8,8 @@ import {
   reasoningPreferenceSummary,
 } from "@shared/model-metadata";
 import { IconPencil, IconPlus, IconRefresh, IconSearch, IconTrash } from "@/components/common/icons";
-import {
-  modelOptionLabel,
-  resolveSubagentReasoningAfterModelSwitch,
-  targetSubagentModel,
-  validateSubagentReasoningPreference,
-} from "@shared/subagent-model-config";
+import { modelOptionLabel } from "@shared/subagent-model-config";
 import ModelEditorModal from "./models/ModelEditorModal";
-import SubagentExecutionSettings from "./SubagentExecutionSettings";
 import ProviderAuthSection from "./models/ProviderAuthSection";
 import {
   API_OPTIONS,
@@ -252,19 +246,7 @@ export default function ModelsTab(): React.JSX.Element {
     [modelCatalog],
   );
   const selectableModelIds = useMemo(() => new Set(selectableModels.map((model) => model.id)), [selectableModels]);
-  const subagentTargetModel = useMemo(
-    () => targetSubagentModel(
-      selectableModels,
-      subagentConfig?.defaultModel,
-      defaultModelId,
-    ),
-    [selectableModels, subagentConfig?.defaultModel, defaultModelId],
-  );
-  const subagentThinkingLevels = subagentTargetModel?.thinkingLevels ?? [];
   const defaultModelInvalid = Boolean(defaultModelId && !selectableModelIds.has(defaultModelId));
-  const subagentModelInvalid = Boolean(
-    subagentConfig?.defaultModel && !selectableModelIds.has(subagentConfig.defaultModel),
-  );
 
   const saveGlobalDefaultModel = async (modelId: string): Promise<void> => {
     if (!selectableModelIds.has(modelId)) {
@@ -294,53 +276,6 @@ export default function ModelsTab(): React.JSX.Element {
     } finally {
       setUsageSaving(false);
     }
-  };
-
-  const saveSubagentDefaults = async (
-    patch: Pick<SubagentConfigDto, "defaultModel" | "defaultReasoning">,
-  ): Promise<void> => {
-    if (!subagentConfig) return;
-    const merged: SubagentConfigDto = {
-      ...subagentConfig,
-      ...patch,
-      globalDefaultModelId: defaultModelId || undefined,
-    };
-    const validation = validateSubagentReasoningPreference({
-      defaultModel: merged.defaultModel,
-      preference: merged.defaultReasoning,
-      models: selectableModels,
-      globalDefaultModelId: defaultModelId,
-    });
-    merged.defaultReasoning = validation.preference;
-    setUsageSaving(true);
-    setHint("");
-    try {
-      const next = await window.api?.agent?.saveSubagentConfig?.({ defaultModel: merged.defaultModel, defaultReasoning: merged.defaultReasoning, expectedRevision: subagentConfig.revision });
-      if (next) setSubagentConfig(next);
-      setHint(validation.problems.length
-        ? validation.problems.join("；")
-        : "Subagent 模型策略已更新");
-    } catch (error) {
-      setHint(error instanceof Error ? error.message : String(error));
-    } finally {
-      setUsageSaving(false);
-    }
-  };
-
-  const changeSubagentModel = async (modelId: string): Promise<void> => {
-    if (!subagentConfig) return;
-    const nextModel = modelId || undefined;
-    const resolved = resolveSubagentReasoningAfterModelSwitch({
-      previous: subagentConfig.defaultReasoning,
-      newModelId: nextModel,
-      models: selectableModels,
-      globalDefaultModelId: defaultModelId,
-    });
-    await saveSubagentDefaults({
-      defaultModel: nextModel,
-      defaultReasoning: resolved.preference,
-    });
-    if (resolved.problem) setHint(resolved.problem);
   };
 
   const reconcileAssignmentsAfterCatalog = async (catalog: ModelInfoDto[]): Promise<void> => {
@@ -887,55 +822,7 @@ export default function ModelsTab(): React.JSX.Element {
             <small>新任务和未显式指定模型的执行使用此模型。</small>
           </label>
 
-          <label className="models-usage-field">
-            <span>Subagent 默认</span>
-            <select
-              value={subagentConfig?.defaultModel ?? ""}
-              disabled={usageSaving || !subagentConfig}
-              onChange={(event) => void changeSubagentModel(event.target.value)}
-            >
-              <option value="">跟随主对话默认</option>
-              {subagentModelInvalid && subagentConfig?.defaultModel && (
-                <option value={subagentConfig.defaultModel}>不可用 · {subagentConfig.defaultModel}</option>
-              )}
-              {selectableModels.map((model) => (
-                <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
-              ))}
-            </select>
-            <small>角色配置中指定的模型仍会优先使用。默认模型不限制可选范围；如需限制，请在下方执行限制中设置。</small>
-          </label>
-
-          <div className="models-usage-field">
-            <span>Subagent 思考偏好</span>
-            {!subagentTargetModel?.supportsReasoning ? (
-              <small>当前目标模型不提供可调思考级别。</small>
-            ) : (
-              <>
-                <select
-                  value={subagentConfig?.defaultReasoning?.effort ?? ""}
-                  disabled={usageSaving || !subagentConfig}
-                  onChange={(event) => void saveSubagentDefaults({
-                    defaultModel: subagentConfig?.defaultModel,
-                    defaultReasoning: event.target.value ? { effort: event.target.value } : undefined,
-                  })}
-                >
-                  <option value="">跟随模型思考偏好</option>
-                  {subagentThinkingLevels.map((level) => (
-                    <option key={level} value={level}>{reasoningEffortLabel(level, subagentTargetModel?.metadata)}</option>
-                  ))}
-                </select>
-                <small>可选级别由 Pi 根据目标模型提供；留空时跟随该模型保存的思考偏好。</small>
-              </>
-            )}
-          </div>
         </div>
-        {subagentConfig && (
-          <SubagentExecutionSettings
-            models={selectableModels}
-            config={subagentConfig}
-            onSaved={setSubagentConfig}
-          />
-        )}
       </section>
 
       <div className="models-provider-layout">
