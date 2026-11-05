@@ -21425,70 +21425,49 @@ html[data-theme="dark"] .extension-artifact-item.active {
   color: var(--fg-muted);
 }
 
-.models-usage-count {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--fg-muted);
-  font-size: 10.5px;
-  line-height: 18px;
-  white-space: nowrap;
-}
-
-.models-recommendations {
-  margin-bottom: 12px;
-  border: 1px solid var(--border-subtle, var(--border));
-  border-radius: 8px;
-}
-
-.models-recommendations summary {
-  padding: 9px 11px;
-  color: var(--fg-secondary);
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.models-recommendations summary span {
-  margin-left: 5px;
-  color: var(--fg-muted);
-  font-size: 10px;
-  font-weight: 400;
-}
-
-.models-recommendations-content {
-  display: grid;
-  gap: 10px;
-  padding: 0 11px 11px;
-}
-
-.models-recommendations-content p {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.models-recommendations-grid {
-  display: grid;
-  gap: 9px;
-}
-
-.models-recommendations-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.models-recommendations-content > button {
-  justify-self: start;
-}
-
 .models-usage-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.models-default-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.models-default-row-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+
+.models-default-row-select {
+  flex: 0 1 340px;
+  width: 340px;
+  min-width: 180px;
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border-default, var(--border));
+  border-radius: 7px;
+  background: var(--bg-input, var(--surface-main));
+  color: var(--fg);
+  font-size: 11.5px;
+}
+
+.models-default-row-select:disabled {
+  opacity: .58;
+}
+
+.models-default-row-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
 }
 
 .models-usage-field {
@@ -21504,8 +21483,7 @@ html[data-theme="dark"] .extension-artifact-item.active {
   color: var(--fg-secondary);
 }
 
-.models-usage-field select,
-.models-recommendations-row input {
+.models-usage-field select {
   width: 100%;
   min-width: 0;
   height: 32px;
@@ -22237,7 +22215,10 @@ html[data-theme="dark"] .extension-artifact-item.active {
   .models-usage-heading { align-items: flex-start; }
   .models-usage-heading > div { flex-direction: column; align-items: flex-start; gap: 2px; }
   .models-usage-grid { grid-template-columns: 1fr; gap: 9px; }
-  .models-recommendations-row { grid-template-columns: 1fr; }
+  .models-default-row { flex-wrap: wrap; row-gap: 6px; }
+  .models-default-row-label { flex-basis: 100%; }
+  .models-default-row-select { flex: 1 1 100%; width: 100%; }
+  .models-default-row-hint { flex: 1 1 100%; }
   .models-usage-field small { min-height: 0; }
   .models-provider-layout { grid-template-columns: 190px minmax(0, 1fr); }
   .models-provider-detail { padding: 16px 18px 20px; }

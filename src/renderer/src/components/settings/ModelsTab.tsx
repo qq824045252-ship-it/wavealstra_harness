@@ -1,4 +1,3 @@
-import type { TaskModelRecommendations } from "@shared/task-model-recommendations";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { ModelInfoDto, ModelsFileConfigDto, ModelsProviderConfigDto, SubagentConfigDto } from "@shared/agent-ipc";
@@ -130,7 +129,6 @@ export default function ModelsTab(): React.JSX.Element {
   const [modelCatalog, setModelCatalog] = useState<ModelInfoDto[]>([]);
   const [pausedProviderModels, setPausedProviderModels] = useState<Record<string, string[]>>({});
   const [defaultModelId, setDefaultModelId] = useState("");
-  const [taskRecommendations, setTaskRecommendations] = useState<TaskModelRecommendations>({});
   const [subagentConfig, setSubagentConfig] = useState<SubagentConfigDto | null>(null);
   const [usageSaving, setUsageSaving] = useState(false);
   const detailRef = useRef<HTMLElement | null>(null);
@@ -157,7 +155,6 @@ export default function ModelsTab(): React.JSX.Element {
       window.api?.agent?.listModels?.(),
     ]);
     setDefaultModelId(settings?.defaultModelId ?? "");
-    setTaskRecommendations(settings?.taskModelRecommendations ?? {});
     setPausedProviderModels(settings?.pausedProviderModels ?? {});
     setSubagentConfig(subagent ?? null);
     setModelCatalog(catalog ?? []);
@@ -770,58 +767,22 @@ export default function ModelsTab(): React.JSX.Element {
   return (
     <div className="models-management-page">
       <section className="models-usage-panel">
-        <div className="models-usage-heading">
-          <div>
-            <strong>模型用途</strong>
-            <span>默认模型只在这里管理；聊天输入栏切换只影响当前任务。</span>
-          </div>
-          <span className="models-usage-count">{selectableModels.length} 个可用聊天模型</span>
-        </div>
-        <details className="models-recommendations">
-          <summary>场景模型推荐 <span>可选</span></summary>
-          <div className="models-recommendations-content">
-            <p>仅用于新会话，任务中明确指定的模型优先。请填写已完成对照评测的报告路径；样本不足时留空。所选模型可能影响成本，任务上下文会发送给对应服务商。</p>
-            <div className="models-recommendations-grid">
-              {([{ mode: "coding", label: "编程场景" }, { mode: "working", label: "工作场景" }] as const).map(({ mode, label }) => (
-                <div className="models-recommendations-row" key={mode}>
-                  <label className="models-usage-field">
-                    <span>{label}模型</span>
-                    <select value={taskRecommendations[mode]?.modelId ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: e.target.value, evidencePath: taskRecommendations[mode]?.evidencePath ?? "" } })}>
-                      <option value="">不启用推荐</option>
-                      {taskRecommendations[mode]?.modelId && !selectableModels.some(model => model.id === taskRecommendations[mode]?.modelId) && <option value={taskRecommendations[mode]?.modelId}>不可用 · {taskRecommendations[mode]?.modelId}</option>}
-                      {selectableModels.map(model => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
-                    </select>
-                  </label>
-                  <label className="models-usage-field">
-                    <span>对照评测报告路径</span>
-                    <input placeholder="填写报告路径" value={taskRecommendations[mode]?.evidencePath ?? ""} onChange={e => setTaskRecommendations({ ...taskRecommendations, [mode]: { modelId: taskRecommendations[mode]?.modelId ?? "", evidencePath: e.target.value } })} />
-                  </label>
-                </div>
-              ))}
-            </div>
-            <button className="btn" type="button" onClick={async () => {
-              const saved = await window.api?.agent?.updateAppSettings?.({ taskModelRecommendations: taskRecommendations });
-              setTaskRecommendations(saved?.taskModelRecommendations ?? {});
-            }}>保存场景推荐</button>
-          </div>
-        </details>
-        <div className="models-usage-grid">
-          <label className="models-usage-field">
-            <span>主对话默认</span>
-            <select
-              value={defaultModelId}
-              disabled={usageSaving || selectableModels.length === 0}
-              onChange={(event) => void saveGlobalDefaultModel(event.target.value)}
-            >
-              {!defaultModelId && <option value="">请选择默认模型</option>}
-              {defaultModelInvalid && <option value={defaultModelId}>不可用 · {defaultModelId}</option>}
-              {selectableModels.map((model) => (
-                <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
-              ))}
-            </select>
-            <small>新任务和未显式指定模型的执行使用此模型。</small>
-          </label>
-
+        <div className="models-default-row">
+          <label className="models-default-row-label" htmlFor="models-default-model">主对话默认</label>
+          <select
+            id="models-default-model"
+            className="models-default-row-select"
+            value={defaultModelId}
+            disabled={usageSaving || selectableModels.length === 0}
+            onChange={(event) => void saveGlobalDefaultModel(event.target.value)}
+          >
+            {!defaultModelId && <option value="">请选择默认模型</option>}
+            {defaultModelInvalid && <option value={defaultModelId}>不可用 · {defaultModelId}</option>}
+            {selectableModels.map((model) => (
+              <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>
+            ))}
+          </select>
+          <small className="models-default-row-hint">新任务和未显式指定模型的执行使用此模型。</small>
         </div>
       </section>
 

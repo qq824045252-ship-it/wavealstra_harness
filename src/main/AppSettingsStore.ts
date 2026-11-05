@@ -1,4 +1,3 @@
-import type { TaskModelRecommendations } from "../shared/task-model-recommendations";
 import { existsSync, readFileSync } from "node:fs";
 import {
   closeSync,
@@ -53,7 +52,6 @@ export interface AppSettings {
   language: string;
   permissionMode: PermissionMode;
   defaultModelId: string;
-  taskModelRecommendations?: TaskModelRecommendations;
   proxyUrl: string;
   memoryEnabled: boolean;
   /** External Agent Memory Gateway master switch (loopback only). */
@@ -319,6 +317,8 @@ export class AppSettingsStore {
   write(partial: Partial<AppSettings>): AppSettings {
     const next = { ...this.read(), ...partial };
     delete (next as AppSettings & Record<string, unknown>).backupFiles;
+    // 已下线：场景模型推荐的残留字段，下一次写入即从 settings.json 清掉。
+    delete (next as AppSettings & Record<string, unknown>).taskModelRecommendations;
     if (partial.memoryGatewayPort !== undefined) {
       next.memoryGatewayPort = Number.isInteger(partial.memoryGatewayPort) && partial.memoryGatewayPort >= 1024 && partial.memoryGatewayPort <= 65535
         ? partial.memoryGatewayPort

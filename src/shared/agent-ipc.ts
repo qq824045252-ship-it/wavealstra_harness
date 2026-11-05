@@ -1,6 +1,5 @@
 import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
 import type { CronExecutionSettings } from "./cron-execution";
-import type { TaskModelRecommendations } from "./task-model-recommendations";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
 /** Main ↔ Renderer agent / cron / gateway IPC 契约 */
@@ -1425,7 +1424,6 @@ export interface AppSettingsDto {
   language: string;
   permissionMode: PermissionMode;
   defaultModelId: string;
-  taskModelRecommendations?: TaskModelRecommendations;
   /** Pi 原生 enabledModels；所有模型入口统一由该 scope 过滤。 */
   enabledModels?: string[];
   /** Provider 暂停前的模型选择；运行权限仍只由 Pi enabledModels 决定。 */

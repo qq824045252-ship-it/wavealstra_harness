@@ -1,6 +1,5 @@
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
-import { evaluatedTaskModel } from "../../shared/task-model-recommendations";
 import { SkillTrialLedger } from "./SkillTrialLedger";
 import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
@@ -2642,7 +2641,7 @@ export class AgentService {
     const settings = this.settingsStore.read();
     const previewModelId = resolveEffectiveModelId(
       undefined,
-      evaluatedTaskModel(settings.taskModelRecommendations, welcomeMode) ?? effProfile.policy.suggestedModelId,
+      effProfile.policy.suggestedModelId,
       (id) => Boolean(this.modelRuntime && this.resolveModel(id)),
       settings.defaultModelId,
     );
@@ -5549,10 +5548,9 @@ export class AgentService {
         ? enabledModelKeys.has(`${model.provider}/${model.id}`)
         : true;
     };
-    const taskRecommendation = evaluatedTaskModel(settingsSnapshot.taskModelRecommendations, opts.welcomeMode);
     const resolvedSessionModelId = resolveEffectiveModelId(
       opts.modelId,
-      taskRecommendation && isModelAvailable(taskRecommendation) ? taskRecommendation : effProfile.policy.suggestedModelId,
+      effProfile.policy.suggestedModelId,
       isModelAvailable,
       (() => {
         const provider = settingsManager.getDefaultProvider();
@@ -5871,7 +5869,7 @@ export class AgentService {
       connectorIds: opts.connectorIds,
       modelDiagnostic: diagnoseSessionModel({
         requested: resolvedSessionModelId, actual: session.model, reasoning: session.thinkingLevel,
-        source: opts.modelId ? "explicit_or_task" : taskRecommendation && resolvedSessionModelId === taskRecommendation ? "evaluated_task_recommendation" : resolvedSessionModelId === effProfile.policy.suggestedModelId
+        source: opts.modelId ? "explicit_or_task" : resolvedSessionModelId === effProfile.policy.suggestedModelId
           ? "mode_suggestion" : resolvedSessionModelId ? "global_default" : "restored_or_sdk",
       }),
       installedSkillIds: runtimeSkills.dtos.map(skill => skill.id),
