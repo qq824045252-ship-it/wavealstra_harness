@@ -180,13 +180,13 @@ async function inspectTarget(target = window): Promise<ComputerExecOutput> {
 }
 function named(tree: ComputerExecOutput, name: string, predicate: (control: ControlInfo) => boolean = () => true): ControlInfo {
   const matches = (tree.controls ?? []).filter((control) => control.name === name && predicate(control));
-  assert.equal(matches.length, 1, `expected exactly one ${name}: ${JSON.stringify(matches)}`);
+  assert.equal(matches.length, 1, `expected exactly one ${name}: ${JSON.stringify(matches)}; observed controls: ${JSON.stringify((tree.controls ?? []).map(({ name, controlType, patterns }) => ({ name, controlType, patterns })))}`);
   return matches[0];
 }
 async function pointer(name: string, action: ComputerExecInput["action"], extra: Partial<ComputerExecInput> = {}): Promise<ComputerExecOutput> {
   const tree = await inspectTarget();
   const control = named(tree, name, name === "Scroll area" ? (item) => !/text|label/i.test(item.controlType) : isButton);
-  assert.equal(control.boundsReliable, true, `${name}: pointer input needs verified AT-SPI bounds`);
+  assert.equal(control.boundsReliable, true, `${name}: pointer input needs verified AT-SPI bounds; observed=${JSON.stringify(control)}`);
   const bounds = control.clientBoundsDip;
   assert.ok(bounds && bounds.width > 0 && bounds.height > 0);
   return backend!.execute({ action, windowHandle: window.handle, taskId,
@@ -220,15 +220,15 @@ async function windowFor(pid: number, expectedTitle: string): Promise<WindowInfo
 }
 async function placeFixtureOnFractionalOutput(): Promise<void> {
   if (!fractionalMonitor) return;
+  await backend!.execute({ action: "resize_window", windowHandle: window.handle, taskId, windowWidth: 900, windowHeight: 700 });
   await backend!.execute({ action: "move_window", windowHandle: window.handle, taskId,
     windowX: fractionalMonitor.x + 30, windowY: fractionalMonitor.y + 30 });
-  await backend!.execute({ action: "resize_window", windowHandle: window.handle, taskId, windowWidth: 900, windowHeight: 700 });
   window = (await backend!.execute({ action: "inspect_window", windowHandle: window.handle, taskId })).window!;
   assert.equal(window.monitorHandle, fractionalMonitor.name, "the fixture must actually be on the fractional-scale output");
   assert.equal(window.scaleFactor, fractionalMonitor.scale);
   assert.ok(window.monitorRect && window.windowRect.left >= window.monitorRect.left && window.windowRect.top >= window.monitorRect.top &&
     window.windowRect.right <= window.monitorRect.right && window.windowRect.bottom <= window.monitorRect.bottom,
-  "the actual fractional-scale output must fit the owned acceptance window");
+  `the actual fractional-scale output must fit the owned acceptance window: ${JSON.stringify({ windowRect: window.windowRect, monitorRect: window.monitorRect })}`);
   report.fractionalFixture = { pid: fixture!.identity.pid, windowHandle: window.handle,
     monitor: window.monitorHandle, scale: window.scaleFactor, windowRect: window.windowRect, monitorRect: window.monitorRect };
 }
@@ -272,15 +272,6 @@ async function main(): Promise<void> {
     return report.fractionalFixture ?? { fractionalOutputUnavailable: true, fullAcceptanceBlocked: true };
   });
 
-  await check("Electron semantic invoke and Chinese/Unicode set/readback reach the real application", async () => {
-    await semantic("Semantic counter", "invoke_control");
-    assert.equal((await fixture!.state()).semanticCount, 1);
-    const text = "中文输入 🧪 café Ω\n第二行";
-    const written = await semantic("Unicode input", "set_control_value", text);
-    assert.equal(written.verified, true, "successful editable-text return must be followed by matching text readback");
-    assert.equal((await fixture!.state()).text, text);
-    return { count: 1, text, semanticWriteVerified: written.verified };
-  });
   await check("reliable AT-SPI bounds drive click, double-click, long press and modifiers", async () => {
     const before = await fixture!.state();
     await pointer("Pointer target", "move_client");
@@ -294,6 +285,52 @@ async function main(): Promise<void> {
     assert.ok(after.holds.some((duration) => duration >= 300), "long press must spend real time with the button down");
     assert.ok(after.modifiers.some((modifiers) => modifiers.ctrl));
     return { clicks: after.clicks, doubleClicks: after.doubleClicks, holds: after.holds, modifiers: after.modifiers };
+  });
+  await check("GTK exports real controls and receives semantic Chinese/Unicode writes", async () => {
+    const gtkTitle = `GTK Linux acceptance ${randomUUID()}`;
+    const gtkHome = mkdtempSync(join(root, "gtk-"));
+    gtk = spawn("zenity", ["--forms", `--title=${gtkTitle}`, "--text=Isolated AT-SPI acceptance", "--separator=|", "--add-entry=First input", "--add-entry=Second input"], {
+      stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: gtkHome, XDG_CONFIG_HOME: join(gtkHome, ".config"), LANG: "C.UTF-8", LC_ALL: "C.UTF-8", NO_AT_BRIDGE: "0", GTK_A11Y: "atspi" },
+    });
+    let gtkOutput = ""; let gtkError = "";
+    gtk.stdout.on("data", (data: Buffer) => { gtkOutput += data.toString(); });
+    gtk.stderr.on("data", (data: Buffer) => { gtkError = (gtkError + data.toString()).slice(-20_000); });
+    const exited = new Promise<number | null>((resolve, reject) => { gtk!.once("exit", resolve); gtk!.once("error", reject); });
+    assert.ok(gtk.pid);
+    const target = await windowFor(gtk.pid, gtkTitle);
+    const marker = "GTK 中文 🧪 café Ω";
+    for (let index = 0; index < 2; index += 1) {
+      const tree = await inspectTarget(target);
+      const entries = (tree.controls ?? []).filter(isEditable);
+      report.gtkEntries = entries.map(control => ({ name: control.name, controlType: control.controlType, enabled: control.enabled, text: control.text, patterns: control.patterns, states: (control as ControlInfo & { states?: string[] }).states }));
+      assert.equal(entries.length, 2, "the dedicated GTK form must export its two editable fields");
+      const next = entries.find((control) => control.text !== marker);
+      assert.ok(next);
+      const result = await backend!.execute({ action: "set_control_value", windowHandle: target.handle, taskId,
+        observationId: tree.observationId, controlRuntimeId: next.runtimeId, text: marker });
+      assert.equal(result.verified, true);
+    }
+    const tree = await inspectTarget(target);
+    const okay = (tree.controls ?? []).filter((control) => isButton(control) && /^(OK|Ok)$/.test(control.name ?? ""));
+    assert.equal(okay.length, 1, "GTK form must expose exactly one OK action");
+    const invoked = await backend!.execute({ action: "invoke_control", windowHandle: target.handle, taskId,
+      observationId: tree.observationId, controlRuntimeId: okay[0].runtimeId });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const exit = await Promise.race([exited, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("GTK submit did not finish")), 5_000); })]).finally(() => clearTimeout(timeout));
+    assert.equal(exit, 0, gtkError);
+    assert.equal(gtkOutput.trimEnd(), `${marker}|${marker}`);
+    writeFileSync(join(reportDir, "gtk-fixture.log"), gtkError);
+    return { bridgeConditions: { GTK_A11Y: "atspi", NO_AT_BRIDGE: "0" }, stdout: gtkOutput.trimEnd(), executed: invoked.executed, backendVerified: invoked.verified, applicationExitCode: exit };
+  });
+  await backend.execute({ action: "focus_window", windowHandle: window.handle, taskId });
+  await check("Electron semantic invoke and Chinese/Unicode set/readback reach the real application", async () => {
+    await semantic("Semantic counter", "invoke_control");
+    assert.equal((await fixture!.state()).semanticCount, 1);
+    const text = "中文输入 🧪 café Ω\n第二行";
+    const written = await semantic("Unicode input", "set_control_value", text);
+    assert.equal(written.verified, true, "successful editable-text return must be followed by matching text readback");
+    assert.equal((await fixture!.state()).text, text);
+    return { count: 1, text, semanticWriteVerified: written.verified };
   });
   await check("keyboard and mouse down persist until explicit up, including intervening observation", async () => {
     await backend!.execute({ action: "key_down", key: "Shift", windowHandle: window.handle, taskId });
@@ -481,41 +518,6 @@ async function main(): Promise<void> {
     await semantic("Unicode input", "set_control_value", "fresh process identity");
     assert.equal((await fixture!.state()).text, "fresh process identity");
     return { oldPid, newPid: fixture.identity.pid, oldWindow: oldWindow.handle, newWindow: window.handle, oldReferenceRejected: true };
-  });
-  await check("GTK exports real controls and receives semantic Chinese/Unicode writes", async () => {
-    const gtkTitle = `GTK Linux acceptance ${randomUUID()}`;
-    const gtkHome = mkdtempSync(join(root, "gtk-"));
-    gtk = spawn("zenity", ["--forms", `--title=${gtkTitle}`, "--text=Isolated AT-SPI acceptance", "--separator=|", "--add-entry=First input", "--add-entry=Second input"], {
-      stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: gtkHome, XDG_CONFIG_HOME: join(gtkHome, ".config"), LANG: "C.UTF-8", LC_ALL: "C.UTF-8", NO_AT_BRIDGE: "0", GTK_A11Y: "atspi" },
-    });
-    let gtkOutput = ""; let gtkError = "";
-    gtk.stdout.on("data", (data: Buffer) => { gtkOutput += data.toString(); });
-    gtk.stderr.on("data", (data: Buffer) => { gtkError = (gtkError + data.toString()).slice(-20_000); });
-    const exited = new Promise<number | null>((resolve, reject) => { gtk!.once("exit", resolve); gtk!.once("error", reject); });
-    assert.ok(gtk.pid);
-    const target = await windowFor(gtk.pid, gtkTitle);
-    const marker = "GTK 中文 🧪 café Ω";
-    for (let index = 0; index < 2; index += 1) {
-      const tree = await inspectTarget(target);
-      const entries = (tree.controls ?? []).filter(isEditable);
-      assert.equal(entries.length, 2, "the dedicated GTK form must export its two editable fields");
-      const next = entries.find((control) => control.text !== marker);
-      assert.ok(next);
-      const result = await backend!.execute({ action: "set_control_value", windowHandle: target.handle, taskId,
-        observationId: tree.observationId, controlRuntimeId: next.runtimeId, text: marker });
-      assert.equal(result.verified, true);
-    }
-    const tree = await inspectTarget(target);
-    const okay = (tree.controls ?? []).filter((control) => isButton(control) && /^(OK|Ok)$/.test(control.name ?? ""));
-    assert.equal(okay.length, 1, "GTK form must expose exactly one OK action");
-    const invoked = await backend!.execute({ action: "invoke_control", windowHandle: target.handle, taskId,
-      observationId: tree.observationId, controlRuntimeId: okay[0].runtimeId });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const exit = await Promise.race([exited, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("GTK submit did not finish")), 5_000); })]).finally(() => clearTimeout(timeout));
-    assert.equal(exit, 0, gtkError);
-    assert.equal(gtkOutput.trimEnd(), `${marker}|${marker}`);
-    writeFileSync(join(reportDir, "gtk-fixture.log"), gtkError);
-    return { bridgeConditions: { GTK_A11Y: "atspi", NO_AT_BRIDGE: "0" }, stdout: gtkOutput.trimEnd(), executed: invoked.executed, backendVerified: invoked.verified, applicationExitCode: exit };
   });
   await check("the complete cold-start workflow made zero capture/OCR/legacy-backend calls", () => {
     assert.equal(captureCalls, 0); assert.deepEqual(forbiddenCalls(), []);

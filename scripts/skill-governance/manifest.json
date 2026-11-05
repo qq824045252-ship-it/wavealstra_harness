@@ -220,7 +220,7 @@
     {
       "file": "meeting-transcribe/SKILL.md",
       "before": "79229b7d2a0062f5085dbc06ffa8fdb7b2bd9c97624781964698b01da23f757b",
-      "after": "180304fd07bf3a6b6b2c3bb234ea2e3f7aa45d5c577a6eb55c27038ddde1f3f8",
+      "after": "d4eddf1500ac0a1721703d1456b9614b5829d9295f2c6b8491e236258a4a4bdf",
       "originalBefore": "a4bda888c063391cae0d898c1f1447e4c6d6833efe457b1b0b0f4fa0d585a31b"
     },
     {
@@ -231,7 +231,7 @@
     {
       "file": "npu-ocr/SKILL.md",
       "before": "18983f89f3de09df670a07f7ad5ddd784b4ce507d3ba697526e32a6df81ae850",
-      "after": "f122806558b4833fc2d1b62a6d45b5ae73583074c09dba9b12d65c0436edd421"
+      "after": "64b5bb3871d08e2fa3eb8402408f7f985a35bbe5af12f46381d3f4d7478c0068"
     },
     {
       "file": "npu-ocr/evals/trigger.json",
@@ -241,7 +241,7 @@
     {
       "file": "officecli/SKILL.md",
       "before": "c950d285ce60021712b4753fb2d9f592308d5622bab776229061dfecb1ce55d4",
-      "after": "7f1eb52d6ab38db719c6737e6248aff6ae14abfb54437d39339d99b084e5615f"
+      "after": "b82189e5d41ed01fcc6c4b8aebb368427cd7e9ffdc168a5df70a08b71932c21d"
     },
     {
       "file": "officecli/evals/trigger.json",

@@ -402,7 +402,7 @@
     "test:media-capability-extension": "esbuild scripts/media-capability-extension-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/media-capability-extension-test.mjs && node scripts/test-guard.mjs out/tests/media-capability-extension-test.mjs",
     "test:media-capabilities-dom": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-dom.js && node scripts/media-capabilities-dom-test.cjs",
     "prepare:officecli": "node scripts/prepare-officecli.cjs",
-    "test:officecli": "esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
+    "test:officecli": "node --test scripts/officecli-integrity.test.cjs && esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
     "validate:packaged-officecli": "node scripts/validate-packaged-officecli.cjs",
     "build:linux-computer-use": "node scripts/build-linux-computer-use.mjs",
     "test:linux-worker-packaging": "node scripts/test-guard.mjs scripts/linux-worker-packaging-test.cjs",

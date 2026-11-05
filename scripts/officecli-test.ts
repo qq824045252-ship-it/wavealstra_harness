@@ -49,12 +49,13 @@ try {
     assert.equal(env.MYBUDDY_OFFICECLI, exe);
     assert(env.PATH?.startsWith(dirname(exe) + (platform === 'win32' ? ';' : ':')));
     assert.equal(env.OFFICECLI_NO_AUTO_RESIDENT, '1');
+    assert.equal(env.OFFICECLI_SKIP_UPDATE, '1');
     if (platform === 'win32') assert.equal(env.Path, undefined);
     if (platform === process.platform) {
       configureOfficeCli({ appRoot: root, resourcesPath: resources, packaged: true, platform, arch: 'x64', env });
       assert.equal(env.PATH?.split(platform === 'win32' ? ';' : ':').filter(p => p === dirname(exe)).length, 1);
     }
-    assert(verifyOfficeCli(resources, platform).errors.some((e: string) => e.includes('SHA-256')));
+    assert(verifyOfficeCli(resources, platform, 'x64', { vendorRoot: join(root, 'empty-vendor') }).errors.some((e: string) => e.includes('integrity receipt')));
     rmSync(exe);
     assert.throws(() => configureOfficeCli({ appRoot: root, resourcesPath: resources, packaged: true, platform, arch: 'x64', env }), /missing/);
     assert(verifyOfficeCli(resources, platform).errors.some((e: string) => e.includes('missing bundled')));
@@ -74,14 +75,15 @@ try {
     configureOfficeCli({ appRoot: repo, resourcesPath: resources, packaged: true, env });
     // A separate task process must find the packaged executable through inherited PATH.
     const version = execFileSync(process.execPath, ['-e', 'process.stdout.write(require("node:child_process").execFileSync("officecli",["--version"],{encoding:"utf8"}))'], { cwd: root, env, encoding: 'utf8' });
-    assert.equal(version.trim(), pin.version);
+    assert(version.trim(), 'bundled OfficeCLI must report a version');
     configureOfficeCli({ appRoot: repo, resourcesPath: resources, packaged: true });
     const bash = createBashToolDefinition(root);
-    const bashResult = await bash.execute('officecli-native', { command: 'officecli --version', timeout: 10 }, undefined, undefined, undefined as never);
-    assert(JSON.stringify(bashResult).includes(pin.version), 'native task Bash must inherit bundled PATH');
+    const bashResult = await bash.execute('officecli-native', { command: 'officecli --version && printf "OFFICECLI_SKIP_UPDATE=%s\\n" "$OFFICECLI_SKIP_UPDATE"', timeout: 10 }, undefined, undefined, undefined as never);
+    assert(JSON.stringify(bashResult).includes(version.trim()), 'native task Bash must inherit bundled PATH');
+    assert(JSON.stringify(bashResult).includes('OFFICECLI_SKIP_UPDATE=1'), 'native task Bash must suppress in-place auto-update');
     let durableOutput = '';
     const durable = await new NodeExecutionEnv({ cwd: root }).exec('officecli --version', { onOutput: text => { durableOutput += text; } }, {} as never);
-    assert(durable.ok && durable.value.exitCode === 0 && durableOutput.includes(pin.version), `Durable/Code Mode execution environment: ${JSON.stringify(durable)} ${durableOutput}`);
+    assert(durable.ok && durable.value.exitCode === 0 && durableOutput.includes(version.trim()), `Durable/Code Mode execution environment: ${JSON.stringify(durable)} ${durableOutput}`);
     const tools = new Map<string, Parameters<ExtensionAPI['registerTool']>[0]>();
     const config = structuredClone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);
     for (const key of ['web', 'vision', 'imageGeneration', 'videoGeneration', 'speechToText', 'textToSpeech', 'browser', 'multiModelConsult'] as const) config[key].enabled = false;
@@ -94,7 +96,7 @@ try {
     })({ registerTool: tool => tools.set(tool.name, tool), on: () => undefined } as unknown as ExtensionAPI);
     for (const language of ['shell', ...(process.platform === 'win32' ? ['powershell'] : [])]) {
       const result = await tools.get('execute_code')!.execute('officecli-task', { language, code: 'officecli --version', timeout: 10 } as never, undefined, undefined, undefined as never);
-      assert(!result.isError && JSON.stringify(result).includes(pin.version), `execute_code ${language}: ${JSON.stringify(result)}`);
+      assert(!result.isError && JSON.stringify(result).includes(version.trim()), `execute_code ${language}: ${JSON.stringify(result)}`);
     }
     for (const ext of ['docx', 'xlsx', 'pptx']) {
       const file = join(root, `smoke.${ext}`);

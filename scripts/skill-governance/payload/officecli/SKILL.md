@@ -9,13 +9,15 @@ AI-friendly CLI for .docx, .xlsx, .pptx. Single binary, no dependencies, no Offi
 
 ## MyBuddy runtime
 
-MyBuddy bundles a pinned, SHA-256 verified OfficeCLI binary for Windows/Linux x64.
+MyBuddy bundles an OfficeCLI binary for Windows/Linux x64, without fixing its version.
 Run `officecli --version` using the task's shell/execute_code tools; its directory is
 already on the task PATH, including child agents. No download, global install,
 Office installation, or administrator access is required. If the command fails,
 report the error and repair/reinstall MyBuddy; do not run remote install scripts.
 The absolute bundled executable is also available as `MYBUDDY_OFFICECLI`.
-Keep `OFFICECLI_NO_AUTO_RESIDENT=1` so task commands save files before returning.
+Keep `OFFICECLI_NO_AUTO_RESIDENT=1` so task commands save files before returning, and
+`OFFICECLI_SKIP_UPDATE=1` to prevent replacement of an executable during use.
+MyBuddy's bundle may be upgraded independently without a fixed OfficeCLI version.
 Use paths inside the task workspace or explicitly authorized project materials.
 After edits, read back the affected content and run `officecli validate <file>`.
 

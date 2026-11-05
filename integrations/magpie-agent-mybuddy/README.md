@@ -17,7 +17,10 @@ execute_code, and child agents inherit its PATH from MyBuddy. Nothing is install
 globally and Magpie's own process environment is not changed. Skill synchronization
 alone does not install OfficeCLI into other agents.
 
-Build-time pin and SHA-256 values: `src/shared/officecli-builds.json`.
-Upstream: https://github.com/iOfficeAI/OfficeCLI/tree/v1.0.143
+Supported assets are listed in `src/shared/officecli-builds.json`. When no binary
+is present, the build downloads the latest upstream release and verifies its published
+SHA-256: https://github.com/iOfficeAI/OfficeCLI
 Run `pnpm prepare:officecli` for development; packaging prepares the target binary
-automatically and rejects missing/corrupt binaries or missing skill references.
+automatically and checks the executable and skill references. Task processes disable
+OfficeCLI's in-place auto-update to avoid replacing a running executable. To upgrade,
+run `node scripts/prepare-officecli.cjs --refresh` and rebuild MyBuddy; no version is fixed.

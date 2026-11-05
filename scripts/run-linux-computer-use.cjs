@@ -88,6 +88,10 @@ async function runPackagedAcceptance(executable, entry, fixtureExecutable) {
       for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error("packaged main inspector closed")); }
       pending.clear();
     };
+    await waitFor(async () => {
+      if (child.exitCode !== null || child.signalCode) throw new Error("packaged app exited before its main module initialized");
+      return evaluate("Boolean(process.mainModule && typeof process.mainModule.require === 'function')", 2_000);
+    }, "packaged Electron main module initialization");
     const identity = await evaluate(`(async()=>{
       const req=process.mainModule.require.bind(process.mainModule);
       const {app,BrowserWindow}=req('electron'); await app.whenReady();

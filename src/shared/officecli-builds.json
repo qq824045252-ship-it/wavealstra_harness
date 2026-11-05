@@ -1,7 +1,6 @@
 {
-  "version": "1.0.143",
   "builds": {
-    "win32-x64": { "asset": "officecli-win-x64.exe", "binary": "officecli.exe", "sha256": "d4d4c10fced307e209744cf98a56b003a6e613424fd651b08469274704afd2c6" },
-    "linux-x64": { "asset": "officecli-linux-x64", "binary": "officecli", "sha256": "6a29c598a789b57c92c03e560907d3f131a4bd0a068785b1d338a86fc31a58a7" }
+    "win32-x64": { "asset": "officecli-win-x64.exe", "binary": "officecli.exe" },
+    "linux-x64": { "asset": "officecli-linux-x64", "binary": "officecli" }
   }
 }
