@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" font-family="'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="1280" height="760" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#111827">缓存前缀的三个断点：为什么“留痕”不是“防抖”</text>
+  <text x="40" y="72" font-size="13.5" fill="#6b7280">提供方缓存按请求起始做严格前缀匹配；断点之后的 token 全部重算。DSH 的日志只记录断点，不消除断点。</text>
+
+  <!-- break labels above -->
+  <text x="60" y="110" font-size="13" font-weight="700" fill="#991b1b">断点 1：系统提示改（含 MCP 自述）→ 从 token 0 起全失效</text>
+  <line x1="300" y1="116" x2="300" y2="138" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow-red)"/>
+
+  <!-- prefix bar -->
+  <rect x="60" y="140" width="300" height="64" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="72" y="166" font-size="14" font-weight="700" fill="#991b1b"><tspan x="72" dy="0">系统提示（node 0）</tspan><tspan x="72" dy="19" font-weight="400" font-size="12.5">含 MCP 自述段 / skills / 能力说明</tspan></text>
+
+  <rect x="360" y="140" width="200" height="64" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="372" y="170" font-size="14" font-weight="700" fill="#1e40af"><tspan x="372" dy="0">tools schema</tspan><tspan x="372" dy="19" font-weight="400" font-size="12.5">扩表也是断点</tspan></text>
+
+  <rect x="560" y="140" width="240" height="64" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="572" y="166" font-size="14" font-weight="700" fill="#92400e"><tspan x="572" dy="0">evidence（仅 durable）</tspan><tspan x="572" dy="19" font-weight="400" font-size="12.5">durable 前置才断</tspan></text>
+
+  <rect x="800" y="140" width="300" height="64" rx="6" fill="#e5e7eb" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="812" y="166" font-size="14" font-weight="700" fill="#374151"><tspan x="812" dy="0">messages[1..N] 历史</tspan><tspan x="812" dy="19" font-weight="400" font-size="12.5">前面一变，这里全失效</tspan></text>
+
+  <rect x="1100" y="140" width="60" height="64" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="1112" y="166" font-size="13" font-weight="700" fill="#166534"><tspan x="1112" dy="0">tail</tspan><tspan x="1112" dy="19" font-weight="400">增量</tspan></text>
+
+  <!-- break labels below -->
+  <text x="500" y="238" font-size="13" font-weight="700" fill="#92400e">断点 2（仅 durable）：evidence 前置到 messages 头 → 系统之后第一项断</text>
+  <line x1="680" y1="244" x2="680" y2="208" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-amber)"/>
+
+  <text x="1030" y="238" font-size="13" font-weight="700" fill="#166534">断点 3：追加在尾部 → 只付增量</text>
+  <line x1="1130" y1="244" x2="1130" y2="208" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="560" y="268" font-size="12.5" font-weight="700" fill="#166534">交互路径：胶囊锚点插在当轮 user 之后（custom→user），不在此断点</text>
+
+  <!-- DSH card -->
+  <rect x="60" y="290" width="560" height="200" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="76" y="320" font-size="16" font-weight="700" fill="#111827">DSH：可归因（attribution）</text>
+  <text x="76" y="348" font-size="13" fill="#374151"><tspan x="76" dy="0">• system/message replace + sourceEventSeqs；replaceGeneration 推进</tspan><tspan x="76" dy="23">• request/header 的 series / change 区分提示词与工具变更</tspan><tspan x="76" dy="23">• 但第 0 节点替换 = 前缀从 token 0 变；日志只记录，不避免</tspan><tspan x="76" dy="23">• 默认路由 replace；in-history 追加；运行记录已见 26 次 replace</tspan><tspan x="76" dy="23">• request/header 频次低，不是逐请求 trace</tspan></text>
+
+  <!-- MyBuddy card -->
+  <rect x="660" y="290" width="560" height="200" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="676" y="320" font-size="16" font-weight="700" fill="#111827">MyBuddy：可定位（diagnosis）</text>
+  <text x="676" y="348" font-size="13" fill="#374151"><tspan x="676" dy="0">• CacheRequestTracer 逐项哈希/字节、sharedItems、changedFields</tspan><tspan x="676" dy="23">• 能把事故定位到 +175 字节；但回答不了“为什么变”</tspan><tspan x="676" dy="23">• 交互路径：胶囊插在当轮 user 后（custom→user）；durable 才前置</tspan><tspan x="676" dy="23">• Pi 的静态 description 是配置层逃生门；DSH 无 description</tspan></text>
+
+  <!-- conclusion -->
+  <rect x="60" y="520" width="1160" height="170" rx="10" fill="#ecfdf5" stroke="#16a34a"/>
+  <text x="76" y="552" font-size="16" font-weight="700" fill="#166534">结论：留痕 ≠ 防抖，两个轴不能混写</text>
+  <text x="76" y="584" font-size="13.5" fill="#14532d"><tspan x="76" dy="0">笔记的正确表述：DSH 让缓存代价可见、可归属、可测；四原则里只有“摘要器前缀扩展”是真正的防抖修复。</tspan><tspan x="76" dy="24">把“能记录”写成“能控制”，会导出错误行动项：以为 DSH 已解决 MCP 抖动，实际它只是会留下一条可读日志。</tspan><tspan x="76" dy="24">对 MyBuddy 的优先级：durable evidence 前置（断点 2）→ 语义日志（归因）→ 聚合口径（度量）；交互路径已安全。</tspan><tspan x="76" dy="24">本轮验证：交互路径不前置；DSH 默认路由 replace 已由 26 次运行事件确认，313 个会话中 0 个 MCP 段。</tspan></text>
+</svg>

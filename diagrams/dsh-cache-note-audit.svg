@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="940" viewBox="0 0 1280 940" font-family="'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif">
+  <rect width="1280" height="940" fill="#ffffff"/>
+
+  <text x="40" y="48" font-size="24" font-weight="700" fill="#111827">DSH 缓存笔记：主张 × 证据 × 判定</text>
+  <text x="40" y="76" font-size="13.5" fill="#6b7280">核对对象：DSH源码学习笔记-缓存相关设计.md（116 行）｜证据：DSH 笔记 4 篇（本机 dsh-src）+ MyBuddy HEAD fd3b7a4｜2026-11-05</text>
+
+  <rect x="40" y="92" width="1200" height="30" rx="6" fill="#f3f4f6"/>
+  <rect x="52" y="102" width="14" height="10" rx="2" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="72" y="112" font-size="12.5" fill="#374151">成立</text>
+  <rect x="132" y="102" width="14" height="10" rx="2" fill="#fef3c7" stroke="#d97706"/>
+  <text x="152" y="112" font-size="12.5" fill="#374151">推断 / 过强</text>
+  <rect x="262" y="102" width="14" height="10" rx="2" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="282" y="112" font-size="12.5" fill="#374151">错误 / 过期 / 被反证</text>
+  <rect x="452" y="102" width="14" height="10" rx="2" fill="#f3f4f6" stroke="#6b7280"/>
+  <text x="472" y="112" font-size="12.5" fill="#374151">不可复核</text>
+
+  <text x="40" y="152" font-size="16" font-weight="700" fill="#111827">笔记主张（含行号）</text>
+  <text x="468" y="152" font-size="16" font-weight="700" fill="#111827">可核对证据（DSH 笔记 / MyBuddy 代码）</text>
+  <text x="940" y="152" font-size="16" font-weight="700" fill="#111827">判定</text>
+
+  <!-- Row 1 -->
+  <rect x="40" y="170" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="196" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L17–21：系统提示 = surface 节点 0；变更 = replace</tspan><tspan x="54" dy="20">日志区分 series 与 change 两类变更</tspan></text>
+  <rect x="468" y="170" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="192" font-size="12.5" fill="#374151"><tspan x="482" dy="0">DSH note L11/L31/L33；assertSystemHeadRewrite</tspan><tspan x="482" dy="18">拒绝覆盖第 0 号节点的范围替换</tspan></text>
+  <rect x="940" y="170" width="300" height="66" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="954" y="196" font-size="13" font-weight="700" fill="#166534"><tspan x="954" dy="0">成立（只解决“归因”）</tspan><tspan x="954" dy="20" font-weight="400">前缀仍从 token 0 重算</tspan></text>
+
+  <!-- Row 2 -->
+  <rect x="40" y="248" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="274" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L29–36：摘要指令移到末尾 user 消息</tspan><tspan x="54" dy="20">带 tools；复用尽力而为</tspan></text>
+  <rect x="468" y="248" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="270" font-size="12.5" fill="#374151"><tspan x="482" dy="0">DSH note L18/L32；COMPACTION_INSTRUCTION</tspan><tspan x="482" dy="18">追加在 messages 末尾，成为前缀扩展</tspan></text>
+  <rect x="940" y="248" width="300" height="66" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="954" y="274" font-size="13" font-weight="700" fill="#166534"><tspan x="954" dy="0">成立（真·防抖）</tspan><tspan x="954" dy="20" font-weight="400">四原则里唯一直接复用前缀的</tspan></text>
+
+  <!-- Row 3 -->
+  <rect x="40" y="326" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="348" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L42–48：命中率公式四桶；输出不进分母</tspan><tspan x="54" dy="19">cacheRead/(input+cacheRead+cacheWrite)</tspan><tspan x="54" dy="19">空会话返回 undefined，不显示 0%</tspan></text>
+  <rect x="468" y="326" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="348" font-size="12.5" fill="#374151"><tspan x="482" dy="0">DSH note L14–29 逐句可对；MyBuddy</tspan><tspan x="482" dy="18">usage-stats.ts:375 同式；ContextUsageControl:247</tspan></text>
+  <rect x="940" y="326" width="300" height="66" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="954" y="352" font-size="13" font-weight="700" fill="#166534"><tspan x="954" dy="0">成立（但 MyBuddy 已有）</tspan><tspan x="954" dy="20" font-weight="400">建议③已是既有能力</tspan></text>
+
+  <!-- Row 4 -->
+  <rect x="40" y="404" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="430" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L54–58：MCP 指令进系统提示；变更 → 节点替换</tspan><tspan x="54" dy="20">默认路由 replace；in-history 追加</tspan></text>
+  <rect x="468" y="404" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="426" font-size="12.5" fill="#374151"><tspan x="482" dy="0">代码路径已确认（默认路由 replace）</tspan><tspan x="482" dy="18">313 会话 26 次 replace；0 个 MCP section，无自然触发</tspan></text>
+  <rect x="940" y="404" width="300" height="66" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="954" y="430" font-size="13" font-weight="700" fill="#166534"><tspan x="954" dy="0">机制成立；MCP 实例未观测</tspan><tspan x="954" dy="20" font-weight="400">只记录，不阻止</tspan></text>
+
+  <!-- Row 5 -->
+  <rect x="40" y="482" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="508" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L58：DSH 靠“节点替换留痕”控制 MCP 抖动</tspan><tspan x="54" dy="20">路线不同，但“同样可归因”</tspan></text>
+  <rect x="468" y="482" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="504" font-size="12.5" fill="#374151"><tspan x="482" dy="0">《说明-DSH为何不需要同样修复》：懒取</tspan><tspan x="482" dy="16">connection.instructions()；无 description</tspan><tspan x="482" dy="16">当前不抖 = 唯一 MCP 无自述</tspan></text>
+  <rect x="940" y="482" width="300" height="66" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="954" y="508" font-size="13" font-weight="700" fill="#991b1b"><tspan x="954" dy="0">错误：留痕 ≠ 防抖</tspan><tspan x="954" dy="20" font-weight="400">DSH 同样是 latent break</tspan></text>
+
+  <!-- Row 6 -->
+  <rect x="40" y="560" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="586" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L68/L75：MyBuddy 无统一口径，UI 不显示</tspan><tspan x="54" dy="20">“现在只有原始 usage，我自算”</tspan></text>
+  <rect x="468" y="560" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="582" font-size="12.5" fill="#374151"><tspan x="482" dy="0">usage-stats.ts:369-380；UsageStatsModal:389</tspan><tspan x="482" dy="18">ContextUsageControl:247（文件 2026-09/10）</tspan></text>
+  <rect x="940" y="560" width="300" height="66" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="954" y="586" font-size="13" font-weight="700" fill="#991b1b"><tspan x="954" dy="0">错误：早已实现</tspan><tspan x="954" dy="20" font-weight="400">建议③应从零改为补聚合标签</tspan></text>
+
+  <!-- Row 7 -->
+  <rect x="40" y="638" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="664" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L36：记忆证据 / 时间快照已是追加式</tspan><tspan x="54" dy="20">主路径成立；durable 例外</tspan></text>
+  <rect x="468" y="638" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="660" font-size="12.5" fill="#374151"><tspan x="482" dy="0">交互路径：胶囊锚点插入 user 后（custom→user）</tspan><tspan x="482" dy="18">durable：DurableBotRuntime.ts:649 前置；时间快照待核</tspan></text>
+  <rect x="940" y="638" width="300" height="66" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="954" y="664" font-size="13" font-weight="700" fill="#92400e"><tspan x="954" dy="0">主路径成立；durable 例外</tspan><tspan x="954" dy="20" font-weight="400">时间快照仍未验证</tspan></text>
+
+  <!-- Row 8 -->
+  <rect x="40" y="716" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="742" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L48：80.3/88.3 与 99.21 同口径，可横向比</tspan><tspan x="54" dy="20">“可以放心横向比”</tspan></text>
+  <rect x="468" y="716" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="738" font-size="12.5" fill="#374151"><tspan x="482" dy="0">公式相同；但 80.3 含子智能体独立会话</tspan><tspan x="482" dy="18">99.21 为单会话 / n=8 抽样（DSH核算 §四）</tspan></text>
+  <rect x="940" y="716" width="300" height="66" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="954" y="742" font-size="13" font-weight="700" fill="#92400e"><tspan x="954" dy="0">过强：口径同、样本不同</tspan><tspan x="954" dy="20" font-weight="400">只能比定义，不能比数值</tspan></text>
+
+  <!-- Row 9 -->
+  <rect x="40" y="794" width="400" height="66" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="820" font-size="13.5" fill="#111827"><tspan x="54" dy="0">L87：两篇已归档；L3/L5：20,665 文件 / 2,692 篇</tspan><tspan x="54" dy="20">标题称“源码学习笔记”</tspan></text>
+  <rect x="468" y="794" width="444" height="66" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="482" y="816" font-size="12.5" fill="#374151"><tspan x="482" dy="0">3 篇 archived（compaction/tui/mcp）；本地仅</tspan><tspan x="482" dy="18">dsh-src 5 个文件、无 clone；元数据无来源</tspan></text>
+  <rect x="940" y="794" width="300" height="66" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="954" y="820" font-size="13" font-weight="700" fill="#991b1b"><tspan x="954" dy="0">计数错；规模不可复核</tspan><tspan x="954" dy="20" font-weight="400">建议写“4 篇笔记，非全仓库”</tspan></text>
+
+  <text x="40" y="892" font-size="12" fill="#6b7280">评估口径：只把“DSH 笔记原文可对 / MyBuddy 代码可反证”算成立；DSH 源码 clone 不在本机，凡涉及实现的判断均标“笔记层面”。</text>
+  <text x="40" y="912" font-size="12" fill="#6b7280">未验证：GitHub 元数据（20,665 文件 / 2,692 篇）、时间快照、DSH 运行中构建版本；已补验：交互 evidence 位置、DSH replace 运行事件。</text>
+</svg>
