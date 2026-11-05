@@ -12,8 +12,9 @@ const otherSpace = { id: "other-materials", name: "隔离空间资料", kind: "t
 const personalSpace = { id: "personal", name: "个人资料", kind: "personal", createdAt: 1, updatedAt: 1 };
 const personalItem = { id: "shared-guide", spaceId: "personal", collectionId: null, kind: "markdown", title: "公共维护说明", filename: "公共维护说明.md", mimeType: "text/markdown", sizeBytes: 20, owner: "测试用户", favorite: false, createdAt: 1, updatedAt: 1, lastVisitedAt: null };
 const library: any = { spaces: [personalSpace, ownSpace, otherSpace], collections: [], items: [personalItem], recent: [], artifacts: [], storage: { usedBytes: 20 }, ownerName: "测试用户" };
-const view: any = { workspaceId: "vps", workspaceName: "VPS管理", owned: [{ targetType: "space", librarySpaceId: ownSpace.id, name: ownSpace.name, kind: "team", workspaceId: "vps" }], ownedItemCount: 0, direct: [], inherited: [],
-  addable: [{ targetType: "space", librarySpaceId: "personal", name: "个人资料", path: "个人资料", kind: "personal" }],
+const legacyReference = { targetType: "space", librarySpaceId: "personal", name: "个人资料", path: "个人资料", kind: "personal" };
+const view: any = { workspaceId: "vps", workspaceName: "VPS管理", owned: [{ targetType: "space", librarySpaceId: ownSpace.id, name: ownSpace.name, kind: "team", workspaceId: "vps" }], ownedItemCount: 0, direct: [legacyReference], inherited: [],
+  addable: [legacyReference],
   destinations: [{ id: ownSpace.id, name: ownSpace.name }] };
 const views: any = { vps: view, other: { workspaceId: "other", workspaceName: "隔离空间", owned: [{ targetType: "space", librarySpaceId: otherSpace.id, name: otherSpace.name, kind: "team", workspaceId: "other" }], ownedItemCount: 0, direct: [], inherited: [], addable: [], destinations: [{ id: otherSpace.id, name: otherSpace.name }] } };
 const test: any = { note: () => note, failSave: false, navigation: null, bound: null, changeEvents: [], views };
