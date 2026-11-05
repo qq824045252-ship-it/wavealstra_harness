@@ -82,7 +82,6 @@ var CacheRequestTracer = class {
   constructor(sink) {
     this.sink = sink;
   }
-  sink;
   epoch = randomUUID();
   key = randomBytes(32);
   previous = /* @__PURE__ */ new Map();
