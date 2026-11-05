@@ -40,7 +40,7 @@ function models(reply: (context: any, options: any) => any): any {
   api.completeSimple = (model: any, context: any, options: any) => api.streamSimple(model, context, options).result();
   return api;
 }
-const text = (value: string) => [{ type: "text", text: value }];
+const text = (value: string) => [{ type: "text" as const, text: value }];
 const call = (name: string, args: object) => [{ type: "toolCall", id: "fixture-call", name, arguments: args }];
 const forbidden = { ...emptyModePolicy(), artifactPolicy: { mode: "hard" as const, allow: ["pdf"], deny: ["py"] }, presets: [{id: "old", label: "kept", promptAddon: "user prompt", mcpPolicy: { mode: "hard" as const, allow: [], deny: ["*"] } }] };
 const policy = botConfiguration(forbidden);
@@ -369,7 +369,7 @@ async function until(check: () => boolean): Promise<void> {
         assert.equal(blockedRequests, 0, "one tool must not connect another server");
         const list = host.tools.find(tool => tool.name === "mcp_list_tools")!;
         const results = await Promise.all([list.execute({server:"fixture"}, {} as any, ctx), list.execute({server:"fixture"}, {} as any, ctx)]);
-        for (const result of results) assert(!JSON.parse((result.output[0] as any).text).tools.some((tool: any) => tool.name === "hidden_tool"));
+        for (const result of results) { assert(result.output); assert(!JSON.parse((result.output[0] as any).text).tools.some((tool: any) => tool.name === "hidden_tool")); }
         const caller = host.tools.find(tool => tool.name === "mcp_call_tool")!;
         await assert.rejects(caller.execute({server:"fixture",tool:"hidden_tool",arguments:{}}, {} as any, ctx), /hidden/);
         await assert.rejects(caller.execute({server:"fixture",tool:"read_cwd",arguments:{}}, {} as any, ctx), /label/);
@@ -381,6 +381,7 @@ async function until(check: () => boolean): Promise<void> {
           assert.equal(runtime.snapshot.error, undefined);
         }
         const state = await host.tools.find(tool => tool.name === "mcp_status")!.execute({}, {} as any, ctx);
+        assert(state.output);
         assert.equal(JSON.parse((state.output[0] as any).text).servers.find((server: any) => server.name === "blocked").state, "idle");
         assert.equal(caller.replay, "unsafe");
         await assert.rejects(list.execute({server:"blocked"}, {} as any, ctx), /timed out|timeout/i);
@@ -425,7 +426,7 @@ for (const mode of ["native", "codemode"] as const) {
   let calls = 0, started = 0;
   const hold = defineTool({ name: "hold", description: "hold for cancellation", parameters: Type.Object({}), replay: "unsafe",
     execute: async (_args, _api, context) => { started++;
-      await new Promise<void>((_resolve,reject) => { if(context.abortSignal.aborted) reject(Error("aborted")); else context.abortSignal.addEventListener("abort",()=>reject(Error("aborted")),{once:true}); });
+      await new Promise<void>((_resolve,reject) => { assert(context.abortSignal); if(context.abortSignal.aborted) reject(Error("aborted")); else context.abortSignal.addEventListener("abort",()=>reject(Error("aborted")),{once:true}); });
       return {output:text("unreachable")};
     } });
   const options = { directory:join(cwd,"state"), cwd, model:ref, toolMode:mode, instructions:()=>"fixture", tools:[hold],onSnapshot:()=>{},
@@ -455,7 +456,7 @@ for (const mode of ["native", "codemode"] as const) {
   let started=false;
   const runtime=await DurableBotRuntime.open({directory:join(cwd,"state"),cwd,model:ref,toolMode:"native",instructions:()=>"fixture",onSnapshot:()=>{},
     models:models(()=>call("hold",{})),tools:[defineTool({name:"hold",description:"hold",parameters:Type.Object({}),replay:"unsafe",execute:async(_a,_api,c)=>{
-      started=true; await new Promise((_r,reject)=>c.abortSignal.addEventListener("abort",()=>reject(Error("aborted")),{once:true})); return {};
+      started=true; const signal = c.abortSignal; assert(signal); await new Promise((_r,reject)=>signal.addEventListener("abort",()=>reject(Error("aborted")),{once:true})); return {};
     }})]});
   const first=await runtime.submit("hold","first"); await until(()=>started);
   const second=await runtime.submit("queued","second"); await runtime.abort();
@@ -631,7 +632,7 @@ for (const mode of ["native", "codemode"] as const) {
       messages: event.messages.map((message: any) => message.role === "user" && typeof message.content === "string"
         ? { ...message, content: `[aged] ${message.content}` } : message),
     }));
-    pi.on("not_a_real_hook", () => { throw new Error("ignored hook must never run"); });
+    pi.on("session_start", () => { throw new Error("ignored hook must never run"); });
   }], { cwd, models: models(() => text("unused")) });
   assert.equal(domain.contextHooks.length, 1, "context 钩子必须被收集，而不是抛错");
   assert.equal(domain.tools.length, 0);

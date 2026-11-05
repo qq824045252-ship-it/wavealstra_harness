@@ -33,7 +33,7 @@ async function main() {
   config.execution = { terminalEnabled: false, codeExecutionEnabled: false };
   const capabilityRuntime = new BuiltinCapabilityRuntime({
     store: { read: () => structuredClone(config), write: next => structuredClone(next) },
-    credentials: { has: () => false, get: () => undefined, set: () => undefined, clear: () => undefined },
+    credentials: { has: () => false, get: () => null, set: () => undefined, clear: () => undefined },
   });
   const manager = SessionManager.inMemory(root);
   manager.appendCustomMessageEntry("mybuddy_completion_gate", "retired directive", false);

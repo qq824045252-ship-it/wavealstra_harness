@@ -196,7 +196,7 @@ async function main(): Promise<void> {
 
     // Grandparent should NOT automatically get the promoted item (no cross-level implicit)
     const grandRes = assembleWorkspaceSharedContext({ spaces, currentSpaceId: "root", itemsBySpace: m });
-    assert(!grandRes.blocks.some(b => b.item.id === promotedRes.ok ? promotedRes.promotedItem.id : "x"), "grandparent root does not auto see promoted (no multi-level implicit)");
+    assert(!grandRes.blocks.some(b => b.item.id === (promotedRes.ok ? promotedRes.promotedItem.id : "x")), "grandparent root does not auto see promoted (no multi-level implicit)");
     const aRes = assembleWorkspaceSharedContext({ spaces, currentSpaceId: "a", itemsBySpace: m });
     assert(aRes.blocks.some(b => b.item.id === buildPromotedItemId("a", "a1", "c1")), "parent has promoted");
     assert(!grandRes.blocks.some(b => b.item.content === "important fact"), "root not polluted via grandchild");

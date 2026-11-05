@@ -15,19 +15,12 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
 import type BetterSqlite3 from "better-sqlite3";
 import type {
-  ConversationBranchErrorCode,
   ConversationBranchPosition,
 } from "../../shared/conversation-branch";
 
 /** 领域错误：携带稳定错误码，服务层转成 IPC outcome（§6.2）。 */
-export class ConversationBranchDomainError extends Error {
-  readonly code: ConversationBranchErrorCode;
-  constructor(code: ConversationBranchErrorCode, message: string) {
-    super(message);
-    this.name = "ConversationBranchDomainError";
-    this.code = code;
-  }
-}
+import { ConversationBranchDomainError } from "../../shared/conversation-branch";
+export { ConversationBranchDomainError } from "../../shared/conversation-branch";
 
 export interface ConversationBranchAnchor {
   /** 主锚点：真实 Pi session entry id（§7.1）。 */

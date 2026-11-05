@@ -337,10 +337,10 @@ async function main(): Promise<void> {
   /* ================= [L7] Learned Skill reusable scope is a hard runtime boundary ================= */
   console.log("\n[L7] Learned Skill scope isolation");
   {
-    db.upsertSpace({ id: "scope-root", name: "Scope Root", archived: false, updatedAt: Date.now() });
-    db.upsertSpace({ id: "scope-a", name: "Scope A", parentId: "scope-root", archived: false, updatedAt: Date.now() });
-    db.upsertSpace({ id: "scope-a-child", name: "Scope A Child", parentId: "scope-a", archived: false, updatedAt: Date.now() });
-    db.upsertSpace({ id: "scope-b", name: "Scope B", parentId: "scope-root", archived: false, updatedAt: Date.now() });
+    db.upsertSpace({ id: "scope-root", name: "Scope Root", archived: false });
+    db.upsertSpace({ id: "scope-a", name: "Scope A", parentId: "scope-root", archived: false });
+    db.upsertSpace({ id: "scope-a-child", name: "Scope A Child", parentId: "scope-a", archived: false });
+    db.upsertSpace({ id: "scope-b", name: "Scope B", parentId: "scope-root", archived: false });
     db.connection.prepare(`INSERT INTO projects (id,name,description,instructions,created_at,updated_at,archived,resource_budget_chars)
       VALUES (?,?,?,?,?,?,0,128000)`).run("scope-proj-a", "Scope Project A", null, null, Date.now(), Date.now());
     db.connection.prepare(`INSERT INTO projects (id,name,description,instructions,created_at,updated_at,archived,resource_budget_chars)
@@ -389,7 +389,7 @@ async function main(): Promise<void> {
   console.log("\n[L8] Learned scope before first-wins collision");
   {
     const collisionCwd = join(root, "collision-project-b");
-    db.upsertSpace({ id: "scope-collision-space", name: "Collision B", path: collisionCwd, archived: false, updatedAt: Date.now() });
+    db.upsertSpace({ id: "scope-collision-space", name: "Collision B", path: collisionCwd, archived: false });
     const outOfScope = scopedSkillsForCollision();
     function scopedSkillsForCollision() {
       return installGovernedLearnedSkill({

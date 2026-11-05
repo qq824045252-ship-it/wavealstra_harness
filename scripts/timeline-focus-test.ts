@@ -62,7 +62,7 @@ function other(block: MessageBlock): TimelineGroup {
 const calloutGroup = (): TimelineGroup =>
   other({ type: "callout", variant: "warning", text: "note" });
 const planGroup = (): TimelineGroup =>
-  other({ type: "plan", title: "plan", items: [{ id: "1", text: "x", done: false }] });
+  other({ type: "detail", title: "plan", content: "- [ ] x", contentKind: "markdown" });
 
 function main(): void {
   console.log("[timeline-focus-test]");

@@ -1,9 +1,8 @@
 /**
  * ConversationBranchService — 对话分支主进程编排（实施规划 §6/§10）。
  *
- * 责任：校验（§6.2 顺序）→ 工作区准备（§8）→ session 物化（§7）→
- * DB 单事务 commit（§10.1）→ usage 水位（§7.4）→ 轻量继承 → 返回 DTO。
- * 领域定位/物化逻辑在 session-branch.ts；目录快照在 TaskWorkspaceBrancher。
+ * 校验 → 工作区准备 → Durable 历史物化 → DB 原子绑定 → 产品资料继承。
+ * 历史与原生状态由 DurableTaskBranch 处理；目录快照由 TaskWorkspaceBrancher 处理。
  *
  * 不变量：
  * - Renderer 不能指定 session 路径、cwd、Project policy 或 leaf entry id（§14.2）；
@@ -11,18 +10,12 @@
  * - commit 前任何失败都只清理本 requestId 的临时产物（§10.2）；
  * - 创建分支不调用模型，无模型费用（§7.4）。
  */
-import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { TaskDto } from "../../shared/agent-ipc";
 import type { ArtifactService } from "../artifact/ArtifactService";
-import {
-  ConversationBranchDomainError,
-  createConversationBranchSession,
-  resolveConversationBranchLeaf,
-  writeConversationBranchUsageWatermark,
-} from "./session-branch";
+import { ConversationBranchDomainError } from "../../shared/conversation-branch";
+import type { DurableBranchAnchor, MaterializedDurableBranch } from "./durable/DurableTaskBranch";
 import { TaskWorkspaceBrancher } from "../task/TaskWorkspaceBrancher";
 import type {
   ConversationBranchCreateOutcome,
@@ -38,6 +31,9 @@ export interface ConversationBranchAgentPort {
   resolveTaskExecutionWorkspaceCwd(taskId: string): string;
   getAppSettings(): { conversationBranchEnabled?: boolean; taskConnectorIds?: Record<string, string[]> };
   setTaskConnectorIds(taskId: string, connectorIds: string[]): void;
+  previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor>;
+  materializeConversationBranch(sourceTaskId: string, childTaskId: string, cwd: string, anchor: DurableBranchAnchor): Promise<MaterializedDurableBranch>;
+  commitConversationBranch(taskId: string, cwd: string, branch: MaterializedDurableBranch): void;
 }
 
 export interface ConversationBranchServiceDeps {
@@ -52,6 +48,7 @@ const SPECIAL_TASK_PREFIXES = ["gw-", "cron-", "btw-"];
 
 export class ConversationBranchService {
   private readonly deps: ConversationBranchServiceDeps;
+  private creation: Promise<unknown> = Promise.resolve();
 
   constructor(deps: ConversationBranchServiceDeps) {
     if (!deps.artifactService) throw new Error("ConversationBranchService requires the initialized ArtifactService");
@@ -63,8 +60,8 @@ export class ConversationBranchService {
     return this.deps.agent.getAppSettings().conversationBranchEnabled === true;
   }
 
-  /** 预检（§8.3 大目录策略选择）：无副作用 */
-  preview(req: CreateConversationBranchRequest): ConversationBranchPreviewDto {
+  /** 预检只读取源任务，不创建子任务或调用模型。 */
+  async preview(req: CreateConversationBranchRequest): Promise<ConversationBranchPreviewDto> {
     const failure = (
       code: ConversationBranchErrorCode,
       message: string,
@@ -72,6 +69,7 @@ export class ConversationBranchService {
     if (!this.featureEnabled()) {
       return failure("INVALID_REQUEST", "对话分支功能未开启。");
     }
+    if (req.position !== "after_user" && req.position !== "after_reply") return failure("INVALID_REQUEST", "分支位置无效。");
     const task = this.deps.db.getTask(req.sourceTaskId);
     if (!task) return failure("TASK_NOT_FOUND", "找不到源任务。");
     if (this.isTrashed(task.id)) return failure("TASK_TRASHED", "任务已进入回收区，无法创建分支。");
@@ -80,9 +78,6 @@ export class ConversationBranchService {
     }
     if (this.deps.agent.isTaskBusy(task.id)) {
       return failure("TASK_BUSY", "当前任务仍在运行，请先停止生成后再创建分支。");
-    }
-    if (!task.sessionFile || !existsSync(task.sessionFile)) {
-      return failure("SESSION_MISSING", "源会话文件不存在，无法创建分支。");
     }
     const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
     const strategy = this.resolveStrategy(task, req.workspaceStrategy);
@@ -103,11 +98,7 @@ export class ConversationBranchService {
       }
     }
     try {
-      const resolved = resolveConversationBranchLeaf(task.sessionFile, sourceCwd, {
-        entryId: req.entryId,
-        userMessageIndex: req.userMessageIndex,
-        position: req.position,
-      });
+      const resolved = await this.deps.agent.previewConversationBranch(req);
       preview.sourceUserMessageIndex = resolved.resolvedUserMessageIndex;
       preview.sourcePosition = req.position;
     } catch (err) {
@@ -117,7 +108,13 @@ export class ConversationBranchService {
     return preview;
   }
 
-  async create(req: CreateConversationBranchRequest): Promise<ConversationBranchCreateOutcome> {
+  create(req: CreateConversationBranchRequest): Promise<ConversationBranchCreateOutcome> {
+    const result = this.creation.then(() => this.createBranch(req));
+    this.creation = result.catch(() => {});
+    return result;
+  }
+
+  private async createBranch(req: CreateConversationBranchRequest): Promise<ConversationBranchCreateOutcome> {
     const fail = (
       code: ConversationBranchErrorCode,
       message: string,
@@ -165,18 +162,11 @@ export class ConversationBranchService {
     if (this.deps.agent.isTaskBusy(task.id)) {
       return fail("TASK_BUSY", "当前任务仍在运行，请先停止生成后再创建分支。");
     }
-    if (!task.sessionFile || !existsSync(task.sessionFile)) {
-      return fail("SESSION_MISSING", "源会话文件不存在，无法创建分支。");
-    }
 
     const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
-    let resolved;
+    let resolved: DurableBranchAnchor;
     try {
-      resolved = resolveConversationBranchLeaf(task.sessionFile, sourceCwd, {
-        entryId: req.entryId,
-        userMessageIndex: req.userMessageIndex,
-        position: req.position,
-      });
+      resolved = await this.deps.agent.previewConversationBranch(req);
     } catch (err) {
       const e = err as ConversationBranchDomainError;
       return fail(e.code ?? "ANCHOR_NOT_FOUND", e.message);
@@ -196,12 +186,12 @@ export class ConversationBranchService {
     return this.createWithStrategy(req, task, childTaskId, resolved, sourceCwd, strategy);
   }
 
-  /** §7.4 + §10.1 + §3.4：给定策略完成工作区 → session → DB commit → 继承 */
+  /** 给定策略完成工作区 → Durable 存储 → DB commit → 资料继承。 */
   private async createWithStrategy(
     req: CreateConversationBranchRequest,
     task: TaskDto,
     childTaskId: string,
-    resolved: ReturnType<typeof resolveConversationBranchLeaf>,
+    resolved: DurableBranchAnchor,
     sourceCwd: string,
     strategy: "shared_space" | "current_snapshot" | "conversation_only",
   ): Promise<ConversationBranchCreateOutcome> {
@@ -230,14 +220,10 @@ export class ConversationBranchService {
       );
     }
 
-    // ---- §7.2 session 物化（独立 SessionManager；不触碰 live 会话） ----
-    let materialized;
+    // Materialize committed history in an independent Durable store before publishing the task.
+    let materialized: MaterializedDurableBranch;
     try {
-      materialized = createConversationBranchSession(
-        task.sessionFile!,
-        childCwd,
-        resolved.leafEntryId,
-      );
+      materialized = await this.deps.agent.materializeConversationBranch(task.id, childTaskId, childCwd, resolved);
     } catch (err) {
       this.deps.brancher.cleanupPending(childTaskId, req.requestId);
       const e = err as ConversationBranchDomainError;
@@ -255,7 +241,6 @@ export class ConversationBranchService {
       // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
       status: req.position === "after_reply" && resolved.leafEntryId !== resolved.userEntryId ? "completed" : "pending",
       updatedAt: Date.now(),
-      sessionFile: materialized.sessionFile,
       cwd: childCwd,
       welcomeMode: task.welcomeMode,
       modelId: task.modelId,
@@ -270,7 +255,7 @@ export class ConversationBranchService {
         parentTaskId: task.id,
         rootTaskId,
         parentTitleSnapshot: task.title,
-        sourceSessionFile: task.sessionFile!,
+        sourceSessionFile: `durable:${task.id}:${resolved.conversationId}`,
         sourceLeafEntryId: resolved.leafEntryId,
         sourceUserMessageIndex: resolved.resolvedUserMessageIndex,
         requestId: req.requestId,
@@ -279,13 +264,10 @@ export class ConversationBranchService {
         createdAt: Date.now(),
         task: childTask,
       });
-      // The inherited-usage watermark is part of the same commit: a failure must
-      // not leave a successful child that charges inherited history again.
-      writeConversationBranchUsageWatermark(this.deps.db.connection, materialized.sessionFile, materialized.inheritedLastEntryId);
+      this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
       })();
     } catch (err) {
-      // commit 失败：会话文件已物化但 Task 未创建 → 清理本 requestId 工作区产物；
-      // 物化的 session 文件保留（Pi 懒写/孤儿诊断可审计，不扩大删除范围）
+      // Keep an unbound store for diagnosis if publishing the task fails.
       this.deps.brancher.cleanupPending(childTaskId, req.requestId);
       return fail(
         "TASK_CREATE_FAILED",

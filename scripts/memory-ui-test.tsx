@@ -1,3 +1,4 @@
+import type { MemoryTurnDto } from "../src/shared/memory-kernel";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import "../src/renderer/src/styles/global.css";
@@ -53,14 +54,14 @@ async function filter(label: string, value: string): Promise<void> {
   });
   await settle();
 }
-const raw = (id: string, extra = {}) => ({
+const raw = (id: string, extra: Partial<MemoryTurnDto> = {}): MemoryTurnDto => ({
   id, taskId: `task-${id}`, taskTitle: `电容计算与模型验证 ${id}`, userText: `对话 ${id}：以后计算电容时，先核对串并联结构及单位，再给出结果。`,
   assistantText: `助手原文 ${id}`, contentHash: id, capturedAt: 1790040000000, extractionState: "completed", attemptCount: 1, metadata: {}, ...extra,
 });
 const atom = { id: "memory-a", kind: "procedure", title: "电容计算采用公共知识库串并联模型原理", content: "先核对模型和单位，再计算并验证结果。", status: "active", importance: 1, confidence: .98, explicit: true, sourceType: "user", tags: [], scopes: [{ scopeType: "workspace", scopeId: "ws", binding: "primary" }], evidence: [], relations: [], createdAt: 1790040000000, updatedAt: 1790040000000 };
 const candidate = (id: string, status: string) => ({ id, status, slug: id, title: status === "stale" ? "历史流程" : atom.title, description: atom.content, instructions: "# 电容计算\n1. 核对单位\n2. 核对连接结构\n3. 计算并验证", sourceMemoryIds: [atom.id], scopeType: "workspace", scopeId: "ws", distinctTaskCount: 1, completedTaskCount: 1, evidenceCount: 3, updatedAt: 1790040000000, installedSkillId: status === "materialized" ? "learned-capacitor" : undefined });
 const stats = { total: 1, active: 1, l0Turns: 2, pendingTurns: 0, failedTurns: 0, activeScenarios: 0, activeCoreProfiles: 0, byScope: { global: 0, workspace: 1, project: 0, task: 0 }, byKind: { procedure: 1 }, byStatus: { active: 1 }, candidates: {}, skillCandidates: 0, skillRevisionCandidates: 0, skillInvocations: 0 };
-let turns = [raw("A"), raw("B", { taskTrashed: true })];
+let turns: MemoryTurnDto[] = [raw("A"), raw("B", { taskTrashed: true })];
 let changed = new Set<() => void>();
 let api: any;
 function fixtures(): void {

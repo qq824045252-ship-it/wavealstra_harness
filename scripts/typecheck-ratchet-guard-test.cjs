@@ -16,8 +16,8 @@ const { join } = require("node:path");
 const ROOT = join(__dirname, "..");
 const SCRIPT = join(ROOT, "scripts", "typecheck-scripts.mjs");
 
-function run(configPath) {
-  return spawnSync(process.execPath, [SCRIPT], {
+function run(configPath, args = []) {
+  return spawnSync(process.execPath, [SCRIPT, ...args], {
     cwd: ROOT,
     encoding: "utf8",
     env: { ...process.env, TYPECHECK_SCRIPTS_CONFIG: configPath },
@@ -49,6 +49,19 @@ try {
   if (failures > 0) {
     console.log("---- output ----");
     console.log(output.trim());
+  }
+
+  const source = join(dir, "dependency.ts");
+  const entry = join(dir, "entry.ts");
+  writeFileSync(source, 'export const value: number = "invalid";\n', "utf8");
+  writeFileSync(entry, 'import { value } from "./dependency";\nexport { value };\n', "utf8");
+  writeFileSync(config, JSON.stringify({ compilerOptions: { noEmit: true, skipLibCheck: true }, files: [entry] }), "utf8");
+  for (const args of [[], ["--update-baseline"]]) {
+    const dependency = run(config, args);
+    const detail = `${dependency.stdout ?? ""}\n${dependency.stderr ?? ""}`;
+    const pass = dependency.status !== 0 && /TS2322/.test(detail) && !/OK：没有新增错误/.test(detail);
+    console.log(`${pass ? "PASS" : "FAIL"}  imported errors fail ${args.length ? "baseline update" : "typecheck"}`);
+    if (!pass) { failures += 1; console.log(detail); }
   }
 
   // 对照：正常配置仍应 exit 0（顺带确认脚本本身没被改坏）。

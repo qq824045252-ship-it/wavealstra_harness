@@ -1,3 +1,4 @@
+import { userMessage, assistantMessage } from "./test-pi-messages";
 /**
  * conversation-branch-test.ts — 对话分支领域测试（实施规划 §13.1/§13.2）。
  *
@@ -97,12 +98,10 @@ function buildThreeTurnSession(root: string): BuiltSession {
   const dir = join(root, "sessions");
   const cwd = join(root, "work");
   const sm = SessionManager.create(cwd, dir);
-  sm.appendMessage({ role: "user", content: "第一问" });
-  sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "第一答" }] });
-  sm.appendMessage({ role: "user", content: "第二问" });
-  sm.appendMessage({
-    role: "assistant",
-    content: [
+  sm.appendMessage(userMessage("第一问"));
+  sm.appendMessage(assistantMessage([{ type: "text", text: "第一答" }]));
+  sm.appendMessage(userMessage("第二问"));
+  sm.appendMessage(assistantMessage([
       { type: "thinking", thinking: "先写文件" },
       {
         type: "toolCall",
@@ -110,19 +109,15 @@ function buildThreeTurnSession(root: string): BuiltSession {
         name: "write",
         arguments: { path: "notes.txt", content: "hello" },
       },
-    ],
-  });
+    ]));
   sm.appendMessage({
-    role: "toolResult",
+    role: "toolResult", toolName: "write", isError: false, timestamp: Date.now(),
     toolCallId: "tc-write-1",
     content: [{ type: "text", text: "written" }],
   });
-  sm.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "第二答" }],
-  });
-  sm.appendMessage({ role: "user", content: "第三问" });
-  sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "第三答" }] });
+  sm.appendMessage(assistantMessage([{ type: "text", text: "第二答" }]));
+  sm.appendMessage(userMessage("第三问"));
+  sm.appendMessage(assistantMessage([{ type: "text", text: "第三答" }]));
 
   const sessionFile = sm.getSessionFile()!;
   const entries = sm
@@ -158,9 +153,8 @@ function buildThreeTurnSession(root: string): BuiltSession {
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
-let root: string;
+const root = mkdtempSync(join(tmpdir(), "conv-branch-test-"));
 try {
-  root = mkdtempSync(join(tmpdir(), "conv-branch-test-"));
   console.log("== Phase 0：Pi createBranchedSession characterization ==");
 
   // ① 源文件不变 + 物化路径语义（leaf = 路径最深 entry；getBranch 沿 parentId 向上）
@@ -215,7 +209,7 @@ try {
   const s2 = buildThreeTurnSession(root);
   const open2 = SessionManager.open(s2.sessionFile, undefined, s2.cwd);
   open2.branch(s2.leaves.u1);
-  open2.appendMessage({ role: "assistant", content: [{ type: "text", text: "重来" }] });
+  open2.appendMessage(assistantMessage([{ type: "text", text: "重来" }]));
   const activeRoles = open2
     .getBranch()
     .map((e) => (e as { message?: { role?: string } }).message?.role ?? e.type)
@@ -336,7 +330,7 @@ try {
   const s3 = buildThreeTurnSession(root);
   const open3 = SessionManager.open(s3.sessionFile, undefined, s3.cwd);
   open3.branch(s3.leaves.u1);
-  open3.appendMessage({ role: "assistant", content: [{ type: "text", text: "重来" }] });
+  open3.appendMessage(assistantMessage([{ type: "text", text: "重来" }]));
   assertThrowsCode(
     () =>
       resolveConversationBranchLeaf(s3.sessionFile, s3.cwd, {
@@ -370,10 +364,10 @@ try {
   // ⑫ 过滤型 user 消息（空 content）不导致 entryId 主锚点错位
   const s4dir = join(root, "s4");
   const s4sm = SessionManager.create(join(s4dir, "work"), join(s4dir, "sessions"));
-  s4sm.appendMessage({ role: "user", content: "" }); // parseUserPrompt 会过滤（空）
-  s4sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "答空" }] });
-  s4sm.appendMessage({ role: "user", content: "真正的问题" });
-  s4sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "真正的答复" }] });
+  s4sm.appendMessage(userMessage("")); // parseUserPrompt 会过滤（空）
+  s4sm.appendMessage(assistantMessage([{ type: "text", text: "答空" }]));
+  s4sm.appendMessage(userMessage("真正的问题"));
+  s4sm.appendMessage(assistantMessage([{ type: "text", text: "真正的答复" }]));
   const s4File = s4sm.getSessionFile()!;
   const s4Branch = s4sm.getBranch();
   const s4Users = s4Branch.filter(
@@ -454,7 +448,7 @@ try {
     "⑮ 落盘内容仅含 user 路径（无多余 entry）",
   );
   // 落盘后追加：Pi flush 语义正常（追加而非整写）
-  v3.appendMessage({ role: "assistant", content: [{ type: "text", text: "首次回复" }] });
+  v3.appendMessage(assistantMessage([{ type: "text", text: "首次回复" }]));
   const v3b = SessionManager.open(m3.sessionFile);
   const v3bRoles = v3b
     .getBranch()
@@ -492,8 +486,8 @@ try {
     );
     // child 追加新消息后回填只统计新增
     const childSm = SessionManager.open(m4.sessionFile);
-    childSm.appendMessage({ role: "user", content: "分支继续" });
-    childSm.appendMessage({ role: "assistant", content: [{ type: "text", text: "分支答复" }] });
+    childSm.appendMessage(userMessage("分支继续"));
+    childSm.appendMessage(assistantMessage([{ type: "text", text: "分支答复" }]));
     usage.backfillSession(m4.sessionFile);
     const childRows = db.connection
       .prepare(`SELECT COUNT(*) AS n FROM usage_events WHERE session_file = ?`)
@@ -548,10 +542,10 @@ try {
   // ⑱ 删除 marker 语义：deleteUserMessage 的 marker 后无尾巴，分支不受影响
   const s5dir = join(root, "s5");
   const s5sm = SessionManager.create(join(s5dir, "work"), join(s5dir, "sessions"));
-  s5sm.appendMessage({ role: "user", content: "q1" });
-  s5sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "a1" }] });
-  s5sm.appendMessage({ role: "user", content: "q2" });
-  s5sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "a2" }] });
+  s5sm.appendMessage(userMessage("q1"));
+  s5sm.appendMessage(assistantMessage([{ type: "text", text: "a1" }]));
+  s5sm.appendMessage(userMessage("q2"));
+  s5sm.appendMessage(assistantMessage([{ type: "text", text: "a2" }]));
   const s5File = s5sm.getSessionFile()!;
   const s5Branch = s5sm.getBranch();
   const s5u2 = s5Branch.find(
@@ -586,8 +580,8 @@ try {
   const s6 = buildThreeTurnSession(root);
   const open6 = SessionManager.open(s6.sessionFile, undefined, s6.cwd);
   open6.appendLabelChange(s6.leaves.a2Final, "里程碑");
-  open6.appendMessage({ role: "user", content: "第四问" });
-  open6.appendMessage({ role: "assistant", content: [{ type: "text", text: "第四答" }] });
+  open6.appendMessage(userMessage("第四问"));
+  open6.appendMessage(assistantMessage([{ type: "text", text: "第四答" }]));
   const s6Branch = open6.getBranch();
   assertOk(
     s6Branch.some((e) => e.type === "label"),
@@ -611,8 +605,8 @@ try {
   const s7 = buildThreeTurnSession(root);
   const open7 = SessionManager.open(s7.sessionFile, undefined, s7.cwd);
   open7.branchWithSummary(s7.leaves.u1, "旧路摘要");
-  open7.appendMessage({ role: "user", content: "第五问" });
-  open7.appendMessage({ role: "assistant", content: [{ type: "text", text: "第五答" }] });
+  open7.appendMessage(userMessage("第五问"));
+  open7.appendMessage(assistantMessage([{ type: "text", text: "第五答" }]));
   const s7Branch = open7.getBranch();
   const s7u5 = s7Branch.find(
     (e) => e.type === "message" && (e as { message?: { content?: string } }).message?.content === "第五问",

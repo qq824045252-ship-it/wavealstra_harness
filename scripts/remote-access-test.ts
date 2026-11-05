@@ -136,7 +136,7 @@ assert.deepEqual(
 const first = events.publish("task.changed", { taskId: "t" });
 const second = events.publish("task.changed", { taskId: "t" });
 assert.equal(second.id, first.id + 1);
-assert.deepEqual(events.replayAfter(first.id).map((event) => event.id), [second.id]);
+assert.deepEqual(events.replayAfter(first.id)?.map((event) => event.id), [second.id]);
 const unsubscribe = events.subscribe(() => undefined);
 assert.equal(events.subscriberCount, 1);
 unsubscribe();

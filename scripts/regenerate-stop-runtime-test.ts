@@ -41,7 +41,7 @@ try {
     await providerStarted;
     let accepted = false;
     const text = `queued ${behavior}`;
-    await session.prompt(text, { streamingBehavior: behavior, preflightResult: ok => { accepted = ok; } });
+    await session.prompt(text, { streamingBehavior: behavior, preflightResult: disposition => { accepted = disposition === "queued"; } });
     assert(accepted, 'SDK preflight succeeds before queued input is consumed');
     assert(!session.getUserMessagesForForking().some(user => user.text === text));
     session.clearQueue();

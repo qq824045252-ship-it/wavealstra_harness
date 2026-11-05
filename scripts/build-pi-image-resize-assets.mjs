@@ -17,9 +17,6 @@ import { join, dirname } from 'node:path';
 
 export const IMAGE_RESIZE_WORKER_FILE = 'image-resize-worker.js';
 export const PHOTON_WASM_FILE = 'photon_rs_bg.wasm';
-// subagent runtime 把 pi-ai 的 photon glue 切进 chunks/photon_rs-*.mjs（ESM splitting），
-// 该 chunk 内部同样 path.join(__dirname, "photon_rs_bg.wasm")，__dirname 即 chunks 子目录。
-export const SUBAGENT_RUNTIME_WASM_FILE = 'capabilities/subagent/runtime/chunks/photon_rs_bg.wasm';
 
 export async function buildPiImageResizeAssets(root) {
   const piRoot = realpathSync(join(root, 'node_modules/@earendil-works/pi-coding-agent'));
@@ -38,6 +35,5 @@ export async function buildPiImageResizeAssets(root) {
   return [
     { type: 'asset', fileName: IMAGE_RESIZE_WORKER_FILE, source: result.outputFiles[0].text },
     { type: 'asset', fileName: PHOTON_WASM_FILE, source: readFileSync(wasmPath) },
-    { type: 'asset', fileName: SUBAGENT_RUNTIME_WASM_FILE, source: readFileSync(wasmPath) },
   ];
 }

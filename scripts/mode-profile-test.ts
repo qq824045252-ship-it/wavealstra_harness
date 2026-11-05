@@ -132,7 +132,6 @@ async function main(): Promise<void> {
     permissionMode: "default",
     platform: "win32",
     memoryEnabled: true,
-    globalMemory: "喜欢简洁",
     skills: [
       { id: "weekly-summary", name: "weekly-summary", description: "周报摘要" },
       { id: "k8s-deploy", name: "k8s-deploy", description: "deploy k8s" },
@@ -174,8 +173,9 @@ async function main(): Promise<void> {
     !shouldBlockArtifactWrite("x.md", { mode: "hard", allow: ["md", "docx"], deny: [] }),
     "hard 白名单内放行 .md",
   );
+  const deniedWrite = evaluateArtifactWrite("a.py", { mode: "hard", allow: ["md"], deny: ["py"] });
   assert(
-    evaluateArtifactWrite("a.py", { mode: "hard", allow: ["md"], deny: ["py"] }).reason === "deny",
+    deniedWrite.block && deniedWrite.reason === "deny",
     "同时配置时 deny 优先",
   );
 

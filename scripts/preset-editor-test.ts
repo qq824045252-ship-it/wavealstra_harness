@@ -31,7 +31,7 @@ import {
   upsertPreset,
 } from "../src/renderer/src/lib/presetEditor";
 // eslint-disable-next-line import/first
-import type { ModePolicyDto, ModePresetDto } from "../src/shared/mode-profile";
+import { emptyModePolicy, type ModePolicyDto, type ModePresetDto } from "../src/shared/mode-profile";
 // eslint-disable-next-line import/first
 import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
 // eslint-disable-next-line import/first
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     assert(replaced.length === 1 && replaced[0].label === "改名", "按 id 替换（不新增）");
     assert(
       replaced[0].suggestedModelId === "m2" &&
-        replaced[0].recommendedExpertIds.length === 0 &&
+        replaced[0].recommendedExpertIds?.length === 0 &&
         replaced[0].suggestedPermissionMode === null,
       "替换 = 整体替换（调用方须传入完整草稿；缺省字段归一化为空）",
     );
@@ -123,8 +123,8 @@ async function main(): Promise<void> {
     const used = [normalizePresetDraft(fullPreset({ id: "new-tag" })) as ModePresetDto];
     assert(suggestPresetId("new tag", used) === "new-tag-2", "suggestPresetId 冲突追加序号");
 
-    const base = {
-      ...({} as ModePolicyDto),
+    const base: ModePolicyDto = {
+      ...emptyModePolicy(),
       skillPolicy: { prefer: ["base"], demote: [], hide: [], allow: [] },
       toolPolicy: { mode: "soft", prefer: [], demote: [], deny: [] },
       mcpPolicy: { mode: "hard", allow: [], deny: [] },
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       presets: [],
     };
     const merged = applyPresetsToPolicy(base, [normalizePresetDraft(fullPreset()) as ModePresetDto, { id: "", label: "" } as ModePresetDto]);
-    assert(merged.presets.length === 1 && merged.presets[0].id === "ui-edited", "applyPresetsToPolicy 归一化并滤掉空条目");
+    assert(merged.presets?.length === 1 && merged.presets?.[0].id === "ui-edited", "applyPresetsToPolicy 归一化并滤掉空条目");
     assert(
       merged.suggestedModelId === "base-model" &&
         merged.suggestedPermissionMode === "default" &&
@@ -144,8 +144,8 @@ async function main(): Promise<void> {
       "base 字段（模型/权限/推荐专家/技能/MCP 策略）原样保留",
     );
     assert(
-      merged.presets[0].suggestedPermissionMode === "readonly" &&
-        merged.presets[0].recommendedExpertIds.length === 2,
+      merged.presets?.[0].suggestedPermissionMode === "readonly" &&
+        merged.presets?.[0].recommendedExpertIds?.length === 2,
       "preset 新字段经 applyPresetsToPolicy 不丢",
     );
   }

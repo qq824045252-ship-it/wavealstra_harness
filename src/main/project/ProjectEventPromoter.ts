@@ -62,7 +62,7 @@ export class ProjectEventPromoter {
    */
   promote(
     eventId: string,
-    request: ProjectEventPromoteRequest,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
     agent?: { taskId?: string },
   ): ProjectEventPromoteResultDto {
     if (!request || !["memory", "todo", "library"].includes(request.targetKind as string)) {
@@ -139,7 +139,7 @@ export class ProjectEventPromoter {
 
   private createTarget(
     event: ProjectEventDto,
-    request: ProjectEventPromoteRequest,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
     promotedBy: "user" | "agent",
     sourceTaskId?: string,
   ): CreatedPromotionTarget {
@@ -177,7 +177,7 @@ export class ProjectEventPromoter {
 
   private promoteToMemory(
     event: ProjectEventDto,
-    request: ProjectEventPromoteRequest,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
     promotedBy: "user" | "agent",
     sourceTaskId?: string,
   ): CreatedPromotionTarget {
@@ -207,7 +207,7 @@ export class ProjectEventPromoter {
 
   private promoteToTodo(
     event: ProjectEventDto,
-    request: ProjectEventPromoteRequest,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
   ): CreatedPromotionTarget {
     if (!request.todoTitle?.trim()) throw new Error("提升为计划项必须显式指定标题");
     const created = this.projects.createTodo({
@@ -226,7 +226,7 @@ export class ProjectEventPromoter {
 
   private promoteToLibrary(
     event: ProjectEventDto,
-    request: ProjectEventPromoteRequest,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
   ): CreatedPromotionTarget {
     if (typeof event.payload?.libraryItemId === "string") {
       throw new Error("该事件已关联资料库条目（文件导入），无需重复保存为资料；可提升为记忆或计划。");

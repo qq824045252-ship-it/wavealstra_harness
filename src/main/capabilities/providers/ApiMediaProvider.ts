@@ -104,7 +104,7 @@ async function generateImage(options: ApiMediaProviderOptions, id: string, input
     if (size && aspect !== undefined && Math.abs(input.width! / input.height! - aspect) > 0.000001) {
       throw new ApiProviderError("input", "dimensions conflict with the aspect ratio");
     }
-    const references = [];
+    const references: Array<{ type: "image_url"; image_url: { url: string } }> = [];
     for (const path of paths) {
       const image = await referenceImage(path, context);
       references.push({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.bytes.toString("base64")}` } });

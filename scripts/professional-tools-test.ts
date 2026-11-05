@@ -116,8 +116,8 @@ function fakeHarness(options: {
       if (drawioOccupied.has(port)) return "<html><title>other service</title></html>";
       return null;
     },
-    openExternal: async (url) => events.push(`open:${url}`),
-    openInApp: async (url) => events.push(`inapp:${url}`),
+    openExternal: async (url) => { events.push(`open:${url}`); },
+    openInApp: async (url) => { events.push(`inapp:${url}`); },
     sleep: async () => {},
   };
 

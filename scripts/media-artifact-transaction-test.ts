@@ -116,6 +116,7 @@ async function cancellationTransaction(stage: "bytes" | "register"): Promise<voi
   try {
     computerAutomationService.execute = async (input, signal) => {
       assert(signal && !signal.aborted, "Screenshot result must begin inside the live CU scope");
+      assert(input.action);
       return { action: input.action, screenshot: Buffer.from("png:CU screenshot"), artifactFileName: `${stage}-cancelled.png` };
     };
     if (stage === "bytes") {
@@ -134,6 +135,7 @@ async function cancellationTransaction(stage: "bytes" | "register"): Promise<voi
     assert.equal(fixture.registered.size, stage === "register" ? 1 : 0, "Register cancellation must pause after the actual registration side effect");
     computerUseRunCoordinator.cancel(taskId);
     release.resolve();
+    assert(running);
     const result = await bounded(running);
     assert.equal(result.isError, true, "Real CU extension must return a recoverable cancellation tool error");
     assert.match(result.content.map((item: any) => item.text ?? "").join("\n"), /停止本轮 Computer Use/);

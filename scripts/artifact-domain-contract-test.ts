@@ -35,7 +35,7 @@ const check = (name: string, pass: boolean, detail = ""): void => {
 
 interface Harness {
   root: string;
-  db: Database;
+  db: Database.Database;
   storage: ArtifactStorage;
   repository: ArtifactRepository;
   registry: ArtifactRegistry;
@@ -712,7 +712,7 @@ async function main(): Promise<void> {
       list.length === 2 && list.some((d) => d.source.type === "workspace-file" && d.source.entryFile === realFile),
     );
     const managed = list.find((d) => d.source.type === "managed-content");
-    check("T25c raw content → managed-content 落盘（M2）", managed !== undefined && h.storage.exists(managed.source.storagePath));
+    check("T25c raw content → managed-content 落盘（M2）", managed?.source.type === "managed-content" && h.storage.exists(managed.source.storagePath));
     check("T25d 迁移后已标记（M4 前置）", h.service.isLegacyMigrated("task-leg"));
     // M4: 标记后 ensureTaskLegacyMigrated 短路，不再读 legacy 源
     const sourceCalls: string[] = [];

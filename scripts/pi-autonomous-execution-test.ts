@@ -1,3 +1,4 @@
+import type { ToolCall } from "@earendil-works/pi-ai";
 import assert from "node:assert/strict";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { mkdtemp, writeFile, readFile, rm, access } from "node:fs/promises";
@@ -27,7 +28,7 @@ function text(message: any): string {
     : (message?.content ?? []).map((part: any) => part.type === "text" ? part.text : "").join("\n");
 }
 function results(context: Context): any[] { return context.messages.filter((m) => m.role === "toolResult"); }
-function tool(id: string, name: string, args: Record<string, unknown>): AssistantMessage["content"][number] {
+function tool(id: string, name: string, args: ToolCall["arguments"]): AssistantMessage["content"][number] {
   return { type: "toolCall", id, name, arguments: args };
 }
 

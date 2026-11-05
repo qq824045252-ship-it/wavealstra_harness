@@ -141,7 +141,7 @@ function capabilityRuntime(): BuiltinCapabilityRuntime {
   config.execution = { terminalEnabled: false, codeExecutionEnabled: false };
   return new BuiltinCapabilityRuntime({
     store: { read: () => structuredClone(config), write: (next) => structuredClone(next) },
-    credentials: { has: () => false, get: () => undefined, set: () => undefined, clear: () => undefined },
+    credentials: { has: () => false, get: () => null, set: () => undefined, clear: () => undefined },
   });
 }
 

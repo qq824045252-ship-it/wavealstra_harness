@@ -62,7 +62,7 @@ class MockDebugger implements DebuggerLike {
     if (method === "DOM.getOuterHTML") return { outerHTML: this.outerHTML };
     return {};
   }
-  on(event: "message" | "detach", listener: (...args: unknown[]) => void): unknown {
+  on(event: "message" | "detach", listener: ((event: unknown, method: string, params: unknown, sessionId?: string) => void) | ((event: unknown, reason: string) => void)): unknown {
     if (event === "message") this.messageListeners.push(listener as never);
     else this.detachListeners.push(listener as never);
     return this;

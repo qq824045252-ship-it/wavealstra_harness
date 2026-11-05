@@ -467,7 +467,7 @@ function installDeferredPrompt(): {
       rejectFn = reject;
     });
   return {
-    resolve: () => resolveFn?.(() => undefined),
+    resolve: () => resolveFn?.(),
     reject: (e: Error) => rejectFn?.(e),
     restore: () => {
       api.btw.prompt = original;

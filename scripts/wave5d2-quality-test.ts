@@ -31,6 +31,7 @@ import {
   splitMergeByFrozen,
   windowRange,
   type XlsxMerge,
+  type XlsxStyle,
 } from "../src/renderer/src/lib/xlsxView";
 
 const ROOT = process.cwd();
@@ -118,7 +119,7 @@ async function styles() {
   const styles = parseStylesXml(xml);
   const base = styles.length - 8; // 我的 8 个 xf 追加在 SheetJS 原有 xfs 之后
   check("styles: 合并后 ≥10 个 cellXfs", styles.length >= 10, String(styles.length));
-  const my = (n: number): XlsxStyle => styles[base + n] ?? ({} as XlsxStyle);
+  const my = (n: number): XlsxStyle => styles[base + n] ?? {};
   check("styles: 我的 xf1 粗体", my(1).bold === true);
   check("styles: 我的 xf2 灰底", my(2).fillColor === "#eeeeee");
   check("styles: 我的 xf3 黄底粗体", my(3).bold === true && my(3).fillColor === "#ffff00");
@@ -168,7 +169,7 @@ function windowMath() {
   const w2 = windowRange(5, 61, 40, offsets, 1);
   check("window: 滚动后窗口", w2.start === 2 && w2.end === 4, JSON.stringify(w2));
   check("colLetter: A/AA", colLetter(0) === "A" && colLetter(26) === "AA" && colLetter(49) === "AX");
-  const matches = searchCells([{ rows: 2, cols: 2, cells: new Map([["0:0", { r: 0, c: 0, v: "hello", w: "hello" }]]), merges: [], colWidths: [], rowHeights: [], frozen: null }], "HELLO");
+  const matches = searchCells([{ name: "Sheet1", rows: 2, cols: 2, cells: new Map([["0:0", { r: 0, c: 0, v: "hello", w: "hello" }]]), merges: [], colWidths: [], rowHeights: [], frozen: null }], "HELLO");
   check("search: 大小写不敏感", matches.total === 1 && matches.matches[0]?.text === "hello");
 }
 

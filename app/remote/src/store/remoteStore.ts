@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { applyDurableDelta } from '@mybuddy/shared'
+import { applyDurableDelta, replayDurableDeltas } from '@mybuddy/shared'
 import { reconcileLiveMessagesWithHistory, type LiveRemoteMessage } from './remoteTimeline'
 import { reduceRemotePatch } from './remotePatch'
 export { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory } from './remoteTimeline'
@@ -1240,7 +1240,12 @@ function receiveDurableDelta(taskId: string, delta: RemoteDurableDelta): void {
         return { runtimes: { ...current.runtimes, [taskId]: { ...runtime, ...existing, interactions: [...interactions.values()] } } };
       });
       durableResyncs.delete(taskId);
-      for (const pending of request.buffered) receiveDurableDelta(taskId, pending);
+      const accepted = useRemoteStore.getState().histories[taskId]?.durable;
+      if (accepted) {
+        const replay = replayDurableDeltas<RemoteHistoryMessage, RemoteDurableState>(accepted, request.buffered);
+        projectDurableSnapshot(taskId, replay.snapshot);
+        if (replay.gap) throw new Error('增量仍有缺口，请重新打开会话');
+      }
     } catch (error) {
       if (useRemoteStore.getState().client === request.client) useRemoteStore.setState({ error: `会话同步失败：${error instanceof Error ? error.message : String(error)}` });
     } finally { if (durableResyncs.get(taskId) === request) durableResyncs.delete(taskId); }

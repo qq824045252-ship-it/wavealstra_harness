@@ -246,6 +246,7 @@ try {
         await writeFile(effectFile, String(++effects));
         await new Promise<never>((_resolve, reject) => {
           const abort = () => reject(new Error("fixture host closed after side effect"));
+          assert(context.abortSignal);
           context.abortSignal.addEventListener("abort", abort, { once: true });
           if (context.abortSignal.aborted) abort();
         });

@@ -6,6 +6,7 @@ import type { AgentPromptRequest, TaskDto } from "../src/shared/agent-ipc";
 async function main(): Promise<void> {
   prepareTestEnv();
   const api = window.api;
+  assert(api);
   const saved: TaskDto[] = [];
   const requests: AgentPromptRequest[] = [];
   let releaseSave: (() => void) | undefined;

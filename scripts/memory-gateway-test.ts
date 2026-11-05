@@ -1,3 +1,4 @@
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,9 +35,9 @@ try {
   const { MemoryGatewayAccessControl } = await import("../src/main/memory/MemoryGatewayAccessControl");
 
   const db = new AppDatabase(join(root, "app.db"));
-  db.upsertSpace({ id: "ws-root", name: "Root", archived: false, updatedAt: Date.now() });
-  db.upsertSpace({ id: "ws-child", name: "Child", parentId: "ws-root", archived: false, updatedAt: Date.now() });
-  db.upsertSpace({ id: "ws-sibling", name: "Sibling", parentId: "ws-root", archived: false, updatedAt: Date.now() });
+  db.upsertSpace({ id: "ws-root", name: "Root", archived: false });
+  db.upsertSpace({ id: "ws-child", name: "Child", parentId: "ws-root", archived: false });
+  db.upsertSpace({ id: "ws-sibling", name: "Sibling", parentId: "ws-root", archived: false });
   project(db, "project-a", "Project A");
   project(db, "project-b", "Project B");
   db.upsertTask({ id: "task-a", title: "Task A", spaceId: "ws-child", projectId: "project-a", status: "in_progress", updatedAt: Date.now() });
@@ -204,7 +205,7 @@ try {
   for (const name of ["memory_search", "memory_get", "memory_history", "memory_context", "memory_stats"]) assert(toolNames.has(name), `MCP exposes ${name}`);
   for (const name of ["memory_create", "memory_update", "memory_promote", "memory_forget"]) assert(!toolNames.has(name), `read-only MCP does not expose ${name}`);
 
-  const mcpSearch = await client.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } });
+  const mcpSearch = CallToolResultSchema.parse(await client.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } }));
   assert.equal(mcpSearch.isError, undefined);
   const content = mcpSearch.content[0];
   assert(content && content.type === "text");
@@ -227,10 +228,10 @@ try {
   const writeTools = await writeClient.listTools();
   const writeToolNames = new Set(writeTools.tools.map((tool) => tool.name));
   for (const name of ["memory_create", "memory_update", "memory_promote", "memory_forget"]) assert(writeToolNames.has(name), `write-enabled MCP exposes ${name}`);
-  const mcpCreate = await writeClient.callTool({
+  const mcpCreate = CallToolResultSchema.parse(await writeClient.callTool({
     name: "memory_create",
     arguments: { taskId: "task-a", kind: "procedure", title: "Created through real MCP", content: "portable write" },
-  });
+  }));
   assert.equal(mcpCreate.isError, undefined);
   const createContent = mcpCreate.content[0];
   assert(createContent && createContent.type === "text");
@@ -299,7 +300,7 @@ try {
   assert(projectTools.has("memory_search"));
   assert(!projectTools.has("memory_stats"), "delegated grants never receive owner-level stats");
   assert(!projectTools.has("memory_create"), "read grant cannot write even when master write is enabled");
-  const projectAllowed = await projectClient.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } });
+  const projectAllowed = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } }));
   assert.equal(projectAllowed.isError, undefined);
   const projectAllowedText = projectAllowed.content[0];
   assert(projectAllowedText?.type === "text");
@@ -310,7 +311,7 @@ try {
   assert(!projectScopedIds.has(childWs.id), "Project grant does not inherit Workspace L1");
   assert(!projectScopedIds.has(parentWs.id), "Project grant does not inherit parent Workspace L1");
   assert(projectScopedIds.has(promotedFromGlobal.id), "explicitly promoted L1 is visible through its Project scope");
-  const promotedGet = await projectClient.callTool({ name: "memory_get", arguments: { taskId: "task-a", id: promotedFromGlobal.id } });
+  const promotedGet = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_get", arguments: { taskId: "task-a", id: promotedFromGlobal.id } }));
   assert.equal(promotedGet.isError, undefined);
   const promotedGetText = promotedGet.content[0];
   assert(promotedGetText?.type === "text");
@@ -322,21 +323,21 @@ try {
   assert.deepEqual(promotedExternal.metadata, {});
   assert.deepEqual(promotedExternal.evidence, []);
   assert.deepEqual(promotedExternal.relations, []);
-  const promotedHistory = await projectClient.callTool({ name: "memory_history", arguments: { taskId: "task-a", id: promotedFromGlobal.id } });
+  const promotedHistory = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_history", arguments: { taskId: "task-a", id: promotedFromGlobal.id } }));
   assert.equal(promotedHistory.isError, undefined);
   const promotedHistoryText = promotedHistory.content[0];
   assert(promotedHistoryText?.type === "text");
   const visibleHistory = JSON.parse(promotedHistoryText.type === "text" ? promotedHistoryText.text : "[]") as Array<{ content: string; changeReason?: string }>;
   assert(visibleHistory.some((revision) => revision.content === "shared-after-promotion"), "post-promotion revisions remain visible");
   assert(!visibleHistory.some((revision) => revision.content.startsWith("private-before-promotion")), "pre-promotion revision bodies are not exposed to the new delegated scope");
-  const ownedHistory = await projectClient.callTool({ name: "memory_history", arguments: { taskId: "task-a", id: projectA.id } });
+  const ownedHistory = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_history", arguments: { taskId: "task-a", id: projectA.id } }));
   assert.equal(ownedHistory.isError, undefined);
   const ownedHistoryText = ownedHistory.content[0];
   assert(ownedHistoryText?.type === "text");
   const visibleOwnedHistory = JSON.parse(ownedHistoryText.type === "text" ? ownedHistoryText.text : "[]") as Array<{ content: string }>;
   assert(visibleOwnedHistory.some((revision) => revision.content === "A-only after delegated access"));
   assert(!visibleOwnedHistory.some((revision) => revision.content === "A-only"), "owned-scope history also starts at grant access time");
-  const delegatedContext = await projectClient.callTool({ name: "memory_context", arguments: { taskId: "task-a", limit: 100 } });
+  const delegatedContext = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_context", arguments: { taskId: "task-a", limit: 100 } }));
   assert.equal(delegatedContext.isError, undefined);
   const delegatedContextText = delegatedContext.content[0];
   assert(delegatedContextText?.type === "text");
@@ -345,7 +346,7 @@ try {
   assert.deepEqual(delegatedContextBody.profileIds, [], "scoped delegated context does not expose L3 Core Profile projections");
   assert(delegatedContextBody.items?.some((item) => item.id === projectA.id));
   assert(!delegatedContextBody.items?.some((item) => item.id === global.id));
-  const projectDenied = await projectClient.callTool({ name: "memory_search", arguments: { taskId: "task-b", limit: 100 } });
+  const projectDenied = CallToolResultSchema.parse(await projectClient.callTool({ name: "memory_search", arguments: { taskId: "task-b", limit: 100 } }));
   assert.equal(projectDenied.isError, true, "Project A token cannot query Project B task context");
   assert((projectDenied.content[0]?.type === "text" ? projectDenied.content[0].text : "").includes("access_denied"));
   const delegatedStats = await fetch(`${delegatedBase}/v1/memory/stats`, { headers: { authorization: `Bearer ${projectRead.token}` } });
@@ -360,7 +361,7 @@ try {
   await projectWriteClient.connect(projectWriteTransport);
   const projectWriteTools = new Set((await projectWriteClient.listTools()).tools.map((tool) => tool.name));
   assert(projectWriteTools.has("memory_create"), "read-write grant plus master write exposes write tools");
-  const projectGrantCreate = await projectWriteClient.callTool({ name: "memory_create", arguments: { taskId: "task-a", kind: "procedure", title: "ERP project procedure" } });
+  const projectGrantCreate = CallToolResultSchema.parse(await projectWriteClient.callTool({ name: "memory_create", arguments: { taskId: "task-a", kind: "procedure", title: "ERP project procedure" } }));
   assert.equal(projectGrantCreate.isError, undefined);
   const projectGrantBody = JSON.parse(projectGrantCreate.content[0]?.type === "text" ? projectGrantCreate.content[0].text : "{}") as { id?: string; sourceId?: string; sourceTaskId?: string; metadata?: Record<string, unknown>; scopes?: Array<{ scopeType: string; scopeId?: string }>; evidence?: unknown[]; relations?: unknown[] };
   assert(projectGrantBody.scopes?.some((scope) => scope.scopeType === "project" && scope.scopeId === "project-a"));
@@ -373,7 +374,7 @@ try {
   assert.equal(rawGrantMemory?.sourceId, `memory-gateway:${projectWrite.grant.id}`, "internal L1 attribution records the external grant identity");
   assert.equal(rawGrantMemory?.metadata.externalAccessId, projectWrite.grant.id);
   assert(rawGrantMemory?.evidence.some((item) => item.evidenceKind === "external"), "internal L1 keeps external evidence even though delegated response is redacted");
-  const attributedUpdate = await projectWriteClient.callTool({
+  const attributedUpdate = CallToolResultSchema.parse(await projectWriteClient.callTool({
     name: "memory_update",
     arguments: {
       taskId: "task-a",
@@ -382,16 +383,16 @@ try {
       metadata: { externalAccessId: "spoof", externalAccessName: "spoof", externalLastAccessId: "spoof" },
       changeReason: "sync",
     },
-  });
+  }));
   assert.equal(attributedUpdate.isError, undefined);
   const internalAfterUpdate = projectGrantBody.id ? memory.get(projectGrantBody.id) : undefined;
   assert.equal(internalAfterUpdate?.metadata.externalAccessId, projectWrite.grant.id, "external update cannot spoof immutable creator grant metadata");
   assert.equal(internalAfterUpdate?.metadata.externalLastAccessId, projectWrite.grant.id, "last external writer is recorded server-side");
   const attributedRevision = projectGrantBody.id ? memory.history(projectGrantBody.id)[0] : undefined;
   assert.match(attributedRevision?.changeReason ?? "", new RegExp(`memory-gateway:${projectWrite.grant.id}`), "revision identifies the exact delegated writer");
-  const inheritedGlobalUpdate = await projectWriteClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: global.id, content: "must not mutate global" } });
+  const inheritedGlobalUpdate = CallToolResultSchema.parse(await projectWriteClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: global.id, content: "must not mutate global" } }));
   assert.equal(inheritedGlobalUpdate.isError, true, "Project grant cannot mutate a Global L1 outside its delegated durable scope");
-  const crossProjectWrite = await projectWriteClient.callTool({ name: "memory_create", arguments: { taskId: "task-b", kind: "procedure", title: "cross project" } });
+  const crossProjectWrite = CallToolResultSchema.parse(await projectWriteClient.callTool({ name: "memory_create", arguments: { taskId: "task-b", kind: "procedure", title: "cross project" } }));
   assert.equal(crossProjectWrite.isError, true);
   await projectWriteClient.close();
 
@@ -411,7 +412,7 @@ try {
     requestInit: { headers: { authorization: `Bearer ${workspaceWrite.token}` } },
   });
   await workspaceClient.connect(workspaceTransport);
-  const wsSearch = await workspaceClient.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } });
+  const wsSearch = CallToolResultSchema.parse(await workspaceClient.callTool({ name: "memory_search", arguments: { taskId: "task-a", limit: 100 } }));
   assert.equal(wsSearch.isError, undefined);
   const wsSearchText = wsSearch.content[0];
   assert(wsSearchText?.type === "text");
@@ -421,15 +422,15 @@ try {
   assert(!wsScopedIds.has(parentWs.id), "child Workspace grant does not inherit parent Workspace L1 outside grant subtree");
   assert(!wsScopedIds.has(projectA.id), "Workspace grant does not inherit Project L1");
   assert(!wsScopedIds.has(global.id), "Workspace grant does not inherit Global L1");
-  const wsCreate = await workspaceClient.callTool({ name: "memory_create", arguments: { taskId: "task-a", kind: "procedure", title: "Workspace procedure" } });
+  const wsCreate = CallToolResultSchema.parse(await workspaceClient.callTool({ name: "memory_create", arguments: { taskId: "task-a", kind: "procedure", title: "Workspace procedure" } }));
   assert.equal(wsCreate.isError, undefined);
   const wsBody = JSON.parse(wsCreate.content[0]?.type === "text" ? wsCreate.content[0].text : "{}") as { scopes?: Array<{ scopeType: string; scopeId?: string }> };
   assert(wsBody.scopes?.some((scope) => scope.scopeType === "workspace" && scope.scopeId === "ws-child"), "Workspace grant writes to its workspace rather than Task project default");
-  const parentMutation = await workspaceClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: parentWs.id, content: "must not mutate parent" } });
+  const parentMutation = CallToolResultSchema.parse(await workspaceClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: parentWs.id, content: "must not mutate parent" } }));
   assert.equal(parentMutation.isError, true, "child Workspace grant cannot mutate inherited parent Workspace memory");
-  const childMutation = await workspaceClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: childWs.id, content: "child grant update" } });
+  const childMutation = CallToolResultSchema.parse(await workspaceClient.callTool({ name: "memory_update", arguments: { taskId: "task-a", id: childWs.id, content: "child grant update" } }));
   assert.equal(childMutation.isError, undefined, "child Workspace grant can mutate its own L1 scope");
-  const siblingContext = await workspaceClient.callTool({ name: "memory_search", arguments: { taskId: "task-b" } });
+  const siblingContext = CallToolResultSchema.parse(await workspaceClient.callTool({ name: "memory_search", arguments: { taskId: "task-b" } }));
   assert.equal(siblingContext.isError, true, "child Workspace grant cannot move sideways to sibling Workspace");
   await workspaceClient.close();
 

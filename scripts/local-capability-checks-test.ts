@@ -60,14 +60,14 @@ try {
   assert.equal((await pending).state, "unchecked", "late checks cannot validate a changed configuration");
   assert.equal(state("terminal").state, "disabled");
 
-  const selection = resolveSessionToolSelection("auto", { mode: "hard", deny: ["write"] }, config);
+  const selection = resolveSessionToolSelection("auto", { mode: "hard", prefer: [], demote: [], deny: ["write"] }, config);
   assert(selection.excludeTools?.includes("bash"));
   assert(selection.excludeTools?.includes("powershell"));
   assert(selection.excludeTools?.includes("write"));
   let active = ["read", "bash", "powershell", "write"];
   activateResolvedSessionTools({ getActiveToolNames: () => active, getAllTools: () => active.map((name) => ({ name })), setActiveToolsByName: (names) => { active = names; } }, selection);
   assert.deepEqual(active, ["read"], "post-bind activation must not re-enable excluded tools");
-  const readonly = resolveSessionToolSelection("readonly", { mode: "inherit" }, config);
+  const readonly = resolveSessionToolSelection("readonly", { mode: "soft", prefer: [], demote: [], deny: [] }, config);
   assert(readonly.excludeTools?.includes("bash"));
   assert(readonly.excludeTools?.includes("execute_code"));
 
@@ -99,7 +99,7 @@ try {
       createBuiltinCapabilityExtension({ taskId: "native-capability-fixture", taskRoot: cwd, runtime: { config: () => sessionConfig } as BuiltinCapabilityRuntime, browser: { available: false } as never, artifactService: () => null, getProducerMessageId: () => undefined, getIsolationLevel: () => "guarded" }),
     ] });
     await loader.reload();
-    const nativeSelection = resolveSessionToolSelection("auto", { mode: "inherit" }, sessionConfig);
+    const nativeSelection = resolveSessionToolSelection("auto", { mode: "soft", prefer: [], demote: [], deny: [] }, sessionConfig);
     const created = await createAgentSession({ cwd, agentDir: cwd, model: model as never, modelRuntime: { getModel: () => model, hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "fixture-only" } }), streamSimple: () => { throw new Error("No model inference allowed"); } } as never, settingsManager, sessionManager: SessionManager.create(cwd, cwd), resourceLoader: loader, excludeTools: nativeSelection.excludeTools });
     try {
       await created.session.bindExtensions({ mode: "rpc" });

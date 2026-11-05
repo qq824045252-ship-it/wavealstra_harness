@@ -42,8 +42,10 @@ async function main(): Promise<void> {
 
 // 旧主进程在热更新期间可能暂时返回 undefined；有 streamingBehavior 时必须按入队处理，
 // 不能把 undefined 当普通 prompt 完成并提前结束 UI。
-const legacyQueuedResult: { queued: boolean } | undefined = undefined;
-assert.equal(legacyQueuedResult?.queued ?? Boolean("steer"), true);
+function wasQueued(result: { queued: boolean } | undefined, streamingBehavior: string): boolean {
+  return result?.queued ?? Boolean(streamingBehavior);
+}
+assert.equal(wasQueued(undefined, "steer"), true);
 
 const routing = {
   assistantMessageId: "assistant-current",
@@ -87,7 +89,7 @@ assert.equal(secondAcquired, true);
 const invalidationState = {
   promptQueueEpoch: 3,
   pendingAssistantTurns: [
-    { messageId: "stale-follow-up", queuedAt: 1, behavior: "followUp" as const },
+    { messageId: "stale-follow-up", executionId: "stale-execution", queuedAt: 1, behavior: "followUp" as const },
   ],
 };
 invalidatePendingPromptQueue(invalidationState);

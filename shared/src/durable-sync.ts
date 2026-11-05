@@ -55,3 +55,17 @@ export function applyDurableDelta<Message extends { id: string }, State>(
   }
   return { kind: 'applied', snapshot: { ...delta.state, epoch: delta.epoch, revision: delta.revision, messages } }
 }
+
+/** A full read supersedes buffered events from every other runtime incarnation. */
+export function replayDurableDeltas<Message extends { id: string }, State>(
+  snapshot: DurableVersioned<Message, State>,
+  buffered: readonly DurableStreamDelta<Message, State>[],
+): { snapshot: DurableVersioned<Message, State>; gap: boolean } {
+  for (const delta of buffered) {
+    if (delta.epoch !== snapshot.epoch) continue
+    const result = applyDurableDelta(snapshot, delta)
+    if (result.kind === 'resync') return { snapshot, gap: true }
+    if (result.kind === 'applied') snapshot = result.snapshot
+  }
+  return { snapshot, gap: false }
+}

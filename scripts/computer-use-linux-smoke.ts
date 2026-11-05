@@ -453,7 +453,7 @@ async function main(): Promise<void> {
     assert.equal((await fixture!.state()).clicks, before.clicks + 1);
     await screenPointer("Scroll area", "scroll", { notches: -2 });
     assert.ok((await fixture!.state()).scrollTop > before.scrollTop);
-    const drags = [];
+    const drags: Array<{ action: string; moves: number; duration: number; delta: number[] }> = [];
     for (const action of ["drag_screen", "mouse_drag"] as const) {
       await screenPointer("Drag target", action, { durationMs: 300, steps: 8 });
       const state = await fixture!.state();

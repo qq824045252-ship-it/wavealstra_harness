@@ -74,7 +74,7 @@ function logGroup(prefix: string, winner: SpaceRow, losers: SpaceRow[], total: n
       } catch {}
     }
     const label = `${loser.id}${loser.path ? ` (${loser.path})` : ""} parent=${loser.parent_id ?? "ROOT"}`;
-    console.log(`   → 合并 ${label} [children=${childCount}, tasks=${taskCount}${memCount}]`);
+    console.log(`   → 合并 ${label} [children=${childCount}, tasks=${taskCount}]`);
   }
 }
 

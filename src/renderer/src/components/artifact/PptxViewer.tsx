@@ -378,7 +378,7 @@ export default function PptxViewer({ content, name }: Props): React.JSX.Element 
     );
   }
 
-  const mainSlides = [];
+  const mainSlides: React.ReactNode[] = [];
   for (let i = Math.max(0, current - MAIN_MARGIN); i <= Math.min(slideCount - 1, current + MAIN_MARGIN); i += 1) {
     mainSlides.push(
       <div

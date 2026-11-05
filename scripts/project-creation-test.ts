@@ -139,7 +139,6 @@ import {
   draft.name = "模板化创建测试";
   const plan = validateAndBuildCreationPlan(draft, undefined);
   assert.equal(plan.ok, true);
-  if (!plan.ok) throw new Error(plan.error);
   assert.equal(plan.request.templateId, "software-development");
   assert.equal(plan.request.name, "模板化创建测试");
   assert.equal(plan.request.resourceBudgetChars, 128_000);
@@ -170,7 +169,6 @@ import {
   draft.name = "空白项目测试";
   const plan = validateAndBuildCreationPlan(draft, undefined);
   assert.equal(plan.ok, true);
-  if (!plan.ok) throw new Error(plan.error);
   assert.equal(plan.request.templateId, "blank");
   assert.deepEqual(plan.request.policies?.expert?.allow, [], "blank has no experts");
   assert.deepEqual(plan.request.policies?.skill?.prefer, [], "blank has no skills");

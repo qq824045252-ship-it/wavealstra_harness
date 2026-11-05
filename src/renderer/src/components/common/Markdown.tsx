@@ -117,7 +117,7 @@ function MarkdownInner({
     [normalizedSource],
   );
   const rehypePlugins = useMemo(() => {
-    const plugins = [];
+    const plugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>["rehypePlugins"]> = [];
     if (/(^|[^\\])\$|\\\(|\\\[/.test(normalizedSource)) plugins.push(rehypeKatex);
     if (/```|~~~/.test(normalizedSource)) plugins.push(rehypeHighlight);
     return plugins;
@@ -274,7 +274,7 @@ function Markdown({
     [normalizedChildren],
   );
   const rehypePlugins = useMemo(() => {
-    const plugins = [];
+    const plugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>["rehypePlugins"]> = [];
     if (/(^|[^\\])\$|\\\(|\\\[/.test(normalizedChildren)) plugins.push(rehypeKatex);
     if (/```|~~~/.test(normalizedChildren)) plugins.push(rehypeHighlight);
     return plugins;

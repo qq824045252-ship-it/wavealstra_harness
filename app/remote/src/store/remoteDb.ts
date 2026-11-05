@@ -104,7 +104,7 @@ export async function saveTaskList(serverKey: string, bootstrap: RemoteBootstrap
 }
 
 /** Persist before POST: a lost response or app restart reuses the same business input identity. */
-export async function pendingPromptOperation(serverKey: string, route: string, serializedInput: string): Promise<{ key: string; operationId: string }> {
+export async function pendingPromptOperation(serverKey: string, route: string, serializedInput: string): Promise<{ key: string; operationId: string; serializedInput: string }> {
   const db = await openDatabase()
   if (!db) throw new Error('无法保存发送回执身份，请恢复本机存储后重试')
   const key = JSON.stringify(['pending-prompt', serverKey, route])
@@ -112,14 +112,24 @@ export async function pendingPromptOperation(serverKey: string, route: string, s
   const finished = transactionDone(tx)
   const store = tx.objectStore(STORE_META)
   const operations = storedPromptOperations(await requestToPromise(store.get(key)))
-  const prior = operations.find(item => item.serializedInput === serializedInput)
+  const identity = promptOperationIdentity(serializedInput)
+  const prior = operations.find(item => promptOperationIdentity(item.serializedInput) === identity)
   const operationId = prior
     ? prior.operationId
     : Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, '0')).join('')
   if (!prior) operations.push({ operationId, serializedInput })
   store.put({ key, operations })
   if (!await finished) throw new Error('无法保存发送回执身份，请重试')
-  return { key, operationId }
+  return { key, operationId, serializedInput: prior?.serializedInput ?? serializedInput }
+}
+
+/** A pending draft retains its original selections even when reconnect resets UI overrides. */
+export function promptOperationIdentity(serializedInput: string): string {
+  const input: unknown = JSON.parse(serializedInput)
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('无效的待发送草稿')
+  return JSON.stringify(Object.fromEntries(Object.entries(input)
+    .filter(([key]) => key !== 'modelId' && key !== 'permissionMode')
+    .sort(([a], [b]) => a.localeCompare(b))))
 }
 
 export async function acknowledgePromptOperation(key: string, operationId: string): Promise<void> {

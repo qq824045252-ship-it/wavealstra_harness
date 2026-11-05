@@ -302,6 +302,19 @@ try {
   const started = new Promise<void>(resolve => { artifactStarted = resolve; });
   const artifactMessages: string[] = [];
   const terminalMessages: string[] = [];
+  let resolveSettledTurns: () => void = () => {};
+  const settledTurns = new Promise<void>(resolve => { resolveSettledTurns = resolve; });
+  const assistantIds: string[] = [];
+  const unsubscribe = fixture.agent.onPatch(patch => {
+    if (patch.taskId !== "lifecycle") return;
+    const rows = patch.type === "durable_snapshot" ? patch.snapshot.messages : patch.type === "durable_delta" ? patch.delta.upserts : [];
+    for (const row of rows) if (row.role === "assistant" && row.entryId && !assistantIds.includes(row.id)) assistantIds.push(row.id);
+  });
+  const submit = async (text: string) => {
+    const accepted = await fixture.agent.prompt({ taskId: "lifecycle", text, userMessageId: `${text}-user`, assistantMessageId: `${text}-answer`, modelId: "fixture/model" });
+    assert(accepted.receipt);
+    assert.equal((await fixture.agent.waitForSubmission(accepted.receipt)).receipt?.status, "done");
+  };
   const projection = fixture.agent as unknown as { emitChangedArtifacts(taskId: string, messageId: string, cwd: string, before: Map<string, string>): Promise<void> };
   const emitArtifacts = projection.emitChangedArtifacts.bind(fixture.agent);
   projection.emitChangedArtifacts = async (taskId, messageId, cwd, before) => {
@@ -310,21 +323,24 @@ try {
     await emitArtifacts(taskId, messageId, cwd, before);
   };
   fixture.agent.setTaskLifecycleListener(event => {
-    if (event.kind === "completed" || event.kind === "failed") terminalMessages.push(event.assistantMessageId);
+    if (event.kind === "completed" || event.kind === "failed") {
+      terminalMessages.push(event.assistantMessageId);
+      if (terminalMessages.length === 2) resolveSettledTurns();
+    }
   });
   try {
     db.upsertTask({ id: "lifecycle", title: "Lifecycle", updatedAt: 1, welcomeMode: "coding" });
-    await fixture.prompt({ taskId: "lifecycle", text: "first", userMessageId: "first-user", assistantMessageId: "first-answer" });
+    await submit("first");
     await started;
-    const first = (await fixture.agent.loadTaskHistory("lifecycle")).messages.filter(message => message.role === "assistant").at(-1)!.id;
-    await fixture.prompt({ taskId: "lifecycle", text: "second", userMessageId: "second-user", assistantMessageId: "second-answer" });
-    const second = (await fixture.agent.loadTaskHistory("lifecycle")).messages.filter(message => message.role === "assistant").at(-1)!.id;
+    await submit("second");
+    await settledTurns;
     releaseArtifacts();
     await fixture.agent.releaseDurableTask("lifecycle");
-    check("late native artifact projection keeps each original message identity", () => assert.deepEqual(artifactMessages, [first, second]));
-    check("native lifecycle settles each receipt once independently of artifact delays", () => assert.deepEqual(terminalMessages, [first, second]));
+    assert.equal(assistantIds.length, 2);
+    check("late native artifact projection keeps each original message identity", () => assert.deepEqual(artifactMessages, assistantIds));
+    check("native lifecycle settles each receipt once independently of artifact delays", () => assert.deepEqual(terminalMessages, assistantIds));
   } finally {
-    releaseArtifacts(); await fixture.close(); db.close();
+    unsubscribe(); releaseArtifacts(); await fixture.close(); db.close();
     if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
     if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
   }

@@ -16,7 +16,7 @@ import { AppDatabase } from "../../src/main/db/AppDatabase";
 import { LibraryService } from "../../src/main/library/LibraryService";
 import { WorkspaceLibraryBindingService } from "../../src/main/workspace/WorkspaceLibraryBindingService";
 import { WorkspaceResourceLocator } from "../../src/main/workspace/WorkspaceResourceLocator";
-import type { SpaceDto } from "../src/shared/agent-ipc";
+import type { SpaceDto } from "../../src/shared/agent-ipc";
 
 type CaseRow = {
   id: string;

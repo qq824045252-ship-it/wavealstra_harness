@@ -166,7 +166,7 @@ async function telegramE2eTest(): Promise<void> {
     sender?: { id: string; name?: string };
   }> = [];
   const sent: Array<Record<string, unknown>> = [];
-  let replyFn: ((text: string) => Promise<void>) | null = null;
+  const captured: { reply?: (text: string) => Promise<void> } = {};
   let updatesLeft = 1;
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -221,7 +221,7 @@ async function telegramE2eTest(): Promise<void> {
         messageId: msg.messageId,
         sender: msg.sender,
       });
-      replyFn = msg.reply;
+      captured.reply = msg.reply;
       resolve();
       return Promise.resolve();
     });
@@ -238,7 +238,7 @@ async function telegramE2eTest(): Promise<void> {
   assert(received[0].sender?.id === "7" && received[0].sender?.name === "alice", "sender 透传（白名单用）");
 
   // reply → sendMessage：markdown 转 HTML + parse_mode
-  await replyFn?.("**ok** `code`");
+  await captured.reply?.("**ok** `code`");
   await new Promise((r) => setTimeout(r, 100));
   assert(sent.length === 1, "sendMessage 被调用");
   assert(sent[0].chat_id === 42 && sent[0].text === "<b>ok</b> <code>code</code>", "markdown→HTML 转换正确");

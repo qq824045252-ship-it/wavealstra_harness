@@ -7,7 +7,7 @@ import { applyPatchToMessage } from "../messages/messageReducer";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
 import type { AgentDeltaPatch } from "../types";
 import { hydrateTaskMetadataFromDb } from "./taskHydration";
-import { applyDurableDelta } from "../../../../../../shared/src/durable-sync";
+import { applyDurableDelta, replayDurableDeltas } from "../../../../../../shared/src/durable-sync";
 import type { DurableBotDelta, DurableBotState } from "../../../../../shared/durable-bot";
 import type { ChatMessageDto } from "../../../../../shared/agent-ipc";
 
@@ -28,7 +28,12 @@ export function createAgentProjectionActions(
         const currentEpoch = get().tasks.find(task => task.id === taskId)?.durable?.epoch;
         if (currentEpoch === initialEpoch || currentEpoch === history.durable.epoch) get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
         storeContext.runtime.durableResyncs.delete(taskId);
-        for (const pending of buffered) get().applyAgentPatch({ type: "durable_delta", taskId, delta: pending });
+        const accepted = get().tasks.find(task => task.id === taskId)?.durable;
+        if (accepted) {
+          const replay = replayDurableDeltas<ChatMessageDto, DurableBotState>(accepted, buffered);
+          get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: replay.snapshot });
+          if (replay.gap) throw new Error("增量仍有缺口，请重新打开会话");
+        }
       } catch (error) {
         storeContext.runtime.durableResyncs.delete(taskId);
         set(state => ({ tasks: state.tasks.map(task => task.id === taskId ? { ...task, historyError: `会话同步失败：${error instanceof Error ? error.message : String(error)}` } : task) }));

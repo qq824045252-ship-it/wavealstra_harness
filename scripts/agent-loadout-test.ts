@@ -18,7 +18,7 @@ try {
 
   const db = new AppDatabase();
   assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
-  db.upsertSpace({ id: "space-loadout", name: "Loadout", archived: false, updatedAt: Date.now() });
+  db.upsertSpace({ id: "space-loadout", name: "Loadout", archived: false });
   db.upsertTask({ id: "task-loadout", title: "Review GitHub bridge code", spaceId: "space-loadout", status: "completed", updatedAt: Date.now() });
 
   assert(loadoutTextSimilarity("review github code", "GitHub code review") > 0.2, "deterministic relevance should match code review wording");
@@ -60,7 +60,6 @@ try {
         id: "mem-procedure", kind: "procedure", title: "Bridge review", content: "review bridge changes", scopeType: "workspace", scopeId: "space-loadout",
         importance: 2, confidence: 0.9, score: 0.9, reasons: ["query"],
       }],
-      text: "", query: "review github bridge code", budgetChars: 2200, includedChars: 0, trimmed: false,
       scenarioIds: ["scenario-review"], profileIds: ["profile-workspace"],
     },
   });

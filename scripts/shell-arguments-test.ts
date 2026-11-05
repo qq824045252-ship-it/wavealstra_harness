@@ -11,7 +11,9 @@ const text = (result: any) => result.content.map((part: any) => part.text ?? "")
 try {
   const result = await createBashToolDefinition(root).execute("bash-quoting", { command: `printf '%s' ${quoteBashArg(value)}`, timeout: 5 }, undefined, undefined, undefined as never);
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent?.output, value);
+  const structured = result.structuredContent;
+  assert(structured && typeof structured === "object" && "output" in structured);
+  assert.equal(structured.output, value);
   assert(text(result).includes(value));
   if (process.platform === "win32") {
     assert.equal(toBashPath("C:\\A B\\x.py"), "C:/A B/x.py");

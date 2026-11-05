@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   assertOk(requests[0].entryId === "entry-u1", "2. 请求携带主锚点 entryId");
   assertOk(requests[0].position === "after_user", "2. 用户消息 → after_user");
   assertOk(requests[0].userMessageIndex === 0, "2. 过滤后 userMessageIndex = 0");
-  assertOk(requests[0].requestId && typeof requests[0].requestId === "string", "2. 请求携带 requestId");
+  assertOk(typeof requests[0].requestId === "string" && requests[0].requestId.length > 0, "2. 请求携带 requestId");
 
   // ===== 3. 双点击去重：pending 期间第二次调用不发第二个请求 =====
   assertOk(useAppStore.getState().branchCreatingTaskId === "task-a", "3. 请求期间 branchCreatingTaskId 置位");

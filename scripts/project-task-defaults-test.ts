@@ -19,6 +19,7 @@ import {
   listProjectTemplates,
 } from "../src/shared/project-template";
 import {
+  type ProjectTaskDefaultCandidate,
   resolveProjectTaskDefaults,
   resolveProjectTemplateTaskSuggestion,
   resolveTemplateTaskSuggestion,
@@ -31,7 +32,7 @@ function pickDefaults(defaults: { welcomeMode: string; modePresetId: string | nu
   return { welcomeMode: defaults.welcomeMode, modePresetId: defaults.modePresetId, source: defaults.source };
 }
 
-function makeTask(overrides: Partial<{ projectId: string; welcomeMode: string; modePresetId: string | null; updatedAt: number }> = {}) {
+function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): ProjectTaskDefaultCandidate {
   return {
     projectId: "p1",
     welcomeMode: "coding",
@@ -48,7 +49,7 @@ function makeTask(overrides: Partial<{ projectId: string; welcomeMode: string; m
     const draft = createDraftFromTemplate(templateId);
     draft.name = "边界测试项目";
     const plan = buildProjectCreationPlan(draft);
-    const request = plan.request as Record<string, unknown>;
+    const request = plan.request;
     for (const forbidden of ["modeId", "welcomeMode", "modePresetId", "tagId", "defaultModeId", "defaultPresetId"]) {
       assert.equal(
         Object.prototype.hasOwnProperty.call(request, forbidden),

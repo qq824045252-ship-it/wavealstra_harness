@@ -17,17 +17,37 @@ export async function buildSubagentRuntime(root) {
   const launcher=readFileSync(join(root,'src/main/capabilities/subagent/worker-launcher.mjs'),'utf8');
   if(!launcher.includes('const EXPECTED_PI_VERSION = '+JSON.stringify(expected)+';'))throw Error('Subagent launcher version pin must match the installed runtime');
   const spec=p=>JSON.stringify(p.replaceAll('\\','/'));
+  // The SDK barrel exports its extension loader, whose virtual modules import the entire CLI.
+  // This isolated probe only needs these upstream modules; no SDK implementation is replaced.
+  const sdkExports = [
+    ['config.js', 'VERSION, CONFIG_DIR_NAME, getAgentDir'],
+    ['core/model-runtime.js', 'ModelRuntime'],
+    ['core/settings-manager.js', 'SettingsManager'],
+    ['core/model-resolver.js', 'resolveModelScopeWithDiagnostics'],
+    ['core/tools/find.js', 'createFindTool'],
+    ['core/tools/grep.js', 'createGrepTool'],
+    ['core/tools/ls.js', 'createLsTool'],
+    ['utils/frontmatter.js', 'parseFrontmatter'],
+  ].map(([file, names]) => `export { ${names} } from ${spec(join(piRoot, 'dist', file))};`).join('\n');
   const entry = 'export { VERSION, verifyPackagedDurable } from ' + spec(join(root, 'src/main/agent/durable/PackagedDurableProbe.ts')) + ';';
   const outdir=join(root,'out/subagent-runtime-build');
   const result=await build({stdin:{contents:entry,resolveDir:root,sourcefile:'pi-worker-runtime-entry.mjs',loader:'js'},outdir,
     entryNames:'pi-runtime',chunkNames:'chunks/[name]-[hash]',outExtension:{'.js':'.mjs'},
     bundle:true,platform:'node',format:'esm',target:'node22',splitting:true,write:false,metafile:true,
     external:['jiti','bufferutil','utf-8-validate','kerberos'],legalComments:'none',logLevel:'warning',
+    plugins: [{ name: 'durable-probe-sdk', setup(plugin) {
+      plugin.onResolve({ filter: /^@earendil-works\/pi-coding-agent$/ }, () => ({ path: 'sdk', namespace: 'durable-probe-sdk' }));
+      plugin.onLoad({ filter: /.*/, namespace: 'durable-probe-sdk' }, () => ({ contents: sdkExports, loader: 'js', resolveDir: root }));
+    } }],
     banner:{js:'import {createRequire as __workerRequire} from "node:module"; const require=__workerRequire(import.meta.url);'},
   });
   const external=Object.values(result.metafile.outputs).flatMap(o=>o.imports).filter(i=>i.external&&!isBuiltin(i.path)&&!['jiti','jiti/static','bufferutil','utf-8-validate','kerberos'].includes(i.path));
   if(external.length)throw Error('Unpackaged worker dependency: '+external.map(i=>i.path).join(','));
-  if (Object.values(result.metafile.outputs).some(output => Object.entries(output.inputs).some(([file, info]) => info.bytesInOutput > 0 && /pi-coding-agent[\\/].*[\\/](?:cli|modes[\\/]rpc)(?:[.\\/])/.test(file)))) throw Error('Obsolete CLI entered Durable package probe');
+  const obsolete = [...new Set(Object.values(result.metafile.outputs).flatMap(output => Object.entries(output.inputs)
+    // Pi's model resolver shares isValidThinkingLevel from cli/args; executable CLI/RPC modules remain forbidden.
+    .filter(([file, info]) => info.bytesInOutput > 0 && /pi-coding-agent[\\/].*[\\/](?:cli|modes[\\/]rpc)(?:[.\\/])/.test(file)
+      && !/[\\/]dist[\\/]cli[\\/]args\.js$/.test(file)).map(([file]) => file)))];
+  if (obsolete.length) throw Error('Obsolete CLI entered Durable package probe: ' + obsolete.join(', '));
   const prefix='capabilities/subagent/runtime/';
   return [...result.outputFiles.map(f=>({type:'asset',fileName:prefix+relative(outdir,f.path).replaceAll('\\','/'),source:f.contents})),
     {type:'asset',fileName:prefix+'package.json',source:JSON.stringify({name:'@wavealstra/pi-durable-probe',private:true,type:'module',version:piVersion})}];

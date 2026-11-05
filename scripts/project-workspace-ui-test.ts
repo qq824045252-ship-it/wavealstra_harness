@@ -320,7 +320,7 @@ void (async () => {
     },
   };
   assert.equal(await resolveUnsavedGuardAction("cancel", guard), "stay");
-  assert.deepEqual(calls, []);
+  assert.deepEqual([...calls], []);
   assert.equal(await resolveUnsavedGuardAction("discard", guard), "navigate");
   assert.deepEqual(calls, ["discard"]);
   assert.equal(await resolveUnsavedGuardAction("save", guard), "navigate");

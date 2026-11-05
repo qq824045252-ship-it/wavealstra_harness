@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     assert(realpathSync(process.execPath) === realpathSync(join(appDir, "MyBuddy.exe")), "必须使用指定包的 MyBuddy.exe 执行测试");
     assert(typeof process.versions.electron === "string", "发行包验收必须运行于 Electron Node");
     assert(process.env.ELECTRON_RUN_AS_NODE === "1", "发行包验收需要 ELECTRON_RUN_AS_NODE=1");
-    for (const entry of ["out/main/image-resize-worker.js", "out/main/photon_rs_bg.wasm", "out/main/capabilities/subagent/runtime/chunks/photon_rs_bg.wasm"]) {
+    for (const entry of ["out/main/image-resize-worker.js", "out/main/photon_rs_bg.wasm"]) {
       assert(statFile(archivePath, entry).unpacked === true, "实际 asar 索引必须标记 unpacked: " + entry);
     }
   }
@@ -126,16 +126,7 @@ async function main(): Promise<void> {
   assert(outputHash === sha256(wasmSource), "wasm SHA-256 与包源一致");
   console.log("[wasm]", wasmSource.length, "B  sha256 =", outputHash.slice(0, 16) + "...");
 
-  // 3b. subagent runtime chunks 同款 wasm 缺口（photon_rs-*.mjs 以 __dirname=chunks/ 查找）
-  const subagentRuntimeWasmPath = join(outMain, "capabilities", "subagent", "runtime", "chunks", "photon_rs_bg.wasm");
-  const subagentRuntimeWasm = readFileSync(subagentRuntimeWasmPath);
-  assert(subagentRuntimeWasm.length === wasmSource.length, `subagent runtime chunks wasm 字节数一致 (${subagentRuntimeWasm.length})`);
-  assert(sha256(subagentRuntimeWasm) === outputHash, "subagent runtime chunks wasm SHA-256 与包源一致");
-  const runtimeChunks = readdirSync(join(outMain, "capabilities", "subagent", "runtime", "chunks")).filter((name) => name.startsWith("photon_rs-") && name.endsWith(".mjs"));
-  assert(runtimeChunks.length > 0, "subagent runtime photon chunk 存在");
-  const runtimeChunkText = readFileSync(join(outMain, "capabilities", "subagent", "runtime", "chunks", runtimeChunks[0]!), "utf8");
-  assert(runtimeChunkText.includes('"photon_rs_bg.wasm"'), "subagent runtime photon chunk 引用 photon_rs_bg.wasm 文件名");
-  console.log("[subagent-runtime]", runtimeChunks.join(","), "+ photon_rs_bg.wasm =", subagentRuntimeWasm.length, "B");
+  // Main and native Durable child tasks share this host's image worker; there is no CLI image runtime.
 
   // 4. asarUnpack 覆盖两个产物
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { build?: { asarUnpack?: string[] } };
@@ -184,7 +175,7 @@ async function main(): Promise<void> {
     mode: appDir ? "packaged-electron-node" : "development-node", appDir: appDir ?? null,
     actualExe: realpathSync(process.execPath), node: process.versions.node, electron: process.versions.electron ?? null,
     archivePath: archivePath ?? null, workerPath, wasmPath, workerSha256: sha256(workerSource), wasmSha256: outputHash,
-    sourceWasmSha256: sha256(wasmSource), runtimeWasmSha256: sha256(subagentRuntimeWasm), mainIndexSha256: sha256(Buffer.from(mainIndex)),
+    sourceWasmSha256: sha256(wasmSource), mainIndexSha256: sha256(Buffer.from(mainIndex)),
     input: { width: 100, height: 200 }, limits: { maxWidth: 40, maxHeight: 40 },
     output: { width: outputPng.readUInt32BE(16), height: outputPng.readUInt32BE(20), wasResized: resized.wasResized, mimeType: resized.mimeType, sha256: sha256(outputPng) },
   }));

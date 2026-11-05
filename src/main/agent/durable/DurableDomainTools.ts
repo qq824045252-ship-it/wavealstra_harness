@@ -5,6 +5,9 @@ import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
 import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
+import { withModelInvocationSettings } from "../ModelInvocationAdmission";
+import { createAgentSettingsManager } from "../../agent-shell-settings";
+import { getMyBuddyDir } from "../../paths";
 
 type NativeApi = Parameters<ToolRegistration["execute"]>[1];
 type NativeContext = Parameters<ToolRegistration["execute"]>[2];
@@ -27,6 +30,7 @@ export interface DurableDomainTools {
  * extension factory must never make a Bot conversation unopenable.
  */
 export async function durableDomainTools(factories: readonly InlineExtension[], capabilities?: CapabilityContext): Promise<DurableDomainTools> {
+  const settings = capabilities && createAgentSettingsManager(capabilities.cwd, getMyBuddyDir());
   const tools: ToolRegistration[] = [];
   const contextHooks: DurableContextHook[] = [];
   const invocation = new AsyncLocalStorage<{ native: NativeApi; context: NativeContext; conversationId: ConversationId; writes: Promise<unknown>[] }>();
@@ -37,7 +41,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
         replay: capabilities?.taskId && (tool.name === "request_user_input" || tool.name === "multi_model_consult") ? "safe" : "unsafe",
         execute: async (args, native, context) => {
           const conversationId = await presentationConversation(native, context);
-          const execute = () => invocation.run({ native, context, conversationId, writes: [] }, async () => {
+          const invoke = () => invocation.run({ native, context, conversationId, writes: [] }, async () => {
             const extensionContext = capabilities ? await capabilityContext(native, context, capabilities, conversationId) : undefined;
             try {
               const result = await tool.execute(native.callId, args, context.abortSignal,
@@ -47,6 +51,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
               return { output: result.content, isError: result.isError, details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
             } finally { await Promise.all(invocation.getStore()!.writes); }
           });
+          const execute = () => settings ? withModelInvocationSettings(settings, invoke) : invoke();
           if (!capabilities?.taskId) return execute();
           const execution = await durableExecutionContext(capabilities.taskId, native, context);
           const cwd = (await native.agent(context)).cwd;

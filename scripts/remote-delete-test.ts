@@ -100,7 +100,7 @@ try {
     // 4. 执行中任务拒绝删除
     const busy = await fetch(`${base}/v1/tasks/t-busy`, { method: "DELETE", headers: auth });
     check(busy.status === 409, "执行中任务 → 409（避免删除后仍有补丁回写）");
-    check(db.getTask("t-busy")?.archived !== 1, "执行中任务未被回收");
+    check(db.getTask("t-busy")?.archived === false, "执行中任务未被回收");
 
     // 5. 异常路径
     const missing = await fetch(`${base}/v1/tasks/t-missing`, { method: "DELETE", headers: auth });

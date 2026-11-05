@@ -50,12 +50,12 @@ class MockDebugger implements DebuggerLike {
     if (method === "DOM.getBoxModel") return { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } };
     return {};
   }
-  on(event: string, listener: (...args: unknown[]) => void): unknown {
+  on(event: string, listener: ((event: unknown, method: string, params: unknown, sessionId?: string) => void) | ((event: unknown, reason: string) => void)): unknown {
     if (event === "message") this.messageListeners.push(listener as never);
     if (event === "detach") this.detachListeners.push(listener as never);
     return this;
   }
-  off(event: string, listener: (...args: unknown[]) => void): unknown {
+  off(event: string, listener: ((event: unknown, method: string, params: unknown, sessionId?: string) => void) | ((event: unknown, reason: string) => void)): unknown {
     if (event === "message") this.messageListeners = this.messageListeners.filter((l) => l !== listener);
     if (event === "detach") this.detachListeners = this.detachListeners.filter((l) => l !== listener);
     return this;
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
       const sel = selection as { tagName: string; text: string };
       assert(sel.tagName === "div" && sel.text.includes("hello world"), "selection 含 tagName/text");
     }
-    svc.release(wc);
+    svc.release(wc, "test-e");
   }
 
   console.log("== A. PageInspectionService：页面快照 ==");

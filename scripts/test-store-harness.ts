@@ -44,24 +44,24 @@ export function installCloseCounters(): { artifactClose: () => number; browserCl
   const api = (globalThis as any).window.api as Record<string, { close?: () => void }>;
   api.artifact = Object.assign(api.artifact ?? {}, {
     close: api.artifact?.close ?? (() => {}),
-    __closeCount: 0,
   });
   api.browser = Object.assign(api.browser ?? {}, {
     close: api.browser?.close ?? (() => {}),
-    __closeCount: 0,
   });
   // 包一层计数
   const artifactTarget = api.artifact;
+  let artifactCloseCount = 0;
+  let browserCloseCount = 0;
   const browserTarget = api.browser;
   artifactTarget.close = () => {
-    artifactTarget.__closeCount = (artifactTarget.__closeCount ?? 0) + 1;
+    artifactCloseCount++;
   };
   browserTarget.close = () => {
-    browserTarget.__closeCount = (browserTarget.__closeCount ?? 0) + 1;
+    browserCloseCount++;
   };
   return {
-    artifactClose: () => artifactTarget.__closeCount ?? 0,
-    browserClose: () => browserTarget.__closeCount ?? 0,
+    artifactClose: () => artifactCloseCount,
+    browserClose: () => browserCloseCount,
   };
 }
 

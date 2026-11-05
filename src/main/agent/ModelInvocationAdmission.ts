@@ -63,7 +63,7 @@ function assertImageCounts(model: Model<Api>, context: Context): void {
   if (!limits) return;
   let total = 0;
   for (const message of normalizeContext(context).messages) {
-    const count = Array.isArray(message.content)
+    const count = (message.role === "user" || message.role === "toolResult") && Array.isArray(message.content)
       ? message.content.filter((part) => part.type === "image").length : 0;
     total += count;
     if (limits.maxPerMessage !== undefined && count > limits.maxPerMessage) {

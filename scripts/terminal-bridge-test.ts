@@ -196,11 +196,11 @@ test("UI owner: 无任务也能从 Workspace 打开终端（cwd 不依赖 taskId
 
 test("输出水位: 正常写入计数并随回调扣减", () => {
   let wrote: string[] = [];
-  let lastCb: (() => void) | null = null;
+  const callback: { current?: () => void } = {};
   const writer = createBoundedWriter(
     (data, cb) => {
       wrote.push(data);
-      lastCb = cb ?? null;
+      callback.current = cb;
     },
     10,
   );
@@ -208,9 +208,9 @@ test("输出水位: 正常写入计数并随回调扣减", () => {
   writer.write("def");
   assert.equal(writer.pendingBytes(), 6);
   assert.deepEqual(wrote, ["abc", "def"]);
-  lastCb?.(); // xterm 解析完成 → 扣减第一块
+  callback.current?.(); // xterm 解析完成 → 扣减第一块
   assert.equal(writer.pendingBytes(), 3);
-  lastCb?.();
+  callback.current?.();
   assert.equal(writer.pendingBytes(), 0);
 });
 

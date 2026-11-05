@@ -1,3 +1,4 @@
+import { userMessage, assistantMessage } from "./test-pi-messages";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -15,10 +16,12 @@ function makeSession(root: string, label: string, turns = 2): { cwd: string; fil
   const dir = join(root, `${label}-sessions`);
   const sm = SessionManager.create(cwd, dir);
   for (let index = 1; index <= turns; index += 1) {
-    sm.appendMessage({ role: "user", content: `q${index}` });
-    sm.appendMessage({ role: "assistant", content: [{ type: "text", text: `a${index}` }] });
+    sm.appendMessage(userMessage(`q${index}`));
+    sm.appendMessage(assistantMessage([{ type: "text", text: `a${index}` }]));
   }
-  return { cwd, file: sm.getSessionFile() };
+  const file = sm.getSessionFile();
+  assert(file, "Fixture session was not persisted");
+  return { cwd, file };
 }
 function recoveryDirs(): Set<string> {
   return new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("mybuddy-session-recovery-")));

@@ -31,19 +31,22 @@ try {
   request.providerEvent({ type: "message_start", message: { usage: { input_tokens: 10, output_tokens: 0, cache_read_input_tokens: 20, cache_creation_input_tokens: 0 } } });
   request.providerEvent({ type: "message_delta", usage: { output_tokens: 3 } });
   request.firstResponse();
-  const result = { stopReason: "stop", usage: { input: 10, output: 3, cacheRead: 20, cacheWrite: 0 } };
+  const result = { stopReason: "stop", usage: { input: 10, output: 3, cacheRead: 20, cacheWrite: 0, cacheWrite1h: 7,
+    cost: { input: 0.2, output: 0.3, cacheRead: 0.1, cacheWrite: 0.4, total: 1 } } };
   request.result(result); request.result(result);
   let value = diagnostics.list("task");
   assert.equal(value.requests.length, 1, "completed result observation is idempotent");
   assert.equal(value.requests[0]?.attempts.length, 2);
   assert.deepEqual(value.requests[0]?.usage, { input: 10, output: 3, cacheRead: 20, cacheWrite: 0 });
   assert.equal(value.requests[0]?.costComplete, true);
+  assert.equal(value.requests[0]?.knownCostUsd, 1, "native tier/cache pricing is not replaced with base rates");
   const unknown = tracer.start(model, "fixture-session", undefined, event => diagnostics.observeTrace(event, model));
   unknown.identify({ taskId: "task", conversationId: "8", generationTaskId: 12, sourceKind: "subagent" });
   unknown.result({ stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
   assert.deepEqual(diagnostics.list("task").requests.find(row => row.generationTaskId === 12)?.usage,
     { input: null, output: null, cacheRead: null, cacheWrite: null }, "SDK zero does not establish reported usage");
   assert.equal(diagnostics.usageForConversation("task", "8").cacheHitRate, null);
+  assert.equal(diagnostics.usageForGeneration("task", "8", 12).costTotal, null, "missing native cost remains unknown");
   const now = Date.now();
   new ConversationInteractionRepository(db.connection).insert({ id: "wait", taskId: "task", executionId: "durable:task:7:30",
     assistantMessageId: "assistant", kind: "confirm", title: "Approve", options: [], allowCustom: false, status: "resolved", answer: true,
@@ -65,12 +68,16 @@ try {
   const statistics = new UsageStatsService(db.connection);
   statistics.recordLive({ taskId: "task", sessionFile: "durable:task:8", sourceKind: "subagent", sourceDetail: "pi-durable",
     persistedEntryId: "diagnostic-usage", message: { ...result, provider: model.provider, model: model.id, timestamp: now },
-    reportedUsage: { input: null, output: null, cacheRead: null, cacheWrite: null, ...diagnostics.usageForGeneration("task", "8", 12) },
+    reportedUsage: diagnostics.usageForGeneration("task", "8", 12),
     sample: { turnIndex: 12, requestStartedAt: null, firstResponseAt: null, completedAt: now, ttftMs: null, decodeMs: null,
       generationTps: null, modelWallMs: null, outputTokens: null, reasoningTokens: null } });
   assert.equal(statistics.queryRows({})[0]?.known?.cacheRead, false);
   const usageRow = statistics.queryRows({})[0];
   assert(usageRow);
+  assert.equal(usageRow.costTotal, 1, "unknown raw usage does not erase native pricing");
+  assert.equal(usageRow.known?.cost, true);
+  assert.deepEqual(db.connection.prepare("SELECT cost_input, cost_output, cost_cache_read, cost_cache_write, cache_write_1h FROM usage_events WHERE entry_id='diagnostic-usage'").get(),
+    { cost_input: 0.2, cost_output: 0.3, cost_cache_read: 0.1, cost_cache_write: 0.4, cache_write_1h: 7 });
   assert.equal(isCallRow({ ...usageRow, sourceKind: "auxiliary" }), true);
   assert.equal(statistics.dashboard(1).cacheHitRate, null);
   assert.equal(diagnostics.list("task", 1, 1).requests.length, 1);

@@ -87,7 +87,7 @@ function makeRuntime(policy: ExternalAgentPermissionPolicy | undefined): {
     async () => [],
     () => [],
     undefined,
-    () => (policy ? { devin: policy } : {}),
+    (): Record<string, ExternalAgentPermissionPolicy> => (policy ? { devin: policy } : {}),
   );
   runtime.setSend((event) => events.push(event));
   (runtime as unknown as { listAgents: () => unknown }).listAgents = () => [{
@@ -130,7 +130,7 @@ try {
       const run = runtime.active("task-ask")[0]!;
       assert.equal(run.status, "blocked");
       assert.equal(run.pendingPermissions.length, 1, "ask 策略必须暴露待审批项");
-      assert.deepEqual(run.permissionPolicy, undefined, "descriptor 的 policy 由 listAgents 注入，run 本身不带");
+      assert.equal("permissionPolicy" in run, false, "descriptor 的 policy 由 listAgents 注入，run 本身不带");
       runtime.resolvePermission({ runId: run.runId, toolCallId: "permission-tool", optionId: "allow" });
       await waitFor(() => runtime.history("task-ask").runs.find((item) => item.status === "completed"), "ask completion");
       ok("ask：仍然弹审批并等待人工选择");

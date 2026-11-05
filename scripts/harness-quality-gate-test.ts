@@ -57,13 +57,13 @@ function fixtureWindow(overrides: Partial<WindowInfo> = {}): WindowInfo {
     title: "Fixture Editor",
     className: "FixtureClass",
     visible: true,
-    enabled: true,
     minimized: false,
     foreground: true,
-    rect: { x: 0, y: 0, width: 800, height: 600 },
+    windowRect: { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 },
     clientRect: { x: 0, y: 0, width: 780, height: 560 },
+    clientOrigin: { x: 0, y: 0 },
     dpi: 96,
-    scale: 1,
+    scaleFactor: 1,
     ...overrides,
   };
 }

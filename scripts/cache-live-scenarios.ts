@@ -227,7 +227,7 @@ async function runScenario(name: string, options: {
         createBuiltinCapabilityExtension({ taskId: "cache-live", taskRoot: root,
           runtime: new BuiltinCapabilityRuntime({
             store: { read: capabilityConfig, write: next => structuredClone(next) },
-            credentials: { has: () => false, get: () => undefined, set: () => undefined, clear: () => undefined },
+            credentials: { has: () => false, get: () => null, set: () => undefined, clear: () => undefined },
           }),
           browser: { available: false } as never, artifactService: () => null,
           getProducerMessageId: () => undefined, getIsolationLevel: () => "guarded" }),

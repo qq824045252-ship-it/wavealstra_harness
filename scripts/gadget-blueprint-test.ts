@@ -513,7 +513,7 @@ async function main(): Promise<void> {
       },
     });
     const taskCountBeforeRollback = db.listTasks().length;
-    const spaceCountBeforeRollback = db.listSpaces({ includeArchived: true }).length;
+    const spaceCountBeforeRollback = db.listSpaces().length;
     const memoryCountBeforeRollback = (db.connection.prepare("SELECT count(*) AS count FROM memory_records").get() as { count: number }).count;
     const instanceCountBeforeRollback = readdirSync(join(root, "instances")).length;
     const originalCreateFromBlueprint = service.createFromBlueprint.bind(service);
@@ -521,7 +521,7 @@ async function main(): Promise<void> {
     await assert.rejects(() => blueprintService.instantiate({ blueprintId: rollbackBlueprint.id }), /forced Gadget materialization failure/);
     service.createFromBlueprint = originalCreateFromBlueprint;
     assert.equal(db.listTasks().length, taskCountBeforeRollback, "failed instantiate must roll back created tasks");
-    assert.equal(db.listSpaces({ includeArchived: true }).length, spaceCountBeforeRollback, "failed instantiate must roll back workspace tree");
+    assert.equal(db.listSpaces().length, spaceCountBeforeRollback, "failed instantiate must roll back workspace tree");
     assert.equal((db.connection.prepare("SELECT count(*) AS count FROM memory_records").get() as { count: number }).count, memoryCountBeforeRollback, "failed instantiate must not leave orphan L1 Memory");
     assert.equal(readdirSync(join(root, "instances")).length, instanceCountBeforeRollback, "failed instantiate must remove its generated workspace root");
 
@@ -541,7 +541,7 @@ async function main(): Promise<void> {
       },
     });
     await assert.rejects(() => blueprintService.instantiate({ blueprintId: collisionBlueprint.id }), /目录冲突/);
-    assert.equal(db.listSpaces({ includeArchived: true }).length, spaceCountBeforeRollback, "sanitized path collision must roll back the whole instance");
+    assert.equal(db.listSpaces().length, spaceCountBeforeRollback, "sanitized path collision must roll back the whole instance");
 
     const requiredLibraryBlueprint = blueprintService.create({
       name: "Required Library",
@@ -556,7 +556,7 @@ async function main(): Promise<void> {
       },
     });
     await assert.rejects(() => blueprintService.instantiate({ blueprintId: requiredLibraryBlueprint.id }), /必需资料库/);
-    assert.equal(db.listSpaces({ includeArchived: true }).length, spaceCountBeforeRollback, "required binding failure must not leave a partial Workspace");
+    assert.equal(db.listSpaces().length, spaceCountBeforeRollback, "required binding failure must not leave a partial Workspace");
 
     blueprintService.delete(blueprint.id);
     assert.ok(db.getSpace(instantiated.workspaceIdsByKey.root), "deleting Blueprint must keep instances");

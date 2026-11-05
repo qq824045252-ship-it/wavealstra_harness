@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createProvider, envApiKeyAuth, type Model, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
+import { normalizeContext, createProvider, envApiKeyAuth, type Model, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -12,7 +12,7 @@ const provider = commandCodeProvider({ createProvider, envApiKeyAuth }, {
 });
 const model = provider.getModels!().find(m => m.id === "deepseek/deepseek-v4.1-flash")!;
 assert(model);
-const context = { messages: [{ role: "user" as const, content: "Reply OK", timestamp: 1 }] };
+const context = normalizeContext({ messages: [{ role: "user", content: "Reply OK", timestamp: 1 }] });
 
 async function capture(target: Model<any>, simple: boolean, extra: StreamOptions = {}, transcript: TranscriptContext = context) {
   let body: any;
@@ -66,7 +66,7 @@ assert(!("max_output_tokens" in uncapped), "preserve existing unpublished output
 
 // Gemini tool-use turns can persist an empty trailing text block. Replaying the
 // original history through Pi must retain the tool pair without sending empties.
-const history: TranscriptContext = { messages: [
+const history: TranscriptContext = normalizeContext({ messages: [
   ...context.messages,
   { role: "assistant", api: "google-vertex", provider: "google-vertex", model: "gemini-3.1-pro-preview",
     content: [{ type: "toolCall", id: "call_fixture", name: "read", arguments: { path: "fixture.txt" } }, { type: "text", text: "" }],
@@ -75,7 +75,7 @@ const history: TranscriptContext = { messages: [
   },
   { role: "toolResult", toolCallId: "call_fixture", toolName: "read", content: [{ type: "text", text: "fixture content" }], isError: false, timestamp: 3 },
   { role: "user", content: [{ type: "text", text: "" }, { type: "text", text: "Continue" }], timestamp: 4 },
-] };
+] });
 const originalHistory = JSON.stringify(history);
 const continued = await capture(model, true, {}, history);
 assert(continued.input.some((item: any) => item.type === "function_call"));
@@ -96,9 +96,9 @@ if (process.env.MYBUDDY_COMMAND_CODE_LIVE === "1") {
  const result = await stream.result();
  console.log(JSON.stringify({wire, stopReason:result.stopReason, error:result.errorMessage, text:result.content.filter(x=>x.type==="text").map(x=>x.text).join("").slice(0,120)}));
  assert.equal(result.stopReason, "stop", result.errorMessage);
- const next = await provider.streamSimple(model, { messages: [...history.messages, result,
+ const next = await provider.streamSimple(model, normalizeContext({ messages: [...history.messages, result,
    { role: "user", content: "Reply exactly OK again.", timestamp: Date.now() },
- ] }, { apiKey, reasoning: "max", maxRetries: 0, signal: AbortSignal.timeout(45000) }).result();
+ ] }), { apiKey, reasoning: "max", maxRetries: 0, signal: AbortSignal.timeout(45000) }).result();
  assert.equal(next.stopReason, "stop", next.errorMessage);
  console.log("PASS live second turn with native reasoning history");
 }

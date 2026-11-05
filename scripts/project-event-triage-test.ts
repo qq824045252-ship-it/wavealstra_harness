@@ -60,7 +60,7 @@ db.connection
   .run();
 
 let seq = 0;
-function eventA(): { id: string } {
+function eventA() {
   return ingestor.ingest("proj-a", { source: "gateway", kind: "message", title: `消息 A${seq}`, body: "正文", ref: `t-a-${seq++}` });
 }
 function eventB(): { id: string } {

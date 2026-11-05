@@ -1,3 +1,4 @@
+import type { ToolCall } from "@earendil-works/pi-ai";
 import assert from "node:assert/strict";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -25,7 +26,7 @@ const names = ["read", "write", "edit", "bash"] as const;
 const model: Model<any> = { id: "native-core-fixture", provider: "fixture", api: "openai-completions",
   name: "Local native core fixture", baseUrl: "http://invalid.invalid", reasoning: false, input: ["text"],
   contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-type Desired = { name: string; arguments: Record<string, unknown>; id: string; requests: number };
+type Desired = { name: string; arguments: ToolCall["arguments"]; id: string; requests: number };
 let desired: Desired | undefined;
 let declaredTools: string[] = [];
 const runtime = {
@@ -95,11 +96,12 @@ function normalizeResult(result: any) {
   if (match) spoolFiles.add((match[1] ?? match[2]).trim());
   return { content: result.content, details: result.details, isError: result.isError };
 }
-async function invoke(session: AgentSession, name: string, arguments_: Record<string, unknown>, suffix: string) {
+async function invoke(session: AgentSession, name: string, arguments_: ToolCall["arguments"], suffix: string) {
   desired = { name, arguments: arguments_, id: suffix, requests: 0 };
   await session.prompt("Execute this exact controlled native tool request: " + suffix);
   const result = session.messages.findLast((entry: any) => entry.role === "toolResult" && entry.toolCallId === suffix);
   assert(result, "Pi must persist its actual tool result");
+  assert(desired);
   assert.equal(desired.requests, 2);
   return normalizeResult(result);
 }

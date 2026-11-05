@@ -86,7 +86,7 @@ export class ScopedLibraryOperations {
   async importFiles(location: LibraryLocation, paths?: readonly string[]) {
     const target = await this.destination(location);
     if (!paths) return value(await this.getApi().pickAndImport(target));
-    const items = [];
+    const items: Awaited<ReturnType<ScopedLibraryApi["listItems"]>> = [];
     for (const sourcePath of paths) {
       // A folder may be removed while a multi-file import is running.
       await this.destination(target);

@@ -39,10 +39,8 @@ const context = new LibraryWorkspaceContextService(
 );
 
 const profile: ModeProfileDto = {
-  id: "working",
+  id: "working", version: "fixture", totalChars: 0, userDir: root, policyPath: join(root, "policy.json"),
   labelZh: "工作",
-  icon: "briefcase",
-  description: "",
   blocks: [],
   policy: emptyModePolicy(),
   hasUserOverride: false,
@@ -118,7 +116,9 @@ try {
   source.validate();
   bindings.unbindCollection("workspace-context", referenceFolder.id);
   assert.throws(() => source.validate(), /不可见/, "pending evidence is revoked when its folder reference is removed");
-  assert.throws(() => context.validateEvidenceAccess("task-context", source.access), /不可见/, "restored evidence revalidates the same live scope");
+  const access = source.access;
+  assert(access);
+  assert.throws(() => context.validateEvidenceAccess("task-context", access), /不可见/, "restored evidence revalidates the same live scope");
 
   const trace = assemblePrompt({
     welcomeMode: "working",

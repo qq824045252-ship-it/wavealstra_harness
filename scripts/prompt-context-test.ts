@@ -249,7 +249,7 @@ async function main(): Promise<void> {
 
   // ---------- 架构边界（deps 形态） ----------
   {
-    const deps = Object.keys(new PromptContextService({ getArtifact: () => null, readContent: async () => null, getSelection: () => makeSelection({ status: "empty", descriptor: null }) }).deps as unknown as Record<string, unknown>);
+    const deps = Object.keys(Reflect.get(new PromptContextService({ getArtifact: () => null, readContent: async () => null, getSelection: () => makeSelection({ status: "empty", descriptor: null }) }), "deps"));
     const keys = new Set(deps);
     check(
       "S17 Service 依赖只有 Domain/Selection（无 fs）",
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
     check(
       "S20 excerpt 含 selection 附近内容（sanitized）",
       r.ok && (r.context.document?.excerpt ?? "").includes("Run report") && !(r.context.document?.excerpt ?? "").includes("hugeEvilCode"),
-      `len=${r.context.document?.excerpt?.length}`,
+      `len=${r.ok ? r.context.document?.excerpt?.length : "failed"}`,
     );
   }
 

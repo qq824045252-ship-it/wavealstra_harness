@@ -1,4 +1,5 @@
 /** Deterministic regression: executeTool()-era Code Mode logs carry nested calls in tool-result details.calls. */
+import { procedureExecution } from "../src/main/memory/MemoryProcedureEvidence";
 import assert from "node:assert/strict";
 import { durableCompletedTurns } from "../src/main/agent/durable/DurableTurnProjection";
 
@@ -15,7 +16,7 @@ const entries: any[] = [
 
 const turns = durableCompletedTurns("task-evidence", "7", entries);
 assert.equal(turns.length, 1, "one completed turn");
-const tools = turns[0].metadata?.procedureExecution?.tools ?? [];
+const tools = procedureExecution(turns[0].metadata ?? {})?.tools ?? [];
 const names = tools.map((tool: any) => tool.name);
 assert(names.includes("bash") && names.includes("write"), "nested calls become procedure evidence: " + JSON.stringify(names));
 assert(tools.filter((tool: any) => tool.name === "bash" || tool.name === "write").every((tool: any) => tool.result.length > 0), "nested output is retained");

@@ -14,17 +14,18 @@ import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
+import { seedDurableBranch, type DurableBranchSeed } from "./DurableTaskBranch";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import type { DurableContextHook } from "./DurableDomainTools";
 import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { withDurableImageRead } from "./DurableImages";
-import { getAgentBashShellPath } from "../../agent-shell-settings";
+import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
 import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata } from "./DurableHistoryProjection";
-import { identifyModelInvocation } from "../ModelInvocationAdmission";
+import { identifyModelInvocation, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { ActiveDurableConversation, forkDurableConversation, resolveActiveDurableConversation, type DurableRegenerationInput, type DurableRegenerationState } from "./DurableConversationBranch";
@@ -59,6 +60,7 @@ export interface DurableBotOptions {
   onTool?: (event: ToolDiagnosticEvent) => void;
   observedUsage?: (conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
   initialHistory?: { messages: readonly Message[]; context: readonly Message[] } | (() => Promise<{ messages: readonly Message[]; context: readonly Message[] } | undefined>);
+  initialBranch?: DurableBranchSeed;
   toolHooks?: Partial<ToolHooks>;
   toolAllowed?: (name: string) => boolean;
   waitingForInput?: () => boolean;
@@ -163,7 +165,7 @@ export class DurableBotRuntime {
   }
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
-    options = { ...options, models: legacyCompatibleModels(options.models) };
+    options = { ...options, models: taskScopedModels(options.models, options.cwd) };
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx);
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
@@ -207,6 +209,7 @@ export class DurableBotRuntime {
       }, ctx);
       const root = await harness.root(ctx, { agent: { cwd: options.cwd, model: options.model },
         init: async (tx, id) => {
+          if (options.initialBranch) return;
           const initialHistory = typeof options.initialHistory === "function" ? await options.initialHistory() : options.initialHistory;
           for (const message of initialHistory?.messages ?? []) await tx.appendEntry(id, {
             kind: message.role === "user" ? "pi.user" : message.role === "assistant" ? "pi.assistant" : "pi.tool-result", model: [message], data: { mybuddyImported: true },
@@ -214,6 +217,7 @@ export class DurableBotRuntime {
           if (initialHistory?.context.length) await tx.appendEntry(id, { kind: "mybuddy.context-import", head: "self", model: [...initialHistory.context] });
         },
       });
+      if (options.initialBranch) await seedDurableBranch(root, options.initialBranch);
       const conversation = await resolveActiveDurableConversation(harness, root, ctx);
       runtime = new DurableBotRuntime(harness, conversation, options);
       if (options.evidenceProjection) runtime.evidence = new DurableEvidenceProjection(options.evidenceProjection, conversation, options.models);
@@ -508,7 +512,7 @@ export class DurableBotRuntime {
     } else entries = fresh.filter(entry => entry.id > this.consumerCursor!);
     this.consumerCursor = tail;
     return entries.filter(entry => entry.kind !== "mybuddy.context-import"
-      && (!entry.data || typeof entry.data !== "object" || Array.isArray(entry.data) || entry.data.mybuddyImported !== true));
+      && (!entry.data || typeof entry.data !== "object" || Array.isArray(entry.data) || (entry.data.mybuddyImported !== true && entry.data.inherited !== true)));
   }
 
   /** The answer belongs to this receipt even if another turn has already started or failed. */
@@ -847,12 +851,13 @@ function codingTools(): ToolRegistration[] {
   ];
 }
 
-/** Preserve persisted provider identities while resolving through the current model runtime. */
-function legacyCompatibleModels(models: Models): Models {
+/** Every native generation, including retries and compaction, uses the owning task's settings. */
+function taskScopedModels(models: Models, cwd: string): Models {
+  const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   return new Proxy(models, { get(target, key) {
     if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
     const value = Reflect.get(target, key, target);
-    return typeof value === "function" ? value.bind(target) : value;
+    return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
 }
 

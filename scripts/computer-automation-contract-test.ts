@@ -112,6 +112,7 @@ async function main(): Promise<void> {
   let clickCount = 0;
   let lastSideEffectTarget: Record<string, unknown> | undefined;
   let lastClickParams: Record<string, unknown> | undefined;
+  function resetClickParams(): void { lastClickParams = undefined; }
   let lastDragParams: Record<string, unknown> | undefined;
   let lastScrollParams: Record<string, unknown> | undefined;
   let lastKeyAction: string | undefined;
@@ -211,7 +212,7 @@ async function main(): Promise<void> {
   const closedDuringCapture = await service.execute({ action: "click_client", windowHandle: current.handle, x: 10, y: 10, captureAfter: true });
   assert.equal(closedDuringCapture.captureStatus, "failed", "capture failure must not turn a completed side effect into a failed action");
   assert.equal((closedDuringCapture.captureError as { code?: string }).code, "CAPTURE_FAILED");
-  assert.equal(closedDuringCapture.observation?.closedWindows.length, 1, "post-action observation must survive capture failure");
+  assert.equal(closedDuringCapture.observation?.closedWindows?.length, 1, "post-action observation must survive capture failure");
   closeOnNextClick = false;
   windowClosed = false;
   loseObservationAfterNextClick = true;
@@ -265,7 +266,7 @@ async function main(): Promise<void> {
   const attached = await service.execute({ action: "attach_app", windowTitle: current.title });
   assert.ok(attached.appSessionId, "attach_app must return an app session id");
   assert.equal(attached.window?.handle, current.handle);
-  lastClickParams = undefined;
+  resetClickParams();
   await service.execute({ action: "click_client", appSessionId: attached.appSessionId, x: 10, y: 10, observeAfter: false });
   assert.equal((lastClickParams?.target as { windowHandle?: string })?.windowHandle, current.handle, "app session must resolve to the attached HWND");
   await expectCode(service.execute({ action: "click_client", appSessionId: "missing-session", x: 1, y: 1 }), "STALE_OBSERVATION");

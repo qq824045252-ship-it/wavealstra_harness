@@ -8,7 +8,7 @@
  * 域工具被静默丢弃、只能靠 15s fixture 超时在运行时暴露。
  *
  * 做法与 test:all 的 baseline 棘轮一致：
- *   - 跑 `tsc -p tsconfig.scripts.json`，把 scripts/ 下的错误归一成「文件 + 错误码 + 消息」键；
+ *   - 跑 `tsc -p tsconfig.scripts.json`，把全部错误归一成「文件 + 错误码 + 消息」键；
  *   - 与 scripts/typecheck-baseline.json 比较：新增键 → 退出码 1；已修复的键 → 提示移除；
  *   - `--update-baseline` 重写基线（清理历史错误后再跑一次）。
  *
@@ -64,8 +64,7 @@ for (const line of `${result.stdout ?? ""}\n${result.stderr ?? ""}`.split("\n"))
   if (!match) continue;
   parsedAny += 1;
   const file = relative(ROOT, match[1]).replace(/\\/g, "/");
-  // 只统计 scripts/ 下的错误；被 import 连带进来的 app/** 归它们自己的检查口径
-  if (!file.startsWith("scripts/")) continue;
+  // 包含被脚本引入的源码：本配置已加载完整的路径别名和环境声明，不能忽略依赖错误。
   const code = match[2];
   const message = match[3].trim();
   const key = `${file} :: ${code} :: ${message}`;
@@ -100,6 +99,11 @@ console.log(
 if (verbose) for (const key of current) console.log(`  ${key}`);
 
 if (updateBaseline) {
+  if (added.length > 0) {
+    console.error("[typecheck-scripts] 拒绝扩大基线，请先修复新增错误：");
+    for (const key of added) console.error(`  - ${key}`);
+    process.exit(1);
+  }
   writeFileSync(
     BASELINE_PATH,
     `${JSON.stringify(
@@ -127,7 +131,7 @@ if (fixed.length > 0) {
 if (added.length > 0) {
   console.error("[typecheck-scripts] 新增 TypeScript 错误（棘轮失败）：");
   for (const key of added) console.error(`  - ${key}`);
-  console.error("[typecheck-scripts] 请修掉新增错误；只有确认是既有技术债时才更新基线。");
+  console.error("[typecheck-scripts] 请修掉新增错误；基线只允许减少。");
   process.exit(1);
 }
 

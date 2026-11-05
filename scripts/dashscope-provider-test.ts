@@ -89,6 +89,8 @@ const baseOptions: NativeMediaProviderOptions = {
   polling: { intervalMs: 1, maxWaitMs: 5_000, maxAttempts: 500 },
 };
 const provider = createDashScopeProvider(baseOptions);
+assert(provider.generateImage);
+const generateImage = provider.generateImage.bind(provider);
 /** 更小的等待预算，用来证明"本地超时只暂停、远端不取消、也不重提"。 */
 const shortProvider = createDashScopeProvider({ ...baseOptions, polling: { intervalMs: 1, maxWaitMs: 10, maxAttempts: 500 } });
 
@@ -122,7 +124,7 @@ try {
       : json({ request_id: "req-img-1", output: { task_id: "task-img-1", task_status: "SUCCEEDED", results: [{ orig_prompt: "p", actual_prompt: "p2", url: IMAGE_URL }] } });
   });
   route("GET", "/api/v1/fixtures/image-1.png", () => binary(PNG, "image/png"));
-  const imageResult = await provider.generateImage({ prompt: "一只橘猫", aspectRatio: "16:9", count: 1 }, context());
+  const imageResult = await generateImage({ prompt: "一只橘猫", aspectRatio: "16:9", count: 1 }, context());
   assert.equal(imageResult.provider, "dashscope-main");
   assert.equal(imageResult.model, "wan2.5-t2i-preview");
   assert.equal(imageResult.requestId, "task-img-1");
@@ -148,7 +150,7 @@ try {
   }));
   route("GET", "/api/v1/fixtures/image-1.png", () => binary(PNG, "image/png"));
   route("GET", "/api/v1/fixtures/image-2.png", () => binary(PNG, "image/png"));
-  const qwen = await provider.generateImage({
+  const qwen = await generateImage({
     prompt: "把这张图改成水彩", model: "qwen-image-2.0-pro", aspectRatio: "1:1", count: 2, negativePrompt: "低清", inputImagePaths: ["reference.png"],
   }, context());
   assert.equal(qwen.items.length, 2, "逐张下载多图结果");
@@ -174,7 +176,7 @@ try {
       : { task_id: "task-img-26", task_status: "SUCCEEDED", results: [{ url: IMAGE_URL }] } });
   });
   route("GET", "/api/v1/fixtures/image-1.png", () => binary(PNG, "image/png"));
-  await provider.generateImage({ prompt: "花店", model: "wan2.6-t2i" }, context());
+  await generateImage({ prompt: "花店", model: "wan2.6-t2i" }, context());
   const wan26Submit = posts()[0];
   assert.equal(wan26Submit.url.toString(), `${BASE}/services/aigc/image-generation/generation`);
   assert.equal(wan26Submit.headers.get("x-dashscope-async"), "enable");
@@ -244,7 +246,7 @@ try {
   /* ---------------------------------------------------------------- ⑥ HTTP 401 / 429 映射 */
   reset();
   route("POST", "/api/v1/services/aigc/text2image/image-synthesis", () => new Response("{}", { status: 401 }));
-  const authError = await failure(() => provider.generateImage({ prompt: "猫" }, context()));
+  const authError = await failure(() => generateImage({ prompt: "猫" }, context()));
   assert.equal(authError.code, "authentication");
   assert.equal(authError.status, 401);
   assert(!authError.message.includes(KEY));
@@ -259,12 +261,12 @@ try {
 
   reset();
   route("POST", "/api/v1/services/aigc/text2image/image-synthesis", () => new Response("{}", { status: 500 }));
-  const httpError = await failure(() => provider.generateImage({ prompt: "猫" }, context()));
+  const httpError = await failure(() => generateImage({ prompt: "猫" }, context()));
   assert.equal(httpError.code, "http");
 
   reset();
   route("POST", "/api/v1/services/aigc/text2image/image-synthesis", () => new Response("<html>not json</html>", { status: 200, headers: { "content-type": "text/html" } }));
-  const parseError = await failure(() => provider.generateImage({ prompt: "猫" }, context()));
+  const parseError = await failure(() => generateImage({ prompt: "猫" }, context()));
   assert.equal(parseError.code, "response", "解析失败映射为 response，且不回显响应体");
   assert(!parseError.message.includes("not json"));
 
@@ -314,11 +316,11 @@ try {
   assert.equal(unsupportedVideo.code, "unsupported");
   const unsupportedModel = await failure(() => provider.generateVideo!({ prompt: "猫", model: "wan2.6-t2v" }, context()));
   assert.equal(unsupportedModel.code, "unsupported");
-  const unsupportedRatio = await failure(() => provider.generateImage({ prompt: "猫", aspectRatio: "21:9" }, context()));
+  const unsupportedRatio = await failure(() => generateImage({ prompt: "猫", aspectRatio: "21:9" }, context()));
   assert.equal(unsupportedRatio.code, "unsupported");
-  const unsupportedReference = await failure(() => provider.generateImage({ prompt: "猫", model: "wan2.5-t2i-preview", inputImagePaths: ["reference.png"] }, context()));
+  const unsupportedReference = await failure(() => generateImage({ prompt: "猫", model: "wan2.5-t2i-preview", inputImagePaths: ["reference.png"] }, context()));
   assert.equal(unsupportedReference.code, "unsupported", "万相图片不支持参考图");
-  const badCount = await failure(() => provider.generateImage({ prompt: "猫", model: "qwen-image-2.0", count: 7 }, context()));
+  const badCount = await failure(() => generateImage({ prompt: "猫", model: "qwen-image-2.0", count: 7 }, context()));
   assert.equal(badCount.code, "input");
   const badDuration = await failure(() => provider.generateVideo!({ prompt: "猫", durationSeconds: 30 }, context()));
   assert.equal(badDuration.code, "input");

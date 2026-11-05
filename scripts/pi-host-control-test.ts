@@ -48,7 +48,7 @@ await test("curator timeout does not masquerade as user submission", () => {
   assert(!/sendFollowUpFromReturn|publishUserSelectedSearch/.test(cancel));
 });
 
-async function hookResult(toolName: string, permission: "auto" | "readonly" | "ask" = "auto", approved = true) {
+async function hookResult(toolName: string, permission: "auto" | "readonly" | "default" = "auto", approved = true) {
   const handlers: Array<(event: any) => any> = [];
   let approvalRequests = 0;
   const api: any = {
@@ -79,11 +79,11 @@ await test("annotated readonly MCP reads remain available without mutation appro
   assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
 await test("refused MCP permission prevents the actual call", async () => {
-  const result = await hookResult("fixture_update_record", "ask", false);
+  const result = await hookResult("fixture_update_record", "default", false);
   assert(result.blocked?.block); assert.equal(result.approvalRequests, 1);
 });
 await test("explicit MCP permission authorizes the actual call", async () => {
-  const result = await hookResult("fixture_update_record", "ask", true);
+  const result = await hookResult("fixture_update_record", "default", true);
   assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 1);
 });
 mkdirSync("artifacts/pi-host-exit", { recursive: true });

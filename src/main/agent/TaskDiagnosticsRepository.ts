@@ -22,6 +22,7 @@ const traceSchema = z.object({
   generationTaskId: z.number().optional(), sourceKind: sourceSchema.optional(), executionScope: z.string().optional(),
   startedAt: z.number().optional(), firstResponseAt: nullableNumber.optional(), modelMs: z.number().optional(),
   reportedUsage: usageSchema.optional(), usageSource: z.string().nullable().optional(), outcome: z.string().optional(), error: z.string().optional(),
+  nativeCostTotal: z.number().finite().nonnegative().nullable().optional(),
   stage: z.string().optional(), attempt: z.number().optional(), status: nullableNumber.optional(), coverage: z.string().optional(),
   previous: z.object({ request: z.string(), prefix: z.boolean().nullable(), changedFields: z.array(z.string()) }).nullable().optional(),
 });
@@ -131,14 +132,8 @@ export class TaskDiagnosticsRepository {
       value.status = event.outcome === "error" ? "failed" : event.outcome === "aborted" ? "aborted" : event.outcome === "observation-failed" ? "interrupted" : "completed";
       value.error = event.error ?? null;
       value.usage = event.reportedUsage ?? unknownTokenUsage(); value.usageSource = event.usageSource ?? null;
-      const rates = model.cost;
-      const keys: Array<keyof typeof value.usage> = ["input", "output", "cacheRead", "cacheWrite"];
-      const parts = rates ? keys.map(key => {
-        const tokens = value.usage[key]; const rate = rates[key];
-        return tokens !== null && Number.isFinite(rate) && rate >= 0 ? tokens * rate / 1_000_000 : null;
-      }) : [];
-      value.knownCostUsd = parts.some(part => part !== null) ? parts.reduce<number>((sum, part) => sum + (part ?? 0), 0) : null;
-      value.costComplete = parts.length === 4 && parts.every(part => part !== null);
+      value.knownCostUsd = event.nativeCostTotal ?? null;
+      value.costComplete = event.nativeCostTotal != null;
     }
     this.pending.set(value.id, value);
     while (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value!);

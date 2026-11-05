@@ -1,3 +1,4 @@
+import { userMessage, assistantMessage } from "./test-pi-messages";
 import { performance } from "node:perf_hooks";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -255,10 +256,11 @@ async function main(): Promise<void> {
     mkdirSync(sessionCwd);
     const sm = SessionManager.create(sessionCwd, sessionDir);
     for (let i = 0; i < 1000; i++) {
-      sm.appendMessage({ role: "user", content: `用户问题 ${i} ` + "x".repeat(80) });
-      sm.appendMessage({ role: "assistant", content: [{ type: "text", text: `助手回答 ${i} ` + "y".repeat(160) }] });
+      sm.appendMessage(userMessage(`用户问题 ${i} ` + "x".repeat(80)));
+      sm.appendMessage(assistantMessage([{ type: "text", text: `助手回答 ${i} ` + "y".repeat(160) }]));
     }
     const sessionFile = sm.getSessionFile();
+    if (!sessionFile) throw new Error("Fixture session was not persisted");
     const historyMetric = measure("session.history/1000-turns", 12, () => {
       const history = loadTaskHistoryFromSession(sessionFile, sessionCwd);
       if (history.messages.length !== 2000) throw new Error(`history messages=${history.messages.length}`);

@@ -49,7 +49,9 @@ const notReady = (detail = "not ready", providerId: ManagedToolProviderId = "pen
 });
 
 function req(providerId: string, patch: Partial<RuntimeRequirement> = {}): RuntimeRequirement {
-  return { providerId: providerId as RuntimeRequirement["providerId"], ...patch };
+  const requirement = resolveRuntimeRequirement({ providerId, ...patch });
+  if (!requirement) throw new Error(`Unknown fixture provider: ${providerId}`);
+  return requirement;
 }
 
 /** 可控 mock runtime：start 次数、ready 时间点、失败注入 */
@@ -225,10 +227,10 @@ async function main(): Promise<void> {
   {
     let starts = 0;
     const runtime: RuntimeStartable = {
-      async status() {
+      async status(providerId) {
         return notReady("drawio 未运行（由会话 adapter 拉起）");
       },
-      async start() {
+      async start(providerId) {
         starts += 1;
         return notReady("not ready", providerId);
       },
@@ -300,10 +302,10 @@ async function main(): Promise<void> {
     let windowUp = false;
     let starts = 0;
     const runtime: RuntimeStartable = {
-      async status() {
+      async status(providerId) {
         return windowUp ? ready("gui up") : notReady("sidecar only");
       },
-      async start() {
+      async start(providerId) {
         starts += 1;
         windowUp = true;
         return ready("spawned gui");
@@ -325,10 +327,10 @@ async function main(): Promise<void> {
     // start 返回 notReady，晚探测变 ready → 经历 waiting-backend
     let backendReady = false;
     const runtime: RuntimeStartable = {
-      async status() {
+      async status(providerId) {
         return backendReady ? ready("backend up") : notReady("等待 backend");
       },
-      async start() {
+      async start(providerId) {
         return notReady("spawn 完成，等 backend");
       },
     };
@@ -353,10 +355,10 @@ async function main(): Promise<void> {
       releaseStart = resolve;
     });
     const runtime: RuntimeStartable = {
-      async status() {
+      async status(providerId) {
         return notReady("not ready", providerId);
       },
-      async start() {
+      async start(providerId) {
         started += 1;
         await gate;
         return ready("Ready", providerId);

@@ -142,7 +142,7 @@ const tests: Array<[string, (fixture: Fixture) => Promise<void>]> = [
     f.afterMutation = () => { f.windows[0].identityToken = "compositor-instance:window-2"; };
     const result = await f.invoke({ expectedOutcomes: [{ kind: "target_closed" }, { kind: "new_window", windowTitleContains: "Test window" }] });
     assert.equal(result.semanticOutcome?.status, "passed");
-    assert.equal(result.observation?.closedWindows.length, 1); assert.equal(result.observation?.newWindows.length, 1);
+    assert.equal(result.observation?.closedWindows?.length, 1); assert.equal(result.observation?.newWindows?.length, 1);
   }],
   ["optional capture failure preserves delivered action and semantic evidence", async f => {
     const result = await f.invoke({ captureAfter: true, expectedOutcomes: [{ kind: "target_present" }] });

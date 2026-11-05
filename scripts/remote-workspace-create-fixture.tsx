@@ -30,7 +30,7 @@ const client = {
     if (failNext) { failNext = false; throw new Error('fixture network unavailable') }
     const task: RemoteTaskSummary = { id: 'created-' + requests.length, title: request.text, spaceId: request.spaceId ?? null,
       projectId: request.projectId ?? null, updatedAt: Date.now(), welcomeMode: request.welcomeMode, archived: false,
-      modePresetId: request.modePresetId ?? null, startAt: null, dueAt: null, isFavorited: false, busy: false, pendingActionCount: 0 }
+      modePresetId: request.modePresetId ?? null, startAt: null, dueAt: null, isFavorited: false, doneAckedAt: null, busy: false, pendingActionCount: 0 }
     bootstrap = { ...bootstrap, tasks: [...bootstrap.tasks, task] }
     return { task, userMessageId: 'u-' + task.id, assistantMessageId: 'a-' + task.id, queued: true }
   },

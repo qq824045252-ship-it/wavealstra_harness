@@ -26,7 +26,8 @@ import { durableText } from "./durable/DurableTurnProjection";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
 import type { LocalWorkflowBridge } from "../capabilities/local-workflow-extension";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
-import { resolveConversationBranchSourceRoots } from "./session-branch";
+import type { CreateConversationBranchRequest } from "../../shared/conversation-branch";
+import type { DurableBranchAnchor, MaterializedDurableBranch } from "./durable/DurableTaskBranch";
 import { getVisibleSessionUserMessages } from "./session-user-messages";
 import { type ConsultWorkerControls } from "../capabilities/MultiModelConsult";
 import { ExecutionFailureRepository } from "./ExecutionFailureRepository";
@@ -1035,13 +1036,28 @@ export class AgentService {
     this.conversationGoals.cloneLive(sourceTaskId, childTaskId);
   }
 
+  async previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.previewBranch(request);
+  }
+
+  async materializeConversationBranch(sourceTaskId: string, childTaskId: string, cwd: string, anchor: DurableBranchAnchor): Promise<MaterializedDurableBranch> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.materializeBranch(sourceTaskId, childTaskId, cwd, anchor);
+  }
+
+  commitConversationBranch(taskId: string, cwd: string, branch: MaterializedDurableBranch): void {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    this.durableBots.commitBranch(taskId, cwd, branch);
+  }
+
   async cloneConversationRuntimeHistory(sourceTaskId: string, childTaskId: string): Promise<void> {
     const [sourceHistory, childHistory] = await Promise.all([
       this.loadTaskHistory(sourceTaskId),
       this.loadTaskHistory(childTaskId),
     ]);
     const sourceAssistants = sourceHistory.messages.filter((message) => message.role === "assistant");
-    const childByEntryId = new Map(
+    const childByEntryId = this.durableBots?.owns(childTaskId) ? await this.durableBots.inheritedBranchMessages(childTaskId) : new Map(
       childHistory.messages.filter((message) => message.role === "assistant" && message.entryId)
         .map((message) => [message.entryId!, message.id]),
     );

@@ -567,7 +567,7 @@ async function main(): Promise<void> {
     assert(row?.permissionMode === "readonly" && row?.expertId === "code-review-expert", "权限/专家持久化");
     assert(row?.modelId === "m1", "模型持久化");
     const rawDb = new Database(join(sandbox, ".mybuddy", "app.db"));
-    const cols = rawDb.pragma("table_info(tasks)").map((c: { name: string }) => c.name);
+    const cols = rawDb.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(c => c.name);
     rawDb.close();
     assert(
       !cols.some((c) => c === "source_task_id" || c === "review_of_task_id" || c === "task_relation"),
@@ -1081,11 +1081,11 @@ async function main(): Promise<void> {
       "F1：无 entry → 沿用重建前捕获值",
     );
     assert(
-      assemblyInputsChanged({ connectorIds: ["c1"], expertId: null }, null, ["c1"]) === false,
+      assemblyInputsChanged({ connectorIds: ["c1"] }, null, ["c1"]) === false,
       "F1：connectorIds 一致 → 不重建（regenerate 全链保留后不再误判）",
     );
     assert(
-      assemblyInputsChanged({ connectorIds: ["c1"], expertId: null }, null, undefined) === true,
+      assemblyInputsChanged({ connectorIds: ["c1"] }, null, undefined) === true,
       "F1 根因：entry 有连接器而请求缺省 → 判定变更（修复前触发错误重建）",
     );
     assert(
@@ -1802,8 +1802,9 @@ async function main(): Promise<void> {
     const agentSource = readFileSync("src/main/agent/AgentService.ts", "utf8");
     const contextSource = readFileSync("src/main/agent/LibraryWorkspaceContextService.ts", "utf8");
     assert(
-      agentSource.includes("LibraryWorkspaceContextService") && agentSource.includes("this.libraryWorkspaceContext.resolveTask("),
-      "N7：AgentService 会话上下文装配委托给 LibraryWorkspaceContextService",
+      agentSource.includes("LibraryWorkspaceContextService") && agentSource.includes("this.libraryWorkspaceContext.projectionSources(")
+        && agentSource.includes("this.libraryWorkspaceContext.validateEvidenceAccess("),
+      "N7：AgentService 将 Durable 证据来源及访问校验委托给 LibraryWorkspaceContextService",
     );
     assert(
       !/private\s+(libraryCatalog|libraryAttachmentsForTask|libraryAttachedIds|workspaceSharedContextDigest|renderBtwProjectContextSegments)\s*\(/.test(agentSource),

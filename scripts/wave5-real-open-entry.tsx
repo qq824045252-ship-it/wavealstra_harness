@@ -20,7 +20,7 @@ import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { useAppStore } from "@/store/appStore";
 import ArtifactPanel from "@/components/artifact/ArtifactPanel";
-import type { ArtifactDescriptor } from "../../../shared/artifact-types";
+import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 
 const api = (window as unknown as { api?: Record<string, unknown> }).api;
 

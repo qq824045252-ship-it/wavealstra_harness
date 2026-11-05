@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { BtwStartRequest, BtwUiPatch, ChatMessageDto } from "../../../shared/agent-ipc";
 import type { DurableBotSnapshot, DurableBotDelta, DurableBotState } from "../../../shared/durable-bot";
-import { applyDurableDelta } from "../../../../shared/src/durable-sync";
+import { applyDurableDelta, replayDurableDeltas } from "../../../../shared/src/durable-sync";
 import type { ChatMessage } from "@/types";
 import { useAppStore } from "./appStore";
 import { applyPatchToMessage } from "./app/messages/messageReducer";
@@ -567,7 +567,12 @@ export const useBtwStore = create<BtwState>((set, get) => ({
     });
     if (patch.type === "durable_snapshot" && btwResync?.btwId === patch.btwId) {
       const pending = btwResync.buffered; btwResync = undefined;
-      for (const delta of pending) get().applyBtwPatch({ type: "durable_delta", taskId: patch.taskId, btwId: patch.btwId, delta });
+      const accepted = get().durable;
+      if (accepted) {
+        const replay = replayDurableDeltas<ChatMessageDto, DurableBotState>(accepted, pending);
+        get().applyBtwPatch({ type: "durable_snapshot", taskId: patch.taskId, btwId: patch.btwId, snapshot: replay.snapshot });
+        if (replay.gap) set({ error: "BTW 增量仍有缺口，请重新打开会话" });
+      }
     }
   },
 

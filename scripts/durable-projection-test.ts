@@ -134,6 +134,7 @@ const codeOptions = { ...options, directory: join(directory, "codemode"), models
         entered();
         await new Promise<void>((_resolve, reject) => {
           const stopped = () => reject(new Error("host closed"));
+          assert(callContext.abortSignal);
           if (callContext.abortSignal.aborted) stopped(); else callContext.abortSignal.addEventListener("abort", stopped, { once: true });
         });
       }

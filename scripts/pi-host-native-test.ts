@@ -22,7 +22,7 @@ async function test(name:string, fn:()=>Promise<any>) {
   catch(error) { results.push({name,passed:false,error:String(error)}); console.error("FAIL "+name+": "+error); }
 }
 const model:any={id:"host-native",provider:"fixture",api:"openai-completions",name:"Local scripted provider",baseUrl:"http://invalid.invalid",reasoning:false,input:["text"],contextWindow:128000,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
-async function nativeScenario(permission:"auto"|"readonly"|"ask"="auto", approved=true, abort=false) {
+async function nativeScenario(permission:"auto"|"readonly"|"default"="auto", approved=true, abort=false) {
   let requests=0,toolCalls=0,started=false;
   const events:string[]=[];
   const ctx={taskId:"fixture",executionId:"exec",assistantMessageId:"reply"};
@@ -60,7 +60,7 @@ async function nativeScenario(permission:"auto"|"readonly"|"ask"="auto", approve
     if(abort){const until=Date.now()+8000;while(!started){if(Date.now()>until)throw Error("native tool did not start");await delay(5);}await session.abort();}
     await running;assert(session.isIdle);const count=requests;await delay(40);assert.equal(requests,count,"settled session was woken by host");
     assert.equal(events.filter(x=>x==="agent_settled").length,1,"settled events: "+JSON.stringify(events));
-    const allowed=permission==="auto"||(permission==="ask"&&approved);
+    const allowed=permission==="auto"||(permission==="default"&&approved);
     assert.equal(toolCalls,allowed?1:0);assert.equal(requests,abort?1:2,"provider request count after abort="+abort+" events="+JSON.stringify(events));
     if(allowed&&!abort)assert.equal(await readFile(join(root,"mutation-count.txt"),"utf8"),"1");
     assert(!session.messages.some((m:any)=>m.role==="custom"&&/completion_gate/.test(m.customType??"")));
@@ -68,8 +68,8 @@ async function nativeScenario(permission:"auto"|"readonly"|"ask"="auto", approve
   }finally{session.dispose();}
 }
 await test("native MCP tool loop settles once with full access",()=>nativeScenario());
-await test("native MCP child respects a refused permission request",()=>nativeScenario("ask",false));
-await test("native MCP child can execute after explicit permission approval",()=>nativeScenario("ask",true));
+await test("native MCP child respects a refused permission request",()=>nativeScenario("default",false));
+await test("native MCP child can execute after explicit permission approval",()=>nativeScenario("default",true));
 await test("native MCP child respects readonly mode",()=>nativeScenario("readonly"));
 await test("native cancellation is not turned into another task",()=>nativeScenario("auto",true,true));
 

@@ -69,7 +69,7 @@ console.log("\n[2] 服务器列表（候选）");
   assert(esp?.installed === false, "候选未安装");
   const repl = servers.find((s) => s.name === "node_repl");
   assert(!!repl && repl.transport === "command", "node_repl TOML 候选解析为 command");
-  assert(repl?.env.includes("NODE_REPL_PIPE"), "TOML 嵌套 env 表解析成功");
+  assert(repl?.env.includes("NODE_REPL_PIPE") === true, "TOML 嵌套 env 表解析成功");
   assert(!existsSync(appGlobal), "尚未写入应用全局");
 }
 
@@ -104,7 +104,7 @@ console.log("\n[4] 停用与启用");
 console.log("\n[5] 从 MyBuddy 移除");
 {
   const r = service.removeServers(["espressif-documentation"]);
-  assert(r.ok === true && r.removed?.includes("espressif-documentation"), "移除成功");
+  assert(r.ok === true && r.removed?.includes("espressif-documentation") === true, "移除成功");
   const raw = JSON.parse(readFileSync(appGlobal, "utf-8"));
   assert(raw.mcpServers["espressif-documentation"] === undefined, "应用全局中定义已删除");
   assert(raw.mcpServers["esp-component-registry"] !== undefined, "未选中的服务器保留");
@@ -125,7 +125,7 @@ console.log("\n[6.5] Draw.io（ensureDrawioServer）幂等 / 停用尊重 / 过�
     port: 6002,
   };
   const installed = service.ensureDrawioServer(drawioPayload);
-  assert(installed.ok === true && installed.added?.includes("drawio-ai"), "缺失时写入 drawio-ai 条目");
+  assert(installed.ok === true && installed.added?.includes("drawio-ai") === true, "缺失时写入 drawio-ai 条目");
   let raw = JSON.parse(readFileSync(appGlobal, "utf-8"));
   const entry = raw.mcpServers["drawio-ai"];
   assert(entry?.command === drawioPayload.command, "条目 command = 解析后的 npx");
@@ -145,7 +145,7 @@ console.log("\n[6.5] Draw.io（ensureDrawioServer）幂等 / 停用尊重 / 过�
     command: "C:\\Users\\me\\AppData\\Roaming\\nvm\\npx.cmd",
   };
   const updated = service.ensureDrawioServer(stalePayload);
-  assert(updated.ok === true && updated.removed?.includes("drawio-ai"), "过期条目被重写");
+  assert(updated.ok === true && updated.removed?.includes("drawio-ai") === true, "过期条目被重写");
   raw = JSON.parse(readFileSync(appGlobal, "utf-8"));
   assert(
     raw.mcpServers["drawio-ai"]?.command === stalePayload.command,

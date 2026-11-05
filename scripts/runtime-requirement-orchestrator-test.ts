@@ -7,7 +7,7 @@ import type { ManagedToolProviderId, ProfessionalToolStatusDto } from "../src/sh
 const officePreset = MODE_SEEDS.working.policy.presets!.find(preset => preset.id === "web-prototype")!;
 const profileStore = {
   getProfile(mode: "working" | "coding" | "bot") {
-    return MODE_SEEDS[mode];
+    return { ...MODE_SEEDS[mode], id: mode, version: "fixture", blocks: [], totalChars: 0, userDir: "", policyPath: "", hasUserOverride: false };
   },
 };
 

@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   console.log("== register 幂等 + 全局槽 ==");
   const handles: string[] = [];
   const ipcMain = {
-    handle(channel: string): void {
+    handle(channel: string, _listener?: (...args: unknown[]) => unknown): void {
       handles.push(channel);
     },
   };
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   resetSubagentIpcHostForTests();
   const reusedChannels: string[] = [];
   const reused = {
-    handle(channel: string): void {
+    handle(channel: string, _listener?: (...args: unknown[]) => unknown): void {
       reusedChannels.push(channel);
     },
   };

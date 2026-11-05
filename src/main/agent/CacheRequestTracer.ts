@@ -195,11 +195,12 @@ export class CacheRequestTracer {
         return attempt;
       },
       received: (attempt: number, status: number | null) => { emit({ ...base, event: 'http-result', attempt, status }); },
-      result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }) => {
+      result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total?: number } } }) => {
         try {
           const u = message.usage;
           emit({ ...base, event: 'result', attempts, startedAt, firstResponseAt, modelMs: Math.max(0, performance.now() - startedClock),
             reportedUsage: reported, usageSource,
+            nativeCostTotal: finiteNumber(u?.cost?.total),
             responseHash: message.responseId ? plainHash(message.responseId) : null,
             responseModelHash: message.responseModel ? this.digest(message.responseModel) : null,
             outcome: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(message.stopReason) ? message.stopReason : 'other',

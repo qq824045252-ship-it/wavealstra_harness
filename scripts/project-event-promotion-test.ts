@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   const listA = projects.listProjectEvents("proj-a");
   const withPromo = listA.find((e) => e.id === ev.id);
   ok(withPromo?.promotions?.length === 1 && withPromo.promotions[0]!.targetId === r1.targetId, "1e. 事件侧溯源：list 带 promotion 链接");
-  ok(withPromo?.promotions[0]!.eventTitle === ev.title, "1f. 链接带事件标题快照");
+  ok(withPromo?.promotions?.[0]!.eventTitle === ev.title, "1f. 链接带事件标题快照");
 
   /* ============ 2. 幂等：同事件同类型重复 promote → 复用，无重复垃圾 ============ */
   const beforeMemCount = projects.listMemory("proj-a").length;
@@ -116,8 +116,8 @@ async function main(): Promise<void> {
   const r3 = promoter.promote(ev.id, { targetKind: "library", libraryTitle: "客户反馈记录", libraryContent: "客户反馈：交付验收标准需确认\n- 来源：gateway" });
   ok(!r3.reused, "3b. 提升为项目资料成功");
   const libItem = library.getItem(r3.targetId);
-  ok(libItem !== undefined && libItem.title === "客户反馈记录", "3c. 资料真源可见");
-  const libContent = library.getItem(r3.targetId) !== undefined;
+  ok(libItem != null && libItem.title === "客户反馈记录", "3c. 资料真源可见");
+  const libContent = library.getItem(r3.targetId) != null;
   ok(libContent, "3d. 资料条目存在（正文经 writeContent 落受管文件）");
   ok(projects.listProjectEvents("proj-a").find((e) => e.id === ev.id)?.promotions?.length === 3, "3e. 同一事件三种目标共 3 条链接");
 
@@ -319,8 +319,8 @@ async function main(): Promise<void> {
       listSkills: (): unknown[] => [],
       listConnectors: (): unknown[] => [],
       getAppSettings: (): { defaultModelId?: string } => ({}),
-    } as never;
-    cron = new CronService(cronDb, fakeAgent, (projectId, summary) => runEvents.push({ projectId, summary }));
+    };
+    cron = new CronService(cronDb, fakeAgent as never, (projectId, summary) => runEvents.push({ projectId, summary }));
 
     // Expert Team removal contract: new Cron writes reject team:*; legacy persisted rows degrade to no expert.
     let teamCronError = "";

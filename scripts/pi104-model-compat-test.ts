@@ -1,3 +1,4 @@
+import { normalizeContext } from "@earendil-works/pi-ai";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -120,8 +121,8 @@ try {
     const api = openAICompletionsApi();
     for (const [reasoning, expected] of [["off", { temperature: 0.7, top_p: 0.8 }], ["high", { temperature: 1, top_p: 0.95, top_k: 20 }]] as const) {
       let sent = 0, body: any;
-      const stream = api.streamSimple(model as any, { messages: [{ role: "user", content: "fixture", timestamp: Date.now() }] }, {
-        apiKey: "fixture-not-a-live-key", reasoning, samplingParams: { top_k: 42 }, maxRetries: 0,
+      const stream = api.streamSimple(model as any, normalizeContext({ messages: [{ role: "user", content: "fixture", timestamp: Date.now() }] }), {
+        apiKey: "fixture-not-a-live-key", reasoning: reasoning === "off" ? undefined : reasoning, samplingParams: { top_k: 42 }, maxRetries: 0,
         fetch: async (_input, init) => {
           sent++; body = JSON.parse(String(init?.body));
           return new Response('data: {"id":"fixture","object":"chat.completion.chunk","created":0,"model":"sample","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });

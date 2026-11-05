@@ -152,7 +152,7 @@ const MCP_FULL: McpConfig = {
 };
 
 function enabledOf(r: McpFilterResult): string[] {
-  return [...r.config.mcpServers.keys()];
+  return Object.keys(r.config.mcpServers);
 }
 
 const SKILLS = [
@@ -1262,13 +1262,14 @@ async function main(): Promise<void> {
     const mod = await import("../src/renderer/src/store/appStore");
     const useAppStore = mod.useAppStore;
     const upserts: Array<Record<string, unknown>> = [];
-    let capturedReq: Record<string, unknown> | null = null;
+    const captured: { request: Record<string, unknown> | null } = { request: null };
+    function resetCapturedRequest(): void { captured.request = null; }
     let listedTasks: Array<Record<string, unknown>> = [];
     (globalThis as unknown as { window: unknown }).window = {
       api: {
         agent: {
           prompt: async (req: Record<string, unknown>): Promise<void> => {
-            capturedReq = req;
+            captured.request = req;
           },
         },
         db: {
@@ -1447,7 +1448,7 @@ async function main(): Promise<void> {
     listedTasks = [];
 
     // sendMessage：working 首条消息 → prompt req.modePresetId + upsertTask 携带（不再 design-only）
-    capturedReq = null;
+    resetCapturedRequest();
     upserts.length = 0;
     useAppStore.setState({
       tasks: [],
@@ -1460,7 +1461,7 @@ async function main(): Promise<void> {
     });
     await useAppStore.getState().sendMessage("帮我写周报", [], undefined);
     assert(
-      capturedReq?.modePresetId === "weekly-report",
+      captured.request?.modePresetId === "weekly-report",
       "sendMessage（working）→ agent.prompt req.modePresetId = weekly-report",
     );
     assert(
@@ -1468,7 +1469,7 @@ async function main(): Promise<void> {
       "sendMessage → upsertTask 携带 modePresetId（working）",
     );
     // sendMessage：design 首条消息仍正确
-    capturedReq = null;
+    resetCapturedRequest();
     upserts.length = 0;
     useAppStore.setState({
       tasks: [],
@@ -1481,7 +1482,7 @@ async function main(): Promise<void> {
     });
     await useAppStore.getState().sendMessage("帮我设计一张海报", [], undefined);
     assert(
-      capturedReq?.modePresetId === "native",
+      captured.request?.modePresetId === "native",
       "sendMessage（bot）→ agent.prompt req.modePresetId = native",
     );
   }

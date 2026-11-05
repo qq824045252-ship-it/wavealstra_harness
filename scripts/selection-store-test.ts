@@ -1,3 +1,4 @@
+import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 /**
  * SelectionStore Tests — V3.5 Wave 4D（§80 stale 语义）
  *
@@ -29,6 +30,10 @@ const check = (name: string, pass: boolean, detail = ""): void => {
   results.push([name, pass, detail]);
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 };
+
+function makeArtifactDescriptor(id: string, version: number): ArtifactDescriptor {
+  return { id, version, taskId: "t", kind: "html", source: { type: "workspace-file", rootDir: "/fixture", entryFile: "index.html" }, capabilities: {}, createdAt: 1, updatedAt: 1 };
+}
 
 function makeDescriptor(overrides: Partial<SelectionDescriptor> = {}): SelectionDescriptor {
   return {
@@ -69,7 +74,7 @@ function main(): void {
   {
     const store = new SelectionStore();
     store.setSelection(makeDescriptor({ artifactVersion: 3 }));
-    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 3, revision: 1, descriptor: makeDescriptor() });
+    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 3, revision: 1, descriptor: makeArtifactDescriptor("art-A", 3) });
     check("T3 version 相同不 stale", isStatus(store.getState(), "active"), `status=${store.getState().status}`);
   }
 
@@ -77,7 +82,7 @@ function main(): void {
   {
     const store = new SelectionStore();
     store.setSelection(makeDescriptor({ artifactVersion: 3 }));
-    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 8, revision: 1, descriptor: makeDescriptor({ artifactVersion: 8 }) });
+    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 8, revision: 1, descriptor: makeArtifactDescriptor("art-A", 8) });
     const s = store.getState();
     check(
       "T4 version 改变 → stale(artifact-version-changed)",
@@ -128,7 +133,7 @@ function main(): void {
   {
     const store = new SelectionStore();
     store.setSelection(makeDescriptor({ artifactVersion: 3 }));
-    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 8, revision: 1, descriptor: makeDescriptor({ artifactVersion: 8 }) });
+    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 8, revision: 1, descriptor: makeArtifactDescriptor("art-A", 8) });
     check("T8a 先进入 stale", isStatus(store.getState(), "stale"));
     store.setSelection(makeDescriptor({ artifactVersion: 8, backendNodeId: 99 }));
     const s = store.getState();
@@ -194,7 +199,7 @@ function main(): void {
   // ---------- T11 stale reason 正确（汇总） ----------
   {
     const cases: Array<[string, (s: SelectionStore) => void, string]> = [
-      ["version", (s) => s.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 99, revision: 1, descriptor: makeDescriptor() }), "artifact-version-changed"],
+      ["version", (s) => s.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 99, revision: 1, descriptor: makeArtifactDescriptor("art-A", 99) }), "artifact-version-changed"],
       ["generation", (s) => s.onSurfaceChanged({ surfaceId: "artifact-main", generation: 99, artifactId: "art-A", reason: "reload" }), "surface-generation-changed"],
       ["artifact-changed", (s) => s.onSurfaceChanged({ surfaceId: "artifact-main", generation: 99, artifactId: "art-B", reason: "load" }), "artifact-changed"],
       ["surface-closed", (s) => s.onSurfaceChanged({ surfaceId: "artifact-main", generation: 99, artifactId: null, reason: "close" }), "surface-closed"],
@@ -216,8 +221,8 @@ function main(): void {
   {
     const store = new SelectionStore();
     store.setSelection(makeDescriptor()); // selection = art-A v3
-    store.onArtifactUpdated({ artifactId: "art-B", taskId: "t", version: 1, revision: 1, descriptor: makeDescriptor({ artifactId: "art-B" }) });
-    store.onArtifactUpdated({ artifactId: "art-C", taskId: "t", version: 9, revision: 1, descriptor: makeDescriptor({ artifactId: "art-C" }) });
+    store.onArtifactUpdated({ artifactId: "art-B", taskId: "t", version: 1, revision: 1, descriptor: makeArtifactDescriptor("art-B", 1) });
+    store.onArtifactUpdated({ artifactId: "art-C", taskId: "t", version: 9, revision: 1, descriptor: makeArtifactDescriptor("art-C", 9) });
     check(
       "T12 其他 artifact updated 不 stale 当前 selection",
       isStatus(store.getState(), "active"),
@@ -244,7 +249,7 @@ function main(): void {
     store.setSelection(makeDescriptor());
     store.clearSelection();
     store.markStale("artifact-version-changed"); // empty 无操作
-    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 99, revision: 1, descriptor: makeDescriptor() });
+    store.onArtifactUpdated({ artifactId: "art-A", taskId: "t", version: 99, revision: 1, descriptor: makeArtifactDescriptor("art-A", 99) });
     store.onSurfaceChanged({ surfaceId: "artifact-main", generation: 99, artifactId: "art-A", reason: "load" });
     check("T14 clear 后迟到事件不复活", isStatus(store.getState(), "empty"), `status=${store.getState().status}`);
   }

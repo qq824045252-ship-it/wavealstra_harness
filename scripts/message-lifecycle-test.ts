@@ -179,9 +179,9 @@ console.log("== Thinking snapshot 对账：Pi 最终消息真源补齐 reasoning
 console.log("== 纯函数：upsertTextBlock / freezeFinalTextSegment / nonEmptyFinalTextBlocks ==");
 {
   const b1 = upsertTextBlock([], "text", "A");
-  assert(b1.length === 1 && b1[0].text === "A", "upsert 空数组 → 新 block");
+  assert(b1.length === 1 && b1[0].type === "text" && b1[0].text === "A", "upsert 空数组 → 新 block");
   const b2 = upsertTextBlock(b1, "text", "B");
-  assert(b2.length === 1 && b2[0].text === "AB", "同类型追加");
+  assert(b2.length === 1 && b2[0].type === "text" && b2[0].text === "AB", "同类型追加");
   const b3 = upsertTextBlock(b2, "thinking", "t");
   assert(b3.length === 2, "不同类型开新 block");
   const f1 = freezeFinalTextSegment([{ type: "text", text: "A" }]);
@@ -283,7 +283,7 @@ console.log("== 场景⑥b：text→tool→error（工具中断 + 错误） ==")
   m3 = applyPatchToMessage(m3, text("错误：already said"));
   m3 = applyPatchToMessage(m3, { type: "assistant_end", taskId: "t", messageId: "m1", error: "already said" });
   const fb3 = nonEmptyFinalTextBlocks(m3.finalBlocks);
-  assert(fb3.length === 2 && fb3[1].text === "错误：already said", "错误文本相同 → 不重复追加");
+  assert(fb3.length === 2 && fb3[1].type === "text" && fb3[1].text === "错误：already said", "错误文本相同 → 不重复追加");
 }
 
 console.log("== 场景⑦：无正文 cancel 不制造空白块 ==");

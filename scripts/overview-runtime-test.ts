@@ -38,7 +38,7 @@ function assert(cond: boolean, label: string): void {
 const NOW = 1_000_000;
 
 function msg(partial: Partial<ChatMessage> & { id: string }): ChatMessage {
-  return { role: "assistant", blocks: [], ...(partial as ChatMessage) };
+  return { role: "assistant", blocks: [], createdAt: NOW, ...partial };
 }
 
 function subagentDto(partial: Partial<SubagentSummaryDto> & { subagentId: string }): SubagentSummaryDto {

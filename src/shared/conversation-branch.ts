@@ -3,13 +3,20 @@
  *
  * 领域名统一使用 ConversationBranch，避免与 Git branch、Workspace Tree、Pi 内部
  * branch 混淆（实施规划 §3.1）。本文件只承载 DTO / 枚举 / IPC 常量 / 错误码，
- * 所有定位、物化、继承逻辑都在主进程（session-branch.ts / ConversationBranchService.ts）。
+ * 所有定位、物化、继承逻辑都在主进程（DurableTaskBranch.ts / ConversationBranchService.ts）。
  *
  * Renderer 请求中禁止出现：sessionFile、cwd、parentTitle、rootTaskId、
  * sourceLeafEntryId、Project/Space policy 文本——这些全部由主进程从可信 Task 和
- * session 解析（实施规划 §5.3）。
+ * Durable 历史解析（实施规划 §5.3）。
  */
 import type { TaskDto } from "./agent-ipc";
+
+export class ConversationBranchDomainError extends Error {
+  constructor(readonly code: ConversationBranchErrorCode, message: string) {
+    super(message);
+    this.name = "ConversationBranchDomainError";
+  }
+}
 
 /** 分支点相对所选 user 消息的位置（实施规划 §3.2） */
 export type ConversationBranchPosition = "after_user" | "after_reply";
@@ -28,7 +35,7 @@ export type ConversationBranchWorkspaceStrategy =
 export interface CreateConversationBranchRequest {
   sourceTaskId: string;
   /**
-   * 主锚点：所选消息的真实 Pi session entry id（由 loadTaskHistory 透传的
+   * 主锚点：所选消息的真实 Durable entry id（由 loadTaskHistory 透传的
    * ChatMessageDto.entryId 提供）。主进程以它在 active branch 中的位置为准
    * （实施规划 §7.1 评审裁决 1-4）。
    */

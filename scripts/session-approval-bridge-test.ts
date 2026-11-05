@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   registry.set(live);
   assert.equal(binding.getPermissionMode(), "default", "live session permission overrides create-time fallback");
 
-  const externalPromise = binding.requestExternalWriteApproval({
+  const externalPromise = binding.requestExternalWriteApproval({ taskId: "approval-task",
     toolCallId: "ext-1",
     toolName: "write",
     summary: "Write outside task root",
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
 
   live.permissionMode = "auto";
   assert.deepEqual(
-    await binding.requestExternalWriteApproval({
+    await binding.requestExternalWriteApproval({ taskId: "approval-task",
       toolCallId: "ext-auto",
       toolName: "write",
       summary: "Auto external",
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
 
   live.permissionMode = "readonly";
   assert.deepEqual(
-    await binding.requestExternalWriteApproval({
+    await binding.requestExternalWriteApproval({ taskId: "approval-task",
       toolCallId: "ext-ro",
       toolName: "write",
       summary: "Readonly external",

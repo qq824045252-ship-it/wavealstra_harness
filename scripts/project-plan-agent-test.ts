@@ -99,7 +99,7 @@ db.upsertTask({ id: "task-none", title: "无项目任务", updatedAt: 4, welcome
   service.updateTodo({ id: doingTech.id, status: "done" });
   const ctxAfter = resolver.resolveTask("task-a")!;
   assertOk(ctxAfter.version !== versionBefore, "version: todo update 触发版本变化");
-  assertOk(ctxAfter.planSummary.byStatus.done === 2, "version: 更新后计数反映（done=2）");
+  assertOk(ctxAfter.planSummary?.byStatus.done === 2, "version: 更新后计数反映（done=2）");
   service.updateTodo({ id: doingTech.id, status: "doing" });
   assertOk(resolver.resolveTask("task-a")!.version !== ctxAfter.version, "version: 恢复后版本再变");
   const temp = service.createTodo({ projectId: projectP.id, title: "临时项" });
@@ -294,16 +294,16 @@ const createdId: string = await (async () => {
 {
   db.upsertTask({ id: "task-a", title: "Task A", updatedAt: Date.now(), projectId: projectP.id, status: "completed" });
   const ctx = resolver.resolveTask("task-a")!;
-  assertOk(ctx.planSummary.byStatus.done === 2, "human-todo: 任务完成不自动把计划项置 done（无绑定/自动映射）");
+  assertOk(ctx.planSummary?.byStatus.done === 2, "human-todo: 任务完成不自动把计划项置 done（无绑定/自动映射）");
 }
 
 /* 6. 同项目 Task B 看到 Task A 更新后的计划（验收场景 3） */
 {
   const ctxB = resolver.resolveTask("task-b")!;
-  assertOk(ctxB.planSummary.total === 65, "taskB: 计划总数含 Task A 新增（63+确认高温版本交期+带日期项）");
-  assertOk(ctxB.planSummary.byStatus.done === 2, "taskB: 看到 Task A 把技术选型置 done");
-  assertOk(ctxB.planSummary.byStatus.todo === 63, "taskB: 新增项计数");
-  assertOk(ctxB.planSummary.active.some((t) => t.title === "确认高温版本交期"), "taskB: active slice 含 Task A 新增项");
+  assertOk(ctxB.planSummary?.total === 65, "taskB: 计划总数含 Task A 新增（63+确认高温版本交期+带日期项）");
+  assertOk(ctxB.planSummary?.byStatus.done === 2, "taskB: 看到 Task A 把技术选型置 done");
+  assertOk(ctxB.planSummary?.byStatus.todo === 63, "taskB: 新增项计数");
+  assertOk(ctxB.planSummary?.active.some((t) => t.title === "确认高温版本交期") === true, "taskB: active slice 含 Task A 新增项");
   const { tools } = makeBridge();
   const list = await byName(tools, "project_plan_list").execute("tc", { status: "done" } as never);
   assertOk((list.details as { total: number }).total === 2, "taskB: 工具读到最新 done 项");

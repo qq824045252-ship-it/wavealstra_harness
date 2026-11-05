@@ -74,7 +74,7 @@ db.upsertTask({ id: "task-none", title: "无项目任务", updatedAt: 4, welcome
 /* ---------------- 1. One Memory source, no stored prompt duplicate ---------------- */
 {
   const ctxA = resolver.resolveTask("task-a");
-  assertOk(ctxA != null && ctxA.memorySummary == null, "resolver: 项目上下文不携带第二份 Memory 摘要");
+  assertOk(ctxA != null && !("memorySummary" in ctxA), "resolver: 项目上下文不携带第二份 Memory 摘要");
   const stored = service.listMemory(projectP.id);
   assertOk(stored.length === 4, "memory: 四条真实记录");
   assertOk(stored.filter(m => m.status === "active").length === 4, "memory: active 状态正确");
@@ -120,7 +120,7 @@ const qId: string = (() => {
   const projected = memory.resolveContext({ taskId: "task-a", query: "交期", trackRecall: false });
   assertOk(projected.items.every(item => item.scopeType !== "project" || item.scopeId === projectP.id), "projection: 只召回当前项目范围");
 
-  const roSegments = assembleProjectContextSegments(ctxA, { memoryReadOnly: true });
+  const roSegments = assembleProjectContextSegments(ctxA, { planReadOnly: true });
   assertOk(!roSegments.some((s) => s.id === "projectMemory"), "assembly: 只读变体同样不重复注入 Memory");
 
   // 空记忆项目也不生成第二份摘要；统一 Memory Kernel 由独立装配链负责。

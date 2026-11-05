@@ -377,7 +377,7 @@ async function main(): Promise<void> {
     assert.equal(isSideEffectTool("runtime_probe", { action: "read" }), false);
     assert.equal(isSideEffectTool("runtime_probe", { action: "mark" }), false);
     assert.equal(isSideEffectTool("video_generate", {}), true);
-    const readonly = resolveSessionToolSelection("readonly", { mode: "inherit" });
+    const readonly = resolveSessionToolSelection("readonly", { mode: "soft", prefer: [], demote: [], deny: [] });
     assert(readonly.excludeTools?.includes("video_generate"));
     assert(readonly.excludeTools?.includes("execute_code"));
 

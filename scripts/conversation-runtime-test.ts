@@ -57,7 +57,6 @@ try {
 
   const created = goals.create({ taskId: "task-a", title: "交付", criteria: [{ text: "类型检查通过" }] });
   assert.equal(created.ok, true);
-  if (!created.ok) throw new Error(created.message);
   assert.equal(goals.create({ taskId: "task-a", title: "冲突" }).ok, false);
   const progressed = goals.update({
     goalId: created.goal.id,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
-import { durableDelta, applyDurableDelta } from "../shared/src/durable-sync";
+import { durableDelta, applyDurableDelta, replayDurableDeltas } from "../shared/src/durable-sync";
 import { REMOTE_API_VERSION, type RemoteEventEnvelope } from "../shared/src/remote-contract";
 import { applyEvent, useRemoteStore } from "../app/remote/src/store/remoteStore";
 import { RemoteClient } from "../app/remote/src/api/RemoteClient";
@@ -39,6 +39,10 @@ const mapped = mapAgentPatchToRemoteEvent({ type: "durable_delta", taskId: "task
 assert(!JSON.stringify(mapped).includes("C:/private"), "remote delta upserts use the existing field projection");
 
 const realFetch = globalThis.fetch;
+const restarted = { ...snapshot(1), epoch: "epoch-two" };
+const restartedNext = { ...snapshot(2), epoch: "epoch-two" };
+assert.deepEqual(replayDurableDeltas(restarted, [delta, update(restarted, restartedNext)]), { snapshot: restartedNext, gap: false });
+assert.equal(replayDurableDeltas(restarted, [update({ ...restarted, revision: 3 }, { ...restarted, revision: 4 })]).gap, true);
 let reads = 0, releaseHistory!: () => void;
 const blockedHistory = new Promise<void>(resolve => { releaseHistory = resolve; });
 const client = new RemoteClient("http://durable-sync-fixture", "token");
@@ -63,7 +67,33 @@ try {
   assert.equal(useRemoteStore.getState().histories.task.durable?.revision, 5);
   emit(mapAgentPatchToRemoteEvent({ type: "durable_delta", taskId: "task", delta }));
   assert.equal(reads, 1);
+  globalThis.fetch = async input => {
+    if (String(input).endsWith("/history")) { reads++; return Response.json({ taskId: "task", messages: restarted.messages, durable: restarted }); }
+    return Response.json({ taskId: "task", busy: true, interactions: [], pendingActions: [], activeGoal: null });
+  };
+  emit(mapAgentPatchToRemoteEvent({ type: "durable_delta", taskId: "task", delta: update(snapshot(7), snapshot(8)) }));
+  emit(mapAgentPatchToRemoteEvent({ type: "durable_delta", taskId: "task", delta: update(restarted, restartedNext) }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(reads, 2, "a new-epoch snapshot discards the old-epoch trigger without another history read");
+  assert.equal(useRemoteStore.getState().histories.task.durable?.epoch, "epoch-two");
+  assert.equal(useRemoteStore.getState().histories.task.durable?.revision, 2);
 } finally { globalThis.fetch = realFetch; useRemoteStore.setState({ client: null }); }
+
+// The host accepts the first POST but the client loses its response and resets UI overrides.
+const posted: Array<Record<string, unknown>> = [];
+globalThis.fetch = async (_url, options) => {
+  posted.push(JSON.parse(String(options?.body)));
+  if (posted.length === 1) throw new Error("response lost after admission");
+  return Response.json({ receipt: { operationId: posted.at(-1)?.operationId } });
+};
+try {
+  const original = { text: "retry draft", modelId: "fixture/selected", permissionMode: "auto" as const };
+  await assert.rejects(client.prompt("retry-task", original), /response lost/);
+  await new RemoteClient("http://durable-sync-fixture", "token").prompt("retry-task", { text: original.text });
+  assert.deepEqual(posted[1], posted[0], "reconnect reuses both the operation ID and the original request body");
+  await client.prompt("retry-task", { text: original.text });
+  assert.notEqual(posted[2].operationId, posted[0].operationId, "an acknowledged draft can be submitted as a new operation");
+} finally { globalThis.fetch = realFetch; }
 
 const streamEvents: RemoteEventEnvelope[] = [];
 class StreamClient extends RemoteClient {

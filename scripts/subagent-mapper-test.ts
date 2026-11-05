@@ -55,7 +55,7 @@ console.log("== subagent onUpdate → renderer patch（tool_execution_update） 
   const p = patches[0];
   // 契约：tool_start 已置 status=running；中间态更新走 tool_update + output（累计）
   assert(p.type === "tool_update", "中间态 → tool_update");
-  assert(typeof p.output === "string" && p.output.length > 0, "output 含中间态文本");
+  assert(p.type === "tool_update" && typeof p.output === "string" && p.output.length > 0, "output 含中间态文本");
 }
 
 console.log("== subagent 完成/错误 → renderer patch ==");
@@ -89,7 +89,7 @@ console.log("== 危险工具判定（subagent 自身不是危险工具；内部 
 console.log("== summarizeToolInput 对 subagent 参数形态鲁棒 ==");
 {
   const s = summarizeToolInput("subagent", { agent: "worker", task: "a".repeat(500), tasks: [] });
-  assert(s.summary.length <= 120 && s.detail.length > 100, "长参数安全截断");
+  assert(s.summary.length <= 120 && (s.detail?.length ?? 0) > 100, "长参数安全截断");
 }
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);

@@ -39,6 +39,7 @@ declare global {
       renderPptx: (file: string | null) => Promise<void>;
       debugDocxParse: (dataUrl: string) => Promise<string>;
       debugDocxImport: () => Promise<string>;
+      debugDocxStage: (dataUrl: string, stage: string) => Promise<string>;
       stats: () => {
         active: number;
         stageListeners: number;
@@ -116,7 +117,7 @@ async function renderChatSvg(file: string): Promise<void> {
     updatedAt: 1,
   };
   useAppStore.setState({
-    tasks: [{ id: taskId, cwd: "C:/task" }],
+    tasks: [{ id: taskId, title: "Preview fixture", updatedAt: 1, messages: [], cwd: "C:/task" }],
     artifactProjection: {
       artifactsByTask: { [taskId]: [descriptor] },
       artifactRevisions: { [taskId]: 1 },
@@ -267,7 +268,7 @@ async function main(): Promise<void> {
       if (stage === "render") {
         const parsed = await mod.parseAsync(blob, { breakPages: true, renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true, inWrapper: true, className: "docx" });
         const nodes = await mod.renderDocument(parsed, { breakPages: true, renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true, inWrapper: true, className: "docx" });
-        const wrapper = nodes.find((n) => n.className && String(n.className).includes("docx-wrapper")) as HTMLElement | undefined;
+        const wrapper = nodes.find((n): n is HTMLElement => n instanceof HTMLElement && n.className.includes("docx-wrapper"));
         const sections = wrapper ? wrapper.querySelectorAll("section.docx").length : -1;
         return "render ok nodes=" + nodes.length + " sections=" + sections + " kids=" + (wrapper ? wrapper.children.length : -1);
       }

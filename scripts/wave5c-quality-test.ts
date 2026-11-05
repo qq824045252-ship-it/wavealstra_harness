@@ -92,14 +92,14 @@ function pure() {
 async function realPdfjs() {
   const open = async (name: string) => {
     const data = readFileSync(join(FIX, name));
-    const doc = await getDocument({ data: new Uint8Array(data), isEvalSupported: false }).promise;
+    const doc = await getDocument({ data: new Uint8Array(data) }).promise;
     return doc;
   };
   const pageText = async (doc: Awaited<ReturnType<typeof open>>, pageNumber: number): Promise<string> => {
     const page = await doc.getPage(pageNumber);
     const content = await page.getTextContent();
     page.cleanup();
-    return content.items.map((i: { str?: string }) => i.str ?? "").join(" ");
+    return content.items.map(i => "str" in i ? i.str : "").join(" ");
   };
 
   const simple = await open("pdf-simple.pdf");

@@ -30,7 +30,7 @@ function ok(cond: unknown, label: string): void {
     McpIpc.statusEvent,
   ];
   ok(new Set(allChannels).size === allChannels.length, "1.1 btw:event 与 agent/cron/gateway/mcp 通道互不重合");
-  ok(BtwIpc.event !== AgentIpc.event, "1.2 BTW 事件不走 agent:event");
+  ok(![String(AgentIpc.event)].includes(BtwIpc.event), "1.2 BTW 事件不走 agent:event");
 }
 
 const repo = process.cwd();

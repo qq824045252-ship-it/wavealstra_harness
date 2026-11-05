@@ -33,6 +33,8 @@ import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
 import type { ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
+import type { CreateConversationBranchRequest } from "../../../shared/conversation-branch";
+import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, type MaterializedDurableBranch } from "./DurableTaskBranch";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 interface BotModelRepair { from: string; to: string }
@@ -590,6 +592,44 @@ export class DurableBotService {
   async refresh(taskId: string): Promise<void> {
     const open = this.opened.get(taskId);
     if (open) await open.runtime.refresh();
+  }
+
+  async previewBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {
+    return this.trackAdmission(request.sourceTaskId, async () => resolveDurableBranch((await this.open(request.sourceTaskId)).runtime, request));
+  }
+
+  async materializeBranch(sourceTaskId: string, childTaskId: string, cwd: string, anchor: DurableBranchAnchor): Promise<MaterializedDurableBranch> {
+    const initialBranch = await this.trackAdmission(sourceTaskId, async () => captureDurableBranch((await this.open(sourceTaskId)).runtime, anchor));
+    const directory = join(this.options.agentDir, "durable", createHash("sha256").update(childTaskId).digest("hex"));
+    const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, initialBranch,
+      toolMode: "native", toolAllowed: () => false, instructions: () => "", onSnapshot: () => {} });
+    try {
+      const entries = await runtime.conversation.entries({ order: "descending" }, 1, undefined, context);
+      const inheritedLastEntryId = entries.items[0]?.id;
+      if (inheritedLastEntryId === undefined) throw new Error("分支历史未写入持久存储");
+      return { directory, inheritedLastEntryId };
+    } finally { await runtime.close(); }
+  }
+
+  commitBranch(taskId: string, cwd: string, branch: MaterializedDurableBranch): void {
+    this.options.db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, branch.directory, cwd);
+    this.options.db.connection.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, branch.inheritedLastEntryId);
+  }
+
+  async inheritedBranchMessages(taskId: string): Promise<Map<string, string>> {
+    const { runtime } = await this.open(taskId);
+    const messages = new Map<string, string>();
+    let cursor: Cursor | undefined;
+    do {
+      const page = await runtime.conversation.entries({ order: "ascending" }, 500, cursor, context);
+      for (const entry of page.items) {
+        const data = entry.data;
+        if (entry.model?.some(message => message.role === "assistant") && data && typeof data === "object" && !Array.isArray(data)
+          && data.inherited === true && typeof data.sourceEntryId === "string") messages.set(data.sourceEntryId, `durable-${entry.id}`);
+      }
+      cursor = page.next;
+    } while (cursor);
+    return messages;
   }
   async abort(taskId: string): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.

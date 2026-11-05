@@ -244,6 +244,11 @@ export function parseSubagentArchive(text: string): SubagentArchiveEntry[] {
   return out;
 }
 
+export interface UsageQueryRow extends UsageEventRow {
+  responseId: string | null;
+  backfilled: number;
+}
+
 export class UsageStatsService {
   private coverageAvailable = true;
   constructor(private readonly db: Database) {
@@ -261,8 +266,7 @@ export class UsageStatsService {
     const reported = input.reportedUsage;
     const usage = reported ? { ...message.usage, input: reported.input ?? 0, output: reported.output ?? 0,
       cacheRead: reported.cacheRead ?? 0, cacheWrite: reported.cacheWrite ?? 0,
-      totalTokens: (reported.input ?? 0) + (reported.output ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0),
-      cost: { ...message.usage?.cost, total: reported.costTotal ?? 0 } } : message.usage ?? null;
+      totalTokens: (reported.input ?? 0) + (reported.output ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0) } : message.usage ?? null;
     const attributed = applyMyBuddyModelAttribution(message, input.modelId);
     const entryId = input.persistedEntryId ?? `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
     const total =
@@ -325,7 +329,7 @@ export class UsageStatsService {
       });
     if (reported && this.coverageAvailable) try {
       this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
-        .run(entryId, Number(reported.input !== null), Number(reported.output !== null), Number(reported.cacheRead !== null), Number(reported.cacheWrite !== null), Number(reported.costTotal !== null));
+        .run(entryId, Number(reported.input !== null), Number(reported.output !== null), Number(reported.cacheRead !== null), Number(reported.cacheWrite !== null), Number(typeof message.usage?.cost?.total === "number" && Number.isFinite(message.usage.cost.total)));
     } catch { /* Unknown coverage must not affect a completed model call. */ }
   }
 
@@ -365,7 +369,7 @@ export class UsageStatsService {
 
   // ---------- 查询 ----------
 
-  queryRows(opts: { since?: number; until?: number; sourceKinds?: string[] }): UsageEventRow[] {
+  queryRows(opts: { since?: number; until?: number; sourceKinds?: string[] }): UsageQueryRow[] {
     const where: string[] = [];
     const args: unknown[] = [];
     if (opts.since !== undefined) {
@@ -395,7 +399,7 @@ export class UsageStatsService {
       FROM usage_events e ${this.coverageAvailable ? "LEFT JOIN usage_event_coverage c ON c.entry_id=e.entry_id" : ""}
       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY ts ASC`;
-    const rows = this.db.prepare<unknown[], UsageEventRow & { inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null; cacheWriteKnown: number | null; costKnown: number | null }>(sql).all(...args);
+    const rows = this.db.prepare<unknown[], UsageQueryRow & { inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null; cacheWriteKnown: number | null; costKnown: number | null }>(sql).all(...args);
     return rows.map(row => {
       const known = {
       input: row.inputKnown === null ? row.sourceDetail !== "pi-durable" && row.inputTokens > 0 : row.inputKnown === 1,

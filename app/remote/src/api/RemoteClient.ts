@@ -143,7 +143,9 @@ export class RemoteClient {
   }
   private async submitPrompt(path: string, request: Omit<RemotePromptRequest, 'operationId'>): Promise<RemotePromptResponse> {
     const pending = await pendingPromptOperation(this.baseUrl, path, JSON.stringify(request))
-    const result = await this.post<RemotePromptResponse>(path, { ...request, operationId: pending.operationId })
+    const original: unknown = JSON.parse(pending.serializedInput)
+    if (!original || typeof original !== 'object' || Array.isArray(original)) throw new Error('无效的待发送草稿')
+    const result = await this.post<RemotePromptResponse>(path, { ...original, operationId: pending.operationId })
     if (result.receipt) await acknowledgePromptOperation(pending.key, pending.operationId).catch(() => undefined)
     return result
   }

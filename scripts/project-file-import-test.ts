@@ -124,7 +124,7 @@ async function main(): Promise<void> {
   ok(rName.event.title.length === PROJECT_EVENT_TITLE_MAX_CHARS, "8. 超长文件名事件标题截断到 200");
 
   /* ============ 9. 文件事件 promotion 语义：不可再存为资料（不复制真源），可提升记忆 ============ */
-  await throwsAsync(() => promoter.promote(r1.event.id, { targetKind: "library", libraryTitle: "重复", libraryContent: "重复" }), "9. 文件事件提升为资料被拒（已关联真源）");
+  await throwsAsync(async () => promoter.promote(r1.event.id, { targetKind: "library", libraryTitle: "重复", libraryContent: "重复" }), "9. 文件事件提升为资料被拒（已关联真源）");
   const rMem = promoter.promote(r1.event.id, { targetKind: "memory", memoryKind: "risk", memoryTitle: "上游可能延期", memoryContent: "风险记录" });
   ok(!rMem.reused && projects.getMemory("proj-a", rMem.targetId) !== undefined, "9b. 文件事件提升为记忆成功");
   ok(
@@ -206,6 +206,7 @@ async function main(): Promise<void> {
   const db2 = new AppDatabase(dbPath);
   const projects2 = new ProjectService(new ProjectRepository(db2.connection), new MemoryService(db2, { semantic: false }));
   const library2 = new LibraryService(db2, { libraryRoot: libRoot });
+  if (!firstId) throw new Error("Fixture event was not persisted");
   const after = projects2.getProjectEvent(firstId);
   ok(after !== undefined && after.source === "document" && after.ref?.length === 64, "12. 重启后事件仍在（哈希 ref）");
   const afterItemId = typeof after?.payload?.libraryItemId === "string" ? after.payload.libraryItemId : undefined;

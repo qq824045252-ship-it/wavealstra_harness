@@ -31,7 +31,7 @@
  * 退出码：全部硬规则 PASS = 0；任一 FAIL = 1。
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 /** 仓库根：从 cwd 向上找含 package.json 的目录（bundle 后 __dirname 不可靠） */
 function findRoot(start: string): string {

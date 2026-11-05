@@ -105,7 +105,7 @@ try {
   assert.equal(agent.kernelSkillLearningStatus().failedTurns, 1);
   assert.equal(agent.kernelSkillLearningStatus().retryableFailedTurns, 0, "trashed failures stay visible but are not offered for retry");
   assert.equal(agent.kernelSkillLearningStatus().pendingTurns, 0);
-  db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "live", createdAt: Date.now(), updatedAt: Date.now() });
+  db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "active", createdAt: Date.now(), updatedAt: Date.now() });
   console.log("PASS real approval/file/activation/runtime selection, scope isolation and lost-source diagnosis");
 
   current = { ...current, kind: "fact", title: "伪造事实" };

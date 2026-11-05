@@ -1026,18 +1026,18 @@ void (async () => {
     await library.indexExtractedText(corruptPdf.id);
     ok((await retrieval.getExtractionStatus(corruptPdf)).status !== "extracted", "损坏 pdf → 抽取失败（降级）");
 
-    // 加密 zip（传统弱加密）：jszip 透明处理（无密码可读），抽取正常即可；无需特殊降级
+    // 普通 ZIP 包装的 DOCX；JSZip 不支持生成加密归档。
     const encZip = new JSZip();
     encZip.file("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>机密加密文档内容</w:t></w:r></w:p></w:body></w:document>");
-    const encBuf = await encZip.generateAsync({ type: "nodebuffer", password: "secret123" });
+    const encBuf = await encZip.generateAsync({ type: "nodebuffer" });
     const encFile = join(offDir, "enc.docx");
     writeFileSync(encFile, encBuf as unknown as Uint8Array);
     const encItem = library.importFile({ spaceId: aSpace.id, sourcePath: encFile });
     await library.indexExtractedText(encItem.id);
     const encStatus = await retrieval.getExtractionStatus(encItem);
-    ok(encStatus.status === "extracted", "加密 docx（传统弱加密）jszip 透明抽取正常");
+    ok(encStatus.status === "extracted", "普通 DOCX 的 ZIP 内容抽取正常");
     const encRead = await retrieval.read("task-ka", encItem.id);
-    ok(!encRead.requiresFileAccess && encRead.content.includes("机密加密文档内容"), "加密 docx read 正常（jszip 透明处理）");
+    ok(!encRead.requiresFileAccess && encRead.content.includes("机密加密文档内容"), "普通 DOCX read 返回已抽取正文");
 
     // zip bomb：高压缩比条目（解压总量超限拒绝）
     const bombBuf = await makeZip(

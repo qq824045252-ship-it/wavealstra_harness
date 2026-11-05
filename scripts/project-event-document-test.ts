@@ -215,6 +215,7 @@ async function main(): Promise<void> {
   db.close();
   const db2 = new AppDatabase(dbPath);
   const projects2 = new ProjectService(new ProjectRepository(db2.connection), new MemoryService(db2, { semantic: false }));
+  if (!firstId) throw new Error("Fixture event was not persisted");
   const after = projects2.getProjectEvent(firstId);
   ok(after !== undefined && after.source === "document" && after.ref?.length === 64, "10. 重启后 document 事件仍在（含哈希 ref）");
   ok(projects2.getMemory("proj-a", rPromo.targetId) !== undefined, "10b. 重启后提升目标仍在");

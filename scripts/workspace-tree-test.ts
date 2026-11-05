@@ -1385,7 +1385,7 @@ async function main(): Promise<void> {
       assert(nullTransfer === null, "null transfer 返回 null");
       // 模拟 handleRowDrop 的同步 local 变量：即使 pending 的 dragged 为空，resolve 后 local activeDragged 立即可用（不依赖 setState 异步）
       let dragged: { id: string; kind: "space" | "task"; parentId: string | null } | null = null;
-      let activeDragged = dragged;
+      let activeDragged: ReturnType<typeof resolveDraggedFromTransfer> = dragged;
       if (!activeDragged) {
         const resolved = resolveDraggedFromTransfer({ dataTransfer: fakeTaskTransfer, spaces: spaces as any, tasks: tasks as any });
         if (resolved) activeDragged = resolved;
@@ -1691,8 +1691,11 @@ async function main(): Promise<void> {
       const tasksFiltered: TaskDto[] = tasksAll.filter((t) => t.id !== "tHidden");
       const treeAll = buildWorkspaceTree(spacesDto, tasksAll);
       const treeFiltered = buildWorkspaceTree(spacesDto, tasksFiltered);
-      const allChildren = treeAll.find((n) => n.id === "r")!.children.map((c) => c.id).join(",");
-      const filteredChildren = treeFiltered.find((n) => n.id === "r")!.children.map((c) => c.id).join(",");
+      const allRoot = treeAll.find((n) => n.id === "r");
+      const filteredRoot = treeFiltered.find((n) => n.id === "r");
+      assertStrict(allRoot && "children" in allRoot && filteredRoot && "children" in filteredRoot);
+      const allChildren = allRoot.children.map((c) => c.id).join(",");
+      const filteredChildren = filteredRoot.children.map((c) => c.id).join(",");
       assert(allChildren === "t1,tHidden,t2,t3", `全量 t1,tHidden,t2,t3 实际 ${allChildren}`);
       assert(filteredChildren === "t1,t2,t3", `筛选后 t1,t2,t3 实际 ${filteredChildren}`);
       // 模拟拖拽 t3 到 t1 之后（visual filtered 中 t1 后即 t2 前），但 DB 需计入 hidden
@@ -1710,8 +1713,8 @@ async function main(): Promise<void> {
       const dbAllChildren = db.connection.prepare("SELECT id FROM tasks WHERE space_id='r' ORDER BY space_sort_order ASC").all() as any[];
       assert(dbAllChildren.map((r: any) => r.id).join(",") === "t1,tHidden,t2,t3", `DB all 顺序 ${dbAllChildren.map((r: any) => r.id).join(",")}`);
       // 验证 mixedIndexToKindIndex 基于全量 vs 筛选：拖动 t3 到 t1 之后
-      const parentAll = treeAll.find((n) => n.id === "r")!.children;
-      const parentFiltered = treeFiltered.find((n) => n.id === "r")!.children;
+      const parentAll = allRoot.children;
+      const parentFiltered = filteredRoot.children;
       // 拖 t3 (在 all 中最后) 到 all[1] 之后（t1 后，hidden 前）visual 1
       const tiAll = mixedIndexToKindIndex(parentAll, "t3", "task", 1);
       // filtered 中同样位置（t1 后）

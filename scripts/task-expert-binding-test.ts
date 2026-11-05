@@ -124,6 +124,7 @@ try {
     execute: async (_args, _api, ctx) => {
       held++;
       await new Promise<void>((_resolve, reject) => {
+        assert(ctx.abortSignal);
         if (ctx.abortSignal.aborted) reject(new Error("aborted"));
         else ctx.abortSignal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });

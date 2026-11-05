@@ -236,6 +236,7 @@ import {
   assert.equal(request.templateId, "software-development", "request carries templateId");
   assert.equal(request.resourceBudgetChars, DEFAULT_PROJECT_RESOURCE_BUDGET_CHARS);
 
+  assert(request.policies?.expert && request.policies.skill && request.policies.connector && request.policies.mcp);
   assert.deepEqual(request.policies.expert.allow, ["code-review-expert", "debug-expert"], "dedup + empty filter");
   assert.deepEqual(
     request.policies.expert.recommended,
@@ -257,6 +258,7 @@ import {
   const shrunk = createDraftFromTemplate("software-development");
   shrunk.experts = ["debug-expert"];
   const plan = buildProjectCreationPlan(shrunk);
+  assert(plan.request.policies?.expert);
   assert.deepEqual(plan.request.policies.expert.allow, ["debug-expert"]);
   assert.deepEqual(plan.request.policies.expert.recommended, ["debug-expert"], "removed item no longer recommended");
 
@@ -264,6 +266,7 @@ import {
   const empty = createDraftFromTemplate("blank");
   const blankPlan = buildProjectCreationPlan(empty);
   assert.equal(blankPlan.request.templateId, "blank");
+  assert(blankPlan.request.policies?.expert);
   assert.deepEqual(blankPlan.request.policies.expert.allow, []);
   assert.equal(blankPlan.request.description, undefined);
 
