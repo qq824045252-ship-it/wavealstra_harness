@@ -1,0 +1,19 @@
+// Exact excerpts from https://github.com/qq824045252-ship-it/wavealstra_harness/blob/1d31faac8fe45d29cf4cc30f0cd821ec50722dc7/src/main/db/AppDatabase.ts
+// Lines 59 and 504-518. This is a review fixture, not an application module.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
+
+CREATE TABLE IF NOT EXISTS conversation_goals (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL CHECK (status IN ('active','paused','blocked','achieved','cancelled')),
+        criteria_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(criteria_json)),
+        progress_summary TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL CHECK (created_by IN ('user','agent_explicit_request')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        achieved_at INTEGER,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      );

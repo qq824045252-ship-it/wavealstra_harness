@@ -1,0 +1,25 @@
+{
+  "freshDdl": {
+    "tables": 12,
+    "userVersion": 28
+  },
+  "staleExpertApproval": {
+    "activeVersion": 3,
+    "hash": "prompt-hash-of-version-2"
+  },
+  "migrationEnums": {
+    "oldStatus": "met",
+    "newStatus": "pending",
+    "oldCreatedBy": "agent_explicit_request",
+    "newCreatedBy": "user"
+  },
+  "twoTruthStores": {
+    "amendOk": true,
+    "workTitle": "work title changed",
+    "legacyTitle": "legacy title"
+  },
+  "currentAppWouldRejectVersion": {
+    "currentVersion": 27,
+    "afterDraftMigration": 28
+  }
+}
