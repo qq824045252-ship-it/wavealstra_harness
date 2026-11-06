@@ -6,6 +6,7 @@ import type {
   ArtifactKind,
   WorkspaceFileNodeDto,
   WorkspaceFilePreviewDto,
+  WorkspaceFileThumbnailDto,
 } from "../../shared/agent-ipc";
 import {
   OFFICE_PREVIEW_MAX_BYTES,
@@ -213,7 +214,161 @@ export async function officeTextPreview(kind: string, dataUri: string, name: str
   return `[office ${kind}]`;
 }
 
-export async function previewWorkspaceFile(filePath: string): Promise<WorkspaceFilePreviewDto> {
+/**
+ * 内联缩略图的显示上限（P0：图片消息拖动卡）。
+ *
+ * ChatImage 的显示上限是 480 CSS px；DPR 2 时需要 960 设备像素，长边 1280
+ * 覆盖 4:3 的 960×1280。再大就只是白解码 —— 原图解码后的位图面积
+ * （width×height×4）才是滚动时反复 evict/重解的根源，CSS 的 maxHeight 不减少它。
+ */
+const IMAGE_THUMBNAIL_MAX_EDGE = 1280;
+const IMAGE_THUMBNAIL_JPEG_QUALITY = 80;
+/** 缩略图体积预算：超了让 pi 继续降质/降尺寸，别拿 1MB 的副本当缩略图 */
+const IMAGE_THUMBNAIL_MAX_BYTES = 320 * 1024;
+/**
+ * 内联等待预算（实测 pi/photon 解一张 12.6MP 的 JPEG 要约 1.2s，0.9MP 约 0.1s）：
+ * 超出预算就先把原图交给渲染、本次不挂缩略图，生成继续在后台跑完并进缓存。
+ * 缩略图是"下一次看同一张图"的收益，绝不能变成首屏新增的等待。
+ */
+const IMAGE_THUMBNAIL_INLINE_BUDGET_MS = 400;
+/** 进程内缩略图缓存条数（每条约 ≤320KB base64）：滚动回看、重开面板都命中它 */
+const IMAGE_THUMBNAIL_CACHE_LIMIT = 64;
+/** 只降采样单帧位图：GIF/ICO 回落到原图，避免把动图变成静帧 */
+const THUMBNAILABLE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp"]);
+
+export interface PreviewWorkspaceFileOptions {
+  /**
+   * 图像额外产出一份内联缩略图。缺省 false：content 与对外行为完全不变；
+   * 只有明确要内联展示的调用方（Artifact Domain readContent → ChatImage）开启。
+   */
+  thumbnail?: boolean;
+}
+
+const thumbnailCache = new Map<string, WorkspaceFileThumbnailDto | undefined>();
+
+/**
+ * 全局并发上限（2）：pi 的 resizeImage 每次调用都会 new 一个 worker 线程。
+ * 一条 38 图的消息会并发打进来 38 个 readContent，不限流就是 38 个线程 + 38 份 wasm。
+ */
+let thumbnailFreeSlots = 2;
+const thumbnailWaiters: Array<() => void> = [];
+async function withThumbnailSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (thumbnailFreeSlots > 0) thumbnailFreeSlots -= 1;
+  else await new Promise<void>((release) => thumbnailWaiters.push(release));
+  try {
+    return await run();
+  } finally {
+    const next = thumbnailWaiters.shift();
+    if (next) next();
+    else thumbnailFreeSlots += 1;
+  }
+}
+
+/**
+ * 图像固有尺寸：只读文件头，不解码。
+ * 有了它，即使这一轮还没产出缩略图，内联 <img> 也能在加载完成前把行高钉死。
+ */
+function imageIntrinsicSize(buffer: Buffer): { width: number; height: number } | null {
+  try {
+    if (buffer.length > 24 && buffer.toString("latin1", 1, 4) === "PNG") {
+      return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+    }
+    const head = buffer.toString("latin1", 0, 12);
+    if (head.startsWith("GIF")) return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
+    if (head.startsWith("RIFF") && buffer.toString("latin1", 8, 12) === "WEBP") {
+      const format = buffer.toString("latin1", 12, 16);
+      if (format === "VP8 ") return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff };
+      if (format === "VP8L") {
+        const packed = buffer.readUInt32LE(21);
+        return { width: (packed & 0x3fff) + 1, height: ((packed >> 14) & 0x3fff) + 1 };
+      }
+      if (format === "VP8X") return { width: buffer.readUIntLE(24, 3) + 1, height: buffer.readUIntLE(27, 3) + 1 };
+    }
+    if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < buffer.length) {
+        if (buffer[offset] !== 0xff) { offset += 1; continue; }
+        const marker = buffer[offset + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
+        }
+        offset += 2 + buffer.readUInt16BE(offset + 2);
+      }
+    }
+  } catch {
+    /* 头不完整/格式不认识：交给渲染端按原逻辑处理 */
+  }
+  return null;
+}
+
+/**
+ * 懒加载 pi 的 resizeImage —— 这里必须是动态 import，不能静态 import。
+ *
+ * pi 的 barrel（dist/index.js）在模块求值阶段就会拉进 cli/config 初始化，而
+ * config.js 依赖 import.meta.url；任何间接 import 到本文件的 esbuild CJS 测试
+ * bundle（chat-markdown 等）都会在加载期直接抛 ERR_INVALID_ARG_TYPE。
+ * 动态 import 把 pi 的求值推迟到「真的要产缩略图」那一刻，测试与不需要缩略图
+ * 的调用方完全不碰它。resizeImage 本身跑 worker 线程，worker 起不来时它会自己
+ * 回落 in-process，所以缩略图最坏情况只是慢，不会让预览报错。
+ */
+let piImageResize: Promise<typeof import("@earendil-works/pi-coding-agent")> | null = null;
+function loadPiImageResize(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
+  piImageResize ??= import("@earendil-works/pi-coding-agent");
+  return piImageResize;
+}
+
+/** 真做一次降采样（不含缓存/限流）：只在确实缩小过时返回。 */
+async function resizeToThumbnail(buffer: Buffer, ext: string): Promise<WorkspaceFileThumbnailDto | undefined> {
+  try {
+    const { resizeImage } = await loadPiImageResize();
+    const resized = await resizeImage(buffer, imageMime(ext), {
+      maxWidth: IMAGE_THUMBNAIL_MAX_EDGE,
+      maxHeight: IMAGE_THUMBNAIL_MAX_EDGE,
+      maxBytes: IMAGE_THUMBNAIL_MAX_BYTES,
+      jpegQuality: IMAGE_THUMBNAIL_JPEG_QUALITY,
+    });
+    // 原图本来就在显示尺寸内时，再产一份等大副本只是把 renderer 的字符串内存翻倍
+    if (!resized?.wasResized || !resized.data) return undefined;
+    return {
+      content: `data:${resized.mimeType};base64,${resized.data}`,
+      width: resized.width,
+      height: resized.height,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 缩略图：缓存 → 限流 → 超预算先返回原图（生成继续在后台跑完并进缓存）。
+ * 任何失败都返回 undefined，由调用方回落到原图。
+ */
+function imageThumbnail(buffer: Buffer, ext: string, cacheKey: string): Promise<WorkspaceFileThumbnailDto | undefined> {
+  if (thumbnailCache.has(cacheKey)) return Promise.resolve(thumbnailCache.get(cacheKey));
+  if (!THUMBNAILABLE_IMAGE_EXTENSIONS.has(ext)) return Promise.resolve(undefined);
+  const job = withThumbnailSlot(() => resizeToThumbnail(buffer, ext))
+    .catch(() => undefined)
+    .then((dto) => {
+      if (thumbnailCache.size >= IMAGE_THUMBNAIL_CACHE_LIMIT) {
+        const oldest = thumbnailCache.keys().next().value;
+        if (oldest !== undefined) thumbnailCache.delete(oldest);
+      }
+      thumbnailCache.set(cacheKey, dto);
+      return dto;
+    });
+  return Promise.race([
+    job,
+    new Promise<undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), IMAGE_THUMBNAIL_INLINE_BUDGET_MS);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    }),
+  ]);
+}
+
+export async function previewWorkspaceFile(
+  filePath: string,
+  options?: PreviewWorkspaceFileOptions,
+): Promise<WorkspaceFilePreviewDto> {
   const name = basename(filePath);
   const ext = extname(name).toLowerCase();
   const kind = artifactKindForFile(filePath);
@@ -231,17 +386,35 @@ export async function previewWorkspaceFile(filePath: string): Promise<WorkspaceF
   }
   const buffer = await readFile(filePath);
   let content: string;
+  let thumbnail: WorkspaceFileThumbnailDto | undefined;
+  let size: { width: number; height: number } | null = null;
   if (kind === "docx" || kind === "xlsx" || kind === "pptx") {
     // Wave 5D-1：Office 以二进制 data URI 透传（viewer 渲染字节；文本抽取走 officeTextPreview）
     content = `data:${officeMime(kind)};base64,${buffer.toString("base64")}`;
   } else if (kind === "pdf") content = `data:application/pdf;base64,${buffer.toString("base64")}`;
-  else if (kind === "image") content = `data:${imageMime(ext)};base64,${buffer.toString("base64")}`;
-  else if (kind === "video" || kind === "audio") content = `data:${mediaMime(kind, ext)};base64,${buffer.toString("base64")}`;
+  else if (kind === "image") {
+    // 原图 base64 保留：Artifact 面板"查看原图"与旧渲染路径都依赖它（一个版本内不删）
+    content = `data:${imageMime(ext)};base64,${buffer.toString("base64")}`;
+    // 固有尺寸来自文件头：给渲染端在加载完成前钉住行高的依据
+    size = imageIntrinsicSize(buffer);
+    if (options?.thumbnail) {
+      const st = await stat(filePath);
+      thumbnail = await imageThumbnail(buffer, ext, `${filePath}\u0000${st.mtimeMs}\u0000${st.size}`);
+    }
+  } else if (kind === "video" || kind === "audio") content = `data:${mediaMime(kind, ext)};base64,${buffer.toString("base64")}`;
   else if (kind === "cad") {
     // Mechanical CAD 二进制（FCStd/STL/GLB）：绝不按 UTF-8 文本解析；base64 透传保字节
     content = `data:application/octet-stream;base64,${buffer.toString("base64")}`;
   } else content = buffer.toString("utf-8");
-  return { path: filePath, name, kind, content, language: ext.slice(1) || undefined };
+  return {
+    path: filePath,
+    name,
+    kind,
+    content,
+    language: ext.slice(1) || undefined,
+    ...(size ? { width: size.width, height: size.height } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
+  };
 }
 
 function assertInsideRoot(root: string, target: string): void {

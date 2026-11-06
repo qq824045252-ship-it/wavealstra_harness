@@ -10,6 +10,7 @@
  * 原则（3C）：Renderer 只触发 intent + 提供数据；Artifact 生命周期全部在 Main Domain。
  */
 import type { ArtifactKind as DomainArtifactKind, ArtifactDescriptor, ArtifactRegistration } from "../../../shared/artifact-types";
+import type { WorkspaceFileThumbnailDto } from "../../../shared/agent-ipc";
 import type { Artifact, ArtifactKind as RendererArtifactKind } from "@/types";
 import { languageFromName } from "./workspace";
 
@@ -99,6 +100,14 @@ export interface ArtifactRenderPayload {
    * 否则一律 stale，必须重新 readContent hydration。
    */
   artifactVersion: number;
+  /** 图像固有尺寸（主进程读文件头得到）：渲染端据此在加载前预留行高 */
+  width?: number;
+  height?: number;
+  /**
+   * 图像的内联缩略图：内联展示用它（解码面积小一个量级），content 仍是原图。
+   * 缺失 = 主进程没产出（格式不支持/本来就不大/生成失败）→ 渲染回落 content。
+   */
+  thumbnail?: WorkspaceFileThumbnailDto;
 }
 
 /**

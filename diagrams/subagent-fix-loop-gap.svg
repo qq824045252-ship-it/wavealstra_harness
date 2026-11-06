@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="490" viewBox="0 0 1100 490" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <rect width="1100" height="490" fill="#ffffff"/>
+  <text x="40" y="42" font-size="20" font-weight="700" fill="#0f172a">每一轮都判「没修好」：循环里缺两个校验门</text>
+  <text x="40" y="68" font-size="13" fill="#475569">修复侧全绿，验收侧全红 —— 两头说的其实是两个不同的构建</text>
+
+  <defs>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arw-red" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect x="435" y="42" width="230" height="56" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="550" y="66" font-size="12" fill="#0f172a" text-anchor="middle">① 改源码</text>
+  <text x="550" y="86" font-size="12" fill="#475569" text-anchor="middle">typecheck 绿</text>
+
+  <rect x="785" y="122" width="230" height="56" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="900" y="146" font-size="12" fill="#0f172a" text-anchor="middle">② 单测 7 项 PASS</text>
+  <text x="900" y="166" font-size="12" fill="#475569" text-anchor="middle">git commit</text>
+
+  <rect x="785" y="272" width="230" height="56" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="900" y="296" font-size="12" fill="#0f172a" text-anchor="middle">③ 在运行中的 app 里手测</text>
+  <text x="900" y="316" font-size="12" fill="#475569" text-anchor="middle">子代理跑在被测进程内</text>
+
+  <rect x="435" y="352" width="230" height="56" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="550" y="376" font-size="12" fill="#0f172a" text-anchor="middle">④ 写报告 vN</text>
+  <text x="550" y="396" font-size="12" fill="#475569" text-anchor="middle">只有时间戳，没有构建指纹</text>
+
+  <rect x="55" y="272" width="230" height="56" rx="8" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="170" y="296" font-size="12" fill="#991b1b" text-anchor="middle">⑤ 判「零变化 · 未修复」</text>
+  <text x="170" y="316" font-size="12" fill="#991b1b" text-anchor="middle">与 v3/v4 一字不差</text>
+
+  <rect x="55" y="122" width="230" height="56" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="170" y="146" font-size="12" fill="#0f172a" text-anchor="middle">⑥ 开下一轮</text>
+  <text x="170" y="166" font-size="12" fill="#475569" text-anchor="middle">再改一遍源码</text>
+
+  <line x1="660" y1="76" x2="788" y2="138" stroke="#94a3b8" marker-end="url(#arw)"/>
+  <line x1="900" y1="178" x2="900" y2="268" stroke="#dc2626" stroke-dasharray="6 4" marker-end="url(#arw-red)"/>
+  <circle cx="900" cy="223" r="13" fill="#dc2626"/>
+  <text x="900" y="228" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">✕</text>
+  <text x="924" y="219" font-size="12" font-weight="700" fill="#b91c1c">缺①：重启 / 装载门禁</text>
+  <text x="924" y="236" font-size="11" fill="#7f1d1d">commit 了，但进程还是旧的</text>
+
+  <line x1="790" y1="305" x2="660" y2="375" stroke="#94a3b8" marker-end="url(#arw)"/>
+  <line x1="435" y1="385" x2="288" y2="322" stroke="#94a3b8" marker-end="url(#arw)"/>
+  <line x1="170" y1="272" x2="170" y2="182" stroke="#94a3b8" marker-end="url(#arw)"/>
+  <line x1="285" y1="145" x2="432" y2="75" stroke="#94a3b8" marker-end="url(#arw)"/>
+
+  <text x="550" y="205" font-size="14" font-weight="700" fill="#991b1b" text-anchor="middle">v1 → v5：每一轮都在测</text>
+  <text x="550" y="228" font-size="14" font-weight="700" fill="#991b1b" text-anchor="middle">上一轮的构建</text>
+  <text x="550" y="432" font-size="12" font-weight="700" fill="#b91c1c" text-anchor="middle">缺②：报告没有版本指纹（commit / 构建 mtime / 进程启动时间）→「没修」与「没测到」在纸面上无法区分</text>
+  <text x="550" y="458" font-size="12" fill="#7f1d1d" text-anchor="middle">缺③：D-4 的判据（timeout_ms 必须生效）与 fixed 策略的设计相反 → 代码再怎么改也永远判红</text>
+</svg>

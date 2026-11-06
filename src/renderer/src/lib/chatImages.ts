@@ -28,6 +28,49 @@ function isChatVisualArtifact(descriptor: ArtifactDescriptor): boolean {
   return descriptor.kind === "image" || isSvgArtifact(descriptor);
 }
 
+/**
+ * 视觉产物索引（P3：进入任务就卡）。
+ *
+ * descriptors 是 store 里按 taskId 切好的稳定数组引用；每次渲染都全量 filter
+ * 一遍（一条 38 图消息 × 每张图每次重渲染）是进入会话时的主要 CPU 开销之一。
+ * 按数组身份缓存 taskId → 视觉产物列表：数组没换就只算一次。
+ */
+const visualArtifactIndex = new WeakMap<readonly ArtifactDescriptor[], Map<string, ArtifactDescriptor[]>>();
+
+function visualArtifactsFor(
+  descriptors: readonly ArtifactDescriptor[],
+  taskId: string | null,
+): ArtifactDescriptor[] {
+  let byTask = visualArtifactIndex.get(descriptors);
+  if (!byTask) {
+    byTask = new Map();
+    visualArtifactIndex.set(descriptors, byTask);
+  }
+  const key = taskId ?? "";
+  const cached = byTask.get(key);
+  if (cached) return cached;
+  const built = descriptors.filter((d) => d.taskId === taskId && isChatVisualArtifact(d));
+  byTask.set(key, built);
+  return built;
+}
+
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+["'][^)]*["'])?\s*\)/g;
+const HTML_IMAGE_RE = /<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+
+/** markdown 正文里出现的图片引用（内联语法 + HTML img），用来判断"正文已经画了哪些图"。 */
+export function markdownImageSources(text: string): string[] {
+  if (!text.includes("![") && !/<img/i.test(text)) return [];
+  const found: string[] = [];
+  for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
+    const raw = match[1] ?? "";
+    found.push(raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw);
+  }
+  for (const match of text.matchAll(HTML_IMAGE_RE)) {
+    if (match[1]) found.push(match[1]);
+  }
+  return found;
+}
+
 /** Strip only the harmless XML declaration/BOM commonly emitted by SVG authoring tools. */
 function normalizeSvgDocumentText(source: string): string | null {
   const value = source
@@ -79,7 +122,7 @@ export function resolveChatImageArtifact(
   taskId: string | null,
   cwd?: string,
 ): ArtifactDescriptor | undefined {
-  const images = descriptors.filter((d) => d.taskId === taskId && isChatVisualArtifact(d));
+  const images = visualArtifactsFor(descriptors, taskId);
   if (/^mybuddy-artifact:/i.test(source)) {
     try {
       const url = new URL(source);
@@ -114,8 +157,7 @@ export function messageImageArtifacts(
   const tools = new Map(
     message.blocks.filter((b) => b.type === "tool").map((b) => [b.toolCall.id, b.toolCall.tool]),
   );
-  return descriptors.filter((d) => {
-    if (d.taskId !== taskId || !isChatVisualArtifact(d)) return false;
+  return visualArtifactsFor(descriptors, taskId).filter((d) => {
     const tool = d.createdByToolCallId ? tools.get(d.createdByToolCallId) : undefined;
     if (tool && INTERNAL_IMAGE_TOOLS.has(tool)) return false;
     return d.createdByMessageId === message.id || Boolean(d.createdByMessageId && message.sourceMessageIds?.includes(d.createdByMessageId)) || Boolean(tool);

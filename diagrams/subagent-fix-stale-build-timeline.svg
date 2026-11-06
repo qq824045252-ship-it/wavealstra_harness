@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="740" viewBox="0 0 1200 740" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <rect width="1200" height="740" fill="#ffffff"/>
+  <text x="40" y="46" font-size="22" font-weight="700" fill="#0f172a">v5 为什么判「零变化」：它测的是 10:33 的旧构建</text>
+  <text x="40" y="74" font-size="14" fill="#475569">2026-11-06 · Asia/Shanghai · 证据：main 日志启动记录、out/main/index.js 产物内容、git commit 时间</text>
+
+  <circle cx="46" cy="100" r="6" fill="#16a34a"/>
+  <text x="60" y="104" font-size="12" fill="#475569">应用进程启动</text>
+  <path d="M212,93 L219,100 L212,107 L205,100 Z" fill="#94a3b8"/>
+  <text x="228" y="104" font-size="12" fill="#475569">修复前提交</text>
+  <path d="M322,93 L329,100 L322,107 L315,100 Z" fill="#2563eb"/>
+  <text x="338" y="104" font-size="12" fill="#475569">修复提交</text>
+  <rect x="428" y="94" width="24" height="12" fill="#fee2e2" stroke="#dc2626" stroke-dasharray="4 3"/>
+  <text x="460" y="104" font-size="12" fill="#475569">修复存在但未装载</text>
+
+  <rect x="840" y="190" width="312" height="370" fill="#fee2e2" opacity="0.5"/>
+  <text x="848" y="206" font-size="12" font-weight="700" fill="#b91c1c">11:03 起修复才存在，且从未进入进程</text>
+
+  <line x1="180" y1="170" x2="1152" y2="170" stroke="#cbd5e1"/>
+  <line x1="180" y1="164" x2="180" y2="176" stroke="#cbd5e1"/>
+  <line x1="396" y1="164" x2="396" y2="176" stroke="#cbd5e1"/>
+  <line x1="612" y1="164" x2="612" y2="176" stroke="#cbd5e1"/>
+  <line x1="828" y1="164" x2="828" y2="176" stroke="#cbd5e1"/>
+  <line x1="1044" y1="164" x2="1044" y2="176" stroke="#cbd5e1"/>
+  <line x1="288" y1="167" x2="288" y2="173" stroke="#e2e8f0"/>
+  <line x1="504" y1="167" x2="504" y2="173" stroke="#e2e8f0"/>
+  <line x1="720" y1="167" x2="720" y2="173" stroke="#e2e8f0"/>
+  <line x1="936" y1="167" x2="936" y2="173" stroke="#e2e8f0"/>
+  <line x1="1152" y1="167" x2="1152" y2="173" stroke="#cbd5e1"/>
+  <text x="180" y="158" font-size="12" fill="#64748b" text-anchor="middle">08:00</text>
+  <text x="396" y="158" font-size="12" fill="#64748b" text-anchor="middle">09:00</text>
+  <text x="612" y="158" font-size="12" fill="#64748b" text-anchor="middle">10:00</text>
+  <text x="828" y="158" font-size="12" fill="#64748b" text-anchor="middle">11:00</text>
+  <text x="1044" y="158" font-size="12" fill="#64748b" text-anchor="middle">12:00</text>
+  <text x="1152" y="158" font-size="12" fill="#64748b" text-anchor="middle">12:30</text>
+  <line x1="1087" y1="170" x2="1087" y2="178" stroke="#b45309"/>
+  <text x="1087" y="158" font-size="11" fill="#b45309" text-anchor="middle">12:12</text>
+
+  <text x="170" y="232" font-size="13" fill="#334155" text-anchor="end">应用进程启动（main 日志）</text>
+  <circle cx="256" cy="225" r="6.5" fill="#16a34a"/>
+  <circle cx="490" cy="225" r="6.5" fill="#16a34a"/>
+  <circle cx="587" cy="225" r="6.5" fill="#16a34a"/>
+  <circle cx="733" cy="225" r="9" fill="#dc2626" stroke="#ffffff" stroke-width="2"/>
+  <text x="256" y="250" font-size="11" fill="#64748b" text-anchor="middle">08:21</text>
+  <text x="490" y="250" font-size="11" fill="#64748b" text-anchor="middle">09:26</text>
+  <text x="587" y="250" font-size="11" fill="#64748b" text-anchor="middle">09:53</text>
+  <text x="733" y="250" font-size="11" font-weight="700" fill="#b91c1c" text-anchor="middle">10:33:38</text>
+  <text x="722" y="212" font-size="12" font-weight="700" fill="#b91c1c" text-anchor="end">被测版本起点</text>
+
+  <text x="170" y="327" font-size="13" fill="#334155" text-anchor="end">源码提交</text>
+  <path d="M486,313 L493,320 L486,327 L479,320 Z" fill="#94a3b8"/>
+  <path d="M702,313 L709,320 L702,327 L695,320 Z" fill="#94a3b8"/>
+  <path d="M833,313 L840,320 L833,327 L826,320 Z" fill="#2563eb"/>
+  <path d="M942,313 L949,320 L942,327 L935,320 Z" fill="#2563eb"/>
+  <text x="493" y="298" font-size="11" fill="#64748b" text-anchor="middle">09:27 5ea05fa</text>
+  <text x="709" y="298" font-size="11" fill="#64748b" text-anchor="middle">10:27 6508894</text>
+  <text x="840" y="346" font-size="11" fill="#1d4ed8" text-anchor="middle">11:03 a473a59</text>
+  <text x="949" y="346" font-size="11" fill="#1d4ed8" text-anchor="middle">11:33 ba9cd1b</text>
+
+  <text x="170" y="432" font-size="13" fill="#334155" text-anchor="end">进程内代码</text>
+  <rect x="733" y="404" width="419" height="46" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-dasharray="6 4"/>
+  <text x="746" y="424" font-size="12" fill="#991b1b">out/main/index.js = 10:33:37 构建，之后没再变过</text>
+  <text x="746" y="442" font-size="12" fill="#991b1b">含旧 header 模板与旧报错文案；不含 a473a59 的任何字符串</text>
+
+  <text x="170" y="522" font-size="13" fill="#334155" text-anchor="end">v5 实测窗口</text>
+  <rect x="810" y="505" width="72" height="28" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+  <text x="810" y="497" font-size="12" fill="#92400e">10:55 → 11:15（前 8 分钟在修复提交之前）</text>
+
+  <rect x="40" y="600" width="1120" height="110" rx="8" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="60" y="626" font-size="13" font-weight="700" fill="#991b1b">结论：v5 的四条「未修复」全部取自 10:33 构建；修复 11:03 / 11:33 才提交，进程此后从未重启。</text>
+  <text x="60" y="650" font-size="12" fill="#7f1d1d">4 次启动记录（08:21 / 09:26 / 09:53 / 10:33:38）之后再无第 5 次；out/main/index.js 的 mtime 停在 10:33:37。</text>
+  <text x="60" y="672" font-size="12" fill="#7f1d1d">报告 12:12 写成，比修复晚 69 分钟，数据却比代码早 69 分钟 —— 于是把「没重启」记成了「没修好」。</text>
+  <text x="60" y="694" font-size="12" fill="#7f1d1d">D-4 是另一类：默认 timeoutPolicy=fixed 下 timeout_ms 按设计被忽略，判据不改就永远判红。</text>
+</svg>

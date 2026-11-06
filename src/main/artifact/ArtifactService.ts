@@ -619,7 +619,15 @@ export class ArtifactService {
    * - workspace-file → fs 读取（entryFile 必须在 rootDir 内，防任意磁盘读取）
    * kind 细分（docx/xlsx/image/pdf 等）由 capabilities.originalKind 提供。
    */
-  async readContent(id: string): Promise<{ content: string; language?: string; kind?: string; path?: string } | null> {
+  async readContent(id: string): Promise<{
+    content: string;
+    language?: string;
+    kind?: string;
+    path?: string;
+    width?: number;
+    height?: number;
+    thumbnail?: import("../../shared/agent-ipc").WorkspaceFileThumbnailDto;
+  } | null> {
     const descriptor = this.get(id);
     if (!descriptor) return null;
     if (descriptor.source.type === "managed-content") {
@@ -636,12 +644,15 @@ export class ArtifactService {
       return null;
     }
     if (!existsSync(target)) return null;
-    const preview = await previewWorkspaceFile(target);
+    // thumbnail 只对图像生效：内联 <img> 用降采样副本，content 仍是原图（查看原图/面板不变）
+    const preview = await previewWorkspaceFile(target, { thumbnail: true });
     return {
       content: preview.content,
       language: preview.language,
       kind: (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind,
       path: preview.path,
+      ...(preview.width ? { width: preview.width, height: preview.height } : {}),
+      ...(preview.thumbnail ? { thumbnail: preview.thumbnail } : {}),
     };
   }
 

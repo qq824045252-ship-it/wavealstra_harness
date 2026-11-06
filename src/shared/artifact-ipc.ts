@@ -70,6 +70,14 @@ export interface ArtifactDomainReadContentResponse {
   /** 原始 kind（docx/xlsx/pptx/image/pdf 等细分） */
   kind?: string;
   path?: string;
+  /** 图像固有尺寸（文件头，不解码）：内联展示用它预留行高 */
+  width?: number;
+  height?: number;
+  /**
+   * 图像的内联缩略图（data URI + 固有尺寸）。
+   * content 仍为原图：内联展示优先用 thumbnail，打开产物用 content。
+   */
+  thumbnail?: import("./agent-ipc").WorkspaceFileThumbnailDto;
 }
 
 /** artifact-domain:get 响应 */

@@ -123,6 +123,9 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
           response.path ??
           (descriptor.source.type === "workspace-file" ? descriptor.source.entryFile : undefined),
         artifactVersion: descriptor.version,
+        // 固有尺寸/缩略图与 content 同版本绑定：前者钉行高，后者压解码面积
+        ...(response.width ? { width: response.width, height: response.height } : {}),
+        ...(response.thumbnail ? { thumbnail: response.thumbnail } : {}),
       };
       deps.setCache(artifactId, payload);
       deps.setLoadState(artifactId, "ready");

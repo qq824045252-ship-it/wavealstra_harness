@@ -18,26 +18,6 @@ export function ChatImageScope({ taskId, children }: { taskId: string | null; ch
   return <ImageScopeContext.Provider value={taskId}>{children}</ImageScopeContext.Provider>;
 }
 
-const ImageContext = createContext<{
-  counts: Record<string, number>;
-  register: (id: string) => () => void;
-} | null>(null);
-
-export function MessageImageProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [counts, setCounts] = useState<Record<string, number>>({});
-  const register = useCallback((id: string) => {
-    setCounts((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
-    return () => setCounts((current) => {
-      const next = { ...current };
-      if ((next[id] ?? 0) <= 1) delete next[id];
-      else next[id] = next[id]! - 1;
-      return next;
-    });
-  }, []);
-  const value = useMemo(() => ({ counts, register }), [counts, register]);
-  return <ImageContext.Provider value={value}>{children}</ImageContext.Provider>;
-}
-
 function useImageScope() {
   const taskId = useContext(ImageScopeContext);
   const descriptors = useAppStore((s) => taskId ? s.artifactProjection.artifactsByTask[taskId] ?? EMPTY_IMAGES : EMPTY_IMAGES);
@@ -84,12 +64,27 @@ export function ChatImage({
     setSvgObjectUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [svgText]);
+  // 内联展示优先用缩略图：解码面积比原图小一个量级，而原图解码后的位图面积
+  // 才是滚动时反复 evict/重解的物理原因。原图只留给"查看原图"（openArtifact）。
+  const thumbnail = useMemo(
+    () => (payload && payload.artifactVersion === version ? payload.thumbnail : undefined),
+    [payload, version],
+  );
+  // 占位尺寸：优先缩略图自身的尺寸，其次主进程读文件头得到的固有尺寸。
+  // 两者都没有（任意外部 https 图）时退回改动前的行为。
+  const intrinsicSize = thumbnail
+    ?? (payload && payload.artifactVersion === version && payload.width && payload.height
+      ? { width: payload.width, height: payload.height }
+      : undefined);
   // Large data URLs must not be revalidated on every streaming text delta.
-  const src = useMemo(() => id
-    ? isSvgArtifact(resolved!)
-      ? svgObjectUrl
-      : payload && payload.artifactVersion === version ? directChatImageSource(payload.content) : null
-    : directChatImageSource(source), [id, resolved, svgObjectUrl, payload, version, source]);
+  const src = useMemo(() => {
+    if (!id) return directChatImageSource(source);
+    if (isSvgArtifact(resolved!)) return svgObjectUrl;
+    const fresh = payload && payload.artifactVersion === version ? payload : undefined;
+    const fromThumbnail = thumbnail ? directChatImageSource(thumbnail.content) : null;
+    // 缩略图不可用（主进程没产出/格式不支持）→ 回落原图，行为与改动前一致
+    return fromThumbnail ?? (fresh ? directChatImageSource(fresh.content) : null);
+  }, [id, resolved, svgObjectUrl, thumbnail, payload, version, source]);
 
   useEffect(() => {
     if (id && !loading) void ensure(id);
@@ -117,7 +112,14 @@ export function ChatImage({
       decoding="async"
       loading="lazy"
       referrerPolicy="no-referrer"
-      style={{ display: "block", maxWidth: "100%", maxHeight: 480, width: "auto", height: "auto", objectFit: "contain", margin: "12px 0", cursor: id ? "zoom-in" : undefined }}
+      /* 固有尺寸已知就先占好位置：加载完成不再改变行高，虚拟列表不必重测这一行 */
+      width={intrinsicSize?.width}
+      height={intrinsicSize?.height}
+      style={{
+        display: "block", maxWidth: "100%", maxHeight: 480, width: "auto", height: "auto",
+        ...(intrinsicSize ? { aspectRatio: `${intrinsicSize.width} / ${intrinsicSize.height}` } : {}),
+        objectFit: "contain", margin: "12px 0", cursor: id ? "zoom-in" : undefined,
+      }}
       onError={() => setFailedSource(src)}
       onClick={id ? () => openArtifact(id) : undefined}
       role={id ? "button" : undefined}

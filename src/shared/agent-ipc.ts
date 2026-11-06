@@ -657,12 +657,35 @@ export type WorkspaceCopyIntoTaskResult =
     }
   | { ok: false; error: string };
 
+/**
+ * 图像内联缩略图（P0：图片消息拖动卡）。
+ *
+ * 与 content 并列而不是替换 content：content 永远是原始字节，"查看原图"、
+ * Artifact 面板、旧渲染路径都靠它；thumbnail 是给内联 <img> 用的降采样副本。
+ * 缺省不产出（previewWorkspaceFile 的默认行为不变）。
+ */
+export interface WorkspaceFileThumbnailDto {
+  /** data:<mime>;base64,… —— 已按显示上限缩过 */
+  content: string;
+  /** 缩略图的固有尺寸，用于在加载完成前就预留正确行高 */
+  width: number;
+  height: number;
+}
+
 export interface WorkspaceFilePreviewDto {
   path: string;
   name: string;
   kind: ArtifactKind;
   content: string;
   language?: string;
+  /**
+   * 图像固有尺寸（只读文件头得来，不解码）。渲染方据此在图片加载完成前就预留
+   * 正确的行高，避免 onload 后行高跳变把整条虚拟列表的下方行重新平移。
+   */
+  width?: number;
+  height?: number;
+  /** 仅图像且显式请求缩略图时存在；缺失时调用方回落到 content */
+  thumbnail?: WorkspaceFileThumbnailDto;
 }
 
 export interface AgentPromptRequest {
