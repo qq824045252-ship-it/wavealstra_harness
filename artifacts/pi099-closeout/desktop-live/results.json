@@ -1,9 +1,0 @@
-{
-  "kind": "real-model-packaged-desktop-composer",
-  "startedAt": "2026-10-09T01:07:24.336Z",
-  "tests": [],
-  "status": "failed",
-  "error": "AssertionError [ERR_ASSERTION]: Verified portable executable is missing\n    at C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\pi099-desktop-live.cjs:34:109\n    at Object.<anonymous> (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\pi099-desktop-live.cjs:70:4)\n    at Module._compile (node:internal/modules/cjs/loader:1872:14)\n    at Object..js (node:internal/modules/cjs/loader:2003:10)\n    at Module.load (node:internal/modules/cjs/loader:1594:32)\n    at Module._load (node:internal/modules/cjs/loader:1396:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n    at node:internal/main/run_main_module:33:47",
-  "temporaryCredentialsRemoved": true,
-  "finishedAt": "2026-10-09T01:07:24.355Z"
-}

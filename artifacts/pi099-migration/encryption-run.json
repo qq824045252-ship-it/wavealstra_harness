@@ -1,7 +1,0 @@
-{
-  "status": "terminated",
-  "pid": 32508,
-  "startedAt": "2026-09-30T01:10:36.784Z",
-  "recordedAt": "2026-09-30T01:38:26.309Z",
-  "reason": "The first Electron test launcher waited for readiness during ESM evaluation and was explicitly terminated. The corrected encryption-run-2 completed successfully."
-}

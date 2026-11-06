@@ -89,23 +89,11 @@ electron.vite.config.*.mjs
 /app/remote/android/app/build-*/
 /app/remote/android/app/*.mybuddy-tmp
 
-# 旧 Pi 版本（0.99.x / 0.99.2 / 1.0.0）历史验收产物：已清出仓库。
-# 注意 pi100-*/pi104-* 的现行测试仍会往这些目录写结果文件（会自行 mkdir），
-# 因此在此忽略，避免测试输出被重新纳入版本库。
-/artifacts/pi0992-memory/
-/artifacts/pi100-upgrade/
-/artifacts/pi104-upgrade/
+# 本地测试、诊断、工作记录与附件（保留本地文件，不纳入版本库）
+/artifacts/
+.workbuddy/
+/附件/
 
-# 一次性诊断截图与工具目录：验收时随手生成的噪声，默认不进版本库。
-# 需要在文档里引用的证据图请显式 `git add -f`（`artifacts/` 下已有 157 张被跟踪的证据图，不受影响）。
-/artifacts/*.png
-/artifacts/ego/
-/artifacts/remote-android-*/
-# 一次性 OCR 诊断输出（ocr/ ocr2/ ocr3/ ocr4/ …），含原始截图，每份 300-500K
-/artifacts/ocr*/
-# cache-investigation 调查：Go 构建缓存（88MB，可再生）与第三方 magpie 源码副本（119MB），不入库
-/artifacts/cache-investigation/go-build/
-/artifacts/cache-investigation/magpie-source/
 # 临时探针脚本（CDP/WebSocket 一次性调试，用完即弃）
 /scripts/tmp-*
 

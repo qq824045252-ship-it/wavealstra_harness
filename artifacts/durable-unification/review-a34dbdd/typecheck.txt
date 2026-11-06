@@ -1,3 +1,0 @@
-$ tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs
-[typecheck-scripts] scripts/ 错误 0 条 · 基线 0 条 · 新增 0 · 已修复 0
-[typecheck-scripts] OK：没有新增错误。
