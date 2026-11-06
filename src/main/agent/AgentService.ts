@@ -236,7 +236,7 @@ import { PendingActionRegistry } from "./PendingActionRegistry";
 import type { PromptRunState } from "./PromptRunRegistry";
 import { PromptExecutionCoordinator } from "./PromptExecutionCoordinator";
 import { PromptSubmissionCoordinator, resolvePromptCompactionBehavior } from "./PromptSubmissionCoordinator";
-import { artifactKindForFile, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
+import { artifactKindForFile, diffWorkspaceSnapshot, isGeneratedWorkspacePath, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoordinator";
 import type { ArtifactKind } from "../../shared/artifact-types";
@@ -4798,16 +4798,21 @@ export class AgentService {
     taskRoot: string,
     before: Map<string, string>,
   ): Promise<void> {
-    // P0 §10.1：before/after 都只扫描 canonical taskRoot；manifest/内部临时文件忽略
-    const bot = this.db.getTask(taskId)?.welcomeMode === "bot";
-    const after = await snapshotWorkspace(taskRoot, { unfiltered: bot });
-    const changed: string[] = [];
-    for (const [filePath, signature] of after) {
-      if (before.get(filePath) === signature) continue;
-      if (this.emittedArtifactPaths.get(taskId)?.has(filePath.toLowerCase())) continue;
-      if (!bot && isInternalTaskPath(filePath)) continue;
-      changed.push(filePath);
+    // P0 §10.1：before/after 都只扫描 canonical taskRoot，且必须使用同一过滤口径。
+    // 历史 bug：baseline 曾以 unfiltered:true 拍摄（.git/node_modules/out 占满 5000 上限），
+    // after 却是过滤版 → 整个项目目录被判为「本轮新增」，一句「你好」就登记上千个产物。
+    const after = await snapshotWorkspace(taskRoot);
+    const diff = diffWorkspaceSnapshot(before, after);
+    if (diff.rejected) {
+      console.warn(`[AgentService][ArtifactBoundary] 跳过本轮工作区 diff：${diff.rejected} taskId=${taskId}`);
+      return;
     }
+    const emitted = this.emittedArtifactPaths.get(taskId);
+    const changed = diff.changed.filter((filePath) =>
+      !emitted?.has(filePath.toLowerCase()) &&
+      !isInternalTaskPath(filePath) &&
+      !isGeneratedWorkspacePath(filePath, taskRoot),
+    );
     // 3C：已注册 artifact 的版本刷新（RefreshCoordinator → markFilesChanged → version++ → artifact:updated）
     // 同一 Agent turn 内多文件只让每个 artifact 最多 +1（Domain 语义，T17 已锁）
     // P1：带 messageId 写入 relation=updated ref（与 tool 即时事件幂等）

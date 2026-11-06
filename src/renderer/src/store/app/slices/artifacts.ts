@@ -25,6 +25,34 @@ export function createArtifactsState(): ArtifactsState {
   };
 }
 
+/**
+ * 渲染缓存 LRU（P0）：一条 38 图的会话会把所有 payload 留在 renderer 内存里。
+ * 现在图片 payload 只有协议 URL + 尺寸，但 SVG/文本产物仍可能很大，必须封顶。
+ * 用 Map 的插入序记录最近使用，超限淘汰最久未用的键。
+ */
+const ARTIFACT_RENDER_CACHE_LIMIT = 48;
+const renderCacheOrder = new Map<string, true>();
+
+export function touchArtifactRenderCache(artifactId: string): void {
+  if (renderCacheOrder.has(artifactId)) renderCacheOrder.delete(artifactId);
+  renderCacheOrder.set(artifactId, true);
+}
+
+export function forgetArtifactRenderCache(artifactId: string): void {
+  renderCacheOrder.delete(artifactId);
+}
+
+function evictOldestRenderCache(): string[] {
+  const evicted: string[] = [];
+  while (renderCacheOrder.size > ARTIFACT_RENDER_CACHE_LIMIT) {
+    const oldest = renderCacheOrder.keys().next().value;
+    if (oldest === undefined) break;
+    renderCacheOrder.delete(oldest);
+    evicted.push(oldest);
+  }
+  return evicted;
+}
+
 export function createArtifactsActions(
   storeContext: AppContext,
 ): Pick<AppActions, "refreshArtifactPolicy" | "cacheArtifactRender"> {
@@ -47,12 +75,14 @@ export function createArtifactsActions(
       }
     },
 
-    cacheArtifactRender: (artifactId, payload) =>
-      set((s) => ({
-        artifactRenderCache: {
-          ...s.artifactRenderCache,
-          [artifactId]: payload,
-        },
-      })),
+    cacheArtifactRender: (artifactId, payload) => {
+      touchArtifactRenderCache(artifactId);
+      const evicted = evictOldestRenderCache();
+      set((s) => {
+        const next = { ...s.artifactRenderCache, [artifactId]: payload };
+        for (const id of evicted) delete next[id];
+        return { artifactRenderCache: next };
+      });
+    },
   };
 }

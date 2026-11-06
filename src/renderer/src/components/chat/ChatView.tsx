@@ -334,6 +334,10 @@ function MessageList({
   followStateRef: React.MutableRefObject<FollowState>;
 }): React.JSX.Element {
   const useVirtual = messages.length > MESSAGE_VIRTUALIZE_THRESHOLD;
+  /** P2：滚动中冻结 measureElement，停止后再统一重测，避免每帧 ResizeObserver 重排 */
+  const scrollingRef = useRef(false);
+  const virtualizerRef = useRef<unknown>(null);
+  const scrollStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -344,7 +348,8 @@ function MessageList({
       const msg = messages[index];
       return msg ? estimateMessageHeight(msg) : 160;
     },
-    overscan: 1,
+    // P2：P0/P1 已把图片内存压住，用 3 行常驻换掉挂载/卸载抖振
+    overscan: 3,
     enabled: useVirtual,
     // 默认从列表末尾附近开始，随后由 ChatView 把最新用户消息置顶
     initialOffset: () => Number.MAX_SAFE_INTEGER,
@@ -366,9 +371,22 @@ function MessageList({
       }),
     measureElement:
       typeof window !== "undefined" && navigator.userAgent.indexOf("Firefox") === -1
-        ? (el) => el.getBoundingClientRect().height
+        ? (el) => {
+            // 滚动中不要接受新的实测高度：返回该行上一次的测量值，
+            // 否则图片 onload / 骨架塌陷会在拖动时反复改动 totalSize。
+            if (scrollingRef.current) {
+              const index = Number(el.getAttribute("data-index"));
+              const instance = virtualizerRef.current as unknown as {
+                getMeasurements?: () => Array<{ index: number; size: number }>;
+              } | null;
+              const cached = instance?.getMeasurements?.().find((m) => m.index === index)?.size;
+              if (typeof cached === "number" && cached > 0) return cached;
+            }
+            return el.getBoundingClientRect().height;
+          }
         : undefined,
   } as VirtualizerOptionsWithCompensation);
+  virtualizerRef.current = virtualizer;
 
   apiRef.current = {
     getMessageOffset: (id) => {
@@ -400,6 +418,30 @@ function MessageList({
       }
     },
   };
+
+  // P2：滚动事件驱动冻结窗口；120ms 无滚动视为停止，补一次统一重测
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const onScroll = () => {
+      scrollingRef.current = true;
+      if (scrollStopTimerRef.current !== null) clearTimeout(scrollStopTimerRef.current);
+      scrollStopTimerRef.current = setTimeout(() => {
+        scrollingRef.current = false;
+        scrollStopTimerRef.current = null;
+        const instance = virtualizerRef.current as unknown as { measure?: () => void } | null;
+        instance?.measure?.();
+      }, 120);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (scrollStopTimerRef.current !== null) {
+        clearTimeout(scrollStopTimerRef.current);
+        scrollStopTimerRef.current = null;
+      }
+    };
+  }, [scrollRef]);
 
   const tailMessage = messages[messages.length - 1];
   // 从用户发送到 assistant_end 都属于同一轮置顶期。不能在第一段思考/正文

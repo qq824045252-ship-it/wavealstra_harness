@@ -220,7 +220,10 @@ export class DurableBotService {
     try {
       // Existing project files are not newly produced artifacts on reconnect. Persisted native
       // write/edit records restore their cards independently of this workspace diff baseline.
-      let workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
+      // Baseline and the end-of-turn snapshot MUST use the same snapshotWorkspace filter: an
+      // unfiltered baseline used to collide with a filtered after snapshot and made every
+      // pre-existing project file look like a newly produced artifact of the current turn.
+      let workspaceBefore = await snapshotWorkspace(cwd);
       let projected = "";
       // 打开会话/读历史不是「发请求」：模型目录暂时解析不到也不能阻断，先沿用任务记录的坐标。
       const resolvedModel = await this.resolveTaskModelForOpen(task);
@@ -289,7 +292,7 @@ export class DurableBotService {
             projected = signature;
             const projection = (this.projections.get(taskId) ?? Promise.resolve()).then(async () => {
               await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd);
-              workspaceBefore = await snapshotWorkspace(cwd, { unfiltered: true });
+              workspaceBefore = await snapshotWorkspace(cwd);
             }).catch(error => console.warn("[Durable] Artifact projection failed", taskId, error));
             this.projections.set(taskId, projection);
           }

@@ -336,4 +336,6 @@ export interface AppActions {
   ensureArtifactRenderPayload: (
     artifactId: string,
   ) => Promise<ArtifactRenderPayload | null>;
+  /** 离开视口回收：清掉该产物的渲染缓存与 loading 态（P0） */
+  releaseArtifactRender: (artifactId: string) => void;
 }

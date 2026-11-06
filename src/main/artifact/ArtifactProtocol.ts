@@ -17,12 +17,21 @@ import { protocol } from "electron";
 
 import { WebArtifactRuntime, type WebResourceResult } from "./WebArtifactRuntime";
 
+/** 图片变体字节解析器（由 Artifact Domain 注入；字节只在这里出主进程） */
+export type ArtifactImageVariantResolver = (
+  artifactId: string,
+  variant: "thumb" | "full",
+) => Promise<{ data: Uint8Array; mimeType: string } | null>;
+
 export class ArtifactProtocol {
   static readonly SCHEME = "mybuddy-artifact";
   /** 固定 ASCII host：Chromium 对非 ASCII host 做 IDN/punycode 转换，不能承载 id */
   static readonly HOST = "local";
 
-  constructor(private readonly runtime: WebArtifactRuntime) {}
+  constructor(
+    private readonly runtime: WebArtifactRuntime,
+    private readonly imageVariant?: ArtifactImageVariantResolver,
+  ) {}
 
   /** artifactId → 协议 URL（host 固定 ASCII，id encodeURIComponent 进 pathname 第一段） */
   static urlFor(artifactId: string): string {
@@ -42,6 +51,24 @@ export class ArtifactProtocol {
       if (!encodedId) return this.text(404, "Not Found");
       const artifactId = this.decode(encodedId);
       if (artifactId === null) return this.text(400, "Bad Request");
+      // 图片内联链路（P0）：?variant=thumb/full 直接投递字节，renderer 不碰 base64。
+      // thumb = 长边 1280 的降采样副本（主进程 LRU 缓存）；full = 原图，仅点击看原图时请求。
+      const variant = url.searchParams.get("variant");
+      if (variant === "thumb" || variant === "full") {
+        if (!this.imageVariant) return this.text(404, "Not Found");
+        const image = await this.imageVariant(artifactId, variant);
+        if (!image) return this.text(404, "Not Found");
+        const headers: Record<string, string> = {
+          "content-type": image.mimeType,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        };
+        // Buffer（Uint8Array）在运行时是合法 BodyInit；仅 TS 泛型不兼容
+        return new Response(request.method === "HEAD" ? null : (image.data as BodyInit), {
+          status: 200,
+          headers,
+        });
+      }
       let subPath = "";
       if (segments.length > 1) {
         const rest = segments.slice(1).join("/");

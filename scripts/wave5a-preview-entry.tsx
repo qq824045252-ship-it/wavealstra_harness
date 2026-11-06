@@ -24,7 +24,7 @@ import { docxViewerStats, decodeDataUriBytes } from "@/lib/docxView";
 import { xlsxViewerStats } from "@/lib/xlsxView";
 import PptxViewer from "@/components/artifact/PptxViewer";
 import { pptxViewerStats } from "@/lib/pptxView";
-import { ChatImageScope, MessageImageProvider, MessageImages } from "@/components/chat/ChatImage";
+import { ChatImageScope, MessageImages } from "@/components/chat/ChatImage";
 import type { ChatMessage } from "@/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 
@@ -141,7 +141,7 @@ async function renderChatSvg(file: string): Promise<void> {
       <div style={{ width: 760, margin: "24px auto", fontFamily: "system-ui" }}>
         <p>趋势图已生成：</p>
         <code>{`C:\\task\\${file}`}</code>
-        <MessageImageProvider><MessageImages message={message} /></MessageImageProvider>
+        <MessageImages message={message} />
       </div>
     </ChatImageScope>,
   );

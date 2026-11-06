@@ -104,8 +104,9 @@ export interface ArtifactRenderPayload {
   width?: number;
   height?: number;
   /**
-   * 图像的内联缩略图：内联展示用它（解码面积小一个量级），content 仍是原图。
-   * 缺失 = 主进程没产出（格式不支持/本来就不大/生成失败）→ 渲染回落 content。
+   * 图像的内联缩略图（协议 URL + 尺寸，不含字节）：ChatImage 用 thumbnail.url。
+   * 缺失 = 主进程没产出降采样副本 → ChatImage 直接请求 ?variant=thumb，
+   * 协议层会回落原图字节。位图的 content 是 ?variant=full 的协议 URL，不是 base64。
    */
   thumbnail?: WorkspaceFileThumbnailDto;
 }

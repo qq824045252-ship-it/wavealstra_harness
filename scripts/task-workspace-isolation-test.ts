@@ -52,7 +52,10 @@ import { ArtifactRefreshCoordinator } from "../src/main/artifact/ArtifactRefresh
 import {
   copyExternalIntoWorkspace,
   createWorkspacePath,
+  diffWorkspaceSnapshot,
+  isGeneratedWorkspacePath,
   listWorkspaceFiles,
+  MAX_TURN_WORKSPACE_CHANGES,
   moveWorkspacePath,
   renameWorkspacePath,
   snapshotWorkspace,
@@ -814,6 +817,101 @@ async function stage4Workspace(): Promise<void> {
 }
 
 /* ================================================================= */
+/* 2026-11-06 回归：一句「你好」把整个项目目录登记成产物               */
+/* ================================================================= */
+
+async function stageWorkspaceArtifactDiff(): Promise<void> {
+  await checkAsync("产物快照忽略 build/intermediates 等生成目录，但文件树仍列出", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-snap-gen-"));
+    try {
+      const generated = join(dir, "app", "remote", "android", "app", "build", "intermediates");
+      mkdirSync(generated, { recursive: true });
+      mkdirSync(join(dir, "node_modules", "pkg"), { recursive: true });
+      writeFileSync(join(generated, "splash.png"), "PNG");
+      writeFileSync(join(dir, "app", "remote", "android", "app", "build", "file-to-id.tab.values.at"), "tab");
+      writeFileSync(join(dir, "node_modules", "pkg", "index.js"), "module.exports = 1");
+      writeFileSync(join(dir, "README.md"), "hello");
+
+      const snap = await snapshotWorkspace(dir);
+      const names = [...snap.keys()].map((p) => basename(p));
+      assert.ok(names.includes("README.md"), "普通项目文件必须进入 baseline");
+      assert.ok(!names.includes("splash.png"), "build/intermediates 下文件不得进产物快照");
+      assert.ok(!names.includes("file-to-id.tab.values.at"), "build 下文件不得进产物快照");
+      assert.ok(!names.includes("index.js"), "node_modules 下文件不得进产物快照");
+      assert.ok(
+        JSON.stringify(await listWorkspaceFiles(dir)).includes("splash.png"),
+        "快照过滤不等于隐藏文件：文件树仍应列出构建产物",
+      );
+      assert.equal(isGeneratedWorkspacePath(join(generated, "splash.png"), dir), true);
+      assert.equal(isGeneratedWorkspacePath(join(dir, "README.md"), dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await checkAsync("既有大目录 + 纯文本轮次（只发「你好」）：diff 必须为空", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-snap-idle-"));
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        writeFileSync(join(dir, `existing-${i}.ts`), `export const n = ${i};`);
+      }
+      const before = await snapshotWorkspace(dir);
+      // 模拟一轮纯文本对话：目录没有任何写入
+      const after = await snapshotWorkspace(dir);
+      const diff = diffWorkspaceSnapshot(before, after);
+      assert.equal(before.size, 120, "既有文件全部进入 baseline");
+      assert.equal(diff.rejected, undefined, "正常 idle 轮次不得被保险丝拒绝");
+      assert.deepEqual(diff.changed, [], "纯文本轮次不得把既有文件判为本轮产物");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  check("基线口径不一致（旧 unfiltered baseline）→ 整轮 diff 被拒绝，不返回全量 changed", () => {
+    const root = join("C:", "repo");
+    const before = new Map<string, string>([
+      [join(root, ".git", "objects", "a"), "1:1"],
+      [join(root, "node_modules", "pkg", "index.js"), "1:1"],
+      [join(root, "out", "main.js"), "1:1"],
+    ]);
+    const after = new Map<string, string>([
+      [join(root, "src", "a.ts"), "1:1"],
+      [join(root, "docs", "b.md"), "1:1"],
+      [join(root, "README.md"), "1:1"],
+    ]);
+    const diff = diffWorkspaceSnapshot(before, after);
+    assert.ok(diff.rejected?.includes("基线失配"), `应拒绝，实际：${JSON.stringify(diff)}`);
+    assert.deepEqual(diff.changed, []);
+  });
+
+  await checkAsync("真实单文件写入仍被 diff 捕获，且下一轮不重复登记", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-snap-write-"));
+    try {
+      const before = await snapshotWorkspace(dir);
+      writeFileSync(join(dir, "result.md"), "done");
+      const after = await snapshotWorkspace(dir);
+      const diff = diffWorkspaceSnapshot(before, after);
+      assert.equal(diff.rejected, undefined);
+      assert.deepEqual(diff.changed.map((p) => basename(p)), ["result.md"]);
+      const next = diffWorkspaceSnapshot(after, await snapshotWorkspace(dir));
+      assert.deepEqual(next.changed, [], "下一轮 baseline 重拍后不得重复登记");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  check("单轮变化超过上限 → 拒绝整轮 diff，不灌入产物列表", () => {
+    const after = new Map<string, string>();
+    for (let i = 0; i < MAX_TURN_WORKSPACE_CHANGES + 1; i += 1) {
+      after.set(join("C:", "ws", `f${i}.ts`), "1:1");
+    }
+    const diff = diffWorkspaceSnapshot(new Map(), after);
+    assert.ok(diff.rejected?.includes("超过上限"), `应拒绝，实际：${JSON.stringify(diff)}`);
+    assert.deepEqual(diff.changed, []);
+  });
+}
+
+/* ================================================================= */
 /* 汇总与清理                                                         */
 /* ================================================================= */
 
@@ -821,6 +919,7 @@ async function main(): Promise<void> {
   stage2Integration();
   await stage4Artifact();
   await stage4Workspace();
+  await stageWorkspaceArtifactDiff();
 
   const failed = results.filter((r) => !r.ok);
   console.log("\n" + "-".repeat(72));

@@ -323,10 +323,12 @@ export function createAgentProjectionActions(
           }
 
           if (patch.type === "conversation_goal_snapshot") {
+            // 元数据快照不是新产出：推进 updatedAt 会让侧栏按 updatedAt DESC
+            // 反复重排（多条任务交替变"刚刚"→ 列表来回跳），也会让已确认的
+            // 完成绿点靠噪声复活。只有 assistant_start/end 才推进任务时间。
             return {
               ...current,
               activeGoal: patch.goal,
-              updatedAt: Date.now(),
             };
           }
 
@@ -345,6 +347,8 @@ export function createAgentProjectionActions(
                   },
                 ]
               : current.fileChanges;
+            // 含大量图片的历史会话重放会连发几十条 artifact_ref；不要每条都把
+            // task.updatedAt 刷成 now（侧栏会持续显示"刚刚"并反复重排）。
             return {
               ...current,
               fileChanges,
@@ -363,7 +367,6 @@ export function createAgentProjectionActions(
                     }
                   : m,
               ),
-              updatedAt: Date.now(),
             };
           }
 

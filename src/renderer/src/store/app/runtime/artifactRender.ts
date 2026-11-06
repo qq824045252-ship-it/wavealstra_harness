@@ -3,6 +3,7 @@ import type { RenderHydration } from "../../../lib/renderHydration";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import { findDescriptorByIdAnyTask } from "../selectors";
+import { forgetArtifactRenderCache, touchArtifactRenderCache } from "../slices/artifacts";
 
 export function getRenderHydration(storeContext: AppContext): RenderHydration {
   const { get, set } = storeContext;
@@ -11,10 +12,15 @@ export function getRenderHydration(storeContext: AppContext): RenderHydration {
   storeContext.runtime.renderHydration = createRenderHydration({
     findDescriptor: (artifactId) =>
       findDescriptorByIdAnyTask(get(), artifactId),
-    getCache: (artifactId) => get().artifactRenderCache[artifactId],
+    getCache: (artifactId) => {
+      const payload = get().artifactRenderCache[artifactId];
+      if (payload) touchArtifactRenderCache(artifactId);
+      return payload;
+    },
     setCache: (artifactId, payload) =>
       get().cacheArtifactRender(artifactId, payload),
     removeCache: (artifactId) => {
+      forgetArtifactRenderCache(artifactId);
       set((s) => {
         if (!(artifactId in s.artifactRenderCache)) return s;
         const next = { ...s.artifactRenderCache };
@@ -54,10 +60,12 @@ export function getRenderHydration(storeContext: AppContext): RenderHydration {
 
 export function createArtifactRenderActions(
   storeContext: AppContext,
-): Pick<AppActions, "ensureArtifactRenderPayload"> {
-  const { get, set } = storeContext;
+): Pick<AppActions, "ensureArtifactRenderPayload" | "releaseArtifactRender"> {
   return {
     ensureArtifactRenderPayload: (artifactId) =>
       getRenderHydration(storeContext).ensure(artifactId),
+    /** 离开视口回收（P0）：复用 renderHydration.clear 的 cache/state 清理能力 */
+    releaseArtifactRender: (artifactId) =>
+      getRenderHydration(storeContext).clear(artifactId),
   };
 }

@@ -15,7 +15,12 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { previewWorkspaceFile } from "../workspace/WorkspaceService";
+import {
+  IMAGE_INLINE_BASE64_MAX_BYTES,
+  previewWorkspaceFile,
+  workspaceImageVariant,
+} from "../workspace/WorkspaceService";
+import { artifactImageUrl } from "../../shared/artifact-ipc";
 import {
   isPathInsideOrEqual,
   MANIFEST_FILENAME,
@@ -39,6 +44,11 @@ import { ArtifactStorage } from "./ArtifactStorage";
 import { ArtifactRepository } from "./ArtifactRepository";
 import { ArtifactRegistry } from "./ArtifactRegistry";
 import { inspectArtifactFolderRelocation, type ArtifactFolderChange } from "./ArtifactFolderRelocation";
+
+/** 位图走协议 URL（SVG 是文本，仍走原 content 契约） */
+const INLINE_IMAGE_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".avif", ".ico",
+]);
 
 function isPptdProjectDependency(manifestPath: string, candidatePath: string): boolean {
   if (extname(manifestPath).toLowerCase() !== ".pptd") return false;
@@ -614,12 +624,59 @@ export class ArtifactService {
   // ---------- 内容读取（3C：渲染/content 解析，workspace-file 走 root 安全边界） ----------
 
   /**
+   * workspace-file 的 root 边界校验：readContent 与图片协议共用同一道门。
+   * 3C：协议层永远不能借 artifactId 读 root 外的任意磁盘文件。
+   */
+  private workspaceTarget(id: string): string | null {
+    const descriptor = this.get(id);
+    if (!descriptor || descriptor.source.type !== "workspace-file") return null;
+    const root = descriptor.source.rootDir;
+    const target = descriptor.source.entryFile;
+    const rel = relative(resolve(root), resolve(target));
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      console.error("[ArtifactService] 拒绝 root 外路径:", target);
+      return null;
+    }
+    return existsSync(target) ? target : null;
+  }
+
+  /** mybuddy-artifact:// 图片协议的唯一字节入口：字节不经 IPC、不进 renderer 内存 */
+  async readImageVariant(
+    id: string,
+    variant: "thumb" | "full",
+  ): Promise<{ data: Buffer; mimeType: string } | null> {
+    const descriptor = this.get(id);
+    if (descriptor?.source.type === "managed-content") {
+      // storage 里的小图/SVG 存的是 data URI：解析成字节交给协议，renderer 仍不碰 base64
+      const content = this.storage.read(descriptor.source.storagePath);
+      if (content === null) return null;
+      try {
+        const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/i.exec(content.trim());
+        if (!match) return null;
+        const mimeType = match[1] ?? "application/octet-stream";
+        const raw = match[3] ?? "";
+        const data = match[2]
+          ? Buffer.from(raw, "base64")
+          : Buffer.from(decodeURIComponent(raw), "utf-8");
+        void variant;
+        return { data, mimeType };
+      } catch {
+        return null;
+      }
+    }
+    const target = this.workspaceTarget(id);
+    return target ? workspaceImageVariant(target, variant) : null;
+  }
+
+  /**
    * 按 id 读取 artifact 内容：
    * - managed-content → ArtifactStorage.read
    * - workspace-file → fs 读取（entryFile 必须在 rootDir 内，防任意磁盘读取）
+   * - 位图（png/jpg/webp/gif/bmp/avif/ico）→ 只回协议 URL + 尺寸元数据 + path，
+   *   content 是 ?variant=full 的 URL 而非原始字节；原图仅"查看原图"时由协议投递。
    * kind 细分（docx/xlsx/image/pdf 等）由 capabilities.originalKind 提供。
    */
-  async readContent(id: string): Promise<{
+  async readContent(id: string, options?: { inline?: boolean }): Promise<{
     content: string;
     language?: string;
     kind?: string;
@@ -627,6 +684,7 @@ export class ArtifactService {
     width?: number;
     height?: number;
     thumbnail?: import("../../shared/agent-ipc").WorkspaceFileThumbnailDto;
+    bytes?: number;
   } | null> {
     const descriptor = this.get(id);
     if (!descriptor) return null;
@@ -635,24 +693,51 @@ export class ArtifactService {
       if (content === null) return null;
       return { content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind };
     }
-    // workspace-file：root 边界校验后读取（3C：ArtifactProtocol 不能任意读用户磁盘）
-    const root = descriptor.source.rootDir;
-    const target = descriptor.source.entryFile;
-    const rel = relative(resolve(root), resolve(target));
-    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-      console.error("[ArtifactService] readContent 拒绝 root 外路径:", target);
-      return null;
+    const target = this.workspaceTarget(id);
+    if (!target) return null;
+    // 只有 renderer IPC（inline）走协议 URL；main 内部的 PromptContext / Gadget /
+    // 预览宿主仍按旧契约拿 data URI，避免改变喂给模型或其它服务的内容语义。
+    const inlineImage = Boolean(options?.inline) && INLINE_IMAGE_EXTENSIONS.has(extname(target).toLowerCase());
+    // SVG / 文本 / Office 走原契约（content 是文本或 data URI）；位图一律不生成 base64
+    const preview = await previewWorkspaceFile(target, {
+      // main 内部调用方（PromptContext/Gadget/预览宿主）不需要缩略图，别让它们等 resize
+      thumbnail: Boolean(options?.inline),
+      inlineImage,
+    });
+    const kind = (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind;
+    if (!inlineImage) {
+      return {
+        content: preview.content,
+        language: preview.language,
+        kind,
+        path: preview.path,
+        bytes: preview.bytes,
+        ...(preview.width ? { width: preview.width, height: preview.height } : {}),
+        ...(preview.thumbnail ? { thumbnail: preview.thumbnail } : {}),
+      };
     }
-    if (!existsSync(target)) return null;
-    // thumbnail 只对图像生效：内联 <img> 用降采样副本，content 仍是原图（查看原图/面板不变）
-    const preview = await previewWorkspaceFile(target, { thumbnail: true });
+    const bytes = preview.bytes ?? 0;
+    // 单图体积上限：超限只回缩略图元数据 + 路径，连原图元数据都不塞进响应；
+    // full URL 只是个地址，真正的字节永远不会经过 IPC。
+    const overBudget = bytes > IMAGE_INLINE_BASE64_MAX_BYTES;
     return {
-      content: preview.content,
+      content: artifactImageUrl(id, "full", {
+        mime: preview.mimeType,
+        ...(overBudget ? {} : { bytes, width: preview.width, height: preview.height }),
+      }),
       language: preview.language,
-      kind: (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind,
+      kind,
       path: preview.path,
+      bytes,
       ...(preview.width ? { width: preview.width, height: preview.height } : {}),
-      ...(preview.thumbnail ? { thumbnail: preview.thumbnail } : {}),
+      ...(preview.thumbnail
+        ? {
+            thumbnail: {
+              ...preview.thumbnail,
+              url: artifactImageUrl(id, "thumb"),
+            },
+          }
+        : {}),
     };
   }
 

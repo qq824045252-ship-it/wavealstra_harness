@@ -1,3 +1,4 @@
+import { isArtifactImageUrl } from "@shared/artifact-ipc";
 import type { ArtifactDescriptor } from "@shared/artifact-types";
 import type { ChatMessage } from "@/types";
 
@@ -5,6 +6,8 @@ import type { ChatMessage } from "@/types";
 export function directChatImageSource(source: string): string | null {
   const value = source.trim();
   if (/^data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,[a-z\d+/=\s]+$/i.test(value)) return value;
+  // 本应用构造的产物图片协议 URL（字节由主进程投递，renderer 不碰 base64）
+  if (isArtifactImageUrl(value)) return value;
   try {
     const url = new URL(value);
     if (url.protocol === "https:" && !url.username && !url.password) return url.href;
@@ -126,7 +129,13 @@ export function resolveChatImageArtifact(
   if (/^mybuddy-artifact:/i.test(source)) {
     try {
       const url = new URL(source);
-      if (url.hostname !== "local" || url.search || url.hash) return undefined;
+      if (url.hostname !== "local" || url.hash) return undefined;
+      // 图片协议 URL 带 ?variant=thumb/full 与元数据；只允许本应用会生成的参数
+      const variant = url.searchParams.get("variant");
+      if (variant !== null && variant !== "thumb" && variant !== "full") return undefined;
+      for (const key of url.searchParams.keys()) {
+        if (!["variant", "mime", "bytes", "w", "h"].includes(key)) return undefined;
+      }
       const parts = url.pathname.split("/").filter(Boolean);
       if (parts.length !== 1) return undefined;
       return images.find((d) => d.id === decodeURIComponent(parts[0]!));

@@ -125,6 +125,21 @@ export interface ImageMetadata {
  */
 export function metadataFromDataUri(content: string): ImageMetadata {
   const trimmed = content.trim();
+  // 图片产物走 mybuddy-artifact:// 协议 URL（字节不过 IPC）：mime/体积在 query 里。
+  if (/^mybuddy-artifact:\/\/local\//i.test(trimmed)) {
+    try {
+      const params = new URL(trimmed).searchParams;
+      const mime = params.get("mime")?.toLowerCase() ?? null;
+      const bytes = Number(params.get("bytes"));
+      return {
+        mime,
+        sizeBytes: Number.isFinite(bytes) && bytes > 0 ? bytes : null,
+        mayHaveAlpha: mime === "image/png" || mime === "image/webp" || mime === "image/gif" || mime === "image/avif",
+      };
+    } catch {
+      return { mime: null, sizeBytes: null, mayHaveAlpha: false };
+    }
+  }
   const comma = trimmed.indexOf(",");
   if (comma < 0) return { mime: null, sizeBytes: null, mayHaveAlpha: false };
   const header = trimmed.slice(0, comma);

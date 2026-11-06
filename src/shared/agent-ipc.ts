@@ -658,18 +658,20 @@ export type WorkspaceCopyIntoTaskResult =
   | { ok: false; error: string };
 
 /**
- * 图像内联缩略图（P0：图片消息拖动卡）。
+ * 图像内联缩略图元数据（P0：图片消息拖动卡）。
  *
- * 与 content 并列而不是替换 content：content 永远是原始字节，"查看原图"、
- * Artifact 面板、旧渲染路径都靠它；thumbnail 是给内联 <img> 用的降采样副本。
- * 缺省不产出（previewWorkspaceFile 的默认行为不变）。
+ * 缩略图字节留在主进程，由 mybuddy-artifact://?variant=thumb 按需投递；
+ * 这里只把尺寸/格式/体积这类几十字节的元数据过 IPC，renderer 不再持有任何
+ * 图片 base64。url 由 Artifact Domain（知道 artifactId）补齐。
  */
 export interface WorkspaceFileThumbnailDto {
-  /** data:<mime>;base64,… —— 已按显示上限缩过 */
-  content: string;
+  /** 缩略图协议 URL（Artifact Domain 填充） */
+  url?: string;
   /** 缩略图的固有尺寸，用于在加载完成前就预留正确行高 */
   width: number;
   height: number;
+  mimeType: string;
+  bytes: number;
 }
 
 export interface WorkspaceFilePreviewDto {
@@ -678,13 +680,17 @@ export interface WorkspaceFilePreviewDto {
   kind: ArtifactKind;
   content: string;
   language?: string;
+  /** 原始文件字节数（图像体积上限判定 / 面板元数据用） */
+  bytes?: number;
+  /** 原图 MIME（内联链路不回字节，面板靠它显示格式/透明棋盘格） */
+  mimeType?: string;
   /**
    * 图像固有尺寸（只读文件头得来，不解码）。渲染方据此在图片加载完成前就预留
    * 正确的行高，避免 onload 后行高跳变把整条虚拟列表的下方行重新平移。
    */
   width?: number;
   height?: number;
-  /** 仅图像且显式请求缩略图时存在；缺失时调用方回落到 content */
+  /** 仅图像且显式请求缩略图时存在 */
   thumbnail?: WorkspaceFileThumbnailDto;
 }
 

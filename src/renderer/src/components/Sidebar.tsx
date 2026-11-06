@@ -64,6 +64,17 @@ const isTaskDrag = (types: readonly string[]): boolean => types.includes(TASK_DR
 const isSpaceDrag = (types: readonly string[]): boolean => types.includes(SPACE_DRAG_TYPE);
 const isTreeDrag = (types: readonly string[]): boolean => isTaskDrag(types) || isSpaceDrag(types);
 
+/**
+ * 侧栏树排序用的时间键：量化到分钟。
+ * 流式/回放事件可能把 task.updatedAt 刷成毫秒级 now（一条含 38 图的消息会连发
+ * 几十条 artifact_ref），而 compareMixed 用 updatedAt DESC 排序 —— 两条任务会
+ * 在同一秒内反复交换位置，看起来像"一直在加载"。量化后同一分钟内排序键恒定，
+ * 退化为 compareMixed 的 id 确定性兜底；跨分钟最多变更一次。
+ */
+function stableSortAt(timestamp: number): number {
+  return Math.floor(timestamp / 60_000) * 60_000;
+}
+
 function notificationTimeLabel(timestamp: number): string {
   const delta = Math.max(0, Date.now() - timestamp);
   if (delta < 60_000) return "刚刚";
@@ -138,7 +149,7 @@ export default function Sidebar(): React.JSX.Element {
       spaceId: t.spaceId ?? null,
       spaceSortOrder: t.spaceSortOrder ?? 0,
       isFavorited: Boolean(t.isFavorited) || pinnedTaskIds.includes(t.id),
-      updatedAt: t.updatedAt,
+      updatedAt: stableSortAt(t.updatedAt),
       archived: Boolean(t.archived),
     })) as TaskDto[];
   }, [tasks, pinnedTaskIds]);
@@ -154,7 +165,7 @@ export default function Sidebar(): React.JSX.Element {
       spaceId: t.spaceId ?? null,
       spaceSortOrder: t.spaceSortOrder ?? 0,
       isFavorited: Boolean(t.isFavorited) || pinnedTaskIds.includes(t.id),
-      updatedAt: t.updatedAt,
+      updatedAt: stableSortAt(t.updatedAt),
       archived: Boolean(t.archived),
     })) as TaskDto[];
   }, [tasks, taskFilterStatus, taskFilterTime, pinnedTaskIds]);

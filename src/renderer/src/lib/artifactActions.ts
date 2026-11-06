@@ -123,6 +123,28 @@ export function downloadArtifact(artifact: Artifact): void {
   const filename = downloadFileName(artifact);
   if (!artifact.content) return;
 
+  // 图片产物 content 是协议 URL：字节由主进程投递（CSP connect-src 已放行），
+  // fetch 到 Blob 再触发下载，避免把 URL 字符串当文件内容下载。
+  if (artifact.content.startsWith("mybuddy-artifact://local/")) {
+    void fetch(artifact.content)
+      .then((response) => {
+        if (!response.ok) throw new Error(`artifact image ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        try {
+          triggerDownload(url, filename);
+        } finally {
+          window.setTimeout(() => URL.revokeObjectURL(url), 4_000);
+        }
+      })
+      .catch(() => {
+        // 下载失败不改变其它产物行为；用户仍可用"在系统应用中打开"走磁盘路径
+      });
+    return;
+  }
+
   if (isBinaryDataUri(artifact.content) || artifact.content.startsWith("data:")) {
     triggerDownload(artifact.content, filename);
     return;

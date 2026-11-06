@@ -29,6 +29,32 @@ const IGNORED_DIRECTORIES = new Set([
   "release",
 ]);
 
+/**
+ * 工具链生成物/缓存目录：只从「产物快照 diff」排除，文件树仍列出（用户可能要手动查看构建结果）。
+ * 这些目录里的文件由外部构建工具随时改写 mtime，不是 Agent 本轮交付物；此前整个 build/、
+ * intermediates/ 被批量登记成一轮产物，就是因为没有这一层过滤。
+ */
+const GENERATED_DIRECTORIES = new Set([
+  "build", "dist", "target", "bin", "obj",
+  ".gradle", ".next", ".nuxt", ".parcel-cache", ".turbo",
+  "cache", ".cache", "caches-jvm", "intermediates", "__pycache__",
+  ".pytest_cache", ".mypy_cache", "coverage", ".nyc_output",
+]);
+
+/** 产物快照扫描上限：超过后截断，diff 侧另有基线失配保险丝，不能把截断当成「本轮新增」。 */
+export const WORKSPACE_SNAPSHOT_FILE_LIMIT = 5000;
+/** 单轮允许登记的文件变化上限；超过这个量级几乎必然是基线失配或外部批量构建。 */
+export const MAX_TURN_WORKSPACE_CHANGES = 200;
+
+/** 路径是否落在版本控制/依赖/生成物目录内（按相对 root 的路径分段判断，跨平台）。 */
+export function isGeneratedWorkspacePath(filePath: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(filePath));
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+  return rel.split(/[\\/]/).some((segment) =>
+    IGNORED_DIRECTORIES.has(segment) || GENERATED_DIRECTORIES.has(segment),
+  );
+}
+
 const TEXT_EXTENSIONS = new Set([
   ".css", ".csv", ".html", ".htm", ".js", ".jsx", ".json", ".log", ".md",
   ".markdown", ".py", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
@@ -222,17 +248,23 @@ export async function officeTextPreview(kind: string, dataUri: string, name: str
  * （width×height×4）才是滚动时反复 evict/重解的根源，CSS 的 maxHeight 不减少它。
  */
 const IMAGE_THUMBNAIL_MAX_EDGE = 1280;
-const IMAGE_THUMBNAIL_JPEG_QUALITY = 80;
+/** 清单 P0：缩略图质量 q60（源为 webp 时 pi 保持 webp 编码） */
+const IMAGE_THUMBNAIL_JPEG_QUALITY = 60;
 /** 缩略图体积预算：超了让 pi 继续降质/降尺寸，别拿 1MB 的副本当缩略图 */
 const IMAGE_THUMBNAIL_MAX_BYTES = 320 * 1024;
 /**
  * 内联等待预算（实测 pi/photon 解一张 12.6MP 的 JPEG 要约 1.2s，0.9MP 约 0.1s）：
- * 超出预算就先把原图交给渲染、本次不挂缩略图，生成继续在后台跑完并进缓存。
+ * 超出预算就先按原图字节回协议请求，生成继续在后台跑完并进缓存。
  * 缩略图是"下一次看同一张图"的收益，绝不能变成首屏新增的等待。
  */
 const IMAGE_THUMBNAIL_INLINE_BUDGET_MS = 400;
-/** 进程内缩略图缓存条数（每条约 ≤320KB base64）：滚动回看、重开面板都命中它 */
+/** 进程内缩略图缓存条数（LRU，每条约 ≤320KB Buffer）：滚动回看、重开面板都命中它 */
 const IMAGE_THUMBNAIL_CACHE_LIMIT = 64;
+/**
+ * 单图体积上限（清单 P0）：超过它，内联链路绝不生成整份原图 base64，
+ * 只回缩略图元数据 + 磁盘路径；原图字节仅由协议在"点击看原图"时投递。
+ */
+export const IMAGE_INLINE_BASE64_MAX_BYTES = 512 * 1024;
 /** 只降采样单帧位图：GIF/ICO 回落到原图，避免把动图变成静帧 */
 const THUMBNAILABLE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp"]);
 
@@ -242,9 +274,33 @@ export interface PreviewWorkspaceFileOptions {
    * 只有明确要内联展示的调用方（Artifact Domain readContent → ChatImage）开启。
    */
   thumbnail?: boolean;
+  /** 内联链路：不生成原图 base64，content 由 Artifact Domain 换成协议 URL */
+  inlineImage?: boolean;
 }
 
-const thumbnailCache = new Map<string, WorkspaceFileThumbnailDto | undefined>();
+interface ThumbnailBytes {
+  data: Buffer;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/** 主进程缩略图字节缓存：只读文件头/mtime 就能命中，renderer 永远拿不到这些字节 */
+const thumbnailCache = new Map<string, ThumbnailBytes | undefined>();
+
+function thumbnailCacheKey(filePath: string, st: { mtimeMs: number; size: number }): string {
+  return `${filePath}\u0000${st.mtimeMs}\u0000${st.size}`;
+}
+
+function touchThumbnailCache(key: string, value: ThumbnailBytes | undefined): void {
+  if (thumbnailCache.has(key)) thumbnailCache.delete(key);
+  while (thumbnailCache.size >= IMAGE_THUMBNAIL_CACHE_LIMIT) {
+    const oldest = thumbnailCache.keys().next().value;
+    if (oldest === undefined) break;
+    thumbnailCache.delete(oldest);
+  }
+  thumbnailCache.set(key, value);
+}
 
 /**
  * 全局并发上限（2）：pi 的 resizeImage 每次调用都会 new 一个 worker 线程。
@@ -317,8 +373,8 @@ function loadPiImageResize(): Promise<typeof import("@earendil-works/pi-coding-a
   return piImageResize;
 }
 
-/** 真做一次降采样（不含缓存/限流）：只在确实缩小过时返回。 */
-async function resizeToThumbnail(buffer: Buffer, ext: string): Promise<WorkspaceFileThumbnailDto | undefined> {
+/** 真做一次降采样（不含缓存/限流）：只在确实缩小过时返回。字节留在主进程。 */
+async function resizeToThumbnail(buffer: Buffer, ext: string): Promise<ThumbnailBytes | undefined> {
   try {
     const { resizeImage } = await loadPiImageResize();
     const resized = await resizeImage(buffer, imageMime(ext), {
@@ -327,10 +383,11 @@ async function resizeToThumbnail(buffer: Buffer, ext: string): Promise<Workspace
       maxBytes: IMAGE_THUMBNAIL_MAX_BYTES,
       jpegQuality: IMAGE_THUMBNAIL_JPEG_QUALITY,
     });
-    // 原图本来就在显示尺寸内时，再产一份等大副本只是把 renderer 的字符串内存翻倍
+    // 原图本来就在显示尺寸内时，再产一份等大副本只是白占缓存
     if (!resized?.wasResized || !resized.data) return undefined;
     return {
-      content: `data:${resized.mimeType};base64,${resized.data}`,
+      data: Buffer.from(resized.data, "base64"),
+      mimeType: resized.mimeType,
       width: resized.width,
       height: resized.height,
     };
@@ -340,21 +397,25 @@ async function resizeToThumbnail(buffer: Buffer, ext: string): Promise<Workspace
 }
 
 /**
- * 缩略图：缓存 → 限流 → 超预算先返回原图（生成继续在后台跑完并进缓存）。
- * 任何失败都返回 undefined，由调用方回落到原图。
+ * 缩略图字节：LRU 缓存 → 限流 → 超预算先返回 undefined（生成继续在后台跑完并进缓存）。
+ * previewWorkspaceFile 与 mybuddy-artifact://?variant=thumb 共用同一份缓存。
  */
-function imageThumbnail(buffer: Buffer, ext: string, cacheKey: string): Promise<WorkspaceFileThumbnailDto | undefined> {
-  if (thumbnailCache.has(cacheKey)) return Promise.resolve(thumbnailCache.get(cacheKey));
+function thumbnailBytesFor(
+  buffer: Buffer,
+  ext: string,
+  cacheKey: string,
+): Promise<ThumbnailBytes | undefined> {
+  if (thumbnailCache.has(cacheKey)) {
+    const hit = thumbnailCache.get(cacheKey);
+    if (hit) touchThumbnailCache(cacheKey, hit);
+    return Promise.resolve(hit);
+  }
   if (!THUMBNAILABLE_IMAGE_EXTENSIONS.has(ext)) return Promise.resolve(undefined);
   const job = withThumbnailSlot(() => resizeToThumbnail(buffer, ext))
     .catch(() => undefined)
-    .then((dto) => {
-      if (thumbnailCache.size >= IMAGE_THUMBNAIL_CACHE_LIMIT) {
-        const oldest = thumbnailCache.keys().next().value;
-        if (oldest !== undefined) thumbnailCache.delete(oldest);
-      }
-      thumbnailCache.set(cacheKey, dto);
-      return dto;
+    .then((bytes) => {
+      touchThumbnailCache(cacheKey, bytes);
+      return bytes;
     });
   return Promise.race([
     job,
@@ -363,6 +424,28 @@ function imageThumbnail(buffer: Buffer, ext: string, cacheKey: string): Promise<
       (timer as unknown as { unref?: () => void }).unref?.();
     }),
   ]);
+}
+
+/**
+ * 协议层唯一图片字节入口（P0）：renderer 只拿 URL，绝不拿 base64。
+ * - full：原图（只由"查看原图"/产物面板点击触发）
+ * - thumb：长边 1280 的降采样副本；不支持/生成超时/本来就在显示尺寸内 → 原图字节
+ */
+export async function workspaceImageVariant(
+  filePath: string,
+  variant: "thumb" | "full",
+): Promise<{ data: Buffer; mimeType: string } | null> {
+  try {
+    const buffer = await readFile(filePath);
+    const ext = extname(filePath).toLowerCase();
+    const mimeType = imageMime(ext);
+    if (variant === "full") return { data: buffer, mimeType };
+    const st = await stat(filePath);
+    const thumb = await thumbnailBytesFor(buffer, ext, thumbnailCacheKey(filePath, st));
+    return thumb ? { data: thumb.data, mimeType: thumb.mimeType } : { data: buffer, mimeType };
+  } catch {
+    return null;
+  }
 }
 
 export async function previewWorkspaceFile(
@@ -393,13 +476,39 @@ export async function previewWorkspaceFile(
     content = `data:${officeMime(kind)};base64,${buffer.toString("base64")}`;
   } else if (kind === "pdf") content = `data:application/pdf;base64,${buffer.toString("base64")}`;
   else if (kind === "image") {
-    // 原图 base64 保留：Artifact 面板"查看原图"与旧渲染路径都依赖它（一个版本内不删）
-    content = `data:${imageMime(ext)};base64,${buffer.toString("base64")}`;
     // 固有尺寸来自文件头：给渲染端在加载完成前钉住行高的依据
     size = imageIntrinsicSize(buffer);
+    const st = await stat(filePath);
+    if (options?.inlineImage) {
+      // 内联链路（Artifact Domain → ChatImage）绝不生成原图 base64：content 由
+      // ArtifactService 换成 mybuddy-artifact://?variant=full 的协议 URL。
+      // 超体积上限也只回缩略图元数据 + path，原图字节只走协议、不过 IPC。
+      content = "";
+    } else {
+      // 其它调用方（历史预览 / 索引）仍按旧契约拿 data URI
+      content = `data:${imageMime(ext)};base64,${buffer.toString("base64")}`;
+    }
     if (options?.thumbnail) {
-      const st = await stat(filePath);
-      thumbnail = await imageThumbnail(buffer, ext, `${filePath}\u0000${st.mtimeMs}\u0000${st.size}`);
+      if (options?.inlineImage && size) {
+        // 内联链路不和协议请求抢着算缩略图：尺寸元数据直接来自文件头，
+        // 字节由 ?variant=thumb 按需生成并进缓存，同一张图只算一次。
+        thumbnail = {
+          width: size.width,
+          height: size.height,
+          mimeType: imageMime(ext),
+          bytes: buffer.length,
+        };
+      } else {
+        const thumb = await thumbnailBytesFor(buffer, ext, thumbnailCacheKey(filePath, st));
+        if (thumb) {
+          thumbnail = {
+            width: thumb.width,
+            height: thumb.height,
+            mimeType: thumb.mimeType,
+            bytes: thumb.data.byteLength,
+          };
+        }
+      }
     }
   } else if (kind === "video" || kind === "audio") content = `data:${mediaMime(kind, ext)};base64,${buffer.toString("base64")}`;
   else if (kind === "cad") {
@@ -412,6 +521,8 @@ export async function previewWorkspaceFile(
     kind,
     content,
     language: ext.slice(1) || undefined,
+    bytes: buffer.length,
+    ...(kind === "image" ? { mimeType: imageMime(ext) } : {}),
     ...(size ? { width: size.width, height: size.height } : {}),
     ...(thumbnail ? { thumbnail } : {}),
   };
@@ -633,17 +744,27 @@ export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNod
   return walk(resolvedRoot);
 }
 
-export async function snapshotWorkspace(root: string, options?: { unfiltered?: boolean }): Promise<Map<string, string>> {
+/**
+ * 工作目录快照：产物 diff 的**唯一**口径。
+ *
+ * 没有 unfiltered 参数：baseline（会话打开/回合开始）与 after（回合结束）必须走完全相同的
+ * 过滤规则，否则两份快照的路径集合不重叠，既有项目文件会被整体误判为「本轮新增产物」。
+ */
+export async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
   const snapshot = new Map<string, string>();
   const files: string[] = [];
   const visit = async (dir: string, depth = 0): Promise<void> => {
-    if (depth > 12 || files.length >= 5000) return;
+    if (depth > 12 || files.length >= WORKSPACE_SNAPSHOT_FILE_LIMIT) return;
     let entries;
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (files.length >= 5000) break;
-      if (!options?.unfiltered && isInternalTaskFile(entry.name)) continue;
-      if (!options?.unfiltered && entry.isDirectory() && (entry.name.startsWith(".") || IGNORED_DIRECTORIES.has(entry.name))) continue;
+      if (files.length >= WORKSPACE_SNAPSHOT_FILE_LIMIT) break;
+      if (isInternalTaskFile(entry.name)) continue;
+      if (entry.isDirectory() && (
+        entry.name.startsWith(".") ||
+        IGNORED_DIRECTORIES.has(entry.name) ||
+        GENERATED_DIRECTORIES.has(entry.name)
+      )) continue;
       const fullPath = resolve(dir, entry.name);
       if (entry.isDirectory()) await visit(fullPath, depth + 1);
       else if (entry.isFile()) files.push(fullPath);
@@ -667,4 +788,43 @@ export async function snapshotWorkspace(root: string, options?: { unfiltered?: b
     for (const row of rows) if (row) snapshot.set(row[0], row[1]);
   }
   return snapshot;
+}
+
+export interface WorkspaceSnapshotDiff {
+  /** 本轮真实变化的文件；基线不可信时为空数组 */
+  changed: string[];
+  /** 非空表示 diff 被整体拒绝，调用方应打日志并跳过登记，绝不能退化为「全量当新增」 */
+  rejected?: string;
+}
+
+/**
+ * before/after 快照 diff。两道保险丝防止把整个工作目录灌进产物列表：
+ *  1. 基线路径重叠率 < 50%：说明两份快照口径不一致或工作目录被整体换掉；
+ *  2. 单轮变化超过 MAX_TURN_WORKSPACE_CHANGES：说明是外部批量构建/误扫描，不是 Agent 交付物。
+ * 正常轮次（含一次性生成几十个文件）不受影响；真实工具 write/edit 另有即时登记通道。
+ */
+export function diffWorkspaceSnapshot(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): WorkspaceSnapshotDiff {
+  let overlap = 0;
+  for (const path of before.keys()) if (after.has(path)) overlap += 1;
+  if (before.size > 0 && overlap / before.size < 0.5) {
+    return {
+      changed: [],
+      rejected: `基线失配（before=${before.size}, after=${after.size}, 路径重叠=${overlap}）`,
+    };
+  }
+  const changed: string[] = [];
+  for (const [path, signature] of after) {
+    if (before.get(path) === signature) continue;
+    changed.push(path);
+  }
+  if (changed.length > MAX_TURN_WORKSPACE_CHANGES) {
+    return {
+      changed: [],
+      rejected: `单轮变化 ${changed.length} 个文件，超过上限 ${MAX_TURN_WORKSPACE_CHANGES}`,
+    };
+  }
+  return { changed };
 }

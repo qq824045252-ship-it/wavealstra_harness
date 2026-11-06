@@ -2164,7 +2164,8 @@ function registerIpc(): void {
   });
   ipcMain.handle(ArtifactDomainIpc.readContent, async (_e, req: ArtifactDomainReadContentRequest) => {
     // 3C：内容解析（managed→storage；workspace-file→fs+root 边界）
-    return artifactDomainService.readContent(req.artifactId);
+    // inline：renderer 只拿协议 URL + 尺寸元数据，位图 base64 一律不过 IPC。
+    return artifactDomainService.readContent(req.artifactId, { inline: true });
   });
   ipcMain.handle(ArtifactDomainIpc.removeTask, (_e, req: ArtifactDomainTaskRequest) => {
     // task 生命周期（3B.6）：DB/Registry/storage 全清理，removed 事件广播
@@ -3171,7 +3172,9 @@ app.whenReady().then(async () => {
     },
     rootOf: (artifactId) => artifactDomainService?.rootOf(artifactId) ?? null,
   });
-  artifactProtocol = new ArtifactProtocol(artifactRuntime);
+  artifactProtocol = new ArtifactProtocol(artifactRuntime, async (artifactId, variant) =>
+    artifactDomainService?.readImageVariant(artifactId, variant) ?? null,
+  );
   // 4D：surface generation 变化（load/reload/close）→ SelectionStore stale 事件源
   surfaceCoordinator.onSurfaceChanged((info) => {
     htmlEditService?.invalidate("artifact");

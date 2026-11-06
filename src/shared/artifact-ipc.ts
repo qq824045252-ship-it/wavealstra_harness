@@ -39,6 +39,67 @@ export const ArtifactDomainIpc = {
   removed: "artifact-domain:removed",
 } as const;
 
+/**
+ * 图片内联链路的协议 URL（P0：renderer 不碰图片 base64）。
+ *
+ * 字节全部由主进程 mybuddy-artifact:// 协议按需投递：
+ * - variant=thumb：长边 1280 的降采样副本 + 进程内缓存（聊天内联 <img> 用）
+ * - variant=full：原图（仅"查看原图"/产物面板点击时加载）
+ * query 里的 mime/bytes/width/height 只是元数据，供 ImageArtifactView 显示格式、
+ * 体积和透明背景棋盘格，避免为了几十字节再跑一次 IPC。
+ */
+export type ArtifactImageVariant = "thumb" | "full";
+
+export interface ArtifactImageMeta {
+  mime?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+}
+
+export function artifactImageUrl(
+  artifactId: string,
+  variant: ArtifactImageVariant,
+  meta: ArtifactImageMeta = {},
+): string {
+  const params = new URLSearchParams({ variant });
+  if (meta.mime) params.set("mime", meta.mime);
+  if (typeof meta.bytes === "number") params.set("bytes", String(meta.bytes));
+  if (typeof meta.width === "number") params.set("w", String(meta.width));
+  if (typeof meta.height === "number") params.set("h", String(meta.height));
+  return `mybuddy-artifact://local/${encodeURIComponent(artifactId)}/?${params.toString()}`;
+}
+
+/** 只允许本应用构造的 single-segment 产物图片 URL，挡掉任意 file/网络协议注入 */
+export function isArtifactImageUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "mybuddy-artifact:" || url.hostname !== "local" || url.hash) return false;
+    const variant = url.searchParams.get("variant");
+    if (variant !== "thumb" && variant !== "full") return false;
+    return url.pathname.split("/").filter(Boolean).length === 1;
+  } catch {
+    return false;
+  }
+}
+
+export function artifactImageMeta(value: string): ArtifactImageMeta {
+  if (!isArtifactImageUrl(value)) return {};
+  const params = new URL(value).searchParams;
+  const num = (key: string): number | undefined => {
+    const raw = params.get(key);
+    if (raw === null) return undefined;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  };
+  return {
+    mime: params.get("mime") ?? undefined,
+    bytes: num("bytes"),
+    width: num("w"),
+    height: num("h"),
+  };
+}
+
 /** artifact-domain:get 请求 */
 export interface ArtifactDomainGetRequest {
   taskId: string;
@@ -74,10 +135,13 @@ export interface ArtifactDomainReadContentResponse {
   width?: number;
   height?: number;
   /**
-   * 图像的内联缩略图（data URI + 固有尺寸）。
-   * content 仍为原图：内联展示优先用 thumbnail，打开产物用 content。
+   * 图像的内联缩略图（协议 URL + 尺寸元数据，不含 base64）。
+   * 图像 content 是 ?variant=full 的协议 URL 而非原始字节；超过体积上限时
+   * 只返回缩略图 + path，原图字节永远不经过 IPC。
    */
   thumbnail?: import("./agent-ipc").WorkspaceFileThumbnailDto;
+  /** 原图文件大小（体积上限判定结果，供面板显示） */
+  bytes?: number;
 }
 
 /** artifact-domain:get 响应 */

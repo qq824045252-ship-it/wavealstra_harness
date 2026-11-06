@@ -12,7 +12,7 @@ import { ArtifactChipRow, FileBadge } from "@/components/common/FileBadge";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import ExecutionTimeline from "./ExecutionTimeline";
 import MessageBlockView from "./MessageBlockView";
-import { ChatImageScope, MessageImageProvider, MessageImages } from "./ChatImage";
+import { ChatImageScope, MessageImages } from "./ChatImage";
 import { ConversationInteractionCard } from "./ConversationRuntimeCards";
 import {
   IconCopy,
@@ -721,7 +721,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />
         ))}
 
-        <MessageImageProvider><div className="assistant-card">
+        <div className="assistant-card">
           {/* 助手回复不折叠，完整展示；仅用户消息长文折叠。
               正文区 = finalBlocks 的 prose 段（tool_start 冻结段，空段渲染过滤）。 */}
           {nonEmptyFinalTextBlocks(message.finalBlocks).map((block, i) => {
@@ -838,7 +838,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
             )}
             <span className="msg-time">{clockTime(message.createdAt)}</span>
           </div>
-        </div></MessageImageProvider>
+        </div>
       </div></ChatImageScope>
     </div>
   );
