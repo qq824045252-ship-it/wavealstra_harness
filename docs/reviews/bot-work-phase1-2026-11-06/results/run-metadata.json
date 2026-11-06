@@ -1,0 +1,8 @@
+{
+  "node": "v24.22.1",
+  "sqlite": "3.53.4",
+  "recordedAt": "2026-11-06T05:44:51.422Z",
+  "executionStatus": "observations-collected",
+  "acceptanceStatus": "NOT_RUN",
+  "note": "ok:true in probe output is the original service response, not a test PASS. These are defect reproductions, not the repository acceptance suite."
+}

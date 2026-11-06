@@ -1,0 +1,26 @@
+{
+  "reviewDate": "2026-11-06",
+  "timezone": "Asia/Shanghai",
+  "repository": "qq824045252-ship-it/wavealstra_harness",
+  "mainSha": "1d31faac8fe45d29cf4cc30f0cd821ec50722dc7",
+  "frozenDesignSha": "cb9680891f8b86aed69d7ace904bca0f2ec7d8cd",
+  "designUnchangedAtMain": true,
+  "attachment": {
+    "filename": "bot_work_phase1.ts",
+    "bytes": 85507,
+    "sha256": "494d96f41113433ffb37f55fe2dd78ed5b9d2a0eda7278fd926e57b1d6a5c4a0"
+  },
+  "probeScope": "Original uploaded TypeScript methods and DDL, with Node type transformation and node:sqlite sync driver adapter",
+  "notRun": [
+    "repository typecheck",
+    "better-sqlite3 integration",
+    "Durable integration",
+    "renderer",
+    "Omarchy real-device tests",
+    "release/package tests",
+    "BW full acceptance and E2E"
+  ],
+  "archivedSourcePath": "draft.ts.txt",
+  "documentationOnly": true,
+  "publishingNotes": "Only probe source paths, schema TypeScript loading, and output destination changed for repository publication; reviewed draft bytes and business logic remain unchanged."
+}

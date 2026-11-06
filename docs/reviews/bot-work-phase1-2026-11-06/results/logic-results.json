@@ -1,0 +1,108 @@
+[
+  {
+    "name": "changed create payload replays original receipt",
+    "ok": true,
+    "replayed": true,
+    "sameWork": true,
+    "returnedOwner": "A",
+    "returnedTitle": "Linux repair"
+  },
+  {
+    "name": "cancel with reused amend operation is silently ignored",
+    "ok": true,
+    "replayed": true,
+    "lifecycle": "active"
+  },
+  {
+    "name": "stale current owner decision without guard accepted",
+    "ok": true,
+    "lifecycle": "paused",
+    "revision": 2
+  },
+  {
+    "name": "arbitrary actorUserId bypasses owner check",
+    "ok": true,
+    "lifecycle": "paused"
+  },
+  {
+    "name": "unregistered worker and arbitrary execution can submit",
+    "ok": true,
+    "deliverable": {
+      "producer_bot_id": "NOT-A-BOT",
+      "execution_id": "NOT-AN-EXECUTION",
+      "intent_revision": 1,
+      "status": "proposed"
+    }
+  },
+  {
+    "name": "amend marks real device criterion verified without evidence",
+    "amendOk": true,
+    "criterion": {
+      "id": "c",
+      "text": "test on Omarchy",
+      "status": "satisfied",
+      "requiredIntentRevision": 2,
+      "verifiedIntentRevision": 2,
+      "requiresRealEnvironmentCheck": true
+    },
+    "closeOk": true,
+    "lifecycle": "closed",
+    "conclusion": "succeeded"
+  },
+  {
+    "name": "known write conflict and uncovered scope can close succeeded",
+    "acceptOk": true,
+    "closeOk": true,
+    "conclusion": "succeeded",
+    "conflictRow": {
+      "status": "accepted",
+      "has_write_conflicts": 1,
+      "uncovered_scope_json": "[\"required file write\"]"
+    }
+  },
+  {
+    "name": "close cancelled skips active execution and unknown settlement",
+    "ok": true,
+    "lifecycle": "closed",
+    "activeExecutionIds": [
+      "running-exec"
+    ],
+    "openBlockers": 1
+  },
+  {
+    "name": "cancel ignores persisted unknown effect unless caller supplies hint",
+    "ok": true,
+    "lifecycle": "closed",
+    "openBlockers": 1
+  },
+  {
+    "name": "handoff rejects still-valid worker result when original epoch supplied",
+    "ok": false,
+    "code": "epoch_mismatch",
+    "currentIntentRevision": 1,
+    "originalIntentRevision": 1
+  },
+  {
+    "name": "old result without intent guard is stamped current revision",
+    "ok": true,
+    "deliverable": {
+      "intent_revision": 2,
+      "owner_epoch": 1,
+      "status": "proposed"
+    }
+  },
+  {
+    "name": "closed work conclusion can be overwritten",
+    "ok": true,
+    "lifecycle": "closed",
+    "conclusion": "cancelled"
+  },
+  {
+    "name": "replayed historical receipt emits stale UI state",
+    "replayed": true,
+    "databaseLifecycle": "active",
+    "lastUiLifecycle": "paused",
+    "databaseVersion": 3,
+    "lastUiVersion": 2
+  }
+]
