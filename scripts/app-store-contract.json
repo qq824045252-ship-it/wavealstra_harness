@@ -5,7 +5,14 @@
     "note": "Pre-refactor public exports and top-level ownership. Changes require an explicit contract decision; never regenerate this from the refactored implementation to hide a missing member."
   },
   "actionAdditions": {
-    "releaseArtifactRender": "Release a ChatImage preview's cached payload and hydration state when it leaves the viewport. The pre-refactor action and initialization lists below remain frozen."
+    "releaseArtifactRender": "Release a ChatImage preview's cached payload and hydration state when it leaves the viewport. The pre-refactor action and initialization lists below remain frozen.",
+    "setBotDraft": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "submitBotDraft": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "setActiveBotId": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "setSelectedWorkId": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "refreshBotWork": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "applyWorkProjection": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "markBotNotificationRead": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -593,5 +600,16 @@
     "usageStatsOpen",
     "welcomeMode",
     "workspaceFilesCount"
-  ]
+  ],
+  "stateAdditions": {
+    "activeBotId": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "selectedWorkId": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botDraft": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botSubmissionNotice": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botIdentities": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botIdentitiesLoaded": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botWorks": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botHostStatus": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botWorkError": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context."
+  }
 }

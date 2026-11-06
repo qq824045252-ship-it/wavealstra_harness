@@ -1035,6 +1035,11 @@ export type AgentUiPatch =
       goal?: import("./conversation-goal").ConversationGoalDto;
     }
   | {
+      /** Current Work projection (never a replayed historical snapshot). */
+      type: "work_projection_snapshot";
+      projection: import("./bot-work").WorkProjectionDto;
+    }
+  | {
       type: "text_delta";
       taskId: string;
       messageId: string;

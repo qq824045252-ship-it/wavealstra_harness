@@ -45,6 +45,7 @@ import { WorkspaceIpc } from "../shared/agent-ipc";
 import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import { ExternalAgentIpc, type ExternalAgentDescriptorDto, type ExternalAgentHistoryDto, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentPromptResult, type ExternalAgentResolvePermissionRequest, type ExternalAgentRunDto, type ExternalAgentSetConfigOptionRequest, type ExternalAgentTestResultDto, type ExternalAgentUiEvent } from "../shared/external-agent";
 import type { ConversationRuntimeApi } from "../shared/conversation-runtime";
+import { BotWorkIpc, type BotWorkApi } from "../shared/bot-work-ipc";
 import {
   ConversationBranchIpc,
   type ConversationBranchCreateOutcome,
@@ -636,6 +637,16 @@ const api = {
     updateGoal: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.updateGoal, request),
     cancelGoal: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelGoal, goalId),
   } satisfies ConversationRuntimeApi,
+
+  botWork: {
+    hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
+    listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
+    listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),
+    getWork: (workId: string) => ipcRenderer.invoke(BotWorkIpc.getWork, workId),
+    attestCriteria: (request) => ipcRenderer.invoke(BotWorkIpc.attestCriteria, request),
+    recordUserFeedback: (request) => ipcRenderer.invoke(BotWorkIpc.recordUserFeedback, request),
+    markNotificationRead: (notificationId: string) => ipcRenderer.invoke(BotWorkIpc.markNotificationRead, notificationId),
+  } satisfies BotWorkApi,
 
   notification: {
     list: (request?: NotificationListRequest): Promise<NotificationDto[]> =>

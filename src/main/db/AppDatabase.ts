@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { ensureBotWorkTables } from "./bot-work-schema";
 import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
@@ -56,7 +57,7 @@ import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 27;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 30;
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -362,6 +363,7 @@ export class AppDatabase {
       this.ensureAgentLoadoutTables();
       this.ensureConversationBranchTables();
       this.ensureConversationRuntimeTables();
+      ensureBotWorkTables(this.db);
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();
   }
@@ -497,31 +499,10 @@ export class AppDatabase {
     `);
   }
 
-  /** Task/Execution scoped interaction and Goal truth stores. */
+  /** Task/Execution scoped interaction store. */
   private ensureConversationRuntimeTables(): void {
     this.db.exec(EXECUTION_ATTEMPT_SCHEMA);
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS conversation_goals (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        status TEXT NOT NULL CHECK (status IN ('active','paused','blocked','achieved','cancelled')),
-        criteria_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(criteria_json)),
-        progress_summary TEXT,
-        version INTEGER NOT NULL DEFAULT 1,
-        created_by TEXT NOT NULL CHECK (created_by IN ('user','agent_explicit_request')),
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        achieved_at INTEGER,
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-      );
-      CREATE INDEX IF NOT EXISTS idx_conversation_goals_task_updated
-        ON conversation_goals(task_id, updated_at DESC);
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_conversation_goals_live
-        ON conversation_goals(task_id)
-        WHERE status IN ('active','blocked');
-
       CREATE TABLE IF NOT EXISTS conversation_interactions (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -592,7 +573,7 @@ export class AppDatabase {
       END;
       CREATE TABLE IF NOT EXISTS memory_scopes (
         id TEXT PRIMARY KEY, memory_id TEXT NOT NULL,
-        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project','task')),
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project','task','bot')),
         scope_id TEXT, binding TEXT NOT NULL DEFAULT 'owned' CHECK (binding IN ('owned','promoted')), created_at INTEGER NOT NULL,
         CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0)),
         FOREIGN KEY (memory_id) REFERENCES memory_records(id) ON DELETE CASCADE

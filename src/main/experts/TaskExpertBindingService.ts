@@ -5,6 +5,7 @@ import type { TaskExpertBindingDto, TaskExpertBindingSaveRequest, TaskExpertSnap
 import type { AppDatabase } from "../db/AppDatabase";
 import { getMyBuddyDir } from "../paths";
 import type { ExpertService } from "./ExpertService";
+import { copyExpertPackages } from "./ExpertSnapshotFiles";
 
 interface SkillCopy { id: string; relativePath: string; origin: "private" | "global" }
 interface BindingRow {
@@ -63,6 +64,29 @@ export class TaskExpertBindingService {
     return { taskId, desired, active, pending: revision(desired) !== revision(active), ...(warnings.length ? { warnings } : {}) };
   }
   active(taskId: string): TaskExpertSnapshot | null { return this.get(taskId)?.active ?? null; }
+
+  /** Install the immutable Work binding, never re-read its editable template. */
+  installFrozen(taskId: string, snapshot: TaskExpertSnapshot, packages: Array<{ id: string; directory: string; origin?: "private" | "global" }>): void {
+    if (!this.db.getTask(taskId)) throw new Error("任务不存在");
+    if (this.active(taskId)?.revision === snapshot.revision) return;
+    if (snapshot.skillIds.some(id => !packages.some(pkg => pkg.id === id))) throw new Error("专家技能快照不完整");
+    const directory = this.ownedPath(taskId, `work-${randomUUID()}`);
+    try {
+      const copies = copyExpertPackages(directory, packages);
+      const owned: SkillCopy[] = copies.map(copy => ({ id: copy.id,
+        relativePath: copy.directory.slice(this.taskRoot(taskId).length + 1), origin: copy.origin ?? "private" }));
+      this.db.connection.transaction(() => {
+        this.db.connection.prepare(`INSERT INTO task_expert_bindings(task_id,desired_json,active_json,desired_skills_json,active_skills_json,warnings_json,updated_at)
+        VALUES (?,?,?,?,?,'[]',?) ON CONFLICT(task_id) DO UPDATE SET desired_json=excluded.desired_json,
+        active_json=excluded.active_json,desired_skills_json=excluded.desired_skills_json,
+        active_skills_json=excluded.active_skills_json,warnings_json='[]',updated_at=excluded.updated_at`)
+        .run(taskId, JSON.stringify(snapshot), JSON.stringify(snapshot), JSON.stringify(owned), JSON.stringify(owned), Date.now());
+      })();
+    } catch (error) {
+      if (dirname(directory) === this.taskRoot(taskId)) rmSync(directory, { recursive: true, force: true });
+      throw error;
+    }
+  }
 
   private taskRoot(taskId: string): string {
     return join(this.root, createHash("sha256").update(taskId).digest("hex"));

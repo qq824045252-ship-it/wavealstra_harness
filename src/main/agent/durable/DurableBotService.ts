@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
@@ -27,6 +28,8 @@ import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
+import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
+import type { WorkExecutionPort } from "../work/WorkExecutionAdapter";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import { SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -78,6 +81,8 @@ export interface DurableBotServiceOptions {
   auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
   prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
+  beforeSubmit?: (request: AgentPromptRequest) => void;
+  resumeAllowed?: (taskId: string) => boolean;
   expertBindings?: TaskExpertBindingService;
 }
 
@@ -136,6 +141,7 @@ export class DurableBotService {
   async resumePersisted(): Promise<void> {
     const bindings = this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings").all() as BotBinding[];
     await Promise.all(bindings.map(async binding => {
+      if (this.options.resumeAllowed?.(binding.task_id) === false) return;
       if (this.options.db.getTaskExecutionWorkspaceState(binding.task_id)?.state === "trashed") return;
       try { (await this.open(binding.task_id)).runtime.resume(); }
       catch (error) { console.error(`[Durable] Cannot resume ${binding.task_id}:`, error); }
@@ -431,6 +437,7 @@ export class DurableBotService {
         content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
       }
       const audit = this.options.auditInput?.(request);
+      this.options.beforeSubmit?.(request);
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
         { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [], ...(audit ? { audit } : {}) });
       return { submission, open };
@@ -523,6 +530,74 @@ export class DurableBotService {
     const { submission } = await this.admitTracked(request);
     const state = await submission.status(context);
     return submissionResult(request.taskId, state);
+  }
+
+  workExecutionPort(): WorkExecutionPort {
+    return {
+      prepare: async taskId => {
+        const open = await this.open(taskId);
+        const binding = this.binding(taskId);
+        if (!binding) throw new Error("原生执行缺少持久化存储绑定");
+        return { taskId, durableStoreKey: binding.directory, conversationId: String(open.runtime.conversation.id), workspaceBinding: binding.cwd };
+      },
+      find: async binding => {
+        const { record } = await this.workSubmission(binding);
+        return record ? submissionResult(binding.taskId, record).receipt : undefined;
+      },
+      submit: async (binding, text) => {
+        const { open } = await this.workSubmission(binding);
+        if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("原接收会话已变化，拒绝改用另一会话派发");
+        const accepted = await this.submit({ taskId: binding.taskId, userMessageId: binding.operationId,
+          assistantMessageId: `work:${binding.bindingId}`, text });
+        if (!accepted.receipt) throw new Error(accepted.error?.message ?? "原生执行未返回受理回执");
+        return accepted.receipt;
+      },
+      stop: async binding => {
+        const { open } = await this.workSubmission(binding);
+        if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("停止目标与原执行会话不一致");
+        await this.abort(binding.taskId);
+      },
+      inspect: async (binding, receipt) => {
+        const { open, record } = await this.workSubmission(binding);
+        if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
+        if (record.status === "queued" || record.status === "placed") return { status: "running" };
+        if (record.status === "unanswered") return { status: record.reason === "aborted" ? "stopped" : "failed",
+          summary: typeof record.detail === "string" ? record.detail : record.reason, hasWriteConflicts: false, artifactRefs: [] };
+        if (record.type !== "input" || record.status !== "done" || record.answer === undefined) {
+          throw new Error("原生回执不是已结束的业务输入");
+        }
+        const answerId = record.answer;
+        const entry = await open.runtime.conversation.commit(tx => tx.entry(answerId), context);
+        const answer = entry?.model?.find(message => message.role === "assistant");
+        const snapshot = await open.runtime.refresh();
+        return {
+          status: !answer || ["error", "length"].includes(answer.stopReason) ? "failed" : answer.stopReason === "aborted" ? "stopped" : "completed",
+          summary: answer ? durableContentText(answer.content) : "原生输入未产生可核对的成果",
+          hasWriteConflicts: snapshot.messages.some(message => message.tools?.some(tool => nativeWriteConflicts(tool.detail))),
+          artifactRefs: snapshot.messages.flatMap(message => (message.artifacts ?? []).flatMap(artifact => artifact.path ? [artifact.path] : [])),
+        };
+      },
+    };
+  }
+
+  private async workSubmission(binding: WorkExecutionBindingDto): Promise<{ open: OpenBot; record: SubmissionRecord | undefined }> {
+    const stored = this.binding(binding.taskId);
+    if (!stored || stored.directory !== binding.durableStoreKey || stored.cwd !== binding.workspaceBinding) {
+      throw new Error("Work 执行与原生 task/store/workspace 绑定不一致，拒绝重新分配");
+    }
+    return this.withRecovery(binding.taskId, async open => {
+      const record = await open.runtime.conversation.commit(async tx => {
+        let cursor: Cursor | undefined;
+        do {
+          const page = await tx.scanConversations({}, 200, cursor);
+          const original = page.items.find(conversation => String(conversation.id) === binding.conversationId && !conversation.owner);
+          if (original) return tx.submissionByRequest(original.id, binding.operationId);
+          cursor = page.next;
+        } while (cursor);
+        throw new Error("原接收会话不存在，不能换会话重新提交");
+      }, context);
+      return { open, record };
+    });
   }
 
   /** Inspect an accepted input before an adapter validates or changes mutable task configuration. */
@@ -701,6 +776,20 @@ function failureText(error: unknown): string {
   if (error instanceof Error) return error.message;
   try { return String(error); }
   catch { return Object.prototype.toString.call(error); }
+}
+
+function nativeWriteConflicts(detail: string | undefined): boolean {
+  if (!detail) return false;
+  try {
+    const value = z.json().parse(JSON.parse(detail));
+    const contains = (item: typeof value): boolean => {
+      if (!item || typeof item !== "object") return false;
+      if (Array.isArray(item)) return item.some(contains);
+      if (Array.isArray(item.writeConflicts) && item.writeConflicts.length > 0) return true;
+      return Object.values(item).some(contains);
+    };
+    return contains(value);
+  } catch { return false; }
 }
 
 function describeDurableHistoryFailure(error: unknown): string {

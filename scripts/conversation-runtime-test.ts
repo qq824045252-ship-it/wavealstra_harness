@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
-import { ConversationGoalRepository } from "../src/main/agent/ConversationGoalRepository";
 import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { WorkService } from "../src/main/agent/work/WorkService";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 import type { AgentUiPatch } from "../src/shared/agent-ipc";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-conversation-runtime-"));
@@ -18,7 +20,10 @@ try {
   db.upsertTask({ id: "task-a", title: "A", updatedAt: Date.now() });
   db.upsertTask({ id: "task-b", title: "B", updatedAt: Date.now() });
   const interactions = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), emit);
-  const goals = new ConversationGoalService(new ConversationGoalRepository(db.connection), emit);
+  const bots = new BotRegistry(db.connection);
+  bots.ensureDefaultBot(LOCAL_USER_ID);
+  const work = new WorkService(db.connection, { bots });
+  const goals = new ConversationGoalService(work, emit, { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID });
   const ctx = { taskId: "task-a", executionId: "exec-a", assistantMessageId: "assistant-a" };
 
   const answerPromise = interactions.request(ctx, {
@@ -66,8 +71,12 @@ try {
   assert.equal(progressed.ok, true);
   const cloned = goals.cloneLive("task-a", "task-b");
   assert.equal(cloned?.taskId, "task-b");
-  assert.notEqual(cloned?.id, created.goal.id);
+  assert.equal(cloned?.id, created.goal.id, "one work authority is shared by the branch conversation");
   assert.equal(cloned?.criteria[0]?.status, "met");
+  const completed = goals.update({ goalId: created.goal.id, status: "achieved", progressSummary: "完成" });
+  assert.equal(completed.ok, true);
+  assert.equal(completed.ok ? completed.goal.status : undefined, "achieved");
+  assert.equal(work.getWork(created.goal.id)?.closureConclusion, "succeeded");
 
   assert.ok(patches.some((patch) => patch.type === "conversation_interaction_snapshot"));
   assert.ok(patches.some((patch) => patch.type === "conversation_goal_snapshot"));

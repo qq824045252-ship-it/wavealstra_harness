@@ -15,6 +15,7 @@ import {
 
 interface Contract {
   actionAdditions: Record<string, string>;
+  stateAdditions: Record<string, string>;
   publicExports: Record<string, "type" | "value">;
   stateKeys: string[];
   optionalStateKeys: string[];
@@ -400,7 +401,7 @@ for (const [file, domain] of domains) {
 }
 assertSameMembers(
   stateOwnership.map(({ key }) => key),
-  contract.stateKeys,
+  [...contract.stateKeys, ...Object.keys(contract.stateAdditions)],
   "Every legacy state field has exactly one domain owner",
 );
 assertSameMembers(
@@ -477,7 +478,7 @@ assert.deepEqual(
 );
 assertSameMembers(
   initialized.map(({ key }) => key),
-  [...contract.initializedKeys, ...Object.keys(contract.actionAdditions)],
+  [...contract.initializedKeys, ...Object.keys(contract.actionAdditions), ...Object.keys(contract.stateAdditions)],
   "The factory initializes every legacy key and approved action addition exactly once",
 );
 

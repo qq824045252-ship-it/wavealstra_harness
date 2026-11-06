@@ -12,6 +12,7 @@ import AssistantPage from "@/components/pages/AssistantPage";
 import HubPage from "@/components/pages/HubPage";
 import ProjectsPage from "@/components/pages/ProjectsPage";
 import AutomationPage from "@/components/pages/AutomationPage";
+import BotWorkspacePage from "@/components/pages/BotWorkspacePage";
 import FilesPage from "@/components/pages/FilesPage";
 import LibraryPage from "@/components/pages/library/LibraryPage";
 import MailboxPage from "@/components/pages/MailboxPage";
@@ -145,6 +146,8 @@ export default function App(): React.JSX.Element {
               </>
             )}
           </>
+        ) : page === "bot" ? (
+          <BotWorkspacePage />
         ) : page === "assistant" ? (
           <AssistantPage />
         ) : page === "projects" ? (

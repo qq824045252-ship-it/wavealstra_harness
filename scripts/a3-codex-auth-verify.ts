@@ -100,7 +100,7 @@ for (const name of cells.filter(name => !process.env.A3_CELL || (process.env.A3_
       await agent.resumePersistedTasks();
     } else db.upsertTask({ id: taskId, title: `A3 ${name}`, updatedAt: Date.now(), welcomeMode: 'working' });
     const errors: string[] = [];
-    const off = agent.onPatch(p => { if (p.taskId === taskId && p.type === 'assistant_end' && p.error) errors.push(p.error); });
+    const off = agent.onPatch(p => { if ("taskId" in p && p.taskId === taskId && p.type === 'assistant_end' && p.error) errors.push(p.error); });
     const timer = setTimeout(() => { void agent.abort(taskId); }, 90000);
     try {
       row.result = await agent.prompt({ taskId, userMessageId, assistantMessageId, text: 'Reply with exactly A3_OK. Do not use any tools.', welcomeMode: 'working', ...(name === 'explicit' ? { modelId: modelA } : {}) });

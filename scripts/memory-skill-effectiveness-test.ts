@@ -15,8 +15,7 @@ const { filterSkillsForMode } = await import("../src/main/agent/SkillPolicy");
 async function main(): Promise<void> {
   const db = new AppDatabase(":memory:");
   try {
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27);
-    assert.equal(db.schemaVersion, 27);
+    assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
     db.upsertTask({ id: "eff-task", title: "Effectiveness Task", status: "in_progress", updatedAt: Date.now() });
 
     const skills = new SkillsService();

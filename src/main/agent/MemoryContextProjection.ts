@@ -52,6 +52,7 @@ export function projectMemoryContext(
     return true;
   };
   const sources = memory.cognition.getContextSources(input);
+  const allowedScopes = new Set(memory.resolveScopeChain(input).map(scope => `${scope.scopeType}:${scope.scopeId ?? ""}`));
   const visible = (id: string) => {
     const atom = memory.get(id);
     const now = Date.now();
@@ -59,7 +60,8 @@ export function projectMemoryContext(
       && (atom.validFrom === undefined || atom.validFrom <= now)
       && (atom.validUntil === undefined || atom.validUntil > now);
   };
-  const scenarios = sources.scenarios.filter((scenario) => scenario.sourceMemoryIds.every(visible));
+  const scenarios = sources.scenarios.filter((scenario) => allowedScopes.has(`${scenario.scopeType}:${scenario.scopeId ?? ""}`)
+    && scenario.sourceMemoryIds.length > 0 && scenario.sourceMemoryIds.every(visible));
   const byScenario = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
   const coveredAtoms = new Set<string>();
   const coveredScenarios = new Set<string>();
@@ -68,6 +70,7 @@ export function projectMemoryContext(
   // Only use a derived view if all of its grounding remains visible. Deduplication
   // follows source IDs, never similarity or untraceable paraphrase heuristics.
   for (const profile of sources.profiles) {
+    if (!allowedScopes.has(`${profile.scopeType}:${profile.scopeId ?? ""}`)) continue;
     if (!profile.sourceScenarioIds.every((id) => byScenario.has(id))) continue;
     const atomIds = [...new Set(profile.sourceScenarioIds.flatMap((id) => byScenario.get(id)!.sourceMemoryIds))];
     if (!atomIds.length || atomIds.every((id) => coveredAtoms.has(id))) continue;

@@ -221,11 +221,11 @@ try {
 
   // Development contract: incompatible DB versions are discarded, not migrated.
   db.upsertTask({ id: "task-migrate", title: "discard me", status: "completed", updatedAt: Date.now() });
-  db.connection.pragma("user_version = 24");
+  db.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
   db.close();
   const migrated = new AppDatabase();
-  assert.equal(migrated.schemaVersion, 27);
-  assert.equal(migrated.getTask("task-migrate"), undefined, "v24 data is intentionally discarded");
+  assert.equal(migrated.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
+  assert.equal(migrated.getTask("task-migrate"), undefined, "incompatible data is intentionally discarded");
   const table = migrated.connection.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='agent_loadout_observations'").get() as { ok: number } | undefined;
   assert.equal(table?.ok, 1, "destructive reset materializes current Loadout schema");
   migrated.close();

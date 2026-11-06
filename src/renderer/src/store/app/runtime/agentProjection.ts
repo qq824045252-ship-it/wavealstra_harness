@@ -42,6 +42,10 @@ export function createAgentProjectionActions(
   };
   return {
     applyAgentPatch: (patch) => {
+      if (patch.type === "work_projection_snapshot") {
+        get().applyWorkProjection(patch.projection);
+        return;
+      }
       // deleteTask is an explicit lifecycle boundary. Main may still emit queued/terminal events while aborting;
       // those events must never resurrect the removed task in the renderer projection or upsert it back to DB.
       if (storeContext.runtime.deletedTaskRuntimeTombstones.has(patch.taskId))

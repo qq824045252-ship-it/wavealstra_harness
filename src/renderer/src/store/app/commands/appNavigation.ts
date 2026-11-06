@@ -9,8 +9,8 @@ export function createAppNavigationActions(
     setPage: (page) =>
       set((s) => ({
         page,
-        // 离开 chat 首页即丢弃未落库的草稿；离开 workspace 清导航态
-        draft: page === "chat" ? s.draft : null,
+        // Bot 模式保留普通任务草稿，其他页面沿用原来的清理规则。
+        draft: page === "chat" || page === "bot" ? s.draft : null,
         hubMcpFocusName: page === "mcp" ? s.hubMcpFocusName : null,
         ...(page !== "workspace" ? { activeWorkspaceId: null } : {}),
       })),

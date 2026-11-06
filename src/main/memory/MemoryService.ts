@@ -2,6 +2,7 @@ import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AppDatabase } from "../db/AppDatabase";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
 import {
   MEMORY_CONTENT_MAX_CHARS,
   MEMORY_EVIDENCE_KINDS,
@@ -309,6 +310,9 @@ export class MemoryService {
 
   /** Default durable scope for an Agent write: Project > Workspace > Task. Global requires explicit selection. */
   inferAgentScope(taskId: string): { scopeType: MemoryScopeType; scopeId?: string } {
+    if (this.workMemoryScope(taskId)) return { scopeType: "task", scopeId: taskId };
+    const botId = this.channelBotId(taskId);
+    if (botId) return { scopeType: "bot", scopeId: botId };
     const task = this.db.getTask(taskId);
     if (task?.projectId) return { scopeType: "project", scopeId: task.projectId };
     if (task?.spaceId) return { scopeType: "workspace", scopeId: task.spaceId };
@@ -447,6 +451,17 @@ export class MemoryService {
   }
 
   create(request: MemoryCreateRequest): MemoryRecordDto {
+    if (request.sourceTaskId && this.workMemoryScope(request.sourceTaskId)
+      && request.sourceType === "agent"
+      && (request.scopeType !== "task" || request.scopeId !== request.sourceTaskId)) {
+      throw new Error("Work 执行者只能写本次任务记忆，不能自动提升为 Bot 或团队事实");
+    }
+    const channelBotId = request.sourceTaskId ? this.channelBotId(request.sourceTaskId) : undefined;
+    if (channelBotId && request.sourceType === "agent" && !(
+      (request.scopeType === "bot" && request.scopeId === channelBotId)
+      || (request.scopeType === "task" && request.scopeId === request.sourceTaskId))) {
+      throw new Error("Bot 只能写自己的私人记忆或当前对话记忆");
+    }
     const record = this.buildRecord(request);
     const saved = this.db.connection.transaction(() => {
       const inserted = this.repository.insert(record);
@@ -630,6 +645,12 @@ export class MemoryService {
   }
 
   canPromoteFromTask(taskId: string, targetScopeType: MemoryScopeType, targetScopeId?: string): boolean {
+    const work = this.workMemoryScope(taskId);
+    if (work) return targetScopeType === "task" && targetScopeId === taskId;
+    const channelBotId = this.channelBotId(taskId);
+    if (channelBotId) return (targetScopeType === "bot" && targetScopeId === channelBotId)
+      || (targetScopeType === "task" && targetScopeId === taskId);
+    if (targetScopeType === "bot") return false;
     const task = this.db.getTask(taskId);
     if (!task) return false;
     if (targetScopeType === "global") return targetScopeId == null;
@@ -1088,12 +1109,27 @@ export class MemoryService {
     }
   }
 
+  private channelBotId(taskId: string): string | undefined {
+    const row = this.db.connection.prepare(`SELECT bot_id FROM bot_channel_bindings
+      WHERE channel_type='desktop' AND channel_identifier=?`).get(JSON.stringify([LOCAL_USER_ID, taskId])) as { bot_id: string } | undefined;
+    return row?.bot_id;
+  }
+
+  private workMemoryScope(taskId: string): { bot_id: string; project_id: string | null } | undefined {
+    return this.db.connection.prepare(`SELECT b.bot_id,w.project_id FROM work_execution_bindings b
+      JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? ORDER BY b.admitted_at DESC LIMIT 1`)
+      .get(taskId) as { bot_id: string; project_id: string | null } | undefined;
+  }
+
   resolveScopeChain(request: MemorySearchRequest): Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> {
     const task = request.taskId ? this.db.getTask(request.taskId) : undefined;
+    const work = request.taskId ? this.workMemoryScope(request.taskId) : undefined;
     const taskId = request.taskId ?? task?.id;
-    const projectId = request.projectId ?? task?.projectId ?? undefined;
-    const workspaceId = request.workspaceId ?? task?.spaceId ?? undefined;
+    const projectId = work ? work.project_id ?? undefined : request.projectId ?? task?.projectId ?? undefined;
+    const workspaceId = work ? undefined : request.workspaceId ?? task?.spaceId ?? undefined;
     const out: Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> = [];
+    const botId = work?.bot_id ?? (taskId ? this.channelBotId(taskId) : undefined) ?? request.botId;
+    if (botId) out.push({ scopeType: "bot", scopeId: botId, distance: 0 });
     if (taskId) out.push({ scopeType: "task", scopeId: taskId, distance: 0 });
     if (projectId) out.push({ scopeType: "project", scopeId: projectId, distance: 1 });
     if (workspaceId) {
@@ -1105,7 +1141,7 @@ export class MemoryService {
         });
       }
     }
-    out.push({ scopeType: "global", distance: 10 });
+    if (!work && !botId) out.push({ scopeType: "global", distance: 10 });
     const allowed = request.scopeTypes?.length ? new Set(request.scopeTypes) : null;
     const seen = new Set<string>();
     return out.filter((scope) => {
@@ -1127,6 +1163,8 @@ export class MemoryService {
   }
 
   private normalizeCandidateScope(scopeType: MemoryScopeType, ctx: { projectId?: string; workspaceId?: string; taskId: string }): { scopeType: MemoryScopeType; scopeId?: string } | null {
+    if (this.workMemoryScope(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
+    if (this.channelBotId(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     if (scopeType === "global") return { scopeType: "global" };
     if (scopeType === "project") {
       if (ctx.projectId) return { scopeType: "project", scopeId: ctx.projectId };
@@ -1154,6 +1192,7 @@ export class MemoryService {
       return;
     }
     if (!scopeId?.trim()) throw new Error(`${scopeType} 记忆必须携带 scopeId`);
+    if (scopeType === "bot" && !this.db.connection.prepare("SELECT 1 FROM bots WHERE bot_id=?").get(scopeId)) throw new Error("Bot 不存在");
     if (scopeType === "workspace" && !this.db.getSpace(scopeId)) throw new Error(`工作空间不存在：${scopeId}`);
     if (scopeType === "task" && !this.db.getTask(scopeId)) throw new Error(`任务不存在：${scopeId}`);
     if (scopeType === "project") {

@@ -142,6 +142,13 @@ export interface AppActions {
   deleteMarketConnector: (id: string) => Promise<void>;
   setConnectorEnabled: (id: string, enabled: boolean) => Promise<void>;
   setPage: (page: Page) => void;
+  setBotDraft: (text: string) => void;
+  submitBotDraft: () => void;
+  setActiveBotId: (botId: string | null) => void;
+  setSelectedWorkId: (workId: string | null) => void;
+  refreshBotWork: (includeClosed?: boolean) => Promise<void>;
+  applyWorkProjection: (projection: import("../../../../shared/bot-work").WorkProjectionDto) => void;
+  markBotNotificationRead: (notificationId: string) => Promise<void>;
   openHubMcp: (serverName?: string) => void;
   requestLibraryNav: (
     dest:

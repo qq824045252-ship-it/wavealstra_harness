@@ -15,8 +15,7 @@ async function main(): Promise<void> {
   process.env.HOME = sandbox;
   const db = new AppDatabase(":memory:");
   try {
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27);
-    assert.equal(db.schemaVersion, 27);
+    assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
 
     const ws = db.createSpace({ id: "ws-learn", name: "Learn" });
     db.connection.prepare(

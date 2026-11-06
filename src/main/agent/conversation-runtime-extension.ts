@@ -5,6 +5,7 @@ import type { ConversationInteractionService } from "./ConversationInteractionSe
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import { projectLegacyExecutionControlHistory } from "./LegacyExecutionControlHistory";
 import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
+import type { ExpectedVersionGuard } from "../../shared/bot-work";
 
 export interface ConversationRuntimeBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -21,6 +22,11 @@ const goalStatus = Type.Union([
 const criterionStatus = Type.Union([
   Type.Literal("pending"), Type.Literal("met"), Type.Literal("not_met"), Type.Literal("waived"),
 ]);
+const guardVersions = {
+  expectedStateVersion: Type.Integer({ minimum: 1 }),
+  expectedIntentRevision: Type.Integer({ minimum: 1 }),
+  expectedOwnerEpoch: Type.Integer({ minimum: 1 }),
+};
 
 function result(text: string, details?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text }], details: details ?? {} };
@@ -90,11 +96,23 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       name: "conversation_goal_get",
       label: "对话 Goal · 查看",
       description: "读取当前 Task 的长期 Goal；它不是 Project Goal。",
-      parameters: Type.Object({}, { additionalProperties: false }),
-      execute: async () => {
+      parameters: Type.Object({ workId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false }),
+      execute: async (_id, params: { workId?: string }) => {
         try {
-          const goal = bridge.goal.getLive(requireContext(bridge).taskId);
-          return result(goal ? `当前 Goal：${goal.title}（${goal.status}）` : "当前 Task 没有进行中的 Goal。", { goal });
+          const taskId = requireContext(bridge).taskId;
+          const goal = bridge.goal.getLive(taskId, params.workId);
+          const work = goal ? bridge.goal.workService.getWork(goal.id) : undefined;
+          return result(
+            goal
+              ? `当前 Work：${goal.title}（${goal.status}，r${work?.intentRevision ?? 1} / v${work?.stateVersion ?? 1} / epoch ${work?.ownerEpoch ?? 1}）`
+              : "当前对话没有进行中的 Work。",
+            {
+              goal,
+              versionGuard: work
+                ? { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch }
+                : undefined,
+            },
+          );
         } catch (error) { return failure("conversation_goal_get", error); }
       },
     });
@@ -117,7 +135,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
             description: params.description,
             criteria: params.criteria?.map((text) => ({ text })),
             createdBy: "agent_explicit_request",
-          });
+          }, { actor: bridge.goal.modelActor(context.taskId) });
           if (!created.ok) throw new Error(created.message);
           return result(`已创建对话 Goal「${created.goal.title}」。`, { goal: created.goal });
         } catch (error) { return failure("conversation_goal_create", error); }
@@ -126,9 +144,11 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
 
     pi.registerTool({
       name: "conversation_goal_update",
-      label: "对话 Goal · 更新",
-      description: "更新当前 Task Goal 的进展、成功标准或状态；不能静默标记 achieved。",
+      label: "对话 Work · 更新进展",
+      description: "更新当前 Work 的进展或状态。必须携带 conversation_goal_get 返回的版本守卫；模型不能直接写入验收事实（met/waived）。",
       parameters: Type.Object({
+        ...guardVersions,
+        workId: Type.Optional(Type.String({ minLength: 1 })),
         progressSummary: Type.Optional(Type.String({ maxLength: 2000 })),
         status: Type.Optional(goalStatus),
         criterionUpdates: Type.Optional(Type.Array(Type.Object({
@@ -140,40 +160,60 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       execute: async (_id, params: any) => {
         try {
           const context = requireContext(bridge);
-          const goal = bridge.goal.getLive(context.taskId);
-          if (!goal) throw new Error("当前 Task 没有进行中的 Goal");
-          if (params.status === "achieved") throw new Error("完成 Goal 必须使用 conversation_goal_propose_complete 并由用户确认");
-          const updated = bridge.goal.update({ goalId: goal.id, ...params });
+          const goal = bridge.goal.getLive(context.taskId, params.workId);
+          if (!goal) throw new Error("当前对话没有进行中的 Work");
+          if (params.status === "achieved") throw new Error("完成 Work 必须使用 conversation_goal_propose_complete 并由用户确认");
+          const guard: ExpectedVersionGuard = {
+            expectedStateVersion: params.expectedStateVersion,
+            expectedIntentRevision: params.expectedIntentRevision,
+            expectedOwnerEpoch: params.expectedOwnerEpoch,
+          };
+          const updated = bridge.goal.update(
+            { goalId: goal.id, ...params },
+            { actor: bridge.goal.modelActor(context.taskId), versionGuard: guard },
+          );
           if (!updated.ok) throw new Error(updated.message);
-          return result(`已更新 Goal「${updated.goal.title}」。`, { goal: updated.goal });
+          return result(`已更新 Work「${updated.goal.title}」。`, { goal: updated.goal });
         } catch (error) { return failure("conversation_goal_update", error); }
       },
     });
 
     pi.registerTool({
       name: "conversation_goal_propose_complete",
-      label: "对话 Goal · 提议完成",
-      description: "提议将当前 Goal 标记为已达成。会显示确认 UI，并等待用户确认后才更新。",
+      label: "对话 Work · 提议完成",
+      description: "提议结束当前有限 Work。必须携带 conversation_goal_get 返回的版本守卫；会等待用户确认，验收条件未满足时会被拒绝。",
       parameters: Type.Object({
+        ...guardVersions,
+        workId: Type.Optional(Type.String({ minLength: 1 })),
         summary: Type.String({ minLength: 1, maxLength: 1600 }),
         evidence: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 12 })),
       }, { additionalProperties: false }),
-      execute: async (id, params: { summary: string; evidence?: string[] }, signal: AbortSignal) => {
+      execute: async (id, params: { workId?: string; summary: string; evidence?: string[]; expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number }, signal: AbortSignal) => {
         try {
           const context = requireContext(bridge);
-          const goal = bridge.goal.getLive(context.taskId);
-          if (!goal) throw new Error("当前 Task 没有进行中的 Goal");
+          const goal = bridge.goal.getLive(context.taskId, params.workId);
+          if (!goal) throw new Error("当前对话没有进行中的 Work");
           if (signal?.aborted) throw new Error("当前执行已中止");
           const answer = await requestInteraction(bridge, context, {
             kind: "confirm",
-            title: `确认完成 Goal「${goal.title}」？`,
+            title: `确认完成 Work「${goal.title}」？`,
             description: [params.summary, ...(params.evidence ?? [])].join("\n"),
           }, signal, id);
           if (signal?.aborted) throw new Error("当前执行已中止");
-          if (answer !== true) return result("用户暂未确认完成 Goal，Goal 保持原状态。", { confirmed: false });
-          const updated = bridge.goal.update({ goalId: goal.id, status: "achieved", progressSummary: params.summary });
+          if (answer !== true) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
+          const updated = bridge.goal.update(
+            { goalId: goal.id, status: "achieved", progressSummary: params.summary },
+            {
+              actor: bridge.goal.modelActor(context.taskId),
+              versionGuard: {
+                expectedStateVersion: params.expectedStateVersion,
+                expectedIntentRevision: params.expectedIntentRevision,
+                expectedOwnerEpoch: params.expectedOwnerEpoch,
+              },
+            },
+          );
           if (!updated.ok) throw new Error(updated.message);
-          return result(`Goal「${updated.goal.title}」已由用户确认完成。`, { confirmed: true, goal: updated.goal });
+          return result(`Work「${updated.goal.title}」已由用户确认结束。`, { confirmed: true, goal: updated.goal });
         } catch (error) { return failure("conversation_goal_propose_complete", error); }
       },
     });

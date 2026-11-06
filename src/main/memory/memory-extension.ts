@@ -19,8 +19,8 @@ export interface MemoryExtensionBridge {
   resolveWorkspaceId?: () => string | null;
 }
 
-const kindSchema = Type.Union(MEMORY_KINDS.map((x) => Type.Literal(x)) as [ReturnType<typeof Type.Literal>, ...ReturnType<typeof Type.Literal>[]]);
-const statusSchema = Type.Union(MEMORY_STATUSES.map((x) => Type.Literal(x)) as [ReturnType<typeof Type.Literal>, ...ReturnType<typeof Type.Literal>[]]);
+const kindSchema = Type.Union(MEMORY_KINDS.map((x) => Type.Literal(x)));
+const statusSchema = Type.Union(MEMORY_STATUSES.map((x) => Type.Literal(x)));
 const scopeSchema = Type.Union([Type.Literal("global"), Type.Literal("workspace"), Type.Literal("project"), Type.Literal("task")]);
 
 function textResult(text: string, details?: unknown) {

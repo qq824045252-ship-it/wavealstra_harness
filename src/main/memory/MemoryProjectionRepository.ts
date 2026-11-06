@@ -299,12 +299,12 @@ export class MemoryProjectionRepository {
    * their ids were not part of the previous projection source list.
    */
   invalidateScopes(
-    scopes: ReadonlyArray<{ scopeType: "global" | "workspace" | "project" | "task"; scopeId?: string }>,
+    scopes: ReadonlyArray<{ scopeType: import("../../shared/memory-kernel").MemoryScopeType; scopeId?: string }>,
     now = Date.now(),
   ): { scenarios: number; profiles: number } {
     const unique = new Map<string, MemoryProjectionScope>();
     for (const scope of scopes) {
-      if (scope.scopeType === "task") continue;
+      if (scope.scopeType === "task" || scope.scopeType === "bot") continue;
       const normalized: MemoryProjectionScope = { scopeType: scope.scopeType, scopeId: scope.scopeId };
       unique.set(`${scope.scopeType}:${scope.scopeId ?? ""}`, normalized);
     }

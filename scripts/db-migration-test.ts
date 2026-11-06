@@ -36,8 +36,14 @@ function assertCurrentSchema(db: AppDatabase, label: string): void {
     "memory_skill_candidates", "memory_skill_effectiveness", "memory_skill_revision_candidates",
     "agent_loadout_observations",
     "conversation_branches",
-    "conversation_goals", "conversation_interactions",
+    "conversation_interactions",
+    "bots", "bot_channel_bindings", "bot_expert_versions", "works", "work_intent_snapshots",
+    "work_conversations", "work_participants", "work_execution_bindings", "work_action_admissions",
+    "work_deliverables", "work_evidence", "work_blockers", "work_operation_receipts",
+    "work_telemetry_state", "work_source_events", "work_events_inbox", "work_events_outbox",
+    "work_subscriptions", "work_budget_reservations", "work_notifications", "work_host_lease",
   ]) assert(tableExists(db, table), `${label}: ${table} exists`);
+  assert(!tableExists(db, "conversation_goals"), `${label}: retired conversation_goals is not created`);
   assert(!tableExists(db, "project_memory"), `${label}: legacy project_memory is absent`);
   assert(!tableExists(db, "project_memory_evidence"), `${label}: legacy project memory evidence is absent`);
   for (const table of ["conversation_todo_lists", "conversation_todo_items", "conversation_execution_plans"])

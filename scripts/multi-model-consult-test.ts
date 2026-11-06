@@ -306,7 +306,7 @@ try {
   const settledTurns = new Promise<void>(resolve => { resolveSettledTurns = resolve; });
   const assistantIds: string[] = [];
   const unsubscribe = fixture.agent.onPatch(patch => {
-    if (patch.taskId !== "lifecycle") return;
+    if (!("taskId" in patch) || patch.taskId !== "lifecycle") return;
     const rows = patch.type === "durable_snapshot" ? patch.snapshot.messages : patch.type === "durable_delta" ? patch.delta.upserts : [];
     for (const row of rows) if (row.role === "assistant" && row.entryId && !assistantIds.includes(row.id)) assistantIds.push(row.id);
   });

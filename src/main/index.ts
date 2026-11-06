@@ -66,6 +66,8 @@ import { ArtifactDomainIpc } from "../shared/artifact-ipc";
 import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
+import { BotWorkIpc } from "../shared/bot-work-ipc";
+import type { AttestCriteriaParams, RecordUserFeedbackParams } from "../shared/bot-work";
 import {
   GadgetIpc,
   type GadgetConvertFromArtifactRequest,
@@ -1013,6 +1015,14 @@ function registerIpc(): void {
     agentService.updateConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
     agentService.cancelConversationGoal(goalId));
+
+  ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
+  ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
+  ipcMain.handle(BotWorkIpc.listWorks, (_e, includeClosed?: boolean) => agentService.listWorkProjections(Boolean(includeClosed)));
+  ipcMain.handle(BotWorkIpc.getWork, (_e, workId: string) => agentService.getWorkProjection(workId));
+  ipcMain.handle(BotWorkIpc.attestCriteria, (_e, request: AttestCriteriaParams) => agentService.attestWorkCriteria(request));
+  ipcMain.handle(BotWorkIpc.recordUserFeedback, (_e, request: RecordUserFeedbackParams) => agentService.recordWorkUserFeedback(request));
+  ipcMain.handle(BotWorkIpc.markNotificationRead, (_e, notificationId: string) => agentService.markWorkNotificationRead(notificationId));
 
   // BTW（临时上下文分支）：瞬时会话，与 Task Registry / agent:event 完全隔离
   ipcMain.handle(BtwIpc.start, async (_e, req: BtwStartRequest) => {

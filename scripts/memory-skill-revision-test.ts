@@ -25,8 +25,7 @@ const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionW
 async function main(): Promise<void> {
   const db = new AppDatabase(join(root, "app.db"));
   try {
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27);
-    assert.equal(db.schemaVersion, 27);
+    assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
     db.upsertTask({ id: "rev-task", title: "Revision Task", updatedAt: Date.now(), welcomeMode: "coding" });
 
     const skills = new SkillsService();

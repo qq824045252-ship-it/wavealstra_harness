@@ -20,7 +20,7 @@ export type MemoryKind =
   | "procedure";
 
 export type MemoryStatus = "active" | "superseded" | "resolved" | "invalid";
-export type MemoryScopeType = "global" | "workspace" | "project" | "task";
+export type MemoryScopeType = "global" | "workspace" | "project" | "task" | "bot";
 export type MemoryScopeBinding = "owned" | "promoted";
 export type MemorySourceType = "user" | "agent" | "tool" | "library" | "event" | "manual" | "import";
 export type MemoryEvidenceKind =
@@ -50,7 +50,7 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   "procedure",
 ] as const;
 export const MEMORY_STATUSES: readonly MemoryStatus[] = ["active", "superseded", "resolved", "invalid"] as const;
-export const MEMORY_SCOPE_TYPES: readonly MemoryScopeType[] = ["global", "workspace", "project", "task"] as const;
+export const MEMORY_SCOPE_TYPES: readonly MemoryScopeType[] = ["global", "workspace", "project", "task", "bot"] as const;
 export const MEMORY_EVIDENCE_KINDS: readonly MemoryEvidenceKind[] = [
   "conversation", "message", "task", "artifact", "library_item",
   "library_chunk", "project_event", "agent_run", "external",
@@ -174,6 +174,8 @@ export interface MemoryUpdateRequest {
 }
 
 export interface MemorySearchRequest {
+  /** Injected by a trusted Bot context. Ordinary task tools do not accept this field. */
+  botId?: string;
   query?: string;
   taskId?: string;
   projectId?: string;

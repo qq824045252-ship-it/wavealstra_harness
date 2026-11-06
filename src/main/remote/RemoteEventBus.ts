@@ -53,6 +53,7 @@ export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, 
       return { type: patch.type, taskId: patch.taskId, notices: patch.notices };
     case "conversation_interaction_snapshot":
     case "conversation_goal_snapshot":
+    case "work_projection_snapshot":
       return { ...patch };
   }
 }

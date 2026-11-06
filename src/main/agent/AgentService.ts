@@ -267,8 +267,23 @@ import { observeCacheRequestTraces } from "./CacheRequestTrace";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
 import { ConversationInteractionService } from "./ConversationInteractionService";
-import { ConversationGoalRepository } from "./ConversationGoalRepository";
 import { ConversationGoalService } from "./ConversationGoalService";
+import { BotRegistry } from "./work/BotRegistry";
+import { BotExpertBindingService } from "./work/BotExpertBindingService";
+import { BotWorkContextService } from "./work/BotWorkContextService";
+import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
+import { WorkHostAuthority } from "./work/WorkHostAuthority";
+import { WorkExecutionAdapter } from "./work/WorkExecutionAdapter";
+import {
+  DEFAULT_BOT_ID,
+  LOCAL_USER_ID,
+  type AttestCriteriaParams,
+  type BotDto,
+  type RecordUserFeedbackParams,
+  type WorkActor,
+  type WorkControlResult,
+  type WorkProjectionDto,
+} from "../../shared/bot-work";
 import type { ConversationRuntimeSnapshotDto } from "../../shared/conversation-runtime";
 import type { AgentLoadoutEffectiveSelectionDto } from "../../shared/agent-loadout";
 import type { ConversationInteractionAnswer, ConversationInteractionMutationResult } from "../../shared/conversation-interaction";
@@ -583,6 +598,12 @@ export class AgentService {
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
+  private readonly botRegistry: BotRegistry;
+  private readonly botExpertBindings: BotExpertBindingService;
+  private readonly botWorkContext: BotWorkContextService;
+  private readonly workService: WorkService;
+  private readonly workHostAuthority: WorkHostAuthority;
+  private workExecutions?: WorkExecutionAdapter;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
   private readonly loadoutObservations: AgentLoadoutObservationService;
@@ -762,10 +783,28 @@ export class AgentService {
         if (patch.type === "conversation_interaction_snapshot") void this.durableBots?.refresh(patch.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
       },
     );
+    this.botRegistry = new BotRegistry(db.connection);
+    this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
+    this.botExpertBindings = new BotExpertBindingService(this.botRegistry, this.expertsService, this.expertBindings, {
+      resolveSkillDirectory: id => {
+        const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
+        return skill?.enabled && skill.filePath ? dirname(skill.filePath) : undefined;
+      },
+    });
+    this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
+    this.workHostAuthority.start();
+    this.workService = new WorkService(db.connection, {
+      bots: this.botRegistry,
+      emitProjection: (projection) => this.emitPatch({ type: "work_projection_snapshot", projection }),
+      isAuthority: () => this.workHostAuthority.isAuthority(),
+    });
     this.conversationGoals = new ConversationGoalService(
-      new ConversationGoalRepository(db.connection),
+      this.workService,
       (patch) => this.emitPatch(patch),
+      { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
+        resolveBotId: taskId => this.botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId },
     );
+    this.botWorkContext = new BotWorkContextService(db.connection, this.botRegistry, this.workService);
     this.executionFailures = new ExecutionFailureRepository(db.connection);
     this.executionAttempts = new ExecutionAttemptRepository(db.connection);
     recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
@@ -1055,6 +1094,55 @@ export class AgentService {
     this.conversationGoals.cloneLive(sourceTaskId, childTaskId);
   }
 
+  /** Host-injected bot identity for the foreground conversation surface. */
+  foregroundBotActor(botId = DEFAULT_BOT_ID): WorkActor {
+    return {
+      kind: "bot", botId, userId: LOCAL_USER_ID, host: "foreground",
+      grants: DESKTOP_USER_GRANTS,
+    };
+  }
+
+  getConversationGoals(): ConversationGoalService {
+    return this.conversationGoals;
+  }
+
+  listBots(): BotDto[] {
+    return this.botRegistry.listBots(LOCAL_USER_ID);
+  }
+
+  listWorkProjections(includeClosed = false): WorkProjectionDto[] {
+    return this.workService.listProjections(LOCAL_USER_ID, { includeClosed });
+  }
+
+  getWorkProjection(workId: string): WorkProjectionDto | undefined {
+    return this.workService.getProjection(workId);
+  }
+
+  getWorkService(): WorkService {
+    return this.workService;
+  }
+
+  getWorkHostStatus(): { online: boolean; isAuthority: boolean; authorityId: string } {
+    const status = this.workHostAuthority.status();
+    return { online: status.online, isAuthority: status.isAuthority, authorityId: status.authorityId };
+  }
+
+  attestWorkCriteria(request: AttestCriteriaParams): WorkControlResult {
+    return this.workService.attestCriteria({
+      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
+    }, request);
+  }
+
+  recordWorkUserFeedback(request: RecordUserFeedbackParams): WorkControlResult {
+    return this.workService.recordUserFeedback({
+      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
+    }, request);
+  }
+
+  markWorkNotificationRead(notificationId: string): { ok: boolean; message?: string } {
+    return this.workService.markNotificationRead(notificationId);
+  }
+
   async previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.previewBranch(request);
@@ -1206,6 +1294,16 @@ export class AgentService {
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       defaultModel: () => this.settingsStore.read().defaultModelId,
       prepareTask: request => this.prepareDurableTask(request),
+      beforeSubmit: request => {
+        const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
+        if (blocked) throw new Error(blocked);
+      },
+      resumeAllowed: taskId => {
+        const binding = this.workService.repo.bindingForTask(taskId);
+        if (!binding) return true;
+        const work = this.workService.getWork(binding.workId);
+        return this.workHostAuthority.isAuthority() && work?.lifecycle === "active" && !binding.invalidatedAt;
+      },
       mcpSelection: task => this.durableAssembly(task).mcpFilter.enabled,
       toolAllowed: (task, name) => this.durableToolAllowed(task, name),
       toolMode: task => {
@@ -1331,6 +1429,11 @@ export class AgentService {
   /** Bootstrap calls this after window-backed tools are attached, before accepting background work. */
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    this.workExecutions ??= new WorkExecutionAdapter(this.workService, this.durableBots.workExecutionPort(), LOCAL_USER_ID,
+      () => this.workHostAuthority.isAuthority(),
+      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
+    await this.workExecutions.flush();
+    this.workExecutions.start();
     await this.durableBots.resumePersisted();
   }
 
@@ -1409,6 +1512,8 @@ export class AgentService {
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
+      admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
+      settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
     const skillPaths = this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId, this.expertConnectorIds(task.id));
     const domain = await durableDomainTools(this.sessionExtensions.durableExtensions({
@@ -1485,7 +1590,9 @@ export class AgentService {
     this.durableAssemblies.delete(request.taskId);
     assertSingleExpertId(request.expertId);
     const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId);
-    this.expertBindings.ensureLegacy(request.taskId);
+    const binding = this.workService.repo.bindingForTask(request.taskId);
+    if (binding) this.botExpertBindings.install(binding);
+    else this.expertBindings.ensureLegacy(request.taskId);
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
@@ -1524,10 +1631,12 @@ export class AgentService {
     await this.durableBots?.purge(taskId);
     this.expertBindings.purge(taskId);
   }
-  async closeDurableBots(): Promise<void> { await this.durableBots?.close(); }
+  async closeDurableBots(): Promise<void> { await this.workExecutions?.close(); await this.durableBots?.close(); }
 
   async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
     if (!this.durableBots) throw new Error("Bot 尚未初始化");
+    const bot = this.botWorkContext.resolveBot(LOCAL_USER_ID, "gateway", request.taskId, DEFAULT_BOT_ID);
+    this.botWorkContext.bind(LOCAL_USER_ID, "desktop", request.taskId, bot.botId);
     return this.durableBots.runGatewayTurn(request);
   }
 
@@ -4462,6 +4571,7 @@ export class AgentService {
   }
 
   dispose(): void {
+    this.workHostAuthority.stop();
     this.stopDiagnosticObservation();
     this.memoryDisposed = true;
     this.memoryOrganization.pauseActive();

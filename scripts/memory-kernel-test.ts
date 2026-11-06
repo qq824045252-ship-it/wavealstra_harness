@@ -13,8 +13,7 @@ function ids<T extends { memory: { id: string } }>(hits: T[]): Set<string> {
 
 const db = new AppDatabase(":memory:");
 try {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27, "Memory Kernel uses current-only schema v27");
-  assert.equal(db.schemaVersion, 27, "fresh DB must materialize current schema v27 directly");
+  assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, "fresh DB must materialize the current schema directly");
 
   const root = db.createSpace({ id: "ws-root", name: "Root" });
   const child = db.createSpace({ id: "ws-child", name: "Child", parentId: root.id });
@@ -475,12 +474,12 @@ try {
     kind: "decision", title: "Old memory", content: "must be discarded with incompatible DB",
     scopeType: "task", scopeId: "old-task", sourceType: "manual", explicit: true,
   });
-  seed.connection.pragma("user_version = 24");
+  seed.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
   seed.close();
 
   const reset = new AppDatabase(resetPath);
   try {
-    assert.equal(reset.schemaVersion, 27, "incompatible DB resets directly to current schema");
+    assert.equal(reset.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, "incompatible DB resets directly to current schema");
     assert.equal(reset.getTask("old-task"), undefined, "old task data is intentionally discarded");
     const memory = new MemoryService(reset, { semantic: false });
     assert.equal(memory.get(oldMemory.id), undefined, "old Memory truth is intentionally discarded");

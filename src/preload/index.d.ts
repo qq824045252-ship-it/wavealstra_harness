@@ -203,6 +203,7 @@ export interface PreloadApi {
     benchmark: () => Promise<WorkGraphBenchmarkResult>;
   };
   conversationRuntime: ConversationRuntimeApi;
+  botWork: import("../shared/bot-work-ipc").BotWorkApi;
   setTheme: (theme: "light" | "dark") => void;
   onThemeRequest: (callback: () => void) => void;
   pickLocalFile: () => Promise<WorkspaceFilePreviewDto | null>;
