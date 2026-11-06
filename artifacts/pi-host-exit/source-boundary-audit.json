@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-06T02:26:33.150Z",
+  "at": "2026-11-06T02:57:43.716Z",
   "scope": [
     "src",
     "app",
@@ -753,8 +753,8 @@
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "lines": 592,
-      "sha256": "47285647f4e164243bb4d44d5226fdeeb5eac1d69764e124d21d0a1e3cbacb7d",
+      "lines": 745,
+      "sha256": "0888889c02b0a7fd9e47ddf55834767df97a3c95ed3f8239df239e4c1e6e4d69",
       "test": false
     },
     {
@@ -1293,8 +1293,8 @@
     },
     {
       "file": "src/main/capabilities/subagent/shared.ts",
-      "lines": 296,
-      "sha256": "a4d9b97a998cd8829eb009ef9da088dc4cf260e60da43dd55cfd6109787e0040",
+      "lines": 320,
+      "sha256": "eae0128dc48b1afdbe58b68a81c6062ca36fddfbc988be5b2cafbe9467973303",
       "test": false
     },
     {
@@ -6013,37 +6013,37 @@
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 116,
+      "line": 132,
       "method": "steer",
       "expression": "child.steer"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 254,
+      "line": 302,
       "method": "steer",
       "expression": "child.steer"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 499,
+      "line": 652,
       "method": "abort",
       "expression": "child.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 519,
+      "line": 672,
       "method": "abort",
       "expression": "timeout.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 520,
+      "line": 673,
       "method": "abort",
       "expression": "timeout.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 525,
+      "line": 678,
       "method": "abort",
       "expression": "child.abort"
     },
@@ -6452,5 +6452,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "68d5b1cb8c03f62a821e5e8f2b1e0bf7eef85ebe3e48e8a01ac7a70086f17fc0"
+  "sourceSha256": "e6b2710bbb9bb8339b72526673556c9bcdc785c90618a2661fa337e76c560aac"
 }

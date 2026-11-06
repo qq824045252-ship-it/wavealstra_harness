@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-label="子代理 v4：结果口径与 header 计数">
+  <rect x="0" y="0" width="1120" height="520" fill="#f8fafc"/>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <g font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" fill="#0f172a">
+    <text x="28" y="36" font-size="21" font-weight="700">子代理 v4：结果口径与 header 计数</text>
+    <text x="28" y="62" font-size="13" fill="#475569">实现：shared.resultOutcome。分片标题、succeeded 计数与 isError 全部走同一条判定，避免 header 与分片状态各说一套。</text>
+
+    <rect x="28" y="96" width="238" height="176" rx="8" fill="#ffffff" stroke="#64748b"/>
+    <text x="44" y="122" font-size="14" font-weight="700">SingleResult 输入</text>
+    <text x="44" y="146" font-size="12.5">rejected: true（N-1）</text>
+    <text x="44" y="166" font-size="12.5">exitCode ≠ 0 / stopReason</text>
+    <text x="44" y="186" font-size="12.5">writeConflicts: string[]</text>
+    <text x="44" y="206" font-size="12.5">status / diagnostics</text>
+    <text x="44" y="226" font-size="12.5">isolationNote</text>
+    <text x="44" y="252" font-size="11.5" fill="#475569">blocked 分片 durable status 仍是 completed</text>
+
+    <rect x="300" y="96" width="220" height="176" rx="8" fill="#f7f7f9" stroke="#64748b"/>
+    <text x="316" y="122" font-size="14" font-weight="700">resultOutcome()</text>
+    <text x="316" y="146" font-size="12.5">rejected → rejected</text>
+    <text x="316" y="166" font-size="12.5">failed → failed</text>
+    <text x="316" y="186" font-size="12.5">writeConflicts 非空 → blocked</text>
+    <text x="316" y="206" font-size="12.5">其余 → completed</text>
+    <text x="316" y="232" font-size="11.5" fill="#475569">shared.ts:79</text>
+
+    <rect x="560" y="88" width="220" height="62" rx="8" fill="#ecfdf5" stroke="#047857"/>
+    <text x="576" y="112" font-size="13.5" font-weight="700">completed</text>
+    <text x="576" y="133" font-size="12.5">计入 succeeded；标题 completed</text>
+
+    <rect x="560" y="162" width="220" height="62" rx="8" fill="#fdeeee" stroke="#b91c1c"/>
+    <text x="576" y="186" font-size="13.5" font-weight="700">failed</text>
+    <text x="576" y="207" font-size="12.5">不计入；标题 failed（含 stopReason）</text>
+
+    <rect x="560" y="236" width="220" height="62" rx="8" fill="#fff7e8" stroke="#b45309"/>
+    <text x="576" y="260" font-size="13.5" font-weight="700">blocked</text>
+    <text x="576" y="281" font-size="12.5">不计入；标题 blocked；isError=true</text>
+
+    <rect x="560" y="310" width="220" height="62" rx="8" fill="#fdf2f8" stroke="#9d174d"/>
+    <text x="576" y="334" font-size="13.5" font-weight="700">rejected</text>
+    <text x="576" y="355" font-size="12.5">不计入；标题 rejected；未建子会话</text>
+
+    <rect x="828" y="88" width="264" height="160" rx="8" fill="#ffffff" stroke="#334155"/>
+    <text x="844" y="112" font-size="13.5" font-weight="700">header 第一行</text>
+    <text x="844" y="134" font-size="12" font-family="Consolas, monospace">Parallel: &lt;clean&gt;/&lt;total&gt; succeeded</text>
+    <text x="844" y="152" font-size="12" font-family="Consolas, monospace">  [ (&lt;segments 用 ; 连接&gt;) ]</text>
+    <text x="844" y="174" font-size="12">segments 顺序：</text>
+    <text x="844" y="192" font-size="12">blocked → rejected → recovered</text>
+    <text x="844" y="212" font-size="12">total = 全部 items（含 rejected）</text>
+    <text x="844" y="232" font-size="12">clean = completed 的数量</text>
+
+    <rect x="828" y="266" width="264" height="116" rx="8" fill="#eef2ff" stroke="#4338ca"/>
+    <text x="844" y="290" font-size="13.5" font-weight="700">header 第二行（有可运行项时）</text>
+    <text x="844" y="312" font-size="12" font-family="Consolas, monospace">Concurrency: &lt;workers&gt; workers,</text>
+    <text x="844" y="330" font-size="12" font-family="Consolas, monospace">  &lt;queued&gt; queued | no queue</text>
+    <text x="844" y="348" font-size="12" font-family="Consolas, monospace">  (maxConcurrency &lt;max&gt;)</text>
+    <text x="844" y="370" font-size="12">全部 item rejected → 不输出此行</text>
+
+    <rect x="828" y="400" width="264" height="90" rx="8" fill="#ffffff" stroke="#334155"/>
+    <text x="844" y="424" font-size="13.5" font-weight="700">isError 与 details</text>
+    <text x="844" y="446" font-size="12" font-family="Consolas, monospace">some(outcome !== "completed")</text>
+    <text x="844" y="466" font-size="12">details: results[] + concurrency{</text>
+    <text x="844" y="482" font-size="12">workers, queued, maxConcurrency }</text>
+
+    <!-- arrows -->
+    <g stroke="#334155" stroke-width="1.8" fill="none" marker-end="url(#arrow)">
+      <path d="M266 184H294"/>
+      <path d="M520 119H554"/>
+      <path d="M520 193H554"/>
+      <path d="M520 267H554"/>
+      <path d="M520 341H554"/>
+      <path d="M780 119H806"/>
+      <path d="M780 193H806"/>
+      <path d="M780 267H806"/>
+      <path d="M780 341H806"/>
+      <path d="M814 230H822"/>
+    </g>
+    <path d="M806 119V341" stroke="#334155" stroke-width="1.8" fill="none"/>
+    <text x="806" y="360" font-size="11.5" fill="#475569">汇总</text>
+  </g>
+</svg>

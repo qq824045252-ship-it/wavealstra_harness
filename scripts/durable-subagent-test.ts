@@ -50,11 +50,16 @@ const tierLimitBody = { code: "tier_limit_exceeded",
   param: null, type: "invalid_request_error" };
 
 const sse = (response: ServerResponse, items: unknown[]) => {
-  response.writeHead(200, { "content-type": "text/event-stream" });
-  for (const item of items) for (const type of ["response.output_item.added", "response.output_item.done"]) {
-    response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
-  }
-  response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${Date.now()}`, status: "completed", output: items, usage: { input_tokens: 20, output_tokens: 10 } } })}\n\n`);
+  // A timed-out child aborts its request while the fixture is still holding it; writing to that
+  // response must stay quiet instead of surfacing as a server failure.
+  if (response.destroyed || response.writableEnded) return;
+  try {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const item of items) for (const type of ["response.output_item.added", "response.output_item.done"]) {
+      response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
+    }
+    response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${Date.now()}`, status: "completed", output: items, usage: { input_tokens: 20, output_tokens: 10 } } })}\n\n`);
+  } catch { /* the client is gone (aborted request) */ }
 };
 
 /**
@@ -85,6 +90,8 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
     { agent: "worker", task: "SCENARIO=plain-400 PLAIN_FAIL", model, isolation },
     { agent: "worker", task: "SCENARIO=plain-400 ok", model, isolation },
   ] };
+  // Marker strings are prefixes of each other, so the more specific one must be checked first.
+  if (marker("timeout-override")) return { agent: "worker", task: "SCENARIO=timeout-override TIMEOUT_SLOW", model, isolation, timeout_ms: 1000 };
   if (marker("timeout")) return { agent: "worker", task: "SCENARIO=timeout task", model, isolation, timeout_ms: 30000 };
   // D-2: two parallel shards write the same file; exactly one write may land.
   if (marker("write-conflict")) return { tasks: [
@@ -96,10 +103,29 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
     { agent: "writer", task: "SCENARIO=chain-write WRITE_ONE", model, isolation },
     { agent: "writer", task: "SCENARIO=chain-write WRITE_TWO", model, isolation },
   ] };
+  // Marker strings are prefixes of each other, so the more specific one must be checked first.
+  if (marker("chain-rejected")) return { chain: [
+    { agent: "worker", task: "SCENARIO=chain-rejected step one", model, isolation },
+    { agent: "no-such-agent", task: "SCENARIO=chain-rejected step two", model, isolation },
+    { agent: "worker", task: "SCENARIO=chain-rejected step three", model, isolation },
+  ] };
   if (marker("chain")) return { chain: [
     { agent: "worker", task: "SCENARIO=chain step one", model, isolation },
     { agent: "worker", task: "SCENARIO=chain step two after {previous}", model, isolation },
   ] };
+  // N-1: one item's isolation preflight fails (non-Git, auto) — the valid items must still run.
+  if (marker("partial-one-valid")) return { tasks: [
+    { agent: "no-such-agent", task: "SCENARIO=partial-one-valid invalid", model },
+    { agent: "worker", task: "SCENARIO=partial-one-valid valid", model },
+  ] };
+  if (marker("partial")) return { tasks: [
+    { agent: "worker", task: "SCENARIO=partial valid one", model, isolation },
+    { agent: "worker", task: "SCENARIO=partial invalid auto", model },
+    { agent: "worker", task: "SCENARIO=partial valid two", model, isolation },
+  ] };
+  // D-5: auto does not isolate single tasks or a one-item tasks array; the result must say why.
+  if (marker("auto-single")) return { agent: "worker", task: "SCENARIO=auto-single task", model };
+  if (marker("auto-tasks-one")) return { tasks: [{ agent: "worker", task: "SCENARIO=auto-tasks-one task", model }] };
   return undefined;
 };
 
@@ -158,6 +184,8 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (text.includes("POOL_SLOW")) await new Promise(done => setTimeout(done, 800));
+      // D-4: hold the request open past the per-call 1s limit so the timeout path is exercised.
+      if (text.includes("TIMEOUT_SLOW")) await new Promise(done => setTimeout(done, 3_000));
       sse(response, [model === "child" && !returned && tools.includes("proof")
         ? { type: "function_call", id: "fc_proof", call_id: "proof_call", name: "proof", arguments: "{}" }
         // D-2: the writer shards all target the same relative path, so only the guard separates them.
@@ -317,7 +345,7 @@ try {
   const parallelRun = await runScenario("parallel-status", "SCENARIO=parallel-status");
   assert.equal(parallelRun.children, 2);
   assert.equal(parallelRun.isError, true, "one failed item keeps isError=true");
-  assert.match(parallelRun.output, /^Parallel: 1\/2 succeeded\n\n/, parallelRun.output.slice(0, 200));
+  assert.match(parallelRun.output, /^Parallel: 1\/2 succeeded\nConcurrency: 2 workers, no queue \(maxConcurrency 2\)\n\n/, parallelRun.output.slice(0, 260));
   assert.match(parallelRun.output, /### \[worker\] completed \(id: [a-zA-Z0-9_-]+\)/, "success marker with id");
   assert.match(parallelRun.output, /### \[worker\] failed \(error\) \(id: [a-zA-Z0-9_-]+\)/, "failure marker with stopReason and id");
   assert.match(parallelRun.output, /\n\n---\n\n/, "items stay separated by ---");
@@ -348,8 +376,13 @@ try {
   const retryRun = await runScenario("retry", "SCENARIO=retry", { inspectSubmissions: true });
   assert.equal(retryRun.children, 12);
   assert.equal(tierLimitRejections, 2, "the fixture must reject the first two concurrent children");
-  assert.match(retryRun.output, /^Parallel: 12\/12 succeeded\n\n/, retryRun.output.slice(0, 200));
+  assert.match(retryRun.output,
+    /^Parallel: 12\/12 succeeded \(2 recovered after provider concurrency limit\)\nConcurrency: 2 workers, 10 queued \(maxConcurrency 2\)\n\n/,
+    retryRun.output.slice(0, 320));
   assert.equal(retryRun.isError, false, "a recovered dispatch must not stay in error");
+  const retryResults = (retryRun.details as { results?: Array<{ diagnostics?: string[] }> }).results ?? [];
+  assert.equal(retryResults.filter(item => item.diagnostics?.some(line => line.includes("retried after provider concurrency rejection"))).length, 2,
+    "a recovered quota rejection must stay visible on the child diagnostics");
   assert.doesNotMatch(retryRun.output, /failed \(error\)/, "both rejected children must be recovered");
   // Ten children x2 requests + two rejected children x(1 rejected + 2 from the retry).
   assert.equal(pool.requests, 26, "each quota rejection must be retried exactly once");
@@ -363,26 +396,85 @@ try {
   // ---- D-1: a plain 400 is not a quota rejection: it stays failed and is never retried ----------
   const plainRun = await runScenario("plain-400", "SCENARIO=plain-400", { inspectSubmissions: true });
   assert.equal(plainRun.children, 2);
-  assert.match(plainRun.output, /^Parallel: 1\/2 succeeded\n\n/, plainRun.output.slice(0, 200));
+  assert.match(plainRun.output, /^Parallel: 1\/2 succeeded\nConcurrency: 2 workers, no queue \(maxConcurrency 2\)\n\n/, plainRun.output.slice(0, 260));
   assert.equal(plainRun.isError, true);
   // One rejected request + two for the successful child; a retry would add two more.
   assert.equal(pool.requests, 3, "a non-quota 400 must not be retried");
   assert.equal(plainRun.submissions.filter(item => item.retry).length, 0, "no retry submission may exist for a plain 400");
 
-  // ---- D-4: an ignored timeout_ms is visible; D-5: shared workspaces are visible -------------
+  // ---- D-4: an ignored timeout_ms is visible; shared workspaces say why they are shared --------
   const timeoutRun = await runScenario("timeout", "SCENARIO=timeout");
   assert.match(timeoutRun.output, /timeout_ms=30000 ignored: fixed policy \(3600s settings\)/);
   assert.match(timeoutRun.output, /Run time limit: 3600s \(settings\)/, "the timeout itself must stay governed by the fixed policy");
   const timeoutResults = (timeoutRun.details as { results?: Array<{ diagnostics?: string[] }> }).results ?? [];
   assert(timeoutResults[0]?.diagnostics?.some(line => line.includes("timeout_ms=30000 ignored")), "the diagnostic must also reach details");
-  assert.ok(timeoutRun.output.includes(`Workspace: shared (${cwd})`), "shared workspace must be explicit in the result");
+  assert.ok(timeoutRun.output.includes(`Workspace: shared (${cwd}); isolation:"shared" was selected`),
+    "an explicit shared workspace must be explicit in the result");
 
-  // ---- D-5: auto + parallel + writable fails once before dispatch ----------------------------
+  // ---- D-4: allow-override makes timeout_ms effective and produces a real timedout --------------
+  await writeFile(join(agentDir, "subagent.json"), JSON.stringify({ maxConcurrency: 2, timeoutPolicy: "allow-override", timeoutMs: 3_600_000 }));
+  try {
+    const overrideRun = await runScenario("timeout-override", "SCENARIO=timeout-override");
+    assert.equal(overrideRun.isError, true);
+    assert.doesNotMatch(overrideRun.output, /ignored: fixed policy/);
+    assert.match(overrideRun.output, /Run time limit: 1s \(invocation\)/);
+    assert.match(overrideRun.output, /Subagent time limit reached/);
+    const overrideResults = (overrideRun.details as { results?: Array<{ status?: string; exitCode?: number }> }).results ?? [];
+    assert.equal(overrideResults[0]?.status, "timedout", "the child must report the real timeout status");
+    assert.equal(overrideResults[0]?.exitCode, 1);
+  } finally {
+    await writeFile(join(agentDir, "subagent.json"), JSON.stringify({ maxConcurrency: 2, timeoutPolicy: "fixed", timeoutMs: 3_600_000 }));
+  }
+
+  // ---- D-5: auto on a single task (and a one-item tasks array) resolves to shared, with the reason
+  const autoSingle = await runScenario("auto-single", "SCENARIO=auto-single");
+  assert.equal(autoSingle.isError, false, "isolation:auto must not fail a single task outside Git");
+  assert.equal(autoSingle.children, 1);
+  assert.match(autoSingle.output, /Workspace: shared \(/);
+  assert.match(autoSingle.output, /isolation:auto does not isolate a single task; writes land in the original directory\./);
+  assert.doesNotMatch(autoSingle.output, /Retained worktree:/, "a single task must not fabricate a worktree");
+  const autoOne = await runScenario("auto-tasks-one", "SCENARIO=auto-tasks-one");
+  assert.equal(autoOne.isError, false, "a one-item tasks array cannot run concurrent writers");
+  assert.match(autoOne.output, /^Parallel: 1\/1 succeeded\nConcurrency: 1 worker, no queue \(maxConcurrency 2\)\n\n/);
+  assert.match(autoOne.output, /isolation:auto does not isolate a dispatch that runs one child; writes land in the original directory\./);
+  assert.doesNotMatch(autoOne.output, /Retained worktree:/);
+
+  // ---- D-5: auto + parallel + write-capable rejects each item before dispatch -----------------
   const preflightRun = await runScenario("preflight", "SCENARIO=preflight");
   assert.equal(preflightRun.isError, true);
   assert.equal(preflightRun.children, 0, "preflight must fail before any child conversation exists");
+  assert.match(preflightRun.output, /^Parallel: 0\/2 succeeded \(2 rejected before start\)\n\n/);
   assert.match(preflightRun.output, /requires a Git working tree/);
   assert.match(preflightRun.output, /isolation:"shared"/);
+  assert.match(preflightRun.output, /### \[worker\] rejected \(id: /);
+  const preflightResults = (preflightRun.details as { results?: Array<{ rejected?: boolean; status?: string; exitCode?: number }> }).results ?? [];
+  assert.equal(preflightResults.filter(item => item.rejected).length, 2, "both invalid items must be surfaced as rejected");
+  assert.equal(preflightResults.filter(item => item.status === "error" && item.exitCode === 1).length, 2);
+
+  // ---- N-1: one invalid item is rejected alone; the valid items still run ----------------------
+  const partialRun = await runScenario("partial", "SCENARIO=partial");
+  assert.equal(partialRun.children, 2, "only the valid items may create children");
+  assert.equal(partialRun.isError, true);
+  assert.match(partialRun.output,
+    /^Parallel: 2\/3 succeeded \(1 rejected before start\)\nConcurrency: 2 workers, no queue \(maxConcurrency 2\)\n\n/,
+    partialRun.output.slice(0, 320));
+  assert.match(partialRun.output, /### \[worker\] rejected \(id: /);
+  assert.match(partialRun.output, /isolation:"shared"/, "the rejection must offer the shared alternative");
+  assert.match(partialRun.output, /child done/, "the valid shards must still produce their output");
+  const partialResults = (partialRun.details as { results?: Array<{ rejected?: boolean }> }).results ?? [];
+  assert.equal(partialResults.length, 3, "the rejected item must still appear in details");
+  assert.equal(partialResults.filter(item => item.rejected).length, 1);
+
+  // An unusable peer must not make the surviving item look like a concurrent writer: with one
+  // runnable child, auto stays shared instead of demanding a worktree.
+  const oneValidRun = await runScenario("partial-one-valid", "SCENARIO=partial-one-valid");
+  assert.equal(oneValidRun.children, 1);
+  assert.match(oneValidRun.output,
+    /^Parallel: 1\/2 succeeded \(1 rejected before start\)\nConcurrency: 1 worker, no queue \(maxConcurrency 2\)\n\n/,
+    oneValidRun.output.slice(0, 320));
+  assert.match(oneValidRun.output, /Unknown agent: no-such-agent/);
+  assert.match(oneValidRun.output, /isolation:auto does not isolate a dispatch that runs one child; writes land in the original directory\./);
+  assert.doesNotMatch(oneValidRun.output, /Retained worktree:/);
 
   // ---- D-5: a dirty repository is rejected for new work, but a ready durable receipt means
   // prepareSubagentWorkspace reuses that worktree and skips the clean check (replay/recovery) ----
@@ -417,19 +509,32 @@ try {
   assert.match(chainRun.output, /Step 2: \[worker\] completed \(id: /);
   assert.doesNotMatch(chainRun.output, /^Parallel:/);
 
-  // ---- D-2: a parallel same-file write is blocked instead of silently overwriting -----------------
+  // ---- N-1 in chain form: prior steps keep their results, the bad step is rejected and stops it --
+  const chainRejected = await runScenario("chain-rejected", "SCENARIO=chain-rejected");
+  assert.equal(chainRejected.children, 1, "only the first step may create a child");
+  assert.equal(chainRejected.isError, true);
+  assert.match(chainRejected.output, /Step 1: \[worker\] completed \(id: /);
+  assert.match(chainRejected.output, /Step 2: \[no-such-agent\] rejected \(id: /);
+  assert.doesNotMatch(chainRejected.output, /Step 3:/, "the chain must not run past the rejected step");
+  assert.match(chainRejected.output, /Chain stopped at step 2 \(no-such-agent\): the step was rejected before start\./);
+
+  // ---- N-2/D-2: a parallel same-file write is blocked instead of silently overwriting ------------
   const conflictRun = await runScenario("write-conflict", "SCENARIO=write-conflict");
   assert.equal(conflictRun.children, 2);
-  // Both shards still answer (the blocked child sees the tool error and finishes), but the header now
-  // says a write was blocked instead of implying every shard's content landed.
+  // Both shards still answer (the blocked child sees the tool error and finishes), but its content
+  // never landed: it is reported as blocked, not counted in `succeeded`, and the dispatch is an error.
   assert.match(conflictRun.output,
-    /^Parallel: 2\/2 succeeded \(1 write conflict blocked: parallel subagents must write different files\)\n\n/,
-    conflictRun.output.slice(0, 260));
+    /^Parallel: 1\/2 succeeded \(1 blocked by write conflict: parallel subagents must write different files\)\nConcurrency: 2 workers, no queue \(maxConcurrency 2\)\n\n/,
+    conflictRun.output.slice(0, 340));
+  assert.equal(conflictRun.isError, true, "a blocked write must make the dispatch an error");
+  assert.match(conflictRun.output, /### \[writer\] blocked \(id: /, "the blocked shard must not read as completed");
   assert.equal(conflictRun.blockedWrites.length, 1, "exactly one of the two same-file writes must be blocked");
   assert.match(conflictRun.blockedWrites[0]!, /并行子代理写冲突/);
   assert.match(conflictRun.blockedWrites[0]!, /shared\.txt/);
   assert.match(conflictRun.blockedWrites[0]!, /并行子代理必须写不同文件/);
-  const conflictResults = (conflictRun.details as { results?: Array<{ diagnostics?: string[] }> }).results ?? [];
+  const conflictResults = (conflictRun.details as { results?: Array<{ diagnostics?: string[]; writeConflicts?: string[] }> }).results ?? [];
+  assert.equal(conflictResults.filter(item => item.writeConflicts?.length).length, 1,
+    "the blocked shard must carry the machine-readable writeConflicts marker");
   assert.equal(conflictResults.filter(item => item.diagnostics?.some(line => line.includes("write conflict blocked"))).length, 1,
     "the blocked write must reach the caller as a per-child diagnostic");
   assert.equal(writtenFiles.length, 1, "only the winning shard's write may reach the file system");
@@ -446,9 +551,12 @@ try {
 
   assert.equal(serverError, undefined);
   console.log("PASS durable child identity, model, display name, bound cwd, persisted receipt, restart, completed effect reuse, recursion and readonly restrictions");
-  console.log("PASS durable parallel text projection (header/status/id/truncation), rolling pool, timeout diagnostic, shared workspace visibility, dispatch preflight and chain steps");
-  console.log("PASS D-1 provider quota rejections retried once serially under a fresh requestId; plain 400s keep their failure");
-  console.log("PASS D-2 parallel same-file writes blocked with a visible conflict (chain writes stay allowed); no silent overwrite");
+  console.log("PASS durable parallel text projection (header/status/id/truncation), rolling pool, concurrency line, timeout diagnostic, shared workspace visibility, dispatch preflight and chain steps");
+  console.log("PASS D-1 provider quota rejections retried once serially under a fresh requestId, visible as recovered; plain 400s keep their failure");
+  console.log("PASS D-2/N-2 parallel same-file writes blocked with a visible conflict and a blocked shard status (chain writes stay allowed); no silent overwrite");
+  console.log("PASS N-1 an invalid item is rejected alone while valid items still run");
+  console.log("PASS D-5 auto resolves single tasks and one-item batches to shared with the reason; parallel write-capable auto items are rejected before dispatch");
+  console.log("PASS D-4 allow-override timeout_ms governs the run and produces a real timedout result");
 } finally {
   await harness?.close(ctx);
   server.closeAllConnections();

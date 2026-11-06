@@ -43,6 +43,15 @@ export interface SingleResult {
   workerReused?: boolean;
   /** 模型解析/降级诊断（如裸名解析、模型降级） */
   diagnostics?: string[];
+  /**
+   * N-2：本 dispatch 的写冲突守卫实际拦截该 child 的 write/edit 次数与路径。
+   * 非空即表示该 child 的某些内容没有落盘，即使它的 durable 状态仍是 completed。
+   */
+  writeConflicts?: string[];
+  /** N-1：分片在启动前被逐项拒绝（没有创建子会话）；errorMessage 是原因。 */
+  rejected?: boolean;
+  /** D-5：该次运行为何使用 supplied cwd 而不是隔离 worktree（写进证据行）。 */
+  isolationNote?: string;
   workspace?: PreparedSubagentWorkspace;
   requestedModel?: string;
   resolvedModel?: string;
@@ -57,6 +66,20 @@ export interface SingleResult {
 
 export function isFailedResult(result: SingleResult): boolean {
   return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+/**
+ * 分片的最终口径：completed 只表示“干净跑完”。
+ * - blocked：进程跑完了，但有过被守卫拦截的写入，内容没有全部生效；
+ * - rejected：启动前就被逐项拒绝，没有子会话。
+ * 汇总计数与分片标题都走这一个函数，避免 header 与分片状态各说一套。
+ */
+export type ResultOutcome = "completed" | "failed" | "blocked" | "rejected";
+
+export function resultOutcome(result: SingleResult): ResultOutcome {
+  if (result.rejected) return "rejected";
+  if (isFailedResult(result)) return "failed";
+  return result.writeConflicts?.length ? "blocked" : "completed";
 }
 
 /**
@@ -84,8 +107,9 @@ export function getResultOutput(result: SingleResult): string {
       ? `Retained worktree: ${result.workspace.cwd}\nBranch: ${result.workspace.branch}\nBase: ${result.workspace.baseCommit}\nReceipt: ${result.workspace.receiptPath}`
       : result.workspace
         // D-5: an un-isolated run used to be invisible; callers could not tell "isolated copy" from
-        // "wrote straight into the original directory". Keep the fact on the same evidence lines.
-        ? `Workspace: shared (${result.workspace.cwd}); writes land in the original directory, not an isolated copy`
+        // "wrote straight into the original directory". The note now also says *why* auto resolved to
+        // shared, so the line reads as a resolution rather than a silent fallback.
+        ? `Workspace: shared (${result.workspace.cwd}); ${result.isolationNote ?? "writes land in the original directory, not an isolated copy"}`
         : "",
     ...(result.diagnostics ?? []),
   ].filter(Boolean);
@@ -215,7 +239,7 @@ const ExecutionFields = {
     effort: Type.Optional(Type.String({ minLength: 1 })),
     budgetTokens: Type.Optional(Type.Integer({ minimum: 1 })),
   }, { additionalProperties: false, description: "Native reasoning preference. Unsupported or lossy subprocess settings fail explicitly." })),
-  isolation: Type.Optional(StringEnum(["auto", "shared", "worktree"] as const, { description: "auto isolates parallel write-capable tasks in retained Git worktrees. worktree requires a clean repository. shared explicitly opts into the supplied cwd." })),
+  isolation: Type.Optional(StringEnum(["auto", "shared", "worktree"] as const, { description: "auto isolates a parallel write-capable dispatch that can run more than one child in retained Git worktrees. worktree requires a clean repository. shared explicitly opts into the supplied cwd. Single tasks, chain steps, read-only tool sets and one-child dispatches use the supplied cwd under auto." })),
 };
 
 export interface DelegatedExecutionOptions {

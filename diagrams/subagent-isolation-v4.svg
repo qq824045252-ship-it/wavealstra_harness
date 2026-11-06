@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-label="子代理 v4：dispatch 规划与 auto 隔离判定">
+  <rect x="0" y="0" width="1120" height="620" fill="#f8fafc"/>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <g font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" fill="#0f172a">
+    <text x="28" y="36" font-size="21" font-weight="700">子代理 v4：dispatch 规划与 auto 隔离判定</text>
+    <text x="28" y="62" font-size="13" fill="#475569">实现：DurableSubagents.planDispatch。隔离决策在子代理启动前一次决定，执行阶段只执行该决定，不再二次推断。</text>
+
+    <!-- Row 1 -->
+    <rect x="28" y="92" width="208" height="104" rx="8" fill="#ffffff" stroke="#64748b"/>
+    <text x="44" y="118" font-size="14" font-weight="700">subagent 调用</text>
+    <text x="44" y="142" font-size="12.5">mode = single / parallel / chain</text>
+    <text x="44" y="162" font-size="12.5">items = tasks[] / chain[] / 1 项</text>
+    <text x="44" y="182" font-size="12.5">item 或顶层 isolation 可覆盖</text>
+
+    <rect x="292" y="92" width="238" height="126" rx="8" fill="#ffffff" stroke="#64748b"/>
+    <text x="308" y="118" font-size="14" font-weight="700">阶段 1：逐项解析</text>
+    <text x="308" y="141" font-size="12.5">agent → role</text>
+    <text x="308" y="160" font-size="12.5">model → selection</text>
+    <text x="308" y="179" font-size="12.5">tools → writable</text>
+    <text x="308" y="198" font-size="12.5">cwd 越界 / 模型不可用 → 失败</text>
+
+    <rect x="586" y="92" width="238" height="126" rx="8" fill="#fff7ed" stroke="#c2410c"/>
+    <text x="602" y="118" font-size="14" font-weight="700">失败如何处理</text>
+    <text x="602" y="141" font-size="12.5">single：整次抛错（fail-fast）</text>
+    <text x="602" y="161" font-size="12.5">parallel / chain：该项 rejected</text>
+    <text x="602" y="181" font-size="12.5">其余合法项继续执行</text>
+    <text x="602" y="201" font-size="12.5">chain 在该步停止</text>
+
+    <!-- Row 2 -->
+    <rect x="292" y="266" width="238" height="150" rx="8" fill="#eef2ff" stroke="#4338ca"/>
+    <text x="308" y="292" font-size="14" font-weight="700">阶段 2：隔离判定</text>
+    <text x="308" y="315" font-size="12.5">worktree → 隔离</text>
+    <text x="308" y="335" font-size="12.5">auto ∧ mode=parallel ∧ writable</text>
+    <text x="308" y="354" font-size="12.5">     ∧ 可运行项 &gt; 1 → 隔离</text>
+    <text x="308" y="377" font-size="12.5">否则 shared</text>
+    <text x="308" y="398" font-size="11.5" fill="#475569">可运行项只数阶段 1 成功的 item</text>
+
+    <rect x="586" y="250" width="238" height="86" rx="8" fill="#ecfdf5" stroke="#047857"/>
+    <text x="602" y="276" font-size="14" font-weight="700">shared（不隔离）</text>
+    <text x="602" y="299" font-size="12.5">single / chain / 只读工具集</text>
+    <text x="602" y="319" font-size="12.5">只有 1 个可运行项 / maxConcurrency=1</text>
+
+    <rect x="586" y="356" width="238" height="150" rx="8" fill="#f5f3ff" stroke="#6d28d9"/>
+    <text x="602" y="382" font-size="14" font-weight="700">隔离预检（启动前）</text>
+    <text x="602" y="405" font-size="12.5">inspectWorktreePreflight</text>
+    <text x="602" y="425" font-size="12.5">Git 仓库 + 干净工作树</text>
+    <text x="602" y="445" font-size="12.5">ready receipt 可复用</text>
+    <text x="602" y="468" font-size="12.5">失败：batch 该项 rejected</text>
+    <text x="602" y="488" font-size="12.5">      single 整次抛错</text>
+
+    <rect x="864" y="250" width="228" height="86" rx="8" fill="#ffffff" stroke="#64748b"/>
+    <text x="880" y="276" font-size="14" font-weight="700">结果证据行</text>
+    <text x="880" y="299" font-size="12.5">Workspace: shared (&lt;cwd&gt;); &lt;note&gt;</text>
+    <text x="880" y="319" font-size="12.5">note 说明为何不隔离（6 种文案）</text>
+
+    <rect x="864" y="356" width="228" height="86" rx="8" fill="#ffffff" stroke="#64748b"/>
+    <text x="880" y="382" font-size="14" font-weight="700">结果证据行</text>
+    <text x="880" y="405" font-size="12.5">Retained worktree: &lt;cwd&gt;</text>
+    <text x="880" y="425" font-size="12.5">Branch / Base / Receipt 路径</text>
+
+    <!-- Row 3 -->
+    <rect x="28" y="470" width="500" height="118" rx="8" fill="#ffffff" stroke="#0f172a"/>
+    <text x="44" y="496" font-size="14" font-weight="700">执行：滚动池</text>
+    <text x="44" y="519" font-size="12.5">workers = min(maxConcurrency, 可运行项数)；空位立即补位，其余排队</text>
+    <text x="44" y="539" font-size="12.5">写守卫仅在 workers &gt; 1 时启用（write / edit 首次写入者拥有该路径）</text>
+    <text x="44" y="559" font-size="12.5">tier_limit 400：池排空后串行重试 1 次（新 requestId，受原 deadline 限制）</text>
+
+    <rect x="586" y="500" width="506" height="88" rx="8" fill="#e2e8f0" stroke="#334155"/>
+    <text x="602" y="526" font-size="13" font-weight="700">每个 item 产出 SingleResult</text>
+    <text x="602" y="548" font-size="12.5">status / exitCode / diagnostics /</text>
+    <text x="602" y="567" font-size="12.5">writeConflicts / rejected / isolationNote</text>
+
+    <!-- arrows -->
+    <g stroke="#334155" stroke-width="1.8" fill="none" marker-end="url(#arrow)">
+      <path d="M236 144H286"/>
+      <path d="M530 150H580"/>
+      <path d="M410 218V260"/>
+      <path d="M530 293H580"/>
+      <path d="M530 400H580"/>
+      <path d="M824 293H858"/>
+      <path d="M824 400H858"/>
+      <path d="M410 416V464"/>
+      <path d="M528 529H580"/>
+    </g>
+    <text x="248" y="136" font-size="12" fill="#475569">items</text>
+    <text x="536" y="142" font-size="12" fill="#475569">解析失败</text>
+    <text x="418" y="242" font-size="12" fill="#475569">合法项</text>
+    <text x="538" y="285" font-size="12" fill="#475569">不隔离</text>
+    <text x="538" y="392" font-size="12" fill="#475569">隔离</text>
+    <text x="418" y="446" font-size="12" fill="#475569">执行决定</text>
+  </g>
+</svg>
