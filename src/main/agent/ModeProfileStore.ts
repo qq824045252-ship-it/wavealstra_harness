@@ -37,7 +37,7 @@ import {
   type RuntimeRequirementInput,
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
-import { LEGACY_DESIGN_BLOCKS, LEGACY_DESIGN_SCENES, MODE_SEEDS, PENPOT_PRESET } from "./mode-defaults";
+import { MODE_SEEDS, PENPOT_PRESET } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
   return (WELCOME_MODES as string[]).includes(id);
@@ -350,8 +350,8 @@ function policiesEqual(a: ModePolicyDto, b: ModePolicyDto): boolean {
 export class ModeProfileStore {
   private penpotPreset(current?: ModePresetDto): ModePresetDto {
     let preset = { ...PENPOT_PRESET };
-    // Read original configuration before Bot strips execution metadata. Working edits win.
-    for (const source of ["design", "bot"]) {
+    // Read the bot-era original before Bot strips execution metadata. Working edits win.
+    for (const source of ["bot"]) {
       const raw = readText(join(getModesDir(), source, "policy.json"));
       if (!raw) continue;
       try {
@@ -387,19 +387,6 @@ export class ModeProfileStore {
       try {
         const seed = MODE_SEEDS[mid];
         ensureDir(this.modeDir(mid));
-        // Copy each missing configuration file once; never overwrite customized Bot files.
-        if (mid === "bot") {
-          for (const name of [...MODE_BLOCK_IDS.map((block) => `${block}.md`), "policy.json"]) {
-            const target = join(this.modeDir(mid), name);
-            const legacy = readText(join(getModesDir(), "design", name));
-            if (!existsSync(target) && legacy !== null) {
-              if (name === "policy.json") {
-                try { writeText(target, JSON.stringify(botConfiguration(normalizePolicy(JSON.parse(legacy))), null, 2)); }
-                catch { /* Preserve the original file; invalid configuration falls back to the seed. */ }
-              } else writeText(target, legacy);
-            }
-          }
-        }
         for (const blockId of MODE_BLOCK_IDS) {
           const path = this.blockPath(mid, blockId);
           const current = readText(path);
@@ -415,7 +402,7 @@ export class ModeProfileStore {
             }
           }
           // Upgrade only exact former factory text. User-authored blocks remain user configuration.
-          if (current === null || (mid === "bot" && normText(current) === normText(LEGACY_DESIGN_BLOCKS[blockId]))) {
+          if (current === null) {
             writeText(path, seed.blocks[blockId]);
             console.log("[ModeProfile] materialized", path);
           }
@@ -500,9 +487,6 @@ export class ModeProfileStore {
     if (policyUser != null) {
       try {
         let diskRaw = JSON.parse(policyUser) as Record<string, unknown>;
-        if (id === "bot" && scenesEqual(normalizeScenes(diskRaw.scenes), LEGACY_DESIGN_SCENES)) {
-          diskRaw = { ...diskRaw, scenes: [] };
-        }
         let seedPresets = seedPolicy.presets;
         if (id === "working") {
           const current = normalizePresets(diskRaw.presets).find(preset => preset.id === PENPOT_PRESET.id);
@@ -537,7 +521,7 @@ export class ModeProfileStore {
         // 向后兼容（全模式通用）：用户旧 policy.json 无 presets 时回退出厂预设；
         // 仅当该模式出厂 presets 全为 prompt-only（working/coding，无 provider/MCP 语义）
         // 且用户自定义过 scenes（≠ 出厂）时，运行时转换为 legacy presets，避免用户 tag 消失；
-        // design 的专业 presets（ai-ui/web-prototype/3d-blender/mechanical-cad/…）始终优先回退出厂。
+        // 出厂 seed presets（如 working 的 general-office/drawio-ai）始终只增不改地并入。
         let fallbackPresets: ModePresetDto[] | undefined;
         if (!Array.isArray(diskRaw.presets)) {
           // 向后兼容（全模式通用）：旧 policy.json 无 presets 时，用户自定义 scenes

@@ -419,40 +419,6 @@ const codingPolicy: ModePolicyDto = {
   presets: CODING_MODE_PRESETS,
 };
 
-/** Legacy export for retired design integrations. Penpot now belongs to working. */
-export const DESIGN_MODE_PRESETS: ModePresetDto[] = [];
-
-export const LEGACY_DESIGN_SCENES = [
-  { label: "线框 HTML", prompt: "在工作区生成可打开的 dashboard 线框 HTML：侧栏、卡片区、空态，信息层级清晰。" },
-  { label: "文案层级", prompt: "把现有 README 或文案整理成更清晰的标题/列表/提示块结构，保留关键信息。" },
-  { label: "Landing 结构", prompt: "输出一页产品 landing 的文案结构 Markdown，并附一份简单可预览 HTML。" },
-];
-
-/** Exact former defaults, used only to migrate untouched on-disk design prompts. */
-export const LEGACY_DESIGN_BLOCKS: Record<ModeBlockId, string> = {
-      goal: `你当前处于「设计创意」场景。
-
-优先交付可预览的结构与表达：信息架构、文案层级、线框/HTML/组件说明，关注空态与错误态。`,
-      workflow: `推荐流程：
-1. 明确用户与使用场景；
-2. 梳理信息架构与优先级；
-3. 落文案层级与关键状态（加载/空/错误）；
-4. 产出可打开预览的文件（HTML/MD 等）。`,
-      delivery: `交付要求：
-- 至少有一个可打开的主预览文件；
-- 说明层级、交互要点与状态；
-- 视觉/结构建议具体可执行，避免空泛形容词堆砌。`,
-      forbid: `禁止：
-- 无确认批量删除文件；
-- 大范围改动无关后端/基础设施；
-- 危险 bash（格式化、递归强删等）除非用户明确要求；
-- 只给概念不给可预览产物（除非用户只要方案讨论）。`,
-      criteria: `验收意识（自检）：
-- 能否打开看到结构与层级？
-- 空态/错误态是否交代？
-- 文案与布局是否服务目标用户？`,
-    };
-
 export const MODE_SEEDS: Record<WelcomeMode, ModeSeed> = {
   working: {
     labelZh: "日常办公",

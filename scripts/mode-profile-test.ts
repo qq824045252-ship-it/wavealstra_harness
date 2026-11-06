@@ -14,7 +14,7 @@ mkdirSync(sandbox, { recursive: true });
 // eslint-disable-next-line import/first
 import { ModeProfileStore } from "../src/main/agent/ModeProfileStore";
 import previousModeBlocks from "../src/main/agent/previous-mode-blocks.json";
-import { LEGACY_DESIGN_BLOCKS, LEGACY_DESIGN_SCENES, MODE_SEEDS } from "../src/main/agent/mode-defaults";
+import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
 // eslint-disable-next-line import/first
 import { assemblePrompt, resolveSessionTools } from "../src/main/agent/PromptAssembly";
 // eslint-disable-next-line import/first
@@ -262,29 +262,21 @@ async function main(): Promise<void> {
   assert(allowOnly.visible.length === 1 && allowOnly.visible[0]?.id === "weekly", "技能白名单");
   assert(allowOnly.hidden.some((s) => s.id === "other"), "白名单外隐藏");
 
-  console.log("\nPenpot 迁移：旧配置、办公编辑与保存恢复");
-  for (const [id, content] of Object.entries(LEGACY_DESIGN_BLOCKS)) {
-    writeFileSync(join(sandbox, ".mybuddy", "modes", "bot", `${id}.md`), content);
-  }
-  writeFileSync(bot.policyPath, JSON.stringify({ ...bot.policy, scenes: LEGACY_DESIGN_SCENES }));
-  const upgradedBot = store.getProfile("bot");
-  assert(upgradedBot.blocks.every(block => block.content.trim() === MODE_SEEDS.bot.blocks[block.id].trim()), "旧默认设计提示词全部升级为通用 Bot");
-  assert(!upgradedBot.policy.presets?.some(p => p.id.startsWith("legacy-scene-")), "旧默认设计示例不会复活为自定义 Tag");
-  store.saveBlock("bot", "goal", "自定义用户目标，不能覆盖");
-  assert(new ModeProfileStore().getProfile("bot").blocks.find(b => b.id === "goal")?.content.trim() === "自定义用户目标，不能覆盖", "保留用户自行编辑的 Bot 提示词");
+  console.log("\nBot 旧配置：不再依赖已删除的 design 目录");
   const legacyDir = join(sandbox, ".mybuddy", "modes", "design");
   mkdirSync(legacyDir, { recursive: true });
   writeFileSync(join(legacyDir, "policy.json"), JSON.stringify({ presets: [
     { id: "general", label: "通用设计" },
-    { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：保留我的设计规范", suggestedModelId: "custom-model",
-      providerMcpIds: ["penpot"], mcpPolicy: { mode: "hard", allow: ["penpot"], deny: [] },
-      requiredRuntimes: [{ providerId: "penpot", launchPolicy: "backend", readinessPolicy: "http", openUi: "browser" }],
-    },
+    { id: "web-prototype", label: "旧设计 Penpot", promptAddon: "旧设计提示词", suggestedModelId: "design-only-model" },
   ] }));
-  // Bot 曾保存过已剥离执行元数据的旧 Tag，不能覆盖丢失的 Penpot 功能。
+  writeFileSync(join(legacyDir, "goal.md"), "旧设计目标文案，不应再被读取");
+  const botGoalPath = join(sandbox, ".mybuddy", "modes", "bot", "goal.md");
+  rmSync(botGoalPath, { force: true });
+  const botAfterRemoval = store.getProfile("bot");
+  assert(botAfterRemoval.blocks.find(b => b.id === "goal")?.content.trim() === MODE_SEEDS.bot.blocks.goal.trim(), "bot 缺失块回退出厂文案，不再从 design 复制");
   writeFileSync(bot.policyPath, JSON.stringify({ ...bot.policy, presets: [
     { id: "general", label: "通用设计" },
-    { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：最新提示词" },
+    { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：最新提示词", suggestedModelId: "custom-model" },
     { id: "custom-bot", label: "自定义 Bot", promptAddon: "保留自定义" },
   ] }));
   const existingOffice = store.getProfile("working").policy;
@@ -293,6 +285,7 @@ async function main(): Promise<void> {
   const penpot = migrated.policy.presets?.find(p => p.id === "web-prototype");
   assert(penpot?.label === "Penpot" && penpot.promptAddon === "Penpot：最新提示词", "重命名且保留最新旧提示词");
   assert(penpot?.suggestedModelId === "custom-model", "保留旧模型推荐");
+  assert(penpot?.suggestedModelId !== "design-only-model", "design 目录的旧模型推荐不再被读取");
   assert(penpot?.providerMcpIds?.includes("penpot") && penpot.mcpPolicy?.allow.includes("penpot"), "保留 Penpot MCP 能力");
   assert(penpot?.requiredRuntimes?.some(r => typeof r !== "string" && r.providerId === "penpot" && r.launchPolicy === "backend" && r.readinessPolicy === "http" && r.openUi === "browser"), "保留后端启动、HTTP 就绪与浏览器打开");
   const cleanBot = store.getProfile("bot");

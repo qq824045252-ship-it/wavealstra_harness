@@ -1,13 +1,13 @@
 /**
- * preset runtime contract 测试：全部 design/working Tag 的 requiredRuntimes 声明
+ * preset runtime contract 测试：working/coding Tag 的 requiredRuntimes 声明
  * 与目标策略一致（统一框架 + 每 Tag 不同 launch policy）。
  *
  * 断言：
  * - web-prototype（penpot）→ backend + http + 系统浏览器打开 9001；
- * - drawio-ai / general / 其它 preset → 零自动启动（不声明 requiredRuntimes）；
- * - Ardot / Blender / FreeCAD / OpenDesign Tag 已退役，不再出厂。
+ * - drawio-ai / 其它 preset → 零自动启动（不声明 requiredRuntimes）；
+ * - Ardot / Blender / FreeCAD / OpenDesign Tag 已退役，不再出厂（design 模式已删除）。
  */
-import { DESIGN_MODE_PRESETS, WORKING_MODE_PRESETS, CODING_MODE_PRESETS } from "../src/main/agent/mode-defaults";
+import { WORKING_MODE_PRESETS, CODING_MODE_PRESETS } from "../src/main/agent/mode-defaults";
 import { resolveRuntimeRequirementList } from "../src/shared/runtime-requirement";
 
 let passed = 0;
@@ -22,7 +22,7 @@ function assert(cond: unknown, label: string): void {
   }
 }
 
-function requirementsFor(presetId: string, list: typeof DESIGN_MODE_PRESETS) {
+function requirementsFor(presetId: string, list: typeof WORKING_MODE_PRESETS) {
   const preset = list.find((p) => p.id === presetId);
   if (!preset) return { preset: undefined as typeof list[number] | undefined, requirements: [] as ReturnType<typeof resolveRuntimeRequirementList> };
   return { preset, requirements: resolveRuntimeRequirementList(preset.requiredRuntimes) };
@@ -31,8 +31,8 @@ function requirementsFor(presetId: string, list: typeof DESIGN_MODE_PRESETS) {
 async function main(): Promise<void> {
   console.log("== 1) Ardot / Blender / FreeCAD / OpenDesign Tag 已退役 ==");
   {
-    for (const id of ["ai-ui", "3d-blender", "mechanical-cad", "opendesign"]) {
-      const { preset } = requirementsFor(id, DESIGN_MODE_PRESETS);
+    for (const id of ["ai-ui", "3d-blender", "mechanical-cad", "opendesign", "general"]) {
+      const { preset } = requirementsFor(id, WORKING_MODE_PRESETS);
       assert(preset === undefined, `${id} 不再出厂`);
     }
   }
@@ -46,13 +46,11 @@ async function main(): Promise<void> {
     assert(penpot?.openUi === "browser", "web-prototype → openUi=browser（Ready 后系统浏览器打开 9001）");
   }
 
-  console.log("== 3) 零自动启动：general / drawio-ai / 其它 preset ==");
+  console.log("== 3) 零自动启动：drawio-ai / 其它 preset ==");
   {
-    const general = requirementsFor("general", DESIGN_MODE_PRESETS);
-    assert(general.preset === undefined, "通用设计 Tag 已删除");
     const drawio = requirementsFor("drawio-ai", WORKING_MODE_PRESETS);
     assert(drawio.preset !== undefined && drawio.requirements.length === 0, "drawio-ai（流程图）零自动启动（进程由会话 adapter 托管）");
-    for (const p of DESIGN_MODE_PRESETS) {
+    for (const p of WORKING_MODE_PRESETS) {
       if (p.id === "web-prototype") continue;
       assert((p.requiredRuntimes ?? []).length === 0, `${p.id} 未声明 requiredRuntimes`);
     }
