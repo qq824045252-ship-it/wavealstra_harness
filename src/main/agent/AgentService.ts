@@ -328,6 +328,10 @@ function broadcast(channel: string, payload: unknown): void {
 }
 
 const IMAGE_ATTACHMENT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+/** Pi enabledModels 的通配符语法；通配符交给目录解析，不参与「模型已下线」判定。 */
+const MODEL_SCOPE_GLOB_RE = /[*?\[\]{}!()]/;
+/** Pi 允许在 enabledModels 引用后追加 `:level`。 */
+const MODEL_SCOPE_LEVEL_SUFFIX_RE = /:(off|minimal|low|medium|high|xhigh|max)$/u;
 
 function isImageAttachment(name?: string, path?: string): boolean {
   const src = `${path ?? ""} ${name ?? ""}`;
@@ -1646,6 +1650,7 @@ export class AgentService {
     const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     const patterns = piSettings.getEnabledModels();
     const enabledScope = patterns !== undefined ? await this.resolvePiModelScope(piSettings) : [];
+    if (patterns !== undefined) await this.dropMissingModelReferences(piSettings);
     const enabledKeys = patterns !== undefined
       ? new Set(enabledScope.map((item) => `${item.model.provider}/${item.model.id}`))
       : null;
@@ -1778,6 +1783,49 @@ export class AgentService {
     const served = new Set((models ?? previous).map((model) => model.id));
     const dropped = previous.map((model) => model.id).filter((id) => !served.has(id));
     if (dropped.length) await this.dropMagpieScopeReferences(dropped);
+  }
+
+  /** 显式引用指向目录里并不存在的模型：网关下线的 id 或拼写错误。通配符照常交给
+   * 目录解析；provider 未知或本轮目录尚未加载到任何模型时不下判断。 */
+  private referenceNamesMissingModel(pattern: string): boolean {
+    if (!this.modelRuntime) return false;
+    const base = pattern.replace(MODEL_SCOPE_LEVEL_SUFFIX_RE, "");
+    if (MODEL_SCOPE_GLOB_RE.test(base)) return false;
+    const parsed = splitProviderModelId(base);
+    if (!parsed || !this.modelRuntime.getProvider(parsed.provider)) return false;
+    const catalog = this.modelRuntime.getModels(parsed.provider);
+    if (catalog.length === 0) return false;
+    return !catalog.some((model) => model.id === parsed.model);
+  }
+
+  /** 目录里已经不存在的 enabledModels / 思考偏好引用既会一直打 no-match 警告，又因为不在
+   * 目录中而渲染不进设置页，用户无法手动关掉。在模型列表的读取边界收敛一次。
+   * provider 暂停期间保留的凭证缺失模型仍在目录里，不会被清掉。 */
+  private async dropMissingModelReferences(piSettings: SettingsManager): Promise<void> {
+    if (!this.modelRuntime) return;
+    const patterns = piSettings.getEnabledModels();
+    const levelKeys = Object.keys(piSettings.getAllModelThinkingLevels());
+    const stale = new Set([...(patterns ?? []), ...levelKeys].filter((pattern) => this.referenceNamesMissingModel(pattern)));
+    if (stale.size === 0) return;
+    const kept = patterns?.filter((pattern) => !stale.has(pattern));
+    // MyBuddy 把 [] 读成「全部禁用」，宁可整份保留也不清空。
+    if (patterns && !kept?.length) {
+      console.warn("[AgentService] 失效模型引用覆盖了全部启用项，保留列表以免变成「全部禁用」");
+      return;
+    }
+    if (kept) piSettings.setEnabledModels(kept);
+    for (const key of levelKeys) {
+      if (!stale.has(key)) continue;
+      const parsed = splitProviderModelId(key);
+      if (parsed) piSettings.removeModelThinkingLevel(parsed.provider, parsed.model);
+    }
+    await piSettings.flush();
+    const errors = piSettings.drainErrors();
+    if (errors.length > 0) {
+      console.error("[AgentService] 清理失效模型引用写盘失败", errors[0]!.error);
+      return;
+    }
+    console.log(`[AgentService] 已清理 ${stale.size} 条指向不存在模型的引用`);
   }
 
   /** A model the gateway no longer serves must not stay selected: remove its
@@ -1951,8 +1999,10 @@ export class AgentService {
       `${model.provider}/${model.id}${thinkingLevel ? `:${thinkingLevel}` : ""}`,
     ));
     for (const { code, pattern } of diagnostics) {
-      const parsed = splitProviderModelId(pattern);
-      if (code === "no-match" && parsed && this.modelRuntime.getProvider(parsed.provider) && !/[*?\[\]{}!()]/.test(pattern)) {
+      const parsed = splitProviderModelId(pattern.replace(MODEL_SCOPE_LEVEL_SUFFIX_RE, ""));
+      // 凭证缺失的显式选择照旧保留；目录里已经没有的 id 不再写回。
+      if (code === "no-match" && parsed && this.modelRuntime.getProvider(parsed.provider)
+        && !MODEL_SCOPE_GLOB_RE.test(pattern) && !this.referenceNamesMissingModel(pattern)) {
         references.add(pattern);
       }
     }
@@ -1963,7 +2013,7 @@ export class AgentService {
     let nextImageEnabled = previousImageEnabled;
     if (enabled) {
       for (const reference of pausedProviderModels[providerId] ?? []) {
-        if (reference !== imageModelId) references.add(reference);
+        if (reference !== imageModelId && !this.referenceNamesMissingModel(reference)) references.add(reference);
       }
       nextImageEnabled = pausedProviderModels[providerId]?.includes(imageModelId) ?? false;
       delete pausedProviderModels[providerId];
