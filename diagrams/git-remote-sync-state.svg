@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" font-family="'Segoe UI','Microsoft YaHei',sans-serif">
+  <rect width="1120" height="560" fill="#ffffff" rx="14"/>
+
+  <text x="40" y="50" font-size="24" font-weight="700" fill="#111827">远端 GitHub 与本地 main 的同步状态</text>
+  <text x="40" y="78" font-size="13" fill="#6b7280">2026-11-06 09:34 · 刚执行 git fetch --prune · 已用 GitHub API 交叉核对</text>
+
+  <!-- origin/main pointer -->
+  <rect x="296" y="120" width="248" height="28" rx="14" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="420" y="139" font-size="13" fill="#1d4ed8" text-anchor="middle">origin/main = 5ea05fa · 09:27 推送</text>
+  <line x1="420" y1="148" x2="420" y2="228" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- no incoming badge -->
+  <rect x="560" y="118" width="184" height="30" rx="15" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="652" y="138" font-size="12" fill="#047857" text-anchor="middle">behind 0 · 无入站提交</text>
+
+  <!-- local main pointer -->
+  <rect x="760" y="120" width="240" height="28" rx="14" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="880" y="139" font-size="13" fill="#c2410c" text-anchor="middle">本地 main（HEAD 在此）</text>
+  <line x1="880" y1="148" x2="880" y2="228" stroke="#fdba74" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- commit chain -->
+  <line x1="190" y1="240" x2="880" y2="240" stroke="#94a3b8" stroke-width="2"/>
+  <circle cx="190" cy="240" r="10" fill="#1d4ed8"/>
+  <circle cx="420" cy="240" r="10" fill="#1d4ed8"/>
+  <circle cx="650" cy="240" r="10" fill="#ea580c"/>
+  <circle cx="880" cy="240" r="10" fill="#ea580c"/>
+  <circle cx="880" cy="240" r="15" fill="none" stroke="#ea580c" stroke-width="1.5"/>
+
+  <text x="190" y="212" font-size="12" fill="#334155" text-anchor="middle">b550444</text>
+  <text x="420" y="212" font-size="12" fill="#334155" text-anchor="middle">5ea05fa</text>
+  <text x="650" y="212" font-size="12" fill="#334155" text-anchor="middle">386e383</text>
+  <text x="880" y="212" font-size="12" fill="#334155" text-anchor="middle">5d5f798</text>
+
+  <text x="190" y="272" font-size="11" fill="#475569" text-anchor="middle">token 口径修复</text>
+  <text x="420" y="272" font-size="11" fill="#475569" text-anchor="middle">subagent 并行汇总</text>
+  <text x="650" y="272" font-size="11" fill="#475569" text-anchor="middle">去掉分类估算脚注</text>
+  <text x="880" y="272" font-size="11" fill="#475569" text-anchor="middle">去掉说明文案</text>
+
+  <!-- ahead bracket -->
+  <polyline points="650,300 650,312 880,312 880,300" fill="none" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="765" y="334" font-size="12" fill="#ea580c" text-anchor="middle">本地领先 2 个提交 · 未推送</text>
+
+  <!-- working tree box -->
+  <rect x="40" y="380" width="690" height="150" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="62" y="410" font-size="14" font-weight="700" fill="#111827">工作区未提交改动</text>
+  <text x="62" y="438" font-size="12" fill="#475569">已跟踪 11 个：AGENTS.md（收紧发布授权）+ artifacts/pi-*.json（测试生成产物）</text>
+  <text x="62" y="462" font-size="12" fill="#475569">未跟踪 10 项：diagrams/*.svg ×9、src/main/capabilities/subagent/test/</text>
+  <text x="62" y="494" font-size="12" fill="#15803d">与任何入站内容都不交叠——因为入站提交数为 0</text>
+
+  <!-- counters -->
+  <rect x="760" y="380" width="320" height="150" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="782" y="410" font-size="14" font-weight="700" fill="#111827">同步计数</text>
+  <text x="782" y="440" font-size="12" fill="#475569">ahead（本地领先）</text>
+  <text x="1058" y="440" font-size="12" fill="#c2410c" text-anchor="end">2</text>
+  <text x="782" y="464" font-size="12" fill="#475569">behind（落后远端）</text>
+  <text x="1058" y="464" font-size="12" fill="#047857" text-anchor="end">0</text>
+  <text x="782" y="488" font-size="12" fill="#475569">远端未合并分支</text>
+  <text x="1058" y="488" font-size="12" fill="#047857" text-anchor="end">0</text>
+  <text x="782" y="512" font-size="12" fill="#475569">可拉取内容 / 冲突</text>
+  <text x="1058" y="512" font-size="12" fill="#c2410c" text-anchor="end">0 / 无</text>
+</svg>

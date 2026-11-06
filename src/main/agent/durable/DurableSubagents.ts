@@ -21,6 +21,9 @@ import { discoverAgents, type AgentConfig, type AgentScope } from "../../capabil
 import { appendWorkspaceNotes, buildContextBlock, buildSystemPromptContent, inspectSharedContext } from "../../capabilities/subagent/context";
 import { resolveBatchDisplayNames } from "../../capabilities/subagent/display-names";
 import { computeChildTools, READONLY_TOOLS, RECURSION_TOOLS, tightenPolicy, type PermissionMode } from "../../capabilities/subagent/policy";
+import {
+  createParallelWriteGuard, registerGuardedChildWrite, releaseGuardedChildWrite, type ParallelWriteGuard,
+} from "../../capabilities/subagent/write-conflict";
 import { assignDiverseModels, DIVERSE_SUBAGENT_ROLE, resolveSubagentSelection } from "../../capabilities/subagent/selection";
 import { normalizeThinking } from "../../capabilities/subagent/config";
 import { prepareSubagentWorkspace, type PreparedSubagentWorkspace } from "../../capabilities/subagent/worktree";
@@ -121,6 +124,27 @@ export const durableSubagentIpcBackend = {
   },
 };
 
+/**
+ * D-1: the provider membership quota rejects with HTTP 400 `tier_limit_exceeded` /
+ * `membership concurrency limit exceeded`. Pi's retry classifier lists only 429/5xx and
+ * `rate.?limit`, so the rejection is classified non-retryable and nothing upstream repeats it.
+ * The rolling pool therefore leaves those items failed; this dispatch retries each of them once,
+ * serially, after the pool has drained (see the retry loop in the `subagent` tool below).
+ */
+const TIER_LIMIT_PATTERN = /tier_limit_exceeded|membership concurrency limit exceeded/i;
+/** One deferred retry only: a provider quota window is hourly, so more retries just burn requests. */
+const TIER_LIMIT_RETRIES = 1;
+/** Do not start a retry that no longer fits the original deadline; it would only time out. */
+const TIER_LIMIT_RETRY_MIN_BUDGET_MS = 1_000;
+
+function isTierLimitFailure(result: SingleResult | undefined): boolean {
+  if (!result || !isFailedResult(result) || !TIER_LIMIT_PATTERN.test(result.errorMessage ?? result.stderr)) return false;
+  // A quota rejection normally happens before the child's first turn ran. If the child already
+  // called a tool, resubmitting the task would replay work with side effects, so that stays final.
+  return !result.messages.some(message => message.role === "assistant"
+    && message.content.some(part => part.type === "toolCall"));
+}
+
 export function createDurableSubagentTools(options: DurableSubagentOptions): ToolRegistration[] {
   const subagent = defineTool({
     name: "subagent", parameters: SubagentParams, replay: "safe",
@@ -129,9 +153,18 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       const dispatch = await api.memo<JsonRepresentation<Dispatch>>("dispatch", context)
         ?? await api.memo("dispatch", json(await planDispatch(params, api, context, options)), context);
       const results: SingleResult[] = [];
+      /** D-1: the identity deadline observed by the first attempt; a retry must stay inside it. */
+      const deadlines = new Map<number, number>();
+      // D-2: pi's write has no version check, so two children writing one file both "succeed" and the
+      // later content silently overwrites the earlier one. Only a concurrent parallel dispatch can
+      // race; single and chain write in order, and chain steps may legitimately rewrite a prior file.
+      const limit = Math.max(1, Math.min(dispatch.concurrency, dispatch.items.length));
+      const writeGuard = dispatch.mode === "parallel" && limit > 1 ? createParallelWriteGuard() : undefined;
+      const blockedWrites = () => writeGuard ? dispatch.items.reduce((sum, item) => sum + writeGuard.conflictsFor(item.id).length, 0) : 0;
       const publish = async () => api.details(json({ mode: dispatch.mode, agentScope: dispatch.agentScope, projectAgentsDir: dispatch.projectAgentsDir, results: results.filter(Boolean) }), context);
       const execute = async (item: ChildSpec) => {
-        const result = await runChild(item, dispatch, api, context, options);
+        const { result, deadline } = await runChild(item, dispatch, api, context, options, 0, writeGuard);
+        if (deadline !== undefined) deadlines.set(item.index, deadline);
         results[item.index] = result;
         await publish();
         return result;
@@ -147,7 +180,6 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
         // Rolling pool: a finished child frees its slot immediately (the old mapWithConcurrencyLimit
         // semantics). Batching with Promise.all made the slowest child hold back an entire batch.
         // Concurrency only bounds admission; execution, cancellation and replay stay inside Durable.
-        const limit = Math.max(1, Math.min(dispatch.concurrency, dispatch.items.length));
         let next = 0;
         await Promise.all(Array.from({ length: limit }, async () => {
           while (next < dispatch.items.length) {
@@ -156,6 +188,25 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
             await execute(item);
           }
         }));
+        // D-1: a provider quota rejection is a 400 that no retry classifier covers, so the pool above
+        // leaves those items failed. The pool has drained by now, so retrying them one at a time cannot
+        // add concurrency pressure; each rejected item is retried at most once and its final result
+        // overwrites the failed one, which makes the summary header recount automatically.
+        for (let attempt = 1; attempt <= TIER_LIMIT_RETRIES; attempt++) {
+          const rejected = dispatch.items.filter(item => isTierLimitFailure(results[item.index]));
+          let started = 0;
+          for (const item of rejected) {
+            if (context.abortSignal?.aborted) break;
+            const deadline = deadlines.get(item.index);
+            if (deadline === undefined || deadline - api.now() < TIER_LIMIT_RETRY_MIN_BUDGET_MS) continue;
+            const retried = await runChild(item, dispatch, api, context, options, attempt, writeGuard);
+            if (retried.deadline !== undefined) deadlines.set(item.index, retried.deadline);
+            results[item.index] = retried.result;
+            await publish();
+            started++;
+          }
+          if (!started) break;
+        }
       }
       // D-3: `results[index]` writes leave holes when a chain stops early; project only real results.
       const completed = results.filter((result): result is SingleResult => Boolean(result));
@@ -171,7 +222,12 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
           : `### [${result.agent}] ${status} (id: ${result.subagentId})`;
         return `${heading}${nameLine}\n\n${truncateParallelOutput(getResultOutput(result), cap)}`;
       });
-      const header = dispatch.mode === "parallel" ? `Parallel: ${succeeded}/${completed.length} succeeded\n\n` : "";
+      // D-2: a blocked write means that child's file did not receive its content, which `x/y succeeded`
+      // alone would hide. Keep the count on the header line so the caller sees it without scrolling.
+      const blocked = blockedWrites();
+      const header = dispatch.mode === "parallel"
+        ? `Parallel: ${succeeded}/${completed.length} succeeded${blocked ? ` (${blocked} write conflict${blocked > 1 ? "s" : ""} blocked: parallel subagents must write different files)` : ""}\n\n`
+        : "";
       const last = completed.at(-1);
       const stopped = dispatch.mode === "chain" && last && isFailedResult(last) && completed.length < dispatch.items.length
         ? `\n\nChain stopped at step ${last.step ?? completed.length} (${last.agent}): the step failed.`
@@ -352,7 +408,11 @@ function gitPreflight(cwd: string, args: string[], signal?: AbortSignal): Promis
   });
 }
 
-async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionApi, context: Context, options: DurableSubagentOptions): Promise<SingleResult> {
+/** D-1: `deadline` is the identity deadline of the conversation this attempt ran in (if any). */
+type ChildAttempt = { result: SingleResult; deadline?: number };
+
+async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionApi, context: Context, options: DurableSubagentOptions,
+  attempt = 0, writeGuard?: ParallelWriteGuard): Promise<ChildAttempt> {
   const owned = await api.commit(async tx => {
     const children = await tx.scanConversations({ ownerTaskId: api.taskId }, 250);
     for (const child of children.items) {
@@ -375,6 +435,14 @@ async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionA
     ...dispatch.timeout, workspace, ...(dispatch.mode === "chain" ? { step: item.index + 1 } : {}) });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopWatch: (() => Promise<unknown>) | undefined;
+  /** D-2: the conversation this attempt registered with the dispatch write guard (released in finally). */
+  let guardedConversation: number | undefined;
+  /** D-2: blocked writes reach the caller as evidence lines next to the child's own output. */
+  const withWriteConflicts = (result: SingleResult): SingleResult => {
+    const conflicts = writeGuard?.conflictsFor(item.id) ?? [];
+    if (conflicts.length) result.diagnostics = [...(result.diagnostics ?? []), ...conflicts];
+    return result;
+  };
   try {
     workspace ??= await prepareSubagentWorkspace({ cwd: item.sourceCwd, isolation: item.isolation,
       parallel: dispatch.mode === "parallel", writable: item.tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name)),
@@ -400,6 +468,14 @@ async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionA
     }, context);
     const child = await api.conversation(created.id, context);
     if (!child) throw new Error("Durable child conversation is missing");
+    // D-2: register before the child can issue any tool call. The ToolTask beforeTool hook
+    // (guardSubagentWriteCall) maps (taskId, api.conversationId) back to this child and its workspace;
+    // each task has its own durable store, so conversation ids alone collide across concurrent tasks.
+    if (writeGuard) {
+      guardedConversation = created.id;
+      registerGuardedChildWrite(created.id, options.taskId, { guard: writeGuard, childId: item.id,
+        label: item.displayName ?? item.role.name, cwd: selectedWorkspace.cwd });
+    }
     const result = empty();
     const summary: SubagentSummaryDto = { subagentId: item.id, role: item.role.name, displayName: item.displayName,
       roleSource: item.role.source, roleDescription: item.role.description, project: workspace.cwd, status: "running",
@@ -431,7 +507,10 @@ async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionA
         options.onChange?.();
       });
     }
-    const submission = await child.submit({ type: "input", content: item.task, requestId: `subagent:${item.id}` }, context);
+    // D-1: Durable dedupes input by conversation-scoped requestId. A retry must submit under a new
+    // one, otherwise the resubmission returns the original failed receipt and the retry does nothing.
+    const requestId = attempt > 0 ? `subagent:${item.id}:retry:${attempt}` : `subagent:${item.id}`;
+    const submission = await child.submit({ type: "input", content: item.task, requestId }, context);
     let timedout = false;
     const initial = await submission.status(context);
     if (initial.status !== "done" && initial.status !== "unanswered") {
@@ -462,17 +541,18 @@ async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionA
       result.usage.cost += message.usage.cost.total; result.usage.turns++;
       result.usage.contextTokens = message.usage.totalTokens;
     }
-    return result;
+    return { result: withWriteConflicts(result), deadline: created.identity.deadline };
   } catch (error) {
     // Closing the Harness must leave the safe tool pending. Turning cancellation into a result would lose recovery.
     if (context.abortSignal?.aborted) throw error;
     const result = empty();
     result.status = "failed"; result.exitCode = 1;
     result.stderr = result.errorMessage = error instanceof Error ? error.message : String(error);
-    return result;
+    return { result: withWriteConflicts(result) };
   } finally {
     if (timer) clearTimeout(timer);
     await stopWatch?.();
+    if (guardedConversation !== undefined) releaseGuardedChildWrite(guardedConversation, options.taskId);
     activeChildren.delete(item.id); options.onChange?.();
   }
 }

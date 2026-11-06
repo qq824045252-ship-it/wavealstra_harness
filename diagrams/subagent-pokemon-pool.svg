@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="340" viewBox="0 0 820 340" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="820" height="340" fill="#F7F9FC"/>
+  <text x="24" y="36" font-size="18" font-weight="700" fill="#0F172A">命名池边界：只取初代 151 个物种名，不取人类角色名</text>
+  <text x="24" y="60" font-size="12" fill="#475569">洗牌后统一小写 + 4 个例外映射 → 151 个唯一名字</text>
+
+  <rect x="24" y="80" width="380" height="170" rx="10" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="40" y="106" font-size="13" font-weight="700" fill="#047857">池内（唯一来源）</text>
+  <text x="40" y="130" font-size="12" fill="#0F172A">初代图鉴 151 个物种（Bulbasaur … Mew）</text>
+  <text x="40" y="154" font-size="12" fill="#0F172A">pikachu · bulbasaur · eevee · snorlax</text>
+  <text x="40" y="178" font-size="12" fill="#0F172A">mr-mime · farfetchd · nidoran-f · nidoran-m</text>
+  <text x="40" y="202" font-size="12" fill="#0F172A">全部小写，按物种而非训练家</text>
+  <text x="40" y="226" font-size="11" fill="#475569">映射后 151 个名字互不重复</text>
+
+  <rect x="420" y="80" width="376" height="170" rx="10" fill="#FEF2F2" stroke="#FCA5A5"/>
+  <text x="436" y="106" font-size="13" font-weight="700" fill="#B91C1C">池外（不要用）</text>
+  <text x="436" y="130" font-size="12" fill="#0F172A">人类角色：ash / misty / brock / oak</text>
+  <text x="436" y="154" font-size="12" fill="#0F172A">后续世代：lucario / gardevoir</text>
+  <text x="436" y="178" font-size="12" fill="#0F172A">中文名：皮卡丘（safeId 会打成 "-"）</text>
+  <text x="436" y="202" font-size="12" fill="#0F172A">旧约定：review-auth 这类语义名</text>
+  <text x="436" y="226" font-size="11" fill="#475569">subagentId 只保留 [A-Za-z0-9_-]</text>
+
+  <text x="24" y="282" font-size="12" fill="#0F172A">写法：subagent({ agent: "scout", subagentId: "pikachu", task: "…" })</text>
+  <text x="24" y="308" font-size="12" fill="#334155">实测一批：wigglytuff, mankey, mr-mime, porygon, pikachu, exeggcute, voltorb, paras, dragonair, golbat</text>
+</svg>

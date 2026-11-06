@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="750" viewBox="0 0 980 750" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arw" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="750" fill="#F7F9FC"/>
+
+  <text x="32" y="46" font-size="22" font-weight="700" fill="#0F172A">wavealstra_harness 子代理命名规则（源码已验证）</text>
+  <text x="32" y="72" font-size="13" fill="#475569">三层：① 角色名（agent） ② 实例 ID（subagentId） ③ 模型角色键（subagent.json roles）</text>
+
+  <!-- ① role name -->
+  <rect x="32" y="92" width="916" height="168" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="52" y="122" font-size="16" font-weight="700" fill="#1D4ED8">① 角色名（agent / role）——调用时写的 agent 字段</text>
+  <text x="52" y="150" font-size="13" fill="#0F172A">来源：产品 plugins/agents/*.md · 用户 agents/*.md · 项目 .pi/agents/*.md（agentScope 需 both/project）</text>
+  <text x="52" y="176" font-size="13" fill="#0F172A">规则：frontmatter 必须同时有 name + description；文件名不参与命名；name 无字符集校验（作者自定）</text>
+  <text x="52" y="202" font-size="13" fill="#0F172A">覆盖：产品 &lt; 用户 &lt; 项目（同名后者覆盖）；别名 default / assistant / agent → 优先 worker，否则第一个角色</text>
+  <text x="52" y="228" font-size="13" fill="#0F172A">失败：Unknown agent: "x" —— 错误文本会列出可用角色与已搜索目录</text>
+
+  <!-- ② instance id -->
+  <rect x="32" y="280" width="916" height="222" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="52" y="310" font-size="16" font-weight="700" fill="#1D4ED8">② 实例 ID（subagentId）——每个子代理实例的唯一名</text>
+
+  <rect x="52" y="326" width="150" height="56" rx="8" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="127" y="350" font-size="13" font-weight="600" text-anchor="middle" fill="#0F172A">agent.name</text>
+  <text x="127" y="370" font-size="12" text-anchor="middle" fill="#475569">（角色名）</text>
+
+  <rect x="242" y="326" width="150" height="56" rx="8" fill="#F1F5F9" stroke="#CBD5E1"/>
+  <text x="317" y="350" font-size="13" font-weight="600" text-anchor="middle" fill="#0F172A">safeId()</text>
+  <text x="317" y="370" font-size="12" text-anchor="middle" fill="#475569">净化字符</text>
+
+  <rect x="432" y="326" width="180" height="56" rx="8" fill="#F1F5F9" stroke="#CBD5E1"/>
+  <text x="522" y="350" font-size="13" font-weight="600" text-anchor="middle" fill="#0F172A">${role}-${shortId}</text>
+  <text x="522" y="370" font-size="12" text-anchor="middle" fill="#475569">自动拼接</text>
+
+  <rect x="672" y="326" width="226" height="56" rx="8" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="785" y="350" font-size="13" font-weight="600" text-anchor="middle" fill="#0F172A">subagentId</text>
+  <text x="785" y="370" font-size="12" text-anchor="middle" fill="#334155">例：worker-k3f9qz</text>
+
+  <line x1="202" y1="354" x2="236" y2="354" stroke="#64748B" stroke-width="2" marker-end="url(#arw)"/>
+  <line x1="392" y1="354" x2="426" y2="354" stroke="#64748B" stroke-width="2" marker-end="url(#arw)"/>
+  <line x1="612" y1="354" x2="666" y2="354" stroke="#64748B" stroke-width="2" marker-end="url(#arw)"/>
+
+  <text x="52" y="410" font-size="13" fill="#0F172A">显式传 subagentId → 只过 safeId（不加后缀）；自动生成时 shortId = Math.random().toString(36).slice(2,8) → 6 位 base36</text>
+  <text x="52" y="436" font-size="13" fill="#0F172A">safeId：把 [A-Za-z0-9_-] 之外的字符替换为 "-"，按 80 字符截断，空串回落 "subagent"</text>
+  <text x="52" y="462" font-size="13" fill="#0F172A">唯一性：runtime 已存在同 id → 抛错「请使用新的 ID，或通过 subagent_steer 引导活动实例」</text>
+  <text x="52" y="488" font-size="13" fill="#0F172A">去向：worker 启动参数 --session-id / --name；transcript 与 session 文件名为 &lt;safeId&gt;.jsonl</text>
+
+  <!-- ③ model role key -->
+  <rect x="32" y="525" width="916" height="150" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="52" y="555" font-size="16" font-weight="700" fill="#1D4ED8">③ 模型角色键（~/.mybuddy/subagent.json 里的 roles）</text>
+  <text x="52" y="583" font-size="13" fill="#0F172A">键名正则：^(?!(?:auto|inherit-parent|__proto__|constructor|prototype)$)[a-zA-Z0-9_-]+$ —— 只允许字母、数字、_、-</text>
+  <text x="52" y="609" font-size="13" fill="#0F172A">含义：它是 model 参数的别名（model: "fast"），不是 agent 名；diverse 保留给多模型扇出，单任务使用直接报错</text>
+  <text x="52" y="635" font-size="13" fill="#475569">本机实际键：fast / strong / diverse（示例，不构成规则）</text>
+
+  <text x="32" y="708" font-size="12" fill="#475569">证据：src/main/capabilities/subagent/agents.ts:74-92 · index.ts:1016-1037 · runtime.ts:121-127,322-326,422-423 · src/shared/subagent-execution-policy.ts:9</text>
+  <text x="32" y="730" font-size="12" fill="#475569">范围：以上均为代码可验证行为；渲染层展示名（readableRole）不影响命名规则</text>
+</svg>

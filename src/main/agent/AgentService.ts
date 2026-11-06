@@ -12,6 +12,7 @@ import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
 import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
+import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
 import { openDurableAuxiliary, type DurableAuxiliaryBinding } from "./durable/DurableAuxiliaryRuntime";
 import { DurableSkillProjection, durableInputAuditSchema, type DurableInputAudit } from "./durable/DurableSkillProjection";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -1417,6 +1418,11 @@ export class AgentService {
     const consultHooks = createDurableConsultToolHooks({ policy: sessionPolicy, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled });
     const toolHooks: NonNullable<typeof domain.toolHooks> = {
       beforeTool: async (call, api, context) => {
+        // D-2: a parallel child writing a file another child already wrote is blocked here — pi's write
+        // has no version check, so without this the later write silently overwrites the earlier content.
+        // The block becomes a tool error the child sees, and the conflict is reported back to the caller.
+        const writeConflict = guardSubagentWriteCall(call, api.conversationId, task.id);
+        if (writeConflict) return writeConflict;
         const consultation = await consultHooks.beforeTool?.(call, api, context);
         if (consultation && "block" in consultation) return consultation;
         const forwarded = consultation?.arguments ? { ...call, arguments: consultation.arguments } : call;

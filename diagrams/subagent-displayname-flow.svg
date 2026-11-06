@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="430" viewBox="0 0 900 430" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arw5" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="430" fill="#F7F9FC"/>
+  <text x="28" y="38" font-size="19" font-weight="700" fill="#0F172A">displayName 数据流：只在显示层，不进入身份层</text>
+  <text x="28" y="62" font-size="12" fill="#475569">可选字段；缺省时全链路回退到 role / id，行为与现在完全一致</text>
+
+  <rect x="28" y="84" width="200" height="58" rx="9" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="128" y="108" font-size="12" font-weight="700" fill="#0F172A" text-anchor="middle">subagent 调用</text>
+  <text x="128" y="128" font-size="12" fill="#334155" text-anchor="middle">displayName: "皮卡丘"</text>
+
+  <line x1="228" y1="113" x2="248" y2="113" stroke="#64748B" stroke-width="2" marker-end="url(#arw5)"/>
+
+  <rect x="254" y="84" width="212" height="58" rx="9" fill="#F1F5F9" stroke="#CBD5E1"/>
+  <text x="360" y="108" font-size="12" font-weight="700" fill="#0F172A" text-anchor="middle">normalize</text>
+  <text x="360" y="128" font-size="12" fill="#475569" text-anchor="middle">去控制字符 · ≤32 码点</text>
+
+  <line x1="466" y1="113" x2="486" y2="113" stroke="#64748B" stroke-width="2" marker-end="url(#arw5)"/>
+
+  <rect x="492" y="84" width="170" height="58" rx="9" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="577" y="108" font-size="12" font-weight="700" fill="#0F172A" text-anchor="middle">record.displayName</text>
+  <text x="577" y="128" font-size="12" fill="#475569" text-anchor="middle">可选，可重复</text>
+
+  <rect x="688" y="84" width="184" height="58" rx="9" fill="#FEF2F2" stroke="#FCA5A5"/>
+  <text x="780" y="108" font-size="12" font-weight="700" fill="#B91C1C" text-anchor="middle">不变量</text>
+  <text x="780" y="128" font-size="12" fill="#7F1D1D" text-anchor="middle">subagentId 仍 ASCII 唯一</text>
+
+  <line x1="540" y1="142" x2="400" y2="206" stroke="#64748B" stroke-width="2" marker-end="url(#arw5)"/>
+  <line x1="614" y1="142" x2="700" y2="206" stroke="#64748B" stroke-width="2" marker-end="url(#arw5)"/>
+
+  <rect x="248" y="212" width="270" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="262" y="236" font-size="12" font-weight="700" fill="#1D4ED8">① 运行中列表（IPC DTO）</text>
+  <text x="262" y="260" font-size="12" fill="#0F172A">toSummaryDto 增加 displayName</text>
+  <text x="262" y="282" font-size="12" fill="#0F172A">渲染 displayName || role</text>
+  <text x="262" y="300" font-size="11" fill="#475569">steer / 中止仍用 subagentId</text>
+
+  <rect x="542" y="212" width="330" height="96" rx="9" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="556" y="236" font-size="12" font-weight="700" fill="#1D4ED8">② 完成态列表（结果文本）</text>
+  <text x="556" y="260" font-size="12" fill="#0F172A">结果多一行 &gt; subagent-name: 皮卡丘</text>
+  <text x="556" y="282" font-size="12" fill="#0F172A">解析后显示 displayName || id</text>
+  <text x="556" y="300" font-size="11" fill="#475569">摘要过滤该行，避免污染最终文本</text>
+
+  <rect x="28" y="330" width="844" height="72" rx="9" fill="#FFFBEB" stroke="#FCD34D"/>
+  <text x="44" y="354" font-size="12" font-weight="700" fill="#92400E">边界（写测试锁定）</text>
+  <text x="44" y="376" font-size="12" fill="#0F172A">displayName 不参与：唯一性查重 / transcript 与 session 文件名 / worker --name 与 --session-id / usage 归档键</text>
+  <text x="44" y="394" font-size="12" fill="#475569">抽屉头部：displayName 为主标题，role 与完整 id 作为次要信息保留</text>
+</svg>

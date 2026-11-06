@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="470" viewBox="0 0 900 470" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arw2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="470" fill="#F7F9FC"/>
+  <text x="28" y="40" font-size="20" font-weight="700" fill="#0F172A">子代理的名称：能“起名”，不能“改名”</text>
+  <text x="28" y="66" font-size="13" fill="#475569">名称由两段组成，两段都在创建瞬间固化；没有 rename IPC，也没有重命名 UI</text>
+
+  <!-- name parts -->
+  <rect x="28" y="84" width="300" height="54" rx="10" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="44" y="106" font-size="13" font-weight="700" fill="#0F172A">role · 角色名</text>
+  <text x="44" y="126" font-size="12" fill="#475569">来自 .md frontmatter 的 name</text>
+
+  <rect x="352" y="84" width="520" height="54" rx="10" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="368" y="106" font-size="13" font-weight="700" fill="#0F172A">subagentId · 实例 ID</text>
+  <text x="368" y="126" font-size="12" fill="#475569">自动 ${role}-${6 位 base36}，或调用方显式传入（只过 safeId，不加后缀）</text>
+
+  <!-- lifecycle -->
+  <rect x="28" y="170" width="260" height="126" rx="10" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="42" y="194" font-size="13" font-weight="700" fill="#1D4ED8">① 创建期｜唯一可定名点</text>
+  <text x="42" y="218" font-size="12" fill="#0F172A">ensureSubagent() 生成记录</text>
+  <text x="42" y="240" font-size="12" fill="#0F172A">可传 subagentId 自定义</text>
+  <text x="42" y="262" font-size="12" fill="#0F172A">同 runtime 重名 → 直接拒绝</text>
+  <text x="42" y="284" font-size="12" fill="#475569">角色与 ID 在此写死</text>
+
+  <rect x="320" y="170" width="260" height="126" rx="10" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="334" y="194" font-size="13" font-weight="700" fill="#1D4ED8">② 运行期｜只读</text>
+  <text x="334" y="218" font-size="12" fill="#0F172A">upsert 只改 status/usage/steer</text>
+  <text x="334" y="240" font-size="12" fill="#0F172A">IPC 只有 active / transcript /</text>
+  <text x="334" y="262" font-size="12" fill="#0F172A">steer / cancel，无 rename</text>
+  <text x="334" y="284" font-size="12" fill="#475569">抽屉里 id 是纯文本</text>
+
+  <rect x="612" y="170" width="260" height="126" rx="10" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="626" y="194" font-size="13" font-weight="700" fill="#1D4ED8">③ 结束｜销毁</text>
+  <text x="626" y="218" font-size="12" fill="#0F172A">RESULT/FAILED/CANCELLED</text>
+  <text x="626" y="240" font-size="12" fill="#0F172A">实例立即从注册表移除</text>
+  <text x="626" y="262" font-size="12" fill="#0F172A">只剩聊天时间线文本</text>
+  <text x="626" y="284" font-size="12" fill="#475569">无法复活，更无法改名</text>
+
+  <line x1="288" y1="233" x2="314" y2="233" stroke="#64748B" stroke-width="2" marker-end="url(#arw2)"/>
+  <line x1="580" y1="233" x2="606" y2="233" stroke="#64748B" stroke-width="2" marker-end="url(#arw2)"/>
+
+  <!-- real options -->
+  <rect x="28" y="322" width="844" height="98" rx="10" fill="#FFFBEB" stroke="#FCD34D"/>
+  <text x="44" y="346" font-size="13" font-weight="700" fill="#92400E">想要“改名”，只有两条路（都是新建，不是改旧）</text>
+  <text x="44" y="370" font-size="12" fill="#0F172A">1) 改 ~/.mybuddy/plugins/agents/&lt;role&gt;.md 的 frontmatter name → 只影响之后新建的实例；改文件名无效</text>
+  <text x="44" y="392" font-size="12" fill="#0F172A">2) 下一次调用 subagent 时传新的 subagentId → 那是一个全新实例，旧实例的历史不会迁过去</text>
+
+  <text x="28" y="446" font-size="12" fill="#475569">UI 事实：运行中行显示 role（如 scout）；已完成/失败行显示从工具结果提取的 id；worker-iyg75… 只是 CSS 截断</text>
+</svg>

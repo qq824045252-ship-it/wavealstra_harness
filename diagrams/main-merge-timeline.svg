@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" font-family="'Segoe UI','Microsoft YaHei',sans-serif">
+  <rect width="1120" height="560" fill="#ffffff" rx="14"/>
+
+  <text x="40" y="50" font-size="24" font-weight="700" fill="#111827">4 个远端分支并入 main 的时间线</text>
+  <text x="40" y="78" font-size="13" fill="#6b7280">全部为 GitHub PR merge commit · 合并时间取自 merge 提交时间，并与 GitHub API merged_at 核对</text>
+
+  <line x1="300" y1="120" x2="300" y2="500" stroke="#cbd5e1" stroke-width="3"/>
+
+  <!-- row 1 -->
+  <circle cx="300" cy="150" r="9" fill="#1d4ed8"/>
+  <text x="278" y="155" font-size="13" fill="#334155" text-anchor="end">2026-10-27 18:58</text>
+  <text x="332" y="147" font-size="14" font-weight="600" fill="#111827">PR #8 · chore/hygiene-node24-acp-cleanup</text>
+  <text x="332" y="169" font-size="12" fill="#64748b">merge 408fdfd，parent2 = f572a2a（分支 tip）</text>
+
+  <!-- row 2 -->
+  <circle cx="300" cy="230" r="9" fill="#1d4ed8"/>
+  <text x="278" y="235" font-size="13" fill="#334155" text-anchor="end">2026-11-01 11:39</text>
+  <text x="332" y="227" font-size="14" font-weight="600" fill="#111827">PR #11 · fix/a0-a5-harness-min-patches</text>
+  <text x="332" y="249" font-size="12" fill="#64748b">merge 07cd846，parent2 = f10f745（分支 tip）</text>
+
+  <!-- row 3 -->
+  <circle cx="300" cy="310" r="9" fill="#1d4ed8"/>
+  <text x="278" y="315" font-size="13" fill="#334155" text-anchor="end">2026-11-04 19:49</text>
+  <text x="332" y="307" font-size="14" font-weight="600" fill="#111827">PR #13 · feat/scoped-library-management</text>
+  <text x="332" y="329" font-size="12" fill="#64748b">merge fd31085，parent2 = a6b3f2e（先于 #12 合入，编号大不代表后合）</text>
+
+  <!-- row 4 -->
+  <circle cx="300" cy="390" r="9" fill="#1d4ed8"/>
+  <text x="278" y="395" font-size="13" fill="#334155" text-anchor="end">2026-11-04 19:53</text>
+  <text x="332" y="387" font-size="14" font-weight="600" fill="#111827">PR #12 · feat/unified-media-services-20261104</text>
+  <text x="332" y="409" font-size="12" fill="#64748b">merge 174b1d3，parent2 = c557c97 · 这是 main 上最后一个 merge commit</text>
+
+  <!-- row 5 -->
+  <circle cx="300" cy="470" r="9" fill="#ea580c"/>
+  <text x="278" y="475" font-size="13" fill="#334155" text-anchor="end">2026-11-05 23:18 起</text>
+  <text x="332" y="467" font-size="14" font-weight="600" fill="#111827">此后没有 PR：a34dbdd → b550444 → 5ea05fa → 386e383 → 5d5f798 全部直接提交 main</text>
+  <text x="332" y="489" font-size="12" fill="#64748b">今天 09:24–09:32 的 4 个提交都在这一段，所以与远端无关</text>
+
+  <text x="40" y="534" font-size="12" fill="#64748b">交叉验证：merge 提交的 parent2 等于对应分支 tip；GitHub merged_at（UTC）换算 +8 后与提交时间分秒吻合；main 上无 revert 这些 merge 的提交。</text>
+</svg>

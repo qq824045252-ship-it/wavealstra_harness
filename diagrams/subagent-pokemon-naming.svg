@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="470" viewBox="0 0 900 470" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arw4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="470" fill="#F7F9FC"/>
+  <text x="28" y="40" font-size="20" font-weight="700" fill="#0F172A">初代 151 个英文名当子代理名：可行，但要过三道关</text>
+  <text x="28" y="66" font-size="13" fill="#475569">净化 → 例外映射 → 洗牌取不重复；151 个名字实测净化后只剩 150 个唯一值</text>
+
+  <!-- pipeline -->
+  <rect x="28" y="90" width="176" height="60" rx="10" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="116" y="114" font-size="13" font-weight="700" fill="#0F172A" text-anchor="middle">151 个英文名</text>
+  <text x="116" y="134" font-size="11" fill="#475569" text-anchor="middle">初代图鉴</text>
+
+  <line x1="204" y1="120" x2="228" y2="120" stroke="#64748B" stroke-width="2" marker-end="url(#arw4)"/>
+
+  <rect x="234" y="90" width="200" height="60" rx="10" fill="#F1F5F9" stroke="#CBD5E1"/>
+  <text x="334" y="114" font-size="13" font-weight="700" fill="#0F172A" text-anchor="middle">safeId 归一化</text>
+  <text x="334" y="134" font-size="11" fill="#475569" text-anchor="middle">非 [A-Za-z0-9_-] → "-"</text>
+
+  <line x1="434" y1="120" x2="458" y2="120" stroke="#64748B" stroke-width="2" marker-end="url(#arw4)"/>
+
+  <rect x="464" y="90" width="200" height="60" rx="10" fill="#FFF7ED" stroke="#FDBA74"/>
+  <text x="564" y="114" font-size="13" font-weight="700" fill="#0F172A" text-anchor="middle">映射 4 个例外 + 小写</text>
+  <text x="564" y="134" font-size="11" fill="#475569" text-anchor="middle">否则会撞名 / 长得怪</text>
+
+  <line x1="664" y1="120" x2="688" y2="120" stroke="#64748B" stroke-width="2" marker-end="url(#arw4)"/>
+
+  <rect x="694" y="90" width="178" height="60" rx="10" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="783" y="114" font-size="13" font-weight="700" fill="#0F172A" text-anchor="middle">洗牌取 n 个</text>
+  <text x="783" y="134" font-size="11" fill="#334155" text-anchor="middle">→ subagentId</text>
+
+  <!-- exceptions -->
+  <rect x="28" y="176" width="844" height="152" rx="10" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="44" y="202" font-size="13" font-weight="700" fill="#1D4ED8">4 个必须手动映射的名字（其余 147 个直接可用，最长 10 字符）</text>
+  <text x="44" y="228" font-size="12" fill="#0F172A">Nidoran♀ → "Nidoran-"  ← 与 Nidoran♂ 净化结果相同，同批出现会重名 → 建议 nidoran-f</text>
+  <text x="44" y="252" font-size="12" fill="#0F172A">Nidoran♂ → "Nidoran-"  → 建议 nidoran-m</text>
+  <text x="44" y="276" font-size="12" fill="#0F172A">Mr. Mime → "Mr--Mime"  → 建议 mr-mime</text>
+  <text x="44" y="300" font-size="12" fill="#0F172A">Farfetch'd → "Farfetch-d"  → 建议 farfetchd</text>
+  <text x="44" y="320" font-size="11" fill="#475569">映射后 151 个名字全部唯一，且都在 [a-z0-9-] 内</text>
+
+  <!-- pitfalls -->
+  <rect x="28" y="344" width="410" height="100" rx="10" fill="#FFFBEB" stroke="#FCD34D"/>
+  <text x="44" y="368" font-size="13" font-weight="700" fill="#92400E">随机方式决定撞名率</text>
+  <text x="44" y="392" font-size="12" fill="#0F172A">独立随机抽 10 个并行 → 26.2% 至少撞一次</text>
+  <text x="44" y="414" font-size="12" fill="#0F172A">先洗牌再取（不重复）→ 0%</text>
+  <text x="44" y="434" font-size="11" fill="#475569">重名会让 ensureSubagent 直接抛错</text>
+
+  <rect x="462" y="344" width="410" height="100" rx="10" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="478" y="368" font-size="13" font-weight="700" fill="#1D4ED8">两个产品限制（与名字无关）</text>
+  <text x="478" y="392" font-size="12" fill="#0F172A">运行中行显示 role（如 scout），不是宝可梦名</text>
+  <text x="478" y="414" font-size="12" fill="#0F172A">Windows 文件名不分大小写 → 统一小写</text>
+  <text x="478" y="434" font-size="11" fill="#475569">名字只在本次运行有效，结束后可回收</text>
+</svg>

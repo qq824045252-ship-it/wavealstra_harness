@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="880" viewBox="0 0 1240 880" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect width="1240" height="880" fill="#f7f8fa"/>
+
+  <text x="40" y="42" font-size="22" font-weight="700" fill="#111827">Magpie → MyBuddy / Pi 模型配置链路（2026-11-05 17:02 实测）</text>
+  <text x="40" y="66" font-size="12.5" fill="#475569">来源：~/.mybuddy/{models.json,settings.json} · ~/.pi/agent/* · ~/.cache/magpie/agents-state.json · 网关 /v1/models · magpie 进程环境变量</text>
+
+  <!-- gateway strip -->
+  <rect x="40" y="84" width="1160" height="58" rx="8" fill="#e8eef7" stroke="#b9c8dd"/>
+  <text x="58" y="108" font-size="13.5" font-weight="700" fill="#1e3a5f">Magpie 网关 127.0.0.1:3425 · /v1/models 按 Authorization key 过滤（实测）</text>
+  <text x="58" y="128" font-size="12.5" fill="#334155">magpie = 7 个模型 · magpie-mybuddy = 6 个 · magpie-pi = 5 个 —— 用不同 key 读目录，数量本来就不同，不是模型坏了</text>
+
+  <!-- lane 1 -->
+  <rect x="40" y="160" width="560" height="610" rx="10" fill="#ffffff" stroke="#d3dae3"/>
+  <text x="60" y="190" font-size="15" font-weight="700" fill="#1d4ed8">① 为什么「MyBuddy 卡加了不生效」，只有 Pi 接入才行</text>
+
+  <!-- S1 -->
+  <rect x="60" y="208" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="74" y="228" font-size="13.5" font-weight="700" fill="#1f2937">MyBuddy 进程启动（本机 dev 0.1.105）</text>
+  <text x="74" y="247" font-size="11.5" fill="#334155" font-family="Consolas, monospace">PI_CODING_AGENT_DIR = C:\Users\servi\.mybuddy</text>
+  <text x="74" y="264" font-size="12" fill="#475569">agent-environment.ts:6 在 Pi 读取配置前设置</text>
+
+  <!-- S2 -->
+  <rect x="60" y="286" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="74" y="306" font-size="13.5" font-weight="700" fill="#1f2937">Magpie 进程继承了它（实测进程环境）</text>
+  <text x="74" y="325" font-size="11.5" fill="#334155" font-family="Consolas, monospace">magpie(9292): PI_CODING_AGENT_DIR=C:\Users\servi\.mybuddy</text>
+  <text x="74" y="342" font-size="12" fill="#475569">同环境还有 PI_NODE_PATH（MyBuddy 注入）⇒ 从 MyBuddy 的 shell 启动</text>
+
+  <!-- S3 -->
+  <rect x="60" y="364" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="74" y="384" font-size="13.5" font-weight="700" fill="#1f2937">所以 Magpie 的「Pi 接入」把 pi 配置目录解析成 ~/.mybuddy</text>
+  <text x="74" y="403" font-size="11.5" fill="#334155" font-family="Consolas, monospace">agents-state.json: pi.path = ~\.mybuddy\settings.json</text>
+  <text x="74" y="420" font-size="12" fill="#475569">而 Pi CLI 正常读的是 ~/.pi/agent（见右侧 ②）</text>
+
+  <!-- S4 -->
+  <rect x="60" y="442" width="520" height="84" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="74" y="462" font-size="13.5" font-weight="700" fill="#1e3a8a">Pi 卡写盘（17:02:43，实测）</text>
+  <text x="74" y="481" font-size="11.5" fill="#334155" font-family="Consolas, monospace">~/.mybuddy/models.json: providers.magpie = 5 个模型，apiKey=magpie</text>
+  <text x="74" y="499" font-size="11.5" fill="#334155" font-family="Consolas, monospace">~/.mybuddy/settings.json: defaultProvider=magpie</text>
+  <text x="74" y="517" font-size="11.5" fill="#334155" font-family="Consolas, monospace">defaultModel=opendesign/deepseek-v4.1-flash，thinking=max</text>
+
+  <!-- S5 -->
+  <rect x="60" y="538" width="520" height="84" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="74" y="558" font-size="13.5" font-weight="700" fill="#991b1b">「MyBuddy 卡」写的是同一份文件</text>
+  <text x="74" y="577" font-size="12" fill="#334155">6 个模型（Codex×3 + Open Design×3），apiKey=magpie-mybuddy</text>
+  <text x="74" y="595" font-size="12" fill="#334155">但 17:02:43 最后一次写入是 Pi 卡 ⇒ 6 个模型被覆盖掉</text>
+  <text x="74" y="613" font-size="12" fill="#991b1b" font-weight="700">✗ 同一文件、两张卡后写覆盖先写</text>
+
+  <!-- S6 -->
+  <rect x="60" y="634" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="74" y="654" font-size="13.5" font-weight="700" fill="#1f2937">落到 MyBuddy 的只剩 Pi 卡的 5 个模型</text>
+  <text x="74" y="673" font-size="12" fill="#334155">MyBuddy 卡选的 codex/gpt-6.1-sol、codex/gpt-6-astra 不在文件里</text>
+  <text x="74" y="690" font-size="12" fill="#334155">⇒ 现象：MyBuddy 卡「添加了却不起作用」；Pi 卡一开就生效</text>
+
+  <rect x="60" y="712" width="520" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="74" y="731" font-size="12" fill="#0f172a" font-weight="700">结论：两张卡抢同一份配置 + Magpie 拿错 pi 目录 ⇒ 只有 Pi 卡真正落到 MyBuddy。</text>
+  <text x="74" y="750" font-size="12" fill="#334155">另：magpie 无登录项，MyBuddy「模型」页不列它；模型只在聊天选择器里。</text>
+
+  <!-- lane 2 -->
+  <rect x="640" y="160" width="560" height="610" rx="10" fill="#ffffff" stroke="#d3dae3"/>
+  <text x="660" y="190" font-size="15" font-weight="700" fill="#b45309">② 为什么 Pi「显示 / 默认模型经常出问题」</text>
+
+  <!-- T1 -->
+  <rect x="660" y="208" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="674" y="228" font-size="13.5" font-weight="700" fill="#1f2937">pi CLI 1.5.0 的配置目录规则</text>
+  <text x="674" y="247" font-size="11.5" fill="#334155" font-family="Consolas, monospace">agent dir = $PI_CODING_AGENT_DIR，未设置时用 ~/.pi/agent</text>
+  <text x="674" y="264" font-size="12" fill="#475569">同一个 pi 命令，目录随启动环境变化</text>
+
+  <!-- T2 -->
+  <rect x="660" y="286" width="520" height="84" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+  <text x="674" y="306" font-size="13.5" font-weight="700" fill="#92400e">普通终端（没有该变量）→ ~/.pi/agent</text>
+  <text x="674" y="325" font-size="12" fill="#334155">models.json 停在 11/1：11 个 magpie 模型</text>
+  <text x="674" y="343" font-size="12" fill="#334155">其中 7 个网关已不再提供（gpt-5.6-*、gpt-6-luna/sol、opencode-zen、openrouter）</text>
+  <text x="674" y="361" font-size="12" fill="#92400e">⇒ /model 列表里一半以上是点不动的旧 ID</text>
+
+  <!-- T3 -->
+  <rect x="660" y="382" width="520" height="66" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+  <text x="674" y="402" font-size="13.5" font-weight="700" fill="#92400e">settings.json 的默认模型也已失效</text>
+  <text x="674" y="421" font-size="11.5" fill="#334155" font-family="Consolas, monospace">defaultModel = opencode-zen/deepseek-v4.1-flash</text>
+  <text x="674" y="439" font-size="12" fill="#334155">网关当前只服务 7 个模型、不含它 ⇒ 新会话默认模型直接失败</text>
+
+  <!-- T4 -->
+  <rect x="660" y="460" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="674" y="480" font-size="13.5" font-weight="700" fill="#1f2937">从 MyBuddy 环境启动 → 读 ~/.mybuddy</text>
+  <text x="674" y="499" font-size="12" fill="#334155">同一命令看到 5 个 magpie 模型，外加 9 个 openai-codex</text>
+  <text x="674" y="516" font-size="12" fill="#475569">（截图 1 的「Pi 模型目录」9 个 = 8 文本 + 1 图片模型）</text>
+
+  <!-- T5 -->
+  <rect x="660" y="538" width="520" height="84" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="674" y="558" font-size="13.5" font-weight="700" fill="#991b1b">实测同一条 pi --list-models 两种结果</text>
+  <text x="674" y="577" font-size="11.5" fill="#334155" font-family="Consolas, monospace">普通 shell：11 个（含 7 个已下线）</text>
+  <text x="674" y="595" font-size="11.5" fill="#334155" font-family="Consolas, monospace">带 PI_CODING_AGENT_DIR=~/.mybuddy：5 magpie + 9 openai-codex</text>
+  <text x="674" y="613" font-size="12" fill="#991b1b" font-weight="700">✗ 显示随启动方式漂移</text>
+
+  <!-- T6 -->
+  <rect x="660" y="634" width="520" height="66" rx="8" fill="#f8fafc" stroke="#dbe3ec"/>
+  <text x="674" y="654" font-size="13.5" font-weight="700" fill="#1f2937">Magpie 的 Pi 卡却显示「5 个模型」</text>
+  <text x="674" y="673" font-size="12" fill="#334155">它读的是 ~/.mybuddy，不是 ~/.pi/agent</text>
+  <text x="674" y="690" font-size="12" fill="#334155">⇒ 页面 / pi 自检 / 实际请求三方对不上</text>
+
+  <rect x="660" y="712" width="520" height="52" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="674" y="731" font-size="12" fill="#0f172a" font-weight="700">结论：同一台机器存在两套 pi 配置，Pi 的显示与默认模型随启动环境漂移。</text>
+  <text x="674" y="750" font-size="12" fill="#334155">Pi 卡的 5 个 = ~/.mybuddy 的内容；pi CLI 普通 shell 的 11 个 = ~/.pi/agent 的内容。</text>
+
+  <!-- fix strip -->
+  <rect x="40" y="786" width="1160" height="82" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="58" y="808" font-size="13.5" font-weight="700" fill="#1e3a8a">修复顺序（模型不用在 MyBuddy 里重加）</text>
+  <text x="58" y="828" font-size="12" fill="#334155">1) 完全退出 Magpie；2) 从普通 shell / 资源管理器启动，确认环境里没有 PI_CODING_AGENT_DIR；3) 核对 agents-state.json 的 pi.path 变为 ~\.pi\agent</text>
+  <text x="58" y="848" font-size="12" fill="#334155">4) 先接 MyBuddy 卡（6 个模型、key=magpie-mybuddy），再重新接 Pi 卡；5) 用 pi --list-models 与 /v1/models 校验两边一致</text>
+</svg>

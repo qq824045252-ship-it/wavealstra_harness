@@ -4,15 +4,16 @@ import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, hook, ToolTask } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
 import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
+import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-child-"));
 const agentDir = join(root, "agent"), cwd = join(root, "workspace"), directory = join(root, "state");
@@ -21,6 +22,8 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 await mkdir(join(agentDir, "agents"), { recursive: true });
 await mkdir(cwd);
 let writes = 0;
+/** D-2: file writes the fixture `write` tool actually performed (a blocked write never lands here). */
+let writtenFiles: Array<{ path: string; content: string }> = [];
 let allowFinal = false;
 let waiting: (() => void) | undefined;
 let serverError: unknown;
@@ -30,7 +33,21 @@ const seenChildTools: string[][] = [];
 /** D-1 observations: child requests, in-flight peaks and per-task start/end (reset per scenario). */
 type PoolProbe = { requests: number; inFlight: number; maxInFlight: number; start: Map<number, number>; end: Map<number, number> };
 let pool: PoolProbe = { requests: 0, inFlight: 0, maxInFlight: 0, start: new Map(), end: new Map() };
-const resetPool = () => { pool = { requests: 0, inFlight: 0, maxInFlight: 0, start: new Map(), end: new Map() }; };
+/**
+ * D-1: how many child requests the fixture still rejects with the provider membership-quota 400, and
+ * how many it rejected. The budget models a quota that is full while the dispatch starts and frees up
+ * by the time the deferred serial retry runs.
+ */
+let tierLimitBudget = 0;
+let tierLimitRejections = 0;
+const resetPool = () => {
+  pool = { requests: 0, inFlight: 0, maxInFlight: 0, start: new Map(), end: new Map() };
+  tierLimitBudget = 0; tierLimitRejections = 0;
+  writtenFiles = [];
+};
+const tierLimitBody = { code: "tier_limit_exceeded",
+  message: "Open Design: [code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets 2026-11-06T01:00:00Z",
+  param: null, type: "invalid_request_error" };
 
 const sse = (response: ServerResponse, items: unknown[]) => {
   response.writeHead(200, { "content-type": "text/event-stream" });
@@ -60,7 +77,25 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
   ] };
   if (marker("pool")) return { tasks: Array.from({ length: 6 }, (_, index) => ({
     agent: "worker", task: `SCENARIO=pool POOL_TASK=${index}${index === 0 ? " POOL_SLOW" : ""}`, model, isolation })) };
+  // D-1: twelve tasks, two of which the fixture rejects with the provider membership-quota 400.
+  if (marker("retry")) return { tasks: Array.from({ length: 12 }, (_, index) => ({
+    agent: "worker", task: `SCENARIO=retry RETRY_TASK=${index}`, model, isolation })) };
+  // D-1: a plain request error must stay failed and must never be retried.
+  if (marker("plain-400")) return { tasks: [
+    { agent: "worker", task: "SCENARIO=plain-400 PLAIN_FAIL", model, isolation },
+    { agent: "worker", task: "SCENARIO=plain-400 ok", model, isolation },
+  ] };
   if (marker("timeout")) return { agent: "worker", task: "SCENARIO=timeout task", model, isolation, timeout_ms: 30000 };
+  // D-2: two parallel shards write the same file; exactly one write may land.
+  if (marker("write-conflict")) return { tasks: [
+    { agent: "writer", task: "SCENARIO=write-conflict WRITE_ONE", model, isolation },
+    { agent: "writer", task: "SCENARIO=write-conflict WRITE_TWO", model, isolation },
+  ] };
+  // D-2: chain steps writing the same file is legal — no guard outside a concurrent parallel dispatch.
+  if (marker("chain-write")) return { chain: [
+    { agent: "writer", task: "SCENARIO=chain-write WRITE_ONE", model, isolation },
+    { agent: "writer", task: "SCENARIO=chain-write WRITE_TWO", model, isolation },
+  ] };
   if (marker("chain")) return { chain: [
     { agent: "worker", task: "SCENARIO=chain step one", model, isolation },
     { agent: "worker", task: "SCENARIO=chain step two after {previous}", model, isolation },
@@ -80,6 +115,9 @@ const server = createServer(async (request, response) => {
     const tools = Array.isArray(bodyTools) ? bodyTools.map(tool => String((tool as { name?: unknown }).name)) : [];
     const returned = text.includes("function_call_output");
     if (model === "parent") {
+      // D-1: the retry scenario starts against a full membership quota: the first two concurrent
+      // children are rejected, and the deferred serial retry afterwards finds a free slot.
+      if (!returned && text.includes("SCENARIO=retry")) tierLimitBudget = 2;
       sse(response, [returned
         ? { type: "message", id: "msg_parent_done", role: "assistant", status: "completed", content: [{ type: "output_text", text: "parent done", annotations: [] }] }
         : { type: "function_call", id: "fc_parent", call_id: "parent_call", name: "subagent",
@@ -98,18 +136,36 @@ const server = createServer(async (request, response) => {
       pool.maxInFlight = Math.max(pool.maxInFlight, pool.inFlight);
     }
     try {
+      if (tierLimitBudget > 0) {
+        // D-1: exactly the provider rejection that the retry path must recognise and defer.
+        tierLimitBudget -= 1;
+        tierLimitRejections += 1;
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify(tierLimitBody));
+        return;
+      }
+      if (text.includes("PLAIN_FAIL")) {
+        // A real request error: it must stay failed and must never be classified as a quota rejection.
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ code: "invalid_request_error",
+          message: "invalid request: unsupported parameter value", param: "temperature", type: "invalid_request_error" }));
+        return;
+      }
       if (text.includes("CHILD_FAIL")) {
         // Same shape as the provider 400 in the defect report: non-retryable, surfaces as failed.
         response.writeHead(400, { "content-type": "application/json" });
-        response.end(JSON.stringify({ code: "tier_limit_exceeded",
-          message: "Open Design: [code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets 2026-11-06T01:00:00Z",
-          param: null, type: "invalid_request_error" }));
+        response.end(JSON.stringify(tierLimitBody));
         return;
       }
       if (text.includes("POOL_SLOW")) await new Promise(done => setTimeout(done, 800));
       sse(response, [model === "child" && !returned && tools.includes("proof")
         ? { type: "function_call", id: "fc_proof", call_id: "proof_call", name: "proof", arguments: "{}" }
-        : { type: "message", id: "msg_done", role: "assistant", status: "completed",
+        // D-2: the writer shards all target the same relative path, so only the guard separates them.
+        : model === "child" && !returned && tools.includes("write")
+          ? { type: "function_call", id: "fc_write", call_id: "write_call", name: "write",
+              arguments: JSON.stringify({ path: "shared.txt",
+                content: text.includes("WRITE_ONE") ? "one" : "two" }) }
+          : { type: "message", id: "msg_done", role: "assistant", status: "completed",
             // Many short lines keep the 50KB per-task cap (and its hint) inside the host's
             // 50KB tool-result projection, so the truncation notice stays observable.
             content: [{ type: "output_text", text: text.includes("CHILD_BIG") ? `${"B".repeat(99)}\n`.repeat(600) : `${model} done`, annotations: [] }] }]);
@@ -130,6 +186,7 @@ try {
   // D-4: a fixed policy must keep governing the timeout while the ignored override is reported.
   await writeFile(join(agentDir, "subagent.json"), JSON.stringify({ maxConcurrency: 2, timeoutPolicy: "fixed", timeoutMs: 3_600_000 }));
   await writeFile(join(agentDir, "agents", "worker.md"), "---\nname: worker\ndescription: fixture child\ntools: proof\n---\nWrite proof then answer.\n");
+  await writeFile(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: fixture writer\ntools: write\n---\nWrite the file then answer.\n");
   const native = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false });
   let permission: "auto" | "readonly" = "auto";
   const proof = defineTool({ name: "proof", description: "Write proof", parameters: Type.Object({}), replay: "unsafe", execute: async (_args, api) => {
@@ -138,14 +195,37 @@ try {
     await writeFile(join(cwd, "proof.txt"), String(writes));
     return { output: [{ type: "text", text: "proof written" }] };
   } });
+  /**
+   * D-2 fixture: a real `write` tool (same name and {path, content} shape as pi's) so the guard sees
+   * the exact call the product guards. Executed writes are recorded; a blocked call never runs.
+   */
+  const write = defineTool({ name: "write", description: "Write a file", replay: "unsafe",
+    parameters: Type.Object({ path: Type.String(), content: Type.String() }), execute: async (args, api) => {
+      assert.equal((await api.agent(ctx)).cwd, cwd);
+      const target = resolve(cwd, args.path);
+      writtenFiles.push({ path: target, content: args.content });
+      await writeFile(target, args.content);
+      return { output: [{ type: "text", text: `wrote ${args.path}` }] };
+    } });
   const open = async (store: string) => {
     const registry = createRegistry();
-    registry.install(defineExtension({ name: "fixture", tools: [proof, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission })] }));
+    registry.install(defineExtension({ name: "fixture",
+      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission })],
+      // D-2: the same beforeTool entry point AgentService installs for production (a one-line
+      // `guardSubagentWriteCall(call, api.conversationId, task.id)`); the guard itself is registered by
+      // DurableSubagents.runChild for parallel dispatches with concurrency > 1, keyed by taskId here too
+      // because every task has its own durable store and conversation ids collide across tasks.
+      hooks: [hook(ToolTask, { beforeTool: (call, api) => guardSubagentWriteCall(call, api.conversationId, "test-task") })] }));
     const storage = await openNodeJsonlStorage(store, ctx, { fsync: true });
     return Harness.open(storage, { models: native, registry, env: async (target, context) => new NodeExecutionEnv({ cwd: await resolveDurableExecutionCwd(target, context, cwd) }) }, ctx);
   };
-  /** Isolated scenario run: one root task, one `subagent` tool result, plus the child count. */
-  const runScenario = async (name: string, prompt: string) => {
+  type ScenarioSubmission = { subagentId: string; base?: number; retry?: number };
+  /**
+   * Isolated scenario run: one root task, one `subagent` tool result, plus the child count.
+   * With `inspectSubmissions`, the durable ledger is read per child for the first attempt's
+   * requestId and for `subagent:<id>:retry:1`; that proves a retry submitted under a new id.
+   */
+  const runScenario = async (name: string, prompt: string, options: { inspectSubmissions?: boolean } = {}) => {
     resetPool();
     let scenarioHarness: Harness | undefined;
     try {
@@ -158,8 +238,26 @@ try {
       assert(toolResult?.role === "toolResult", `subagent toolResult missing for ${name}`);
       const output = typeof toolResult.content === "string" ? toolResult.content
         : toolResult.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
-      const childCount = (await scenarioHarness.commit(tx => tx.scanConversations({}, 250), ctx)).items.filter(item => item.owner).length;
-      return { output, details: toolResult.details, isError: Boolean(toolResult.isError), children: childCount };
+      const owned = (await scenarioHarness.commit(tx => tx.scanConversations({}, 250), ctx)).items.filter(item => item.owner);
+      // D-2: a blocked write lands as an error tool result inside the child's own transcript.
+      const blockedWrites: string[] = [];
+      for (const child of owned) {
+        const childEntries = await scenarioHarness.commit(tx => tx.scanEntries({ conversationId: child.id, order: "ascending" }, 250, undefined), ctx);
+        for (const entry of childEntries.items) for (const message of entry.model ?? []) {
+          if (message.role !== "toolResult" || message.toolName !== "write" || !message.isError) continue;
+          blockedWrites.push(typeof message.content === "string" ? message.content
+            : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n"));
+        }
+      }
+      const submissions: ScenarioSubmission[] = [];
+      if (options.inspectSubmissions) for (const child of owned) {
+        const identity = (await scenarioHarness.snapshot(DurableSubagentIdentity, child.id, ctx))?.value;
+        if (!identity) continue;
+        const base = await scenarioHarness.commit(tx => tx.submissionByRequest(child.id, `subagent:${identity.item.id}`), ctx);
+        const retry = await scenarioHarness.commit(tx => tx.submissionByRequest(child.id, `subagent:${identity.item.id}:retry:1`), ctx);
+        submissions.push({ subagentId: identity.item.id, ...(base ? { base: base.id } : {}), ...(retry ? { retry: retry.id } : {}) });
+      }
+      return { output, details: toolResult.details, isError: Boolean(toolResult.isError), children: owned.length, submissions, blockedWrites };
     } finally {
       await scenarioHarness?.close(ctx);
     }
@@ -244,6 +342,33 @@ try {
   const refilled = [...pool.start.entries()].filter(([index, at]) => index !== 0 && at < slowEnd).length;
   assert.ok(refilled >= 3, `a finished child must free its slot before the slow child ends (refilled ${refilled}/5)`);
 
+  // ---- D-1: provider quota rejections are retried once, serially, after the pool drains --------
+  // Twelve tasks at maxConcurrency=2: the fixture rejects the first two concurrent children with the
+  // provider membership-quota 400, then admits the deferred retry.
+  const retryRun = await runScenario("retry", "SCENARIO=retry", { inspectSubmissions: true });
+  assert.equal(retryRun.children, 12);
+  assert.equal(tierLimitRejections, 2, "the fixture must reject the first two concurrent children");
+  assert.match(retryRun.output, /^Parallel: 12\/12 succeeded\n\n/, retryRun.output.slice(0, 200));
+  assert.equal(retryRun.isError, false, "a recovered dispatch must not stay in error");
+  assert.doesNotMatch(retryRun.output, /failed \(error\)/, "both rejected children must be recovered");
+  // Ten children x2 requests + two rejected children x(1 rejected + 2 from the retry).
+  assert.equal(pool.requests, 26, "each quota rejection must be retried exactly once");
+  const retried = retryRun.submissions.filter(item => item.retry);
+  assert.equal(retried.length, 2, "exactly the rejected children get one deferred retry each");
+  for (const item of retried) {
+    assert(item.base, `the first attempt must be on the ledger for ${item.subagentId}`);
+    assert.notEqual(item.retry, item.base, "a retry must use a new requestId or Durable dedupes it into the failure");
+  }
+
+  // ---- D-1: a plain 400 is not a quota rejection: it stays failed and is never retried ----------
+  const plainRun = await runScenario("plain-400", "SCENARIO=plain-400", { inspectSubmissions: true });
+  assert.equal(plainRun.children, 2);
+  assert.match(plainRun.output, /^Parallel: 1\/2 succeeded\n\n/, plainRun.output.slice(0, 200));
+  assert.equal(plainRun.isError, true);
+  // One rejected request + two for the successful child; a retry would add two more.
+  assert.equal(pool.requests, 3, "a non-quota 400 must not be retried");
+  assert.equal(plainRun.submissions.filter(item => item.retry).length, 0, "no retry submission may exist for a plain 400");
+
   // ---- D-4: an ignored timeout_ms is visible; D-5: shared workspaces are visible -------------
   const timeoutRun = await runScenario("timeout", "SCENARIO=timeout");
   assert.match(timeoutRun.output, /timeout_ms=30000 ignored: fixed policy \(3600s settings\)/);
@@ -292,9 +417,38 @@ try {
   assert.match(chainRun.output, /Step 2: \[worker\] completed \(id: /);
   assert.doesNotMatch(chainRun.output, /^Parallel:/);
 
+  // ---- D-2: a parallel same-file write is blocked instead of silently overwriting -----------------
+  const conflictRun = await runScenario("write-conflict", "SCENARIO=write-conflict");
+  assert.equal(conflictRun.children, 2);
+  // Both shards still answer (the blocked child sees the tool error and finishes), but the header now
+  // says a write was blocked instead of implying every shard's content landed.
+  assert.match(conflictRun.output,
+    /^Parallel: 2\/2 succeeded \(1 write conflict blocked: parallel subagents must write different files\)\n\n/,
+    conflictRun.output.slice(0, 260));
+  assert.equal(conflictRun.blockedWrites.length, 1, "exactly one of the two same-file writes must be blocked");
+  assert.match(conflictRun.blockedWrites[0]!, /并行子代理写冲突/);
+  assert.match(conflictRun.blockedWrites[0]!, /shared\.txt/);
+  assert.match(conflictRun.blockedWrites[0]!, /并行子代理必须写不同文件/);
+  const conflictResults = (conflictRun.details as { results?: Array<{ diagnostics?: string[] }> }).results ?? [];
+  assert.equal(conflictResults.filter(item => item.diagnostics?.some(line => line.includes("write conflict blocked"))).length, 1,
+    "the blocked write must reach the caller as a per-child diagnostic");
+  assert.equal(writtenFiles.length, 1, "only the winning shard's write may reach the file system");
+  assert.match(await readFile(join(cwd, "shared.txt"), "utf8"), /^(one|two)$/,
+    "the surviving content must be exactly one shard's payload, never a mix");
+
+  // ---- D-2: chain steps may rewrite a prior step's file — the guard is parallel-only --------------
+  const chainWrite = await runScenario("chain-write", "SCENARIO=chain-write");
+  assert.equal(chainWrite.children, 2);
+  assert.equal(chainWrite.blockedWrites.length, 0, "chain is sequential; rewriting a prior step's file is legal");
+  assert.equal(writtenFiles.length, 2, "both chain steps must write");
+  assert.equal(await readFile(join(cwd, "shared.txt"), "utf8"), "two", "the later chain step wins");
+  assert.doesNotMatch(chainWrite.output, /write conflict/);
+
   assert.equal(serverError, undefined);
   console.log("PASS durable child identity, model, display name, bound cwd, persisted receipt, restart, completed effect reuse, recursion and readonly restrictions");
   console.log("PASS durable parallel text projection (header/status/id/truncation), rolling pool, timeout diagnostic, shared workspace visibility, dispatch preflight and chain steps");
+  console.log("PASS D-1 provider quota rejections retried once serially under a fresh requestId; plain 400s keep their failure");
+  console.log("PASS D-2 parallel same-file writes blocked with a visible conflict (chain writes stay allowed); no silent overwrite");
 } finally {
   await harness?.close(ctx);
   server.closeAllConnections();
