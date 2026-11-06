@@ -51,8 +51,14 @@ export function projectMemoryContext(
     bytes += size;
     return true;
   };
-  const sources = memory.cognition.getContextSources(input);
-  const allowedScopes = new Set(memory.resolveScopeChain(input).map(scope => `${scope.scopeType}:${scope.scopeId ?? ""}`));
+  const chain = memory.resolveScopeChain(input);
+  // Use the same authoritative Work/Bot scope for derived views and L1 recall.
+  // Passing taskId here would let cognition fall back to unrelated UI task metadata.
+  const sources = memory.cognition.getContextSources({
+    projectId: chain.find(scope => scope.scopeType === "project")?.scopeId,
+    workspaceId: chain.find(scope => scope.scopeType === "workspace")?.scopeId,
+  });
+  const allowedScopes = new Set(chain.map(scope => `${scope.scopeType}:${scope.scopeId ?? ""}`));
   const visible = (id: string) => {
     const atom = memory.get(id);
     const now = Date.now();
@@ -106,7 +112,6 @@ export function projectMemoryContext(
       scenario.sourceMemoryIds.forEach((id) => coveredAtoms.add(id));
     }
   }
-  const chain = memory.resolveScopeChain(input);
   const decorated = hits.map((hit) => ({ hit, scope: memory.bestMatchedScope(hit.memory, chain) }));
   const picked = new Set<string>();
   const ordered: typeof decorated = [];

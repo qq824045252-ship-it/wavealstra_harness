@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
@@ -24,6 +23,7 @@ import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
 import { durableContentText } from "./DurableHistoryProjection";
+import { readDurableWorkExecution } from "./DurableWorkExecutionProjection";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
@@ -560,22 +560,7 @@ export class DurableBotService {
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
-        if (record.status === "queued" || record.status === "placed") return { status: "running" };
-        if (record.status === "unanswered") return { status: record.reason === "aborted" ? "stopped" : "failed",
-          summary: typeof record.detail === "string" ? record.detail : record.reason, hasWriteConflicts: false, artifactRefs: [] };
-        if (record.type !== "input" || record.status !== "done" || record.answer === undefined) {
-          throw new Error("原生回执不是已结束的业务输入");
-        }
-        const answerId = record.answer;
-        const entry = await open.runtime.conversation.commit(tx => tx.entry(answerId), context);
-        const answer = entry?.model?.find(message => message.role === "assistant");
-        const snapshot = await open.runtime.refresh();
-        return {
-          status: !answer || ["error", "length"].includes(answer.stopReason) ? "failed" : answer.stopReason === "aborted" ? "stopped" : "completed",
-          summary: answer ? durableContentText(answer.content) : "原生输入未产生可核对的成果",
-          hasWriteConflicts: snapshot.messages.some(message => message.tools?.some(tool => nativeWriteConflicts(tool.detail))),
-          artifactRefs: snapshot.messages.flatMap(message => (message.artifacts ?? []).flatMap(artifact => artifact.path ? [artifact.path] : [])),
-        };
+        return open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record), context);
       },
     };
   }
@@ -776,20 +761,6 @@ function failureText(error: unknown): string {
   if (error instanceof Error) return error.message;
   try { return String(error); }
   catch { return Object.prototype.toString.call(error); }
-}
-
-function nativeWriteConflicts(detail: string | undefined): boolean {
-  if (!detail) return false;
-  try {
-    const value = z.json().parse(JSON.parse(detail));
-    const contains = (item: typeof value): boolean => {
-      if (!item || typeof item !== "object") return false;
-      if (Array.isArray(item)) return item.some(contains);
-      if (Array.isArray(item.writeConflicts) && item.writeConflicts.length > 0) return true;
-      return Object.values(item).some(contains);
-    };
-    return contains(value);
-  } catch { return false; }
 }
 
 function describeDurableHistoryFailure(error: unknown): string {

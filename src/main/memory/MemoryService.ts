@@ -476,6 +476,14 @@ export class MemoryService {
     return saved;
   }
 
+  /** Model tools carry their host-bound task identity separately from memory provenance. */
+  updateFromTask(taskId: string, request: MemoryUpdateRequest): MemoryRecordDto {
+    return this.db.connection.transaction(() => {
+      this.assertTaskMemoryWritable(taskId, request.id);
+      return this.update(request);
+    })();
+  }
+
   update(request: MemoryUpdateRequest): MemoryRecordDto {
     const current = this.repository.get(request.id);
     if (!current) throw new Error(`记忆不存在：${request.id}`);
@@ -662,6 +670,16 @@ export class MemoryService {
       return this.db.getSpaceAncestors(task.spaceId).some((space) => space.id === targetScopeId && !space.effectiveArchived);
     }
     return false;
+  }
+
+  promoteFromTask(taskId: string, id: string, scopeType: MemoryScopeType, scopeId?: string): MemoryRecordDto {
+    return this.db.connection.transaction(() => {
+      this.assertTaskMemoryWritable(taskId, id);
+      if (taskId !== "transient" && !this.canPromoteFromTask(taskId, scopeType, scopeId)) {
+        throw new Error("目标作用域不属于当前任务可写范围，拒绝越界提升");
+      }
+      return this.promote(id, scopeType, scopeId);
+    })();
   }
 
   promote(id: string, scopeType: MemoryScopeType, scopeId?: string): MemoryRecordDto {
@@ -981,6 +999,11 @@ export class MemoryService {
   }
 
   private reconcileCandidate(candidate: MemoryCandidateDto, sourceTurns: readonly MemoryTurnDto[] = [], force = false): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
+    // Scope checks and all mutations share one SQLite snapshot, including promoted atoms.
+    return this.db.connection.transaction(() => this.reconcileCandidateInTransaction(candidate, sourceTurns, force))();
+  }
+
+  private reconcileCandidateInTransaction(candidate: MemoryCandidateDto, sourceTurns: readonly MemoryTurnDto[], force: boolean): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
     if (!force) {
       let execution: ExtractedCandidate["executionEvidence"];
       try { execution = JSON.parse(candidate.rawJson ?? "{}").executionEvidence; } catch { /* use user evidence below */ }
@@ -1001,6 +1024,11 @@ export class MemoryService {
         }
       }
     }
+    const deferSharedMutation = (record: MemoryRecordDto): boolean => {
+      if (force || this.canMutateFromTask(candidate.taskId, record)) return false;
+      this.repository.resolveCandidate(candidate.id, "needs_review");
+      return true;
+    };
     const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId);
     const targetText = candidate.replaces || candidate.title;
     const best = matches
@@ -1017,11 +1045,13 @@ export class MemoryService {
         this.repository.resolveCandidate(candidate.id, "needs_review");
         return { status: "needs_review" };
       }
+      if (deferSharedMutation(best.m)) return { status: "needs_review" };
       this.forget(best.m.id);
       this.repository.resolveCandidate(candidate.id, "committed");
       return { status: "committed" };
     }
     if (duplicate) {
+      if (deferSharedMutation(duplicate)) return { status: "needs_review" };
       this.addConversationEvidence(duplicate.id, sourceTurns);
       this.repository.resolveCandidate(candidate.id, "rejected", duplicate.id);
       return { status: "rejected", memoryId: duplicate.id };
@@ -1054,12 +1084,14 @@ export class MemoryService {
         refTitle: `成功工具检查：${tool.name}`, excerpt: `${tool.name}\n${tool.arguments}\n${tool.result}`.slice(0, 2400) });
     } catch { /* User-approved candidates may have legacy provenance. */ }
     if (candidate.operationHint === "resolve" && best && best.score >= 0.5) {
+      if (deferSharedMutation(best.m)) return { status: "needs_review" };
       const resolved = this.resolve(best.m.id, candidate.explicit ? "user" : "agent");
       this.addConversationEvidence(resolved.id, sourceTurns);
       this.repository.resolveCandidate(candidate.id, "committed", resolved.id);
       return { status: "committed", memoryId: resolved.id };
     }
     if (candidate.operationHint === "update" && best && best.score >= 0.52) {
+      if (deferSharedMutation(best.m)) return { status: "needs_review" };
       const updated = this.update({
         id: best.m.id,
         kind: candidate.kind,
@@ -1076,6 +1108,7 @@ export class MemoryService {
       return { status: "committed", memoryId: updated.id };
     }
     if (candidate.operationHint === "supersede" && best && best.score >= 0.45) {
+      if (deferSharedMutation(best.m)) return { status: "needs_review" };
       const created = this.supersede(best.m.id, createReq);
       this.repository.resolveCandidate(candidate.id, "committed", created.id);
       return { status: "committed", memoryId: created.id };
@@ -1109,6 +1142,27 @@ export class MemoryService {
     }
   }
 
+  private canMutateFromTask(taskId: string, memory: MemoryRecordDto): boolean {
+    const work = this.workMemoryScope(taskId);
+    const botId = work ? undefined : this.channelBotId(taskId);
+    if (!work && !botId) return true;
+    // A retained local scope does not grant permission to rewrite the same atom
+    // after it has been promoted to shared/project/global memory.
+    return memory.scopes.length > 0 && memory.scopes.every(scope =>
+      (scope.scopeType === "task" && scope.scopeId === taskId)
+      || (!work && scope.scopeType === "bot" && scope.scopeId === botId));
+  }
+
+  private assertTaskMemoryWritable(taskId: string, id: string): void {
+    const memory = this.repository.get(id);
+    if (!memory || !this.canAccess(id, { taskId: taskId === "transient" ? undefined : taskId, includeInherited: true })) {
+      throw new Error("记忆不存在或不属于当前任务可见作用域");
+    }
+    if (!this.canMutateFromTask(taskId, memory)) {
+      throw new Error("当前 Bot / Work 执行者不能改写共享事实或其他身份的记忆，需要显式审核");
+    }
+  }
+
   private channelBotId(taskId: string): string | undefined {
     const row = this.db.connection.prepare(`SELECT bot_id FROM bot_channel_bindings
       WHERE channel_type='desktop' AND channel_identifier=?`).get(JSON.stringify([LOCAL_USER_ID, taskId])) as { bot_id: string } | undefined;
@@ -1117,7 +1171,7 @@ export class MemoryService {
 
   private workMemoryScope(taskId: string): { bot_id: string; project_id: string | null } | undefined {
     return this.db.connection.prepare(`SELECT b.bot_id,w.project_id FROM work_execution_bindings b
-      JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? ORDER BY b.admitted_at DESC LIMIT 1`)
+      JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? ORDER BY b.admitted_at DESC, b.rowid DESC LIMIT 1`)
       .get(taskId) as { bot_id: string; project_id: string | null } | undefined;
   }
 

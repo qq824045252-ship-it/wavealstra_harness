@@ -7,6 +7,20 @@ import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import type { StreamingSendMode, TaskDraft } from "../types";
 
+function reconcileWorkProjection(incoming: WorkProjectionDto, observed?: WorkProjectionDto): WorkProjectionDto {
+  if (!observed) return incoming;
+  if (observed.stateVersion > incoming.stateVersion) return observed;
+  // A read acknowledgement is monotonic but does not advance the control version.
+  const readAtById = new Map(observed.notifications.map(item => [item.notificationId, item.readAt]));
+  return {
+    ...incoming,
+    notifications: incoming.notifications.map(item => {
+      const readAt = readAtById.get(item.notificationId);
+      return item.readAt === undefined && readAt !== undefined ? { ...item, readAt } : item;
+    }),
+  };
+}
+
 export interface ActiveContextState {
   activeTaskId: string | null;
   activeBotId: string | null;
@@ -96,6 +110,7 @@ export function createActiveContextActions(
   | "markBotNotificationRead"
 > {
   const { get, set, getApi } = storeContext;
+  let refreshSequence = 0;
   return {
     clearBranchError: () => {
       if (get().branchError) set({ branchError: null });
@@ -119,32 +134,41 @@ export function createActiveContextActions(
     setSelectedWorkId: (workId) => set({ selectedWorkId: workId }),
     refreshBotWork: async (includeClosed = false) => {
       const api = getApi();
+      const requestSequence = ++refreshSequence;
+      const requestedVersions = new Map(get().botWorks.map(work => [work.workId, work.stateVersion]));
       try {
         const [bots, works, hostStatus] = await Promise.all([
           api?.botWork?.listBots() ?? Promise.resolve([]),
           api?.botWork?.listWorks(includeClosed) ?? Promise.resolve([]),
           api?.botWork?.hostStatus() ?? Promise.resolve(null),
         ]);
-        set((state) => ({
-          botIdentities: bots,
-          botWorks: [
-            ...works.map(work => {
-              const observed = state.botWorks.find(item => item.workId === work.workId);
-              return observed && observed.stateVersion > work.stateVersion ? observed : work;
-            }),
-            ...state.botWorks.filter(observed => !works.some(work => work.workId === observed.workId)),
-          ],
-          botHostStatus: hostStatus,
-          botIdentitiesLoaded: true,
-          botWorkError: null,
-          activeBotId: bots.some((bot) => bot.botId === state.activeBotId)
-            ? state.activeBotId
-            : bots[0]?.botId ?? null,
-          selectedWorkId: works.some((work) => work.workId === state.selectedWorkId)
-            ? state.selectedWorkId
-            : null,
-        }));
+        if (requestSequence !== refreshSequence) return;
+        set((state) => {
+          const observedById = new Map(state.botWorks.map(work => [work.workId, work]));
+          const incomingIds = new Set(works.map(work => work.workId));
+          const botWorks = [
+            ...works.map(work => reconcileWorkProjection(work, observedById.get(work.workId))),
+            // An open-only response removes stale cards for Works closed offline.
+            // Preserve only facts that arrived after this request began.
+            ...state.botWorks.filter(observed => !incomingIds.has(observed.workId)
+              && (requestedVersions.get(observed.workId) ?? -1) < observed.stateVersion),
+          ];
+          return {
+            botIdentities: bots,
+            botWorks,
+            botHostStatus: hostStatus,
+            botIdentitiesLoaded: true,
+            botWorkError: null,
+            activeBotId: bots.some((bot) => bot.botId === state.activeBotId)
+              ? state.activeBotId
+              : bots[0]?.botId ?? null,
+            selectedWorkId: botWorks.some((work) => work.workId === state.selectedWorkId)
+              ? state.selectedWorkId
+              : null,
+          };
+        });
       } catch (error) {
+        if (requestSequence !== refreshSequence) return;
         set({
           botIdentitiesLoaded: true,
           botWorkError: error instanceof Error ? error.message : String(error),
@@ -156,7 +180,7 @@ export function createActiveContextActions(
         const existing = state.botWorks.find((work) => work.workId === projection.workId);
         if (existing && existing.stateVersion >= projection.stateVersion) return {};
         const botWorks = existing
-          ? state.botWorks.map((work) => (work.workId === projection.workId ? projection : work))
+          ? state.botWorks.map((work) => (work.workId === projection.workId ? reconcileWorkProjection(projection, work) : work))
           : [projection, ...state.botWorks];
         return { botWorks };
       });

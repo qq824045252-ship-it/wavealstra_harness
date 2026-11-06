@@ -72,7 +72,7 @@ export class WorkHostAuthority {
         previousAuthorityId: row.authority_id,
         message: `另一宿主 ${row.authority_id} 仍持有 Work 调度权，拒绝双主调度`,
       };
-    })();
+    }).immediate();
   }
 
   heartbeat(): boolean {
@@ -81,7 +81,7 @@ export class WorkHostAuthority {
       if (!row || row.released_at !== null || row.authority_id !== this.authorityId) return false;
       this.db.prepare("UPDATE work_host_lease SET heartbeat_at=? WHERE lease_id='singleton'").run(this.now());
       return true;
-    })();
+    }).immediate();
   }
 
   release(): void {

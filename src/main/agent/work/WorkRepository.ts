@@ -552,7 +552,7 @@ export class WorkRepository {
   }
 
   bindingForTask(taskId: string): WorkExecutionBindingDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC LIMIT 1")
+    const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC LIMIT 1")
       .get(taskId) as BindingRow | undefined;
     return row ? mapBinding(row) : undefined;
   }
@@ -643,9 +643,17 @@ export class WorkRepository {
       .all(workId) as DeliverableRow[]).map(mapDeliverable);
   }
 
-  supersedeStaleDeliverables(workId: string, intentRevision: number): void {
-    this.db.prepare("UPDATE work_deliverables SET status='superseded' WHERE work_id=? AND status='proposed' AND intent_revision < ?")
-      .run(workId, intentRevision);
+  supersedeStaleDeliverables(workId: string, intentRevision: number, inputSnapshotId: string): void {
+    // A pending result from an old input is no longer awaiting current acceptance.
+    // Accepted rows retain their historical review; Work tracks current result IDs.
+    this.db.prepare(`UPDATE work_deliverables SET status='superseded'
+      WHERE work_id=? AND status='proposed' AND (
+        intent_revision != ? OR input_snapshot_id != ? OR EXISTS (
+          SELECT 1 FROM work_execution_bindings b
+          WHERE b.binding_id=work_deliverables.execution_id AND b.work_id=work_deliverables.work_id
+            AND (b.invalidated_at IS NOT NULL OR b.status='invalidated')
+        )
+      )`).run(workId, intentRevision, inputSnapshotId);
   }
 
   // ---------------------------------------------------------------- evidence

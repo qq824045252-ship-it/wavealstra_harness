@@ -149,11 +149,12 @@ export class BotRegistry {
     });
     this.db.prepare(`INSERT OR IGNORE INTO bot_expert_versions (
       bot_id,version,state,expert_id,source_revision,system_prompt_hash,allowed_mcp_ids_json,
-      allowed_skill_ids_json,allowed_connector_ids_json,staged_by,created_at,adopted_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      allowed_skill_ids_json,allowed_connector_ids_json,configuration_json,skill_packages_json,staged_by,created_at,adopted_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       botId, profile.activeVersion, "active", profile.expertId, profile.revision, profile.systemPromptHash,
       JSON.stringify(profile.allowedMcpIds), JSON.stringify(profile.allowedSkillIds),
-      JSON.stringify(profile.allowedConnectorIds), "host", now, now,
+      JSON.stringify(profile.allowedConnectorIds), JSON.stringify(profile.configuration ?? null),
+      JSON.stringify(profile.skillPackages ?? []), "host", now, now,
     );
     return this.getBot(botId)!;
   }

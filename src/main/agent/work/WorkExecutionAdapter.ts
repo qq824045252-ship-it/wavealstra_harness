@@ -96,11 +96,20 @@ export class WorkExecutionAdapter {
     }
     if (!this.isAuthority()) return;
     this.service.recordSubmissionReceipt(current.bindingId, JSON.stringify(receipt));
-    work = this.service.getWork(current.workId);
-    if (!work) return;
-    const latestBinding = this.service.repo.getBinding(current.bindingId);
-    if (work.lifecycle !== "active" || latestBinding?.invalidatedAt) await this.native.stop(current);
-    const observation = await this.native.inspect(current, receipt);
+    let observation = await this.native.inspect(current, receipt);
+    if (!this.isAuthority()) return;
+    // A lost receipt may belong to an already completed input in an older native
+    // conversation. Reconcile that result without aborting a newer active one.
+    if (observation.status === "running") {
+      work = this.service.getWork(current.workId);
+      const latestBinding = this.service.repo.getBinding(current.bindingId);
+      if (!work || !latestBinding) return;
+      if (work.lifecycle !== "active" || latestBinding.invalidatedAt) {
+        await this.native.stop(current);
+        if (!this.isAuthority()) return;
+        observation = await this.native.inspect(current, receipt);
+      }
+    }
     if (!this.isAuthority() || observation.status === "running") return;
     // Result, settlement and their receipts commit together. Re-reading the same
     // native result after a crash cannot create another deliverable (BW-A16).

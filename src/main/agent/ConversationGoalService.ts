@@ -51,6 +51,8 @@ export class ConversationGoalService {
   }
 
   modelActor(taskId: string): WorkActor {
+    const binding = this.work.repo.bindingForTask(taskId);
+    if (binding) return { kind: "worker", botId: binding.botId, bindingId: binding.bindingId };
     return defaultBotActor(this.options.resolveBotId?.(taskId) ?? this.options.botId ?? DEFAULT_BOT_ID,
       this.options.userId ?? LOCAL_USER_ID);
   }
@@ -208,7 +210,12 @@ export class ConversationGoalService {
   }
 
   getLive(taskId: string, workId?: string): ConversationGoalDto | undefined {
-    const candidates = this.work.listWorksByConversation(taskId).filter(candidate => candidate.userId === (this.options.userId ?? LOCAL_USER_ID)
+    const binding = this.work.repo.bindingForTask(taskId);
+    const boundWork = binding ? this.work.getWork(binding.workId) : undefined;
+    const visibleWorks = binding
+      ? boundWork && boundWork.lifecycle !== "closed" ? [boundWork] : []
+      : this.work.listWorksByConversation(taskId);
+    const candidates = visibleWorks.filter(candidate => candidate.userId === (this.options.userId ?? LOCAL_USER_ID)
       && (!workId || candidate.workId === workId));
     if (candidates.length > 1) throw new Error("当前对话涉及多个 Work，请明确事项引用");
     const work = candidates[0];

@@ -191,9 +191,10 @@ export class WorkService {
     const executions = this.repo.listBindings(work.workId);
     const notifications = this.repo.listNotifications(work.workId);
     const subscriptions = this.repo.listSubscriptions(work.workId);
+    const currentResultIds = new Set(currentAcceptedDeliverableIds(work, deliverables, executions));
     const unresolved = work.criteria.filter((criterion) => !isCriterionResolved(criterion));
     const uncoveredScope = [...new Set(deliverables
-      .filter((deliverable) => deliverable.status === "accepted")
+      .filter((deliverable) => currentResultIds.has(deliverable.deliverableId))
       .flatMap((deliverable) => deliverable.uncoveredScope))];
     const nextSteps: string[] = [];
     if (work.lifecycle === "closing") nextSteps.push("等待在途执行与外部效果结算");
@@ -208,7 +209,12 @@ export class WorkService {
       }
       const pendingText = unresolved.filter(criterion => !criterionNeedsEnvironment(criterion));
       if (pendingText.length > 0) nextSteps.push(`待验收：${pendingText.map(criterion => criterion.text).join("、")}`);
-      if (work.acceptedDeliverableIds.length === 0 && executions.length === 0) nextSteps.push("安排后台执行");
+      const hasCurrentExecution = executions.some(binding => UNSETTLED_BINDING_STATUSES.has(binding.status)
+        && binding.invalidatedAt === undefined && binding.intentRevision === work.intentRevision
+        && binding.inputSnapshotId === work.inputSnapshotId);
+      const hasPendingResult = deliverables.some(deliverable => deliverable.status === "proposed"
+        && deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId);
+      if (currentResultIds.size === 0 && !hasCurrentExecution && !hasPendingResult) nextSteps.push("安排后台执行");
     }
     return {
       workId: work.workId,
@@ -227,7 +233,7 @@ export class WorkService {
       inputSnapshotBound: work.inputSnapshotId !== "snapshot:unbound",
       goalSources: work.goalSources,
       criteria: work.criteria,
-      acceptedDeliverableIds: work.acceptedDeliverableIds,
+      acceptedDeliverableIds: [...currentResultIds],
       deliverables,
       blockers,
       executions,
@@ -247,11 +253,20 @@ export class WorkService {
     if (authorityError) return authorityError;
     const resolved = this.resolveActor(actor);
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
+    if (resolved.kind === "worker") {
+      return { ok: false, code: "unauthorized_actor", message: "执行者只能处理已绑定的事项，不能创建新的长期责任" };
+    }
     const invalid = this.validatePayload("createWork", params);
     if (invalid) return invalid;
     const payloadHash = this.hash("createWork", params);
 
     const outcome = this.transaction((): WorkControlResult => {
+      // A lease or Bot binding can change while waiting for the SQLite write
+      // lock. New control facts must be authorized in the same commit order.
+      const authorityError = this.authorityError();
+      if (authorityError) return authorityError;
+      const resolved = this.resolveActor(actor);
+      if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
       const existing = this.repo.getReceipt(resolved.userId, params.operationId);
       if (existing) {
         if (existing.operation_type !== "createWork" || existing.payload_hash !== payloadHash) {
@@ -460,7 +475,10 @@ export class WorkService {
     if (snapshotChanged) {
       this.repo.insertIntentSnapshot(this.intentSnapshot(nextWork, ownerBot, params.sourceMessageId, resolved.kind === "user" ? "user" : "bot"));
     }
-    this.repo.supersedeStaleDeliverables(work.workId, nextIntentRevision);
+    this.repo.supersedeStaleDeliverables(work.workId, nextIntentRevision, nextInputSnapshotId);
+    nextWork.acceptedDeliverableIds = currentAcceptedDeliverableIds(
+      nextWork, this.repo.listDeliverables(work.workId), this.repo.listBindings(work.workId),
+    );
     this.repo.supersedeNotifications(work.workId, nextIntentRevision, nextInputSnapshotId);
     this.repo.updateWork(nextWork);
     if (params.watchRule !== undefined) this.syncSubscriptions(nextWork, now);
@@ -967,6 +985,10 @@ export class WorkService {
     const resolved = this.resolveActor(actor);
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
     return this.transaction((): { ok: true; admission: WorkAdmissionDto } | Fail => {
+      const authorityError = this.authorityError();
+      if (authorityError) return authorityError;
+      const resolved = this.resolveActor(actor);
+      if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
       const work = this.repo.getWork(params.workId);
       if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
       const access = this.requireAccess(work, resolved);
@@ -985,8 +1007,12 @@ export class WorkService {
       if (!this.authorizedFor(work, params.actionKind)) {
         return { ok: false, code: "unauthorized_actor", message: `事项授权不允许动作 ${params.actionKind}` };
       }
-      if (params.bindingId) {
-        const binding = this.repo.getBinding(params.bindingId);
+      // A worker's execution identity comes from the host actor, including when
+      // the business payload omits bindingId. Never turn that omission into an
+      // unbound admission that skips the current execution/delegation checks.
+      const bindingId = params.bindingId ?? resolved.binding?.bindingId;
+      if (bindingId) {
+        const binding = this.repo.getBinding(bindingId);
         if (!binding || binding.workId !== work.workId) {
           return { ok: false, code: "not_found", message: "找不到有效执行绑定" };
         }
@@ -1002,6 +1028,9 @@ export class WorkService {
         if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
           return { ok: false, code: "unauthorized_actor", message: "worker 只能为自己的绑定申请业务动作" };
         }
+        if (this.bots.getBot(binding.botId)?.status !== "active") {
+          return { ok: false, code: "bot_disabled", message: "执行 Bot 已暂停或停用，不能准入新业务动作" };
+        }
         if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind)) {
           return { ok: false, code: "unauthorized_actor", message: "业务动作超出了本执行的委派范围" };
         }
@@ -1012,7 +1041,7 @@ export class WorkService {
       const admission: WorkAdmissionDto = {
         admissionId: newId("admission"),
         workId: work.workId,
-        bindingId: params.bindingId,
+        bindingId,
         operationId: params.operationId,
         actionKind: params.actionKind,
         state: "admitted",
@@ -1111,7 +1140,8 @@ export class WorkService {
       // A late result from an invalidated/unknown execution is still recorded, but with
       // the binding's own revision/snapshot as a historical deliverable (R04/R06).
       const now = this.now();
-      const stale = binding.intentRevision < work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId;
+      const stale = binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
+        || binding.invalidatedAt !== undefined || binding.status === "invalidated";
       const deliverableId = params.deliverableId?.trim() || newId("deliverable");
       const evidenceIds: string[] = [];
       const evidenceRows: WorkEvidenceDto[] = [];
@@ -2079,6 +2109,10 @@ export class WorkService {
     if (invalid) return invalid;
 
     const outcome = this.transaction((): WorkControlResult => {
+      const authorityError = this.authorityError();
+      if (authorityError) return authorityError;
+      const resolved = this.resolveActor(actor);
+      if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
       const work = this.repo.getWork(params.workId);
       if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
       const access = this.requireAccess(work, resolved);
@@ -2115,13 +2149,24 @@ export class WorkService {
           latestWorkSnapshot: work,
         };
       }
-      if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= this.now()
+      const now = this.now();
+      if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
         && !(operationType === "cancelWork" || operationType === "closeWork")) {
-        return { ok: false, code: "unauthorized_actor", message: "事项授权已过期" };
+        // Renewing an expired delegation is a user authorization change, not new
+        // business execution. Models cannot renew themselves, and the new deadline
+        // and capabilities still intersect the current authenticated host grant.
+        const requested = operationType === "amendWork" && resolved.kind === "user"
+          ? (params as AmendWorkParams).authorization
+          : undefined;
+        const renewed = requested?.expiresAt !== undefined && Number.isFinite(requested.expiresAt)
+          ? intersectAuthorization({ ...work.authorization, ...requested }, resolved.grants)
+          : undefined;
+        if (renewed?.expiresAt === undefined || renewed.expiresAt <= now) {
+          return { ok: false, code: "unauthorized_actor", message: "事项授权已过期，需要用户在当前授权范围内明确续权" };
+        }
       }
       const guardError = this.checkGuard(work, resolved, params.versionGuard, options.guard);
       if (guardError) return guardError;
-      const now = this.now();
       const mutation = mutate(work, resolved, now);
       if (!mutation.ok) {
         return {
@@ -2387,6 +2432,15 @@ export class WorkService {
 
 function parseWork(value: string): WorkDto | undefined {
   try { return JSON.parse(value) as WorkDto; } catch { return undefined; }
+}
+
+function currentAcceptedDeliverableIds(work: WorkDto, deliverables: WorkDeliverableDto[], bindings: WorkExecutionBindingDto[]): string[] {
+  const validBindings = new Set(bindings.filter(binding => binding.invalidatedAt === undefined && binding.status !== "invalidated")
+    .map(binding => binding.bindingId));
+  const current = new Set(deliverables.filter(deliverable => deliverable.status === "accepted"
+    && deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId
+    && validBindings.has(deliverable.executionId)).map(deliverable => deliverable.deliverableId));
+  return work.acceptedDeliverableIds.filter(id => current.has(id));
 }
 
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }

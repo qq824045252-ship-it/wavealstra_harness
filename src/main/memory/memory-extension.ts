@@ -148,7 +148,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
     pi.registerTool({
       name: "memory_update",
       label: "长期记忆 · 更新",
-      description: "更新当前任务可见的一条长期记忆。更新会自动生成 revision；信息被新事实取代时不要直接覆盖，请使用 supersedeId 创建替代关系。",
+      description: "更新当前身份可写的一条长期记忆。Work 执行者只可修改本次任务独占记忆，Bot 前台只可修改自己的私人或当前对话独占记忆；共享事实需要显式审核。更新会自动生成 revision；信息被新事实取代时不要直接覆盖，请使用 supersedeId 创建替代关系。",
       promptSnippet: "memory_update(id,title?,content?,status?,importance?,confidence?,supersedeId?) — revision-safe 更新",
       parameters: Type.Object({
         id: Type.String({ minLength: 1, maxLength: 120 }),
@@ -161,7 +161,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       execute: async (_id: string, params: { id: string; title?: string; content?: string; status?: MemoryStatus; importance?: number; confidence?: number }) => {
         try {
           writable(); requireVisible(params.id);
-          const memory = bridge.service.update({ ...params, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` });
+          const memory = bridge.service.updateFromTask(bridge.taskId, { ...params, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` });
           return textResult(`已更新：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
       },
@@ -187,7 +187,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
           if (params.targetScopeType === "global" && !["identity", "preference", "constraint", "procedure"].includes(memory.kind)) {
             throw new Error("项目事实/决策/风险不能直接提升为 Global");
           }
-          const promoted = bridge.service.promote(params.id, params.targetScopeType, params.targetScopeId);
+          const promoted = bridge.service.promoteFromTask(bridge.taskId, params.id, params.targetScopeType, params.targetScopeId);
           return textResult(`已提升作用域（同一 Memory，无正文复制）：${short(promoted)}`, { memory: promoted });
         } catch (error) { return errorResult(error); }
       },
