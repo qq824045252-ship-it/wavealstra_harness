@@ -111,3 +111,6 @@ electron.vite.config.*.mjs
 
 # IDE 本地配置
 /app/remote/android/.idea/
+
+# 子代理写冲突测试生成的临时 bundle（9MB，可重建，不入库）
+/src/main/capabilities/subagent/test/.tmp/
