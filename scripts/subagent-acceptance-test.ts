@@ -25,6 +25,7 @@ import { createRegistry, defineExtension, defineTool, Harness, hook, ToolTask } 
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
+import { z } from "zod";
 import { createDurableSubagentTools, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
 import { collectFingerprints, formatFingerprintBlock, validateFingerprints } from "./subagent-acceptance-fingerprint";
@@ -55,6 +56,7 @@ assert.equal(inRepository, false,
 /** D-2/N-2：fixture write 工具真正落盘过的文件（被拦截的写入不会进这里）。 */
 let writtenFiles: Array<{ path: string; content: string }> = [];
 const resetWritten = () => { writtenFiles = []; };
+let slowRequests: Array<{ released: boolean; closedBeforeRelease: boolean }> = [];
 /**
  * N-2 三写者：把三个子会话压在同一个 barrier 上，等它们都到齐再同时下发写入指令，
  * 否则「谁先写完并释放持有」会随调度抖动，场景不稳定。超过 10s 也放行，宁可断言失败也不要挂死。
@@ -110,27 +112,46 @@ const parentDispatch = (prompt: string): Record<string, unknown> => {
   throw new Error(`未知验收标记：${prompt}`);
 };
 
+const fixtureRequest = z.object({
+  model: z.string(),
+  input: z.array(z.union([
+    z.object({ role: z.string(), content: z.union([
+      z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() })),
+    ]) }),
+    z.object({ type: z.string() }),
+  ])),
+});
+
 const server = createServer(async (request, response) => {
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const text = Buffer.concat(chunks).toString();
-    const body = JSON.parse(text) as { model?: unknown };
-    const model = String(body?.model ?? "");
-    const returned = text.includes("function_call_output");
+    const body = fixtureRequest.parse(JSON.parse(Buffer.concat(chunks).toString()));
+    const model = body.model;
+    const returned = body.input.some(item => "type" in item && item.type === "function_call_output");
+    const prompt = body.input.flatMap(item => "role" in item && item.role === "user"
+      ? typeof item.content === "string" ? [item.content] : item.content.flatMap(part => part.text ? [part.text] : [])
+      : []).at(-1);
+    assert(prompt, "fixture request must contain a user task");
     if (model === "parent") {
       sse(response, [returned
         ? { type: "message", id: "msg_parent_done", role: "assistant", status: "completed",
             content: [{ type: "output_text", text: "parent done", annotations: [] }] }
         : { type: "function_call", id: "fc_parent", call_id: "parent_call", name: "subagent",
-            arguments: JSON.stringify(parentDispatch(text)) }]);
+            arguments: JSON.stringify(parentDispatch(prompt)) }]);
       return;
     }
     // 场景 3：三个子会话先到齐，再同时拿到 write 指令，写冲突才可稳定复现。
-    if (!returned && text.includes(`${ACCEPT}conflict`)) await waitForSiblings();
+    if (!returned && prompt.includes(`${ACCEPT}conflict`)) await waitForSiblings();
     // 场景 4：把子会话请求挂住 3 秒，用来区分「1s 生效」与「1s 被忽略」。
-    if (!returned && text.includes("TIMEOUT_SLOW")) await new Promise(done => setTimeout(done, 3_000));
-    const write = /WRITE:([^\s=]+)=([^\s]+)/.exec(text);
+    if (!returned && prompt.includes("TIMEOUT_SLOW")) {
+      const pending = { released: false, closedBeforeRelease: false };
+      slowRequests.push(pending);
+      response.once("close", () => { pending.closedBeforeRelease = !pending.released; });
+      await new Promise(done => setTimeout(done, 3_000));
+      pending.released = true;
+    }
+    const write = /WRITE:([^\s=]+)=([^\s]+)/.exec(prompt);
     if (!returned && write) {
       sse(response, [{ type: "function_call", id: "fc_write", call_id: "write_call", name: "write",
         arguments: JSON.stringify({ path: write[1], content: write[2] }) }]);
@@ -196,6 +217,7 @@ try {
 
   const runScenario = async (name: string, settings: Record<string, unknown> = {}) => {
     resetWritten();
+    slowRequests = [];
     // 只有 conflict 场景需要 barrier：三个子会话到齐后同时下发写入，冲突才可稳定复现。
     waitForSiblings = name === "conflict" ? makeBarrier(3) : async () => {};
     await writeFile(join(agentDir, "subagent.json"), subagentSettings(settings));
@@ -214,7 +236,8 @@ try {
         : toolResult.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
       const owned = (await scenarioHarness.commit(tx => tx.scanConversations({}, 250), ctx)).items.filter(item => item.owner);
       return { output, details: toolResult.details as { results?: Array<Record<string, unknown>> },
-        isError: Boolean(toolResult.isError), children: owned.length, elapsed: Date.now() - startedAt };
+        isError: Boolean(toolResult.isError), children: owned.length, elapsed: Date.now() - startedAt,
+        slowRequests: slowRequests.map(item => ({ ...item })) };
     } finally { await scenarioHarness?.close(ctx); }
   };
 
@@ -302,8 +325,10 @@ try {
     assert.match(run.output, /Run time limit: 1s \(invocation\)/);
     assert.match(run.output, /Subagent time limit reached/);
     assert.equal(run.details.results?.[0]?.status, "timedout", "子会话必须报告真实 timedout 状态");
-    assert.ok(run.elapsed < 3_000, `1s 时限必须在 3s 子会话结束前生效（实测 ${run.elapsed}ms）`);
-    evidence.push(`耗时: ${run.elapsed}ms（< 3000ms 即证明 1s 时限真的生效）`,
+    assert.equal(writtenFiles.length, 0, "超时子会话不得执行延迟返回的 write 指令");
+    assert.ok(run.slowRequests.some(item => item.closedBeforeRelease), "子会话必须在延迟响应返回前取消请求");
+    evidence.push(`总耗时: ${run.elapsed}ms（包含建会话和父任务收尾，不作为子会话时限判据）`,
+      "延迟响应返回前请求已关闭，未执行任何写入",
       `limits: Run time limit: 1s (invocation)`,
       `status: ${String(run.details.results?.[0]?.status)}`);
   });
