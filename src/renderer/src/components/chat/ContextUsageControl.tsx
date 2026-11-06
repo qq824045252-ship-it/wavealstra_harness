@@ -553,10 +553,6 @@ export default function ContextUsageControl({ executing = false }: Props): React
             {unknown || pct <= 0 ? <span className="context-usage-popup-seg empty" /> : null}
           </div>
 
-          <div className="settings-row-desc">
-            分类按可取得的字符数据（{CHARS_PER_TOKEN} 字符 ≈ 1 token）估算，总额以 Pi 回报为准，
-            压缩后会随之变化；取不到字符来源的分类显示「—」。
-          </div>
           <ul className="context-usage-popup-list">
             {categories.map((c) => (
               <li
