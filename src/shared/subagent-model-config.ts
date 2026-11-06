@@ -160,6 +160,20 @@ export function resolveSubagentReasoningAfterModelSwitch(opts: {
   };
 }
 
+/**
+ * 子代理累计用量（一个实例在本次运行内的合计，不是单次请求）。
+ * 字段与 `SubagentSummaryDto.usage` / usage_events 的 token 列同口径。
+ */
+export interface SubagentUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  contextTokens: number;
+  turns: number;
+}
+
 /** Durable 子代理结果的结构化视图（工具 details.results[] 的安全投影）。 */
 export interface SubagentResultRecord {
   subagentId: string;
@@ -172,6 +186,28 @@ export interface SubagentResultRecord {
   finalText?: string;
   resolvedModel?: string;
   model?: string;
+  /** 累计用量；四个主分量任一缺失/畸形则整体视为未知（不补零） */
+  usage?: SubagentUsage;
+}
+
+const isNonNegativeNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/** 累计用量只接受四个主分量为有效非负数；辅助分量缺失时按 0 处理（它们是计数，不是成本估算）。 */
+function parseSubagentUsage(raw: unknown): SubagentUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const usage = raw as Record<string, unknown>;
+  if (!isNonNegativeNumber(usage.input) || !isNonNegativeNumber(usage.output)
+    || !isNonNegativeNumber(usage.cacheRead) || !isNonNegativeNumber(usage.cacheWrite)) return undefined;
+  return {
+    input: usage.input,
+    output: usage.output,
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    cost: isNonNegativeNumber(usage.cost) ? usage.cost : 0,
+    contextTokens: isNonNegativeNumber(usage.contextTokens) ? usage.contextTokens : 0,
+    turns: isNonNegativeNumber(usage.turns) ? Math.round(usage.turns) : 0,
+  };
 }
 
 function messageFinalText(messages: unknown): string {
@@ -221,6 +257,7 @@ export function parseSubagentResultDetails(
       finalText: messageFinalText(record.messages) || undefined,
       resolvedModel: typeof record.resolvedModel === "string" ? record.resolvedModel : undefined,
       model: typeof record.model === "string" ? record.model : undefined,
+      usage: parseSubagentUsage(record.usage),
     });
   }
   return out;

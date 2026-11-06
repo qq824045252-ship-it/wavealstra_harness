@@ -13924,6 +13924,30 @@ button.font-picker-item {
   font-variant-numeric: tabular-nums;
 }
 
+/* 子代理累计用量：四个参数一行（输入 / 缓存读 / 输出 / 命中），窄面板可折行 */
+.ro-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ro-usage-item {
+  white-space: nowrap;
+}
+
+.ro-usage-item b {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.ro-usage-item--good b { color: #34c759; }
+.ro-usage-item--warn b { color: #f5a623; }
+
 .ro-label {
   display: inline-flex;
   align-items: center;

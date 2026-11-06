@@ -10,12 +10,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { currentTerminalOwnerKey, useAppStore } from "@/store/appStore";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
+import type { SubagentUsage } from "@shared/subagent-model-config";
 import type { ExternalAgentRunDto } from "@shared/external-agent";
 import { modelBadgeTitle, type ModelBadge } from "@/lib/modelBadge";
 import {
   buildRuntimeOverview,
   formatElapsed,
   readableRole,
+  subagentUsageFields,
+  subagentUsageTitle,
   oneLine,
   type RuntimeOverviewVm,
 } from "./overviewRuntime";
@@ -32,6 +35,23 @@ function SectionTitle({ children, count }: { children: string; count?: number })
 
 function Dot({ state }: { state: "running" | "ok" | "err" }): React.JSX.Element {
   return <span className={`ro-dot ro-dot--${state}`} aria-hidden />;
+}
+
+/**
+ * 子代理累计用量的四个参数：输入 / 缓存读 / 输出 / 缓存命中率。
+ * 独立一行并允许折行：窄面板下宁可两行，也不压缩数值或溢出。
+ */
+function UsageGrid({ usage }: { usage?: SubagentUsage }): React.JSX.Element | null {
+  if (!usage) return null;
+  return (
+    <span className="ro-usage" title={subagentUsageTitle(usage)}>
+      {subagentUsageFields(usage).map((field) => (
+        <span key={field.key} className={`ro-usage-item${field.tone && field.tone !== "normal" ? ` ro-usage-item--${field.tone}` : ""}`}>
+          {field.label} <b>{field.value}</b>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /** 模型标签：显示在智能体名称下方一行（面板窄时也放得下完整名称）；完整标识与来源在 title。 */
@@ -194,6 +214,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                     {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   </span>
                   <ModelChip badge={s.model} />
+                  <UsageGrid usage={s.usage} />
                   <span className="ro-sub">{s.work}</span>
                 </button>
               </li>
@@ -227,6 +248,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                       </span>
                     </div>
                     <ModelChip badge={d.model} />
+                    <UsageGrid usage={d.usage} />
                     <span className="ro-sub">{oneLine(d.summary, 60) || "—"}</span>
 
                     {/* 点击展开后的任务要求与完整输出结果 */}

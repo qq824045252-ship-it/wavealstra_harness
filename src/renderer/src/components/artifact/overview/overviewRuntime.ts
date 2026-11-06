@@ -22,7 +22,9 @@ import {
   extractSubagentDisplayNameFromToolResult,
   extractSubagentIdFromToolResult,
   parseSubagentResultDetails,
+  type SubagentUsage,
 } from "@shared/subagent-model-config";
+import { formatCount, formatRateDash, formatTokenCount } from "@shared/token-format";
 import {
   buildModelBadge,
   parseModelEvidenceFromOutput,
@@ -53,6 +55,8 @@ export interface RunningSubagentVm {
   elapsedMs: number;
   /** 该实例真正使用的模型（actual/resolved 记录值；拿不到则不显示） */
   model?: ModelBadge;
+  /** 该实例累计用量（还没有任何模型调用时不提供） */
+  usage?: SubagentUsage;
 }
 
 export type DoneSubagentState = "completed" | "failed" | "cancelled";
@@ -72,6 +76,8 @@ export interface DoneSubagentVm {
   detail?: string;
   /** 工具结果证据行解析出的模型（无证据则不显示） */
   model?: ModelBadge;
+  /** 该实例累计用量（旧消息的 details 无 usage 时不提供） */
+  usage?: SubagentUsage;
 }
 
 export type BackgroundState = "running" | "completed" | "failed";
@@ -174,6 +180,69 @@ function isActiveInstance(dto: SubagentSummaryDto): boolean {
   return dto.status === "running" || (dto.status === "idle" && dto.workerAlive === true);
 }
 
+/**
+ * 只有真的产生过调用才展示用量：turns=0 且 token 全零（刚 spawn、被拒绝）时
+ * 显示一排 0 只是噪声，宁可整块不显示。
+ */
+function usableUsage(usage: SubagentUsage | undefined): SubagentUsage | undefined {
+  if (!usage) return undefined;
+  const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  return total > 0 || usage.turns > 0 ? usage : undefined;
+}
+
+/**
+ * 缓存命中率：cacheRead / (cacheRead + 新输入 + 缓存写)，与用量统计面板同一口径
+ * （shared/usage-stats.cacheHitRate）。分母为 0 → null（界面显示「—」，不伪装成 0%）。
+ */
+export function subagentCacheHitRate(usage: SubagentUsage): number | null {
+  const denom = usage.cacheRead + usage.input + usage.cacheWrite;
+  if (!(denom > 0)) return null;
+  return usage.cacheRead / denom;
+}
+
+/** 子代理用量的一格（label + 已格式化 value）；命中率带好坏标记供着色。 */
+export interface SubagentUsageField {
+  key: "input" | "cacheRead" | "output" | "hit";
+  label: string;
+  value: string;
+  tone?: "normal" | "good" | "warn";
+}
+
+/**
+ * 四个显示参数：输入 / 缓存读 / 输出 / 缓存命中率。
+ * token 一律 M 口径（产品统一）；命中率无分母时「—」。
+ */
+export function subagentUsageFields(usage: SubagentUsage): SubagentUsageField[] {
+  const hit = subagentCacheHitRate(usage);
+  return [
+    { key: "input", label: "输入", value: formatTokenCount(usage.input) },
+    { key: "cacheRead", label: "缓存读", value: formatTokenCount(usage.cacheRead) },
+    { key: "output", label: "输出", value: formatTokenCount(usage.output) },
+    {
+      key: "hit",
+      label: "命中",
+      value: formatRateDash(hit),
+      // 与上下文弹窗的阈值一致：≥60% 绿，低于则提醒
+      tone: hit == null ? "normal" : hit >= 0.6 ? "good" : "warn",
+    },
+  ];
+}
+
+/** 悬停展示的完整分解（含缓存写 / 轮次 / 费用，不进窄行）。 */
+export function subagentUsageTitle(usage: SubagentUsage): string {
+  const parts = [
+    `新输入 ${formatTokenCount(usage.input)}`,
+    `缓存读 ${formatTokenCount(usage.cacheRead)}`,
+    `缓存写 ${formatTokenCount(usage.cacheWrite)}`,
+    `输出 ${formatTokenCount(usage.output)}`,
+  ];
+  const hit = subagentCacheHitRate(usage);
+  parts.push(`缓存命中率 ${formatRateDash(hit)}`);
+  if (usage.turns > 0) parts.push(`${formatCount(usage.turns)} 轮模型调用`);
+  if (usage.cost > 0) parts.push(`费用 $${usage.cost.toFixed(4)}`);
+  return `子代理累计用量：${parts.join(" · ")}`;
+}
+
 export function buildRunningSubagents(
   dtos: SubagentSummaryDto[],
   now: number,
@@ -188,6 +257,7 @@ export function buildRunningSubagents(
       work: oneLine(d.lastTask || (d.status === "running" ? "运行中" : "等待工具调用"), 56) || "运行中",
       elapsedMs: now - (d.lastPromptAt ?? d.createdAt ?? now),
       model: subagentModelBadge(d, modelNames),
+      usage: usableUsage(d.usage),
     }));
 }
 
@@ -227,6 +297,7 @@ export function buildDoneSubagents(
       detail?: string;
       model?: ModelBadge;
       displayName?: string;
+      usage?: SubagentUsage;
     }
   >();
   for (const msg of messages) {
@@ -260,6 +331,8 @@ export function buildDoneSubagents(
             detail: item.finalText || item.errorMessage || tc.output || prev?.detail,
             model,
             displayName: item.displayName ?? prev?.displayName,
+            // results[].usage 已是该实例的累计值：后一次结果直接覆盖，不重复累加
+            usage: item.usage ?? prev?.usage,
           });
         }
         continue;
@@ -299,6 +372,7 @@ export function buildDoneSubagents(
     task: v.task,
     detail: v.detail,
     model: v.model,
+    usage: usableUsage(v.usage),
   }));
 }
 

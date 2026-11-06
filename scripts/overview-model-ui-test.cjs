@@ -3,6 +3,7 @@
  *
  * 覆盖：主 Agent / 运行中子代理 / 完成态子代理都显示模型短标签；
  * title 保留完整 provider/model 与来源；窄面板下 chip 不溢出；
+ * 子代理累计用量的四个参数（输入 / 缓存读 / 输出 / 命中率）只对产生过调用的实例显示；
  * 运行中子代理行仍保持「点击打开临时 Chat」的既有行为。
  * 这是渲染器夹具验收（注入 IPC 数据 + Electron 截图），不等于打包应用验收。
  */
@@ -89,6 +90,36 @@ runRendererFixture({ name: 'overview-model-ui', width: 420, height: 640 }, async
     `[...document.querySelectorAll('.ro-model')].map((el) => { const r = el.getBoundingClientRect(); return { width: r.width, left: r.left, right: r.right }; })`,
   );
   assert(boxes.every((box) => box.width > 0 && box.left >= 0 && box.right <= 420), `chip 必须完整落在面板内（${JSON.stringify(boxes)}）`);
+
+  // 子代理累计用量：只有真的调用过模型的那一行显示，未调用不伪造 0M
+  const usages = await evaluate(
+    `[...document.querySelectorAll('.ro-usage')].map((el) => { const r = el.getBoundingClientRect(); return { text: el.textContent.trim(), title: el.title, width: r.width, right: r.right }; })`,
+  );
+  // 四个参数：输入 / 缓存读 / 输出 / 命中（运行中行与完成态行各 4 格）
+  const items = await evaluate(
+    `[...document.querySelectorAll('.ro-usage-item')].map((el) => { const r = el.getBoundingClientRect(); return { text: el.textContent.trim(), right: r.right, width: r.width }; })`,
+  );
+  // 完成态行同样展示四参数（数据来自 details.results[].usage）
+  const doneUsage = await evaluate(
+    `(() => { const row = document.querySelector('.ro-row--done'); return row ? [...row.querySelectorAll('.ro-usage-item')].map((el) => el.textContent.trim()).join(' | ') : ''; })()`,
+  );
+  assert(doneUsage === '输入 0.002M | 缓存读 0.04M | 输出 <0.001M | 命中 93%',
+    `完成态显示四参数（${doneUsage}）`);
+
+  const runningUsage = await evaluate(
+    `(() => { const row = document.querySelector('.ro-list--subagents .ro-row'); return row ? [...row.querySelectorAll('.ro-usage-item')].map((el) => el.textContent.trim()).join(' | ') : ''; })()`,
+  );
+  assert(runningUsage === '输入 0.001M | 缓存读 0.008M | 输出 <0.001M | 命中 89%',
+    `运行中行四参数顺序固定（${runningUsage}）`);
+  assert(items.length === 8, `两行共 8 格（${items.length}）`);
+  assert(items.every((it) => it.width > 0 && it.right <= 420), '四参数格不越出窄面板');
+  const hitTone = await evaluate(`document.querySelector('.ro-usage-item--good')?.textContent.trim() ?? ''`);
+  assert(hitTone === '命中 89%', `高命中率走着色分支（${hitTone}）`);
+  assert(usages.length === 2, `运行中与完成态各一处用量块（${usages.length} 处）`);
+  assert(usages[0].title.includes('子代理累计用量：新输入 0.001M')
+    && usages[0].title.includes('缓存命中率 89%')
+    && usages[0].title.includes('费用 $0.0123'), `title 给出完整分解（${usages[0].title}）`);
+  assert(usages.every((u) => u.width > 0 && u.right <= 420), '用量块不越出窄面板');
 
   // 既有交互不变：点击运行中子代理行 → 打开临时 Chat
   await evaluate(`document.querySelector('.ro-list--subagents .ro-btn').click()`);

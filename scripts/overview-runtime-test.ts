@@ -16,6 +16,9 @@ import {
   formatElapsed,
   oneLine,
   readableRole,
+  subagentCacheHitRate,
+  subagentUsageFields,
+  subagentUsageTitle,
   extractSubagentId,
 } from "@/components/artifact/overview/overviewRuntime";
 import type { ChatMessage } from "@/types";
@@ -582,6 +585,57 @@ console.log("== 模型标识展示（主 Agent / 运行中 / 完成态） ==");
   assert(shortModelLabel("provider/this-is-an-extremely-long-model-identifier-for-testing").endsWith("…"), "超长短名截断");
   assert(modelSourceLabel("role") === "角色指定" && modelSourceLabel(undefined) === undefined, "来源文案映射/缺省");
   assert(modelBadgeTitle({ label: "x", full: "p/x", source: "手动指定" }) === "模型：p/x · 来源：手动指定", "title 带完整标识与来源");
+}
+
+console.log("== 子代理累计用量（运行中 DTO + 完成态 details.usage） ==");
+{
+  const used = { input: 1_000, output: 200, cacheRead: 8_000, cacheWrite: 0, cost: 0.0123, contextTokens: 42_000, turns: 3 };
+  const running = buildRunningSubagents([subagentDto({ subagentId: "sa-u1", usage: used })], NOW);
+  assert(running[0].usage?.turns === 3 && running[0].usage?.cacheRead === 8_000, "运行中：DTO usage 透传");
+
+  // 四个显示参数：输入 / 缓存读 / 输出 / 命中（顺序固定，label 字面量断言）
+  const fields = subagentUsageFields(running[0].usage!);
+  assert(fields.map((f) => f.label).join("/") === "输入/缓存读/输出/命中", `四参数顺序（${fields.map((f) => f.label).join("/")}）`);
+  assert(fields[0].value === "0.001M" && fields[1].value === "0.008M" && fields[2].value === "<0.001M",
+    `token 走 M 口径（${fields.map((f) => f.value).join(" ")}）`);
+  assert(subagentCacheHitRate(running[0].usage!) !== null && fields[3].value === "89%", `命中率 = cacheRead/(input+cacheRead+cacheWrite)（${fields[3].value}）`);
+  assert(fields[3].tone === "good", "高命中率标记 good（着色用）");
+
+  const coldFields = subagentUsageFields({ input: 3_000, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 });
+  assert(coldFields[3].value === "0%" && coldFields[3].tone === "warn", "没命中过 → 0% 且标记 warn");
+  assert(subagentCacheHitRate({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }) === null,
+    "分母为 0 → null（界面显示 — 而非 0%）");
+
+  assert(subagentUsageTitle(running[0].usage!).startsWith("子代理累计用量：新输入 0.001M"), "title 给出分解");
+  assert(subagentUsageTitle(running[0].usage!).includes("缓存命中率 89%"), "title 带命中率口径");
+  assert(subagentUsageTitle(running[0].usage!).includes("费用 $0.0123"), "title 带真实费用");
+
+  const untouched = buildRunningSubagents([subagentDto({ subagentId: "sa-u2" })], NOW);
+  assert(untouched[0].usage === undefined, "还没调用模型（全零）→ 不展示用量，不显示 0M");
+
+  const detailWithUsage = JSON.stringify({
+    mode: "single",
+    results: [
+      { subagentId: "durable-u1", agent: "worker", status: "completed", exitCode: 0, task: "扫描", usage: used,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "完成" }] }] },
+      { subagentId: "durable-u2", agent: "scout", status: "completed", exitCode: 0, task: "扫描", usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 } },
+      { subagentId: "durable-u3", agent: "scout", status: "failed", exitCode: 1, errorMessage: "x", usage: { input: "bad" } },
+    ],
+  });
+  const done = buildDoneSubagents([
+    msg({ id: "usage-1", blocks: [{ type: "tool", toolCall: { id: "tu", tool: "subagent", summary: "s", status: "success" as const, output: "完成", detail: detailWithUsage } }] }),
+  ]);
+  const withUsage = done.find((item) => item.id === "durable-u1")!;
+  assert(withUsage.usage?.input === 1_000 && withUsage.usage?.turns === 3, "完成态：details.results[].usage 透传");
+  assert(subagentUsageFields(withUsage.usage!).map((f) => f.value).join("/") === "0.001M/0.008M/<0.001M/89%",
+    "完成态与运行中同一口径（四参数同值）");
+  assert(done.find((item) => item.id === "durable-u2")?.usage?.turns === 1, "小用量也展示");
+  assert(done.find((item) => item.id === "durable-u3")?.usage === undefined, "usage 畸形 → 视为未知，不补零");
+
+  const legacy = buildDoneSubagents([
+    msg({ id: "usage-2", blocks: [{ type: "tool", toolCall: { id: "tl", tool: "subagent", summary: "s", status: "success" as const, output: "> subagent: sa-legacy-1\n完成" } }] }),
+  ]);
+  assert(legacy[0].usage === undefined, "旧消息无结构化 usage → 不展示");
 }
 
 console.log("== 纯函数（elapsed / 截断 / role / id 解析） ==");

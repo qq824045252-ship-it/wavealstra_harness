@@ -63,6 +63,25 @@ state.tasks = [
               summary: "subagent",
               status: "success",
               output: "\n> subagent-name: 杰尼龟\n> subagent: sa-ui-done\nResolved model: openai/gpt-5; thinking: high\n\n审查完成：未发现阻断问题",
+              // Durable 结构化结果：完成态行的累计用量只能从 details.results[].usage 拿
+              detail: JSON.stringify({
+                mode: "single",
+                concurrency: { workers: 1, queued: 0, maxConcurrency: 2 },
+                results: [
+                  {
+                    agent: "scout",
+                    agentSource: "user",
+                    task: "审查变更",
+                    subagentId: "sa-ui-done",
+                    displayName: "杰尼龟",
+                    status: "completed",
+                    exitCode: 0,
+                    resolvedModel: "openai/gpt-5",
+                    usage: { input: 2_000, output: 400, cacheRead: 40_000, cacheWrite: 1_000, cost: 0.05, contextTokens: 9_000, turns: 4 },
+                    messages: [{ role: "assistant", content: [{ type: "text", text: "审查完成：未发现阻断问题" }] }],
+                  },
+                ],
+              }),
             },
           },
         ],
@@ -74,7 +93,9 @@ state.tasks = [
 (window as any).api = {
   subagent: {
     active: async () => [
-      subagent({ subagentId: "sa-ui-1", role: "代码审查", resolvedModel: "openai/gpt-5", actualModel: "GPT-5 · Codex", modelSource: "invocation", lastTask: "审查 auth 补丁" }),
+      subagent({ subagentId: "sa-ui-1", role: "代码审查", resolvedModel: "openai/gpt-5", actualModel: "GPT-5 · Codex", modelSource: "invocation", lastTask: "审查 auth 补丁",
+        // 累计用量：运行中行展示「总量 · 轮次」，分解在 title
+        usage: { input: 1_000, output: 200, cacheRead: 8_000, cacheWrite: 0, cost: 0.0123, contextTokens: 42_000, turns: 3 } }),
       subagent({ subagentId: "sa-ui-2", role: "资料检索", resolvedModel: "anthropic/claude-opus-4", modelSource: "role", lastTask: "检索成对凭证规范" }),
       subagent({ subagentId: "sa-ui-3", role: "测试 runner", resolvedModel: "deepseek/deepseek-v4.1-flash", modelSource: "parent", lastTask: "跑 test:all" }),
       // displayName：纯显示字段（允许中文），渲染层优先于 role/id
