@@ -584,14 +584,16 @@ export class DurableBotService {
     if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
     try {
       const recovered = await this.withRecovery(taskId, async open => {
-        const snapshot = beforeEntryId === undefined ? await open.runtime.refresh() : await open.runtime.loadEarlier(beforeEntryId);
-        return { runtime: open.runtime, snapshot, modelRepair: open.modelRepair };
+        const block = beforeEntryId === undefined ? undefined : await open.runtime.loadHistoryBlock(beforeEntryId);
+        const snapshot = block ? open.runtime.snapshot : await open.runtime.refresh();
+        return { runtime: open.runtime, snapshot, block, modelRepair: open.modelRepair };
       });
       await this.projections.get(taskId);
       const recovery = durableHistoryRecovery(recovered.runtime.repairReport);
       // 复述任务当前模型（可能刚刚被目录漂移修复过），渲染层据此校正输入框的模型选择。
       const modelId = this.options.db.getTask(taskId)?.modelId;
-      return { messages: recovered.snapshot.messages, durable: recovered.snapshot, cwd: this.binding(taskId)?.cwd,
+      return { messages: recovered.block?.messages ?? recovered.snapshot.messages, durable: recovered.snapshot,
+        ...(recovered.block ? { page: { epoch: recovered.block.epoch, before: recovered.block.before } } : {}), cwd: this.binding(taskId)?.cwd,
         ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}),
         ...(recovery ? { sessionRecovery: recovery } : {}) };
     } catch (error) {

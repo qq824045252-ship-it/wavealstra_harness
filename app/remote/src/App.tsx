@@ -6,7 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary, RemoteTaskHistory } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
 
 /** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
 const EMPTY_MESSAGE_IMAGES: RemoteImageArtifact[] = []
@@ -15,6 +15,8 @@ import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
 import { RemoteImageChipList, resolveImageOwnerId } from './components/RemoteImages'
 import { buildSpaceTaskGroups, spaceBreadcrumb, type SpaceGroupNode } from './lib/spaceGroups'
+import { useHistoryPagination } from './lib/historyPagination'
+import { prependScrollTop } from './lib/historyWindow'
 import { taskModeLabel } from './lib/taskModeLabel'
 import { taskDotLabel, taskStatusDot } from './lib/taskStatusDot'
 import { ConnectPage } from './components/ConnectPage'
@@ -297,6 +299,35 @@ function HomePage() {
 /* ==========================================================================
    3. Chat Page (Claude 1:1 Conversation Stream, Markdown & Thinking)
    ========================================================================== */
+/** 时间轴首条消息 id：用来判断这一轮渲染是不是「更早历史前插」 */
+function timelineFirstMessageId(element: HTMLElement): string | undefined {
+  return element.querySelector<HTMLElement>('[data-message-id]')?.dataset.messageId
+}
+
+/**
+ * 前插块里的图片 / SVG / 字体之后还会长高，布局时刻的一次补偿不够。
+ * 盯住原首条消息在容器内的偏移，一漂就补回；一旦 scrollTop 偏离我们写入的值
+ * （用户自己滚了）或容器已卸载就立即放手，绝不与手势抢视口。最多 40 帧。
+ */
+function guardPrependAnchor(el: HTMLDivElement, prevFirstId: string | undefined, offset: number): void {
+  if (!prevFirstId) return
+  let expected = el.scrollTop
+  let frames = 0
+  const tick = (): void => {
+    if (!el.isConnected || Math.abs(el.scrollTop - expected) > 2) return
+    const node = el.querySelector<HTMLElement>(`[data-message-id="${prevFirstId}"]`)
+    if (!node) return
+    const drift = node.getBoundingClientRect().top - el.getBoundingClientRect().top - offset
+    if (Math.abs(drift) > 1) {
+      el.scrollTop += drift
+      expected = el.scrollTop
+    }
+    frames += 1
+    if (frames < 40) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+
 function ChatPage() {
   const activeTaskId = useRemoteStore((state) => state.activeTaskId)!
   const histories = useRemoteStore((state) => state.histories)
@@ -323,11 +354,9 @@ function ChatPage() {
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const isNearBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
-  const [loadingEarlier, setLoadingEarlier] = useState(false)
-  const [olderPage, setOlderPage] = useState<{ taskId: string; history: RemoteTaskHistory }>()
-  const visiblePage = olderPage?.taskId === activeTaskId && olderPage?.history.durable?.epoch === histories[activeTaskId]?.durable?.epoch ? olderPage?.history : undefined
-  useEffect(() => { setOlderPage(undefined); setEarlierError(null) }, [activeTaskId, histories[activeTaskId]?.durable?.epoch])
-  const [earlierError, setEarlierError] = useState<string | null>(null)
+  // 更早历史是「前插块」而不是整页替换：时间轴永远是「已加载的更早块 + 实时窗口」这一条连续的线。
+  // 块与游标由 useHistoryPagination 持有（换任务/换世代时自动清空），这里不再单独存一页历史。
+
   // 发送时记录「当前用户气泡数」，等新气泡真正渲染（数量 +1）再锚定置顶。
   // 不能再用一次性 flag：回复中追加提问时，旧回复的 text_delta 会抢跑 effect、
   // 把 flag 消耗在旧气泡上，导致新提问沉底（用户反馈 bug）。
@@ -341,17 +370,31 @@ function ChatPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const task = bootstrap?.tasks.find((item) => item.id === activeTaskId)
+  const durable = histories[activeTaskId]?.durable
+  const runtime = runtimes[activeTaskId]
+  // 第一页更早历史的游标：契约字段 page.before 优先；实时窗口快照目前仍用 durable.historyBefore
+  // 表示「窗口里最早那条」，只能当入口兜底（服务端把 page 也挂到实时窗口后这行自然失效）。
+  // 之后每一页的游标严格取上一块响应的 page.before，不再回看 durable。
+  const firstPageBefore = histories[activeTaskId]?.page?.before ?? durable?.historyBefore
+  const { olderBlocks, handleWheel, handleTouchStart, handleTouchMove, consumePrependAnchor, clearOlderBlocks } = useHistoryPagination({
+    activeTaskId, epoch: durable?.epoch, seedCursor: firstPageBefore, timelineRef,
+  })
   // 只订阅当前任务的切片：其它任务的 patch 会让 histories/live 整对象换引用，
   // 若直接依赖整对象，看 A 时 B 的流式增量也会触发这里全量重建时间轴。
-  const activeHistoryMessages = visiblePage ? visiblePage.messages : histories[activeTaskId]?.messages
-  const activeLive = visiblePage ? undefined : live[activeTaskId]
+  // 可见历史 = 已加载的更早块（数组旧→新，flat 后即时间正序）+ 实时窗口。
+  const durableEpoch = durable?.epoch
+  const activeHistoryMessages = useMemo(() => {
+    const windowMessages = histories[activeTaskId]?.messages ?? []
+    if (!olderBlocks.length) return windowMessages
+    // 世代变化（重建/切分支）后旧块立即不参与渲染：不能等清空 effect 落地，否则会闪一帧重复轮次
+    const visible = durableEpoch === undefined ? olderBlocks : olderBlocks.filter((block) => block.epoch === durableEpoch)
+    if (!visible.length) return windowMessages
+    return [...visible.flatMap((block) => block.messages), ...windowMessages]
+  }, [olderBlocks, histories[activeTaskId]?.messages, durableEpoch])
+  const activeLive = live[activeTaskId]
   const messages = useMemo(() => buildRemoteTimeline(
-    activeHistoryMessages ?? [], activeLive ?? {},
+    activeHistoryMessages, activeLive ?? {},
   ), [activeHistoryMessages, activeLive])
-
-  const runtime = runtimes[activeTaskId]
-  const durable = histories[activeTaskId]?.durable
-  const beforeHistory = visiblePage ? visiblePage.durable?.historyBefore : durable?.historyBefore
   const interactionsByMessage = useMemo(() => {
     const map = new Map<string, RemoteConversationInteraction[]>()
     for (const interaction of runtime?.interactions ?? []) {
@@ -424,10 +467,18 @@ function ChatPage() {
   useLayoutEffect(() => {
     const el = timelineRef.current
     if (!el) return
+    // 前插补偿优先于任何「新轮次置顶」判定：上拉加载更早历史不是一次新的用户回合，
+    // 不能被下面的 pin 拉回底部。内容在顶部变长，scrollTop 同步加同样的高度，视觉位置才不动。
+    const prepend = consumePrependAnchor(timelineFirstMessageId(el))
+    if (prepend) {
+      el.scrollTop = prependScrollTop(prepend.top, prepend.scrollHeight, el.scrollHeight)
+      guardPrependAnchor(el, prepend.prevFirstId, prepend.prevFirstOffset)
+    }
     const users = el.querySelectorAll<HTMLElement>('.message-bubble-user')
     const user = users[users.length - 1]
     const previous = turnView.current
-    const ownSend = pendingAnchorUserCountRef.current !== null && users.length > pendingAnchorUserCountRef.current
+    // 前插同样会让 user 气泡数 +N：不能让它冒充「我刚发的那一条」，否则真正的发送锚定会被提前吃掉
+    const ownSend = !prepend && pendingAnchorUserCountRef.current !== null && users.length > pendingAnchorUserCountRef.current
     /**
      * 「进任务时对齐一次」必须**每任务只发生一次**。
      * 旧判定是 previous.userCount === 0 && users.length > 0：只要中途出现过一次
@@ -438,7 +489,8 @@ function ChatPage() {
     const ownsTaskEntry = pinnedTask.current !== activeTaskId
     const firstDataForTask = ownsTaskEntry && users.length > 0
     if (firstDataForTask) pinnedTask.current = activeTaskId
-    const pin = firstDataForTask || ownSend || (users.length > previous.userCount && isNearBottomRef.current)
+    // 前插会让 user 气泡变多，但那不是新提问：prepend 时一律不许 pin（否则一上拉就被拽回底部）
+    const pin = !prepend && (firstDataForTask || ownSend || (users.length > previous.userCount && isNearBottomRef.current))
     turnView.current = { taskId: activeTaskId, userCount: users.length }
     if (ownSend) pendingAnchorUserCountRef.current = null
     // A passive snapshot must not change the scroll range either. Recomputing
@@ -475,11 +527,17 @@ function ChatPage() {
   }, [activeTaskId])
 
   const scrollToBottom = () => {
+    // 回到实时窗口：累积的更早块整组丢弃，游标回到第一页（下次上拉重新按页加载）
+    clearOlderBlocks()
     const el = timelineRef.current
     if (!el) return
     isNearBottomRef.current = true
     setShowScrollBottom(false)
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    // 清块会让内容变短：等 DOM 提交后再滚，避免拿着旧的 scrollHeight 冲到错的位置
+    requestAnimationFrame(() => {
+      if (timelineRef.current !== el) return
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
   }
 
   const armUserAnchor = () => {
@@ -589,23 +647,12 @@ function ChatPage() {
           ref={timelineRef}
           className="chat-timeline"
           onScroll={handleScroll}
+          onWheel={handleWheel}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
         >
-          {visiblePage && <button type="button" onClick={() => setOlderPage(undefined)}>返回最新消息</button>}
-          {beforeHistory !== undefined && <button type="button" disabled={loadingEarlier} onClick={async () => {
-            if (loadingEarlier) return
-            const element = timelineRef.current, taskId = activeTaskId
-            isNearBottomRef.current = false
-            setLoadingEarlier(true); setEarlierError(null)
-            try {
-              const client = useRemoteStore.getState().client
-              if (!client) throw new Error('未连接电脑')
-              const history = await client.history(taskId, beforeHistory)
-              if (useRemoteStore.getState().histories[taskId]?.durable?.epoch === history.durable?.epoch) setOlderPage({ taskId, history })
-              requestAnimationFrame(() => { if (element && timelineRef.current === element) element.scrollTop = 0 })
-            } catch (error) { setEarlierError(error instanceof Error ? error.message : String(error)) }
-            finally { setLoadingEarlier(false) }
-          }}>{loadingEarlier ? '正在加载历史…' : '加载更早的消息'}</button>}
-          {earlierError && <div role="alert">{earlierError}</div>}
+          {/* 更早历史是无缝前插：贴顶继续上拉即加载，不再有分页按钮条，也没有隐藏触发点。
+              手机 WebView 没有 wheel 事件，所以同一判定同时挂在 touchmove 上。 */}
           {messages.map((message) => {
             if (message.role === 'user') {
               return (

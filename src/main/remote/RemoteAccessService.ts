@@ -193,12 +193,14 @@ export class RemoteAccessService {
 
   async history(taskId: string, beforeEntryId?: number) {
     if (!this.db.getTask(taskId)) return null;
+    const nativeProjected = mapRemoteHistory(taskId, await this.agent.loadTaskHistory(taskId, beforeEntryId));
+    // 更早历史块只回 durable 存储里那一页：块靠 page.before 游标前进，
+    // 掺入 ACP 全量历史会让块首条与客户端记录的 blockIds 不匹配（前插补偿失效）
+    // 并且每页都重发同一批 ACP 消息。ACP 轮次只属于实时窗口投影。
+    if (beforeEntryId !== undefined) return this.images.enrichHistory(taskId, nativeProjected);
     // 与桌面端 loadTaskHistory IPC 一致：ACP 外部 Agent 的轮次存在
     // external_agent_runs 而非 builtin session 文件，必须合入否则手机端看不到
-    const [nativeHistory, externalHistory] = await Promise.all([
-      this.agent.loadTaskHistory(taskId, beforeEntryId),
-      Promise.resolve(this.externalAgent?.history(taskId) ?? { messages: [], runs: [] }),
-    ]);
+    const externalHistory = this.externalAgent?.history(taskId) ?? { messages: [], runs: [] };
     // 外部 Agent 消息 → 手机端投影时补上 acp 运行信息（ACP 权限卡片与续聊都依赖它）
     const runsById = new Map(externalHistory.runs.map((run) => [run.runId, run]));
     const projected = externalHistory.messages.map((message) => {
@@ -209,7 +211,6 @@ export class RemoteAccessService {
       return { ...projectedMessage, acp: mapRemoteAcpRun(run) };
     });
     // 先在「手机端投影」这一层合并，再交给图片富化，避免把 Remote 形状塞回 ChatMessageDto
-    const nativeProjected = mapRemoteHistory(taskId, nativeHistory);
     if (!projected.length) return this.images.enrichHistory(taskId, nativeProjected);
     return this.images.enrichHistory(taskId, {
       ...nativeProjected,

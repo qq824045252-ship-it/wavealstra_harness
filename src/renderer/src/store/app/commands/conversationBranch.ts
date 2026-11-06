@@ -1,3 +1,4 @@
+import { mergeHistoryWindow } from "../../../lib/historyWindow";
 import type { CreateConversationBranchRequest } from "../../../../../shared/conversation-branch";
 import type { Task } from "../../../types";
 import type { AppActions } from "../actions";
@@ -15,7 +16,7 @@ export function createConversationBranchActions(
       const taskId = state.activeTaskId;
       if (!taskId || state.branchCreatingTaskId === taskId) return false;
       const task = state.tasks.find((t) => t.id === taskId);
-      const messages = task?.historyPage?.messages ?? task?.messages ?? [];
+      const messages = task?.historyWindow ? mergeHistoryWindow([task.historyWindow.messages], task.messages) : task?.messages ?? [];
       // 过滤后 UI 序号（辅助锚点；主锚点是 entryId，§7.1）
       const targetIndex = messages.findIndex(
         (message) => message.id === messageId,

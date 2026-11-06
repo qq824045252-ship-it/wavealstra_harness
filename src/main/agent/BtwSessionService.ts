@@ -53,8 +53,10 @@ export class BtwSessionService {
     let history = await this.deps.history(parentTaskId);
     if (history.historyError) throw new Error(history.historyError);
     let messages = history.messages;
-    while (messages.length < 60 && history.durable?.historyBefore !== undefined) {
-      history = await this.deps.history(parentTaskId, history.durable.historyBefore);
+    let before = history.durable?.historyBefore;
+    while (messages.length < 60 && before !== undefined) {
+      history = await this.deps.history(parentTaskId, before);
+      before = history.page?.before;
       if (history.historyError) throw new Error(history.historyError);
       messages = [...history.messages, ...messages].slice(-60);
     }

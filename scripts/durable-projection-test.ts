@@ -84,9 +84,9 @@ try {
   const allMessages = new Map(visible.messages.map(message => [message.id, message]));
   let before = visible.historyBefore;
   while (before !== undefined) {
-    const page = await runtime.loadEarlier(before);
+    const page = await runtime.loadHistoryBlock(before);
     for (const message of page.messages) allMessages.set(message.id, message);
-    before = page.historyBefore; pages++; assert(pages < 10);
+    before = page.before; pages++; assert(pages < 10);
     assert.equal(runtime.snapshot, visible, "paging never changes the live snapshot or another observer");
   }
   assert.equal(allMessages.size, history.length);
@@ -101,7 +101,7 @@ try {
   assert.equal(responses, 2);
   const withTool = runtime.snapshot.messages.find(message => message.tools?.some(tool => tool.id === "echo-one"));
   assert(withTool?.entryId);
-  const toolPage = await runtime.loadEarlier(Number(withTool.entryId), 1);
+  const toolPage = await runtime.loadHistoryBlock(Number(withTool.entryId), 1);
   assert.equal(toolPage.messages[0]?.tools?.find(tool => tool.id === "echo-one")?.status, "success", "page boundaries retain later tool results");
   const firstCapsule = requests[0].filter(message => message.role === "user" && typeof message.content === "string" && message.content.includes("source revision"));
   assert.equal(firstCapsule.length, 1);
@@ -319,11 +319,11 @@ try {
   const seen = new Set(tail.messages.map(message => message.id));
   let cursor = tail.historyBefore;
   while (cursor !== undefined) {
-    const page = await bounded.loadEarlier(cursor);
+    const page = await bounded.loadHistoryBlock(cursor);
     assert(page.messages.length <= DURABLE_HISTORY_ENTRY_LIMIT);
-    assert(page.historyBefore === undefined || page.historyBefore < cursor);
+    assert(page.before === undefined || page.before < cursor);
     page.messages.forEach(message => seen.add(message.id));
-    cursor = page.historyBefore;
+    cursor = page.before;
   }
   assert.equal(seen.size, 600, "every evicted message remains reachable by read-only pages");
   assert.equal(bounded.snapshot, tail);

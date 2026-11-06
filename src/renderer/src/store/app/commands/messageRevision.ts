@@ -1,3 +1,4 @@
+import { mergeHistoryWindow } from "../../../lib/historyWindow";
 import type { AgentRegenerateResult } from "../../../../../shared/agent-ipc";
 import { normalizedEditorTextHash } from "../../../../../shared/regenerate-hash";
 import {
@@ -21,7 +22,7 @@ export function createMessageRevisionActions(
       if (!activeTaskId) return;
       const task = get().tasks.find((item) => item.id === activeTaskId);
       if (!task) return;
-      const messages = task.historyPage?.messages ?? task.messages;
+      const messages = task.historyWindow ? mergeHistoryWindow([task.historyWindow.messages], task.messages) : task.messages;
       const messageIndex = messages.findIndex(
         (message) => message.id === messageId,
       );
@@ -93,7 +94,7 @@ export function createMessageRevisionActions(
       if (!activeTaskId) return;
       const task = get().tasks.find((t) => t.id === activeTaskId);
       if (!task) return;
-      const messages = task.historyPage?.messages ?? task.messages;
+      const messages = task.historyWindow ? mergeHistoryWindow([task.historyWindow.messages], task.messages) : task.messages;
 
       const idx = messages.findIndex((m) => m.id === messageId);
       const sourceAssistant = messages[idx];

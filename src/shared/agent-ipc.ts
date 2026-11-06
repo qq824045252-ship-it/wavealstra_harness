@@ -2100,6 +2100,12 @@ export interface SessionHistoryRecoveryDto {
 export interface TaskHistoryDto {
   durable?: import("./durable-bot").DurableBotSnapshot;
   messages: ChatMessageDto[];
+  /**
+   * 带 beforeEntryId 读取「更早历史块」时的块元数据；顶层 messages 即该块消息，
+   * durable 仍是实时窗口快照（两者的 epoch 必须一致，否则客户端丢弃该块）。
+   * 缺省 = 本次读取是实时窗口，不是历史块。
+   */
+  page?: { epoch: string; before?: number };
   artifacts?: ChatArtifactDto[];
   sessionFile?: string;
   cwd?: string;

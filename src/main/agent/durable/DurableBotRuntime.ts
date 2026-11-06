@@ -12,7 +12,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
-import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
+import type { BotToolMode, DurableBotSnapshot, DurableHistoryBlock } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { seedDurableBranch, type DurableBranchSeed } from "./DurableTaskBranch";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
@@ -429,20 +429,29 @@ export class DurableBotRuntime {
     return this.latest;
   }
 
-  async loadEarlier(beforeEntryId: number | undefined = this.historyBefore, limit = 50): Promise<DurableBotSnapshot> {
-    if (beforeEntryId === undefined) return this.refresh();
+  /**
+   * 读取一段更早历史的独立块（不改变实时窗口，也不写 latest）。
+   *
+   * 一页 50 条 entry 里可能有 0 条可见消息（toolResult / context-import / skill-read 都不产行），
+   * 所以空页时继续向前读，最多 4 轮；扫到最老仍为空则返回空块与 before=undefined。
+   */
+  async loadHistoryBlock(beforeEntryId: number, limit = 50): Promise<DurableHistoryBlock> {
     if (!Number.isSafeInteger(beforeEntryId) || beforeEntryId < 1) throw new Error("Invalid history cursor");
     const size = Math.max(1, Math.min(200, Math.floor(limit)));
     await this.projection;
-    const page = await this.conversation.entries({ maxEntryId: beforeEntryId as EntryId, order: "descending" }, size + 1, undefined, ctx);
-    const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
     const metadata = new Map<number, BotInputMetadata>();
-    await this.loadInputMetadata(entries, metadata);
     const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
     const history = new DurableHistoryProjection();
-    history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
-    // A tool's result can lie beyond this page. Resolve only these calls, without
-    // retaining the newer transcript or exposing unrelated messages in the page.
+    let before: number | undefined = beforeEntryId;
+    for (let round = 0; round < 4 && before !== undefined; round++) {
+      const page = await this.conversation.entries({ maxEntryId: before as EntryId, order: "descending" }, size + 1, undefined, ctx);
+      const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
+      await this.loadInputMetadata(entries, metadata);
+      history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
+      before = page.items[size]?.id;
+      if (history.messages.length) break;
+    }
+    // 工具结果可能位于块之后，只补齐对应调用，不引入其他消息。
     const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
     let cursor: Cursor | undefined;
     while (unresolved.size) {
@@ -457,8 +466,7 @@ export class DurableBotRuntime {
       if (!later.next) break;
       cursor = later.next;
     }
-    // A page is a read-only observation. It never changes the live cursor or other clients.
-    return { ...this.latest, messages: history.messages, historyBefore: page.items[size]?.id };
+    return { epoch: this.epoch, before, messages: history.messages };
   }
 
   /** The service releases and reopens after this atomic branch switch. */

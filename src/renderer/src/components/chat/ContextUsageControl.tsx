@@ -295,7 +295,7 @@ export default function ContextUsageControl({ executing = false }: Props): React
   });
   const historyMessages = useAppStore((s) => {
     const task = s.tasks.find((t) => t.id === s.activeTaskId);
-    return task?.historyPage?.messages ?? EMPTY_MESSAGES;
+    return task?.historyWindow?.messages ?? EMPTY_MESSAGES;
   });
   const skills = useAppStore((s) => s.skills ?? EMPTY_SKILLS);
 

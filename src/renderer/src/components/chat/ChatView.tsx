@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
-import type { Artifact, Space } from "@/types";
+import type { Artifact, ChatMessage, Space } from "@/types";
 import { heroCategories } from "@/mock/data";
 import MessageItem from "./MessageItem";
 import { durableMessageToChatMessage } from "@/store/app/messages/historyMapper";
@@ -51,6 +51,8 @@ import {
   shouldPinOnNewTurn,
   type FollowState,
 } from "@/lib/scrollFollow";
+import { isPrependOnly, mergeHistoryWindow } from "@/lib/historyWindow";
+import { useEarlierHistory } from "./useEarlierHistory";
 import { estimateMessageHeight } from "@/lib/messageSizeEstimate";
 
 /** 中等长度的历史已经可能包含巨大的工具/Markdown 内容，应尽早虚拟化。 */
@@ -319,6 +321,7 @@ function MessageList({
   scrollRef,
   apiRef,
   followStateRef,
+  programmaticTargetRef,
 }: {
   taskId: string;
   messages: NonNullable<ReturnType<typeof useActiveTask>>["messages"];
@@ -332,6 +335,8 @@ function MessageList({
   } | null>;
   /** 滚动意图状态机（单一真源；补偿决策与虚拟布局回调用） */
   followStateRef: React.MutableRefObject<FollowState>;
+  /** 未决的程序化滚动目标：非 null 时视口位置由外部补偿独占，虚拟器不得再补一次 */
+  programmaticTargetRef: React.MutableRefObject<number | null>;
 }): React.JSX.Element {
   const useVirtual = messages.length > MESSAGE_VIRTUALIZE_THRESHOLD;
   /** P2：滚动中冻结 measureElement，停止后再统一重测，避免每帧 ResizeObserver 重排 */
@@ -341,6 +346,7 @@ function MessageList({
 
   const virtualizer = useVirtualizer({
     count: messages.length,
+    getItemKey: (index) => messages[index]?.id ?? index,
     getScrollElement: () => scrollRef.current,
     // 内容感知估算：缩小首测 delta 与初始 totalSize 误差（滚动安全由
     // shouldAdjustScrollCompensation 保证，不依赖估算精度）
@@ -368,6 +374,7 @@ function MessageList({
         scrollOffset: (instance.scrollOffset ?? 0) + instance.scrollAdjustments,
         scrollDirection: instance.scrollDirection,
         follow: followStateRef.current.follow,
+        compensationOwned: programmaticTargetRef.current !== null,
       }),
     measureElement:
       typeof window !== "undefined" && navigator.userAgent.indexOf("Firefox") === -1
@@ -535,12 +542,15 @@ export default function ChatView(): React.JSX.Element {
     return "运行时策略";
   };
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const visiblePage = task?.historyPage?.epoch === task?.durable?.epoch ? task?.historyPage : undefined;
-  const beforeHistory = visiblePage ? visiblePage.historyBefore : task?.durable?.historyBefore;
-  const clearHistoryPage = () => useAppStore.setState(state => ({ tasks: state.tasks.map(row => row.id === task?.id ? { ...row, historyPage: undefined } : row) }));
-  useEffect(() => () => { useAppStore.setState(state => ({ tasks: state.tasks.map(row => row.id === task?.id ? { ...row, historyPage: undefined } : row) })); }, [task?.id]);
-  const [historyLoadError, setHistoryLoadError] = useState<string>();
+  /**
+   * 已加载的更早历史窗口。seed 是首次加载时实时窗口的 historyBefore：实时窗口一旦前滚驱逐，
+   * 这一段块与实时窗口之间就无法再保证衔接（中间消息已被逐出），必须整段作废。
+   */
+  const visibleWindow = task?.historyWindow?.epoch === task?.durable?.epoch
+    && task?.historyWindow?.seed === task?.durable?.historyBefore ? task?.historyWindow : undefined;
+  const beforeHistory = visibleWindow ? visibleWindow.before : task?.durable?.historyBefore;
+  /** 上一帧的消息列表：用来判定本轮渲染是「前插」还是真的出现了新消息 */
+  const previousDisplayMessagesRef = useRef<ChatMessage[]>([]);
   const [taskMenuOpen, setTaskMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -560,9 +570,12 @@ export default function ChatView(): React.JSX.Element {
   /** 诊断弹窗绑定当前任务：切换任务即关闭，避免仍显示上一个任务的记录 */
   useEffect(() => setDiagnosticsOpen(false), [task?.id]);
 
-  const displayMessages = useMemo(() => visiblePage ? botMessagePresentation(visiblePage.messages) : task?.durable !== undefined || task?.welcomeMode === "bot"
-    ? botMessagePresentation(task.messages, task.durable?.pendingInputs) : task?.messages ?? [],
-    [visiblePage, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
+  const displayMessages = useMemo(() => {
+    const live = task?.messages ?? [];
+    const messages = visibleWindow ? mergeHistoryWindow([visibleWindow.messages], live) : live;
+    return task?.durable !== undefined || task?.welcomeMode === "bot"
+      ? botMessagePresentation(messages, task.durable?.pendingInputs) : messages;
+  }, [visibleWindow, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
   const lastMessage = displayMessages[messageCount - 1];
@@ -619,6 +632,14 @@ export default function ChatView(): React.JSX.Element {
     lastScrollTopRef.current = target;
   }, []);
 
+  /** 更早历史的前插、游标推进、作废令牌与滚动补偿都归这个控制器管 */
+  const { requestEarlier, clearWindow } = useEarlierHistory({
+    taskId: task?.id,
+    cursor: beforeHistory,
+    scrollRef,
+    applyProgrammaticScrollTop,
+  });
+
   const latestUserMessageIdRef = useRef(latestUserMessageId);
   latestUserMessageIdRef.current = latestUserMessageId;
 
@@ -667,8 +688,12 @@ export default function ChatView(): React.JSX.Element {
     const historyRestored = previousMessageCount === 0 && messageCount > 0;
     previousTaskIdRef.current = task?.id;
     previousMessageCountRef.current = messageCount;
+    // 前插只往头部加旧消息：它不是一次新回合，不能拥有滚动写权限。
+    // 用「上一帧列表」判定而不是外部开关：少一个需要手动复位的可变状态。
+    const prepended = isPrependOnly(previousDisplayMessagesRef.current, displayMessages);
+    previousDisplayMessagesRef.current = displayMessages;
 
-    if (!hasMessages) return;
+    if (!hasMessages || prepended) return;
 
     // 新一轮置顶语义（P1-1）：仅「用户新消息」触发 resetAndPin；
     // assistant streaming 新消息仅在它是用户发送后的首个回复（前一条是 user）
@@ -746,6 +771,8 @@ export default function ChatView(): React.JSX.Element {
       const prevTop = lastScrollTopRef.current;
       lastScrollTopRef.current = el.scrollTop;
       const delta = el.scrollTop - prevTop;
+      // 位移动到顶时 wheel 已不再派发（scrollTop 卡在 0），抓拖滚动条/触摸的用户只能靠位移触发
+      if (delta < 0) requestEarlier();
       const s = followStateRef.current;
       if (
         !s.pointerScrolling &&
@@ -769,6 +796,7 @@ export default function ChatView(): React.JSX.Element {
     const markWheelIntent = (event: WheelEvent): void => {
       // 用户手势打断未决的程序滚动目标
       programmaticTargetRef.current = null;
+      if (event.deltaY < 0) requestEarlier();
       if (event.deltaY < 0) {
         // P2-1：wheel 上滚只登记候选（触底回弹/惯性零位移不锁存）；
         // 实际向上位移由 handleScroll → onFollowScroll(scrollDelta<0) 确认锁存。
@@ -831,7 +859,7 @@ export default function ChatView(): React.JSX.Element {
       document.removeEventListener("pointercancel", cancelPointerIntent);
       document.removeEventListener("keydown", markKeyboardIntent);
     };
-  }, [task?.id, hasMessages, commitFollow, bottomDistance]);
+  }, [task?.id, hasMessages, commitFollow, bottomDistance, requestEarlier]);
 
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
@@ -1052,27 +1080,6 @@ export default function ChatView(): React.JSX.Element {
               </div>
             </div>
           )}
-          {visiblePage && <button type="button" className="durable-history-earlier" onClick={clearHistoryPage}>返回最新消息</button>}
-          {beforeHistory !== undefined && <button type="button" className="durable-history-earlier" disabled={loadingEarlier}
-            onClick={async () => {
-              if (loadingEarlier) return;
-              const taskId = task.id;
-              const element = scrollRef.current;
-              setLoadingEarlier(true); setHistoryLoadError(undefined);
-              try {
-                if (!window.api?.agent) throw new Error("主进程 Agent API 未就绪");
-                const history = await window.api.agent.loadTaskHistory(taskId, beforeHistory);
-                if (history.historyError) throw new Error(history.historyError);
-                const page = history.durable;
-                if (page) useAppStore.setState(state => state.activeTaskId !== taskId ? state : ({
-                  tasks: state.tasks.map(row => row.id === taskId && row.durable?.epoch === page.epoch ? { ...row,
-                    historyPage: { epoch: page.epoch, historyBefore: page.historyBefore, messages: page.messages.map(durableMessageToChatMessage) } } : row),
-                }));
-                requestAnimationFrame(() => { if (element && scrollRef.current === element) applyProgrammaticScrollTop(0); });
-              } catch (error) { setHistoryLoadError(error instanceof Error ? error.message : String(error)); }
-              finally { setLoadingEarlier(false); }
-            }}>{loadingEarlier ? "正在加载历史…" : "加载更早的消息"}</button>}
-          {historyLoadError && <div role="alert">{historyLoadError}</div>}
           <MessageList
             taskId={task.id}
             key={task.id}
@@ -1082,19 +1089,20 @@ export default function ChatView(): React.JSX.Element {
             scrollRef={scrollRef}
             apiRef={listApiRef}
             followStateRef={followStateRef}
+            programmaticTargetRef={programmaticTargetRef}
           />
         </div>
         {/* 用户接管滚动（上拉阅读历史）时出现；点击 = 显式「回到底部」动作。
             位于 chat viewport overlay 层（非滚动容器内）：消息怎么滚/虚拟行怎么重测，
             按钮视觉位置都不移动；固定在 composer 上方、与内容列对齐。 */}
-        {!followVisible && (
+        {(!followVisible || visibleWindow) && (
           <button
             type="button"
             className="jump-to-bottom"
             title="回到底部"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
-              clearHistoryPage();
+              clearWindow();
               commitFollow(onResetForTask(followStateRef.current));
               requestAnimationFrame(() => {
                 pinUserMessageToTopRef.current();

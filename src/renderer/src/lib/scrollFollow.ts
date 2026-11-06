@@ -177,6 +177,11 @@ export interface CompensationContext {
   scrollDirection: "forward" | "backward" | null;
   /** 是否贴底跟随 */
   follow: boolean;
+  /**
+   * 视口位置由外部写入者独占（前插补偿等）：禁止虚拟器再补一次。
+   * 与 follow 的区别是 follow 表达「贴底跟随」，这里表达「这一次位移不是内容变高引起的」。
+   */
+  compensationOwned?: boolean;
 }
 
 /**
@@ -193,7 +198,7 @@ export interface CompensationContext {
  *   折叠线落在卡的真实内容内）会被此规则排除，不会把视口向下拖入卡片。
  */
 export function shouldAdjustScrollCompensation(ctx: CompensationContext): boolean {
-  if (ctx.follow) return false;
+  if (ctx.compensationOwned || ctx.follow) return false;
   if (ctx.scrollDirection === "backward") return false;
   if (ctx.delta === 0) return false;
   // 行真实下边缘 = 缓存高 + 本次增量；必须完全在折叠线上方（含边界）才补偿

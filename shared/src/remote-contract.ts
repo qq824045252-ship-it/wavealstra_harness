@@ -190,6 +190,12 @@ export interface RemoteTaskHistory {
   durable?: RemoteDurableSnapshot
   taskId: string
   messages: RemoteHistoryMessage[]
+  /**
+   * 带 beforeEntryId 读取「更早历史块」时的块元数据：顶层 messages 就是该块，
+   * before 是该块之前（更早）的下一页游标，undefined = 已到最老。
+   * 远端只能把这个块追加到列表前端，不能把它当成整页替换。
+   */
+  page?: { epoch: string; before?: number }
   imageArtifacts?: RemoteImageArtifact[]
   /**
    * 历史**完全打不开**时的人类可读原因。服务端必须如实回传，否则远端会把真实的存储/模型故障
