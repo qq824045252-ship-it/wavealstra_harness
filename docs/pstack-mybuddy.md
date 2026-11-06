@@ -98,7 +98,7 @@ The shared contract is [subagent-execution-policy.ts](../src/shared/subagent-exe
 - `worktree` requests a separate Git worktree even for a single task or chain step.
 - `shared` explicitly uses the supplied working directory. Parallel workers can then change the same files.
 
-The isolation decision is made once, while the dispatch is planned, and each child then runs exactly that decision. It counts only items that resolved to a usable role, model, and toolset, so a rejected item neither forces nor prevents a worktree for its peers. The result states the decision: an isolated task reports `Retained worktree:`, and a task in the supplied directory reports `Workspace: shared (<cwd>); <reason>`. The reason is also available in the tool details as `isolationNote`. It explains the resolution instead of announcing a degraded run:
+The isolation decision is made once, while the dispatch is planned, and each child then runs exactly that decision. It counts only items that resolved to a usable role, model, and toolset, so a rejected item neither forces nor prevents a worktree for its peers. A dispatch that an earlier release started replays under that release's isolation rule, so a resumed child keeps the workspace it already prepared. The result states the decision: an isolated task reports `Retained worktree:`, and a task in the supplied directory reports `Workspace: shared (<cwd>); <reason>`. The reason is also available in the tool details as `isolationNote`. It explains the resolution instead of announcing a degraded run:
 
 - A single task: `isolation:auto does not isolate a single task; writes land in the original directory`.
 - A `chain`: `isolation:auto does not isolate chain steps; each step writes to the original directory`.

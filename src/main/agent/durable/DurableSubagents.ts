@@ -169,7 +169,7 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       const dispatch = await api.memo<JsonRepresentation<Dispatch>>("dispatch", context)
         ?? await api.memo("dispatch", json(await planDispatch(params, api, context, options)), context);
       /** A dispatch memo written by an older release has no `kind`/`workspace`; reattach it safely. */
-      const items = dispatch.items.map(normalizePlanItem);
+      const items = dispatch.items.map(item => normalizePlanItem(item, dispatch));
       const results: SingleResult[] = [];
       /** D-1: the identity deadline observed by the first attempt; a retry must stay inside it. */
       const deadlines = new Map<number, number>();
@@ -398,17 +398,14 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   const plannedWorkers = Math.max(1, Math.min(limits.maxConcurrency, candidates.length));
   for (const { base, role, sourceCwd, tools, selection, explicitIsolation } of candidates) {
     const itemBase: PlanBase = { ...base, sourceCwd };
-    const writable = tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name));
-    const isolated = base.isolation === "worktree"
-      || (base.isolation === "auto" && mode === "parallel" && writable && plannedWorkers > 1);
-    if (!isolated) {
-      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection,
-        workspace: { kind: "shared", note: sharedIsolationNote({ requested: base.isolation, explicit: explicitIsolation,
-          mode, writable, workers: plannedWorkers, runnable: candidates.length }) } });
+    const workspace = resolveIsolation({ requested: base.isolation, explicit: explicitIsolation, mode,
+      writable: isWritable(tools), workers: plannedWorkers, runnable: candidates.length });
+    if (workspace.kind === "shared") {
+      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace });
       continue;
     }
     // A repository is probed at most once per dispatch; the receipt check stays per operation.
-    const requestedCheck: WorktreeIsolationRequest = base.isolation === "worktree" ? "worktree" : "auto";
+    const requestedCheck: WorktreeIsolationRequest = base.isolation === "auto" ? "auto" : "worktree";
     try {
       const inspection = inspections.get(sourceCwd) ?? inspectWorktreePreflight(sourceCwd, context.abortSignal, requestedCheck);
       inspections.set(sourceCwd, inspection);
@@ -426,12 +423,17 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
 }
 
 /**
- * D-5: why a run used the supplied directory. The note is evidence, not a warning: auto is defined as
- * "isolate the dispatches that can run concurrent writers", so every other dispatch resolves to shared.
+ * D-5: one place decides isolation and, when it declines to isolate, says why. The decision and its
+ * explanation used to be derived twice, which let them disagree; isolating only means "this dispatch
+ * can run more than one concurrent writer", so no other dispatch needs a separate copy of the tree.
  */
-function sharedIsolationNote(input: { requested: IsolationRequest; explicit: boolean; mode: Dispatch["mode"];
-  writable: boolean; workers: number; runnable: number }): string {
-  const note = input.requested === "shared"
+function resolveIsolation(input: { requested: IsolationRequest; explicit: boolean; mode: Dispatch["mode"];
+  writable: boolean; workers: number; runnable: number }): PlannedWorkspace {
+  if (input.requested === "worktree"
+    || (input.requested === "auto" && input.mode === "parallel" && input.writable && input.workers > 1)) {
+    return { kind: "worktree" };
+  }
+  const why = input.requested === "shared"
     ? 'isolation:"shared" was selected; writes land in the original directory, not an isolated copy'
     : input.mode === "single"
       ? "isolation:auto does not isolate a single task; writes land in the original directory"
@@ -444,7 +446,12 @@ function sharedIsolationNote(input: { requested: IsolationRequest; explicit: boo
             : `isolation:auto needs more than one concurrent writer; maxConcurrency=${input.workers} keeps the supplied directory`;
   const force = input.explicit && input.requested === "auto"
     ? ' isolation:"auto" has no isolation effect here; pass isolation:"worktree" to force a separate worktree.' : "";
-  return `${note}.${force}`;
+  return { kind: "shared", note: `${why}.${force}` };
+}
+
+/** One definition of "this toolset can change files": planning, execution and legacy replay share it. */
+function isWritable(tools: string[]): boolean {
+  return tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name));
 }
 
 export type WorktreePreflight = { repository: string; clean: boolean };
@@ -539,17 +546,22 @@ function rejectedResult(item: RejectedItem, dispatch: Dispatch): SingleResult {
 }
 
 /**
- * Durable replays the `dispatch` memo written by the release that started the call. Before v4 the
- * memo had no `kind`/`workspace`; normalizing it keeps an in-flight dispatch recoverable across an
- * upgrade instead of failing every child with a shape error.
+ * Durable replays the `dispatch` memo written by the release that started the call. Before v4 the memo
+ * carried `isolation` instead of a resolved workspace, so it is replayed under that release's rule
+ * (worktree.ts: `auto` isolated a parallel, write-capable child) rather than re-decided by the current
+ * policy. A child that already prepared its workspace keeps it either way, and runChild rejects a plan
+ * that contradicts a prepared workspace.
  */
-function normalizePlanItem(item: PlanItem): PlanItem {
-  if (item.kind === "run" || item.kind === "rejected") return item;
-  const legacy = item as unknown as { isolation?: IsolationRequest };
-  const workspace: PlannedWorkspace = legacy.isolation === "worktree"
+export function legacyPlannedWorkspace(isolation: IsolationRequest | undefined, mode: Dispatch["mode"], tools: string[]): PlannedWorkspace {
+  return isolation === "worktree" || (isolation !== "shared" && mode === "parallel" && isWritable(tools))
     ? { kind: "worktree" }
-    : { kind: "shared", note: "isolation was resolved by the release that started this dispatch" };
-  return { ...(item as PlannedChild), kind: "run", workspace };
+    : { kind: "shared", note: "isolation was resolved by the release that started this dispatch; writes land in the original directory, not an isolated copy" };
+}
+
+function normalizePlanItem(item: PlanItem, dispatch: Dispatch): PlanItem {
+  if (item.kind === "run" || item.kind === "rejected") return item;
+  const legacy = item as PlannedChild & { isolation?: IsolationRequest };
+  return { ...legacy, kind: "run", workspace: legacyPlannedWorkspace(legacy.isolation, dispatch.mode, legacy.tools) };
 }
 
 async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecutionApi, context: Context, options: DurableSubagentOptions,
@@ -597,7 +609,7 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     // D-5: the isolation decision was made once, in planDispatch. Execute exactly that decision, so
     // the preflight and the child can never disagree about whether a worktree is in play.
     workspace ??= await prepareSubagentWorkspace({ cwd: item.sourceCwd, isolation: item.workspace.kind,
-      parallel: dispatch.mode === "parallel", writable: item.tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name)),
+      parallel: dispatch.mode === "parallel", writable: isWritable(item.tools),
       baseDir: join(getAgentDir(), "subagent-worktrees"), signal: context.abortSignal, operationId: item.id });
     if (workspace.kind !== item.workspace.kind) throw new Error(`Subagent workspace changed after planning: expected ${item.workspace.kind}, prepared ${workspace.kind}`);
     const shared = inspectSharedContext(item.sourceCwd);

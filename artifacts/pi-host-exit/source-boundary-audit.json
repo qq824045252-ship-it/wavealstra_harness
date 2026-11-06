@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-06T02:57:43.716Z",
+  "at": "2026-11-06T03:25:33.781Z",
   "scope": [
     "src",
     "app",
@@ -423,8 +423,8 @@
     },
     {
       "file": "src/main/agent/ModeProfileStore.ts",
-      "lines": 745,
-      "sha256": "5c2c441cf4405fd4a1d09a828ef6faa6f71c2712cefeb2019d5726ab5bdf3cd8",
+      "lines": 729,
+      "sha256": "5f1853b03b06c73a517461e320078e430cfac976675a1b57d71584d34c9c68b0",
       "test": false
     },
     {
@@ -753,8 +753,8 @@
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "lines": 745,
-      "sha256": "0888889c02b0a7fd9e47ddf55834767df97a3c95ed3f8239df239e4c1e6e4d69",
+      "lines": 757,
+      "sha256": "8ef29dd9024ff30b56b4482014a7c0b31c3ce25c5709d3f872ae2c51457b4627",
       "test": false
     },
     {
@@ -789,8 +789,8 @@
     },
     {
       "file": "src/main/agent/mode-defaults.ts",
-      "lines": 551,
-      "sha256": "9f83386480e4d79fc967c6ac397140c25f0fbebb1091c36a81f3c083eddf7bfa",
+      "lines": 517,
+      "sha256": "76408f0db231c8a0a538ae21033fbdbc94d6703f84afe3b06bcbf9e82b9402fa",
       "test": false
     },
     {
@@ -6025,25 +6025,25 @@
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 652,
+      "line": 664,
       "method": "abort",
       "expression": "child.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 672,
+      "line": 684,
       "method": "abort",
       "expression": "timeout.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 673,
+      "line": 685,
       "method": "abort",
       "expression": "timeout.abort"
     },
     {
       "file": "src/main/agent/durable/DurableSubagents.ts",
-      "line": 678,
+      "line": 690,
       "method": "abort",
       "expression": "child.abort"
     },
@@ -6452,5 +6452,5 @@
   ],
   "violations": [],
   "passed": true,
-  "sourceSha256": "e6b2710bbb9bb8339b72526673556c9bcdc785c90618a2661fa337e76c560aac"
+  "sourceSha256": "fb562bb4291d88facf7c85dfd69f4d1c245f2ad9147dda065c1cda13559ce079"
 }

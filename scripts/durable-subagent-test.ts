@@ -11,7 +11,7 @@ import { createRegistry, defineExtension, defineTool, Harness, hook, ToolTask } 
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
-import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
+import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, legacyPlannedWorkspace, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
 import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
 
@@ -125,6 +125,8 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
   ] };
   // D-5: auto does not isolate single tasks or a one-item tasks array; the result must say why.
   if (marker("auto-single")) return { agent: "worker", task: "SCENARIO=auto-single task", model };
+  // D-5: an explicit `auto` that cannot isolate must say so instead of reading like a silent choice.
+  if (marker("auto-explicit")) return { agent: "worker", task: "SCENARIO=auto-explicit task", model, isolation: "auto" };
   if (marker("auto-tasks-one")) return { tasks: [{ agent: "worker", task: "SCENARIO=auto-tasks-one task", model }] };
   return undefined;
 };
@@ -433,6 +435,10 @@ try {
   assert.match(autoSingle.output, /Workspace: shared \(/);
   assert.match(autoSingle.output, /isolation:auto does not isolate a single task; writes land in the original directory\./);
   assert.doesNotMatch(autoSingle.output, /Retained worktree:/, "a single task must not fabricate a worktree");
+  const autoExplicit = await runScenario("auto-explicit", "SCENARIO=auto-explicit");
+  assert.match(autoExplicit.output,
+    /isolation:"auto" has no isolation effect here; pass isolation:"worktree" to force a separate worktree\./,
+    "an explicit auto that cannot isolate must name the only way to force one");
   const autoOne = await runScenario("auto-tasks-one", "SCENARIO=auto-tasks-one");
   assert.equal(autoOne.isError, false, "a one-item tasks array cannot run concurrent writers");
   assert.match(autoOne.output, /^Parallel: 1\/1 succeeded\nConcurrency: 1 worker, no queue \(maxConcurrency 2\)\n\n/);
@@ -475,6 +481,18 @@ try {
   assert.match(oneValidRun.output, /Unknown agent: no-such-agent/);
   assert.match(oneValidRun.output, /isolation:auto does not isolate a dispatch that runs one child; writes land in the original directory\./);
   assert.doesNotMatch(oneValidRun.output, /Retained worktree:/);
+
+  // ---- D-5 replay: a `dispatch` memo written before v4 carries `isolation`, not a workspace. Its
+  // items must replay under that release's rule, otherwise a resumed child whose worktree is already
+  // prepared is rejected by the "workspace changed after planning" guard.
+  assert.deepEqual(legacyPlannedWorkspace("auto", "parallel", ["write"]), { kind: "worktree" });
+  assert.equal(legacyPlannedWorkspace("auto", "parallel", ["ls", "grep"]).kind, "shared",
+    "a read-only legacy child never had a worktree");
+  assert.equal(legacyPlannedWorkspace("auto", "single", ["write"]).kind, "shared");
+  assert.equal(legacyPlannedWorkspace(undefined, "parallel", ["write"]).kind, "worktree",
+    "a memo without isolation used the auto default");
+  assert.equal(legacyPlannedWorkspace("shared", "parallel", ["write"]).kind, "shared");
+  assert.deepEqual(legacyPlannedWorkspace("worktree", "single", ["ls"]), { kind: "worktree" });
 
   // ---- D-5: a dirty repository is rejected for new work, but a ready durable receipt means
   // prepareSubagentWorkspace reuses that worktree and skips the clean check (replay/recovery) ----
@@ -555,7 +573,7 @@ try {
   console.log("PASS D-1 provider quota rejections retried once serially under a fresh requestId, visible as recovered; plain 400s keep their failure");
   console.log("PASS D-2/N-2 parallel same-file writes blocked with a visible conflict and a blocked shard status (chain writes stay allowed); no silent overwrite");
   console.log("PASS N-1 an invalid item is rejected alone while valid items still run");
-  console.log("PASS D-5 auto resolves single tasks and one-item batches to shared with the reason; parallel write-capable auto items are rejected before dispatch");
+  console.log("PASS D-5 auto resolves single tasks and one-item batches to shared with the reason; parallel write-capable auto items are rejected before dispatch; a pre-v4 dispatch memo replays under that release's isolation rule");
   console.log("PASS D-4 allow-override timeout_ms governs the run and produces a real timedout result");
 } finally {
   await harness?.close(ctx);

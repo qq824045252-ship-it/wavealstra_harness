@@ -1,9 +1,7 @@
 /**
  * D-2 单元测试：并行同文件写冲突守卫（纯逻辑，无 pi-durable 运行时依赖）。
  *
- * 跑法（不改 package.json）：
- *   esbuild scripts/subagent-write-conflict-test.ts --bundle --platform=node --format=esm \
- *     --outfile=out/tests/subagent-write-conflict-test.mjs && node out/tests/subagent-write-conflict-test.mjs
+ * 跑法：`pnpm -s test:subagent-write-conflict`（test:all 的 default/headless 套件会跑它）。
  */
 import assert from "node:assert/strict";
 import { resolve, sep } from "node:path";
