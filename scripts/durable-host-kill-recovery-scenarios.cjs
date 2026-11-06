@@ -14,7 +14,7 @@ const path = require("node:path");
 const cp = require("node:child_process");
 const {
   fixtureProvider, makeProfile, makeDriver, durableFacts, durableSnapshot, durableTexts, leaseOwner, collectFiles, expectationFor,
-  processFacts, descendants, killHostPid, fileFact, wait, now, sha, root, TASK_PREFIX, FILES, CHECKPOINTS, contentFor,
+  processFacts, descendants, killHostPid, fileFact, wait, now, sha, root, harness, reportRoot, packageArchive, TASK_PREFIX, FILES, CHECKPOINTS, contentFor,
 } = require("./durable-host-kill-recovery-test.cjs");
 
 const HISTORY_TIMEOUT_MS = Number(process.env.KILLRECON_HISTORY_TIMEOUT_MS || 60000);
@@ -300,10 +300,10 @@ async function runKillScenario(kind, profile, report, fixture, pids) {
 
 async function runScenario(which) {
   const scenarios = which === "all" ? ["baseline", "checkpoint", "effect"] : [which];
-  const session = { startedAt: now(), node: process.version, hostExecutable: require("./durable-host-kill-recovery-test.cjs").harness, gitHead: gitHead(), outMain: fileFact(path.join(root, "out", "main", "index.js")), scenarios: {} };
+  const session = { startedAt: now(), node: process.version, hostExecutable: harness, gitHead: gitHead(), outMain: fileFact(path.join(root, "out", "main", "index.js")), packageArchive: packageArchive ? fileFact(packageArchive) : null, scenarios: {} };
   const pids = new Set();
   for (const scenario of scenarios) {
-    const trace = path.join(root, "out", "host-kill-recovery", scenario, "provider-trace.jsonl");
+    const trace = path.join(reportRoot, scenario, "provider-trace.jsonl");
     fs.mkdirSync(path.dirname(trace), { recursive: true });
     if (fs.existsSync(trace)) fs.unlinkSync(trace);
     const fixture = fixtureProvider(scenario, trace);
@@ -333,7 +333,7 @@ async function runScenario(which) {
   }
   session.finishedAt = now();
   session.sandboxProcesses = [...pids].map((pid) => ({ pid, alive: Boolean(processFacts(pid)) }));
-  const summaryPath = path.join(root, "out", "host-kill-recovery", "summary.json");
+  const summaryPath = path.join(reportRoot, "summary.json");
   fs.writeFileSync(summaryPath, JSON.stringify(session, null, 2));
   console.log(JSON.stringify({ summary: summaryPath, scenarios: session.scenarios, sandboxProcesses: session.sandboxProcesses }, null, 1));
   process.exitCode = Object.values(session.scenarios).every((entry) => entry.status === "passed") ? 0 : 1;

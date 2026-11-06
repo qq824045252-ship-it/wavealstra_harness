@@ -53,6 +53,7 @@ const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "worksp
 
 try {
   await agent.init();
+  await agent.resumePersistedTasks();
 
   // 1. 已下线 id（含 :level 后缀）与失效思考偏好一起清掉；目录中存在的引用（含无凭证）保留。
   writeSettings({

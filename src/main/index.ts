@@ -3288,34 +3288,11 @@ app.whenReady().then(async () => {
     taskLifecycle.restore(taskId);
   });
   agentService.setLocalWorkflowServices({ cron: cronService, terminal: new TaskTerminalService(terminalHost) });
-  // init() resumes persisted Durable calls; install every domain tool before opening their sessions.
   await agentService.init();
   // User-requested design retirement: use the same recoverable deletion as the task UI.
   for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
     if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
   }
-  cronService.start();
-  // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
-  void gatewayService.restoreChannels();
-  if (memoryGatewayController) {
-    try {
-      const status = await memoryGatewayController.start();
-      if (status.running) {
-        console.log(`[MemoryGateway] listening ${status.mcpUrl} (${status.writeEnabled ? "read-write" : "read-only"})`);
-      }
-    } catch (error) {
-      console.warn(`[MemoryGateway] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (remoteAccessController) {
-    try {
-      const status = await remoteAccessController.start();
-      if (status.running) console.log(`[RemoteAccess] listening http://127.0.0.1:${status.port}`);
-    } catch (error) {
-      console.warn(`[RemoteAccess] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   registerIpc();
   // Subagent 是编译内建能力：直接把 backend 接入稳定 IPC host，不扫描用户目录。
   try {
@@ -3358,6 +3335,28 @@ app.whenReady().then(async () => {
     ]),
   );
   createWindow();
+  await agentService.resumePersistedTasks();
+  cronService.start();
+  // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
+  void gatewayService.restoreChannels();
+  if (memoryGatewayController) {
+    try {
+      const status = await memoryGatewayController.start();
+      if (status.running) {
+        console.log(`[MemoryGateway] listening ${status.mcpUrl} (${status.writeEnabled ? "read-write" : "read-only"})`);
+      }
+    } catch (error) {
+      console.warn(`[MemoryGateway] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (remoteAccessController) {
+    try {
+      const status = await remoteAccessController.start();
+      if (status.running) console.log(`[RemoteAccess] listening http://127.0.0.1:${status.port}`);
+    } catch (error) {
+      console.warn(`[RemoteAccess] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

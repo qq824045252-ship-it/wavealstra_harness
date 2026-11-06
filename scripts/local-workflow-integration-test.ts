@@ -7,10 +7,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parse } from "@babel/parser";
 import { traverseFast } from "@babel/types";
 
-// init() opens persisted Durable sessions, so bootstrap ordering is an execution contract.
+// Persisted sessions require both domain services and window-backed tools before opening.
 const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
 const startupCalls = new Map<string, number[]>();
 traverseFast(bootstrap, node => {
+  if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "createWindow") {
+    assert(typeof node.start === "number");
+    startupCalls.set("createWindow", [...(startupCalls.get("createWindow") ?? []), node.start]);
+  }
   if (node.type === "CallExpression" && node.callee.type === "MemberExpression" && !node.callee.computed
     && node.callee.object.type === "Identifier" && node.callee.property.type === "Identifier") {
     const key = `${node.callee.object.name}.${node.callee.property.name}`;
@@ -23,13 +27,20 @@ function startupPosition(call: string): number {
   assert.equal(positions.length, 1, `bootstrap must call ${call} exactly once`);
   return positions[0]!;
 }
-const recoveryStart = startupPosition("agentService.init");
+const initialization = startupPosition("agentService.init");
+const recoveryStart = startupPosition("agentService.resumePersistedTasks");
+const windowCreation = startupCalls.get("createWindow")?.[0];
+assert(typeof windowCreation === "number", "bootstrap must create the window-backed tool hosts");
+assert(initialization < windowCreation && windowCreation < recoveryStart,
+  "initialize AgentService, attach the browser/UI hosts, then resume persisted tasks");
 for (const dependency of ["setSelectionContextResolver", "setArtifactDomain", "setGadgetDomain", "setLocalWorkflowServices"]) {
-  assert(startupPosition(`agentService.${dependency}`) < recoveryStart,
-    `install ${dependency} before agentService.init(): persisted subagents require the complete tool registry`);
+  assert(startupPosition(`agentService.${dependency}`) < initialization,
+    `install ${dependency} before agentService.init()`);
 }
-for (const producer of ["cronService.start", "gatewayService.restoreChannels"]) {
-  assert(startupPosition(producer) > recoveryStart, `${producer} must wait for AgentService initialization`);
+for (const producer of ["cronService.start", "gatewayService.restoreChannels", "memoryGatewayController.start", "remoteAccessController.start"]) {
+  // Memory Gateway may also be started later by an IPC handler; the last call is bootstrap.
+  const position = startupCalls.get(producer)?.at(-1);
+  assert(typeof position === "number" && position > recoveryStart, `${producer} must wait for persisted task recovery`);
 }
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-local-workflow-"));
@@ -74,6 +85,7 @@ const terminal = new TaskTerminalService(host);
 const cron = new CronService(db, agent);
 agent.setLocalWorkflowServices({ cron, terminal });
 await agent.init();
+await agent.resumePersistedTasks();
 let permission: "auto" | "readonly" = "auto";
 const tools = new Map<string, Tool>();
 const api: Pick<ExtensionAPI, "registerTool"> = { registerTool: tool => { tools.set(tool.name, tool); } };

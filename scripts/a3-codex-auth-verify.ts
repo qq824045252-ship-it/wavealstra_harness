@@ -61,6 +61,7 @@ save();
 const db = new AppDatabase(join(root, 'tasks.db'));
 let agent = new AgentService(db, new TaskExecutionWorkspace(join(root, 'workspaces')));
 await agent.init();
+await agent.resumePersistedTasks();
 const reload = await agent.reloadModels('openai-codex');
 const models = reload.models.filter(m => m.vendor === 'openai-codex' && m.available);
 evidence.catalog = models.map(m => ({ id: m.id, provider: m.vendor }));
@@ -96,6 +97,7 @@ for (const name of cells.filter(name => !process.env.A3_CELL || (process.env.A3_
       agent.dispose(); await agent.closeDurableBots();
       agent = new AgentService(db, new TaskExecutionWorkspace(join(root, 'workspaces')));
       await agent.init();
+      await agent.resumePersistedTasks();
     } else db.upsertTask({ id: taskId, title: `A3 ${name}`, updatedAt: Date.now(), welcomeMode: 'working' });
     const errors: string[] = [];
     const off = agent.onPatch(p => { if (p.taskId === taskId && p.type === 'assistant_end' && p.error) errors.push(p.error); });

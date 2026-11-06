@@ -1326,6 +1326,11 @@ export class AgentService {
       },
       emit: patch => this.emitPatch(patch),
     });
+  }
+
+  /** Bootstrap calls this after window-backed tools are attached, before accepting background work. */
+  async resumePersistedTasks(): Promise<void> {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.durableBots.resumePersisted();
   }
 

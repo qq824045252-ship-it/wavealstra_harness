@@ -42,6 +42,7 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(["fixture/model"]);
   const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")), { models });
   await agent.init();
+  await agent.resumePersistedTasks();
   return {
     agent, models, requests,
     prompt: async (input: AgentPromptRequest) => {

@@ -16,6 +16,7 @@
  *   node scripts/durable-host-kill-recovery-test.cjs --scenario checkpoint
  *   node scripts/durable-host-kill-recovery-test.cjs --scenario effect
  *   node scripts/durable-host-kill-recovery-test.cjs --scenario all
+ * MYBUDDY_RECOVERY_EXECUTABLE 指定实际发行包 EXE；MYBUDDY_RECOVERY_OUT 可隔离不同产物的报告。
  * 产物：out/host-kill-recovery/<scenario>/{results.json,provider-trace.jsonl,timeline.json,host-*.log}
  */
 const fs = require("node:fs");
@@ -27,7 +28,10 @@ const crypto = require("node:crypto");
 const net = require("node:net");
 
 const root = path.resolve(__dirname, "..");
-const harness = path.join(root, "node_modules", "electron", "dist", "electron.exe");
+const packaged = Boolean(process.env.MYBUDDY_RECOVERY_EXECUTABLE);
+const harness = packaged ? path.resolve(process.env.MYBUDDY_RECOVERY_EXECUTABLE) : path.join(root, "node_modules", "electron", "dist", "electron.exe");
+const reportRoot = process.env.MYBUDDY_RECOVERY_OUT ? path.resolve(process.env.MYBUDDY_RECOVERY_OUT) : path.join(root, "out", "host-kill-recovery");
+const packageArchive = packaged ? path.join(path.dirname(harness), "resources", "app.asar") : null;
 const TASK_PREFIX = "KILLRECON";
 const CHILD_MARKER = "KILLRECON_CHILD";
 const FILES = 20;
@@ -199,7 +203,7 @@ function makeDriver() {
     for (const key of Object.keys(env)) if (/(?:^|_)(?:API_KEY|TOKEN|SECRET)$/.test(key)) delete env[key];
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_RENDERER_URL;
-    proc = cp.spawn(harness, [root, "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`, "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-features=CalculateNativeWinOcclusion"], { cwd: root, env, stdio: ["ignore", log, log], windowsHide: true });
+    proc = cp.spawn(harness, [...(packaged ? [] : [root]), "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`, "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-features=CalculateNativeWinOcclusion"], { cwd: root, env, stdio: ["ignore", log, log], windowsHide: true });
     proc.once("exit", (code, signal) => { exitInfo = { code, signal, at: now() }; });
     const identity = processFacts(proc.pid);
     let target;
@@ -238,7 +242,7 @@ function makeProfile(scenario, port) {
   const home = path.join(base, "home");
   const agentDir = path.join(home, ".mybuddy");
   const scratch = path.join(base, "scratch");
-  const out = path.join(root, "out", "host-kill-recovery", scenario);
+  const out = path.join(reportRoot, scenario);
   for (const dir of [agentDir, scratch, path.join(home, "AppData/Roaming"), path.join(home, "AppData/Local"), path.join(agentDir, "agents"), out]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(agentDir, "agents", "worker.md"), "---\nname: worker\ndescription: General-purpose subagent with full capabilities, isolated context\n---\n\nYou are a worker agent with full capabilities.\n");
   const model = { id: "fixture", name: "Durable Fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -369,7 +373,7 @@ function expectationFor(cwd) {
   return expected;
 }
 
-module.exports = { fixtureProvider, makeProfile, makeDriver, durableFacts, durableSnapshot, durableTexts, leaseOwner, collectFiles, expectationFor, contentFor, checkpointContent, processFacts, descendants, killHostPid, treeKill, freePort, fileFact, wait, now, sha, root, harness, TASK_PREFIX, FILES, CHECKPOINTS };
+module.exports = { fixtureProvider, makeProfile, makeDriver, durableFacts, durableSnapshot, durableTexts, leaseOwner, collectFiles, expectationFor, contentFor, checkpointContent, processFacts, descendants, killHostPid, treeKill, freePort, fileFact, wait, now, sha, root, harness, reportRoot, packageArchive, TASK_PREFIX, FILES, CHECKPOINTS };
 
 if (require.main === module) {
   const scenarioArg = process.argv.indexOf("--scenario");
