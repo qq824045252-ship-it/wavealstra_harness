@@ -29,7 +29,7 @@ export function classifyPromptFailure(error: unknown): PromptFailureClassificati
     return { causeCode: "provider-authentication", recovery: "requires-user-action", message: facts.message,
       nextAction: "Check or renew the model provider credential, then retry after authentication succeeds." };
   }
-  if (facts.status === 429 || /rate.?limit|too many requests|usage[_ -]?limit|quota.*(exceeded|reached)|insufficient[_ -]?quota/i.test(text)) {
+  if (facts.status === 429 || /rate.?limit|too many requests|usage[_ -]?limit|quota.*(exceeded|reached)|insufficient[_ -]?quota|tier_limit_exceeded|membership concurrency limit exceeded/i.test(text)) {
     return { causeCode: "provider-rate-limit", recovery: "recoverable", message: facts.message,
       nextAction: "Wait for the provider limit to recover or switch to an available model. Do not blindly replay if tools may already have run." };
   }

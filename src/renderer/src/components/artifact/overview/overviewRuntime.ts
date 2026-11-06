@@ -18,7 +18,11 @@
 import type { ChatMessage } from "@/types";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { TerminalSessionInfo } from "@shared/terminal-ipc";
-import { extractSubagentDisplayNameFromToolResult, extractSubagentIdFromToolResult } from "@shared/subagent-model-config";
+import {
+  extractSubagentDisplayNameFromToolResult,
+  extractSubagentIdFromToolResult,
+  parseSubagentResultDetails,
+} from "@shared/subagent-model-config";
 import {
   buildModelBadge,
   parseModelEvidenceFromOutput,
@@ -230,6 +234,36 @@ export function buildDoneSubagents(
       if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
       const tc = block.toolCall;
       if (tc.status === "pending_approval" || tc.status === "running") continue; // 未终结：运行中由 IPC 侧覆盖
+      // Durable 架构：完成态工具的 detail 是结构化结果（details.results[]），优先按它建条目；
+      // 旧消息没有结构化结果时回退到文本标记解析。
+      const structured = parseSubagentResultDetails("subagent", tc.detail);
+      if (structured.length > 0) {
+        for (const item of structured) {
+          const state: DoneSubagentState =
+            item.status === "cancelled" ? "cancelled"
+              : item.status === "failed" || item.status === "timedout" || item.status === "error" ? "failed"
+                : (item.exitCode ?? 0) === 0 ? "completed" : "failed";
+          const prev = map.get(item.subagentId);
+          const summary = oneLine(
+            item.finalText || item.errorMessage
+              || (state === "completed" ? "已完成" : state === "failed" ? "执行失败" : "已取消"),
+            64,
+          );
+          const model = buildModelBadge(item.resolvedModel ?? item.model, {
+            displayName: item.resolvedModel ? modelNames?.[item.resolvedModel] : undefined,
+          }) ?? prev?.model;
+          map.set(item.subagentId, {
+            state,
+            summary: summary || prev?.summary || "",
+            count: (prev?.count ?? 0) + 1,
+            task: item.task || prev?.task,
+            detail: item.finalText || item.errorMessage || tc.output || prev?.detail,
+            model,
+            displayName: item.displayName ?? prev?.displayName,
+          });
+        }
+        continue;
+      }
       const id = extractSubagentId(tc.output, tc.detail);
       if (!id) continue;
       const displayName = extractSubagentDisplayNameFromToolResult("subagent", tc.output, tc.detail);

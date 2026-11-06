@@ -9,6 +9,7 @@ import {
   extractSubagentIdFromToolResult,
   modelOptionLabel,
   normalizeSubagentDisplayName,
+  parseSubagentResultDetails,
   resolveSubagentReasoningAfterModelSwitch,
   SUBAGENT_DISPLAY_NAME_MAX_CODE_POINTS,
   targetSubagentModel,
@@ -251,6 +252,34 @@ assert(
   "无名字行 → null（渲染回退 id/role）",
 );
 assert(extractSubagentDisplayNameFromToolResult("bash", "> subagent-name: 皮卡丘", undefined) === null, "非 subagent 工具忽略名字行");
+
+console.log("== Durable 结构化结果解析 ==");
+{
+  const detail = JSON.stringify({
+    results: [
+      {
+        subagentId: "durable-abc-0",
+        displayName: "皮卡丘",
+        task: "审查补丁",
+        status: "completed",
+        exitCode: 0,
+        resolvedModel: "openai/gpt-5",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "go" }] },
+          { role: "assistant", content: [{ type: "text", text: "完成" }] },
+        ],
+      },
+    ],
+  });
+  const parsed = parseSubagentResultDetails("subagent", detail);
+  assert(parsed.length === 1 && parsed[0].subagentId === "durable-abc-0", "details.results[] 解析 id");
+  assert(parsed[0].displayName === "皮卡丘" && parsed[0].finalText === "完成", "解析显示名与最终文本");
+  assert(extractSubagentIdFromToolResult("subagent", "皮卡丘 (durable-abc-0)", detail) === "durable-abc-0", "结构化优先于文本形态");
+  assert(extractSubagentDisplayNameFromToolResult("subagent", "", detail) === "皮卡丘", "显示名也能从结构化结果取");
+  assert(parseSubagentResultDetails("subagent", "{}").length === 0, "无 results → 空");
+  assert(parseSubagentResultDetails("subagent", "not json").length === 0, "非法 JSON → 空");
+  assert(parseSubagentResultDetails("bash", detail).length === 0, "非 subagent 工具不解析");
+}
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);
 if (failed > 0) process.exit(1);

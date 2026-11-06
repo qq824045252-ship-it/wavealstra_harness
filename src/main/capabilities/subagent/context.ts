@@ -87,6 +87,7 @@ export function buildContextBlock(input: ContextBlockInput): string {
   lines.push(
     "- 完成任务后在最终回复给出固定栏目：结论 / 改动文件 / 执行结果（命令与证据、产物路径）/ 未验证项；不要输出内部推理过程。",
   );
+  lines.push("- 例外：任务要求逐字或精确格式时，产物文件必须逐字匹配；上述固定栏目只约束最终回复，不得施加于产物文件。");
   lines.push("- 遇到权限/工具不可用导致的阻塞，明确说明阻塞原因，不要假装完成。");
   return lines.join("\n");
 }

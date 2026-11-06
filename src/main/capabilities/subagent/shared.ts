@@ -81,7 +81,12 @@ export function getResultOutput(result: SingleResult): string {
     result.model ? `Observed model: ${result.model}` : "",
     result.timeoutMs ? `Run time limit: ${result.timeoutMs / 1000}s (${result.timeoutSource})` : "",
     result.workspace?.kind === "worktree"
-      ? `Retained worktree: ${result.workspace.cwd}\nBranch: ${result.workspace.branch}\nBase: ${result.workspace.baseCommit}\nReceipt: ${result.workspace.receiptPath}` : "",
+      ? `Retained worktree: ${result.workspace.cwd}\nBranch: ${result.workspace.branch}\nBase: ${result.workspace.baseCommit}\nReceipt: ${result.workspace.receiptPath}`
+      : result.workspace
+        // D-5: an un-isolated run used to be invisible; callers could not tell "isolated copy" from
+        // "wrote straight into the original directory". Keep the fact on the same evidence lines.
+        ? `Workspace: shared (${result.workspace.cwd}); writes land in the original directory, not an isolated copy`
+        : "",
     ...(result.diagnostics ?? []),
   ].filter(Boolean);
   return [...evidence, output].join("\n\n");

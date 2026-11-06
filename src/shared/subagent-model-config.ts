@@ -160,9 +160,76 @@ export function resolveSubagentReasoningAfterModelSwitch(opts: {
   };
 }
 
+/** Durable 子代理结果的结构化视图（工具 details.results[] 的安全投影）。 */
+export interface SubagentResultRecord {
+  subagentId: string;
+  displayName?: string;
+  task?: string;
+  status?: string;
+  exitCode?: number;
+  errorMessage?: string;
+  /** 该子代理最后一条 assistant 文本（用于完成态摘要） */
+  finalText?: string;
+  resolvedModel?: string;
+  model?: string;
+}
+
+function messageFinalText(messages: unknown): string {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; content?: Array<{ type?: string; text?: string }> } | undefined;
+    if (message?.role !== "assistant") continue;
+    const text = (message.content ?? [])
+      .filter((part) => part?.type === "text")
+      .map((part) => part?.text ?? "")
+      .join("");
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * 从工具 `detail` 解析 Durable 结构化结果（`details.results[]`）。
+ * 新架构里完成态工具的 detail 是结果详情 JSON；旧消息或运行中的工具则是入参，返回空数组。
+ */
+export function parseSubagentResultDetails(
+  tool: string,
+  detail: string | undefined,
+): SubagentResultRecord[] {
+  if (tool !== "subagent" || !detail) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(detail);
+  } catch {
+    return [];
+  }
+  const results = (parsed as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) return [];
+  const out: SubagentResultRecord[] = [];
+  for (const raw of results) {
+    if (!raw || typeof raw !== "object") continue;
+    const record = raw as Record<string, unknown>;
+    const subagentId = typeof record.subagentId === "string" ? record.subagentId : "";
+    if (!subagentId) continue;
+    out.push({
+      subagentId,
+      displayName: normalizeSubagentDisplayName(record.displayName),
+      task: typeof record.task === "string" ? record.task : undefined,
+      status: typeof record.status === "string" ? record.status : undefined,
+      exitCode: typeof record.exitCode === "number" ? record.exitCode : undefined,
+      errorMessage: typeof record.errorMessage === "string" ? record.errorMessage : undefined,
+      finalText: messageFinalText(record.messages) || undefined,
+      resolvedModel: typeof record.resolvedModel === "string" ? record.resolvedModel : undefined,
+      model: typeof record.model === "string" ? record.model : undefined,
+    });
+  }
+  return out;
+}
+
 /**
  * Extract subagentId from tool output/detail so failed/cancelled runs can still
- * open the Subagent panel.
+ * open the Subagent panel. Prefers Durable structured results; falls back to
+ * the legacy text markers (`> subagent: id` / `(id: id)`).
  */
 export function extractSubagentIdFromToolResult(
   tool: string,
@@ -170,6 +237,8 @@ export function extractSubagentIdFromToolResult(
   detail: string | undefined,
 ): string | null {
   if (tool !== "subagent") return null;
+  const structured = parseSubagentResultDetails(tool, detail);
+  if (structured[0]) return structured[0].subagentId;
   const text = `${output ?? ""}\n${detail ?? ""}`;
   const match =
     text.match(/subagent: ([a-zA-Z0-9_-]+)/)
@@ -202,8 +271,8 @@ export function normalizeSubagentDisplayName(raw: unknown): string | undefined {
 }
 
 /**
- * 从工具结果文本解析 displayName（与 subagentId 同一条文本桥）。
- * 结果里以 `> subagent-name: <name>` 标记；缺失返回 null。
+ * 从工具结果解析 displayName：优先 Durable 结构化结果，缺失时回退旧文本标记
+ * `> subagent-name: <name>`；都没有返回 null。
  */
 export function extractSubagentDisplayNameFromToolResult(
   tool: string,
@@ -211,6 +280,9 @@ export function extractSubagentDisplayNameFromToolResult(
   detail: string | undefined,
 ): string | null {
   if (tool !== "subagent") return null;
+  const structured = parseSubagentResultDetails(tool, detail);
+  const structuredName = structured[0]?.displayName;
+  if (structuredName) return structuredName;
   const text = `${output ?? ""}\n${detail ?? ""}`;
   const match = text.match(/^\s*>\s*subagent-name:\s*(.+)$/m);
   return normalizeSubagentDisplayName(match?.[1]) ?? null;

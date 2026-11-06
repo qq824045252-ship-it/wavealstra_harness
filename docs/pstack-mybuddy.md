@@ -71,7 +71,7 @@ The native `reasoning` object has optional `enabled`, `effort`, and `budgetToken
 
 When `reasoning` is omitted, a saved subagent reasoning transport can apply if it is valid and bound to the selected model. Otherwise the worker uses the model default. Omission does not copy the parent's effort.
 
-The schema lives in [index.ts](../src/main/capabilities/subagent/index.ts). Selection, role resolution, and diverse assignment live in [selection.ts](../src/main/capabilities/subagent/selection.ts). Native preference validation lives in [subagent-model-config.ts](../src/shared/subagent-model-config.ts).
+The schema lives in [shared.ts](../src/main/capabilities/subagent/shared.ts) and is wired into the Durable tools in [DurableSubagents.ts](../src/main/agent/durable/DurableSubagents.ts). Selection, role resolution, and diverse assignment live in [selection.ts](../src/main/capabilities/subagent/selection.ts). Native preference validation lives in [subagent-model-config.ts](../src/shared/subagent-model-config.ts).
 
 ## Subagent execution settings
 
@@ -100,7 +100,16 @@ Worktrees use separate branches based on the source commit. Their files and bran
 
 `subagent_list` lists active workers. `subagent_steer` guides active work without changing the selected model. Completed worktree artifacts remain accessible through their receipts rather than through the active-worker list.
 
-Workspace creation and receipts live in [worktree.ts](../src/main/capabilities/subagent/worktree.ts). Execution and results live in [index.ts](../src/main/capabilities/subagent/index.ts). Pi worker startup and model readback live in [runtime.ts](../src/main/capabilities/subagent/runtime.ts). The trusted Pi entry is [worker-launcher.mjs](../src/main/capabilities/subagent/worker-launcher.mjs).
+Workspace creation and receipts live in [worktree.ts](../src/main/capabilities/subagent/worktree.ts). Dispatch, execution, and results run as durable child conversations in [DurableSubagents.ts](../src/main/agent/durable/DurableSubagents.ts). The trusted Pi entry is [worker-launcher.mjs](../src/main/capabilities/subagent/worker-launcher.mjs).
+
+## Subagent concurrency, write conflicts, and timeouts
+
+These limits belong to the whole subagent runtime. They are not per-call options.
+
+- **Concurrency.** The product accepts up to 200 tasks per dispatch and runs up to 100 workers at once. These are product defaults, not provider quotas. The upstream provider may enforce a lower membership concurrency quota, for example 10 for a given plan. The product does not know that quota, so requests above it fail with HTTP 400 `tier_limit_exceeded` / `membership concurrency limit exceeded`, not with 429. Set `maxConcurrency` in `~/.mybuddy/subagent.json` below the provider quota to avoid the rejection; the setting can only lower the product default and cannot raise it.
+- **Write conflicts.** Concurrent writes to the same file are not supported. The runtime serializes `write` and `edit` mutations of one file inside a process, but it provides no version check, no lock against `bash`, and no compare-and-swap. The last writer wins, and earlier writes are silently lost even though each call reported success. Parallel workers must write different files.
+- **Isolation.** `auto` creates a separate Git worktree only for parallel tasks with write-capable tools; a single task, a chain step, or a read-only subagent uses the supplied working directory. `worktree` requests a worktree for any task. Both fail explicitly before the worker launches when the directory is not a Git repository or the tree is dirty, including untracked files; neither degrades silently to the shared directory. Under `auto` this check applies only to the parallel, write-capable case. Choose `shared` deliberately when the working directory is not a clean Git repository.
+- **Timeouts.** With the default `timeoutPolicy: "fixed"`, a per-call `timeout_ms` is ignored and not rejected; the configured duration applies. Diagnostics still identify the effective value: each result reports `timeoutMs` and `timeoutSource: "settings"`, and its evidence line shows `Run time limit: <seconds>s (settings)`. Set the policy to `allow-override` to let a valid `timeout_ms` (1 to 3600 seconds) replace the configured duration.
 
 ## Skill policy needles
 

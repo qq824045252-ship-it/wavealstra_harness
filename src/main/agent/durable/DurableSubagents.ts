@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { copyJson, type JsonRepresentation } from "@earendil-works/chord";
 import { withAbortSignal, type Context } from "@earendil-works/chord/context";
@@ -24,8 +25,8 @@ import { assignDiverseModels, DIVERSE_SUBAGENT_ROLE, resolveSubagentSelection } 
 import { normalizeThinking } from "../../capabilities/subagent/config";
 import { prepareSubagentWorkspace, type PreparedSubagentWorkspace } from "../../capabilities/subagent/worktree";
 import {
-  DEFAULT_CONFIRM_TOOLS, getResultOutput, ListParams, loadHostDefaults, loadSubagentConfig,
-  parallelPerTaskOutputCap, resolveParallelLimits, SteerParams, SubagentParams, type SingleResult,
+  DEFAULT_CONFIRM_TOOLS, getResultOutput, isFailedResult, ListParams, loadHostDefaults, loadSubagentConfig,
+  parallelPerTaskOutputCap, resolveParallelLimits, SteerParams, SubagentParams, truncateParallelOutput, type SingleResult,
 } from "../../capabilities/subagent/shared";
 
 type Invocation = Static<typeof SubagentParams>;
@@ -49,6 +50,8 @@ type Dispatch = {
   concurrency: number;
   permissionMode: PermissionMode;
   timeout: ReturnType<typeof resolveSubagentTimeout>;
+  /** D-4：调用方传了 timeout_ms、但固定策略把它丢掉时，随结果一起回传的可见诊断。 */
+  timeoutDiagnostic?: string;
   items: ChildSpec[];
 };
 type Identity = {
@@ -141,15 +144,41 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
           previous = finalText(result.messages);
         }
       } else {
-        // Batches only bound admission. Every child's execution, cancellation and replay belongs to Durable.
-        for (let start = 0; start < dispatch.items.length; start += dispatch.concurrency) {
-          await Promise.all(dispatch.items.slice(start, start + dispatch.concurrency).map(execute));
-        }
+        // Rolling pool: a finished child frees its slot immediately (the old mapWithConcurrencyLimit
+        // semantics). Batching with Promise.all made the slowest child hold back an entire batch.
+        // Concurrency only bounds admission; execution, cancellation and replay stay inside Durable.
+        const limit = Math.max(1, Math.min(dispatch.concurrency, dispatch.items.length));
+        let next = 0;
+        await Promise.all(Array.from({ length: limit }, async () => {
+          while (next < dispatch.items.length) {
+            const item = dispatch.items[next++];
+            if (!item) return;
+            await execute(item);
+          }
+        }));
       }
-      const cap = parallelPerTaskOutputCap(results.length);
-      const text = results.map(result => `${result.displayName ?? result.agent} (${result.subagentId})\n${getResultOutput(result).slice(0, cap)}`).join("\n\n");
-      return { output: [{ type: "text", text }], isError: results.some(result => result.exitCode !== 0),
-        details: json({ mode: dispatch.mode, agentScope: dispatch.agentScope, projectAgentsDir: dispatch.projectAgentsDir, results }) };
+      // D-3: `results[index]` writes leave holes when a chain stops early; project only real results.
+      const completed = results.filter((result): result is SingleResult => Boolean(result));
+      const succeeded = completed.filter(result => !isFailedResult(result)).length;
+      const cap = parallelPerTaskOutputCap(completed.length);
+      const summaries = completed.map(result => {
+        const status = isFailedResult(result)
+          ? `failed${result.stopReason && result.stopReason !== "end" ? ` (${result.stopReason})` : ""}`
+          : "completed";
+        const nameLine = result.displayName && result.subagentId ? `\n> subagent-name: ${result.displayName}` : "";
+        const heading = dispatch.mode === "chain" && result.step
+          ? `Step ${result.step}: [${result.agent}] ${status} (id: ${result.subagentId})`
+          : `### [${result.agent}] ${status} (id: ${result.subagentId})`;
+        return `${heading}${nameLine}\n\n${truncateParallelOutput(getResultOutput(result), cap)}`;
+      });
+      const header = dispatch.mode === "parallel" ? `Parallel: ${succeeded}/${completed.length} succeeded\n\n` : "";
+      const last = completed.at(-1);
+      const stopped = dispatch.mode === "chain" && last && isFailedResult(last) && completed.length < dispatch.items.length
+        ? `\n\nChain stopped at step ${last.step ?? completed.length} (${last.agent}): the step failed.`
+        : "";
+      const text = `${header}${summaries.join("\n\n---\n\n")}${stopped}`;
+      return { output: [{ type: "text", text }], isError: succeeded !== completed.length,
+        details: json({ mode: dispatch.mode, agentScope: dispatch.agentScope, projectAgentsDir: dispatch.projectAgentsDir, results: completed }) };
     },
   });
   const list = defineTool({
@@ -228,8 +257,99 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
       displayName: names[index]!, role, task: appendWorkspaceNotes(item.task, options.workspaceNotes?.() ?? ""), sourceCwd,
       isolation: isolation === "worktree" || isolation === "shared" ? isolation : "auto", tools, selection: selected });
   }
+  const timeout = resolveSubagentTimeout(config, params.timeout_ms);
+  // D-4: a fixed timeout policy silently discards timeout_ms. Timeout behavior must not change, but
+  // the caller has to be able to see that the request was ignored.
+  const timeoutDiagnostic = params.timeout_ms !== undefined && timeout.timeoutSource === "settings"
+    ? `timeout_ms=${params.timeout_ms} ignored: fixed policy (${timeout.timeoutMs / 1000}s settings)`
+    : undefined;
+  // D-5: decide isolation prerequisites once, before any child starts. Otherwise every child fails
+  // in its own catch block and the caller sees N identical errors instead of one actionable one.
+  // A repository is probed at most once per dispatch, while the receipt check stays per operation.
+  const worktreeBaseDir = join(getAgentDir(), "subagent-worktrees");
+  const inspections = new Map<string, Promise<WorktreePreflight>>();
+  const checkedOperations = new Set<string>();
+  for (const item of planned) {
+    const writable = item.tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name));
+    const isolated = item.isolation === "worktree" || (item.isolation === "auto" && mode === "parallel" && writable);
+    if (!isolated) continue;
+    const key = `${item.sourceCwd}\u0000${item.id}`;
+    if (checkedOperations.has(key)) continue;
+    checkedOperations.add(key);
+    const inspection = inspections.get(item.sourceCwd) ?? inspectWorktreePreflight(item.sourceCwd, context.abortSignal);
+    inspections.set(item.sourceCwd, inspection);
+    await assertWorktreeIsolationPreflight(item.sourceCwd, item.id,
+      { baseDir: worktreeBaseDir, signal: context.abortSignal, inspection: await inspection });
+  }
   return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: limits.maxConcurrency,
-    permissionMode, timeout: resolveSubagentTimeout(config, params.timeout_ms), items: planned };
+    permissionMode, timeout, ...(timeoutDiagnostic ? { timeoutDiagnostic } : {}), items: planned };
+}
+
+export type WorktreePreflight = { repository: string; clean: boolean };
+
+/** Repository-level preconditions for worktree isolation, probed once per cwd per dispatch. */
+export async function inspectWorktreePreflight(cwd: string, signal?: AbortSignal): Promise<WorktreePreflight> {
+  let repository: string;
+  try {
+    repository = await realpath(await gitPreflight(cwd, ["rev-parse", "--show-toplevel"], signal));
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw new Error(`Subagent worktree isolation requires a Git working tree: ${cwd}. `
+      + `Run these tasks with isolation:"shared" so writes land in the original directory, or initialize a Git repository first.`, { cause: error });
+  }
+  const inside = relative(repository, cwd);
+  if (isAbsolute(inside) || inside === ".." || inside.startsWith(`..${sep}`)) {
+    throw new Error(`Subagent cwd is outside its Git repository: ${cwd}`);
+  }
+  const clean = !(await gitPreflight(repository, ["status", "--porcelain=v1", "--untracked-files=all"], signal));
+  return { repository, clean };
+}
+
+/**
+ * D-5 preflight: fail once, at dispatch time, when a dispatch that intends to isolate cannot. The
+ * checks mirror prepareSubagentWorkspace (worktree.ts:96-148): a matching ready receipt means it
+ * reuses that worktree and returns before the clean-repository check, so replay/recovery of an
+ * existing durable child must not be rejected here.
+ */
+export async function assertWorktreeIsolationPreflight(
+  cwd: string,
+  operationId: string,
+  options: { baseDir?: string; signal?: AbortSignal; inspection?: WorktreePreflight } = {},
+): Promise<void> {
+  const inspection = options.inspection ?? await inspectWorktreePreflight(cwd, options.signal);
+  // prepareSubagentWorkspace allocates under realpath(baseDir); mirror that so the receipt lookup
+  // hits the same directory (a missing baseDir simply means there is no receipt yet).
+  let baseDir = options.baseDir ?? join(getAgentDir(), "subagent-worktrees");
+  try { baseDir = await realpath(baseDir); } catch { /* no receipts yet */ }
+  if (await hasReusableWorktreeReceipt(inspection.repository, cwd, operationId, baseDir)) return;
+  if (!inspection.clean) {
+    throw new Error(`Subagent worktree isolation requires a clean repository, including untracked files: ${inspection.repository}. `
+      + `Commit or stash changes, or run these tasks with isolation:"shared" so writes land in the original directory.`);
+  }
+}
+
+/** Same receipt layout and validity rules as prepareSubagentWorkspace (worktree.ts:113-143). */
+async function hasReusableWorktreeReceipt(repository: string, cwd: string, operationId: string, baseDir: string): Promise<boolean> {
+  const allocation = join(baseDir, `durable-${createHash("sha256").update(operationId).digest("hex")}`);
+  try {
+    const saved = JSON.parse(await readFile(join(allocation, "receipt.json"), "utf8")) as Record<string, unknown>;
+    if (saved?.state !== "ready" || saved.sourceCwd !== cwd || saved.repository !== repository
+      || saved.root !== join(allocation, "worktree") || saved.cwd !== join(allocation, "worktree", relative(repository, cwd))) return false;
+    return await realpath(String(saved.root)) === saved.root && await realpath(String(saved.cwd)) === saved.cwd;
+  } catch { return false; }
+}
+
+function gitPreflight(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", cwd, ...args], {
+      shell: false, windowsHide: true, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}),
+    }, (error, stdout, stderr) => {
+      if (signal?.aborted) reject(signal.reason);
+      else if (error) reject(new Error(`git ${args[0]} failed: ${String(stderr).trim() || error.message}`, { cause: error }));
+      else resolve(String(stdout).trimEnd());
+    });
+  });
 }
 
 async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionApi, context: Context, options: DurableSubagentOptions): Promise<SingleResult> {
@@ -242,11 +362,16 @@ async function runChild(item: ChildSpec, dispatch: Dispatch, api: ToolExecutionA
     return undefined;
   }, context);
   let workspace = owned?.identity.workspace;
+  const diagnostics = [
+    ...(item.selection.diagnostics ?? []),
+    ...(dispatch.timeoutDiagnostic ? [dispatch.timeoutDiagnostic] : []),
+  ];
   const empty = (): SingleResult => ({ agent: item.role.name, agentSource: item.role.source, task: item.task,
     subagentId: item.id, displayName: item.displayName, status: "running", exitCode: -1, messages: [], stderr: "",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
     model: item.selection.model, resolvedModel: item.selection.model, resolvedThinking: item.selection.thinking ?? undefined,
-    diagnostics: item.selection.diagnostics, modelRole: item.selection.modelRole, roleCandidates: item.selection.roleCandidates,
+    diagnostics: diagnostics.length ? diagnostics : item.selection.diagnostics,
+    modelRole: item.selection.modelRole, roleCandidates: item.selection.roleCandidates,
     ...dispatch.timeout, workspace, ...(dispatch.mode === "chain" ? { step: item.index + 1 } : {}) });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopWatch: (() => Promise<unknown>) | undefined;

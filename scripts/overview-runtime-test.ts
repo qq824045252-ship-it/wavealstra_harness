@@ -246,6 +246,63 @@ console.log("== displayName（显示层字段） ==");
   assert(parallel[0].id === "sa-dn-5" && parallel[0].displayName === "皮卡丘", "并行 header 后的名字行也能解析");
 }
 
+console.log("== Durable 结构化结果（details.results[]） ==");
+{
+  const detail = JSON.stringify({
+    mode: "parallel",
+    agentScope: "user",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "worker",
+        agentSource: "user",
+        task: "审查 auth 补丁",
+        subagentId: "durable-aaa-1",
+        displayName: "皮卡丘",
+        status: "completed",
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "审查通过" }] }],
+        resolvedModel: "openai/gpt-5",
+      },
+      {
+        agent: "scout",
+        agentSource: "user",
+        task: "检索资料",
+        subagentId: "durable-bbb-2",
+        displayName: "杰尼龟",
+        status: "failed",
+        exitCode: 1,
+        errorMessage: "超时",
+      },
+    ],
+  });
+  const done = buildDoneSubagents([
+    msg({
+      id: "structured-1",
+      blocks: [
+        {
+          type: "tool",
+          toolCall: {
+            id: "tc-structured",
+            tool: "subagent",
+            summary: "subagent",
+            status: "success" as const,
+            output: "皮卡丘 (durable-aaa-1)\n审查通过\n\n杰尼龟 (durable-bbb-2)\n超时",
+            detail: detail,
+          },
+        },
+      ],
+    }),
+  ]);
+  assert(done.length === 2, `一个工具调用拆出两条完成态（${done.length}）`);
+  const a = done.find((item) => item.id === "durable-aaa-1")!;
+  const b = done.find((item) => item.id === "durable-bbb-2")!;
+  assert(a?.displayName === "皮卡丘" && a?.state === "completed" && a?.summary === "审查通过", "结构化结果：名字/状态/摘要");
+  assert(a?.task === "审查 auth 补丁", "结构化结果：任务要求");
+  assert(b?.displayName === "杰尼龟" && b?.state === "failed" && b?.summary === "超时", "结构化结果：失败态与错误摘要");
+  assert(extractSubagentId("皮卡丘 (durable-aaa-1)", detail) === "durable-aaa-1", "工具 card 也能从结构化 detail 取 id");
+}
+
 console.log("== 后台任务（终端会话 + bash） ==");
 {
   const termRunning: TerminalSessionInfo = {

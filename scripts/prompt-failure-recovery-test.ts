@@ -15,6 +15,12 @@ try {
   assert.equal(classifyPromptFailure(Object.assign(new Error("upstream unavailable"), { status: 503 }))?.causeCode, "provider-server-error");
   assert.equal(classifyPromptFailure(new DOMException("This operation was aborted", "AbortError")), null);
   assert.equal(classifyPromptFailure(new Error("content policy refused the request")), null, "unknown model/content errors are not guessed into recovery classes");
+  const tierLimitBody = '400: {"code":"tier_limit_exceeded","message":"Open Design: [code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets 2026-11-06T01:00:00Z","param":null,"type":"invalid_request_error"}';
+  assert.equal(classifyPromptFailure(new Error(tierLimitBody))?.causeCode, "provider-rate-limit", "the provider membership concurrency 400 string is a rate limit even without a status field");
+  assert.equal(classifyPromptFailure(Object.assign(new Error(tierLimitBody), { status: 400, code: "tier_limit_exceeded" }))?.recovery, "recoverable", "a 400 carrying the tier-limit code classifies as a recoverable rate limit");
+  assert.equal(classifyPromptFailure(Object.assign(new Error("invalid request body"), { status: 400, code: "tier_limit_exceeded" }))?.causeCode, "provider-rate-limit", "the code field alone is enough to separate a provider quota 400 from a parameter 400");
+  assert.equal(classifyPromptFailure(Object.assign(new Error("invalid_request_error: temperature must be between 0 and 2"), { status: 400 })), null, "an ordinary 400 is not guessed into rate limit");
+  assert.equal(classifyPromptFailure(Object.assign(new Error("membership concurrency limit exceeded: 11/10"), { status: 429 }))?.causeCode, "provider-rate-limit", "the same body with 429 stays a rate limit");
 
   const first = recordPromptFailureRecovery({ failures, taskId: "task", executionId: "e1", assistantMessageId: "a1", modelKey: "openai/gpt-x",
     error: Object.assign(new Error("Too many requests"), { status: 429 }) });
@@ -29,5 +35,5 @@ try {
   assert.equal(resolvePromptFailureRecovery(failures, "task", "openai/gpt-x"), 1);
   assert(failures.list("task").find((item) => item.id === row.id)?.resolvedAt);
 
-  console.log("prompt failure recovery: PASS (conservative classifier, cancel exclusion, dedupe, stable model identity, successful-turn resolution)");
+  console.log("prompt failure recovery: PASS (conservative classifier, tier-limit 400 vs ordinary 400, cancel exclusion, dedupe, stable model identity, successful-turn resolution)");
 } finally { db.close(); }
