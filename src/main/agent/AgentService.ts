@@ -375,6 +375,20 @@ async function loadAttachmentImages(
   return images;
 }
 
+/**
+ * write/edit 工具行里的参数路径：detail 可能带原始参数 JSON，也可能只有人读摘要。
+ * 只有长得像参数 JSON 的文本才参与解析，非 JSON 由调用方按规范路径处理。
+ */
+function argsPathOf(raw: string | undefined): string | undefined {
+  if (!raw || !raw.trimStart().startsWith("{")) return undefined;
+  try {
+    const args = JSON.parse(raw) as { path?: unknown };
+    return typeof args?.path === "string" ? args.path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** renderer ArtifactKind（含 table/docx/xlsx/pptx）→ Domain ArtifactKind（3C Agent ingest 用） */
 function toDomainArtifactKind(kind: string): ArtifactKind {
   switch (kind) {
@@ -1292,10 +1306,9 @@ export class AgentService {
         // Their containing directory is display metadata, never an execution permission grant.
         for (const message of snapshot.messages) for (const tool of message.tools ?? []) {
           if (tool.status !== "success" || !["write", "edit"].includes(tool.tool)) continue;
+          const target = argsPathOf(tool.detail) ?? argsPathOf(tool.summary) ?? tool.summary;
           try {
-            const args = JSON.parse(tool.summary);
-            if (typeof args.path !== "string") continue;
-            const file = resolve(cwd, args.path);
+            const file = resolve(cwd, target);
             if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file, tool.id);
           } catch { /* Non-file results remain visible verbatim in the Durable transcript. */ }
         }

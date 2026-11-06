@@ -11,9 +11,11 @@ import { createRegistry, defineExtension, defineTool, Harness, hook, ToolTask } 
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, legacyPlannedWorkspace, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
 import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
+import { ListParams, SubagentParams } from "../src/main/capabilities/subagent/shared";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-child-"));
 const agentDir = join(root, "agent"), cwd = join(root, "workspace"), directory = join(root, "state");
@@ -49,7 +51,7 @@ const tierLimitBody = { code: "tier_limit_exceeded",
   message: "Open Design: [code=tier_limit_exceeded] membership concurrency limit exceeded: 11/10 resets 2026-11-06T01:00:00Z",
   param: null, type: "invalid_request_error" };
 
-const sse = (response: ServerResponse, items: unknown[]) => {
+const sse = (response: ServerResponse, items: unknown[], usage: Record<string, unknown> = { input_tokens: 20, output_tokens: 10 }) => {
   // A timed-out child aborts its request while the fixture is still holding it; writing to that
   // response must stay quiet instead of surfacing as a server failure.
   if (response.destroyed || response.writableEnded) return;
@@ -58,7 +60,7 @@ const sse = (response: ServerResponse, items: unknown[]) => {
     for (const item of items) for (const type of ["response.output_item.added", "response.output_item.done"]) {
       response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
     }
-    response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${Date.now()}`, status: "completed", output: items, usage: { input_tokens: 20, output_tokens: 10 } } })}\n\n`);
+    response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${Date.now()}`, status: "completed", output: items, usage } })}\n\n`);
   } catch { /* the client is gone (aborted request) */ }
 };
 
@@ -113,6 +115,14 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
     { agent: "worker", task: "SCENARIO=chain step one", model, isolation },
     { agent: "worker", task: "SCENARIO=chain step two after {previous}", model, isolation },
   ] };
+  // Cache accounting: one child, two provider requests; the fixture declares the second request's
+  // prefix as cached (cached_tokens), which is the only way to observe cacheRead without a real
+  // upstream. The scenario asserts the harness records it per generation instead of dropping it.
+  if (marker("cache-usage")) return { agent: "worker", task: "SCENARIO=cache-usage CACHE_FIXTURE review", model, isolation };
+  // Same cache fixture, three parallel children: each child's cacheRead is charged to its own
+  // conversation, so the dispatch total is the sum, never a diluted average of a shared prefix.
+  if (marker("cache-parallel")) return { tasks: [0, 1, 2].map(index => ({
+    agent: "worker", task: `SCENARIO=cache-parallel CACHE_FIXTURE shard ${index}`, model, isolation })) };
   // N-1: one item's isolation preflight fails (non-Git, auto) — the valid items must still run.
   if (marker("partial-one-valid")) return { tasks: [
     { agent: "no-such-agent", task: "SCENARIO=partial-one-valid invalid", model },
@@ -198,7 +208,14 @@ const server = createServer(async (request, response) => {
           : { type: "message", id: "msg_done", role: "assistant", status: "completed",
             // Many short lines keep the 50KB per-task cap (and its hint) inside the host's
             // 50KB tool-result projection, so the truncation notice stays observable.
-            content: [{ type: "output_text", text: text.includes("CHILD_BIG") ? `${"B".repeat(99)}\n`.repeat(600) : `${model} done`, annotations: [] }] }]);
+            content: [{ type: "output_text", text: text.includes("CHILD_BIG") ? `${"B".repeat(99)}\n`.repeat(600) : `${model} done`, annotations: [] }] }],
+        // Cache fixture: OpenAI counts cached prompt tokens inside input_tokens, so a 1000-token
+        // prefix that is fully cached shows up as input_tokens=1010 / cached_tokens=1000.
+        text.includes("CACHE_FIXTURE")
+          ? returned
+            ? { input_tokens: 1010, output_tokens: 10, total_tokens: 1020, input_tokens_details: { cached_tokens: 1000 } }
+            : { input_tokens: 1000, output_tokens: 10, total_tokens: 1010, input_tokens_details: { cached_tokens: 0 } }
+          : undefined);
     } finally {
       if (index !== undefined) { pool.inFlight -= 1; pool.end.set(index, Date.now()); }
     }
@@ -303,11 +320,33 @@ try {
   assert.equal(active[0]?.displayName, "皮卡丘");
   // 跨任务不得串店：其他 taskId 看到的是空表
   assert.equal(durableSubagentIpcBackend.active("another-task").length, 0);
+  /**
+   * 契约：subagent_list 只索引 live 子会话，且与 IPC backend 同样按 taskId 隔离。
+   * 直接取工具并调 execute，不经模型，避免用 fixture 的调用意图代替断言本身。
+   */
+  const readLive = async (taskId: string) => {
+    const tool = createDurableSubagentTools({ taskId, cwd, models: native, permissionMode: () => permission })
+      .find(candidate => candidate.name === "subagent_list") as unknown as
+      { execute: (args: unknown, api: unknown, context: unknown) => Promise<{ details: { active: Array<{ status?: string }> } }> } | undefined;
+    assert(tool, "subagent_list must be registered");
+    return (await tool.execute({}, {}, {})).details.active;
+  };
+  const liveList = await readLive("test-task");
+  assert.equal(liveList.length, 1, "subagent_list 应只看到本任务的 live 子会话");
+  assert.equal(liveList[0]?.status, "running", "live 子会话的 status 恒为 running");
+  assert.deepEqual(await readLive("another-task"), [], "subagent_list 不得跨任务串台");
+  // schema 契约：终态与 idle 过滤值不再被接受（旧枚举写完永远返回空表，误导调用方）
+  assert.equal(Value.Check(ListParams, { status: "running" }), true);
+  assert.equal(Value.Check(ListParams, { status: "completed" }), false, "ListParams 不应再声明终态过滤值");
+  assert.equal(Value.Check(ListParams, { status: "idle" }), false, "idle 同样查不到，不应出现在契约里");
+  // 旧参数兼容：已删除的 subagentId 作为未知属性被忽略，不得拒绝整次委派
+  assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "legacy", subagentId: "sa-legacy" }), true);
   const childId = (await harness.commit(tx => tx.scanConversations({}, 20), ctx)).items.find(item => item.owner)?.id;
   assert(childId);
   assert.equal((await harness.snapshot(DurableSubagentIdentity, childId, ctx))?.value?.item.selection.model, "fixture/child");
   await harness.close(ctx); await firstWait;
   assert.equal(durableSubagentIpcBackend.active("test-task").length, 0);
+  assert.deepEqual(await readLive("test-task"), [], "子会话结束后必须从 subagent_list 消失");
   allowFinal = true;
   harness = await open(directory);
   conversation = await harness.root(ctx);
@@ -569,6 +608,31 @@ try {
   assert.equal(await readFile(join(cwd, "shared.txt"), "utf8"), "two", "the later chain step wins");
   assert.doesNotMatch(chainWrite.output, /write conflict/);
 
+  // ---- cache accounting: a child's cacheRead survives into the dispatch result ------------------
+  const cacheRun = await runScenario("cache-usage", "SCENARIO=cache-usage");
+  assert.equal(cacheRun.children, 1);
+  assert.equal(cacheRun.isError, false);
+  const cacheResults = (cacheRun.details as { results?: Array<{ usage?: Record<string, number> }> }).results ?? [];
+  const childUsage = cacheResults[0]?.usage ?? {};
+  assert.equal(childUsage.turns, 2, "both child generations must be counted as separate calls");
+  assert.equal(childUsage.input, 1010, `uncached input sums both generations (${childUsage.input})`);
+  assert.equal(childUsage.cacheRead, 1000, `cacheRead from the second generation is preserved (${childUsage.cacheRead})`);
+  assert.equal(childUsage.cacheWrite, 0, `cacheWrite stays 0 when the provider reports none (${childUsage.cacheWrite})`);
+  assert.equal(childUsage.output, 20, `output sums both generations (${childUsage.output})`);
+  assert.equal(childUsage.contextTokens, 1020, `contextTokens is the last generation's totalTokens (${childUsage.contextTokens})`);
+
+  // ---- cache accounting under parallelism: per-child cacheRead is summed, not shared ------------
+  const parallelCacheRun = await runScenario("cache-parallel", "SCENARIO=cache-parallel");
+  assert.equal(parallelCacheRun.children, 3);
+  assert.equal(parallelCacheRun.isError, false);
+  assert.equal(pool.requests, 6, "three children with two provider requests each; no retries");
+  const parallelCacheResults = (parallelCacheRun.details as { results?: Array<{ usage?: Record<string, number> }> }).results ?? [];
+  assert.deepEqual(parallelCacheResults.map(item => item.usage?.cacheRead), [1000, 1000, 1000],
+    "each parallel child charges its own cacheRead (no cross-child sharing or dilution)");
+  assert.deepEqual(parallelCacheResults.map(item => item.usage?.turns), [2, 2, 2], "each child reports its own two calls");
+  assert.equal(parallelCacheResults.reduce((sum, item) => sum + (item.usage?.cacheRead ?? 0), 0), 3000,
+    "the dispatch total is the sum of the per-child cacheRead values");
+
   assert.equal(serverError, undefined);
   console.log("PASS durable child identity, model, display name, bound cwd, persisted receipt, restart, completed effect reuse, recursion and readonly restrictions");
   console.log("PASS durable parallel text projection (header/status/id/truncation), rolling pool, concurrency line, timeout diagnostic, shared workspace visibility, dispatch preflight and chain steps");
@@ -577,6 +641,8 @@ try {
   console.log("PASS N-1 an invalid item is rejected alone while valid items still run");
   console.log("PASS D-5 auto resolves single tasks and one-item batches to shared with the reason; parallel write-capable auto items are rejected before dispatch; a pre-v4 dispatch memo replays under that release's isolation rule");
   console.log("PASS D-4 allow-override timeout_ms governs the run and produces a real timedout result");
+  console.log("PASS child cacheRead/cacheWrite from the provider fixture survive into the per-child usage (per-generation calls, last-generation contextTokens)");
+  console.log("PASS parallel children keep per-child cacheRead (summed, not shared)");
 } finally {
   await harness?.close(ctx);
   server.closeAllConnections();

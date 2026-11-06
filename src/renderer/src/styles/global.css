@@ -19564,10 +19564,6 @@ html[data-theme="dark"] .input-expert-chip {
 .sa-empty { color: var(--text-muted, #888); font-size: 13px; padding: 24px 12px; text-align: center; }
 .btn--small { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
 
-/* ---- Subagent 主对话入口（P2-5） ---- */
-.tool-row-subagent { padding: 4px 10px 8px; }
-.tool-row-subagent .btn { display: inline-flex; align-items: center; gap: 4px; }
-
 /* ---- SubagentDrawer（Task-scoped 临时 Chat） ---- */
 .sa-drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 200; display: flex; justify-content: flex-end; }
 .sa-drawer { width: 420px; max-width: 90vw; height: 100%; background: var(--bg-panel, #171717); border-left: 1px solid var(--border, #2a2a2a); display: flex; flex-direction: column; }

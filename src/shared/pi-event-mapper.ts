@@ -74,8 +74,30 @@ export function isComputerExecReadonly(input: unknown): boolean {
   return COMPUTER_EXEC_READONLY_ACTIONS.has(action);
 }
 
+/**
+ * subagent 委派的一句话摘要：谁去做，而不是整段参数 JSON。
+ * 单任务/并行 tasks/顺序 chain 三种形态共用：只取 agent 与 displayName，任务正文进 detail。
+ */
+function subagentSummary(obj: Record<string, unknown>): string {
+  const items = (value: unknown): Record<string, unknown>[] => Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const name = (item: Record<string, unknown>): string => {
+    const agent = typeof item.agent === "string" ? item.agent.trim() : "";
+    const displayName = typeof item.displayName === "string" ? item.displayName.trim() : "";
+    return [agent, displayName].filter(Boolean).join(" · ");
+  };
+  const tasks = items(obj.tasks);
+  if (tasks.length === 1) return name(tasks[0]!);
+  if (tasks.length > 1) return `${tasks.length} 个并行：${tasks.map(name).filter(Boolean).join("、")}`;
+  const chain = items(obj.chain);
+  if (chain.length) return `${chain.length} 步顺序链：${chain.map(name).filter(Boolean).join(" → ")}`;
+  return name(obj);
+}
+
 function summarizeToolInput(tool: string, input: unknown): { summary: string; detail?: string } {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  if (tool === "subagent") return { summary: subagentSummary(obj).slice(0, 120) || "子代理委派", detail: JSON.stringify(obj, null, 2) };
   if (tool === "multi_model_consult") return { summary: "多模型会诊", detail: typeof obj.task === "string" ? obj.task : undefined };
   if ((tool === "bash" || tool === "terminal") && typeof obj.command === "string") {
     return { summary: obj.command, detail: obj.command };

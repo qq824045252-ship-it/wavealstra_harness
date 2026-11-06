@@ -393,7 +393,10 @@ export class UsageStatsService {
   }
 
   /** subagent 实例结束归档（usage-archive.jsonl → 事实表；key = sub:{id}:{finishedAt}，
-   *  同 id 多次运行（复用）每次归档一行，重复扫描同一行幂等）。 */
+   *  同 id 多次运行（复用）每次归档一行，重复扫描同一行幂等）。
+   *  缺字段：归档行可能不带 cacheRead/cacheWrite。数值列是 NOT NULL DEFAULT 0，所以
+   *  "没有这个字段"与"这个字段是 0"在表里长得一样，必须由 coverage 行区分——否则缺字段
+   *  的行会被当成"已知的缓存未命中"，把命中率分母虚假抬高（实测 0.9 → 0.818）。 */
   recordSubagentArchive(entries: SubagentArchiveEntry[]): void {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO usage_events (
@@ -402,12 +405,16 @@ export class UsageStatsService {
         reasoning_tokens, total_tokens, cost_total, turn_index, backfilled
       ) VALUES (?, ?, ?, 'subagent', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, 1)`,
     );
+    const coverage = this.coverageAvailable
+      ? this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
+      : null;
     const tx = this.db.transaction((entries: SubagentArchiveEntry[]) => {
       for (const e of entries) {
         const u = e.usage ?? {};
         const total = (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
-        insert.run(
-          `${SUBAGENT_PREFIX}${e.subagentId}:${e.runCount ?? 0}:${e.finishedAt ?? 0}`,
+        const entryId = `${SUBAGENT_PREFIX}${e.subagentId}:${e.runCount ?? 0}:${e.finishedAt ?? 0}`;
+        const inserted = insert.run(
+          entryId,
           e.scope ?? null,
           null,
           e.role ?? null,
@@ -421,6 +428,10 @@ export class UsageStatsService {
           total,
           u.cost ?? 0,
         );
+        if (inserted.changes && coverage) {
+          coverage.run(entryId, Number(u.input != null), Number(u.output != null),
+            Number(u.cacheRead != null), Number(u.cacheWrite != null), Number(u.cost != null || total > 0));
+        }
       }
     });
     tx(entries);

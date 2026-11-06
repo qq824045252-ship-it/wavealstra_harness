@@ -39,8 +39,14 @@ const quantiles = (values: number[]) => {
   return { totalMs: values.reduce((sum, value) => sum + value, 0), p50Ms: sorted[Math.floor((sorted.length - 1) * 0.5)], p95Ms: sorted[Math.floor((sorted.length - 1) * 0.95)] };
 };
 try {
-  while (runtime.snapshot.historyBefore !== undefined) await runtime.loadEarlier();
-  assert.equal(runtime.snapshot.messages.length, turns * 2);
+  let before = runtime.snapshot.historyBefore;
+  let messageCount = runtime.snapshot.messages.length;
+  while (before !== undefined) {
+    const block = await runtime.loadHistoryBlock(before);
+    messageCount += block.messages.length;
+    before = block.before;
+  }
+  assert.equal(messageCount, turns * 2);
   const commonProjectionMs: number[] = [];
   scans = { entries: 0, submissions: 0 };
   for (let index = 0; index < updates; index++) {

@@ -265,7 +265,6 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task handoff: goal; allowed file scope; constraints; known facts with source paths; acceptance commands/conditions; artifact paths. Return conclusion, changed files, execution evidence, unverified items" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-  subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
   displayName: DisplayNameField,
 });
 
@@ -274,7 +273,6 @@ const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-  subagentId: Type.Optional(Type.String({ description: "Reuse/create a persistent subagent with this id" })),
   displayName: DisplayNameField,
 });
 
@@ -294,9 +292,6 @@ export const SubagentParams = Type.Object({
     Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
   ),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
-  subagentId: Type.Optional(
-    Type.String({ description: "Persistent subagent id: reuse an existing one (same session/history) or create with this id" }),
-  ),
   displayName: DisplayNameField,
   timeout_ms: Type.Optional(
     Type.Integer({ description: "Requested total run time in ms (1s..3600s). Honored only if Settings > Models > Subagent execution limits allows per-call overrides. Fixed settings take precedence; default 600s.", minimum: 1000, maximum: 3_600_000 }),
@@ -306,14 +301,16 @@ export const SubagentParams = Type.Object({
 export const ListParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Filter by role/agent name" })),
   status: Type.Optional(
-    StringEnum(["idle", "running", "completed", "failed", "cancelled", "timedout", "interrupted", "error"] as const, {
-      description: "Filter by status",
+    StringEnum(["running"] as const, {
+      // 只有 live 实例进入本工具的索引（见 DurableSubagents 的 activeChildren），status 恒为 running。
+      // 声明终态枚举会让调用方误以为可以事后查历史，实际永远返回空表。
+      description: 'Filter by status. Only live children are indexed here and their status is always "running"; a finished child\'s result stays in the subagent tool result and the task timeline.',
     }),
   ),
-  limit: Type.Optional(Type.Integer({ description: "Max entries (newest first). Default: 20.", minimum: 1, maximum: 200 })),
+  limit: Type.Optional(Type.Integer({ description: "Max live entries (newest first). Default: 20.", minimum: 1, maximum: 200 })),
 });
 
 export const SteerParams = Type.Object({
-  subagentId: Type.String({ description: "Persistent subagent id from subagent_list / subagent result" }),
+  subagentId: Type.String({ description: "Id of a live child from subagent_list; terminal children cannot be steered" }),
   instruction: Type.String({ description: "Additional instruction to deliver" }),
 });

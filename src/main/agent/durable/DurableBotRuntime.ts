@@ -12,6 +12,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
+import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { BotToolMode, DurableBotSnapshot, DurableHistoryBlock } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { seedDurableBranch, type DurableBranchSeed } from "./DurableTaskBranch";
@@ -682,7 +683,7 @@ export class DurableBotRuntime {
       id: `${message.toolCallId}:nested:interrupted${key ? ":" + key : ""}`,
       parentToolCallId: message.toolCallId,
       tool: name,
-      summary: JSON.stringify(args),
+      summary: summarizeToolInput(name, args).summary,
       status: "error",
       output: "",
     };
@@ -795,8 +796,9 @@ export class DurableBotRuntime {
       const owner = ownerIndex === undefined ? undefined : messages[ownerIndex];
       if (!owner) continue;
       const status = slot.status === "done" ? (slot.summary?.isError ? "error" as const : "success" as const) : "running" as const;
+      const text = summarizeToolInput(slot.name, slot.arguments);
       const row: NonNullable<ChatMessageDto["tools"]>[number] = { id: slot.callId, parentToolCallId: slot.parentCallId, tool: slot.name,
-        summary: JSON.stringify(slot.arguments), status, output: slot.output ?? slot.summary?.error ?? "" };
+        summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status, output: slot.output ?? slot.summary?.error ?? "" };
       tools.set(row.id, row);
       const index = owner.tools!.findIndex(item => item.id === row.id);
       if (index < 0) owner.tools!.push(row); else owner.tools![index] = row;
@@ -824,7 +826,9 @@ export class DurableBotRuntime {
         for (const entry of added) for (const message of entry.model ?? []) {
           if (message.role === "assistant") for (const call of message.content) {
             if (call.type !== "toolCall" || childTools.has(call.id)) continue;
-            const tool = { id: call.id, parentToolCallId: parentId, tool: call.name, summary: JSON.stringify(call.arguments), status: "running" as const };
+            const text = summarizeToolInput(call.name, call.arguments);
+            const tool = { id: call.id, parentToolCallId: parentId, tool: call.name, summary: text.summary,
+              ...(text.detail === undefined ? {} : { detail: text.detail }), status: "running" as const };
             childTools.set(call.id, tool); owner.tools.push(tool);
           }
           if (message.role === "toolResult") {

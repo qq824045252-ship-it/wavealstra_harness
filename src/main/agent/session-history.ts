@@ -1,5 +1,6 @@
 import { searchReportFromDetails, searchReportSummary } from "../../shared/web-search";
 import { consultReportFromDetails, consultSummary } from "../../shared/multi-model-consult";
+import { summarizeToolInput } from "../../shared/pi-event-mapper";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, isAbsolute, resolve } from "node:path";
 import type {
@@ -21,22 +22,7 @@ function toolFromPart(part: Record<string, unknown>): ChatToolCallDto | null {
     : {}) as Record<string, unknown>;
   const tool = part.name;
   const id = typeof part.id === "string" ? part.id : `hist-tool-${tool}-${Date.now()}`;
-  let summary = tool;
-  if (tool === "bash" && typeof args.command === "string") summary = args.command;
-  else if (typeof args.path === "string") summary = args.path;
-  else {
-    try {
-      summary = JSON.stringify(args).slice(0, 120) || tool;
-    } catch {
-      summary = tool;
-    }
-  }
-  let detail: string | undefined;
-  try {
-    detail = JSON.stringify(args, null, 2);
-  } catch {
-    detail = undefined;
-  }
+  const { summary, detail } = summarizeToolInput(tool, args);
   return { id, tool, summary, detail, status: "success" };
 }
 

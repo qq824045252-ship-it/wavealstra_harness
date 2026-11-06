@@ -289,7 +289,10 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
     },
   });
   const list = defineTool({
-    name: "subagent_list", parameters: ListParams, replay: "safe", description: "List live durable children belonging to this host task.",
+    name: "subagent_list", parameters: ListParams, replay: "safe",
+    // 契约：只有 live 子会话在索引里（activeChildren），终态一律在 runChild 的 finally 中移除。
+    // 已结束子会话的结果通过 subagent 工具的 result/details 与任务时间线查看，不在本工具重复暴露。
+    description: "List live durable children belonging to this host task. Only running children are indexed; a finished child's result stays in the subagent tool result and the task timeline.",
     execute: async params => {
       const children = [...activeChildren.values()].filter(child => child.taskId === options.taskId)
         .map(child => child.summary).filter(child => (!params.agent || child.role === params.agent) && (!params.status || child.status === params.status))

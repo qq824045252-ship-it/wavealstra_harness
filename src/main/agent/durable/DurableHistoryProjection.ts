@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
+import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
 
 export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; audit?: import("./DurableSkillProjection").DurableInputAudit };
@@ -162,7 +163,10 @@ export function assistantRow(id: string, taskId: TaskId | undefined, message: As
       ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
     text: durableContentText(message.content) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
     thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
-    tools: message.content.filter(item => item.type === "toolCall").map(call => ({ id: call.id, tool: call.name, summary: JSON.stringify(call.arguments), status: "running" })),
+    tools: message.content.filter(item => item.type === "toolCall").map(call => {
+      const text = summarizeToolInput(call.name, call.arguments);
+      return { id: call.id, tool: call.name, summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status: "running" as const };
+    }),
     modelName: message.model, createdAt: message.timestamp, streaming,
   };
 }
@@ -179,8 +183,12 @@ function validDuration(value: number | null | undefined): number | null {
 
 export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string };
 export function nestedToolRow(parentCallId: string, call: NestedCallDetail, index: number): ToolRow {
+  // 嵌套调用的 args 可能是字符串（已成形文本）或对象；字符串保持原样，对象走统一摘要。
+  const text = summarizeToolInput(call.name, call.args);
   return { id: typeof call.id === "number" ? `${parentCallId}/c${call.id}` : `${parentCallId}:nested:${call.id ?? String(index)}`, parentToolCallId: parentCallId, tool: call.name,
-    summary: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}), status: call.status === "error" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
+    summary: typeof call.args === "string" ? call.args : text.summary,
+    ...(typeof call.args === "string" || text.detail === undefined ? {} : { detail: text.detail }),
+    status: call.status === "error" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
 }
 function resultDetails(message: ToolResult): { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined {
   return message.details as { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined;

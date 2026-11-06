@@ -3,13 +3,11 @@ import MultiModelConsultCard from "./MultiModelConsultCard";
 import { useState } from "react";
 import type { ToolCall } from "@/types";
 import { useAppStore } from "@/store/appStore";
-import { extractSubagentIdFromToolResult } from "@shared/subagent-model-config";
 import {
   IconAlert,
   IconCheck,
   IconChevronRight,
   IconCircle,
-  IconUsers,
 } from "@/components/common/icons";
 
 const STATUS_TEXT: Record<ToolCall["status"], string> = {
@@ -67,7 +65,6 @@ export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.
   const needsApproval = toolCall.status === "pending_approval";
   const [open, setOpen] = useState(needsApproval);
   const resolveToolApproval = useAppStore((s) => s.resolveToolApproval);
-  const openSubagentDrawer = useAppStore((s) => s.openSubagentDrawer);
 
   const body = [toolCall.detail, toolCall.output].filter(Boolean).join("\n\n");
   const isExternalWrite = toolCall.approvalKind === "external-write";
@@ -76,12 +73,6 @@ export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.
     resolveToolApproval(messageId, toolCall.id, approved, externalWrite);
   };
 
-  // Task-scoped：subagent 工具结果 → 打开当前父 Task 的临时 Chat（drawer）；
-  // 实例在 RESULT 返回后已销毁，仅运行中可打开（chip）
-  const subagentId = extractSubagentIdFromToolResult(toolCall.tool, toolCall.output, toolCall.detail);
-  const openSubagent = (): void => {
-    if (subagentId) openSubagentDrawer(subagentId);
-  };
   const statusBeforeSummary = toolCall.status === "running";
   const displaySummary = toolCall.status === "running"
     ? toolCall.summary.replace(/^Ran\s+/i, "")
@@ -182,15 +173,6 @@ export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.
       </button>
 
       {open && body && <div className="tool-row-output">{body}</div>}
-
-      {subagentId && toolCall.status === "running" && (
-        <div className="tool-row-subagent">
-          <span className="sa-status sa-status--running">Running</span>
-          <button className="btn btn--small" onClick={openSubagent}>
-            <IconUsers size={12} /> 打开临时 Chat {subagentId}
-          </button>
-        </div>
-      )}
 
       {needsApproval && !isExternalWrite && !isAcpPermission && (
         <div className="approval-bar">
