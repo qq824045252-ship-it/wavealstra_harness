@@ -4,6 +4,13 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
 
 不同于传统的扁平聊天窗口，MyBuddy 将工作流组织为「项目（Project）→ 树形空间（Blueprint / Workspace）→ 任务（Task）」的多层级结构，通过情景模式（Scenario Mode）在会话初始化阶段硬性收紧 Skill 与 MCP 权限边界，并通过统一的 Memory Gateway 让桌面端会话与外部 CLI Agent 共享同一套多层记忆（L1/L2/L3），同时保持对 WorkBuddy / CodeBuddy 插件目录规范的兼容。
 
+## Bot / Work 设计基线
+
+2026-11-06 冻结 **BOT-WORK-1.0**：长期 bot 与对话、任务运行分离，独立事项承载目标与责任，后台复用 Durable。以下文件定义目标行为与完整交付条件；冻结不表示相关功能已经实现或通过验收。
+
+- [Bot / Work 架构冻结设计](docs/bot-work-design.md)：对象、权威状态、前后台宿主、主动跟进、专家与团队协作，以及最新源码复核结论。
+- [Bot / Work 冻结验收规范](docs/bot-work-acceptance.md)：行为场景、故障恢复边界、端到端故事与验收证据要求。
+
 ## 为什么开源
 
 这个项目最初的目标是探索一套 WorkBuddy 的开源替代方案：沿用「工作区 + 插件生态 + 桌面 Agent」的核心理念，但在工程上按照更严格的项目制层级、权限围栏（Harness）与记忆协同边界来演进。

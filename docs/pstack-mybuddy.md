@@ -2,6 +2,10 @@
 
 This reference describes MyBuddy's native tools that pstack skills can use. Skill instructions do not add tool parameters, provider access, or permissions.
 
+## Frozen Bot / Work design
+
+[BOT-WORK-1.0](bot-work-design.md) and its [acceptance contract](bot-work-acceptance.md) define the frozen target architecture for persistent bot identities, independent work ownership, foreground/background hosts, and collaboration. They describe target behavior pending implementation and validation. The capability mappings below describe the current execution foundation and do not imply that the frozen product design is already implemented.
+
 ## Subagent model and reasoning selection
 
 The `subagent` tool accepts `model`, `reasoning`, and `isolation` for a single task and for each entry in `tasks` or `chain`. In array modes, the top-level fields provide defaults. An item's explicit fields override those defaults. An item's `reasoning` replaces the whole top-level object, without a deep merge.
