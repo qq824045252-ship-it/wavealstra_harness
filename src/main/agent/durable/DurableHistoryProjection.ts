@@ -5,6 +5,8 @@ import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
 
 export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; audit?: import("./DurableSkillProjection").DurableInputAudit };
+/** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
+export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttftMs?: number | null };
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
 type ToolResult = Extract<Message, { role: "toolResult" }>;
 export type InterruptedNested = { ownerId: string; message: ToolResult; toolTaskId: TaskId };
@@ -76,7 +78,9 @@ export class DurableHistoryProjection {
     return before;
   }
 
-  merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>): EntryRecord[] {
+  /** `timing` 是 `${taskId}:${timestamp}` → completedAt；`speed` 是同一 key → 完成态实测速度。 */
+  merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>,
+    speed: Readonly<Record<string, DurableResponseSpeed>> = {}): EntryRecord[] {
     const fresh = entries.filter(entry => !this.entries.has(entry.id)).sort((a, b) => a.id - b.id);
     for (const entry of fresh) {
       this.entries.set(entry.id, entry);
@@ -93,7 +97,8 @@ export class DurableHistoryProjection {
         } else if (message.role === "assistant") {
           const user = [...this.entries.values()].filter(item => item.id <= entry.id && (item.kind === "pi.user" || item.kind === "mybuddy.user")).sort((a, b) => b.id - a.id)[0];
           const startedAt = user?.model?.find(item => item.role === "user")?.timestamp ?? message.timestamp;
-          const row = assistantRow(id, entry.byTaskId, message, timing[`${entry.byTaskId}:${message.timestamp}`], startedAt);
+          const key = `${entry.byTaskId}:${message.timestamp}`;
+          const row = assistantRow(id, entry.byTaskId, message, timing[key], startedAt, false, speed[key]);
           this.rows.set(id, row); this.dirty = true;
           if (row.presentationKey) this.presentationRows.set(row.presentationKey, id);
           for (const tool of row.tools ?? []) {
@@ -141,17 +146,35 @@ export class DurableHistoryProjection {
   }
 }
 
-export function assistantRow(id: string, taskId: TaskId | undefined, message: AssistantMessage, completedAt?: number, startedAt = message.timestamp, streaming = false): ChatMessageDto {
+/**
+ * 一条 assistant 回复的 DTO。
+ * `metrics` 只在完成态生效：`tps` / `ttftMs` 来自 host 侧实测（持久化在 `mybuddy.response-timing`），
+ * 历史重载时如果那次调用没有被观测到计时，就是 null —— 不拿 0 冒充。
+ * 流式行由 runtime 用实时估算覆盖，这里保持 tps=null。
+ */
+export function assistantRow(id: string, taskId: TaskId | undefined, message: AssistantMessage, completedAt?: number, startedAt = message.timestamp,
+  streaming = false, metrics?: DurableResponseSpeed): ChatMessageDto {
   return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1 } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
     durationMs: completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined,
     generationStats: { phase: streaming ? "generating" : "complete", startedAt, updatedAt: completedAt ?? message.timestamp,
-      tps: null, estimated: false, outputTokens: message.usage.output, ttftMs: null,
+      tps: streaming ? null : validSpeed(metrics?.tps), estimated: false, outputTokens: message.usage.output,
+      ttftMs: streaming ? null : validDuration(metrics?.ttftMs),
       ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
     text: durableContentText(message.content) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
     thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
     tools: message.content.filter(item => item.type === "toolCall").map(call => ({ id: call.id, tool: call.name, summary: JSON.stringify(call.arguments), status: "running" })),
     modelName: message.model, createdAt: message.timestamp, streaming,
   };
+}
+
+/** 持久化/外部时间数据不可信：非正、非有限的速度一律折算成 null（界面据此显示「已完成」而不是 NaN）。 */
+function validSpeed(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** 时长同理：负值（时钟回拨）与 NaN 都不进 UI。 */
+function validDuration(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string };

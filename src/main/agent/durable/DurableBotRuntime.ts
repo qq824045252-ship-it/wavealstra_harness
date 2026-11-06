@@ -33,6 +33,7 @@ import { DurableConsultIdentity } from "./DurableConsultSession";
 import type { DiagnosticSource, ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
 import { durableInputAuditSchema, type DurableInputAudit } from "./DurableSkillProjection";
 import { mergeContextUsage } from "../../usage/context-usage-merge";
+import { GenerationTiming, generationContentTokens } from "../../usage/generation-timing";
 
 type BotInputMetadata = DurableInputMetadata;
 const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
@@ -40,8 +41,10 @@ const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, sc
 });
 
 // Display telemetry lives with Durable, never in the task scheduler or renderer clock.
+// `completed` keeps the completion clock (durationMs); `speed` keeps the host-measured generation speed
+// (tps/ttftMs), keyed by the same `${taskId}:${message.timestamp}` identity.
 const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
-  initial: () => ({ completed: {} as Record<string, number> }),
+  initial: () => ({ completed: {} as Record<string, number>, speed: {} as Record<string, { tps: number | null; ttftMs: number | null }> }),
 });
 
 export interface DurableBotOptions {
@@ -109,6 +112,8 @@ export class DurableBotRuntime {
   private pendingTurnEntries: EntryRecord[] = [];
   private consumerCursor?: number;
   private contextTokens: number | null = null;
+  /** Host-side stream clocks, one per live generation task; pi's `LiveState.generation` carries no timestamps. */
+  private readonly generationTimings = new Map<number, { attempt: number; timing: GenerationTiming }>();
   private evidence?: DurableEvidenceProjection;
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {
     this.observeSession();
@@ -317,12 +322,43 @@ export class DurableBotRuntime {
     return !snapshot.busy && snapshot.queued === 0;
   }
 
+  /**
+   * Every terminal provider message: keep its completion clock and, when the stream was observed,
+   * settle the host-side generation clock with the authoritative `usage.output`.
+   * pi never timestamps `LiveState.generation`, so this observed stream is the only real speed source.
+   */
   private async recordResponse(taskId: number, message: AssistantMessage): Promise<void> {
     const completedAt = Date.now();
+    const metrics = this.generationTimings.get(taskId)?.timing.finalize(message.usage?.output ?? 0, completedAt);
+    this.generationTimings.delete(taskId);
     await this.conversation.commit(async tx => {
       const timing = await tx.doc(ResponseTiming, this.conversation.id);
-      timing.completed[`${taskId}:${message.timestamp}`] ??= completedAt;
+      const key = `${taskId}:${message.timestamp}`;
+      timing.completed[key] ??= completedAt;
+      // Nothing measured (never observed, or a failed attempt with no output) → keep the doc honest.
+      if (!metrics || (metrics.tps === null && metrics.ttftMs === null)) return;
+      timing.speed ??= {};
+      // A retried attempt appends its own message with its own timestamp, so this write replaces only
+      // a replay of the same terminal message.
+      timing.speed[key] = { tps: metrics.tps, ttftMs: metrics.ttftMs };
     }, ctx);
+  }
+
+  /**
+   * Feed one observed live generation. A generation appears before pi requests the provider
+   * (`live.generation = { attempt }`), then its throttled partial arrives on later commits;
+   * a retried attempt bumps `attempt`, which restarts the clock.
+   */
+  private observeGeneration(taskId: number, attempt: number, message: AssistantMessage | undefined, now: number): { attempt: number; timing: GenerationTiming } {
+    let entry = this.generationTimings.get(taskId);
+    if (!entry || entry.attempt !== attempt) {
+      entry = { attempt, timing: new GenerationTiming(now) };
+      this.generationTimings.set(taskId, entry);
+      // Timings of tasks whose terminal response never reached afterResponse (abort/fault) must not accumulate.
+      if (this.generationTimings.size > 4) for (const id of [...this.generationTimings.keys()]) if (id !== taskId) this.generationTimings.delete(id);
+    }
+    if (message) entry.timing.observe(generationContentTokens(message.content), now);
+    return entry;
   }
 
   private async recordSkillRead(call: Parameters<ToolHooks["afterTool"]>[0], api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]): Promise<void> {
@@ -403,7 +439,7 @@ export class DurableBotRuntime {
     await this.loadInputMetadata(entries, metadata);
     const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
     const history = new DurableHistoryProjection();
-    history.merge(entries, metadata, timing?.completed ?? {});
+    history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
     // A tool's result can lie beyond this page. Resolve only these calls, without
     // retaining the newer transcript or exposing unrelated messages in the page.
     const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
@@ -647,6 +683,8 @@ export class DurableBotRuntime {
 
   private async project(value: ConversationView): Promise<void> {
     if (this.closed || this.failed) return;
+    // One observation clock for this revision: the same `now` feeds the stream clocks and the retry countdown.
+    const now = Date.now();
     const entries = value.entries.filter(entry => entry.kind !== "mybuddy.context-import");
     if (this.history.oldest === undefined || !Number.isFinite(this.history.oldest)) this.historyBefore = value.before;
     // A stalled observer may receive a window beyond the last delivered entry. Fill only that gap.
@@ -661,7 +699,7 @@ export class DurableBotRuntime {
     const live = (value.docs["pi.live"] ?? {}) as LiveState;
     const timing = entries.some(entry => !this.history.has(entry.id)) ? await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx) : undefined;
     await this.loadInputMetadata(entries);
-    const fresh = this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {});
+    const fresh = this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {}, timing?.speed ?? {});
     const activeCalls = new Set([...(live.tools ?? []).map(slot => slot.callId), ...(live.nestedTools ?? []).map(slot => slot.parentCallId)]);
     const evictedBefore = this.history.trim(activeCalls);
     if (evictedBefore !== undefined) this.historyBefore = evictedBefore as EntryId;
@@ -709,11 +747,26 @@ export class DurableBotRuntime {
       // Durable's attempt counts the initial one too; Pi's retry counter counts retries only.
       const liveAttempt = live.generation?.attempt;
       const liveRetry = live.generation?.retry;
-      current.generationStats = { phase: liveRetry ? "retrying" : live.compactions?.some(item => item.blocking) ? "compacting" : live.tools?.length ? "tools" : live.generation?.message ? "generating" : "waiting",
-        startedAt: turnStartedAt ?? current.createdAt, updatedAt: current.createdAt, tps: null, estimated: false, outputTokens: null, ttftMs: null,
+      const phase = liveRetry ? "retrying" as const : live.compactions?.some(item => item.blocking) ? "compacting" as const
+        : live.tools?.length ? "tools" as const : live.generation?.message ? "generating" as const : "waiting" as const;
+      // pi's live generation has no timestamps: this refresh observes the attempt and its throttled
+      // partial, so the host keeps the stream clock. `updatedAt` only advances when output grew —
+      // a silent model must keep saying "等待输出", not pretend to be streaming.
+      const observed = liveAttempt === undefined ? undefined
+        : this.observeGeneration(live.run.taskId, liveAttempt, live.generation?.message, now).timing.snapshot(now);
+      const streamedTps = phase === "generating" ? observed?.tps ?? null : null;
+      // `startedAt` stays the reply-level clock the renderer reads for "等待 Ns"; TTFT is measured against
+      // this attempt's own observation (`generation-timing.ts`), never the user message timestamp.
+      current.generationStats = { phase,
+        startedAt: turnStartedAt ?? current.createdAt, updatedAt: observed?.updatedAt ?? current.createdAt,
+        // Same convention as the native `GenerationSpeedTracker`: a generating request carries an estimate
+        // (null until there is enough output to publish one); a settled reply carries the measured average.
+        tps: streamedTps, estimated: phase === "generating",
+        // `outputTokens` is the authoritative total only; a stream has none yet.
+        outputTokens: null, ttftMs: observed?.ttftMs ?? null,
         ...(liveAttempt !== undefined ? { attempts: liveAttempt } : {}),
         ...(liveRetry ? { retry: { attempt: Math.max(1, (liveAttempt ?? 2) - 1), error: liveRetry.error,
-          delayMs: Math.max(0, liveRetry.at - Date.now()) } } : {}) };
+          delayMs: Math.max(0, liveRetry.at - now) } } : {}) };
     }
     for (const slot of live.tools ?? []) {
       const tool = tools.get(slot.callId);
