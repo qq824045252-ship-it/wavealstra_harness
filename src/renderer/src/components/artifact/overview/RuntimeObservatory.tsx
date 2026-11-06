@@ -70,7 +70,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
     [activeModelId, modelNames],
   );
 
-  // 运行中子代理（主进程按当前 session scope 过滤；事件驱动刷新）
+  // 运行中子代理（按 taskId 作用域过滤；事件驱动刷新）
   const [activeSubagents, setActiveSubagents] = useState<SubagentSummaryDto[]>([]);
   const [activeExternalAgents, setActiveExternalAgents] = useState<ExternalAgentRunDto[]>([]);
   const taskIdRef = useRef<string | null>(null);
@@ -84,9 +84,9 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
     let disposed = false;
     const fetchActive = async (): Promise<void> => {
       try {
-        const list = await window.api?.subagent?.active?.();
-        // 竞态防御：旧任务的事件/响应不得污染新任务（列表本身按 scope 过滤，
-        // 这里再加一道 taskId 校验）
+        const list = await window.api?.subagent?.active?.(activeTaskId);
+        // 竞态防御：旧任务的事件/响应不得污染新任务
+        // （列表本身已按 taskId 过滤，这里再加一道 taskId 校验）
         if (!disposed && taskIdRef.current === activeTaskId) setActiveSubagents(list ?? []);
       } catch {
         if (!disposed && taskIdRef.current === activeTaskId) setActiveSubagents([]);

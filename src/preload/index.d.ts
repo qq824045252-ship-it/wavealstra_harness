@@ -394,7 +394,7 @@ export interface PreloadApi {
   };
   /** Subagent 临时 Chat（task-scoped：仅当前父 Task 运行中实例） */
   subagent: {
-    active: () => Promise<SubagentSummaryDto[]>;
+    active: (taskId: string) => Promise<SubagentSummaryDto[]>;
     transcript: (subagentId: string) => Promise<SubagentTranscriptDto>;
     steer: (subagentId: string, instruction: string) => Promise<SubagentSteerResultDto>;
     cancel: (subagentId: string) => Promise<{ ok: boolean; message: string }>;

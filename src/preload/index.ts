@@ -666,7 +666,7 @@ const api = {
 
   /** Subagent 临时 Chat（task-scoped：仅当前父 Task 运行中实例） */
   subagent: {
-    active: (): Promise<SubagentSummaryDto[]> => ipcRenderer.invoke(SubagentIpc.active),
+    active: (taskId: string): Promise<SubagentSummaryDto[]> => ipcRenderer.invoke(SubagentIpc.active, taskId),
     transcript: (subagentId: string): Promise<SubagentTranscriptDto> =>
       ipcRenderer.invoke(SubagentIpc.transcript, subagentId),
     steer: (subagentId: string, instruction: string): Promise<SubagentSteerResultDto> =>

@@ -3,7 +3,7 @@
  *
  * 数据源（全部现有、task-scoped、事件驱动，无新增轮询 IPC）：
  * - 主 Agent：当前 task 消息（streaming 标志 + 运行中 tool call 摘要）；
- * - 运行中子代理：window.api.subagent.active()（主进程按当前 session scope 过滤）；
+ * - 运行中子代理：window.api.subagent.active(taskId)（主进程按 taskId 过滤）；
  * - 完成态子代理：当前 task 消息中的 subagent tool calls（task 生命周期内短暂记录；
  *   Subagent 本体仍 disposable，terminal 即销毁，此处只是聊天时间线派生视图）；
  * - 后台任务：当前 task 的终端会话（TerminalSessionInfo：alive/exitCode/startedAt）

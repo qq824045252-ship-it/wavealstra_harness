@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   resetSubagentIpcHostForTests();
 
   console.log("== stub：无 backend ==");
-  assert(Array.isArray(handleSubagentActive()) && (handleSubagentActive() as unknown[]).length === 0, "active → []");
+  assert(Array.isArray(handleSubagentActive("task-1")) && (handleSubagentActive("task-1") as unknown[]).length === 0, "active → []");
   const tr = handleSubagentTranscript("x") as { record: null; ended: boolean; entries: unknown[] };
   assert(tr.record === null && tr.ended === true && Array.isArray(tr.entries), "transcript → ended");
   const steer = (await handleSubagentSteer("x", "go")) as { ok: boolean; message: string };
@@ -62,15 +62,32 @@ async function main(): Promise<void> {
   assert(typeof slot?.setBackend === "function", "globalThis 宿主槽已挂");
 
   console.log("== backend 接管 ==");
+  let lastScope: string | null = null;
   slot.setBackend({
-    active: () => [{ subagentId: "sa-1", displayName: "皮卡丘" }],
+    active: (taskId: string) => {
+      lastScope = taskId;
+      // 模拟真实 backend：只回本任务实例（跨任务并集就是 UI 上的“子代理乱串”）
+      return taskId === "task-1"
+        ? [{ subagentId: "sa-1", displayName: "皮卡丘" }]
+        : [{ subagentId: "sa-other-task", displayName: "超梦" }];
+    },
     transcript: (id: string) => ({ record: { subagentId: id, displayName: "皮卡丘" }, entries: [1], ended: false }),
     steer: async () => ({ ok: true, delivered: "rpc-steer", message: "ok" }),
     cancel: async () => ({ ok: true, message: "cancelled" }),
   });
-  const active = handleSubagentActive() as Array<{ subagentId: string; displayName?: string }>;
+  const active = handleSubagentActive("task-1") as Array<{ subagentId: string; displayName?: string }>;
   assert(active[0]?.subagentId === "sa-1", "active 委托 backend");
   assert(active[0]?.displayName === "皮卡丘", "active DTO 透传 displayName");
+  assert(lastScope === "task-1", `active 透传 taskId 作用域（${String(lastScope)}）`);
+  assert(
+    (handleSubagentActive("  task-1  ") as Array<{ subagentId: string }>)[0]?.subagentId === "sa-1",
+    "作用域两侧空白被裁剪",
+  );
+  lastScope = null;
+  assert((handleSubagentActive() as unknown[]).length === 0, "无 taskId → 空表（不返回全局并集）");
+  assert((handleSubagentActive("   ") as unknown[]).length === 0, "空白 taskId → 空表");
+  assert((handleSubagentActive(42 as unknown) as unknown[]).length === 0, "非字符串 taskId → 空表");
+  assert(lastScope === null, "无作用域时不得委托 backend");
   const live = handleSubagentTranscript("sa-1") as {
     ended: boolean;
     entries: unknown[];
@@ -84,7 +101,7 @@ async function main(): Promise<void> {
   assert(cancelled.ok === true, "cancel 委托 backend");
 
   slot.setBackend(null);
-  assert((handleSubagentActive() as unknown[]).length === 0, "卸 backend 后回到 stub");
+  assert((handleSubagentActive("task-1") as unknown[]).length === 0, "卸 backend 后回到 stub");
 
   console.log("== 旧扩展二次 handle 被吸收 ==");
   let secondHandleThrew = false;
@@ -94,7 +111,7 @@ async function main(): Promise<void> {
     secondHandleThrew = true;
   }
   assert(!secondHandleThrew, "旧扩展 handle 不抛 second handler");
-  const adopted = handleSubagentActive() as Array<{ subagentId: string }>;
+  const adopted = handleSubagentActive("task-1") as Array<{ subagentId: string }>;
   assert(adopted[0]?.subagentId === "legacy-1", "吸收的旧 handler 生效");
 
   console.log("== reset 后复用同一 mock 必须仍真实注册 ==");

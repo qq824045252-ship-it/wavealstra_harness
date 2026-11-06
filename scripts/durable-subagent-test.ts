@@ -298,14 +298,16 @@ try {
   const firstWait = submitted.wait(ctx).catch(() => undefined);
   await Promise.race([reachedWaiting, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("child never reached post-write wait")), 15_000).unref())]);
   assert.equal(writes, 1);
-  const active = durableSubagentIpcBackend.active();
+  const active = durableSubagentIpcBackend.active("test-task");
   assert.equal(active.length, 1);
   assert.equal(active[0]?.displayName, "皮卡丘");
+  // 跨任务不得串店：其他 taskId 看到的是空表
+  assert.equal(durableSubagentIpcBackend.active("another-task").length, 0);
   const childId = (await harness.commit(tx => tx.scanConversations({}, 20), ctx)).items.find(item => item.owner)?.id;
   assert(childId);
   assert.equal((await harness.snapshot(DurableSubagentIdentity, childId, ctx))?.value?.item.selection.model, "fixture/child");
   await harness.close(ctx); await firstWait;
-  assert.equal(durableSubagentIpcBackend.active().length, 0);
+  assert.equal(durableSubagentIpcBackend.active("test-task").length, 0);
   allowFinal = true;
   harness = await open(directory);
   conversation = await harness.root(ctx);

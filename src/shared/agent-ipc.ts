@@ -333,7 +333,7 @@ export const BrowserIpc = {
  * DTO 形状由内建 Subagent Capability 实现；此处锁定 Main/Renderer 通道契约。
  */
 export const SubagentIpc = {
-  /** 当前父 Task 的 active 实例 */
+  /** 当前父 Task 的 active 实例；参数 taskId，缺省或非字符串一律空表（不做跨任务并集） */
   active: "subagent:active",
   /** 运行中实例的实时 transcript（scope 校验；已结束 → ended:true） */
   transcript: "subagent:transcript",

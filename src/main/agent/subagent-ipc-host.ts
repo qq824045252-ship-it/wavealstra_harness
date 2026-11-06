@@ -14,7 +14,8 @@ import { SubagentIpc } from "../../shared/agent-ipc";
 export const SUBAGENT_IPC_HOST_KEY = "__mybuddySubagentIpcHost";
 
 export interface SubagentIpcBackend {
-  active: () => unknown;
+  /** taskId 是唯一作用域：缺省或不匹配时必须返回空表，绝不做跨任务并集。 */
+  active: (taskId: string) => unknown;
   transcript: (subagentId: string) => unknown;
   steer: (subagentId: string, instruction: string) => unknown | Promise<unknown>;
   cancel: (subagentId: string) => unknown | Promise<unknown>;
@@ -60,10 +61,18 @@ function invokeAdopted(channel: string, ...args: unknown[]): unknown {
   return fn({}, ...args);
 }
 
-export function handleSubagentActive(): unknown {
+/** 作用域归一：非字符串/空白/纯空格一律视为无作用域。 */
+function normalizeTaskScope(taskId: unknown): string {
+  return typeof taskId === "string" ? taskId.trim() : "";
+}
+
+export function handleSubagentActive(taskId?: unknown): unknown {
+  const scope = normalizeTaskScope(taskId);
+  // 无作用域不返回全局表：这是 user 可见的“跨任务乱串”入口
+  if (!scope) return [];
   try {
-    if (backend) return backend.active();
-    const adoptedResult = invokeAdopted(SubagentIpc.active);
+    if (backend) return backend.active(scope);
+    const adoptedResult = invokeAdopted(SubagentIpc.active, scope);
     return adoptedResult === undefined ? [] : adoptedResult;
   } catch {
     return [];
@@ -137,7 +146,7 @@ export function registerSubagentIpcHost(ipcMain: {
   if (registered) return;
   registered = true;
   exposeGlobalHost();
-  ipcMain.handle(SubagentIpc.active, () => handleSubagentActive());
+  ipcMain.handle(SubagentIpc.active, (_e: unknown, taskId: unknown) => handleSubagentActive(taskId));
   ipcMain.handle(SubagentIpc.transcript, (_e: unknown, subagentId: unknown) =>
     handleSubagentTranscript(subagentId),
   );

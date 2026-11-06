@@ -124,7 +124,10 @@ export async function stopDurableSubagentsForModelScopeChange(): Promise<void> {
 
 /** This index is a view of live Durable calls. It never schedules or restores work. */
 export const durableSubagentIpcBackend = {
-  active: () => [...activeChildren.values()].map(child => child.summary),
+  // 作用域必须按 taskId 过滤：面板只应看到当前任务的实例
+  active: (taskId: string) => [...activeChildren.values()]
+    .filter(child => child.taskId === taskId)
+    .map(child => child.summary),
   transcript: async (id: string) => await activeChildren.get(id)?.transcript() ?? { record: null, entries: [], ended: true },
   steer: async (id: string, instruction: string) => {
     const child = activeChildren.get(id);
