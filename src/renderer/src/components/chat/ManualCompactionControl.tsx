@@ -44,7 +44,6 @@ export default function ManualCompactionControl({ taskId, executing, contextWind
   };
   return <div className="manual-compaction-control">
     <div className="settings-row-desc">设置触发线：{threshold == null ? "—" : formatTokenCount(threshold)}</div>
-    <p className="settings-row-desc">将较早消息整理为摘要，保留最近上下文。完整聊天记录仍可查看；会调用当前会话模型。</p>
     {(notice || resultLabel(state)) && <div role={state?.status === "failed" ? "alert" : "status"} className="compaction-result">{notice || resultLabel(state)}</div>}
     <div className="compaction-actions"><button type="button" className="btn btn--primary" disabled={executing || running || pending}
       onClick={() => void compact()}>{running || pending ? "正在压缩…" : executing ? "执行结束后可压缩" : "立即压缩"}</button>
