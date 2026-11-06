@@ -82,15 +82,11 @@ async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void>
     ] as AppState["models"],
     draft: { spaceId: "old-space" },
     homeSpaceId: "old-space",
-    selectedMessageIds: ["old-message"],
-    selectMode: true,
   });
   api.getState().setActiveTask("a");
   api.setState({
     draft: { spaceId: "old-space" },
     homeSpaceId: "old-space",
-    selectedMessageIds: ["old-message"],
-    selectMode: true,
   });
   let transitions = 0;
   const unsubscribe = api.subscribe((next, previous) => {
@@ -105,8 +101,6 @@ async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void>
     assert.equal(next.modelExplicit, true);
     assert.equal(next.permissionExplicit, true);
     assert.deepEqual(next.activeConnectorIds, ["connector-b"]);
-    assert.deepEqual(next.selectedMessageIds, []);
-    assert.equal(next.selectMode, false);
   });
   api.getState().setActiveTask("b");
   assert.equal(transitions, 1, "one observer-visible cross-domain activation");

@@ -43,8 +43,6 @@ export function createTaskDraftActions(
         panelOpen: false,
         artifactTabs: [],
         activeArtifactId: null,
-        selectMode: false,
-        selectedMessageIds: [],
       });
     },
 
@@ -77,8 +75,6 @@ export function createTaskDraftActions(
         panelOpen: false,
         artifactTabs: [],
         activeArtifactId: null,
-        selectMode: false,
-        selectedMessageIds: [],
       });
       void get().refreshModelConfiguration();
     },
@@ -96,8 +92,6 @@ export function createTaskDraftActions(
         panelOpen: false,
         artifactTabs: [],
         activeArtifactId: null,
-        selectMode: false,
-        selectedMessageIds: [],
         // F4：召唤新专家任务不继承上一任务的 Active 连接器（与 newTask/createRelatedTask 一致）
         activeConnectorIds: [],
         // F2：新任务不继承显式模型/权限标记

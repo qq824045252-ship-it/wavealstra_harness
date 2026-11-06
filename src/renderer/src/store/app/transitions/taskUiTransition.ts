@@ -27,8 +27,6 @@ export function resetTaskScopedUiState(
     | "extensionMenuOpen"
     | "artifactTabs"
     | "activeArtifactId"
-    | "selectMode"
-    | "selectedMessageIds"
     | "chatSelections"
     | "pendingExternalAgentContinuation"
     | "tasks"
@@ -69,8 +67,6 @@ export function resetTaskScopedUiState(
         ? state.sidebarBeforePanelExpand
         : state.sidebarCollapsed,
     sidebarBeforePanelExpand: null,
-    selectMode: false,
-    selectedMessageIds: [],
     chatSelections: [],
     pendingExternalAgentContinuation: null,
   };

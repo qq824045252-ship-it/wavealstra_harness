@@ -90,8 +90,6 @@ export function createRelatedTasksActions(
         chatSelections: [],
         artifactTabs: [],
         activeArtifactId: null,
-        selectMode: false,
-        selectedMessageIds: [],
       }));
       void get().hydrateArtifacts(task.id);
     },
@@ -252,8 +250,6 @@ export function createRelatedTasksActions(
         chatSelections: [],
         artifactTabs: [],
         activeArtifactId: null,
-        selectMode: false,
-        selectedMessageIds: [],
       }));
       void get().hydrateArtifacts(task.id);
       void storeContext.getApi()?.db?.upsertTask({

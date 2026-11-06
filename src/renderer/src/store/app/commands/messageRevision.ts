@@ -68,8 +68,6 @@ export function createMessageRevisionActions(
         const history = await api.loadTaskHistory?.(activeTaskId);
         if (history?.durable) {
           get().applyAgentPatch({ type: "durable_snapshot", taskId: activeTaskId, snapshot: history.durable });
-          const remainingIds = new Set(history.messages.map(message => message.id));
-          set(state => ({ selectedMessageIds: state.selectedMessageIds.filter(id => remainingIds.has(id)) }));
           return;
         }
       }
@@ -86,9 +84,6 @@ export function createMessageRevisionActions(
                 updatedAt: Date.now(),
               }
             : item,
-        ),
-        selectedMessageIds: state.selectedMessageIds.filter((id) =>
-          remaining.some((message) => message.id === id),
         ),
       }));
     },

@@ -23,8 +23,6 @@ export interface ComposerState {
   chatFocusTick: number;
   composerDraft: string | null;
   composerInsertion: string | null;
-  selectMode: boolean;
-  selectedMessageIds: string[];
 }
 
 export function createComposerState(): ComposerState {
@@ -38,8 +36,6 @@ export function createComposerState(): ComposerState {
     chatFocusTick: 0,
     composerDraft: null,
     composerInsertion: null,
-    selectMode: false,
-    selectedMessageIds: [],
   };
 }
 
@@ -54,9 +50,6 @@ export function createComposerActions(
   | "clearPendingExternalAgentContinuation"
   | "clearComposerDraft"
   | "clearComposerInsertion"
-  | "setSelectMode"
-  | "toggleMessageSelected"
-  | "selectAllMessages"
 > {
   const { get, set } = storeContext;
   return {
@@ -102,17 +95,5 @@ export function createComposerActions(
     clearComposerInsertion: () => {
       if (get().composerInsertion != null) set({ composerInsertion: null });
     },
-
-    setSelectMode: (on) => set({ selectMode: on, selectedMessageIds: [] }),
-
-    toggleMessageSelected: (id) => {
-      set((s) => ({
-        selectedMessageIds: s.selectedMessageIds.includes(id)
-          ? s.selectedMessageIds.filter((x) => x !== id)
-          : [...s.selectedMessageIds, id],
-      }));
-    },
-
-    selectAllMessages: (ids) => set({ selectedMessageIds: ids }),
   };
 }

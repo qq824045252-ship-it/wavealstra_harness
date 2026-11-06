@@ -67,8 +67,6 @@ export function createTaskActivationActions(
         sidebarBeforePanelExpand: keepPanel ? s.sidebarBeforePanelExpand : null,
         artifactTabs: first ? [first] : [],
         activeArtifactId: first,
-        selectMode: false,
-        selectedMessageIds: [],
         contextUsedTokens: null,
         contextEstimated: false,
         activeModelId: taskModelId,

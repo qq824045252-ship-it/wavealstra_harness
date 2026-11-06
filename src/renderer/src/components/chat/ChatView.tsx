@@ -18,19 +18,14 @@ import ChatProjectCrumb from "./ChatProjectCrumb";
 import WorkspaceCrumb from "./WorkspaceCrumb";
 import RuntimeStatusChips from "./RuntimeStatusChips";
 import TaskWriteGrantsMenu from "./TaskWriteGrantsMenu";
-import TaskDiagnosticsButton from "./TaskDiagnosticsButton";
+import TaskDiagnosticsDialog from "./TaskDiagnosticsDialog";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
   IconClock,
   IconAlert,
-  IconLink,
   IconMore,
   IconPanel,
-  IconQr,
-  IconSearch,
-  IconShare,
-  IconUsers,
   IconX,
 } from "@/components/common/icons";
 import type { McpServerDto, ModePresetDto, WelcomeMode } from "@shared/agent-ipc";
@@ -316,50 +311,6 @@ function HistoryPopup({
   );
 }
 
-const SHARE_ACTIONS = [
-  { icon: IconShare, label: "分享到微信" },
-  { icon: IconUsers, label: "分享到朋友圈" },
-  { icon: IconLink, label: "复制链接" },
-  { icon: IconQr, label: "生成二维码" },
-];
-
-function ShareBar(): React.JSX.Element {
-  const task = useActiveTask();
-  const selectedIds = useAppStore((s) => s.selectedMessageIds);
-  const selectAll = useAppStore((s) => s.selectAllMessages);
-  const setSelectMode = useAppStore((s) => s.setSelectMode);
-
-  const allIds = (task?.durable || task?.welcomeMode === "bot" ? botMessagePresentation(task.messages) : task?.messages ?? []).map((m) => m.id);
-  const allSelected = allIds.length > 0 && selectedIds.length === allIds.length;
-
-  return (
-    <div className="share-bar">
-      <label className="share-bar-all">
-        <input
-          type="checkbox"
-          className="msg-check inline"
-          checked={allSelected}
-          onChange={() => selectAll(allSelected ? [] : allIds)}
-        />
-        全选
-      </label>
-      <div className="share-bar-actions">
-        {SHARE_ACTIONS.map((a) => (
-          <button key={a.label} className="share-bar-action" disabled={selectedIds.length === 0}>
-            <span className="share-bar-action-icon">
-              <a.icon size={18} />
-            </span>
-            {a.label}
-          </button>
-        ))}
-      </div>
-      <button className="icon-btn" title="退出分享" onClick={() => setSelectMode(false)}>
-        <IconX size={16} />
-      </button>
-    </div>
-  );
-}
-
 function MessageList({
   taskId,
   messages,
@@ -517,8 +468,6 @@ export default function ChatView(): React.JSX.Element {
   const panelOpen = useAppStore((s) => s.panelOpen);
   const closePanel = useAppStore((s) => s.closePanel);
   const showOverview = useAppStore((s) => s.showOverview);
-  const selectMode = useAppStore((s) => s.selectMode);
-  const setSelectMode = useAppStore((s) => s.setSelectMode);
   const branchError = useAppStore((s) => s.branchError);
   const clearBranchError = useAppStore((s) => s.clearBranchError);
 
@@ -551,6 +500,7 @@ export default function ChatView(): React.JSX.Element {
   useEffect(() => () => { useAppStore.setState(state => ({ tasks: state.tasks.map(row => row.id === task?.id ? { ...row, historyPage: undefined } : row) })); }, [task?.id]);
   const [historyLoadError, setHistoryLoadError] = useState<string>();
   const [taskMenuOpen, setTaskMenuOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
   const taskMenuAnchorRef = useRef<HTMLDivElement>(null);
@@ -565,6 +515,8 @@ export default function ChatView(): React.JSX.Element {
 
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
   useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
+  /** 诊断弹窗绑定当前任务：切换任务即关闭，避免仍显示上一个任务的记录 */
+  useEffect(() => setDiagnosticsOpen(false), [task?.id]);
 
   const displayMessages = useMemo(() => visiblePage ? botMessagePresentation(visiblePage.messages) : task?.durable !== undefined || task?.welcomeMode === "bot"
     ? botMessagePresentation(task.messages, task.durable?.pendingInputs) : task?.messages ?? [],
@@ -856,7 +808,6 @@ export default function ChatView(): React.JSX.Element {
             {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
             {draftSpaceId ? <WorkspaceCrumb spaceId={draftSpaceId} /> : null}
             <div className="chat-header-sub" />
-            {task && <TaskDiagnosticsButton taskId={task.id} />}
             {task && sidePanelButton}
           </div>
         )}
@@ -896,7 +847,6 @@ export default function ChatView(): React.JSX.Element {
           )}
           <RuntimeStatusChips modePresetId={task.modePresetId} />
           <div className="input-spacer" />
-          <TaskDiagnosticsButton taskId={task.id} />
           {sidePanelButton}
         </div>
         <div className="chat-scroll">
@@ -982,17 +932,6 @@ export default function ChatView(): React.JSX.Element {
           </span>
         )}
           <RuntimeStatusChips modePresetId={task.modePresetId} />
-        <TaskDiagnosticsButton taskId={task.id} />
-        <button className="icon-btn" title="搜索">
-          <IconSearch size={15} />
-        </button>
-        <button
-          className={`icon-btn ${selectMode ? "toggled" : ""}`}
-          title="分享"
-          onClick={() => setSelectMode(!selectMode)}
-        >
-          <IconShare size={15} />
-        </button>
         <div className="history-anchor" ref={historyAnchorRef}>
           <button
             className={`icon-btn ${historyOpen ? "toggled" : ""}`}
@@ -1012,7 +951,7 @@ export default function ChatView(): React.JSX.Element {
             />
           )}
         </div>
-        {task.welcomeMode !== "bot" && <div className="history-anchor" ref={taskMenuAnchorRef}>
+        <div className="history-anchor" ref={taskMenuAnchorRef}>
           <button
             className={`icon-btn ${taskMenuOpen ? "toggled" : ""}`}
             title="任务菜单"
@@ -1023,11 +962,21 @@ export default function ChatView(): React.JSX.Element {
             <IconMore size={15} />
           </button>
           {taskMenuOpen && (
-            <TaskWriteGrantsMenu taskId={task.id} onClose={() => setTaskMenuOpen(false)} />
+            <TaskWriteGrantsMenu
+              taskId={task.id}
+              onClose={() => setTaskMenuOpen(false)}
+              onOpenDiagnostics={() => {
+                setTaskMenuOpen(false);
+                setDiagnosticsOpen(true);
+              }}
+            />
           )}
-        </div>}
+        </div>
         {sidePanelButton}
       </div>
+      {diagnosticsOpen && (
+        <TaskDiagnosticsDialog taskId={task.id} onClose={() => setDiagnosticsOpen(false)} />
+      )}
 
 
       <div className="chat-viewport">
@@ -1128,16 +1077,12 @@ export default function ChatView(): React.JSX.Element {
         {task.durable.status === "stopped" && <div>已停止</div>}
         {task.durable.status === "failed" && <div role="alert">执行失败：{task.durable.error ?? "请查看执行记录"}</div>}
       </div>}
-      {selectMode ? (
-        <ShareBar />
-      ) : (
-        <ChatInput
-          onBeforeSend={() => {
-            pendingLocalSendRef.current = true;
-            commitFollow(onResetForTask(followStateRef.current));
-          }}
-        />
-      )}
+      <ChatInput
+        onBeforeSend={() => {
+          pendingLocalSendRef.current = true;
+          commitFollow(onResetForTask(followStateRef.current));
+        }}
+      />
     </div>
   );
 }

@@ -4,7 +4,7 @@
  * 覆盖（方案 3.5）：
  * 1. 删除当前 Task → panelOpen=false。
  * 2. 删除当前 Task → artifactTabs 清空。
- * 3. 删除当前 Task → flyout/menu/pinned/selectMode 均关闭。
+ * 3. 删除当前 Task → flyout/menu/pinned 均关闭。
  * 4. 删除当前 Task → 展开面板前的 sidebar 状态得到恢复（不能只置 null 丢了原值）。
  * 5. 删除当前 Task → 只清掉它自己的 browserUrlByTask key，并清空 browserUrlInput。
  * 6. 删除非当前 Task → 不关闭当前 Task 正在使用的右栏。
@@ -32,8 +32,6 @@ function stateWithClosed(patch: Partial<ReturnType<typeof useAppStore.getState>>
     sidebarBeforePanelExpand: null,
     browserUrlByTask: {},
     browserUrlInput: "",
-    selectMode: false,
-    selectedMessageIds: [],
     chatSelections: [],
     ...patch,
   });
@@ -63,23 +61,19 @@ async function main(): Promise<void> {
   assert.deepEqual(useAppStore.getState().artifactTabs, [], "artifact tabs 必须清空");
   assert.equal(useAppStore.getState().activeArtifactId, null, "activeArtifactId 必须清空");
 
-  // ---- 3. 删除当前 Task → flyout/menu/pinned/selectMode 均关闭 ----
+  // ---- 3. 删除当前 Task → flyout/menu/pinned 均关闭 ----
   stateWithClosed({
     tasks: [minimalTask("task-a")],
     activeTaskId: "task-a",
     extensionFlyoutOpen: true,
     extensionFlyoutPinned: true,
     extensionMenuOpen: true,
-    selectMode: true,
-    selectedMessageIds: ["m1"],
   });
   useAppStore.getState().deleteTask("task-a");
   const s3 = useAppStore.getState();
   assert.equal(s3.extensionFlyoutOpen, false, "flyout 必须关闭");
   assert.equal(s3.extensionFlyoutPinned, false, "flyout pinned 必须关闭");
   assert.equal(s3.extensionMenuOpen, false, "menu 必须关闭");
-  assert.equal(s3.selectMode, false, "selectMode 必须关闭");
-  assert.deepEqual(s3.selectedMessageIds, [], "selectedMessageIds 必须清空");
 
   // ---- 4. 删除当前 Task → 展开面板前的 sidebar 状态得到恢复 ----
   stateWithClosed({

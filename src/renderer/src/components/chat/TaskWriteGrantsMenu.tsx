@@ -1,8 +1,10 @@
 /**
- * TaskWriteGrantsMenu — 当前任务「外部写入授权」查看/撤销弹层。
+ * TaskWriteGrantsMenu — 聊天头部「更多」任务菜单。
  *
- * 入口：聊天头部「更多」任务菜单。语义：权限管理（外部目录写授权），
- * 不属于 Artifact（产物）范畴，故不放在 Artifact Panel。
+ * 入口：聊天头部「更多」按钮。菜单内包含两项：
+ * - 「执行诊断」：打开当前任务的执行诊断弹窗（模型/工具/等待/缓存记录，只读）；
+ * - 「外部写入授权」：查看/撤销当前任务的授权写入目录。语义是权限管理，
+ *   不属于 Artifact（产物）范畴，故不放在 Artifact Panel。
  *
  * 行为：
  * - 打开即从主进程加载当前任务已授权目录（listTaskWriteGrants）；
@@ -17,12 +19,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskWriteGrantRow } from "../../../../shared/external-write";
 import { useAppStore } from "@/store/appStore";
-import { IconTrash } from "@/components/common/icons";
+import { IconBarChart, IconTrash } from "@/components/common/icons";
 
 export interface TaskWriteGrantsMenuProps {
   /** 当前任务 id（弹层只对激活任务生效；无任务不渲染） */
   taskId: string;
   onClose: () => void;
+  /** 打开「执行诊断」弹窗（由 ChatView 持有弹窗开关） */
+  onOpenDiagnostics: () => void;
 }
 
 const REVOKE_FAILED_NOTICE = "撤销失败，请重试";
@@ -43,6 +47,7 @@ function formatTime(ts: number): string {
 export default function TaskWriteGrantsMenu({
   taskId,
   onClose,
+  onOpenDiagnostics,
 }: TaskWriteGrantsMenuProps): React.JSX.Element {
   const listTaskWriteGrants = useAppStore((s) => s.listTaskWriteGrants);
   const revokeTaskWriteGrant = useAppStore((s) => s.revokeTaskWriteGrant);
@@ -96,7 +101,22 @@ export default function TaskWriteGrantsMenu({
   };
 
   return (
-    <div className="task-grants-popup" role="dialog" aria-label="任务外部写入授权">
+    <div className="task-grants-popup task-menu-popup" role="dialog" aria-label="任务菜单">
+      <div className="task-grants-title">任务菜单</div>
+      <div className="task-menu-list">
+        <button
+          type="button"
+          className="task-menu-item"
+          data-testid="task-menu-diagnostics"
+          title="查看模型、工具、等待与缓存记录"
+          onClick={onOpenDiagnostics}
+        >
+          <IconBarChart size={14} />
+          <span className="task-menu-item-label">执行诊断</span>
+          <span className="task-menu-item-hint">模型 / 工具 / 等待 / 缓存记录</span>
+        </button>
+      </div>
+      <div className="task-menu-sep" />
       <div className="task-grants-title">外部写入授权</div>
       <div className="task-grants-hint">{SECTION_HINT}</div>
       {error && (

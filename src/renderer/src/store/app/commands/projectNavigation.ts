@@ -23,8 +23,6 @@ export function createProjectNavigationActions(
               ? { type: "tab", tab }
               : { type: "project", projectId, tab },
           draft: null,
-          selectMode: false,
-          selectedMessageIds: [],
         });
         return;
       }
@@ -34,8 +32,6 @@ export function createProjectNavigationActions(
         activeProjectTab: normalizeProjectWorkspaceTab(tab),
         projectNavRequest: null,
         draft: null,
-        selectMode: false,
-        selectedMessageIds: [],
       });
     },
 
@@ -73,8 +69,6 @@ export function createProjectNavigationActions(
           page: dest.page,
           projectNavRequest: null,
           draft: null,
-          selectMode: false,
-          selectedMessageIds: [],
         });
         return;
       }
@@ -84,8 +78,6 @@ export function createProjectNavigationActions(
         activeProjectTab: normalizeProjectWorkspaceTab(dest.tab ?? "activity"),
         projectNavRequest: null,
         draft: null,
-        selectMode: false,
-        selectedMessageIds: [],
       });
     },
   };

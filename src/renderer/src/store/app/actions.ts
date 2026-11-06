@@ -90,9 +90,6 @@ export interface AppActions {
   clearPendingExternalAgentContinuation: () => void;
   clearComposerDraft: () => void;
   clearComposerInsertion: () => void;
-  setSelectMode: (on: boolean) => void;
-  toggleMessageSelected: (id: string) => void;
-  selectAllMessages: (ids: string[]) => void;
   refreshArtifactPolicy: (mode: WelcomeMode) => Promise<void>;
   cacheArtifactRender: (
     artifactId: string,

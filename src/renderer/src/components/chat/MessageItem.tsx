@@ -27,7 +27,6 @@ import {
   IconMore,
   IconPencil,
   IconRefresh,
-  IconShare,
   IconSparkles,
   IconTarget,
   IconThumbsDown,
@@ -362,19 +361,6 @@ function MessageActionBar({
   );
 }
 
-function SelectBox({ id }: { id: string }): React.JSX.Element {
-  const selected = useAppStore((s) => s.selectedMessageIds.includes(id));
-  const toggle = useAppStore((s) => s.toggleMessageSelected);
-  return (
-    <input
-      type="checkbox"
-      className="msg-check"
-      checked={selected}
-      onChange={() => toggle(id)}
-    />
-  );
-}
-
 function TaskReferenceNotice({
   references,
 }: {
@@ -427,7 +413,6 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   const taskChangesCount = useMemo(() => {
     return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
   }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
-  const selectMode = useAppStore((s) => s.selectMode);
   const isBot = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "bot");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);
   const continueExternalAgent = useAppStore((s) => s.continueExternalAgent);
@@ -528,15 +513,10 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
       connectorNames.length > 0;
     // 仅技能/MCP、无说明文字时仍渲染芯片气泡（不再整行空白）
     if (!text && taskReferences.length === 0 && !hasMetaChips) {
-      return (
-        <div className={`msg-row user ${selectMode ? "selectable" : ""}`}>
-          {selectMode && <SelectBox id={message.id} />}
-        </div>
-      );
+      return <div className="msg-row user" />;
     }
     return (
-      <div className={`msg-row user ${selectMode ? "selectable" : ""}`}>
-        {selectMode && <SelectBox id={message.id} />}
+      <div className="msg-row user">
         <div className="user-bubble">
           {taskReferences.length > 0 && <TaskReferenceNotice references={taskReferences} />}
           {hasMetaChips && (
@@ -709,8 +689,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   const artifactCount = chipIds.length;
 
   return (
-    <div className={`msg-row ${selectMode ? "selectable" : ""}${message.presentationKey && message.streaming ? " bot-message-enter" : ""}`}>
-      {selectMode && <SelectBox id={message.id} />}
+    <div className={`msg-row${message.presentationKey && message.streaming ? " bot-message-enter" : ""}`}>
       <ChatImageScope taskId={taskId ?? null}><div className="msg-body">
         <div className="assistant-avatar-row">
           <div
@@ -834,11 +813,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                     <IconRefresh size={14} />
                   </button>
                 )}
-                <button className="icon-btn" title="分享">
-                  <IconShare size={14} />
-                </button>
-                {canBranch && (
-                  <button
+                {canBranch && (                  <button
                     type="button"
                     className="icon-btn"
                     title={branchCreating ? "正在创建分支…" : "从这里创建分支"}

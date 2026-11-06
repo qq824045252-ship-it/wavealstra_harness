@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600" viewBox="0 0 1000 600" role="img" aria-labelledby="t d">
+  <title id="t">对话头部操作重构：移除搜索/分享，执行诊断迁入任务菜单</title>
+  <desc id="d">改前头部含 Goal、场景、执行诊断、搜索、分享、历史、任务菜单、侧栏；改后移除执行诊断、搜索、分享，执行诊断成为任务菜单条目，点击后由 ChatView 打开 portal 弹窗并读取诊断记录。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1000" height="600" fill="#ffffff"/>
+
+  <text x="28" y="40" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="19" font-weight="700" fill="#0f172a">对话头部：移除搜索 / 分享，执行诊断迁入任务菜单</text>
+  <text x="28" y="64" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#64748b">组件：src/renderer/src/components/chat/ChatView.tsx（chat-header.task-chat-header）</text>
+
+  <rect x="828" y="20" width="148" height="24" rx="6" fill="#fef2f2" stroke="#fca5a5"/>
+  <rect x="838" y="29" width="9" height="9" fill="#ffffff" stroke="#dc2626" stroke-dasharray="3 2"/>
+  <text x="854" y="37" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b91c1c">红色虚线框 = 本轮移除</text>
+
+  <!-- 改前 -->
+  <rect x="24" y="86" width="952" height="126" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="40" y="110" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">改前</text>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">
+    <rect x="40" y="120" width="64" height="32" rx="16" fill="#eef2ff" stroke="#c7d2fe"/>
+    <text x="52" y="141" fill="#3730a3">Goal</text>
+
+    <rect x="114" y="120" width="84" height="32" rx="16" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="126" y="141" fill="#1d4ed8">场景 chip</text>
+
+    <rect x="208" y="120" width="84" height="32" rx="8" fill="#ffffff" stroke="#dc2626" stroke-dasharray="4 3"/>
+    <text x="220" y="141" fill="#b91c1c">执行诊断</text>
+
+    <rect x="302" y="120" width="64" height="32" rx="8" fill="#ffffff" stroke="#dc2626" stroke-dasharray="4 3"/>
+    <text x="316" y="141" fill="#b91c1c">搜索</text>
+
+    <rect x="376" y="120" width="64" height="32" rx="8" fill="#ffffff" stroke="#dc2626" stroke-dasharray="4 3"/>
+    <text x="390" y="141" fill="#b91c1c">分享</text>
+
+    <rect x="450" y="120" width="52" height="32" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="462" y="141" fill="#334155">历史</text>
+
+    <rect x="512" y="120" width="36" height="32" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="524" y="141" fill="#334155">⋯</text>
+
+    <rect x="558" y="120" width="44" height="32" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="568" y="141" fill="#334155">侧栏</text>
+  </g>
+
+  <text x="208" y="176" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#b91c1c">三个按钮（含 text 按钮与两个 icon-btn）连同其功能一起删除</text>
+  <text x="640" y="140" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">搜索按钮原本无 onClick（死按钮）</text>
+  <text x="640" y="160" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">分享按钮只切换 selectMode（全选 + 四个无实现的分享项）</text>
+
+  <!-- 改后 -->
+  <rect x="24" y="232" width="952" height="216" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="40" y="256" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13.5" font-weight="700" fill="#0f172a">改后</text>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">
+    <rect x="40" y="266" width="64" height="32" rx="16" fill="#eef2ff" stroke="#c7d2fe"/>
+    <text x="52" y="287" fill="#3730a3">Goal</text>
+
+    <rect x="114" y="266" width="84" height="32" rx="16" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="126" y="287" fill="#1d4ed8">场景 chip</text>
+
+    <rect x="208" y="266" width="52" height="32" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="220" y="287" fill="#334155">历史</text>
+
+    <rect x="270" y="266" width="36" height="32" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+    <text x="282" y="287" fill="#1d4ed8" font-weight="700">⋯</text>
+
+    <rect x="316" y="266" width="44" height="32" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="326" y="287" fill="#334155">侧栏</text>
+  </g>
+
+  <path d="M 288 300 L 288 320" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)" fill="none"/>
+  <text x="298" y="316" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#475569">点击 ⋯ 打开任务菜单</text>
+
+  <rect x="196" y="330" width="392" height="104" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="212" y="352" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#0f172a">任务菜单</text>
+
+  <rect x="208" y="360" width="368" height="32" rx="8" fill="#eff6ff" stroke="#2563eb"/>
+  <text x="220" y="381" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" font-weight="600" fill="#1d4ed8">执行诊断</text>
+  <text x="300" y="381" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#475569">模型 / 工具 / 等待 / 缓存记录</text>
+
+  <line x1="208" y1="402" x2="576" y2="402" stroke="#e2e8f0"/>
+  <text x="212" y="422" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#334155">外部写入授权（原有内容，未改动）</text>
+
+  <text x="606" y="352" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">TaskWriteGrantsMenu.tsx</text>
+  <text x="606" y="372" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">新增条目 + 分隔线；弹窗标题改为「任务菜单」</text>
+  <text x="606" y="392" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">⋯ 按钮不再按 welcomeMode 隐藏，</text>
+  <text x="606" y="410" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5" fill="#64748b">Bot 任务同样能进诊断。</text>
+
+  <!-- 链路 -->
+  <text x="28" y="480" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#0f172a">点「执行诊断」后的真实链路</text>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11.5">
+    <rect x="28" y="494" width="150" height="56" rx="8" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="40" y="516" fill="#0f172a" font-weight="600">任务菜单条目</text>
+    <text x="40" y="535" fill="#475569">onOpenDiagnostics()</text>
+
+    <rect x="198" y="494" width="196" height="56" rx="8" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="210" y="516" fill="#0f172a" font-weight="600">ChatView</text>
+    <text x="210" y="535" fill="#475569">setDiagnosticsOpen(true)</text>
+
+    <rect x="414" y="494" width="210" height="56" rx="8" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="426" y="516" fill="#0f172a" font-weight="600">TaskDiagnosticsDialog</text>
+    <text x="426" y="535" fill="#475569">createPortal → body · Esc 关闭</text>
+
+    <rect x="644" y="494" width="212" height="56" rx="8" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="656" y="516" fill="#0f172a" font-weight="600">TaskDiagnosticsPanel</text>
+    <text x="656" y="535" fill="#475569">getTaskDiagnostics(taskId, 200, offset)</text>
+
+    <rect x="876" y="494" width="96" height="56" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+    <text x="888" y="516" fill="#166534" font-weight="600">只读刷新</text>
+    <text x="888" y="535" fill="#166534">每 3 秒</text>
+  </g>
+
+  <g stroke="#475569" stroke-width="1.4" fill="none">
+    <path d="M 178 522 L 194 522" marker-end="url(#arrow)"/>
+    <path d="M 394 522 L 410 522" marker-end="url(#arrow)"/>
+    <path d="M 624 522 L 640 522" marker-end="url(#arrow)"/>
+    <path d="M 856 522 L 872 522" marker-end="url(#arrow)"/>
+  </g>
+</svg>

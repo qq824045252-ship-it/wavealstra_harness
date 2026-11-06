@@ -1,5 +1,4 @@
 .task-diagnostics-panel { min-width: 0; }
-.task-diagnostics-open { width: auto; padding: 0 8px; font-size: 12px; white-space: nowrap; }
 .task-diagnostic-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 12px 0; }
 .task-diagnostic-totals > div { display: flex; flex-direction: column; gap: 5px; border: 1px solid var(--border-color, #4444); border-radius: 8px; padding: 10px; }
 .task-diagnostic-totals span, .task-diagnostic-note { font-size: 12px; opacity: .75; line-height: 1.6; }
