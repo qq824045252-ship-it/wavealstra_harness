@@ -1,7 +1,7 @@
 # Agent notes
 
-- 多机（Windows/Linux）同步与 push 前门禁：以本文件 Default release workflow 与 git 状态为准；旧 docs/git-sync.md 已删除。
-- Git workflow: use `main` as the only active local branch and commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. The release workflow below is standing authorization for its scoped commit and push; otherwise push only when explicitly requested.
+- 多机（Windows/Linux）同步与 push 前门禁：以本文件 Default workflow、Explicit release workflow 与 git 状态为准；旧 docs/git-sync.md 已删除。
+- Git workflow: use `main` as the only active local branch. When a commit is explicitly requested, commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. Commit and push only when explicitly requested; there is no standing release authorization.
 - Typecheck: `pnpm -s typecheck`
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
 - **只支持当前 Pi 版本（1.5.0）**：旧版本（0.99.x / 0.99.2 / 1.0.x）的迁移与兼容测试已删除，不要为旧版本重新引入兼容层或迁移用例。版本 pin 在 `src/main/capabilities/subagent/worker-launcher.mjs` 的 `EXPECTED_PI_VERSION`，测试从那里读取，不要硬编码。
@@ -27,12 +27,20 @@
 - **Linux GUI 门禁不能用 headless 代替**：`pnpm -s test:computer-use-linux` 在真实 Hyprland 用户会话里运行隔离的 Electron 与 GTK 靶窗；`pnpm -s test:computer-use-linux:packaged` 另验真实发行包的正常启动、内置 Node、worker 与相同输入链路。缺会话、依赖或 GTK 无障碍桥时命令必须失败，不得 skip+exit0。分数缩放须有实际桌面证据，混合缩放/旋转等纯变换夹具要另列。开发模式或 payload PASS 均不能称作发行包桌面验收通过。
 - 停止/重启 dev 实例只对 Electron **主进程**发 SIGTERM（`.tools/mybuddy.sh stop` 已如此）；不要 broad `pkill` 所有 electron 进程——退出期 GPU relaunch 连续失败会触发 Chromium 的 GPU 崩溃保护（SIGILL + core，见 `artifacts/audit-2026-10-26/crash-sigill.md` §9）。
 
-## Default release workflow
+## Default workflow
 
-- After completing a feature or bug fix, bump the desktop patch version unless the user specifies another version, run relevant checks, commit the scoped changes to `main`, and push to `origin/main`.
-- Build the Windows distribution, validate the actual packaged app, update the Desktop and Start Menu shortcuts to the accepted build, and read back their target, working directory, icon, and application identity.
+- 默认流程：完成修复或功能实现，运行与改动相关的测试和检查，然后报告结果。
+- 默认不升级版本号、不提交、不打包、不更新快捷方式、不推送，也不清理已有发行包。只有用户明确要求相应操作时才执行，不因完成修复而自动启动发布流程。
+- **改完只跑 `pnpm dev`，不要编译任何产物**（用户 2026-11-06 明确指令）：不要 `pnpm -s build`、不要 `pack:*` / `dist*` / `electron-builder`，也不要为了「看一眼效果」构建开发包或安装包。验证用 `pnpm -s typecheck` + 与改动相关的 `test:*`；要看界面/实机效果就直接跑 `pnpm dev`（electron-vite dev，主进程与渲染层热更新）。
+- 打包、安装、更新快捷方式只在用户明确要求发布时执行（见下一节）。
+
+## Explicit release workflow
+
+- 以下规则仅适用于用户明确要求的发布操作。按请求范围执行；要求打包不自动授权更新快捷方式、提交或推送。
+- When packaging is explicitly requested, build the requested distribution and validate the actual packaged app before accepting it.
+- When shortcut updates are explicitly requested, update the Desktop and Start Menu shortcuts to the accepted build, and read back their target, working directory, icon, and application identity.
 - **Packaged-payload gate是构建的一部分**：`electron-builder` 的 `afterPack` 会调用 `scripts/verify-packaged-app.cjs`，校验 asar 索引里所有 `unpacked:true` 的条目都在 `app.asar.unpacked` 存在，并实际启动打包后的子代理 worker（`node worker-launcher.mjs <pi-runtime.mjs> --version`，版本必须等于 `EXPECTED_PI_VERSION`）；Linux 还必须用打包程序的 Electron Node 启动 AT-SPI worker / 输入释放守护进程握手，核对 Node 与依赖版本。构建失败就不要接受/安装该产物；不要为了“先跑起来”删掉 `app.asar.unpacked` 里的任何目录（子代理、execute_code、图片缩放都依赖它）。
 - 手工复核用 `pnpm -s verify:packaged -- --app-dir <win-unpacked>`：PASS 才可以把快捷方式指过去。dev 模式（`out/`）永远有这些文件，dev 测试 GREEN 不能证明安装包可用。
 - **打包会就地改写仓库根 `package.json`**：`electron-builder` 26.x 在打包时把它换成「打包用」裁剪版（只剩 name/version/main/dependencies 等，`scripts`/`devDependencies`/`build` 全丢；asar 里那份是正常的）。所以 `pack`/`pack:win`/`pack:linux`/`dist*` 链尾都串了 `scripts/check-root-package-json.cjs`：相对 git HEAD 发现短缺就备份到 `out/diagnostics/` 并从 HEAD 还原，然后非零退出（构建产物本身仍可用，`--no-fail` 只跳过退码）。手工跑过 `electron-builder` 后请看一眼 `git status`，别把裁剪版当成「没改动」提交掉。
-- Keep one accepted desktop release. Delete obsolete generated release directories only after checking their resolved paths, active processes, and shortcut references, and verifying the retained package's hash and startup. Preserve unrelated source changes, user data, and diagnostic reports.
+- When release installation or cleanup is explicitly requested, keep one accepted desktop release. Delete obsolete generated release directories only after checking their resolved paths, active processes, and shortcut references, and verifying the retained package's hash and startup. Preserve unrelated source changes, user data, and diagnostic reports.
 - Do not interrupt an active user task without authorization. If release validation fails, retain the previously accepted build and report the specific failure.
