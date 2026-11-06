@@ -6,11 +6,11 @@ import { useAppStore } from "@/store/appStore";
 import {
   directChatImageSource,
   isSvgArtifact,
-  markdownImageSources,
   messageImageArtifacts,
   resolveChatImageArtifact,
   svgTextFromArtifactContent,
 } from "@/lib/chatImages";
+import { markdownImageSources } from "@/lib/markdownImages";
 
 const EMPTY_IMAGES: ArtifactDescriptor[] = [];
 const ImageScopeContext = createContext<string | null>(null);
@@ -104,7 +104,8 @@ export function ChatImage({
   }, [svgText]);
 
   // 内联展示只拿协议 URL：字节由主进程 mybuddy-artifact:// 投递，renderer 不碰 base64。
-  // hydration 尚未回来时也能直接加载 thumb（协议层在缩略图不可用/超时时回落原图字节）。
+  // URL 带产物版本（v=）：同一版本的字节不可变，Chromium 能按 URL 缓存，
+  // 虚拟列表卸载/重挂时不必重新请求和解码。
   const isSvg = resolved ? isSvgArtifact(resolved) : false;
   const fresh = payload && payload.artifactVersion === version ? payload : undefined;
   const thumbnail = fresh?.thumbnail;
@@ -115,8 +116,8 @@ export function ChatImage({
   const src = useMemo(() => {
     if (!id) return directChatImageSource(source);
     if (isSvg) return svgObjectUrl;
-    return thumbnail?.url ?? artifactImageUrl(id, "thumb");
-  }, [id, isSvg, svgObjectUrl, thumbnail, source]);
+    return thumbnail?.url ?? artifactImageUrl(id, "thumb", { version });
+  }, [id, isSvg, svgObjectUrl, thumbnail, source, version]);
 
   useEffect(() => {
     // 只为元数据/SVG 文本做 hydration：图片字节不经过这条 IPC。

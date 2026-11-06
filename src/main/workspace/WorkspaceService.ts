@@ -260,11 +260,6 @@ const IMAGE_THUMBNAIL_MAX_BYTES = 320 * 1024;
 const IMAGE_THUMBNAIL_INLINE_BUDGET_MS = 400;
 /** 进程内缩略图缓存条数（LRU，每条约 ≤320KB Buffer）：滚动回看、重开面板都命中它 */
 const IMAGE_THUMBNAIL_CACHE_LIMIT = 64;
-/**
- * 单图体积上限（清单 P0）：超过它，内联链路绝不生成整份原图 base64，
- * 只回缩略图元数据 + 磁盘路径；原图字节仅由协议在"点击看原图"时投递。
- */
-export const IMAGE_INLINE_BASE64_MAX_BYTES = 512 * 1024;
 /** 只降采样单帧位图：GIF/ICO 回落到原图，避免把动图变成静帧 */
 const THUMBNAILABLE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp"]);
 
@@ -481,8 +476,7 @@ export async function previewWorkspaceFile(
     const st = await stat(filePath);
     if (options?.inlineImage) {
       // 内联链路（Artifact Domain → ChatImage）绝不生成原图 base64：content 由
-      // ArtifactService 换成 mybuddy-artifact://?variant=full 的协议 URL。
-      // 超体积上限也只回缩略图元数据 + path，原图字节只走协议、不过 IPC。
+      // ArtifactService 换成带版本的 mybuddy-artifact://?variant=full 协议 URL。
       content = "";
     } else {
       // 其它调用方（历史预览 / 索引）仍按旧契约拿 data URI

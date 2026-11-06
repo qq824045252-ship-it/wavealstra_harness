@@ -1,4 +1,4 @@
-import { isArtifactImageUrl } from "@shared/artifact-ipc";
+import { isArtifactImageUrl, parseArtifactImageUrl } from "@shared/artifact-ipc";
 import type { ArtifactDescriptor } from "@shared/artifact-types";
 import type { ChatMessage } from "@/types";
 
@@ -57,23 +57,6 @@ function visualArtifactsFor(
   return built;
 }
 
-const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+["'][^)]*["'])?\s*\)/g;
-const HTML_IMAGE_RE = /<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
-
-/** markdown 正文里出现的图片引用（内联语法 + HTML img），用来判断"正文已经画了哪些图"。 */
-export function markdownImageSources(text: string): string[] {
-  if (!text.includes("![") && !/<img/i.test(text)) return [];
-  const found: string[] = [];
-  for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    const raw = match[1] ?? "";
-    found.push(raw.startsWith("<") && raw.endsWith(">") ? raw.slice(1, -1) : raw);
-  }
-  for (const match of text.matchAll(HTML_IMAGE_RE)) {
-    if (match[1]) found.push(match[1]);
-  }
-  return found;
-}
-
 /** Strip only the harmless XML declaration/BOM commonly emitted by SVG authoring tools. */
 function normalizeSvgDocumentText(source: string): string | null {
   const value = source
@@ -127,19 +110,10 @@ export function resolveChatImageArtifact(
 ): ArtifactDescriptor | undefined {
   const images = visualArtifactsFor(descriptors, taskId);
   if (/^mybuddy-artifact:/i.test(source)) {
-    try {
-      const url = new URL(source);
-      if (url.hostname !== "local" || url.hash) return undefined;
-      // 图片协议 URL 带 ?variant=thumb/full 与元数据；只允许本应用会生成的参数
-      const variant = url.searchParams.get("variant");
-      if (variant !== null && variant !== "thumb" && variant !== "full") return undefined;
-      for (const key of url.searchParams.keys()) {
-        if (!["variant", "mime", "bytes", "w", "h"].includes(key)) return undefined;
-      }
-      const parts = url.pathname.split("/").filter(Boolean);
-      if (parts.length !== 1) return undefined;
-      return images.find((d) => d.id === decodeURIComponent(parts[0]!));
-    } catch { return undefined; }
+    // 与协议层、`<img src>` 判定共用同一份 URL 解析（白名单只在 artifact-ipc）。
+    // 这里允许无 variant 的宿主 URL：正文可能引用产物入口而非图片变体。
+    const parsed = parseArtifactImageUrl(source);
+    return parsed ? images.find((d) => d.id === parsed.artifactId) : undefined;
   }
   if (/^[a-z][a-z\d+.-]*:/i.test(source) && !/^(?:file:|[a-z]:[\\/])/i.test(source)) return undefined;
   let decoded: string;

@@ -16,7 +16,6 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  IMAGE_INLINE_BASE64_MAX_BYTES,
   previewWorkspaceFile,
   workspaceImageVariant,
 } from "../workspace/WorkspaceService";
@@ -644,9 +643,11 @@ export class ArtifactService {
   async readImageVariant(
     id: string,
     variant: "thumb" | "full",
-  ): Promise<{ data: Buffer; mimeType: string } | null> {
+  ): Promise<{ data: Buffer; mimeType: string; version: number } | null> {
     const descriptor = this.get(id);
-    if (descriptor?.source.type === "managed-content") {
+    if (!descriptor) return null;
+    const version = descriptor.version;
+    if (descriptor.source.type === "managed-content") {
       // storage 里的小图/SVG 存的是 data URI：解析成字节交给协议，renderer 仍不碰 base64
       const content = this.storage.read(descriptor.source.storagePath);
       if (content === null) return null;
@@ -659,13 +660,15 @@ export class ArtifactService {
           ? Buffer.from(raw, "base64")
           : Buffer.from(decodeURIComponent(raw), "utf-8");
         void variant;
-        return { data, mimeType };
+        return { data, mimeType, version };
       } catch {
         return null;
       }
     }
     const target = this.workspaceTarget(id);
-    return target ? workspaceImageVariant(target, variant) : null;
+    if (!target) return null;
+    const bytes = await workspaceImageVariant(target, variant);
+    return bytes ? { ...bytes, version } : null;
   }
 
   /**
@@ -717,13 +720,13 @@ export class ArtifactService {
       };
     }
     const bytes = preview.bytes ?? 0;
-    // 单图体积上限：超限只回缩略图元数据 + 路径，连原图元数据都不塞进响应；
-    // full URL 只是个地址，真正的字节永远不会经过 IPC。
-    const overBudget = bytes > IMAGE_INLINE_BASE64_MAX_BYTES;
+    // 图片字节永不过 IPC：content 只是带版本的协议 URL，体积/尺寸只做元数据。
     return {
       content: artifactImageUrl(id, "full", {
         mime: preview.mimeType,
-        ...(overBudget ? {} : { bytes, width: preview.width, height: preview.height }),
+        version: descriptor.version,
+        bytes,
+        ...(preview.width ? { width: preview.width, height: preview.height } : {}),
       }),
       language: preview.language,
       kind,
@@ -734,7 +737,7 @@ export class ArtifactService {
         ? {
             thumbnail: {
               ...preview.thumbnail,
-              url: artifactImageUrl(id, "thumb"),
+              url: artifactImageUrl(id, "thumb", { version: descriptor.version }),
             },
           }
         : {}),

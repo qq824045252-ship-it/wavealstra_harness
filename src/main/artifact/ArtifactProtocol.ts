@@ -15,13 +15,22 @@
  */
 import { protocol } from "electron";
 
+import { parseArtifactImageUrl } from "../../shared/artifact-ipc";
 import { WebArtifactRuntime, type WebResourceResult } from "./WebArtifactRuntime";
 
 /** 图片变体字节解析器（由 Artifact Domain 注入；字节只在这里出主进程） */
 export type ArtifactImageVariantResolver = (
   artifactId: string,
   variant: "thumb" | "full",
-) => Promise<{ data: Uint8Array; mimeType: string } | null>;
+) => Promise<{ data: Uint8Array; mimeType: string; version?: number } | null>;
+
+/**
+ * 版本化图片 URL 的内容不可变，可以长缓存。
+ * 缺版本参数或与当前 descriptor 版本不符时不缓存：否则新字节会被钉在旧 URL 上，
+ * 表现为“图片更新了但聊天仍显示旧图”。
+ */
+const IMMUTABLE_IMAGE_CACHE = "private, max-age=31536000, immutable";
+const NO_CACHE = "no-store";
 
 export class ArtifactProtocol {
   static readonly SCHEME = "mybuddy-artifact";
@@ -53,14 +62,23 @@ export class ArtifactProtocol {
       if (artifactId === null) return this.text(400, "Bad Request");
       // 图片内联链路（P0）：?variant=thumb/full 直接投递字节，renderer 不碰 base64。
       // thumb = 长边 1280 的降采样副本（主进程 LRU 缓存）；full = 原图，仅点击看原图时请求。
-      const variant = url.searchParams.get("variant");
-      if (variant === "thumb" || variant === "full") {
+      // URL 合法性只认 parseArtifactImageUrl（与 renderer 共用同一份白名单）。
+      const requestedVariant = url.searchParams.get("variant");
+      if (requestedVariant === "thumb" || requestedVariant === "full") {
         if (!this.imageVariant) return this.text(404, "Not Found");
-        const image = await this.imageVariant(artifactId, variant);
+        const parsed = parseArtifactImageUrl(request.url);
+        if (!parsed?.variant) return this.text(400, "Bad Request");
+        const image = await this.imageVariant(artifactId, parsed.variant);
         if (!image) return this.text(404, "Not Found");
+        const requestedVersion = parsed.meta.version;
+        const stale =
+          requestedVersion !== undefined &&
+          image.version !== undefined &&
+          requestedVersion !== image.version;
         const headers: Record<string, string> = {
           "content-type": image.mimeType,
-          "cache-control": "no-store",
+          "cache-control":
+            requestedVersion === undefined || stale ? NO_CACHE : IMMUTABLE_IMAGE_CACHE,
           "x-content-type-options": "nosniff",
         };
         // Buffer（Uint8Array）在运行时是合法 BodyInit；仅 TS 泛型不兼容

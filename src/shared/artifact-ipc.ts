@@ -55,7 +55,16 @@ export interface ArtifactImageMeta {
   bytes?: number;
   width?: number;
   height?: number;
+  /**
+   * 产物版本，作为 URL 缓存键写成 `v=`。
+   * Chromium 按 URL 分键缓存自定义协议响应：没有版本参数就只能 `no-store`，
+   * 虚拟列表滚出 overscan 卸载 <img> 后再滚回来会重新发请求并重新解码位图。
+   */
+  version?: number;
 }
+
+/** 允许出现在图片协议 URL 上的 query 参数 —— 唯一白名单，协议层与 renderer 共用 */
+const ARTIFACT_IMAGE_PARAMS = new Set(["variant", "mime", "bytes", "w", "h", "v"]);
 
 export function artifactImageUrl(
   artifactId: string,
@@ -67,37 +76,72 @@ export function artifactImageUrl(
   if (typeof meta.bytes === "number") params.set("bytes", String(meta.bytes));
   if (typeof meta.width === "number") params.set("w", String(meta.width));
   if (typeof meta.height === "number") params.set("h", String(meta.height));
+  if (typeof meta.version === "number") params.set("v", String(meta.version));
   return `mybuddy-artifact://local/${encodeURIComponent(artifactId)}/?${params.toString()}`;
+}
+
+export interface ParsedArtifactImageUrl {
+  artifactId: string;
+  /** 无 ?variant= 时为 null（`ArtifactProtocol.urlFor` 生成的宿主 URL 不带 variant） */
+  variant: ArtifactImageVariant | null;
+  meta: ArtifactImageMeta;
+}
+
+/**
+ * 解析本应用构造的产物图片协议 URL —— 全仓唯一真源。
+ *
+ * 三个消费方的口径必须一致，所以只能有一份实现：协议层决定投递哪份字节、
+ * renderer 判定一个 src 能不能内联、markdown 图片引用解析回 artifact。
+ *
+ * `requireVariant` 区分两种语义：作为 `<img src>` 必须带 variant；
+ * 作为"正文引用了哪个产物"的引用解析允许宿主 URL（无 variant）。
+ */
+export function parseArtifactImageUrl(
+  value: string,
+  options?: { requireVariant?: boolean },
+): ParsedArtifactImageUrl | null {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "mybuddy-artifact:" || url.hostname !== "local" || url.hash) return null;
+    const segments = url.pathname.split("/").filter(Boolean);
+    // 只接受 single-segment：多段是 HTML 产物的子资源路径，不属于图片 URL
+    if (segments.length !== 1) return null;
+    for (const key of url.searchParams.keys()) {
+      if (!ARTIFACT_IMAGE_PARAMS.has(key)) return null;
+    }
+    const variant = url.searchParams.get("variant");
+    if (variant !== null && variant !== "thumb" && variant !== "full") return null;
+    if (options?.requireVariant && variant === null) return null;
+    const artifactId = decodeURIComponent(segments[0]!);
+    const num = (key: string): number | undefined => {
+      const raw = url.searchParams.get(key);
+      if (raw === null) return undefined;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    };
+    return {
+      artifactId,
+      variant,
+      meta: {
+        mime: url.searchParams.get("mime") ?? undefined,
+        bytes: num("bytes"),
+        width: num("w"),
+        height: num("h"),
+        version: num("v"),
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** 只允许本应用构造的 single-segment 产物图片 URL，挡掉任意 file/网络协议注入 */
 export function isArtifactImageUrl(value: string): boolean {
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "mybuddy-artifact:" || url.hostname !== "local" || url.hash) return false;
-    const variant = url.searchParams.get("variant");
-    if (variant !== "thumb" && variant !== "full") return false;
-    return url.pathname.split("/").filter(Boolean).length === 1;
-  } catch {
-    return false;
-  }
+  return parseArtifactImageUrl(value, { requireVariant: true }) !== null;
 }
 
 export function artifactImageMeta(value: string): ArtifactImageMeta {
-  if (!isArtifactImageUrl(value)) return {};
-  const params = new URL(value).searchParams;
-  const num = (key: string): number | undefined => {
-    const raw = params.get(key);
-    if (raw === null) return undefined;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  };
-  return {
-    mime: params.get("mime") ?? undefined,
-    bytes: num("bytes"),
-    width: num("w"),
-    height: num("h"),
-  };
+  return parseArtifactImageUrl(value, { requireVariant: true })?.meta ?? {};
 }
 
 /** artifact-domain:get 请求 */
@@ -136,11 +180,10 @@ export interface ArtifactDomainReadContentResponse {
   height?: number;
   /**
    * 图像的内联缩略图（协议 URL + 尺寸元数据，不含 base64）。
-   * 图像 content 是 ?variant=full 的协议 URL 而非原始字节；超过体积上限时
-   * 只返回缩略图 + path，原图字节永远不经过 IPC。
+   * 图像 content 是 ?variant=full 的协议 URL 而非原始字节；原图字节永远不经过 IPC。
    */
   thumbnail?: import("./agent-ipc").WorkspaceFileThumbnailDto;
-  /** 原图文件大小（体积上限判定结果，供面板显示） */
+  /** 原图文件大小（供面板显示） */
   bytes?: number;
 }
 
