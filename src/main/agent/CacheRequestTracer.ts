@@ -17,6 +17,9 @@ const ITEM_FIELDS = new Set(['type', 'role', 'id', 'call_id', 'name', 'arguments
   'summary', 'encrypted_content', 'phase', 'status', 'tools']);
 const KINDS = new Set(['message', 'reasoning', 'function_call', 'function_call_output', 'custom_tool_call',
   'custom_tool_call_output', 'tool_search_call', 'tool_search_output', 'additional_tools', 'configuration_update']);
+/** The operation a request belongs to; every chain is keyed by it so two operations never share a baseline. */
+export const CACHE_TRACE_OPERATIONS = ['prompt', 'stream', 'compact', 'navigate', 'capability'] as const;
+export type CacheTraceOperation = (typeof CACHE_TRACE_OPERATIONS)[number];
 const ROLES = new Set(['system', 'developer', 'user', 'assistant', 'tool']);
 const AFFINITY_HEADERS = ['session_id', 'conversation_id', 'x-session-id', 'x-client-session-id', 'user-agent', 'openai-beta',
   'authorization', 'api-key', 'x-api-key', 'openai-organization', 'openai-project', 'chatgpt-account-id'];
@@ -34,6 +37,22 @@ export type CacheTraceSink = (record: Json) => void;
 export type CacheTraceBoundary = { sessionId?: string; leafId?: string | null; userId?: string;
   compactionId?: string; ledgerId?: string; resetId?: string; operation?: string };
 export type ModelExecutionIdentity = { taskId?: string; conversationId: string; generationTaskId: number; sourceKind: DiagnosticSource; executionScope?: string };
+
+/**
+ * Classify the body a transport hands to fetch *without reading it*. A stream is never teed or consumed:
+ * only its runtime type is named, so the record says why the wire body is unobservable instead of looking unchanged.
+ */
+function requestBodyKind(input: RequestInfo | URL, init?: RequestInit): string {
+  const body: unknown = init?.body;
+  if (typeof body === 'string') return 'string';
+  if (body === undefined || body === null) return input instanceof Request && input.body !== null ? 'request-body' : 'none';
+  if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) return 'stream';
+  if (typeof Blob !== 'undefined' && body instanceof Blob) return 'blob';
+  if (typeof FormData !== 'undefined' && body instanceof FormData) return 'form-data';
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return 'url-search-params';
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return 'binary';
+  return 'other';
+}
 
 export function sessionTraceBoundary(session: AgentSession, operation: string): CacheTraceBoundary {
   try {
@@ -107,8 +126,14 @@ export class CacheRequestTracer {
     // No global chain for unbound calls: unrelated requests must never share a baseline.
     const sessionHash = session ? plainHash(session) : undefined;
     const modelHash = this.digest([model.provider, model.id, model.api]);
+    // One normalized operation drives both the record and every chain key, so the audit can never read a
+    // label that differs from the chain the tracer actually compared against.
+    const operation = boundary
+      ? (CACHE_TRACE_OPERATIONS as readonly string[]).includes(boundary.operation ?? '') ? boundary.operation : 'other'
+      : undefined;
+    const chainKey = (stage: 'provider' | 'http') => sessionHash ? `${sessionHash}/${stage}/${operation ?? 'unbound'}` : undefined;
     const base = { request, sessionHash, modelHash,
-      boundary: boundary ? { operation: ['prompt', 'stream', 'compact', 'navigate', 'capability'].includes(boundary.operation ?? '') ? boundary.operation : 'other',
+      boundary: boundary ? { operation,
         leaf: boundary.leafId ? this.digest(boundary.leafId) : null,
         user: boundary.userId ? this.digest(boundary.userId) : null,
         compaction: boundary.compactionId ? this.digest(boundary.compactionId) : null,
@@ -123,10 +148,10 @@ export class CacheRequestTracer {
         if (!now) {
           emit({ ...base, event: 'request', stage, attempt, coverage: 'unsupported-or-over-limit', ...extras });
           // Skipped observations cannot silently bridge a gap in the chain.
-          if (sessionHash) this.previous.delete(`${sessionHash}/${stage}/${boundary?.operation ?? 'unbound'}`);
+          const skipped = chainKey(stage); if (skipped) this.previous.delete(skipped);
           return undefined;
         }
-        const chain = sessionHash ? `${sessionHash}/${stage}/${boundary?.operation ?? 'unbound'}` : undefined;
+        const chain = chainKey(stage);
         const before = chain ? this.previous.get(chain) : undefined;
         let shared = 0;
         while (before && shared < before.items.length && shared < now.items.length && before.items[shared]!.hash === now.items[shared]!.hash) shared++;
@@ -150,7 +175,7 @@ export class CacheRequestTracer {
         }
         return now;
       } catch {
-        if (sessionHash) this.previous.delete(`${sessionHash}/${stage}/${boundary?.operation ?? 'unbound'}`);
+        const failed = chainKey(stage); if (failed) this.previous.delete(failed);
         emit({ ...base, event: 'request', stage, attempt, coverage: 'observation-failed' });
         return undefined;
       }
@@ -185,13 +210,21 @@ export class CacheRequestTracer {
           const headerEvidence = { headersScope: 'sdk-fetch-arguments',
             headersHash: entries ? this.digest(entries) : null, headersCount: entries?.length ?? null,
             affinityHash: headers ? this.digest(AFFINITY_HEADERS.map(key => [key, headers.get(key)])) : null };
-          // Native HTTP SDKs pass JSON strings. Never consume or tee an arbitrary request stream.
-          if (typeof init?.body !== 'string' || Buffer.byteLength(init.body) > MAX_BYTES) {
-            capture(undefined, 'http', attempt, headerEvidence); return attempt;
+          // Native HTTP SDKs pass JSON strings. Any other body (a stream, a Request's own body, binary) is
+          // named but never consumed or teed; the record says `body-unobservable` instead of implying
+          // "no items observed = nothing changed".
+          const body = init?.body;
+          const bodyKind = requestBodyKind(input, init);
+          const wireBytes = typeof body === 'string' ? Buffer.byteLength(body) : null;
+          if (typeof body !== 'string' || wireBytes === null || wireBytes > MAX_BYTES) {
+            capture(undefined, 'http', attempt, { ...headerEvidence, coverage: 'body-unobservable',
+              bodyKind: wireBytes !== null && wireBytes > MAX_BYTES ? 'string-over-limit' : bodyKind,
+              ...(wireBytes === null ? {} : { wireBytes }) });
+            return attempt;
           }
-          const payload: unknown = JSON.parse(init.body);
+          const payload: unknown = JSON.parse(body);
           capture(payload, 'http', attempt, { ...headerEvidence,
-            wireBytes: Buffer.byteLength(init.body), wireHash: this.digest(init.body),
+            wireBytes, wireHash: this.digest(body),
             adapterMatch: payloadSnapshot ? payloadSnapshot.hash === this.digest(payload) : null,
             endpointHash: this.digest(input instanceof Request ? input.url : String(input)) });
         } catch { capture(undefined, 'http', attempt); }

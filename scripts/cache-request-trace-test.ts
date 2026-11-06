@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { normalizeContext, type Model } from '@earendil-works/pi-ai';
 import { SettingsManager } from '@earendil-works/pi-coding-agent';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { MemoryStorage } from '@earendil-works/pi-durable';
 import { stream } from '../node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js';
-import { CacheRequestTracer } from '../src/main/agent/CacheRequestTrace';
-import { identifyModelInvocation, installModelInvocationAdmission } from '../src/main/agent/ModelInvocationAdmission';
+import { CacheRequestTracer, observeCacheRequestTraces } from '../src/main/agent/CacheRequestTrace';
+import {
+  identifyModelInvocation, installModelInvocationAdmission, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings,
+} from '../src/main/agent/ModelInvocationAdmission';
+import { DurableBotRuntime } from '../src/main/agent/durable/DurableBotRuntime';
 import { createRequestTransport } from '../src/main/agent/request-transport.mjs';
 
 const records: any[] = [];
@@ -112,6 +119,82 @@ assert.equal(rawNative.usagePresent, true);
 assert.equal(rawNative.cachedTokensPresent, true);
 assert.deepEqual(rawNative.usage, { inputTokens: 150000, outputTokens: 2, totalTokens: null, cachedTokens: 24704 });
 console.log('PASS native Responses serializer, caller transform, real HTTP-body boundary, retries and response correlation');
+
+// Durable has no AgentSession to describe a model request. Its task hooks register a boundary under the
+// invocation's abort signal — the same signal-keyed contract as DurableBotRuntime.modelRequestGuards — and
+// the admission layer reads it, so every generation reports `stream` and every compaction reports `compact`.
+const durableRecords:any[]=[];
+const durableTracer=new CacheRequestTracer(record=>durableRecords.push(record));
+const durableRuntime:any={getModel:()=>model,stream:(m:any,c:any,o:any)=>stream(m,c,o),streamSimple:(m:any,c:any,o:any)=>stream(m,c,o)};
+installModelInvocationAdmission(durableRuntime,()=>settings,(...args)=>durableTracer.start(...args));
+const durableSession='durable-trace-session';
+const durableContext=normalizeContext({systemPrompt:'Stable durable instructions',messages:[{role:'user',content:[{type:'text',text:'inspect'}],timestamp:1}],tools:[]});
+const durableTerminal='data: '+JSON.stringify({type:'response.completed',response:{status:'completed',output:[],usage:{input_tokens:150000,output_tokens:2,input_tokens_details:{cached_tokens:24704}}}})+'\n\n';
+const durableFetch=async()=>new Response(durableTerminal,{status:200,headers:{'content-type':'text/event-stream'}});
+async function durableCall(operation:'stream'|'compact', session=durableSession){
+  const controller=new AbortController();
+  if (operation) setRequestTraceBoundary(controller.signal,()=>({sessionId:session,operation}));
+  const begun=durableRecords.length;
+  const message=await durableRuntime.streamSimple(model,durableContext,{apiKey:'offline',signal:controller.signal,sessionId:session,maxRetries:0,fetch:durableFetch}).result();
+  assert.equal(message.stopReason,'stop',message.errorMessage);
+  const rows=durableRecords.slice(begun);
+  const http=rows.find(row=>row.event==='request'&&row.stage==='http');
+  assert(http,'every Durable request must reach the HTTP observer');
+  return {rows,http};
+}
+const generationA=await durableCall('stream');
+assert.equal(generationA.http.boundary.operation,'stream','a generation task registers the stream operation');
+assert.equal(generationA.rows.find(row=>row.event==='result').boundary.operation,'stream');
+assert.equal(generationA.http.previous,null,'the first request of a chain has no predecessor');
+const generationB=await durableCall('stream');
+assert.equal(generationB.http.previous.request,generationA.http.request,'later generations continue their own chain');
+assert.equal(generationB.http.previous.prefix,true);
+const compactSummary=await durableCall('compact');
+assert.equal(compactSummary.http.boundary.operation,'compact','a compaction must be labelled compact, never stream');
+assert.equal(compactSummary.http.previous,null,'compaction must not compare against the generation chain');
+assert.equal(compactSummary.http.sessionHash,generationA.http.sessionHash,'both operations belong to one session');
+const generationC=await durableCall('stream');
+assert.equal(generationC.http.previous.request,generationB.http.request,'a compaction must not disturb the generation chain');
+console.log('PASS Durable boundary: stream/compact are recorded and never share a prefix chain');
+// A request no task claimed stays unbound instead of claiming an operation it cannot prove.
+const unclaimed=new AbortController();
+const unclaimedStart=durableRecords.length;
+await durableRuntime.streamSimple(model,durableContext,{apiKey:'offline',signal:unclaimed.signal,sessionId:durableSession,maxRetries:0,fetch:durableFetch}).result();
+assert.equal(durableRecords.slice(unclaimedStart).find(row=>row.event==='request'&&row.stage==='http').boundary,undefined,
+  'an unregistered request must not invent an operation');
+// A summarization resumed from its `summarize` checkpoint never reruns beforeCompact; the completeSimple
+// call form still supplies the operation (the expression DurableBotRuntime's proxy branch evaluates).
+const resumedSignal=new AbortController().signal;
+const resumedStart=durableRecords.length;
+await withModelInvocationSettings(settings,()=>durableRuntime.streamSimple(model,durableContext,
+  {apiKey:'offline',signal:resumedSignal,sessionId:durableSession,maxRetries:0,fetch:durableFetch}),undefined,
+  requestTraceBoundary(resumedSignal)??(()=>({operation:'compact'}))).result();
+const resumedHttp=durableRecords.slice(resumedStart).find(row=>row.event==='request'&&row.stage==='http');
+assert.equal(resumedHttp.boundary.operation,'compact','a resumed compaction keeps its own operation');
+assert.equal(resumedHttp.previous.request,compactSummary.http.request,'a resumed compaction continues the compaction chain');
+assert.notEqual(resumedHttp.previous.request,generationC.http.request,'the generation chain stays separate');
+console.log('PASS Durable boundary: unclaimed requests stay unbound and a resumed compaction stays isolated');
+// A body the tracer cannot see is named, never read: no tee, no stream consumption, no fake item list.
+const opaqueTrace=durableTracer.start(model,'body-chain',{operation:'stream'});
+opaqueTrace.sent('https://example.invalid/v1/responses',{method:'POST',body:JSON.stringify(payload)});
+const opaqueStart=durableRecords.length;
+opaqueTrace.sent(new Request('https://example.invalid/v1/responses',{method:'POST',body:JSON.stringify(payload)}));
+let pulled=false;
+opaqueTrace.sent('https://example.invalid/v1/responses',{method:'POST',body:new ReadableStream({pull(){pulled=true}})});
+opaqueTrace.sent('https://example.invalid/v1/responses',{method:'POST',body:new Uint8Array([1,2,3])});
+const opaqueRows=durableRecords.slice(opaqueStart).filter(row=>row.event==='request');
+assert.deepEqual(opaqueRows.map(row=>[row.coverage,row.bodyKind]),[
+  ['body-unobservable','request-body'],['body-unobservable','stream'],['body-unobservable','binary'],
+],'an unobservable body names why it is unobservable');
+assert(opaqueRows.every(row=>row.items===undefined),'an unobservable body must not fake an item list');
+assert.equal(pulled,false,'the tracer must never read or tee a request stream');
+assert.equal(typeof opaqueRows[0].headersHash,'string','headers stay observable even when the body is not');
+const bridgedStart=durableRecords.length;
+opaqueTrace.sent('https://example.invalid/v1/responses',{method:'POST',body:JSON.stringify(payload)});
+const bridged=durableRecords.slice(bridgedStart).find(row=>row.event==='request');
+assert.equal(bridged.coverage,'complete');
+assert.equal(bridged.previous,null,'an unobservable request must not bridge a chain as unchanged');
+console.log('PASS unobservable HTTP bodies are labelled bodyKind, never consumed and never called unchanged');
 
 // ~0.8 MB of deterministic history, plus image/encrypted reasoning; no model call or network.
 const long={...payload,input:[...payload.input,...Array.from({length:1000},(_,i)=>({role:'user',content:`row ${i} `+'data '.repeat(150)}))]};
@@ -259,4 +342,74 @@ unseenTrace.result({stopReason:'stop',usage:{input:10,output:1,cacheRead:0,cache
 const unseenReport=summarizeCacheTraces(unseen).requests[0];
 assert.equal(unseenReport.classification,'missing-http-observation');assert.equal(unseenReport.headersScope,null);assert.equal(unseenReport.routeChanged,null);
 console.log('PASS SDK header HMAC is canonical and redacted; unseen headers and wire remain unknown');
+
+// End-to-end Durable: the real GenerationTask/CompactionTask hooks register the boundary the tracer records.
+// A fake Models-like runtime still runs the real task graph and the real Responses serializer offline.
+process.env.MYBUDDY_CACHE_TRACE='0'; // observers receive the records; never touch the rotating request log
+const durableE2eTraces:any[]=[];
+const stopDurableObserver=observeCacheRequestTraces(record=>durableE2eTraces.push(record));
+const durableModel:Model<any>={...model,id:'durable-template-fixture'};
+const durableAnswer=(text:string)=>[
+  {type:'response.output_item.added',output_index:0,item:{type:'message',id:'msg_durable',role:'assistant',content:[]}},
+  {type:'response.output_text.delta',output_index:0,delta:text},
+  {type:'response.completed',response:{id:'resp_durable',status:'completed',output:[],
+    usage:{input_tokens:60000,output_tokens:2,input_tokens_details:{cached_tokens:0}}}},
+].map(event=>'data: '+JSON.stringify(event)+'\n\n').join('');
+let durableCalls=0;
+const durableRuntimeModels:any={
+  getAuth:async()=>undefined,
+  getModel:()=>durableModel,
+  getAvailable:async()=>[durableModel],
+  stream:(m:any,c:any,o:any)=>durableRuntimeModels.streamSimple(m,c,o),
+  streamSimple:(_model:any,context:any,options:any)=>{
+    durableCalls++;
+    const text=Array.isArray(context?.messages)&&context.messages.some((message:any)=>message.role==='system'&&JSON.stringify(message).includes('Next Steps'))?'earlier context summarized':'ok';
+    return stream(durableModel,normalizeContext(context),{...options,apiKey:'offline-fixture',
+      fetch:async()=>new Response(durableAnswer(text),{status:200,headers:{'content-type':'text/event-stream'}})});
+  },
+};
+durableRuntimeModels.completeSimple=(m:any,c:any,o:any)=>durableRuntimeModels.streamSimple(m,c,o).result();
+// Same admission production installs on Pi's ModelRuntime; Durable's task-scoped proxy wraps it.
+installModelInvocationAdmission(durableRuntimeModels,()=>SettingsManager.inMemory({}));
+const durableRoot=mkdtempSync(join(tmpdir(),'mybuddy-durable-trace-'));
+const durableBot=await DurableBotRuntime.open({directory:durableRoot,cwd:durableRoot,
+  model:{provider:durableModel.provider,modelId:durableModel.id},toolMode:'native',instructions:()=>'durable fixture',
+  onSnapshot:()=>{},storage:new MemoryStorage(),models:durableRuntimeModels});
+const providerRecords=(rows:any[])=>rows.filter(row=>row.event==='request'&&row.stage==='provider');
+try {
+  const firstStart=durableE2eTraces.length;
+  const first=await durableBot.submit('first turn','durable-trace-1');
+  assert.equal((await first.wait(ctx)).status,'done');
+  const firstTurn=providerRecords(durableE2eTraces.slice(firstStart));
+  assert.equal(firstTurn.length,1,'one generation request must be observed');
+  assert.equal(firstTurn[0].boundary.operation,'stream','the real GenerationTask hook registers stream');
+  assert.equal(firstTurn[0].previous,null,'the first generation has no predecessor');
+  const secondStart=durableE2eTraces.length;
+  const second=await durableBot.submit('second turn '+'x'.repeat(90000),'durable-trace-2');
+  assert.equal((await second.wait(ctx)).status,'done');
+  const secondTurn=providerRecords(durableE2eTraces.slice(secondStart));
+  assert.equal(secondTurn.length,1);
+  assert.equal(secondTurn[0].boundary.operation,'stream');
+  assert.equal(secondTurn[0].previous.request,firstTurn[0].request,'successive generations continue one chain');
+  const compactionStart=durableE2eTraces.length;
+  await durableBot.compact();
+  const compaction=providerRecords(durableE2eTraces.slice(compactionStart));
+  assert.equal(compaction.length,1,'the compaction summary must be observed');
+  assert.equal(compaction[0].boundary.operation,'compact','the real CompactionTask hook registers compact');
+  assert.equal(compaction[0].previous,null,'compaction must not inherit the generation chain');
+  const resumedStart=durableE2eTraces.length;
+  const resumedSubmission=await durableBot.submit('continue after compaction','durable-trace-3');
+  assert.equal((await resumedSubmission.wait(ctx)).status,'done');
+  const resumed=providerRecords(durableE2eTraces.slice(resumedStart));
+  assert.equal(resumed.length,1);
+  assert.equal(resumed[0].boundary.operation,'stream');
+  assert.equal(resumed[0].previous.request,secondTurn[0].request,'after compaction the generation chain continues unchanged');
+  assert.equal(durableCalls,4,'only the two generations, the summary and the follow-up request were issued');
+  assert(durableE2eTraces.every(record=>record.boundary?.operation!==undefined),'no Durable request may stay unbound');
+  stopDurableObserver();
+  console.log('PASS Durable hooks: real generation/compaction boundaries are recorded and never share a chain');
+} finally {
+  await durableBot.close();
+  rmSync(durableRoot,{recursive:true,force:true});
+}
 console.log('PASS cache request tracing; all provider responses simulated; no network');

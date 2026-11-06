@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1000" viewBox="0 0 1280 1000" role="img" aria-label="缓存前缀断裂真实链路">
+  <title>缓存前缀断裂真实链路：MCP serverSummary → sections.mcp_servers → items[0]</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowDash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="1000" fill="#f8fafc"/>
+
+  <text x="40" y="42" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700" fill="#0f172a">缓存前缀断裂真实链路（items[0] = 整段系统提示）</text>
+  <text x="40" y="70" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" fill="#475569">11-05 12:18:40 / 15:04:18 两轮 +175 字节已逐字节闭合；虚线框为未闭合的候选源</text>
+
+  <!-- legend -->
+  <rect x="880" y="88" width="360" height="72" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="896" y="102" width="14" height="14" fill="#dcfce7" stroke="#15803d"/>
+  <text x="918" y="114" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">已验证 proven（字节级闭合）</text>
+  <rect x="896" y="128" width="14" height="14" fill="#fef3c7" stroke="#b45309"/>
+  <text x="918" y="140" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">推断 / 未闭合 inferred-unresolved</text>
+
+  <!-- ===== spine boxes ===== -->
+  <!-- 1 -->
+  <rect x="60" y="180" width="470" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="205" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">MCP 服务器（间接型：tool_search / codemode）</text>
+  <text x="76" y="225" font-family="Consolas, monospace" font-size="12" fill="#334155">WaveAlstra-ERP（stdio）· 首选不在 waitForDirectServers 名单</text>
+
+  <!-- 2 -->
+  <rect x="60" y="268" width="470" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="293" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">connection.instructions（握手后才有的实时自述）</text>
+  <text x="76" y="313" font-family="Consolas, monospace" font-size="12" fill="#334155">首行 175 字节中文；连接前为 undefined</text>
+
+  <!-- 3 -->
+  <rect x="60" y="356" width="470" height="66" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="380" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">serverSummary(server)</text>
+  <text x="76" y="398" font-family="Consolas, monospace" font-size="12" fill="#334155">修复前：description || connection.instructions</text>
+  <text x="76" y="414" font-family="Consolas, monospace" font-size="12" fill="#b91c1c">mcp/index.js:99-104　→ d2ad724 改为只读 config.description</text>
+
+  <!-- 4 -->
+  <rect x="60" y="454" width="470" height="66" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="478" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">renderServersSection() → &lt;mcp_servers&gt; 段</text>
+  <text x="76" y="496" font-family="Consolas, monospace" font-size="12" fill="#334155">- mcp__WaveAlstra_ERP (tool_search): 先 erp_resources 看资源。…</text>
+  <text x="76" y="512" font-family="Consolas, monospace" font-size="12" fill="#334155">mcp/index.js:110-133（每轮 before_agent_start 重渲染）</text>
+
+  <!-- 5 -->
+  <rect x="60" y="552" width="470" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="577" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">buildSystemPromptSections() 包装各段</text>
+  <text x="76" y="597" font-family="Consolas, monospace" font-size="12" fill="#334155">sections{…, mcp_servers, …}　system-prompt.js:114-119</text>
+
+  <!-- 6 -->
+  <rect x="60" y="640" width="470" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="665" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">diffSystemPromptSections() → SystemMessage 补丁</text>
+  <text x="76" y="685" font-family="Consolas, monospace" font-size="12" fill="#334155">同秒写入会话 JSONL：12:18:40.397 / 15:04:18.837</text>
+
+  <!-- 7 -->
+  <rect x="60" y="728" width="470" height="66" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="752" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">convertResponsesMessages() → input[0]</text>
+  <text x="76" y="770" font-family="Consolas, monospace" font-size="12" fill="#334155">includeInitialSystemMessage = true（默认）</text>
+  <text x="76" y="786" font-family="Consolas, monospace" font-size="12" fill="#334155">{role:"developer", content:全文}　openai-responses-shared.js:161</text>
+
+  <!-- 8 -->
+  <rect x="60" y="826" width="470" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+  <text x="76" y="851" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#0f172a">CacheRequestTracer.snapshot()</text>
+  <text x="76" y="871" font-family="Consolas, monospace" font-size="12" fill="#334155">items[0].bytes 23571→23746 · 13090→13265　changedFields=[]</text>
+
+  <!-- 9 -->
+  <rect x="60" y="914" width="470" height="56" rx="8" fill="#fecaca" stroke="#b91c1c" stroke-width="1.5"/>
+  <text x="76" y="939" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="600" fill="#7f1d1d">chain=sessionHash/stage/op → shared=0 → prefix=false</text>
+  <text x="76" y="959" font-family="Consolas, monospace" font-size="12" fill="#7f1d1d">严格前缀匹配：保住断点前 2944 token，余 38465 重算（7.11%）</text>
+
+  <!-- arrows spine -->
+  <line x1="295" y1="236" x2="295" y2="262" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="324" x2="295" y2="350" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="422" x2="295" y2="448" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="520" x2="295" y2="546" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="608" x2="295" y2="634" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="696" x2="295" y2="722" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="794" x2="295" y2="820" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="295" y1="882" x2="295" y2="908" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ===== right annotations ===== -->
+  <rect x="570" y="180" width="660" height="132" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="588" y="206" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#0f172a">触发条件（缺一不可）</text>
+  <text x="588" y="230" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">① 服务器没有静态 description（11-05 缺 5 台：ERP/rea/penpot/drawio-ai/ERP-Remote）</text>
+  <text x="588" y="252" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">② 该服务器是间接型（进 &lt;mcp_servers&gt; 段）且不在启动等待名单</text>
+  <text x="588" y="274" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">③ 连接在会话中途完成 → 同一行长出 175 字节自述首行</text>
+  <text x="588" y="296" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#b91c1c">关掉任意一条即不漂移：d2ad724 关掉的是 ①</text>
+
+  <rect x="570" y="324" width="660" height="120" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="588" y="350" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#0f172a">字节账（逐字节闭合，proven）</text>
+  <text x="588" y="374" font-family="Consolas, monospace" font-size="12" fill="#1e293b">sections.mcp_servers  295 字符/295 字节  →  418 字符/470 字节</text>
+  <text x="588" y="396" font-family="Consolas, monospace" font-size="12" fill="#1e293b">items[0]  23571 → 23746（+175）   13090 → 13265（+175）</text>
+  <text x="588" y="418" font-family="Consolas, monospace" font-size="12" fill="#1e293b">重放值 == tracer 值（两条会话各自独立命中）</text>
+  <text x="588" y="436" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">增量全部来自 “: ” + 自述首行（中文 3 字节/字）</text>
+
+  <rect x="570" y="456" width="660" height="160" rx="8" fill="#ffffff" stroke="#f59e0b" stroke-dasharray="6 4"/>
+  <text x="588" y="482" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#b45309">仍未闭合的两类（inferred / unresolved）</text>
+  <text x="588" y="506" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">±14 抖动（16:43:19 / 16:43:27，BTW 瞬时会话）：A→B→A 可逆</text>
+  <text x="588" y="526" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">　　候选 → project_context（每轮读 AGENTS.md）/ addendum / skills</text>
+  <text x="588" y="548" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">+58（11-06 09:10:31，Durable）：botInstructions 每次生成重算</text>
+  <text x="588" y="568" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">　　assembly 已证不变（50 快照同 hash）→ 落在 “## Skills” 列表</text>
+  <text x="588" y="592" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#b45309">两者都无法取明文：BTW/subagent 不落会话文件，Durable store 不存 system 消息</text>
+
+  <rect x="570" y="636" width="660" height="140" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="588" y="662" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#0f172a">为什么 items[0] 一变就全废</text>
+  <text x="588" y="686" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">缓存按从头连续的 token 前缀匹配；items[0] 在全部历史之前。</text>
+  <text x="588" y="708" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">改的是系统提示最末尾的 &lt;mcp_servers&gt;，但“在末尾”仍早于全部历史。</text>
+  <text x="588" y="730" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">于是 sharedItems=0，后面 25 条历史整体失效。</text>
+  <text x="588" y="752" font-family="Consolas, monospace" font-size="12" fill="#475569">hitRate 7.11% = 2944 / (38465 + 2944)</text>
+
+  <rect x="570" y="796" width="660" height="110" rx="8" fill="#eff6ff" stroke="#1d4ed8"/>
+  <text x="588" y="822" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700" fill="#1e3a8a">合法边界（不该修）</text>
+  <text x="588" y="846" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">1a9e5385 / 9a8cc082：compaction 条目与请求同秒，+9737 = 摘要字节数</text>
+  <text x="588" y="868" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">d8043128 / 5b600690：op=prompt 一次性调用（inputCount=1），另一套形态</text>
+  <text x="588" y="890" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">真正要修的是 tracer 把 compaction 与 stream 混在一条链（task-1）</text>
+
+  <text x="40" y="988" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#64748b">证据：cache-requests-20261105*.log（7261 条 trace）· 会话 JSONL 的 role=system sections · app.db task_runtime_context_snapshots · git show d2ad724</text>
+</svg>

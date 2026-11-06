@@ -21,6 +21,26 @@ export function withModelInvocationSettings<T>(settings: SettingsManager, operat
   return invocationSettings.run({ settings, validate, boundary: boundary ?? invocationSettings.getStore()?.boundary }, operation);
 }
 
+/**
+ * Durable has no AgentSession to describe a model request: one task invocation (a generation or a
+ * compaction) owns one abort signal, and Pi passes that same signal to the provider request. Its hooks
+ * register the boundary under that signal — the same key `DurableBotRuntime.modelRequestGuards` uses —
+ * so `guarded()` finds the operation without threading anything through the call stack.
+ */
+const requestBoundaries = new WeakMap<AbortSignal, () => CacheTraceBoundary>();
+
+/** Register (or clear, with `undefined`) the boundary for the request(s) one task invocation will issue. */
+export function setRequestTraceBoundary(signal: AbortSignal | undefined, boundary: (() => CacheTraceBoundary) | undefined): void {
+  if (!signal) return;
+  if (boundary) requestBoundaries.set(signal, boundary);
+  else requestBoundaries.delete(signal);
+}
+
+/** The boundary a task invocation registered for this signal; `undefined` means no task claimed the request. */
+export function requestTraceBoundary(signal: AbortSignal | undefined): (() => CacheTraceBoundary) | undefined {
+  return signal ? requestBoundaries.get(signal) : undefined;
+}
+
 /** Native hosts annotate the already-observed request while Pi builds its provider payload. */
 export function identifyModelInvocation(identity: ModelExecutionIdentity): void { requestIdentity.getStore()?.(identity); }
 
@@ -85,9 +105,11 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
   ): AssistantMessageEventStream {
     const invocation = invocationSettings.getStore();
     const settings = invocation?.settings ?? fallbackSettings();
+    // Durable registers per task invocation; an explicit caller boundary (native sessions) always wins.
+    const describeBoundary = invocation?.boundary ?? requestTraceBoundary(options?.signal);
     const stream = createAssistantMessageEventStream();
     const trace = (() => {
-      try { return traceFactory(model, (options as { sessionId?: string } | undefined)?.sessionId, invocation?.boundary?.()); }
+      try { return traceFactory(model, (options as { sessionId?: string } | undefined)?.sessionId, describeBoundary?.()); }
       catch { return undefined; }
     })();
     void (async () => {

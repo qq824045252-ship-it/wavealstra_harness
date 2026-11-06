@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-label="首条消息漂移事件逐条判定">
+  <title>首条消息（items[0]）漂移事件：逐条判定与证据等级</title>
+
+  <rect x="0" y="0" width="1280" height="860" fill="#f8fafc"/>
+
+  <text x="40" y="42" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700" fill="#0f172a">首条消息（items[0]）漂移事件：逐条判定与证据等级</text>
+  <text x="40" y="70" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" fill="#475569">纵轴按真实发生顺序；时间均为 Asia/Shanghai。绿色=已逐字节闭合，橙色=明文不可得，蓝色=合法边界/口径误报（不该修）</text>
+
+  <!-- legend -->
+  <rect x="40" y="88" width="1200" height="40" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="56" y="100" width="14" height="14" fill="#dcfce7" stroke="#15803d"/>
+  <text x="78" y="112" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">proven</text>
+  <rect x="176" y="100" width="14" height="14" fill="#fef3c7" stroke="#b45309"/>
+  <text x="198" y="112" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">inferred / unresolved</text>
+  <rect x="392" y="100" width="14" height="14" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="414" y="112" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">合法边界 / 口径误报 · 不该修</text>
+  <text x="700" y="112" font-family="Consolas, monospace" font-size="12" fill="#475569">修复时刻：11-05 15:20 ERP 补 description · 15:25 其余 3 台补 · 17:18 d2ad724 打补丁</text>
+
+  <!-- column headers -->
+  <text x="90" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">时间</text>
+  <text x="252" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">请求</text>
+  <text x="380" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">items[0] 角色 / 字节</text>
+  <text x="600" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">机制与边界判定</text>
+  <text x="1080" y="158" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">判定</text>
+
+  <!-- rows -->
+  <!-- 1 -->
+  <rect x="40" y="170" width="1200" height="54" rx="6" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="56" y="203" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 11:56:51</text>
+  <text x="252" y="203" font-family="Consolas, monospace" font-size="13" fill="#0f172a">1a9e5385</text>
+  <text x="380" y="203" font-family="Consolas, monospace" font-size="13" fill="#0f172a">user 294 → 10031 (+9737)</text>
+  <text x="600" y="203" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">压缩边界：compaction d84c543c 于 11:56:51.186 写入，摘要 9737 字节 = delta</text>
+  <text x="1080" y="203" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e3a8a">proven · 不该修</text>
+
+  <!-- 2 -->
+  <rect x="40" y="230" width="1200" height="54" rx="6" fill="#dcfce7" stroke="#15803d"/>
+  <text x="56" y="263" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 12:18:40</text>
+  <text x="252" y="263" font-family="Consolas, monospace" font-size="13" fill="#0f172a">566393c3</text>
+  <text x="380" y="263" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 23571 → 23746 (+175)</text>
+  <text x="600" y="263" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">mcp_servers 段长出自述首行（ERP）· 跨用户轮但非轮次所致 · changedFields=[]</text>
+  <text x="1080" y="263" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#14532d">proven · 已修(d2ad724)</text>
+
+  <!-- 3 -->
+  <rect x="40" y="290" width="1200" height="54" rx="6" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="56" y="323" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 12:39:48</text>
+  <text x="252" y="323" font-family="Consolas, monospace" font-size="13" fill="#0f172a">9a8cc082</text>
+  <text x="380" y="323" font-family="Consolas, monospace" font-size="13" fill="#0f172a">user 10031 → 22060 (+12029)</text>
+  <text x="600" y="323" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">第二次压缩（d2c47581 于 12:39:48.837，摘要 21632 字节）</text>
+  <text x="1080" y="323" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e3a8a">proven · 不该修</text>
+
+  <!-- 4 -->
+  <rect x="40" y="350" width="1200" height="54" rx="6" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="56" y="383" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 12:52:06</text>
+  <text x="252" y="383" font-family="Consolas, monospace" font-size="13" fill="#0f172a">d8043128</text>
+  <text x="380" y="383" font-family="Consolas, monospace" font-size="13" fill="#0f172a">user 347 → 29144</text>
+  <text x="600" y="383" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">op=prompt 一次性调用（inputCount=1，另一套请求形态）→ T06 应排除</text>
+  <text x="1080" y="383" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e3a8a">proven · 不该修</text>
+
+  <!-- 5 -->
+  <rect x="40" y="410" width="1200" height="54" rx="6" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="56" y="443" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 12:55:27</text>
+  <text x="252" y="443" font-family="Consolas, monospace" font-size="13" fill="#0f172a">5b600690</text>
+  <text x="380" y="443" font-family="Consolas, monospace" font-size="13" fill="#0f172a">user 29144 → 16749</text>
+  <text x="600" y="443" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">同上，op=prompt 家族；与主链不是同一请求形态</text>
+  <text x="1080" y="443" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e3a8a">proven · 不该修</text>
+
+  <!-- 6 -->
+  <rect x="40" y="470" width="1200" height="54" rx="6" fill="#fef3c7" stroke="#b45309"/>
+  <text x="56" y="503" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 15:01:32</text>
+  <text x="252" y="503" font-family="Consolas, monospace" font-size="13" fill="#0f172a">1edf5161</text>
+  <text x="380" y="503" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 47005 → 46873 (−132)</text>
+  <text x="600" y="503" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">subagent 会话；同一 user 轮内缩短，无任何合法边界可解释</text>
+  <text x="1080" y="503" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#92400e">inferred · 先补观测</text>
+
+  <!-- 7 -->
+  <rect x="40" y="530" width="1200" height="54" rx="6" fill="#dcfce7" stroke="#15803d"/>
+  <text x="56" y="563" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 15:04:18</text>
+  <text x="252" y="563" font-family="Consolas, monospace" font-size="13" fill="#0f172a">215c8360</text>
+  <text x="380" y="563" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 13090 → 13265 (+175)</text>
+  <text x="600" y="563" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">同一台 ERP 服务器、同一段自述；cacheRead 39936→2944（7.11%）</text>
+  <text x="1080" y="563" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#14532d">proven · 已修(d2ad724)</text>
+
+  <!-- 8 -->
+  <rect x="40" y="590" width="1200" height="54" rx="6" fill="#fef3c7" stroke="#b45309"/>
+  <text x="56" y="623" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 16:43:19</text>
+  <text x="252" y="623" font-family="Consolas, monospace" font-size="13" fill="#0f172a">6e8aaed3</text>
+  <text x="380" y="623" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 48851 → 48837 (−14)</text>
+  <text x="600" y="623" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">BTW 瞬时会话，同一 user 轮内；此时 9 台服务器均已有 description</text>
+  <text x="1080" y="623" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#92400e">unresolved</text>
+
+  <!-- 9 -->
+  <rect x="40" y="650" width="1200" height="54" rx="6" fill="#fef3c7" stroke="#b45309"/>
+  <text x="56" y="683" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-05 16:43:27</text>
+  <text x="252" y="683" font-family="Consolas, monospace" font-size="13" fill="#0f172a">604f4eba</text>
+  <text x="380" y="683" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 48837 → 48851 (+14)</text>
+  <text x="600" y="683" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">8 秒后回到与 16:41:22 首版逐字节相同的状态（A→B→A 可逆抖动）</text>
+  <text x="1080" y="683" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#92400e">unresolved</text>
+
+  <!-- 10 -->
+  <rect x="40" y="710" width="1200" height="54" rx="6" fill="#fef3c7" stroke="#b45309"/>
+  <text x="56" y="743" font-family="Consolas, monospace" font-size="13" fill="#0f172a">11-06 09:10:31</text>
+  <text x="252" y="743" font-family="Consolas, monospace" font-size="13" fill="#0f172a">3c4eefc4</text>
+  <text x="380" y="743" font-family="Consolas, monospace" font-size="13" fill="#0f172a">developer 5140 → 5198 (+58)</text>
+  <text x="600" y="743" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#1e293b">Durable 路径无 boundary；assembly 已证不变 → 落在每次重算的 Skills 列表</text>
+  <text x="1080" y="743" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#92400e">inferred</text>
+
+  <!-- footer note -->
+  <rect x="40" y="778" width="1200" height="56" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="56" y="802" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#0f172a">共同指纹：prefix=false &amp; sharedItems=0 &amp; changedFields=[] —— body 的 model / tools 哈希全不变，唯一变化在 items[0] 的 content。</text>
+  <text x="56" y="824" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12.5" fill="#475569">因此“items[0] 内容变了”= 系统提示被改写；要定位到哪一段，必须补段级指纹（F1），否则 ±14 与 +58 永远只能停在 inferred。</text>
+</svg>

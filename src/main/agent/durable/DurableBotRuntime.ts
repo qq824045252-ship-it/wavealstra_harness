@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, GenerationTask, ToolTask, defineDoc,
+  Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
   type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
 } from "@earendil-works/pi-durable";
@@ -25,7 +25,8 @@ import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-s
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
 import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata } from "./DurableHistoryProjection";
-import { identifyModelInvocation, withModelInvocationSettings } from "../ModelInvocationAdmission";
+import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
+import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { ActiveDurableConversation, forkDurableConversation, resolveActiveDurableConversation, type DurableRegenerationInput, type DurableRegenerationState } from "./DurableConversationBranch";
@@ -914,6 +915,15 @@ function codingTools(): ToolRegistration[] {
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, () => void>>();
+
+/**
+ * Durable has no AgentSession, so a task invocation's abort signal identifies its model requests and the
+ * task kind identifies the operation. This is the same signal-keyed contract as `modelRequestGuards`.
+ */
+function traceBoundary(api: HookApi, operation: CacheTraceOperation): () => CacheTraceBoundary {
+  return () => ({ sessionId: String(api.conversationId), operation });
+}
+
 function taskScopedModels(models: Models, cwd: string): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, () => void>();
@@ -925,6 +935,14 @@ function taskScopedModels(models: Models, cwd: string): Models {
       const validate = signal ? guards.get(signal) : undefined;
       validate?.();
       return withModelInvocationSettings(settings, () => target.streamSimple(...args), validate);
+    };
+    if (key === "completeSimple") return (...args: Parameters<Models["completeSimple"]>) => {
+      // Pi's compaction task is the harness's only completeSimple caller. A summarization resumed from its
+      // `summarize` checkpoint never reruns `beforeCompact`, so keep the operation its call form proves
+      // instead of letting that request join the unbound chain with a generation request.
+      const signal = args[2]?.signal;
+      return withModelInvocationSettings(settings, () => target.completeSimple(...args), undefined,
+        requestTraceBoundary(signal) ?? (() => ({ operation: "compact" })));
     };
     const value = Reflect.get(target, key, target);
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
@@ -975,7 +993,14 @@ function botExtension(
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);
       return child?.value || consult?.key ? undefined : options.instructions();
     }, { tag: false })],
-    hooks: [hook(ToolTask, toolHooks), hook(GenerationTask, { beforeRequest: async (request, api, context) => {
+    hooks: [hook(ToolTask, toolHooks), hook(CompactionTask, { beforeCompact: async (_compaction, api, context) => {
+      // Compaction is its own task, never a GenerationTask: its summarization request must not share a
+      // prefix chain with the visible answer, so it registers `compact` under its own invocation signal.
+      setRequestTraceBoundary(context.abortSignal, traceBoundary(api, "compact"));
+      return undefined;
+    } }), hook(GenerationTask, { beforeRequest: async (request, api, context) => {
+      // Same signal-keyed contract as modelRequestGuards: the invocation signal identifies the request.
+      setRequestTraceBoundary(context.abortSignal, traceBoundary(api, "stream"));
       let messages = request.messages;
       let changed = false;
       let validate: () => void = () => { throw new Error("本轮上下文投影未完成"); };

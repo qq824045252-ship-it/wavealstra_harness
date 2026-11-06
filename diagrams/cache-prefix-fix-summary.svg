@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" role="img" aria-label="缓存前缀异常：修复与验证链路">
+  <rect width="1000" height="600" fill="#f8fafc"/>
+  <text x="24" y="36" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" fill="#0f172a">缓存前缀异常：从证据到修复（2026-11-06）</text>
+  <text x="24" y="60" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#475569">实线框 = 本机已验证；虚线框 = 证据不足、仅给出关闭条件。数字均来自 logs/cache-requests-2026110{5,6}*.log 与实跑门禁。</text>
+
+  <!-- lane 1: evidence -->
+  <rect x="24" y="84" width="300" height="230" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="40" y="110" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700" fill="#0f172a">① 证据层（只读）</text>
+  <rect x="40" y="124" width="268" height="52" rx="6" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="52" y="145" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e293b">8 个日志 / 2995 条 request 行</text>
+  <text x="52" y="164" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">11-05：2091 行，全部带 boundary</text>
+
+  <rect x="40" y="184" width="268" height="58" rx="6" fill="#fff7ed" stroke="#f59e0b"/>
+  <text x="52" y="205" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#7c2d12">11-06：900 / 904 行无 boundary</text>
+  <text x="52" y="224" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#9a3412">→ 按 op=stream 的巡检全部空过</text>
+
+  <rect x="40" y="250" width="268" height="50" rx="6" fill="#f5f3ff" stroke="#8b5cf6"/>
+  <text x="52" y="271" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#4c1d95">prefix=false &amp; sharedItems=0：10 条</text>
+  <text x="52" y="290" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#6d28d9">dev 7 / user 2 / op=prompt 误报 2（应剔除）</text>
+
+  <!-- lane 2: fixes -->
+  <rect x="348" y="84" width="304" height="230" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="364" y="110" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700" fill="#0f172a">② 修复层（本机已改，未提交）</text>
+
+  <rect x="364" y="124" width="272" height="58" rx="6" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="376" y="145" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#064e3b">Durable 追踪补 boundary</text>
+  <text x="376" y="164" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#065f46">AbortSignal 注册；stream 与 compact 不共链</text>
+
+  <rect x="364" y="190" width="272" height="58" rx="6" fill="#eff6ff" stroke="#3b82f6"/>
+  <text x="376" y="211" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#1e3a8a">审计脚本按修正规则落地</text>
+  <text x="376" y="230" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1d4ed8">http→provider 回退；T01=7；23 项自检</text>
+
+  <rect x="364" y="256" width="272" height="44" rx="6" fill="#fdf2f8" stroke="#ec4899"/>
+  <text x="376" y="277" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#831843">+175 已证：MCP 自述首行</text>
+  <text x="376" y="294" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#9d174d">d2ad724 已修，本次回归 5/5</text>
+
+  <!-- lane 3: verification -->
+  <rect x="668" y="84" width="304" height="230" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="684" y="110" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700" fill="#0f172a">③ 验证层（Lead 亲自实跑）</text>
+
+  <rect x="684" y="124" width="272" height="46" rx="6" fill="#f0fdfa" stroke="#14b8a6"/>
+  <text x="696" y="145" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#134e4a">typecheck：新增 0 错误</text>
+  <text x="696" y="162" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#0f766e">cache-trace / boundary-matrix / context-ledger 全 PASS</text>
+
+  <rect x="684" y="178" width="272" height="46" rx="6" fill="#f0fdfa" stroke="#14b8a6"/>
+  <text x="696" y="199" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#134e4a">审计 --selfcheck：23 / 23</text>
+  <text x="696" y="216" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#0f766e">T02/T04/T08/T09/T18/11-06 逐项对上</text>
+
+  <rect x="684" y="232" width="272" height="68" rx="6" fill="#fef2f2" stroke="#ef4444"/>
+  <text x="696" y="253" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" fill="#7f1d1d">test:durable-bot 失败 = HEAD 既存</text>
+  <text x="696" y="271" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#991b1b">临时回退本次 3 文件后同样失败</text>
+  <text x="696" y="289" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#991b1b">→ 不计入本次修复（归 6f0ec61 负责人）</text>
+
+  <!-- arrows between lanes -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L9 4 L0 8 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <line x1="324" y1="200" x2="346" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="652" y1="200" x2="666" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- open items -->
+  <rect x="24" y="336" width="948" height="150" rx="10" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="40" y="362" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700" fill="#0f172a">④ 仍未闭合的三条：证据不足，先补观测再改代码</text>
+
+  <rect x="40" y="378" width="296" height="92" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="52" y="400" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">±14 抖动（6e8aaed3→604f4eba）</text>
+  <text x="52" y="419" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">BTW 瞬时会话不落盘；同 user 轮内 A→B→A</text>
+  <text x="52" y="438" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">等级：unresolved；已排除 ERP 175 路径</text>
+  <text x="52" y="457" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#7c3aed">关闭：F1 段级指纹（后续事件）</text>
+
+  <rect x="352" y="378" width="296" height="92" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="364" y="400" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">−132（1edf5161，subagent）</text>
+  <text x="364" y="419" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">同一 user 轮内缩短；subagent 会话不落盘</text>
+  <text x="364" y="438" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">等级：inferred；方向与 +175 相反</text>
+  <text x="364" y="457" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#7c3aed">关闭：F1 + 子代理段级指纹</text>
+
+  <rect x="664" y="378" width="308" height="92" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="676" y="400" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#334155">+58（3c4eefc4，Durable）</text>
+  <text x="676" y="419" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">assembly 50 快照 hash 恒定；落在每轮重算的</text>
+  <text x="676" y="438" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#475569">「## Skills」候选段；等级：inferred</text>
+  <text x="676" y="457" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#7c3aed">关闭：F3 把 skills 并入 assembly 版本键</text>
+
+  <!-- footer -->
+  <text x="24" y="516" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#64748b">不该修（已证）：1a9e5385 / 9a8cc082 = 压缩边界（summary 9737 B = Δ+9737）；d8043128 / 5b600690 = op=prompt、inputCount=1 的一次性调用。</text>
+  <text x="24" y="540" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#64748b">产物：artifacts/cache-investigation/{prefix-audit-20261106, prefix-root-cause-20261106, verify-prefix-20261106}；scripts/cache-prefix-audit.mjs。</text>
+  <text x="24" y="564" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#64748b">纪律：只读日志与 plugins；未 build / pack / commit / push；工作区其余未提交改动属于用户并行会话。</text>
+</svg>
