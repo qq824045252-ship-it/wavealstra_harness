@@ -12,7 +12,9 @@ const { verifyPackagedApp, formatReport } = require('./verify-packaged-app.cjs')
  *    握手不连接图形会话；真实桌面验收另行运行，不能据 payload PASS 宣称 GUI 通过。
  * 2) Windows-only：把打包 payload 的完整性级别设为 Medium（icacls）。工作区可能继承
  *    Low integrity，Windows 会以 Low 启动 EXE，Chromium 主进程无法创建 sandbox window
- *    station。只在 Windows 宿主 + win32 目标上执行。
+ *    station。**必须在 payload gate 之前做**：gate 会用 `ELECTRON_RUN_AS_NODE=1` 真实启动
+ *    打包后的 exe 跑 durable probe，而 Low 进程写不了 `%LOCALAPPDATA%\Temp`（NW），会在
+ *    mkdtemp 处 EPERM，把一个健康构建判成坏包。
  */
 module.exports = async function afterPack(context) {
   const outDir = fs.realpathSync(context.outDir);
@@ -20,6 +22,18 @@ module.exports = async function afterPack(context) {
   const relative = path.relative(outDir, appOutDir);
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
     throw new Error('Refusing to change integrity labels outside the packaged application directory');
+  }
+
+  const windows = context.electronPlatformName === 'win32' && process.platform === 'win32';
+  if (windows) {
+    const icacls = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
+    const result = execFileSync(icacls, [appOutDir, '/setintegritylevel', '(OI)(CI)M', '/L', '/Q'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 120000,
+      maxBuffer: 1024 * 1024,
+    });
+    console.log(`[packaging] Windows payload integrity set to Medium: ${appOutDir}\n${result.trim()}`);
   }
 
   const verification = verifyPackagedApp(appOutDir, { platform: context.electronPlatformName });
@@ -32,20 +46,10 @@ module.exports = async function afterPack(context) {
     );
   }
 
-  if (context.electronPlatformName !== 'win32' || process.platform !== 'win32') {
+  if (!windows) {
     console.log(
       `[packaging] payload gate passed for ${context.electronPlatformName} (host ${process.platform}); ` +
         'Windows integrity labelling skipped',
     );
-    return;
   }
-
-  const icacls = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
-  const result = execFileSync(icacls, [appOutDir, '/setintegritylevel', '(OI)(CI)M', '/L', '/Q'], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 120000,
-    maxBuffer: 1024 * 1024,
-  });
-  console.log(`[packaging] Windows payload integrity set to Medium: ${appOutDir}\n${result.trim()}`);
 };
