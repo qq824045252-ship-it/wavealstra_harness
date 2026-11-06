@@ -2971,11 +2971,6 @@ app.whenReady().then(async () => {
       });
     }
   });
-  await agentService.init();
-  // User-requested design retirement: use the same recoverable deletion as the task UI.
-  for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
-    if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
-  }
   // Draw.io AI：启动自愈（npx 可解析且条目缺失/过期时写入，用户停用不覆盖）
   void professionalToolService
     .drawioMcpPayload()
@@ -3293,6 +3288,12 @@ app.whenReady().then(async () => {
     taskLifecycle.restore(taskId);
   });
   agentService.setLocalWorkflowServices({ cron: cronService, terminal: new TaskTerminalService(terminalHost) });
+  // init() resumes persisted Durable calls; install every domain tool before opening their sessions.
+  await agentService.init();
+  // User-requested design retirement: use the same recoverable deletion as the task UI.
+  for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
+    if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
+  }
   cronService.start();
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels();

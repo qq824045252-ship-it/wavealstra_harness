@@ -1,9 +1,36 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { parse } from "@babel/parser";
+import { traverseFast } from "@babel/types";
+
+// init() opens persisted Durable sessions, so bootstrap ordering is an execution contract.
+const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
+const startupCalls = new Map<string, number[]>();
+traverseFast(bootstrap, node => {
+  if (node.type === "CallExpression" && node.callee.type === "MemberExpression" && !node.callee.computed
+    && node.callee.object.type === "Identifier" && node.callee.property.type === "Identifier") {
+    const key = `${node.callee.object.name}.${node.callee.property.name}`;
+    assert.equal(typeof node.start, "number");
+    startupCalls.set(key, [...(startupCalls.get(key) ?? []), node.start!]);
+  }
+});
+function startupPosition(call: string): number {
+  const positions = startupCalls.get(call) ?? [];
+  assert.equal(positions.length, 1, `bootstrap must call ${call} exactly once`);
+  return positions[0]!;
+}
+const recoveryStart = startupPosition("agentService.init");
+for (const dependency of ["setSelectionContextResolver", "setArtifactDomain", "setGadgetDomain", "setLocalWorkflowServices"]) {
+  assert(startupPosition(`agentService.${dependency}`) < recoveryStart,
+    `install ${dependency} before agentService.init(): persisted subagents require the complete tool registry`);
+}
+for (const producer of ["cronService.start", "gatewayService.restoreChannels"]) {
+  assert(startupPosition(producer) > recoveryStart, `${producer} must wait for AgentService initialization`);
+}
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-local-workflow-"));
 process.env.HOME = root;
@@ -42,11 +69,11 @@ const workspaces = new TaskExecutionWorkspace(join(root, "workspaces"));
 const taskRoot = workspaces.ensureTaskExecutionWorkspace("scheduled");
 const runtime = await ModelRuntime.create({ authPath: join(config, "auth.json"), modelsPath: join(config, "models.json"), allowModelNetwork: false, refreshOnCreate: false });
 const agent = new AgentService(db, workspaces, { models: runtime });
-await agent.init();
 const host = new TerminalHost({ resolveCwd: () => root });
 const terminal = new TaskTerminalService(host);
 const cron = new CronService(db, agent);
 agent.setLocalWorkflowServices({ cron, terminal });
+await agent.init();
 let permission: "auto" | "readonly" = "auto";
 const tools = new Map<string, Tool>();
 const api: Pick<ExtensionAPI, "registerTool"> = { registerTool: tool => { tools.set(tool.name, tool); } };
