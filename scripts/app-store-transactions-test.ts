@@ -314,6 +314,15 @@ async function artifactSingleFlightIsInstanceLocal(): Promise<void> {
     b.useAppStore.getState().artifactRenderCache.artifact.content,
     "content B",
   );
+  assert.equal(a.useAppStore.getState().artifactRenderLoadState.artifact, "ready");
+  a.useAppStore.getState().releaseArtifactRender("artifact");
+  const released = a.useAppStore.getState();
+  assert.equal(released.artifactRenderCache.artifact, undefined, "release removes the cached payload");
+  assert.equal(released.artifactRenderLoadState.artifact, undefined, "release clears hydration state");
+  assert.equal(released.artifactRenderErrors.artifact, undefined, "release clears any hydration error");
+  assert.equal(b.useAppStore.getState().artifactRenderCache.artifact.content, "content B", "release is scoped to its store");
+  await a.useAppStore.getState().ensureArtifactRenderPayload("artifact");
+  assert.equal(readsA, 2, "a released artifact is read again when its preview reopens");
 }
 
 async function workspaceMovesShareOneQueuePerStore(): Promise<void> {

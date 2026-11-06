@@ -14,6 +14,7 @@ import {
 } from "./read-app-store-source";
 
 interface Contract {
+  actionAdditions: Record<string, string>;
   publicExports: Record<string, "type" | "value">;
   stateKeys: string[];
   optionalStateKeys: string[];
@@ -414,8 +415,8 @@ const actionMembers = interfaceMembers(
 );
 assertSameMembers(
   actionMembers.map((member) => propertyKey(member, "AppActions")),
-  contract.actionKeys,
-  "AppActions preserves every legacy action",
+  [...contract.actionKeys, ...Object.keys(contract.actionAdditions)],
+  "AppActions preserves every legacy action and declares only approved additions",
 );
 const appState = findBinding(sourceModule(appPath("types.ts")), "AppState");
 assert.equal(
@@ -476,8 +477,8 @@ assert.deepEqual(
 );
 assertSameMembers(
   initialized.map(({ key }) => key),
-  contract.initializedKeys,
-  "The factory initializes every legacy state/action key exactly once",
+  [...contract.initializedKeys, ...Object.keys(contract.actionAdditions)],
+  "The factory initializes every legacy key and approved action addition exactly once",
 );
 
 // 4. Lower modules receive context; only public hooks/compatibility adapters can
@@ -550,5 +551,5 @@ assert.equal(
 );
 
 console.log(
-  `app-store-structure: PASS (${exports.size} public exports, ${domains.length} domains, ${contract.stateKeys.length} state fields, ${contract.actionKeys.length} actions; no overwritten keys or singleton back-imports)`,
+  `app-store-structure: PASS (${exports.size} public exports, ${domains.length} domains, ${contract.stateKeys.length} state fields, ${actionMembers.length} actions; no overwritten keys or singleton back-imports)`,
 );
