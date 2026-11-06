@@ -25,6 +25,7 @@ export interface ModelRequestDiagnostic {
   usageSource: string | null;
   knownCostUsd: number | null;
   costComplete: boolean;
+  costSource: "provider-reported" | "pi-native" | "sdk-default" | null;
   attempts: Array<{ number: number; startedAt: number; finishedAt: number | null; httpStatus: number | null }>;
   cacheContext: { previousRequestId: string | null; prefixStable: boolean | null; changedFields: string[]; coverage: string };
 }

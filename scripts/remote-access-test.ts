@@ -490,6 +490,23 @@ try {
     assert.ok(failedCreate instanceof RemoteValidationError);
     assert.deepEqual([...savedTasks.keys()].filter((id) => !savedBefore.has(id)), [], "失败的新任务必须回滚任务行");
     assert.deepEqual(readdirSync(uploadsRoot).filter((entry) => entry !== "t-ro"), [], "失败的新任务不得残留附件目录");
+    const promptServer = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: service as never, commands, events });
+    const promptAddress = await promptServer.start();
+    try {
+      const phone = new RemoteClient(`http://127.0.0.1:${promptAddress.port}`, token);
+      const count = prompts.length;
+      await assert.rejects(phone.prompt("t-ro", { text: "correct rejected model", modelId: "vendor/unauthed" }), /不可用/);
+      assert.equal(prompts.length, count, "HTTP rejection precedes Durable submission");
+      await phone.prompt("t-ro", { text: "correct rejected model", modelId: "vendor/ok" });
+      assert.equal(prompts.at(-1)?.modelId, "vendor/ok");
+      failNextPrompt = true;
+      await assert.rejects(phone.prompt("t-ro", { text: "unknown admission", modelId: "vendor/ok" }));
+      const uncertain = prompts.at(-1);
+      await phone.prompt("t-ro", { text: "unknown admission", modelId: "vendor/unauthed" });
+      assert.equal(prompts.at(-1)?.userMessageId, uncertain?.userMessageId);
+      assert.equal(prompts.at(-1)?.modelId, "vendor/ok", "post-dispatch HTTP failure retains the original payload");
+    } finally { await promptServer.stop(); }
+
   }
 
   // ---- remoteStore 提交语义单测（P1：POST 成功即提交，后续同步失败不得伪装成发送失败） ----

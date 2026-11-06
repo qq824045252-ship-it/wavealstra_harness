@@ -52,11 +52,13 @@ export class BtwSessionService {
   private async snapshot(parentTaskId: string): Promise<string> {
     let history = await this.deps.history(parentTaskId);
     if (history.historyError) throw new Error(history.historyError);
-    while (history.messages.length < 60 && history.durable?.historyBefore !== undefined) {
+    let messages = history.messages;
+    while (messages.length < 60 && history.durable?.historyBefore !== undefined) {
       history = await this.deps.history(parentTaskId, history.durable.historyBefore);
       if (history.historyError) throw new Error(history.historyError);
+      messages = [...history.messages, ...messages].slice(-60);
     }
-    return formatBtwSnapshot(history.messages);
+    return formatBtwSnapshot(messages);
   }
 
   private baseContext(parentTaskId: string, cwd: string): string[] {

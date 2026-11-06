@@ -35,7 +35,10 @@ export async function resolveDurableBranch(runtime: DurableBotRuntime, request: 
   if (!await runtime.isIdle()) throw new ConversationBranchDomainError("TASK_BUSY", "当前任务仍在运行");
   const entries = await entriesOf(runtime.conversation);
   const users = entries.filter(isUser);
-  const index = request.entryId ? users.findIndex(entry => String(entry.id) === request.entryId || `durable-${entry.id}` === request.entryId) : request.userMessageIndex ?? -1;
+  const selected = request.entryId ? entries.find(entry => String(entry.id) === request.entryId || `durable-${entry.id}` === request.entryId) : undefined;
+  const owner = selected && (isUser(selected) || selected.model?.some(message => message.role === "assistant" || message.role === "toolResult"))
+    ? entries.slice(0, entries.indexOf(selected) + 1).reverse().find(isUser) : undefined;
+  const index = request.entryId ? (owner ? users.indexOf(owner) : -1) : request.userMessageIndex ?? -1;
   const user = users[index];
   if (!user) throw new ConversationBranchDomainError("ANCHOR_NOT_FOUND", "找不到当前分支中的用户消息");
   let leaf = user;
@@ -68,7 +71,7 @@ export async function captureDurableBranch(runtime: DurableBotRuntime, anchor: D
       ? data.mybuddyInput : runtime.inputMetadata(source.id);
     entries.push({ sourceId: source.id, store: store?.values ?? {}, entry: {
       kind: source.kind, model: source.model, head: source.head, edits: source.edits,
-      data: { inherited: true, sourceEntryId: String(source.id), ...(input ? {
+      data: source.data !== undefined && (source.data === null || typeof source.data !== "object" || Array.isArray(source.data)) ? source.data : { ...data, inherited: true, sourceEntryId: String(source.id), ...(input ? {
         mybuddyInput: { text: input.text ?? "", displayText: input.displayText ?? "", attachments: input.attachments ?? [] },
       } : {}) },
     } });
@@ -78,19 +81,33 @@ export async function captureDurableBranch(runtime: DurableBotRuntime, anchor: D
 
 /** Separate commits preserve Pi's document watermarks for later branches inside inherited history. */
 export async function seedDurableBranch(conversation: Conversation, seed: DurableBranchSeed): Promise<void> {
-  const ids = new Map<EntryId, EntryId>();
+  const ids = new Map<string, EntryId>();
   const remap = (id: EntryId): EntryId => {
-    const mapped = ids.get(id);
+    const mapped = ids.get(String(id));
     if (mapped === undefined) throw new Error(`分支历史引用不存在：${id}`);
     return mapped;
   };
   for (const { sourceId, entry, store } of seed.entries) {
     const head = entry.head === sourceId ? "self" : entry.head === undefined || entry.head === "self" ? entry.head : remap(entry.head);
     const edits = entry.edits?.map(edit => ({ ...edit, target: remap(edit.target) }));
+    const data = entry.kind === "mybuddy.context-ledger" ? remapLedger(entry.data, ids) : entry.data;
     const saved = await conversation.commit(async tx => {
       (await tx.doc(CodemodeStoreDoc, conversation.id)).values = store;
-      return tx.appendEntry(conversation.id, { ...entry, head, edits });
+      return tx.appendEntry(conversation.id, { ...entry, data, head, edits });
     }, context);
-    ids.set(sourceId, saved.id);
+    ids.set(String(sourceId), saved.id);
   }
+}
+
+function remapLedger(data: EntryDraft["data"], ids: ReadonlyMap<string, EntryId>): JsonObject {
+  if (!data || typeof data !== "object" || Array.isArray(data)
+    || typeof data.anchor !== "string" || typeof data.boundary !== "string") throw new Error("分支证据账本缺少锚点");
+  const remap = (value: string) => {
+    const mapped = ids.get(value);
+    if (mapped === undefined) throw new Error(`分支证据引用不存在：${value}`);
+    return String(mapped);
+  };
+  // Scope and access witnesses describe the original evidence. The child's projection
+  // validates them against its own scope; changing their identity would grant access.
+  return { ...data, anchor: remap(data.anchor), boundary: ["root", "summary-lineage"].includes(data.boundary) ? data.boundary : remap(data.boundary) };
 }

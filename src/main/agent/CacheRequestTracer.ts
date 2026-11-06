@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { reportedTokenUsage, unknownTokenUsage } from './ReportedTokenUsage';
+import { reportedCostTotal, reportedTokenUsage, unknownTokenUsage } from './ReportedTokenUsage';
+import { nativeCostEvidence } from './NativeCostEvidence';
 import type { DiagnosticSource } from '../../shared/task-diagnostics';
 
 // This observer never rewrites requests, retries them, or saves request content.
@@ -100,6 +101,7 @@ export class CacheRequestTracer {
     let firstResponseAt: number | null = null;
     let reported = unknownTokenUsage();
     let usageSource: string | null = null;
+    let providerCost: number | undefined;
     const request = randomUUID();
     const session = sessionId || boundary?.sessionId;
     // No global chain for unbound calls: unrelated requests must never share a baseline.
@@ -162,6 +164,7 @@ export class CacheRequestTracer {
           const observed = reportedTokenUsage(data);
           if (observed) { reported = { ...reported, ...observed.values }; usageSource = observed.source; }
           const event = object(data);
+          providerCost = reportedCostTotal(event?.response ?? event?.message ?? data) ?? providerCost;
           if (typeof event?.type !== 'string' || !RESPONSE_TERMINALS.has(event.type)) return;
           const response = object(event.response);
           const usage = object(response?.usage);
@@ -198,9 +201,10 @@ export class CacheRequestTracer {
       result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total?: number } } }) => {
         try {
           const u = message.usage;
+          const cost = nativeCostEvidence(u, reported, providerCost);
           emit({ ...base, event: 'result', attempts, startedAt, firstResponseAt, modelMs: Math.max(0, performance.now() - startedClock),
             reportedUsage: reported, usageSource,
-            nativeCostTotal: finiteNumber(u?.cost?.total),
+            nativeCostTotal: cost.total, nativeCostSource: cost.source, nativeCostComplete: cost.complete,
             responseHash: message.responseId ? plainHash(message.responseId) : null,
             responseModelHash: message.responseModel ? this.digest(message.responseModel) : null,
             outcome: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(message.stopReason) ? message.stopReason : 'other',

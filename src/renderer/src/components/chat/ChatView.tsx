@@ -9,6 +9,7 @@ import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppS
 import type { Artifact, Space } from "@/types";
 import { heroCategories } from "@/mock/data";
 import MessageItem from "./MessageItem";
+import { durableMessageToChatMessage } from "@/store/app/messages/historyMapper";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
@@ -544,6 +545,10 @@ export default function ChatView(): React.JSX.Element {
   };
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const visiblePage = task?.historyPage?.epoch === task?.durable?.epoch ? task?.historyPage : undefined;
+  const beforeHistory = visiblePage ? visiblePage.historyBefore : task?.durable?.historyBefore;
+  const clearHistoryPage = () => useAppStore.setState(state => ({ tasks: state.tasks.map(row => row.id === task?.id ? { ...row, historyPage: undefined } : row) }));
+  useEffect(() => () => { useAppStore.setState(state => ({ tasks: state.tasks.map(row => row.id === task?.id ? { ...row, historyPage: undefined } : row) })); }, [task?.id]);
   const [historyLoadError, setHistoryLoadError] = useState<string>();
   const [taskMenuOpen, setTaskMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -561,9 +566,9 @@ export default function ChatView(): React.JSX.Element {
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
   useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
 
-  const displayMessages = useMemo(() => task?.durable !== undefined || task?.welcomeMode === "bot"
+  const displayMessages = useMemo(() => visiblePage ? botMessagePresentation(visiblePage.messages) : task?.durable !== undefined || task?.welcomeMode === "bot"
     ? botMessagePresentation(task.messages, task.durable?.pendingInputs) : task?.messages ?? [],
-    [task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
+    [visiblePage, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
   const lastMessage = displayMessages[messageCount - 1];
@@ -1056,21 +1061,23 @@ export default function ChatView(): React.JSX.Element {
               </div>
             </div>
           )}
-          {task.durable?.historyBefore !== undefined && <button type="button" className="durable-history-earlier" disabled={loadingEarlier}
+          {visiblePage && <button type="button" className="durable-history-earlier" onClick={clearHistoryPage}>返回最新消息</button>}
+          {beforeHistory !== undefined && <button type="button" className="durable-history-earlier" disabled={loadingEarlier}
             onClick={async () => {
               if (loadingEarlier) return;
               const taskId = task.id;
               const element = scrollRef.current;
-              const height = element?.scrollHeight ?? 0;
-              const top = element?.scrollTop ?? 0;
               setLoadingEarlier(true); setHistoryLoadError(undefined);
               try {
                 if (!window.api?.agent) throw new Error("主进程 Agent API 未就绪");
-                const history = await window.api.agent.loadTaskHistory(taskId, task.durable?.historyBefore);
+                const history = await window.api.agent.loadTaskHistory(taskId, beforeHistory);
                 if (history.historyError) throw new Error(history.historyError);
-                const current = useAppStore.getState().tasks.find(candidate => candidate.id === taskId)?.durable;
-                if (history.durable && (!current || current.epoch === task.durable?.epoch || current.epoch === history.durable.epoch)) useAppStore.getState().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
-                requestAnimationFrame(() => { if (element && scrollRef.current === element) applyProgrammaticScrollTop(top + element.scrollHeight - height); });
+                const page = history.durable;
+                if (page) useAppStore.setState(state => state.activeTaskId !== taskId ? state : ({
+                  tasks: state.tasks.map(row => row.id === taskId && row.durable?.epoch === page.epoch ? { ...row,
+                    historyPage: { epoch: page.epoch, historyBefore: page.historyBefore, messages: page.messages.map(durableMessageToChatMessage) } } : row),
+                }));
+                requestAnimationFrame(() => { if (element && scrollRef.current === element) applyProgrammaticScrollTop(0); });
               } catch (error) { setHistoryLoadError(error instanceof Error ? error.message : String(error)); }
               finally { setLoadingEarlier(false); }
             }}>{loadingEarlier ? "正在加载历史…" : "加载更早的消息"}</button>}
@@ -1096,6 +1103,7 @@ export default function ChatView(): React.JSX.Element {
             title="回到底部"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
+              clearHistoryPage();
               commitFollow(onResetForTask(followStateRef.current));
               requestAnimationFrame(() => {
                 pinUserMessageToTopRef.current();

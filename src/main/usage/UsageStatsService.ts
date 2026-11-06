@@ -28,6 +28,8 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { PerfSample } from "./PerformanceTracker";
+import { nativeCostEvidence } from "../agent/NativeCostEvidence";
+import { unknownTokenUsage } from "../agent/ReportedTokenUsage";
 import {
   applyMyBuddyModelAttribution,
   summarizeRows,
@@ -327,9 +329,14 @@ export class UsageStatsService {
         turnIndex: sample.turnIndex,
         userTurn: input.userTurn ?? null,
       });
-    if (reported && this.coverageAvailable) try {
+    const costKnown = reported?.costTotal != null || nativeCostEvidence(message.usage, reported).complete;
+    if ((reported || !costKnown) && this.coverageAvailable) try {
+      const native = message.usage;
+      const hasUsage = native && [native.input, native.output, native.cacheRead, native.cacheWrite].some(count => count != null && count > 0);
+      const observed = reported ?? (hasUsage ? { input: native.input ?? null, output: native.output ?? null,
+        cacheRead: native.cacheRead ?? null, cacheWrite: native.cacheWrite ?? null } : unknownTokenUsage());
       this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
-        .run(entryId, Number(reported.input !== null), Number(reported.output !== null), Number(reported.cacheRead !== null), Number(reported.cacheWrite !== null), Number(typeof message.usage?.cost?.total === "number" && Number.isFinite(message.usage.cost.total)));
+        .run(entryId, Number(observed.input !== null), Number(observed.output !== null), Number(observed.cacheRead !== null), Number(observed.cacheWrite !== null), Number(costKnown));
     } catch { /* Unknown coverage must not affect a completed model call. */ }
   }
 

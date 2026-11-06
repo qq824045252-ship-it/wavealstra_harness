@@ -24524,3 +24524,11 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
   max-width: 220px;
 }
 
+
+.durable-history-earlier {
+  margin: 0 8px 8px 0;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}

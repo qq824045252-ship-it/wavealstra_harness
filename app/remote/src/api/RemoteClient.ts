@@ -22,7 +22,7 @@ import type {
 import { acknowledgePromptOperation, pendingPromptOperation } from '../store/remoteDb'
 
 export class RemoteApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message) }
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
 }
 
 export class RemoteClient {
@@ -145,7 +145,14 @@ export class RemoteClient {
     const pending = await pendingPromptOperation(this.baseUrl, path, JSON.stringify(request))
     const original: unknown = JSON.parse(pending.serializedInput)
     if (!original || typeof original !== 'object' || Array.isArray(original)) throw new Error('无效的待发送草稿')
-    const result = await this.post<RemotePromptResponse>(path, { ...original, operationId: pending.operationId })
+    let result: RemotePromptResponse
+    try { result = await this.post<RemotePromptResponse>(path, { ...original, operationId: pending.operationId }) }
+    catch (error) {
+      if (error instanceof RemoteApiError && error.code === 'prompt_not_accepted') {
+        await acknowledgePromptOperation(pending.key, pending.operationId)
+      }
+      throw error
+    }
     if (result.receipt) await acknowledgePromptOperation(pending.key, pending.operationId).catch(() => undefined)
     return result
   }
@@ -159,8 +166,8 @@ export class RemoteClient {
   }
   private headers() { return { authorization: `Bearer ${this.token}` } }
   private static async read<T>(response: Response): Promise<T> {
-    const value = await response.json().catch(() => ({})) as { error?: { message?: string } }
-    if (!response.ok) throw new RemoteApiError(value.error?.message || `HTTP ${response.status}`, response.status)
+    const value = await response.json().catch(() => ({})) as { error?: { message?: string; code?: string } }
+    if (!response.ok) throw new RemoteApiError(value.error?.message || `HTTP ${response.status}`, response.status, value.error?.code)
     return value as T
   }
 }

@@ -2,7 +2,7 @@ import type { ChatMessage, Task } from "../../../types";
 import { hasActiveExecutionMessages } from "../../../utils/taskFilters";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
-import { formatDuration } from "../format";
+import { durableMessageToChatMessage } from "../messages/historyMapper";
 import { applyPatchToMessage } from "../messages/messageReducer";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
 import type { AgentDeltaPatch } from "../types";
@@ -85,36 +85,8 @@ export function createAgentProjectionActions(
           const previous = priorMessages.get(message.id);
           if (previous && (priorRows.get(message.id) === message || (message.projectionVersion !== undefined && priorRows.get(message.id)?.projectionVersion === message.projectionVersion))) return previous;
           return {
-          id: message.id,
-          executionId: previous?.executionId,
-          interactions: previous?.interactions,
-          artifactIds: previous?.artifactIds,
-          changesCount: previous?.changesCount,
-          entryId: message.entryId,
-          role: message.role,
-          createdAt: message.createdAt,
-          modelName: message.modelName,
-          streaming: message.streaming,
-          presentationKey: message.presentationKey,
-          generationStats: message.generationStats,
-          durationLabel: formatDuration(message.durationMs),
-          attachments: message.attachments,
-          blocks:
-            message.role === "user"
-              ? [{ type: "text", text: message.text }]
-              : [
-                  ...(message.thinking
-                    ? [{ type: "thinking" as const, text: message.thinking }]
-                    : []),
-                  ...(message.tools ?? []).map((tool) => ({
-                    type: "tool" as const,
-                    toolCall: { ...tool },
-                  })),
-                ],
-          finalBlocks:
-            message.role === "assistant" && message.text
-              ? [{ type: "text", text: message.text }]
-              : undefined,
+          ...durableMessageToChatMessage(message), executionId: previous?.executionId,
+          interactions: previous?.interactions, artifactIds: previous?.artifactIds, changesCount: previous?.changesCount,
           };
         });
         if (!known?.durable || known.durable.epoch === snapshot.epoch) {
@@ -132,6 +104,7 @@ export function createAgentProjectionActions(
             id: patch.taskId,
             welcomeMode: prior?.welcomeMode,
             durable: snapshot,
+            historyPage: prior?.historyPage?.epoch === snapshot.epoch ? prior.historyPage : undefined,
             historyError: undefined,
             messages,
             title:

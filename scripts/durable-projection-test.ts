@@ -8,6 +8,9 @@ import { createModels, type AssistantMessage, type Message, type Models } from "
 import { AgentDoc, defineTool, type Storage } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { DURABLE_HISTORY_ENTRY_LIMIT } from "../src/main/agent/durable/DurableHistoryProjection";
+import { CONTEXT_LEDGER_VERSION } from "../src/main/agent/EphemeralContextProjection";
+import { resolveDurableBranch, captureDurableBranch } from "../src/main/agent/durable/DurableTaskBranch";
 import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
 import { findDurableUserEntry } from "../src/main/agent/durable/DurableConversationBranch";
 import { DurableConsultIdentity } from "../src/main/agent/durable/DurableConsultSession";
@@ -77,9 +80,17 @@ try {
   waitingForInput = false;
   assert.notEqual((await runtime.refresh()).status, "waiting_input");
   let pages = 0;
-  while (runtime.snapshot.historyBefore !== undefined) { await runtime.loadEarlier(); pages++; assert(pages < 10); }
-  assert.equal(runtime.snapshot.messages.length, history.length);
-  assert.equal(runtime.snapshot.messages[0].text, "old question 0");
+  const visible = runtime.snapshot;
+  const allMessages = new Map(visible.messages.map(message => [message.id, message]));
+  let before = visible.historyBefore;
+  while (before !== undefined) {
+    const page = await runtime.loadEarlier(before);
+    for (const message of page.messages) allMessages.set(message.id, message);
+    before = page.historyBefore; pages++; assert(pages < 10);
+    assert.equal(runtime.snapshot, visible, "paging never changes the live snapshot or another observer");
+  }
+  assert.equal(allMessages.size, history.length);
+  assert([...allMessages.values()].some(message => message.text === "old question 0"));
   const submission = await runtime.submit("new question", "input-one", "followUp", { text: "new question", displayText: "visible question", attachments: [] });
   assert.equal((await submission.wait(context)).status, "done");
   await runtime.conversation.waitForIdle(context);
@@ -88,6 +99,10 @@ try {
   assert.equal(runtime.snapshot.status, "completed");
   assert.equal(completedTurns, 1);
   assert.equal(responses, 2);
+  const withTool = runtime.snapshot.messages.find(message => message.tools?.some(tool => tool.id === "echo-one"));
+  assert(withTool?.entryId);
+  const toolPage = await runtime.loadEarlier(Number(withTool.entryId), 1);
+  assert.equal(toolPage.messages[0]?.tools?.find(tool => tool.id === "echo-one")?.status, "success", "page boundaries retain later tool results");
   const firstCapsule = requests[0].filter(message => message.role === "user" && typeof message.content === "string" && message.content.includes("source revision"));
   assert.equal(firstCapsule.length, 1);
   assert.deepEqual(requests[1].slice(0, requests[0].length), requests[0], "tool continuation keeps the complete earlier request prefix");
@@ -238,3 +253,79 @@ try {
   assert.equal(await runtime.abortCompaction(), false, "manual cancellation leaves no pending compaction task");
 } finally { await runtime.close(); }
 console.log("PASS manual compaction cancellation targets its native task");
+
+// Copy actual generated ledgers, then continue and revoke in the child's scope.
+let branchCalls = 0;
+const branchApi: Models = { ...api, streamSimple: () => {
+  branchCalls++;
+  const stream = createAssistantMessageEventStream();
+  queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message: answer("branch answer", Date.now()) }); stream.end(); });
+  return stream;
+} };
+let revoked = false;
+const accessScopes: string[] = [];
+const branchOptions = (taskId: string) => ({ ...options, models: branchApi, directory: join(directory, taskId),
+  evidenceProjection: { ...options.evidenceProjection, scope: () => ({ taskId }),
+    supplementalEvidence: () => options.evidenceProjection.supplementalEvidence().map(item => ({ ...item, validate: () => { if (revoked) throw new Error("child evidence revoked"); } })),
+    validateEvidenceAccess: () => { accessScopes.push(taskId); if (revoked) throw new Error("child evidence revoked"); } } });
+const parent = await DurableBotRuntime.open(branchOptions("ledger-parent"));
+try {
+  await (await parent.submit("parent evidence", "parent-one")).wait(context);
+  await parent.conversation.waitForIdle(context);
+  await parent.refresh();
+  const reply = parent.snapshot.messages.findLast(message => message.role === "assistant");
+  assert(reply?.entryId);
+  const anchor = await resolveDurableBranch(parent, { sourceTaskId: "parent", entryId: reply.entryId, position: "after_reply", requestId: "branch-ledger" });
+  const seed = await captureDurableBranch(parent, anchor);
+  assert(seed.entries.some(item => item.entry.kind === "mybuddy.context-ledger"));
+  const child = await DurableBotRuntime.open({ ...branchOptions("ledger-child"), initialBranch: seed });
+  try {
+    const entries = (await child.conversation.entries({ order: "ascending" }, 100, undefined, context)).items;
+    const ledger = entries.find(entry => entry.kind === "mybuddy.context-ledger");
+    assert(ledger?.data && typeof ledger.data === "object" && !Array.isArray(ledger.data));
+    assert.equal(ledger.data.version, CONTEXT_LEDGER_VERSION);
+    assert(entries.some(entry => String(entry.id) === String(ledger.data && typeof ledger.data === "object" && !Array.isArray(ledger.data) ? ledger.data.anchor : "") && entry.model?.some(message => message.role === "user")));
+    await (await child.submit("child evidence", "child-one")).wait(context);
+    await child.conversation.waitForIdle(context);
+    assert.equal(branchCalls, 2);
+    assert(accessScopes.includes("ledger-child"), "inherited access witnesses are checked in the child's scope");
+    revoked = true;
+    await (await child.submit("deny revoked evidence", "child-two")).wait(context);
+    await child.conversation.waitForIdle(context);
+    assert.equal(branchCalls, 2, "hook rejection must block the actual provider");
+    revoked = false;
+    await child.conversation.commit(tx => tx.appendEntry(child.conversation.id, { kind: "mybuddy.context-ledger", data: { inherited: true } }), context);
+    await (await child.submit("deny corrupt evidence", "child-three")).wait(context);
+    await child.conversation.waitForIdle(context);
+    assert.equal(branchCalls, 2, "a corrupt ledger cannot fall through Pi's swallowed hook exception");
+  } finally { await child.close(); }
+} finally { await parent.close(); }
+console.log("PASS branch evidence provenance, child access checks and fail-closed provider dispatch");
+
+const bounded = await DurableBotRuntime.open({ ...options, directory: join(directory, "bounded-history"), evidenceProjection: undefined });
+try {
+  for (let batch = 0; batch < 15; batch++) {
+    await bounded.conversation.commit(async tx => {
+      for (let i = 0; i < 20; i++) {
+        const n = batch * 20 + i;
+        await tx.appendEntry(bounded.conversation.id, { kind: "pi.user", model: [{ role: "user", content: `bounded ${n}`, timestamp: n * 2 }] });
+        await tx.appendEntry(bounded.conversation.id, { kind: "pi.assistant", model: [answer(`answer ${n}`, n * 2 + 1)] });
+      }
+    }, context);
+    await bounded.refresh();
+    assert(bounded.snapshot.messages.length <= DURABLE_HISTORY_ENTRY_LIMIT, "live history residency stays bounded while entries grow");
+  }
+  const tail = bounded.snapshot;
+  const seen = new Set(tail.messages.map(message => message.id));
+  let cursor = tail.historyBefore;
+  while (cursor !== undefined) {
+    const page = await bounded.loadEarlier(cursor);
+    assert(page.messages.length <= DURABLE_HISTORY_ENTRY_LIMIT);
+    assert(page.historyBefore === undefined || page.historyBefore < cursor);
+    page.messages.forEach(message => seen.add(message.id));
+    cursor = page.historyBefore;
+  }
+  assert.equal(seen.size, 600, "every evicted message remains reachable by read-only pages");
+  assert.equal(bounded.snapshot, tail);
+} finally { await bounded.close(); }
+console.log("PASS bounded live history, complete older pagination and observer isolation");

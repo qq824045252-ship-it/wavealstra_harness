@@ -12,7 +12,6 @@ export class DurableEvidenceProjection {
   private readonly projection: EphemeralContextProjection;
   private readonly entries = new Map<number, EntryRecord>();
   private newest?: EntryId;
-  private guard?: () => void;
 
   constructor(options: DurableEvidenceOptions, private readonly conversation: Conversation, private readonly models: Models) {
     this.projection = new EphemeralContextProjection({ ...options, registerRequestGuard: () => {} });
@@ -57,12 +56,11 @@ export class DurableEvidenceProjection {
       }, context);
       for (const entry of stored) this.entries.set(entry.id, entry);
     }
-    this.guard = this.projection.captureRequestGuard();
-    this.guard();
+    this.captureRequestGuard()();
     return result?.messages.map(toModelMessage) ?? messages;
   }
 
-  validate(): void { this.guard?.(); }
+  captureRequestGuard(): () => void { return this.projection.captureRequestGuard(); }
   dispose(): void { this.projection.dispose(); }
 }
 

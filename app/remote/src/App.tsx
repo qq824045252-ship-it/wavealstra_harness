@@ -6,7 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, Wrench, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary, RemoteTaskHistory } from '@mybuddy/shared'
 
 /** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
 const EMPTY_MESSAGE_IMAGES: RemoteImageArtifact[] = []
@@ -324,6 +324,9 @@ function ChatPage() {
   const isNearBottomRef = useRef(true)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const [olderPage, setOlderPage] = useState<{ taskId: string; history: RemoteTaskHistory }>()
+  const visiblePage = olderPage?.taskId === activeTaskId && olderPage?.history.durable?.epoch === histories[activeTaskId]?.durable?.epoch ? olderPage?.history : undefined
+  useEffect(() => { setOlderPage(undefined); setEarlierError(null) }, [activeTaskId, histories[activeTaskId]?.durable?.epoch])
   const [earlierError, setEarlierError] = useState<string | null>(null)
   // 发送时记录「当前用户气泡数」，等新气泡真正渲染（数量 +1）再锚定置顶。
   // 不能再用一次性 flag：回复中追加提问时，旧回复的 text_delta 会抢跑 effect、
@@ -340,14 +343,15 @@ function ChatPage() {
   const task = bootstrap?.tasks.find((item) => item.id === activeTaskId)
   // 只订阅当前任务的切片：其它任务的 patch 会让 histories/live 整对象换引用，
   // 若直接依赖整对象，看 A 时 B 的流式增量也会触发这里全量重建时间轴。
-  const activeHistoryMessages = histories[activeTaskId]?.messages
-  const activeLive = live[activeTaskId]
+  const activeHistoryMessages = visiblePage ? visiblePage.messages : histories[activeTaskId]?.messages
+  const activeLive = visiblePage ? undefined : live[activeTaskId]
   const messages = useMemo(() => buildRemoteTimeline(
     activeHistoryMessages ?? [], activeLive ?? {},
   ), [activeHistoryMessages, activeLive])
 
   const runtime = runtimes[activeTaskId]
   const durable = histories[activeTaskId]?.durable
+  const beforeHistory = visiblePage ? visiblePage.durable?.historyBefore : durable?.historyBefore
   const interactionsByMessage = useMemo(() => {
     const map = new Map<string, RemoteConversationInteraction[]>()
     for (const interaction of runtime?.interactions ?? []) {
@@ -586,15 +590,18 @@ function ChatPage() {
           className="chat-timeline"
           onScroll={handleScroll}
         >
-          {durable?.historyBefore !== undefined && <button type="button" disabled={loadingEarlier} onClick={async () => {
+          {visiblePage && <button type="button" onClick={() => setOlderPage(undefined)}>返回最新消息</button>}
+          {beforeHistory !== undefined && <button type="button" disabled={loadingEarlier} onClick={async () => {
             if (loadingEarlier) return
             const element = timelineRef.current, taskId = activeTaskId
-            const height = element?.scrollHeight ?? 0, top = element?.scrollTop ?? 0
             isNearBottomRef.current = false
             setLoadingEarlier(true); setEarlierError(null)
             try {
-              await useRemoteStore.getState().syncTask(taskId, durable.historyBefore)
-              requestAnimationFrame(() => { if (element && timelineRef.current === element) element.scrollTop = top + element.scrollHeight - height })
+              const client = useRemoteStore.getState().client
+              if (!client) throw new Error('未连接电脑')
+              const history = await client.history(taskId, beforeHistory)
+              if (useRemoteStore.getState().histories[taskId]?.durable?.epoch === history.durable?.epoch) setOlderPage({ taskId, history })
+              requestAnimationFrame(() => { if (element && timelineRef.current === element) element.scrollTop = 0 })
             } catch (error) { setEarlierError(error instanceof Error ? error.message : String(error)) }
             finally { setLoadingEarlier(false) }
           }}>{loadingEarlier ? '正在加载历史…' : '加载更早的消息'}</button>}

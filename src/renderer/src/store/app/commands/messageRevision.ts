@@ -21,14 +21,15 @@ export function createMessageRevisionActions(
       if (!activeTaskId) return;
       const task = get().tasks.find((item) => item.id === activeTaskId);
       if (!task) return;
-      const messageIndex = task.messages.findIndex(
+      const messages = task.historyPage?.messages ?? task.messages;
+      const messageIndex = messages.findIndex(
         (message) => message.id === messageId,
       );
-      if (messageIndex < 0 || task.messages[messageIndex]?.role !== "user")
+      if (messageIndex < 0 || messages[messageIndex]?.role !== "user")
         return;
-      const targetEntryId = task.messages[messageIndex].entryId;
+      const targetEntryId = messages[messageIndex].entryId;
       const userMessageIndex =
-        task.messages
+        messages
           .slice(0, messageIndex + 1)
           .filter((message) => message.role === "user").length - 1;
       if (userMessageIndex < 0) return;
@@ -73,7 +74,7 @@ export function createMessageRevisionActions(
         }
       }
 
-      const remaining = task.messages.slice(0, messageIndex);
+      const remaining = messages.slice(0, messageIndex);
       const nextStatus = remaining.length === 0 ? "pending" : "completed";
       set((state) => ({
         tasks: state.tasks.map((item) =>
@@ -97,21 +98,22 @@ export function createMessageRevisionActions(
       if (!activeTaskId) return;
       const task = get().tasks.find((t) => t.id === activeTaskId);
       if (!task) return;
+      const messages = task.historyPage?.messages ?? task.messages;
 
-      const idx = task.messages.findIndex((m) => m.id === messageId);
-      const sourceAssistant = task.messages[idx];
+      const idx = messages.findIndex((m) => m.id === messageId);
+      const sourceAssistant = messages[idx];
       if (!sourceAssistant || sourceAssistant.role !== "assistant") return;
       // 两阶段提交只允许对已终结的助手回复执行；源消息自身仍 streaming 时不在此路径进入。
       if (sourceAssistant.streaming) return;
 
       // 目标消息之后仍有消息在流式生成 → 不可重新生成（避免与正跑执行争夺叶子）
-      if (task.messages.some((m, i) => i > idx && m.streaming)) return;
+      if (task.messages.some(m => m.streaming)) return;
 
       // 定位被重生成的源用户消息 + 它在会话中的 0-based 用户序号
       let userIdx = idx - 1;
-      while (userIdx >= 0 && task.messages[userIdx]?.role !== "user")
+      while (userIdx >= 0 && messages[userIdx]?.role !== "user")
         userIdx -= 1;
-      const sourceUser = userIdx >= 0 ? task.messages[userIdx] : undefined;
+      const sourceUser = userIdx >= 0 ? messages[userIdx] : undefined;
       if (!sourceUser) return;
       // 与主进程 SDK getUserMessagesForForking() 对齐：只统计「有正文文本」的用户消息。
       // SDK 侧过滤 text 非空的 user entry（contentText join 后非空），若 UI 侧把无文本
@@ -123,7 +125,7 @@ export function createMessageRevisionActions(
           .join("\n") !== "";
       if (!hasForkableUserText(sourceUser)) return;
       const userMessageIndex =
-        task.messages
+        messages
           .slice(0, userIdx + 1)
           .filter((m) => m.role === "user" && hasForkableUserText(m)).length -
         1;

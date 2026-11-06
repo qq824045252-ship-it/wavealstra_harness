@@ -9,7 +9,7 @@ import type { RemoteAccessPairing } from "./RemoteAccessPairing";
 import type { RemoteAccessService } from "./RemoteAccessService";
 import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
-import { RemoteConflictError, RemoteNotFoundError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
+import { RemoteConflictError, RemoteNotFoundError, RemotePromptRejectedError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
 import { RemotePairWindow } from "./RemotePairWindow";
 import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteDirectPairSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
 
@@ -355,6 +355,7 @@ export class RemoteAccessServer {
       replyJson(404, errorBody("not_found", "route not found"));
     } catch (error) {
       if (response.headersSent) { response.end(); return; }
+      if (error instanceof RemotePromptRejectedError) return replyJson(error.cause instanceof RemoteConflictError ? 409 : error.cause instanceof RemoteNotFoundError ? 404 : 400, errorBody("prompt_not_accepted", error.message));
       if (error instanceof RemoteImageError) return replyJson(error.status, errorBody("image_unavailable", error.message));
       if (error instanceof ZodError || error instanceof RemoteValidationError || error instanceof RemotePairingError) return replyJson(400, errorBody("invalid_request", error.message));
       if (error instanceof RemoteNotFoundError) return replyJson(404, errorBody("not_found", error.message));

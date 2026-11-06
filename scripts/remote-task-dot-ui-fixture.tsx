@@ -6,7 +6,7 @@
 import { createRoot } from 'react-dom/client'
 import { App } from '../app/remote/src/App'
 import { useRemoteStore } from '../app/remote/src/store/remoteStore'
-import type { RemoteBootstrap, RemoteTaskSummary } from '@mybuddy/shared'
+import type { RemoteBootstrap, RemoteTaskSummary, RemoteTaskHistory } from '@mybuddy/shared'
 import '../app/remote/src/styles/app.css'
 
 const now = Date.now()
@@ -34,11 +34,15 @@ const fakeClient = {
   ackDone: async (taskId: string) => { ackCalls.push(taskId); return { ok: true } },
   bootstrap: async () => bootstrapSnapshot(),
   notifications: async () => [],
-  history: async (taskId: string) => ({ taskId, messages: [] }),
+  history: async (taskId: string, before?: number) => before === undefined ? ({ taskId, messages: [] }) : pageHistory(taskId, before),
   runtime: async (taskId: string) => ({ taskId, busy: false, pendingActions: [], interactions: [], activeGoal: null }),
   eventStream: () => new Promise<void>(() => {}),
 } as never
 
+function pageHistory(taskId: string, before: number): RemoteTaskHistory {
+  const messages = Array.from({ length: 50 }, (_, index) => ({ id: `older-${before - 49 + index}`, role: 'user' as const, text: `OLDER_PAGE_${before}_${index}`, createdAt: index + 1 }))
+  return { taskId, messages, durable: { backend: 'pi-durable', epoch: 'history-fixture', revision: 1, conversationId: 'fixture', toolMode: 'native', busy: false, queued: 0, pendingInputs: [], compacting: false, messages, historyBefore: before > 50 ? before - 50 : undefined } }
+}
 function bootstrapSnapshot(): RemoteBootstrap {
   return {
     apiVersion: 1,
@@ -54,6 +58,17 @@ useRemoteStore.setState({ client: fakeClient, bootstrap: bootstrapSnapshot(), co
 createRoot(document.getElementById('root')!).render(<App />)
 ;(window as unknown as { harness: unknown }).harness = {
   ackCalls,
+  history() {
+    const history = pageHistory('t-running', 500)
+    history.messages = [{ id: 'latest', role: 'user', text: 'LATEST_LIVE', createdAt: 1000 }]
+    history.durable!.messages = history.messages
+    useRemoteStore.setState({ activeTaskId: 't-running', isDrawerOpen: false, histories: { 't-running': history }, live: {} })
+  },
+  advance() {
+    const history = useRemoteStore.getState().histories['t-running']
+    const messages = [{ id: 'latest', role: 'user' as const, text: 'LATEST_UPDATED', createdAt: 1001 }]
+    useRemoteStore.setState({ histories: { 't-running': { ...history, messages, durable: { ...history.durable!, messages, revision: 2 } } } })
+  },
   store: useRemoteStore,
   state: () => {
     const state = useRemoteStore.getState()

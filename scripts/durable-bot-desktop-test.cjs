@@ -175,8 +175,9 @@ const report={temp,tests:[],status:'running'};
   const url='http://127.0.0.1:'+server.address().port+'/v1';
   const fixtureModel={id:'fixture',name:'Durable Fixture',reasoning:false,input:['text','image'],contextWindow:128000,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
   fs.writeFileSync(path.join(agentDir,'models.json'),JSON.stringify({providers:{'durable-fixture':{baseUrl:url,api:'openai-completions',apiKey:'fixture-only',models:[fixtureModel,{...fixtureModel,id:'alternate',name:'Durable Alternate'}]}}}));
-  fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({defaultProvider:'durable-fixture',defaultModel:'fixture',enabledModels:['durable-fixture/fixture','durable-fixture/alternate'],memoryEnabled:true,memoryGatewayEnabled:false,remoteAccessEnabled:false,closeToTray:false,theme:'light',permissionMode:'readonly'}));
+  fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({defaultProvider:'durable-fixture',defaultModel:'fixture',enabledModels:['durable-fixture/fixture','durable-fixture/alternate'],memoryEnabled:true,memoryGatewayEnabled:false,remoteAccessEnabled:false,conversationBranchEnabled:true,closeToTray:false,theme:'light',permissionMode:'readonly'}));
   await launch();
+  if(process.argv.includes('--review')) { await require('./durable-review-desktop.cjs')({evaluate,until,send,click,rpc,report,out,requests}); report.status='passed'; return; }
   const profile=await evaluate('window.api.agent.getModeProfile("bot")');
   assert(profile.blocks.some(b=>b.content.trim()==='PRESERVED_USER_BOT_PROMPT'));assert.equal(profile.policy.presets.find(p=>p.id==='kept').promptAddon,'PRESERVED_TAG');assert.equal(profile.policy.presets.find(p=>p.id==='kept').providerMcpIds,undefined);assert.equal(profile.policy.artifactPolicy.unfiltered,true);report.tests.push('legacy prompts and Tags preserved; all scene policies removed');
   const modeLabels=await evaluate('[...document.querySelectorAll(".hero-categories button")].map(b=>b.textContent.trim())');assert.deepEqual(modeLabels.sort(),['日常办公','代码开发','Bot'].sort());

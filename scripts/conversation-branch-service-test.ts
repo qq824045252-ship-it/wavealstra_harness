@@ -60,9 +60,9 @@ const user1 = await append({ kind: "mybuddy.user", model: [{ role: "user", conte
   data: { mybuddyInput: { text: "q1", displayText: "question one", attachments: [] } } }, "before-first");
 await append({ kind: "pi.assistant", model: [{ ...answer(""), stopReason: "toolUse",
   content: [{ type: "toolCall", id: "before-leaf", name: "read", arguments: { path: "notes.txt" } }] }] }, "after-tool");
-await append({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "before-leaf", toolName: "read",
+const result1 = await append({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "before-leaf", toolName: "read",
   timestamp: 2, isError: false, content: [{ type: "text", text: "source notes" }] }] }, "after-tool");
-await append({ kind: "pi.assistant", model: [answer("a1")] }, "after-first");
+const reply1 = await append({ kind: "pi.assistant", model: [answer("a1")] }, "after-first");
 await append({ kind: "pi.compaction", head: "self", model: [{ role: "user", content: "compacted q1", timestamp: 3 }] }, "compacted");
 const user2 = await append({ kind: "pi.user", model: [{ role: "user", content: "q2", timestamp: 4 }] }, "before-second");
 await append({ kind: "pi.assistant", model: [answer("a2")] }, "after-second");
@@ -97,7 +97,11 @@ try {
   await artifacts.register({ taskId: "source", kind: "code", title: "Before", content: "before", producerToolCallId: "before-leaf" });
   await artifacts.register({ taskId: "source", kind: "code", title: "After", content: "after", producerToolCallId: "after-leaf" });
   assert.equal((await service.preview(request())).ok, true, "a new Durable task needs no sessionFile");
-  const same = request();
+  for (const anchor of [reply1, result1]) {
+    const preview = await service.preview(request({ entryId: String(anchor.id) }));
+    assert(preview.ok, "assistant/tool-result entry IDs from the real branch button resolve their owning user turn");
+  }
+  const same = request({ entryId: String(reply1.id) });
   const [first, duplicate] = await Promise.all([service.create(same), service.create(same)]);
   assert(first.ok && duplicate.ok);
   const childId = first.result.task.id;

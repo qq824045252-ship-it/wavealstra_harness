@@ -52,6 +52,7 @@ function sanitizeFileName(name: string): string {
 export class RemoteConflictError extends Error {}
 export class RemoteNotFoundError extends Error {}
 export class RemoteValidationError extends Error {}
+export class RemotePromptRejectedError extends RemoteValidationError {}
 
 /** 远程删除需要的最小生命周期能力：与桌面端 DbIpc.deleteTask 同一条安全回收链路。 */
 export interface RemoteTrashLifecycle {
@@ -89,93 +90,111 @@ export class RemoteTaskCommandService {
   invalidateModelCache(): void { this.modelIdsCache = null; }
 
   async createAndPrompt(request: RemotePromptRequest): Promise<RemotePromptResponse> {
-    const operation = this.operationIdentity(request.operationId);
-    const taskId = `remote-${operation}`;
-    if (this.db.getTask(taskId)) return this.promptExisting(taskId, request);
-    const text = request.text.trim();
-    // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
-    if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
-    const space = request.spaceId ? this.db.getSpace(request.spaceId) : undefined;
-    if (request.spaceId && (!space || space.effectiveArchived)) throw new RemoteValidationError("Workspace 不存在或不可用");
-    if (request.projectId && !this.projects.get(request.projectId)) throw new RemoteValidationError("Project 不存在");
-    // Validate new-task configuration only; never gate tools or alter existing tasks.
-    const welcomeMode = resolveWelcomeMode(request.welcomeMode);
-    if (request.modePresetId && !this.agent.getModeProfile(welcomeMode).policy.presets?.some(tag => tag.id === request.modePresetId)) {
-      throw new RemoteValidationError("所选 Tag 不属于当前模式或已被删除，请刷新后重新选择");
-    }
+    let submitting = false;
+    try {
+      const operation = this.operationIdentity(request.operationId);
+      const taskId = `remote-${operation}`;
+      if (this.db.getTask(taskId)) return this.promptExisting(taskId, request);
+      const text = request.text.trim();
+      // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
+      if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
+      const space = request.spaceId ? this.db.getSpace(request.spaceId) : undefined;
+      if (request.spaceId && (!space || space.effectiveArchived)) throw new RemoteValidationError("Workspace 不存在或不可用");
+      if (request.projectId && !this.projects.get(request.projectId)) throw new RemoteValidationError("Project 不存在");
+      // Validate new-task configuration only; never gate tools or alter existing tasks.
+      const welcomeMode = resolveWelcomeMode(request.welcomeMode);
+      if (request.modePresetId && !this.agent.getModeProfile(welcomeMode).policy.presets?.some(tag => tag.id === request.modePresetId)) {
+        throw new RemoteValidationError("所选 Tag 不属于当前模式或已被删除，请刷新后重新选择");
+      }
 
-    const now = Date.now();
-    const settings = this.settings.read();
-    const modelId = await this.resolveModelId(request.modelId) ?? (settings.defaultModelId || undefined);
-    const permissionMode = request.permissionMode ?? settings.permissionMode;
-    this.db.upsertTask({
-      id: taskId,
-      title: titleFromPrompt(text, request.attachments),
-      spaceId: request.spaceId,
-      projectId: request.projectId,
-      updatedAt: now,
-      welcomeMode: resolveWelcomeMode(request.welcomeMode),
-      modelId,
-      permissionMode,
-      modePresetId: request.modePresetId ?? null,
-    });
-    const userMessageId = `remote-user-${operation}`;
-    const assistantMessageId = `remote-assistant-${operation}`;
-    const attachments = await this.persistAttachments(taskId, request.attachments, operation);
-    const result = await this.agent.prompt({
-      taskId,
-      text,
-      displayText: text,
-      spaceId: request.spaceId,
-      welcomeMode: resolveWelcomeMode(request.welcomeMode),
-      modelId,
-      permissionMode,
-      modePresetId: request.modePresetId ?? null,
-      connectorIds: this.settings.getTaskConnectorIds(taskId),
-      attachments,
-      userMessageId,
-      assistantMessageId,
-    }, { durableAdmissionOnly: true });
-    return this.promptResponse(taskId, operation, result);
+      const now = Date.now();
+      const settings = this.settings.read();
+      const modelId = await this.resolveModelId(request.modelId) ?? (settings.defaultModelId || undefined);
+      const permissionMode = request.permissionMode ?? settings.permissionMode;
+      this.db.upsertTask({
+        id: taskId,
+        title: titleFromPrompt(text, request.attachments),
+        spaceId: request.spaceId,
+        projectId: request.projectId,
+        updatedAt: now,
+        welcomeMode: resolveWelcomeMode(request.welcomeMode),
+        modelId,
+        permissionMode,
+        modePresetId: request.modePresetId ?? null,
+      });
+      const userMessageId = `remote-user-${operation}`;
+      const assistantMessageId = `remote-assistant-${operation}`;
+      const attachments = await this.persistAttachments(taskId, request.attachments, operation);
+      submitting = true;
+      const result = await this.agent.prompt({
+        taskId,
+        text,
+        displayText: text,
+        spaceId: request.spaceId,
+        welcomeMode: resolveWelcomeMode(request.welcomeMode),
+        modelId,
+        permissionMode,
+        modePresetId: request.modePresetId ?? null,
+        connectorIds: this.settings.getTaskConnectorIds(taskId),
+        attachments,
+        userMessageId,
+        assistantMessageId,
+      }, { durableAdmissionOnly: true });
+      return this.promptResponse(taskId, operation, result);
+    } catch (error) {
+      if (!submitting && (error instanceof RemoteValidationError || error instanceof RemoteNotFoundError || error instanceof RemoteConflictError)) {
+        throw new RemotePromptRejectedError(error.message, { cause: error });
+      }
+      throw error;
+    }
   }
 
   async promptExisting(taskId: string, request: RemotePromptRequest): Promise<RemotePromptResponse> {
-    const operation = this.operationIdentity(request.operationId);
-    const task = this.requireTask(taskId);
-    const accepted = await this.agent.findSubmission(taskId, `remote-user-${operation}`);
-    if (accepted) return this.promptResponse(taskId, operation, accepted);
-    if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
-    const text = request.text.trim();
-    // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
-    if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
-    const requestedModelId = await this.resolveModelId(request.modelId);
-    const modelId = requestedModelId ?? task.modelId;
-    const permissionMode = request.permissionMode ?? task.permissionMode;
-    // 先写附件再改任务：附件落盘失败（超限/写错误）时抛错返回，任务的模型/权限保持原值，不产生半提交
-    const attachments = await this.persistAttachments(taskId, request.attachments, operation);
-    if ((requestedModelId && requestedModelId !== task.modelId) || (request.permissionMode && request.permissionMode !== task.permissionMode)) {
-      this.db.upsertTask({ ...task, modelId, permissionMode });
+    let submitting = false;
+    try {
+      const operation = this.operationIdentity(request.operationId);
+      const task = this.requireTask(taskId);
+      const accepted = await this.agent.findSubmission(taskId, `remote-user-${operation}`);
+      if (accepted) { submitting = true; return this.promptResponse(taskId, operation, accepted); }
+      if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
+      const text = request.text.trim();
+      // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
+      if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
+      const requestedModelId = await this.resolveModelId(request.modelId);
+      const modelId = requestedModelId ?? task.modelId;
+      const permissionMode = request.permissionMode ?? task.permissionMode;
+      // 先写附件再改任务：附件落盘失败（超限/写错误）时抛错返回，任务的模型/权限保持原值，不产生半提交
+      const attachments = await this.persistAttachments(taskId, request.attachments, operation);
+      if ((requestedModelId && requestedModelId !== task.modelId) || (request.permissionMode && request.permissionMode !== task.permissionMode)) {
+        this.db.upsertTask({ ...task, modelId, permissionMode });
+      }
+      const userMessageId = `remote-user-${operation}`;
+      const assistantMessageId = `remote-assistant-${operation}`;
+      submitting = true;
+      const result = await this.agent.prompt({
+        taskId,
+        text,
+        displayText: text,
+        spaceId: task.spaceId ?? undefined,
+        welcomeMode: task.welcomeMode,
+        modelId,
+        permissionMode,
+        modePresetId: task.modePresetId,
+        expertId: task.expertId,
+        sessionFile: task.sessionFile,
+        connectorIds: this.settings.getTaskConnectorIds(taskId),
+        attachments,
+        userMessageId,
+        assistantMessageId,
+        streamingBehavior: this.agent.isTaskBusy(taskId) ? "followUp" : undefined,
+      }, { durableAdmissionOnly: true });
+      return this.promptResponse(taskId, operation, result);
+    } catch (error) {
+      if (!submitting && (error instanceof RemoteValidationError || error instanceof RemoteNotFoundError || error instanceof RemoteConflictError)) {
+        throw new RemotePromptRejectedError(error.message, { cause: error });
+      }
+      throw error;
     }
-    const userMessageId = `remote-user-${operation}`;
-    const assistantMessageId = `remote-assistant-${operation}`;
-    const result = await this.agent.prompt({
-      taskId,
-      text,
-      displayText: text,
-      spaceId: task.spaceId ?? undefined,
-      welcomeMode: task.welcomeMode,
-      modelId,
-      permissionMode,
-      modePresetId: task.modePresetId,
-      expertId: task.expertId,
-      sessionFile: task.sessionFile,
-      connectorIds: this.settings.getTaskConnectorIds(taskId),
-      attachments,
-      userMessageId,
-      assistantMessageId,
-      streamingBehavior: this.agent.isTaskBusy(taskId) ? "followUp" : undefined,
-    }, { durableAdmissionOnly: true });
-    return this.promptResponse(taskId, operation, result);
   }
 
   private promptResponse(taskId: string, operation: string, result: AgentPromptResult): RemotePromptResponse {

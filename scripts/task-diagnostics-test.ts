@@ -42,11 +42,13 @@ try {
   assert.equal(value.requests[0]?.knownCostUsd, 1, "native tier/cache pricing is not replaced with base rates");
   const unknown = tracer.start(model, "fixture-session", undefined, event => diagnostics.observeTrace(event, model));
   unknown.identify({ taskId: "task", conversationId: "8", generationTaskId: 12, sourceKind: "subagent" });
-  unknown.result({ stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+  unknown.result({ stopReason: "aborted", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
   assert.deepEqual(diagnostics.list("task").requests.find(row => row.generationTaskId === 12)?.usage,
     { input: null, output: null, cacheRead: null, cacheWrite: null }, "SDK zero does not establish reported usage");
   assert.equal(diagnostics.usageForConversation("task", "8").cacheHitRate, null);
   assert.equal(diagnostics.usageForGeneration("task", "8", 12).costTotal, null, "missing native cost remains unknown");
+  assert.equal(diagnostics.list("task").requests.find(row => row.generationTaskId === 12)?.costSource, "sdk-default");
+  assert.equal(diagnostics.list("task").requests.find(row => row.generationTaskId === 12)?.costComplete, false);
   const now = Date.now();
   new ConversationInteractionRepository(db.connection).insert({ id: "wait", taskId: "task", executionId: "durable:task:7:30",
     assistantMessageId: "assistant", kind: "confirm", title: "Approve", options: [], allowCustom: false, status: "resolved", answer: true,
@@ -81,6 +83,23 @@ try {
   assert.equal(isCallRow({ ...usageRow, sourceKind: "auxiliary" }), true);
   assert.equal(statistics.dashboard(1).cacheHitRate, null);
   assert.equal(diagnostics.list("task", 1, 1).requests.length, 1);
+  const zero = tracer.start(model, "zero", undefined, event => diagnostics.observeTrace(event, model));
+  zero.identify({ taskId: "task", conversationId: "zero", generationTaskId: 13, sourceKind: "main" });
+  zero.providerEvent({ usage: { cost: 0 } });
+  zero.result({ stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
+  const zeroRow = diagnostics.list("task").requests.find(row => row.generationTaskId === 13)!;
+  assert.equal(zeroRow.costSource, "provider-reported"); assert.equal(zeroRow.costComplete, true); assert.equal(zeroRow.knownCostUsd, 0);
+  const partial = tracer.start(model, "partial", undefined, event => diagnostics.observeTrace(event, model));
+  partial.identify({ taskId: "task", conversationId: "partial", generationTaskId: 14, sourceKind: "main" });
+  partial.result(result);
+  const partialRow = diagnostics.list("task").requests.find(row => row.generationTaskId === 14)!;
+  assert.equal(partialRow.knownCostUsd, 1); assert.equal(partialRow.costSource, "pi-native");
+  assert.deepEqual(partialRow.usage, { input: null, output: null, cacheRead: null, cacheWrite: null });
+  statistics.recordLive({ taskId: "task", sessionFile: "durable:task:8", sourceKind: "main", persistedEntryId: "unknown-zero",
+    message: { ...result, timestamp: now, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } },
+    reportedUsage: diagnostics.usageForGeneration("task", "8", 12),
+    sample: { turnIndex: 13, requestStartedAt: null, firstResponseAt: null, completedAt: now, ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: null, reasoningTokens: null } });
+  assert.equal(statistics.queryRows({}).find(row => row.entryId === "unknown-zero")?.known?.cost, false);
   console.log("PASS request retries, raw usage presence, idempotent recovery, wait subtraction and account coverage");
 } finally { db.close(); }
 assert.doesNotThrow(() => diagnostics.observeTool({ phase: "finish", taskId: "task", conversationId: "7", toolTaskId: 99, callId: "closed", name: "read", sourceKind: "main", at: Date.now() }));

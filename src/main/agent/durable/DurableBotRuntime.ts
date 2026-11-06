@@ -37,9 +37,7 @@ type BotInputMetadata = DurableInputMetadata;
 const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ settled: {} as Record<string, number> }),
 });
-const InputMetadata = defineDoc({ kind: "mybuddy.inputs", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
-  initial: () => ({ requests: {} as Record<string, BotInputMetadata> }),
-});
+
 // Display telemetry lives with Durable, never in the task scheduler or renderer clock.
 const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ completed: {} as Record<string, number> }),
@@ -106,7 +104,6 @@ export class DurableBotRuntime {
   private historyBefore?: EntryId;
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
-  private metadataLoaded = false;
   private readonly nestedHistory = new Map<number, { entries: EntryRecord[]; newest?: EntryId }>();
   private pendingTurnEntries: EntryRecord[] = [];
   private consumerCursor?: number;
@@ -195,8 +192,11 @@ export class DurableBotRuntime {
       return tools;
     });
     let runtime: DurableBotRuntime | undefined;
+    // Recovered generations may enter their hook while the host is still opening.
+    let finishOpening!: (projection: DurableEvidenceProjection | undefined) => void;
+    const openingEvidence = new Promise<DurableEvidenceProjection | undefined>(resolve => { finishOpening = resolve; });
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
-      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => runtime?.evidence, (call, api, context) => runtime?.recordSkillRead(call, api, context)));
+      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context)));
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
@@ -230,6 +230,7 @@ export class DurableBotRuntime {
       runtime.codemode = codemode;
       const bound = await conversation.agent(ctx);
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
+      finishOpening(runtime.evidence);
       // Stored agent choices win on reopen, including an unfinished Code Mode call.
       const configured = await conversation.commit(async tx => Boolean((await tx.doc(AgentDoc, conversation.id)).tools), ctx);
       if (configured) {
@@ -245,6 +246,7 @@ export class DurableBotRuntime {
       await runtime.resumeRegeneration();
       return runtime;
     } catch (error) {
+      finishOpening(undefined);
       if (harness) await harness.close(ctx); else await storage.close(ctx);
       handle?.lease.release();
       throw error;
@@ -393,18 +395,32 @@ export class DurableBotRuntime {
     if (beforeEntryId === undefined) return this.refresh();
     if (!Number.isSafeInteger(beforeEntryId) || beforeEntryId < 1) throw new Error("Invalid history cursor");
     const size = Math.max(1, Math.min(200, Math.floor(limit)));
-    const projection = this.projection.then(async () => {
-      const page = await this.conversation.entries({ maxEntryId: beforeEntryId as EntryId, order: "descending" }, size + 1, undefined, ctx);
-      const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
-      await this.loadInputMetadata(entries);
-      const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
-      this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {});
-      this.historyBefore = page.items[size]?.id;
-      await this.project(this.watch.value);
-    });
-    this.projection = projection.catch(() => {});
-    await projection;
-    return this.latest;
+    await this.projection;
+    const page = await this.conversation.entries({ maxEntryId: beforeEntryId as EntryId, order: "descending" }, size + 1, undefined, ctx);
+    const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
+    const metadata = new Map<number, BotInputMetadata>();
+    await this.loadInputMetadata(entries, metadata);
+    const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
+    const history = new DurableHistoryProjection();
+    history.merge(entries, metadata, timing?.completed ?? {});
+    // A tool's result can lie beyond this page. Resolve only these calls, without
+    // retaining the newer transcript or exposing unrelated messages in the page.
+    const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
+    let cursor: Cursor | undefined;
+    while (unresolved.size) {
+      const later = await this.conversation.entries({ minEntryId: (beforeEntryId + 1) as EntryId, order: "ascending" }, 100, cursor, ctx);
+      for (const entry of later.items) {
+        const results = entry.model?.filter(message => message.role === "toolResult" && unresolved.has(message.toolCallId));
+        if (results?.length) {
+          history.merge([{ ...entry, model: results }], metadata, {});
+          for (const message of results) if (message.role === "toolResult") unresolved.delete(message.toolCallId);
+        }
+      }
+      if (!later.next) break;
+      cursor = later.next;
+    }
+    // A page is a read-only observation. It never changes the live cursor or other clients.
+    return { ...this.latest, messages: history.messages, historyBefore: page.items[size]?.id };
   }
 
   /** The service releases and reopens after this atomic branch switch. */
@@ -467,23 +483,7 @@ export class DurableBotRuntime {
     return submission;
   }
 
-  private async loadInputMetadata(entries: readonly EntryRecord[]): Promise<void> {
-    // Older stores kept display data in a document indexed by request ID. Index it once on open.
-    if (!this.metadataLoaded) {
-      const metadata = await this.harness.snapshot(InputMetadata, this.conversation.id, ctx);
-      if (metadata && Object.keys(metadata.requests).length) {
-        let next: Cursor | undefined;
-        do {
-          const page = await this.storage.scanSubmissions({ conversationId: this.conversation.id }, 500, next, ctx);
-          for (const receipt of page.items) {
-            const input = receipt.requestId && metadata.requests[receipt.requestId];
-            if (receipt.entry && input) this.metadataByEntry.set(receipt.entry, input);
-          }
-          next = page.next;
-        } while (next);
-      }
-      this.metadataLoaded = true;
-    }
+  private async loadInputMetadata(entries: readonly EntryRecord[], target = this.metadataByEntry): Promise<void> {
     for (const entry of entries) {
       const data = entry.data;
       const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
@@ -492,7 +492,7 @@ export class DurableBotRuntime {
       const attachments = input.attachments.flatMap(item => item && typeof item === "object" && !Array.isArray(item)
         && typeof item.name === "string" && typeof item.path === "string" ? [{ name: item.name, path: item.path }] : []);
       const audit = durableInputAuditSchema.safeParse(input.audit);
-      this.metadataByEntry.set(entry.id, { text: input.text, displayText: input.displayText, attachments, ...(audit.success ? { audit: audit.data } : {}) });
+      target.set(entry.id, { text: input.text, displayText: input.displayText, attachments, ...(audit.success ? { audit: audit.data } : {}) });
     }
   }
 
@@ -661,10 +661,12 @@ export class DurableBotRuntime {
     const timing = entries.some(entry => !this.history.has(entry.id)) ? await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx) : undefined;
     await this.loadInputMetadata(entries);
     const fresh = this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {});
+    const activeCalls = new Set([...(live.tools ?? []).map(slot => slot.callId), ...(live.nestedTools ?? []).map(slot => slot.parentCallId)]);
+    const evictedBefore = this.history.trim(activeCalls);
+    if (evictedBefore !== undefined) this.historyBefore = evictedBefore as EntryId;
     const messages = this.history.messages.slice();
     const tools = new Map<string, NonNullable<ChatMessageDto["tools"]>[number]>();
     // Historical rows stay immutable. Only rows with active tools or a live generation need copies.
-    const activeCalls = new Set([...(live.tools ?? []).map(slot => slot.callId), ...(live.nestedTools ?? []).map(slot => slot.parentCallId)]);
     const activeRows = new Set([...activeCalls].map(id => this.history.ownerId(id)).filter((id): id is string => id !== undefined));
     const generationId = this.history.presentationId(`durable-generation-${live.run?.taskId}`);
     if (generationId) activeRows.add(generationId);
@@ -835,6 +837,11 @@ export class DurableBotRuntime {
       }
     }
     if (!evidenceEntries.length && !snapshot.busy) await this.reconcileAuditReceipts();
+    const pendingIds = new Set<number>(this.pendingTurnEntries.map(entry => entry.id));
+    for (const id of this.metadataByEntry.keys()) if (!this.history.has(id) && !pendingIds.has(id)) this.metadataByEntry.delete(id);
+    const retainedChildren = new Set(this.history.children.values());
+    for (const id of this.nestedHistory.keys()) if (!retainedChildren.has(id)) this.nestedHistory.delete(id);
+    for (const [id, child] of this.children) if (!retainedChildren.has(id)) { await child.stop(); this.children.delete(id); }
     this.options.onProjected?.(snapshot);
   }
 }
@@ -852,13 +859,24 @@ function codingTools(): ToolRegistration[] {
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
+const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, () => void>>();
 function taskScopedModels(models: Models, cwd: string): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
-  return new Proxy(models, { get(target, key) {
+  const guards = new WeakMap<AbortSignal, () => void>();
+  const scoped = new Proxy(models, { get(target, key) {
     if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
+    if (key === "streamSimple") return (...args: Parameters<Models["streamSimple"]>) => {
+      // Pi passes the generation invocation signal to both its hooks and streamSimple.
+      const signal = args[2]?.signal;
+      const validate = signal ? guards.get(signal) : undefined;
+      validate?.();
+      return withModelInvocationSettings(settings, () => target.streamSimple(...args), validate);
+    };
     const value = Reflect.get(target, key, target);
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
+  modelRequestGuards.set(scoped, guards);
+  return scoped;
 }
 
 function botExtension(
@@ -867,7 +885,7 @@ function botExtension(
   codemode: ToolRegistration,
   recordResponse: (taskId: number, message: AssistantMessage) => void | Promise<void>,
   prewarmCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2], conversationId: Conversation["id"]) => Promise<void> | void,
-  evidence?: () => DurableEvidenceProjection | undefined,
+  evidence?: () => DurableEvidenceProjection | undefined | Promise<DurableEvidenceProjection | undefined>,
   recordSkillRead?: (call: Parameters<ToolHooks["afterTool"]>[0], api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<void> | void,
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
@@ -906,25 +924,34 @@ function botExtension(
     hooks: [hook(ToolTask, toolHooks), hook(GenerationTask, { beforeRequest: async (request, api, context) => {
       let messages = request.messages;
       let changed = false;
-      const child = await childConversation(api, context);
-      try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
-      catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
-      if (child) return;
-      const ledger = evidence?.();
-      if (ledger) { messages = await ledger.project(messages, context); changed = true; }
-      const text = ledger ? undefined : options.evidence?.(messages);
-      if (text) {
-        messages = [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...messages];
-        changed = true;
+      let validate: () => void = () => { throw new Error("本轮上下文投影未完成"); };
+      const guards = modelRequestGuards.get(options.models);
+      if (context.abortSignal) guards?.set(context.abortSignal, () => validate());
+      try {
+        const child = await childConversation(api, context);
+        try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
+        catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
+        if (child) { validate = () => {}; return; }
+        const ledger = await evidence?.();
+        if (options.evidenceProjection && !ledger) throw new Error("任务的证据校验服务未就绪");
+        if (ledger) { messages = await ledger.project(messages, context); changed = true; }
+        const text = ledger ? undefined : options.evidence?.(messages);
+        if (text) {
+          messages = [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...messages];
+          changed = true;
+        }
+        for (const contextHook of options.contextHooks ?? []) {
+          const rewritten = await contextHook(messages);
+          if (rewritten?.messages) { messages = rewritten.messages; changed = true; }
+        }
+        validate = ledger?.captureRequestGuard() ?? (() => {});
+        return changed ? { messages } : undefined;
+      } catch (error) {
+        validate = () => { throw error; };
+        throw error;
       }
-      for (const contextHook of options.contextHooks ?? []) {
-        const rewritten = await contextHook(messages);
-        if (rewritten?.messages) { messages = rewritten.messages; changed = true; }
-      }
-      return changed ? { messages } : undefined;
     }, beforeProviderRequest: async (_request, api, context) => {
       const child = await childConversation(api, context);
-      if (!child) evidence?.()?.validate();
       identifyModelInvocation({ taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,
         sourceKind: options.executionIdentity?.sourceKind ?? (child ? "subagent" : "main") });

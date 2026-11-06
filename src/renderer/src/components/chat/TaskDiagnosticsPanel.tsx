@@ -3,6 +3,7 @@ import type { ModelRequestDiagnostic, TaskDiagnosticsDto } from "@shared/task-di
 import "./TaskDiagnosticsPanel.css";
 
 const sourceLabels = { main: "主代理", subagent: "子代理／会诊", auxiliary: "辅助任务" };
+const costLabels = { "provider-reported": "供应商报告", "pi-native": "Pi 原生计价", "sdk-default": "未取得费用（SDK 初始值）" };
 const statusLabels = { running: "执行中", completed: "完成", failed: "失败", aborted: "已停止", interrupted: "观测中断" };
 const count = (value: number | null) => value === null ? "未知" : value.toLocaleString();
 const duration = (value: number | null) => value === null ? "未知" : value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
@@ -22,9 +23,9 @@ function RequestDetails({ request }: { request: ModelRequestDiagnostic }) {
         <dt>首个输出等待</dt><dd>{duration(request.firstResponseAt === null ? null : Math.max(0, request.firstResponseAt - request.startedAt))}</dd>
         <dt>结果</dt><dd>{request.outcome ?? "尚未完成"}{request.error ? `：${request.error}` : ""}</dd>
       </dl>
-      <div className="task-diagnostic-table-wrap"><table><thead><tr><th>新输入 token</th><th>输出 token</th><th>缓存读取</th><th>缓存写入</th><th>估算费用</th></tr></thead>
+      <div className="task-diagnostic-table-wrap"><table><thead><tr><th>新输入 token</th><th>输出 token</th><th>缓存读取</th><th>缓存写入</th><th>费用</th></tr></thead>
         <tbody><tr><td>{count(request.usage.input)}</td><td>{count(request.usage.output)}</td><td>{count(request.usage.cacheRead)}</td><td>{count(request.usage.cacheWrite)}</td><td>{money(request.knownCostUsd, request.costComplete)}</td></tr></tbody></table></div>
-      <p className="task-diagnostic-note">用量来源：{request.usageSource ? `供应商原始事件（${request.usageSource}）` : "未取得供应商原始用量"}。费用按模型目录单价估算，缺失字段不补零。</p>
+      <p className="task-diagnostic-note">用量来源：{request.usageSource ? `供应商原始事件（${request.usageSource}）` : "未取得供应商原始用量"}。费用来源：{request.costSource ? costLabels[request.costSource] : "未知"}，缺失字段不补零。</p>
       <p>历史前缀：{prefix === null ? "没有可比较的前次请求" : prefix ? "保持稳定" : "已变化"}。
         配置变化：{request.cacheContext.changedFields.length ? request.cacheContext.changedFields.map(field => changedLabels[field] ?? field).join("、") : "未观察到"}。
         观测覆盖：{request.cacheContext.coverage}。</p>
@@ -45,7 +46,7 @@ export function TaskDiagnosticsView({ value }: { value: TaskDiagnosticsDto }) {
       <div><span>本页模型观测累计</span><strong>{duration(value.totals.modelMs)}</strong></div>
       <div><span>本页工具观测累计</span><strong>{duration(value.totals.toolMs)}</strong></div>
       <div><span>等待回答／审批</span><strong>{duration(value.totals.waitingMs)}</strong></div>
-      <div><span>目录单价估算</span><strong>{money(value.totals.knownCostUsd, value.totals.costComplete)}</strong></div>
+      <div><span>已知费用</span><strong>{money(value.totals.knownCostUsd, value.totals.costComplete)}</strong></div>
     </div>
     <p className="task-diagnostic-note">模型时间含该请求的重试与传输。工具时间扣除同一调用的交互等待；并行和嵌套调用可能重叠，各项不能相加当任务总耗时。
       有 {value.totals.unknownUsageRequests} 条请求的用量不完整。累计仅含本页已观测区间，进程退出期间的未知耗时不补计。</p>

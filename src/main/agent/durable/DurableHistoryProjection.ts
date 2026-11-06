@@ -8,6 +8,7 @@ export type DurableInputMetadata = { text: string; displayText: string; attachme
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
 type ToolResult = Extract<Message, { role: "toolResult" }>;
 export type InterruptedNested = { ownerId: string; message: ToolResult; toolTaskId: TaskId };
+export const DURABLE_HISTORY_ENTRY_LIMIT = 200;
 
 export function durableContentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -50,6 +51,29 @@ export class DurableHistoryProjection {
       this.dirty = false;
     }
     return this.ordered;
+  }
+
+  /** Keep the current window and active tool owners; persisted entries remain pageable. */
+  trim(activeCallIds: ReadonlySet<string> = new Set()): number | undefined {
+    if (this.entries.size <= DURABLE_HISTORY_ENTRY_LIMIT) return;
+    const ids = [...this.entries.keys()].sort((a, b) => b - a);
+    const keep = new Set(ids.slice(0, DURABLE_HISTORY_ENTRY_LIMIT));
+    for (const call of activeCallIds) {
+      const owner = this.owners.get(call);
+      if (owner) keep.add(Number(owner.slice(8)));
+    }
+    let before: number | undefined;
+    for (const id of ids) if (!keep.has(id)) {
+      this.entries.delete(id); this.rows.delete(`durable-${id}`);
+      before = Math.max(before ?? id, id); this.dirty = true;
+    }
+    for (const [call, owner] of this.owners) if (!this.rows.has(owner)) {
+      this.owners.delete(call); this.children.delete(call);
+    }
+    for (const call of this.results.keys()) if (!this.owners.has(call)) this.results.delete(call);
+    for (const [key, id] of this.presentationRows) if (!this.rows.has(id)) this.presentationRows.delete(key);
+    this.oldestEntry = this.entries.size ? Math.min(...this.entries.keys()) : undefined;
+    return before;
   }
 
   merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>): EntryRecord[] {

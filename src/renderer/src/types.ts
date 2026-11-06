@@ -193,6 +193,7 @@ export interface FileChange {
 }
 
 export interface Task {
+  historyPage?: { epoch: string; historyBefore?: number; messages: ChatMessage[] };
   expertBinding?: import("../../shared/expert-binding").TaskExpertBindingDto;
   durable?: import("../../shared/durable-bot").DurableBotSnapshot;
   /** Transport/configuration errors before Durable accepts an input, not execution state. */

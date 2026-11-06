@@ -18,6 +18,14 @@ const eventSchema = z.object({
 });
 export const unknownTokenUsage = (): ReportedTokenUsage => ({ input: null, output: null, cacheRead: null, cacheWrite: null });
 
+const providerCostSchema = z.object({ usage: z.object({ cost: z.union([z.number().finite().nonnegative(), z.object({ total: z.number().finite().nonnegative() })]) }) });
+export function reportedCostTotal(value: unknown): number | undefined {
+  const parsed = providerCostSchema.safeParse(value);
+  if (!parsed.success) return;
+  const cost = parsed.data.usage.cost;
+  return typeof cost === "number" ? cost : cost.total;
+}
+
 /** Parse only provider-reported counters. Absence and explicit zero remain distinct. */
 export function reportedTokenUsage(value: unknown): { source: string; values: Partial<ReportedTokenUsage> } | undefined {
   const parsed = eventSchema.safeParse(value);

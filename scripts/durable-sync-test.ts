@@ -95,6 +95,21 @@ try {
   assert.notEqual(posted[2].operationId, posted[0].operationId, "an acknowledged draft can be submitted as a new operation");
 } finally { globalThis.fetch = realFetch; }
 
+// Explicit rejection allows corrected configuration; ambiguous HTTP failures do not.
+for (const [status, code, rejected] of [[400, "prompt_not_accepted", true], [500, "internal_error", false], [400, "unknown", false]] as const) {
+  const sent: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (_url, options) => {
+    sent.push(JSON.parse(String(options?.body)));
+    return sent.length === 1 ? Response.json({ error: { code, message: "rejected" } }, { status }) : Response.json({ receipt: {} });
+  };
+  try {
+    await assert.rejects(client.prompt(`reject-${code}`, { text: "same draft", modelId: "unavailable" }), /rejected/);
+    await client.prompt(`reject-${code}`, { text: "same draft", modelId: "available" });
+    assert.equal(sent[1].modelId, rejected ? "available" : "unavailable");
+    assert.equal(sent[1].operationId === sent[0].operationId, !rejected);
+  } finally { globalThis.fetch = realFetch; }
+}
+
 const streamEvents: RemoteEventEnvelope[] = [];
 class StreamClient extends RemoteClient {
   override async eventStream(_last: number, signal: AbortSignal, onEvent: (event: RemoteEventEnvelope) => void, onOpen?: () => void): Promise<void> {

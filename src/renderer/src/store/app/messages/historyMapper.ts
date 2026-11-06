@@ -33,3 +33,10 @@ export function historyMessageToChatMessage(m: ChatMessageDto): ChatMessage {
     streaming: false,
   };
 }
+
+/** Durable keeps intermediate blocks separate from the final reply. */
+export function durableMessageToChatMessage(message: ChatMessageDto): ChatMessage {
+  const row = historyMessageToChatMessage(message);
+  return { ...row, presentationKey: message.presentationKey, generationStats: message.generationStats, streaming: message.streaming,
+    blocks: message.role === "assistant" ? row.blocks.filter(block => block.type !== "text") : row.blocks };
+}

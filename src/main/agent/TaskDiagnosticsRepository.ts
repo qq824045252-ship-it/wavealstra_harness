@@ -13,7 +13,7 @@ const requestSchema = z.object({
   sourceKind: sourceSchema, provider: z.string(), model: z.string(), startedAt: z.number(), firstResponseAt: nullableNumber,
   finishedAt: nullableNumber, modelMs: nullableNumber, status: z.enum(["running", "completed", "failed", "aborted", "interrupted"]),
   outcome: z.string().nullable(), error: z.string().nullable(), usage: usageSchema, usageSource: z.string().nullable(),
-  knownCostUsd: nullableNumber, costComplete: z.boolean(),
+  knownCostUsd: nullableNumber, costComplete: z.boolean(), costSource: z.enum(["provider-reported", "pi-native", "sdk-default"]).nullable(),
   attempts: z.array(z.object({ number: z.number(), startedAt: z.number(), finishedAt: nullableNumber, httpStatus: nullableNumber })),
   cacheContext: z.object({ previousRequestId: z.string().nullable(), prefixStable: z.boolean().nullable(), changedFields: z.array(z.string()), coverage: z.string() }),
 });
@@ -23,6 +23,7 @@ const traceSchema = z.object({
   startedAt: z.number().optional(), firstResponseAt: nullableNumber.optional(), modelMs: z.number().optional(),
   reportedUsage: usageSchema.optional(), usageSource: z.string().nullable().optional(), outcome: z.string().optional(), error: z.string().optional(),
   nativeCostTotal: z.number().finite().nonnegative().nullable().optional(),
+  nativeCostSource: z.enum(["provider-reported", "pi-native", "sdk-default"]).nullable().optional(), nativeCostComplete: z.boolean().optional(),
   stage: z.string().optional(), attempt: z.number().optional(), status: nullableNumber.optional(), coverage: z.string().optional(),
   previous: z.object({ request: z.string(), prefix: z.boolean().nullable(), changedFields: z.array(z.string()) }).nullable().optional(),
 });
@@ -102,7 +103,7 @@ export class TaskDiagnosticsRepository {
         id: event.request, taskId: null, executionScope: "", conversationId: "", generationTaskId: 0, sourceKind: "main",
         provider: model.provider, model: model.id, startedAt: event.startedAt ?? event.at, firstResponseAt: null, finishedAt: null,
         modelMs: null, status: "running", outcome: null, error: null, usage: unknownTokenUsage(), usageSource: null,
-        knownCostUsd: null, costComplete: false, attempts: [],
+        knownCostUsd: null, costComplete: false, costSource: null, attempts: [],
         cacheContext: { previousRequestId: null, prefixStable: null, changedFields: [], coverage: "unobserved" },
       };
     }
@@ -132,8 +133,9 @@ export class TaskDiagnosticsRepository {
       value.status = event.outcome === "error" ? "failed" : event.outcome === "aborted" ? "aborted" : event.outcome === "observation-failed" ? "interrupted" : "completed";
       value.error = event.error ?? null;
       value.usage = event.reportedUsage ?? unknownTokenUsage(); value.usageSource = event.usageSource ?? null;
-      value.knownCostUsd = event.nativeCostTotal ?? null;
-      value.costComplete = event.nativeCostTotal != null;
+      value.costComplete = event.nativeCostComplete === true && event.nativeCostTotal != null;
+      value.knownCostUsd = value.costComplete ? event.nativeCostTotal! : null;
+      value.costSource = event.nativeCostSource ?? null;
     }
     this.pending.set(value.id, value);
     while (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value!);

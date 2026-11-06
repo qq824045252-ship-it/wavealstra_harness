@@ -113,6 +113,21 @@ app.whenReady().then(async () => {
     await evalJs('window.harness.store.getState().setDrawerOpen(true)');
     await screenshot('after-open.png');
 
+    await evalJs('window.harness.history()');
+    await until('document.body.innerText.includes("LATEST_LIVE")', 'live history');
+    for (let page=0;page<4;page++) {
+      await evalJs('[...document.querySelectorAll("button")].find(button=>button.textContent==="加载更早的消息").click()');
+      await until(`document.body.innerText.includes("OLDER_PAGE_${450-page*50}_0")`, 'independent older page');
+      assert.equal(await evalJs('document.querySelectorAll(".message-bubble-user").length'), 50);
+    }
+    await evalJs('window.harness.advance()');
+    assert.equal(await evalJs('document.body.innerText.includes("LATEST_UPDATED")'), false, 'live changes do not replace the page being read');
+    await evalJs('[...document.querySelectorAll("button")].find(button=>button.textContent==="返回最新消息").click()');
+    await until('document.body.innerText.includes("LATEST_UPDATED")', 'return to current live window');
+    assert.equal(await evalJs('document.querySelectorAll(".message-bubble-user").length'), 1);
+    pass('历史窗口有界；翻页不替换实时快照，返回后显示最新消息');
+    await screenshot('bounded-history.png');
+
     console.log('remote task dot ui: all assertions passed');
     app.exit(0);
   } catch (error) {

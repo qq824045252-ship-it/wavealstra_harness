@@ -14,24 +14,25 @@ export function createConversationBranchActions(
       if (!state.conversationBranchEnabled) return false;
       const taskId = state.activeTaskId;
       if (!taskId || state.branchCreatingTaskId === taskId) return false;
-      const messages = state.tasks.find((t) => t.id === taskId)?.messages ?? [];
+      const task = state.tasks.find((t) => t.id === taskId);
+      const messages = task?.historyPage?.messages ?? task?.messages ?? [];
       // 过滤后 UI 序号（辅助锚点；主锚点是 entryId，§7.1）
       const targetIndex = messages.findIndex(
         (message) => message.id === messageId,
       );
-      if (targetIndex < 0) return false;
+      if (targetIndex < 0 && !opts.entryId) return false;
       const userMessageIndex =
         messages
           .slice(0, targetIndex + 1)
           .filter((message) => message.role === "user").length - 1;
-      if (userMessageIndex < 0) return false;
+      if (userMessageIndex < 0 && !opts.entryId) return false;
       const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
       set({ branchCreatingTaskId: taskId, branchError: null });
       try {
         const request: CreateConversationBranchRequest = {
           sourceTaskId: taskId,
           entryId: opts.entryId,
-          userMessageIndex,
+          userMessageIndex: userMessageIndex >= 0 ? userMessageIndex : undefined,
           position: opts.role === "user" ? "after_user" : "after_reply",
           requestId,
         };
