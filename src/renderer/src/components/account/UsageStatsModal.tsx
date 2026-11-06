@@ -9,10 +9,37 @@ import { IconX, IconDownload, IconRefresh } from "@/components/common/icons";
 import type { UsageDashboardDto, UsageDailyCellDto } from "../../../../shared/agent-ipc";
 import type { UsageKnownFields } from "../../../../shared/usage-stats";
 import { barHeights, mondayIndex, weeklyTotals } from "@shared/usage-stats";
+import { formatCount, formatRatePercent, formatTokenCount } from "@shared/token-format";
 
-const allTokensKnown = (known?: UsageKnownFields) => !known || known.input && known.output && known.cacheRead && known.cacheWrite;
-const fmtKnown = (value: number, known?: boolean) => known === false ? "未知" : fmtZh(value);
-const fmtKnownTotal = (value: number, known?: UsageKnownFields) => allTokensKnown(known) ? fmtZh(value) : value > 0 ? `已知 ${fmtZh(value)}` : "未知";
+const allTokensKnown = (known?: UsageKnownFields): boolean =>
+  !known || Boolean(known.input && known.output && known.cacheRead && known.cacheWrite);
+
+/** 「已知」前缀比主数值小一号、灰一点：20px 粗体只留给数字本身（KPI / 指标格 / 模型行共用）。 */
+function KnownPrefix(): React.JSX.Element {
+  return (
+    <span style={{ fontSize: "0.62em", fontWeight: 500, letterSpacing: "0", color: "var(--fg-muted)" }}>
+      已知{" "}
+    </span>
+  );
+}
+
+/**
+ * token 数量 → M 单位（口径由 @shared/token-format 统一：3.523M / 0.042M / 1M / <0.001M）。
+ * known 齐全 → 直接显示数值；某字段供应商未报告 → 「已知 X」而不是把未知当 0；值也是 0 → 「未知」。
+ * 注意：这是 token 专用。会话数 / 运行数 / 调用次数等计数必须用 formatCount，不能套 M。
+ */
+function TokenValue({ value, known }: { value: number; known?: boolean }): React.JSX.Element {
+  if (known !== false) return <>{formatTokenCount(value)}</>;
+  if (value > 0) {
+    return (
+      <>
+        <KnownPrefix />
+        {formatTokenCount(value)}
+      </>
+    );
+  }
+  return <>未知</>;
+}
 
 const RANGES = [
   { days: 1, label: "今天" },
@@ -31,19 +58,6 @@ const HEAT_MODES = [
 
 type HeatMode = (typeof HEAT_MODES)[number]["id"];
 
-function trimNum(n: number, digits: number): string {
-  const s = n.toFixed(digits);
-  return s.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
-}
-
-function fmtZh(n: number): string {
-  const abs = Math.abs(n);
-  if (abs >= 100_000_000) return `${trimNum(n / 100_000_000, abs >= 1_000_000_000 ? 1 : 1)}亿`;
-  if (abs >= 10_000) return `${trimNum(n / 10_000, abs >= 100_000 ? 1 : 1)}万`;
-  if (abs >= 1000) return trimNum(n, 0);
-  return String(Math.round(n));
-}
-
 function fmtDuration(ms: number): string {
   if (ms <= 0) return "—";
   if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}秒`;
@@ -55,10 +69,6 @@ function fmtDuration(ms: number): string {
   const days = Math.floor(hours / 24);
   const rh = hours % 24;
   return rh ? `${days}天 ${rh}小时` : `${days}天`;
-}
-
-function fmtPct(p: number | null): string {
-  return p === null ? "未知" : `${trimNum(p * 100, 0)}%`;
 }
 
 function heatLevel(tokens: number, max: number): number {
@@ -110,7 +120,7 @@ function buildHeatColumns(
             ? {
                 on: cell.tokens > 0 || cell.calls > 0,
                 level: heatLevel(cell.tokens, maxDay),
-                title: `${cell.date}: ${fmtZh(cell.tokens)} tokens / ${cell.calls} 次`,
+                title: `${cell.date}: ${formatTokenCount(cell.tokens)} tokens / ${formatCount(cell.calls)} 次`,
               }
             : { on: false, level: 0 },
         ),
@@ -118,7 +128,7 @@ function buildHeatColumns(
     }
     const stat = weekStats[wi];
     if (mode === "weekly") {
-      const title = `${stat?.weekStart ?? ""} 当周 ${fmtZh(stat?.tokens ?? 0)} tokens / ${stat?.calls ?? 0} 次`;
+      const title = `${stat?.weekStart ?? ""} 当周 ${formatTokenCount(stat?.tokens ?? 0)} tokens / ${formatCount(stat?.calls ?? 0)} 次`;
       const level = heatLevel(stat?.tokens ?? 0, maxWeek);
       return {
         month,
@@ -130,7 +140,7 @@ function buildHeatColumns(
     }
 
     const height = cumH[wi] ?? 0;
-    const title = `${stat?.weekStart ?? ""} 累计 ${fmtZh(cumTokens[wi] ?? 0)} tokens`;
+    const title = `${stat?.weekStart ?? ""} 累计 ${formatTokenCount(cumTokens[wi] ?? 0)} tokens`;
     return {
       month,
       cells: Array.from({ length: 7 }, (_, row) => {
@@ -161,7 +171,7 @@ function Kpi({
   label,
 }: {
   icon: string;
-  value: string;
+  value: React.ReactNode;
   label: string;
 }): React.JSX.Element {
   return (
@@ -182,7 +192,7 @@ function StatGrid({
   items,
 }: {
   title: string;
-  items: Array<{ label: string; value: string }>;
+  items: Array<{ label: string; value: React.ReactNode }>;
 }): React.JSX.Element {
   return (
     <section className="us-box">
@@ -319,11 +329,15 @@ export default function UsageStatsModal(): React.JSX.Element | null {
         {data && (
           <div className="us-body">
             <div className="us-kpis">
-              <Kpi icon="☰" value={fmtKnownTotal(data.totalTokens, data.known)} label="累计 tokens" />
-              <Kpi icon="⌃" value={fmtZh(data.dailyPeakTokens)} label="单日峰值 tokens" />
+              <Kpi
+                icon="☰"
+                value={<TokenValue value={data.totalTokens} known={allTokensKnown(data.known)} />}
+                label="累计 tokens"
+              />
+              <Kpi icon="⌃" value={formatTokenCount(data.dailyPeakTokens)} label="单日峰值 tokens" />
               <Kpi icon="◷" value={fmtDuration(data.longestTaskMs)} label="最长任务" />
-              <Kpi icon="🔥" value={`${data.currentStreakDays} 天`} label="当前连续" />
-              <Kpi icon="▦" value={`${data.longestStreakDays} 天`} label="最长连续" />
+              <Kpi icon="🔥" value={`${formatCount(data.currentStreakDays)} 天`} label="当前连续" />
+              <Kpi icon="▦" value={`${formatCount(data.longestStreakDays)} 天`} label="最长连续" />
             </div>
 
             <section className="us-box us-heat-box">
@@ -372,26 +386,44 @@ export default function UsageStatsModal(): React.JSX.Element | null {
               <StatGrid
                 title="活跃度指标"
                 items={[
-                  { label: "总会话数", value: fmtZh(data.sessions) },
-                  { label: "总运行数", value: fmtZh(data.runs) },
-                  { label: "平均 tokens / 运行", value: allTokensKnown(data.known) ? fmtZh(data.avgTokensPerRun) : "未知" },
+                  { label: "总会话数", value: formatCount(data.sessions) },
+                  { label: "总运行数", value: formatCount(data.runs) },
+                  {
+                    label: "平均 tokens / 运行",
+                    value: <TokenValue value={data.avgTokensPerRun} known={allTokensKnown(data.known)} />,
+                  },
                   { label: "最长任务", value: fmtDuration(data.longestTaskMs) },
                 ]}
               />
               <StatGrid
                 title="Token 指标"
                 items={[
-                  { label: "输入 tokens", value: fmtKnown(data.input, data.known?.input) },
-                  { label: "输出 tokens", value: fmtKnown(data.output, data.known?.output) },
-                  { label: "缓存读取 tokens", value: fmtKnown(data.cacheRead, data.known?.cacheRead) },
-                  { label: "缓存写入 tokens", value: fmtKnown(data.cacheWrite, data.known?.cacheWrite) },
+                  { label: "输入 tokens", value: <TokenValue value={data.input} known={data.known?.input} /> },
+                  { label: "输出 tokens", value: <TokenValue value={data.output} known={data.known?.output} /> },
+                  {
+                    label: "缓存读取 tokens",
+                    value: <TokenValue value={data.cacheRead} known={data.known?.cacheRead} />,
+                  },
+                  {
+                    label: "缓存写入 tokens",
+                    value: <TokenValue value={data.cacheWrite} known={data.known?.cacheWrite} />,
+                  },
                 ]}
               />
               <StatGrid
                 title="Cache 指标"
                 items={[
-                  { label: "缓存 tokens", value: data.known?.cacheRead === false || data.known?.cacheWrite === false ? "未知" : fmtZh(data.cacheRead + data.cacheWrite) },
-                  { label: "Cache 命中率", value: fmtPct(data.cacheHitRate) },
+                  {
+                    label: "缓存 tokens",
+                    value: (
+                      <TokenValue
+                        value={data.cacheRead + data.cacheWrite}
+                        known={data.known?.cacheRead !== false && data.known?.cacheWrite !== false}
+                      />
+                    ),
+                  },
+                  // 分母口径与主进程一致：cacheRead / (input + cacheRead + cacheWrite)，null → 未知。
+                  { label: "Cache 命中率", value: formatRatePercent(data.cacheHitRate) },
                 ]}
               />
             </div>
@@ -425,7 +457,7 @@ export default function UsageStatsModal(): React.JSX.Element | null {
                     {skills.map((s) => (
                       <li key={s.name}>
                         <span className="us-skill-name">/{s.name}</span>
-                        <span className="us-skill-count">{s.count}次</span>
+                        <span className="us-skill-count">{formatCount(s.count)}次</span>
                       </li>
                     ))}
                   </ul>
@@ -465,17 +497,27 @@ export default function UsageStatsModal(): React.JSX.Element | null {
                             <div className="us-model-prov">{m.provider}</div>
                           </div>
                           <div className="us-model-total">
-                            <div>{fmtKnownTotal(m.totalTokens, m.known)}</div>
+                            <div>
+                              <TokenValue value={m.totalTokens} known={allTokensKnown(m.known)} />
+                            </div>
                             <div className="us-model-total-hint">总 tokens</div>
                           </div>
                         </div>
                         <div className="us-model-metrics">
-                          <span>输入 {fmtKnown(m.input, m.known?.input)}</span>
-                          <span>输出 {fmtKnown(m.output, m.known?.output)}</span>
-                          <span>缓存读取 {fmtKnown(m.cacheRead, m.known?.cacheRead)}</span>
-                          <span>缓存写入 {fmtKnown(m.cacheWrite, m.known?.cacheWrite)}</span>
-                          <span className="us-model-hit">缓存命中率 {fmtPct(m.cacheHitRate)}</span>
-                          <span className="us-model-calls">{m.calls}次</span>
+                          <span>
+                            输入 <TokenValue value={m.input} known={m.known?.input} />
+                          </span>
+                          <span>
+                            输出 <TokenValue value={m.output} known={m.known?.output} />
+                          </span>
+                          <span>
+                            缓存读取 <TokenValue value={m.cacheRead} known={m.known?.cacheRead} />
+                          </span>
+                          <span>
+                            缓存写入 <TokenValue value={m.cacheWrite} known={m.known?.cacheWrite} />
+                          </span>
+                          <span className="us-model-hit">缓存命中率 {formatRatePercent(m.cacheHitRate)}</span>
+                          <span className="us-model-calls">{formatCount(m.calls)}次</span>
                         </div>
                       </article>
                     ))}
@@ -485,8 +527,8 @@ export default function UsageStatsModal(): React.JSX.Element | null {
             </div>
 
             <div className="us-note">
-              数字按所选时间窗口统计（今天 = 当日 0 点起）。模型按 MyBuddy 所选模型记账。Token /
-              费用含压缩摘要，但不计为调用。费用按目录单价估算。供应商未报告的字段显示未知；有缺失时，总量和趋势只显示已知部分。
+              数字按所选时间窗口统计（今天 = 当日 0 点起）。Token 数字统一以 M 为单位。模型按
+              MyBuddy 所选模型记账。Token / 费用含压缩摘要，但不计为调用。费用按目录单价估算。供应商未报告的字段显示未知；有缺失时，总量和趋势只显示已知部分。
             </div>
           </div>
         )}

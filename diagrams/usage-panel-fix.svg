@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1220" height="900" viewBox="0 0 1220 900" font-family="'Segoe UI','Microsoft YaHei',system-ui,sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#b42318"/>
+    </marker>
+  </defs>
+
+  <rect width="1220" height="900" fill="#ffffff"/>
+  <text x="24" y="34" font-size="19" font-weight="700" fill="#0f172a">用量口径修复：从 pi 的 usage 到两个面板（真实字段名 · 根因 ①–⑦ 与验证值）</text>
+  <text x="24" y="56" font-size="12" fill="#64748b">红字 = 修前的缺陷点；蓝框 = 修复后链路；数值为 2026-11-06 用 app.db 副本实跑 dashboard(1) 的结果。</text>
+
+  <!-- ================= lane 1 : 写入 ================= -->
+  <text x="24" y="92" font-size="14" font-weight="700" fill="#0f172a">① 写入链路（每次模型调用）</text>
+  <g>
+    <rect x="24" y="104" width="252" height="74" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="40" y="128" font-size="13" font-weight="600" fill="#0f172a">pi AssistantMessage.usage</text>
+    <text x="40" y="148" font-size="12" fill="#334155">input · output ·</text>
+    <text x="40" y="166" font-size="12" fill="#334155">cacheRead · cacheWrite（已归一化）</text>
+
+    <rect x="318" y="104" width="272" height="74" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="334" y="128" font-size="13" font-weight="600" fill="#0f172a">AgentService.recordDurableUsage</text>
+    <text x="334" y="148" font-size="12" fill="#334155">reportedUsage =</text>
+    <text x="334" y="166" font-size="12" fill="#334155">usageForGeneration(...)</text>
+
+    <rect x="632" y="104" width="272" height="74" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="648" y="128" font-size="13" font-weight="600" fill="#0f172a">UsageStatsService.recordLive</text>
+    <text x="648" y="148" font-size="12" fill="#0b5132">usage = reported ?? native（逐字段）</text>
+    <text x="648" y="166" font-size="12" fill="#0b5132">coverage 每行都写 known 位</text>
+
+    <rect x="946" y="104" width="250" height="74" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="962" y="128" font-size="13" font-weight="600" fill="#0f172a">SQLite</text>
+    <text x="962" y="148" font-size="12" fill="#334155">usage_events</text>
+    <text x="962" y="166" font-size="12" fill="#334155">+ usage_event_coverage（known 五字段）</text>
+  </g>
+  <line x1="276" y1="141" x2="312" y2="141" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="590" y1="141" x2="626" y2="141" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="904" y1="141" x2="940" y2="141" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="318" y="196" font-size="12" fill="#b42318">① 旧：reported 是对象但字段全 null，仍覆盖原生 usage → 整行清零</text>
+  <text x="632" y="214" font-size="12" fill="#b42318">② 旧：coverage 只按 reported 写 → provider 不报也记 unknown（即使原生有数）</text>
+
+  <!-- ================= lane 2 : 读取聚合 ================= -->
+  <text x="24" y="252" font-size="14" font-weight="700" fill="#0f172a">② 读取与聚合（用量面板一次请求）</text>
+  <g>
+    <rect x="24" y="264" width="252" height="86" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="40" y="288" font-size="13" font-weight="600" fill="#0f172a">queryRows</text>
+    <text x="40" y="308" font-size="12" fill="#0b5132">有 coverage → 以它为准</text>
+    <text x="40" y="326" font-size="12" fill="#0b5132">无 coverage → total_tokens&gt;0</text>
+    <text x="40" y="342" font-size="12" fill="#0b5132">判定四字段 known</text>
+
+    <rect x="318" y="264" width="272" height="86" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="334" y="288" font-size="13" font-weight="600" fill="#0f172a">repairLegacyCoverage()</text>
+    <text x="334" y="308" font-size="12" fill="#0b5132">启动幂等修复老行 known</text>
+    <text x="334" y="326" font-size="12" fill="#0b5132">只改 coverage，不动 token 数值</text>
+    <text x="334" y="342" font-size="12" fill="#0b5132">total=0 的失败行保持 unknown</text>
+
+    <rect x="632" y="264" width="272" height="86" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="648" y="288" font-size="13" font-weight="600" fill="#0f172a">summarizeRows.cacheHitRate</text>
+    <text x="648" y="308" font-size="12" fill="#0b5132">cacheRead /</text>
+    <text x="648" y="326" font-size="12" fill="#0b5132">(input + cacheRead + cacheWrite)</text>
+    <text x="648" y="342" font-size="12" fill="#0b5132">分母按已知分量降级</text>
+
+    <rect x="946" y="264" width="250" height="86" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="962" y="288" font-size="13" font-weight="600" fill="#0f172a">UsageDashboardDto</text>
+    <text x="962" y="308" font-size="12" fill="#334155">totalTokens / input / output</text>
+    <text x="962" y="326" font-size="12" fill="#334155">cacheRead / cacheWrite /</text>
+    <text x="962" y="342" font-size="12" fill="#334155">cacheHitRate / known</text>
+  </g>
+  <line x1="276" y1="307" x2="312" y2="307" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="590" y1="307" x2="626" y2="307" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="904" y1="307" x2="940" y2="307" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="24" y="372" font-size="12" fill="#b42318">③ 旧：source_detail='pi-durable' 一律判 unknown → 历史 5611 行永远「未知」</text>
+  <text x="632" y="372" font-size="12" fill="#b42318">④ 旧：任一行任一字段 unknown → 整窗命中率 null</text>
+
+  <!-- ================= lane 3 : 用量面板渲染 ================= -->
+  <text x="24" y="414" font-size="14" font-weight="700" fill="#0f172a">③ 用量面板渲染</text>
+  <g>
+    <rect x="24" y="426" width="252" height="86" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="40" y="450" font-size="13" font-weight="600" fill="#0f172a">UsageStatsModal</text>
+    <text x="40" y="470" font-size="12" fill="#334155">token → formatTokenCount</text>
+    <text x="40" y="488" font-size="12" fill="#334155">（一律 M，最多 3 位小数）</text>
+    <text x="40" y="504" font-size="12" fill="#334155">计数 → formatCount（不套 M）</text>
+
+    <rect x="318" y="426" width="272" height="86" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="334" y="450" font-size="13" font-weight="600" fill="#0f172a">比率与话术</text>
+    <text x="334" y="470" font-size="12" fill="#334155">formatRatePercent(0.96) → 96%</text>
+    <text x="334" y="488" font-size="12" fill="#334155">null → 「未知」</text>
+    <text x="334" y="504" font-size="12" fill="#334155">known=false 且值&gt;0 → 「已知 X」</text>
+  </g>
+  <line x1="276" y1="469" x2="312" y2="469" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="24" y="534" font-size="12" fill="#b42318">⑤ 旧：fmtZh 用「万 / 亿」→ 352.3万；Unit 现改为 3.523M，「万 / 亿 / K」不再出现</text>
+
+  <!-- ================= lane 4 : 上下文弹窗 ================= -->
+  <text x="24" y="576" font-size="14" font-weight="700" fill="#0f172a">④ 上下文弹窗链路（会话累计）</text>
+  <g>
+    <rect x="24" y="588" width="252" height="86" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="40" y="612" font-size="13" font-weight="600" fill="#0f172a">docs["pi.usage"] 账本 totals</text>
+    <text x="40" y="632" font-size="12" fill="#334155">input / output</text>
+    <text x="40" y="650" font-size="12" fill="#334155">cacheRead / cacheWrite</text>
+    <text x="40" y="666" font-size="12" fill="#334155">DurableBotRuntime 每次快照重算</text>
+
+    <rect x="318" y="588" width="272" height="86" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="334" y="612" font-size="13" font-weight="600" fill="#0f172a">usageForConversation</text>
+    <text x="334" y="632" font-size="12" fill="#0b5132">totals + known 双轨累加</text>
+    <text x="334" y="650" font-size="12" fill="#0b5132">命中率分母按已知分量降级</text>
+
+    <rect x="632" y="588" width="272" height="86" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="648" y="612" font-size="13" font-weight="600" fill="#0f172a">mergeContextUsage</text>
+    <text x="648" y="632" font-size="12" fill="#0b5132">computed 优先，observed 只补</text>
+    <text x="648" y="650" font-size="12" fill="#0b5132">它确实知道的字段（null 不覆盖）</text>
+
+    <rect x="946" y="588" width="250" height="86" rx="8" fill="#f7f9fc" stroke="#c9d4e3"/>
+    <text x="962" y="612" font-size="13" font-weight="600" fill="#0f172a">ContextUsageControl</text>
+    <text x="962" y="632" font-size="12" fill="#334155">缓存命中率 / 输入 · 缓存读 · 输出</text>
+    <text x="962" y="650" font-size="12" fill="#334155">全部 formatTokenCount（M）</text>
+  </g>
+  <line x1="276" y1="631" x2="312" y2="631" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="590" y1="631" x2="626" y2="631" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="904" y1="631" x2="940" y2="631" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="318" y="696" font-size="12" fill="#b42318">⑥ 旧：一条记录 cacheWrite=null → totals 全 null → 命中率「—」（输入/缓存读仍有值）</text>
+  <text x="632" y="714" font-size="12" fill="#b42318">⑦ 旧：observedUsage 展开在末尾，全 null 把账本算出的真实值擦掉</text>
+
+  <!-- ================= lane 5 : 分类占比 ================= -->
+  <text x="24" y="756" font-size="14" font-weight="700" fill="#0f172a">⑤ 分类占比（同一弹窗）</text>
+  <g>
+    <rect x="24" y="768" width="252" height="76" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="40" y="792" font-size="13" font-weight="600" fill="#0f172a">对话消息</text>
+    <text x="40" y="812" font-size="12" fill="#0b5132">task.messages + historyPage 合并</text>
+    <text x="40" y="830" font-size="12" fill="#0b5132">chars / 4 → tokens</text>
+
+    <rect x="318" y="768" width="272" height="76" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="334" y="792" font-size="13" font-weight="600" fill="#0f172a">系统提示词 / 技能</text>
+    <text x="334" y="812" font-size="12" fill="#0b5132">inspectRuntimeContext().assembly</text>
+    <text x="334" y="830" font-size="12" fill="#0b5132">.segments[].chars，source=skill 归技能</text>
+
+    <rect x="632" y="768" width="272" height="76" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="648" y="792" font-size="13" font-weight="600" fill="#0f172a">连接器</text>
+    <text x="648" y="812" font-size="12" fill="#0b5132">skillFilter.visible + skills.source</text>
+    <text x="648" y="830" font-size="12" fill="#0b5132">按目录条目字符占比拆分</text>
+
+    <rect x="946" y="768" width="250" height="76" rx="8" fill="#eef7f1" stroke="#9ed4b4"/>
+    <text x="962" y="792" font-size="13" font-weight="600" fill="#0f172a">MCP</text>
+    <text x="962" y="812" font-size="12" fill="#0b5132">inspectRuntimeContext().mcpContext</text>
+    <text x="962" y="830" font-size="12" fill="#0b5132">元工具定义 chars ÷ 4（5 个元工具 ≈1088 字符）</text>
+  </g>
+
+  <!-- 验证值 -->
+  <rect x="24" y="856" width="1172" height="32" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="40" y="877" font-size="12.5" fill="#0f172a">真实库副本验证（dashboard(1)，今天）：累计 11.468M · 输入 0.423M · 输出 0.158M · 缓存读取 10.887M · 缓存写入 0M · 命中率 96% · 费用已知 · known 全 true；二次 repair 改动 0 行（幂等）。</text>
+</svg>

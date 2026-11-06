@@ -12,6 +12,9 @@
  * 3) 回填：jsonl 解析（中断行跳过、compaction/model_change 忽略、user_turn 重建）、
  *    live 认领（response_id 精确 + 顺序对齐）、幂等（重复回填不双计）、水位、
  *    P0 回归：带 response_id 的纯回填会话全部入表、live 键 responseId 防碰撞。
+ * 5) known 判定（供应商不上报的能力缺口）：cacheWrite 未知只降级命中率分母、
+ *    provider 未上报时回落 pi 原生计数（known 全 true）、两边都没有仍为 unknown，
+ *    观测值（诊断口径）的 null 不覆盖 pi 账本算出的计数与命中率。
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +22,8 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { PerformanceTracker } from "../src/main/usage/PerformanceTracker";
 import { UsageStatsService, parseSessionJsonl, parseSubagentArchive } from "../src/main/usage/UsageStatsService";
+import { TaskDiagnosticsRepository } from "../src/main/agent/TaskDiagnosticsRepository";
+import { mergeContextUsage } from "../src/main/usage/context-usage-merge";
 import {
   applyMyBuddyModelAttribution,
   summarizeRows,
@@ -604,6 +609,273 @@ console.log("== 阶段 4：窗口口径 / 活跃度 / skills ==");
     return a;
   }, []);
   assert(JSON.stringify(barHeights(cum, 7)) === JSON.stringify([1, 4, 7]), "累计柱从左到右升高");
+}
+
+console.log("== 阶段 5：known 判定与缓存命中率降级（供应商不上报 cache_creation） ==");
+{
+  const mkRow = (over: Partial<UsageEventRow>): UsageEventRow => ({
+    entryId: "r", taskId: "t", sessionFile: "s", sourceKind: "main", sourceDetail: null,
+    provider: "opencode-go", model: "glm-5", responseModel: null, ts: 1750000000000,
+    inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: null,
+    reasoningTokens: null, totalTokens: 0, costTotal: 0,
+    stopReason: "stop", errorMessage: null, ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null,
+    turnIndex: 0, userTurn: 1,
+    ...over,
+  });
+  const allKnown = { input: true, output: true, cacheRead: true, cacheWrite: true, cost: true };
+
+  // 5.1 面板真实口径（输入 42.1K / 缓存读 996.1K / 输出 26.8K，供应商不报 cache_creation）：
+  // cacheWrite 未知不能让命中率整体变 null，分母降级为 input+cacheRead。
+  const chatCompletions = mkRow({
+    entryId: "cc", inputTokens: 42_100, outputTokens: 26_800, cacheRead: 996_100, cacheWrite: 0,
+    totalTokens: 1_065_000, known: { ...allKnown, cacheWrite: false },
+  });
+  const degraded = cacheHitRate([chatCompletions]);
+  assert(
+    degraded !== null && Math.abs(degraded - 996_100 / (42_100 + 996_100)) < 1e-12,
+    `cacheWrite 未知 → 分母 input+cacheRead，命中率有值（${degraded}）`,
+  );
+  const [group] = groupByProviderModel([chatCompletions]);
+  assert(
+    group.cacheHitRate !== null && degraded !== null && Math.abs(group.cacheHitRate - degraded) < 1e-12,
+    `模型明细命中率同样降级（${group.cacheHitRate}）`,
+  );
+  // 分子未知（cacheRead unknown）或分母没有已知分量 → 该行不参与，全部不可用 → null（不用 0 冒充）
+  assert(cacheHitRate([mkRow({ cacheRead: 100, known: { ...allKnown, cacheRead: false } })]) === null, "cacheRead 未知 → 命中率仍为 null");
+  assert(
+    cacheHitRate([mkRow({ cacheRead: 100, known: { ...allKnown, input: false, cacheWrite: false } })]) === null,
+    "input 与 cacheWrite 都未知 → 没有可信分母 → null",
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), "usage-known-"));
+  const db = new Database(join(dir, "t.db"));
+  db.exec(`
+    CREATE TABLE usage_events (
+      entry_id TEXT PRIMARY KEY, task_id TEXT, session_file TEXT,
+      source_kind TEXT NOT NULL DEFAULT 'main', source_detail TEXT,
+      provider TEXT, model TEXT, response_model TEXT, ts INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_total REAL NOT NULL DEFAULT 0, cost_input REAL NOT NULL DEFAULT 0,
+      cost_output REAL NOT NULL DEFAULT 0, cost_cache_read REAL NOT NULL DEFAULT 0,
+      cost_cache_write REAL NOT NULL DEFAULT 0, stop_reason TEXT, error_message TEXT,
+      request_started_at INTEGER, first_response_at INTEGER, completed_at INTEGER,
+      ttft_ms INTEGER, decode_ms INTEGER, generation_tps REAL, model_wall_ms INTEGER,
+      response_id TEXT, turn_index INTEGER, backfilled INTEGER NOT NULL DEFAULT 0,
+      user_turn INTEGER
+    );
+  `);
+  const svc = new UsageStatsService(db);
+  const sample = { turnIndex: 0, requestStartedAt: null, firstResponseAt: null, completedAt: 1000,
+    ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: 200, reasoningTokens: null };
+  const nativeUsage = { input: 500, output: 200, cacheRead: 900, cacheWrite: 100, totalTokens: 1700, cost: { total: 0.01 } };
+
+  // 5.2 provider 未上报（AgentService.recordDurableUsage 的真实形状：usageForGeneration 未命中
+  //     → reportedUsage 全 null）→ 回落 pi 原生计数，known 全 true，面板不再显示「未知」。
+  svc.recordLive({
+    taskId: "t", sessionFile: "durable:t:c1", sourceKind: "main", sourceDetail: "pi-durable",
+    reportedUsage: { input: null, output: null, cacheRead: null, cacheWrite: null, costTotal: null },
+    persistedEntryId: "durable:t:c1:generation:1:1000", sample,
+    message: { provider: "opencode-go", model: "glm-5", responseId: "r1", timestamp: 1000, usage: nativeUsage, stopReason: "stop" },
+  });
+  const live = svc.queryRows({})[0]!;
+  assert(
+    live.inputTokens === 500 && live.outputTokens === 200 && live.cacheRead === 900 && live.cacheWrite === 100 && live.totalTokens === 1700,
+    `provider 未上报 → 回落 pi 原生计数（${live.inputTokens}/${live.outputTokens}/${live.cacheRead}/${live.cacheWrite}/${live.totalTokens}）`,
+  );
+  assert(
+    live.known?.input === true && live.known.output === true && live.known.cacheRead === true && live.known.cacheWrite === true,
+    "known 四项均 true（输入/输出/缓存读取/缓存写入 不再是「未知」）",
+  );
+  const knownSummary = summarizeRows(svc.queryRows({}));
+  assert(
+    knownSummary.cacheHitRate !== null && Math.abs(knownSummary.cacheHitRate - 900 / 1500) < 1e-12,
+    `面板命中率 = 900/(500+900+100)（${knownSummary.cacheHitRate}）`,
+  );
+  assert(knownSummary.input === 500 && knownSummary.known?.cacheWrite === true, `汇总输入与 known 一致（input=${knownSummary.input}）`);
+
+  // 5.3 两边都没有计数 → 仍然是 unknown（不用 0 冒充）
+  svc.recordLive({
+    taskId: "t", sessionFile: "durable:t:c1", sourceKind: "main", sourceDetail: "pi-durable",
+    persistedEntryId: "durable:t:c1:generation:2:2000", sample,
+    message: { responseId: "r2", timestamp: 2000, stopReason: "error", errorMessage: "boom" },
+  });
+  const blind = svc.queryRows({}).find((r) => r.entryId === "durable:t:c1:generation:2:2000")!;
+  assert(
+    blind.known?.input === false && blind.known.output === false && blind.known.cacheRead === false && blind.known.cacheWrite === false,
+    "无上报也无原生计数 → known 全 false（未知）",
+  );
+  assert(summarizeRows([blind]).cacheHitRate === null, "无可用分量的行不给命中率");
+
+  // 5.4 上报与原生混合：上报不含 cacheWrite 时其 input 已含 cache-write（prompt-cached），
+  //     pi 原生单独扣出 → input 取原生值，避免与原生 cacheWrite 双计。
+  svc.recordLive({
+    taskId: "t", sessionFile: "durable:t:c2", sourceKind: "main", sourceDetail: "pi-durable",
+    reportedUsage: { input: 1200, output: 200, cacheRead: 5000, cacheWrite: null, costTotal: null },
+    persistedEntryId: "durable:t:c2:generation:1:3000", sample,
+    message: { provider: "openai", model: "gpt", responseId: "r3", timestamp: 3000,
+      usage: { input: 1000, output: 200, cacheRead: 5000, cacheWrite: 200, totalTokens: 6400, cost: { total: 0.02 } }, stopReason: "stop" },
+  });
+  const mixed = svc.queryRows({}).find((r) => r.entryId === "durable:t:c2:generation:1:3000")!;
+  assert(
+    mixed.inputTokens === 1000 && mixed.cacheWrite === 200 && mixed.totalTokens === 6400 && mixed.known?.cacheWrite === true,
+    `上报缺 cacheWrite 时不与原生 cacheWrite 双计（${mixed.inputTokens}/${mixed.cacheWrite}/${mixed.totalTokens}）`,
+  );
+
+  // 5.5 上下文弹窗来源（TaskDiagnosticsRepository.usageForConversation）：供应商不报
+  //     cache_creation → cacheWrite 未知只降级分母，命中率不再整体 null。
+  const diagDb = new Database(join(dir, "diag.db"));
+  diagDb.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY);
+    CREATE TABLE conversation_interactions (task_id TEXT, execution_id TEXT);`);
+  diagDb.prepare(`INSERT INTO tasks (id) VALUES ('t1')`).run();
+  const repo = new TaskDiagnosticsRepository(diagDb);
+  const diagnosticModel = { provider: "opencode-go", id: "glm-5", api: "openai-completions" };
+  for (const [n, usage] of [
+    [1, { input: 1000, output: 200, cacheRead: 5000, cacheWrite: null }],
+    [2, { input: 4200, output: 800, cacheRead: 94_000, cacheWrite: null }],
+  ] as const) {
+    repo.observeTrace({ request: `rq${n}`, at: n, event: "execution", taskId: "t1", conversationId: "c1",
+      generationTaskId: n, sourceKind: "main", executionScope: "t1" }, diagnosticModel);
+    repo.observeTrace({ request: `rq${n}`, at: n + 10, event: "result", outcome: "stop", reportedUsage: usage }, diagnosticModel);
+  }
+  const observed = repo.usageForConversation("t1", "c1");
+  assert(
+    observed.inputTokens === 5200 && observed.outputTokens === 1000 && observed.cacheReadTokens === 99_000,
+    `诊断会话合计只丢未知分量（${observed.inputTokens}/${observed.outputTokens}/${observed.cacheReadTokens}）`,
+  );
+  assert(
+    observed.cacheHitRate !== null && Math.abs(observed.cacheHitRate - 99_000 / (5200 + 99_000)) < 1e-12,
+    `cacheWrite 未知不再把上下文命中率整体置 null（${observed.cacheHitRate}）`,
+  );
+  repo.observeTrace({ request: "rq3", at: 20, event: "execution", taskId: "t1", conversationId: "c2",
+    generationTaskId: 3, sourceKind: "main", executionScope: "t1" }, diagnosticModel);
+  repo.observeTrace({ request: "rq3", at: 21, event: "result", outcome: "stop" }, diagnosticModel);
+  const blindObserved = repo.usageForConversation("t1", "c2");
+  assert(blindObserved.inputTokens === null && blindObserved.cacheHitRate === null, "完全没有上报 → 上下文用量仍是未知");
+  diagDb.close();
+
+  // 5.6 观测值合并：null 只表示「不知道」，不能覆盖 pi 账本算出的计数与命中率。
+  const computed = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 100 };
+  const merged = mergeContextUsage(computed, { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null });
+  assert(merged.inputTokens === 100 && merged.outputTokens === 50 && merged.cacheReadTokens === 900, "观测值 null 不覆盖账本计数");
+  assert(
+    merged.cacheHitRate !== null && Math.abs(merged.cacheHitRate - 900 / 1100) < 1e-12,
+    `观测值 null 不覆盖账本命中率（${merged.cacheHitRate}）`,
+  );
+  const observedWins = mergeContextUsage(computed, { inputTokens: 7, outputTokens: 3, cacheReadTokens: 11, cacheHitRate: 0.25 });
+  assert(observedWins.inputTokens === 7 && observedWins.cacheHitRate === 0.25, "观测值已知时仍优先（诊断口径）");
+  assert(
+    mergeContextUsage({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }).cacheHitRate === null,
+    "账本无计数 → 命中率 null",
+  );
+
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log("== 阶段 6：legacy 行 known 兜底 / 零用量行不污染 / 历史 coverage 幂等修复 ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "usage-legacy-"));
+  const db = new Database(join(dir, "t.db"));
+  // 真实库的两类历史形态：老 pi-durable 行完全没有 coverage 行；旧写入 bug 留下
+  // 1110 / 0000 两种错误 coverage。
+  db.exec(`
+    CREATE TABLE usage_events (
+      entry_id TEXT PRIMARY KEY, task_id TEXT, session_file TEXT,
+      source_kind TEXT NOT NULL DEFAULT 'main', source_detail TEXT,
+      provider TEXT, model TEXT, response_model TEXT, ts INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_total REAL NOT NULL DEFAULT 0, cost_input REAL NOT NULL DEFAULT 0,
+      cost_output REAL NOT NULL DEFAULT 0, cost_cache_read REAL NOT NULL DEFAULT 0,
+      cost_cache_write REAL NOT NULL DEFAULT 0, stop_reason TEXT, error_message TEXT,
+      request_started_at INTEGER, first_response_at INTEGER, completed_at INTEGER,
+      ttft_ms INTEGER, decode_ms INTEGER, generation_tps REAL, model_wall_ms INTEGER,
+      response_id TEXT, turn_index INTEGER, backfilled INTEGER NOT NULL DEFAULT 0,
+      user_turn INTEGER
+    );
+    CREATE TABLE usage_event_coverage (
+      entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
+      input_known INTEGER NOT NULL, output_known INTEGER NOT NULL,
+      cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL
+    );
+  `);
+  const ts = Date.now();
+  const insertRow = db.prepare(`INSERT INTO usage_events (entry_id, session_file, source_kind, source_detail, provider, model, ts,
+      input_tokens, output_tokens, cache_read, cache_write, total_tokens, cost_total, stop_reason)
+    VALUES (@entryId, NULL, 'main', @sourceDetail, 'opencode-go', 'glm-5', @ts,
+      @input, @output, @cacheRead, @cacheWrite, @total, @cost, @stopReason)`);
+  const insertCoverage = db.prepare(`INSERT INTO usage_event_coverage VALUES (?,?,?,?,?,?)`);
+  // A) 旧 bug 的 live 行：coverage 1110（cacheWrite 被误判 unknown），token 列是真实值
+  insertRow.run({ entryId: "live-1110", sourceDetail: "pi-durable", ts, input: 100, output: 20, cacheRead: 900, cacheWrite: 0, total: 1020, cost: 0.001, stopReason: "stop" });
+  insertCoverage.run("live-1110", 1, 1, 1, 0, 1);
+  // B) 老 pi-durable 行：完全没有 coverage 行（真实库 19k 行这种）
+  insertRow.run({ entryId: "legacy-nocoverage", sourceDetail: "pi-durable", ts, input: 50, output: 10, cacheRead: 400, cacheWrite: 0, total: 460, cost: 0.002, stopReason: "stop" });
+  // C) 旧 bug 的 live 行：coverage 全 unknown 但 token 列真实（reported 缺失 + costKnown=false 路径）
+  insertRow.run({ entryId: "live-0000", sourceDetail: "pi-durable", ts, input: 30, output: 5, cacheRead: 200, cacheWrite: 0, total: 235, cost: 0, stopReason: "stop" });
+  insertCoverage.run("live-0000", 0, 0, 0, 0, 0);
+  // D) 零用量失败行（tier_limit 400，未消耗 token）：无 coverage
+  insertRow.run({ entryId: "fail-nocoverage", sourceDetail: "pi-durable", ts, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, stopReason: "error" });
+  // E) 零用量失败行：coverage 全 unknown
+  insertRow.run({ entryId: "fail-0000", sourceDetail: "pi-durable", ts, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, stopReason: "error" });
+  insertCoverage.run("fail-0000", 0, 0, 0, 0, 0);
+
+  // 构造即修复（历史 coverage，幂等）
+  const svc = new UsageStatsService(db);
+  const coverageOf = (id: string) =>
+    db.prepare(`SELECT input_known AS i,output_known AS o,cache_read_known AS cr,cache_write_known AS cw,cost_known AS c
+      FROM usage_event_coverage WHERE entry_id=?`).get(id) as { i: number; o: number; cr: number; cw: number; c: number } | undefined;
+  assert(JSON.stringify(coverageOf("live-1110")) === '{"i":1,"o":1,"cr":1,"cw":1,"c":1}', "repair：1110 的历史行恢复 cacheWrite known");
+  assert(JSON.stringify(coverageOf("live-0000")) === '{"i":1,"o":1,"cr":1,"cw":1,"c":1}', "repair：全 unknown 且 total>0 的历史行四字段 + 费用恢复 known");
+  assert(JSON.stringify(coverageOf("fail-0000")) === '{"i":0,"o":0,"cr":0,"cw":0,"c":0}', "repair：total=0 的失败行保持 unknown（不用 0 冒充已知）");
+  assert(svc.repairLegacyCoverage() === 0, "repair 幂等（重复执行 0 行变更）");
+
+  // repair 不动 usage_events 的 token 数值
+  const raw = db.prepare(`SELECT input_tokens AS i,output_tokens AS o,cache_read AS cr,cache_write AS cw,total_tokens AS t
+    FROM usage_events WHERE entry_id='live-0000'`).get() as { i: number; o: number; cr: number; cw: number; t: number };
+  assert(raw.i === 30 && raw.o === 5 && raw.cr === 200 && raw.cw === 0 && raw.t === 235, "repair 只改 known 位、不动 token 数值");
+
+  // 无 coverage 行的兜底：total>0 → 四字段 known；total=0 → unknown
+  const rows = svc.queryRows({});
+  const legacyRow = rows.find((r) => r.entryId === "legacy-nocoverage")!;
+  const failRow = rows.find((r) => r.entryId === "fail-nocoverage")!;
+  assert(
+    legacyRow.known?.input === true && legacyRow.known.output === true && legacyRow.known.cacheRead === true && legacyRow.known.cacheWrite === true,
+    "无 coverage 老行（total>0）按行内数据判定 known=true，不再因 pi-durable 一律未知",
+  );
+  assert(failRow.known?.input === false && failRow.known.cacheWrite === false, "无 coverage 且 total=0 → 保持 unknown");
+  assert(failRow.totalTokens === 0 && legacyRow.totalTokens === 460, "行内 token 未被改写");
+
+  // 面板（dashboard(1)）：三类行都在窗口内，零用量失败行不得把已知位/命中率降级
+  const d = svc.dashboard(1);
+  assert(d.input === 180 && d.output === 35 && d.cacheRead === 1500 && d.cacheWrite === 0, `面板四项有值（${d.input}/${d.output}/${d.cacheRead}/${d.cacheWrite}）`);
+  assert(d.totalTokens === 1715, `面板累计 tokens=${d.totalTokens}（零用量行贡献 0）`);
+  assert(
+    d.known?.input === true && d.known.output === true && d.known.cacheRead === true && d.known.cacheWrite === true,
+    `含 total=0 失败行时 known 仍为 true（${JSON.stringify(d.known)}）`,
+  );
+  // 费用口径（用户 2026-11-06）：有真实用量的行，费用视为已知（没上报就是 0）；
+  // total=0 的失败行仍未知，且不参与 known 聚合。
+  assert(d.known?.cost === true, `有真实用量的行费用视为已知（${JSON.stringify(d.known)}）`);
+  assert(legacyRow.known?.cost === true, "无 coverage 老行（total>0）费用 known=true");
+  assert(failRow.known?.cost === false, "total=0 失败行费用仍 unknown（不用 0 冒充已知）");
+  assert(
+    d.cacheHitRate !== null && Math.abs(d.cacheHitRate - 1500 / 1680) < 1e-12,
+    `含 total=0 失败行时命中率仍非 null（${d.cacheHitRate}）`,
+  );
+  assert(d.calls === 5 && d.errors === 2, `calls/errors 仍按调用行统计（${d.calls}/${d.errors}）`);
+  assert(
+    d.models.length === 1 && d.models[0].known?.input === true && d.models[0].known?.cacheWrite === true,
+    "模型明细 known 同样不被零用量行污染",
+  );
+  assert(d.models[0].cacheHitRate !== null && Math.abs(d.models[0].cacheHitRate - 1500 / 1680) < 1e-12, "模型明细命中率有值");
+  // 热力/趋势也不因零用量行降级（同一 summarizeRows 口径）
+  assert(svc.summarize(1).known?.cacheRead === true, "summarize 与 dashboard 同口径");
+
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);

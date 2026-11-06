@@ -37,12 +37,25 @@ const toolSchema = z.object({
 });
 type Interval = z.infer<typeof intervalSchema>;
 type StoredTool = z.infer<typeof toolSchema>;
-type ConversationUsage = { count: number; totals: ModelRequestDiagnostic["usage"] };
+type UsageField = keyof ModelRequestDiagnostic["usage"];
+type UsageCounts = { [K in UsageField]: number };
+type UsageKnown = { [K in UsageField]: boolean };
+/**
+ * 会话累计口径：已知分量求和，缺失分量单独记在 known 里。
+ * 旧实现把 null 直接写进 totals，任何一条记录缺某个供应商不上报的字段
+ * （如 chat-completions 不报 cache_creation）就会让整份合计变成 null。
+ */
+type ConversationUsage = { count: number; totals: UsageCounts; known: UsageKnown };
+function emptyConversationUsage(): ConversationUsage {
+  return { count: 0, totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    known: { input: true, output: true, cacheRead: true, cacheWrite: true } };
+}
 function addUsage(target: ConversationUsage, usage: ModelRequestDiagnostic["usage"]): void {
   target.count++;
   for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
-    const previous = target.totals[key], next = usage[key];
-    target.totals[key] = previous === null || next === null ? null : previous + next;
+    const next = usage[key];
+    if (next === null) target.known[key] = false;
+    else target.totals[key] += next;
   }
 }
 const waitRow = z.object({ id: z.string(), execution_id: z.string(), title: z.string(), created_at: z.number(), resolved_at: nullableNumber, status: z.string() });
@@ -184,16 +197,23 @@ export class TaskDiagnosticsRepository {
       AND json_extract(record_json,'$.conversationId')=? AND json_extract(record_json,'$.executionScope')=?
       AND json_extract(record_json,'$.status')!='running'`).all(taskId, conversationId, taskId)
       .map(row => requestSchema.parse(JSON.parse(recordRow.parse(row).record_json)));
-      records = { count: 0, totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+      records = emptyConversationUsage();
       for (const row of rows) addUsage(records, row.usage);
       this.conversationUsage.set(key, records);
       while (this.conversationUsage.size > 32) this.conversationUsage.delete(this.conversationUsage.keys().next().value!);
     }
     const summary = records;
-    const sum = (key: keyof ModelRequestDiagnostic["usage"]) => summary.count ? summary.totals[key] : null;
-    const inputTokens = sum("input"), outputTokens = sum("output"), cacheReadTokens = sum("cacheRead"), writes = sum("cacheWrite");
-    const total = inputTokens !== null && cacheReadTokens !== null && writes !== null ? inputTokens + cacheReadTokens + writes : null;
-    return { inputTokens, outputTokens, cacheReadTokens, cacheHitRate: total && cacheReadTokens !== null ? cacheReadTokens / total : null };
+    // 只暴露已知分量的合计；未知分量为 null（不是 0——0 会被当成真实计数）。
+    const sum = (field: UsageField) => summary.count && summary.known[field] ? summary.totals[field] : null;
+    const inputTokens = sum("input"), outputTokens = sum("output"), cacheReadTokens = sum("cacheRead");
+    const cacheWriteTokens = sum("cacheWrite");
+    // 命中率分母按已知分量降级：cacheWrite 未知（chat-completions / responses / google
+    // 不报 cache_creation）时用 input+cacheRead；input 或 cacheRead 未知时才给 null。
+    const denominator = inputTokens === null && cacheWriteTokens === null
+      ? null
+      : (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+    const cacheHitRate = cacheReadTokens !== null && denominator !== null && denominator > 0 ? cacheReadTokens / denominator : null;
+    return { inputTokens, outputTokens, cacheReadTokens, cacheHitRate };
     } catch { return unknown; }
   }
 

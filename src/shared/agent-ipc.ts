@@ -890,6 +890,13 @@ export interface RuntimeContextInspectionDto {
   assembly: import("./mode-profile").AssemblyTraceDto;
   assemblyHash: string;
   loadout: import("./agent-loadout").AgentLoadoutRecommendationDto;
+  /**
+   * MCP 元工具定义的字符口径（durable 会话向模型注入的 5 个元工具：name + description + JSON.stringify(parameters)）。
+   * `chars`/4 ≈ tokens 只是界面估算（4 字符 ≈ 1 token）；取不到（该任务没有已打开的 bot）为 null，
+   * 渲染层必须退回「—」而不是 0。注意它只覆盖元工具定义，不含 MCP 工具调用结果、服务器实际工具清单
+   * 在 Code Mode 下的差异，也不含 provider 请求体的包装开销。
+   */
+  mcpContext?: { chars: number; tools: number; servers: number } | null;
   latestExecution?: {
     executionId: string;
     status: RuntimeContextSnapshotDto["status"];

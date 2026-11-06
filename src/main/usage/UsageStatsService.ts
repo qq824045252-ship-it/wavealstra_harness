@@ -29,7 +29,6 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { PerfSample } from "./PerformanceTracker";
 import { nativeCostEvidence } from "../agent/NativeCostEvidence";
-import { unknownTokenUsage } from "../agent/ReportedTokenUsage";
 import {
   applyMyBuddyModelAttribution,
   summarizeRows,
@@ -258,6 +257,39 @@ export class UsageStatsService {
       db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
         input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
     } catch { this.coverageAvailable = false; }
+    // 启动即修一次历史 coverage（幂等，见 repairLegacyCoverage 注释）。
+    this.repairLegacyCoverage();
+  }
+
+  /**
+   * 一次性、幂等的历史 coverage 修复（随 UsageStatsService 构造在启动路径执行；重复执行无副作用）。
+   *
+   * 旧写入路径留下两类错误 unknown：
+   * 1) provider 未上报时整行 coverage 记成全 unknown，但 token 列其实来自 pi 归一化 usage；
+   * 2) chat-completions / responses / google 不报 cache_creation，cache_write_known 被记成 0，
+   *    而 pi 归一化 usage 里 cacheWrite 是确定的 0。
+   * 判据只有一条：行内有真实用量（total_tokens > 0）时，token 列就是 pi 归一化后的真实计数——
+   * 旧缺陷仅有的破坏是把整行清零，而清零出来的行 total_tokens = 0。所以恢复四字段 known。
+   * total_tokens = 0 的行保持 unknown（失败调用没消耗 token，不能用 0 冒充已知）。
+   * cost 同口径：有真实用量就说「费用已知（未上报即 0）」，不再因为一行没上报费用把
+   * 整窗费用降级成未知。
+   * 只改 coverage 的 known 位，不动 usage_events 里的任何 token / 费用数值。
+   */
+  repairLegacyCoverage(): number {
+    if (!this.coverageAvailable) return 0;
+    try {
+      const usage = `EXISTS (SELECT 1 FROM usage_events e WHERE e.entry_id = usage_event_coverage.entry_id AND e.total_tokens > 0)`;
+      const tokens = this.db
+        .prepare(
+          `UPDATE usage_event_coverage SET input_known = 1, output_known = 1, cache_read_known = 1, cache_write_known = 1
+            WHERE cache_write_known = 0 AND ${usage}`,
+        )
+        .run().changes;
+      const cost = this.db
+        .prepare(`UPDATE usage_event_coverage SET cost_known = 1 WHERE cost_known = 0 AND ${usage}`)
+        .run().changes;
+      return tokens + cost;
+    } catch { return 0; }
   }
 
   // ---------- live 投影 ----------
@@ -266,14 +298,34 @@ export class UsageStatsService {
     const { sample, message } = input;
     const sessionFile = input.sessionFile ?? null;
     const reported = input.reportedUsage;
-    const usage = reported ? { ...message.usage, input: reported.input ?? 0, output: reported.output ?? 0,
-      cacheRead: reported.cacheRead ?? 0, cacheWrite: reported.cacheWrite ?? 0,
-      totalTokens: (reported.input ?? 0) + (reported.output ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0) } : message.usage ?? null;
+    const native = message.usage ?? null;
+    const nativeCounts = native
+      ? {
+          input: native.input ?? null,
+          output: native.output ?? null,
+          cacheRead: native.cacheRead ?? null,
+          cacheWrite: native.cacheWrite ?? null,
+        }
+      : null;
+    // 逐字段合并：provider 上报优先，缺失字段回落 pi 原生归一化 usage；两边都没有才是
+    // 未知（null）——不能用 0 冒充缺失，否则面板把「未上报」显示成真实 0，下游 known
+    // 判定也随之失真。
+    // 例外：上报侧不含 cacheWrite（chat-completions / responses / google 都不报
+    // cache_creation）时，上报的 input 已把 cache-write token 算进未命中侧
+    // （prompt-cached），而 pi 原生会单独扣出；此时 input 一并取原生值，避免双计。
+    const reportedWrite = reported?.cacheWrite ?? null;
+    const nativeWrite = nativeCounts?.cacheWrite ?? null;
+    let inputTokens = reported?.input ?? nativeCounts?.input ?? null;
+    if (reported?.input != null && reportedWrite === null && (nativeWrite ?? 0) > 0) inputTokens = nativeCounts?.input ?? inputTokens;
+    const counts = {
+      input: inputTokens,
+      output: reported?.output ?? nativeCounts?.output ?? null,
+      cacheRead: reported?.cacheRead ?? nativeCounts?.cacheRead ?? null,
+      cacheWrite: reportedWrite ?? nativeWrite ?? null,
+    };
     const attributed = applyMyBuddyModelAttribution(message, input.modelId);
     const entryId = input.persistedEntryId ?? `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
-    const total =
-      usage?.totalTokens ??
-      (usage ? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0);
+    const total = (counts.input ?? 0) + (counts.output ?? 0) + (counts.cacheRead ?? 0) + (counts.cacheWrite ?? 0);
     this.db
       .prepare(
         `INSERT OR IGNORE INTO usage_events (
@@ -304,18 +356,18 @@ export class UsageStatsService {
         model: attributed.model,
         responseModel: attributed.responseModel,
         ts: message.timestamp ?? sample.completedAt ?? Date.now(),
-        inputTokens: usage?.input ?? 0,
-        outputTokens: usage?.output ?? 0,
-        cacheRead: usage?.cacheRead ?? 0,
-        cacheWrite: usage?.cacheWrite ?? 0,
-        cacheWrite1h: usage?.cacheWrite1h ?? null,
-        reasoningTokens: usage?.reasoning ?? null,
+        inputTokens: counts.input ?? 0,
+        outputTokens: counts.output ?? 0,
+        cacheRead: counts.cacheRead ?? 0,
+        cacheWrite: counts.cacheWrite ?? 0,
+        cacheWrite1h: native?.cacheWrite1h ?? null,
+        reasoningTokens: native?.reasoning ?? null,
         totalTokens: total,
-        costTotal: usage?.cost?.total ?? 0,
-        costInput: usage?.cost?.input ?? 0,
-        costOutput: usage?.cost?.output ?? 0,
-        costCacheRead: usage?.cost?.cacheRead ?? 0,
-        costCacheWrite: usage?.cost?.cacheWrite ?? 0,
+        costTotal: native?.cost?.total ?? 0,
+        costInput: native?.cost?.input ?? 0,
+        costOutput: native?.cost?.output ?? 0,
+        costCacheRead: native?.cost?.cacheRead ?? 0,
+        costCacheWrite: native?.cost?.cacheWrite ?? 0,
         stopReason: message.stopReason ?? null,
         errorMessage: message.errorMessage ?? null,
         requestStartedAt: sample.requestStartedAt,
@@ -329,14 +381,14 @@ export class UsageStatsService {
         turnIndex: sample.turnIndex,
         userTurn: input.userTurn ?? null,
       });
-    const costKnown = reported?.costTotal != null || nativeCostEvidence(message.usage, reported).complete;
-    if ((reported || !costKnown) && this.coverageAvailable) try {
-      const native = message.usage;
-      const hasUsage = native && [native.input, native.output, native.cacheRead, native.cacheWrite].some(count => count != null && count > 0);
-      const observed = reported ?? (hasUsage ? { input: native.input ?? null, output: native.output ?? null,
-        cacheRead: native.cacheRead ?? null, cacheWrite: native.cacheWrite ?? null } : unknownTokenUsage());
+    // coverage：记录这次调用实际知道哪些分量——已合并上报/原生之后仍为 null 的字段才算
+    // 未知。每行都写，取代 queryRows 里「token>0 才算已知」的旧启发式（它把真实的 0
+    // 当成未知，让面板整片显示「未知」）。
+    // cost：有真实用量即视为已知（没上报费用就是 0，见 queryRows 的同款口径）。
+    const costKnown = total > 0 || reported?.costTotal != null || nativeCostEvidence(native, reported).complete;
+    if (this.coverageAvailable) try {
       this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
-        .run(entryId, Number(observed.input !== null), Number(observed.output !== null), Number(observed.cacheRead !== null), Number(observed.cacheWrite !== null), Number(costKnown));
+        .run(entryId, Number(counts.input !== null), Number(counts.output !== null), Number(counts.cacheRead !== null), Number(counts.cacheWrite !== null), Number(costKnown));
     } catch { /* Unknown coverage must not affect a completed model call. */ }
   }
 
@@ -408,12 +460,21 @@ export class UsageStatsService {
       ORDER BY ts ASC`;
     const rows = this.db.prepare<unknown[], UsageQueryRow & { inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null; cacheWriteKnown: number | null; costKnown: number | null }>(sql).all(...args);
     return rows.map(row => {
+      // 有 coverage 行时以它为准（权威）。没有 coverage 行（老数据 / 回填 / 子代理归档）时
+      // 按行内数据判定：旧写入缺陷只会把整行 token 清零，所以 total_tokens > 0 的行是 pi
+      // 归一化后的真实计数、四字段可信；total_tokens = 0 才保持 unknown（失败调用没消耗
+      // token，不能用 0 冒充已知）。旧实现按 source_detail='pi-durable' 一律判未知，导致
+      // 历史 pi-durable 行永远显示「未知」。
+      // cost 口径（用户 2026-11-06 明确要求）：只要这一行有真实用量（total > 0），就把
+      // 费用视为已知——没有上报费用就是 0（面板按目录单价估算，0 与「未知」相比更接近
+      // 事实，也不会因为一条无费用行把整窗降级成未知）。total = 0 的失败行仍然未知。
+      const legacyKnown = row.totalTokens > 0;
       const known = {
-      input: row.inputKnown === null ? row.sourceDetail !== "pi-durable" && row.inputTokens > 0 : row.inputKnown === 1,
-      output: row.outputKnown === null ? row.sourceDetail !== "pi-durable" && row.outputTokens > 0 : row.outputKnown === 1,
-      cacheRead: row.cacheReadKnown === null ? row.sourceDetail !== "pi-durable" && row.cacheRead > 0 : row.cacheReadKnown === 1,
-      cacheWrite: row.cacheWriteKnown === null ? row.sourceDetail !== "pi-durable" && row.cacheWrite > 0 : row.cacheWriteKnown === 1,
-      cost: row.costKnown === null ? row.sourceDetail !== "pi-durable" && row.costTotal > 0 : row.costKnown === 1,
+      input: row.inputKnown === null ? legacyKnown : row.inputKnown === 1,
+      output: row.outputKnown === null ? legacyKnown : row.outputKnown === 1,
+      cacheRead: row.cacheReadKnown === null ? legacyKnown : row.cacheReadKnown === 1,
+      cacheWrite: row.cacheWriteKnown === null ? legacyKnown : row.cacheWriteKnown === 1,
+      cost: row.costKnown === null ? legacyKnown : row.costKnown === 1 || legacyKnown,
       };
       const inputTokens = known.input ? row.inputTokens : 0;
       const outputTokens = known.output ? row.outputTokens : 0;

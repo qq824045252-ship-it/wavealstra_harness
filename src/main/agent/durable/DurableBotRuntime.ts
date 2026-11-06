@@ -32,6 +32,7 @@ import { ActiveDurableConversation, forkDurableConversation, resolveActiveDurabl
 import { DurableConsultIdentity } from "./DurableConsultSession";
 import type { DiagnosticSource, ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
 import { durableInputAuditSchema, type DurableInputAudit } from "./DurableSkillProjection";
+import { mergeContextUsage } from "../../usage/context-usage-merge";
 
 type BotInputMetadata = DurableInputMetadata;
 const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
@@ -799,7 +800,6 @@ export class DurableBotRuntime {
       && (slot.name === "request_user_input" || (slot.details && typeof slot.details === "object" && !Array.isArray(slot.details) && slot.details.waitingForInput === true)));
     const status: DurableBotSnapshot["status"] = waitingForInput ? "waiting_input" : live.generation?.retry ? "retrying"
       : busy ? "running" : queued ? "queued" : outcome === "failed" ? "failed" : outcome === "aborted" ? "stopped" : outcome === "completed" ? "completed" : "idle";
-    const denominator = totals.input + totals.cacheRead + totals.cacheWrite;
     const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: this.epoch, revision: ++this.revision,
       conversationId: String(this.conversation.id), toolMode: this.options.toolMode,
       busy, queued, status, historyBefore: this.historyBefore, messages, ...(error ? { error } : {}),
@@ -808,9 +808,10 @@ export class DurableBotRuntime {
       outcome: busy ? undefined : outcome,
       ...(model ? { contextUsage: { usedTokens, estimated: usedTokens !== null, contextWindow: model.contextWindow,
         percent: usedTokens === null ? null : usedTokens / model.contextWindow * 100,
-        cacheHitRate: denominator ? totals.cacheRead / denominator : null,
-        inputTokens: totals.input, outputTokens: totals.output, cacheReadTokens: totals.cacheRead,
-        ...this.options.observedUsage?.(String(this.conversation.id)) } } : {}),
+        // 观测值只补它确实知道的字段；null 不能覆盖账本算出的计数/命中率。
+        ...mergeContextUsage({ inputTokens: totals.input, outputTokens: totals.output,
+          cacheReadTokens: totals.cacheRead, cacheWriteTokens: totals.cacheWrite },
+          this.options.observedUsage?.(String(this.conversation.id))) } } : {}),
     };
     this.latest = snapshot;
     this.options.onSnapshot(snapshot);

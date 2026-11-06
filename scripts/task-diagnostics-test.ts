@@ -73,7 +73,11 @@ try {
     reportedUsage: diagnostics.usageForGeneration("task", "8", 12),
     sample: { turnIndex: 12, requestStartedAt: null, firstResponseAt: null, completedAt: now, ttftMs: null, decodeMs: null,
       generationTps: null, modelWallMs: null, outputTokens: null, reasoningTokens: null } });
-  assert.equal(statistics.queryRows({})[0]?.known?.cacheRead, false);
+  // 新口径（用量面板修复）：provider 上报缺失时逐字段回落 pi 原生归一化 usage。
+  // 本 fixture 原生 usage 是 10/3/20/0、provider 侧全 null，所以 known 应为 true——
+  // 面板不再因为「供应商没单独报 cache_read / cache_creation」就整片显示未知。
+  assert.equal(statistics.queryRows({}).find(row => row.entryId === "diagnostic-usage")?.known?.cacheRead, true,
+    "provider 上报缺失时逐字段回落 pi 原生 usage");
   const usageRow = statistics.queryRows({})[0];
   assert(usageRow);
   assert.equal(usageRow.costTotal, 1, "unknown raw usage does not erase native pricing");
@@ -81,7 +85,8 @@ try {
   assert.deepEqual(db.connection.prepare("SELECT cost_input, cost_output, cost_cache_read, cost_cache_write, cache_write_1h FROM usage_events WHERE entry_id='diagnostic-usage'").get(),
     { cost_input: 0.2, cost_output: 0.3, cost_cache_read: 0.1, cost_cache_write: 0.4, cache_write_1h: 7 });
   assert.equal(isCallRow({ ...usageRow, sourceKind: "auxiliary" }), true);
-  assert.equal(statistics.dashboard(1).cacheHitRate, null);
+  // 分母 = input + cacheRead + cacheWrite = 10 + 20 + 0，命中率不能因为上报缺失退回 null。
+  assert.equal(statistics.dashboard(1).cacheHitRate, 20 / 30, "命中率按已知分量计算，不再整窗 null");
   assert.equal(diagnostics.list("task", 1, 1).requests.length, 1);
   const zero = tracer.start(model, "zero", undefined, event => diagnostics.observeTrace(event, model));
   zero.identify({ taskId: "task", conversationId: "zero", generationTaskId: 13, sourceKind: "main" });
@@ -100,6 +105,15 @@ try {
     reportedUsage: diagnostics.usageForGeneration("task", "8", 12),
     sample: { turnIndex: 13, requestStartedAt: null, firstResponseAt: null, completedAt: now, ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: null, reasoningTokens: null } });
   assert.equal(statistics.queryRows({}).find(row => row.entryId === "unknown-zero")?.known?.cost, false);
+  // 真正未知：provider 上报与 pi 原生 usage 都不存在 —— 仍必须是未知，不能用 0 冒充。
+  statistics.recordLive({ taskId: "task", sessionFile: "durable:task:8", sourceKind: "main", persistedEntryId: "usage-absent",
+    message: { ...result, timestamp: now, usage: null },
+    sample: { turnIndex: 14, requestStartedAt: null, firstResponseAt: null, completedAt: now, ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: null, reasoningTokens: null } });
+  const absent = statistics.queryRows({}).find(row => row.entryId === "usage-absent");
+  assert.equal(absent?.known?.input, false, "原生与上报都缺失时保持未知");
+  assert.equal(absent?.known?.cacheRead, false, "原生与上报都缺失时保持未知");
+  assert.equal(absent?.totalTokens, 0);
+  assert.equal(absent?.inputTokens, 0, "未知字段不参与合计");
   console.log("PASS request retries, raw usage presence, idempotent recovery, wait subtraction and account coverage");
 } finally { db.close(); }
 assert.doesNotThrow(() => diagnostics.observeTool({ phase: "finish", taskId: "task", conversationId: "7", toolTaskId: 99, callId: "closed", name: "read", sourceKind: "main", at: Date.now() }));

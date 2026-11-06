@@ -107,6 +107,17 @@ function sum(nums: number[]): number {
   return nums.reduce((a, b) => a + b, 0);
 }
 
+/**
+ * 行内是否有真实用量。
+ * total_tokens = 0 的行（供应商 4xx / tier limit 等失败调用，未消耗 token）不构成
+ * 「未知」的证据：它们贡献 0，known 聚合时不该把整个窗口的已知位降级成未知。
+ */
+export function hasUsageEvidence(
+  row: Pick<UsageEventRow, "totalTokens" | "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite">,
+): boolean {
+  return row.totalTokens > 0 || row.inputTokens > 0 || row.outputTokens > 0 || row.cacheRead > 0 || row.cacheWrite > 0;
+}
+
 /** 行内错误判定：stopReason=error 或 errorMessage 非空。 */
 export function isErrorRow(row: UsageEventRow): boolean {
   return row.stopReason === "error" || Boolean(row.errorMessage);
@@ -375,13 +386,28 @@ function computeTurns(callRows: UsageEventRow[]): number {
  * interactive 侧同样把 cacheWrite 归入 uncached 侧）。cacheWrite 是重新计费的新写入
  * token，属未命中侧。分母 ≤ 0 → null（不 NaN）；全 cacheWrite 轮（input=cacheRead=0,
  * cacheWrite>0）分母>0 → 返回 0（对齐 pi 显示 0%）。
+ *
+ * 缺失口径（chat-completions / responses 类供应商不报 cache_creation，cacheWrite 未知）：
+ * 只跳过分子未知的行（cacheRead unknown），分母按已知分量降级——cacheWrite 未知时用
+ * input+cacheRead（cacheWrite 记 0），input 未知时同样只累加已知项。全部行都无可用分量
+ * → null；不用 0 冒充缺失。与 summarizeRows().known 的组合语义一致：面板仍逐项标注未知，
+ * 但已知部分能给出命中率。
  */
 export function cacheHitRate(rows: UsageEventRow[]): number | null {
-  if (rows.some(row => row.known && (!row.known.input || !row.known.cacheRead || !row.known.cacheWrite))) return null;
-  const cacheRead = sum(rows.map((r) => r.cacheRead));
-  const uncached = sum(rows.map((r) => r.inputTokens + r.cacheWrite));
+  let usable = 0;
+  let cacheRead = 0;
+  let uncached = 0;
+  for (const row of rows) {
+    if (row.known?.cacheRead === false) continue; // 分子未知 → 该行不能参与
+    const inputKnown = row.known?.input !== false;
+    const writeKnown = row.known?.cacheWrite !== false;
+    if (!inputKnown && !writeKnown) continue; // 分母没有任何已知分量
+    usable += 1;
+    cacheRead += row.cacheRead;
+    uncached += (inputKnown ? row.inputTokens : 0) + (writeKnown ? row.cacheWrite : 0);
+  }
   const denom = cacheRead + uncached;
-  if (denom <= 0) return null;
+  if (usable === 0 || denom <= 0) return null;
   return cacheRead / denom;
 }
 
@@ -404,9 +430,11 @@ export function summarizeRows(rows: UsageEventRow[], _userTurnsBySession?: Reado
   const cacheWrite1h = rows.some((r) => r.cacheWrite1h !== null)
     ? sum(rows.map((r) => r.cacheWrite1h ?? 0))
     : null;
+  // known 只由「有用量的行」决定：零用量失败行（total=0）贡献 0，不该把整窗降级成未知。
+  const knownRows = rows.filter(hasUsageEvidence);
   return {
-    known: { input: rows.every(row => row.known?.input !== false), output: rows.every(row => row.known?.output !== false),
-      cacheRead: rows.every(row => row.known?.cacheRead !== false), cacheWrite: rows.every(row => row.known?.cacheWrite !== false), cost: rows.every(row => row.known?.cost !== false) },
+    known: { input: knownRows.every(row => row.known?.input !== false), output: knownRows.every(row => row.known?.output !== false),
+      cacheRead: knownRows.every(row => row.known?.cacheRead !== false), cacheWrite: knownRows.every(row => row.known?.cacheWrite !== false), cost: knownRows.every(row => row.known?.cost !== false) },
     totalTokens: sum(rows.map((r) => r.totalTokens)),
     input: sum(rows.map((r) => r.inputTokens)),
     output: sum(rows.map((r) => r.outputTokens)),
@@ -461,7 +489,8 @@ export function groupByProviderModel(rows: UsageEventRow[]): ProviderModelStat[]
       map.set(key, stat);
     }
     stat.calls += 1;
-    if (r.known && stat.known) {
+    // 零用量失败行不参与 known 聚合（同 summarizeRows.known）。
+    if (stat.known && r.known && hasUsageEvidence(r)) {
       stat.known.input &&= r.known.input; stat.known.output &&= r.known.output;
       stat.known.cacheRead &&= r.known.cacheRead; stat.known.cacheWrite &&= r.known.cacheWrite; stat.known.cost &&= r.known.cost;
     }
@@ -482,8 +511,10 @@ export function groupByProviderModel(rows: UsageEventRow[]): ProviderModelStat[]
     s.ttftMs = avg(s._ttft);
     s.tps = avg(s._tps);
     s.wallMs = avg(s._wall);
-    const denom = s.cacheRead + s.input + s.cacheWrite;
-    s.cacheHitRate = denom > 0 && s.known?.input !== false && s.known?.cacheRead !== false && s.known?.cacheWrite !== false ? s.cacheRead / denom : null;
+    // 同 cacheHitRate()：cacheWrite（或 input）未知只降级分母，不让整行失去命中率。
+    const denom =
+      s.cacheRead + (s.known?.input === false ? 0 : s.input) + (s.known?.cacheWrite === false ? 0 : s.cacheWrite);
+    s.cacheHitRate = s.known?.cacheRead !== false && denom > 0 ? s.cacheRead / denom : null;
     delete (s as { _ttft?: number[] })._ttft;
     delete (s as { _tps?: number[] })._tps;
     delete (s as { _wall?: number[] })._wall;

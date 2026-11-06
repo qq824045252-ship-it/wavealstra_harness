@@ -2955,6 +2955,8 @@ export class AgentService {
       assembly,
       assemblyHash,
       loadout: this.loadoutService.resolve(taskId, task.title, assembly, connectorIds),
+      // 只读投影：取不到已打开的 bot 就是 null，渲染层退回「—」，绝不为统计而建 host。
+      mcpContext: this.durableBots?.mcpContext(taskId) ?? null,
       latestExecution: latestExecution
         ? {
             executionId: latestExecution.executionId,

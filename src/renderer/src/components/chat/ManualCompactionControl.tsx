@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { TaskCompactionStatusDto } from "@shared/compaction";
 import { resolveCompactionPolicy } from "@shared/compaction-policy";
+import { formatTokenCount } from "@shared/token-format";
 
 export default function ManualCompactionControl({ taskId, executing, contextWindow }: { taskId: string; executing: boolean; contextWindow: number }): React.JSX.Element {
   const api = window.api?.agent;
@@ -37,12 +38,12 @@ export default function ManualCompactionControl({ taskId, executing, contextWind
   };
   const running = state?.status === "running";
   const resultLabel = (s: TaskCompactionStatusDto | undefined): string => {
-    if (s?.status === "completed") return "已压缩：" + (s.tokensBefore == null ? "—" : (s.tokensBefore / 1000).toFixed(1) + "K") + " → " + (s.estimatedTokensAfter == null ? "—" : "约 " + (s.estimatedTokensAfter / 1000).toFixed(1) + "K");
+    if (s?.status === "completed") return "已压缩：" + (s.tokensBefore == null ? "—" : formatTokenCount(s.tokensBefore)) + " → " + (s.estimatedTokensAfter == null ? "—" : "约 " + formatTokenCount(s.estimatedTokensAfter));
     if (s?.status === "running") return s.reason === "manual" ? "正在手动压缩…" : "Pi 正在自动整理上下文…";
     return s?.message ?? "";
   };
   return <div className="manual-compaction-control">
-    <div className="settings-row-desc">设置触发线：{threshold == null ? "—" : (threshold / 1000).toLocaleString("zh-CN") + "K"}</div>
+    <div className="settings-row-desc">设置触发线：{threshold == null ? "—" : formatTokenCount(threshold)}</div>
     <p className="settings-row-desc">将较早消息整理为摘要，保留最近上下文。完整聊天记录仍可查看；会调用当前会话模型。</p>
     {(notice || resultLabel(state)) && <div role={state?.status === "failed" ? "alert" : "status"} className="compaction-result">{notice || resultLabel(state)}</div>}
     <div className="compaction-actions"><button type="button" className="btn btn--primary" disabled={executing || running || pending}

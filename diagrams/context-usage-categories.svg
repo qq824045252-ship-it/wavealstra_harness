@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640" role="img" aria-label="上下文用量弹窗分类占比的数据链路">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#6b7280" />
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="640" fill="#f7f8fa" />
+
+  <text x="24" y="34" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700" fill="#1f2328">上下文用量弹窗：六类占比的数据链路（src/renderer/src/components/chat/ContextUsageControl.tsx）</text>
+  <text x="24" y="58" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">所有分类都是 chars ÷ 4 的估算；总量与百分比以 Pi 回报的 usedTokens / contextWindow 为准（真实样本：22,597 / 1,048,000）。实线 = 已实现的数据流，虚线 = 只决定「0% 还是 —」。</text>
+
+  <text x="24" y="92" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">① 数据源（已有，全部只读）</text>
+  <text x="360" y="92" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">② 字符估算（chars ÷ 4 的唯一入口）</text>
+  <text x="700" y="92" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">③ 归一 + 六类分类</text>
+
+  <!-- ① 数据源 -->
+  <rect x="24" y="112" width="310" height="104" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <text x="40" y="134" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">renderer store（同步可用）</text>
+  <text x="40" y="156" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">task.messages / task.historyPage.messages</text>
+  <text x="40" y="176" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">store.skills：name / description / source</text>
+  <text x="40" y="196" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">source = "connector:&lt;id&gt;" → 连接器归属</text>
+
+  <rect x="24" y="236" width="310" height="104" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <text x="40" y="258" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">api.agent.inspectRuntimeContext(taskId)</text>
+  <text x="40" y="280" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">assembly.segments[].chars / .source</text>
+  <text x="40" y="300" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">skillFilter.visible（允许的可见技能名）</text>
+  <text x="40" y="320" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">只读；basis = current_configuration</text>
+
+  <rect x="24" y="360" width="310" height="88" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-dasharray="5 3" />
+  <text x="40" y="382" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">api.mcp.status(taskId)</text>
+  <text x="40" y="404" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">servers[]（!disabled）· totalTools</text>
+  <text x="40" y="424" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">只有「有没有 MCP 工具」，无字符数</text>
+
+  <!-- ② 估算 -->
+  <rect x="360" y="112" width="310" height="104" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <text x="376" y="134" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">estimateChars(messages)</text>
+  <text x="376" y="156" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ dialogChars：text / thinking / callout /</text>
+  <text x="376" y="174" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">detail / file_table / 附件 / 终端上下文</text>
+  <text x="376" y="196" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ toolChars：tool.detail + tool.output</text>
+
+  <rect x="360" y="236" width="310" height="104" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <text x="376" y="258" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">measureAssemblyChars(assembly)</text>
+  <text x="376" y="280" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ systemChars = 非 skill 段 chars 之和</text>
+  <text x="376" y="300" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ skillChars = source==="skill" 段</text>
+  <text x="376" y="320" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ visibleSkills = skillFilter.visible</text>
+
+  <rect x="360" y="360" width="310" height="88" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <text x="376" y="382" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">splitSkillCatalogChars(...)</text>
+  <text x="376" y="404" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">按目录条目字符占比拆分 skillChars</text>
+  <text x="376" y="424" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">→ skills / connectors（0，或 null=未知）</text>
+
+  <!-- ③ buildCategories -->
+  <rect x="700" y="112" width="430" height="336" rx="8" fill="#eef6ff" stroke="#7aa7e0" />
+  <text x="716" y="138" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">buildCategories()（唯一出口，纯函数）</text>
+  <text x="716" y="166" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">1. tokens ≈ chars ÷ 4（CHARS_PER_TOKEN）</text>
+  <text x="716" y="192" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">2. 按 Pi 回报的 used 等比归一 → 六类之和 === used</text>
+  <text x="716" y="218" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">3. 消息正文缺失：余额归「对话消息」（不再是 0%）</text>
+  <text x="716" y="244" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">4. 浮点差额归「对话消息」：误差 &lt; 1 token</text>
+  <text x="716" y="270" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">5. percent = tokens ÷ contextWindow（一位小数）</text>
+  <text x="716" y="296" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">6. tokens &gt; 0 但舍入成 0.0 → 文案「&lt;0.1%」</text>
+  <text x="716" y="322" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">7. used 未知 / 窗口未知 → 六类全部「—」</text>
+  <text x="716" y="348" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">8. MCP：有工具无字符数 → 「—」；无工具 → 0%</text>
+  <text x="716" y="374" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#3d4451">9. skills/connectors：无装配数据 → 「—」</text>
+  <text x="716" y="400" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#8a5a00">⚠ System 提示词在无装配数据时退回启发式</text>
+  <text x="716" y="420" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#8a5a00">  min(used×12%, max(800, window×2%))</text>
+
+  <!-- 箭头 -->
+  <line x1="334" y1="164" x2="356" y2="164" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <line x1="334" y1="288" x2="356" y2="288" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <polyline points="334,320 346,320 346,404 356,404" fill="none" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <line x1="515" y1="340" x2="515" y2="356" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <line x1="670" y1="164" x2="696" y2="164" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <line x1="670" y1="288" x2="696" y2="288" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+  <line x1="670" y1="404" x2="696" y2="404" stroke="#6b7280" stroke-width="1.6" marker-end="url(#arrow)" />
+
+  <!-- MCP 只决定 0% 还是 — （虚线绕开其它箭头） -->
+  <polyline points="179,448 179,478 676,478 676,430 696,430" fill="none" stroke="#6b7280" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#arrow)" />
+  <text x="188" y="472" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#8a5a00">servers=0 且 tools=0 → 成本 0%；否则「—」</text>
+
+  <!-- ④ 分类行 -->
+  <text x="24" y="494" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#1f2328">④ 弹窗分类行（.context-usage-popup-item；百分比 = tokens ÷ contextWindow）</text>
+  <polyline points="800,448 800,505" fill="none" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="300" y1="505" x2="1168" y2="505" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="369" y1="505" x2="369" y2="514" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="515" y1="505" x2="515" y2="514" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="661" y1="505" x2="661" y2="514" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="807" y1="505" x2="807" y2="514" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="953" y1="505" x2="953" y2="514" stroke="#6b7280" stroke-width="1.6" />
+  <line x1="1099" y1="505" x2="1099" y2="514" stroke="#6b7280" stroke-width="1.6" />
+
+  <rect x="300" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="318" cy="538" r="5" fill="#34c759" />
+  <text x="332" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">系统提示词</text>
+  <text x="316" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">实测装配段</text>
+
+  <rect x="446" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="464" cy="538" r="5" fill="#f5a623" />
+  <text x="478" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">工具及子智能体</text>
+  <text x="462" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">工具块字符</text>
+
+  <rect x="592" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="610" cy="538" r="5" fill="#8b5cf6" />
+  <text x="624" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">对话消息</text>
+  <text x="608" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">消息 + 余额</text>
+
+  <rect x="738" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="756" cy="538" r="5" fill="#3b82f6" />
+  <text x="770" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">技能</text>
+  <text x="754" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">目录占比</text>
+
+  <rect x="884" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="902" cy="538" r="5" fill="#94a3b8" />
+  <text x="916" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">MCP</text>
+  <text x="900" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">「—」或 0%</text>
+
+  <rect x="1030" y="516" width="138" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" />
+  <circle cx="1048" cy="538" r="5" fill="#64748b" />
+  <text x="1062" y="543" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#1f2328">连接器</text>
+  <text x="1046" y="566" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">目录占比</text>
+
+  <text x="24" y="626" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#5b6472">真实数据核对（~/.mybuddy/app.db）：装配段 soul:db:33 · mode:user:1543 · skillCatalog:skill:356 · memoryRules:runtime:229 · workspace:runtime:44；context_used_tokens 22,597 / context_window_tokens 1,048,000。</text>
+</svg>

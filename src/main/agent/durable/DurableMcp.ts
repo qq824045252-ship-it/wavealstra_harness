@@ -28,6 +28,23 @@ function visible(server: McpServerConfig, name: string): boolean {
   const pattern = Object.keys(overrides).find(key => new RegExp("^" + key.split("*").map(part => part.replace(/[.*+?^{}$()|[\]\\]/g, "\\$&")).join(".*") + "$").test(name));
   return (overrides[name] ?? (pattern ? overrides[pattern] : undefined) ?? server.exposure) !== "hidden";
 }
+
+/**
+ * 元工具定义实际进入模型上下文的字符数：每个工具的 name + description + JSON.stringify(parameters)。
+ * parameters 是 TypeBox schema，序列化后就是下发给 provider 的形状，因此可以用它做可复现的字符口径
+ * （只是下界：不含 provider 请求体的包装/转义开销，也不含 tokenizer 的边界效应）。
+ * 纯函数：不读环境、不连接任何服务器，便于在测试里直接断言。
+ */
+export function mcpToolDefinitionChars(tools: readonly ToolRegistration[]): number {
+  let chars = 0;
+  for (const tool of tools) {
+    const name = typeof tool.name === "string" ? tool.name : "";
+    const description = typeof tool.description === "string" ? tool.description : "";
+    chars += name.length + description.length + JSON.stringify(tool.parameters ?? {}).length;
+  }
+  return chars;
+}
+
 interface Server {
   config: McpServerConfig;
   client?: McpClient;
@@ -85,6 +102,14 @@ export class DurableMcp implements ExternalEffectRecovery {
         state: server.error ? "failed" : server.client?.connectionState ?? "idle", instructions: server.client?.instructions,
         connectMs: server.connectMs, listToolsMs: server.listToolsMs, error: server.error })), errors: host.errors }) }] }) }));
     return host;
+  }
+
+  /**
+   * 只读上下文成本事实：模型本轮看到的 MCP 元工具定义字符数 / 元工具个数 / 已配置服务器个数。
+   * 不连接服务器、不触发 discovery、不改任何状态，供 `inspectRuntimeContext` 的弹窗投影使用。
+   */
+  contextFacts(): { chars: number; tools: number; servers: number } {
+    return { chars: mcpToolDefinitionChars(this.tools), tools: this.tools.length, servers: this.servers.size };
   }
 
   /** Resolve stored native tool names locally before Durable resumes old native/Code Mode work. */

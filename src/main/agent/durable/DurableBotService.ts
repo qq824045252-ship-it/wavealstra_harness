@@ -116,6 +116,15 @@ export class DurableBotService {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
     return value ? { taskId, ...value } : null;
   }
+  /**
+   * MCP 元工具定义的字符口径（只读投影）：当前已打开 bot 的元工具字符数 / 元工具个数 / 已配置服务数。
+   * 没有已打开的 bot（未启动或已释放）返回 null；不 open()、不建 host、不连接任何服务器、无副作用。
+   */
+  mcpContext(taskId: string): { chars: number; tools: number; servers: number } | null {
+    const open = this.opened.get(taskId);
+    if (!open || open.closing) return null;
+    return open.mcp.contextFacts();
+  }
   private binding(taskId: string): BotBinding | undefined {
     return this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings WHERE task_id = ?").get(taskId) as BotBinding | undefined;
   }
