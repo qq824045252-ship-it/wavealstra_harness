@@ -129,6 +129,7 @@ Windows/Omarchy 原生桌面、移动端、真实供应商账单、外部连接�
 
 ## 6. 最终源码身份
 
+- 实现冻结提交：[`3153cf09125f946eb6d1a3fad7f634d132f242ee`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/3153cf09125f946eb6d1a3fad7f634d132f242ee)，已推送 `main`。后续冻结记录只修改文档，不改变经过门禁的源码。
 - 基线提交：`60a50eec58fbb96cefb1fa4690e430546f2bb57d`。
 - 冻结源码范围：`src/`、`scripts/`、`package.json` 相对基线的变更文件；本轮共 18 个，`package.json` 本身未变。
 - source SHA-256：`cd7c759ccbc14a170b8824586b7a19a1ad70ef03c9731e4b874d7ea690141b26`。
