@@ -74,3 +74,5 @@ Windows 原生桌面尝试使用隔离测试窗口，未操作用户业务窗口
 因此本阶段的结论是：组件行为、故障恢复和 headless 门禁成立，BW-A31 的真实 Windows 桌面输入链仍受阻（前台停在 `ShellExperienceHost` 通知窗口，目标窗口聚焦返回 `FOCUS_FAILED`，未操作用户业务窗口、未关闭用户进程）；Linux/Omarchy、移动端与发行包桌面未运行，Phase 3 不得整体标记验收通过。
 
 用户授权完成实现、更新、提交和推送。没有升级应用版本、运行发布 build/pack/dist、安装或更新快捷方式。
+
+冻结的源码提交：`238bb999f25f9b9fd8bfd208c9ac9f0aa13db4af`（`feat(bot-work): complete Phase 3 resource gating, settlement and collaboration`）。上述门禁在该提交的工作树上运行，本记录随其后一次文档提交落库。
