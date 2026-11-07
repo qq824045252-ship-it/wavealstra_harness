@@ -2,7 +2,7 @@
 
 实施日期：2026-11-06；交付记录更新：2026-11-07。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
-**最新待执行阶段：** [Phase 4 执行规划](bot-work-phase4-execution-plan.md)（2026-11-07，审核基线 `main@e454341ae3268e7a2ab1cdbc55d84231171f0aa3`）。规划已确认，P4-00～P4-08 待 agent 实施，BW-A36～BW-A41 尚未验收。Phase 3 最新加固证据以 [后续复核报告](reviews/bot-work-phase3-followup-2026-11-07.md) 为准；下文原始实施/测试记录保留为各次执行的历史证据。
+**最新待执行阶段：** [Phase 5 执行规划](bot-work-phase5-execution-plan.md)（2026-11-07，已核对远端审核基线 `main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`）。规划已确认，P5-00～P5-08 待实施，BW-A42～BW-A46 与第 9 节十步故事尚未完成阶段验收。Phase 4 已实施并加固，冻结实现为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`；最新验证边界以 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) 为准，两轮 Linux 全量均为 344 passed / 1 failed，整体验收仍未完成。下文各次实施/测试记录保留为历史证据，本轮只更新规划入口，不将既有测试结果改写为 Phase 5 通过。
 
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
@@ -135,7 +135,7 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 
 ## Phase 4 规划与执行入口（2026-11-07）
 
-**状态：规划已确认，待 agent 实施，尚未验收。** 完整任务书为 [bot-work-phase4-execution-plan.md](bot-work-phase4-execution-plan.md)，执行入口为 [GitHub Issue #16](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/16)。基于已核对远端的 `main@e454341ae3268e7a2ab1cdbc55d84231171f0aa3`，覆盖 BW-A36～BW-A41，按 M1～M3 连续完成 P4-00～P4-08。
+**规划提交时状态（历史记录）：规划已确认，待 agent 实施，尚未验收。** 后续实施与加固结果见本节下方记录，当前待执行阶段已转为 Phase 5。完整任务书为 [bot-work-phase4-execution-plan.md](bot-work-phase4-execution-plan.md)，执行入口为 [GitHub Issue #16](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/16)。基于已核对远端的 `main@e454341ae3268e7a2ab1cdbc55d84231171f0aa3`，覆盖 BW-A36～BW-A41，按 M1～M3 连续完成 P4-00～P4-08。
 
 - M1：真实来源接线、多订阅独立路由、分目标 source-version 比较、固定合并上界/冻结批次、each 队列与有限持久溢出和来源背压。
 - M2：单权威宿主中的注入时钟、IANA/DST 唯一 tick、时钟跳变、宿主/来源离线事实、latest/each/skip 补处理与零 Hook 承诺到期跟进。
@@ -161,3 +161,27 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 恢复测试改为真实核对被强杀 PID 与持久租约到期，并在全量中串行执行该重型套件；原 timeout、业务断言和失败白名单均保持。最终 `pnpm -s typecheck` 通过；两轮完整 `pnpm -s test:all` 均为 **344 passed / 1 failed / 0 known failed / 1 new regression，退出码 1**，唯一失败 `test:atspi-transport` 在基线源码快照也以 D-Bus socket EPERM 复现。两轮 Phase 4 六项、Phase 3 九项以及恢复/性能专项均通过，恢复套件分别 22.8s / 22.7s。
 
 真实 `pnpm dev` 已尝试，Electron 启动时被 Unix socket EPERM 阻碍，新增按钮实际点击仍为 blocked；不宣称全量门禁全绿、Windows 瞬时失败已完成复验或 Phase 4 整体验收完成。schema 保持 33，版本保持 0.1.107，无发布 build/pack/dist。冻结源码指纹 `cd7c759ccbc14a170b8824586b7a19a1ad70ef03c9731e4b874d7ea690141b26`；完整事实、门禁和逐文件指纹见 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md)。
+
+## Phase 5 规划与执行入口（2026-11-07）
+
+**状态：规划已确认，P5-00～P5-08 待实施，尚未验收。** 完整任务书为 [bot-work-phase5-execution-plan.md](bot-work-phase5-execution-plan.md)。审核基线为已读取远端确认的 `main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`，Phase 4 实现冻结 SHA 为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`。覆盖 BW-A42～BW-A46、冻结验收第 9 节十步故事，终局逐项核对 BW-A01～BW-A46、R09/R10 与 UI-01～UI-10。
+
+| 里程碑 | 规划内容 | 完成判据 |
+| --- | --- | --- |
+| M1（P5-01～P5-03） | 原 accept/close 事务补齐唯一语义卡片；真实通知宿主接线、渠道幂等/回查及 unknown；当前负责人汇总、多专家降噪、服务端阅读事实 | 崩溃/重放只恢复原投递；卡片不重复；不可确认渠道不盲重发；阅读不改变 Work 控制状态 |
+| M2（P5-04～P5-05） | 桌面/手机持久 journal 同步、Remote 权限/API/store/UI 接入；epoch/scope 全量替换；摘要与按需诊断、版本化未验证范围；双页面与 Bot 配置审阅 | 旧缓存不压住新真源；同 stateVersion 的阅读/投递仍同步；用户能按版本追溯产物、交接、回执和实测缺口 |
+| M3（P5-06～P5-08） | 同库原生十步故事、有限 watch 关闭与对照 B 隔离、三项专项/前序回归、全景证据与实机台账 | 真实原执行恢复、成功分支不重跑、手机反馈绑定原测试产物、可信入口关闭；门禁及剩余 blocked 如实记录 |
+
+本规划已按当前代码校正以下实施要点：
+
+- `acceptDeliverable/closeWork` 已有即时事务，`work_notifications.semantic_key` 已唯一；新增 `work_result_cards` 是已有验收事实的持久投影，不是第二套 Work 或通知真源。
+- 当前通知接口是 `idempotent + lookup`，未有独立 payload hash；自动重试的稳定 provider 效果键必须与本地 attempt 分开。Work 通知生产 drain/真实渠道接线列为明确交付项，不以 fixture 类测试替代。
+- 实际文件为 `src/main/agent/work/WorkProjectionJournal.ts`、`shared/src/remote-contract.ts`；Work 的 epoch/sequence 与 Durable 对话 epoch/revision、SSE 事件 ID 分责。Remote 转发 patch 不代表手机已有 Work 同步/页面。
+- 全量重建必须替换跨 epoch 的旧投影；已读返回服务端持久事实，不能以客户端时间或 Work 控制版本推导。
+- 有限 watch 已有按 Work 停订阅及可信关闭守卫；十步故事补有效唤醒清理/隔离断言，沿用可信用户入口。Omarchy 反馈须绑定实际 input/source/artifact 版本，不能仅凭相同 intentRevision 验证修复后的新产物。
+- Schema 基于本基线预计 33→34，实施时按当前常量核对；不做旧数据/旧 Pi 兼容，保留不兼容库改名备份。应用版本保持本轮未变。
+
+**本次仅提交规划与实施索引，P5 清单全部未勾选。** 核对了固定 SHA 的设计、验收、代码接线、文件路径、相对链接和文档差异；没有运行 Phase 5 功能门禁，没有开始实现或启动外部执行 agent。
+
+前序证据继续保留：Phase 4 两轮 Linux 全量均为 **344 passed / 1 failed，exit 1**；真实 dev 因 Unix socket EPERM 受阻。Windows 恢复/BW-A31、宿主 D-Bus/AT-SPI、真实 dev 点击、Omarchy、桌面/手机 Remote、外部连接器与真实用量仍按任务书分别补证。缺少必要证据时不能宣称 Phase 5 或 BOT-WORK-1.0 整体验收完成；发行包只在另行发布授权下验证。
+
