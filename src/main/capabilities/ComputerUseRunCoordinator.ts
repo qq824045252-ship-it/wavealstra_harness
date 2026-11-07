@@ -1,3 +1,4 @@
+import type { ResourceRecoveryAttempt } from "../../shared/resource-recovery";
 import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
 import { releaseHeldInput, waitForHeldInputRelease } from "../platform/computer-use/heldInput";
 import { computerUseOverlayService } from "./ComputerUseOverlayService";
@@ -63,19 +64,21 @@ export class ComputerUseRunCoordinator {
     return signal;
   }
 
-  cancel(taskId: string): void {
+  cancel(taskId: string, recovery?: ResourceRecoveryAttempt): void {
+    recovery?.assertCurrent();
     const state = this.runs.get(taskId);
     if (!state) return;
     state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。"));
     computerUseOverlayService.settle(taskId, "failed", 500);
-    releaseHeldInput(taskId);
+    releaseHeldInput(taskId, recovery);
   }
 
-  async cancelAndWait(taskId: string): Promise<{ inputReleased: true; queueDrained: true; receipt: string }> {
+  async cancelAndWait(taskId: string, recovery?: ResourceRecoveryAttempt): Promise<{ inputReleased: true; queueDrained: true; receipt: string }> {
+    recovery?.assertCurrent();
     const hasRun = this.runs.has(taskId);
-    this.cancel(taskId);
-    if (!hasRun) releaseHeldInput(taskId);
-    return waitForHeldInputRelease(taskId);
+    this.cancel(taskId, recovery);
+    if (!hasRun) releaseHeldInput(taskId, recovery);
+    return waitForHeldInputRelease(taskId, recovery);
   }
 
   prepare(input: ComputerExecInput): ComputerExecInput {

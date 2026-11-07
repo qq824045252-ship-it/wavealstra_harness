@@ -1,10 +1,11 @@
+import type { ResourceRecoveryAttempt } from "../../../shared/resource-recovery";
 import type { WorkResourceOwner } from "../work/WorkResourceGate";
 import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -545,22 +546,29 @@ export class DurableBotService {
   }
 
   /** Native graph proof for resource recovery. Root status alone is never sufficient. */
-  async resourceQuiescence(owner: WorkResourceOwner): Promise<{ executionStopped: boolean; ownedChildrenStopped: boolean; receipt: string }> {
+  async resourceQuiescence(owner: WorkResourceOwner, recovery?: ResourceRecoveryAttempt): Promise<{ executionStopped: boolean; ownedChildrenStopped: boolean; receipt: string }> {
+    recovery?.assertCurrent();
+    const probeContext = recovery ? withAbortSignal(recovery.signal, context) : context;
     const stored = this.binding(owner.taskId);
     if (!stored || stored.directory !== owner.durableStoreKey || stored.cwd !== owner.workspaceBinding)
       throw new Error("资源恢复与原生存储命名空间不一致");
     const open = await this.open(owner.taskId);
-    const graph = await open.runtime.harness.inspect(context);
+    recovery?.assertCurrent();
+    const graph = await open.runtime.harness.inspect(probeContext);
+    recovery?.assertCurrent();
     const tasks = await open.runtime.conversation.commit(async tx => {
       const statuses: Array<{ id: number; terminal: boolean }> = [];
       let cursor: Cursor | undefined;
       do {
+        recovery?.assertCurrent();
         const page = await tx.scanTasks({}, 200, cursor);
+        recovery?.assertCurrent();
         for (const task of page.items) statuses.push({ id: task.id, terminal: task.state.status === "terminal" });
         cursor = page.next;
       } while (cursor);
       return statuses;
-    }, context);
+    }, probeContext);
+    recovery?.assertCurrent();
     const quiet = graph.tasks.length === 0 && tasks.every(task => task.terminal);
     return { executionStopped: quiet, ownedChildrenStopped: quiet,
       receipt: JSON.stringify({ taskId: owner.taskId, store: owner.durableStoreKey, conversationId: owner.conversationId,

@@ -1,3 +1,6 @@
+import { WINDOWS_SHELL_OVERLAY_NATIVE_MATCH } from "./windowsShellOverlayPolicy";
+import { WINDOWS_OWNED_INPUT_SCRIPT } from "./windowsOwnedInputScript";
+
 /**
  * Persistent Windows automation host. Stdout is reserved for one NDJSON
  * response per request; diagnostics use stderr so protocol framing is stable.
@@ -42,7 +45,12 @@ public static class MyBuddyWindowsAutomation {
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr SetActiveWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetWindowsDirectory(StringBuilder buffer, uint size);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint source, uint target, bool attach);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int command);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
@@ -70,6 +78,40 @@ public static class MyBuddyWindowsAutomation {
     var text = new StringBuilder(512); GetClassName(hWnd, text, text.Capacity); return text.ToString();
   }
   public static uint ProcessId(IntPtr hWnd) { uint pid; GetWindowThreadProcessId(hWnd, out pid); return pid; }
+  public static string WindowsDirectory() {
+    var directory = new StringBuilder(32768);
+    uint size = GetWindowsDirectory(directory, (uint)directory.Capacity);
+    return size > 0 && size < directory.Capacity ? directory.ToString() : "";
+  }
+  public static string ProcessImagePath(uint processId) {
+    IntPtr process = OpenProcess(0x1000, false, processId);
+    if (process == IntPtr.Zero) return "";
+    try {
+      var path = new StringBuilder(32768); uint size = (uint)path.Capacity;
+      return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : "";
+    } finally { CloseHandle(process); }
+  }
+  private static bool SameWindowIdentity(IntPtr hWnd, uint processId, string className) {
+    return hWnd != IntPtr.Zero && IsWindow(hWnd) && ProcessId(hWnd) == processId && ClassName(hWnd) == className;
+  }
+  private static bool IsKnownShellOverlay(IntPtr hWnd) {
+    string className = ClassName(hWnd), imagePath = ProcessImagePath(ProcessId(hWnd));
+    if (String.IsNullOrEmpty(WindowsDirectory()) || String.IsNullOrEmpty(imagePath)) return false;
+    return ${WINDOWS_SHELL_OVERLAY_NATIVE_MATCH};
+  }
+  public static bool TryDismissShellOverlay(IntPtr target, uint targetPid, string targetClass,
+      IntPtr overlay, uint overlayPid, string overlayClass, string overlayPath) {
+    if (target == overlay || !SameWindowIdentity(target, targetPid, targetClass) || !IsWindowVisible(target)
+        || !SameWindowIdentity(overlay, overlayPid, overlayClass) || !IsWindowVisible(overlay)
+        || GetForegroundWindow() != overlay || !IsKnownShellOverlay(overlay)
+        || !String.Equals(ProcessImagePath(overlayPid), overlayPath, StringComparison.OrdinalIgnoreCase)) return false;
+    // Never turn Escape into a chord, or release input held by the user/another task.
+    for (int key = 1; key < 255; key++) if ((GetAsyncKeyState(key) & 0x8000) != 0) return false;
+    // No async work between this last identity/foreground check and the atomic key pair.
+    if (!SameWindowIdentity(target, targetPid, targetClass) || !SameWindowIdentity(overlay, overlayPid, overlayClass)
+        || !IsKnownShellOverlay(overlay) || GetForegroundWindow() != overlay) return false;
+    return SendKeyChord(new byte[] { 0x1B });
+  }
   public static bool ForceForeground(IntPtr hWnd) {
     uint ignored;
     uint currentThread = GetCurrentThreadId();
@@ -145,14 +187,23 @@ public static class MyBuddyWindowsAutomation {
       INPUT release = pair.Value; release.U.ki.dwFlags |= 0x0002; releases.Add(release);
     }
     if (releases.Count == 0) return;
-    INPUT[] releaseArray = releases.ToArray();
     for (int attempt = 0; attempt < 2; attempt++) {
-      if (SendInput((uint)releaseArray.Length, releaseArray, Marshal.SizeOf(typeof(INPUT))) == (uint)releaseArray.Length) break;
+      var stillOwned = new List<INPUT>();
+      foreach (INPUT release in releases) { string control = InputControl(release); if (control != null && OwnsControl(control)) stillOwned.Add(release); }
+      INPUT[] releaseArray = stillOwned.ToArray();
+      if (releaseArray.Length == 0) break;
+      uint released = SendInput((uint)releaseArray.Length, releaseArray, Marshal.SizeOf(typeof(INPUT)));
+      RecordInserted(releaseArray, released);
+      if (released == (uint)releaseArray.Length) break;
     }
   }
+${WINDOWS_OWNED_INPUT_SCRIPT}
   private static bool SendBatch(IList<INPUT> inputs) {
-    var array = new INPUT[inputs.Count]; inputs.CopyTo(array, 0);
+    var array = PrepareOwnedInput(inputs);
+    if (array == null) return false;
+    if (array.Length == 0) return true;
     uint inserted = SendInput((uint)array.Length, array, Marshal.SizeOf(typeof(INPUT)));
+    RecordInserted(array, inserted);
     if (inserted == (uint)array.Length) return true;
     if (inserted > 0) CompensatePartial(array, inserted);
     return false;
@@ -370,13 +421,44 @@ function Resolve-Target($target, [bool]$allowMissing = $false) {
   return $matches[0]
 }
 
+function Get-FocusForegroundObject([IntPtr]$handle) {
+  $window = Get-WindowObject $handle
+  if ($null -eq $window) { return $null }
+  $window['processPath'] = [MyBuddyWindowsAutomation]::ProcessImagePath([uint32]$window.processId)
+  $window['windowsDirectory'] = [MyBuddyWindowsAutomation]::WindowsDirectory()
+  return $window
+}
+
+function Confirm-FocusGuard($target, $window) {
+  $expected = $target.expectedFocusWindow
+  if ($null -eq $expected) { return $null }
+  if ($expected.handle -cne $window.handle -or [int]$expected.processId -ne [int]$window.processId -or $expected.className -cne $window.className -or
+      $expected.dpi -ne $window.dpi -or $expected.scaleFactor -ne $window.scaleFactor -or
+      $expected.clientOrigin.x -ne $window.clientOrigin.x -or $expected.clientOrigin.y -ne $window.clientOrigin.y -or
+      $expected.clientRect.width -ne $window.clientRect.width -or $expected.clientRect.height -ne $window.clientRect.height -or
+      $expected.windowRect.left -ne $window.windowRect.left -or $expected.windowRect.top -ne $window.windowRect.top -or
+      $expected.windowRect.width -ne $window.windowRect.width -or $expected.windowRect.height -ne $window.windowRect.height) {
+    return New-ErrorResult 'STALE_OBSERVATION' 'Target changed during native focus recovery; observe again' @{ expected = $expected; current = $window }
+  }
+  return $null
+}
+
 function Focus-Target($target) {
   $window = Resolve-Target $target
   if ($null -ne $window.__error) { return $window }
+  $guard = Confirm-FocusGuard $target $window
+  if ($null -ne $guard) { return $guard }
   if (-not $window.visible) { return New-ErrorResult 'WINDOW_NOT_VISIBLE' 'Target window is not visible' $window }
   $handle = [IntPtr]::new([Int64]::Parse($window.handle))
   $before = [MyBuddyWindowsAutomation]::GetForegroundWindow().ToInt64().ToString()
-  if ($window.minimized) { $null = [MyBuddyWindowsAutomation]::ShowWindow($handle, 9) }
+  $boundTarget = @{ windowHandle = $window.handle; expectedProcessId = $window.processId; className = $window.className }
+  # Restore only the requested target if it is actually minimized. Never minimize
+  # other applications or change foreground-lock policy to make focus succeed.
+  if ($window.minimized) {
+    $current = Resolve-Target $boundTarget
+    if ($null -ne $current.__error) { return $current }
+    if ($current.minimized) { $null = [MyBuddyWindowsAutomation]::ShowWindow($handle, 9) }
+  }
   $null = [MyBuddyWindowsAutomation]::ForceForeground($handle)
   $after = [MyBuddyWindowsAutomation]::GetForegroundWindow()
   for ($attempt = 0; $attempt -lt 20 -and $after -ne $handle; $attempt++) {
@@ -384,9 +466,33 @@ function Focus-Target($target) {
     $after = [MyBuddyWindowsAutomation]::GetForegroundWindow()
   }
   if ($after -ne $handle) {
-    return New-ErrorResult 'FOCUS_FAILED' 'Target window did not become foreground' @{ expected = $window.handle; foregroundBefore = $before; foregroundAfter = $after.ToInt64().ToString() }
+    return New-ErrorResult 'FOCUS_FAILED' 'Target window did not become foreground' @{
+      expected = $window.handle; foregroundBefore = $before; foregroundAfter = $after.ToInt64().ToString()
+      focusAttempt = @{ beforeInput = $true; targetWindow = $window; foregroundWindow = Get-FocusForegroundObject $after }
+    }
   }
-  return [ordered]@{ focused = $true; foregroundBefore = $before; foregroundAfter = $after.ToInt64().ToString(); window = Get-WindowObject $handle }
+  $current = Resolve-Target $boundTarget
+  if ($null -ne $current.__error) { return $current }
+  $guard = Confirm-FocusGuard $target $current
+  if ($null -ne $guard) { return $guard }
+  if (-not $current.foreground) { return New-ErrorResult 'FOCUS_FAILED' 'Target lost foreground during focus verification' $current }
+  return [ordered]@{ focused = $true; foregroundBefore = $before; foregroundAfter = $after.ToInt64().ToString(); window = $current }
+}
+
+function Dismiss-ShellOverlay($target, $overlay) {
+  $window = Resolve-Target $target
+  if ($null -ne $window.__error) { return $window }
+  $targetHandle = [IntPtr]::new([Int64]::Parse($window.handle))
+  $overlayHandle = [IntPtr]::new([Int64]::Parse([string]$overlay.handle))
+  $sent = [MyBuddyWindowsAutomation]::TryDismissShellOverlay($targetHandle, [uint32]$window.processId, [string]$window.className,
+    $overlayHandle, [uint32]$overlay.processId, [string]$overlay.className, [string]$overlay.processPath)
+  if (-not $sent) { return @{ dismissed = $false; escapeSent = $false; reason = 'overlay-identity-focus-or-input-changed' } }
+  $after = [MyBuddyWindowsAutomation]::GetForegroundWindow()
+  for ($attempt = 0; $attempt -lt 12 -and $after -eq $overlayHandle; $attempt++) {
+    Start-Sleep -Milliseconds 25
+    $after = [MyBuddyWindowsAutomation]::GetForegroundWindow()
+  }
+  return @{ dismissed = ($after -ne $overlayHandle); escapeSent = $true; foregroundAfter = $after.ToInt64().ToString() }
 }
 
 function Get-PatternNames($element) {
@@ -551,10 +657,16 @@ function Get-MouseFlags([string]$button, [bool]$down) {
 
 function Invoke-Dispatch([string]$action, $params) {
   switch ($action) {
+    'release_owned_input' {
+      $ok = [MyBuddyWindowsAutomation]::ReleaseOwnedInput([string]$params.inputOwner, [string]$params.expectedInputHost, [string[]]@($params.controls))
+      if (-not $ok) { return New-ErrorResult 'HOST_UNAVAILABLE' 'Original owned input ledger or release proof is unavailable; input remains quarantined' }
+      return @{ inputReleased = $true }
+    }
     'active_window' { $handle = [MyBuddyWindowsAutomation]::GetForegroundWindow(); return Get-WindowObject $handle }
     'list_windows' { return @(Get-TopWindows $true) }
     'inspect_window' { return Resolve-Target $params.target }
     'focus_window' { return Focus-Target $params.target }
+    'dismiss_shell_overlay' { return Dismiss-ShellOverlay $params.target $params.overlay }
     'wait_for_window' {
       $timeout = if ($null -ne $params.timeoutMs) { [Math]::Min(30000, [Math]::Max(100, [int]$params.timeoutMs)) } else { 5000 }
       $state = if ([string]::IsNullOrWhiteSpace([string]$params.state)) { 'visible' } else { [string]$params.state }
@@ -642,7 +754,8 @@ function Invoke-Dispatch([string]$action, $params) {
       }
       $point = Get-ClientPoint $params.target $params.x $params.y; if ($null -ne $point.__error) { return $point }
       $guard = Confirm-InputTarget $point.window; if ($null -ne $guard) { return $guard }
-      $downs = @(); if ($null -ne $params.modifiers) { $downs = @($params.modifiers | ForEach-Object { [byte][int]$_ }) }
+      if ([MyBuddyWindowsAutomation]::OwnsControl('mouse:' + $button)) { return New-ErrorResult 'TARGET_CHANGED' 'Release the owned mouse button before starting a separate click' @{ inputNotStarted = $true } }
+      $downs = @(); if ($null -ne $params.modifiers) { $downs = @($params.modifiers | ForEach-Object { [byte][int]$_ } | Where-Object { -not [MyBuddyWindowsAutomation]::OwnsControl('key:' + [string]$_ + ':0:0') }) }
       $ok = $true
       if ($downs.Count -gt 0) { $ok = [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]$downs, [byte[]]@()) }
       if ($ok) {
@@ -654,7 +767,7 @@ function Invoke-Dispatch([string]$action, $params) {
           $ok = [MyBuddyWindowsAutomation]::SendMouseClickAtCount($point.x, $point.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $count, 60)
         }
       }
-      if ($downs.Count -gt 0) { $null = [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]@(), [byte[]]$downs) }
+      if ($downs.Count -gt 0) { $ok = [MyBuddyWindowsAutomation]::SendKeyStates([byte[]]@(), [byte[]]$downs) -and $ok }
       if (-not $ok) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic click injection failed' $point }
       return $point
     }
@@ -678,12 +791,14 @@ function Invoke-Dispatch([string]$action, $params) {
       if ($start.window.handle -ne $finish.window.handle -or $start.window.processId -ne $finish.window.processId) { return New-ErrorResult 'TARGET_CHANGED' 'Target changed while preparing drag' }
       $guard = Confirm-InputTarget $finish.window; if ($null -ne $guard) { return $guard }
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      if ([MyBuddyWindowsAutomation]::OwnsControl('mouse:' + $button)) { return New-ErrorResult 'TARGET_CHANGED' 'Release the owned mouse button before starting a separate drag' @{ inputNotStarted = $true } }
       $steps = if ($null -ne $params.steps) { [Math]::Min(60, [Math]::Max(1, [int]$params.steps)) } else { 12 }
       $duration = if ($null -ne $params.durationMs) { [Math]::Min(10000, [Math]::Max(0, [int]$params.durationMs)) } else { 0 }
       if (-not [MyBuddyWindowsAutomation]::SendMouseDragTimed($start.x, $start.y, $finish.x, $finish.y, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $steps, $duration)) { return New-ErrorResult 'TARGET_CHANGED' 'Atomic drag injection failed' $finish }; return $finish
     }
     'drag_screen' {
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      if ([MyBuddyWindowsAutomation]::OwnsControl('mouse:' + $button)) { return New-ErrorResult 'TARGET_CHANGED' 'Release the owned mouse button before starting a separate drag' @{ inputNotStarted = $true } }
       $steps = if ($null -ne $params.steps) { [Math]::Min(60, [Math]::Max(1, [int]$params.steps)) } else { 12 }
       $duration = if ($null -ne $params.durationMs) { [Math]::Min(10000, [Math]::Max(0, [int]$params.durationMs)) } else { 0 }
       if (-not [MyBuddyWindowsAutomation]::SendMouseDragTimed([int]$params.x, [int]$params.y, [int]$params.x2, [int]$params.y2, (Get-MouseFlags $button $true), (Get-MouseFlags $button $false), $steps, $duration)) { return New-ErrorResult 'TARGET_CHANGED' 'Cross-window drag injection failed' }; return @{ legacy = $true; crossWindow = $true }
@@ -707,11 +822,13 @@ function Invoke-Dispatch([string]$action, $params) {
     'mouse_move' { if (-not [MyBuddyWindowsAutomation]::SetCursorPos([int]$params.x,[int]$params.y)) { return New-ErrorResult 'TARGET_CHANGED' 'Legacy cursor positioning failed' }; return @{ legacy = $true } }
     'mouse_click' {
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      if ([MyBuddyWindowsAutomation]::OwnsControl('mouse:' + $button)) { return New-ErrorResult 'TARGET_CHANGED' 'Release the owned mouse button before starting a separate click' @{ inputNotStarted = $true } }
       $ok = if ($null -ne $params.x -and $null -ne $params.y) { [MyBuddyWindowsAutomation]::SendMouseClickAt([int]$params.x,[int]$params.y,(Get-MouseFlags $button $true),(Get-MouseFlags $button $false)) } else { [MyBuddyWindowsAutomation]::SendMouseClickCurrent((Get-MouseFlags $button $true),(Get-MouseFlags $button $false)) }
       if (-not $ok) { return New-ErrorResult 'TARGET_CHANGED' 'Legacy atomic click injection failed' }; return @{ legacy = $true }
     }
     'mouse_drag' {
       $button = if ([string]::IsNullOrWhiteSpace([string]$params.button)) { 'left' } else { [string]$params.button }
+      if ([MyBuddyWindowsAutomation]::OwnsControl('mouse:' + $button)) { return New-ErrorResult 'TARGET_CHANGED' 'Release the owned mouse button before starting a separate drag' @{ inputNotStarted = $true } }
       if (-not [MyBuddyWindowsAutomation]::SendMouseDrag([int]$params.x,[int]$params.y,[int]$params.x2,[int]$params.y2,(Get-MouseFlags $button $true),(Get-MouseFlags $button $false))) { return New-ErrorResult 'TARGET_CHANGED' 'Legacy atomic drag injection failed' }; return @{ legacy = $true }
     }
     'scroll' { if (-not [MyBuddyWindowsAutomation]::SendScrollCurrent([int]$params.deltaX,[int]$params.deltaY)) { return New-ErrorResult 'TARGET_CHANGED' 'Legacy atomic scroll injection failed' }; return @{ legacy = $true } }
@@ -792,9 +909,14 @@ while ($true) {
   $request = $null
   try {
     $request = $line | ConvertFrom-Json
-    $result = Invoke-Dispatch ([string]$request.action) $request.params
+    $inputOwner = if ([string]::IsNullOrWhiteSpace([string]$request.params.inputOwner)) { '__direct__' } else { [string]$request.params.inputOwner }
+    [MyBuddyWindowsAutomation]::BeginInput($inputOwner)
+    if (-not [string]::IsNullOrWhiteSpace([string]$request.params.expectedInputHost) -and [string]$request.params.expectedInputHost -cne [MyBuddyWindowsAutomation]::InputHostInstance) {
+      $result = New-ErrorResult 'HOST_UNAVAILABLE' 'Original input host changed; previous held input cannot be assumed released' @{ inputNotStarted = $true }
+    } else { $result = Invoke-Dispatch ([string]$request.action) $request.params }
     if ($null -ne $result.__error) { $response = @{ id = [string]$request.id; ok = $false; error = $result.__error } }
     else { $response = @{ id = [string]$request.id; ok = $true; result = $result } }
+    $response['inputState'] = @{ hostInstance = [MyBuddyWindowsAutomation]::InputHostInstance; owner = $inputOwner; controls = @([MyBuddyWindowsAutomation]::OwnedInputControls($inputOwner)) }
   } catch {
     $response = @{ id = if ($null -ne $request) { [string]$request.id } else { '' }; ok = $false; error = @{ code = 'HOST_PROTOCOL_ERROR'; message = $_.Exception.Message } }
     [Console]::Error.WriteLine('[WindowsAutomationHost] ' + $_.Exception.ToString())

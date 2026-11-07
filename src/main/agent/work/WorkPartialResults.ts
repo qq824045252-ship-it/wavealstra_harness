@@ -53,7 +53,11 @@ export class WorkPartialResults {
   gaps(workId: string): WorkSubitemDto[] {
     const work = this.works.getWork(workId);
     if (!work) return [];
-    const all = this.list(workId).filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId);
+    const all = this.list(workId).filter(item => {
+      const binding = this.works.repo.getBinding(item.bindingId);
+      return item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
+        && binding && this.works.collaboration.isDelegationAdopted(binding, work);
+    });
     return all.filter(item => item.required && item.outcome !== "completed" && !this.resolvedByContinuation(item));
   }
   settle(binding:WorkExecutionBindingDto):void {
@@ -128,7 +132,7 @@ export class WorkPartialResults {
   continue(work: WorkDto, params: ContinuationWorkParams, now: number): { ok: true; outboxEventId?:string } | Extract<WorkControlResult, { ok: false }> {
     if (!this.db.inTransaction) throw new Error("缺口计划必须通过 Work 控制事务");
     const source = this.works.repo.getBinding(params.sourceBindingId);
-    if (!source || source.workId !== work.workId || source.intentRevision !== work.intentRevision || source.inputSnapshotId !== work.inputSnapshotId)
+    if (!source || !this.works.collaboration.isDelegationAdopted(source, work))
       return { ok: false, code: "version_conflict", message: "缺口执行不属于当前输入要求" };
     if (!["completed","failed","stopped"].includes(source.status) || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
       return { ok: false, code: "unsettled_effects", message: "原执行或外部效果尚未核对，不能补跑" };

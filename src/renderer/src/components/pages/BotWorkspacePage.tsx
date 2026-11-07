@@ -152,6 +152,7 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
   const [question, setQuestion] = useState("");
   const [controlNotice, setControlNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [safeRecovery, setSafeRecovery] = useState<string | null>(null);
   const operations = useRef(new Map<string, string>());
   const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
   const operation = (key: string) => {
@@ -163,7 +164,7 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
   const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
   const control = async (request: WorkPhase3ControlRequest) => {
     setBusy(true);
-    const requestId = request.kind === "continue" || request.kind === "handoff" ? request.request.operationId
+    const requestId = request.kind === "continue" || request.kind === "handoff" || request.kind === "retry_resource_recovery" ? request.request.operationId
       : request.kind === "collaborate" ? request.request.messageId : undefined;
     const original = requestId ? controlRequests.current.get(requestId) ?? request : request;
     if (requestId) controlRequests.current.set(requestId, original);
@@ -199,6 +200,24 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         <h3>执行情况</h3>
         {work.lifecycle === "paused" && <p>{work.phase3.settlingActions ? "已暂停，正在结算在途操作" : "已暂停"}，积压 {work.phase3.pausedEventCount} 条事件。</p>}
         {work.phase3.resourceWaits.map(reason => <p role="status" key={reason}>{reason}</p>)}
+        {work.phase3.resourceRecoveries.map(recovery => {
+          const confirmationKey = `${recovery.token}:${recovery.attempts}:${recovery.exhaustedAt}:${work.stateVersion}`;
+          const resourceLabel = recovery.resourceKinds.some(kind => kind === "desktop" || kind === "browser") ? "桌面或浏览器输入" : "共享资源";
+          return <article key={recovery.token} aria-label="资源隔离恢复">
+            <p role="status">{resourceLabel}仍被隔离。{recovery.reason}</p>
+            {recovery.pendingProbe && <p>恢复核对仍有在途步骤，资源继续隔离。</p>}
+            {recovery.exhaustedAt !== undefined && !recovery.pendingProbe && <>
+              <p>自动核对已停止。请先收起遮挡面板并确认旧操作已经停止，再重新核对。只有执行、输入清理和原操作效果均得到确认后，资源才会释放。</p>
+              <label><input type="checkbox" checked={safeRecovery === confirmationKey} disabled={busy}
+                onChange={event => setSafeRecovery(event.target.checked ? confirmationKey : null)} />我已确认环境安全，可以重新核对</label>
+              <button type="button" disabled={busy || safeRecovery !== confirmationKey}
+                onClick={() => { void control({ kind: "retry_resource_recovery", request: {
+                  operationId: operation(`recovery:${confirmationKey}`), workId: work.workId, token: recovery.token,
+                  expectedAttempts: recovery.attempts, expectedExhaustedAt: recovery.exhaustedAt!, confirmEnvironmentSafe: true, versionGuard,
+                } }); }}>重新核对隔离资源</button>
+            </>}
+          </article>;
+        })}
         <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>
         {work.phase3.gaps.map(gap => <article key={gap.factId}>
           <p>{gap.task || gap.summary} · {{ completed: "已完成", blocked: "受阻", rejected: "未获准启动", failed: "失败", stopped: "已停止", unknown: "效果待核对", not_started: "尚未启动" }[gap.outcome]}</p>

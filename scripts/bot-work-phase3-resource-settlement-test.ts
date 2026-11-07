@@ -77,14 +77,14 @@ try {
           BEGIN SELECT RAISE(ABORT,'injected admission finalize failure'); END;`);
         db.connection.prepare("INSERT INTO phase3_finalize_fault(admission_id) VALUES (?)").run(admitted.admission.admissionId);
       }
-      let callbacks = 0;
+      let callbacks = 0, recoveryClock = Date.now();
       const recovery = new WorkResourceRecovery(db.connection, works.resourceGate, {
         transaction:fn=>works.transaction(fn),
         inspectExecution: async () => ({ executionStopped: true, ownedChildrenStopped: true, receipt: "fixture-original-execution-and-owned-tasks-terminal" }),
         drainInput: async () => ({ queueDrained: true, inputReleased: true, receipt: "file-only-action-no-input-driver" }),
         verifyEffect: async original => readResourceEffectEvidence(db.connection, original),
         onRecovered: original => { callbacks++; works.finalizeRecoveredResource(original); },
-      });
+      }, () => recoveryClock);
       const beforeRecoveryEmissions=emissions.length;
       await recovery.recover();
       if (injectRollback) {
@@ -93,20 +93,20 @@ try {
         assert.equal(works.repo.getAdmission(admitted.admission.admissionId)?.state, "unknown");
         assert.equal(works.repo.getBlocker(originalBlocker.blockerId)?.status, "open");
         assert.equal(works.getWork(created.workId)?.lifecycle, "closing");
-        assert.equal(emissions.length,beforeRecoveryEmissions,"rolled-back admission settlement emits no projection");
+        assert(emissions.slice(beforeRecoveryEmissions).every(value => value.lifecycle === "closing"), "recovery status may publish, but rolled-back admission settlement cannot publish closed work");
         const failed = z.object({ receipt_json: z.string().nullable(), reason: z.string().nullable() }).parse(db.connection.prepare("SELECT receipt_json,reason FROM work_resource_recovery WHERE token=?").get(lease.token));
         assert.equal(failed.receipt_json, null); assert(failed.reason?.includes("injected admission finalize failure"));
         db.connection.exec("DROP TRIGGER reject_admission_finalize; DROP TABLE phase3_finalize_fault;");
         // A later failure occurs after Work finalization has queued its projection.
         // The outer WorkService transaction must discard that projection too.
-        db.connection.exec(`CREATE TEMP TRIGGER reject_recovery_receipt BEFORE INSERT ON work_resource_recovery
+        db.connection.exec(`CREATE TEMP TRIGGER reject_recovery_receipt BEFORE UPDATE OF receipt_json ON work_resource_recovery
           WHEN NEW.receipt_json IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected recovery receipt failure'); END;`);
-        recovery.retryWork(created.workId); await recovery.recover(); assert.equal(callbacks,2);
+        recoveryClock += 10_000; await recovery.recover(); assert.equal(callbacks,2);
         assert.equal(works.resourceGate.leaseState(lease),"quarantined");assert.equal(works.repo.getAdmission(admitted.admission.admissionId)?.state,"unknown");
         assert.equal(works.repo.getBlocker(originalBlocker.blockerId)?.status,"open");assert.equal(works.getWork(created.workId)?.lifecycle,"closing");
-        assert.equal(emissions.length,beforeRecoveryEmissions,"post-finalization rollback cannot leak a closed snapshot");
+        assert(emissions.slice(beforeRecoveryEmissions).every(value => value.lifecycle === "closing"), "post-finalization rollback cannot leak a closed snapshot");
         db.connection.exec("DROP TRIGGER reject_recovery_receipt;");
-        recovery.retryWork(created.workId); await recovery.recover(); assert.equal(callbacks, 3);
+        recoveryClock += 10_000; await recovery.recover(); assert.equal(callbacks, 3);
       }
       assert.equal(works.resourceGate.leaseState(lease), "released");
       assert.equal(works.repo.getAdmission(admitted.admission.admissionId)?.state, "consumed");

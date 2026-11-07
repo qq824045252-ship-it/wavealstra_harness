@@ -42,3 +42,13 @@ export interface WorkContinuationDto {
   intentRevision: number; inputSnapshotId: string; ownerEpoch: number; ownerBotId: string;
   state: "pending" | "dispatched" | "settled" | "cancelled"; reason: string; createdAt: number;
 }
+
+/** Persisted quarantine checks. Retrying never grants or releases the resource. */
+export interface WorkResourceRecoveryDto {
+  token: number;
+  resourceKinds: string[];
+  attempts: number;
+  pendingProbe?: boolean;
+  exhaustedAt?: number;
+  reason?: string;
+}

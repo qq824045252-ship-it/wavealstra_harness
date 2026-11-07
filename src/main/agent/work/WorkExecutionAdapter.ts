@@ -37,7 +37,7 @@ export class WorkExecutionAdapter {
     private readonly userId: string,
     private readonly isAuthority: () => boolean,
     private readonly onError: (bindingId: string, error: unknown) => void,
-    private readonly resourceRecovery?: Pick<WorkResourceRecovery, "recover" | "retryWork">,
+    private readonly resourceRecovery?: Pick<WorkResourceRecovery, "recover">,
   ) {}
 
   async dispatch(actor: WorkActor, input: Omit<DispatchExecutionParams, keyof WorkExecutionNamespace> & { taskId: string }): Promise<WorkControlResult> {
@@ -69,7 +69,6 @@ export class WorkExecutionAdapter {
   }
 
   wakeWork(workId: string): void {
-    if (this.isAuthority()) this.resourceRecovery?.retryWork(workId);
     if (this.isAuthority()) for (const binding of this.service.repo.listBindings(workId)) this.service.nativeResults.allowInspect(binding.bindingId);
     this.wake();
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { WindowsComputerUseFixture as ComputerAutomationService } from "./windows-input-fixture";
 import { prepareComputerUseInput } from "../src/main/capabilities/ComputerUsePolicy";
 import { planComputerUseRecovery } from "../src/main/capabilities/ComputerUseRecoveryPolicy";
 import { computerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
@@ -92,9 +92,15 @@ async function cancellationCase(action: "mouse_click" | "wait_for_window"): Prom
   assert.throws(() => computerUseRunCoordinator.complete(input, { action }), isCancelled);
   computerUseRunCoordinator.endTask(taskId, "failed");
   pending = false;
-  const next = await service.execute(input, parent.signal);
-  assert.equal(next.action, action, "A new parent run may use CU after endTask releases the cancelled run");
-  assert.equal(calls.filter(called => called === action).length, 2);
+  if (action === "mouse_click") {
+    await assert.rejects(service.execute(input, parent.signal), (error: unknown) => error instanceof WindowsAutomationError && error.code === "HOST_UNAVAILABLE",
+      "endTask cannot prove physical UP after a cancelled emitter returned no ownership receipt");
+    assert.equal(calls.filter(called => called === action).length, 1);
+  } else {
+    const next = await service.execute(input, parent.signal);
+    assert.equal(next.action, action, "A new parent run may use CU after a cancelled read-only wait");
+    assert.equal(calls.filter(called => called === action).length, 2);
+  }
   computerUseRunCoordinator.endTask(taskId);
 }
 

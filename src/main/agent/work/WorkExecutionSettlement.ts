@@ -32,7 +32,12 @@ export function settleWorkExecution({ repo, work, binding, params, now, commitUs
   const needsBlocker = status === "unknown" && !repo.listOpenBlockers(work.workId).some(item => item.unknownExternalEffectRef === unknownRef);
   if (terminal.has(binding.status) && status !== binding.status
     || binding.status === status && !usagePending && !needsBlocker && !needsUsageBlocker && !(usageUnknown && reservation?.state === "reserved")) {
-    return { ok: true, replayed: true, operationId: binding.operationId, work };
+    // A retained native fact may have already settled usage while adoption was
+    // pending. Clearing its final blocker must still finish a later cancellation.
+    const settlement = tryClose(work, now);
+    const latest = repo.getWork(work.workId)!;
+    return { ok: true, replayed: latest.stateVersion === work.stateVersion, operationId: binding.operationId,
+      work: latest, outboxEventId: settlement.ok ? settlement.outboxEventId : undefined };
   }
   repo.updateBinding({
     ...binding,

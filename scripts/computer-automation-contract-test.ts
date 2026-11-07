@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { WindowsComputerUseBackend as ComputerAutomationService } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { WindowsComputerUseFixture as ComputerAutomationService } from "./windows-input-fixture";
+import { WindowsComputerUseBackend } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { setHeldInputReleaser, waitForHeldInputRelease, onHeldInputReleased } from "../src/main/platform/computer-use/heldInput";
+import { computerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
 import { WINDOWS_AUTOMATION_HOST_SCRIPT } from "../src/main/platform/computer-use/windows/windowsAutomationHostScript";
+import { requestWithWindowsFocusRecovery, type WindowsFocusRecoveryBudget } from "../src/main/platform/computer-use/windows/WindowsFocusRecovery";
+import { isKnownWindowsShellOverlay, WINDOWS_SHELL_OVERLAY_NATIVE_MATCH } from "../src/main/platform/computer-use/windows/windowsShellOverlayPolicy";
+import { planComputerUseRecovery } from "../src/main/capabilities/ComputerUseRecoveryPolicy";
 import {
   WINDOWS_AUTOMATION_ERROR_CODES,
   WindowsAutomationError,
@@ -51,7 +57,268 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<void
   await assert.rejects(promise, (error: unknown) => error instanceof WindowsAutomationError && error.code === code);
 }
 
+async function testFocusRecovery(): Promise<void> {
+  const target = windowFixture({ foreground: false });
+  const overlay = {
+    handle: "880", processId: 88, processName: "ShellExperienceHost", className: "Windows.UI.Core.CoreWindow",
+    processPath: "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+    windowsDirectory: "C:\\Windows", visible: true, foreground: true,
+  };
+  assert.equal(isKnownWindowsShellOverlay(overlay), true);
+  for (const invalid of [
+    { ...overlay, processName: "ordinary-app" },
+    { ...overlay, className: "Chrome_WidgetWin_1" },
+    { ...overlay, processPath: "C:\\Users\\user\\ShellExperienceHost.exe" },
+    { ...overlay, processPath: "" }, { ...overlay, foreground: false }, { ...overlay, processId: 0 },
+  ]) assert.equal(isKnownWindowsShellOverlay(invalid), false, "class/name alone must not authorize Escape");
+  assert.ok(WINDOWS_AUTOMATION_HOST_SCRIPT.includes(WINDOWS_SHELL_OVERLAY_NATIVE_MATCH), "native input guard must consume the same narrow allowlist");
+
+  function fixture(options: {
+    foreground?: unknown; proofTarget?: WindowInfo; current?: WindowInfo; beforeInput?: boolean;
+    noProof?: boolean; dismissed?: boolean; failRetry?: boolean; onDismiss?: () => void;
+    beforeInputState?: unknown; afterInputState?: unknown; inspectFails?: boolean;
+  } = {}) {
+    const calls: string[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    let attempts = 0, effects = 0;
+    const inputState = { owner: "__direct__", hostInstance: "focus-native-host", controls: [] };
+    const fail = () => new WindowsAutomationError("FOCUS_FAILED", "controlled native focus failure", options.noProof ? {} : {
+      focusAttempt: { beforeInput: options.beforeInput ?? true, targetWindow: options.proofTarget ?? target, foregroundWindow: options.foreground ?? overlay },
+      ownedInputState: "beforeInputState" in options ? options.beforeInputState : inputState,
+    });
+    const params = { target: { windowHandle: target.handle, expectedProcessId: target.processId }, x: 10, y: 20 };
+    const request = (async (action: string, supplied: unknown, _timeout?: number, signal?: AbortSignal) => {
+      calls.push(action); signals.push(signal);
+      if (action === "dismiss_shell_overlay") {
+        assert.deepEqual((supplied as { overlay: unknown }).overlay, options.foreground ?? overlay);
+        assert.equal((supplied as { inputOwner: string }).inputOwner, inputState.owner);
+        assert.equal((supplied as { expectedInputHost: string }).expectedInputHost, inputState.hostInstance);
+        options.onDismiss?.();
+        return { dismissed: options.dismissed ?? true, ownedInputState: "afterInputState" in options ? options.afterInputState : inputState };
+      }
+      if (action === "inspect_window") {
+        if (options.inspectFails) throw new WindowsAutomationError("WINDOW_NOT_FOUND", "target disappeared after Escape", { ownedInputState: { ...inputState, hostInstance: "unrelated-inspection-host" } });
+        return options.current ?? target;
+      }
+      const replay = supplied as { target: { expectedFocusWindow?: WindowInfo } };
+      assert.deepEqual(supplied, { ...params, ...(attempts > 0 ? { inputOwner: inputState.owner, expectedInputHost: inputState.hostInstance } : {}),
+        target: { ...params.target, ...(attempts > 0 && action !== "focus_window" ? { expectedFocusWindow: target } : {}) } },
+        "retry must keep the original params/coordinates and pin native focus to the original snapshot");
+      if (attempts > 0 && action !== "focus_window") assert.strictEqual(replay.target.expectedFocusWindow, target);
+      if (++attempts === 1 || options.failRetry) throw fail();
+      return { effect: ++effects };
+    }) as Parameters<typeof requestWithWindowsFocusRecovery>[0];
+    const run = (budget: WindowsFocusRecoveryBudget = { attempted: false }, signal?: AbortSignal, action: "click_client" | "focus_window" = "click_client") =>
+      requestWithWindowsFocusRecovery(request, action, params, target, budget, signal);
+    return { calls, signals, run, get effects() { return effects; } };
+  }
+
+  const success = fixture(), signal = new AbortController().signal, budget = { attempted: false };
+  await success.run(budget, signal);
+  assert.deepEqual(success.calls, ["click_client", "dismiss_shell_overlay", "inspect_window", "click_client"]);
+  assert.equal(success.effects, 1, "only the unstarted target input is retried, exactly once");
+  assert.ok(success.signals.every((item) => item === signal), "all recovery RPCs must keep cancellation");
+  assert.equal(budget.attempted, true);
+
+  for (const options of [
+    { foreground: { ...overlay, processName: "ordinary-app" } },
+    { noProof: true }, { beforeInput: false },
+    { beforeInputState: undefined },
+    { beforeInputState: { owner: "foreign", hostInstance: "focus-native-host", controls: [] } },
+    { beforeInputState: { owner: "__direct__", hostInstance: "focus-native-host", controls: ["key:16:0:0"] } },
+    { proofTarget: windowFixture({ processId: 999 }) },
+    { proofTarget: windowFixture({ handle: "999" }) },
+  ]) {
+    const denied = fixture(options);
+    await expectCode(denied.run(), "FOCUS_FAILED");
+    assert.deepEqual(denied.calls, ["click_client"], "unproven/preexisting effects or wrong identities must not trigger Escape/replay");
+    assert.equal(denied.effects, 0);
+  }
+  for (const afterInputState of [undefined,
+    { owner: "foreign", hostInstance: "focus-native-host", controls: [] },
+    { owner: "__direct__", hostInstance: "replacement-host", controls: [] },
+    { owner: "__direct__", hostInstance: "focus-native-host", controls: ["key:27:0:0"] },
+  ]) {
+    const noReleaseProof = fixture({ afterInputState });
+    await expectCode(noReleaseProof.run(), "HOST_PROTOCOL_ERROR");
+    assert.deepEqual(noReleaseProof.calls, ["click_client", "dismiss_shell_overlay"], "unproven Escape UP must stop before target inspection/replay");
+  }
+  const inspectionFailed = fixture({ inspectFails: true });
+  await assert.rejects(inspectionFailed.run(), (error: unknown) => {
+    assert(error instanceof WindowsAutomationError && error.code === "WINDOW_NOT_FOUND");
+    const details = error.details as { shellOverlayRecoveryAttempted?: boolean; ownedInputState?: { hostInstance: string } };
+    assert.equal(details.shellOverlayRecoveryAttempted, true);
+    assert.equal(details.ownedInputState?.hostInstance, "focus-native-host", "inspection errors retain the confirmed Escape UP receipt, never unrelated/older proof");
+    return true;
+  });
+  const changedBefore = fixture({ proofTarget: windowFixture({ dpi: 192 }) });
+  await expectCode(changedBefore.run(), "STALE_OBSERVATION");
+  assert.deepEqual(changedBefore.calls, ["click_client"]);
+  for (const current of [windowFixture({ dpi: 192 }), windowFixture({ processId: 999 }), windowFixture({ className: "ReusedClass" })]) {
+    const changedAfter = fixture({ current });
+    await expectCode(changedAfter.run(), "STALE_OBSERVATION");
+    assert.deepEqual(changedAfter.calls, ["click_client", "dismiss_shell_overlay", "inspect_window"]);
+    assert.equal(changedAfter.effects, 0, "recovery cannot refresh a moved/reused target into valid coordinates");
+  }
+  const abort = new AbortController();
+  const cancelled = fixture({ onDismiss: () => abort.abort() });
+  await expectCode(cancelled.run(undefined, abort.signal), "REQUEST_CANCELLED");
+  assert.deepEqual(cancelled.calls, ["click_client", "dismiss_shell_overlay"]);
+  const preCancelled = fixture();
+  await expectCode(preCancelled.run(undefined, abort.signal), "REQUEST_CANCELLED");
+  assert.equal(preCancelled.calls.length, 0);
+
+  for (const refused of [fixture({ dismissed: false }), fixture({ failRetry: true })]) {
+    let failure: unknown;
+    try { await refused.run(); } catch (error) { failure = error; }
+    assert(failure instanceof WindowsAutomationError);
+    assert.equal(planComputerUseRecovery(failure, { action: "click_client", windowHandle: target.handle }, 0)?.retry, false,
+      "the outer task retry must not reset the one-Escape budget");
+    assert.equal(refused.calls.filter((action) => action === "dismiss_shell_overlay").length, 1);
+  }
+  const nextBatchStep = fixture();
+  await expectCode(nextBatchStep.run(budget), "FOCUS_FAILED");
+  assert.deepEqual(nextBatchStep.calls, ["click_client"], "a later batch step shares the same Escape budget");
+  const restoreOnly = fixture({ current: windowFixture({ clientRect: { x: 0, y: 0, width: 800, height: 600 } }) });
+  await restoreOnly.run(undefined, undefined, "focus_window");
+  assert.equal(restoreOnly.calls.filter((action) => action === "focus_window").length, 2,
+    "focus-only recovery can restore the target's size without replaying coordinates");
+
+  // Exercise the production backend wiring, including a fresh budget for a later execute.
+  let current = target, focuses = 0, dismissals = 0;
+  const service = new ComputerAutomationService({
+    pid: 888,
+    request: async (action: string) => {
+      if (action === "inspect_window") return current;
+      if (action === "list_windows") return [current];
+      if (action === "dismiss_shell_overlay") { dismissals++; return { dismissed: true }; }
+      if (action === "focus_window") {
+        if (++focuses % 2 === 1) throw new WindowsAutomationError("FOCUS_FAILED", "native overlay", {
+          focusAttempt: { beforeInput: true, targetWindow: current, foregroundWindow: overlay },
+        });
+        current = { ...current, foreground: true }; return { window: current };
+      }
+      throw new Error(`Unexpected focus fixture action: ${action}`);
+    },
+  } as never);
+  for (let index = 0; index < 2; index++) {
+    current = { ...current, foreground: false };
+    const output = await service.execute({ action: "focus_window", windowHandle: target.handle });
+    assert.equal(output.window?.foreground, true);
+  }
+  assert.equal(dismissals, 2, "independent execute calls each receive one bounded recovery attempt");
+  assert.equal(focuses, 4);
+
+  const batchCalls: number[] = [], batchEffects: number[] = [];
+  let batchDismissals = 0;
+  const batchService = new ComputerAutomationService({
+    request: async (action: string, params: { x?: number }) => {
+      if (action === "inspect_window") return target;
+      if (action === "list_windows") return [target];
+      if (action === "dismiss_shell_overlay") { batchDismissals++; return { dismissed: true }; }
+      if (action === "click_client") {
+        batchCalls.push(params.x!);
+        if (params.x === 3 || (params.x === 2 && batchCalls.filter((value) => value === 2).length === 1)) {
+          throw new WindowsAutomationError("FOCUS_FAILED", "overlay between batch steps", {
+            focusAttempt: { beforeInput: true, targetWindow: target, foregroundWindow: overlay },
+          });
+        }
+        batchEffects.push(params.x!); return {};
+      }
+      throw new Error(`Unexpected batch focus fixture action: ${action}`);
+    },
+  } as never);
+  await assert.rejects(batchService.execute({ windowHandle: target.handle, settleMs: 0,
+    actions: [1, 2, 3].map((x) => ({ action: "click_client" as const, x, y: 1 })),
+  }), (error: unknown) => {
+    assert(error instanceof WindowsAutomationError);
+    assert.equal((error.details as { batch: { completedSteps: number } }).batch.completedSteps, 2);
+    return error.code === "FOCUS_FAILED";
+  });
+  assert.deepEqual(batchEffects, [1, 2], "completed batch steps must never be replayed during focus recovery");
+  assert.deepEqual(batchCalls, [1, 2, 2, 3]);
+  assert.equal(batchDismissals, 1, "a second obstructed batch step cannot send a second Escape");
+}
+
+async function testWindowsOwnedInput(): Promise<void> {
+  const taskId = "windows-owned-input-proof", window = windowFixture();
+  const own = new Set<string>(), physical = new Set<string>(["user:Control", "other-driver:right"]);
+  const events: string[] = [];
+  let started!: () => void, finish!: () => void, receipts = 0, releases = 0;
+  const releaseStarted = new Promise<void>(resolve => { started = resolve; });
+  const releaseGate = new Promise<void>(resolve => { finish = resolve; });
+  const backend = new WindowsComputerUseBackend({
+    waitForQuiescence: async () => {},
+    request: async (action: string, params: { inputOwner: string; expectedInputHost?: string; controls?: string[] }) => {
+      if (action === "inspect_window") return window;
+      if (action === "list_windows") return [window];
+      if (action === "key_down") { own.add("key:16:0:0"); physical.add("driver:Shift"); events.push("down"); }
+      else if (action === "mouse_down_client") { own.add("mouse:left"); physical.add("driver:left"); events.push("mouse-down"); }
+      else if (action === "release_owned_input") {
+        releases++; events.push("release-start");
+        assert.equal(params.expectedInputHost, "original-host");
+        assert.deepEqual(new Set(params.controls), own, "cleanup may request only the original driver's recorded controls");
+        started(); await releaseGate;
+        own.clear(); physical.delete("driver:Shift"); physical.delete("driver:left"); events.push("up");
+        return { inputReleased: true, ownedInputState: { owner: params.inputOwner, hostInstance: "original-host", controls: [] } };
+      } else throw new Error(`Unexpected owned input fixture action: ${action}`);
+      return { ownedInputState: { owner: params.inputOwner, hostInstance: "original-host", controls: [...own] } };
+    },
+  } as never);
+  setHeldInputReleaser((owner, recovery) => backend.releaseHeldInput(owner, recovery));
+  const unsubscribe = onHeldInputReleased((owner) => {
+    if (owner !== taskId) return;
+    assert(events.includes("up"), "no resource-release receipt may be broadcast before actual owned UP finishes");
+    events.push("receipt"); receipts++;
+  });
+  try {
+    await backend.execute({ action: "key_down", taskId, key: "Shift", windowHandle: window.handle, observeAfter: false });
+    await backend.execute({ action: "mouse_down_client", taskId, x: 10, y: 10, windowHandle: window.handle, observeAfter: false });
+    computerUseRunCoordinator.endTask(taskId);
+    await releaseStarted;
+    assert.equal(receipts, 0);
+    assert(physical.has("driver:Shift"));
+    const cleanup = waitForHeldInputRelease(taskId);
+    finish(); await cleanup;
+    assert.equal(receipts, 1);
+    assert.deepEqual(events, ["down", "mouse-down", "release-start", "up", "receipt"]);
+    assert.deepEqual(physical, new Set(["user:Control", "other-driver:right"]), "cleanup never releases user or other-driver controls");
+    await backend.releaseHeldInput(taskId);
+    assert.equal(releases, 1, "a repeated cleanup cannot emit a second UP for the same held generation");
+  } finally { finish(); unsubscribe(); setHeldInputReleaser(undefined); computerUseRunCoordinator.endTask(taskId); }
+
+  for (const mode of ["missing", "wrong-owner", "transport-unknown", "changed-host", "incomplete"] as const) {
+    let upCalls = 0;
+    const uncertain = new WindowsComputerUseBackend({
+      waitForQuiescence: async () => {},
+      request: async (action: string, params: { inputOwner: string }) => {
+        if (action === "inspect_window") return window;
+        if (action === "list_windows") return [window];
+        if (action === "key_down") {
+          if (mode === "transport-unknown") throw new WindowsAutomationError("REQUEST_TIMEOUT", "unknown DOWN delivery");
+          if (mode === "missing") return {};
+          return { ownedInputState: { owner: mode === "wrong-owner" ? "foreign" : params.inputOwner, hostInstance: "original-host", controls: ["key:16:0:0"] } };
+        }
+        if (action === "release_owned_input") {
+          upCalls++;
+          return { inputReleased: true, ownedInputState: { owner: params.inputOwner, hostInstance: mode === "changed-host" ? "replacement-empty-host" : "original-host",
+            controls: mode === "incomplete" ? ["key:16:0:0"] : [] } };
+        }
+        throw new Error(action);
+      },
+    } as never);
+    const down = uncertain.execute({ action: "key_down", key: "Shift", windowHandle: window.handle, observeAfter: false });
+    if (mode === "changed-host" || mode === "incomplete") await down;
+    else await expectCode(down, mode === "transport-unknown" ? "REQUEST_TIMEOUT" : "HOST_PROTOCOL_ERROR");
+    await expectCode(uncertain.releaseHeldInput(), "HOST_UNAVAILABLE");
+    assert.equal(upCalls, mode === "changed-host" || mode === "incomplete" ? 1 : 0, "unknown DOWN cannot authorize a blind cleanup");
+    await expectCode(uncertain.releaseHeldInput(), "HOST_UNAVAILABLE");
+  }
+}
+
 async function main(): Promise<void> {
+  await testFocusRecovery();
+  await testWindowsOwnedInput();
   const extensionSource = readFileSync(resolve("src/main/capabilities/builtin-capability-extension.ts"), "utf8");
   const serviceSource = readFileSync(resolve("src/main/platform/computer-use/windows/WindowsComputerUseBackend.ts"), "utf8");
   for (const action of requiredActions) {
@@ -287,7 +554,7 @@ async function main(): Promise<void> {
   await service.execute({ action: "key_up", windowHandle: current.handle, key: "Shift", observeAfter: false });
   assert.equal(lastKeyAction, "key_up");
 
-  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture + batch + app session + input primitives + window filtering)`);
+  console.log(`computer automation contract PASS (${requiredActions.length} actions, ${readonlyActions.length} always-readonly + conditional capture + batch + app session + input primitives + window filtering + bounded verified shell-overlay focus recovery)`);
 }
 
 void main();

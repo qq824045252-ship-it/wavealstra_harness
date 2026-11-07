@@ -145,12 +145,15 @@ export class WindowsAutomationHost {
     clearTimeout(pending.timer);
     this.pending.delete(response.id);
     if (response.ok) {
-      pending.resolve(response.result);
+      pending.resolve(response.inputState && response.result && typeof response.result === "object" && !Array.isArray(response.result)
+        ? { ...response.result, ownedInputState: response.inputState } : response.result);
       return;
     }
     const code = response.error?.code;
     const normalizedCode = WINDOWS_AUTOMATION_ERROR_CODES.includes(code as never) ? code! : "HOST_PROTOCOL_ERROR";
-    pending.reject(new WindowsAutomationError(normalizedCode, response.error?.message ?? "Windows automation request failed", response.error?.details));
+    const details = response.error?.details;
+    pending.reject(new WindowsAutomationError(normalizedCode, response.error?.message ?? "Windows automation request failed",
+      response.inputState ? { ...(details && typeof details === "object" ? details : { details }), ownedInputState: response.inputState } : details));
   }
 
   private handleExit(generation: number, error: Error): void {

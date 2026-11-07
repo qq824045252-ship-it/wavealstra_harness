@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { fileResourceIdentity, resourcePathContains } from "../../platform/resource-identity";
 import { resolvedPathKey } from "../../platform/paths";
+import type { WorkResourceRecoveryDto } from "../../../shared/bot-work-phase3";
 
 export const workResourceOwnerSchema = z.object({ taskId: z.string().min(1), durableStoreKey: z.string().min(1),
   conversationId: z.string().min(1), workspaceBinding: z.string().min(1), bindingId: z.string().optional(), workId: z.string().optional(),
@@ -238,6 +239,16 @@ export class WorkResourceGate {
   waiting(workId: string): string[] {
     return this.db.prepare("SELECT owner_json,reason FROM work_resource_waiters WHERE deadline_at>?").all(this.now()).map(row => z.object({ owner_json: z.string(), reason: z.string() }).parse(row))
       .filter(row => workResourceOwnerSchema.parse(JSON.parse(row.owner_json)).workId === workId).map(row => row.reason);
+  }
+  recoveryStatus(workId: string): WorkResourceRecoveryDto[] {
+    return this.db.prepare(`SELECT lease.token,lease.resources_json,recovery.attempts,recovery.exhausted_at,recovery.reason
+      FROM work_resource_leases lease JOIN work_resource_recovery recovery ON recovery.token=lease.token
+      WHERE lease.state='quarantined' AND json_extract(lease.owner_json,'$.workId')=? ORDER BY lease.token`).all(workId).map(row => {
+      const value = z.object({ token: z.number(), resources_json: z.string(), attempts: z.number(),
+        exhausted_at: z.number().nullable(), reason: z.string().nullable() }).parse(row);
+      return { token: value.token, resourceKinds: [...new Set(z.array(workResourceSchema).parse(JSON.parse(value.resources_json)).map(resource => resource.kind))],
+        attempts: value.attempts, exhaustedAt: value.exhausted_at ?? undefined, reason: value.reason ?? undefined };
+    });
   }
   cancelWaiting(input: { workId?: string; taskId?: string; actionId?: string }): number {
     if (!input.workId && !input.taskId && !input.actionId) throw new Error("取消资源等待必须指定真实作用域");

@@ -1,3 +1,4 @@
+import type { ResourceRecoveryAttempt } from "../../../../shared/resource-recovery";
 import { isComputerExecReadonly } from "../../../../shared/pi-event-mapper";
 import { withManagedResource } from "../../managed-resources";
 import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
@@ -10,6 +11,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type { NativeImage } from "electron";
 import { windowsAutomationHost, type WindowsAutomationHost } from "./WindowsAutomationHost";
+import { requestWithWindowsFocusRecovery, type WindowsFocusRecoveryBudget } from "./WindowsFocusRecovery";
 import { windowCaptureService, type WindowCaptureService } from "./WindowCaptureService";
 import { computerUseRunCoordinator } from "../../../capabilities/ComputerUseRunCoordinator";
 import { planComputerUseRecovery, withRecoveryDetails, type ComputerUseRecoveryPlan } from "../../../capabilities/ComputerUseRecoveryPolicy";
@@ -24,6 +26,7 @@ import {
   type WindowInfo,
   type HostAction,
   type HostRequestMap,
+  type WindowsOwnedInputState,
 } from "./windowsAutomationProtocol";
 import type { ComputerUseBackend, ComputerUseStatus } from "../backend";
 import {
@@ -55,6 +58,10 @@ const APP_SESSION_TTL_MS = 10 * 60_000;
 const MAX_APP_SESSIONS = 8;
 const MODIFIER_VK: Record<ComputerModifier, number> = { ctrl: 0x11, shift: 0x10, alt: 0x12, win: 0x5b };
 const OCR_TIMEOUT_MS = 30_000;
+const INPUT_EDGE_ACTIONS = new Set<HostAction>(["focus_window", "key_down", "key_up", "key_press", "type_text",
+  "mouse_down_client", "mouse_up_client", "click_client", "drag_client", "drag_screen", "mouse_click", "mouse_drag",
+  // These actions may enter the same bounded Escape recovery before acting.
+  "invoke_control", "set_control_value", "move_client", "scroll_client"]);
 const execFileAsync = promisify(execFile);
 
 function parseWindowsOcrOutput(stdout: string): OcrRawText[] {
@@ -283,6 +290,11 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
 
   private readonly observations = new Map<string, CachedObservation>();
   private readonly appSessions = new Map<string, AppSessionInfo>();
+  private readonly focusGuards = new WeakMap<TargetIdentity, WindowInfo>();
+  private focusRecoveryBudget: WindowsFocusRecoveryBudget | undefined;
+  private inputOwner = "__direct__";
+  private readonly ownedInput = new Map<string, WindowsOwnedInputState>();
+  private readonly uncertainInput = new Set<string>();
 
   constructor(
     private readonly host: WindowsAutomationHost = windowsAutomationHost,
@@ -303,13 +315,60 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     };
   }
 
-  async shutdown(): Promise<void> { await this.host.shutdown(); }
+  async shutdown(): Promise<void> {
+    try { await this.releaseHeldInput(); }
+    finally { await this.host.shutdown(); }
+  }
 
   private operationQueue: Promise<unknown> = Promise.resolve();
 
-  async waitForIdle(): Promise<void> {
+  async waitForIdle(recovery?: ResourceRecoveryAttempt): Promise<void> {
+    recovery?.assertCurrent();
+    // Cancellation revokes the receipt, but the original promise must still wait
+    // for queue and process exit so a late native release cannot overlap takeover.
     await this.operationQueue;
     await this.host.waitForQuiescence();
+    recovery?.assertCurrent();
+  }
+
+  releaseHeldInput(taskId?: string, recovery?: ResourceRecoveryAttempt): Promise<{ keys: number[]; buttons: string[] }> {
+    recovery?.assertCurrent();
+    // Reserve the queue synchronously. A later DOWN cannot overtake this UP or
+    // its receipt, including when an old execution ends just before a new one.
+    const cleanup = this.operationQueue.then(async () => {
+      recovery?.assertCurrent();
+      await this.host.waitForQuiescence();
+      recovery?.assertCurrent();
+      if (this.uncertainInput.size) throw new WindowsAutomationError("HOST_UNAVAILABLE", "Windows 输入仍缺少原宿主按压/释放回执，资源保持隔离");
+      const released = { keys: [] as number[], buttons: [] as string[] };
+      for (const [owner, state] of this.ownedInput) {
+        if (taskId !== undefined && owner !== taskId.trim() || !state.controls.length) continue;
+        recovery?.assertCurrent();
+        this.uncertainInput.add(owner);
+        let output: { inputReleased?: boolean; ownedInputState?: unknown };
+        try {
+          output = await this.host.request("release_owned_input", {
+            inputOwner: owner, expectedInputHost: state.hostInstance, controls: [...state.controls],
+          }, undefined, recovery?.signal);
+        } finally {
+          // Host cancellation rejects early; its actual process must be stopped
+          // before retiring this queue barrier or allowing another recovery.
+          await this.host.waitForQuiescence();
+        }
+        recovery?.assertCurrent();
+        const proof = this.readInputState(owner, output.ownedInputState);
+        if (!output.inputReleased || !proof || proof.hostInstance !== state.hostInstance || proof.controls.length) throw new WindowsAutomationError("HOST_UNAVAILABLE", "Windows 原驱动输入释放未获完整回执，资源保持隔离");
+        this.ownedInput.set(owner, proof); this.uncertainInput.delete(owner);
+        for (const control of state.controls) {
+          if (control.startsWith("mouse:")) released.buttons.push(control.slice(6));
+          else released.keys.push(Number(control.split(":")[1]));
+        }
+      }
+      recovery?.assertCurrent();
+      return released;
+    });
+    this.operationQueue = cleanup.catch(() => undefined);
+    return cleanup;
   }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
@@ -321,9 +380,12 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     if (input.taskId) signal = computerUseRunCoordinator.scope(input.taskId, signal);
     assertNotCancelled(signal);
     // Serialize the entire observe/act/verify transaction, not individual Host RPCs.
-    const operation = this.operationQueue.then(() => {
+    const operation = this.operationQueue.then(async () => {
       assertNotCancelled(signal);
-      return this.executeUnlocked(input, signal);
+      this.focusRecoveryBudget = { attempted: false };
+      this.inputOwner = input.taskId?.trim() || "__direct__";
+      try { return await this.executeUnlocked(input, signal); }
+      finally { this.focusRecoveryBudget = undefined; this.inputOwner = "__direct__"; }
     });
     this.operationQueue = operation.catch(() => undefined);
     return checked(() => operation, signal);
@@ -406,7 +468,59 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
   }
 
   private request<TAction extends HostAction, TResult = unknown>(action: TAction, params: HostRequestMap[TAction], signal?: AbortSignal, timeoutMs?: number): Promise<TResult> {
-    return checked(() => this.host.request<TAction, TResult>(action, params, timeoutMs, signal), signal);
+    const target = (params as { target?: TargetIdentity }).target;
+    return checked(async () => {
+      const owner = this.inputOwner;
+      const tracksInput = INPUT_EDGE_ACTIONS.has(action) && !(action === "click_client" && (params as { background?: boolean }).background);
+      const previous = this.ownedInput.get(owner);
+      if (tracksInput) {
+        if (this.uncertainInput.size || [...this.ownedInput].some(([other, state]) => other !== owner && state.controls.length)) {
+          throw new WindowsAutomationError("HOST_UNAVAILABLE", "尚有未结算或其他任务持有的 Windows 输入，拒绝新输入");
+        }
+        this.uncertainInput.add(owner);
+      }
+      const nativeParams = { ...params, inputOwner: owner,
+        ...(previous?.controls.length ? { expectedInputHost: previous.hostInstance } : {}) };
+      try {
+        const output = await requestWithWindowsFocusRecovery<TAction, TResult>(
+          this.host.request.bind(this.host), action, nativeParams, target ? this.focusGuards.get(target) : undefined,
+          this.focusRecoveryBudget, signal, timeoutMs,
+        );
+        if (tracksInput) {
+          const value = output as { ownedInputState?: unknown; completed?: boolean } | undefined;
+          const proof = this.readInputState(owner, value?.ownedInputState);
+          if (proof) { this.ownedInput.set(owner, proof); this.uncertainInput.delete(owner); }
+          else throw new WindowsAutomationError("HOST_PROTOCOL_ERROR", "Windows 输入缺少原宿主所有权回执", { executed: "unknown" });
+        }
+        if (output && typeof output === "object" && !Array.isArray(output)) {
+          const { ownedInputState: _internal, ...visible } = output as Record<string, unknown>;
+          return visible as TResult;
+        }
+        return output;
+      } catch (error) {
+        if (tracksInput) {
+          const details = error instanceof WindowsAutomationError && error.details && typeof error.details === "object"
+            ? error.details as { ownedInputState?: unknown; shellOverlayRecoveryAttempted?: boolean; inputNotStarted?: boolean } : undefined;
+          const proof = this.readInputState(owner, details?.ownedInputState);
+          if (proof) { this.ownedInput.set(owner, proof); this.uncertainInput.delete(owner); }
+          else if (error instanceof WindowsAutomationError && !details?.shellOverlayRecoveryAttempted
+            && (details?.inputNotStarted || ["FOCUS_FAILED", "STALE_OBSERVATION", "WINDOW_NOT_FOUND", "WINDOW_AMBIGUOUS", "WINDOW_NOT_VISIBLE", "POINT_OUTSIDE_CLIENT"].includes(error.code))) {
+            this.uncertainInput.delete(owner);
+          }
+        }
+        throw error;
+      }
+    }, signal);
+  }
+
+  private readInputState(owner: string, value: unknown): WindowsOwnedInputState | undefined {
+    const state = value as Partial<WindowsOwnedInputState> | undefined;
+    if (!state || state.owner !== owner || typeof state.hostInstance !== "string" || !state.hostInstance
+      || !Array.isArray(state.controls) || state.controls.length > 256
+      || state.controls.some(control => typeof control !== "string" || !/^(key:\d+:\d+:[04]|mouse:(left|right|middle))$/.test(control))) return;
+    const previous = this.ownedInput.get(owner);
+    if (previous?.controls.length && previous.hostInstance !== state.hostInstance) return;
+    return { hostInstance: state.hostInstance, owner, controls: [...new Set(state.controls)] };
   }
 
   private async evaluateSemanticOutcome(input: ComputerExecInput, output: ComputerExecOutput, signal?: AbortSignal): Promise<ComputerSemanticOutcome> {
@@ -625,7 +739,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     if (!input.observationId) {
       const current = await this.inspect(requested, signal);
       computerUseRunCoordinator.presentTarget(input, current, "observing");
-      return { windowHandle: current.handle, expectedProcessId: current.processId };
+      return this.bindFocusGuard(current);
     }
     const observation = this.observations.get(input.observationId);
     if (!observation || observation.taskId !== input.taskId) throw new WindowsAutomationError("STALE_OBSERVATION", "Observation is missing or expired", { observationId: input.observationId });
@@ -658,7 +772,13 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       throw new WindowsAutomationError("STALE_OBSERVATION", "Explicit window selector does not match observation", { requested, current });
     }
     computerUseRunCoordinator.presentTarget(input, current, "observing");
-    return { windowHandle: current.handle, expectedProcessId: current.processId };
+    return this.bindFocusGuard(current);
+  }
+
+  private bindFocusGuard(window: WindowInfo): TargetIdentity {
+    const target = { windowHandle: window.handle, expectedProcessId: window.processId };
+    this.focusGuards.set(target, window);
+    return target;
   }
 
   private async captureDesktop(input: ComputerExecInput & { action: ComputerExecAction }, signal?: AbortSignal): Promise<ComputerExecOutput> {

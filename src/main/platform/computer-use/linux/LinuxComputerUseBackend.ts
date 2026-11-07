@@ -1,3 +1,4 @@
+import type { ResourceRecoveryAttempt } from "../../../../shared/resource-recovery";
 import { isComputerExecReadonly } from "../../../../shared/pi-event-mapper";
 import { withManagedResource } from "../../managed-resources";
 import { randomUUID } from "node:crypto";
@@ -344,22 +345,30 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     await this.input.setButtonHeld(button, "up", signal);
     this.heldButtons.delete(button); this.clearHeldTarget(owner); return true;
   }
-  private async releaseOwned(owner?: string): Promise<{ keys: number[]; buttons: string[]; errors: string[] }> {
+  private async releaseOwned(owner?: string, recovery?: ResourceRecoveryAttempt): Promise<{ keys: number[]; buttons: string[]; errors: string[] }> {
+    recovery?.assertCurrent();
     const result = { keys: [] as number[], buttons: [] as string[], errors: [] as string[] };
     const owners = owner ? [owner] : [...new Set([...this.heldKeys.values(), ...this.heldButtons.values()])];
     for (const current of owners) {
+      recovery?.assertCurrent();
       const codes = [...this.heldKeys].filter(([, value]) => value === current).map(([code]) => code);
-      try { result.keys.push(...await this.keysUp(codes, current)); } catch (error) { result.errors.push(errorText(error)); }
+      try { result.keys.push(...await this.keysUp(codes, current, recovery?.signal)); } catch (error) { result.errors.push(errorText(error)); }
+      recovery?.assertCurrent();
       for (const [button, value] of this.heldButtons) if (value === current) {
-        try { if (await this.buttonUp(button, current)) result.buttons.push(button); } catch (error) { result.errors.push(errorText(error)); }
+        recovery?.assertCurrent();
+        try { if (await this.buttonUp(button, current, recovery?.signal)) result.buttons.push(button); } catch (error) { result.errors.push(errorText(error)); }
+        recovery?.assertCurrent();
       }
     }
     if (result.errors.length) { this.recoveryPending = true; this.recoveryReason = result.errors.join("；"); }
     return result;
   }
-  releaseHeldInput(taskId?: string): Promise<{ keys: number[]; buttons: string[] }> {
+  releaseHeldInput(taskId?: string, recovery?: ResourceRecoveryAttempt): Promise<{ keys: number[]; buttons: string[] }> {
+    recovery?.assertCurrent();
     const release = this.queue.then(async () => {
-      const result = await this.releaseOwned(taskId?.trim() || undefined);
+      recovery?.assertCurrent();
+      const result = await this.releaseOwned(taskId?.trim() || undefined, recovery);
+      recovery?.assertCurrent();
       if (result.errors.length) throw new ComputerUseError("HOST_UNAVAILABLE", "未能释放全部输入；新输入已暂停", { cleanup: result });
       return result;
     });

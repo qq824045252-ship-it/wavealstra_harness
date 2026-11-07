@@ -74,6 +74,8 @@ import { WorkNotificationDelivery } from "./WorkNotificationDelivery";
 import { WorkPausedBacklog } from "./WorkPausedBacklog";
 import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
+import type { RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
+import { resourceRecoveryProjection, runResourceRecoveryControl } from "./WorkResourceRecoveryControl";
 
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
@@ -142,9 +144,7 @@ export class WorkService {
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
     this.pausedBacklog = new WorkPausedBacklog(db, this);
-
   }
-
 
   private authorityError(): Fail | undefined {
     if (!this.authority || this.authority()) return undefined;
@@ -229,11 +229,13 @@ export class WorkService {
     const nextSteps: string[] = [];
     if (work.lifecycle === "closing") nextSteps.push("等待在途执行与外部效果结算");
     const resourceWaits = this.resourceGate.waiting(work.workId);
+    const { resourceRecoveries, nextSteps: recoverySteps } = resourceRecoveryProjection(this.db, this.resourceGate, work.workId);
     const settlingActions = Math.max(this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted" || item.state === "unknown").length,
       this.resourceGate.live().filter(lease => lease.owner.workId === work.workId).length);
     const gaps = this.partialResults.gaps(work.workId);
     if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
     for (const reason of resourceWaits) nextSteps.push(reason);
+    nextSteps.push(...recoverySteps);
     if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待定向补跑`);
     if (work.lifecycle !== "closed") {
       for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
@@ -277,7 +279,7 @@ export class WorkService {
       subscriptionIds: subscriptions.map(subscription => subscription.subscriptionId),
       phase3: {
         subitems: this.partialResults.list(work.workId), continuations: this.partialResults.plans(work.workId),
-        gaps, resourceWaits, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
+        gaps, resourceWaits, resourceRecoveries, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
         artifactSnapshotId: this.artifacts.currentSnapshotId(work.workId),
         handoffs: this.collaboration.history(work.workId).filter(message => message.kind === "handoff"),
         collaborationMessages: this.collaboration.history(work.workId),
@@ -813,6 +815,11 @@ export class WorkService {
 
   // ============================================================ delegation
 
+  retryResourceRecovery(actor: WorkActor, params: RetryResourceRecoveryParams): WorkControlResult {
+    return runResourceRecoveryControl(actor, params, this.db, this.resourceGate, this.repo,
+      this.runWorkControl.bind(this), this.outbox.bind(this));
+  }
+
   handoffOwner(actor: WorkActor, params: HandoffOwnerParams): WorkControlResult {
     return this.runWorkControl(actor, "handoffOwner", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"],
@@ -844,7 +851,7 @@ export class WorkService {
       this.repo.updateWork(next);
       this.collaboration.commitHandoffFacts(work, next, params.operationId, now);
       const outboxEventId = this.outbox({
-        work: next, eventType: "work.owner_handed_off", operationId: params.operationId,
+        work: this.repo.getWork(work.workId)!, eventType: "work.owner_handed_off", operationId: params.operationId,
         payload: {
           previousOwnerBotId: work.ownerBotId, newOwnerBotId: target.botId,
           previousEpoch: work.ownerEpoch, newEpoch: next.ownerEpoch,
@@ -1226,10 +1233,14 @@ export class WorkService {
       if (resolved.kind === "bot" && resolved.bot?.botId !== binding.botId && resolved.bot?.botId !== work.ownerBotId) {
         return { ok: false, code: "unauthorized_actor", message: "该 Bot 没有这次执行的委派" };
       }
+      const pendingAdoption = this.collaboration.isDelegationPending(binding, work);
+      if (pendingAdoption && (work.lifecycle === "active" || work.lifecycle === "paused")) {
+        return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管此执行委派；接管后可重试成果提交，当前输入未作废" };
+      }
       // A late result from an invalidated/unknown execution is still recorded, but with
       // the binding's own revision/snapshot as a historical deliverable (R04/R06).
       const now = this.now();
-      const stale = binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
+      const stale = pendingAdoption || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
         || binding.invalidatedAt !== undefined || binding.status === "invalidated";
       const deliverableId = params.deliverableId?.trim() || newId("deliverable");
       const evidenceIds: string[] = [];
@@ -1335,6 +1346,9 @@ export class WorkService {
       }
       if (binding.invalidatedAt || binding.status === "invalidated") {
         return { ok: false, code: "version_conflict", message: "执行已被新要求失效，不能按当前成果验收" };
+      }
+      if (!this.collaboration.isDelegationAdopted(binding, work)) {
+        return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管此执行委派，不能验收成果" };
       }
       if (deliverable.intentRevision !== work.intentRevision) {
         return {
@@ -2195,7 +2209,7 @@ export class WorkService {
       }
       const now = this.now();
       if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork")) {
+        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery")) {
         // Renewing an expired delegation is a user authorization change, not new
         // business execution. Models cannot renew themselves, and the new deadline
         // and capabilities still intersect the current authenticated host grant.

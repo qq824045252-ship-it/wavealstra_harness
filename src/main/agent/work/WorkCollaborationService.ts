@@ -50,6 +50,9 @@ const storedMessageSchema = z.object({ payload_json: z.string(), sender_bot_id: 
   sender_kind: z.enum(["user", "bot", "worker"]), user_id: z.string(), intent_revision: z.number(),
   input_snapshot_id: z.string(), owner_epoch: z.number(), created_at: z.number(), payload_hash: z.string() });
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const currentDelegation = (binding: WorkExecutionBindingDto, work: WorkDto) => binding.workId === work.workId
+  && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId
+  && binding.invalidatedAt === undefined && binding.status !== "invalidated" && binding.ownerEpoch <= work.ownerEpoch;
 type Options = { isAuthority?: () => boolean; now?: () => number };
 type Sender = { kind: "user" | "bot" | "worker"; botId: string | null; userId: string; binding?: WorkExecutionBindingDto };
 
@@ -143,8 +146,7 @@ export class WorkCollaborationService {
       if (sender.kind !== "user" && (sender.kind !== "bot" || sender.botId !== work.ownerBotId)) throw new Error("只有负责人或用户可以准备交接");
       const error = this.handoffError(work, targetBotId);
       if (error) throw new Error(error);
-      const bindingIds = this.works.repo.listBindings(workId).filter(binding => !binding.invalidatedAt
-        && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId).map(binding => binding.bindingId);
+      const bindingIds = this.works.repo.listBindings(workId).filter(binding => currentDelegation(binding, work)).map(binding => binding.bindingId);
       const preparationId = digest([workId, targetBotId, work.stateVersion, work.ownerEpoch]);
       this.db.prepare(`INSERT OR IGNORE INTO work_handoff_preparations(preparation_id,work_id,target_bot_id,state_version,
         owner_epoch,input_snapshot_id,snapshot_json,created_at) VALUES (?,?,?,?,?,?,?,?)`)
@@ -180,7 +182,7 @@ export class WorkCollaborationService {
     const error = this.handoffError(before, next.ownerBotId);
     if (error) throw new Error(error);
     for (const binding of this.works.repo.listBindings(before.workId)) {
-      if (binding.invalidatedAt || binding.intentRevision !== next.intentRevision || binding.inputSnapshotId !== next.inputSnapshotId) continue;
+      if (!currentDelegation(binding, next)) continue;
       const scope = binding.delegatedScope.filter(item => next.authorization.allowedScopes.includes(item));
       this.db.prepare(`INSERT INTO work_delegation_adoptions(binding_id,owner_epoch,adopted_by_bot_id,intent_revision,
         input_snapshot_id,delegated_scope_json,operation_id,created_at) VALUES (?,?,?,?,?,?,?,?)`)
@@ -205,14 +207,22 @@ export class WorkCollaborationService {
     this.db.prepare(`INSERT INTO work_collaboration_messages(message_id,work_id,sender_bot_id,sender_kind,user_id,kind,payload_hash,
       payload_json,intent_revision,input_snapshot_id,owner_epoch,created_at) VALUES (?,?,?,'bot',?,'handoff',?,?,?,?,?,?)`)
       .run(input.messageId, next.workId, before.ownerBotId, next.userId, digest(input), JSON.stringify(input), next.intentRevision, next.inputSnapshotId, next.ownerEpoch, now);
+    // Ordinary handoff has no post-commit adoption gap. If a previously retained
+    // receipt was waiting for adoption, replay it in this same control transaction.
+    this.works.nativeResults.consume(next.workId);
   }
 
   isDelegationAdopted(binding: WorkExecutionBindingDto, work: WorkDto): boolean {
-    if (binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId || binding.invalidatedAt) return false;
+    if (!currentDelegation(binding, work)) return false;
     if (binding.ownerEpoch === work.ownerEpoch) return true;
     return Boolean(this.db.prepare(`SELECT 1 FROM work_delegation_adoptions WHERE binding_id=? AND owner_epoch=?
       AND adopted_by_bot_id=? AND intent_revision=? AND input_snapshot_id=?`).get(binding.bindingId, work.ownerEpoch,
       work.ownerBotId, work.intentRevision, work.inputSnapshotId));
+  }
+
+  /** Missing adoption delays publication, never invalidates otherwise current native facts. */
+  isDelegationPending(binding: WorkExecutionBindingDto, work: WorkDto): boolean {
+    return currentDelegation(binding, work) && binding.ownerEpoch < work.ownerEpoch && !this.isDelegationAdopted(binding, work);
   }
 
   private requireWork(workId: string): WorkDto {

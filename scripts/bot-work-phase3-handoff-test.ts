@@ -6,6 +6,8 @@ import Database from "better-sqlite3";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import type { WorkExecutionObservation } from "../src/main/agent/work/WorkExecutionAdapter";
+import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
 import type { WorkActor, WorkControlResult, WorkDto, WorkNotificationChannel, WorkNotificationDto } from "../src/shared/bot-work";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 
@@ -23,18 +25,36 @@ const owner: WorkActor = { kind: "bot", userId: LOCAL_USER_ID, botId: DEFAULT_BO
 const unwrap = (value: WorkControlResult) => { if (!value.ok) throw new Error(`${value.code}: ${value.message}`); return value.work; };
 const guard = (work: WorkDto) => ({ expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch });
 let sequence = 0;
-function fixture(name: string) {
+function fixture(name: string, reserveTokens = 0) {
   const suffix = `${name}-${++sequence}`;
   let work = unwrap(works.createWork(user, { operationId: `create:${suffix}`, title: suffix,
     authorization: grants, inputSnapshotId: `input:${suffix}`, criteria: [{ text: "Current checked evidence" }] }));
   const taskId = `task:${suffix}`;
   db.upsertTask({ id: taskId, title: suffix, updatedAt: Date.now() });
   work = unwrap(works.dispatchExecution(user, { operationId: `dispatch:${suffix}`, workId: work.workId, botId: DEFAULT_BOT_ID,
-    taskId, durableStoreKey: `store:${suffix}`, conversationId: "1", workspaceBinding: root, delegatedScope: ["workspace:read", "workspace:write"] }));
+    taskId, durableStoreKey: `store:${suffix}`, conversationId: "1", workspaceBinding: root, reserveTokens, delegatedScope: ["workspace:read", "workspace:write"] }));
   const binding = works.repo.listBindings(work.workId)[0];
   const worker: WorkActor = { kind: "worker", botId: binding.botId, bindingId: binding.bindingId };
   return { suffix, work, binding, worker };
 }
+function awaitingAdoption(name: string) {
+  const f = fixture(name, 30);
+  unwrap(works.handoffOwner(user, { operationId: `handoff:${f.suffix}`, workId: f.work.workId, targetBotId: "next-owner" }));
+  // Fault injection only: production handoff inserts these rows atomically. A
+  // missing row must still preserve native facts without granting new authority.
+  db.connection.prepare("DELETE FROM work_delegation_adoptions WHERE binding_id=?").run(f.binding.bindingId);
+  return f;
+}
+const nativeReceipt = (f: ReturnType<typeof fixture>): AgentSubmissionReceipt => ({
+  taskId: f.binding.taskId, operationId: f.binding.operationId, submissionId: 1, status: "done",
+});
+const nativeResult: WorkExecutionObservation = { status: "completed", summary: "Original worker retained its result",
+  artifactRefs: [], hasWriteConflicts: false, usageTokens: 7, subitems: [
+    { itemId: "success", task: "Successful original item", required: true, dependencies: [], criterionIds: [],
+      nativeStatus: "completed", outcome: "completed", artifactRefs: [], writeConflicts: [], summary: "Retain this success" },
+    { itemId: "gap", task: "Blocked original item", required: true, dependencies: [], criterionIds: [],
+      nativeStatus: "blocked", outcome: "blocked", artifactRefs: [], writeConflicts: [], summary: "Still needs review" },
+  ] };
 function accepted(name: string, artifactPath?: string) {
   const f = fixture(name);
   if (artifactPath) {
@@ -74,7 +94,18 @@ try {
   const db2 = new AppDatabase(path);
   const works2 = new WorkService(db2.connection, { bots: new BotRegistry(db2.connection) });
   const competing = works2.collaboration.prepareHandoff(user, before.workId, "concurrent-owner");
+  const intermediate: Array<{ epoch: number; adoptionVisible: boolean }> = [];
+  db.connection.function("phase3_observe_handoff", (workId: string) => {
+    intermediate.push({ epoch: works2.getWork(workId)!.ownerEpoch, adoptionVisible: Boolean(db2.connection.prepare(
+      "SELECT 1 FROM work_delegation_adoptions WHERE binding_id=? AND owner_epoch=?",
+    ).get(f.binding.bindingId, before.ownerEpoch + 1)) });
+    return 0;
+  });
+  db.connection.exec("CREATE TRIGGER phase3_observe_handoff AFTER UPDATE OF owner_epoch ON works WHEN NEW.owner_epoch!=OLD.owner_epoch BEGIN SELECT phase3_observe_handoff(NEW.work_id); END");
   const handed = unwrap(works.handoffOwner(owner, { operationId: "handoff:once", workId: before.workId, targetBotId: "next-owner", preparationId: prep.preparationId, versionGuard: guard(before) }));
+  db.connection.exec("DROP TRIGGER phase3_observe_handoff");
+  assert.deepEqual(intermediate, [{ epoch: before.ownerEpoch, adoptionVisible: false }], "another SQLite connection cannot see the new epoch before adoption commits");
+  assert.equal(works2.collaboration.isDelegationAdopted(f.binding, works2.getWork(before.workId)!), true, "new epoch and adoption become visible together");
   assert.equal(handed.ownerEpoch, before.ownerEpoch + 1);
   assert.equal(handed.stateVersion, before.stateVersion + 1);
   assert.equal(handed.inputSnapshotId, before.inputSnapshotId);
@@ -103,7 +134,104 @@ try {
   assert.throws(() => works.handoffOwner(user, { operationId: "rollback-handoff", workId: initial.workId, targetBotId: "next-owner" }), /injected handoff crash/);
   assert.deepEqual(works.getWork(initial.workId), initial);
   assert.equal(works.repo.getReceipt(LOCAL_USER_ID, "rollback-handoff"), undefined);
+  assert.deepEqual(db.connection.prepare("SELECT * FROM work_delegation_adoptions WHERE binding_id=?").all(rollback.binding.bindingId), [], "adoption rolls back with the owner and message");
   db.connection.exec("DROP TRIGGER phase3_fail_handoff");
+
+  const pending = awaitingAdoption("pending-native-receipt");
+  assert.deepEqual(works.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), []);
+  const deferred = db.connection.prepare("SELECT payload_json,namespace_hash,consumed_at,consume_error FROM work_native_inbox WHERE binding_id=?").get(pending.binding.bindingId) as {
+    payload_json: string; namespace_hash: string; consumed_at: number | null; consume_error: string;
+  };
+  assert.equal(deferred.consumed_at, null);
+  assert.match(deferred.consume_error, /^pending_adoption:/);
+  assert.deepEqual(JSON.parse(deferred.payload_json), nativeResult);
+  assert.equal(works.repo.getBinding(pending.binding.bindingId)!.status, "completed", "actual native completion settles even before adoption");
+  assert.equal(works.getWork(pending.work.workId)!.budget.usedTokens, 7);
+  assert.equal(works.getWork(pending.work.workId)!.budget.reservedTokens, 0);
+  assert.equal(works.repo.listDeliverables(pending.work.workId).length, 0, "unadopted native results are not published");
+  assert.equal(works.partialResults.list(pending.work.workId).length, 0, "partial publication follows the same adoption gate");
+  assert.equal(works.repo.getBlocker(`adoption:${pending.binding.bindingId}`)!.status, "open");
+  const deferredVersion = works.getWork(pending.work.workId)!.stateVersion;
+  assert.deepEqual(works.nativeResults.consume(), []);
+  assert.deepEqual(works.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), []);
+  assert.equal(works.getWork(pending.work.workId)!.stateVersion, deferredVersion, "repeated pending consumption does not churn control versions or charge usage again");
+  assert.equal(works.repo.listOutbox(pending.work.workId).some(event => event.eventType === "work.deliverable_proposed"), false);
+  const directPending = works.submitDeliverable(pending.worker, { operationId: `direct:${pending.suffix}`, workId: pending.work.workId,
+    bindingId: pending.binding.bindingId, summary: "Direct submit cannot bypass adoption", artifactRefs: [] });
+  assert.equal(directPending.ok, false);
+  if (!directPending.ok) assert.equal(directPending.code, "epoch_mismatch");
+
+  const pendingDb = new AppDatabase(path);
+  try {
+    const recovered = new WorkService(pendingDb.connection, { bots: new BotRegistry(pendingDb.connection) });
+    assert.deepEqual(recovered.nativeResults.consume(), []);
+    assert.equal(recovered.repo.listDeliverables(pending.work.workId).length, 0, "restart keeps the pending fact pending");
+    const adopted = unwrap(recovered.handoffOwner(user, { operationId: "adopt-retained-native-result", workId: pending.work.workId, targetBotId: "concurrent-owner" }));
+    assert.equal(adopted.budget.usedTokens, 7, "adoption does not settle native usage twice");
+    const outputs = recovered.repo.listDeliverables(pending.work.workId);
+    assert.equal(outputs.length, 2, "adoption immediately replays aggregate and completed partial facts");
+    assert(outputs.every(output => output.status === "proposed" && output.ownerEpoch === pending.binding.ownerEpoch && output.producerBotId === pending.binding.botId));
+    assert.equal(recovered.partialResults.gaps(pending.work.workId)[0].itemId, "gap");
+    assert.equal(recovered.repo.getBlocker(`adoption:${pending.binding.bindingId}`)!.status, "cleared");
+    assert.deepEqual(pendingDb.connection.prepare("SELECT count(*) AS n FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NULL").get(pending.binding.bindingId), { n: 0 });
+    assert.equal(recovered.repo.listBindings(pending.work.workId).length, 1);
+    assert.equal(recovered.repo.getBinding(pending.binding.bindingId)!.durableStoreKey, pending.binding.durableStoreKey);
+    const completedVersion = adopted.stateVersion;
+    assert.deepEqual(recovered.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), []);
+    assert.deepEqual(works.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), [], "the original connection may replay its pre-handoff binding snapshot safely");
+    assert.equal(recovered.getWork(pending.work.workId)!.stateVersion, completedVersion);
+    assert.equal(works.getWork(pending.work.workId)!.budget.usedTokens, 7);
+    assert.equal(recovered.repo.listDeliverables(pending.work.workId).length, outputs.length);
+  } finally { pendingDb.close(); }
+
+  const pendingReview = fixture("unadopted-review");
+  unwrap(works.submitDeliverable(pendingReview.worker, { operationId: "before-review-handoff", workId: pendingReview.work.workId,
+    bindingId: pendingReview.binding.bindingId, deliverableId: "before-review-handoff", summary: "Retained before handoff", artifactRefs: [] }));
+  unwrap(works.handoffOwner(user, { operationId: "review-handoff", workId: pendingReview.work.workId, targetBotId: "next-owner" }));
+  db.connection.prepare("DELETE FROM work_delegation_adoptions WHERE binding_id=?").run(pendingReview.binding.bindingId);
+  const unadoptedReview = works.acceptDeliverable(user, { operationId: "unadopted-review", workId: pendingReview.work.workId, deliverableId: "before-review-handoff" });
+  assert.equal(unadoptedReview.ok, false);
+  if (!unadoptedReview.ok) assert.equal(unadoptedReview.code, "epoch_mismatch");
+  assert.equal(works.repo.getDeliverable("before-review-handoff")!.status, "proposed");
+
+  for (const change of ["intent", "input", "revoked", "revoked_at_zero", "invalidated_status"] as const) {
+    const stalePending = awaitingAdoption(`pending-${change}`);
+    assert.deepEqual(works.nativeResults.receive(stalePending.binding, nativeReceipt(stalePending), nativeResult), []);
+    if (change === "revoked_at_zero" || change === "invalidated_status") {
+      // Exercise both persisted invalidation signals independently. Neither a
+      // zero timestamp nor a status-only invalidation may be adopted again.
+      const binding = works.repo.getBinding(stalePending.binding.bindingId)!;
+      works.transaction(() => works.repo.updateBinding({ ...binding,
+        ...(change === "revoked_at_zero" ? { invalidatedAt: 0 } : { status: "invalidated" }) }));
+    } else unwrap(works.amendWork(user, { operationId: `invalidate:${stalePending.suffix}`, workId: stalePending.work.workId,
+      ...(change === "intent" ? { title: "Changed requirement" } : change === "input" ? { inputSnapshotId: "new-pending-input" } : { invalidateExecutionIds: [stalePending.binding.bindingId] }) }));
+    const changed = unwrap(works.handoffOwner(user, { operationId: `handoff-after:${stalePending.suffix}`, workId: stalePending.work.workId, targetBotId: "concurrent-owner" }));
+    assert.equal(works.collaboration.isDelegationAdopted(works.repo.getBinding(stalePending.binding.bindingId)!, changed), false);
+    assert.equal(works.collaboration.isDelegationPending(works.repo.getBinding(stalePending.binding.bindingId)!, changed), false);
+    assert(works.repo.listDeliverables(stalePending.work.workId).every(output => output.status === "superseded"), `${change} cannot become a current adopted result`);
+    assert.equal(works.repo.getBlocker(`adoption:${stalePending.binding.bindingId}`)!.status, "cleared");
+    assert.equal(works.getWork(stalePending.work.workId)!.budget.usedTokens, 7);
+    assert.equal(works.partialResults.gaps(stalePending.work.workId).length, 0, "revoked or stale facts cannot authorize new gap work");
+    const staleContinuation = works.continueWork(user, { operationId: `continue-stale:${stalePending.suffix}`, workId: stalePending.work.workId,
+      sourceBindingId: stalePending.binding.bindingId, gapItemIds: ["gap"], reason: "stale gap must stay historical", versionGuard: guard(changed) });
+    assert.equal(staleContinuation.ok, false);
+    assert.deepEqual(db.connection.prepare("SELECT count(*) AS n FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NULL").get(stalePending.binding.bindingId), { n: 0 });
+    assert.deepEqual(db.connection.prepare("SELECT * FROM work_delegation_adoptions WHERE binding_id=? AND owner_epoch=?").all(stalePending.binding.bindingId, changed.ownerEpoch), []);
+  }
+
+  const cancelledPending = awaitingAdoption("pending-cancelled");
+  assert.deepEqual(works.nativeResults.receive(cancelledPending.binding, nativeReceipt(cancelledPending), nativeResult), []);
+  const cancelling = unwrap(works.cancelWork(user, { operationId: "cancel-awaiting-adoption", workId: cancelledPending.work.workId }));
+  assert.equal(cancelling.lifecycle, "closing");
+  assert.deepEqual(works.nativeResults.consume(cancelledPending.work.workId), []);
+  const cancelledState = works.getWork(cancelledPending.work.workId)!;
+  assert.equal(cancelledState.lifecycle, "closed", "cancellation can settle without a new handoff");
+  assert.equal(cancelledState.closureConclusion, "cancelled");
+  assert.equal(cancelledState.budget.usedTokens, 7);
+  assert(works.repo.listDeliverables(cancelledPending.work.workId).every(output => output.status === "superseded"));
+  assert.equal(works.repo.listNotifications(cancelledPending.work.workId).some(notification => notification.kind === "result"), false);
+  assert.equal(works.repo.getBlocker(`adoption:${cancelledPending.binding.bindingId}`)!.status, "cleared");
+  assert.deepEqual(db.connection.prepare("SELECT count(*) AS n FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NULL").get(cancelledPending.binding.bindingId), { n: 0 });
 
   const stale = accepted("before-change");
   unwrap(works.amendWork(user, { operationId: "changed-before-claim", workId: stale.work.workId, inputSnapshotId: "new-input" }));
@@ -216,7 +344,7 @@ try {
   assert.equal(reopenedWorks.repo.getNotification(lost.notification.notificationId)!.delivery, "sent");
   assert.equal(lostSends, 1);
   reopened.close();
-  console.log("Phase 3 handoff/notifications: two SQLite connections, transactional rollback, preserved producer/budget, latest-fact claims, in-flight settlement, immutable unknown recovery and actual endpoint effects passed");
+  console.log("Phase 3 handoff/notifications: atomic epoch/adoption visibility, retained pending receipts/restart/replay, once-only usage, revoked/stale/cancelled history, transactional rollback, and immutable notification recovery passed");
 } finally {
   try { db.close(); } catch { /* closed for restart */ }
   effectDb.close(); rmSync(root, { recursive: true, force: true });

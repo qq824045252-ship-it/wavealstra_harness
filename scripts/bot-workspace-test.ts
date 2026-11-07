@@ -140,6 +140,19 @@ assert.match(populatedPage, /日志齐全/);
 assert.match(populatedPage, /负责人 值班/);
 assert.match(populatedPage, /要求 r2/);
 assert.doesNotMatch(populatedPage, /要求 r5/);
+night.phase3 = { subitems: [], continuations: [], gaps: [], resourceWaits: [], settlingActions: 1,
+  pausedEventCount: 0, handoffs: [], collaborationMessages: [], resourceRecoveries: [{
+    token: 1, resourceKinds: ["desktop"], attempts: 4, exhaustedAt: 100, pendingProbe: false, reason: "原操作效果待核对",
+  }] };
+const exhaustedPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(exhaustedPage, /自动核对已停止/);
+assert.match(exhaustedPage, /我已确认环境安全，可以重新核对/);
+assert.match(exhaustedPage, /<button[^>]*disabled[^>]*>重新核对隔离资源<\/button>/, "rendered retry is disabled before explicit confirmation");
+night.phase3.resourceRecoveries[0]!.pendingProbe = true;
+const pendingRecoveryPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(pendingRecoveryPage, /恢复核对仍有在途步骤，资源继续隔离/);
+assert.doesNotMatch(pendingRecoveryPage, /自动核对已停止|重新核对隔离资源<\/button>/, "an exhausted budget cannot make an outstanding probe look stopped");
+delete night.phase3;
 snapshot.selectedWorkId = handoff.workId;
 const handoffPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(handoffPage, /要求 r5/);

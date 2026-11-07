@@ -7,15 +7,73 @@ const http = require('node:http');
 const net = require('node:net');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const windows = process.platform === 'win32';
+const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
+if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
 const out = path.join(root, 'out/diagnostics/bot-work-phase3/dev'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
 let processDev, socket, sequence = 0, log;
+let electronExecutable, devDebugPort, launcherIdentity, electronWatch;
+const ownedElectronMains = new Map();
 const pending = new Map(), requests = [];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const until = async (fn, label) => { const end = Date.now() + 90000; while (!await fn()) { if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); }); });
+function linuxProcessState(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    return { pid, parent: Number(fields[1]), startedAt: fields[19],
+      args: fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean) };
+  } catch { return undefined; } // The process may have exited between proc reads.
+}
+function isTestElectronMain(state) {
+  if (!state || !state.args.includes(`--remote-debugging-port=${devDebugPort}`)
+    || state.args.some(arg => arg === '--type' || arg.startsWith('--type='))) return false;
+  try {
+    const env = fs.readFileSync(`/proc/${state.pid}/environ`, 'utf8').split('\0');
+    return fs.realpathSync(`/proc/${state.pid}/exe`) === electronExecutable
+      && fs.realpathSync(`/proc/${state.pid}/cwd`) === fs.realpathSync(root)
+      && env.includes(`HOME=${home}`) && env.includes(`REMOTE_DEBUGGING_PORT=${devDebugPort}`)
+      && !env.includes('ELECTRON_RUN_AS_NODE=1');
+  } catch { return false; }
+}
+function trackTestElectronMains() {
+  if (process.platform !== 'linux' || !launcherIdentity) return;
+  const launcher = linuxProcessState(launcherIdentity.pid);
+  if (!launcher || launcher.startedAt !== launcherIdentity.startedAt) return;
+  const queue = [launcher], seen = new Set();
+  while (queue.length) {
+    const parent = queue.shift();
+    if (seen.has(parent.pid)) continue;
+    seen.add(parent.pid);
+    if (isTestElectronMain(parent)) ownedElectronMains.set(parent.pid, parent.startedAt);
+    let children;
+    try { children = fs.readFileSync(`/proc/${parent.pid}/task/${parent.pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean); }
+    catch { continue; }
+    for (const id of children) {
+      const child = linuxProcessState(Number(id));
+      if (child?.parent === parent.pid) queue.push(child);
+    }
+  }
+}
+async function stopTestElectronMains() {
+  if (process.platform !== 'linux') return;
+  trackTestElectronMains();
+  const stillOwned = (pid, startedAt) => {
+    const state = linuxProcessState(pid);
+    return state?.startedAt === startedAt && isTestElectronMain(state);
+  };
+  for (const [pid, startedAt] of ownedElectronMains) if (stillOwned(pid, startedAt)) {
+    try { process.kill(pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  }
+  // Only the main process receives a signal. Let Electron close its GPU/renderers
+  // itself; PID start time and the isolated profile prevent unrelated-process kills.
+  const deadline = Date.now() + 3000;
+  while ([...ownedElectronMains].some(([pid, startedAt]) => stillOwned(pid, startedAt)) && Date.now() < deadline) await wait(50);
+}
 function rpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error('CDP timeout: ' + method)); }, 20000);
@@ -69,7 +127,8 @@ print(json.dumps(rows))
 c.close()`;
   return JSON.parse(cp.execFileSync('python', ['-c', source], { input: JSON.stringify({ database: path.join(agentDir, 'app.db'), ...input }), encoding: 'utf8', windowsHide: true }));
 }
-const report = { platform: 'Windows pnpm dev, isolated profile', seededPresentationFacts: [], actualControlChecks: [], status: 'running', home, checks: [] };
+const report = { platform: `${process.platform} pnpm dev, isolated profile`, displayMode: headless ? 'headless-renderer' : 'desktop-session',
+  validatesNativeDesktopInput: false, seededPresentationFacts: [], actualControlChecks: [], status: 'running', home, checks: [] };
 (async () => {
   try {
     await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
@@ -80,13 +139,20 @@ const report = { platform: 'Windows pnpm dev, isolated profile', seededPresentat
       memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
     const port = await freePort();
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), REMOTE_DEBUGGING_PORT: String(port),
-      ELECTRON_CLI_ARGS: JSON.stringify(['--remote-debugging-address=127.0.0.1', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--enable-logging=stderr']) };
+      XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local/share'),
+      ELECTRON_CLI_ARGS: JSON.stringify(['--remote-debugging-address=127.0.0.1', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--enable-logging=stderr',
+        ...(headless ? ['--ozone-platform=headless', '--disable-gpu'] : [])]) };
     delete env.ELECTRON_RUN_AS_NODE;
     assert(process.env.npm_execpath && fs.existsSync(process.env.npm_execpath), 'launch through pnpm test script');
     log = fs.openSync(path.join(out, 'dev.log'), 'w');
     const nativePnpm = path.extname(process.env.npm_execpath).toLowerCase() === '.exe';
+    if (process.platform === 'linux') { electronExecutable = fs.realpathSync(require('electron')); devDebugPort = port; }
     processDev = cp.spawn(nativePnpm ? process.env.npm_execpath : process.execPath,
       nativePnpm ? ['dev'] : [process.env.npm_execpath, 'dev'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
+    if (process.platform === 'linux') {
+      launcherIdentity = linuxProcessState(processDev.pid);
+      trackTestElectronMains(); electronWatch = setInterval(trackTestElectronMains, 100); electronWatch.unref();
+    }
     let target;
     await until(async () => {
       if (processDev.exitCode !== null) throw Error('pnpm dev exited ' + processDev.exitCode);
@@ -181,6 +247,28 @@ const report = { platform: 'Windows pnpm dev, isolated profile', seededPresentat
     await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("已暂停，正在结算在途操作")'), 'paused settlement presentation');
     assert(await evaluate('[...document.querySelectorAll("#bot-work-inspector button")].filter(button => button.textContent === "仅补跑此项").every(button => button.disabled)'));
     report.seededPresentationFacts.push('paused lifecycle and one in-flight admission, proving projection label and disabled new-action control; actual pause execution/settlement is covered by separate native tests');
+    // Exhaustion is a labelled fixture; the user action and safety checks use the
+    // real React -> preload -> IPC -> transaction path below.
+    const exhaustedAt = Date.now();
+    isolatedSql({ statements: [
+      { sql: "INSERT INTO work_resource_leases(action_id,owner_json,resources_json,host_id,state,expires_at,admitted_at) VALUES (?,?,?,'ui-fixture-old-host','quarantined',?,?)",
+        params: ['ui-fixture-exhausted', JSON.stringify(fullOwner), JSON.stringify([{ kind: 'desktop', scope: 'host-input', key: 'focus:desktop', mode: 'write' }]), exhaustedAt - 1, exhaustedAt - 1000] },
+      { sql: "INSERT INTO work_resource_recovery(token,attempts,next_at,exhausted_at,reason) SELECT token,4,?,?,? FROM work_resource_leases WHERE action_id='ui-fixture-exhausted'",
+        params: [exhaustedAt, exhaustedAt, '界面夹具：旧宿主输入尚未核对'] },
+    ] });
+    await until(() => evaluate('Boolean(document.querySelector(\'[aria-label="资源隔离恢复"]\'))'), 'exhausted resource projection');
+    assert(await evaluate('document.querySelector(\'[aria-label="资源隔离恢复"] button\').disabled'), 'retry requires explicit human confirmation');
+    await evaluate('document.querySelector(\'[aria-label="资源隔离恢复"] input[type="checkbox"]\').click()');
+    await until(() => evaluate('!document.querySelector(\'[aria-label="资源隔离恢复"] button\').disabled'), 'confirmed recovery control enabled');
+    await evaluate('document.querySelector(\'[aria-label="资源隔离恢复"] button\').click()');
+    await until(() => isolatedSql({ statements: [], query: { sql: "SELECT operation_id FROM work_operation_receipts WHERE operation_type='retryResourceRecovery' AND work_id=?", params: [original.workId] } }).length === 1, 'retry persisted through real IPC');
+    const recoveredState = isolatedSql({ statements: [], query: { sql: "SELECT lease.state,recovery.attempts,recovery.exhausted_at FROM work_resource_leases lease JOIN work_resource_recovery recovery ON recovery.token=lease.token WHERE lease.action_id='ui-fixture-exhausted'" } })[0];
+    assert.equal(recoveredState.state, 'quarantined', 'human confirmation never releases unknown original desktop input');
+    assert(recoveredState.attempts >= 4, 'retry identity never rolls back');
+    assert.equal((await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`)).lifecycle, 'paused');
+    assert.equal((await evaluate('window.api.db.listTasks()')).length, tasksBefore + 1, 'recovery retry does not submit a business task');
+    report.seededPresentationFacts.push('one exhausted old-host desktop lease, labelled fixture; native Windows focus is not exercised');
+    report.actualControlChecks.push('unchecked retry disabled; explicit confirmation accepted through real IPC and idempotent control transaction; unknown original input remains quarantined, Work remains paused, no new Task');
     const phase3shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(out, 'phase3-page.png'), Buffer.from(phase3shot.data, 'base64'));
     report.finalProjection = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);
@@ -191,10 +279,15 @@ const report = { platform: 'Windows pnpm dev, isolated profile', seededPresentat
     if (socket) try { report.visibleText = await evaluate('document.body.innerText'); const shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); fs.writeFileSync(path.join(out, 'failed-page.png'), Buffer.from(shot.data, 'base64')); } catch {}
   }
   finally {
+    if (electronWatch) clearInterval(electronWatch);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests, null, 2));
     if (socket) { try { await rpc('Browser.close'); } catch {} socket.close(); }
-    if (processDev) { await wait(1000); if (processDev.exitCode === null) cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); }
+    await stopTestElectronMains();
+    if (processDev) { await wait(1000); if (processDev.exitCode === null) {
+      if (windows) cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      else processDev.kill('SIGTERM');
+    } }
     if (log !== undefined) fs.closeSync(log); await new Promise(resolve => provider.close(resolve));
     console.log(`Phase 3 pnpm dev UI: ${report.status}; ${path.join(out, 'report.json')}`);
   }

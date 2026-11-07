@@ -38,10 +38,11 @@ export class WorkNativeResultInbox {
     return this.consume();
   }
 
-  consume(): Array<{ bindingId: string; error: unknown }> {
+  consume(workId?: string): Array<{ bindingId: string; error: unknown }> {
     const failures: Array<{ bindingId: string; error: unknown }> = [];
-    const pending = this.db.prepare("SELECT fact_id,binding_id,namespace_hash,payload_json FROM work_native_inbox WHERE consumed_at IS NULL ORDER BY received_at,rowid")
-      .all().map(row => factSchema.parse(row));
+    const pending = this.db.prepare(`SELECT fact_id,binding_id,namespace_hash,payload_json FROM work_native_inbox
+      WHERE consumed_at IS NULL AND (? IS NULL OR binding_id IN (SELECT binding_id FROM work_execution_bindings WHERE work_id=?))
+      ORDER BY received_at,rowid`).all(workId ?? null, workId ?? null).map(row => factSchema.parse(row));
     for (const fact of pending) {
       try { this.works.transaction(() => {
       this.assertAuthority();
@@ -49,8 +50,14 @@ export class WorkNativeResultInbox {
       if (!unconsumed) return;
       const binding = this.works.repo.getBinding(fact.binding_id);
       if (!binding || namespace(binding) !== fact.namespace_hash) throw new Error("结果执行命名空间不匹配");
+      const work = this.works.getWork(binding.workId);
+      if (!work) throw new Error("结果执行缺少原事项");
       const observation = observationSchema.parse(JSON.parse(fact.payload_json));
-      if (observation.subitems?.length) this.works.partialResults.record(binding,observation.subitems);
+      const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
+      const canSettle = !terminal || binding.status === observation.status;
+      const awaitingAdoption = (work.lifecycle === "active" || work.lifecycle === "paused")
+        && this.works.collaboration.isDelegationPending(binding, work);
+      this.adoptionBlocker(binding, awaitingAdoption);
       {
         for (const blocker of this.works.repo.listOpenBlockers(binding.workId)) {
           if (blocker.blockerId === `inbox:${fact.fact_id}` || blocker.unknownExternalEffectRef === `native-read:${binding.bindingId}`) {
@@ -58,8 +65,18 @@ export class WorkNativeResultInbox {
           }
         }
       }
-      const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
-      if (!terminal || binding.status === observation.status) {
+      if (awaitingAdoption) {
+        // Native completion and its actual usage are facts even while a delegation
+        // awaits adoption. Keep the original payload/cursor durable and retryable;
+        // publishing aggregate or partial deliverables still requires the owner.
+        if (canSettle) this.reconcile(binding, observation);
+        this.db.prepare("UPDATE work_native_inbox SET consume_error=? WHERE fact_id=? AND consumed_at IS NULL")
+          .run("pending_adoption: 当前输入仍有效，等待当前负责人接管原执行委派", fact.fact_id);
+        this.works.emitCurrentProjection(binding.workId);
+        return;
+      }
+      if (observation.subitems?.length) this.works.partialResults.record(binding,observation.subitems);
+      if (canSettle) {
         if ((observation.status === "completed" || observation.status === "failed")
           && !this.works.repo.listDeliverables(binding.workId).some(item => item.deliverableId === `result:${binding.bindingId}`)) {
           this.require(this.works.submitDeliverable({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
@@ -72,11 +89,7 @@ export class WorkNativeResultInbox {
             uncoveredCriterionIds: [...new Set((observation.subitems ?? []).filter(item => item.required && item.outcome !== "completed").flatMap(item => item.criterionIds))],
           }));
         }
-        this.require(this.works.reconcileExecution({ kind: "system", reason: "native-result-inbox" }, {
-          bindingId: binding.bindingId, outcome: observation.status,
-          ...(observation.status === "running" ? {} : { note: observation.summary, usageTokens: observation.usageTokens }),
-          reservationId: binding.reservationId,
-        }));
+        this.reconcile(binding, observation);
         if(observation.status!=="running") this.works.partialResults.settle(binding);
       }
       this.db.prepare("UPDATE work_native_inbox SET consumed_at=?,consume_error=NULL WHERE fact_id=?").run(Date.now(), fact.fact_id);
@@ -96,6 +109,31 @@ export class WorkNativeResultInbox {
       }
     }
     return failures;
+  }
+
+  private reconcile(binding: WorkExecutionBindingDto, observation: WorkExecutionObservation): void {
+    this.require(this.works.reconcileExecution({ kind: "system", reason: "native-result-inbox" }, {
+      bindingId: binding.bindingId, outcome: observation.status,
+      ...(observation.status === "running" ? {} : { note: observation.summary, usageTokens: observation.usageTokens }),
+      reservationId: binding.reservationId,
+    }));
+  }
+
+  private adoptionBlocker(binding: WorkExecutionBindingDto, pending: boolean): void {
+    const blockerId = `adoption:${binding.bindingId}`;
+    const existing = this.works.repo.getBlocker(blockerId);
+    const now = Date.now();
+    if (pending && existing?.status !== "open") {
+      if (existing) this.works.repo.reopenBlocker(blockerId, binding.workId);
+      else this.works.repo.insertBlocker({ blockerId, workId: binding.workId,
+        reason: "原执行回执已保留，等待当前负责人接管委派后核验成果", kind: "operational",
+        waitingForUserInput: false, status: "open", createdAt: now });
+    } else if (!pending && existing?.status === "open") {
+      this.works.repo.clearBlocker(blockerId, binding.workId, now);
+    } else return;
+    const work = this.works.getWork(binding.workId)!;
+    this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
+    this.works.emitCurrentProjection(binding.workId);
   }
 
   shouldInspect(bindingId: string): boolean {

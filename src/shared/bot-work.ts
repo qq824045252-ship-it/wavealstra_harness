@@ -1,4 +1,4 @@
-import type { WorkSubitemDto, WorkContinuationDto } from "./bot-work-phase3";
+import type { WorkSubitemDto, WorkContinuationDto, WorkResourceRecoveryDto } from "./bot-work-phase3";
 import type { WorkCollaborationMessage, WorkNotificationIdentity } from "./bot-work-collaboration";
 /**
  * BOT-WORK-1.0 shared contract.
@@ -392,6 +392,7 @@ export interface WorkProjectionDto {
     continuations: WorkContinuationDto[];
     gaps: WorkSubitemDto[];
     resourceWaits: string[];
+    resourceRecoveries: WorkResourceRecoveryDto[];
     settlingActions: number;
     pausedEventCount: number;
     artifactSnapshotId?: string;

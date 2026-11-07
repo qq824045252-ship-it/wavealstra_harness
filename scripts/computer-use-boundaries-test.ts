@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { WindowsComputerUseBackend } from "../src/main/platform/computer-use/windows/WindowsComputerUseBackend";
+import { WindowsComputerUseFixture as WindowsComputerUseBackend } from "./windows-input-fixture";
 import { WindowsAutomationError, type WindowInfo, type ComputerExecInput } from "../src/main/platform/computer-use/protocol";
 import { formatComputerUseFailureEvidence, verificationFor, withComputerUseDeliveryEvidence } from "../src/main/capabilities/ComputerUsePolicy";
 import { computerUseRunCoordinator as coordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
@@ -182,7 +182,7 @@ async function main() {
     }
     throw new Error(action);
   } } as never, {} as never);
-  const focusObservation = await lostFocus.execute({ action: "inspect_window", windowHandle: "10" });
+  const focusObservation = await lostFocus.execute({ action: "inspect_window", taskId: "focus-drift", windowHandle: "10" });
   await assert.rejects(lostFocus.execute({ action: "click_client", taskId: "focus-drift", windowHandle: "10",
     observationId: focusObservation.observationId, x: 1, y: 1,
   }), code("STALE_OBSERVATION"));

@@ -1,3 +1,4 @@
+import type { ResourceRecoveryAttempt } from "../../../shared/resource-recovery";
 import type { PlatformId } from "../index";
 import type { ComputerExecInput, ComputerExecOutput } from "./protocol";
 
@@ -45,7 +46,7 @@ export interface ComputerUseBackend {
   execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput>;
   shutdown(): Promise<void>;
   /** Proves previously admitted backend queue work has drained before resource takeover. */
-  waitForIdle?(): Promise<void>;
+  waitForIdle?(recovery?: ResourceRecoveryAttempt): Promise<void>;
   /**
    * 可选：刷新会话、总线、compositor 与输入依赖的真实能力证据。
    * status() 保持同步、轻量；异步探测不得隐式截图或发送用户输入。
@@ -58,7 +59,7 @@ export interface ComputerUseBackend {
    * 忘记 `key_up` 就会把用户桌面留在按着 Ctrl 的状态。借鉴 LCU 的输入状态清理规则：
    * 任务结束/取消时由上层调用一次，后端只释放「自己按下、且现在仍按着」的输入，
    * 不动用户自己在按的（用户的按键不经过后端，后端也看不见）。
-   * Windows 的 SendInput 没有跨调用按住语义，所以不实现。
+   * Windows 的 SendInput 同样可能跨调用持有；必须由原驱动确认 UP，不能用队列空闲代替。
    */
-  releaseHeldInput?(taskId?: string): Promise<{ keys: number[]; buttons: string[] }>;
+  releaseHeldInput?(taskId?: string, recovery?: ResourceRecoveryAttempt): Promise<{ keys: number[]; buttons: string[] }>;
 }

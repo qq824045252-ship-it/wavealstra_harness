@@ -4,15 +4,22 @@
  * 共享 DTO（WindowInfo / ControlInfo / 错误码 / 错误类）在 `../protocol`；
  * 本文件只保留 host 请求/响应形状，并 re-export 共享 DTO 供 Windows 内部使用。
  */
-import type { AutomationErrorCode, ControlSelector, TargetIdentity } from "../protocol";
+import type { AutomationErrorCode, ControlSelector, TargetIdentity, WindowInfo } from "../protocol";
+import type { WindowsShellOverlay } from "./windowsShellOverlayPolicy";
 
 export * from "../protocol";
+
+/** Internal retry guard, never accepted as model-supplied observation evidence. */
+export interface WindowsFocusTarget extends TargetIdentity { expectedFocusWindow?: WindowInfo }
+export interface WindowsOwnedInputState { hostInstance: string; owner: string; controls: string[] }
 
 export interface HostRequestMap {
   active_window: Record<string, never>;
   list_windows: Record<string, never>;
   inspect_window: { target: TargetIdentity };
   focus_window: { target: TargetIdentity };
+  dismiss_shell_overlay: { target: TargetIdentity; overlay: WindowsShellOverlay; inputOwner: string; expectedInputHost: string };
+  release_owned_input: { inputOwner: string; expectedInputHost: string; controls: string[] };
   wait_for_window: {
     target: TargetIdentity;
     state?: "visible" | "foreground" | "closed";
@@ -66,5 +73,6 @@ export interface WindowsAutomationResponse<T = unknown> {
   ok: boolean;
   result?: T;
   error?: AutomationErrorPayload;
+  inputState?: WindowsOwnedInputState;
 }
 

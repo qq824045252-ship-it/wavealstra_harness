@@ -1191,7 +1191,8 @@ export class AgentService {
         return { ok: true, messageId: result.message.messageId, replayed: result.replayed };
       }
       const result = input.kind === "continue" ? this.workService.continueWork(actor, input.request)
-        : this.workService.handoffOwner(actor, input.request);
+        : input.kind === "retry_resource_recovery" ? this.workService.retryResourceRecovery(actor, input.request)
+          : this.workService.handoffOwner(actor, input.request);
       if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.work.workId); }
       return result;
     } catch (error) {
@@ -1503,19 +1504,20 @@ export class AgentService {
     const nativeWork = this.durableBots.workExecutionPort();
     const resources = new WorkResourceRecovery(this.db.connection, this.workService.resourceGate, {
       transaction: fn => this.workService.transaction(fn),
-      inspectExecution: lease => {
+      inspectExecution: (lease, recovery) => {
         if (!this.durableBots) throw new Error("原生执行服务尚未就绪");
-        return this.durableBots.resourceQuiescence(lease.owner);
+        return this.durableBots.resourceQuiescence(lease.owner, recovery);
       },
-      drainInput: async (lease, execution) => {
+      drainInput: async (lease, execution, recovery) => {
+        recovery.assertCurrent();
         if (lease.resources.some(resource => resource.kind === "desktop")) {
           if (lease.hostId !== this.workHostAuthority.status().authorityId)
             throw new Error("旧宿主的桌面输入缺少原驱动释放回执，保持隔离等待核对");
-          return computerUseRunCoordinator.cancelAndWait(lease.owner.taskId);
+          return computerUseRunCoordinator.cancelAndWait(lease.owner.taskId, recovery);
         }
         return { queueDrained: execution.ownedChildrenStopped, inputReleased: true, receipt: execution.receipt };
       },
-      verifyEffect: async lease => readResourceEffectEvidence(this.db.connection, lease),
+      verifyEffect: async (lease, recovery) => { recovery.assertCurrent(); return readResourceEffectEvidence(this.db.connection, lease); },
       onRecovered: lease => this.workService.finalizeRecoveredResource(lease),
     });
     this.workExecutions ??= new WorkExecutionAdapter(this.workService, { ...nativeWork, resourceBoundary: "host-action-gate",

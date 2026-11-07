@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ResourceRecoveryAttempt } from "../src/shared/resource-recovery";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
@@ -91,6 +92,25 @@ async function main() {
     assert.ok(!hasEdge(f, "42:0"));
     await f.backend.releaseHeldInput("owner-b"); assert.ok(!hasEdge(f, "42:0"));
     await f.backend.execute({ action: "key_up", key: "Shift", taskId: "owner-a" }); assert.ok(hasEdge(f, "42:0"));
+  });
+  await check("timed-out queued recovery cannot release keys held by a later recovery generation", async f => {
+    await f.backend.execute({ action: "key_down", key: "Shift", windowHandle: f.handle, taskId: "recovery-owner" });
+    let unblock!: () => void, started!: () => void;
+    const barrier = new Promise<void>(done => { unblock = done; });
+    const begun = new Promise<void>(done => { started = done; });
+    f.state.snapshotHook = async () => { started(); await barrier; };
+    const occupyingQueue = f.observe("recovery-owner"); await begun;
+    const controller = new AbortController();
+    const attempt: ResourceRecoveryAttempt = { token: 9, attempt: 4, signal: controller.signal, assertCurrent: () => controller.signal.throwIfAborted() };
+    const cancelledCleanup = f.backend.releaseHeldInput("recovery-owner", attempt);
+    const rejected = assert.rejects(cancelledCleanup, /recovery timed out/);
+    controller.abort(new Error("recovery timed out"));
+    unblock(); await occupyingQueue; await rejected;
+    assert.equal(hasEdge(f, "42:0"), false, "cancelled recovery checks identity after queue admission and before the UP edge");
+    f.state.snapshotHook = undefined;
+    const next = new AbortController();
+    await f.backend.releaseHeldInput("recovery-owner", { token: 9, attempt: 5, signal: next.signal, assertCurrent: () => next.signal.throwIfAborted() });
+    assert.equal(f.state.edges.filter(args => args.includes("42:0")).length, 1);
   });
   await check("held button remains through a separate move and releases without a live target", async f => {
     await f.coordinates("mouse_down_client"); assert.ok(!hasEdge(f, "0x80"));

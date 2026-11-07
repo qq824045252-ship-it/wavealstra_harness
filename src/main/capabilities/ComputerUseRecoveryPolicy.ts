@@ -47,6 +47,9 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
     };
   }
   if (error.code === "FOCUS_FAILED") {
+    if ((error.details as { shellOverlayRecoveryAttempted?: boolean } | undefined)?.shellOverlayRecoveryAttempted) {
+      return { retry: false, reason: "shell-overlay-recovery-exhausted", guidance: "已尝试一次系统浮层恢复；请确认桌面安全并重新观察，不自动重复 Escape 或目标输入。" };
+    }
     return {
       retry: true,
       delayMs: 180,
