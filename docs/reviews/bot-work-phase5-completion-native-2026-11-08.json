@@ -1,0 +1,1495 @@
+{
+  "provenance": [
+    {
+      "case": "single-trusted",
+      "taskId": "phase5-native-provenance:single",
+      "conversationId": 1,
+      "submissionId": 8,
+      "requestId": "trusted-original-input",
+      "workId": "work-ca2ef93a-696c-478a-abcd-ad84c5d5ac82",
+      "sourceMessageId": "trusted-original-input",
+      "unrelatedSubmissionId": 18,
+      "rejectedForgedEntryId": 21,
+      "rejectedSiblingConversationId": 22,
+      "emptyAndMultipleInputsRejected": true
+    },
+    {
+      "case": "forged-audit",
+      "taskId": "phase5-native-provenance:forged",
+      "submissionId": 8,
+      "workId": "work-40b3311b-9891-4466-9f7c-77c7aa262a45",
+      "sourceMessageId": null
+    },
+    {
+      "case": "multiple-native-inputs",
+      "taskId": "phase5-native-provenance:multiple",
+      "submissionIds": [
+        8,
+        14
+      ],
+      "observedRunInputs": [
+        8,
+        14
+      ],
+      "workId": "work-0abac4e8-5881-429c-a379-f630f44f64bf",
+      "sourceMessageId": null
+    }
+  ],
+  "environment": "headless production Pi Durable native processes; isolated model and effect fixtures",
+  "physicalDevicesVerified": false,
+  "database": "/tmp/phase5-native-story-tBg15R/business.db",
+  "nativeDirectory": "/tmp/phase5-native-story-tBg15R/native",
+  "processId": 29622,
+  "storyCounts": {
+    "modelCalls": 17,
+    "effects": 5,
+    "perModel": [
+      {
+        "model": "blocked",
+        "count": 2
+      },
+      {
+        "model": "front",
+        "count": 1
+      },
+      {
+        "model": "gap",
+        "count": 2
+      },
+      {
+        "model": "old",
+        "count": 2
+      },
+      {
+        "model": "repair",
+        "count": 2
+      },
+      {
+        "model": "retain",
+        "count": 2
+      },
+      {
+        "model": "root",
+        "count": 4
+      },
+      {
+        "model": "watch",
+        "count": 2
+      }
+    ],
+    "perEffect": [
+      {
+        "marker": "gap-two",
+        "count": 1
+      },
+      {
+        "marker": "r1-historical",
+        "count": 1
+      },
+      {
+        "marker": "repair-v2",
+        "count": 1
+      },
+      {
+        "marker": "retain-one",
+        "count": 1
+      },
+      {
+        "marker": "watch-b",
+        "count": 1
+      }
+    ]
+  },
+  "counts": {
+    "modelCalls": 25,
+    "effects": 5,
+    "perModel": [
+      {
+        "model": "blocked",
+        "count": 2
+      },
+      {
+        "model": "front",
+        "count": 1
+      },
+      {
+        "model": "gap",
+        "count": 2
+      },
+      {
+        "model": "old",
+        "count": 2
+      },
+      {
+        "model": "provenance",
+        "count": 8
+      },
+      {
+        "model": "repair",
+        "count": 2
+      },
+      {
+        "model": "retain",
+        "count": 2
+      },
+      {
+        "model": "root",
+        "count": 4
+      },
+      {
+        "model": "watch",
+        "count": 2
+      }
+    ],
+    "perEffect": [
+      {
+        "marker": "gap-two",
+        "count": 1
+      },
+      {
+        "marker": "r1-historical",
+        "count": 1
+      },
+      {
+        "marker": "repair-v2",
+        "count": 1
+      },
+      {
+        "marker": "retain-one",
+        "count": 1
+      },
+      {
+        "marker": "watch-b",
+        "count": 1
+      }
+    ]
+  },
+  "identities": [
+    {
+      "bindingId": "binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1",
+      "taskId": "phase5-collaborator-repair",
+      "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/29429a3367a095eeac5919d8031e32e9f97956f6e2b342d4297ad8f502f3ce15",
+      "conversationId": "1",
+      "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+      "operationId": "native:phase5-collaborator-repair",
+      "inputSnapshotId": "input:story-r2",
+      "intentRevision": 2
+    },
+    {
+      "bindingId": "binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0",
+      "taskId": "work-execution-b062f3f5-fd3c-463d-9d91-27387c38fd66",
+      "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/c8dd3fb9d9ae29425ae4e23b5ec6366eae3d622b63187c7f4ce8c55d6314425e",
+      "conversationId": "1",
+      "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+      "operationId": "dispatch:source:instruction-cb3f5aec-460e-4e27-b4c1-f45a1f21ee2c",
+      "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+      "intentRevision": 1
+    },
+    {
+      "bindingId": "binding-4d4a6c05-0f77-431b-b9e2-bbafb403b85b",
+      "taskId": "work-execution-76eb34a3-29d8-4e63-a3d9-09ac744d09e3",
+      "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/5730d8ce995729b13ef0946b92559d96768064b76a7c0b51bbaa6e53ee1d6b0a",
+      "conversationId": "1",
+      "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+      "operationId": "dispatch:source:instruction-b293ae7e-c2a8-4877-bde3-0c692eb6bb45",
+      "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+      "intentRevision": 1
+    },
+    {
+      "bindingId": "binding-4ec339ce-abaa-4624-8934-b21c495fb952",
+      "taskId": "work-execution-79ca835c-be93-43c5-8955-2bf201c2f64c",
+      "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/133f399b8154e85b26643225bd7ac6da65704f35814954eabd6ccd6c6daef346",
+      "conversationId": "1",
+      "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+      "operationId": "dispatch:continuation:53f4940afdc1a7ac8d7a83339e6f5c8805a223fab011a75d11fec13628e41821",
+      "inputSnapshotId": "input:story-r2",
+      "intentRevision": 2
+    },
+    {
+      "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+      "taskId": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+      "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/8af52a6b69332b2d2b3c857832e1c6a55b22471f2394e8a43edaa39199ecb1a5",
+      "conversationId": "1",
+      "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+      "operationId": "dispatch:story-original-r2",
+      "inputSnapshotId": "input:story-r2",
+      "intentRevision": 2
+    }
+  ],
+  "steps": [
+    {
+      "number": 1,
+      "name": "同一持久库立项 A 与同宿主同来源 B，冻结有限职责、授权、验收和停止条件",
+      "evidence": {
+        "a": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+        "b": "work-9f725dae-25a7-4b68-92bc-a23ec630c089",
+        "subA": "subscription-849fd084-557a-47be-a9d9-868669ce8a8b",
+        "subB": "subscription-aba52fdb-7bb4-4f99-a0b1-e4cb5ac76344",
+        "source": {
+          "sourceType": "file",
+          "sourceRef": "/tmp/phase5-native-story-tBg15R/workspace/source-version.txt",
+          "inputSnapshotId": "sha256:dc401379cbba891e3bc83b79c540224938344d120ded54f22d00343f02ad566f",
+          "observedAt": 1794093132618
+        }
+      }
+    },
+    {
+      "number": 2,
+      "name": "真实 Hook 单次派发，前台原生讨论及时完成且不新建后台 Task",
+      "evidence": {
+        "original": {
+          "bindingId": "binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0",
+          "taskId": "work-execution-b062f3f5-fd3c-463d-9d91-27387c38fd66",
+          "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/c8dd3fb9d9ae29425ae4e23b5ec6366eae3d622b63187c7f4ce8c55d6314425e",
+          "conversationId": "1",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "operationId": "dispatch:source:instruction-cb3f5aec-460e-4e27-b4c1-f45a1f21ee2c",
+          "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+          "intentRevision": 1
+        },
+        "foregroundRequest": "foreground-status",
+        "calls": {
+          "modelCalls": 3,
+          "effects": 1,
+          "perModel": [
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "old",
+              "count": 2
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "r1-historical",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "number": 3,
+      "name": "正式改要求为 r2，旧命令与执行失效，在途效果仍须结算",
+      "evidence": {
+        "intentRevision": 2,
+        "snapshots": [
+          {
+            "intentRevision": 2,
+            "inputSnapshotId": "input:story-r2",
+            "sourceVersion": 3,
+            "createdAt": 1794093133834
+          },
+          {
+            "intentRevision": 1,
+            "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+            "sourceVersion": 2,
+            "createdAt": 1794093133654
+          },
+          {
+            "intentRevision": 1,
+            "inputSnapshotId": "sha256:dc401379cbba891e3bc83b79c540224938344d120ded54f22d00343f02ad566f",
+            "sourceVersion": 1,
+            "createdAt": 1794093132619
+          }
+        ]
+      }
+    },
+    {
+      "number": 4,
+      "name": "真实 Pi Durable 已落盘原 submission，业务回执未写入，进入外部 SIGKILL 窗口",
+      "evidence": {
+        "identity": {
+          "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+          "taskId": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+          "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/8af52a6b69332b2d2b3c857832e1c6a55b22471f2394e8a43edaa39199ecb1a5",
+          "conversationId": "1",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "operationId": "dispatch:story-original-r2",
+          "inputSnapshotId": "input:story-r2",
+          "intentRevision": 2
+        },
+        "receipt": {
+          "taskId": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+          "operationId": "dispatch:story-original-r2",
+          "submissionId": 8,
+          "status": "placed"
+        },
+        "observation": {
+          "sourceEntryId": 48,
+          "usageTokens": 30,
+          "status": "completed",
+          "summary": "代码与自动检查通过，等待 Omarchy 实测；是否可验收须逐项核对真实子项结果。",
+          "hasWriteConflicts": true,
+          "artifactRefs": [],
+          "subitems": [
+            {
+              "itemId": "phase5-4:durable-8af52a6b6933-13-0",
+              "task": "retain-one: write the first result",
+              "required": true,
+              "dependencies": [],
+              "criterionIds": [],
+              "nativeStatus": "completed",
+              "outcome": "completed",
+              "childId": "durable-8af52a6b6933-13-0",
+              "childConversationId": "14",
+              "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+              "artifactRefs": [
+                "/tmp/phase5-native-story-tBg15R/workspace/shared-result.txt"
+              ],
+              "writeConflicts": [],
+              "summary": "原生范围执行结束，等待负责人审核。",
+              "isolation": "shared"
+            },
+            {
+              "itemId": "phase5-4:durable-8af52a6b6933-13-1",
+              "task": "gap-two: write the second required result",
+              "required": true,
+              "dependencies": [],
+              "criterionIds": [],
+              "nativeStatus": "completed",
+              "outcome": "blocked",
+              "childId": "durable-8af52a6b6933-13-1",
+              "childConversationId": "21",
+              "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+              "artifactRefs": [],
+              "writeConflicts": [
+                "write conflict blocked: /tmp/phase5-native-story-tBg15R/workspace/shared-result.txt already written by durable-8af52a6b6933-13-0 (write)"
+              ],
+              "summary": "原生范围执行结束，等待负责人审核。",
+              "isolation": "shared"
+            }
+          ]
+        },
+        "counts": {
+          "modelCalls": 9,
+          "effects": 2,
+          "perModel": [
+            {
+              "model": "blocked",
+              "count": 2
+            },
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "old",
+              "count": 2
+            },
+            {
+              "model": "retain",
+              "count": 2
+            },
+            {
+              "model": "root",
+              "count": 2
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "r1-historical",
+              "count": 1
+            },
+            {
+              "marker": "retain-one",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "number": 5,
+      "name": "r1 真实原生日志晚到后仅归档历史，r2 当前成果与完成通知保持隔离",
+      "evidence": {
+        "late": {
+          "deliverableId": "result:binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0",
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "producerBotId": "bot-mybuddy-default",
+          "executionId": "binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0",
+          "intentRevision": 1,
+          "ownerEpoch": 1,
+          "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+          "status": "superseded",
+          "summary": "原生范围执行结束，等待负责人审核。",
+          "artifactRefs": [
+            "/tmp/phase5-native-story-tBg15R/workspace/r1-historical.txt"
+          ],
+          "evidenceRefs": [
+            "evidence-cce10ee9-5287-4588-992c-5de2c21e51ae"
+          ],
+          "uncoveredScope": [],
+          "uncoveredCriterionIds": [],
+          "isSpeculation": false,
+          "hasWriteConflicts": false,
+          "createdAt": 1794093135957
+        },
+        "recoveredIdentity": {
+          "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+          "taskId": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+          "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/8af52a6b69332b2d2b3c857832e1c6a55b22471f2394e8a43edaa39199ecb1a5",
+          "conversationId": "1",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "operationId": "dispatch:story-original-r2",
+          "inputSnapshotId": "input:story-r2",
+          "intentRevision": 2
+        },
+        "counts": {
+          "modelCalls": 9,
+          "effects": 2,
+          "perModel": [
+            {
+              "model": "blocked",
+              "count": 2
+            },
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "old",
+              "count": 2
+            },
+            {
+              "model": "retain",
+              "count": 2
+            },
+            {
+              "model": "root",
+              "count": 2
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "r1-historical",
+              "count": 1
+            },
+            {
+              "marker": "retain-one",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "number": 6,
+      "name": "真实并行 child 写入冲突，isError/blocked 保留，仅原生补跑缺口且成功分支零重跑",
+      "evidence": {
+        "retained": {
+          "itemId": "phase5-4:durable-8af52a6b6933-13-0",
+          "task": "retain-one: write the first result",
+          "required": true,
+          "dependencies": [],
+          "criterionIds": [],
+          "nativeStatus": "completed",
+          "outcome": "completed",
+          "childId": "durable-8af52a6b6933-13-0",
+          "childConversationId": "14",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "artifactRefs": [
+            "/tmp/phase5-native-story-tBg15R/workspace/shared-result.txt"
+          ],
+          "writeConflicts": [],
+          "summary": "原生范围执行结束，等待负责人审核。",
+          "isolation": "shared",
+          "factId": "item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+          "intentRevision": 2,
+          "inputSnapshotId": "input:story-r2",
+          "deliverableId": "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+          "createdAt": 1794093135976
+        },
+        "blocked": {
+          "itemId": "phase5-4:durable-8af52a6b6933-13-1",
+          "task": "gap-two: write the second required result",
+          "required": true,
+          "dependencies": [],
+          "criterionIds": [],
+          "nativeStatus": "completed",
+          "outcome": "blocked",
+          "childId": "durable-8af52a6b6933-13-1",
+          "childConversationId": "21",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "artifactRefs": [],
+          "writeConflicts": [
+            "write conflict blocked: /tmp/phase5-native-story-tBg15R/workspace/shared-result.txt already written by durable-8af52a6b6933-13-0 (write)"
+          ],
+          "summary": "原生范围执行结束，等待负责人审核。",
+          "isolation": "shared",
+          "factId": "item:a713a48c9a0e2e1134d5347ab14dfe8883d2363f8fec9fd71296ae4b759a364d",
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+          "intentRevision": 2,
+          "inputSnapshotId": "input:story-r2",
+          "createdAt": 1794093135976
+        },
+        "continuation": {
+          "bindingId": "binding-4ec339ce-abaa-4624-8934-b21c495fb952",
+          "taskId": "work-execution-79ca835c-be93-43c5-8955-2bf201c2f64c",
+          "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/133f399b8154e85b26643225bd7ac6da65704f35814954eabd6ccd6c6daef346",
+          "conversationId": "1",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "operationId": "dispatch:continuation:53f4940afdc1a7ac8d7a83339e6f5c8805a223fab011a75d11fec13628e41821",
+          "inputSnapshotId": "input:story-r2",
+          "intentRevision": 2
+        },
+        "plans": [
+          {
+            "planId": "continuation:53f4940afdc1a7ac8d7a83339e6f5c8805a223fab011a75d11fec13628e41821",
+            "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+            "sourceBindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+            "gapItemIds": [
+              "phase5-4:durable-8af52a6b6933-13-1"
+            ],
+            "intentRevision": 2,
+            "inputSnapshotId": "input:story-r2",
+            "ownerEpoch": 1,
+            "ownerBotId": "bot-mybuddy-default",
+            "state": "settled",
+            "reason": "仅补齐被实际并行写冲突阻止的 gap-two，保留 retain-one",
+            "createdAt": 1794093136000
+          }
+        ],
+        "counts": {
+          "modelCalls": 13,
+          "effects": 3,
+          "perModel": [
+            {
+              "model": "blocked",
+              "count": 2
+            },
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "gap",
+              "count": 2
+            },
+            {
+              "model": "old",
+              "count": 2
+            },
+            {
+              "model": "retain",
+              "count": 2
+            },
+            {
+              "model": "root",
+              "count": 4
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "gap-two",
+              "count": 1
+            },
+            {
+              "marker": "r1-historical",
+              "count": 1
+            },
+            {
+              "marker": "retain-one",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "number": 7,
+      "name": "代码和自动检查通过，受信任评审采纳真实产物，明确等待 Omarchy 实测且不能提前关闭",
+      "evidence": {
+        "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+        "title": "Watch A: Linux 检查与有限实测职责",
+        "lifecycle": "active",
+        "mode": "watch",
+        "ownerBotId": "bot-mybuddy-default",
+        "ownerEpoch": 1,
+        "intentRevision": 2,
+        "inputSnapshotId": "input:story-r2",
+        "stateVersion": 35,
+        "artifactSnapshotId": "artifacts:f44e20955c3e92a3c28c238ef3a80dacb4e54d39e2821ffcc11534c8e0572e34",
+        "acceptedCount": 3,
+        "currentCardKeys": [
+          "card:73614c4640408efe3efdccccc7f82c327dfb601de05b7f77331aacf859b0f647",
+          "card:991e591cae80e118ad1bd6a2934971b9576267a877e608ac04b8f499ce015020",
+          "card:77be2198a87f9b0357f5f8e18413ff02466a2c1a5ea518e686e70d1bfe33a0e7"
+        ],
+        "currentConclusion": "代码与自动检查通过，等待 Omarchy 实测；是否可验收须逐项核对真实子项结果。",
+        "pendingUserDecisions": [
+          "待实测：Omarchy 实测通过（omarchy）",
+          "原汇总含被阻止的必要写入；只保留已核验子项并对缺口单独补跑"
+        ],
+        "nextSteps": [
+          "等待实测反馈：Omarchy 实测通过"
+        ],
+        "unverifiedScope": [
+          {
+            "criterionId": "criterion-1794093132619-0",
+            "text": "自动检查通过",
+            "reason": "user_verified",
+            "intentRevision": 2,
+            "inputSnapshotId": "input:story-r2",
+            "artifactSnapshotId": "artifacts:f44e20955c3e92a3c28c238ef3a80dacb4e54d39e2821ffcc11534c8e0572e34",
+            "evidenceIds": [
+              "evidence-ead37689-4189-453b-a9d9-8a7d62609108"
+            ]
+          },
+          {
+            "criterionId": "criterion-1794093132619-1",
+            "text": "Omarchy 实测通过",
+            "reason": "pending_real_environment",
+            "requiredEnvironment": "omarchy",
+            "artifactSnapshotId": "artifacts:f44e20955c3e92a3c28c238ef3a80dacb4e54d39e2821ffcc11534c8e0572e34",
+            "evidenceIds": []
+          }
+        ],
+        "delivery": [],
+        "updatedAt": 1794093136276
+      }
+    },
+    {
+      "number": 8,
+      "name": "真实配对 Remote 反馈失败、原生协作者修复期间交接，旧负责人和旧手机产物版本均被拒绝",
+      "evidence": {
+        "beforeArtifact": "artifacts:f44e20955c3e92a3c28c238ef3a80dacb4e54d39e2821ffcc11534c8e0572e34",
+        "afterArtifact": "artifacts:19bc15a769f0875af36743ef015e188fc666e5a55ec903fc049b7bfbd1c34f28",
+        "repair": {
+          "bindingId": "binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1",
+          "taskId": "phase5-collaborator-repair",
+          "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/29429a3367a095eeac5919d8031e32e9f97956f6e2b342d4297ad8f502f3ce15",
+          "conversationId": "1",
+          "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+          "operationId": "native:phase5-collaborator-repair",
+          "inputSnapshotId": "input:story-r2",
+          "intentRevision": 2
+        },
+        "ownerEpoch": 2
+      }
+    },
+    {
+      "number": 9,
+      "name": "当前版本反馈后用户关闭有限 Watch A；A 停止唤醒，B 的原预算/游标不受清理影响并继续真实执行",
+      "evidence": {
+        "conclusion": "succeeded",
+        "subscriptions": [
+          {
+            "subscriptionId": "subscription-849fd084-557a-47be-a9d9-868669ce8a8b",
+            "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+            "source": "hook",
+            "filter": {},
+            "catchUpPolicy": "latest",
+            "maxMergeWaitMs": 1000,
+            "maxQueueDepth": 8,
+            "stopConditionText": "Omarchy 实测通过且无回归，由用户确认结束",
+            "scheduleRevision": 1,
+            "configRevision": 2,
+            "sourceTarget": "A",
+            "versionMode": "monotonic",
+            "dstPolicy": "first-valid",
+            "maxBacklogEvents": 400,
+            "maxBacklogBytes": 8388608,
+            "lastCheckedAt": 1794093133657,
+            "createdAt": 1794093132628,
+            "updatedAt": 1794093136926,
+            "stoppedAt": 1794093136926
+          }
+        ],
+        "bBinding": [
+          {
+            "bindingId": "binding-4d4a6c05-0f77-431b-b9e2-bbafb403b85b",
+            "taskId": "work-execution-76eb34a3-29d8-4e63-a3d9-09ac744d09e3",
+            "durableStoreKey": "/tmp/phase5-native-story-tBg15R/native/durable/5730d8ce995729b13ef0946b92559d96768064b76a7c0b51bbaa6e53ee1d6b0a",
+            "conversationId": "1",
+            "workspaceBinding": "/tmp/phase5-native-story-tBg15R/workspace",
+            "operationId": "dispatch:source:instruction-b293ae7e-c2a8-4877-bde3-0c692eb6bb45",
+            "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+            "intentRevision": 1
+          }
+        ],
+        "counts": {
+          "modelCalls": 17,
+          "effects": 5,
+          "perModel": [
+            {
+              "model": "blocked",
+              "count": 2
+            },
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "gap",
+              "count": 2
+            },
+            {
+              "model": "old",
+              "count": 2
+            },
+            {
+              "model": "repair",
+              "count": 2
+            },
+            {
+              "model": "retain",
+              "count": 2
+            },
+            {
+              "model": "root",
+              "count": 4
+            },
+            {
+              "model": "watch",
+              "count": 2
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "gap-two",
+              "count": 1
+            },
+            {
+              "marker": "r1-historical",
+              "count": 1
+            },
+            {
+              "marker": "repair-v2",
+              "count": 1
+            },
+            {
+              "marker": "retain-one",
+              "count": 1
+            },
+            {
+              "marker": "watch-b",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "number": 10,
+      "name": "第二次真实强杀后仅补通知，已投递效果不重复；真实桌面 reducer 与配对 Remote 增量/快照/只读事实收敛",
+      "evidence": {
+        "counts": {
+          "modelCalls": 17,
+          "effects": 5,
+          "perModel": [
+            {
+              "model": "blocked",
+              "count": 2
+            },
+            {
+              "model": "front",
+              "count": 1
+            },
+            {
+              "model": "gap",
+              "count": 2
+            },
+            {
+              "model": "old",
+              "count": 2
+            },
+            {
+              "model": "repair",
+              "count": 2
+            },
+            {
+              "model": "retain",
+              "count": 2
+            },
+            {
+              "model": "root",
+              "count": 4
+            },
+            {
+              "model": "watch",
+              "count": 2
+            }
+          ],
+          "perEffect": [
+            {
+              "marker": "gap-two",
+              "count": 1
+            },
+            {
+              "marker": "r1-historical",
+              "count": 1
+            },
+            {
+              "marker": "repair-v2",
+              "count": 1
+            },
+            {
+              "marker": "retain-one",
+              "count": 1
+            },
+            {
+              "marker": "watch-b",
+              "count": 1
+            }
+          ]
+        },
+        "notifications": [
+          {
+            "notificationId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+            "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+            "semanticKey": "work:work-d82385d4-dcc5-478f-b729-06405914d3c1:summary:f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+            "kind": "summary",
+            "title": "phase5-next-owner汇总：Watch A: Linux 检查与有限实测职责",
+            "body": "已验收 · bot-mybuddy-default：代码与自动检查通过，等待 Omarchy 实测；是否可验收须逐项核对真实子项结果。\n已拒绝 · bot-mybuddy-default：原汇总含被阻止的必要写入；只保留已核验子项并对缺口单独补跑\n已验收 · bot-mybuddy-default：原生范围执行结束，等待负责人审核。\n已验收 · phase5-collaborator：原生范围执行结束，等待负责人审核。\n已验收 · bot-mybuddy-default：原生范围执行结束，等待负责人审核。",
+            "stateVersion": 48,
+            "intentRevision": 2,
+            "delivery": "sent",
+            "channel": "fixture-desktop",
+            "idempotencyKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+            "attemptCount": 2,
+            "externalReceipt": "fixture-receipt:effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+            "cardKey": "card:f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+            "effectKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+            "createdAt": 1794093138032,
+            "sentAt": 1794093139995
+          }
+        ],
+        "attempts": [
+          {
+            "attemptId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:1",
+            "notificationId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+            "ordinal": 1,
+            "channel": "fixture-desktop",
+            "providerEffectKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+            "payloadHash": "3b67c1a065eeec92cfd4f7e9f66ca950f16ae6be258f020f71c6d4530fa29707",
+            "guarantee": "idempotent-queryable",
+            "claimGeneration": 1,
+            "status": "failed",
+            "claimedAt": 1794093139979,
+            "settledAt": 1794093139980
+          },
+          {
+            "attemptId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:2",
+            "notificationId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+            "ordinal": 2,
+            "channel": "fixture-desktop",
+            "providerEffectKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+            "payloadHash": "3b67c1a065eeec92cfd4f7e9f66ca950f16ae6be258f020f71c6d4530fa29707",
+            "guarantee": "idempotent-queryable",
+            "claimGeneration": 2,
+            "status": "sent",
+            "claimedAt": 1794093139994,
+            "settledAt": 1794093139995,
+            "receipt": "fixture-receipt:effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial"
+          }
+        ],
+        "budgets": {
+          "a": {
+            "windowId": "win-work-d82385d4-dcc5-478f-b729-06405914d3c1-1",
+            "maxTokens": 10000,
+            "usedTokens": 70,
+            "reservedTokens": 0,
+            "unknownUsageCount": 0,
+            "windowStartAt": 1794093132619,
+            "windowExpiresAt": 1794096732618,
+            "allowNextWindow": false,
+            "committedTokens": 70,
+            "unknownTokens": 0,
+            "policyRevision": 1,
+            "autoRollover": false
+          },
+          "b": {
+            "windowId": "win-work-9f725dae-25a7-4b68-92bc-a23ec630c089-1",
+            "maxTokens": 10000,
+            "usedTokens": 10,
+            "reservedTokens": 0,
+            "unknownUsageCount": 0,
+            "windowStartAt": 1794093132623,
+            "windowExpiresAt": 1794096732623,
+            "allowNextWindow": false,
+            "committedTokens": 10,
+            "unknownTokens": 0,
+            "policyRevision": 1,
+            "autoRollover": false
+          }
+        },
+        "physicalNotificationEffects": 1,
+        "cursor": {
+          "epoch": "fe31ddb7c3293df61b7263768e6c75a9",
+          "sequence": 169,
+          "scope": "all"
+        },
+        "desktop": {
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "lifecycle": "closed",
+          "intentRevision": 2,
+          "ownerEpoch": 2
+        },
+        "mobile": {
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "lifecycle": "closed",
+          "intentRevision": 2,
+          "ownerEpoch": 2
+        },
+        "diagnostics": {
+          "workId": "work-d82385d4-dcc5-478f-b729-06405914d3c1",
+          "intentRevision": 2,
+          "inputSnapshotId": "input:story-r2",
+          "stateVersion": 50,
+          "artifactSnapshotId": "artifacts:19bc15a769f0875af36743ef015e188fc666e5a55ec903fc049b7bfbd1c34f28",
+          "requirements": {
+            "items": [
+              {
+                "intentRevision": 2,
+                "inputSnapshotId": "input:story-r2",
+                "sourceVersion": 3,
+                "createdAt": 1794093133834,
+                "deliverableIds": [
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+                  "result:binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+                  "partial:item:8f8c78f11ab7f72da60a34d3024329811b8b2937cb30f8691f8fa280ca5a76ae",
+                  "result:binding-4ec339ce-abaa-4624-8934-b21c495fb952",
+                  "result:binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1"
+                ]
+              },
+              {
+                "intentRevision": 1,
+                "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+                "sourceVersion": 2,
+                "createdAt": 1794093133654,
+                "deliverableIds": [
+                  "result:binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0"
+                ]
+              },
+              {
+                "intentRevision": 1,
+                "inputSnapshotId": "sha256:dc401379cbba891e3bc83b79c540224938344d120ded54f22d00343f02ad566f",
+                "sourceVersion": 1,
+                "createdAt": 1794093132619,
+                "deliverableIds": []
+              }
+            ],
+            "truncated": false
+          },
+          "responsibility": {
+            "items": [
+              {
+                "ownerEpoch": 2,
+                "ownerBotId": "bot-mybuddy-default",
+                "reason": "负责人由 bot-mybuddy-default 交接为 phase5-next-owner，沿用当前要求、输入、成果和预算",
+                "at": 1794093136412,
+                "adoptionState": "adopted"
+              },
+              {
+                "ownerEpoch": 2,
+                "ownerBotId": "phase5-next-owner",
+                "at": 1794093139995,
+                "adoptionState": "adopted"
+              }
+            ],
+            "truncated": false
+          },
+          "executions": {
+            "items": [
+              {
+                "bindingId": "binding-3b4e540c-c3eb-44db-8a07-b3a26a4395c0",
+                "taskId": "work-execution-b062f3f5-fd3c-463d-9d91-27387c38fd66",
+                "status": "completed",
+                "intentRevision": 1,
+                "inputSnapshotId": "sha256:717ab3cd8b085eb2e6dff512dd01c55308d8256e1a9ee61d00e947bab2af76ad",
+                "invalidatedAt": 1794093133834,
+                "artifactRefs": [
+                  "/tmp/phase5-native-story-tBg15R/workspace/r1-historical.txt"
+                ],
+                "blocked": "原生范围执行结束，等待负责人审核。",
+                "writeConflicts": false,
+                "isError": false
+              },
+              {
+                "bindingId": "binding-75838fc6-939d-4f00-bb57-71df04dc5c8d",
+                "taskId": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+                "status": "completed",
+                "intentRevision": 2,
+                "inputSnapshotId": "input:story-r2",
+                "artifactRefs": [
+                  "/tmp/phase5-native-story-tBg15R/workspace/shared-result.txt"
+                ],
+                "blocked": "代码与自动检查通过，等待 Omarchy 实测；是否可验收须逐项核对真实子项结果。",
+                "writeConflicts": true,
+                "isError": false
+              },
+              {
+                "bindingId": "binding-4ec339ce-abaa-4624-8934-b21c495fb952",
+                "taskId": "work-execution-79ca835c-be93-43c5-8955-2bf201c2f64c",
+                "status": "completed",
+                "intentRevision": 2,
+                "inputSnapshotId": "input:story-r2",
+                "artifactRefs": [
+                  "/tmp/phase5-native-story-tBg15R/workspace/gap-two.txt"
+                ],
+                "blocked": "代码与自动检查通过，等待 Omarchy 实测；是否可验收须逐项核对真实子项结果。",
+                "writeConflicts": false,
+                "isError": false
+              },
+              {
+                "bindingId": "binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1",
+                "taskId": "phase5-collaborator-repair",
+                "status": "completed",
+                "intentRevision": 2,
+                "inputSnapshotId": "input:story-r2",
+                "artifactRefs": [
+                  "/tmp/phase5-native-story-tBg15R/workspace/repair-v2.txt"
+                ],
+                "blocked": "原生范围执行结束，等待负责人审核。",
+                "writeConflicts": false,
+                "isError": false
+              }
+            ],
+            "truncated": false
+          },
+          "acceptance": {
+            "items": [
+              {
+                "cardKey": "card:73614c4640408efe3efdccccc7f82c327dfb601de05b7f77331aacf859b0f647",
+                "semanticCardKey": "73614c4640408efe3efdccccc7f82c327dfb601de05b7f77331aacf859b0f647",
+                "kind": "accepted_result",
+                "canonicalOutcomeHash": "469b2f833ad5006a793ffc040345c3ca1056c84cc2421091f8f80779e41f72d5",
+                "currency": "current",
+                "createdAt": 1794093136258,
+                "deliverableIds": [
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35"
+                ],
+                "evidenceIds": [
+                  "evidence-ead37689-4189-453b-a9d9-8a7d62609108"
+                ]
+              },
+              {
+                "cardKey": "card:991e591cae80e118ad1bd6a2934971b9576267a877e608ac04b8f499ce015020",
+                "semanticCardKey": "991e591cae80e118ad1bd6a2934971b9576267a877e608ac04b8f499ce015020",
+                "kind": "accepted_result",
+                "canonicalOutcomeHash": "6f5995641ec2903acab496f52540764d0a21d7cdd401258573534dd612476672",
+                "currency": "current",
+                "createdAt": 1794093136269,
+                "deliverableIds": [
+                  "partial:item:8f8c78f11ab7f72da60a34d3024329811b8b2937cb30f8691f8fa280ca5a76ae",
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35"
+                ],
+                "evidenceIds": [
+                  "evidence-ead37689-4189-453b-a9d9-8a7d62609108"
+                ]
+              },
+              {
+                "cardKey": "card:77be2198a87f9b0357f5f8e18413ff02466a2c1a5ea518e686e70d1bfe33a0e7",
+                "semanticCardKey": "77be2198a87f9b0357f5f8e18413ff02466a2c1a5ea518e686e70d1bfe33a0e7",
+                "kind": "accepted_result",
+                "canonicalOutcomeHash": "7d57ae666c962b176f1a263d57d4750a577db72c492ffc34c96f7b2b0fc802a6",
+                "currency": "current",
+                "createdAt": 1794093136276,
+                "deliverableIds": [
+                  "partial:item:8f8c78f11ab7f72da60a34d3024329811b8b2937cb30f8691f8fa280ca5a76ae",
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+                  "result:binding-4ec339ce-abaa-4624-8934-b21c495fb952"
+                ],
+                "evidenceIds": [
+                  "evidence-ead37689-4189-453b-a9d9-8a7d62609108"
+                ]
+              },
+              {
+                "cardKey": "card:65bb59cb5cc59cd6489837c3777bd503f8a778c9b222ec726d682960c53f7cf9",
+                "semanticCardKey": "65bb59cb5cc59cd6489837c3777bd503f8a778c9b222ec726d682960c53f7cf9",
+                "kind": "accepted_result",
+                "canonicalOutcomeHash": "8841162c4f436d88f8d3fd91816dea7accb98f4bc5251a13e9131a964a6dae64",
+                "currency": "current",
+                "createdAt": 1794093136456,
+                "deliverableIds": [
+                  "partial:item:8f8c78f11ab7f72da60a34d3024329811b8b2937cb30f8691f8fa280ca5a76ae",
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+                  "result:binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1",
+                  "result:binding-4ec339ce-abaa-4624-8934-b21c495fb952"
+                ],
+                "evidenceIds": [],
+                "readAt": 1794093140185
+              },
+              {
+                "cardKey": "card:f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+                "semanticCardKey": "f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+                "kind": "owner_summary",
+                "canonicalOutcomeHash": "629baeda026eb5176cd120e4fa8d7ec9aec3f63e875d8c27ae7837a4a4d755fa",
+                "currency": "current",
+                "createdAt": 1794093138032,
+                "deliverableIds": [
+                  "partial:item:8f8c78f11ab7f72da60a34d3024329811b8b2937cb30f8691f8fa280ca5a76ae",
+                  "partial:item:b740b6b3872bf1302196c4bd527c0b07f8a87b3ba6653a014bbf4bd58002ab35",
+                  "result:binding-27d9d8c4-f35d-42e2-9d4f-e1c675727ac1",
+                  "result:binding-4ec339ce-abaa-4624-8934-b21c495fb952"
+                ],
+                "evidenceIds": [
+                  "evidence-129b0281-fe79-4c58-a4b6-99cf90d8f040",
+                  "evidence-dc1773d7-fe91-4f0f-a16a-69d42166d37d"
+                ]
+              }
+            ],
+            "truncated": false
+          },
+          "resources": {
+            "items": [
+              {
+                "kind": "subscription",
+                "ref": "subscription-849fd084-557a-47be-a9d9-868669ce8a8b",
+                "state": "stopped",
+                "detail": "Omarchy 实测通过且无回归，由用户确认结束"
+              },
+              {
+                "kind": "budget",
+                "ref": "win-work-d82385d4-dcc5-478f-b729-06405914d3c1-1",
+                "state": "0",
+                "detail": "70/10000"
+              }
+            ],
+            "truncated": false
+          },
+          "delivery": {
+            "items": [
+              {
+                "attemptId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:1",
+                "notificationId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+                "ordinal": 1,
+                "channel": "fixture-desktop",
+                "providerEffectKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+                "payloadHash": "3b67c1a065eeec92cfd4f7e9f66ca950f16ae6be258f020f71c6d4530fa29707",
+                "guarantee": "idempotent-queryable",
+                "claimGeneration": 1,
+                "status": "failed",
+                "claimedAt": 1794093139979,
+                "settledAt": 1794093139980
+              },
+              {
+                "attemptId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:2",
+                "notificationId": "notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab",
+                "ordinal": 2,
+                "channel": "fixture-desktop",
+                "providerEffectKey": "effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial",
+                "payloadHash": "3b67c1a065eeec92cfd4f7e9f66ca950f16ae6be258f020f71c6d4530fa29707",
+                "guarantee": "idempotent-queryable",
+                "claimGeneration": 2,
+                "status": "sent",
+                "claimedAt": 1794093139994,
+                "settledAt": 1794093139995,
+                "receipt": "fixture-receipt:effect:notification-work-d82385d4-dcc5-478f-b729-06405914d3c1-summary-f30f63c98e39e65e8667db902d19ac5e2ed80eeb5e479a492cd1e0c4050c66ab:initial"
+              }
+            ],
+            "truncated": false
+          },
+          "unverifiedScope": [
+            {
+              "criterionId": "criterion-1794093132619-0",
+              "text": "自动检查通过",
+              "reason": "user_verified",
+              "intentRevision": 2,
+              "inputSnapshotId": "input:story-r2",
+              "artifactSnapshotId": "artifacts:19bc15a769f0875af36743ef015e188fc666e5a55ec903fc049b7bfbd1c34f28",
+              "evidenceIds": [
+                "evidence-129b0281-fe79-4c58-a4b6-99cf90d8f040"
+              ]
+            },
+            {
+              "criterionId": "criterion-1794093132619-1",
+              "text": "Omarchy 实测通过",
+              "reason": "user_verified",
+              "requiredEnvironment": "omarchy",
+              "intentRevision": 2,
+              "inputSnapshotId": "input:story-r2",
+              "artifactSnapshotId": "artifacts:19bc15a769f0875af36743ef015e188fc666e5a55ec903fc049b7bfbd1c34f28",
+              "evidenceIds": [
+                "evidence-dc1773d7-fe91-4f0f-a16a-69d42166d37d"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "modelCalls": [
+    {
+      "id": 1,
+      "stage": 1,
+      "model": "old",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "97a2475e8bdf6344f4a38b44d0f041b8bed5bc089f6b39e328962fb7d5c38fd4"
+    },
+    {
+      "id": 2,
+      "stage": 1,
+      "model": "old",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "97a2475e8bdf6344f4a38b44d0f041b8bed5bc089f6b39e328962fb7d5c38fd4"
+    },
+    {
+      "id": 3,
+      "stage": 1,
+      "model": "front",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "d9763db81434d9b9a763678f78bf421becf0f3cc65ce5f5afab98fac22c03e1c"
+    },
+    {
+      "id": 4,
+      "stage": 1,
+      "model": "root",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "f8d6c781a142229e0417a82e696c2335a838510d68b8a9acf5749772371fcc49"
+    },
+    {
+      "id": 5,
+      "stage": 1,
+      "model": "retain",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "366a342eff79ddc03c92357c1c72e1e2f0448ae2fbc0ae98123535dfb0ad2a56"
+    },
+    {
+      "id": 6,
+      "stage": 1,
+      "model": "blocked",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "942b9e5dbd3fec02d67e9ccc34f8d54fb59ac41564564883e7206e74bb45c687"
+    },
+    {
+      "id": 7,
+      "stage": 1,
+      "model": "retain",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "366a342eff79ddc03c92357c1c72e1e2f0448ae2fbc0ae98123535dfb0ad2a56"
+    },
+    {
+      "id": 8,
+      "stage": 1,
+      "model": "blocked",
+      "last_role": "toolResult",
+      "last_error": 1,
+      "prompt_hash": "942b9e5dbd3fec02d67e9ccc34f8d54fb59ac41564564883e7206e74bb45c687"
+    },
+    {
+      "id": 9,
+      "stage": 1,
+      "model": "root",
+      "last_role": "toolResult",
+      "last_error": 1,
+      "prompt_hash": "f8d6c781a142229e0417a82e696c2335a838510d68b8a9acf5749772371fcc49"
+    },
+    {
+      "id": 10,
+      "stage": 2,
+      "model": "root",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "81c6e6efc1dcfb2e1c48e28e12f5bb9f2f76b78837b88f6a7e63e765b154b597"
+    },
+    {
+      "id": 11,
+      "stage": 2,
+      "model": "gap",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "942b9e5dbd3fec02d67e9ccc34f8d54fb59ac41564564883e7206e74bb45c687"
+    },
+    {
+      "id": 12,
+      "stage": 2,
+      "model": "gap",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "942b9e5dbd3fec02d67e9ccc34f8d54fb59ac41564564883e7206e74bb45c687"
+    },
+    {
+      "id": 13,
+      "stage": 2,
+      "model": "root",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "81c6e6efc1dcfb2e1c48e28e12f5bb9f2f76b78837b88f6a7e63e765b154b597"
+    },
+    {
+      "id": 14,
+      "stage": 2,
+      "model": "repair",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "f8d6c781a142229e0417a82e696c2335a838510d68b8a9acf5749772371fcc49"
+    },
+    {
+      "id": 15,
+      "stage": 2,
+      "model": "repair",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "f8d6c781a142229e0417a82e696c2335a838510d68b8a9acf5749772371fcc49"
+    },
+    {
+      "id": 16,
+      "stage": 2,
+      "model": "watch",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "b4583d23423a7149fbe764447d3b0e346acb0459ffeba2ac4ae6bfd46c5acba7"
+    },
+    {
+      "id": 17,
+      "stage": 2,
+      "model": "watch",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "b4583d23423a7149fbe764447d3b0e346acb0459ffeba2ac4ae6bfd46c5acba7"
+    },
+    {
+      "id": 18,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "35bc9d4f101bcdbd32404c61600c99852cf1f6bf222475b4a7fc79085d96007e"
+    },
+    {
+      "id": 19,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "35bc9d4f101bcdbd32404c61600c99852cf1f6bf222475b4a7fc79085d96007e"
+    },
+    {
+      "id": 20,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "f8cf6d3204a43b0b9ae8d99edafa4b0d9b0652b49dba08679fb1541bed8e9f15"
+    },
+    {
+      "id": 21,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "8099a371823e95853c9230e3844fe7289cc87e691f3471ffe41164bc5e81a96c"
+    },
+    {
+      "id": 22,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "8099a371823e95853c9230e3844fe7289cc87e691f3471ffe41164bc5e81a96c"
+    },
+    {
+      "id": 23,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "88b2a13565f8fde7c4a7794b2b8fa5c1c824d8d32b4412ce4ab241d6d82f8ef9"
+    },
+    {
+      "id": 24,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "user",
+      "last_error": 0,
+      "prompt_hash": "18dcf61a88399a9b3d39ba036f2634bdaaf41be739dd807cd79c581f37b506bf"
+    },
+    {
+      "id": 25,
+      "stage": 3,
+      "model": "provenance",
+      "last_role": "toolResult",
+      "last_error": 0,
+      "prompt_hash": "18dcf61a88399a9b3d39ba036f2634bdaaf41be739dd807cd79c581f37b506bf"
+    }
+  ],
+  "writeEffects": [
+    {
+      "id": 1,
+      "stage": 1,
+      "task_id": "work-execution-b062f3f5-fd3c-463d-9d91-27387c38fd66",
+      "conversation_id": "1",
+      "marker": "r1-historical",
+      "path": "/tmp/phase5-native-story-tBg15R/workspace/r1-historical.txt",
+      "content_hash": "47c60ae32a84cd1b93a3f69533bebbc1ae4f268c49aac6c2d5b85837915ec683"
+    },
+    {
+      "id": 2,
+      "stage": 1,
+      "task_id": "work-execution-b78b5b7d-3039-49f7-99ef-33f08267b007",
+      "conversation_id": "14",
+      "marker": "retain-one",
+      "path": "/tmp/phase5-native-story-tBg15R/workspace/shared-result.txt",
+      "content_hash": "8509fb47bf2d2912093c65f12df88e5531c975105e66383ceb2ceefc5763bc27"
+    },
+    {
+      "id": 3,
+      "stage": 2,
+      "task_id": "work-execution-79ca835c-be93-43c5-8955-2bf201c2f64c",
+      "conversation_id": "14",
+      "marker": "gap-two",
+      "path": "/tmp/phase5-native-story-tBg15R/workspace/gap-two.txt",
+      "content_hash": "bb6f99d2ff19a16b88b40528819e36d17a844bb8833f10304a5fc6301bee3656"
+    },
+    {
+      "id": 4,
+      "stage": 2,
+      "task_id": "phase5-collaborator-repair",
+      "conversation_id": "1",
+      "marker": "repair-v2",
+      "path": "/tmp/phase5-native-story-tBg15R/workspace/repair-v2.txt",
+      "content_hash": "23f85f3ebc2a7a5165056736fa35eda498321f8e513ab62f329d26b385826ca3"
+    },
+    {
+      "id": 5,
+      "stage": 2,
+      "task_id": "work-execution-76eb34a3-29d8-4e63-a3d9-09ac744d09e3",
+      "conversation_id": "1",
+      "marker": "watch-b",
+      "path": "/tmp/phase5-native-story-tBg15R/workspace/watch-b.txt",
+      "content_hash": "1cdc3258fbd2c74eb060bca5f5e86f370b8925539420afda0838cddfe7d3e55c"
+    }
+  ],
+  "kills": [
+    {
+      "stage": 1,
+      "label": "native-accepted-before-business-receipt",
+      "pid": 29598,
+      "requestedSignal": "SIGKILL",
+      "exitCode": null,
+      "signalCode": "SIGKILL",
+      "lease": {
+        "authority_id": "host-29598",
+        "heartbeat_at": 1794093133938,
+        "released_at": null
+      }
+    },
+    {
+      "stage": 2,
+      "label": "accepted-and-closed-before-notification",
+      "pid": 29610,
+      "requestedSignal": "SIGKILL",
+      "exitCode": null,
+      "signalCode": "SIGKILL",
+      "lease": {
+        "authority_id": "host-29610",
+        "heartbeat_at": 1794093137900,
+        "released_at": null
+      }
+    }
+  ]
+}

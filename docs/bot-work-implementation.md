@@ -2,7 +2,7 @@
 
 实施日期：2026-11-06；交付记录更新：2026-11-08。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
-**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md) 已实施并完成本轮代码加固，原始实现冻结 `f561cc7a2c03d644d724302eb6b0ae92f636dc1c`，加固实现冻结 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)。类型检查与相关专项通过；最终 Linux 完整门禁 **348 passed / 1 failed / 0 known failed / 1 new regression，exit 1**，唯一 AT-SPI socket EPERM 在原始基线亦复现。真实 UI、设备与外部证据仍缺，Phase 5 和 BOT-WORK-1.0 整体验收未完成。最新事实见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)，首轮 Windows 347/0/0/0 见 [历史执行复核](reviews/bot-work-phase5-2026-11-07.md)。下文各阶段的实施、规划和测试记录保留为历史证据，不混用为本轮验证结果。
+**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md) 的剩余代码功能已补齐，受测实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**。本轮接通五类真实 Gateway Work 出站适配、独立负责人汇总、桌面成果评审/实测反馈/明确关闭入口，并完成同库 Pi Durable 原生十步故事和两次真实进程强杀恢复。类型、架构与相关专项通过；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在本轮基线 `ac03fd5` 亦复现。真实 Electron UI、Windows/Omarchy、手机、渠道账户及 provider 用量证据仍缺，BOT-WORK-1.0 整体验收未完成。最新事实见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。下文各阶段的实施、规划和测试记录保留为历史证据，不混用为本轮验证结果。
 
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
@@ -11,7 +11,7 @@
 - [双页面与入口规范](bot-work-ui.md)，Git blob `ce52fec1dc8f6671d8be512a899f9af135663adc`。
 - [BW-A01～A46 与端到端故事](bot-work-acceptance.md)。
 
-## 当前实现与证据范围
+## Phase 1 实现与证据范围（历史）
 
 **Phase 1 已完成，验收范围为规划第 4 节的真实 SQLite、服务行为及宿主接线。** Bot/Work 唯一数据源、可信身份和控制版本、来源快照、验收证据、渠道身份、专家配置装配与 Memory 隔离均已实现并执行联合检查。完整 Bot 前台对话与后续五阶段的总体交付仍按原规划推进。
 
@@ -210,3 +210,19 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 最终主项目及 Remote 类型检查通过；architecture-graph 5/5、delivery-dedup 34、reconnect-diagnostics 19、e2e-story 10 步、remote-work-sync 19，以及 bot-workspace、bot-work-control、Phase 3 handoff 通过。最终完整 test:all 为 **348 passed / 1 failed / 0 known failed / 1 new regression（143.82 秒，exit 1）**，唯一失败 test:atspi-transport 在原始 f561cc7 同环境复现 D-Bus socket EPERM。首轮完整门禁的另一失败为旧能力升级夹具，已拆成保留真实数据库重开的正负两例并重跑，不修改失败白名单或削弱产品守卫。
 
 本轮真实 dev 探针启动 Electron 后因 singleton socket EPERM 受阻，未进入页面；Windows 强杀/BW-A31、Omarchy、真实手机、外部连接器及原生完整故事仍需各自补证。版本 0.1.107、schema 34、WorkService.ts 2498 行均保持。19 个变更源码/测试文件的冻结指纹为 `5b4fdcbf86cc575a6952678068b3b1b383f18f2d409e703b36f7d7e26788d4ad`；完整事实与逐文件清单见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)。
+
+
+## Phase 5 剩余功能补全与原生故事（2026-11-08）
+
+按用户“做完并更新到 GitHub”的要求继续在 main 完成，受测实现 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**，基线 `ac03fd59b9803e47f99ea4b67078d90600eb5a19`。完整证据及 BW-A01～BW-A46 最新矩阵见 [功能补全复核](reviews/bot-work-phase5-completion-2026-11-08.md)。
+
+- **用户评审入口**：新增严格 `bot-work:review-control`，真实桌面页面可采纳/拒绝成果、提交绑定输入/产物的实测反馈，再明确确认关闭。身份由可信 AgentService 注入，四类请求均需完整版本守卫；采纳不补造验收证据。用户反馈明确标为 `user_verified`，桌面与手机不误称自动验证。
+- **负责人汇总**：独立 `owner_summary` 卡片和 `summary` 通知，首条事实固定 15 秒最长等待，内容语义去重；报告、拒绝/写冲突/未验证范围准确区分，当前负责人与 adoption 校验，交接和已答问题重放不复活旧待决。团队采纳及成功关闭不再逐成员重复通知。
+- **Gateway 出站**：Feishu / WeCom / WeChat / Telegram / Slack 通过生产 adapter 异步发送；可信原输入绑定不可变目的地，每次发送及 token 刷新后重验账户/允许名单/负责人。均声明 best-effort-unqueryable，unknown 不自动盲重发；真实第三方账户发送尚未取证。
+- **来源与通知隔离**：原生 Goal 仅在单一 run input、原 submission 回执和 entry 三者精确一致时保存来源；多输入或伪造记录不猜测收件目标。真实 Work Task 完成不再重复 generic 完成通知，普通 Task 和必要失败提示保留。
+- **原生十步故事**：三个生产 Pi Durable 子进程复用同库，真实 children、内建 write、Remote HTTP 和 store/reducer；两次 SIGKILL 恢复前后模型/写入计数分别保持 9/2 和 17/5；通知一次物理效果。模型与外部传输是 fixture，实机事实仍单列。
+- **界面竞态**：组件卸载后隔离旧回调，列表刷新使用最新 includeClosed，按版本/产物重建表单与诊断；真实 ReactDOM 的 8 个延迟回调场景通过，不冒充真实 Electron 点击。
+
+最终门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**。真实 dev 已实际尝试，Node 堆扩容后到 Electron 仍因 singleton socket EPERM 未进入页面；AT-SPI 在本轮基线也复现 D-Bus socket EPERM，未加入失败白名单。Windows 强杀/BW-A31、Omarchy、真实手机、真实渠道与真实 provider 用量仍待各自环境补证。
+
+应用版本仍为 0.1.107，依赖未变，WorkService 为 2483 行。schema 升至 **35**，旧库按既有不兼容策略连同 WAL/SHM 改名备份后重建空库，不做旧数据迁移；启用 Feishu 还需配置 Verification Token。未执行应用发布 build/pack/dist。

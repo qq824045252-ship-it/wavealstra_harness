@@ -1,5 +1,7 @@
 # Bot / Work — Phase 5 执行复核（2026-11-07）
 
+> 最新补全记录见 [Phase 5 功能补全与原生验收复核](bot-work-phase5-completion-2026-11-08.md)：五类 Gateway 出站、独立负责人汇总、用户评审入口及真实原生十步故事已补齐。本文保留本轮历史事实；当前门禁与未完成实机边界以上述最新报告为准。
+
 > 首轮状态（2026-11-07 Windows 历史记录）：**实现完成，headless 347/0/0/0；实机（Windows 强杀、Omarchy/Hyprland、真实手机、真实外部连接器）证据仍未取得，Phase 5 整体验收未完成。**
 >
 > 执行日期：2026-11-07（Asia/Shanghai）。规划基线 `main@02c40ed`（父提交 `57e6fbb`，代码零漂移）。首轮受测实现冻结：[`f561cc7a2c03d644d724302eb6b0ae92f636dc1c`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/f561cc7a2c03d644d724302eb6b0ae92f636dc1c)（§6 指纹）。

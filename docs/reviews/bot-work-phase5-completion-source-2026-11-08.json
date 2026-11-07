@@ -1,0 +1,231 @@
+{
+  "baseCommit": "ac03fd59b9803e47f99ea4b67078d90600eb5a19",
+  "frozenAt": "2026-11-07T23:09:40.389196+00:00",
+  "files": [
+    {
+      "path": "app/remote/src/components/WorkPanel.tsx",
+      "sha256": "6056bbdd05a76466a0f9061f8a2bba7bea92bf5266753fdf63a8efcc7ce76d21"
+    },
+    {
+      "path": "package.json",
+      "sha256": "f0f1238e1b56003000d09ec969f86caea0f18eaf94285da496ff46b61aa8a33b"
+    },
+    {
+      "path": "scripts/bot-work-phase3-dev-test.cjs",
+      "sha256": "106bff3ea7c36616b47bd2e23d24efa3998642e6d6f9d6a5d880a26bcf0c42d3"
+    },
+    {
+      "path": "scripts/bot-work-phase5-dev-checks.cjs",
+      "sha256": "4f35797765b889ec9c66d2d398b9c04846c6255a0da8716b08c6d4c4ce8a8778"
+    },
+    {
+      "path": "scripts/bot-work-phase5-dev-test.cjs",
+      "sha256": "4dc09906b013d6dffcafbb40a33b6ed92789e9a460e97155f57c0653ef558e97"
+    },
+    {
+      "path": "scripts/bot-work-phase5-e2e-story-test.ts",
+      "sha256": "c8dcfd4a53c925b556d4ccc1d23478cc28daac2c1a36a803fc69436f18f19e0f"
+    },
+    {
+      "path": "scripts/bot-work-phase5-gateway-test.ts",
+      "sha256": "dd45bdb58392af92292fce241a031a6c9fadfd000eb4e128b4b334085c6e4203"
+    },
+    {
+      "path": "scripts/bot-work-phase5-native-fixture.ts",
+      "sha256": "7b30ad62774dbad3953d1c3c2b296cc65527c952e30131431bc81876c169f41b"
+    },
+    {
+      "path": "scripts/bot-work-phase5-native-provenance.ts",
+      "sha256": "8bb745c826681caa08447901b55f6b79926cd0719fecf628ddb9b40d15544c54"
+    },
+    {
+      "path": "scripts/bot-work-phase5-native-story-test.ts",
+      "sha256": "3e1a355a05c9ac9a73f43cf0f6bbcafd2d6399067c6b90b59b10f7194a07f28d"
+    },
+    {
+      "path": "scripts/bot-work-phase5-owner-summary-test.ts",
+      "sha256": "048fb72f515cda43df076d360fe0eb971e23ea2928f1409a0f6d944682f2b63f"
+    },
+    {
+      "path": "scripts/bot-work-phase5-reconnect-diagnostics-test.ts",
+      "sha256": "28c9843c987675565be66f8b62d4ecb9f79281bab7f02d08231c4ffe359fb740"
+    },
+    {
+      "path": "scripts/bot-work-phase5-review-test.ts",
+      "sha256": "0751d0a7c04f72ee8fcf5839f8d66280a32d39e320e504d99cf239c853b49442"
+    },
+    {
+      "path": "scripts/bot-work-phase5-review-ui-test.tsx",
+      "sha256": "244b240ca6a6e3f51fa490c2ed05e59f154272081a5a3919fe39029c2380287c"
+    },
+    {
+      "path": "scripts/bot-workspace-test.ts",
+      "sha256": "bcda975e15c18688b98a41e6fb7993137feff9a0e342311be99f67d49b42eb3b"
+    },
+    {
+      "path": "scripts/remote-work-sync-test.ts",
+      "sha256": "797bfed7523692ace5079076d68bd0e5ec46e5121eba44bc8e90832a8a6aa418"
+    },
+    {
+      "path": "scripts/test-all.mjs",
+      "sha256": "bca8958be81aa863ce4a7be7854924e343b7de919fe25488e9ada9c0a617fd63"
+    },
+    {
+      "path": "shared/src/remote-contract.ts",
+      "sha256": "b8a33a3b1b3776996d194914b127bb5c49578c8763aa70797173fff29214fdf2"
+    },
+    {
+      "path": "src/main/agent/AgentService.ts",
+      "sha256": "79a1f28c524f9b9eefc5dd0374e4661ca0dd8f73df0341a5102cd7af715c9e01"
+    },
+    {
+      "path": "src/main/agent/ConversationGoalService.ts",
+      "sha256": "4876477e1768e4f5ede176956bc32a5d5a74772f4792bec992235124e7a969a4"
+    },
+    {
+      "path": "src/main/agent/durable/DurableDomainTools.ts",
+      "sha256": "15c4d48aacdded7818ae93873da6b68e5ff1263007fc9c1cd8486a0a22b48218"
+    },
+    {
+      "path": "src/main/agent/durable/DurableExecutionContext.ts",
+      "sha256": "3affd25fd617ad06e38015f6d5dcef80de51fbce1099ea8af5af916175df85f6"
+    },
+    {
+      "path": "src/main/agent/durable/DurableInputProvenance.ts",
+      "sha256": "269e0fb9e53cda9dd5e57af3dbcd2218cc47df8400ec89f6636147f90568ad97"
+    },
+    {
+      "path": "src/main/agent/work/WorkArtifactValidation.ts",
+      "sha256": "3342935beda16a55e1b00b85c308d2196f882b2f1676a64ce3324a1a4e2f6250"
+    },
+    {
+      "path": "src/main/agent/work/WorkCollaborationService.ts",
+      "sha256": "fe46363c882a7257a77dc889cf7b7e0ef0714151c280725e4dbb1bab8f847286"
+    },
+    {
+      "path": "src/main/agent/work/WorkGatewayNotificationChannel.ts",
+      "sha256": "54474e3b2fa59754f3704c11eb0d168ca1dd8cdc7105e10929c25d573aa2385b"
+    },
+    {
+      "path": "src/main/agent/work/WorkNotificationDelivery.ts",
+      "sha256": "2d58ed194a3d5af38454ea05f78a4a0f0ce84e5d9a2cd4cd112d5cc5726d5c08"
+    },
+    {
+      "path": "src/main/agent/work/WorkNotificationHost.ts",
+      "sha256": "daa70d255ec88d2b35ace2206a280ee6bd99a82c357c1adfe76fd68d224c23a1"
+    },
+    {
+      "path": "src/main/agent/work/WorkOwnerSummary.ts",
+      "sha256": "577b2461f031792f216f1449d6122e53c517c3f33e3ad99f26da2d4db6aaed00"
+    },
+    {
+      "path": "src/main/agent/work/WorkOwnerSummaryFacts.ts",
+      "sha256": "65901db1a538272f8390ec0f79a95a326dccee2a9cd39f276cb4b87a276c05fc"
+    },
+    {
+      "path": "src/main/agent/work/WorkPhase5Facts.ts",
+      "sha256": "bc593b3cae67929d17458953ba9f002f11a193f7ee52822dbc7e144605c2a378"
+    },
+    {
+      "path": "src/main/agent/work/WorkResultCards.ts",
+      "sha256": "0a87e1bcd846a27fc80d0b7316e64ded313ac16e17c7aa1e4845238d3dba24df"
+    },
+    {
+      "path": "src/main/agent/work/WorkReviewControl.ts",
+      "sha256": "84a8759145b75ab11aab27a9c75cfc1e3a4f7c4b61712a407367815605805229"
+    },
+    {
+      "path": "src/main/agent/work/WorkService.ts",
+      "sha256": "4744d7dae1bf90a752f6755a8218f3fa13598044fe4d0312b51a5f6307cfbd80"
+    },
+    {
+      "path": "src/main/db/AppDatabase.ts",
+      "sha256": "de905f0c477807a38e7c44bbe8b7568fcf5b1b6ce98eb4c699ede55bc4e91574"
+    },
+    {
+      "path": "src/main/db/bot-work-phase5-schema.ts",
+      "sha256": "89c376fde78178b7b7e61c3ff14cba95d4833740b0ff92fffd3b24be2a4d6947"
+    },
+    {
+      "path": "src/main/db/bot-work-schema.ts",
+      "sha256": "6630170592b79f1b3faa743e7d7943cdd9d6bde665521658343b9dfcb40d462e"
+    },
+    {
+      "path": "src/main/gateway/GatewayService.ts",
+      "sha256": "d204e49bcc9669b61fb76689e2f5cb19181e1b7c7fa22f82a7a6bee928dc6582"
+    },
+    {
+      "path": "src/main/gateway/GatewayWorkTargets.ts",
+      "sha256": "f347d7ab3b7066658c8dc6fdeeb265b14041f28d964c96b5ddbc47ba437c75a5"
+    },
+    {
+      "path": "src/main/gateway/SlackSocketModeAdapter.ts",
+      "sha256": "7f4bcec9168a7554e6998d56f22fe5ecba7b307fc4129c55fa432248310e4fb6"
+    },
+    {
+      "path": "src/main/gateway/channels.ts",
+      "sha256": "7c335a5e236d232002cdc688930666c9266cc0020744685058ffb616570857b4"
+    },
+    {
+      "path": "src/main/gateway/work-outbound.ts",
+      "sha256": "a21919b299cd3ff8c7f374823b93063fecd7e1b1cf3264a712115670e35cedee"
+    },
+    {
+      "path": "src/main/index.ts",
+      "sha256": "64f48b15deb3ff0f9e85bc4f0ba8f42988cba3b9fe62e63cba0c283a4c65ebf5"
+    },
+    {
+      "path": "src/main/notification/TaskLifecycleNotifications.ts",
+      "sha256": "69b245f0b25713f1638d2c335b7ec32fa2dbc20bb634b78b9b378ae805bfed9a"
+    },
+    {
+      "path": "src/main/remote/work-mapper.ts",
+      "sha256": "361b7151f0a98f222de823b08f3dd2cef115bebbf8ff6c5e8d0f9c47c58e98f0"
+    },
+    {
+      "path": "src/preload/index.ts",
+      "sha256": "8e8b25797006192d37c5aa41b78ba1c813cffad7557ab36fe7aa95459c7a17eb"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkCardsPanel.tsx",
+      "sha256": "98b95197c005f0eecea6e9d772f6a3ee902f5d438607d35c93e30c88824b8364"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkReviewPanel.tsx",
+      "sha256": "34887ec002a594f86a7efab7e30bbec3cf992f93a370907b30e4f12bbd15e385"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkspacePage.css",
+      "sha256": "30d15fad48311c7579993e64af3a6f7fb13885a5fd2dcc7b4d1ed33769f9a087"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkspacePage.tsx",
+      "sha256": "279b9bf7515778160b8808a2a0565882d7f0677a4aa62663c91cd6dbaa43186c"
+    },
+    {
+      "path": "src/renderer/src/components/settings/SettingsModal.tsx",
+      "sha256": "1e44dbcabefb872a2fef03abff275736a980409154bd564bb89489b135758b26"
+    },
+    {
+      "path": "src/shared/bot-work-ipc.ts",
+      "sha256": "3b5f094276f5252067fc6230e29eb0e559e34babb060b6928523ea3b008a1810"
+    },
+    {
+      "path": "src/shared/bot-work-phase5.ts",
+      "sha256": "dccf5c891b0a2aefa8dfed9fb6389f6007c054da0a813e0854c8197f8f400007"
+    },
+    {
+      "path": "src/shared/bot-work-review.ts",
+      "sha256": "402c5ab3a2250ad1708ac7e725c080b583fa9c57c02d003f1cbafd096f019806"
+    },
+    {
+      "path": "src/shared/bot-work.ts",
+      "sha256": "6830f6ef59e3d5b8a8865d5b822fb6256ebc1c6cc21393f352e81dc31fd16caf"
+    }
+  ],
+  "aggregateSha256": "63e9f19008091bab17ab9327b2ccc77ebdd654a924e5c2e1f1ec207326928cca",
+  "sourceCommit": "fff50d77538654565a562b2122109fea302576a7",
+  "sourceTree": "3ea1b81162db28c55990f98ad278816a8cc0d5b9",
+  "verifiedUnchangedAfterGatesAt": "2026-11-07T23:15:18.449057+00:00",
+  "scope": "All 55 changed production, shared, renderer, test and package files; documentation is archived in a subsequent commit."
+}

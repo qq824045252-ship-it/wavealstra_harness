@@ -1,5 +1,7 @@
 # Bot / Work — Phase 5 加固复核
 
+> 最新补全记录见 [Phase 5 功能补全与原生验收复核](bot-work-phase5-completion-2026-11-08.md)：五类 Gateway 出站、独立负责人汇总、用户评审入口及真实原生十步故事已补齐。本文保留本轮历史事实；当前门禁与未完成实机边界以上述最新报告为准。
+
 日期：2026-11-08（Asia/Shanghai）。
 
 审查基线：[`f561cc7a2c03d644d724302eb6b0ae92f636dc1c`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/f561cc7a2c03d644d724302eb6b0ae92f636dc1c)。规划提交为 `02c40edba09fe9fe32f4feead2ec067bcd779e37`。

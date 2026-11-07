@@ -1,16 +1,16 @@
 # Bot / Work — Phase 5 执行规划（供 Codex / agent 实施）
 
-> 最新状态（2026-11-08）：**实现已加固，类型检查与相关专项通过；Linux 全量 348 passed / 1 failed，exit 1，Phase 5 尚未整体验收。** 唯一失败为原基线亦复现的 AT-SPI socket EPERM。加固实现冻结 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)，详见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)；原始实现 `f561cc7a2c03d644d724302eb6b0ae92f636dc1c` 与 Windows 347/0/0/0 的历史证据见 [首轮执行复核](reviews/bot-work-phase5-2026-11-07.md)。未勾选的实机/外部项仍需实际取证。
+> 最新状态（2026-11-08）：**剩余代码功能与生产原生十步故事已完成，整体验收仍待实机/真实账户证据。** 实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在基线 `ac03fd5` 亦复现。真实 Gateway 出站、独立负责人汇总、桌面评审/反馈/关闭和两次真实原生 SIGKILL 恢复已补齐，详见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。[第一轮加固](reviews/bot-work-phase5-followup-2026-11-08.md) 与 [首轮 Windows 证据](reviews/bot-work-phase5-2026-11-07.md) 保留为历史记录。
 >
 > 确认日期：2026-11-07（Asia/Shanghai）。
 >
 > 审核代码基线：[`main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4)，提交本规划前已读取 GitHub 远端确认。
 >
-> Phase 4 实现冻结 SHA：[`3153cf09125f946eb6d1a3fad7f634d132f242ee`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/3153cf09125f946eb6d1a3fad7f634d132f242ee)。规划时 schema 为 33，应用版本为 0.1.107，预计 Phase 5 schema 为 34；后续实现已使用 schema 34，本轮加固保持 schema 和应用版本不变。
+> Phase 4 实现冻结 SHA：[`3153cf09125f946eb6d1a3fad7f634d132f242ee`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/3153cf09125f946eb6d1a3fad7f634d132f242ee)。规划时 schema 为 33，应用版本为 0.1.107，预计 Phase 5 schema 为 34；首轮实现使用 schema 34，本轮功能补全升至 schema 35，应用版本仍为 0.1.107；旧库按既有策略改名备份后重建。
 >
 > 范围：成果验收与稳定结果卡片、通知回执与 unknown、多专家汇总、桌面/移动重连、分层诊断与证据、冻结验收第 9 节十步故事，以及前序遗留实机证据收口。专项覆盖 **BW-A42～BW-A46**，终局核对 **BW-A01～BW-A46、R09/R10 与 UI-01～UI-10**。
 
-产品语义以 [冻结设计](bot-work-design.md) 第 4、6～14 节、[冻结验收](bot-work-acceptance.md) 第 8～10 节、[双页面 UI 规范](bot-work-ui.md) 和 [AGENTS.md](../AGENTS.md) 为准。最新实现与门禁边界见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md) §5～§7；前序 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) §5.1 的待补证项继续保留。前序资源与交接边界见 [Phase 3 加固复核](reviews/bot-work-phase3-followup-2026-11-07.md)。
+产品语义以 [冻结设计](bot-work-design.md) 第 4、6～14 节、[冻结验收](bot-work-acceptance.md) 第 8～10 节、[双页面 UI 规范](bot-work-ui.md) 和 [AGENTS.md](../AGENTS.md) 为准。最新实现与门禁边界见 [功能补全复核](reviews/bot-work-phase5-completion-2026-11-08.md) §4～§7；前序 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) §5.1 的待补证项继续保留。前序资源与交接边界见 [Phase 3 加固复核](reviews/bot-work-phase3-followup-2026-11-07.md)。
 
 M1～M3 是同一个收官阶段内的依赖顺序。后续实施应连续完成 P5-00～P5-08，不能只交付表结构或 P5-00～P5-03。实施完成、headless 通过、原生集成通过、实机通过和 BOT-WORK-1.0 总体验收是不同结论，必须分别记载。
 
@@ -22,7 +22,7 @@ M1～M3 是同一个收官阶段内的依赖顺序。后续实施应连续完成
 4. **重连后以宿主持久事实为准。** 桌面和手机携带 `epoch / sequence / scope` 读取 Work 投影日志；连续增量追平或原子全量替换，清理墓碑、关闭范围外事项及失效绑定。跨 epoch 的本地高版本也不能压住服务端新快照。不得把客户端缓存、SSE 事件 ID 或本地已读时钟逆向写成业务真源。（F06/F13/F14、R10、BW-A45）
 5. **主视图可决策，展开视图可追证。** 默认只呈现目标、当前负责人、当前有效结论、未决阻碍和下一步；展开查询关联 `(workId, intentRevision, inputSnapshotId, ownerEpoch)`、`bindingId`、执行回执、产物版本、资源/因果/预算与未验证范围。历史证据可见但不能冒充当前结论，截断或缺失证据必须标识。（F12/F13、BW-A46）
 6. **十步故事运行真实持久层与原生执行链。** 同一套临时数据库、同一路径 Durable 存储和真实业务服务连续驱动故事，重启必须重开这些存储。模型/效果可用可控 fixture，执行内核不能全换成假代理，不能用 SQL 直接拼终态或绕过守卫。业务 fixture 的“Omarchy 通过”不等于真实桌面验收。（冻结验收 §1、§9）
-7. **如实保留门禁与环境边界。** 不新增失败白名单、不缩小断言、不把 blocked/未运行改成 passed。Phase 4 历史冻结报告的两轮全量均为 **344 passed / 1 failed，exit 1**；本轮 Phase 5 加固的最终全量为 **348 passed / 1 failed，exit 1**；D-Bus/Unix socket EPERM 的基线复现只解释该次失败，不预先解释后续所有失败。Windows、Omarchy、移动端、真实连接器等缺证据时阶段不能宣告整体验收完成。
+7. **如实保留门禁与环境边界。** 不新增失败白名单、不缩小断言、不把 blocked/未运行改成 passed。Phase 4 历史冻结报告的两轮全量均为 **344 passed / 1 failed，exit 1**；第一轮 Phase 5 加固的历史全量为 **348 passed / 1 failed，exit 1**；本轮功能补全的最终全量为 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**；D-Bus/Unix socket EPERM 的基线复现只解释该次失败，不预先解释后续所有失败。Windows、Omarchy、移动端、真实连接器等缺证据时阶段不能宣告整体验收完成。
 8. **沿用唯一权威、既有控制入口及当前版本策略。** Work 事实归 SQLite/WorkService，执行与 checkpoint 归 Pi Durable；不另建 Work/Goal、执行恢复器、控制服务或通知发送账本。允许增加有唯一键、能回溯事实的派生 `work_result_cards`，它不能成为第二套 Work 状态。复用受控 IPC/Remote 接线；必要的新方法须进入既有 API 和库存审查。不引入旧数据迁移/旧 Pi 兼容层，保留数据库不兼容时改名备份后重建的契约。
 
 ## 1. 已核实的基线事实与原位演进
@@ -248,17 +248,17 @@ Work B 作为同来源/同宿主的活跃 watch 对照：关闭 A 不改变 B �
 
 ## 6. Codex / agent 执行清单
 
-全部为待实施项；完成后逐项回填实现 SHA、具体行为证据与剩余平台边界，不能因为本文入库就勾选。
+以下按实现与实际验收证据逐项回填；缺少必要的真实 UI/设备/账户证据时保留未勾选，不能仅以文档入库或受控 fixture 代替验收。
 
-> 执行进度（2026-11-07）：P5-00、P5-01、P5-04 已完成并勾选。P5-02 的桌面生产 drain 与真实桌面渠道已完成，Gateway/外部连接器出站仍未交付；P5-03 的阅读与汇总水位完成，多专家“汇总通知”独立语义未做；P5-05 的卡片/诊断/专家审阅 UI 已接线，`pnpm dev` 实机点击未跑；P5-06 十步故事 headless 通过，真实原生进程与 Omarchy 未跑；P5-07 的 `test:all` = 347 passed / 0 failed / 0 regression，dev 验证未执行；P5-08 已回填 46 行矩阵，实机项标注 blocked。因此这些项保持未勾选。
+> 执行进度（2026-11-08）：P5-00、P5-01、P5-03、P5-04、P5-06 已完成相应代码/组件或原生故事验收。P5-02 的五类 Gateway 生产适配已交付，真实账户证据仍缺；P5-05 的完整入口已接线，8 个真实 React 生命周期场景通过，实际 dev 启动因 socket EPERM 未进入页面；P5-07 最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**；P5-08 已更新 46 行矩阵和冻结证据，实机/真实渠道未取证。因此 P5-02、P5-05、P5-07、P5-08 仍未勾选，不宣称 BOT-WORK-1.0 整体验收完成。
 
-- [x] **P5-00 基线、schema 与共享契约。**（2026-11-07 已实施：schema 33→34，`bot-work-phase5-schema.ts` / `shared/bot-work-phase5.ts`，身份与能力矩阵；证据见复核报告 §1～§4。） 记录执行时最新 main 和相对审核 SHA 的差异，读取 AGENTS；明确 schema、语义/投递/attempt/阅读身份、summary/diagnostics 与 Remote 权限契约；新增 Phase 5 schema/共享类型并接入真实数据库。验收：唯一约束、归属、备份重建与类型边界。
+- [x] **P5-00 基线、schema 与共享契约。**（2026-11-07 已实施：schema 33→34，`bot-work-phase5-schema.ts` / `shared/bot-work-phase5.ts`，身份与能力矩阵；2026-11-08 补全升 schema 35，新增不可变 Gateway 目标、summary/owner_summary 与前序卡片关联；证据见最新复核。） 记录执行时最新 main 和相对审核 SHA 的差异，读取 AGENTS；明确 schema、语义/投递/attempt/阅读身份、summary/diagnostics 与 Remote 权限契约；新增 Phase 5 schema/共享类型并接入真实数据库。验收：唯一约束、归属、备份重建与类型边界。
 - [x] **P5-01 原子成果接纳与唯一语义卡片（BW-A42）。**（2026-11-07 已实施：原 accept/close/reportBlocker 事务内写卡片，`test:bot-work-phase5-delivery-dedup` 20 项；accepted→closed 复用同一 substantive 卡片。） 在原 accept/close 事务补齐派生卡片、原通知意图与 journal；保护重放/旧版本/交接，验收前后强杀不新派发。验收：事务回滚、双连接竞争和零重复效果。
-- [ ] **P5-02 真实渠道投递与 unknown（BW-A43）。** 能力矩阵、稳定 provider 效果键、immutable payload/attempt fence、回查与手动重发；接入生产宿主 drain、现有桌面通知/Gateway、实际 UI。验收：两类渠道响应丢失、异步竞态、迟到回执与重启；真实外部能力单列证据。
-- [ ] **P5-03 负责人汇总与阅读隔离（BW-A44）。** 多专家收敛、持久汇总水位/有界等待、内部噪音静默、必要待决可见；受权 markWorkCardRead 与服务端阅读同步。验收：交接时旧汇总拒绝、乱序阅读及零控制副作用。
+- [ ] **P5-02 真实渠道投递与 unknown（BW-A43）。**（代码完成：Gateway 13、delivery 34 通过；真实账户/收件人、真实 UI 仍未取证。） 能力矩阵、稳定 provider 效果键、immutable payload/attempt fence、回查与手动重发；接入生产宿主 drain、现有桌面通知/Gateway、实际 UI。验收：两类渠道响应丢失、异步竞态、迟到回执与重启；真实外部能力单列证据。
+- [x] **P5-03 负责人汇总与阅读隔离（BW-A44）。**（2026-11-08：独立 owner_summary/summary、固定最长等待与交接/待决语义，17 个专项场景通过；短事务阅读与 Journal 保留。） 多专家收敛、持久汇总水位/有界等待、内部噪音静默、必要待决可见；受权 markWorkCardRead 与服务端阅读同步。验收：交接时旧汇总拒绝、乱序阅读及零控制副作用。
 - [x] **P5-04 桌面/移动持久同步（BW-A45、R10）。**（2026-11-07 已实施：journal 同事务、桌面快照原子替换、Remote 路由/契约/客户端/store/WorkPanel、SSE 仅唤醒；`test:bot-work-phase5-reconnect-diagnostics` 13 项 + `test:remote-work-sync` 8 项。） Work journal 与实际桌面 store、Remote 路由/能力/API/store/UI 全链接通；增量分页、epoch/scope 全量替换、墓碑和旧异步响应隔离。验收：多次要求/成果/交接/关闭后的双端重连，零旧缓存回写。
-- [ ] **P5-05 分层诊断与完整 UI（BW-A46、R09、UI-01～UI-10）。** 主摘要/按需证据分离，版本/产物/未验证范围/账本可追，语义卡片可定位；补 Bot pending 配置完整审阅/显式采用和双页面回归。验收：真实入口与版本竞态，不仅静态渲染。
-- [ ] **P5-06 十步故事（冻结验收 §9）。** 单套持久库、原生执行、真实来源/Remote/同步路径；两类强杀、旧版归档、冲突补跑、实测等待/反馈、交接、有限 watch 关闭与 B 隔离、通知恢复。验收：逐步身份/状态/实际效果计数。
+- [ ] **P5-05 分层诊断与完整 UI（BW-A46、R09、UI-01～UI-10）。**（代码完成；可信评审控制 11、React 生命周期 8 场景通过；dev 页面被宿主 socket EPERM 阻断。） 主摘要/按需证据分离，版本/产物/未验证范围/账本可追，语义卡片可定位；补 Bot pending 配置完整审阅/显式采用和双页面回归。验收：真实入口与版本竞态，不仅静态渲染。
+- [x] **P5-06 十步故事（冻结验收 §9）。**（2026-11-08：新增同库生产原生故事，三个子进程、两次真实 SIGKILL、实际 child/write/Remote/双端状态；fixture 模型/通知传输范围及逐步账本见最新复核 §3；不代替 Windows/Omarchy 实机。） 单套持久库、原生执行、真实来源/Remote/同步路径；两类强杀、旧版归档、冲突补跑、实测等待/反馈、交接、有限 watch 关闭与 B 隔离、通知恢复。验收：逐步身份/状态/实际效果计数。
 - [ ] **P5-07 专项与联合门禁。** 注册三项 Phase 5 测试及所需 dev/Remote 验证，执行分类自检、typecheck、受影响前序回归与完整 test:all。恢复/性能用例的串行约束保留，不修改失败白名单制造通过。
 - [ ] **P5-08 全景证据、实机台账与冻结报告。** 更新实施记录、建立 BW-A01～BW-A46 逐项证据索引、R09/R10 与 UI-01～UI-10 联验、平台缺口台账；产出按实际日期命名的 Phase 5 review，冻结受测实现 SHA 与源文件指纹。未解决的失败/blocked 仍计为未完成。
 
