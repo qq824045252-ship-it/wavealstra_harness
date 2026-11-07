@@ -237,7 +237,33 @@ console.log("== 阶段 1/4：聚合口径 ==");
   assert(trend.every((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.key)), "趋势键是本地 YYYY-MM-DD");
   const todayStart = localDayStart(now);
   assert(rangeStartMs(1, now) === todayStart, "今天 = 本地 0 点，不是滚动 24h");
-  assert(rangeStartMs(7, now) === todayStart - 6 * 86400000, "7 天从 6 天前 0 点起");
+  const sixDaysAgo = new Date(todayStart);
+  sixDaysAgo.setDate(sixDaysAgo.getDate() - 6);
+  sixDaysAgo.setHours(0, 0, 0, 0);
+  assert(rangeStartMs(7, now) === sixDaysAgo.getTime(), "7 天从 6 天前本地 0 点起");
+  const previousTz = process.env.TZ;
+  try {
+    for (const [zone, date, expectedFirst] of [
+      ["America/New_York", "2026-03-10", "2026-03-04"],
+      ["America/New_York", "2026-11-03", "2026-10-28"],
+      ["America/Santiago", "2026-09-06", "2026-08-31"],
+      ["America/Santiago", "2026-09-08", "2026-09-02"],
+      ["America/Sao_Paulo", "2018-11-04", "2018-10-29"],
+      ["America/Sao_Paulo", "2018-11-06", "2018-10-31"],
+    ]) {
+      process.env.TZ = zone;
+      const end = new Date(`${date}T12:00:00`).getTime();
+      const start = rangeStartMs(7, end);
+      const points = dailyTrend([{ ...base, ts: end }], 7, end);
+      assert(localDayKey(start) === expectedFirst && new Date(start).getHours() === 0, `DST ${date}: 起点为正确本地午夜`);
+      assert(points.length === 7 && new Set(points.map(point => point.key)).size === 7, `DST ${date}: 七个不重复日历日`);
+      assert(points[0]?.key === expectedFirst && points.at(-1)?.key === date, `DST ${date}: 保留窗口首尾日期`);
+      assert(points.at(-1)?.tokens === base.totalTokens, `DST ${date}: 当日用量不丢失`);
+    }
+  } finally {
+    if (previousTz === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTz;
+  }
   const heat = weekHeatmap([{ ...base, ts: now }], new Date().getFullYear());
   assert(heat.length === 53 && heat.some((h) => h.tokens > 0), "53 周热力图");
   const month = monthlySummary(rows);

@@ -177,18 +177,21 @@ export function localDayKey(ts: number): string {
 
 /** 今天 0 点起往回 (rangeDays-1) 个本地日；「今天」= 当日 0 点，不是滚动 24h。 */
 export function rangeStartMs(rangeDays: number, now: number): number {
-  const today = localDayStart(now);
+  const today = new Date(localDayStart(now));
   const days = Math.max(1, Math.floor(rangeDays) || 1);
-  return today - (days - 1) * 24 * 60 * 60 * 1000;
+  today.setDate(today.getDate() - (days - 1));
+  today.setHours(0, 0, 0, 0);
+  return today.getTime();
 }
 
 export function enumerateLocalDays(fromMs: number, toMs: number): string[] {
   const out: string[] = [];
   const end = localDayStart(toMs);
-  let t = localDayStart(fromMs);
-  while (t <= end) {
-    out.push(localDayKey(t));
-    t += 24 * 60 * 60 * 1000;
+  const day = new Date(localDayStart(fromMs));
+  while (day.getTime() <= end) {
+    out.push(localDayKey(day.getTime()));
+    day.setDate(day.getDate() + 1);
+    day.setHours(0, 0, 0, 0);
   }
   return out;
 }

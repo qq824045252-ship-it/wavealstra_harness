@@ -90,7 +90,8 @@ electron.vite.config.*.mjs
 /app/remote/android/app/*.mybuddy-tmp
 
 # 本地测试、诊断、工作记录与附件（保留本地文件，不纳入版本库）
-/artifacts/
+/artifacts/*
+!/artifacts/ipc-channel-baseline.json
 .workbuddy/
 /附件/
 

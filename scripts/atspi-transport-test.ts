@@ -31,9 +31,10 @@ const SLIDER = FRAME + "/slider";
 
 interface PrivateBus { child: ChildProcess; address: string }
 
-async function privateBus(address: string): Promise<PrivateBus> {
+async function privateBus(address: string, runtimeDirectory: string): Promise<PrivateBus> {
   const child = spawn("dbus-daemon", ["--session", "--nofork", "--print-address=1", "--address=" + address], {
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, XDG_RUNTIME_DIR: runtimeDirectory },
   });
   let stdout = "";
   let stderr = "";
@@ -190,9 +191,9 @@ async function main(): Promise<void> {
   let driver: AtSpiDriver | undefined;
   let client: AtSpiClient | undefined;
   try {
-    const session = await privateBus("unix:path=" + join(directory, "session"));
+    const session = await privateBus("unix:path=" + join(directory, "session"), directory);
     daemons.push(session);
-    const accessibility = await privateBus("unix:abstract=mybuddy-atspi-" + randomUUID());
+    const accessibility = await privateBus("unix:abstract=mybuddy-atspi-" + randomUUID(), directory);
     daemons.push(accessibility);
     const sessionService = await service(session.address);
     services.push(sessionService);

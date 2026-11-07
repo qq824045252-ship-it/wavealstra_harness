@@ -7,6 +7,9 @@ import { createModels, type AssistantMessage } from "@earendil-works/pi-ai";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 
 const directory = await mkdtemp(join(tmpdir(), "durable-history-block-"));
+// Keep model/auth state out of the real user profile.
+process.env.HOME = directory;
+process.env.USERPROFILE = directory;
 const cwd = join(directory, "workspace");
 await mkdir(cwd);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };

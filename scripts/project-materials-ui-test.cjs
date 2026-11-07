@@ -20,7 +20,11 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     await wait(`${target}?.disabled === false`);
     await evaluate(`${target}.click()`);
   };
-  const setText = async (selector, text) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});if(!input)throw Error('input missing');const proto=input.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  const setText = async (selector, text) => {
+    // React commits the editor after the click; wait for that state, not a timer.
+    await wait(`document.querySelector(${JSON.stringify(selector)}) !== null`);
+    return evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});if(!input)throw Error('input missing');const proto=input.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  };
   const rowAction = async (title, action) => {
     await evaluate(`(()=>{const row=[...document.querySelectorAll('.scoped-library-row')].find(row=>row.querySelector('.scoped-library-name button')?.textContent===${JSON.stringify(title)});if(!row)throw Error('row missing');row.querySelector('summary').click()})()`);
     await click(action);
