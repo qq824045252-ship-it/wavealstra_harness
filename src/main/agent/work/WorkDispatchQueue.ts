@@ -8,7 +8,8 @@ import { DESKTOP_USER_GRANTS } from "./WorkService";
 import { WorkSourceObserver,sourceSnapshot } from "./WorkSourceObserver";
 
 const rowSchema = z.object({ operation_id: z.string(), work_id: z.string(), task_id: z.string(), bot_id: z.string(),
-  intent_revision: z.number(), input_snapshot_id: z.string(), continuation_plan_id: z.string().nullable().optional() });
+  intent_revision: z.number(), input_snapshot_id: z.string(), continuation_plan_id: z.string().nullable().optional(),
+  inbox_event_id: z.string().nullable().optional() });
 const sameInput = (binding: WorkExecutionBindingDto, work: WorkDto) => binding.intentRevision === work.intentRevision
   && binding.inputSnapshotId === work.inputSnapshotId;
 // Invalidating a result never erases execution/effect history. Only an explicitly
@@ -25,7 +26,7 @@ export class WorkDispatchQueue {
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
     private readonly defaultModel: () => string | undefined) {}
 
-  enqueue(work: WorkDto, operationId: string, retryBlocked = false): void {
+  enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
     if (!current || current.lifecycle !== "active" || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId) return;
     work = current;
@@ -40,12 +41,15 @@ export class WorkDispatchQueue {
     // and partial/failed executions too: a fresh root would repeat their effects.
     // Pending bindings resume through the adapter; only a new input/revision can
     // authorize a separately planned continuation.
-    if (bindings.some(binding => retainsInput(binding, work))) return;
+    const inboxEvent = inboxEventId ? this.works.repo.getInbox(inboxEventId) : undefined;
+    const readOnlyFollowUp = inboxEvent?.eventType === "deadline_expired";
+    if (inboxEventId && inboxEvent?.workId !== work.workId) return;
+    if (!readOnlyFollowUp && bindings.some(binding => retainsInput(binding, work))) return;
     const taskId = `work-execution-${randomUUID()}`;
     this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath,
       projectId: work.projectId, modelId: this.defaultModel(), permissionMode: "default", modePresetId: "native" });
-    this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at)
-      VALUES (?,?,?,?,?,?,'pending',?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now());
+    this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
+      VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
 
   start(): void {
@@ -95,15 +99,23 @@ export class WorkDispatchQueue {
       if (request.continuation_plan_id && (!continuation || continuation.state === "cancelled" || continuation.ownerEpoch !== work.ownerEpoch || continuation.ownerBotId !== work.ownerBotId)) {
         this.finishRequest(request.operation_id,request.work_id,"cancelled"); continue;
       }
-      if (!continuation && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
+      const requestEvent = request.inbox_event_id ? this.works.repo.getInbox(request.inbox_event_id) : undefined;
+      const readOnlyFollowUp = requestEvent?.eventType === "deadline_expired";
+      if (!continuation && !readOnlyFollowUp && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
         this.finishRequest(request.operation_id, request.work_id, "cancelled");
         continue;
       }
       try {
         const actor: WorkActor = { kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: DESKTOP_USER_GRANTS };
         const result = await this.adapter.dispatch(actor, { taskId: request.task_id, operationId: `dispatch:${request.operation_id}`,
-          workId: work.workId, botId: request.bot_id, delegatedScope: continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"] : work.authorization.allowedScopes,
-          reserveTokens: Math.min(4096, Math.max(1, work.budget.maxTokens - work.budget.usedTokens - work.budget.reservedTokens)),
+          workId: work.workId, botId: request.bot_id,
+          delegatedScope: readOnlyFollowUp ? ["workspace:read"]
+            : continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"]
+              : work.authorization.allowedScopes,
+          reserveTokens: readOnlyFollowUp ? 0 : Math.min(4096, Math.max(1, work.budget.maxTokens - work.budget.usedTokens - work.budget.reservedTokens)),
+          inboxEventId: request.inbox_event_id ?? undefined,
+          causal: requestEvent ? { source: requestEvent.source, sourceEventId: requestEvent.sourceEventId,
+            causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "deadline-follow-up" : "source-dispatch" } : undefined,
           versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
         if (!result.ok) {
           if (["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(result.code)) continue;
@@ -146,7 +158,7 @@ export class WorkDispatchQueue {
           this.works.repo.markOutboxStatus(event.eventId,"invalidated");continue;
         }
         if(work.lifecycle!=="active")continue;
-        this.enqueue(work,`source:${event.eventId}`);
+        this.enqueue(work,`source:${event.eventId}`,false,event.payload.inboxEventId as string | undefined);
         this.works.repo.markOutboxStatus(event.eventId,"delivered");
       }
     });
@@ -159,24 +171,39 @@ export class WorkDispatchQueue {
     for(const workId of ids) {
       if(!this.isAuthority())return;
       let work=this.works.getWork(workId);if(!work || work.lifecycle!=="active")continue;
-      this.works.transaction(()=>this.works.pausedBacklog.refill(workId,Date.now()));
+      this.works.transaction(()=>{
+        this.works.pausedBacklog.refill(workId,Date.now());
+        // Reorder the finite overflow back into the active queue before scanning it.
+        for(const subscription of this.works.repo.listSubscriptions(workId)) this.works.ingress.refillBlocked(subscription);
+      });
       work=this.works.getWork(workId)!;
       const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status)
         || binding.reservationId && ["reserved","unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? ""));
       const pendingIntent=this.works.repo.listOutbox(workId,["pending","attempted","unknown"]).some(event=>event.eventType==="work.source_dispatch_requested");
       if(pendingBinding || pendingIntent || this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(workId))continue;
-      const event=this.works.pausedBacklog.due(workId,Date.now())[0];if(!event)continue;
+      const event=this.works.ingress.listReady(workId,Date.now())[0];if(!event)continue;
       const subscription=event.subscriptionId?this.works.repo.getSubscription(event.subscriptionId):undefined;
       if(event.subscriptionId && !subscription) {this.sourceBlocked(workId,event.eventId,"事件缺少原订阅，等待核对");continue;}
       try {
         const result=await this.works.pausedBacklog.consume(event.eventId,async()=>{
-          const source=await observer.readCurrent(work);
-          if(subscription?.catchUpPolicy!=="latest") {
-            const eventSource={sourceType:"external_input" as const,sourceRef:`work-event:${event.subscriptionId ?? event.source}`,inputSnapshotId:`source-event:${createHash("sha256").update(JSON.stringify([event.source,event.sourceEventId,event.sourceVersion,event.payload])).digest("hex")}`,observedAt:Date.now()};
-            const sources=[...source.sources,eventSource];return {inputSnapshotId:sourceSnapshot(sources),sources};
-          }
-          return source;
+          if(event.eventType==="deadline_expired") return {inputSnapshotId:work.inputSnapshotId, sources:work.goalSources};
+          const needsReadback=subscription?.catchUpPolicy==="latest" || event.payload.authoritativeReadbackRequired===true;
+          if(needsReadback) return observer.readCurrent(work);
+          // each obligations need no current-state readback: their immutable event payload is the input.
+          const sourceRef=`work-event:${event.subscriptionId ?? event.source}`;
+          const eventSource={sourceType:"external_input" as const,sourceRef,inputSnapshotId:`source-event:${createHash("sha256").update(JSON.stringify([event.source,event.sourceEventId,event.sourceVersion,event.frozenPayload ?? event.payload])).digest("hex")}`,observedAt:Date.now()};
+          const sources=[...work.goalSources.filter(item=>!(item.sourceType==="external_input" && item.sourceRef===sourceRef)),eventSource];
+          return {inputSnapshotId:sourceSnapshot(sources),sources};
         },(current,original,source)=>{
+          if(original.eventType==="deadline_expired") {
+            this.works.repo.insertOutbox({ eventId:`deadline-outbox:${original.eventId}`,
+              dedupeKey:`work:${current.workId}:op:deadline:${original.eventId}:work.source_dispatch_requested`,
+              eventType:"work.source_dispatch_requested", workId:current.workId, intentRevision:current.intentRevision,
+              stateVersion:current.stateVersion, ownerEpoch:current.ownerEpoch, requestId:`deadline:${original.eventId}`,
+              payload:{ inputSnapshotId:current.inputSnapshotId, inboxEventId:original.eventId }, deliveryStatus:"pending",
+              attemptCount:0, createdAt:Date.now() });
+            return;
+          }
           const applied=this.works.applyObservedSources(current.workId,`source-inbox:${original.eventId}`,current,source);
           if(!applied.ok)throw Error(`${applied.code}: ${applied.message}`);
           this.works.repo.clearBlocker(`source-readback:${original.eventId}`,current.workId,Date.now());

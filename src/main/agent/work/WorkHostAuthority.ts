@@ -34,6 +34,13 @@ export class WorkHostAuthority {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
+  /** Read the previous holder's watermark before `start()` overwrites the heartbeat. */
+  snapshot(): { authorityId?: string; heartbeatAt?: number; releasedAt?: number; acquiredAt?: number } {
+    const row = this.row();
+    return row ? { authorityId: row.authority_id, heartbeatAt: row.heartbeat_at,
+      releasedAt: row.released_at ?? undefined, acquiredAt: row.acquired_at } : {};
+  }
+
   start(): ReturnType<WorkHostAuthority["acquire"]> {
     const acquired = this.acquire();
     if (!this.heartbeatTimer) {

@@ -803,6 +803,7 @@ export class AgentService {
       },
     });
     this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
+    const previousWorkLease = this.workHostAuthority.snapshot();
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
@@ -810,6 +811,7 @@ export class AgentService {
       emitProjection: (projection) => this.emitPatch({ type: "work_projection_snapshot", projection }),
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
+    this.workService.scheduler.beginHostSession(previousWorkLease);
     installWorkManagedResourceBoundary(this.workService.resourceGate, taskId => {
       const invocation = currentDurableInvocation();
       const binding = taskId ? this.workService.repo.bindingForTask(taskId) : undefined;
@@ -1200,6 +1202,17 @@ export class AgentService {
     }
   }
 
+  phase4WorkControl(request: unknown): import("../../shared/bot-work-phase4").WorkPhase4ControlResult {
+    const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
+    try {
+      const result = this.workService.phase4Control(actor, request);
+      if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.workId); }
+      return result;
+    } catch (error) {
+      return { ok: false, code: "invalid_request", message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   markWorkNotificationRead(notificationId: string): { ok: boolean; message?: string } {
     return this.workService.markNotificationRead(notificationId);
   }
@@ -1364,6 +1377,20 @@ export class AgentService {
         if (!binding) return;
         const error = this.workService.checkTaskInput(taskId, binding.operationId);
         if (error) throw new Error(error);
+      },
+      onProviderRequest: (taskId, input) => {
+        const result = this.workService.budget.admitProviderRequest({ taskId, conversationId: input.conversationId,
+          generationTaskId: input.generationTaskId, sourceKind: input.sourceKind,
+          requestKind: input.requestKind === "compaction" ? "compaction" : input.sourceKind === "subagent" ? "child" : "generation",
+          estimatedTokens: input.estimatedTokens });
+        if (!result.allowed) throw new Error(result.message ?? "Work 共享预算已耗尽，未发送新的模型请求");
+      },
+      onProviderUsage: (taskId, input) => {
+        try { this.workService.budget.settleProviderUsage({ taskId, conversationId: input.conversationId,
+          generationTaskId: input.generationTaskId, reported: input.reported,
+          inputTokens: input.inputTokens, outputTokens: input.outputTokens,
+          cacheReadTokens: input.cacheReadTokens, cacheWriteTokens: input.cacheWriteTokens }); }
+        catch (error) { console.warn("[Work] 压缩用量结算待核对", taskId, error); }
       },
       resumeAllowed: taskId => {
         const binding = this.workService.repo.bindingForTask(taskId);
@@ -1542,6 +1569,7 @@ export class AgentService {
       wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
     });
     this.workDispatchQueue.start();
+    this.workService.scheduler.start();
     this.botConversations.recover();
     await this.durableBots.resumePersisted();
   }
@@ -1600,6 +1628,15 @@ export class AgentService {
 
   private recordDurableUsage(taskId: string, message: import("@earendil-works/pi-ai").AssistantMessage,
     info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }): void {
+    if (this.workService.repo.bindingForTask(taskId) && info.generationTaskId > 0) {
+      const trusted = message.stopReason !== "error" && message.stopReason !== "aborted";
+      try {
+        this.workService.budget.settleProviderUsage({ taskId, conversationId: info.conversationId,
+          generationTaskId: info.generationTaskId, reported: trusted,
+          inputTokens: message.usage.input, outputTokens: message.usage.output,
+          cacheReadTokens: message.usage.cacheRead, cacheWriteTokens: message.usage.cacheWrite });
+      } catch (error) { console.warn("[Work] 预算回执结算待核对", taskId, error); }
+    }
     this.runtimeSnapshots.finish(`durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
       message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed", message.errorMessage);
     this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${info.conversationId}`,
@@ -4702,7 +4739,20 @@ export class AgentService {
     return true;
   }
 
+  onSystemSuspend(): void {
+    this.workService.scheduler.suspend();
+  }
+
+  onSystemResume(): void {
+    for (const gap of this.workService.scheduler.resume()) this.workService.scheduler.applyGap(gap.gapId);
+    try { this.workService.scheduler.tick(); } catch (error) { console.warn("[Work] 系统恢复调度失败", error); }
+    this.workDispatchQueue?.wake();
+    this.workExecutions?.wake();
+  }
+
   dispose(): void {
+    this.workService.scheduler.stop();
+    this.workService.scheduler.markStopped();
     this.workHostAuthority.stop();
     this.stopDiagnosticObservation();
     this.memoryDisposed = true;

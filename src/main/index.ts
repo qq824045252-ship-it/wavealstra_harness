@@ -1017,6 +1017,7 @@ function registerIpc(): void {
     agentService.cancelConversationGoal(goalId));
 
   ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
+  ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
   ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));
@@ -2681,6 +2682,10 @@ app.whenReady().then(async () => {
   powerMonitor.on("resume", () => {
     cadenceEngine?.catchUp();
     cadenceEngine?.scheduleAll();
+    agentService?.onSystemResume();
+  });
+  powerMonitor.on("suspend", () => {
+    agentService?.onSystemSuspend();
   });
   // 外部输入入口层：通用事件契约（source/kind 白名单 + 有界校验），ingest 后仅触发既有收敛
   projectEventIngestor = new ProjectEventIngestor(projectService, {

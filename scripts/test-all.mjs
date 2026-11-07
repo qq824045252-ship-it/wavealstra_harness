@@ -214,6 +214,13 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:bot-work-phase4-hook-fanout",
+  "test:bot-work-phase4-offline-catchup",
+  "test:bot-work-phase4-schedule-clock",
+  "test:bot-work-phase4-causal-guard",
+  "test:bot-work-phase4-shared-budget",
+  "test:bot-work-phase4-backpressure",
+
   "test:durable-projection",
   "test:durable-sync",
   "test:durable-tool-policy",

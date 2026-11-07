@@ -84,6 +84,16 @@ export class WorkCollaborationService {
       const owner = sender.kind === "user" || sender.botId === work.ownerBotId && sender.kind === "bot";
       if (["delegate", "change", "cancel", "handoff"].includes(parsed.kind) && !owner) throw new Error("只有当前负责人或用户可以提出团队控制请求");
       if (parsed.kind === "delegate" && (!work.authorization.allowRedelegation || sender.kind === "worker")) throw new Error("当前授权不允许转委派");
+      if (parsed.kind === "delegate") {
+        // Collaboration is a causal edge too; a new message id cannot hide a same-state loop.
+        const admission = this.works.causal.admit({ workId: work.workId, source: "collaboration",
+          sourceEventId: parsed.messageId, causalEventId: parsed.causalMessageId, originWorkId: work.workId,
+          originBotId: sender.botId ?? undefined, inputSnapshotId: work.inputSnapshotId,
+          actionKind: "delegate-message", operationId: parsed.messageId,
+          trustedRoot: sender.kind === "user" || sender.botId === work.ownerBotId,
+          budgetAvailable: this.works.budget.availableTokens(work.workId)! > 0 });
+        if (!admission.allowed) throw new Error(`${admission.reasonCode ?? "causal-guard"}: ${admission.message}`);
+      }
       const allowed = new Set([work.ownerBotId, ...work.participants.map(item => item.botId)]);
       for (const botId of parsed.recipientBotIds) {
         const recipient = this.bots.getBot(botId);

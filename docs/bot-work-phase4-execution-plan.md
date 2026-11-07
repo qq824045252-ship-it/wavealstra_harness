@@ -1,8 +1,8 @@
 # Bot / Work — Phase 4 执行规划（供 Codex / agent 实施）
 
-> 状态：**规划已确认，待 agent 实施，尚未验收。P4-00～P4-08 全部为待办。**
+> 状态：**P4-00～P4-08 已实施；六项 Phase 4 行为专项、Phase 3 九项前序专项与完整 headless 门禁已通过。Phase 4 整体验收仍未完成：Phase 4 控制按钮的 dev 点击、Linux/移动端/发行包和真实外部连接器证据尚未取得。**
 >
-> 确认日期：2026-11-07（Asia/Shanghai）。
+> 确认日期：2026-11-07（Asia/Shanghai）。实施与证据：2026-11-07，见 [Phase 4 复核](reviews/bot-work-phase4-2026-11-07.md)。
 >
 > 执行任务：[GitHub Issue #16](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/16)，由 agent 按本文件连续完成并回填证据。
 >
@@ -239,25 +239,27 @@ M1～M3 是同一阶段内的依赖顺序，agent 应连续完成 P4-00～P4-08 
 
 ## 8. Codex / agent 执行清单
 
-以下任务全部尚未实施。完成一项只勾该项，全部实施和必要证据满足后才能更新阶段状态。
+以下任务中 P4-00～P4-07 已实施并有门禁证据；P4-08 的实现与本地门禁已完成，GitHub Issue #16 回填由主会话执行。完成一项只勾该项，全部实施和必要证据满足后才能更新阶段状态。
 
-- [ ] **P4-00 基线、schema 与共享契约**：记录最新 main；新增 Phase 4 schema/contracts，扩承诺期限、路由/批次、来源水位、预算回执与阻碍字段；统一 clock/adapter/身份契约；schema 备份重建行为继续通过。
-- [ ] **P4-01 真实来源与多订阅扇出**：实现 WorkWatchIngress，生产 adapter 接入，修复全局来源去重吞路由、目标分区与 source-version 排序；统一活跃/暂停/离线状态机与受守卫配置（BW-A36）。
-- [ ] **P4-02 合并硬截止与完整背压**：固定首次 deadline、到期冻结/CAS、不可变派发、each 容量/有限溢出/上游重试/回填、公平扫描和可观察阻碍（BW-A41）。
-- [ ] **P4-03 时钟、IANA/DST 与承诺唤醒**：实现 WorkWatchScheduler，接 AgentService/权威/系统恢复；唯一 tick、跳时保护、期限字段与幂等只读跟进；零 Hook 能真实唤醒（BW-A38）。
-- [ ] **P4-04 离线补处理**：旧活跃水位保护、宿主/来源 gap、有限分页与恢复游标、latest/each/skip、不可回查缺口及 UI 事实（BW-A37）。
-- [ ] **P4-05 因果链与专家互调**：实现 WorkCausalGuard，贯通事件→派发→动作→回流与协作消息；同状态防环、深度/总量/共享预算边界、结算通路保留（BW-A39）。
-- [ ] **P4-06 共享预算与窗口账本**：实现 WorkBudgetService，真实 provider 请求预留、root/child/compaction/重试统一归属、unknown/迟到/原生对账、受控窗口和重启/交接继承；保持 EvidenceBudget 原职责（BW-A40）。
-- [ ] **P4-07 IPC/投影与 dev 监控**：订阅/期限/政策保存与恢复，订阅/时区/离线/背压/因果/窗口三桶展示、重连补读和真实 dev 流程；不能仅做假数据卡片。
-- [ ] **P4-08 联合门禁与交付**：注册六个专项脚本和必要集成/dev 用例，通过分类审计；执行 typecheck、完整 test:all 和相关前序回归，冻结实现 SHA，写独立审查报告、更新实施记录与执行 Issue；缺失实机/网络证据如实列出。
+- [x] **P4-00 基线、schema 与共享契约**：记录最新 main；新增 Phase 4 schema/contracts，扩承诺期限、路由/批次、来源水位、预算回执与阻碍字段；统一 clock/adapter/身份契约；schema 备份重建行为继续通过。
+- [x] **P4-01 真实来源与多订阅扇出**：实现 WorkWatchIngress，生产 adapter 接入，修复全局来源去重吞路由、目标分区与 source-version 排序；统一活跃/暂停/离线状态机与受守卫配置（BW-A36）。
+- [x] **P4-02 合并硬截止与完整背压**：固定首次 deadline、到期冻结/CAS、不可变派发、each 容量/有限溢出/上游重试/回填、公平扫描和可观察阻碍（BW-A41）。
+- [x] **P4-03 时钟、IANA/DST 与承诺唤醒**：实现 WorkWatchScheduler，接 AgentService/权威/系统恢复；唯一 tick、跳时保护、期限字段与幂等只读跟进；零 Hook 能真实唤醒（BW-A38）。
+- [x] **P4-04 离线补处理**：旧活跃水位保护、宿主/来源 gap、有限分页与恢复游标、latest/each/skip、不可回查缺口及 UI 事实（BW-A37）。
+- [x] **P4-05 因果链与专家互调**：实现 WorkCausalGuard，贯通事件→派发→动作→回流与协作消息；同状态防环、深度/总量/共享预算边界、结算通路保留（BW-A39）。
+- [x] **P4-06 共享预算与窗口账本**：实现 WorkBudgetService，真实 provider 请求预留、root/child/compaction/重试统一归属、unknown/迟到/原生对账、受控窗口和重启/交接继承；保持 EvidenceBudget 原职责（BW-A40）。
+- [x] **P4-07 IPC/投影与 dev 监控**：订阅/期限/政策保存与恢复，订阅/时区/离线/背压/因果/窗口三桶展示、重连补读和真实 dev 流程；不能仅做假数据卡片。
+- [x] **P4-08 联合门禁与交付**：注册六个专项脚本和必要集成/dev 用例，通过分类审计；执行 typecheck、完整 test:all 和相关前序回归，冻结实现 SHA，写独立审查报告、更新实施记录与执行 Issue；缺失实机/网络证据如实列出。（GitHub Issue #16 回填由主会话执行；本工作区未提交。）
 
 依赖顺序：P4-00 → P4-01/02 与 P4-03/04；P4-05/06 在共享身份冻结后可并行，最终由 P4-07/08 串联验证。任务拆分不减少 M1～M3 的联合验收责任。
 
+> 2026-11-07 实施结果：六项 Phase 4 专项、Phase 3 九项前序专项、真实 Pi 原生结算回归与完整 headless 门禁通过。最终 `pnpm -s typecheck` 通过；`pnpm -s test:all` 为 **343 passed / 0 failed / 0 known failed / 0 new regressions**；`--audit` 为 headless 345 / GUI 54 / NETWORK 29 / DATASET 2 / pending 0。剩余未运行/blocked 项、故障修复与实现 SHA 见 [Phase 4 复核](reviews/bot-work-phase4-2026-11-07.md)。
+
 ## 9. 验收矩阵与必须观察的行为
 
-下列 `scripts/bot-work-phase4-*-test.ts` 是**拟新增**脚本；对应注册 `test:bot-work-phase4-*`。测试全程用虚拟时钟/可控 timer 推进时间，真实 SQLite 与真实原生集成义务不能被源码字符串检查替代。
+下列 `scripts/bot-work-phase4-*-test.ts` 已实现并注册为 `test:bot-work-phase4-*`（2026-11-07）。测试全程用虚拟时钟/可控 timer 推进时间，真实 SQLite 与真实原生集成义务不能被源码字符串检查替代。
 
-| 验收 | 注入条件 | 必须观察到的判定结果 | 拟新增脚本 |
+| 验收 | 注入条件 | 必须观察到的判定结果 | 脚本 |
 | --- | --- | --- | --- |
 | BW-A36 | 同 Hook 扇出多 Work；重复、部分路由背压、崩溃重投；v4→v1、v9→v10、同版本不同义务、多目标/不可比版本 | 各合法路由恰好一次；latest 目标快照不回退；each 义务不被版本去重吞掉且 worker 分别收到对应不可变事件内容；回读期间新事件不被旧消费误标完成，源版本不被快照 hash 替代 | `scripts/bot-work-phase4-hook-fanout-test.ts` |
 | BW-A37 | 宿主退出/休眠、来源断连、重复 resume、补读中重启；三种策略与不可回查源 | 原离线区间/游标保留；按政策有界恢复；skip 不忽略在线新事件；未知历史明确缺口；UI 不宣称离线持续执行 | `scripts/bot-work-phase4-offline-catchup-test.ts` |

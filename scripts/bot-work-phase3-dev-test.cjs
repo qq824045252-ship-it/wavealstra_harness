@@ -269,6 +269,22 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     assert.equal((await evaluate('window.api.db.listTasks()')).length, tasksBefore + 1, 'recovery retry does not submit a business task');
     report.seededPresentationFacts.push('one exhausted old-host desktop lease, labelled fixture; native Windows focus is not exercised');
     report.actualControlChecks.push('unchecked retry disabled; explicit confirmation accepted through real IPC and idempotent control transaction; unknown original input remains quarantined, Work remains paused, no new Task');
+    // Phase 4 control through the real preload/IPC path and its authoritative projection.
+    const phase4Before = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);
+    const phase4Response = await evaluate(`window.api.botWork.phase4Control(${JSON.stringify({
+      kind: 'configure-subscription', operationId: 'dev-phase4-subscription', workId: original.workId,
+      source: 'hook', catchUpPolicy: 'latest', maxMergeWaitMs: 1000, maxQueueDepth: 8,
+      versionGuard: { expectedStateVersion: phase4Before.stateVersion, expectedIntentRevision: phase4Before.intentRevision,
+        expectedOwnerEpoch: phase4Before.ownerEpoch },
+    })})`);
+    assert.equal(phase4Response.ok, true, 'phase4 control accepted through preload/IPC');
+    const phase4After = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);
+    assert.equal(phase4After.phase4.subscriptions.length, 1);
+    assert.equal(phase4After.phase4.subscriptions[0].source, 'hook');
+    assert.equal(phase4After.phase4.budget.windowId.length > 0, true);
+    await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("关注与运行")'), 'Phase 4 projection rendered');
+    await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("共享预算")'), 'Phase 4 budget projection rendered');
+    report.actualControlChecks.push('phase4 subscription saved through real preload/IPC and current-version guard; phase4 projection rendered in the dev page');
     const phase3shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(out, 'phase3-page.png'), Buffer.from(phase3shot.data, 'base64'));
     report.finalProjection = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);

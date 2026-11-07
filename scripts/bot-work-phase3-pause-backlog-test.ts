@@ -62,7 +62,10 @@ try {
     if(!result.ok)throw Error(result.message);
   })).ok);
   assert.equal(works.getWork(latest.workId)?.inputSnapshotId,"authoritative:v4-current");
-  assert.equal(works.repo.getSubscription(latestSub.subscriptionId)?.lastProcessedSourceVersion,"authoritative:v4-current");
+  // Phase 4 contract: the provider source watermark never stores an input snapshot hash.
+  assert.equal(works.repo.getSubscription(latestSub.subscriptionId)?.lastProcessedSourceVersion,undefined);
+  assert.equal(works.ingress.cursor(latestSub.subscriptionId,"hook","default")?.highestConsumedVersion,"v3");
+  assert.equal(works.getWork(latest.workId)?.inputSnapshotId,"authoritative:v4-current");
 
   const skip=create("skip"),skipSub=subscribe(skip,"skip");unwrap(works.pauseWork(user,{operationId:"skip-pause",workId:skip.workId,versionGuard:guard(works.getWork(skip.workId)!)}));
   event(skip,skipSub,"skip-old");unwrap(works.resumeWork(user,{operationId:"skip-resume",workId:skip.workId,versionGuard:guard(works.getWork(skip.workId)!)}));

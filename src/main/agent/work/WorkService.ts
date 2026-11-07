@@ -61,6 +61,8 @@ import {
   minimumAuthorization,
 } from "../../../shared/bot-work";
 import type { BotDto } from "../../../shared/bot-work";
+import type { WorkSubscriptionMonitorDto, WorkPhase4ControlRequest, WorkPhase4ControlResult } from "../../../shared/bot-work-phase4";
+import { phase4ControlRequestSchema } from "../../../shared/bot-work-phase4";
 import { BotRegistry } from "./BotRegistry";
 import { WorkRepository, newId } from "./WorkRepository";
 import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
@@ -72,6 +74,10 @@ import { WorkArtifactValidation } from "./WorkArtifactValidation";
 import { WorkCollaborationService } from "./WorkCollaborationService";
 import { WorkNotificationDelivery } from "./WorkNotificationDelivery";
 import { WorkPausedBacklog } from "./WorkPausedBacklog";
+import { WorkWatchIngress } from "./WorkWatchIngress";
+import { WorkBudgetService } from "./WorkBudgetService";
+import { WorkCausalGuard } from "./WorkCausalGuard";
+import { WorkWatchScheduler } from "./WorkWatchScheduler";
 import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
 import type { RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
@@ -119,12 +125,17 @@ export class WorkService {
   readonly collaboration: WorkCollaborationService;
   readonly notifications: WorkNotificationDelivery;
   readonly pausedBacklog: WorkPausedBacklog;
+  readonly ingress: WorkWatchIngress;
+  readonly budget: WorkBudgetService;
+  readonly causal: WorkCausalGuard;
+  readonly scheduler: WorkWatchScheduler;
   private readonly bots: BotRegistry;
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
   private readonly computeNextWake: WorkNextWake;
   private readonly authority?: () => boolean;
   private readonly lastEmitted = new Map<string, number>();
+  private lastPhase4SubscriptionId?: string;
   private transactionDepth = 0;
   private readonly pendingProjections = new Set<string>();
 
@@ -136,6 +147,10 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
+    this.budget = new WorkBudgetService(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
+    this.ingress = new WorkWatchIngress(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
+    this.causal = new WorkCausalGuard(db, this, { now: this.now });
+    this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.resourceGate = new WorkResourceGate(db, { hostId: options.resourceHostId ?? newId("resource-host"),
       isAuthority: () => !this.authority || this.authority(), now: this.now,
       authorize: (owner, resources) => authorizeWorkResourceOwner({ service: this, bots: this.bots, now: this.now, owner, resources }) });
@@ -277,6 +292,18 @@ export class WorkService {
       executions,
       notifications,
       subscriptionIds: subscriptions.map(subscription => subscription.subscriptionId),
+      phase4: {
+        subscriptions: this.projectSubscriptions(work),
+        offlineGaps: this.scheduler.gaps(work.workId),
+        budget: this.budget.snapshot(work.workId),
+        causal: this.causal.list(work.workId, 10).map(item => ({ chainId: item.chain_id, rootEventId: item.root_event_id,
+          parentChainId: item.parent_chain_id ?? undefined, originWorkId: item.origin_work_id,
+          targetWorkId: item.target_work_id, depth: item.depth, hops: item.hops,
+          dispatchCount: item.dispatch_count, decision: item.decision,
+          reasonCode: item.reason_code ?? undefined, createdAt: item.created_at })),
+        deadlineAt: work.deadlineAt, deadlineRevision: work.deadlineRevision,
+        host: this.scheduler.hostState(),
+      },
       phase3: {
         subitems: this.partialResults.list(work.workId), continuations: this.partialResults.plans(work.workId),
         gaps, resourceWaits, resourceRecoveries, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
@@ -375,6 +402,7 @@ export class WorkService {
         goalSources,
         mode: params.mode ?? "once",
         lifecycle: "active",
+        deadlineRevision: 1,
         acceptedDeliverableIds: [],
         activeExecutionIds: [],
         stateVersion: 1,
@@ -385,6 +413,7 @@ export class WorkService {
         updatedAt: now,
       };
       this.repo.insertWork(work);
+      this.budget.ensureWindow(work);
       this.repo.insertIntentSnapshot(this.intentSnapshot(work, ownerBot, params.sourceMessageId, work.createdBy));
       if (params.conversationId) this.repo.linkConversation(workId, params.conversationId, "desktop", now);
       if (watchRule) this.installSubscriptions(work, watchRule, now);
@@ -961,6 +990,20 @@ export class WorkService {
       if (!work.inputSnapshotId || work.inputSnapshotId === "snapshot:unbound") {
         return { ok: false, code: "invalid_request", message: "启动执行前必须绑定可追溯的输入快照" };
       }
+      const inboxEvent = params.inboxEventId ? this.repo.getInbox(params.inboxEventId) : undefined;
+      if (inboxEvent && inboxEvent.workId !== work.workId) return { ok: false, code: "invalid_request", message: "派发引用了另一事项的事件" };
+      if (params.causal) {
+        const admission = this.causal.admit({ workId: work.workId, subscriptionId: inboxEvent?.subscriptionId ?? undefined,
+          source: params.causal.source, sourceEventId: params.causal.sourceEventId,
+          causalEventId: params.causal.causalEventId, parentChainId: params.causal.parentChainId,
+          originWorkId: work.workId, inputSnapshotId: work.inputSnapshotId,
+          actionKind: params.causal.actionKind ?? "dispatch", operationId: params.operationId,
+          trustedRoot: params.causal.trustedRoot, budgetAvailable: this.budget.availableTokens(work.workId)! > 0 });
+        if (!admission.allowed) return { ok: false, code: "causal_guard", message: admission.message ?? "因果链已触限" };
+      }
+      const readOnlyFollowUp = inboxEvent?.eventType === "deadline_expired"
+        || (inboxEvent?.payload.readOnlyFollowUp === true && inboxEvent?.eventType === "work.offline_catchup");
+      const delegatedScope = readOnlyFollowUp ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
       const reservationOutcome = params.reserveTokens && params.reserveTokens > 0
         ? this.reserveBudgetInternal(work, newId("budget"), params.reserveTokens, now)
         : undefined;
@@ -980,9 +1023,10 @@ export class WorkService {
         ownerEpoch: work.ownerEpoch,
         inputSnapshotId: work.inputSnapshotId,
         expertSnapshot: this.snapshotOf(target),
-        delegatedScope: params.delegatedScope ?? [...work.authorization.allowedScopes],
+        delegatedScope,
         workspaceBinding: params.workspaceBinding,
         reservationId: reservation?.reservationId,
+        inboxEventId: params.inboxEventId,
         status: "pending",
         admittedAt: now,
       };
@@ -1665,18 +1709,8 @@ export class WorkService {
   // ================================================================ budgets
 
   reserveBudget(workId: string, reservationId: string, tokens: number): { ok: true; reservation: WorkBudgetReservationDto } | Fail {
-    return this.transaction(() => {
-      const work = this.repo.getWork(workId);
-      if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
-      const existing = this.repo.getReservation(reservationId);
-      if (existing) return existing.workId === workId && existing.tokens === tokens
-        ? { ok: true, reservation: existing }
-        : { ok: false, code: "idempotency_conflict", message: "预算预留身份已用于另一事项或额度" };
-      const result = this.reserveBudgetInternal(work, reservationId, tokens, this.now());
-      return typeof result === "string"
-        ? { ok: false, code: "budget_exhausted", message: result }
-        : { ok: true, reservation: result };
-    });
+    const result = this.budget.reserve({ workId, reservationId, tokens });
+    return result.ok ? result : { ok: false, code: result.code, message: result.message };
   }
 
   /**
@@ -1684,31 +1718,7 @@ export class WorkService {
    * A missing provider report is counted as unknown, never as zero consumption.
    */
   commitBudgetUsage(workId: string, reservationId: string, reportedTokens?: number): { ok: boolean; message?: string } {
-    return this.transaction(() => {
-      const work = this.repo.getWork(workId);
-      if (!work) return { ok: false, message: "找不到 Work" };
-      const reservation = this.repo.getReservation(reservationId);
-      if (!reservation || reservation.workId !== workId) return { ok: false, message: "找不到该事项的预算预留" };
-      if (reservation.state === "committed" || reservation.state === "released") return { ok: true };
-      if (reportedTokens === undefined) {
-        if (reservation.state === "unknown") return { ok: true };
-        this.repo.updateReservation(reservation.reservationId, "unknown", this.now());
-        const next: WorkDto = {
-          ...work,
-          budget: {
-            ...work.budget,
-            unknownUsageCount: work.budget.unknownUsageCount + 1,
-          },
-          stateVersion: work.stateVersion + 1,
-          updatedAt: this.now(),
-        };
-        this.repo.updateWork(next);
-        return { ok: true };
-      }
-      if (!Number.isSafeInteger(reportedTokens) || reportedTokens < 0) return { ok: false, message: "用量必须是非负整数" };
-      this.commitBudgetInternal(work, reservation, reportedTokens, this.now());
-      return { ok: true };
-    });
+    return this.budget.commit(workId, reservationId, reportedTokens);
   }
 
   /** Only a persisted policy may open the next window; handoff/restart never does. */
@@ -1719,32 +1729,10 @@ export class WorkService {
       const work = this.repo.getWork(workId);
       if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
       if (!this.isOwnerOrUser(work, resolved)) return { ok: false, code: "unauthorized_actor", message: "只有负责人或用户可开启预算窗口" };
-      if (!work.budget.allowNextWindow) {
-        return { ok: false, code: "invalid_lifecycle_transition", message: "当前预算策略不允许开启新窗口" };
-      }
-      if (this.repo.listReservations(workId).some(reservation => reservation.state === "reserved" || reservation.state === "unknown")) {
-        return { ok: false, code: "unsettled_effects", message: "仍有在途或未知用量，不能重置预算窗口" };
-      }
-      if (work.budget.usedTokens + work.budget.reservedTokens > 0 && work.budget.windowExpiresAt && work.budget.windowExpiresAt > this.now()) {
-        return { ok: false, code: "invalid_lifecycle_transition", message: "当前预算窗口尚未结束" };
-      }
-      const next: WorkDto = {
-        ...work,
-        budget: {
-          windowId: input.windowId,
-          maxTokens: input.maxTokens,
-          usedTokens: 0,
-          reservedTokens: 0,
-          unknownUsageCount: work.budget.unknownUsageCount,
-          windowStartAt: this.now(),
-          windowExpiresAt: input.windowExpiresAt,
-          allowNextWindow: work.budget.allowNextWindow,
-        },
-        stateVersion: work.stateVersion + 1,
-        updatedAt: this.now(),
-      };
-      this.repo.updateWork(next);
-      return { ok: true, work: next };
+      const opened = this.budget.openExplicitWindow(work, { ...input, allowNextWindow: work.budget.allowNextWindow });
+      return typeof opened === "string"
+        ? { ok: false, code: opened === "policy" ? "invalid_lifecycle_transition" : "unsettled_effects", message: opened }
+        : { ok: true, work: opened };
     });
   }
 
@@ -1766,40 +1754,14 @@ export class WorkService {
     };
   }
 
-  private reserveBudgetInternal(work: WorkDto, reservationId: string, tokens: number, now: number): WorkBudgetReservationDto | string {
-    if (!Number.isSafeInteger(tokens) || tokens < 0) return "预算预留额度无效";
-    if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= now) return "预算窗口已过期";
-    const effectiveMax = Math.min(work.budget.maxTokens, work.authorization.budgetLimitTokens ?? Number.MAX_SAFE_INTEGER);
-    if (work.budget.usedTokens + work.budget.reservedTokens + tokens > effectiveMax) {
-      return `预算不足：已用 ${work.budget.usedTokens}，已预留 ${work.budget.reservedTokens}，上限 ${effectiveMax}`;
-    }
-    const reservation: WorkBudgetReservationDto = {
-      reservationId, workId: work.workId, windowId: work.budget.windowId,
-      tokens, state: "reserved", createdAt: now,
-    };
-    this.repo.insertReservation(reservation);
-    this.repo.updateWork({
-      ...work,
-      budget: { ...work.budget, reservedTokens: work.budget.reservedTokens + tokens },
-      updatedAt: now,
-    });
-    return reservation;
+  private reserveBudgetInternal(work: WorkDto, reservationId: string, tokens: number, _now: number,
+    detail: { requestKind?: WorkBudgetReservationDto["requestKind"]; bindingId?: string; attemptIdentity?: string } = {}): WorkBudgetReservationDto | string {
+    const result = this.budget.reserve({ workId: work.workId, reservationId, tokens, ...detail });
+    return result.ok ? result.reservation : result.message;
   }
 
-  private commitBudgetInternal(work: WorkDto, reservation: WorkBudgetReservationDto, reportedTokens: number, now: number): void {
-    if (reservation.state === "committed" || reservation.state === "released") return;
-    const actual = Math.max(0, reportedTokens);
-    this.repo.updateReservation(reservation.reservationId, "committed", now);
-    this.repo.updateWork({
-      ...work,
-      budget: {
-        ...work.budget,
-        usedTokens: work.budget.usedTokens + actual,
-        reservedTokens: Math.max(0, work.budget.reservedTokens - reservation.tokens),
-        unknownUsageCount: Math.max(0, work.budget.unknownUsageCount - (reservation.state === "unknown" ? 1 : 0)),
-      },
-      updatedAt: now,
-    });
+  private commitBudgetInternal(_work: WorkDto, reservation: WorkBudgetReservationDto, reportedTokens: number, _now: number): void {
+    this.budget.commit(reservation.workId, reservation.reservationId, reportedTokens);
   }
 
   // ============================================================ telemetry
@@ -1824,7 +1786,25 @@ export class WorkService {
       if (!input.source?.trim()) return { ok: false, code: "invalid_request", message: "订阅来源不能为空" };
       if (!input.catchUpPolicy) return { ok: false, code: "invalid_request", message: "订阅必须显式保存补处理策略" };
       const now = this.now();
-      const subscription: WorkSubscriptionDto = {
+      const existing = input.subscriptionId
+        ? this.repo.getSubscription(input.subscriptionId)
+        : this.repo.listSubscriptions(work.workId).find(item => !item.stoppedAt && item.source === input.source);
+      if (existing && (existing.workId !== work.workId || existing.source !== input.source)) {
+        return { ok: false, code: "idempotency_conflict", message: "订阅身份已用于另一事项或来源" };
+      }
+      const subscription: WorkSubscriptionDto = existing ? {
+        ...existing,
+        filter: input.filter ?? existing.filter,
+        catchUpPolicy: input.catchUpPolicy,
+        maxMergeWaitMs: input.maxMergeWaitMs ?? existing.maxMergeWaitMs,
+        maxQueueDepth: input.maxQueueDepth ?? existing.maxQueueDepth,
+        stopConditionText: input.stopConditionText ?? existing.stopConditionText,
+        timezone: input.timezone ?? existing.timezone,
+        cronExpression: input.cronExpression ?? existing.cronExpression,
+        nextWakeAt: input.nextWakeAt ?? this.computeNextWake({ cronExpression: input.cronExpression ?? existing.cronExpression,
+          timezone: input.timezone ?? existing.timezone, nextWakeAt: input.nextWakeAt }, now),
+        updatedAt: now,
+      } : {
         subscriptionId: input.subscriptionId?.trim() || newId("subscription"),
         workId: work.workId,
         source: input.source,
@@ -1832,6 +1812,9 @@ export class WorkService {
         catchUpPolicy: input.catchUpPolicy,
         maxMergeWaitMs: input.maxMergeWaitMs ?? 60_000,
         maxQueueDepth: input.maxQueueDepth ?? 100,
+        scheduleRevision: 1, configRevision: 1, versionMode: "readback", dstPolicy: "first-valid",
+        maxBacklogEvents: input.maxQueueDepth ? Math.max(input.maxQueueDepth * 4, 16) : 400,
+        maxBacklogBytes: 8 * 1024 * 1024,
         stopConditionText: input.stopConditionText,
         timezone: input.timezone,
         cronExpression: input.cronExpression,
@@ -1841,12 +1824,17 @@ export class WorkService {
         createdAt: now,
         updatedAt: now,
       };
-      this.repo.insertSubscription(subscription);
+      if (existing) this.repo.updateSubscription(subscription);
+      else {
+        this.repo.insertSubscription(subscription);
+        this.ingress.setCursor(subscription.subscriptionId, subscription.source,
+          subscription.sourceTarget ?? this.ingress.adapter(subscription.source)?.targetKeyOf({ eventType: "", payload: {} }) ?? "default", {});
+      }
       this.repo.updateWork({
         ...work,
         watchRule: {
           ...(work.watchRule ?? { subscriptions: [], catchUpPolicy: subscription.catchUpPolicy, maxMergeWaitMs: subscription.maxMergeWaitMs, maxQueueDepth: subscription.maxQueueDepth }),
-          subscriptions: [...new Set([...(work.watchRule?.subscriptions ?? []), subscription.subscriptionId])],
+          subscriptions: [...new Set([...(work.watchRule?.subscriptions ?? []), subscription.source])],
           nextWakeAt: subscription.nextWakeAt ?? work.watchRule?.nextWakeAt,
         },
         stateVersion: work.stateVersion + 1,
@@ -1867,8 +1855,20 @@ export class WorkService {
       if (!subscription || subscription.workId !== workId) return { ok: false, code: "not_found", message: "找不到订阅" };
       const now = this.now();
       this.repo.updateSubscription({ ...subscription, stoppedAt: now, updatedAt: now });
+      this.repo.updateWork(this.syncWatchRuleSources(work, now));
       return { ok: true };
     });
+  }
+
+  /** watchRule.subscriptions is a source-name set; it never stores subscription primary keys. */
+  private syncWatchRuleSources(work: WorkDto, now: number): WorkDto {
+    if (!work.watchRule) return work;
+    const active = [...new Set(this.repo.listSubscriptions(work.workId).filter(item => !item.stoppedAt).map(item => item.source))];
+    const current = work.watchRule.subscriptions;
+    const next = [...new Set([...current.filter(source => active.includes(source)), ...active])];
+    if (JSON.stringify(next) === JSON.stringify(current)) return work;
+    return { ...work, watchRule: { ...work.watchRule, subscriptions: next },
+      stateVersion: work.stateVersion + 1, updatedAt: now };
   }
 
   private installSubscriptions(work: WorkDto, rule: WorkWatchRuleDto, now: number): void {
@@ -1928,142 +1928,22 @@ export class WorkService {
   /** Source-level dedupe first, then one durable processing identity per subscription. */
   ingestSourceEvent(event: WorkSourceEventDto, options: { hostOnline?: boolean } = {}): {
     sourceNew: boolean;
-    outcomes: Array<{ workId: string; subscriptionId?: string; outcome: "pending" | "merged" | "skipped" | "blocked" | "duplicate" }>;
+    acknowledged: boolean;
+    outcomes: Array<{ workId: string; subscriptionId?: string; outcome: "pending" | "accepted" | "merged" | "skipped" | "blocked" | "duplicate" | "rejected"; reasonCode?: string }>;
   } {
-    const now = event.timestamp ?? this.now();
-    return this.transaction(() => {
-      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
-      const sourceNew = this.repo.recordSourceEvent({
-        source: event.source,
-        sourceEventId: event.sourceEventId,
-        eventType: event.eventType,
-        sourceVersion: event.sourceVersion,
-        causalEventId: event.causalEventId,
-        payload: event.payload ?? {},
-        receivedAt: now,
-      });
-      const subscriptions = event.subscriptionId
-        ? [this.repo.getSubscription(event.subscriptionId)].filter((item): item is WorkSubscriptionDto => Boolean(item))
-        : this.repo.listActiveSubscriptions().filter(subscription => {
-          if (event.workId && subscription.workId !== event.workId) return false;
-          return subscription.source === event.source && matchesFilter(subscription.filter, event.payload ?? {});
-        });
-      const outcomes: Array<{ workId: string; subscriptionId?: string; outcome: "pending" | "merged" | "skipped" | "blocked" | "duplicate" }> = [];
-      for (const subscription of subscriptions) {
-        if (subscription.stoppedAt) continue;
-        const work = this.repo.getWork(subscription.workId);
-        if (!work) continue;
-        if (!sourceNew) {
-          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "duplicate" });
-          continue;
-        }
-        if (work.lifecycle === "paused") {
-          const outcome = this.pausedBacklog.enqueue(work, subscription, event, now);
-          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome });
-          this.emitCurrentProjection(work.workId);
-          continue;
-        }
-        const dedupeKey = `sub:${subscription.subscriptionId}:src:${event.sourceEventId}`;
-        const status = options.hostOnline === false && subscription.catchUpPolicy === "skip" ? "skipped" as const : undefined;
-        if (status === "skipped") {
-          const inserted = this.repo.insertInbox({
-            eventId: newId("event"),
-            dedupeKey,
-            source: event.source,
-            sourceEventId: event.sourceEventId,
-            eventType: event.eventType,
-            workId: work.workId,
-            subscriptionId: subscription.subscriptionId,
-            intentRevision: work.intentRevision,
-            stateVersion: work.stateVersion,
-            ownerEpoch: work.ownerEpoch,
-            sourceVersion: event.sourceVersion,
-            causalEventId: event.causalEventId,
-            payload: { ...event.payload, skipped: true },
-            status: "skipped",
-            mergedCount: 1,
-            receivedAt: now,
-            processedAt: now,
-          });
-          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: inserted ? "skipped" : "duplicate" });
-          continue;
-        }
-        if (subscription.catchUpPolicy === "latest") {
-          const merged = this.repo.mergeLatestInbox({
-            subscriptionId: subscription.subscriptionId,
-            eventType: event.eventType,
-            sourceVersion: event.sourceVersion,
-            causalEventId: event.causalEventId,
-            payload: event.payload ?? {},
-            now,
-          });
-          if (merged.merged) {
-            outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "merged" });
-            continue;
-          }
-        }
-        const pendingCount = this.repo.countPendingInboxForSubscription(subscription.subscriptionId);
-        if (pendingCount >= subscription.maxQueueDepth) {
-          const inserted = this.repo.insertInbox({
-            eventId: newId("event"),
-            dedupeKey,
-            source: event.source,
-            sourceEventId: event.sourceEventId,
-            eventType: event.eventType,
-            workId: work.workId,
-            subscriptionId: subscription.subscriptionId,
-            intentRevision: work.intentRevision,
-            stateVersion: work.stateVersion,
-            ownerEpoch: work.ownerEpoch,
-            sourceVersion: event.sourceVersion,
-            causalEventId: event.causalEventId,
-            payload: { ...event.payload, overflow: true },
-            status: "blocked",
-            mergedCount: 1,
-            receivedAt: now,
-          });
-          if (inserted && !this.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "backpressure")) {
-            this.repo.insertBlocker({
-              blockerId: newId("blocker"),
-              workId: work.workId,
-              reason: `订阅 ${subscription.subscriptionId} 积压超过上限 ${subscription.maxQueueDepth}`,
-              kind: "backpressure",
-              waitingForUserInput: false,
-              status: "open",
-              createdAt: now,
-            });
-          }
-          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: inserted ? "blocked" : "duplicate" });
-          continue;
-        }
-        const inserted = this.repo.insertInbox({
-          eventId: newId("event"),
-          dedupeKey,
-          source: event.source,
-          sourceEventId: event.sourceEventId,
-          eventType: event.eventType,
-          workId: work.workId,
-          subscriptionId: subscription.subscriptionId,
-          intentRevision: work.intentRevision,
-          stateVersion: work.stateVersion,
-          ownerEpoch: work.ownerEpoch,
-          sourceVersion: event.sourceVersion,
-          causalEventId: event.causalEventId,
-          payload: event.payload ?? {},
-          status: subscription.catchUpPolicy === "latest" ? "merged" : "pending",
-          mergedCount: 1,
-          receivedAt: now,
-          processAfter: subscription.catchUpPolicy === "latest" ? now + subscription.maxMergeWaitMs : undefined,
-        });
-        outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: inserted ? (subscription.catchUpPolicy === "latest" ? "merged" : "pending") : "duplicate" });
-      }
-      return { sourceNew, outcomes };
-    });
+    const accepted = this.ingress.accept({
+      source: event.source, sourceEventId: event.sourceEventId, eventType: event.eventType,
+      sourceVersion: event.sourceVersion, causalEventId: event.causalEventId,
+      occurredAt: event.timestamp, payload: event.payload ?? {}, trustedOrigin: "host",
+    }, { workId: event.workId, subscriptionId: event.subscriptionId, offline: options.hostOnline === false, trust: "host" });
+    return { sourceNew: accepted.sourceNew, acknowledged: accepted.acknowledged, outcomes: accepted.outcomes.map(item => ({
+      workId: item.workId, subscriptionId: item.subscriptionId, outcome: item.outcome, reasonCode: item.reasonCode,
+    })) };
   }
 
   /** Due inbox rows: `merged` rows become ready at their bounded merge deadline. */
   listDueInbox(workId: string, now = this.now()): WorkInboxEventDto[] {
-    return this.pausedBacklog.due(workId, now);
+    return this.ingress.listReady(workId, now);
   }
 
   /**
@@ -2081,51 +1961,14 @@ export class WorkService {
       if (event.payload.authoritativeReadbackRequired) return { ok: false, message: "合并事件必须通过可信来源回读入口消费" };
 
       apply(event);
-      this.repo.setInboxStatus(event.eventId, "processed", this.now());
+      this.ingress.markConsumed(event.eventId, { providerSourceVersion: event.sourceVersion });
       return { ok: true };
     });
   }
 
-  /** Deterministic trigger tick: one stable identity per subscription and scheduled time. */
+  /** Deterministic trigger tick: one stable identity per subscription and logical slot. */
   tick(now = this.now()): Array<{ subscriptionId: string; workId: string; scheduledAt: number }> {
-    return this.transaction(() => {
-      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
-      const fired: Array<{ subscriptionId: string; workId: string; scheduledAt: number }> = [];
-      for (const subscription of this.repo.listActiveSubscriptions()) {
-        const scheduledAt = subscription.nextWakeAt;
-        if (scheduledAt === undefined || scheduledAt > now) continue;
-        const work = this.repo.getWork(subscription.workId);
-        if (!work || work.lifecycle === "closed") continue;
-        const dedupeKey = `sub:${subscription.subscriptionId}:tick:${scheduledAt}`;
-        if (work.lifecycle === "paused") this.repo.recordSourceEvent({ source: "cron", sourceEventId: dedupeKey,
-          eventType: "work.tick", payload: { scheduledAt }, receivedAt: now });
-        const inserted = work.lifecycle === "paused"
-          ? this.pausedBacklog.enqueue(work, subscription, { source: "cron", sourceEventId: dedupeKey,
-            eventType: "work.tick", payload: { scheduledAt } }, now) === "pending"
-          : this.repo.insertInbox({
-          eventId: newId("event"),
-          dedupeKey,
-          source: "cron",
-          sourceEventId: dedupeKey,
-          eventType: "work.tick",
-          workId: work.workId,
-          subscriptionId: subscription.subscriptionId,
-          intentRevision: work.intentRevision,
-          stateVersion: work.stateVersion,
-          ownerEpoch: work.ownerEpoch,
-          payload: { scheduledAt },
-          status: "pending",
-          mergedCount: 1,
-          receivedAt: now,
-        });
-        if (inserted) fired.push({ subscriptionId: subscription.subscriptionId, workId: work.workId, scheduledAt });
-        const nextWakeAt = this.computeNextWake({
-          cronExpression: subscription.cronExpression, timezone: subscription.timezone,
-        }, now);
-        this.repo.updateSubscription({ ...subscription, nextWakeAt, updatedAt: now });
-      }
-      return fired;
-    });
+    return this.scheduler.tick(now).flatMap(item => item.fired);
   }
 
   // ========================================================== notifications
@@ -2143,6 +1986,130 @@ export class WorkService {
     if (!notification) return { ok: false, message: "找不到通知" };
     if (!notification.readAt) this.repo.markNotificationRead(notificationId, this.now());
     return { ok: true };
+  }
+
+  // ============================================================= phase 4 control
+
+  /** Guarded IPC/API entry for subscription, deadline and budget policy changes. */
+  phase4Control(actor: WorkActor, request: unknown): WorkPhase4ControlResult {
+    const parsed = phase4ControlRequestSchema.safeParse(request);
+    if (!parsed.success) return { ok: false, code: "invalid_request", message: parsed.error.issues[0]?.message ?? "Phase 4 控制请求无效" };
+    const input = parsed.data as WorkPhase4ControlRequest;
+    let subscriptionId: string | undefined = "subscriptionId" in input ? input.subscriptionId : undefined;
+    const result = this.runWorkControl(actor, `phase4:${input.kind}`, input as unknown as
+      { operationId: string; workId: string; versionGuard?: ExpectedVersionGuard }, {
+      guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"],
+    }, (work, _resolved, now) => this.applyPhase4Control(work, input, now));
+    if (!result.ok) return { ok: false, code: result.code, message: result.message };
+    if (input.kind === "configure-subscription") subscriptionId = this.lastPhase4SubscriptionId ?? input.subscriptionId;
+    if (input.kind === "retry-backlog") subscriptionId = input.subscriptionId;
+    return { ok: true, replayed: result.replayed, operationId: input.operationId, workId: result.work.workId,
+      subscriptionId, deadlineAt: result.work.deadlineAt, budgetWindowId: result.work.budget.windowId };
+  }
+
+  private applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, now: number): Mutation {
+    if (input.kind === "configure-subscription") {
+      const existing = input.subscriptionId
+        ? this.repo.getSubscription(input.subscriptionId)
+        : this.repo.listSubscriptions(work.workId).find(item => !item.stoppedAt && item.source === input.source
+          && (input.targetKey === undefined ? item.sourceTarget === undefined : item.sourceTarget === input.targetKey));
+      if (existing && existing.workId !== work.workId) return { ok: false, code: "not_found", message: "找不到订阅" };
+      const timezone = input.timezone ?? existing?.timezone;
+      const cronExpression = input.cronExpression ?? existing?.cronExpression;
+      if (timezone !== undefined && !validTimezone(timezone)) return { ok: false, code: "invalid_request", message: "时区必须是可以解析的 IANA 名称" };
+      const scheduleChanged = cronExpression !== existing?.cronExpression || timezone !== existing?.timezone;
+      let nextWakeAt: number | undefined;
+      try { nextWakeAt = input.nextWakeAt ?? this.computeNextWake({ cronExpression, timezone }, now); }
+      catch { return { ok: false, code: "invalid_request", message: "Cron 表达式或时区无法解析" }; }
+      const subscription: WorkSubscriptionDto = {
+        subscriptionId: existing?.subscriptionId ?? input.subscriptionId ?? newId("subscription"),
+        workId: work.workId, source: input.source, filter: input.filter ?? existing?.filter ?? {},
+        catchUpPolicy: input.catchUpPolicy, maxMergeWaitMs: input.maxMergeWaitMs ?? existing?.maxMergeWaitMs ?? 60_000,
+        maxQueueDepth: input.maxQueueDepth ?? existing?.maxQueueDepth ?? 100,
+        stopConditionText: input.stopConditionText ?? existing?.stopConditionText,
+        timezone, cronExpression, nextWakeAt,
+        scheduleRevision: existing ? (scheduleChanged ? (existing.scheduleRevision ?? 1) + 1 : input.scheduleRevision ?? existing.scheduleRevision ?? 1)
+          : 1,
+        configRevision: (existing?.configRevision ?? 1) + 1,
+        sourceTarget: input.targetKey ?? existing?.sourceTarget,
+        versionMode: input.versionMode ?? existing?.versionMode ?? "readback",
+        dstPolicy: input.dstPolicy ?? existing?.dstPolicy ?? "first-valid",
+        maxBacklogEvents: input.maxBacklogEvents ?? existing?.maxBacklogEvents ?? 400,
+        maxBacklogBytes: input.maxBacklogBytes ?? existing?.maxBacklogBytes ?? 8 * 1024 * 1024,
+        lastCheckedAt: existing?.lastCheckedAt, stoppedReason: existing?.stoppedReason,
+        createdAt: existing?.createdAt ?? now, updatedAt: now, stoppedAt: existing?.stoppedAt,
+      };
+      this.lastPhase4SubscriptionId = subscription.subscriptionId;
+      if (existing) this.repo.updateSubscription(subscription);
+      else {
+        this.repo.insertSubscription(subscription);
+        this.ingress.setCursor(subscription.subscriptionId, subscription.source,
+          subscription.sourceTarget ?? this.ingress.adapter(subscription.source)?.targetKeyOf({ eventType: "", payload: {} }) ?? "default", {});
+      }
+      this.repo.updateWork({ ...work, watchRule: {
+        ...(work.watchRule ?? { subscriptions: [], catchUpPolicy: subscription.catchUpPolicy,
+          maxMergeWaitMs: subscription.maxMergeWaitMs, maxQueueDepth: subscription.maxQueueDepth }),
+        subscriptions: [...new Set([...(work.watchRule?.subscriptions ?? []), subscription.source])],
+        nextWakeAt: subscription.nextWakeAt ?? work.watchRule?.nextWakeAt,
+      }, stateVersion: work.stateVersion + 1, updatedAt: now });
+      return { ok: true };
+    }
+    if (input.kind === "stop-subscription") {
+      const subscription = this.repo.getSubscription(input.subscriptionId);
+      if (!subscription || subscription.workId !== work.workId) return { ok: false, code: "not_found", message: "找不到订阅" };
+      this.repo.updateSubscription({ ...subscription, stoppedAt: now, stoppedReason: input.reason, updatedAt: now });
+      this.repo.updateWork(this.syncWatchRuleSources(work, now));
+      return { ok: true };
+    }
+    if (input.kind === "set-deadline") {
+      const changed = (work.deadlineAt ?? null) !== (input.deadlineAt ?? null);
+      const revision = changed ? work.deadlineRevision + 1 : work.deadlineRevision;
+      if (changed) {
+        this.db.prepare("UPDATE work_deadline_instances SET state='cancelled' WHERE work_id=? AND state='armed'").run(work.workId);
+        if (input.deadlineAt !== null) {
+          this.db.prepare(`INSERT OR IGNORE INTO work_deadline_instances
+            (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?,?,?,'armed',?)`)
+            .run(work.workId, revision, input.deadlineAt, now);
+        }
+      }
+      this.repo.updateWork({ ...work, deadlineAt: input.deadlineAt ?? undefined, deadlineRevision: revision,
+        deadlineSetAt: now, stateVersion: work.stateVersion + 1, updatedAt: now });
+      return { ok: true };
+    }
+    if (input.kind === "set-budget-policy") {
+      const updated = this.budget.setPolicy(work, { maxTokens: input.maxTokens, windowMs: input.windowMs,
+        timezone: input.timezone, autoRollover: input.autoRollover });
+      if (typeof updated === "string") return { ok: false, code: "invalid_request", message: updated };
+      return { ok: true };
+    }
+    // retry-backlog: allow the source to redeliver hard-refused routes and refill the finite overflow.
+    const subscription = this.repo.getSubscription(input.subscriptionId);
+    if (!subscription || subscription.workId !== work.workId) return { ok: false, code: "not_found", message: "找不到订阅" };
+    this.db.prepare("DELETE FROM work_ingress_routes WHERE subscription_id=? AND state='rejected'").run(subscription.subscriptionId);
+    this.ingress.refillBlocked(subscription);
+    this.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
+    return { ok: true };
+  }
+
+  private projectSubscriptions(work: WorkDto): WorkSubscriptionMonitorDto[] {
+    const host = this.scheduler.hostState();
+    return this.repo.listSubscriptions(work.workId, { includeStopped: true }).map(subscription => {
+      const stats = this.ingress.queueStats(subscription);
+      const cursors = this.ingress.listCursors(subscription.subscriptionId).map(cursor => ({
+        source: cursor.source, targetKey: cursor.targetKey, highestAcceptedVersion: cursor.highestAcceptedVersion,
+        highestConsumedVersion: cursor.highestConsumedVersion, highestFrozenVersion: cursor.highestFrozenVersion,
+        replayCursor: cursor.replayCursor, enumerationWatermark: cursor.enumerationWatermark,
+      }));
+      const status = subscription.stoppedAt !== undefined ? "stopped" as const
+        : work.lifecycle === "paused" ? "paused" as const : work.lifecycle === "closing" ? "closing" as const
+          : host.online ? "online" as const : "offline" as const;
+      return { subscriptionId: subscription.subscriptionId, workId: work.workId, source: subscription.source,
+        targetKey: subscription.sourceTarget, status, catchUpPolicy: subscription.catchUpPolicy,
+        timezone: subscription.timezone, cronExpression: subscription.cronExpression,
+        scheduleRevision: subscription.scheduleRevision ?? 1, configRevision: subscription.configRevision ?? 1,
+        nextWakeAt: subscription.nextWakeAt, lastCheckedAt: subscription.lastCheckedAt,
+        versionMode: subscription.versionMode ?? "readback", queue: stats, cursors };
+    });
   }
 
   // ================================================================ internal
@@ -2496,3 +2463,7 @@ function parseWork(value: string): WorkDto | undefined {
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }
 
 
+
+function validTimezone(timezone: string): boolean {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(0); return true; } catch { return false; }
+}

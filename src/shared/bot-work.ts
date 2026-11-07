@@ -164,6 +164,25 @@ export interface WorkBudgetDto {
   windowExpiresAt?: number;
   /** Only a persisted policy may roll the window; retries/handoff never do. */
   allowNextWindow: boolean;
+  /** Committed actual usage, kept separate from the legacy reserved-union projection. */
+  committedTokens?: number;
+  /** Tokens held by requests whose trusted provider receipt is still missing. */
+  unknownTokens?: number;
+  /** Persisted window policy identity; a policy change is a new revision. */
+  policyRevision?: number;
+  windowTimezone?: string;
+  windowDurationMs?: number;
+  autoRollover?: boolean;
+}
+
+export interface WorkBudgetPolicyDto {
+  policyRevision: number;
+  scope: "work" | "window";
+  maxTokens: number;
+  windowDurationMs?: number;
+  timezone?: string;
+  autoRollover: boolean;
+  carryPolicy: "none" | "outstanding";
 }
 
 export interface WorkWatchRuleDto {
@@ -242,12 +261,33 @@ export interface WorkDeliverableDto {
   reviewedByBotId?: string;
 }
 
+export type WorkBlockerReasonCode =
+  | "backlog-overflow"
+  | "merge-wait"
+  | "causal-loop-guard"
+  | "causal-depth"
+  | "causal-hops"
+  | "causal-attribution-unknown"
+  | "budget-exhausted"
+  | "budget-rollover-pending"
+  | "unqueryable-offline-gap"
+  | "source-readback"
+  | "dispatch-blocked"
+  | "invalid-schedule"
+  | "deadline-follow-up";
+
 export interface WorkBlockerDto {
   blockerId: string;
   workId: string;
   reportedByBotId?: string;
   reason: string;
   kind: "external_effect" | "backpressure" | "write_conflict" | "operational";
+  reasonCode?: WorkBlockerReasonCode;
+  details?: Record<string, unknown>;
+  sourceRef?: string;
+  subscriptionId?: string;
+  windowId?: string;
+  causalChainId?: string;
   unknownExternalEffectRef?: string;
   waitingForUserInput: boolean;
   status: WorkBlockerStatus;
@@ -270,6 +310,7 @@ export interface WorkExecutionBindingDto {
   delegatedScope: string[];
   workspaceBinding: string;
   reservationId?: string;
+  inboxEventId?: string;
   status: WorkExecutionStatus;
   attemptId?: string;
   submissionReceipt?: string;
@@ -301,6 +342,15 @@ export interface WorkBudgetReservationDto {
   state: "reserved" | "committed" | "released" | "unknown";
   createdAt: number;
   settledAt?: number;
+  /** Trusted provider receipt quantity; never clamped to the reservation estimate. */
+  reportedTokens?: number;
+  requestKind?: "dispatch" | "generation" | "compaction" | "child" | "retry";
+  requestId?: string;
+  bindingId?: string;
+  attemptId?: string;
+  attemptIdentity?: string;
+  receiptKey?: string;
+  metering?: "reserved" | "reported" | "unknown" | "released";
 }
 
 export interface WorkSubscriptionDto {
@@ -316,6 +366,15 @@ export interface WorkSubscriptionDto {
   cronExpression?: string;
   nextWakeAt?: number;
   lastProcessedSourceVersion?: string;
+  scheduleRevision?: number;
+  configRevision?: number;
+  sourceTarget?: string;
+  versionMode?: "monotonic" | "provider-sequence" | "readback" | "none";
+  dstPolicy?: "first-valid" | "first-occurrence";
+  maxBacklogEvents?: number;
+  maxBacklogBytes?: number;
+  lastCheckedAt?: number;
+  stoppedReason?: string;
   createdAt: number;
   updatedAt: number;
   stoppedAt?: number;
@@ -376,6 +435,13 @@ export interface WorkDto {
 
   watchRule?: WorkWatchRuleDto;
 
+  /** Business commitment deadline, independent of authorization/budget expiry. */
+  deadlineAt?: number;
+  deadlineRevision: number;
+  deadlineSetAt?: number;
+  budgetPolicy?: WorkBudgetPolicyDto;
+  causalPolicy?: { maxDepth: number; maxHops: number; maxDispatches: number };
+
   stateVersion: number;
   budget: WorkBudgetDto;
   createdBy: "user" | "bot";
@@ -387,6 +453,7 @@ export interface WorkDto {
 
 /** Reconnect/UI projection. Derived from persisted facts only. */
 export interface WorkProjectionDto {
+  phase4?: import("./bot-work-phase4").WorkPhase4Projection;
   phase3?: {
     subitems: WorkSubitemDto[];
     continuations: WorkContinuationDto[];
@@ -471,6 +538,8 @@ export type WorkControlErrorCode =
   | "unmet_acceptance_criteria"
   | "unsettled_effects"
   | "budget_exhausted"
+  | "causal_guard"
+  | "capacity_refused"
   | "speculation_not_acceptable"
   | "bot_disabled";
 
@@ -586,6 +655,16 @@ export interface DispatchExecutionParams {
   workspaceBinding: string;
   delegatedScope?: string[];
   reserveTokens?: number;
+  /** Immutable each-event obligation this binding executes. */
+  inboxEventId?: string;
+  causal?: {
+    source: string;
+    sourceEventId: string;
+    causalEventId?: string;
+    parentChainId?: string;
+    trustedRoot?: boolean;
+    actionKind?: string;
+  };
   versionGuard?: ExpectedVersionGuard;
 }
 
@@ -703,7 +782,8 @@ export interface AdmitActionParams {
 }
 
 export interface WorkSourceEventDto {
-  source: "user" | "foreground_bot" | "durable_host" | "cron" | "hook" | "system";
+  /** Trusted adapter namespace, not a closed enum; the ingress validates the registered adapter. */
+  source: string;
   sourceEventId: string;
   eventType: string;
   sourceVersion?: string;
@@ -745,6 +825,13 @@ export interface WorkInboxEventDto {
   mergedCount: number;
   receivedAt: number;
   processAfter?: number;
+  batchId?: string;
+  batchDeadlineAt?: number;
+  frozenAt?: number;
+  frozenPayload?: Record<string, unknown>;
+  claimVersion?: number;
+  targetKey?: string;
+  processReason?: string;
   processedAt?: number;
 }
 

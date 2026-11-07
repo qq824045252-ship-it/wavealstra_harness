@@ -58,6 +58,11 @@ interface WorkRow {
   active_execution_ids_json: string;
   progress_summary: string | null;
   watch_rule_json: string | null;
+  deadline_at: number | null;
+  deadline_revision: number;
+  deadline_set_at: number | null;
+  budget_policy_json: string;
+  causal_policy_json: string;
   state_version: number;
   budget_json: string;
   created_by: "user" | "bot";
@@ -101,6 +106,7 @@ export interface BindingRow {
   submitted_at: number | null;
   invalidated_at: number | null;
   settled_at: number | null;
+  inbox_event_id: string | null;
 }
 
 interface DeliverableRow {
@@ -148,6 +154,12 @@ interface BlockerRow {
   reported_by_bot_id: string | null;
   reason: string;
   kind: WorkBlockerDto["kind"];
+  reason_code: string | null;
+  details_json: string;
+  source_ref: string | null;
+  subscription_id: string | null;
+  window_id: string | null;
+  causal_chain_id: string | null;
   unknown_external_effect_ref: string | null;
   waiting_for_user_input: number;
   status: WorkBlockerDto["status"];
@@ -181,9 +193,37 @@ interface SubscriptionRow {
   cron_expression: string | null;
   next_wake_at: number | null;
   last_processed_source_version: string | null;
+  schedule_revision: number;
+  config_revision: number;
+  source_target: string | null;
+  version_mode: string;
+  dst_policy: string;
+  max_backlog_events: number;
+  max_backlog_bytes: number;
+  last_checked_at: number | null;
+  stopped_reason: string | null;
+  config_json: string;
   created_at: number;
   updated_at: number;
   stopped_at: number | null;
+}
+
+interface ReservationRow {
+  reservation_id: string;
+  work_id: string;
+  window_id: string;
+  tokens: number;
+  state: WorkBudgetReservationDto["state"];
+  created_at: number;
+  settled_at: number | null;
+  reported_tokens: number | null;
+  request_kind: string | null;
+  request_id: string | null;
+  binding_id: string | null;
+  attempt_id: string | null;
+  attempt_identity: string | null;
+  receipt_key: string | null;
+  metering: WorkBudgetReservationDto["metering"] | null;
 }
 
 interface InboxRow {
@@ -203,6 +243,13 @@ interface InboxRow {
   status: WorkInboxEventDto["status"];
   merged_count: number;
   merge_deadline_at: number | null;
+  batch_id: string | null;
+  batch_deadline_at: number | null;
+  frozen_at: number | null;
+  frozen_payload_json: string | null;
+  claim_version: number;
+  target_key: string | null;
+  process_reason: string | null;
   received_at: number;
   processed_at: number | null;
 }
@@ -257,7 +304,8 @@ export class WorkRepository {
       constraints_json,criteria_json,authorization_json,active_intent_snapshot_id,
       input_snapshot_id,goal_sources_json,mode,lifecycle,pending_conclusion,cancel_requested_at,
       closure_conclusion,closure_summary,accepted_deliverable_ids_json,active_execution_ids_json,
-      progress_summary,watch_rule_json,state_version,budget_json,created_by,created_at,updated_at,
+      progress_summary,watch_rule_json,deadline_at,deadline_revision,deadline_set_at,budget_policy_json,
+      causal_policy_json,state_version,budget_json,created_by,created_at,updated_at,
       closed_at,close_operation_id
     ) VALUES (
       @workId,@userId,@projectId,@workspacePath,@sourceMessageId,@legacyTaskId,
@@ -265,7 +313,8 @@ export class WorkRepository {
       @constraintsJson,@criteriaJson,@authorizationJson,@activeIntentSnapshotId,
       @inputSnapshotId,@goalSourcesJson,@mode,@lifecycle,@pendingConclusion,@cancelRequestedAt,
       @closureConclusion,@closureSummary,@acceptedDeliverableIdsJson,@activeExecutionIdsJson,
-      @progressSummary,@watchRuleJson,@stateVersion,@budgetJson,@createdBy,@createdAt,@updatedAt,
+      @progressSummary,@watchRuleJson,@deadlineAt,@deadlineRevision,@deadlineSetAt,@budgetPolicyJson,
+      @causalPolicyJson,@stateVersion,@budgetJson,@createdBy,@createdAt,@updatedAt,
       @closedAt,@closeOperationId
     )`).run(this.workParams(work));
   }
@@ -281,8 +330,10 @@ export class WorkRepository {
       lifecycle=@lifecycle, pending_conclusion=@pendingConclusion, cancel_requested_at=@cancelRequestedAt,
       closure_conclusion=@closureConclusion, closure_summary=@closureSummary,
       accepted_deliverable_ids_json=@acceptedDeliverableIdsJson, active_execution_ids_json=@activeExecutionIdsJson,
-      progress_summary=@progressSummary, watch_rule_json=@watchRuleJson, state_version=@stateVersion,
-      budget_json=@budgetJson, updated_at=@updatedAt, closed_at=@closedAt, close_operation_id=@closeOperationId
+      progress_summary=@progressSummary, watch_rule_json=@watchRuleJson, deadline_at=@deadlineAt,
+      deadline_revision=@deadlineRevision, deadline_set_at=@deadlineSetAt, budget_policy_json=@budgetPolicyJson,
+      causal_policy_json=@causalPolicyJson, state_version=@stateVersion, budget_json=@budgetJson, updated_at=@updatedAt,
+      closed_at=@closedAt, close_operation_id=@closeOperationId
       WHERE work_id=@workId`).run(this.workParams(work));
   }
 
@@ -316,6 +367,11 @@ export class WorkRepository {
       activeExecutionIdsJson: jsonText(work.activeExecutionIds),
       progressSummary: work.progressSummary ?? null,
       watchRuleJson: work.watchRule ? jsonText(work.watchRule) : null,
+      deadlineAt: work.deadlineAt ?? null,
+      deadlineRevision: work.deadlineRevision ?? 1,
+      deadlineSetAt: work.deadlineSetAt ?? null,
+      budgetPolicyJson: jsonText(work.budgetPolicy ?? {}),
+      causalPolicyJson: jsonText(work.causalPolicy ?? {}),
       stateVersion: work.stateVersion,
       budgetJson: jsonText(work.budget),
       createdBy: work.createdBy,
@@ -397,6 +453,11 @@ export class WorkRepository {
       activeExecutionIds: json<string[]>(row.active_execution_ids_json, []),
       progressSummary: row.progress_summary ?? undefined,
       watchRule: row.watch_rule_json ? json<WorkWatchRuleDto | undefined>(row.watch_rule_json, undefined) : undefined,
+      deadlineAt: row.deadline_at ?? undefined,
+      deadlineRevision: row.deadline_revision,
+      deadlineSetAt: row.deadline_set_at ?? undefined,
+      budgetPolicy: json<WorkDto["budgetPolicy"] | undefined>(row.budget_policy_json, undefined),
+      causalPolicy: json<WorkDto["causalPolicy"] | undefined>(row.causal_policy_json, undefined),
       stateVersion: row.state_version,
       budget: json<WorkBudgetDto>(row.budget_json, {
         windowId: `win-${row.work_id}-1`, maxTokens: 0, usedTokens: 0, reservedTokens: 0,
@@ -446,10 +507,23 @@ export class WorkRepository {
       ORDER BY source_version DESC LIMIT 1`).get(binding.workId, binding.intentRevision, binding.inputSnapshotId) as
       { title: string; goal_description: string | null; constraints_json: string; criteria_json: string } | undefined;
     if (!row) throw new Error("执行缺少持久化的要求与输入快照");
+    const sourceEvent = binding.inboxEventId
+      ? this.db.prepare("SELECT source,source_event_id,event_type,source_version,payload_json,received_at FROM work_events_inbox WHERE event_id=?")
+        .get(binding.inboxEventId) as { source: string; source_event_id: string; event_type: string; source_version: string | null;
+          payload_json: string; received_at: number } | undefined
+      : undefined;
     return JSON.stringify({
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
       title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
       criteria: json<WorkDto["criteria"]>(row.criteria_json, []), delegatedScope: binding.delegatedScope,
+      ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
+        eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
+        receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
+      ...(sourceEvent?.event_type === "deadline_expired" ? { deadlineFollowUp: {
+        readOnly: true, deadlineRevision: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineRevision,
+        deadlineAt: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineAt,
+        instructions: "这是承诺到期的只读跟进。整理已有成果、未完成项和缺口，不重跑原业务副作用，不重复已确认的外部效果。",
+      } } : {}),
       instructions: "按上述持久要求执行。只提交成果、证据和未覆盖范围，不自行宣布整个 Work 已验收。",
     });
   }
@@ -516,10 +590,10 @@ export class WorkRepository {
     this.db.prepare(`INSERT INTO work_execution_bindings (
       binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,
       owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,reservation_id,
-      status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at
+      status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at,inbox_event_id
     ) VALUES (@bindingId,@workId,@operationId,@botId,@taskId,@durableStoreKey,@conversationId,@intentRevision,
       @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,@reservationId,
-      @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt)`).run({
+      @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt,@inboxEventId)`).run({
       ...binding,
       reservationId: binding.reservationId ?? null,
       attemptId: binding.attemptId ?? null,
@@ -528,6 +602,7 @@ export class WorkRepository {
       submittedAt: binding.submittedAt ?? null,
       invalidatedAt: binding.invalidatedAt ?? null,
       settledAt: binding.settledAt ?? null,
+      inboxEventId: binding.inboxEventId ?? null,
       expertSnapshotJson: jsonText(binding.expertSnapshot),
       delegatedScopeJson: jsonText(binding.delegatedScope),
     });
@@ -536,7 +611,7 @@ export class WorkRepository {
   updateBinding(binding: WorkExecutionBindingDto): void {
     this.db.prepare(`UPDATE work_execution_bindings SET status=@status, attempt_id=@attemptId,
       submission_receipt=@submissionReceipt, settlement_note=@settlementNote, submitted_at=@submittedAt,
-      invalidated_at=@invalidatedAt, settled_at=@settledAt WHERE binding_id=@bindingId`).run({
+      invalidated_at=@invalidatedAt, settled_at=@settledAt, inbox_event_id=@inboxEventId WHERE binding_id=@bindingId`).run({
       bindingId: binding.bindingId,
       status: binding.status,
       attemptId: binding.attemptId ?? null,
@@ -545,6 +620,7 @@ export class WorkRepository {
       submittedAt: binding.submittedAt ?? null,
       invalidatedAt: binding.invalidatedAt ?? null,
       settledAt: binding.settledAt ?? null,
+      inboxEventId: binding.inboxEventId ?? null,
     });
   }
 
@@ -691,12 +767,20 @@ export class WorkRepository {
   insertBlocker(blocker: WorkBlockerDto): void {
     this.db.prepare(`INSERT INTO work_blockers (
       blocker_id,work_id,reported_by_bot_id,reason,kind,unknown_external_effect_ref,
+      reason_code,details_json,source_ref,subscription_id,window_id,causal_chain_id,
       waiting_for_user_input,status,created_at,cleared_at
     ) VALUES (@blockerId,@workId,@reportedByBotId,@reason,@kind,@unknownExternalEffectRef,
+      @reasonCode,@detailsJson,@sourceRef,@subscriptionId,@windowId,@causalChainId,
       @waitingForUserInput,@status,@createdAt,@clearedAt)`).run({
       ...blocker,
       reportedByBotId: blocker.reportedByBotId ?? null,
       unknownExternalEffectRef: blocker.unknownExternalEffectRef ?? null,
+      reasonCode: blocker.reasonCode ?? null,
+      detailsJson: jsonText(blocker.details ?? {}),
+      sourceRef: blocker.sourceRef ?? null,
+      subscriptionId: blocker.subscriptionId ?? null,
+      windowId: blocker.windowId ?? null,
+      causalChainId: blocker.causalChainId ?? null,
       waitingForUserInput: blocker.waitingForUserInput ? 1 : 0,
       clearedAt: blocker.clearedAt ?? null,
     });
@@ -731,9 +815,13 @@ export class WorkRepository {
     this.db.prepare(`INSERT INTO work_subscriptions (
       subscription_id,work_id,source,filter_json,catch_up_policy,max_merge_wait_ms,max_queue_depth,
       stop_condition_text,timezone,cron_expression,next_wake_at,last_processed_source_version,
+      schedule_revision,config_revision,source_target,version_mode,dst_policy,max_backlog_events,
+      max_backlog_bytes,last_checked_at,stopped_reason,config_json,
       created_at,updated_at,stopped_at
     ) VALUES (@subscriptionId,@workId,@source,@filterJson,@catchUpPolicy,@maxMergeWaitMs,@maxQueueDepth,
       @stopConditionText,@timezone,@cronExpression,@nextWakeAt,@lastProcessedSourceVersion,
+      @scheduleRevision,@configRevision,@sourceTarget,@versionMode,@dstPolicy,@maxBacklogEvents,
+      @maxBacklogBytes,@lastCheckedAt,@stoppedReason,@configJson,
       @createdAt,@updatedAt,@stoppedAt)`).run({
       ...subscription,
       filterJson: jsonText(subscription.filter),
@@ -742,6 +830,16 @@ export class WorkRepository {
       cronExpression: subscription.cronExpression ?? null,
       nextWakeAt: subscription.nextWakeAt ?? null,
       lastProcessedSourceVersion: subscription.lastProcessedSourceVersion ?? null,
+      scheduleRevision: subscription.scheduleRevision ?? 1,
+      configRevision: subscription.configRevision ?? 1,
+      sourceTarget: subscription.sourceTarget ?? null,
+      versionMode: subscription.versionMode ?? "readback",
+      dstPolicy: subscription.dstPolicy ?? "first-valid",
+      maxBacklogEvents: subscription.maxBacklogEvents ?? 400,
+      maxBacklogBytes: subscription.maxBacklogBytes ?? 8_388_608,
+      lastCheckedAt: subscription.lastCheckedAt ?? null,
+      stoppedReason: subscription.stoppedReason ?? null,
+      configJson: jsonText(subscription.filter),
       stoppedAt: subscription.stoppedAt ?? null,
     });
   }
@@ -750,7 +848,11 @@ export class WorkRepository {
     this.db.prepare(`UPDATE work_subscriptions SET filter_json=@filterJson, catch_up_policy=@catchUpPolicy,
       max_merge_wait_ms=@maxMergeWaitMs, max_queue_depth=@maxQueueDepth, stop_condition_text=@stopConditionText,
       timezone=@timezone, cron_expression=@cronExpression, next_wake_at=@nextWakeAt,
-      last_processed_source_version=@lastProcessedSourceVersion, updated_at=@updatedAt, stopped_at=@stoppedAt
+      last_processed_source_version=@lastProcessedSourceVersion, schedule_revision=@scheduleRevision,
+      config_revision=@configRevision, source_target=@sourceTarget, version_mode=@versionMode,
+      dst_policy=@dstPolicy, max_backlog_events=@maxBacklogEvents, max_backlog_bytes=@maxBacklogBytes,
+      last_checked_at=@lastCheckedAt, stopped_reason=@stoppedReason, config_json=@configJson,
+      updated_at=@updatedAt, stopped_at=@stoppedAt
       WHERE subscription_id=@subscriptionId`).run({
       ...subscription,
       filterJson: jsonText(subscription.filter),
@@ -759,6 +861,16 @@ export class WorkRepository {
       cronExpression: subscription.cronExpression ?? null,
       nextWakeAt: subscription.nextWakeAt ?? null,
       lastProcessedSourceVersion: subscription.lastProcessedSourceVersion ?? null,
+      scheduleRevision: subscription.scheduleRevision ?? 1,
+      configRevision: subscription.configRevision ?? 1,
+      sourceTarget: subscription.sourceTarget ?? null,
+      versionMode: subscription.versionMode ?? "readback",
+      dstPolicy: subscription.dstPolicy ?? "first-valid",
+      maxBacklogEvents: subscription.maxBacklogEvents ?? 400,
+      maxBacklogBytes: subscription.maxBacklogBytes ?? 8_388_608,
+      lastCheckedAt: subscription.lastCheckedAt ?? null,
+      stoppedReason: subscription.stoppedReason ?? null,
+      configJson: jsonText(subscription.filter),
       stoppedAt: subscription.stoppedAt ?? null,
     });
   }
@@ -791,12 +903,17 @@ export class WorkRepository {
   recordSourceEvent(event: {
     source: string; sourceEventId: string; eventType: string; sourceVersion?: string;
     causalEventId?: string; payload: Record<string, unknown>; receivedAt: number;
+    occurredAt?: number; targetKey?: string; adapter?: string; trustedOrigin?: string;
   }): boolean {
+    const payloadJson = jsonText(event.payload);
     const result = this.db.prepare(`INSERT OR IGNORE INTO work_source_events
-      (source,source_event_id,event_type,source_version,causal_event_id,payload_json,received_at)
-      VALUES (?,?,?,?,?,?,?)`).run(
+      (source,source_event_id,event_type,source_version,causal_event_id,payload_json,received_at,
+       occurred_at,target_key,payload_bytes,adapter,trusted_origin)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       event.source, event.sourceEventId, event.eventType, event.sourceVersion ?? null,
-      event.causalEventId ?? null, jsonText(event.payload), event.receivedAt,
+      event.causalEventId ?? null, payloadJson, event.receivedAt,
+      event.occurredAt ?? null, event.targetKey ?? null, Buffer.byteLength(payloadJson, "utf8"),
+      event.adapter ?? null, event.trustedOrigin ?? null,
     );
     return result.changes > 0;
   }
@@ -805,16 +922,26 @@ export class WorkRepository {
     const result = this.db.prepare(`INSERT OR IGNORE INTO work_events_inbox (
       event_id,dedupe_key,source,source_event_id,event_type,work_id,subscription_id,intent_revision,
       state_version,owner_epoch,source_version,causal_event_id,payload_json,status,merged_count,
-      merge_deadline_at,received_at,processed_at
+      merge_deadline_at,received_at,processed_at,batch_id,batch_deadline_at,frozen_at,frozen_payload_json,
+      claim_version,target_key,process_reason
     ) VALUES (@eventId,@dedupeKey,@source,@sourceEventId,@eventType,@workId,@subscriptionId,@intentRevision,
       @stateVersion,@ownerEpoch,@sourceVersion,@causalEventId,@payloadJson,@status,@mergedCount,
-      @mergeDeadlineAt,@receivedAt,@processedAt)`).run({
+      @mergeDeadlineAt,@receivedAt,@processedAt,@batchId,@batchDeadlineAt,@frozenAt,@frozenPayloadJson,
+      @claimVersion,@targetKey,@processReason)`).run({
       ...event,
       subscriptionId: event.subscriptionId ?? null,
+      causalEventId: event.causalEventId ?? null,
       sourceVersion: event.sourceVersion ?? null,
       payloadJson: jsonText(event.payload),
-      mergeDeadlineAt: event.processAfter ?? null,
+      mergeDeadlineAt: event.batchDeadlineAt ?? event.processAfter ?? null,
       processedAt: event.processedAt ?? null,
+      batchId: event.batchId ?? null,
+      batchDeadlineAt: event.batchDeadlineAt ?? null,
+      frozenAt: event.frozenAt ?? null,
+      frozenPayloadJson: event.frozenPayload ? jsonText(event.frozenPayload) : null,
+      claimVersion: event.claimVersion ?? 0,
+      targetKey: event.targetKey ?? null,
+      processReason: event.processReason ?? null,
     });
     return result.changes > 0;
   }
@@ -902,27 +1029,26 @@ export class WorkRepository {
 
   insertReservation(reservation: WorkBudgetReservationDto): void {
     this.db.prepare(`INSERT INTO work_budget_reservations
-      (reservation_id,work_id,window_id,tokens,state,created_at,settled_at)
-      VALUES (@reservationId,@workId,@windowId,@tokens,@state,@createdAt,@settledAt)`).run({
+      (reservation_id,work_id,window_id,tokens,state,created_at,settled_at,reported_tokens,request_kind,
+       request_id,binding_id,attempt_id,attempt_identity,receipt_key,metering)
+      VALUES (@reservationId,@workId,@windowId,@tokens,@state,@createdAt,@settledAt,@reportedTokens,@requestKind,
+       @requestId,@bindingId,@attemptId,@attemptIdentity,@receiptKey,@metering)`).run({
       ...reservation,
       settledAt: reservation.settledAt ?? null,
+      reportedTokens: reservation.reportedTokens ?? null,
+      requestKind: reservation.requestKind ?? "dispatch",
+      requestId: reservation.requestId ?? null,
+      bindingId: reservation.bindingId ?? null,
+      attemptId: reservation.attemptId ?? null,
+      attemptIdentity: reservation.attemptIdentity ?? null,
+      receiptKey: reservation.receiptKey ?? null,
+      metering: reservation.metering ?? "reserved",
     });
   }
 
   listReservations(workId: string): WorkBudgetReservationDto[] {
     return (this.db.prepare("SELECT * FROM work_budget_reservations WHERE work_id=? ORDER BY created_at ASC")
-      .all(workId) as Array<{
-        reservation_id: string; work_id: string; window_id: string; tokens: number;
-        state: WorkBudgetReservationDto["state"]; created_at: number; settled_at: number | null;
-      }>).map((row) => ({
-        reservationId: row.reservation_id,
-        workId: row.work_id,
-        windowId: row.window_id,
-        tokens: row.tokens,
-        state: row.state,
-        createdAt: row.created_at,
-        settledAt: row.settled_at ?? undefined,
-      }));
+      .all(workId) as ReservationRow[]).map(mapReservation);
   }
 
   getReservation(reservationId: string): WorkBudgetReservationDto | undefined {
@@ -931,18 +1057,16 @@ export class WorkRepository {
 
   private listReservationsById(reservationId: string): WorkBudgetReservationDto[] {
     const row = this.db.prepare("SELECT * FROM work_budget_reservations WHERE reservation_id=?")
-      .get(reservationId) as { reservation_id: string; work_id: string; window_id: string; tokens: number;
-        state: WorkBudgetReservationDto["state"]; created_at: number; settled_at: number | null } | undefined;
-    if (!row) return [];
-    return [{
-      reservationId: row.reservation_id, workId: row.work_id, windowId: row.window_id, tokens: row.tokens,
-      state: row.state, createdAt: row.created_at, settledAt: row.settled_at ?? undefined,
-    }];
+      .get(reservationId) as ReservationRow | undefined;
+    return row ? [mapReservation(row)] : [];
   }
 
-  updateReservation(reservationId: string, state: WorkBudgetReservationDto["state"], now: number): void {
-    this.db.prepare("UPDATE work_budget_reservations SET state=?, settled_at=? WHERE reservation_id=?")
-      .run(state, now, reservationId);
+  updateReservation(reservationId: string, state: WorkBudgetReservationDto["state"], now: number,
+    reportedTokens?: number | null): void {
+    this.db.prepare(`UPDATE work_budget_reservations SET state=?, settled_at=?,
+      reported_tokens=COALESCE(?,reported_tokens), metering=? WHERE reservation_id=?`)
+      .run(state, now, reportedTokens === undefined ? null : reportedTokens,
+        state === "committed" ? "reported" : state === "released" ? "released" : state, reservationId);
   }
 
   // ---------------------------------------------------------- notifications
@@ -1062,6 +1186,7 @@ function mapBinding(row: BindingRow): WorkExecutionBindingDto {
     submittedAt: row.submitted_at ?? undefined,
     invalidatedAt: row.invalidated_at ?? undefined,
     settledAt: row.settled_at ?? undefined,
+    inboxEventId: row.inbox_event_id ?? undefined,
   };
 }
 
@@ -1115,6 +1240,12 @@ function mapBlocker(row: BlockerRow): WorkBlockerDto {
     reportedByBotId: row.reported_by_bot_id ?? undefined,
     reason: row.reason,
     kind: row.kind,
+    reasonCode: (row.reason_code ?? undefined) as WorkBlockerDto["reasonCode"],
+    details: json<Record<string, unknown>>(row.details_json, {}),
+    sourceRef: row.source_ref ?? undefined,
+    subscriptionId: row.subscription_id ?? undefined,
+    windowId: row.window_id ?? undefined,
+    causalChainId: row.causal_chain_id ?? undefined,
     unknownExternalEffectRef: row.unknown_external_effect_ref ?? undefined,
     waitingForUserInput: row.waiting_for_user_input === 1,
     status: row.status,
@@ -1152,9 +1283,38 @@ function mapSubscription(row: SubscriptionRow): WorkSubscriptionDto {
     cronExpression: row.cron_expression ?? undefined,
     nextWakeAt: row.next_wake_at ?? undefined,
     lastProcessedSourceVersion: row.last_processed_source_version ?? undefined,
+    scheduleRevision: row.schedule_revision,
+    configRevision: row.config_revision,
+    sourceTarget: row.source_target ?? undefined,
+    versionMode: (row.version_mode ?? "readback") as WorkSubscriptionDto["versionMode"],
+    dstPolicy: (row.dst_policy ?? "first-valid") as WorkSubscriptionDto["dstPolicy"],
+    maxBacklogEvents: row.max_backlog_events,
+    maxBacklogBytes: row.max_backlog_bytes,
+    lastCheckedAt: row.last_checked_at ?? undefined,
+    stoppedReason: row.stopped_reason ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     stoppedAt: row.stopped_at ?? undefined,
+  };
+}
+
+function mapReservation(row: ReservationRow): WorkBudgetReservationDto {
+  return {
+    reservationId: row.reservation_id,
+    workId: row.work_id,
+    windowId: row.window_id,
+    tokens: row.tokens,
+    state: row.state,
+    createdAt: row.created_at,
+    settledAt: row.settled_at ?? undefined,
+    reportedTokens: row.reported_tokens ?? undefined,
+    requestKind: (row.request_kind ?? undefined) as WorkBudgetReservationDto["requestKind"],
+    requestId: row.request_id ?? undefined,
+    bindingId: row.binding_id ?? undefined,
+    attemptId: row.attempt_id ?? undefined,
+    attemptIdentity: row.attempt_identity ?? undefined,
+    receiptKey: row.receipt_key ?? undefined,
+    metering: row.metering ?? undefined,
   };
 }
 
@@ -1177,6 +1337,13 @@ function mapInbox(row: InboxRow): WorkInboxEventDto {
     mergedCount: row.merged_count,
     receivedAt: row.received_at,
     processAfter: row.merge_deadline_at ?? undefined,
+    batchId: row.batch_id ?? undefined,
+    batchDeadlineAt: row.batch_deadline_at ?? undefined,
+    frozenAt: row.frozen_at ?? undefined,
+    frozenPayload: row.frozen_payload_json ? json<Record<string, unknown>>(row.frozen_payload_json, {}) : undefined,
+    claimVersion: row.claim_version,
+    targetKey: row.target_key ?? undefined,
+    processReason: row.process_reason ?? undefined,
     processedAt: row.processed_at ?? undefined,
   };
 }

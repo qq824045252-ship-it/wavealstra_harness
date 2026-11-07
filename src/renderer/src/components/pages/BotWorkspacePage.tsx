@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BotDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
+import type { WorkPhase4ControlRequest } from "@shared/bot-work-phase4";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import "./BotWorkspacePage.css";
@@ -153,6 +154,11 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
   const [controlNotice, setControlNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [safeRecovery, setSafeRecovery] = useState<string | null>(null);
+  const [phase4Notice, setPhase4Notice] = useState("");
+  const [watchSource, setWatchSource] = useState("hook");
+  const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
+  const [deadlineInput, setDeadlineInput] = useState("");
+  const [budgetLimit, setBudgetLimit] = useState(String(work.phase4?.budget.limitTokens ?? 500000));
   const operations = useRef(new Map<string, string>());
   const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
   const operation = (key: string) => {
@@ -181,6 +187,20 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
       return response;
     } catch (error) { setControlNotice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。"); }
     finally { setBusy(false); }
+  };
+
+  const runPhase4 = async (request: WorkPhase4ControlRequest) => {
+    setBusy(true);
+    try {
+      const api = window.api;
+      if (!api) throw new Error("桌面控制接口不可用");
+      const response = await api.botWork.phase4Control(request);
+      setPhase4Notice(response.ok ? "关注规则已保存，正在读取最新状态。" : response.message);
+      await useAppStore.getState().refreshBotWork();
+      return response;
+    } catch (error) {
+      setPhase4Notice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。");
+    } finally { setBusy(false); }
   };
 
   return (
@@ -248,6 +268,64 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         <button type="button" disabled={busy || !question.trim()} onClick={() => { void control({ kind: "collaborate", request: { messageId: operation(`question:${question}`),
           workId: work.workId, kind: "question", recipientBotIds: [work.ownerBotId], body: question, versionGuard } }); }}>保存问题</button>
         {controlNotice && <p role="status">{controlNotice}</p>}
+      </section>}
+      {work.phase4 && <section aria-label="关注、离线与预算">
+        <h3>关注与运行</h3>
+        <p>{work.phase4.host.online ? "权威宿主在线" : "权威宿主离线，不能宣称持续运行"}
+          {work.phase4.host.lastScanAt ? ` · 最近实际检查 ${new Date(work.phase4.host.lastScanAt).toLocaleString()}` : " · 尚无实际检查记录"}
+          {work.phase4.host.suspendEvidence ? ` · 休眠证据 ${work.phase4.host.suspendEvidence}` : ""}</p>
+        <p>承诺期限 {work.phase4.deadlineAt ? new Date(work.phase4.deadlineAt).toLocaleString() : "未设置"}（revision {work.phase4.deadlineRevision}）</p>
+        {work.phase4.subscriptions.length === 0 ? <p>尚无关注规则。</p> : work.phase4.subscriptions.map(subscription => <article key={subscription.subscriptionId} aria-label="关注规则">
+          <strong>{subscription.source} · {subscription.targetKey ?? "默认目标"} · {{ online: "在线", paused: "暂停积压", offline: "宿主离线", stopped: "已停止", closing: "结算中" }[subscription.status]}</strong>
+          <p>策略 {subscription.catchUpPolicy} · 时区 {subscription.timezone ?? "默认"} · 规则 r{subscription.scheduleRevision} · 配置 r{subscription.configRevision}</p>
+          <p>下一唤醒 {subscription.nextWakeAt ? new Date(subscription.nextWakeAt).toLocaleString() : "无"} · 最近检查 {subscription.lastCheckedAt ? new Date(subscription.lastCheckedAt).toLocaleString() : "无"}</p>
+          <p>队列 ready {subscription.queue.ready} · frozen {subscription.queue.frozen} · blocked {subscription.queue.blocked} / 上限 {subscription.queue.maxEvents} 条 · {subscription.queue.bytes}/{subscription.queue.maxBytes} 字节
+            {subscription.queue.mergeDeadlineAt ? ` · 固定合并截止 ${new Date(subscription.queue.mergeDeadlineAt).toLocaleString()}` : ""}
+            {subscription.queue.waitReason ? ` · ${subscription.queue.waitReason}` : ""}</p>
+          {subscription.cursors.map(cursor => <p key={`${cursor.source}:${cursor.targetKey}`}>目标 {cursor.targetKey} · 已接纳 {cursor.highestAcceptedVersion ?? "无"} · 已消费 {cursor.highestConsumedVersion ?? "无"} · 已冻结 {cursor.highestFrozenVersion ?? "无"}</p>)}
+          <button type="button" disabled={busy || subscription.status === "stopped" || work.lifecycle === "closed"}
+            onClick={() => { void runPhase4({ kind: "stop-subscription", operationId: operation(`stop-sub:${subscription.subscriptionId}`),
+              workId: work.workId, subscriptionId: subscription.subscriptionId, reason: "用户在事项详情中停止关注", versionGuard }); }}>停止此关注</button>
+          <button type="button" disabled={busy || subscription.status === "stopped"} onClick={() => { void runPhase4({ kind: "retry-backlog",
+            operationId: operation(`retry-backlog:${subscription.subscriptionId}:${work.stateVersion}`), workId: work.workId,
+            subscriptionId: subscription.subscriptionId, versionGuard }); }}>重试积压与拒收路由</button>
+        </article>)}
+        <label>来源<input aria-label="关注来源" value={watchSource} onChange={event => setWatchSource(event.target.value)} maxLength={100} /></label>
+        <label>合并策略<select aria-label="合并策略" value={watchPolicy} onChange={event => setWatchPolicy(event.target.value as typeof watchPolicy)}>
+          <option value="latest">latest</option><option value="each">each</option><option value="skip">skip</option>
+        </select></label>
+        <button type="button" disabled={busy || !watchSource.trim() || !["active", "paused"].includes(work.lifecycle)}
+          onClick={() => { void runPhase4({ kind: "configure-subscription", operationId: operation(`subscribe:${watchSource}:${watchPolicy}:${work.stateVersion}`),
+            workId: work.workId, source: watchSource.trim(), catchUpPolicy: watchPolicy, versionGuard }); }}>保存关注规则</button>
+        <label>承诺期限<input aria-label="承诺期限" type="datetime-local" value={deadlineInput} onChange={event => setDeadlineInput(event.target.value)} /></label>
+        <button type="button" disabled={busy || !deadlineInput || work.lifecycle === "closed"}
+          onClick={() => { void runPhase4({ kind: "set-deadline", operationId: operation(`deadline:${deadlineInput}:${work.stateVersion}`),
+            workId: work.workId, deadlineAt: new Date(deadlineInput).getTime(), versionGuard }); }}>保存期限</button>
+        <button type="button" disabled={busy || work.phase4.deadlineAt === undefined || work.lifecycle === "closed"}
+          onClick={() => { void runPhase4({ kind: "set-deadline", operationId: operation(`deadline-clear:${work.stateVersion}`),
+            workId: work.workId, deadlineAt: null, versionGuard }); }}>取消期限</button>
+
+        <h3>离线补处理</h3>
+        {work.phase4.offlineGaps.length === 0 ? <p>没有记录的离线缺口。</p> : work.phase4.offlineGaps.map(gap => <article key={gap.gapId}>
+          <p>{new Date(gap.offlineGapFrom).toLocaleString()} ~ {new Date(gap.offlineGapTo).toLocaleString()} · 依据 {gap.detectedBy} / {gap.confidence === "evidence" ? "有证据" : "推断"}
+            · 策略 {gap.policy} · {{ open: "待恢复", recovering: "恢复中", recovered: "已恢复", unqueryable: "不可回查" }[gap.state]}</p>
+          <p>已补 {gap.recoveredCount} · 已合并 {gap.mergedCount} · 已跳过 {gap.skippedCount} · 未知 {gap.unknownCount ?? "未统计"}{gap.gapReason ? ` · ${gap.gapReason}` : ""}</p>
+        </article>)}
+
+        <h3>共享预算</h3>
+        <p>窗口 {work.phase4.budget.windowId} · {new Date(work.phase4.budget.periodStartAt).toLocaleString()} ~ {work.phase4.budget.periodEndAt ? new Date(work.phase4.budget.periodEndAt).toLocaleString() : "无期限"}
+          · {work.phase4.budget.timezone ?? "默认时区"} · 策略 r{work.phase4.budget.policyRevision} · {work.phase4.budget.autoRollover ? "允许续期" : "不自动续期"}</p>
+        <p>上限 {work.phase4.budget.limitTokens} · 已结算 {work.phase4.budget.committedTokens} · 在途预留 {work.phase4.budget.reservedTokens} · 未知 {work.phase4.budget.unknownTokens}（{work.phase4.budget.unknownUsageCount} 笔）· 可用 {work.phase4.budget.availableTokens}</p>
+        <label>预算上限<input aria-label="预算上限" type="number" min={0} value={budgetLimit} onChange={event => setBudgetLimit(event.target.value)} /></label>
+        <button type="button" disabled={busy || !Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 0}
+          onClick={() => { void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
+            workId: work.workId, maxTokens: Number(budgetLimit), versionGuard }); }}>保存预算政策</button>
+
+        <h3>因果准入</h3>
+        {work.phase4.causal.length === 0 ? <p>尚无因果准入记录。</p> : <details><summary>最近 {work.phase4.causal.length} 次准入</summary>
+          {work.phase4.causal.map(item => <p key={item.chainId}>{item.decision === "admitted" ? "已准入" : "已拦截"} · 深度 {item.depth} · 互调 {item.hops} 跳 · 派发 {item.dispatchCount} · {item.reasonCode ?? item.rootEventId}</p>)}
+        </details>}
+        {phase4Notice && <p role="status">{phase4Notice}</p>}
       </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>

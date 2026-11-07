@@ -140,6 +140,37 @@ assert.match(populatedPage, /日志齐全/);
 assert.match(populatedPage, /负责人 值班/);
 assert.match(populatedPage, /要求 r2/);
 assert.doesNotMatch(populatedPage, /要求 r5/);
+night.phase4 = {
+  subscriptions: [{ subscriptionId: "sub-1", workId: night.workId, source: "hook", targetKey: "repo-a",
+    status: "online", catchUpPolicy: "latest", timezone: "Asia/Shanghai", scheduleRevision: 2, configRevision: 3,
+    nextWakeAt: 1_000, lastCheckedAt: 900, versionMode: "monotonic",
+    queue: { ready: 1, frozen: 1, blocked: 2, bytes: 120, maxEvents: 8, maxBytes: 4096, mergeDeadlineAt: 1_100,
+      readySince: 800, waitReason: "有限溢出区等待回填" },
+    cursors: [{ source: "hook", targetKey: "repo-a", highestAcceptedVersion: "10", highestConsumedVersion: "9", highestFrozenVersion: "10" }] }],
+  offlineGaps: [{ gapId: "gap-1", subscriptionId: "sub-1", workId: night.workId, offlineGapFrom: 100, offlineGapTo: 200,
+    detectedBy: "heartbeat-stale", confidence: "inferred", policy: "latest", policyRevision: 2, queryable: false,
+    recoveredCount: 0, mergedCount: 1, skippedCount: undefined, unknownCount: undefined, state: "unqueryable",
+    gapReason: "来源没有历史回查能力" }],
+  budget: { windowId: "bw-1", policyRevision: 3, scope: "window", periodStartAt: 100, periodEndAt: 200,
+    timezone: "Asia/Shanghai", limitTokens: 500, committedTokens: 120, reservedTokens: 30, unknownTokens: 20,
+    unknownUsageCount: 2, availableTokens: 330, autoRollover: true, carryPolicy: "none", status: "open" },
+  causal: [{ chainId: "chain-1", rootEventId: "root-1", originWorkId: night.workId, targetWorkId: night.workId,
+    depth: 2, hops: 2, dispatchCount: 3, decision: "blocked-loop", reasonCode: "causal-loop-guard", createdAt: 110 }],
+  deadlineAt: 300, deadlineRevision: 4, host: { authorityId: "local", sessionId: "session-1", online: true,
+    lastScanAt: 190, lastScanCursor: "cursor-1", activeSince: 50 },
+};
+const phase4Page = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(phase4Page, /关注与运行/);
+assert.match(phase4Page, /repo-a/);
+assert.match(phase4Page, /latest/);
+assert.match(phase4Page, /固定合并截止/);
+assert.match(phase4Page, /不可回查/);
+assert.match(phase4Page, /已结算 120/);
+assert.match(phase4Page, /在途预留 30/);
+assert.match(phase4Page, /未知 20/);
+assert.match(phase4Page, /causal-loop-guard/);
+assert.match(phase4Page, /承诺期限/);
+delete night.phase4;
 night.phase3 = { subitems: [], continuations: [], gaps: [], resourceWaits: [], settlingActions: 1,
   pausedEventCount: 0, handoffs: [], collaborationMessages: [], resourceRecoveries: [{
     token: 1, resourceKinds: ["desktop"], attempts: 4, exhaustedAt: 100, pendingProbe: false, reason: "原操作效果待核对",

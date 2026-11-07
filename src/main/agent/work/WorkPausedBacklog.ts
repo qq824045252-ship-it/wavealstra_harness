@@ -32,7 +32,10 @@ export class WorkPausedBacklog {
     const pending = this.works.repo.listInbox(work.workId,["pending","merged","blocked"]).filter(item => item.subscriptionId === subscription.subscriptionId);
     if (pending.length >= subscription.maxQueueDepth) {
       const id = `paused-backpressure:${subscription.subscriptionId}`;
-      if (!this.works.repo.getBlocker(id)) this.works.repo.insertBlocker({ blockerId: id, workId: work.workId, kind: "backpressure", reason: "暂停积压达到上限，后续来源事实保留且等待显式补读", status: "open", waitingForUserInput: false, createdAt: now });
+      if (!this.works.repo.getBlocker(id)) this.works.repo.insertBlocker({ blockerId: id, workId: work.workId, kind: "backpressure",
+        reasonCode: "backlog-overflow", reason: "暂停积压达到上限，后续来源事实保留且等待显式补读",
+        details: { subscriptionId: subscription.subscriptionId, maxEvents: subscription.maxQueueDepth },
+        status: "open", waitingForUserInput: false, createdAt: now });
       return "blocked";
     }
     const eventId = newId("event");
@@ -119,11 +122,11 @@ export class WorkPausedBacklog {
       if (!stored || stored.status === "processed") return { ok: true };
       if (!["pending","merged"].includes(stored.status)) return { ok: false, message: "事件不可消费" };
       apply(latest,stored,current);
-      this.works.repo.setInboxStatus(eventId,"processed",Date.now());
+      this.works.ingress.markConsumed(eventId, { providerSourceVersion: stored.payload.authoritativeReadbackRequired
+        ? undefined : stored.sourceVersion });
       if (stored.subscriptionId) {
         const subscription = this.works.repo.getSubscription(stored.subscriptionId);
-        if (subscription) this.works.repo.updateSubscription({ ...subscription,
-          lastProcessedSourceVersion: stored.payload.authoritativeReadbackRequired ? this.works.getWork(latest.workId)?.inputSnapshotId : stored.sourceVersion, updatedAt: Date.now() });
+        if (subscription) this.works.repo.updateSubscription({ ...subscription, lastCheckedAt: Date.now(), updatedAt: Date.now() });
       }
       return { ok: true };
     });

@@ -196,7 +196,8 @@ try {
   assert.equal(await readFile(join(cwd,"source-latest.txt"),"utf8"),"source-latest\n");assert.equal(works.repo.listBindings(latest.workId).length,1);
   assert.equal(works.getWork(latest.workId)!.inputSnapshotId,`sha256:${createHash("sha256").update("source-v4").digest("hex")}`);
   const unknown=unwrap(works.createWork(actor,{operationId:"unconfigured-source",title:"unconfigured source",inputSnapshotId:"initial",authorization:grants}));
-  const unknownSubscription=works.addSubscription(actor,unknown.workId,{source:"hook",catchUpPolicy:"each"});assert(unknownSubscription.ok);assert(unknownSubscription.subscription);
+  // latest needs a trusted current-state readback; an unconfigured source must block explicitly.
+  const unknownSubscription=works.addSubscription(actor,unknown.workId,{source:"hook",catchUpPolicy:"latest",maxMergeWaitMs:1});assert(unknownSubscription.ok);assert(unknownSubscription.subscription);
   works.ingestSourceEvent({source:"hook",sourceEventId:"unknown-provider",eventType:"changed",workId:unknown.workId,subscriptionId:unknownSubscription.subscription.subscriptionId});
   await runtime.queue.flush();assert.equal(works.repo.listInbox(unknown.workId,["blocked"]).length,1);assert(works.repo.listOpenBlockers(unknown.workId).some(blocker=>blocker.blockerId.startsWith("source-readback:")));assert.equal(works.repo.listBindings(unknown.workId).length,0);
   console.log("PASS production host loop: original Inbox + actual file source -> source Outbox -> real Pi root; each effects2/roots2 after bounded overflow, latest effect1/root1 despite delayed v1, unknown provider explicitly blocked");

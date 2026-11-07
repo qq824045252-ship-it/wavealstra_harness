@@ -145,3 +145,11 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 规划已校正实际方法/路径和预算职责：复用 `ingestSourceEvent/tick`、原 Inbox/Outbox/WorkDispatchQueue，以及 `reserveBudget/commitBudgetUsage/openBudgetWindow`；`EvidenceBudget` 保持上下文注入裁剪职责。新增表、承诺字段、调度/事件生产接线与预算服务均是待实现任务，不能因当前存在基础方法而标记完成。
 
 本次只提交规划和实施入口，P4 清单未勾选；仅核对文档内容、路径、链接和差异，不宣称执行了 Phase 4 功能门禁。开发 agent 完成后须按任务书更新本节和执行 Issue；只有实际任务启动回执才能记录“执行中”。
+
+### Phase 4 实施与 headless 验收（2026-11-07）
+
+**P4-00～P4-08 已实施并完成 headless/native 回归；Phase 4 整体验收仍未完成。** 代码基线 `main@a6c55ba`，未提交工作区实现。新增 `bot-work-phase4-schema`（schema 33）、Phase 4 共享契约、`WorkWatchIngress`、`WorkWatchScheduler`、`WorkCausalGuard`、`WorkBudgetService`，并接入真实 `WorkService.ingestSourceEvent/tick/listDueInbox`、`WorkDispatchQueue` 冻结/回填、`AgentService`/`WorkHostAuthority` 启停与 suspend/resume、`DurableBotRuntime` 的 provider 请求/compaction 边界、IPC/preload/投影和 `BotWorkspacePage`。
+
+六个 `test:bot-work-phase4-*` 专项覆盖 BW-A36～BW-A41：路由扇出/latest-source/不可变 each、离线 gap 与 latest/each/skip、IANA/DST/回拨/前跳/零 Hook 期限、因果防环与跨 Work 扇出、共享预算三桶与窗口、固定合并截止和有限背压。Phase 3 九项专项和真实 Pi 原生结算回归通过。最终 `pnpm -s typecheck` 通过；`pnpm -s test:all` 为 **343 passed / 0 failed / 0 known failed / 0 new regressions**；`--audit` 为 headless 345 / GUI 54 / NETWORK 29 / DATASET 2 / pending 0。既有 `test:bot-work-phase3:dev` 在隔离 HOME 下真实 `pnpm dev` 通过；本轮在该页面通过 preload/IPC 保存 Phase 4 订阅并断言「关注与运行/共享预算」投影渲染。期限/预算按钮未逐项点击。
+
+未运行/blocked：Phase 4 dev 期限/预算按钮逐项点击、Linux/Omarchy/移动端、发行包桌面、真实外部连接器 webhook。Issue #16 回填未由实施会话执行，按交接约定由主会话完成。完整证据、故障修复和实现 SHA 见 [Phase 4 复核报告](reviews/bot-work-phase4-2026-11-07.md)。
