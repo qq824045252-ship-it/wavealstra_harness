@@ -643,6 +643,8 @@ const api = {
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
+    listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
+    adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),
     listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),
     syncWorks: request => ipcRenderer.invoke(BotWorkIpc.syncWorks, request),
     sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),
@@ -653,6 +655,10 @@ const api = {
     attestCriteria: (request) => ipcRenderer.invoke(BotWorkIpc.attestCriteria, request),
     recordUserFeedback: (request) => ipcRenderer.invoke(BotWorkIpc.recordUserFeedback, request),
     markNotificationRead: (notificationId: string) => ipcRenderer.invoke(BotWorkIpc.markNotificationRead, notificationId),
+    markCardRead: (request) => ipcRenderer.invoke(BotWorkIpc.markCardRead, request),
+    workSummary: (workId: string) => ipcRenderer.invoke(BotWorkIpc.workSummary, workId),
+    workDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.workDiagnostics, request),
+    resendNotification: (request) => ipcRenderer.invoke(BotWorkIpc.resendNotification, request),
   } satisfies BotWorkApi,
 
   notification: {

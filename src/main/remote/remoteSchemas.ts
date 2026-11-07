@@ -89,3 +89,31 @@ export const remoteConfigureSchema = z.object({
   port: z.number().int().min(1024).max(65535).optional(),
   baseUrl: z.string().trim().max(500).optional(),
 }).strict();
+
+/** Work card read: the client may only move the read watermark, never the Work version. */
+export const remoteWorkCardReadSchema = z.object({
+  readAt: z.number().int().nonnegative().optional(),
+}).strict();
+
+export const remoteWorkDiagnosticsSchema = z.object({
+  sections: z.array(z.enum(["requirements", "responsibility", "executions", "acceptance", "resources", "delivery"]))
+    .max(6).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+  cursor: z.string().max(400).optional(),
+}).strict();
+
+/** Feedback is bound to the tested version; the host re-validates the binding. */
+export const remoteWorkFeedbackSchema = z.object({
+  operationId: z.string().min(1).max(200),
+  criterionIds: z.array(z.string().min(1)).min(1).max(12),
+  environment: z.string().trim().min(1).max(120),
+  sourceRef: z.string().trim().min(1).max(400),
+  inputSnapshotId: z.string().min(1).max(400),
+  failed: z.boolean(),
+  detail: z.string().max(2000).optional(),
+}).strict();
+
+export const remoteWorkResendSchema = z.object({
+  operationId: z.string().min(1).max(200),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();

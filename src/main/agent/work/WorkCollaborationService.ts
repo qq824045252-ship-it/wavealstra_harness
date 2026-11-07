@@ -35,7 +35,11 @@ export function ensureWorkCollaborationTables(db: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS work_notification_attempts (
       attempt_id TEXT PRIMARY KEY, notification_id TEXT NOT NULL REFERENCES work_notifications(notification_id),
-      ordinal INTEGER NOT NULL CHECK(ordinal>0), channel TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+      ordinal INTEGER NOT NULL CHECK(ordinal>0), channel TEXT NOT NULL,
+      -- Attempt-local identity. Safe retries reuse provider_effect_key instead of minting a new one.
+      idempotency_key TEXT NOT NULL,
+      provider_effect_key TEXT, payload_hash TEXT,
+      delivery_guarantee TEXT, claim_generation INTEGER NOT NULL DEFAULT 1 CHECK(claim_generation>0),
       payload_json TEXT NOT NULL CHECK(json_valid(payload_json)), status TEXT NOT NULL CHECK(status IN ('unknown','sent','missing','failed')),
       claimed_at INTEGER NOT NULL, settled_at INTEGER, receipt TEXT, UNIQUE(notification_id,ordinal)
     );

@@ -73,6 +73,11 @@ export class NotificationService {
     if (this.repository.markRead(id)) this.emitChanged();
   }
 
+  /** Read-back for an external channel that must prove its own effect. */
+  findByDedupeKey(dedupeKey: string): NotificationDto | undefined {
+    return this.repository.findByDedupeKey(dedupeKey);
+  }
+
   markReadByDedupeKey(dedupeKey: string): void {
     if (this.repository.markReadByDedupeKey(dedupeKey)) this.emitChanged();
   }

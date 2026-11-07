@@ -290,6 +290,9 @@ interface NotificationRow {
   read_at: number | null;
   created_at: number;
   sent_at: number | null;
+  card_key: string | null;
+  effect_key: string | null;
+  target_key: string | null;
 }
 
 export class WorkRepository {
@@ -497,6 +500,15 @@ export class WorkRepository {
       sourceMessageId: snapshot.sourceMessageId ?? null,
       createdAt: snapshot.createdAt,
     });
+  }
+
+  /** Requirement revisions for the expanded diagnostics view, newest first. */
+  listIntentSnapshots(workId: string): Array<{ intentRevision: number; inputSnapshotId: string; sourceVersion: number; createdAt: number }> {
+    return (this.db.prepare(`SELECT intent_revision,input_snapshot_id,source_version,created_at
+      FROM work_intent_snapshots WHERE work_id=? ORDER BY intent_revision DESC,source_version DESC`)
+      .all(workId) as Array<{ intent_revision: number; input_snapshot_id: string; source_version: number; created_at: number }>)
+      .map(row => ({ intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
+        sourceVersion: row.source_version, createdAt: row.created_at }));
   }
 
   // ----------------------------------------------------------- participants
@@ -1074,9 +1086,9 @@ export class WorkRepository {
   insertNotification(notification: WorkNotificationDto): boolean {
     const result = this.db.prepare(`INSERT OR IGNORE INTO work_notifications (
       notification_id,work_id,semantic_key,kind,title,body,state_version,intent_revision,delivery,
-      channel,idempotency_key,attempt_count,external_receipt,read_at,created_at,sent_at
+      channel,idempotency_key,attempt_count,external_receipt,read_at,created_at,sent_at,card_key,effect_key,target_key
     ) VALUES (@notificationId,@workId,@semanticKey,@kind,@title,@body,@stateVersion,@intentRevision,@delivery,
-      @channel,@idempotencyKey,@attemptCount,@externalReceipt,@readAt,@createdAt,@sentAt)`).run({
+      @channel,@idempotencyKey,@attemptCount,@externalReceipt,@readAt,@createdAt,@sentAt,@cardKey,@effectKey,@targetKey)`).run({
       ...notification,
       body: notification.body ?? null,
       channel: notification.channel ?? null,
@@ -1084,8 +1096,18 @@ export class WorkRepository {
       externalReceipt: notification.externalReceipt ?? null,
       readAt: notification.readAt ?? null,
       sentAt: notification.sentAt ?? null,
+      cardKey: notification.cardKey ?? null,
+      effectKey: notification.effectKey ?? null,
+      targetKey: notification.targetKey ?? null,
     });
     return result.changes > 0;
+  }
+
+  /** Link an existing intent to its card or provider effect without touching delivery. */
+  updateNotificationLinks(notificationId: string, params: { cardKey?: string; effectKey?: string; targetKey?: string }): void {
+    this.db.prepare(`UPDATE work_notifications SET card_key=COALESCE(?,card_key), effect_key=COALESCE(?,effect_key),
+      target_key=COALESCE(?,target_key) WHERE notification_id=?`)
+      .run(params.cardKey ?? null, params.effectKey ?? null, params.targetKey ?? null, notificationId);
   }
 
   listWorksForNotifications(): WorkDto[] {
@@ -1384,6 +1406,9 @@ function mapNotification(row: NotificationRow): WorkNotificationDto {
     idempotencyKey: row.idempotency_key ?? undefined,
     attemptCount: row.attempt_count,
     externalReceipt: row.external_receipt ?? undefined,
+    cardKey: row.card_key ?? undefined,
+    effectKey: row.effect_key ?? undefined,
+    targetKey: row.target_key ?? undefined,
     readAt: row.read_at ?? undefined,
     createdAt: row.created_at,
     sentAt: row.sent_at ?? undefined,

@@ -1,4 +1,10 @@
 import { settleWorkExecution } from "./WorkExecutionSettlement";
+import { WorkResultCards } from "./WorkResultCards";
+import { WorkPhase5Facts } from "./WorkPhase5Facts";
+import { checkControlGuard } from "./WorkControlGuards";
+import type {
+  WorkCardReadResult, WorkExpandedDiagnosticsDto, WorkSummaryProjectionDto,
+} from "../../../shared/bot-work-phase5";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -129,6 +135,8 @@ export class WorkService {
   readonly budget: WorkBudgetService;
   readonly causal: WorkCausalGuard;
   readonly scheduler: WorkWatchScheduler;
+  readonly cards: WorkResultCards;
+  readonly phase5: WorkPhase5Facts;
   private readonly bots: BotRegistry;
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
@@ -158,6 +166,8 @@ export class WorkService {
     this.artifacts = new WorkArtifactValidation(db, this);
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
+    this.cards = new WorkResultCards(db, this.repo);
+    this.phase5 = new WorkPhase5Facts(this, this.now);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
   }
 
@@ -215,7 +225,7 @@ export class WorkService {
   }
 
   /** R10: emit only the current fact; replays never publish a historical snapshot. */
-  emitCurrentProjection(workId: string): WorkProjectionDto | undefined {
+  emitCurrentProjection(workId: string, options: { force?: boolean } = {}): WorkProjectionDto | undefined {
     if (this.transactionDepth > 0) {
       this.pendingProjections.add(workId);
       return undefined;
@@ -223,8 +233,10 @@ export class WorkService {
     const work = this.repo.getWork(workId);
     if (!work || !this.emit) return undefined;
     const last = this.lastEmitted.get(workId) ?? 0;
-    if (work.stateVersion <= last) return undefined;
-    this.lastEmitted.set(workId, work.stateVersion);
+    // A read/effect fact can change without a Work control version; it still has to reach
+    // the other devices, so those paths force the push while the client reads facts back.
+    if (!options.force && work.stateVersion <= last) return undefined;
+    this.lastEmitted.set(workId, Math.max(last, work.stateVersion));
     const projection = this.project(work);
     this.emit(projection);
     return projection;
@@ -291,6 +303,7 @@ export class WorkService {
       blockers,
       executions,
       notifications,
+      cards: this.cards.list(work),
       subscriptionIds: subscriptions.map(subscription => subscription.subscriptionId),
       phase4: {
         subscriptions: this.projectSubscriptions(work),
@@ -796,6 +809,7 @@ export class WorkService {
       work: next, eventType: "work.closed", operationId: params.operationId,
       payload: { conclusion, closureSummary: next.closureSummary, closedAt: now },
     });
+    const card = this.phase5.recordClosure(next, conclusion ?? "ended_unsuccessfully", now);
     this.repo.insertNotification({
       notificationId: newId("notification"),
       workId: work.workId,
@@ -808,6 +822,7 @@ export class WorkService {
       delivery: "pending",
       createdAt: now,
       attemptCount: 0,
+      cardKey: card.cardKey,
     });
     return { ok: true, outboxEventId };
   }
@@ -879,6 +894,7 @@ export class WorkService {
       };
       this.repo.updateWork(next);
       this.collaboration.commitHandoffFacts(work, next, params.operationId, now);
+      this.phase5.refreshSummary(work.workId);
       const outboxEventId = this.outbox({
         work: this.repo.getWork(work.workId)!, eventType: "work.owner_handed_off", operationId: params.operationId,
         payload: {
@@ -1484,6 +1500,9 @@ export class WorkService {
         work: next, eventType: "work.deliverable_accepted", operationId: params.operationId,
         bindingId: binding.bindingId, payload: { deliverableId: deliverable.deliverableId, partialAcceptance: params.partialAcceptance },
       });
+      // Same transaction: the one card for this accepted outcome. A replay lands on the
+      // same key, so a re-observed result never mints a second card.
+      const card = this.phase5.recordAcceptance(next, deliverable.summary, now);
       // Same transaction: stable semantic card for the accepted result.
       this.repo.insertNotification({
         notificationId: `notification-${work.workId}-${deliverable.deliverableId}`,
@@ -1497,6 +1516,7 @@ export class WorkService {
         delivery: "pending",
         createdAt: now,
         attemptCount: 0,
+        cardKey: card.cardKey,
       });
       return { ok: true, outboxEventId };
     });
@@ -1688,6 +1708,8 @@ export class WorkService {
       });
       const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
       this.repo.updateWork(next);
+      if (params.waitingForUserInput) this.phase5.recordEscalation(next, params.reason, now);
+      else this.phase5.refreshSummary(next.workId);
       return { ok: true };
     });
   }
@@ -1988,6 +2010,43 @@ export class WorkService {
     return { ok: true };
   }
 
+  // ============================================================= phase 5 facts
+
+  /** Card reads, resends, the summary and the expanded view live in WorkPhase5Facts. */
+  markWorkCardRead(actor: WorkActor, input: unknown): WorkCardReadResult {
+    return this.phase5.markRead(actor, input);
+  }
+
+  resendWorkNotification(actor: WorkActor, request: unknown): WorkControlResult {
+    return this.phase5.resend(actor, request);
+  }
+
+  getWorkSummary(userId: string, workId: string): WorkSummaryProjectionDto | undefined {
+    return this.phase5.summary(userId, workId);
+  }
+
+  getWorkDiagnostics(userId: string, request: unknown): WorkExpandedDiagnosticsDto | undefined {
+    return this.phase5.diagnostics(userId, request);
+  }
+
+  /** Internal seams used by WorkPhase5Facts; the control path and receipts stay the same. */
+  resolveWorkActor(actor: WorkActor): ResolvedActor | string {
+    return this.resolveActor(actor);
+  }
+
+  runCardControl<TParams extends { operationId: string; workId: string; versionGuard?: ExpectedVersionGuard }>(
+    actor: WorkActor, operationType: string, params: TParams,
+    options: { guard: "full" | "versions" | "none"; ownerOnly: boolean; allowLifecycles: WorkDto["lifecycle"][] },
+    mutate: (work: WorkDto, resolved: ResolvedActor, now: number) => Mutation,
+  ): WorkControlResult {
+    return this.runWorkControl(actor, operationType, params, options, mutate);
+  }
+
+  emitNotificationResent(work: WorkDto, input: { notificationId: string; effectKey: string; reason: string; operationId: string }): string {
+    return this.outbox({ work, eventType: "work.notification_resent", operationId: input.operationId,
+      payload: { notificationId: input.notificationId, effectKey: input.effectKey, reason: input.reason } });
+  }
+
   // ============================================================= phase 4 control
 
   /** Guarded IPC/API entry for subscription, deadline, budget policy and receipt reconciliation. */
@@ -2276,49 +2335,9 @@ export class WorkService {
    * ownership-sensitive decisions also carry the owner epoch. The authenticated user
    * entry is the separate trusted instant-command contract (guards optional).
    */
-  private checkGuard(
-    work: WorkDto,
-    resolved: ResolvedActor,
-    guard: ExpectedVersionGuard | undefined,
-    mode: "full" | "versions" | "none",
-  ): Fail | undefined {
-    if (mode === "none" || resolved.kind === "system" || resolved.kind === "worker") return undefined;
-    if (resolved.kind === "bot") {
-      if (guard?.expectedStateVersion === undefined || guard.expectedIntentRevision === undefined) {
-        return {
-          ok: false, code: "invalid_request",
-          message: "控制决定必须携带依据的 stateVersion 与 intentRevision",
-        };
-      }
-      if (mode === "full" && guard.expectedOwnerEpoch === undefined) {
-        return {
-          ok: false, code: "invalid_request",
-          message: "控制决定必须携带依据的 ownerEpoch",
-        };
-      }
-    }
-    if (guard?.expectedOwnerEpoch !== undefined && guard.expectedOwnerEpoch !== work.ownerEpoch) {
-      return {
-        ok: false, code: "epoch_mismatch",
-        message: `负责人代次已变更（期望 ${guard.expectedOwnerEpoch}，当前 ${work.ownerEpoch}），旧决定失效`,
-        latestWorkSnapshot: work,
-      };
-    }
-    if (guard?.expectedIntentRevision !== undefined && guard.expectedIntentRevision !== work.intentRevision) {
-      return {
-        ok: false, code: "version_conflict",
-        message: `要求版本已更新（期望 r${guard.expectedIntentRevision}，当前 r${work.intentRevision}），请基于最新要求重新评估`,
-        latestWorkSnapshot: work,
-      };
-    }
-    if (guard?.expectedStateVersion !== undefined && guard.expectedStateVersion !== work.stateVersion) {
-      return {
-        ok: false, code: "version_conflict",
-        message: `状态版本冲突（期望 ${guard.expectedStateVersion}，当前 ${work.stateVersion}）`,
-        latestWorkSnapshot: work,
-      };
-    }
-    return undefined;
+  private checkGuard(work: WorkDto, resolved: ResolvedActor, guard: ExpectedVersionGuard | undefined,
+    mode: "full" | "versions" | "none"): Fail | undefined {
+    return checkControlGuard(work, resolved, guard, mode);
   }
 
   private validatePayload(operationType: string, params: unknown): Fail | undefined {
@@ -2469,7 +2488,6 @@ export class WorkService {
 function parseWork(value: string): WorkDto | undefined {
   try { return JSON.parse(value) as WorkDto; } catch { return undefined; }
 }
-
 
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }
 

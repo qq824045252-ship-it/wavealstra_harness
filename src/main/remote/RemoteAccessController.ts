@@ -1,5 +1,6 @@
 import type { RemoteArtifactReader } from './RemoteImageService';
 import type { NotificationChangedEvent } from "../../shared/notification";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
 import type { ExternalAgentUiEvent } from "../../shared/external-agent";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { AgentService } from "../agent/AgentService";
@@ -15,6 +16,7 @@ import { RemotePairWindow } from "./RemotePairWindow";
 import { RemoteAccessServer } from "./RemoteAccessServer";
 import { RemoteAccessService } from "./RemoteAccessService";
 import { RemoteDeviceStore } from "./RemoteDeviceStore";
+import { createRemoteWorkBridge } from "./work-mapper";
 import { RemoteEventBus, mapAgentPatchToRemoteEvent } from "./RemoteEventBus";
 import { RemoteTaskCommandService, type RemoteTrashLifecycle, type RemoteWorkGraphCleanup } from "./RemoteTaskCommandService";
 import { remoteConfigureSchema } from "./remoteSchemas";
@@ -35,7 +37,7 @@ export class RemoteAccessController {
   private readonly unsubscribePatch: () => void;
 
   constructor(
-    db: AppDatabase,
+    private readonly db: AppDatabase,
     private readonly agent: AgentService,
     notifications: NotificationService,
     projects: ProjectService,
@@ -129,6 +131,12 @@ export class RemoteAccessController {
   closePairWindow() { this.pairWindow.close(); }
   pairWindowState() { return this.pairWindow.state(); }
   cancelPairingSession(id: string): void { this.pairing.cancel(id); }
+  /** Paired-device Work access; every call goes through the desktop host service. */
+  private workBridge() {
+    return createRemoteWorkBridge({ db: this.db.connection, works: this.agent.getWorkService(),
+      userId: LOCAL_USER_ID });
+  }
+
   publishArtifactChanged(taskId: string): void { this.events.publish('task.changed', { taskId }); }
   publishNotificationChanged(event: NotificationChangedEvent): void { this.events.publish("notification.changed", event); }
 
@@ -179,6 +187,7 @@ export class RemoteAccessController {
       service: this.service,
       commands: this.commands,
       events: this.events,
+      work: this.workBridge(),
     });
     try {
       const address = await server.start();

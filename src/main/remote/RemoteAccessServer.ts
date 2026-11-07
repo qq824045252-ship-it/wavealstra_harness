@@ -11,7 +11,7 @@ import type { RemoteDeviceStore, RemotePrincipal } from "./RemoteDeviceStore";
 import { RemoteEventBus, writeSseEvent } from "./RemoteEventBus";
 import { RemoteConflictError, RemoteNotFoundError, RemotePromptRejectedError, RemoteTaskCommandService, RemoteValidationError } from "./RemoteTaskCommandService";
 import { RemotePairWindow } from "./RemotePairWindow";
-import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteDirectPairSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema } from "./remoteSchemas";
+import { remoteAcpPermissionSchema, remoteAcpPromptSchema, remoteApprovalSchema, remoteDirectPairSchema, remoteInteractionAnswerSchema, remotePairSchema, remotePromptSchema, remoteWorkCardReadSchema, remoteWorkDiagnosticsSchema, remoteWorkFeedbackSchema, remoteWorkResendSchema } from "./remoteSchemas";
 
 const BODY_LIMIT = 512 * 1024;
 /** prompt 路由允许携带 base64 附件：4 个 × ~3MB 原始字节（≈4M base64 字符）+ JSON 包裹 */
@@ -30,6 +30,21 @@ export interface RemoteAccessServerOptions {
   service: RemoteAccessService;
   commands: RemoteTaskCommandService;
   events: RemoteEventBus;
+  /** Work sync/detail/feedback for paired devices; omitted means the feature is off. */
+  work?: RemoteWorkBridge;
+}
+
+/**
+ * Everything the Work routes may do. The bridge is built by the controller from the host's
+ * Work service, so authorization and ownership checks stay in one place.
+ */
+export interface RemoteWorkBridge {
+  sync(request: { includeClosed: boolean; cursor?: { epoch: string; sequence: number; scope: "open" | "all" } }): unknown;
+  summary(workId: string): unknown;
+  diagnostics(request: { workId: string; sections?: string[]; limit?: number; cursor?: string }): unknown;
+  markCardRead(request: { workId: string; semanticCardKey: string; readAt?: number }): { ok: boolean; message?: string };
+  recordFeedback(request: unknown): { ok: boolean; message?: string };
+  resend(request: unknown): { ok: boolean; message?: string };
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown, origin?: string): void {
@@ -334,6 +349,53 @@ export class RemoteAccessServer {
         this.options.commands.respondToAction(decodeURIComponent(approvalMatch[1]), decodeURIComponent(approvalMatch[2]), remoteApprovalSchema.parse(await readJson(request)));
         return replyJson(200, { ok: true });
       }
+      // ------------------------------------------------------------- Work (Bot)
+      if (this.options.work) {
+        const work = this.options.work;
+        if (request.method === "GET" && path === "/v1/work/sync") {
+          const includeClosed = url.searchParams.get("includeClosed") === "1";
+          const epoch = url.searchParams.get("epoch");
+          const scope = url.searchParams.get("scope");
+          const sequence = Number(url.searchParams.get("sequence"));
+          if (scope !== null && scope !== "open" && scope !== "all") return replyJson(400, errorBody("invalid_request", "无效的 Work scope"));
+          const cursor = epoch !== null && Number.isSafeInteger(sequence) && sequence >= 0
+            ? { epoch, sequence, scope: (scope === "open" || scope === "all" ? scope : "open") as "open" | "all" }
+            : undefined;
+          return replyJson(200, work.sync({ includeClosed, cursor }));
+        }
+        const workRead = /^\/v1\/work\/([^/]+)\/cards\/([^/]+)\/read$/.exec(path);
+        if (request.method === "POST" && workRead) {
+          const body = remoteWorkCardReadSchema.parse(await readJson(request));
+          const result = work.markCardRead({ workId: decodeURIComponent(workRead[1]!), semanticCardKey: decodeURIComponent(workRead[2]!),
+            readAt: body.readAt });
+          return replyJson(result.ok ? 200 : 409, result);
+        }
+        const workDiagnostics = /^\/v1\/work\/([^/]+)\/diagnostics$/.exec(path);
+        if (request.method === "POST" && workDiagnostics) {
+          const body = remoteWorkDiagnosticsSchema.parse(await readJson(request));
+          const result = work.diagnostics({ ...body, workId: decodeURIComponent(workDiagnostics[1]!) });
+          return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "找不到事项"));
+        }
+        const workFeedback = /^\/v1\/work\/([^/]+)\/feedback$/.exec(path);
+        if (request.method === "POST" && workFeedback) {
+          const body = remoteWorkFeedbackSchema.parse(await readJson(request));
+          const result = work.recordFeedback({ ...body, workId: decodeURIComponent(workFeedback[1]!) });
+          return replyJson(result.ok ? 200 : 409, result);
+        }
+        const workResend = /^\/v1\/work\/([^/]+)\/notifications\/([^/]+)\/resend$/.exec(path);
+        if (request.method === "POST" && workResend) {
+          const body = remoteWorkResendSchema.parse(await readJson(request));
+          const result = work.resend({ ...body, workId: decodeURIComponent(workResend[1]!),
+            notificationId: decodeURIComponent(workResend[2]!) });
+          return replyJson(result.ok ? 200 : 409, result);
+        }
+        const workDetail = /^\/v1\/work\/([^/]+)$/.exec(path);
+        if (request.method === "GET" && workDetail) {
+          const result = work.summary(decodeURIComponent(workDetail[1]!));
+          return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "找不到事项"));
+        }
+      }
+
       if (request.method === "GET" && path === "/v1/notifications") {
         const unreadOnly = url.searchParams.get("unreadOnly") === "1";
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 100));

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type {
   BotChannelBindingDto,
   BotDto,
+  BotExpertVersionDto,
   BotLifecycleStatus,
   ExpertConfigSnapshotDto,
   ExpertProfileDto,
@@ -336,6 +337,24 @@ export class BotRegistry {
     this.db.prepare("DELETE FROM bot_expert_versions WHERE bot_id=?").run(botId);
     this.db.prepare("DELETE FROM bots WHERE bot_id=?").run(botId);
     return { ok: true };
+  }
+
+  /**
+   * R09 read model: the immutable staged/active configurations a user must review before
+   * adopting. The pending row keeps its own full content, so reviewing v2 while v3 is
+   * staged is a detectable conflict rather than a silent overwrite.
+   */
+  expertVersions(botId: string): BotExpertVersionDto[] {
+    return (this.db.prepare("SELECT * FROM bot_expert_versions WHERE bot_id=? ORDER BY version DESC")
+      .all(botId) as ExpertVersionRow[]).map(row => ({
+        botId: row.bot_id, version: row.version, state: row.state, snapshotId: `expert:${row.bot_id}:v${row.version}`,
+        expertId: row.expert_id, sourceRevision: row.source_revision, systemPromptHash: row.system_prompt_hash,
+        allowedMcpIds: parseJson<string[]>(row.allowed_mcp_ids_json, []),
+        allowedSkillIds: parseJson<string[]>(row.allowed_skill_ids_json, []),
+        allowedConnectorIds: parseJson<string[]>(row.allowed_connector_ids_json, []),
+        configuration: parseJson<BotExpertVersionDto["configuration"]>(row.configuration_json, undefined),
+        stagedBy: row.staged_by, createdAt: row.created_at, adoptedAt: row.adopted_at ?? undefined,
+      }));
   }
 
   private getPendingVersionRow(botId: string): ExpertVersionRow | undefined {

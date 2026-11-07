@@ -157,6 +157,8 @@ import type {
   ArtifactDomainTaskRequest,
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
+import { WorkNotificationHost } from "./agent/work/WorkNotificationHost";
+import { createDesktopWorkChannel } from "./agent/work/WorkDesktopNotificationChannel";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
 import { ExternalAgentIpc, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentResolvePermissionRequest, type ExternalAgentSetConfigOptionRequest } from "../shared/external-agent";
 import { ConversationBranchService } from "./agent/ConversationBranchService";
@@ -327,6 +329,7 @@ let projectEventPromoter: ProjectEventPromoter;
 let projectDocumentImporter: ProjectDocumentImporter;
 let projectContextResolver: ProjectContextResolver;
 let agentService: AgentService;
+let workNotificationHost: WorkNotificationHost | null = null;
 let externalAgentRuntime: ExternalAgentRuntime;
 /** 对话分支（Branch in new task）服务 */
 let conversationBranchService: ConversationBranchService;
@@ -1020,6 +1023,9 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
+  ipcMain.handle(BotWorkIpc.listBotExpertVersions, (_e, botId: string) => agentService.listBotExpertVersions(botId));
+  ipcMain.handle(BotWorkIpc.adoptBotExpertVersion, (_e, botId: string, expected: { pendingVersion: number; snapshotId: string }) =>
+    agentService.adoptBotExpertVersion(botId, expected));
   ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));
   ipcMain.handle(BotWorkIpc.sendMessage, (_e, request: unknown) => agentService.sendBotMessage(request));
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
@@ -1030,6 +1036,10 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.attestCriteria, (_e, request: AttestCriteriaParams) => agentService.attestWorkCriteria(request));
   ipcMain.handle(BotWorkIpc.recordUserFeedback, (_e, request: RecordUserFeedbackParams) => agentService.recordWorkUserFeedback(request));
   ipcMain.handle(BotWorkIpc.markNotificationRead, (_e, notificationId: string) => agentService.markWorkNotificationRead(notificationId));
+  ipcMain.handle(BotWorkIpc.markCardRead, (_e, request: unknown) => agentService.markWorkCardRead(request));
+  ipcMain.handle(BotWorkIpc.workSummary, (_e, workId: string) => agentService.getWorkSummary(workId));
+  ipcMain.handle(BotWorkIpc.workDiagnostics, (_e, request: unknown) => agentService.getWorkDiagnostics(request));
+  ipcMain.handle(BotWorkIpc.resendNotification, (_e, request: unknown) => agentService.resendWorkNotification(request));
 
   // BTW（临时上下文分支）：瞬时会话，与 Task Registry / agent:event 完全隔离
   ipcMain.handle(BtwIpc.start, async (_e, req: BtwStartRequest) => {
@@ -2711,6 +2721,16 @@ app.whenReady().then(async () => {
     console.log(`[index] 任务执行工作区路径重绑完成：cwd=${rebind.cwds}, trash_path=${rebind.trashPaths}`);
   }
   agentService = new AgentService(db);
+  // The desktop channel is a real endpoint: its effect is a durable notification row keyed
+  // by the provider effect key, so a restart reads the effect back instead of re-notifying.
+  workNotificationHost = new WorkNotificationHost(agentService.getWorkService(), {
+    isAuthority: () => agentService.getWorkHostStatus().isAuthority,
+    channels: () => notificationService ? [createDesktopWorkChannel(notificationService)] : [],
+    intervalMs: 15_000,
+    onError: (error) => console.warn("[Work] 通知投递失败", error),
+  });
+  agentService.setWorkNotificationWake(() => workNotificationHost?.wake());
+  workNotificationHost.start();
   computerUseOverlayService.setAbortHandler(async (taskId) => {
     computerUseRunCoordinator.cancel(taskId);
   });
@@ -3424,6 +3444,8 @@ app.on("before-quit", (event) => {
     try { professionalToolService?.stopOwned(); } catch { /* best effort */ }
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
+    try { workNotificationHost?.stop(); } catch { /* best effort */ }
+    try { agentService?.setWorkNotificationWake(undefined); } catch { /* best effort */ }
     try { await gatewayService?.suspend(); } catch { /* best effort */ }
     try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }

@@ -3,6 +3,7 @@ import { ensureBotWorkTables } from "./bot-work-schema";
 import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
 import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
 import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
+import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
@@ -60,7 +61,7 @@ import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 33;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 34;
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -370,6 +371,7 @@ export class AppDatabase {
       ensureBotWorkPhase2Tables(this.db);
       ensureBotWorkPhase3Tables(this.db);
       ensureBotWorkPhase4Tables(this.db);
+      ensureBotWorkPhase5Tables(this.db);
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();
   }

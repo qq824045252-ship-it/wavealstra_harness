@@ -288,6 +288,7 @@ import {
   LOCAL_USER_ID,
   type AttestCriteriaParams,
   type BotDto,
+  type BotExpertVersionDto,
   type RecordUserFeedbackParams,
   type WorkActor,
   type WorkControlResult,
@@ -808,7 +809,11 @@ export class AgentService {
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
       resourceHostId: this.workHostAuthority.status().authorityId,
-      emitProjection: (projection) => this.emitPatch({ type: "work_projection_snapshot", projection }),
+      emitProjection: (projection) => {
+        this.emitPatch({ type: "work_projection_snapshot", projection });
+        // Delivery is a background obligation: a new card wakes the host drain.
+        this.workNotificationWake?.();
+      },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
     this.workService.scheduler.beginHostSession(previousWorkLease);
@@ -1163,6 +1168,13 @@ export class AgentService {
     return this.workService;
   }
 
+  private workNotificationWake?: () => void;
+
+  /** Set by the host once the real delivery channels exist. */
+  setWorkNotificationWake(wake: (() => void) | undefined): void {
+    this.workNotificationWake = wake;
+  }
+
   getWorkHostStatus(): { online: boolean; isAuthority: boolean; authorityId: string } {
     const status = this.workHostAuthority.status();
     return { online: status.online, isAuthority: status.isAuthority, authorityId: status.authorityId };
@@ -1213,8 +1225,39 @@ export class AgentService {
     }
   }
 
+  /** R09: read the immutable expert versions so a human can review before adopting. */
+  listBotExpertVersions(botId: string): BotExpertVersionDto[] {
+    if (this.botRegistry.getBot(botId)?.userId !== LOCAL_USER_ID) return [];
+    return this.botRegistry.expertVersions(botId);
+  }
+
+  adoptBotExpertVersion(botId: string, expected: { pendingVersion?: number; snapshotId?: string }) {
+    const bot = this.botRegistry.getBot(botId);
+    if (!bot || bot.userId !== LOCAL_USER_ID) return { ok: false as const, code: "not_found" as const, message: "找不到 Bot" };
+    return this.botRegistry.adoptExpertVersion(botId, expected);
+  }
+
   markWorkNotificationRead(notificationId: string): { ok: boolean; message?: string } {
     return this.workService.markNotificationRead(notificationId);
+  }
+
+  /** Card reads and expanded diagnostics are user-scoped facts, never control operations. */
+  markWorkCardRead(request: unknown) {
+    return this.workService.markWorkCardRead({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, request);
+  }
+
+  getWorkSummary(workId: string) {
+    return this.workService.getWorkSummary(LOCAL_USER_ID, workId);
+  }
+
+  getWorkDiagnostics(request: unknown) {
+    return this.workService.getWorkDiagnostics(LOCAL_USER_ID, request);
+  }
+
+  resendWorkNotification(request: unknown) {
+    const result = this.workService.resendWorkNotification({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, request);
+    if (result.ok) this.workDispatchQueue?.wake();
+    return result;
   }
 
   async previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {

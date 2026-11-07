@@ -1,5 +1,5 @@
 import { createBotConversationActions, createBotConversationState, type BotConversationUiState } from "./botConversation";
-import { mergeWorkList, reconcileWorkProjection } from "./botWorkSync";
+import { mergeWorkList } from "./botWorkSync";
 import type { WorkListCursor } from "../../../../../shared/bot-conversation";
 import type { ConversationBranchInfoDto } from "../../../../../shared/conversation-branch";
 import type { BotDto, WorkProjectionDto } from "../../../../../shared/bot-work";
@@ -156,10 +156,9 @@ export function createActiveContextActions(
         if (requestSequence !== refreshSequence) return;
         set((state) => {
           const activeBotId = bots.some(bot => bot.botId === state.activeBotId) ? state.activeBotId : bots[0]?.botId ?? null;
-          const observed = new Map(state.botWorks.map(work => [work.workId, work]));
           return {
             botIdentities: bots,
-            botWorks: botWorks.map(work => reconcileWorkProjection(work, observed.get(work.workId))),
+            botWorks,
             botWorkCursor,
             botHostStatus: hostStatus,
             botIdentitiesLoaded: true,

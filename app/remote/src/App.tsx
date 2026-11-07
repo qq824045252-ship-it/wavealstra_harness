@@ -24,6 +24,7 @@ import { ConnectPage } from './components/ConnectPage'
 import { NewTaskSetupChips, NewTaskSetupSheet } from './components/NewTaskSetup'
 import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
+import { WorkPanelLauncher } from './components/WorkPanel'
 import './styles/app.css'
 
 import { acpOptionLabel, acpStatusLabel } from './lib/acpLabels'
@@ -144,6 +145,7 @@ export function App() {
     {!client || !bootstrap ? <ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /> : activeTaskId ? <ChatPage /> : <HomePage />}
     {client && bootstrap && showConnectionSettings && <div className="connection-settings-overlay"><ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /></div>}
     {client && bootstrap && !activeTaskId && <NewTaskSetupSheet />}
+    {client && bootstrap && <WorkPanelLauncher client={client} />}
   </div>
 }
 

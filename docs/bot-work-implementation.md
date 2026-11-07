@@ -2,7 +2,7 @@
 
 实施日期：2026-11-06；交付记录更新：2026-11-07。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
-**最新待执行阶段：** [Phase 5 执行规划](bot-work-phase5-execution-plan.md)（2026-11-07，已核对远端审核基线 `main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`）。规划已确认，P5-00～P5-08 待实施，BW-A42～BW-A46 与第 9 节十步故事尚未完成阶段验收。Phase 4 已实施并加固，冻结实现为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`；最新验证边界以 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) 为准，两轮 Linux 全量均为 344 passed / 1 failed，整体验收仍未完成。下文各次实施/测试记录保留为历史证据，本轮只更新规划入口，不将既有测试结果改写为 Phase 5 通过。
+**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md)（规划基线 `main@57e6fbb`，执行基线 `main@02c40ed`）。**实现完成、headless 门禁全绿；实机与外部证据缺失，Phase 5 未验收。** 逐项证据见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。Phase 4 已实施并加固，冻结实现为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`；最新验证边界以 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) 为准，两轮 Linux 全量均为 344 passed / 1 failed，整体验收仍未完成。下文各次实施/测试记录保留为历史证据，本轮只更新规划入口，不将既有测试结果改写为 Phase 5 通过。
 
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
@@ -185,3 +185,16 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 
 前序证据继续保留：Phase 4 两轮 Linux 全量均为 **344 passed / 1 failed，exit 1**；真实 dev 因 Unix socket EPERM 受阻。Windows 恢复/BW-A31、宿主 D-Bus/AT-SPI、真实 dev 点击、Omarchy、桌面/手机 Remote、外部连接器与真实用量仍按任务书分别补证。缺少必要证据时不能宣称 Phase 5 或 BOT-WORK-1.0 整体验收完成；发行包只在另行发布授权下验证。
 
+## Phase 5 执行记录（2026-11-07）
+
+**状态：实现完成、headless 门禁全绿；实机与外部证据缺失，未验收。** 完整证据、门禁原始输出、逐项断言与缺口清单见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。
+
+- **schema 33→34**：新增 `work_result_cards`（`semantic_card_key UNIQUE`，唯一阅读写入点）、`work_notification_effects`（provider 效果身份，initial 每通知唯一）、`work_owner_summaries`（负责人汇总水位）；`work_notifications` 增 `card_key/effect_key/target_key`；`work_notification_attempts` 增 `provider_effect_key/payload_hash/delivery_guarantee/claim_generation`，并去掉 `idempotency_key` 的全局 UNIQUE —— 安全重发必须复用效果键而不是换新键。
+- **原子卡片**：`acceptDeliverable` / `closeWork` / `reportBlocker` 在既有 `.immediate()` 事务内写卡片；`accepted→closed` 复用同一 substantive 卡片，cancel/ended 生成独立 closure 卡片；内部进展与重放不产生新卡片。
+- **投递语义**：能力显式声明（矛盾声明直接失败）、冻结 payload 与 hash、unknown 不自动重发、`missing` 时按原效果键与原 payload 安全重放、人工重发需 `acknowledgedDuplicateRisk` + 受控 operationId + 版本守卫、迟到回执按 `attempt_id + claim_generation` 结算。
+- **阅读与汇总**：`markWorkCardRead` 只写卡片事实（控制版本/负责人/执行数零副作用，主机时钟压制未来时间，倒序不倒退）；`getWorkSummary` 与 `getWorkDiagnostics` 分层，诊断有界分页、缺证据列为 `missing`。
+- **同步**：卡片/效果/汇总表接入既有 user journal，同 `stateVersion` 的阅读变化也能推送；桌面 `mergeWorkList` 修复跨 epoch/scope 快照被本地高版本遮蔽，快照改为原子替换。
+- **生产投递**：`WorkNotificationHost` 随宿主启动/退出，projection 变化唤醒 drain；桌面渠道用 `NotificationService` 落库，效果键即 dedupeKey，重启靠回读结算；“声明可回查但无 lookup”直接失败；unknown 不自动重发。
+- **桌面/移动同步**：Remote 新增 `/v1/work/*`（设备鉴权 + 版本守卫）与 `createRemoteWorkBridge`；移动端 `shared/src/remote-contract.ts` 契约、`RemoteClient` 方法、`remoteWork` store（epoch/scope 原子替换）、`WorkPanel`（列表/详情/未验证范围/卡片已读/实测反馈/unknown 重发/诊断）；SSE 仅唤醒。桌面 `WorkCardsPanel` 与 R09 `BotExpertReview` 已接线。
+- **门禁**：`pnpm -s typecheck` 通过；`--audit` 分类自检 OK；`pnpm -s test:all` = **347 passed / 0 failed / 0 known / 0 regression**（Windows 跳过 2 个 Linux 限定用例）。四个新专项：delivery-dedup（24）、reconnect-diagnostics（13）、e2e-story（10 步）、remote-work-sync（8）。行数棘轮靠拆分 `WorkResultCards`/`WorkPhase5Facts`/`WorkControlGuards` 守住，未放宽基线。
+- **未完成（实机/外部）**：Gateway/外部连接器 Work 出站适配器与真实回查契约、Windows 强杀与 BW-A31、Omarchy/Hyprland 实测、真实手机配对重连、`pnpm dev` 点击回归、发行包证据。BW-A01～BW-A46 的 46 行矩阵已回填（实机项标注 blocked），未取得证据前不宣称 Phase 5 或 BOT-WORK-1.0 交付。

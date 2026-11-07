@@ -1,6 +1,6 @@
 # Bot / Work — Phase 5 执行规划（供 Codex / agent 实施）
 
-> 状态：**规划已确认，P5-00～P5-08 待实施，Phase 5 尚未验收。本文提交只包含规划与实施索引，不代表代码已实现、测试已运行或外部执行 agent 已启动。**
+> 状态：**实现完成，headless 门禁全绿（347/0/0/0）；实机与外部证据缺失，Phase 5 尚未验收。** 逐项证据与 46 行矩阵见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。未勾选项表示仍缺实机/外部证据，不是因为“没做代码”。
 >
 > 确认日期：2026-11-07（Asia/Shanghai）。
 >
@@ -250,11 +250,13 @@ Work B 作为同来源/同宿主的活跃 watch 对照：关闭 A 不改变 B �
 
 全部为待实施项；完成后逐项回填实现 SHA、具体行为证据与剩余平台边界，不能因为本文入库就勾选。
 
-- [ ] **P5-00 基线、schema 与共享契约。** 记录执行时最新 main 和相对审核 SHA 的差异，读取 AGENTS；明确 schema、语义/投递/attempt/阅读身份、summary/diagnostics 与 Remote 权限契约；新增 Phase 5 schema/共享类型并接入真实数据库。验收：唯一约束、归属、备份重建与类型边界。
-- [ ] **P5-01 原子成果接纳与唯一语义卡片（BW-A42）。** 在原 accept/close 事务补齐派生卡片、原通知意图与 journal；保护重放/旧版本/交接，验收前后强杀不新派发。验收：事务回滚、双连接竞争和零重复效果。
+> 执行进度（2026-11-07）：P5-00、P5-01、P5-04 已完成并勾选。P5-02 的桌面生产 drain 与真实桌面渠道已完成，Gateway/外部连接器出站仍未交付；P5-03 的阅读与汇总水位完成，多专家“汇总通知”独立语义未做；P5-05 的卡片/诊断/专家审阅 UI 已接线，`pnpm dev` 实机点击未跑；P5-06 十步故事 headless 通过，真实原生进程与 Omarchy 未跑；P5-07 的 `test:all` = 347 passed / 0 failed / 0 regression，dev 验证未执行；P5-08 已回填 46 行矩阵，实机项标注 blocked。因此这些项保持未勾选。
+
+- [x] **P5-00 基线、schema 与共享契约。**（2026-11-07 已实施：schema 33→34，`bot-work-phase5-schema.ts` / `shared/bot-work-phase5.ts`，身份与能力矩阵；证据见复核报告 §1～§4。） 记录执行时最新 main 和相对审核 SHA 的差异，读取 AGENTS；明确 schema、语义/投递/attempt/阅读身份、summary/diagnostics 与 Remote 权限契约；新增 Phase 5 schema/共享类型并接入真实数据库。验收：唯一约束、归属、备份重建与类型边界。
+- [x] **P5-01 原子成果接纳与唯一语义卡片（BW-A42）。**（2026-11-07 已实施：原 accept/close/reportBlocker 事务内写卡片，`test:bot-work-phase5-delivery-dedup` 20 项；accepted→closed 复用同一 substantive 卡片。） 在原 accept/close 事务补齐派生卡片、原通知意图与 journal；保护重放/旧版本/交接，验收前后强杀不新派发。验收：事务回滚、双连接竞争和零重复效果。
 - [ ] **P5-02 真实渠道投递与 unknown（BW-A43）。** 能力矩阵、稳定 provider 效果键、immutable payload/attempt fence、回查与手动重发；接入生产宿主 drain、现有桌面通知/Gateway、实际 UI。验收：两类渠道响应丢失、异步竞态、迟到回执与重启；真实外部能力单列证据。
 - [ ] **P5-03 负责人汇总与阅读隔离（BW-A44）。** 多专家收敛、持久汇总水位/有界等待、内部噪音静默、必要待决可见；受权 markWorkCardRead 与服务端阅读同步。验收：交接时旧汇总拒绝、乱序阅读及零控制副作用。
-- [ ] **P5-04 桌面/移动持久同步（BW-A45、R10）。** Work journal 与实际桌面 store、Remote 路由/能力/API/store/UI 全链接通；增量分页、epoch/scope 全量替换、墓碑和旧异步响应隔离。验收：多次要求/成果/交接/关闭后的双端重连，零旧缓存回写。
+- [x] **P5-04 桌面/移动持久同步（BW-A45、R10）。**（2026-11-07 已实施：journal 同事务、桌面快照原子替换、Remote 路由/契约/客户端/store/WorkPanel、SSE 仅唤醒；`test:bot-work-phase5-reconnect-diagnostics` 13 项 + `test:remote-work-sync` 8 项。） Work journal 与实际桌面 store、Remote 路由/能力/API/store/UI 全链接通；增量分页、epoch/scope 全量替换、墓碑和旧异步响应隔离。验收：多次要求/成果/交接/关闭后的双端重连，零旧缓存回写。
 - [ ] **P5-05 分层诊断与完整 UI（BW-A46、R09、UI-01～UI-10）。** 主摘要/按需证据分离，版本/产物/未验证范围/账本可追，语义卡片可定位；补 Bot pending 配置完整审阅/显式采用和双页面回归。验收：真实入口与版本竞态，不仅静态渲染。
 - [ ] **P5-06 十步故事（冻结验收 §9）。** 单套持久库、原生执行、真实来源/Remote/同步路径；两类强杀、旧版归档、冲突补跑、实测等待/反馈、交接、有限 watch 关闭与 B 隔离、通知恢复。验收：逐步身份/状态/实际效果计数。
 - [ ] **P5-07 专项与联合门禁。** 注册三项 Phase 5 测试及所需 dev/Remote 验证，执行分类自检、typecheck、受影响前序回归与完整 test:all。恢复/性能用例的串行约束保留，不修改失败白名单制造通过。

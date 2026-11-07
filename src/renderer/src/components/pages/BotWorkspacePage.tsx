@@ -4,6 +4,8 @@ import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
+import { WorkCardsPanel } from "./BotWorkCardsPanel";
+import { BotExpertReview } from "./BotExpertReview";
 import "./BotWorkspacePage.css";
 
 function presenceLabel(bot: BotDto, host: BotWorkHostStatusDto | null): string {
@@ -106,6 +108,10 @@ export default function BotWorkspacePage(): React.JSX.Element {
             {decisions.length === 0 ? <p>暂无可显示的待决事项。</p> : (
               <ul>{decisions.map((work) => <li key={work.workId}>{work.title}：{work.nextSteps[0] ?? "需要处理"}</li>)}</ul>
             )}
+            {activeBot && <details className="bot-expert-config">
+              <summary>专家配置审阅</summary>
+              <BotExpertReview botId={activeBot.botId} />
+            </details>}
           </div>
         ) : (
           <div className="bot-conversation-empty">
@@ -391,6 +397,7 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeC
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
       <h3>验收</h3>
+      <WorkCardsPanel work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
       )}

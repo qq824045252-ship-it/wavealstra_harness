@@ -100,6 +100,30 @@ export interface BotMemoryScopeDto {
   allowUnconfirmedSpeculationInMemory: boolean;
 }
 
+/** One immutable staged/active expert configuration, for explicit review (R09). */
+export interface BotExpertVersionDto {
+  botId: string;
+  version: number;
+  snapshotId: string;
+  state: "pending" | "active" | "superseded";
+  expertId: string;
+  sourceRevision: string;
+  systemPromptHash: string;
+  allowedMcpIds: string[];
+  allowedSkillIds: string[];
+  allowedConnectorIds: string[];
+  configuration?: {
+    name: string;
+    instructions: string;
+    skillIds: string[];
+    mcpIds: string[];
+    connectorIds: string[];
+  };
+  stagedBy: string;
+  createdAt: number;
+  adoptedAt?: number;
+}
+
 export interface BotChannelBindingDto {
   channelType: "desktop" | "mobile" | "remote" | "gateway";
   channelIdentifier: string;
@@ -398,6 +422,12 @@ export interface WorkNotificationDto extends Partial<WorkNotificationIdentity> {
   readAt?: number;
   createdAt: number;
   sentAt?: number;
+  /** The stable semantic card this intent announces; delivery stays a separate fact. */
+  cardKey?: string;
+  /** Provider-level effect identity; safe retries reuse it instead of minting a new one. */
+  effectKey?: string;
+  targetKey?: string;
+  deliveryGuarantee?: import("./bot-work-phase5").WorkDeliveryGuarantee;
 }
 
 export interface WorkDto {
@@ -489,6 +519,8 @@ export interface WorkProjectionDto {
   blockers: WorkBlockerDto[];
   executions: WorkExecutionBindingDto[];
   notifications: WorkNotificationDto[];
+  /** Stable semantic cards; read state lives here and never on Work control fields. */
+  cards?: import("./bot-work-phase5").WorkResultCardDto[];
   subscriptionIds: string[];
   uncoveredScope: string[];
   nextSteps: string[];
@@ -857,8 +889,16 @@ export interface WorkOutboxInstructionDto {
 
 export interface WorkNotificationChannel {
   channel: string;
-  /** Contract of the external endpoint: idempotent keys and read-back supported or not. */
-  idempotent: boolean;
+  /**
+   * Legacy hint kept for existing adapters. When capability fields are present they are
+   * authoritative: `idempotent` never implies both replay safety and read-back support.
+   */
+  idempotent?: boolean;
+  deliveryGuarantee?: import("./bot-work-phase5").WorkDeliveryGuarantee;
+  supportsIdempotencyKey?: boolean;
+  supportsReceiptQuery?: boolean;
+  /** Delivery target scope, e.g. one gateway connection or one paired device. */
+  targetKey?: string;
   send(input: {
     notification: WorkNotificationDto;
     idempotencyKey: string;

@@ -483,3 +483,113 @@ export const RemoteAccessIpc = {
   closePairWindow: 'remoteAccess:closePairWindow',
   pairWindowState: 'remoteAccess:pairWindowState',
 } as const
+
+// ---------------------------------------------------------------- Work (Bot)
+
+/**
+ * Work sync contract for paired devices.
+ *
+ * The cursor belongs to the host's durable projection journal: `epoch` changes when the
+ * host replaces its stream, `scope` says which view the cursor was read in. A client must
+ * replace its whole set whenever the cursor's epoch/scope no longer matches, and must never
+ * treat an SSE event id as a Work cursor.
+ */
+export interface RemoteWorkCursor {
+  epoch: string
+  sequence: number
+  scope: 'open' | 'all'
+}
+
+export interface RemoteWorkCard {
+  cardKey: string
+  semanticCardKey: string
+  kind: 'accepted_result' | 'closure_succeeded' | 'closure_cancelled' | 'closure_failed' | 'blocked_escalation'
+  intentRevision: number
+  inputSnapshotId: string
+  title: string
+  summary: string
+  deliverables: string[]
+  artifacts: string[]
+  unverifiedScope: string[]
+  currency: 'current' | 'historical' | 'superseded'
+  createdAt: number
+  readAt?: number
+  readVersion: number
+}
+
+export interface RemoteWorkSummary {
+  workId: string
+  title: string
+  goal?: string
+  lifecycle: 'active' | 'paused' | 'closing' | 'closed'
+  mode: 'once' | 'watch'
+  ownerEpoch: number
+  intentRevision: number
+  inputSnapshotId: string
+  stateVersion: number
+  acceptedCount: number
+  currentCardKeys: string[]
+  currentConclusion?: string
+  pendingUserDecisions: string[]
+  nextSteps: string[]
+  unverifiedScope: Array<{ criterionId: string; text: string; reason: string; requiredEnvironment?: string }>
+  delivery: Array<{
+    notificationId: string
+    cardKey?: string
+    kind: 'result' | 'blocked' | 'closed' | 'handoff'
+    state: 'pending' | 'sent' | 'unknown' | 'failed'
+    externalStatus: 'not_requested' | 'in_app_only' | 'waiting_receipt' | 'delivered' | 'unconfirmed_no_auto_retry' | 'failed'
+    attemptCount: number
+    readAt?: number
+  }>
+  cards: RemoteWorkCard[]
+  updatedAt: number
+  closedAt?: number
+}
+
+export type RemoteWorkUpdate =
+  | { kind: 'snapshot'; cursor: RemoteWorkCursor; works: RemoteWorkSummary[] }
+  | {
+    kind: 'delta'
+    cursor: RemoteWorkCursor
+    from: number
+    hasMore: boolean
+    events: Array<{ kind: 'upsert'; sequence: number; work: RemoteWorkSummary } | { kind: 'remove'; sequence: number; workId: string; reason: 'closed' | 'removed' }>
+  }
+  | { kind: 'resync_required' }
+
+export interface RemoteWorkCardReadRequest {
+  workId: string
+  semanticCardKey: string
+  readAt?: number
+}
+
+export interface RemoteWorkCardReadResult {
+  ok: boolean
+  message?: string
+  cardKey?: string
+  readAt?: number
+  readVersion?: number
+}
+
+export interface RemoteWorkFeedbackRequest {
+  operationId: string
+  workId: string
+  criterionIds: string[]
+  environment: string
+  sourceRef: string
+  inputSnapshotId: string
+  failed: boolean
+  detail?: string
+}
+
+export interface RemoteWorkResendRequest {
+  operationId: string
+  notificationId: string
+  reason: string
+}
+
+export interface RemoteWorkControlResult {
+  ok: boolean
+  message?: string
+}

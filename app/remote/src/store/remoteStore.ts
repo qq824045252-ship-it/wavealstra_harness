@@ -11,6 +11,7 @@ import type {
   RemoteDurableSnapshot, RemoteDurableDelta, RemoteDurableState,
 } from '@mybuddy/shared'
 import { RemoteApiError, RemoteClient } from '../api/RemoteClient'
+import { useRemoteWorkStore } from './remoteWork'
 import { checkRemoteService, normalizeRemoteAddress } from '../api/connectionSetup'
 import { RemoteEventStream } from '../api/RemoteEventStream'
 import {
@@ -1275,6 +1276,13 @@ export function applyEvent(event: RemoteEventEnvelope): void {
   }
   if (event.type !== 'agent.patch') return
   const patch = event.payload as Record<string, unknown>
+  // A Work projection is only a wakeup: the device then reads the durable journal, so an
+  // SSE id can never act as the Work cursor.
+  if (patch.type === 'work_projection_snapshot') {
+    const client = useRemoteStore.getState().client
+    if (client) void useRemoteWorkStore.getState().refresh(client)
+    return
+  }
   const taskId = String(patch.taskId ?? '')
   if (!taskId) return
   taskEventRevisions.set(taskId, (taskEventRevisions.get(taskId) ?? 0) + 1)

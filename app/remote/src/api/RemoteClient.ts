@@ -18,6 +18,13 @@ import type {
   RemotePromptResponse,
   RemoteRuntimeSnapshot,
   RemoteTaskHistory,
+  RemoteWorkCardReadResult,
+  RemoteWorkControlResult,
+  RemoteWorkCursor,
+  RemoteWorkFeedbackRequest,
+  RemoteWorkResendRequest,
+  RemoteWorkSummary,
+  RemoteWorkUpdate,
 } from '@mybuddy/shared'
 import { acknowledgePromptOperation, pendingPromptOperation } from '../store/remoteDb'
 
@@ -98,6 +105,34 @@ export class RemoteClient {
   readNotification(id: string) { return this.post(`/v1/notifications/${encodeURIComponent(id)}/read`, {}) }
   readAllNotifications() { return this.post('/v1/notifications/read-all', {}) }
   clearAllNotifications() { return this.post('/v1/notifications/clear-all', {}) }
+
+  // ---------------------------------------------------------------- Work (Bot)
+  /** Cursor read of the host's durable Work journal; SSE only wakes this call. */
+  workSync(request: { includeClosed: boolean; cursor?: RemoteWorkCursor }) {
+    const params = new URLSearchParams({ includeClosed: request.includeClosed ? '1' : '0' })
+    if (request.cursor) {
+      params.set('epoch', request.cursor.epoch)
+      params.set('sequence', String(request.cursor.sequence))
+      params.set('scope', request.cursor.scope)
+    }
+    return this.get<RemoteWorkUpdate>(`/v1/work/sync?${params.toString()}`)
+  }
+  workSummary(workId: string) { return this.get<RemoteWorkSummary>(`/v1/work/${encodeURIComponent(workId)}`) }
+  workDiagnostics(workId: string, request: { sections?: string[]; limit?: number; cursor?: string }) {
+    return this.post<unknown>(`/v1/work/${encodeURIComponent(workId)}/diagnostics`, request)
+  }
+  /** Read state only: the host keeps the Work control version untouched. */
+  workCardRead(workId: string, semanticCardKey: string, readAt?: number) {
+    return this.post<RemoteWorkCardReadResult>(
+      `/v1/work/${encodeURIComponent(workId)}/cards/${encodeURIComponent(semanticCardKey)}/read`, { readAt })
+  }
+  workFeedback(workId: string, request: Omit<RemoteWorkFeedbackRequest, 'workId'>) {
+    return this.post<RemoteWorkControlResult>(`/v1/work/${encodeURIComponent(workId)}/feedback`, request)
+  }
+  workResend(workId: string, notificationId: string, request: Omit<RemoteWorkResendRequest, 'workId' | 'notificationId'>) {
+    return this.post<RemoteWorkControlResult>(
+      `/v1/work/${encodeURIComponent(workId)}/notifications/${encodeURIComponent(notificationId)}/resend`, request)
+  }
 
   async eventStream(lastEventId: number, signal: AbortSignal, onEvent: (event: RemoteEventEnvelope) => void, onOpen?: () => void, onActivity?: () => void): Promise<void> {
     const response = await fetch(`${this.baseUrl}/v1/events`, {

@@ -1,6 +1,7 @@
 import type {
   AttestCriteriaParams,
   BotDto,
+  BotExpertVersionDto,
   RecordUserFeedbackParams,
   WorkControlResult,
   WorkProjectionDto,
@@ -8,10 +9,16 @@ import type {
 import type { BotSendRequest, BotSendReceipt, BotHistoryRequest, BotHistoryDto, WorkListRequest, WorkListUpdate } from "./bot-conversation";
 import type { WorkPhase3ControlRequest, WorkPhase3ControlResult } from "./bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "./bot-work-phase4";
+import type {
+  WorkCardReadRequest, WorkCardReadResult, WorkDiagnosticsRequest, WorkExpandedDiagnosticsDto,
+  WorkManualResendRequest, WorkSummaryProjectionDto,
+} from "./bot-work-phase5";
 
 export const BotWorkIpc = {
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
+  listBotExpertVersions: "bot-work:list-bot-expert-versions",
+  adoptBotExpertVersion: "bot-work:adopt-bot-expert-version",
   listWorks: "bot-work:list-works",
   syncWorks: "bot-work:sync-works",
   sendMessage: "bot-work:send-message",
@@ -22,6 +29,10 @@ export const BotWorkIpc = {
   attestCriteria: "bot-work:attest-criteria",
   recordUserFeedback: "bot-work:record-user-feedback",
   markNotificationRead: "bot-work:mark-notification-read",
+  markCardRead: "bot-work:mark-card-read",
+  workSummary: "bot-work:work-summary",
+  workDiagnostics: "bot-work:work-diagnostics",
+  resendNotification: "bot-work:resend-notification",
   phase3Control: "bot-work:phase3-control",
   phase4Control: "bot-work:phase4-control",
 } as const;
@@ -32,6 +43,13 @@ export interface BotWorkHostStatusDto {
   authorityId: string;
 }
 
+export interface BotExpertAdoptionResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  adoptedVersion?: number;
+}
+
 export interface BotWorkNotificationReadResult {
   ok: boolean;
   message?: string;
@@ -40,6 +58,8 @@ export interface BotWorkNotificationReadResult {
 export interface BotWorkApi {
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
+  listBotExpertVersions(botId: string): Promise<BotExpertVersionDto[]>;
+  adoptBotExpertVersion(botId: string, expected: { pendingVersion: number; snapshotId: string }): Promise<BotExpertAdoptionResult>;
   listWorks(includeClosed?: boolean): Promise<WorkProjectionDto[]>;
   syncWorks(request: WorkListRequest): Promise<WorkListUpdate>;
   sendMessage(request: BotSendRequest): Promise<BotSendReceipt>;
@@ -50,6 +70,12 @@ export interface BotWorkApi {
   attestCriteria(request: AttestCriteriaParams): Promise<WorkControlResult>;
   recordUserFeedback(request: RecordUserFeedbackParams): Promise<WorkControlResult>;
   markNotificationRead(notificationId: string): Promise<BotWorkNotificationReadResult>;
+  /** Read facts only: never a Work control version or a new execution. */
+  markCardRead(request: WorkCardReadRequest): Promise<WorkCardReadResult>;
+  workSummary(workId: string): Promise<WorkSummaryProjectionDto | undefined>;
+  workDiagnostics(request: WorkDiagnosticsRequest): Promise<WorkExpandedDiagnosticsDto | undefined>;
+  /** Explicit user-authorized resend of a delivery whose external outcome is unknown. */
+  resendNotification(request: WorkManualResendRequest): Promise<WorkControlResult>;
   phase3Control(request: WorkPhase3ControlRequest): Promise<WorkPhase3ControlResult>;
   phase4Control(request: WorkPhase4ControlRequest): Promise<WorkPhase4ControlResult>;
 }
