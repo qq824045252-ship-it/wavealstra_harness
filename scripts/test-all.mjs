@@ -43,13 +43,13 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
 
 /**
  * 负载敏感用例：性能用例断言墙钟预算（启动 p95、构建耗时等）；
- * Phase 2 recovery 连续强杀并重开真实 SQLite/JSONL，且持有 1s 的测试宿主租约。
- * CPU/IO 争用会干扰性能预算或进程/租约交接，故这一个崩溃套件也走串行池。
+ * Phase 2 recovery 与 Phase 5 native story 连续强杀并重开真实 SQLite/JSONL，且持有短期测试宿主租约。
+ * CPU/IO 争用会干扰性能预算或进程/租约交接，故崩溃套件也走串行池。
  * 它们在并行池跑完后串行执行（JOBS=1），并且 `core-performance-all`
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/];
+const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/];
 
 /**
  * 排除集合分三类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -65,6 +65,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-r
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:bot-work-phase5:dev",
   "test:bot-work-phase3:dev",
   "test:bot-work-phase3-focus-desktop",
   "test:bot-work-phase2:dev", // actual pnpm dev Electron renderer and isolated profile
@@ -225,6 +226,11 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-phase5-delivery-dedup",
   "test:bot-work-phase5-reconnect-diagnostics",
   "test:bot-work-phase5-e2e-story",
+  "test:bot-work-phase5-gateway",
+  "test:bot-work-phase5-owner-summary",
+  "test:bot-work-phase5-review",
+  "test:bot-work-phase5-review-ui",
+  "test:bot-work-phase5-native-story",
   "test:remote-work-sync",
 
   "test:durable-projection",

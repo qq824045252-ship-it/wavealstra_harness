@@ -503,7 +503,8 @@ export interface RemoteWorkCursor {
 export interface RemoteWorkCard {
   cardKey: string
   semanticCardKey: string
-  kind: 'accepted_result' | 'closure_succeeded' | 'closure_cancelled' | 'closure_failed' | 'blocked_escalation'
+  kind: 'accepted_result' | 'closure_succeeded' | 'closure_cancelled' | 'closure_failed' | 'blocked_escalation' | 'owner_summary'
+  previousCardKey?: string
   intentRevision: number
   inputSnapshotId: string
   title: string
@@ -538,7 +539,7 @@ export interface RemoteWorkSummary {
   delivery: Array<{
     notificationId: string
     cardKey?: string
-    kind: 'result' | 'blocked' | 'closed' | 'handoff'
+    kind: 'result' | 'blocked' | 'closed' | 'handoff' | 'summary'
     state: 'pending' | 'sent' | 'unknown' | 'failed'
     externalStatus: 'not_requested' | 'in_app_only' | 'waiting_receipt' | 'delivered' | 'unconfirmed_no_auto_retry' | 'failed'
     attemptCount: number

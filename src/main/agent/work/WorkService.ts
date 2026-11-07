@@ -167,7 +167,7 @@ export class WorkService {
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
     this.cards = new WorkResultCards(db, this.repo);
-    this.phase5 = new WorkPhase5Facts(this, this.now);
+    this.phase5 = new WorkPhase5Facts(this, this.now, db);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
   }
 
@@ -810,7 +810,7 @@ export class WorkService {
       payload: { conclusion, closureSummary: next.closureSummary, closedAt: now },
     });
     const card = this.phase5.recordClosure(next, conclusion ?? "ended_unsuccessfully", now);
-    this.repo.insertNotification({
+    if (!card.suppressNotification) this.repo.insertNotification({
       notificationId: newId("notification"),
       workId: work.workId,
       semanticKey: `work:${work.workId}:closed:${conclusion}`,
@@ -1502,22 +1502,7 @@ export class WorkService {
       });
       // Same transaction: the one card for this accepted outcome. A replay lands on the
       // same key, so a re-observed result never mints a second card.
-      const card = this.phase5.recordAcceptance(next, deliverable.summary, now);
-      // Same transaction: stable semantic card for the accepted result.
-      this.repo.insertNotification({
-        notificationId: `notification-${work.workId}-${deliverable.deliverableId}`,
-        workId: work.workId,
-        semanticKey: `work:${work.workId}:result:${deliverable.deliverableId}`,
-        kind: "result",
-        title: `成果已验收：${work.title}`,
-        body: deliverable.summary,
-        stateVersion: next.stateVersion,
-        intentRevision: next.intentRevision,
-        delivery: "pending",
-        createdAt: now,
-        attemptCount: 0,
-        cardKey: card.cardKey,
-      });
+      this.phase5.recordAcceptance(next, deliverable, now);
       return { ok: true, outboxEventId };
     });
   }

@@ -5,6 +5,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
 import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
+import { durableSourceUserMessageId } from "./DurableInputProvenance";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -58,7 +59,9 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           if (!cwd) throw new Error("工具执行缺少宿主绑定的工作目录");
           const live = await native.snapshot(LiveDoc, conversationId, context);
           const runId = `durable-run:${capabilities.taskId}:${conversationId}:${live?.run?.first ?? live?.run?.inputs[0] ?? native.taskId}`;
-          return withDurableExecution({ execution, cwd, runId, native, context }, execute);
+          const sourceUserMessageId = tool.name === "conversation_goal_create"
+            ? await durableSourceUserMessageId(native, context, conversationId, live?.run?.inputs ?? []) : undefined;
+          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId }, execute);
         },
       });
     },

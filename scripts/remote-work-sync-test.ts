@@ -263,6 +263,9 @@ try {
     assert.deepEqual(accepted, { ok: true, replayed: false },
       "HTTP feedback success must not serialize the host Work, workspace, authorization or budget");
     assert.equal(works.getWork(work.workId)!.criteria[1]!.status, "satisfied");
+    const verified = await client.workSummary(work.workId);
+    assert.equal(verified.unverifiedScope.find(item => item.criterionId === request.criterionIds[0])?.reason,
+      "user_verified", "the real HTTP projection preserves user verification provenance for the phone");
     const versionAfterFeedback = works.getWork(work.workId)!.stateVersion;
     const replay = await call("POST", route, request);
     assert.equal(replay.status, 200);

@@ -368,7 +368,7 @@ export function ensureBotWorkTables(db: Database.Database): void {
       notification_id TEXT PRIMARY KEY,
       work_id TEXT NOT NULL,
       semantic_key TEXT NOT NULL UNIQUE,
-      kind TEXT NOT NULL CHECK (kind IN ('result','blocked','closed','handoff')),
+      kind TEXT NOT NULL CHECK (kind IN ('result','blocked','closed','handoff','summary')),
       title TEXT NOT NULL,
       body TEXT,
       state_version INTEGER NOT NULL,

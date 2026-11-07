@@ -21,6 +21,10 @@ import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView 
 import { runGatewayAgentTurn, withSlackChannelHistory } from "./GatewayAgentTurn";
 import { ensureGatewayChannelSpace } from "./gateway-task-space";
 import { gatewayBotTaskId } from "../../shared/gateway-task";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
+import { GatewayWorkTargets } from "./GatewayWorkTargets";
+import { gatewayWorkTargetSchema, GatewayWorkNotSentError,
+  type GatewayWorkSendInput, type GatewayWorkSendResult, type GatewayWorkTarget } from "./work-outbound";
 import {
   FeishuChannelAdapter,
   TelegramChannelAdapter,
@@ -36,7 +40,7 @@ export const GATEWAY_REDACTED = "••••••";
 
 /** 各通道需要脱敏的字段（表单回填时打码，留空提交则保留旧值） */
 const REDACTED_FIELDS: Record<GatewayChannelType, string[]> = {
-  feishu: ["appSecret"],
+  feishu: ["appSecret", "verificationToken"],
   wecom: ["secret", "token", "encodingAESKey"],
   wechat: ["appSecret", "token", "encodingAESKey"],
   telegram: ["botToken"],
@@ -102,6 +106,12 @@ export interface GatewayProjectMessageSink {
   (msg: { text: string; channelId: string; chatId: string; messageId?: string; senderName?: string }): void;
 }
 
+export interface GatewayServiceOptions {
+  settingsStore?: Pick<AppSettingsStore, "read">;
+  adapters?: { feishu?: FeishuChannelAdapter; wecom?: WecomChannelAdapter; wechat?: WechatMpChannelAdapter;
+    telegram?: TelegramChannelAdapter; slack?: SlackSocketModeAdapter };
+}
+
 export class GatewayService {
   private readonly adapters = new Map<string, ChannelAdapter>();
   private readonly feishu: FeishuChannelAdapter;
@@ -109,7 +119,9 @@ export class GatewayService {
   private readonly wechat: WechatMpChannelAdapter;
   private readonly telegram: TelegramChannelAdapter;
   private readonly slack: SlackSocketModeAdapter;
-  private readonly settingsStore = new AppSettingsStore();
+  private readonly settingsStore: Pick<AppSettingsStore, "read">;
+  private readonly workTargets: GatewayWorkTargets;
+  private workNotificationWake?: () => void;
   /** 通道级策略：白名单（空 = 不限制） */
   private readonly channelPolicies = new Map<string, { allowUsers: string[] }>();
   /** 幂等去重守卫：key = channelId:chatId:messageId */
@@ -127,15 +139,18 @@ export class GatewayService {
 
   constructor(
     private readonly db: AppDatabase,
-    private readonly agent: AgentService,
+    private readonly agent: Pick<AgentService, "runGatewayTurn">,
     private readonly projectMessageSink?: GatewayProjectMessageSink,
+    options: GatewayServiceOptions = {},
   ) {
+    this.settingsStore = options.settingsStore ?? new AppSettingsStore();
+    this.workTargets = new GatewayWorkTargets(db.connection);
     const inbound = this.createInboundHandler();
-    this.feishu = new FeishuChannelAdapter("feishu-default", "飞书");
-    this.wecom = new WecomChannelAdapter("wecom-default", "企微");
-    this.wechat = new WechatMpChannelAdapter("wechat-default", "微信");
-    this.telegram = new TelegramChannelAdapter("telegram-default", "Telegram");
-    this.slack = new SlackSocketModeAdapter("slack-default", "Slack", {
+    this.feishu = options.adapters?.feishu ?? new FeishuChannelAdapter("feishu-default", "飞书");
+    this.wecom = options.adapters?.wecom ?? new WecomChannelAdapter("wecom-default", "企微");
+    this.wechat = options.adapters?.wechat ?? new WechatMpChannelAdapter("wechat-default", "微信");
+    this.telegram = options.adapters?.telegram ?? new TelegramChannelAdapter("telegram-default", "Telegram");
+    this.slack = options.adapters?.slack ?? new SlackSocketModeAdapter("slack-default", "Slack", {
       journal: new SlackGatewayJournal(() => join(getGatewayDir(), "slack-deliveries.json")),
       deferInboundUntilActivated: true,
       onStatus: text => this.emitEvent({ channelId: "slack-default", direction: "system", text, at: Date.now() }),
@@ -156,6 +171,54 @@ export class GatewayService {
 
   private isAllowed(channelId: string, senderId?: string): boolean {
     return isAllowedUser(this.channelPolicies.get(channelId)?.allowUsers ?? [], senderId);
+  }
+
+  setWorkNotificationWake(wake: (() => void) | undefined): void { this.workNotificationWake = wake; }
+
+  /** Checks the live endpoint, not just its last saved "connected" flag. */
+  checkWorkTarget(value: GatewayWorkTarget): string | undefined {
+    const parsed = gatewayWorkTargetSchema.safeParse(value);
+    if (!parsed.success) return "Gateway 通知目标身份无效";
+    const target = parsed.data;
+    const adapter = this.adapters.get(target.channelId);
+    const saved = this.db.listGatewayChannels().find(row => row.id === target.channelId);
+    if (this.stopping || !saved?.connected || !adapter?.isConnected() || !this.channelPolicies.has(target.channelId)) {
+      return "Gateway 渠道未连接或已停用，通知等待恢复";
+    }
+    if (adapter.type !== target.channelType || saved.type !== target.channelType
+      || adapter.workConnectionKey?.() !== target.connectionKey) return "Gateway 连接账号与原始通知授权不匹配";
+    if (!adapter.sendWorkNotification) return "Gateway 渠道不支持 Work 出站";
+    if (!this.isAllowed(target.channelId, target.senderId)) return "原始发送者已不在 Gateway 允许名单中";
+    return undefined;
+  }
+
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    const check = () => {
+      const rejected = this.checkWorkTarget(input.target);
+      if (rejected) throw new GatewayWorkNotSentError(rejected);
+      input.assertCurrent();
+    };
+    check();
+    const adapter = this.adapters.get(input.target.channelId)!;
+    const result = await adapter.sendWorkNotification!({ ...input, assertCurrent: check });
+    if (result.ok) this.emitEvent({ channelId: input.target.channelId, chatId: input.target.chatId,
+      direction: "out", text: input.text, at: Date.now() });
+    return result;
+  }
+
+  private recordWorkTarget(msg: GatewayInboundMessage, sourceTaskId: string, sourceMessageId: string): void {
+    // Older/unaddressable inputs remain without an outbound route. No message text,
+    // latest conversation or historical chat log may manufacture an authorized target.
+    if (!msg.workTarget) return;
+    const target = gatewayWorkTargetSchema.parse(msg.workTarget);
+    if (target.channelId !== msg.channelId || target.chatId !== msg.chatId || target.senderId !== msg.sender?.id) {
+      throw new Error("Gateway 受信任目标与原始消息身份不一致");
+    }
+    const rejected = this.checkWorkTarget(target);
+    if (rejected) throw new Error(rejected);
+    this.workTargets.record({ userId: LOCAL_USER_ID, conversationId: gatewayBotTaskId(sourceTaskId),
+      sourceMessageId, target, createdAt: Date.now() });
+    this.workNotificationWake?.();
   }
 
   private markProcessed(channelId: string, chatId: string, messageId: string): boolean {
@@ -230,6 +293,11 @@ export class GatewayService {
       const turnId = msg.messageId
         ? createHash("sha256").update(JSON.stringify([msg.channelId, msg.chatId, msg.messageId])).digest("hex")
         : randomUUID();
+      try { this.recordWorkTarget(msg, taskId, `gw-user-${turnId}`); }
+      catch (error) {
+        if (msg.messageId) this.processed.forget(msg.channelId, msg.chatId, msg.messageId);
+        throw error;
+      }
       let text: string;
       try {
         this.reviveTrashedGatewayTask(taskId);
@@ -269,6 +337,7 @@ export class GatewayService {
 
   private async handleSlackInbound(msg: GatewayInboundMessage): Promise<void> {
     if (!msg.taskId || !msg.userMessageId || !msg.assistantMessageId) throw new Error("Slack 任务身份缺失，未执行");
+    this.recordWorkTarget(msg, msg.taskId, msg.userMessageId);
     this.emitEvent({
       channelId: msg.channelId, direction: "in", text: msg.text, at: Date.now(),
       chatId: msg.chatId, senderId: msg.sender?.id, messageId: msg.messageId,
@@ -506,6 +575,7 @@ export class GatewayService {
       console.warn("[Gateway] 消息落库失败", err);
     }
     broadcast(GatewayIpc.event, ev);
+    this.workNotificationWake?.();
   }
 
   private createWebhookServer(): Server {

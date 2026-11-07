@@ -659,6 +659,7 @@ const api = {
     workSummary: (workId: string) => ipcRenderer.invoke(BotWorkIpc.workSummary, workId),
     workDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.workDiagnostics, request),
     resendNotification: (request) => ipcRenderer.invoke(BotWorkIpc.resendNotification, request),
+    reviewControl: (request) => ipcRenderer.invoke(BotWorkIpc.reviewControl, request),
   } satisfies BotWorkApi,
 
   notification: {

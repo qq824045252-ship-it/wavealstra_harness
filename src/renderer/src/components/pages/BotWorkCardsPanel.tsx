@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkDiagnosticsSection, WorkExpandedDiagnosticsDto } from "@shared/bot-work-phase5";
 import { useAppStore } from "@/store/appStore";
@@ -14,8 +14,12 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<WorkExpandedDiagnosticsDto | null>(null);
+  const mounted = useRef(true);
+  const currentScope = useRef(includeClosed);
+  currentScope.current = includeClosed;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const cards = work.cards ?? [];
-  const refresh = () => useAppStore.getState().refreshBotWork(includeClosed);
+  const refresh = () => useAppStore.getState().refreshBotWork(currentScope.current);
 
   const read = async (semanticCardKey: string) => {
     setBusy(true);
@@ -23,11 +27,12 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
       const api = window.api;
       if (!api) throw new Error("桌面接口不可用");
       const result = await api.botWork.markCardRead({ workId: work.workId, semanticCardKey });
+      if (!mounted.current) return;
       setNotice(result.ok ? "已标记为已读。" : result.message ?? "阅读状态未确认");
       if (result.ok) await refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "阅读状态未确认");
-    } finally { setBusy(false); }
+      if (mounted.current) setNotice(error instanceof Error ? error.message : "阅读状态未确认");
+    } finally { if (mounted.current) setBusy(false); }
   };
 
   const resend = async (notificationId: string) => {
@@ -43,11 +48,12 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
         versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision,
           expectedOwnerEpoch: work.ownerEpoch },
       });
+      if (!mounted.current) return;
       setNotice(result.ok ? "重发已受理，等待实际渠道回执。" : result.message);
       if (result.ok) await refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "重发未受理");
-    } finally { setBusy(false); }
+      if (mounted.current) setNotice(error instanceof Error ? error.message : "重发未受理");
+    } finally { if (mounted.current) setBusy(false); }
   };
 
   const loadDiagnostics = async () => {
@@ -56,18 +62,21 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
       const api = window.api;
       if (!api) throw new Error("桌面接口不可用");
       const result = await api.botWork.workDiagnostics({ workId: work.workId, limit: 20 });
+      if (!mounted.current) return;
       setDiagnostics(result ?? null);
       if (!result) setNotice("诊断不可读或事项不存在。");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "诊断读取失败");
-    } finally { setBusy(false); }
+      if (mounted.current) setNotice(error instanceof Error ? error.message : "诊断读取失败");
+    } finally { if (mounted.current) setBusy(false); }
   };
 
   return <section aria-label="结果卡片与证据">
     <h3>结果卡片</h3>
     {cards.length === 0 && <p>还没有验收成果。</p>}
-    {cards.map(card => <article key={card.cardKey} aria-label="结果卡片">
+    {cards.map(card => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>
+      {card.kind === "owner_summary" && <p>主负责人汇总{card.previousCardKey
+        && <> · <a href={`#work-card-${card.previousCardKey}`}>查看上次汇总</a></>}</p>}
       {work.lifecycle === "closed" && work.closureConclusion === "succeeded"
         && card.currency === "current" && (card.kind === "accepted_result" || card.kind === "closure_succeeded")
         && <p role="status">已完成并关闭</p>}

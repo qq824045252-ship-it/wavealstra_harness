@@ -6,6 +6,7 @@ import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
+import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const menu = renderToStaticMarkup(createElement(AccountNavigation, { go: () => {}, openProjects: () => {} }));
@@ -134,6 +135,29 @@ for (const state of noncurrentResultStates) {
   assert.doesNotMatch(renderCards({}, state), /已完成并关闭/,
     `a successful Work cannot relabel a different card fact: ${JSON.stringify(state)}`);
 }
+
+assert.match(renderCards({}, { kind: "owner_summary", previousCardKey: "summary-previous" }), /主负责人汇总/);
+assert.match(renderCards({}, { kind: "owner_summary", previousCardKey: "summary-previous" }), /href="#work-card-summary-previous"/);
+assert.match(renderCards({}, { kind: "owner_summary" }), /id="work-card-card-accepted"/);
+const proposedOutput: WorkProjectionDto["deliverables"][number] = {
+  deliverableId: "ui-proposed", workId: completedWork.workId, producerBotId: duty.botId,
+  executionId: "ui-execution", intentRevision: 2, ownerEpoch: 1, inputSnapshotId: "input-1",
+  status: "proposed", summary: "Current proposal", artifactRefs: [], evidenceRefs: [], uncoveredScope: [],
+  uncoveredCriterionIds: [], isSpeculation: false, hasWriteConflicts: false, createdAt: 5,
+};
+const renderReview = (changes: Partial<WorkProjectionDto> = {}) => renderToStaticMarkup(createElement(WorkReviewPanel, {
+  work: { ...completedWork, lifecycle: "active", deliverables: [proposedOutput], ...changes }, includeClosed: true,
+}));
+const reviewPanel = renderReview();
+assert.match(reviewPanel, /采纳成果/);
+assert.match(reviewPanel, /拒绝成果/);
+assert.match(reviewPanel, /<button[^>]*disabled[^>]*>记录实测通过<\/button>/, "feedback needs actual user input");
+assert.match(reviewPanel, /<button[^>]*disabled[^>]*>确认结束事项<\/button>/, "closure needs evidence and confirmation");
+for (const flags of [{ hasWriteConflicts: true }, { isSpeculation: true }]) {
+  assert.match(renderReview({ deliverables: [{ ...proposedOutput, ...flags }] }), /<button[^>]*disabled[^>]*>采纳成果<\/button>/);
+}
+assert.doesNotMatch(renderReview({ deliverables: [{ ...proposedOutput, intentRevision: 1 }] }), /采纳成果/);
+assert.equal(renderReview({ lifecycle: "closed" }), "", "closed Work has no additional review controls");
 
 const night = work({ workId: "work-night", title: "夜间巡检", intentRevision: 2 });
 const handoff = work({

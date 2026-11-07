@@ -409,7 +409,7 @@ export interface WorkNotificationDto extends Partial<WorkNotificationIdentity> {
   notificationId: string;
   workId: string;
   semanticKey: string;
-  kind: "result" | "blocked" | "closed" | "handoff";
+  kind: "result" | "blocked" | "closed" | "handoff" | "summary";
   title: string;
   body?: string;
   stateVersion: number;

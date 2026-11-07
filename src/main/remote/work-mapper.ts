@@ -18,6 +18,7 @@ export function toRemoteWorkCard(card: NonNullable<WorkProjectionDto["cards"]>[n
     cardKey: card.cardKey,
     semanticCardKey: card.semanticCardKey,
     kind: card.kind,
+    previousCardKey: card.previousCardKey,
     intentRevision: card.intentRevision,
     inputSnapshotId: card.inputSnapshotId,
     title: card.title,

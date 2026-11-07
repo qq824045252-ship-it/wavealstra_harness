@@ -5,6 +5,7 @@ import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
+import { WorkReviewPanel } from "./BotWorkReviewPanel";
 import { BotExpertReview } from "./BotExpertReview";
 import "./BotWorkspacePage.css";
 
@@ -397,7 +398,10 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeC
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
       <h3>验收</h3>
-      <WorkCardsPanel work={work} includeClosed={includeClosed} />
+      <WorkCardsPanel key={JSON.stringify([work.workId, work.intentRevision, work.inputSnapshotId,
+        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
+      <WorkReviewPanel key={JSON.stringify([work.workId, work.intentRevision, work.inputSnapshotId,
+        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
       )}

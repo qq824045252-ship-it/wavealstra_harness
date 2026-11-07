@@ -1,4 +1,5 @@
-import type { WorkDto } from "../../../shared/bot-work";
+import type Database from "better-sqlite3";
+import type { WorkDto, WorkDeliverableDto } from "../../../shared/bot-work";
 import {
   capabilityOfGuarantee, externalDeliveryStatus, workCardReadRequestSchema, workDiagnosticsRequestSchema,
   workManualResendRequestSchema, type WorkCardReadResult, type WorkDeliveryGuarantee,
@@ -6,6 +7,7 @@ import {
 } from "../../../shared/bot-work-phase5";
 import type { ExpectedVersionGuard, WorkActor, WorkControlResult } from "../../../shared/bot-work";
 import { WorkResultCards } from "./WorkResultCards";
+import { WorkOwnerSummary } from "./WorkOwnerSummary";
 import type { WorkService } from "./WorkService";
 
 const ALL_SECTIONS = ["requirements", "responsibility", "executions", "acceptance", "resources", "delivery"] as const;
@@ -20,24 +22,40 @@ const ALL_SECTIONS = ["requirements", "responsibility", "executions", "acceptanc
 export class WorkPhase5Facts {
   private readonly repo: WorkService["repo"];
   private readonly cards: WorkResultCards;
-  constructor(private readonly works: WorkService, private readonly now: () => number) {
+  readonly ownerSummaries: WorkOwnerSummary;
+  constructor(private readonly works: WorkService, private readonly now: () => number, db: Database.Database) {
     this.repo = works.repo;
     this.cards = works.cards;
+    this.ownerSummaries = new WorkOwnerSummary(db, works, now);
   }
+
+  /** Host lifecycle seam: bounded recovery of durable team-notification obligations. */
+  flushOwnerSummaries(): number { return this.ownerSummaries.flush(this.now()); }
+  observeOwnerSummary(workId: string, now = this.now()): void { this.ownerSummaries.observe(workId, now); }
+  isOwnerSummaryCurrent(work: WorkDto, cardKey: string | undefined): boolean { return this.ownerSummaries.isCurrent(work, cardKey); }
+  nextOwnerSummaryDeadline(): number | undefined { return this.ownerSummaries.nextDeadline(); }
 
   // ------------------------------------------------------------- writes
 
   /** Runs inside acceptDeliverable's transaction; returns the one card for this outcome. */
-  recordAcceptance(work: WorkDto, summary: string, now: number) {
+  recordAcceptance(work: WorkDto, deliverable: WorkDeliverableDto, now: number) {
     const card = this.cards.ensure({
       work, kind: "accepted_result",
       outcome: WorkResultCards.acceptedOutcome(work, this.repo.listDeliverables(work.workId)),
       title: `成果已验收：${work.title}`,
-      summary,
+      summary: deliverable.summary,
       unverifiedScope: this.unverifiedText(work),
       now,
     });
     this.cards.refreshSummary(work, now);
+    if (this.ownerSummaries.isManaged(work)) this.ownerSummaries.observe(work.workId, now);
+    else this.repo.insertNotification({
+      notificationId: `notification-${work.workId}-${deliverable.deliverableId}`,
+      workId: work.workId, semanticKey: `work:${work.workId}:result:${deliverable.deliverableId}`,
+      kind: "result", title: `成果已验收：${work.title}`, body: deliverable.summary,
+      stateVersion: work.stateVersion, intentRevision: work.intentRevision, delivery: "pending", createdAt: now,
+      attemptCount: 0, cardKey: card.cardKey,
+    });
     return card;
   }
 
@@ -57,7 +75,11 @@ export class WorkPhase5Facts {
       now,
     });
     this.cards.refreshSummary(work, now);
-    return card;
+    const team = this.ownerSummaries.isManaged(work);
+    if (team) this.ownerSummaries.observe(work.workId, now);
+    // The team summary already owns delivery of the same accepted outcome. Cancellation
+    // and unsuccessful endings remain independent closure decisions.
+    return { ...card, suppressNotification: team && conclusion === "succeeded" };
   }
 
   /** A blocker waiting for a human is substantive; internal retries are not. */
@@ -69,7 +91,7 @@ export class WorkPhase5Facts {
       title: `${work.title}：需要你的决定`, summary: open.map(blocker => blocker.reason).join("\n"),
       unverifiedScope: [], now,
     });
-    this.repo.insertNotification({
+    if (!this.ownerSummaries.isManaged(work)) this.repo.insertNotification({
       notificationId: `notification-${work.workId}-blocked-${card.semanticCardKey.slice(0, 16)}`,
       workId: work.workId, semanticKey: `work:${work.workId}:blocked:${card.semanticCardKey}`,
       kind: "blocked", title: `${work.title}：需要你的决定`,
@@ -78,12 +100,16 @@ export class WorkPhase5Facts {
       cardKey: card.cardKey,
     });
     this.cards.refreshSummary(work, now);
+    this.ownerSummaries.observe(work.workId, now);
     return card;
   }
 
   refreshSummary(workId: string): void {
     const work = this.repo.getWork(workId);
-    if (work) this.cards.refreshSummary(work, this.now());
+    if (work) {
+      this.cards.refreshSummary(work, this.now());
+      this.ownerSummaries.observe(workId, this.now());
+    }
   }
 
   /**
@@ -149,8 +175,8 @@ export class WorkPhase5Facts {
       artifactSnapshotId: projection.phase3?.artifactSnapshotId,
       acceptedCount: projection.acceptedDeliverableIds.length,
       currentCardKeys: currentCards.map(card => card.cardKey),
-      currentConclusion: work.closureConclusion ?? (currentCards.at(-1)?.summary || undefined),
-      pendingUserDecisions: decisions.map(blocker => blocker.reason),
+      currentConclusion: work.closureConclusion ?? (currentCards.find(card => card.kind === "owner_summary")?.summary || currentCards.at(-1)?.summary || undefined),
+      pendingUserDecisions: [...new Set([...decisions.map(blocker => blocker.reason), ...this.ownerSummaries.pendingDecisions(work)])],
       nextSteps: projection.nextSteps.slice(0, 6),
       unverifiedScope: this.cards.unverifiedScope(work, projection.phase3?.artifactSnapshotId),
       delivery: notifications.map(notification => {
@@ -240,7 +266,7 @@ export class WorkPhase5Facts {
   // --------------------------------------------------------------- helpers
 
   private unverifiedText(work: WorkDto): string[] {
-    return this.cards.unverifiedScope(work).filter(entry => entry.reason !== "auto_verified")
+    return this.cards.unverifiedScope(work).filter(entry => !["auto_verified", "user_verified"].includes(entry.reason))
       .map(entry => entry.text);
   }
 

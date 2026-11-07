@@ -136,6 +136,7 @@ export class WorkCollaborationService {
         .run(parsed.messageId, work.workId, sender.botId, sender.kind, work.userId, parsed.kind, hash, JSON.stringify(parsed),
           work.intentRevision, work.inputSnapshotId, work.ownerEpoch, message.createdAt);
       this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: message.createdAt });
+      this.works.phase5?.observeOwnerSummary(work.workId, message.createdAt);
       this.works.emitCurrentProjection(work.workId);
       return { replayed: false, message };
     });
@@ -224,6 +225,7 @@ export class WorkCollaborationService {
     // Ordinary handoff has no post-commit adoption gap. If a previously retained
     // receipt was waiting for adoption, replay it in this same control transaction.
     this.works.nativeResults.consume(next.workId);
+    this.works.phase5?.observeOwnerSummary(next.workId, now);
   }
 
   isDelegationAdopted(binding: WorkExecutionBindingDto, work: WorkDto): boolean {
@@ -244,7 +246,8 @@ export class WorkCollaborationService {
     if (!work) throw new Error("找不到 Work");
     return work;
   }
-  private assertAuthority(): void { if (this.options.isAuthority && !this.options.isAuthority()) throw new Error("当前宿主不是协作权威"); }
+  /** Shared authority fence for derived owner facts as well as collaboration messages. */
+  assertAuthority(): void { if (this.options.isAuthority && !this.options.isAuthority()) throw new Error("当前宿主不是协作权威"); }
   private sender(actor: WorkActor, work: WorkDto): Sender {
     if (actor.kind === "system") throw new Error("协作消息必须来自已认证的用户、Bot 或执行者");
     if (actor.kind === "worker") {

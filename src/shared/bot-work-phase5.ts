@@ -16,6 +16,7 @@ export const WORK_RESULT_CARD_KINDS = [
   "closure_cancelled",
   "closure_failed",
   "blocked_escalation",
+  "owner_summary",
 ] as const;
 export type WorkResultCardKind = (typeof WORK_RESULT_CARD_KINDS)[number];
 export const workResultCardKindSchema = z.enum(WORK_RESULT_CARD_KINDS);
@@ -35,6 +36,9 @@ export interface WorkResultCardDto {
   /** Owner epoch that produced the fact; evidence only, never the current owner. */
   originOwnerEpoch: number;
   canonicalOutcomeHash: string;
+  /** Previous distinct owner summary; presentation linkage never changes semantic identity. */
+  previousCardKey?: string;
+  ownerSummary?: WorkOwnerSummaryPayload;
   title: string;
   summary: string;
   deliverableIds: string[];
@@ -51,10 +55,33 @@ export interface WorkResultCardDto {
   notificationIds: string[];
 }
 
+/** A member report remains a report until the current owner/user accepts its deliverable. */
+export const workOwnerSummaryItemSchema = z.object({
+  key: z.string(),
+  kind: z.enum(["accepted", "reported", "awaiting_review", "blocked", "question", "rejected", "error", "awaiting_environment", "authorization"]),
+  botId: z.string().optional(),
+  text: z.string(),
+  artifactRefs: z.array(z.string()),
+  criterionIds: z.array(z.string()),
+  writeConflicts: z.array(z.string()),
+  isError: z.boolean(),
+}).strict();
+export type WorkOwnerSummaryItem = z.infer<typeof workOwnerSummaryItemSchema>;
+
+/** Sorted substantive member outcomes; clocks, delivery attempts and message IDs stay outside. */
+export const workOwnerSummaryPayloadSchema = z.object({
+  version: z.literal(1),
+  items: z.array(workOwnerSummaryItemSchema),
+  waitingForBotIds: z.array(z.string()),
+  pendingDecisionKeys: z.array(z.string()),
+}).strict();
+export type WorkOwnerSummaryPayload = z.infer<typeof workOwnerSummaryPayloadSchema>;
+
 /**
- * Canonical, versioned outcome payload. Only substantive facts enter it: wording,
- * notification attempts, read clocks, wall time and owner epoch are excluded so a
- * cosmetic rewrite cannot mint a new card.
+ * Canonical, versioned outcome payload. Display titles and delivery wording,
+ * notification attempts, read clocks, wall time and owner epoch stay outside.
+ * Owner summaries include normalized member-report content: identical whitespace
+ * rewrites are one fact, while a changed report can carry new substance.
  */
 export interface WorkOutcomePayload {
   version: 1;
@@ -69,6 +96,7 @@ export interface WorkOutcomePayload {
   artifactRefs: string[];
   /** Stable reason codes of blockers that still require a human decision. */
   pendingBlockerCodes: string[];
+  ownerSummary?: WorkOwnerSummaryPayload;
 }
 
 /** Deterministic serialisation: sorted keys, no whitespace, explicit array order. */
@@ -218,6 +246,7 @@ export interface WorkCardReadResult {
 /** Why a criterion is not verified against the current artifact. */
 export const workUnverifiedReasonSchema = z.enum([
   "auto_verified",
+  "user_verified",
   "pending_real_environment",
   "historical_version_only",
   "artifact_changed",
@@ -262,7 +291,7 @@ export interface WorkSummaryProjectionDto {
   delivery: Array<{
     notificationId: string;
     cardKey?: string;
-    kind: "result" | "blocked" | "closed" | "handoff";
+    kind: "result" | "blocked" | "closed" | "handoff" | "summary";
     state: WorkNotificationDelivery;
     /** Honest wording for a delivery that cannot be reconciled automatically. */
     externalStatus: "not_requested" | "in_app_only" | "waiting_receipt" | "delivered" | "unconfirmed_no_auto_retry" | "failed";

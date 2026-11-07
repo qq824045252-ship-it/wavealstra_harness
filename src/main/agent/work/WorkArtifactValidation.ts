@@ -77,13 +77,29 @@ export class WorkArtifactValidation {
       WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?
       ORDER BY binding.admitted_at,dependency.rowid`).all(workId,work.intentRevision,work.inputSnapshotId).map(row=>rowSchema.parse(row));
   }
-  validate(inspection: ArtifactInspection, now = Date.now()): boolean {
+  validate(inspection: ArtifactInspection, now = Date.now(), bindingIds?: readonly string[]): boolean {
     if (!this.db.inTransaction) throw new Error("产物版本复核必须与验收控制同事务提交");
     const work = this.works.getWork(inspection.workId);
     if (!work || work.inputSnapshotId !== inspection.inputSnapshotId || work.intentRevision !== inspection.intentRevision) return false;
     const changedBindings = new Set<string>();
+    const dependencies = this.currentDependencies(work.workId);
+    const scope = bindingIds === undefined ? undefined : new Set(bindingIds);
+    // A notification about a new verification gap can contain older invalidated
+    // facts. Only its still-accepted evidence needs a fresh success proof. An
+    // accepted artifact without a registered dependency is never proven by an
+    // empty scope/ledger.
+    if (scope) for (const bindingId of scope) {
+      const binding = this.works.repo.getBinding(bindingId);
+      if (!binding || binding.workId !== work.workId || binding.intentRevision !== work.intentRevision
+        || binding.inputSnapshotId !== work.inputSnapshotId) return false;
+      const accepted = this.works.repo.listDeliverables(work.workId).filter(item => item.executionId === bindingId
+        && item.status === "accepted" && work.acceptedDeliverableIds.includes(item.deliverableId));
+      for (const deliverable of accepted) for (const ref of deliverable.artifactRefs) {
+        if (!dependencies.some(row => row.binding_id === bindingId && row.path === resolve(binding.workspaceBinding, ref))) return false;
+      }
+    }
     const latest=new Map<string,z.infer<typeof rowSchema>>();
-    for(const row of this.currentDependencies(work.workId)) latest.set(row.path,row);
+    for(const row of dependencies) if (!scope || scope.has(row.binding_id)) latest.set(row.path,row);
     let invalid=false;
     for (const row of latest.values()) {
       if(row.invalidated_at!==null) {invalid=true;continue;}

@@ -9,6 +9,7 @@ import type {
 import type { BotSendRequest, BotSendReceipt, BotHistoryRequest, BotHistoryDto, WorkListRequest, WorkListUpdate } from "./bot-conversation";
 import type { WorkPhase3ControlRequest, WorkPhase3ControlResult } from "./bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "./bot-work-phase4";
+import type { WorkReviewControlRequest } from "./bot-work-review";
 import type {
   WorkCardReadRequest, WorkCardReadResult, WorkDiagnosticsRequest, WorkExpandedDiagnosticsDto,
   WorkManualResendRequest, WorkSummaryProjectionDto,
@@ -33,6 +34,7 @@ export const BotWorkIpc = {
   workSummary: "bot-work:work-summary",
   workDiagnostics: "bot-work:work-diagnostics",
   resendNotification: "bot-work:resend-notification",
+  reviewControl: "bot-work:review-control",
   phase3Control: "bot-work:phase3-control",
   phase4Control: "bot-work:phase4-control",
 } as const;
@@ -76,6 +78,7 @@ export interface BotWorkApi {
   workDiagnostics(request: WorkDiagnosticsRequest): Promise<WorkExpandedDiagnosticsDto | undefined>;
   /** Explicit user-authorized resend of a delivery whose external outcome is unknown. */
   resendNotification(request: WorkManualResendRequest): Promise<WorkControlResult>;
+  reviewControl(request: WorkReviewControlRequest): Promise<WorkControlResult>;
   phase3Control(request: WorkPhase3ControlRequest): Promise<WorkPhase3ControlResult>;
   phase4Control(request: WorkPhase4ControlRequest): Promise<WorkPhase4ControlResult>;
 }

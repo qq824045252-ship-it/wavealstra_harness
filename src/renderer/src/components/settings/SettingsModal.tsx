@@ -998,10 +998,11 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="feishu-default"
         title="飞书"
-        desc="在飞书开放平台配置事件回调：http://127.0.0.1:52140/feishu（需要公网）。"
+        desc="在飞书开放平台配置事件回调：http://127.0.0.1:52140/feishu（需要公网）。填写事件订阅的 Verification Token，用于验证回调来源。"
         fields={[
           { key: "appId", label: "App ID", placeholder: "cli_xxx" },
           { key: "appSecret", label: "App Secret", type: "password", placeholder: "密钥" },
+          { key: "verificationToken", label: "Verification Token", type: "password", placeholder: "事件订阅校验令牌" },
         ]}
       />
 

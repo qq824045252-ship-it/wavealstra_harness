@@ -5,7 +5,8 @@ import type {
   WorkBlockerDto, WorkDeliverableDto, WorkDto,
 } from "../../../shared/bot-work";
 import {
-  canonicalJson, semanticCardTuple, type WorkCardReadResult, type WorkCardCurrency,
+  canonicalJson, semanticCardTuple, workResultCardKindSchema, workOwnerSummaryPayloadSchema,
+  type WorkCardReadResult, type WorkCardCurrency,
   type WorkOutcomePayload, type WorkResultCardDto, type WorkResultCardKind,
   type WorkUnverifiedScopeDto, type WorkUnverifiedReason,
 } from "../../../shared/bot-work-phase5";
@@ -13,7 +14,7 @@ import type { WorkRepository } from "./WorkRepository";
 
 const cardRowSchema = z.object({
   card_key: z.string(), semantic_card_key: z.string(), work_id: z.string(), user_id: z.string(),
-  kind: z.enum(["accepted_result", "closure_succeeded", "closure_cancelled", "closure_failed", "blocked_escalation"]),
+  kind: workResultCardKindSchema, previous_card_key: z.string().nullable(),
   intent_revision: z.number(), input_snapshot_id: z.string(), origin_owner_epoch: z.number(),
   canonical_outcome_hash: z.string(), canonical_outcome_json: z.string(), title: z.string(), summary: z.string(),
   deliverable_ids_json: z.string(), evidence_ids_json: z.string(), source_refs_json: z.string(),
@@ -128,6 +129,9 @@ export class WorkResultCards {
     summary: string;
     title: string;
     unverifiedScope: string[];
+    previousCardKey?: string;
+    /** Physical source references are traceable, but replay identities do not change the outcome. */
+    provenanceRefs?: string[];
     now: number;
   }): WorkResultCardDto {
     const outcomeHash = WorkResultCards.computeOutcomeHash(input.outcome);
@@ -147,14 +151,14 @@ export class WorkResultCards {
     this.db.prepare(`INSERT OR IGNORE INTO work_result_cards (
       card_key,semantic_card_key,work_id,user_id,kind,intent_revision,input_snapshot_id,origin_owner_epoch,
       canonical_outcome_hash,canonical_outcome_json,title,summary,deliverable_ids_json,evidence_ids_json,
-      source_refs_json,artifact_refs_json,unverified_scope_json,created_at,read_version
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      source_refs_json,artifact_refs_json,unverified_scope_json,created_at,previous_card_key,read_version
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
       cardKey, semanticKey, input.work.workId, input.work.userId, input.kind, input.work.intentRevision,
       input.work.inputSnapshotId, input.work.ownerEpoch, outcomeHash, canonicalJson(input.outcome),
       input.title, input.summary, listText(deliverableIds),
       listText(input.outcome.criteria.flatMap(criterion => criterion.evidenceRefs)),
-      listText(input.outcome.sourceRefs), listText(input.outcome.artifactRefs),
-      listText(input.unverifiedScope), input.now,
+      listText([...input.outcome.sourceRefs, ...input.provenanceRefs ?? []]), listText(input.outcome.artifactRefs),
+      listText(input.unverifiedScope), input.now, input.previousCardKey ?? null,
     );
     const row = this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(cardKey);
     return this.toDto(cardRowSchema.parse(row), input.work);
@@ -191,7 +195,8 @@ export class WorkResultCards {
         handled_watermark_json=excluded.handled_watermark_json, updated_at=excluded.updated_at`)
         .run(work.workId, work.intentRevision, work.inputSnapshotId, work.ownerEpoch, summaryDigest,
           cardKey ?? null, JSON.stringify([...new Set(pendingDecisionCodes)].sort()),
-          JSON.stringify({ cardKeys: current.map(card => card.cardKey), acceptedCount: current.reduce((total, card) => total + card.deliverableIds.length, 0) }),
+          JSON.stringify({ ...(existing ? JSON.parse(existing.handled_watermark_json) as Record<string, unknown> : {}),
+            cardKeys: current.map(card => card.cardKey), acceptedCount: work.acceptedDeliverableIds.length }),
           now);
     }
     return { digest: summaryDigest, cardKey, pendingDecisionCodes };
@@ -243,7 +248,7 @@ export class WorkResultCards {
       const currentEvidence = evidence.filter(item => item.intentRevision === work.intentRevision
         && item.inputSnapshotId === work.inputSnapshotId);
       const reason: WorkUnverifiedReason = criterion.status === "satisfied" && currentEvidence.length > 0
-        ? "auto_verified"
+        ? currentEvidence.some(item => item.provenance === "user") ? "user_verified" : "auto_verified"
         : criterion.status === "satisfied"
           ? "historical_version_only"
           : criterion.requiresRealEnvironmentCheck
@@ -273,6 +278,9 @@ export class WorkResultCards {
       cardKey: row.card_key, semanticCardKey: row.semantic_card_key, workId: row.work_id, userId: row.user_id,
       kind: row.kind, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
       originOwnerEpoch: row.origin_owner_epoch, canonicalOutcomeHash: row.canonical_outcome_hash,
+      previousCardKey: row.previous_card_key ?? undefined,
+      ...(row.kind === "owner_summary" ? { ownerSummary: workOwnerSummaryPayloadSchema.parse(
+        (JSON.parse(row.canonical_outcome_json) as WorkOutcomePayload).ownerSummary) } : {}),
       title: row.title, summary: row.summary,
       deliverableIds: jsonList(row.deliverable_ids_json), evidenceIds: jsonList(row.evidence_ids_json),
       sourceRefs: jsonList(row.source_refs_json), artifactRefs: jsonList(row.artifact_refs_json),
@@ -285,6 +293,11 @@ export class WorkResultCards {
 
   private currencyOf(row: CardRow, work: WorkDto): WorkCardCurrency {
     if (row.intent_revision !== work.intentRevision || row.input_snapshot_id !== work.inputSnapshotId) return "historical";
+    if (row.kind === "owner_summary") {
+      const latest = this.db.prepare(`SELECT json_extract(handled_watermark_json,'$.ownerNotification.publishedCardKey') AS card_key
+        FROM work_owner_summaries WHERE work_id=?`).get(work.workId) as { card_key: string | null } | undefined;
+      if (latest?.card_key && latest.card_key !== row.card_key) return "superseded";
+    }
     const outcome = JSON.parse(row.canonical_outcome_json) as WorkOutcomePayload;
     const superseded = outcome.deliverables.some(item => this.repo.getDeliverable(item.deliverableId)?.status === "superseded");
     return superseded ? "superseded" : "current";

@@ -1,4 +1,8 @@
 import type { AgentService } from "../agent/AgentService";
+import { timingSafeEqual } from "node:crypto";
+import { assertGatewayWorkSend, gatewayConnectionKey, gatewayWorkTarget, GatewayWorkNotSentError,
+  postGatewayWork, providerRejected, unknownProviderReceipt, workRequestSignal,
+  type GatewayWorkSendInput, type GatewayWorkSendResult, type GatewayWorkTarget } from "./work-outbound";
 import type { GatewayChannelType, GatewayEventDto } from "../../shared/agent-ipc";
 
 export interface ChannelConfig {
@@ -13,6 +17,8 @@ export interface ChannelAdapter {
   disconnect(): Promise<void>;
   isConnected(): boolean;
   statusText(): string;
+  workConnectionKey?(): string | undefined;
+  sendWorkNotification?(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult>;
 }
 
 export interface GatewayInboundMessage {
@@ -28,6 +34,8 @@ export interface GatewayInboundMessage {
   /** Bot-read channel material; it cannot grant authority or start another task. */
   slackHistory?: SlackChannelHistory;
   sender?: { id: string; name?: string };
+  /** Set only by the authenticated adapter; never parsed from user message text. */
+  workTarget?: GatewayWorkTarget;
   reply: (text: string) => Promise<void>;
 }
 
@@ -53,7 +61,8 @@ export type GatewayInboundHandler = (msg: GatewayInboundMessage) => Promise<void
 export class FeishuChannelAdapter implements ChannelAdapter {
   readonly type = "feishu" as const;
   private connected = false;
-  private config: { appId?: string; appSecret?: string } = {};
+  private generation = 0;
+  private config: { appId?: string; appSecret?: string; verificationToken?: string } = {};
   private token: string | null = null;
   private tokenExpireAt = 0;
   private onInbound: GatewayInboundHandler | null = null;
@@ -68,18 +77,23 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   }
 
   async connect(config: ChannelConfig): Promise<void> {
+    await this.disconnect();
+    const generation = this.generation;
     this.config = {
       appId: String(config.appId ?? ""),
       appSecret: String(config.appSecret ?? ""),
+      verificationToken: String(config.verificationToken ?? ""),
     };
-    if (!this.config.appId || !this.config.appSecret) {
-      throw new Error("飞书通道需要 appId 与 appSecret");
+    if (!this.config.appId || !this.config.appSecret || !this.config.verificationToken) {
+      throw new Error("飞书通道需要 appId、appSecret 与 verificationToken，未核验的 Webhook 不会启动任务");
     }
     await this.refreshToken();
+    if (generation !== this.generation) throw new Error("Gateway 连接已取消");
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
+    this.generation++;
     this.connected = false;
     this.token = null;
   }
@@ -95,10 +109,15 @@ export class FeishuChannelAdapter implements ChannelAdapter {
 
   /** 供 Gateway HTTP webhook 调用 */
   async handleWebhookPayload(body: unknown): Promise<{ challenge?: string } | void> {
+    if (!this.connected || !this.config.verificationToken) throw new Error("飞书 Webhook 身份校验未配置或通道已停用");
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("飞书 Webhook 请求无效");
     const payload = body as {
+      schema?: string;
       type?: string;
+      token?: string;
+      encrypt?: string;
       challenge?: string;
-      header?: { event_type?: string };
+      header?: { event_type?: string; app_id?: string; token?: string };
       event?: {
         message?: {
           chat_id?: string;
@@ -110,9 +129,15 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       };
     };
 
-    if (payload.type === "url_verification" && payload.challenge) {
+    if (payload.encrypt) throw new Error("此飞书通道尚未配置加密事件解密，拒绝接纳请求");
+    const expectedToken = Buffer.from(this.config.verificationToken);
+    const suppliedToken = Buffer.from(payload.type === "url_verification" ? payload.token ?? "" : payload.header?.token ?? "");
+    const tokenMatches = expectedToken.length === suppliedToken.length && timingSafeEqual(expectedToken, suppliedToken);
+    if (!tokenMatches) throw new Error("飞书 Webhook 身份校验失败");
+    if (payload.type === "url_verification" && typeof payload.challenge === "string" && payload.challenge) {
       return { challenge: payload.challenge };
     }
+    if (payload.schema !== "2.0" || payload.header?.app_id !== this.config.appId) throw new Error("飞书事件版本或 App 身份不匹配");
 
     const eventType = payload.header?.event_type;
     if (eventType !== "im.message.receive_v1") return;
@@ -131,6 +156,9 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     await this.onInbound({
       channelId: this.id,
       chatId: msg.chat_id,
+      workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
+        connectionKey: this.workConnectionKey(), chatId: msg.chat_id,
+        senderId: payload.event?.sender?.sender_id?.open_id, address: { chatId: msg.chat_id } }),
       text: text.trim(),
       messageId: msg.message_id,
       sender: payload.event?.sender?.sender_id?.open_id
@@ -142,12 +170,13 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     });
   }
 
-  private async refreshToken(): Promise<string> {
+  private async refreshToken(signal?: AbortSignal): Promise<string> {
+    const generation = this.generation;
     if (this.token && Date.now() < this.tokenExpireAt - 60_000) return this.token;
     const res = await fetch(
       "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
       {
-        method: "POST",
+        method: "POST", signal: workRequestSignal(signal),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           app_id: this.config.appId,
@@ -164,9 +193,34 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     if (data.code !== 0 || !data.tenant_access_token) {
       throw new Error(`飞书 token 失败: ${data.msg}`);
     }
+    if (generation !== this.generation) throw new Error("Gateway 连接已改变");
     this.token = data.tenant_access_token;
     this.tokenExpireAt = Date.now() + (data.expire ?? 7200) * 1000;
     return this.token;
+  }
+
+  workConnectionKey(): string | undefined {
+    return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+  }
+
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    if (input.target.channelType !== "feishu") throw new GatewayWorkNotSentError("飞书通知目标不匹配");
+    let token: string;
+    try { token = await this.refreshToken(input.signal); }
+    catch { throw new GatewayWorkNotSentError("飞书连接授权不可用，本次未发送", true); }
+    assertGatewayWorkSend(input, this);
+    return postGatewayWork({ label: "飞书", signal: input.signal,
+      url: "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+      headers: { Authorization: `Bearer ${token}` },
+      body: { receive_id: input.target.address.chatId, msg_type: "text", content: JSON.stringify({ text: input.text }) },
+      interpret(data, response) {
+        if (typeof data.code === "number" && data.code !== 0) return providerRejected("飞书", data.code);
+        const detail = data.data as { message_id?: unknown; chat_id?: unknown } | undefined;
+        return response.ok && data.code === 0 && typeof detail?.message_id === "string" && detail.message_id.length > 0
+          && (!detail.chat_id || detail.chat_id === input.target.chatId)
+          ? { ok: true, receipt: `feishu:${detail.message_id}` } : unknownProviderReceipt("飞书");
+      } });
   }
 
   private async sendText(chatId: string, text: string): Promise<void> {
@@ -201,6 +255,7 @@ export interface WxHttpResult {
 export class WecomChannelAdapter implements ChannelAdapter {
   readonly type = "wecom" as const;
   private connected = false;
+  private generation = 0;
   private config: {
     corpId?: string;
     agentId?: string;
@@ -223,6 +278,8 @@ export class WecomChannelAdapter implements ChannelAdapter {
   }
 
   async connect(config: ChannelConfig): Promise<void> {
+    await this.disconnect();
+    const generation = this.generation;
     this.config = {
       corpId: String(config.corpId ?? ""),
       agentId: String(config.agentId ?? ""),
@@ -241,10 +298,12 @@ export class WecomChannelAdapter implements ChannelAdapter {
     }
     this.crypt = new WxCrypt(this.config.token, this.config.encodingAESKey, this.config.corpId);
     await this.refreshToken();
+    if (generation !== this.generation) throw new Error("Gateway 连接已取消");
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
+    this.generation++;
     this.connected = false;
     this.accessToken = null;
     this.crypt = null;
@@ -304,6 +363,8 @@ export class WecomChannelAdapter implements ChannelAdapter {
     void this.onInbound({
       channelId: this.id,
       chatId,
+      workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
+        connectionKey: this.workConnectionKey(), chatId, senderId: fromUser, address: { chatId, userId: fromUser } }),
       text: text.trim(),
       messageId: extractXmlTag(message, "MsgId"),
       sender: { id: fromUser, name: fromUser },
@@ -315,10 +376,11 @@ export class WecomChannelAdapter implements ChannelAdapter {
     return { status: 200, body: "success", contentType: "text/plain" };
   }
 
-  private async refreshToken(): Promise<string> {
+  private async refreshToken(signal?: AbortSignal): Promise<string> {
+    const generation = this.generation;
     if (this.accessToken && Date.now() < this.tokenExpireAt - 60_000) return this.accessToken;
     const url = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(this.config.corpId!)}&corpsecret=${encodeURIComponent(this.config.secret!)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: workRequestSignal(signal) });
     const data = (await res.json()) as {
       errcode?: number;
       errmsg?: string;
@@ -329,9 +391,37 @@ export class WecomChannelAdapter implements ChannelAdapter {
       throw new Error(`企微 token 失败: ${data.errmsg ?? data.errcode}`);
     }
     if (!data.access_token) throw new Error("企微 token 失败: 无 access_token");
+    if (generation !== this.generation) throw new Error("Gateway 连接已改变");
     this.accessToken = data.access_token;
     this.tokenExpireAt = Date.now() + (data.expires_in ?? 7200) * 1000;
     return this.accessToken;
+  }
+
+  workConnectionKey(): string | undefined {
+    return this.connected && this.config.corpId && this.config.agentId
+      ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.agentId]) : undefined;
+  }
+
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    if (input.target.channelType !== "wecom") throw new GatewayWorkNotSentError("企微通知目标不匹配");
+    let token: string;
+    try { token = await this.refreshToken(input.signal); }
+    catch { throw new GatewayWorkNotSentError("企微连接授权不可用，本次未发送", true); }
+    assertGatewayWorkSend(input, this);
+    const { chatId, userId } = input.target.address;
+    const room = chatId !== userId;
+    return postGatewayWork({ label: "企微", signal: input.signal,
+      url: `https://qyapi.weixin.qq.com/cgi-bin/${room ? "appchat" : "message"}/send?access_token=${encodeURIComponent(token)}`,
+      body: room ? { chatid: chatId, msgtype: "text", text: { content: input.text } }
+        : { touser: userId, agentid: Number(this.config.agentId), msgtype: "text", text: { content: input.text } },
+      interpret(data, response) {
+        if (typeof data.errcode === "number" && data.errcode !== 0) return providerRejected("企微", data.errcode);
+        if (typeof data.invaliduser === "string" && data.invaliduser.split("|").includes(userId)) return providerRejected("企微", "invalid_user");
+        return response.ok && data.errcode === 0
+          ? { ok: true, receipt: typeof data.msgid === "string" ? `wecom:${data.msgid}` : `wecom:accepted:${input.effectKey}` }
+          : unknownProviderReceipt("企微");
+      } });
   }
 
   private async sendText(chatId: string, fromUser: string, text: string): Promise<void> {
@@ -368,6 +458,7 @@ export class WecomChannelAdapter implements ChannelAdapter {
 export class WechatMpChannelAdapter implements ChannelAdapter {
   readonly type = "wechat" as const;
   private connected = false;
+  private generation = 0;
   private config: {
     appId?: string;
     appSecret?: string;
@@ -389,6 +480,8 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
   }
 
   async connect(config: ChannelConfig): Promise<void> {
+    await this.disconnect();
+    const generation = this.generation;
     this.config = {
       appId: String(config.appId ?? ""),
       appSecret: String(config.appSecret ?? ""),
@@ -405,10 +498,12 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     }
     this.crypt = new WxCrypt(this.config.token, this.config.encodingAESKey, this.config.appId);
     await this.refreshToken();
+    if (generation !== this.generation) throw new Error("Gateway 连接已取消");
     this.connected = true;
   }
 
   async disconnect(): Promise<void> {
+    this.generation++;
     this.connected = false;
     this.accessToken = null;
     this.crypt = null;
@@ -478,6 +573,8 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     void this.onInbound({
       channelId: this.id,
       chatId: fromUser,
+      workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
+        connectionKey: this.workConnectionKey(), chatId: fromUser, senderId: fromUser, address: { openId: fromUser } }),
       text: text.trim(),
       messageId: extractXmlTag(messageXml, "MsgId"),
       sender: { id: fromUser, name: fromUser },
@@ -489,10 +586,11 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     return { status: 200, body: "success", contentType: "text/plain" };
   }
 
-  private async refreshToken(): Promise<string> {
+  private async refreshToken(signal?: AbortSignal): Promise<string> {
+    const generation = this.generation;
     if (this.accessToken && Date.now() < this.tokenExpireAt - 60_000) return this.accessToken;
     const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${encodeURIComponent(this.config.appId!)}&secret=${encodeURIComponent(this.config.appSecret!)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: workRequestSignal(signal) });
     const data = (await res.json()) as {
       access_token?: string;
       expires_in?: number;
@@ -502,9 +600,31 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     if (!data.access_token) {
       throw new Error(`微信 token 失败: ${data.errmsg ?? data.errcode ?? "unknown"}`);
     }
+    if (generation !== this.generation) throw new Error("Gateway 连接已改变");
     this.accessToken = data.access_token;
     this.tokenExpireAt = Date.now() + (data.expires_in ?? 7200) * 1000;
     return this.accessToken;
+  }
+
+  workConnectionKey(): string | undefined {
+    return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+  }
+
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    if (input.target.channelType !== "wechat") throw new GatewayWorkNotSentError("微信通知目标不匹配");
+    let token: string;
+    try { token = await this.refreshToken(input.signal); }
+    catch { throw new GatewayWorkNotSentError("微信连接授权不可用，本次未发送", true); }
+    assertGatewayWorkSend(input, this);
+    return postGatewayWork({ label: "微信", signal: input.signal,
+      url: `https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=${encodeURIComponent(token)}`,
+      body: { touser: input.target.address.openId, msgtype: "text", text: { content: input.text } },
+      interpret(data, response) {
+        if (typeof data.errcode === "number" && data.errcode !== 0) return providerRejected("微信", data.errcode);
+        return response.ok && data.errcode === 0 ? { ok: true, receipt: `wechat:accepted:${input.effectKey}` }
+          : unknownProviderReceipt("微信");
+      } });
   }
 
   private async sendText(openId: string, text: string): Promise<void> {
@@ -536,6 +656,10 @@ interface TgUpdate {
   update_id: number;
   message?: {
     message_id: number;
+    message_thread_id?: number;
+    direct_messages_topic?: { topic_id: number };
+    business_connection_id?: string;
+    sender_chat?: unknown;
     chat: { id: number; type: string; title?: string };
     text?: string;
     from?: { id: number; username?: string; first_name?: string; last_name?: string };
@@ -591,8 +715,10 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export class TelegramChannelAdapter implements ChannelAdapter {
   readonly type = "telegram" as const;
   private connected = false;
+  private generation = 0;
   private config: { botToken?: string } = {};
   private botUsername = "";
+  private botId = "";
   private lastError = "";
   private offset = 0;
   private polling = false;
@@ -611,30 +737,38 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   async connect(config: ChannelConfig): Promise<void> {
+    await this.disconnect();
+    const generation = this.generation;
     this.config = { botToken: String(config.botToken ?? "").trim() };
     if (!this.config.botToken) {
       throw new Error("Telegram 通道需要 Bot Token（@BotFather 创建）");
     }
     const res = await fetch(`${this.apiBase}${this.config.botToken}/getMe`);
-    const me = (await res.json()) as { ok?: boolean; result?: { username?: string }; description?: string };
+    const me = (await res.json()) as { ok?: boolean; result?: { id?: number; username?: string }; description?: string };
     if (!me.ok) {
       throw new Error(`Telegram token 无效: ${me.description ?? "unknown"}`);
     }
+    if (generation !== this.generation) throw new Error("Telegram 连接已取消");
+    this.offset = 0;
     this.botUsername = me.result?.username ?? "";
+    this.botId = Number.isSafeInteger(me.result?.id) && me.result!.id! > 0 ? String(me.result!.id) : "";
     this.lastError = "";
     this.stopped = false;
     this.connected = true;
     this.polling = true;
-    void this.pollLoop().catch((err) => {
+    void this.pollLoop(generation).catch((err) => {
+      if (generation !== this.generation) return;
       this.lastError = err instanceof Error ? err.message : String(err);
     });
   }
 
   async disconnect(): Promise<void> {
+    this.generation++;
     this.stopped = true;
     this.polling = false;
     this.connected = false;
     this.botUsername = "";
+    this.botId = "";
   }
 
   isConnected(): boolean {
@@ -646,12 +780,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     return this.botUsername ? `已连接（@${this.botUsername} 轮询）` : "连接中…";
   }
 
-  private async pollLoop(): Promise<void> {
-    while (this.polling && !this.stopped) {
+  private async pollLoop(generation: number): Promise<void> {
+    while (this.polling && !this.stopped && generation === this.generation) {
       try {
         const res = await fetch(
           `${this.apiBase}${this.config.botToken}/getUpdates?timeout=30&offset=${this.offset}&allowed_updates=["message"]`,
         );
+        if (generation !== this.generation || this.stopped) return;
         if (res.status === 409) {
           // 同一 bot 已有另一实例在轮询：继续轮询只会反复 409，停掉并报错
           this.lastError = "同一 bot 已被其他实例轮询（409 Conflict）";
@@ -669,6 +804,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           result?: TgUpdate[];
           description?: string;
         };
+        if (generation !== this.generation || this.stopped) return;
         if (!data.ok) {
           throw new Error(`getUpdates 失败: ${data.description ?? "unknown"}`);
         }
@@ -679,7 +815,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           );
         }
       } catch (err) {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.generation) return;
         this.lastError = err instanceof Error ? err.message : String(err);
         await sleep(3000);
       }
@@ -702,10 +838,37 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       text: msg.text.trim(),
       messageId: String(msg.message_id),
       sender,
+      workTarget: !msg.business_connection_id && !msg.sender_chat ? gatewayWorkTarget({ version: 1,
+        channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId,
+        senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
+          directMessagesTopicId: msg.direct_messages_topic?.topic_id } }) : undefined,
       reply: async (replyText: string) => {
         await this.sendText(chatId, replyText);
       },
     });
+  }
+
+  workConnectionKey(): string | undefined {
+    return this.connected && this.botId ? gatewayConnectionKey(this.type, [this.botId]) : undefined;
+  }
+
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    if (input.target.channelType !== "telegram") throw new GatewayWorkNotSentError("Telegram 通知目标不匹配");
+    const target = input.target.address;
+    return postGatewayWork({ label: "Telegram", signal: input.signal,
+      url: `${this.apiBase}${this.config.botToken}/sendMessage`,
+      body: { chat_id: target.chatId, text: input.text, disable_web_page_preview: true,
+        ...(target.messageThreadId !== undefined ? { message_thread_id: target.messageThreadId } : {}),
+        ...(target.directMessagesTopicId !== undefined ? { direct_messages_topic_id: target.directMessagesTopicId } : {}) },
+      interpret(data, response) {
+        if (data.ok === false && typeof data.error_code === "number") return providerRejected("Telegram", data.error_code);
+        const result = data.result as { message_id?: number; chat?: { id?: number }; message_thread_id?: number } | undefined;
+        return response.ok && data.ok === true && Number.isSafeInteger(result?.message_id) && result!.message_id! > 0
+          && String(result?.chat?.id) === target.chatId
+          && (target.messageThreadId === undefined || result?.message_thread_id === target.messageThreadId)
+          ? { ok: true, receipt: `telegram:${target.chatId}:${result!.message_id}` } : unknownProviderReceipt("Telegram");
+      } });
   }
 
   private async sendText(chatId: string, text: string): Promise<void> {

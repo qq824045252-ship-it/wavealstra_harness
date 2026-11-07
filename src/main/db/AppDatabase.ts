@@ -61,7 +61,7 @@ import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 34;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {

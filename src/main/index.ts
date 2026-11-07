@@ -158,7 +158,9 @@ import type {
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
 import { WorkNotificationHost } from "./agent/work/WorkNotificationHost";
+import { publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
 import { createDesktopWorkChannel } from "./agent/work/WorkDesktopNotificationChannel";
+import { WorkGatewayNotificationChannels } from "./agent/work/WorkGatewayNotificationChannel";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
 import { ExternalAgentIpc, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentResolvePermissionRequest, type ExternalAgentSetConfigOptionRequest } from "../shared/external-agent";
 import { ConversationBranchService } from "./agent/ConversationBranchService";
@@ -330,6 +332,7 @@ let projectDocumentImporter: ProjectDocumentImporter;
 let projectContextResolver: ProjectContextResolver;
 let agentService: AgentService;
 let workNotificationHost: WorkNotificationHost | null = null;
+let workGatewayNotificationChannels: WorkGatewayNotificationChannels | null = null;
 let externalAgentRuntime: ExternalAgentRuntime;
 /** 对话分支（Branch in new task）服务 */
 let conversationBranchService: ConversationBranchService;
@@ -1040,6 +1043,7 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.workSummary, (_e, workId: string) => agentService.getWorkSummary(workId));
   ipcMain.handle(BotWorkIpc.workDiagnostics, (_e, request: unknown) => agentService.getWorkDiagnostics(request));
   ipcMain.handle(BotWorkIpc.resendNotification, (_e, request: unknown) => agentService.resendWorkNotification(request));
+  ipcMain.handle(BotWorkIpc.reviewControl, (_e, request: unknown) => agentService.reviewWork(request));
 
   // BTW（临时上下文分支）：瞬时会话，与 Task Registry / agent:event 完全隔离
   ipcMain.handle(BtwIpc.start, async (_e, req: BtwStartRequest) => {
@@ -2721,11 +2725,12 @@ app.whenReady().then(async () => {
     console.log(`[index] 任务执行工作区路径重绑完成：cwd=${rebind.cwds}, trash_path=${rebind.trashPaths}`);
   }
   agentService = new AgentService(db);
-  // The desktop channel is a real endpoint: its effect is a durable notification row keyed
-  // by the provider effect key, so a restart reads the effect back instead of re-notifying.
+  // Cards remain available in-app. External effects use the same authority-owned ledger;
+  // an unqueryable desktop/Gateway receipt stays unknown across a restart.
   workNotificationHost = new WorkNotificationHost(agentService.getWorkService(), {
     isAuthority: () => agentService.getWorkHostStatus().isAuthority,
     channels: () => notificationService ? [createDesktopWorkChannel(notificationService)] : [],
+    asyncChannels: () => workGatewayNotificationChannels?.channels() ?? [],
     intervalMs: 15_000,
     onError: (error) => console.warn("[Work] 通知投递失败", error),
   });
@@ -2778,54 +2783,8 @@ app.whenReady().then(async () => {
     { cleanupByNode: (kind, id) => workGraphService.cleanupByNode(kind, id) },
   );
   agentService.setTaskLifecycleListener((event) => {
-    // Cron 有自己的 automation 生命周期通知，避免同一运行出现 task + automation 双通知。
-    if (event.taskId.startsWith("cron-")) return;
-    const task = db.getTask(event.taskId);
-    const taskTitle = task?.title?.trim() || "任务";
-    const workspaceId = task?.spaceId ?? undefined;
-    const projectId = task?.projectId ?? undefined;
-    if (event.kind === "completed") {
-      notificationService.publish({
-        type: "task.completed",
-        level: "success",
-        title: "任务已完成",
-        body: taskTitle,
-        sourceType: "task",
-        sourceId: event.taskId,
-        taskId: event.taskId,
-        workspaceId,
-        projectId,
-        dedupeKey: `task:${event.taskId}:${event.assistantMessageId}:terminal`,
-      });
-      return;
-    }
-    if (event.kind === "failed") {
-      notificationService.publish({
-        type: "task.failed",
-        level: "error",
-        title: "任务执行失败",
-        body: `${taskTitle} · ${event.error}`,
-        sourceType: "task",
-        sourceId: event.taskId,
-        taskId: event.taskId,
-        workspaceId,
-        projectId,
-        dedupeKey: `task:${event.taskId}:${event.assistantMessageId}:terminal`,
-      });
-      return;
-    }
-    notificationService.publish({
-      type: "task.action_required",
-      level: "warning",
-      title: "任务需要你处理",
-      body: `${taskTitle} · ${event.summary}${event.detail ? ` · ${event.detail}` : ""}`,
-      sourceType: "task",
-      sourceId: event.taskId,
-      taskId: event.taskId,
-      workspaceId,
-      projectId,
-      dedupeKey: `task:${event.taskId}:tool:${event.toolCallId}:action`,
-    });
+    publishTaskLifecycleNotification({ event, task: db.getTask(event.taskId),
+      workRepo: agentService.getWorkService().repo, notifications: notificationService });
   });
   // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
   // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
@@ -3325,6 +3284,11 @@ app.whenReady().then(async () => {
       console.warn(`[index] 项目事件投递失败 ${project.id}：`, err);
     }
   });
+  workGatewayNotificationChannels = new WorkGatewayNotificationChannels(db.connection, agentService.getWorkService(), gatewayService, {
+    isAuthority: () => agentService.getWorkHostStatus().isAuthority,
+  });
+  gatewayService.setWorkNotificationWake(() => workNotificationHost?.wake());
+  workNotificationHost.wake();
   gatewayService.setTrashedWorkspaceRestorer((taskId) => {
     taskLifecycle.restore(taskId);
   });
@@ -3444,8 +3408,9 @@ app.on("before-quit", (event) => {
     try { professionalToolService?.stopOwned(); } catch { /* best effort */ }
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
-    try { workNotificationHost?.stop(); } catch { /* best effort */ }
+    try { await workNotificationHost?.close(); } catch { /* best effort */ }
     try { agentService?.setWorkNotificationWake(undefined); } catch { /* best effort */ }
+    try { gatewayService?.setWorkNotificationWake(undefined); } catch { /* best effort */ }
     try { await gatewayService?.suspend(); } catch { /* best effort */ }
     try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }

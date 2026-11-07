@@ -9,8 +9,9 @@ const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const windows = process.platform === 'win32';
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
+const phase5 = process.env.BOT_WORK_DEV_PHASE5 === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, 'out/diagnostics/bot-work-phase3/dev'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, `out/diagnostics/bot-work-phase${phase5 ? 5 : 3}/dev`); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -187,6 +188,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     report.checks.push('UI send -> trusted control -> independent root -> result -> projection -> Work selection');
     await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("执行情况")'), 'Phase 3 authoritative detail');
     const original = (await evaluate('window.api.botWork.listWorks(true)'))[0];
+    if (phase5) {
+      await require('./bot-work-phase5-dev-checks.cjs')({ evaluate, rpc, until, isolatedSql, report,
+        original, requests, socket, out });
+      report.finalProjection = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);
+      report.works = works; report.providerRequests = requests.length; report.status = 'passed';
+      return;
+    }
     const binding = original.executions[0];
     assert(binding && binding.status === 'completed', 'fixture original root really settled');
     const fullOwner = { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
@@ -362,6 +370,6 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       else processDev.kill('SIGTERM');
     } }
     if (log !== undefined) fs.closeSync(log); await new Promise(resolve => provider.close(resolve));
-    console.log(`Phase 3 pnpm dev UI: ${report.status}; ${path.join(out, 'report.json')}`);
+    console.log(`Phase ${phase5 ? 5 : 3} pnpm dev UI: ${report.status}; ${path.join(out, 'report.json')}`);
   }
 })();

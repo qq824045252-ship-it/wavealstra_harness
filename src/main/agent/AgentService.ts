@@ -11,6 +11,7 @@ import { DurableBotService } from "./durable/DurableBotService";
 import { BotConversationService } from "./work/BotConversationService";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
 import { WorkProjectionJournal } from "./work/WorkProjectionJournal";
+import { reviewWork } from "./work/WorkReviewControl";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
@@ -835,7 +836,11 @@ export class AgentService {
       this.workService,
       (patch) => this.emitPatch(patch),
       { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
-        resolveBotId: taskId => this.botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId },
+        resolveBotId: taskId => this.botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId,
+        resolveSourceMessageId: taskId => {
+          const invocation = currentDurableInvocation();
+          return invocation?.execution.taskId === taskId ? invocation.sourceUserMessageId : undefined;
+        } },
     );
     this.botWorkContext = new BotWorkContextService(db.connection, this.botRegistry, this.workService);
     this.executionFailures = new ExecutionFailureRepository(db.connection);
@@ -1188,6 +1193,12 @@ export class AgentService {
 
   recordWorkUserFeedback(request: RecordUserFeedbackParams): WorkControlResult {
     return this.workService.recordUserFeedback({
+      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
+    }, request);
+  }
+
+  reviewWork(request: unknown): WorkControlResult {
+    return reviewWork(this.workService, {
       kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
     }, request);
   }

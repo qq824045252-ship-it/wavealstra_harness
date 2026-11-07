@@ -11,6 +11,8 @@ interface Invocation {
   runId: string;
   native: ToolExecutionApi;
   context: Context;
+  /** Trusted original host input, resolved through this run's durable submission receipt. */
+  sourceUserMessageId?: string;
 }
 const invocation = new AsyncLocalStorage<Invocation>();
 

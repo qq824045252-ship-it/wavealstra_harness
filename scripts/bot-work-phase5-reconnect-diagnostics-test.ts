@@ -311,7 +311,7 @@ check("a source commit SHA is not confused with the artifact snapshot identity",
   }));
   const scope = works.cards.unverifiedScope(current, snapshotId).find(item => item.criterionId === criterion.id)!;
   assert.notEqual(sourceSha, snapshotId);
-  assert.equal(scope.reason, "auto_verified", "current evidence can name a source commit independently of its artifact snapshot");
+  assert.equal(scope.reason, "user_verified", "current user evidence keeps its provenance and can name a source commit independently of its artifact snapshot");
   assert.equal(scope.artifactSnapshotId, snapshotId);
   assert.equal(works.repo.getEvidence(scope.evidenceIds[0]!)!.sourceSha, sourceSha);
   const historical = works.cards.unverifiedScope({ ...current, inputSnapshotId: "a-new-input" }, snapshotId)

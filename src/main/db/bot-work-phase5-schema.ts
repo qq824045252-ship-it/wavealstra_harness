@@ -31,7 +31,8 @@ export function ensureBotWorkPhase5Tables(db: Database.Database): void {
       semantic_card_key TEXT NOT NULL UNIQUE,
       work_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('accepted_result','closure_succeeded','closure_cancelled','closure_failed','blocked_escalation')),
+      kind TEXT NOT NULL CHECK (kind IN ('accepted_result','closure_succeeded','closure_cancelled','closure_failed','blocked_escalation','owner_summary')),
+      previous_card_key TEXT,
       intent_revision INTEGER NOT NULL CHECK (intent_revision > 0),
       input_snapshot_id TEXT NOT NULL,
       origin_owner_epoch INTEGER NOT NULL CHECK (origin_owner_epoch > 0),
@@ -77,6 +78,25 @@ export function ensureBotWorkPhase5Tables(db: Database.Database): void {
       ON work_notification_effects(notification_id, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS uq_work_notification_effect_initial
       ON work_notification_effects(notification_id) WHERE authorization_kind = 'initial';
+
+    -- Immutable inbound route authorization, not a delivery ledger. Attempts/effects
+    -- remain in work_notifications / work_notification_attempts / effects above.
+    CREATE TABLE IF NOT EXISTS gateway_work_targets (
+      target_key TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      source_message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      channel_type TEXT NOT NULL,
+      connection_key TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK (json_valid(target_json)),
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, conversation_id, source_message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_work_targets_conversation
+      ON gateway_work_targets(user_id, conversation_id, source_message_id);
 
     CREATE TABLE IF NOT EXISTS work_owner_summaries (
       work_id TEXT PRIMARY KEY,

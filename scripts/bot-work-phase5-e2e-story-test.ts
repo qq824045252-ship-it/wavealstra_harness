@@ -7,6 +7,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkProjectionJournal } from "../src/main/agent/work/WorkProjectionJournal";
+import { OWNER_SUMMARY_MAX_WAIT_MS } from "../src/main/agent/work/WorkOwnerSummary";
 import { mergeWorkList } from "../src/renderer/src/store/app/slices/botWorkSync";
 import { capabilityOfGuarantee } from "../src/shared/bot-work-phase5";
 import type { WorkActor, WorkControlResult, WorkDto, WorkNotificationChannel, WorkProjectionDto } from "../src/shared/bot-work";
@@ -14,7 +15,8 @@ import type { WorkListCursor } from "../src/shared/bot-conversation";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 
 /**
- * Frozen acceptance §9: one continuous story on one durable store.
+ * Service-level regression for acceptance §9. The separate native-story test owns
+ * the actual Pi Durable processes, child execution and SIGKILL acceptance evidence.
  *
  * The story drives the real Work service, the real watch ingress, the real projection
  * journal and the real notification chain. Two host restarts reopen the same SQLite file
@@ -49,7 +51,7 @@ function openHost() {
 }
 let host = openHost();
 let { db, works, journal } = host;
-/** Abrupt host stop: no shutdown hook runs, the next host reopens the same files. */
+/** Service fixture reopen only; this is not a process kill or a native recovery proof. */
 function crashAndReopen() {
   db.connection.close();
   host = openHost();
@@ -304,14 +306,19 @@ step("通知恢复与双端追溯：验收后未发送即崩溃，恢复只补�
   // A channel that cannot report keeps an honest unknown and is not resent blindly.
   const unknownWork = works.getWork(workA)!;
   assert.equal(unknownWork.lifecycle, "closed");
-  const closedNotification = works.repo.listNotifications(workA).find(item => item.kind === "closed")!;
+  clock.at += OWNER_SUMMARY_MAX_WAIT_MS;
+  works.phase5.flushOwnerSummaries();
+  const summaryNotification = works.repo.listNotifications(workA).find(item => item.kind === "summary")!;
+  assert(summaryNotification, "the current owner has one independent team summary intent");
+  assert.equal(works.repo.listNotifications(workA).filter(item => item.kind === "closed").length, 0,
+    "successful closure does not duplicate the team's accepted-outcome notification");
   works.deliverPendingNotifications({ channel: "gateway", ...capabilityOfGuarantee("best-effort-unqueryable"),
     send() { return { ok: false, retryable: false, responseLost: true, error: "no receipt" }; } }, workA);
-  assert.equal(works.repo.getNotification(closedNotification.notificationId)!.delivery, "unknown");
-  const attempts = works.notifications.attempts(closedNotification.notificationId).length;
+  assert.equal(works.repo.getNotification(summaryNotification.notificationId)!.delivery, "unknown");
+  const attempts = works.notifications.attempts(summaryNotification.notificationId).length;
   works.deliverPendingNotifications({ channel: "gateway", ...capabilityOfGuarantee("best-effort-unqueryable"),
     send() { return { ok: false, retryable: false, responseLost: true, error: "no receipt" }; } }, workA);
-  assert.equal(works.notifications.attempts(closedNotification.notificationId).length, attempts, "unknown 不盲目重发");
+  assert.equal(works.notifications.attempts(summaryNotification.notificationId).length, attempts, "unknown 不盲目重发");
 
   // Both ends converge on the same persisted facts.
   const desktop: { works: WorkProjectionDto[]; cursor: WorkListCursor | null } = { works: [], cursor: null };
@@ -325,7 +332,7 @@ step("通知恢复与双端追溯：验收后未发送即崩溃，恢复只补�
   syncInto(desktop); syncInto(phone);
   assert.deepEqual(desktop.works.map(item => [item.workId, item.stateVersion, item.cards?.length]).sort(),
     phone.works.map(item => [item.workId, item.stateVersion, item.cards?.length]).sort());
-  const aCard = desktop.works.find(item => item.workId === workA)!.cards![0]!;
+  const aCard = desktop.works.find(item => item.workId === workA)!.cards!.find(card => card.kind === "accepted_result")!;
   assert.equal(aCard.kind, "accepted_result");
   assert.equal(desktop.works.find(item => item.workId === workB)!.lifecycle, "active");
 });

@@ -30,6 +30,7 @@ export interface ConversationGoalServiceOptions {
   userId?: string;
   botId?: string;
   resolveBotId?: (taskId: string) => string;
+  resolveSourceMessageId?: (taskId: string) => string | undefined;
 }
 
 /**
@@ -72,6 +73,7 @@ export class ConversationGoalService {
       criteria: (request.criteria ?? []).slice(0, CONVERSATION_GOAL_MAX_CRITERIA)
         .map((criterion) => ({ text: criterion.text })),
       conversationId: request.taskId,
+      sourceMessageId: this.options.resolveSourceMessageId?.(request.taskId),
       legacyTaskId: request.taskId,
       ownerBotId: this.options.resolveBotId?.(request.taskId) ?? this.options.botId ?? DEFAULT_BOT_ID,
       inputSnapshotId: `conversation:${request.taskId}`,

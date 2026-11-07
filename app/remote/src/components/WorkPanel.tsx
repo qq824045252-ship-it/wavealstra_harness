@@ -87,7 +87,7 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
   const [feedbackError, setFeedbackError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const criterion = work.unverifiedScope.find(entry => entry.reason !== 'auto_verified')
+  const criterion = work.unverifiedScope.find(entry => !['auto_verified', 'user_verified'].includes(entry.reason))
   const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision,
     expectedOwnerEpoch: work.ownerEpoch }
 
@@ -161,12 +161,14 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
       <section className="work-section">
         <h3 className="work-section-title">结果卡片</h3>
         {work.cards.map(card => (
-          <div key={card.cardKey} className={`work-card ${card.currency !== 'current' ? 'work-card-historical' : ''}`}>
+          <div key={card.cardKey} id={`work-card-${card.cardKey}`} className={`work-card ${card.currency !== 'current' ? 'work-card-historical' : ''}`}>
             <div className="work-card-head">
               <span className="work-card-title">{card.title}</span>
               {workCardCompletionLabel(work, card) && <span className="work-badge work-badge-closed">{workCardCompletionLabel(work, card)}</span>}
               {card.currency !== 'current' && <span className="work-badge work-badge-historical">{card.currency === 'superseded' ? '已失效' : '历史'}</span>}
             </div>
+            {card.kind === 'owner_summary' && <div className="work-meta">主负责人汇总{card.previousCardKey
+              && <> · <a href={`#work-card-${card.previousCardKey}`}>查看上次汇总</a></>}</div>}
             <p className="work-card-body">{card.summary}</p>
             {card.unverifiedScope.length > 0 && (
               <div className="work-card-scope">未验证：{card.unverifiedScope.join('、')}</div>
@@ -255,6 +257,7 @@ export function workCardCompletionLabel(work: RemoteWorkSummary, card: RemoteWor
 function reasonLabel(reason: string): string {
   switch (reason) {
     case 'auto_verified': return '自动已验证'
+    case 'user_verified': return '用户已验证'
     case 'pending_real_environment': return '待实机'
     case 'historical_version_only': return '仅历史版本'
     case 'artifact_changed': return '产物已变'

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler, SlackChannelHistory } from "./channels";
 import { SlackGatewayJournal, slackTaskId, slackTurnIds, type SlackDelivery } from "./SlackGatewayJournal";
+import { assertGatewayWorkSend, gatewayConnectionKey, gatewayWorkTarget, GatewayWorkNotSentError,
+  postGatewayWork, providerRejected, unknownProviderReceipt,
+  type GatewayWorkSendInput, type GatewayWorkSendResult } from "./work-outbound";
 
 export interface SlackSocket {
   onmessage: ((event: { data: unknown }) => void) | null;
@@ -99,6 +102,33 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
   setInboundHandler(handler: GatewayInboundHandler): void { this.onInbound = handler; }
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.lastError || (this.connected ? "已连接（Socket Mode，限定工作区和用户）" : "未连接"); }
+  workConnectionKey(): string | undefined {
+    return this.connected && this.activated && this.config && this.botUserId
+      ? gatewayConnectionKey(this.type, [this.config.teamId, this.config.appId, this.botUserId]) : undefined;
+  }
+
+  /** Work owns the attempt/effect ledger. Never put its delivery into the reply journal. */
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    if (input.target.channelType !== "slack" || !this.config) throw new GatewayWorkNotSentError("Slack 通知目标不匹配");
+    const target = input.target.address;
+    if (!this.activated || !this.allows({ ...target, userId: input.target.senderId })) {
+      throw new GatewayWorkNotSentError("Slack 原发送者或目标不再获授权，本次未发送");
+    }
+    const hash = createHash("sha256").update(input.effectKey).digest("hex");
+    const clientId = hash.slice(0, 8) + "-" + hash.slice(8, 12) + "-4" + hash.slice(13, 16) + "-8" + hash.slice(17, 20) + "-" + hash.slice(20, 32);
+    return postGatewayWork({ label: "Slack", fetcher: this.fetcher, signal: input.signal,
+      url: "https://slack.com/api/chat.postMessage", headers: { Authorization: "Bearer " + this.config.botToken },
+      body: { channel: target.channel, thread_ts: target.threadTs,
+        text: redactSlackText(input.text, [this.config.botToken, this.config.appToken]),
+        client_msg_id: clientId, unfurl_links: false, unfurl_media: false, reply_broadcast: false },
+      interpret(data, response) {
+        if (data.ok === false && typeof data.error === "string") return providerRejected("Slack", data.error);
+        return response.ok && data.ok === true && data.channel === target.channel && typeof data.ts === "string"
+          && /^\d+\.\d+$/.test(data.ts) ? { ok: true, receipt: `slack:${target.teamId}:${target.channel}:${data.ts}` }
+          : unknownProviderReceipt("Slack");
+      } });
+  }
   private report(text: string): void { this.lastError = text; this.options.onStatus?.(text); }
   private ownerUserId(): string { return this.config?.allowUsers[0] ?? ""; }
   private deliveryKey(delivery: SlackDelivery): string { return [delivery.teamId, delivery.appId, delivery.eventId].join(":"); }
@@ -359,6 +389,10 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     try {
       await this.onInbound({
         channelId: this.id, chatId: [current.teamId, current.channel, current.threadTs].join(":"),
+        workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
+          connectionKey: this.workConnectionKey(), chatId: [current.teamId, current.channel, current.threadTs].join(":"),
+          senderId: current.userId, address: { teamId: current.teamId, appId: current.appId,
+            channel: current.channel, threadTs: current.threadTs } }),
         taskId: slackTaskId(current), ...slackTurnIds(current), text: current.text,
         ...(slackHistory ? { slackHistory } : {}),
         messageId: current.eventId, sender: { id: current.userId },
