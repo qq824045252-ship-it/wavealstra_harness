@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, access, cp, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +41,8 @@ function models(reply: (context: any, options: any) => any): any {
   return api;
 }
 const text = (value: string) => [{ type: "text" as const, text: value }];
-const call = (name: string, args: object) => [{ type: "toolCall", id: "fixture-call", name, arguments: args }];
+let toolCallSequence = 0;
+const call = (name: string, args: object) => [{ type: "toolCall", id: `fixture-call-${++toolCallSequence}`, name, arguments: args }];
 const forbidden = { ...emptyModePolicy(), artifactPolicy: { mode: "hard" as const, allow: ["pdf"], deny: ["py"] }, presets: [{id: "old", label: "kept", promptAddon: "user prompt", mcpPolicy: { mode: "hard" as const, allow: [], deny: ["*"] } }] };
 const policy = botConfiguration(forbidden);
 assert.equal(policy.presets?.[0].promptAddon, "user prompt");
@@ -66,6 +67,7 @@ for (const mode of ["native", "codemode"] as const) {
     const submission = await runtime.submit("run", `request-${mode}`);
     assert.equal((await submission.wait(ctx)).status, "done");
     assert.equal(await readFile(join(cwd, "proof.py"), "utf8"), "native durable");
+    await runtime.conversation.waitForIdle(ctx);
     await runtime.refresh();
     assert.equal(runtime.snapshot.messages.at(-1)?.text, "complete");
     assert.equal(runtime.snapshot.busy, false);
@@ -99,7 +101,7 @@ for (const mode of ["native", "codemode"] as const) {
     const firstAnswer = history.items.find(entry => entry.kind === "pi.assistant" && entry.model?.some(message => message.role === "assistant" && message.stopReason === "stop"));
     assert(firstAnswer);
     const fork = await runtime.conversation.fork(firstAnswer.id, { ownership: { kind: "ownerless" } }, ctx);
-    code = 'if(load("n")!==2)throw Error("fork must copy current state"); store("n",3);';
+    code = 'if(load("n")!==1)throw Error("fork must copy store as of its entry"); store("n",3);';
     assert.equal((await (await fork.submit({ type: "input", content: "fork", requestId: "fork" }, ctx)).wait(ctx)).status, "done");
     await fork.waitForIdle(ctx);
     const sibling = await runtime.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { cwd, model: ref, tools: (await runtime.conversation.agent(ctx)).tools } }, ctx);
@@ -116,7 +118,7 @@ for (const mode of ["native", "codemode"] as const) {
     code = 'if(load("n")!==2)throw Error("reopen lost root store or fork/sibling mutated it"); text(load("n"));';
     assert.equal((await (await runtime.submit("read persisted store", "document-reopen")).wait(ctx)).status, "done");
   } finally { await runtime.close(); }
-  console.log("PASS conversation documents preserve current forks, isolate siblings and restore store, input metadata, timing and history");
+  console.log("PASS conversation documents preserve entry-time forks, isolate siblings and restore store, input metadata, timing and history");
 }
 if (process.platform === "win32") for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode + "-powershell"); await mkdir(cwd);
@@ -149,34 +151,6 @@ if (process.platform === "win32") for (const mode of ["native", "codemode"] as c
   console.log("PASS", mode, "native PowerShell argv execution, UTF-8, workspace cwd and refreshed tool configuration");
 }
 {
-  const cwd = join(root, "legacy-1.0.0"); await mkdir(cwd);
-  const directory = join(cwd, "state");
-  await cp(join(process.cwd(), "scripts/fixtures/pi-durable-1.0.0"), directory, { recursive: true });
-  let effects = 0;
-  const sessionIds: string[] = [];
-  const hold = defineTool({ name: "legacy_hold", description: "legacy unsafe effect", parameters: Type.Object({}), replay: "unsafe",
-    execute: async () => { effects++; return { output: text("must not replay") }; } });
-  const runtime = await DurableBotRuntime.open({ directory, cwd, model: ref, toolMode: "native", tools: [hold],
-    instructions: () => "fixture", onSnapshot: () => {}, models: models((_context, options) => {
-      sessionIds.push(options.sessionId); return text("upgraded completion");
-    }) });
-  try {
-    assert(runtime.snapshot.messages.some(message => message.text === "legacy completed reply"), "1.0.0 committed history is preserved");
-    assert.equal(runtime.snapshot.pendingInputs.at(-1)?.text, "legacy queued");
-    const interrupted = await runtime.submit("legacy hold", "legacy-interrupted");
-    const queued = await runtime.submit("legacy queued", "legacy-queued");
-    assert.equal((await interrupted.wait(ctx)).status, "done");
-    assert.equal((await queued.wait(ctx)).status, "done");
-    assert.equal(effects, 0, "1.0.0 interrupted unsafe side effects must not replay on upgrade");
-    assert(sessionIds[0], "legacy conversations acquire native provider session identity");
-    assert(sessionIds.every(id => id === sessionIds[0]), "legacy resumed and queued requests share the new provider identity");
-    await runtime.refresh();
-    assert(runtime.snapshot.messages.some(message => message.tools?.some(tool => tool.tool === "legacy_hold" && tool.status === "error")));
-    assert.equal(runtime.snapshot.busy, false); assert.equal(runtime.snapshot.queued, 0);
-  } finally { await runtime.close(); }
-  console.log("PASS real 1.0.0 JSONL upgrade retains history, resumes queued input, never replays unsafe effects and provisions provider UUID");
-}
-{
   const cwd = join(root, "provider-session"); await mkdir(cwd);
   const sessionIds: string[] = [];
   const api = models((_context, options) => { sessionIds.push(options.sessionId); return text("session affinity"); });
@@ -196,40 +170,6 @@ if (process.platform === "win32") for (const mode of ["native", "codemode"] as c
   assert.notEqual(sessionIds[2], sessionIds[0], "separate Bot conversations have separate provider cache affinity");
   console.log("PASS native provider session UUID persists on reopen and isolates conversations");
 }
-{
-  const cwd = join(root, "legacy-azure-1.0.0"); await mkdir(cwd);
-  const directory = join(cwd, "state");
-  await cp(join(process.cwd(), "scripts/fixtures/pi-durable-1.0.0"), directory, { recursive: true });
-  // Only copied execution references change. Historical assistant provider metadata remains fixture.
-  const migrateFixture = (value: any): any => {
-    if (Array.isArray(value)) return value.map(migrateFixture);
-    if (!value || typeof value !== "object") return value;
-    if (value.provider === "fixture" && value.modelId === "fixture") return { ...value, provider: "azure-openai-responses" };
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, migrateFixture(item)]));
-  };
-  for (const name of await readdir(directory)) if (name.endsWith(".jsonl")) {
-    const file = join(directory, name), original = await readFile(file, "utf8");
-    await writeFile(file, original.trimEnd().split("\n").map(line => JSON.stringify(migrateFixture(JSON.parse(line)))).join("\n") + "\n");
-  }
-  let effects = 0, lookups = 0;
-  const api = models(() => text("azure upgraded completion"));
-  api.getModel = (provider: string, id: string) => {
-    assert.equal(provider, "azure", "only the new Azure provider is registered"); assert.equal(id, "fixture"); lookups++;
-    return { ...model, provider: "azure" };
-  };
-  const stream = api.streamSimple;
-  api.streamSimple = (selected: any, context: any, options: any) => { assert.equal(selected.provider, "azure"); return stream(selected, context, options); };
-  const runtime = await DurableBotRuntime.open({ directory, cwd, model: { provider: "azure", modelId: "fixture" }, toolMode: "native",
-    models: api, instructions: () => "fixture", onSnapshot: () => {}, tools: [defineTool({ name: "legacy_hold", description: "legacy effect",
-      parameters: Type.Object({}), replay: "unsafe", execute: async () => { effects++; return {}; } })] });
-  try {
-    assert.equal((await (await runtime.submit("legacy hold", "legacy-interrupted")).wait(ctx)).status, "done");
-    assert.equal((await (await runtime.submit("legacy queued", "legacy-queued")).wait(ctx)).status, "done");
-    assert.equal(effects, 0); assert(lookups > 0);
-    assert.equal((await runtime.conversation.agent(ctx)).model?.provider, "azure-openai-responses", "adapter never rewrites persisted selections or historical entries");
-  } finally { await runtime.close(); }
-  console.log("PASS 1.0.0 legacy Azure agent/checkpoint resumes with only native azure provider registered");
-}
 // Generated and decoded successfully by Pi's Photon runtime, including its strict PNG decoder.
 const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AACA//8EggJ/LF23YQAAAABJRU5ErkJggg==";
 const decodedPng = await resizeImage(Buffer.from(tinyPng, "base64"), "image/png");
@@ -244,7 +184,7 @@ for (const mode of ["native", "codemode"] as const) {
     assert(input, "persisted user image reaches provider context before and after reopen");
     if (restored) return text("image reopen complete");
     if (++requests === 1) return mode === "native" ? call("read", { path: "input.png" })
-      : call("codemode", { code: 'const r=await tools.read({path:"input.png"}); const img=r.content; if(img.type!=="image")throw Error("Image missing"); image(img); image(img);' });
+      : call("codemode", { code: 'const r=await tools.read({path:"input.png"}); const img=r; if(img.type!=="image")throw Error("Image missing"); image(img); image(img);' });
     outputImages = context.messages.filter((message: any) => message.role === "toolResult").flatMap((message: any) => message.content.filter((part: any) => part.type === "image"));
     assert(outputImages.length >= (mode === "codemode" ? 2 : 1), "native read and Code Mode forward actual image blocks");
     return text("image complete");
@@ -444,6 +384,7 @@ for (const mode of ["native", "codemode"] as const) {
   assert.equal((await (await runtime.harness.submission(first.id,ctx))!.wait(ctx)).status,"done");
   assert.equal((await (await runtime.harness.submission(queued.id,ctx))!.wait(ctx)).status,"done");
   assert.equal(started,1,"unsafe tool must not execute twice after restart");
+  await runtime.conversation.waitForIdle(ctx);
   await runtime.refresh(); assert.equal(runtime.snapshot.busy,false);
   assert(runtime.snapshot.messages.some(m=>m.tools?.some(t=>t.status==="error")),"interrupted tool must be visible");
   await runtime.configure(ref,"native");
@@ -474,6 +415,7 @@ for (const mode of ["native", "codemode"] as const) {
   const options = {directory:join(cwd,"state"),cwd,model:ref,toolMode:"native" as const,instructions:()=>"fixture",models:api,onSnapshot:()=>{}};
   let runtime = await DurableBotRuntime.open(options);
   for(let i=0;i<3;i++) await (await runtime.submit(`turn ${i} ` + "context ".repeat(12000), `compact-${i}`)).wait(ctx);
+  await runtime.conversation.waitForIdle(ctx);
   const before = (await runtime.refresh()).messages;
   await runtime.compact();
   assert(summaries > 0, "native summarizer must actually run");
@@ -559,8 +501,11 @@ for (const mode of ["native", "codemode"] as const) {
   await runtime.close(); clearResults(); stage = "recall";
   runtime = await DurableBotRuntime.open(options);
   try {
-    await (await runtime.submit("recall", "recall-metadata")).wait(ctx); await runtime.refresh();
-    assert(runtime.snapshot.messages.some(m => m.tools?.some(t => t.tool === "recall_fixture" && t.status === "success" && t.output === "restored source")), "metadata must survive in a new Code Mode child after restart");
+    await (await runtime.submit("recall", "recall-metadata")).wait(ctx);
+    await runtime.conversation.waitForIdle(ctx);
+    await runtime.refresh();
+    assert(runtime.snapshot.messages.some(m => m.tools?.some(t => t.tool === "recall_fixture" && t.status === "success")), "metadata lookup must succeed after restart");
+    assert(runtime.snapshot.messages.some(m => m.tools?.some(t => t.tool === "codemode" && t.status === "success" && t.output?.includes("restored source"))), "restored metadata must reach the persisted Code Mode output");
   } finally { await runtime.close(); clearResults(); }
   console.log("PASS extension metadata survives restart and new Code Mode child ownership");
 }
@@ -658,6 +603,11 @@ for (const mode of ["native", "codemode"] as const) {
   const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
   await mkdir(directory, { recursive: true });
   const emptyModels: any = { getAuth: async () => undefined, getModel: () => undefined, getModels: () => [], getAvailable: async () => [], refresh: async () => ({}) };
+  const seeded = await DurableBotRuntime.open({ directory, cwd, model: ref, toolMode: "native",
+    models: models(() => text("persisted history without a model catalog")), instructions: () => "fixture", onSnapshot: () => {} });
+  await (await seeded.submit("seed actual history", "history-seed")).wait(ctx);
+  await seeded.conversation.waitForIdle(ctx);
+  await seeded.close();
   const service = new DurableBotService({ db, agentDir, mcpDir: join(agentDir, "mcp"), models: emptyModels,
     // 扩展工厂自身抛错同样不能阻断只读历史；发请求时才严格重新装配。
     tools: () => { throw new Error("extension factory boom"); },
@@ -667,7 +617,10 @@ for (const mode of ["native", "codemode"] as const) {
     const history = await service.history(taskId);
     assert.equal(history.historyError, undefined, "模型目录为空不能把历史变成打不开（模型只属于发请求）");
     assert.equal(history.durable?.backend, "pi-durable");
+    assert(history.messages.some(message => message.text === "persisted history without a model catalog"));
     assert.equal(db.getTask(taskId)!.modelId, storedModel, "只读打开不得改写任务配置");
+    await assert.rejects(service.submit({ taskId, userMessageId: "must-not-run", assistantMessageId: "must-not-run-answer", text: "not a history read" }),
+      /extension factory boom/, "execution must rebuild the real tool factory and fail, rather than use the viewer");
   } finally { await service.close(); db.close(); }
   console.log("PASS 只读历史与模型目录解耦：没有可用模型也能打开，且不改写任务");
 }

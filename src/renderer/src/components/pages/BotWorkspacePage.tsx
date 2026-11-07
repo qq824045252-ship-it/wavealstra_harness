@@ -32,6 +32,9 @@ export default function BotWorkspacePage(): React.JSX.Element {
   const setBotDraft = useAppStore((s) => s.setBotDraft);
   const submitBotDraft = useAppStore((s) => s.submitBotDraft);
   const notice = useAppStore((s) => s.botSubmissionNotice);
+  const histories = useAppStore((s) => s.botHistories);
+  const sendErrors = useAppStore((s) => s.botConversationErrors);
+  const pendingSends = useAppStore((s) => s.botPendingSends);
   const identities = useAppStore((s) => s.botIdentities);
   const works = useAppStore((s) => s.botWorks);
   const activeBotId = useAppStore((s) => s.activeBotId);
@@ -46,6 +49,13 @@ export default function BotWorkspacePage(): React.JSX.Element {
   useEffect(() => {
     void useAppStore.getState().refreshBotWork();
   }, []);
+  useEffect(() => {
+    if (!activeBotId) return;
+    const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId); void useAppStore.getState().refreshBotWork(); };
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => clearInterval(timer);
+  }, [activeBotId]);
 
   const activeBot = identities.find((bot) => bot.botId === activeBotId) ?? null;
   const openWorks = works.filter((work) => work.ownerBotId === activeBot?.botId && work.lifecycle !== "closed");
@@ -70,6 +80,17 @@ export default function BotWorkspacePage(): React.JSX.Element {
         </header>
         {activeBot ? (
           <div className="bot-thread">
+            <button type="button" onClick={() => { void useAppStore.getState().archiveBotConversation(activeBot.botId); }}>归档对话</button>
+            {sendErrors[activeBot.botId] && <p role="alert">{sendErrors[activeBot.botId]}</p>}
+            {(histories[activeBot.botId]?.messages ?? []).map(message => <article key={message.messageId} data-message-id={message.messageId}>
+              <strong>{message.role === "user" ? "你" : activeBot.displayName}</strong>
+              <p style={{ whiteSpace: "pre-wrap" }}>{message.text || (message.status === "queued" ? "等待回复" : "处理中")}</p>
+              <small>{message.status === "completed" ? message.role === "user" ? "已发送" : "已回复"
+                : { queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" }[message.status]}</small>
+              {message.error && <p role="alert">{message.error}</p>}
+              {message.workIds.map(workId => <button type="button" key={workId} onClick={() => setSelectedWorkId(workId)}>{works.find(work => work.workId === workId)?.title ?? workId}</button>)}
+              {message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status) && <button type="button" onClick={() => { void useAppStore.getState().cancelBotSend(activeBot.botId, message.requestId); }}>停止回复</button>}
+            </article>)}
             {workError && <p role="alert">{workError}</p>}
             {openWorks.length === 0 ? (
               <p>这个 Bot 还没有未结束的事项。普通消息不会自动创建事项。</p>
@@ -89,10 +110,10 @@ export default function BotWorkspacePage(): React.JSX.Element {
           </div>
         )}
         <form className="bot-composer" onSubmit={(event) => { event.preventDefault(); submitBotDraft(); }}>
-          {notice && <p role="status">这次只保留了草稿，没有创建事项，也没有派发执行。</p>}
+          {notice && <p role="status">消息已持久受理。</p>}
           <label htmlFor="bot-draft">Bot 对话草稿</label>
           <textarea id="bot-draft" value={botDraft} onChange={(event) => setBotDraft(event.target.value)} placeholder="输入草稿" rows={3} />
-          <button type="submit" disabled={!botDraft.trim()}>发送</button>
+          <button type="submit" disabled={!activeBotId || !botDraft.trim() || pendingSends[activeBotId]?.sending}>{activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送"}</button>
         </form>
       </section>
       {inspectorOpen && <aside className="bot-inspector" id="bot-work-inspector" aria-label="Work 详情">
@@ -138,6 +159,13 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         <dt>目标</dt>
         <dd>{work.mode === "watch" ? "持续查看" : "一次完成"}{work.inputSnapshotBound ? "" : " · 输入快照未绑定"}</dd>
       </dl>
+      <h3>成果与证据</h3>
+      {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
+        <strong>{{ proposed: "待验收", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
+        <p style={{ whiteSpace: "pre-wrap" }}>{deliverable.summary}</p>
+        {deliverable.artifactRefs.length > 0 && <ul>{deliverable.artifactRefs.map(ref => <li key={ref}>{ref}</li>)}</ul>}
+        <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
+      </article>)}
       <h3>验收</h3>
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>

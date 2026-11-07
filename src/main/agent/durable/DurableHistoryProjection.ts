@@ -5,7 +5,7 @@ import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
 
-export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; audit?: import("./DurableSkillProjection").DurableInputAudit };
+export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
 export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttftMs?: number | null };
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];

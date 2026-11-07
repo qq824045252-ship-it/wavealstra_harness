@@ -18,6 +18,7 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import { readDurableReadOnlyHistory } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
@@ -40,6 +41,9 @@ import type { CreateConversationBranchRequest } from "../../../shared/conversati
 import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, type MaterializedDurableBranch } from "./DurableTaskBranch";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
+class DurableToolAssemblyError extends Error {
+  constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause), { cause }); }
+}
 interface BotModelRepair { from: string; to: string }
 interface OpenBot {
   runtime: DurableBotRuntime; mcp: DurableMcp; mcpConfigKey: string;
@@ -82,6 +86,7 @@ export interface DurableBotServiceOptions {
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
   prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
+  beforeModelRequest?: (taskId: string) => void;
   resumeAllowed?: (taskId: string) => boolean;
   expertBindings?: TaskExpertBindingService;
 }
@@ -97,6 +102,7 @@ export class DurableBotService {
   private readonly admissions = new Map<string, Set<Promise<unknown>>>();
   private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly projections = new Map<string, Promise<void>>();
+  private readonly passiveReads = new Map<string, Promise<void>>();
   constructor(private readonly options: DurableBotServiceOptions) {
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
       task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
@@ -150,6 +156,8 @@ export class DurableBotService {
 
   private open(taskId: string): Promise<OpenBot> {
     if (this.closing) return Promise.reject(new Error("Bot runtime is closing"));
+    const passive = this.passiveReads.get(taskId);
+    if (passive) return passive.then(() => this.open(taskId));
     // A failed Session is being torn down; reopen only after its lease/MCP are released.
     const invalidating = this.invalidations.get(taskId);
     if (invalidating) return invalidating.then(() => this.open(taskId));
@@ -237,7 +245,9 @@ export class DurableBotService {
       const modelRepair = resolvedModel?.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
-      const domain = await this.options.tools?.(task, cwd, mcp);
+      let domain: DurableDomainTools | undefined;
+      try { domain = await this.options.tools?.(task, cwd, mcp); }
+      catch (error) { throw new DurableToolAssemblyError(error); }
       const base = this.options.assetsDir?.replace(/([\\/])app\.asar(?=[\\/])/, "$1app.asar.unpacked");
       const wasm = base && join(base, "quickjs.wasm");
       const worker = base && join(base, "codemode-worker.cjs");
@@ -262,6 +272,7 @@ export class DurableBotService {
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
         onResponse: (message, info) => this.options.onResponse?.(taskId, message, info),
         onRequest: info => this.options.onRequest?.(taskId, info),
+        beforeProviderRequest: () => this.options.beforeModelRequest?.(taskId),
         onTool: this.options.onTool,
         observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },
         waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
@@ -560,7 +571,31 @@ export class DurableBotService {
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
-        return open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record), context);
+        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record), context);
+        if (observation.status === "running") return observation;
+        const dedicated = this.options.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
+          .get(binding.taskId, binding.workId);
+        if (dedicated) {
+          // The host creates one fresh store per input. Session totals therefore
+          // include exactly its root, owned children and compaction, without
+          // attributing a shared answer or another Work's history to this binding.
+          const inspection = await open.runtime.harness.inspect(context);
+          if (inspection.tasks.length) return { status: "running" };
+          const interruptedUsage = await open.runtime.conversation.commit(async tx => {
+            let cursor: Cursor | undefined;
+            do {
+              const page = await tx.scanTasks({}, 200, cursor);
+              if (page.items.some(task => ["pi.generation", "pi.compaction"].includes(task.kind) && task.state.status === "terminal"
+                && ["aborted", "faulted", "orphaned"].includes(task.state.outcome.status))) return true;
+              cursor = page.next;
+            } while (cursor);
+            return false;
+          }, context);
+          const usage = await open.runtime.harness.usage(context);
+          const usageTokens = [...Object.values(usage.models), ...Object.values(usage.tools)].reduce((sum, item) => sum + item.totalTokens, 0);
+          return { ...observation, usageTokens: observation.status === "stopped" || interruptedUsage ? undefined : usageTokens };
+        }
+        return observation;
       },
     };
   }
@@ -657,6 +692,10 @@ export class DurableBotService {
         ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}),
         ...(recovery ? { sessionRecovery: recovery } : {}) };
     } catch (error) {
+      if (error instanceof DurableToolAssemblyError) {
+        try { return await this.passiveHistory(taskId, beforeEntryId); }
+        catch (readError) { error = readError; }
+      }
       // A Bot conversation that cannot be opened must say so: an empty projection renders as the
       // product's "waiting for the first message" state, which hides real damage from the user.
       console.warn("[Durable] Cannot open history", taskId, error);
@@ -666,6 +705,26 @@ export class DurableBotService {
   async refresh(taskId: string): Promise<void> {
     const open = this.opened.get(taskId);
     if (open) await open.runtime.refresh();
+  }
+
+  private async passiveHistory(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+    for (;;) {
+      const prior = this.passiveReads.get(taskId);
+      if (!prior) break;
+      await prior;
+    }
+    if (this.closing) throw new Error("Bot runtime is closing");
+    // Another request may already have rebuilt a healthy writer. Use it instead of claiming its lease.
+    if (this.opened.has(taskId) || this.opening.has(taskId)) return this.history(taskId, beforeEntryId);
+    const binding = this.binding(taskId);
+    if (!binding) return { messages: [] };
+    const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,
+      models: this.options.models, beforeEntryId });
+    const barrier = reading.then(() => {}, () => {}).finally(() => {
+      if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
+    });
+    this.passiveReads.set(taskId, barrier);
+    return reading;
   }
 
   async previewBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {
@@ -723,6 +782,7 @@ export class DurableBotService {
     this.projections.delete(taskId);
   }
   async release(taskId: string): Promise<void> {
+    await this.passiveReads.get(taskId);
     const open = this.opened.get(taskId) ?? await this.opening.get(taskId);
     const invalidating = this.invalidations.get(taskId);
     if (!open) { await invalidating; return; }
@@ -731,6 +791,7 @@ export class DurableBotService {
   }
   async close(): Promise<void> {
     this.closing = true;
+    await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
 }

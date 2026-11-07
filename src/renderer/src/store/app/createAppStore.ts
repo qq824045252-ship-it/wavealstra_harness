@@ -61,7 +61,7 @@ export function createAppStore(dependencies: AppStoreDependencies = {}) {
       set,
       get,
       runtime,
-      getApi: dependencies.getApi ?? (() => window.api),
+      getApi: dependencies.getApi ?? (() => typeof window === "undefined" ? undefined : window.api),
     };
     return {
       ...createAppUiState(),

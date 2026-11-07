@@ -158,6 +158,7 @@ export function ensureBotWorkTables(db: Database.Database): void {
       expert_snapshot_json TEXT NOT NULL CHECK (json_valid(expert_snapshot_json)),
       delegated_scope_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(delegated_scope_json)),
       workspace_binding TEXT NOT NULL,
+      reservation_id TEXT,
       status TEXT NOT NULL CHECK (status IN ('pending','submitted','running','completed','failed','stopped','unknown','invalidated')),
       attempt_id TEXT,
       submission_receipt TEXT,

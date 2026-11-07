@@ -50,6 +50,8 @@ const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, 
 });
 
 export interface DurableBotOptions {
+  /** Native passive viewer: never configure, recover, admit or settle work. */
+  readOnly?: boolean;
   directory: string;
   cwd: string;
   models: Models;
@@ -60,6 +62,7 @@ export interface DurableBotOptions {
   evidenceProjection?: DurableEvidenceOptions;
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  beforeProviderRequest?: () => void;
   executionIdentity?: { taskId?: string; sourceKind: DiagnosticSource; executionScope: string };
   onTool?: (event: ToolDiagnosticEvent) => void;
   observedUsage?: (conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
@@ -171,7 +174,7 @@ export class DurableBotRuntime {
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
     options = { ...options, models: taskScopedModels(options.models, options.cwd) };
-    const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx);
+    const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
     const native = [...codingTools(), ...(options.tools ?? [])];
@@ -208,6 +211,7 @@ export class DurableBotRuntime {
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
+        readOnly: options.readOnly,
         models: options.models, registry,
         env: async (target, context) => {
           const cwd = await resolveDurableExecutionCwd(target, context, options.cwd);
@@ -225,7 +229,7 @@ export class DurableBotRuntime {
           if (initialHistory?.context.length) await tx.appendEntry(id, { kind: "mybuddy.context-import", head: "self", model: [...initialHistory.context] });
         },
       });
-      if (options.initialBranch) await seedDurableBranch(root, options.initialBranch);
+      if (!options.readOnly && options.initialBranch) await seedDurableBranch(root, options.initialBranch);
       const conversation = await resolveActiveDurableConversation(harness, root, ctx);
       runtime = new DurableBotRuntime(harness, conversation, options);
       if (options.evidenceProjection) runtime.evidence = new DurableEvidenceProjection(options.evidenceProjection, conversation, options.models);
@@ -245,13 +249,15 @@ export class DurableBotRuntime {
         options.toolMode = bound.tools.some(tool => tool.name === "codemode") ? "codemode" : "native";
         // Normalize Code Mode sessions persisted before executeTool: scripts may call every registered tool,
         // while the model is still offered only codemode.
-        if (options.toolMode === "codemode") await runtime.configure(undefined, "codemode");
-      } else await runtime.configure(options.model, options.toolMode);
+        if (!options.readOnly && options.toolMode === "codemode") await runtime.configure(undefined, "codemode");
+      } else if (!options.readOnly) await runtime.configure(options.model, options.toolMode);
       runtime.watch = await conversation.watch(ctx);
       await runtime.refresh();
       runtime.watch.start(async () => { await runtime!.refresh(); });
-      await runtime.replayChildUsage();
-      await runtime.resumeRegeneration();
+      if (!options.readOnly) {
+        await runtime.replayChildUsage();
+        await runtime.resumeRegeneration();
+      }
       return runtime;
     } catch (error) {
       finishOpening(undefined);
@@ -383,6 +389,7 @@ export class DurableBotRuntime {
   }
 
   private async reconcileAuditReceipts(): Promise<void> {
+    if (this.options.readOnly) return;
     for (const [requestId, audit] of this.pendingAuditInputs) {
       const receipt = await this.storage.submissionByRequest(this.conversation.id, requestId, ctx);
       if (!receipt || (receipt.status !== "done" && receipt.status !== "unanswered")) continue;
@@ -1042,6 +1049,7 @@ function botExtension(
         throw error;
       }
     }, beforeProviderRequest: async (_request, api, context) => {
+      options.beforeProviderRequest?.();
       const child = await childConversation(api, context);
       identifyModelInvocation({ taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,

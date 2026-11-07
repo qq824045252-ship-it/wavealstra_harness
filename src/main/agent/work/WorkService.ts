@@ -1,3 +1,4 @@
+import { settleWorkExecution } from "./WorkExecutionSettlement";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -63,6 +64,8 @@ import type { BotDto } from "../../../shared/bot-work";
 import { BotRegistry } from "./BotRegistry";
 import { WorkRepository, newId } from "./WorkRepository";
 import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
+import { normalizeTexts, normalizeSources, normalizeWatchRule } from "./WorkControlNormalization";
+import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
 
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
@@ -98,6 +101,7 @@ const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "t
 
 export class WorkService {
   readonly repo: WorkRepository;
+  readonly nativeResults: WorkNativeResultInbox;
   private readonly bots: BotRegistry;
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
@@ -109,6 +113,7 @@ export class WorkService {
 
   constructor(private readonly db: Database.Database, options: WorkServiceOptions) {
     this.repo = new WorkRepository(db);
+    this.nativeResults = new WorkNativeResultInbox(db, this, () => !this.authority || this.authority());
     this.bots = options.bots;
     this.now = options.now ?? (() => Date.now());
     this.emit = options.emitProjection;
@@ -465,8 +470,10 @@ export class WorkService {
         settledAt: neverSubmitted ? now : binding.settledAt,
       };
       this.repo.updateBinding(nextBinding);
+      if (neverSubmitted && binding.reservationId) this.commitBudgetUsage(binding.workId, binding.reservationId, 0);
       invalidatedBindings.push(nextBinding);
     }
+    nextWork.budget = this.repo.getWork(work.workId)!.budget;
     nextWork.activeExecutionIds = this.repo.listBindings(work.workId)
       .filter(binding => UNSETTLED_BINDING_STATUSES.has(binding.status)).map(binding => binding.bindingId);
 
@@ -675,6 +682,7 @@ export class WorkService {
   private isSettled(work: WorkDto): boolean {
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
+    if (bindings.some(binding => binding.reservationId && ["reserved", "unknown"].includes(this.repo.getReservation(binding.reservationId)?.state ?? ""))) return false;
     const admissions = this.repo.listAdmissions(work.workId);
     if (admissions.some((admission) => admission.state === "admitted" || admission.state === "unknown")) return false;
     if (this.repo.listOpenBlockers(work.workId).length > 0) return false;
@@ -763,6 +771,7 @@ export class WorkService {
       || binding.operationId !== operationId || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId || this.bots.getBot(binding.botId)?.status !== "active"
       || this.bots.getBot(work.ownerBotId)?.status !== "active"
+      || (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now())
       || (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= this.now())) {
       return "Work 当前状态不允许新的业务输入；原提交仍可查回和停止";
     }
@@ -815,7 +824,7 @@ export class WorkService {
       if (occupied && UNSETTLED_BINDING_STATUSES.has(occupied.status)) {
         return { ok: false, code: "unsettled_effects", message: "该 task 已绑定未结算执行，不能同时承接另一次派发" };
       }
-      if (!this.authorizedFor(work, "workspace:write")) {
+      if (!this.authorizedFor(work, params.delegatedScope?.every(scope => scope === "workspace:read") ? "workspace:read" : "workspace:write")) {
         return { ok: false, code: "unauthorized_actor", message: "事项授权未包含工作区写入范围" };
       }
       const target = this.bots.getBot(params.botId);
@@ -846,6 +855,7 @@ export class WorkService {
         expertSnapshot: this.snapshotOf(target),
         delegatedScope: params.delegatedScope ?? [...work.authorization.allowedScopes],
         workspaceBinding: params.workspaceBinding,
+        reservationId: reservation?.reservationId,
         status: "pending",
         admittedAt: now,
       };
@@ -923,58 +933,11 @@ export class WorkService {
           return { ok: false, code: "unauthorized_actor", message: "只有当前负责人可以结算执行" };
         }
       }
-      const now = this.now();
-      const status = params.outcome;
-      const settled = TERMINAL_BINDING_STATUSES.has(status);
-      this.repo.updateBinding({
-        ...binding,
-        status,
-        submissionReceipt: params.submissionReceipt ?? binding.submissionReceipt,
-        settlementNote: params.note ?? binding.settlementNote,
-        settledAt: status === "unknown" ? undefined : (settled ? now : binding.settledAt),
-        attemptId: binding.attemptId,
-      });
-      if (settled) {
-        const instruction = this.repo.listOutbox(work.workId, ["pending", "attempted", "unknown"])
-          .find(item => item.bindingId === binding.bindingId);
-        if (instruction) this.repo.markOutboxStatus(instruction.eventId, "delivered");
-      }
-      if (status === "unknown") {
-        this.repo.insertBlocker({
-          blockerId: newId("blocker"),
-          workId: work.workId,
-          reason: params.unknownExternalEffectRef
-            ? `外部效果未知，需要核对：${params.unknownExternalEffectRef}`
-            : "执行结果未知，需要核对",
-          kind: "external_effect",
-          unknownExternalEffectRef: params.unknownExternalEffectRef ?? binding.bindingId,
-          waitingForUserInput: false,
-          status: "open",
-          createdAt: now,
-        });
-      }
-      if (typeof params.usageTokens === "number") {
-        const reservation = params.reservationId
-          ? this.repo.getReservation(params.reservationId)
-          : this.repo.listReservations(work.workId).find(item => item.state === "reserved");
-        if (reservation && reservation.workId === work.workId) this.commitBudgetInternal(work, reservation, params.usageTokens, now);
-      }
-      const next: WorkDto = {
-        ...work,
-        budget: this.repo.getWork(work.workId)!.budget,
-        activeExecutionIds: settled || status === "unknown"
-          ? work.activeExecutionIds.filter(id => id !== binding.bindingId)
-          : work.activeExecutionIds,
-        stateVersion: work.stateVersion + 1,
-        updatedAt: now,
-      };
-      this.repo.updateWork(next);
-      const settlement = this.tryCloseSettled(next, now);
-      const latest = this.repo.getWork(work.workId)!;
-      return {
-        ok: true, replayed: false, operationId: binding.operationId,
-        work: latest, outboxEventId: settlement.ok ? settlement.outboxEventId : undefined,
-      };
+      const authorityError = this.authorityError();
+      if (authorityError) return authorityError;
+      return settleWorkExecution({ repo: this.repo, work, binding, params, now: this.now(),
+        commitUsage: (reservation, tokens, now) => this.commitBudgetInternal(work, reservation, tokens, now),
+        tryClose: (next, now) => this.tryCloseSettled(next, now) });
     });
   }
 
@@ -1006,6 +969,9 @@ export class WorkService {
       }
       if (!this.authorizedFor(work, params.actionKind)) {
         return { ok: false, code: "unauthorized_actor", message: `事项授权不允许动作 ${params.actionKind}` };
+      }
+      if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now()) {
+        return { ok: false, code: "budget_exhausted", message: "预算期限已到，拒绝新的业务动作" };
       }
       // A worker's execution identity comes from the host actor, including when
       // the business payload omits bindingId. Never turn that omission into an
@@ -2444,38 +2410,6 @@ function currentAcceptedDeliverableIds(work: WorkDto, deliverables: WorkDelivera
 }
 
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }
-
-function normalizeTexts(values: string[] | undefined): string[] {
-  return [...new Set((values ?? []).map(value => value.trim()).filter(Boolean))].slice(0, 256);
-}
-
-function normalizeSources(values: WorkGoalSourceDto[] | undefined, now: number): WorkGoalSourceDto[] {
-  // A source entry without an immutable snapshot identity cannot prove later evidence.
-  return (values ?? [])
-    .filter(source => source.sourceType && source.sourceRef?.trim() && source.inputSnapshotId?.trim())
-    .map(source => ({
-      sourceType: source.sourceType,
-      sourceRef: source.sourceRef.trim(),
-      inputSnapshotId: source.inputSnapshotId.trim(),
-      observedAt: source.observedAt || now,
-    }))
-    .slice(0, 16);
-}
-
-function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined): WorkWatchRuleDto | undefined {
-  if (!input) return undefined;
-  const catchUpPolicy = input.catchUpPolicy ?? "latest";
-  return {
-    subscriptions: normalizeTexts(input.subscriptions),
-    cronExpression: input.cronExpression?.trim() || undefined,
-    timezone: input.timezone?.trim() || undefined,
-    catchUpPolicy,
-    maxMergeWaitMs: input.maxMergeWaitMs && input.maxMergeWaitMs > 0 ? input.maxMergeWaitMs : 60_000,
-    maxQueueDepth: input.maxQueueDepth && input.maxQueueDepth > 0 ? input.maxQueueDepth : 100,
-    stopConditionText: input.stopConditionText?.trim() || undefined,
-    nextWakeAt: input.nextWakeAt,
-  };
-}
 
 function normalizeCriteria(
   inputs: CreateWorkParams["criteria"],

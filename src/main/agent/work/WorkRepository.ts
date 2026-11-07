@@ -92,6 +92,7 @@ export interface BindingRow {
   expert_snapshot_json: string;
   delegated_scope_json: string;
   workspace_binding: string;
+  reservation_id: string | null;
   status: WorkExecutionBindingDto["status"];
   attempt_id: string | null;
   submission_receipt: string | null;
@@ -514,12 +515,13 @@ export class WorkRepository {
   insertBinding(binding: WorkExecutionBindingDto): void {
     this.db.prepare(`INSERT INTO work_execution_bindings (
       binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,
-      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,
+      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,reservation_id,
       status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at
     ) VALUES (@bindingId,@workId,@operationId,@botId,@taskId,@durableStoreKey,@conversationId,@intentRevision,
-      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,
+      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,@reservationId,
       @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt)`).run({
       ...binding,
+      reservationId: binding.reservationId ?? null,
       attemptId: binding.attemptId ?? null,
       submissionReceipt: binding.submissionReceipt ?? null,
       settlementNote: binding.settlementNote ?? null,
@@ -717,6 +719,10 @@ export class WorkRepository {
 
   listOpenBlockers(workId: string): WorkBlockerDto[] {
     return this.listBlockers(workId).filter((blocker) => blocker.status === "open");
+  }
+
+  reopenBlocker(blockerId: string, workId: string): void {
+    this.db.prepare("UPDATE work_blockers SET status='open',cleared_at=NULL WHERE blocker_id=? AND work_id=?").run(blockerId, workId);
   }
 
   // ------------------------------------------------------------- subscriptions
@@ -1048,6 +1054,7 @@ function mapBinding(row: BindingRow): WorkExecutionBindingDto {
     }),
     delegatedScope: json<string[]>(row.delegated_scope_json, []),
     workspaceBinding: row.workspace_binding,
+    reservationId: row.reservation_id ?? undefined,
     status: row.status,
     attemptId: row.attempt_id ?? undefined,
     submissionReceipt: row.submission_receipt ?? undefined,

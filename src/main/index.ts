@@ -1018,6 +1018,11 @@ function registerIpc(): void {
 
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
+  ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));
+  ipcMain.handle(BotWorkIpc.sendMessage, (_e, request: unknown) => agentService.sendBotMessage(request));
+  ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
+  ipcMain.handle(BotWorkIpc.cancelSend, (_e, botId: string, requestId: string) => agentService.cancelBotSend(botId, requestId));
+  ipcMain.handle(BotWorkIpc.archiveConversation, (_e, botId: string, conversationId: string) => agentService.archiveBotConversation(botId, conversationId));
   ipcMain.handle(BotWorkIpc.listWorks, (_e, includeClosed?: boolean) => agentService.listWorkProjections(Boolean(includeClosed)));
   ipcMain.handle(BotWorkIpc.getWork, (_e, workId: string) => agentService.getWorkProjection(workId));
   ipcMain.handle(BotWorkIpc.attestCriteria, (_e, request: AttestCriteriaParams) => agentService.attestWorkCriteria(request));

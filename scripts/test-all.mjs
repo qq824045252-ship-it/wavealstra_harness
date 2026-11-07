@@ -63,6 +63,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/];
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:bot-work-phase2:dev", // actual pnpm dev Electron renderer and isolated profile
   "test:media-capabilities-ui",
   "test:computer-use-behavior",
   "test:computer-use-agent-desktop",
@@ -185,6 +186,7 @@ const GUI_WINDOWS_ONLY = new Set([
  * 应写成 host 无关（期望值用 join()/resolve() 拼，别写死 "/tmp/x"），不要塞进这张表。
  */
 const PLATFORM_ONLY_TESTS = new Map([
+  ["test:bot-work-phase2:dev", ["windows"]], // Windows dev UI driver; Linux/Omarchy desktop acceptance remains separate.
   ["test:computer-use-linux", ["linux"]],
   ["test:computer-use-linux:packaged", ["linux"]],
   ["test:atspi-transport", ["linux"]],

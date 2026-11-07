@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { ensureBotWorkTables } from "./bot-work-schema";
+import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
 import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
@@ -57,7 +58,7 @@ import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 30;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 31;
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -364,6 +365,7 @@ export class AppDatabase {
       this.ensureConversationBranchTables();
       this.ensureConversationRuntimeTables();
       ensureBotWorkTables(this.db);
+      ensureBotWorkPhase2Tables(this.db);
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();
   }

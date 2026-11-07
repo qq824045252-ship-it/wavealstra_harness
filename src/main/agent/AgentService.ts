@@ -7,6 +7,9 @@ import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-prof
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
+import { BotConversationService } from "./work/BotConversationService";
+import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
+import { WorkProjectionJournal } from "./work/WorkProjectionJournal";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
@@ -604,6 +607,8 @@ export class AgentService {
   private readonly workService: WorkService;
   private readonly workHostAuthority: WorkHostAuthority;
   private workExecutions?: WorkExecutionAdapter;
+  private botConversations?: BotConversationService;
+  private workDispatchQueue?: WorkDispatchQueue;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
   private readonly loadoutObservations: AgentLoadoutObservationService;
@@ -1110,6 +1115,18 @@ export class AgentService {
     return this.botRegistry.listBots(LOCAL_USER_ID);
   }
 
+  syncWorkProjections(request: unknown) {
+    return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
+  }
+  sendBotMessage(request: unknown) { return this.requireBotConversations().send(request); }
+  botMessageHistory(request: unknown) { return this.requireBotConversations().history(request); }
+  cancelBotSend(botId: string, requestId: string) { return this.requireBotConversations().cancel(botId, requestId); }
+  archiveBotConversation(botId: string, conversationId: string) { return this.requireBotConversations().archive(botId, conversationId); }
+  private requireBotConversations(): BotConversationService {
+    if (!this.botConversations) throw new Error("Bot 前台尚未连接，请稍后重试");
+    return this.botConversations;
+  }
+
   listWorkProjections(includeClosed = false): WorkProjectionDto[] {
     return this.workService.listProjections(LOCAL_USER_ID, { includeClosed });
   }
@@ -1298,6 +1315,12 @@ export class AgentService {
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
         if (blocked) throw new Error(blocked);
       },
+      beforeModelRequest: taskId => {
+        const binding = this.workService.repo.bindingForTask(taskId);
+        if (!binding) return;
+        const error = this.workService.checkTaskInput(taskId, binding.operationId);
+        if (error) throw new Error(error);
+      },
       resumeAllowed: taskId => {
         const binding = this.workService.repo.bindingForTask(taskId);
         if (!binding) return true;
@@ -1315,6 +1338,7 @@ export class AgentService {
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
       onSettled: (taskId, snapshot) => {
+        if (this.workService.repo.bindingForTask(taskId)) this.workExecutions?.wake(taskId);
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
@@ -1339,6 +1363,7 @@ export class AgentService {
           resolvedInstructions: assembly.segments, resolvedCapabilities: assembly.capabilities ?? [], warnings: assembly.warnings });
       },
       onEntries: (taskId, entries, info) => {
+        if (this.workService.repo.bindingForTask(taskId)) this.workExecutions?.wake();
         if (info.sourceKind === "main") this.durableSkills.entries(taskId, info.conversationId, entries);
         for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
           if (!entry.byTaskId) continue;
@@ -1434,6 +1459,18 @@ export class AgentService {
       (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
     await this.workExecutions.flush();
     this.workExecutions.start();
+    if (!this.durableModels) throw new Error("模型服务尚未初始化");
+    this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
+      () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId);
+    this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
+      bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
+      defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
+      memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
+      schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),
+      wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
+    });
+    this.workDispatchQueue.start();
+    this.botConversations.recover();
     await this.durableBots.resumePersisted();
   }
 
@@ -1631,7 +1668,10 @@ export class AgentService {
     await this.durableBots?.purge(taskId);
     this.expertBindings.purge(taskId);
   }
-  async closeDurableBots(): Promise<void> { await this.workExecutions?.close(); await this.durableBots?.close(); }
+  async closeDurableBots(): Promise<void> {
+    await this.botConversations?.close(); await this.workDispatchQueue?.close();
+    await this.workExecutions?.close(); await this.durableBots?.close();
+  }
 
   async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
     if (!this.durableBots) throw new Error("Bot 尚未初始化");

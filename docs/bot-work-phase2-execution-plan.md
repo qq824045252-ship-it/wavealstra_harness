@@ -1,10 +1,10 @@
 # Bot / Work — Phase 2 执行规划（供 Codex 实施）
 
-> 状态：**Approved plan / 待实现、待验收**  
+> 状态：**Approved plan / M1～M3 已实施，Phase 2 Windows 组件验收通过**
 > 制定日期：2026-11-07（Asia/Shanghai）  
 > 审核代码基线：`main@ac2b4583460f38a54ea797c1a09826e6920a6d62`  
 > 范围：Phase 2 —— **真实前台独立对话、受守卫的 Work 控制工具、独立后台 root、事务 Inbox/Outbox 与结果事件闭环**。  
-> 不代表 Phase 2 已开发完成，也不代表所有测试已经通过。
+> 2026-11-07 按第 7 节完成本阶段门禁，证据见 [Phase 2 验收记录](reviews/bot-work-phase2-2026-11-07.md)。这不代表后续阶段或全部平台验收通过。
 
 本文件是给 Codex 的**实施任务书**，不是第二份产品真源。按优先级服从 [架构冻结设计](bot-work-design.md)、[冻结验收 BW-A01～BW-A46](bot-work-acceptance.md)、[双页面 UI 规范](bot-work-ui.md)、[Phase 1 复审修复记录](reviews/bot-work-phase1-2026-11-07.md) 以及仓库根目录 `AGENTS.md`。不得通过修改冻结行为语义、降低失败基线或替换执行内核来“完成”本计划。
 
@@ -153,15 +153,15 @@
 
 ## 8. Codex 执行任务（可逐项勾选）
 
-- [ ] **P2-00 环境**：核对当前 main，恢复 Pi 1.5 锁定依赖，跑基线并记录受阻项；不做 1.3 类型垫片。
-- [ ] **P2-01 消息**：持久 Bot 会话、稳定发送请求、回复/历史、IPC/preload/renderer 真发送，不借普通 Task 身份。
-- [ ] **P2-02 工具**：前台代码白名单；查询与 `work_create/amend/pause/resume/cancel` 串接 `WorkService` 的真实 actor/CAS/幂等。
-- [ ] **P2-03 交互**：多 Work 引用/消歧、页面/草稿隔离、卡片和当前权威投影；普通 Task 不回归。
-- [ ] **P2-04 派发**：Work 受理→Outbox→独立 Durable root→原生 children；沿用 `WorkExecutionAdapter`/原生存储，不双重重试。
-- [ ] **P2-05 消费**：实时唤醒和重启补读合流；持久去重/水位、事务成果/状态/预算/后续 Outbox；旧状态不回退、unknown 不重复。
-- [ ] **P2-06 证据**：输入变更后的独立执行归属或明确拒绝伪归属；完整命名空间、精确 reservation、外部效果回查/unknown。
-- [ ] **P2-07 同步**：持久作用域水位、列表成员 tombstone、补读/缺口恢复、跨页面事件不串扰。
-- [ ] **P2-08 验证**：BW-A09～A20 全部，关联 A02/A05/A21/A23/A24/A25 和 UI 项；真实重启/崩溃注入；回归/typecheck/test:all；写 Phase 2 证据报告。
+- [x] **P2-00 环境**：核对当前 main，恢复 Pi 1.5 锁定依赖，跑基线并记录受阻项；不做 1.3 类型垫片。2026-11-07 已核实本机真实 1.5 依赖、修复预检发现的问题并通过基线，见[预检记录](reviews/bot-work-phase2-2026-11-07.md)。
+- [x] **P2-01 消息**：持久 Bot 会话、稳定发送请求、回复/历史、IPC/preload/renderer 真发送，不借普通 Task 身份。
+- [x] **P2-02 工具**：前台代码白名单；查询与 `work_create/amend/pause/resume/cancel` 串接 `WorkService` 的真实 actor/CAS/幂等。
+- [x] **P2-03 交互**：多 Work 引用/消歧、页面/草稿隔离、卡片和当前权威投影；普通 Task 不回归。
+- [x] **P2-04 派发**：Work 受理→Outbox→独立 Durable root→原生 children；沿用 `WorkExecutionAdapter`/原生存储，不双重重试。
+- [x] **P2-05 消费**：实时唤醒和重启补读合流；持久去重/水位、事务成果/状态/预算/后续 Outbox；旧状态不回退、unknown 不重复。
+- [x] **P2-06 证据**：输入变更后的独立执行归属或明确拒绝伪归属；完整命名空间、精确 reservation、外部效果回查/unknown。
+- [x] **P2-07 同步**：持久作用域水位、列表成员 tombstone、补读/缺口恢复、跨页面事件不串扰。
+- [x] **P2-08 验证**：BW-A09～A20 全部，关联 A02/A05/A21/A23/A24/A25 和 UI 项；真实重启/崩溃注入；回归/typecheck/test:all；写 Phase 2 证据报告。
 
 ### 代码定位（先读现有实现，复用后改造）
 

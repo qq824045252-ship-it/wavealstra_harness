@@ -11,7 +11,7 @@ export interface WorkExecutionNamespace {
 
 export type WorkExecutionObservation =
   | { status: "running" }
-  | { status: "completed" | "failed" | "stopped"; summary: string; hasWriteConflicts: boolean; artifactRefs: string[] };
+  | { status: "completed" | "failed" | "stopped"; summary: string; hasWriteConflicts: boolean; artifactRefs: string[]; sourceEntryId?: number; usageTokens?: number };
 
 /** The port delegates execution and recovery to the existing native Durable store. */
 export interface WorkExecutionPort {
@@ -26,6 +26,7 @@ export interface WorkExecutionPort {
 export class WorkExecutionAdapter {
   private flushing?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
+  private dirty = false;
 
   constructor(
     private readonly service: WorkService,
@@ -38,15 +39,15 @@ export class WorkExecutionAdapter {
   async dispatch(actor: WorkActor, input: Omit<DispatchExecutionParams, keyof WorkExecutionNamespace> & { taskId: string }): Promise<WorkControlResult> {
     const namespace = await this.native.prepare(input.taskId);
     const result = this.service.dispatchExecution(actor, { ...input, ...namespace });
-    if (result.ok) void this.flush();
+    if (result.ok) this.wake();
     return result;
   }
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => { void this.flush(); }, 1_000);
+    this.timer = setInterval(() => this.wake(), 1_000);
     this.timer.unref?.();
-    void this.flush();
+    this.wake();
   }
 
   async close(): Promise<void> {
@@ -55,21 +56,40 @@ export class WorkExecutionAdapter {
     await this.flushing;
   }
 
+  wake(taskId?: string): void {
+    if (taskId && this.isAuthority()) {
+      const binding = this.service.repo.bindingForTask(taskId);
+      if (binding) this.service.nativeResults.allowInspect(binding.bindingId);
+    }
+    void this.flush().catch(error => this.onError("scheduler", error));
+  }
+
+  wakeWork(workId: string): void {
+    if (this.isAuthority()) for (const binding of this.service.repo.listBindings(workId)) this.service.nativeResults.allowInspect(binding.bindingId);
+    this.wake();
+  }
+
   flush(): Promise<void> {
+    this.dirty = true;
     if (!this.flushing) {
-      this.flushing = this.deliver().finally(() => { this.flushing = undefined; });
+      this.flushing = (async () => {
+        do { this.dirty = false; await this.deliver(); } while (this.dirty);
+      })().finally(() => { this.flushing = undefined; });
     }
     return this.flushing;
   }
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
+    for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
     for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
       for (const binding of this.service.repo.listBindings(work.workId)) {
-        if (["completed", "failed", "stopped", "invalidated"].includes(binding.status)) continue;
+        const pendingUsage = binding.reservationId && ["reserved", "unknown"].includes(this.service.repo.getReservation(binding.reservationId)?.state ?? "");
+        if (["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !pendingUsage) continue;
+        if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
         if (!this.isAuthority()) return;
         try { await this.deliverBinding(binding); }
-        catch (error) { this.onError(binding.bindingId, error); }
+        catch (error) { this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error); }
       }
     }
   }
@@ -82,15 +102,20 @@ export class WorkExecutionAdapter {
     const current = this.service.repo.getBinding(binding.bindingId);
     if (!current) return;
     const canStart = work.lifecycle === "active" && !current.invalidatedAt
+      && !["completed", "failed", "stopped", "invalidated"].includes(current.status)
       && current.intentRevision === work.intentRevision && current.inputSnapshotId === work.inputSnapshotId;
     if (!receipt) {
+      if (["completed", "failed", "stopped", "invalidated"].includes(current.status)) throw new Error("终态预算补读缺少原始回执，保留未知额度且不重新执行");
       if (!canStart) {
         if (work.lifecycle === "paused" && !current.invalidatedAt && !current.attemptId) return;
+        if (current.attemptId || current.submissionReceipt) throw new Error("已尝试的原始提交缺少可核对回执，结果与用量保留未知");
         this.requireSuccess(this.service.reconcileExecution({ kind: "system", reason: "native-submission-absent" }, {
           bindingId: current.bindingId, outcome: "stopped", note: "原生存储确认没有该逻辑提交，未启动新的业务执行",
+          usageTokens: 0,
         }));
         return;
       }
+      if (!this.resourceAvailable(current)) return;
       this.service.markDispatchAttempt(current.bindingId, current.attemptId ?? `attempt:${current.bindingId}`);
       receipt = await this.native.submit(current, this.service.repo.executionInput(current));
     }
@@ -110,26 +135,34 @@ export class WorkExecutionAdapter {
         observation = await this.native.inspect(current, receipt);
       }
     }
-    if (!this.isAuthority() || observation.status === "running") return;
-    // Result, settlement and their receipts commit together. Re-reading the same
-    // native result after a crash cannot create another deliverable (BW-A16).
-    this.service.transaction(() => {
-      if (observation.status === "completed" || observation.status === "failed") {
-        this.requireSuccess(this.service.submitDeliverable({ kind: "worker", botId: current.botId, bindingId: current.bindingId }, {
-          operationId: `result:${current.bindingId}`, workId: current.workId, bindingId: current.bindingId,
-          deliverableId: `result:${current.bindingId}`, summary: observation.summary || "原生执行已结束，成果仍待负责人核验",
-          artifactRefs: observation.artifactRefs, hasWriteConflicts: observation.hasWriteConflicts,
-          uncoveredScope: observation.status === "failed" ? ["本次执行失败，必要目标仍待核验"] : [],
-        }));
-      }
-      this.requireSuccess(this.service.reconcileExecution({ kind: "system", reason: "native-submission-result" }, {
-        bindingId: current.bindingId, outcome: observation.status, note: observation.summary,
-      }));
-    });
+    if (!this.isAuthority()) return;
+    const failures = this.service.nativeResults.receive(current, receipt, observation);
+    for (const failure of failures) this.onError(failure.bindingId, failure.error);
+    if (!failures.length && (observation.status === "running" || observation.usageTokens !== undefined || !current.reservationId)) this.service.nativeResults.readRecovered(current);
+    if (observation.status !== "running" && observation.usageTokens === undefined && current.reservationId) {
+      this.service.nativeResults.readFailed(current, new Error("原生终态用量尚未完整返回"));
+    }
     this.service.emitCurrentProjection(current.workId);
   }
 
   private requireSuccess(result: WorkControlResult): void {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+  }
+
+  private resourceAvailable(candidate: WorkExecutionBindingDto): boolean {
+    const readOnly = (binding: WorkExecutionBindingDto) => binding.delegatedScope.length > 0
+      && binding.delegatedScope.every(scope => scope === "workspace:read");
+    for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
+      for (const binding of this.service.repo.listBindings(work.workId)) {
+        const unknownEffect = this.service.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect"
+          && blocker.unknownExternalEffectRef !== `native-read:${binding.bindingId}`);
+        if (binding.bindingId === candidate.bindingId || !binding.attemptId
+          || ["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !unknownEffect) continue;
+        // Only independently bound read-only roots prove isolation. Every mutable
+        // capability may reach a shared browser/device until Phase 3 resource claims.
+        if (!readOnly(candidate) || !readOnly(binding)) return false;
+      }
+    }
+    return true;
   }
 }

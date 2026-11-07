@@ -1,3 +1,6 @@
+import { createBotConversationActions, createBotConversationState, type BotConversationUiState } from "./botConversation";
+import { mergeWorkList, reconcileWorkProjection } from "./botWorkSync";
+import type { WorkListCursor } from "../../../../../shared/bot-conversation";
 import type { ConversationBranchInfoDto } from "../../../../../shared/conversation-branch";
 import type { BotDto, WorkProjectionDto } from "../../../../../shared/bot-work";
 import type { BotWorkHostStatusDto } from "../../../../../shared/bot-work-ipc";
@@ -7,21 +10,12 @@ import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import type { StreamingSendMode, TaskDraft } from "../types";
 
-function reconcileWorkProjection(incoming: WorkProjectionDto, observed?: WorkProjectionDto): WorkProjectionDto {
-  if (!observed) return incoming;
-  if (observed.stateVersion > incoming.stateVersion) return observed;
-  // A read acknowledgement is monotonic but does not advance the control version.
-  const readAtById = new Map(observed.notifications.map(item => [item.notificationId, item.readAt]));
-  return {
-    ...incoming,
-    notifications: incoming.notifications.map(item => {
-      const readAt = readAtById.get(item.notificationId);
-      return item.readAt === undefined && readAt !== undefined ? { ...item, readAt } : item;
-    }),
-  };
-}
-
 export interface ActiveContextState {
+  botDrafts: BotConversationUiState["botDrafts"];
+  botHistories: BotConversationUiState["botHistories"];
+  botPendingSends: BotConversationUiState["botPendingSends"];
+  botConversationErrors: BotConversationUiState["botConversationErrors"];
+  botWorkCursor: WorkListCursor | null;
   activeTaskId: string | null;
   activeBotId: string | null;
   selectedWorkId: string | null;
@@ -58,6 +52,8 @@ export interface ActiveContextState {
 
 export function createActiveContextState(): ActiveContextState {
   return {
+    ...createBotConversationState(),
+    botWorkCursor: null,
     activeTaskId: null,
     activeBotId: null,
     selectedWorkId: null,
@@ -103,6 +99,9 @@ export function createActiveContextActions(
   | "setHomeSpaceId"
   | "setBotDraft"
   | "submitBotDraft"
+  | "refreshBotHistory"
+  | "cancelBotSend"
+  | "archiveBotConversation"
   | "setActiveBotId"
   | "setSelectedWorkId"
   | "refreshBotWork"
@@ -126,42 +125,45 @@ export function createActiveContextActions(
         permissionMode: on ? "auto" : "default",
       }),
 
-    setBotDraft: (text) => set({ botDraft: text, botSubmissionNotice: false }),
-    submitBotDraft: () => {
-      if (get().botDraft.trim()) set({ botSubmissionNotice: true });
-    },
-    setActiveBotId: (botId) => set({ activeBotId: botId, selectedWorkId: null }),
+    ...createBotConversationActions(storeContext),
     setSelectedWorkId: (workId) => set({ selectedWorkId: workId }),
     refreshBotWork: async (includeClosed = false) => {
       const api = getApi();
       const requestSequence = ++refreshSequence;
-      const requestedVersions = new Map(get().botWorks.map(work => [work.workId, work.stateVersion]));
+      const scope = includeClosed ? "all" : "open";
+      const cursor = get().botWorkCursor?.scope === scope ? get().botWorkCursor ?? undefined : undefined;
       try {
-        const [bots, works, hostStatus] = await Promise.all([
-          api?.botWork?.listBots() ?? Promise.resolve([]),
-          api?.botWork?.listWorks(includeClosed) ?? Promise.resolve([]),
-          api?.botWork?.hostStatus() ?? Promise.resolve(null),
+        const apiBot = api?.botWork;
+        if (!apiBot) throw new Error("Work 主机离线，当前投影待同步");
+        const [bots, initial, hostStatus] = await Promise.all([
+          apiBot.listBots(), apiBot.syncWorks({ includeClosed, cursor }), apiBot.hostStatus(),
         ]);
+        let update = initial;
+        let merged = mergeWorkList(get().botWorks, cursor ?? null, update);
+        if (!merged) {
+          update = await apiBot.syncWorks({ includeClosed });
+          merged = mergeWorkList(get().botWorks, null, update);
+        }
+        while (merged && update.kind === "delta" && update.hasMore && requestSequence === refreshSequence) {
+          update = await apiBot.syncWorks({ includeClosed, cursor: merged.cursor });
+          merged = mergeWorkList(merged.works, merged.cursor, update);
+        }
+        if (!merged) throw new Error("列表水位缺口，等待全量同步");
+        const botWorks = merged.works;
+        const botWorkCursor = merged.cursor;
         if (requestSequence !== refreshSequence) return;
         set((state) => {
-          const observedById = new Map(state.botWorks.map(work => [work.workId, work]));
-          const incomingIds = new Set(works.map(work => work.workId));
-          const botWorks = [
-            ...works.map(work => reconcileWorkProjection(work, observedById.get(work.workId))),
-            // An open-only response removes stale cards for Works closed offline.
-            // Preserve only facts that arrived after this request began.
-            ...state.botWorks.filter(observed => !incomingIds.has(observed.workId)
-              && (requestedVersions.get(observed.workId) ?? -1) < observed.stateVersion),
-          ];
+          const activeBotId = bots.some(bot => bot.botId === state.activeBotId) ? state.activeBotId : bots[0]?.botId ?? null;
+          const observed = new Map(state.botWorks.map(work => [work.workId, work]));
           return {
             botIdentities: bots,
-            botWorks,
+            botWorks: botWorks.map(work => reconcileWorkProjection(work, observed.get(work.workId))),
+            botWorkCursor,
             botHostStatus: hostStatus,
             botIdentitiesLoaded: true,
             botWorkError: null,
-            activeBotId: bots.some((bot) => bot.botId === state.activeBotId)
-              ? state.activeBotId
-              : bots[0]?.botId ?? null,
+            botDraft: activeBotId === state.activeBotId ? state.botDraft : state.botDrafts[activeBotId ?? ""] ?? "",
+            activeBotId,
             selectedWorkId: botWorks.some((work) => work.workId === state.selectedWorkId)
               ? state.selectedWorkId
               : null,
@@ -175,15 +177,9 @@ export function createActiveContextActions(
         });
       }
     },
-    applyWorkProjection: (projection) => {
-      set((state) => {
-        const existing = state.botWorks.find((work) => work.workId === projection.workId);
-        if (existing && existing.stateVersion >= projection.stateVersion) return {};
-        const botWorks = existing
-          ? state.botWorks.map((work) => (work.workId === projection.workId ? reconcileWorkProjection(projection, work) : work))
-          : [projection, ...state.botWorks];
-        return { botWorks };
-      });
+    applyWorkProjection: () => {
+      // Unsequenced push only wakes the durable list reader; it cannot resurrect a tombstone.
+      void get().refreshBotWork(get().botWorkCursor?.scope === "all");
     },
     markBotNotificationRead: async (notificationId) => {
       const api = getApi();

@@ -43,7 +43,7 @@ useAppStore.getState().submitBotDraft();
 assert.equal(useAppStore.getState().tasks, tasks);
 assert.equal(useAppStore.getState().activeTaskId, "task-a");
 assert.equal(useAppStore.getState().page, "bot");
-assert.equal(useAppStore.getState().botSubmissionNotice, true);
+assert.equal(useAppStore.getState().botSubmissionNotice, false, "without a Bot host receipt the UI must retain the draft and not claim acceptance");
 assert.equal(useAppStore.getState().botDraft, "Bot 草稿");
 useAppStore.getState().setPage("chat");
 assert.equal(useAppStore.getState().draft, draft);
@@ -147,7 +147,7 @@ assert.match(handoffPage, /交接说明已读/);
 assert.doesNotMatch(handoffPage, /要求 r2/);
 snapshot.botSubmissionNotice = true;
 const noticePage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(noticePage, /没有创建事项/);
+assert.match(noticePage, /消息已持久受理/);
 Object.assign(snapshot, savedSnapshot);
 
 useAppStore.setState({

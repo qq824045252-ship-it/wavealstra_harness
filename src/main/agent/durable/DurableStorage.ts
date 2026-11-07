@@ -1,5 +1,6 @@
 import type { Storage } from "@earendil-works/pi-durable";
-import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
+import { JsonlStorage, openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
+import { DurableReadOnlyFiles } from "./DurableReadOnlyFiles";
 import { repairDurableJsonlLog, type DurableLogRepairReport } from "./DurableLogRepair";
 import { claimDurableStorageLease, type DurableStorageLease } from "./DurableStorageLease";
 
@@ -26,13 +27,16 @@ export function isJsonlCorruption(error: unknown): boolean {
   return typeof candidate.message === "string" && candidate.message.includes("JsonlCorruptionError");
 }
 
-export async function openDurableStorage(directory: string, context: JsonlContext): Promise<DurableStorageHandle> {
+export async function openDurableStorage(directory: string, context: JsonlContext, options: { readOnly?: boolean } = {}): Promise<DurableStorageHandle> {
   const lease = claimDurableStorageLease(directory);
   try {
     try {
-      return { storage: await openNodeJsonlStorage(directory, context, { fsync: true }), lease };
+      const storage = options.readOnly
+        ? await JsonlStorage.open(directory, new DurableReadOnlyFiles({ cwd: directory }), context, { fsync: true })
+        : await openNodeJsonlStorage(directory, context, { fsync: true });
+      return { storage, lease };
     } catch (error) {
-      if (!isJsonlCorruption(error)) throw error;
+      if (options.readOnly || !isJsonlCorruption(error)) throw error;
       const repair = repairDurableJsonlLog(directory);
       if (!repair) throw error;
       console.warn(`[Durable] Repaired corrupted log ${directory}: kept ${repair.keptMainCommits} commits, dropped ${repair.droppedMainCommits} duplicate commits and ${repair.droppedSidecarRecords} sidecar records; backup: ${repair.backupDirectory}`);

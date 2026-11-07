@@ -143,7 +143,10 @@ export interface AppActions {
   setConnectorEnabled: (id: string, enabled: boolean) => Promise<void>;
   setPage: (page: Page) => void;
   setBotDraft: (text: string) => void;
-  submitBotDraft: () => void;
+  submitBotDraft: () => Promise<void>;
+  refreshBotHistory: (botId: string) => Promise<void>;
+  cancelBotSend: (botId: string, requestId: string) => Promise<void>;
+  archiveBotConversation: (botId: string) => Promise<void>;
   setActiveBotId: (botId: string | null) => void;
   setSelectedWorkId: (workId: string | null) => void;
   refreshBotWork: (includeClosed?: boolean) => Promise<void>;

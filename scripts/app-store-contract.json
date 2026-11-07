@@ -12,7 +12,10 @@
     "setSelectedWorkId": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
     "refreshBotWork": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
     "applyWorkProjection": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "markBotNotificationRead": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged."
+    "markBotNotificationRead": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
+    "refreshBotHistory": "Phase 2 persistent Bot conversation sending and recovery.",
+    "cancelBotSend": "Phase 2 persistent Bot conversation sending and recovery.",
+    "archiveBotConversation": "Phase 2 persistent Bot conversation sending and recovery."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -610,6 +613,11 @@
     "botIdentitiesLoaded": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
     "botWorks": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
     "botHostStatus": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botWorkError": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context."
+    "botWorkError": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
+    "botDrafts": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
+    "botHistories": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
+    "botPendingSends": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
+    "botConversationErrors": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
+    "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor."
   }
 }

@@ -267,6 +267,7 @@ export interface WorkExecutionBindingDto {
   expertSnapshot: ExpertConfigSnapshotDto;
   delegatedScope: string[];
   workspaceBinding: string;
+  reservationId?: string;
   status: WorkExecutionStatus;
   attemptId?: string;
   submissionReceipt?: string;

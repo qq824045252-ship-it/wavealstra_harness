@@ -22,10 +22,15 @@ function deferred<T>() {
 }
 
 function fixture(listWorks: BotWorkApi["listWorks"]) {
+  let sequence = 0;
   const api = {
     botWork: {
       listBots: async () => [{ botId: "bot-review" }] as BotDto[],
       listWorks,
+      syncWorks: async () => {
+        const snapshotSequence = ++sequence;
+        return { kind: "snapshot", cursor: { epoch: "review", sequence: snapshotSequence, scope: "open" }, works: await listWorks(false) };
+      },
       hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "review-host" }),
       markNotificationRead: async () => ({ ok: true }),
     },
@@ -43,24 +48,28 @@ async function main(): Promise<void> {
 
   // A response captured before a newer push must retain both that Work and its selection.
   const pending = deferred<WorkProjectionDto[]>();
-  const pushed = fixture(() => pending.promise);
+  let pushedCalls = 0;
+  const pushed = fixture(() => ++pushedCalls === 1 ? pending.promise : Promise.resolve([work("created-during-refresh")]));
   pushed.setState({ botWorks: [work("was-open")], selectedWorkId: "was-open" });
   const refreshing = pushed.getState().refreshBotWork();
   pushed.getState().applyWorkProjection(work("created-during-refresh"));
   pushed.getState().setSelectedWorkId("created-during-refresh");
   pending.resolve([]);
   await refreshing;
+  await pushed.getState().refreshBotWork();
   assert.deepEqual(pushed.getState().botWorks.map(item => item.workId), ["created-during-refresh"]);
   assert.equal(pushed.getState().selectedWorkId, "created-during-refresh", "resolve selection against the reconciled list");
 
   // Updated existing items also survive an older list snapshot.
   const changedPending = deferred<WorkProjectionDto[]>();
-  const changed = fixture(() => changedPending.promise);
+  let changedCalls = 0;
+  const changed = fixture(() => ++changedCalls === 1 ? changedPending.promise : Promise.resolve([{ ...work("changed", 2), lifecycle: "paused" }]));
   changed.setState({ botWorks: [work("changed")] });
   const changing = changed.getState().refreshBotWork();
   changed.getState().applyWorkProjection({ ...work("changed", 2), lifecycle: "paused" });
   changedPending.resolve([]);
   await changing;
+  await changed.getState().refreshBotWork();
   assert.equal(changed.getState().botWorks[0]?.lifecycle, "paused");
 
   // Older overlapping refreshes cannot resurrect a Work omitted by the later refresh.

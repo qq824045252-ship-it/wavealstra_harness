@@ -187,7 +187,7 @@ try {
       ...effectEntries(11, 2, "active-fork.png", ["fork-conflict"]),
     ];
     const result = await readDurableWorkExecution(persisted(entries), completed(10, 13));
-    assert.deepEqual(result, { status: "completed", summary: "本次成果", hasWriteConflicts: false, artifactRefs: ["original.png"] });
+    assert.deepEqual(result, { status: "completed", summary: "本次成果", hasWriteConflicts: false, artifactRefs: ["original.png"], sourceEntryId: 13, usageTokens: 4 });
   });
 
   await check("a long submission retains early conflict evidence beyond the bounded UI history window", async () => {
