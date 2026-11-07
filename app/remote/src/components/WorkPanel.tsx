@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronRight, RefreshCw, X } from 'lucide-react'
 import type { RemoteClient } from '../api/RemoteClient'
-import type { RemoteWorkSummary } from '@mybuddy/shared'
+import type { RemoteWorkCard, RemoteWorkSummary } from '@mybuddy/shared'
 import { useRemoteWorkStore } from '../store/remoteWork'
 
 /**
@@ -43,6 +43,7 @@ function WorkPanel({ client, onClose }: { client: RemoteClient; onClose: () => v
           <RefreshCw size={16} className={loading ? 'work-spin' : undefined} />
         </button>
       </header>
+      {error && <div className="work-error" role="status">{error}</div>}
 
       {!selected && (
         <div className="work-body">
@@ -50,16 +51,15 @@ function WorkPanel({ client, onClose }: { client: RemoteClient; onClose: () => v
             <input type="checkbox" checked={includeClosed} onChange={event => setIncludeClosed(event.target.checked)} />
             显示已结束
           </label>
-          {error && <div className="work-error">{error}</div>}
           {works.length === 0 && !loading && <div className="work-empty">暂无事项</div>}
           {works.map(work => (
             <button type="button" key={work.workId} className="work-row" onClick={() => setSelectedWork(work.workId)}>
               <div className="work-row-main">
                 <span className="work-row-title">{work.title}</span>
-                <span className="work-row-step">{work.nextSteps[0] ?? lifecycleLabel(work.lifecycle)}</span>
+                <span className="work-row-step">{work.nextSteps[0] ?? lifecycleLabel(work)}</span>
               </div>
               <div className="work-row-meta">
-                <span className={`work-badge work-badge-${work.lifecycle}`}>{lifecycleLabel(work.lifecycle)}</span>
+                <span className={`work-badge work-badge-${work.lifecycle}`}>{lifecycleLabel(work)}</span>
                 <span className="work-row-cards">{work.cards.length} 张卡片</span>
                 <ChevronRight size={16} />
               </div>
@@ -68,7 +68,8 @@ function WorkPanel({ client, onClose }: { client: RemoteClient; onClose: () => v
         </div>
       )}
 
-      {selected && <WorkDetail client={client} work={selected} />}
+      {selected && <WorkDetail key={JSON.stringify([selected.workId, selected.intentRevision,
+        selected.inputSnapshotId, selected.artifactSnapshotId])} client={client} work={selected} />}
     </div>
   )
 }
@@ -87,13 +88,52 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
   const [busy, setBusy] = useState(false)
 
   const criterion = work.unverifiedScope.find(entry => entry.reason !== 'auto_verified')
+  const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision,
+    expectedOwnerEpoch: work.ownerEpoch }
+
+  const feedback = async (failed: boolean) => {
+    if (!criterion) return
+    setBusy(true); setFeedbackError(null)
+    try {
+      const result = await submitFeedback(client, work.workId, {
+        operationId: `phone-feedback-${crypto.randomUUID()}`, criterionIds: [criterion.criterionId],
+        environment: environment.trim(), sourceRef: sourceRef.trim(),
+        inputSnapshotId: work.inputSnapshotId, artifactSnapshotId: work.artifactSnapshotId,
+        versionGuard, failed,
+      })
+      if (!result.ok) setFeedbackError(result.message ?? '反馈未被接受')
+      else await useRemoteWorkStore.getState().refresh(client)
+    } catch (error) { setFeedbackError(error instanceof Error ? error.message : '反馈未被接受') }
+    finally { setBusy(false) }
+  }
+
+  const read = async (semanticCardKey: string) => {
+    setBusy(true); setFeedbackError(null)
+    try {
+      const result = await markCardRead(client, work.workId, semanticCardKey)
+      if (!result.ok) setFeedbackError(result.message ?? '阅读状态未确认')
+    } finally { setBusy(false) }
+  }
+
+  const resend = async (notificationId: string) => {
+    if (!window.confirm('原投递可能已经送达，重发可能造成重复。确认重发？')) return
+    setBusy(true); setFeedbackError(null)
+    try {
+      const result = await resendNotification(client, work.workId, notificationId, {
+        reason: '手机端确认重发', acknowledgedDuplicateRisk: true, versionGuard,
+      })
+      if (!result.ok) setFeedbackError(result.message ?? '重发未被接受')
+      else await useRemoteWorkStore.getState().refresh(client)
+    } finally { setBusy(false) }
+  }
 
   return (
     <div className="work-body">
+      {feedbackError && <div className="work-error" role="status">{feedbackError}</div>}
       <section className="work-section">
         {work.goal && <p className="work-goal">{work.goal}</p>}
-        <div className="work-meta">r{work.intentRevision} · 负责人代次 {work.ownerEpoch} · {lifecycleLabel(work.lifecycle)}</div>
-        {work.currentConclusion && <div className="work-conclusion">{work.currentConclusion}</div>}
+        <div className="work-meta">r{work.intentRevision} · 负责人代次 {work.ownerEpoch} · {lifecycleLabel(work)}</div>
+        {work.currentConclusion && <div className="work-conclusion">{work.closureConclusion ? lifecycleLabel(work) : work.currentConclusion}</div>}
         {work.nextSteps.length > 0 && (
           <ul className="work-list">
             {work.nextSteps.map(step => <li key={step}>{step}</li>)}
@@ -124,6 +164,7 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
           <div key={card.cardKey} className={`work-card ${card.currency !== 'current' ? 'work-card-historical' : ''}`}>
             <div className="work-card-head">
               <span className="work-card-title">{card.title}</span>
+              {workCardCompletionLabel(work, card) && <span className="work-badge work-badge-closed">{workCardCompletionLabel(work, card)}</span>}
               {card.currency !== 'current' && <span className="work-badge work-badge-historical">{card.currency === 'superseded' ? '已失效' : '历史'}</span>}
             </div>
             <p className="work-card-body">{card.summary}</p>
@@ -132,9 +173,9 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
             )}
             <div className="work-card-foot">
               <span>r{card.intentRevision} · {card.deliverables.length} 个成果</span>
-              {card.readAt
+              {card.readAt !== undefined
                 ? <span className="work-read-ok"><Check size={14} /> 已读</span>
-                : <button type="button" className="work-link" onClick={() => void markCardRead(client, work.workId, card.semanticCardKey)}>标记已读</button>}
+                : <button type="button" className="work-link" disabled={busy} onClick={() => void read(card.semanticCardKey)}>标记已读</button>}
             </div>
           </div>
         ))}
@@ -145,40 +186,18 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
         <section className="work-section">
           <h3 className="work-section-title">提交实测反馈</h3>
           <div className="work-meta">绑定当前版本 r{work.intentRevision} · {work.inputSnapshotId}</div>
+          {work.artifactSnapshotId && <div className="work-meta">产物版本 {work.artifactSnapshotId}</div>}
           <input className="work-input" placeholder="环境，例如 omarchy" value={environment}
             onChange={event => setEnvironment(event.target.value)} />
           <input className="work-input" placeholder="被测版本，例如 omarchy:d6151a8" value={sourceRef}
             onChange={event => setSourceRef(event.target.value)} />
-          {feedbackError && <div className="work-error">{feedbackError}</div>}
           <div className="work-actions">
             <button type="button" className="work-button" disabled={busy || !environment.trim() || !sourceRef.trim()}
-              onClick={async () => {
-                setBusy(true); setFeedbackError(null)
-                try {
-                  const result = await submitFeedback(client, work.workId, {
-                    operationId: `phone-feedback-${Date.now()}`, criterionIds: [criterion.criterionId],
-                    environment: environment.trim(), sourceRef: sourceRef.trim(),
-                    inputSnapshotId: work.inputSnapshotId, failed: false,
-                  })
-                  if (!result.ok) setFeedbackError(result.message ?? '反馈未被接受')
-                  else await useRemoteWorkStore.getState().refresh(client)
-                } finally { setBusy(false) }
-              }}>
+              onClick={() => void feedback(false)}>
               实测通过
             </button>
             <button type="button" className="work-button work-button-danger" disabled={busy || !environment.trim() || !sourceRef.trim()}
-              onClick={async () => {
-                setBusy(true); setFeedbackError(null)
-                try {
-                  const result = await submitFeedback(client, work.workId, {
-                    operationId: `phone-feedback-fail-${Date.now()}`, criterionIds: [criterion.criterionId],
-                    environment: environment.trim(), sourceRef: sourceRef.trim(),
-                    inputSnapshotId: work.inputSnapshotId, failed: true,
-                  })
-                  if (!result.ok) setFeedbackError(result.message ?? '反馈未被接受')
-                  else await useRemoteWorkStore.getState().refresh(client)
-                } finally { setBusy(false) }
-              }}>
+              onClick={() => void feedback(true)}>
               实测失败
             </button>
           </div>
@@ -193,11 +212,7 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
             <span>{deliveryLabel(item.externalStatus)}</span>
             <span className="work-meta">{item.attemptCount} 次尝试</span>
             {item.state === 'unknown' && (
-              <button type="button" className="work-link" onClick={async () => {
-                if (!window.confirm('原投递可能已经送达，重发可能造成重复。确认重发？')) return
-                await resendNotification(client, work.workId, item.notificationId, '手机端确认重发')
-                await useRemoteWorkStore.getState().refresh(client)
-              }}>重发</button>
+              <button type="button" className="work-link" disabled={busy} onClick={() => void resend(item.notificationId)}>重发</button>
             )}
           </div>
         ))}
@@ -219,8 +234,22 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
   )
 }
 
-function lifecycleLabel(lifecycle: RemoteWorkSummary['lifecycle']): string {
+function lifecycleLabel(work: RemoteWorkSummary): string {
+  const { lifecycle, closureConclusion } = work
+  if (lifecycle === 'closed') {
+    if (closureConclusion === 'succeeded') return '已完成并关闭'
+    if (closureConclusion === 'cancelled') return '已取消'
+    if (closureConclusion === 'ended_unsuccessfully') return '已结束（未达成）'
+  }
   return lifecycle === 'active' ? '进行中' : lifecycle === 'paused' ? '已暂停' : lifecycle === 'closing' ? '结束中' : '已结束'
+}
+
+/** Acceptance cards retain their semantic kind when a successful close reuses them. */
+export function workCardCompletionLabel(work: RemoteWorkSummary, card: RemoteWorkCard): string | undefined {
+  return work.lifecycle === 'closed' && work.closureConclusion === 'succeeded'
+    && card.currency === 'current' && card.intentRevision === work.intentRevision
+    && card.inputSnapshotId === work.inputSnapshotId
+    && (card.kind === 'accepted_result' || card.kind === 'closure_succeeded') ? '已完成并关闭' : undefined
 }
 
 function reasonLabel(reason: string): string {

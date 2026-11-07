@@ -8,7 +8,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkHostAuthority } from "../src/main/agent/work/WorkHostAuthority";
 import { WorkService } from "../src/main/agent/work/WorkService";
 import { ConversationGoalService, defaultBotActor } from "../src/main/agent/ConversationGoalService";
-import { DEFAULT_BOT_ID, LOCAL_USER_ID, type CreateWorkParams, type WorkControlResult, type WorkActor } from "../src/shared/bot-work";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, type CreateWorkParams, type WorkControlResult, type WorkActor, type WorkNotificationChannel } from "../src/shared/bot-work";
 
 export function runWorkRegressions(): void {
   const root = mkdtempSync(join(tmpdir(), "bot-work-regressions-"));
@@ -165,6 +165,36 @@ export function runWorkRegressions(): void {
     };
     service.deliverPendingNotifications(crashChannel, notificationWork.workId);
     assert.equal(service.repo.listNotifications(notificationWork.workId)[0]?.delivery, "unknown");
+
+    // Read-back recovery needs the same contract that admitted the original effect.
+    // This separate Work declares a queryable, idempotent endpoint from its first send.
+    const queryableWork = create({ criteria: [] });
+    unwrap(service.closeWork(actor, { operationId: op(), workId: queryableWork.workId, conclusion: "succeeded" }));
+    let queryableEffects = 0;
+    let queryableEffectKey: string | undefined;
+    let receiptAvailable = false;
+    let queryableLookups = 0;
+    const queryableChannel: WorkNotificationChannel = {
+      channel: "idempotent-queryable", deliveryGuarantee: "idempotent-queryable",
+      send: ({ idempotencyKey }): never => {
+        queryableEffects++;
+        queryableEffectKey = idempotencyKey;
+        throw new Error("external effect recorded; response not persisted");
+      },
+      lookup: ({ idempotencyKey }) => {
+        queryableLookups++;
+        assert.equal(idempotencyKey, queryableEffectKey, "read-back addresses the originally recorded effect");
+        return receiptAvailable ? "delivered" : "unknown";
+      },
+    };
+    service.deliverPendingNotifications(queryableChannel, queryableWork.workId);
+    service.deliverPendingNotifications(queryableChannel, queryableWork.workId);
+    const queryableNotification = service.repo.listNotifications(queryableWork.workId)[0]!;
+    const originalQueryableAttempt = service.notifications.attempts(queryableNotification.notificationId)[0]!;
+    assert.equal(queryableNotification.delivery, "unknown");
+    assert.equal(queryableEffects, 1, "an unavailable receipt does not cause another send");
+    assert.equal(queryableLookups, 1);
+
     db.close();
     db = new AppDatabase(dbPath);
     bots = new BotRegistry(db.connection);
@@ -172,9 +202,25 @@ export function runWorkRegressions(): void {
     service.deliverPendingNotifications(crashChannel, notificationWork.workId);
     assert.equal(effects, 1, "reopening storage does not blindly resend a possibly delivered notification");
     assert.equal(service.repo.listNotifications(notificationWork.workId)[0]?.delivery, "unknown");
-    service.deliverPendingNotifications({ ...crashChannel, idempotent: true, lookup: () => "delivered" }, notificationWork.workId);
-    assert.equal(effects, 1, "read-back recovers delivery without another send");
-    assert.equal(service.repo.listNotifications(notificationWork.workId)[0]?.delivery, "sent");
+    let upgradedLookups = 0;
+    service.deliverPendingNotifications({ ...crashChannel, idempotent: true, lookup: () => {
+      upgradedLookups++;
+      return "delivered";
+    } }, notificationWork.workId);
+    assert.equal(effects, 1, "a stronger new declaration cannot authorize replay of the old best-effort effect");
+    assert.equal(upgradedLookups, 0, "a changed endpoint contract cannot supply the original effect's receipt");
+    assert.equal(service.repo.listNotifications(notificationWork.workId)[0]?.delivery, "unknown");
+
+    receiptAvailable = true;
+    service.deliverPendingNotifications(queryableChannel, queryableWork.workId);
+    assert.equal(queryableEffects, 1, "same-contract read-back after reopening storage recovers delivery without another send");
+    assert.equal(queryableLookups, 2);
+    assert.equal(service.repo.listNotifications(queryableWork.workId)[0]?.delivery, "sent");
+    const recoveredQueryableAttempts = service.notifications.attempts(queryableNotification.notificationId);
+    assert.equal(recoveredQueryableAttempts.length, 1, "read-back settles the persisted attempt without creating another one");
+    assert.equal(recoveredQueryableAttempts[0]?.attemptId, originalQueryableAttempt.attemptId);
+    assert.equal(recoveredQueryableAttempts[0]?.providerEffectKey, originalQueryableAttempt.providerEffectKey);
+    assert.equal(recoveredQueryableAttempts[0]?.status, "sent");
 
     const staleNotice = create();
     const staleBinding = dispatch(staleNotice.workId);

@@ -68,6 +68,9 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
     {cards.length === 0 && <p>还没有验收成果。</p>}
     {cards.map(card => <article key={card.cardKey} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>
+      {work.lifecycle === "closed" && work.closureConclusion === "succeeded"
+        && card.currency === "current" && (card.kind === "accepted_result" || card.kind === "closure_succeeded")
+        && <p role="status">已完成并关闭</p>}
       <p>{card.summary}</p>
       <p>要求 r{card.intentRevision} · 成果 {card.deliverableIds.length} 项 · 阅读版本 {card.readVersion}</p>
       {card.unverifiedScope.length > 0 && <p>未验证：{card.unverifiedScope.join("、")}</p>}

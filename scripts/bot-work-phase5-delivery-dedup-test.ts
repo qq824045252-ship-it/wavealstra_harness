@@ -385,18 +385,53 @@ check("the production host drains only while it holds the authority", () => {
   assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "sent");
 });
 
-check("a restart reads the desktop effect back instead of notifying twice", () => {
+check("a lost desktop response stays unknown after restart until explicit manual resend", () => {
   const f = accepted("host-restart");
-  const notifications = new NotificationService(db, { read: () => ({}) } as unknown as AppSettingsStore);
-  const host = new WorkNotificationHost(works, { isAuthority: () => true, channels: () => [createDesktopWorkChannel(notifications)] });
-  host.drain(f.work.workId);
-  const before = notifications.list({}).filter(item => item.dedupeKey?.startsWith("work-delivery:")).length;
-  // A fresh host on the same database must reconcile the original effect.
-  const reopened = new WorkNotificationHost(works, { isAuthority: () => true, channels: () => [createDesktopWorkChannel(notifications)] });
-  const outcomes = reopened.drain(f.work.workId);
-  assert.equal(notifications.list({}).filter(item => item.dedupeKey?.startsWith("work-delivery:")).length, before,
-    "the second drain does not publish a duplicate");
-  assert.ok(outcomes.every(item => item.delivery !== "pending"));
+  const settings = { read: () => ({ notificationPreferences: {
+    inAppEnabled: false, desktopEnabled: true, desktopBackgroundOnly: false,
+  } }) } as unknown as AppSettingsStore;
+  let presentations = 0;
+  const notifications = new NotificationService(db, settings);
+  notifications.setDesktopDelivery(() => { presentations++; });
+  const desktop = createDesktopWorkChannel(notifications);
+  assert.equal(resolveChannelCapability(desktop).deliveryGuarantee, "best-effort-unqueryable");
+  works.deliverPendingNotifications({ ...desktop, send(input) {
+    desktop.send(input);
+    throw new Error("host crashed after desktop presentation, before receipt persistence");
+  } }, f.work.workId);
+  assert.equal(presentations, 1);
+  assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+  const reopenedWorks = new WorkService(db.connection, { bots, now: () => clock });
+  const beforeChannelRecovery = reopenedWorks.resendWorkNotification(user, {
+    operationId: `resend-before-channel:${f.suffix}`, workId: f.work.workId,
+    notificationId: f.notification.notificationId, reason: "retry after restart", acknowledgedDuplicateRisk: true,
+    versionGuard: guard(reopenedWorks.getWork(f.work.workId)!),
+  });
+  assert.equal(beforeChannelRecovery.ok, false, "resend admission needs a live observed endpoint contract");
+  // Reopening the service loses its transient dedupe map. Neither that map nor an OS
+  // toast is a durable provider receipt, so automatic recovery must not send again.
+  const reopenedNotifications = new NotificationService(db, settings);
+  reopenedNotifications.setDesktopDelivery(() => { presentations++; });
+  const reopened = new WorkNotificationHost(reopenedWorks, {
+    isAuthority: () => true, channels: () => [createDesktopWorkChannel(reopenedNotifications)],
+  });
+  reopened.drain(f.work.workId);
+  assert.equal(presentations, 1);
+  assert.equal(reopenedWorks.notifications.attempts(f.notification.notificationId).length, 1);
+  assert.equal(reopenedWorks.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+  unwrap(reopenedWorks.resendWorkNotification(user, {
+    operationId: `resend-desktop:${f.suffix}`, workId: f.work.workId,
+    notificationId: f.notification.notificationId, reason: "user confirms duplicate risk", acknowledgedDuplicateRisk: true,
+    versionGuard: guard(reopenedWorks.getWork(f.work.workId)!),
+  }));
+  reopened.drain(f.work.workId);
+  const attempts = reopenedWorks.notifications.attempts(f.notification.notificationId);
+  assert.equal(presentations, 2, "only the explicit new authorization permits another presentation request");
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0]!.status, "unknown");
+  assert.notEqual(attempts[0]!.providerEffectKey, attempts[1]!.providerEffectKey);
+  assert.match(attempts[1]!.receipt ?? "", /^accepted-notification:/,
+    "the receipt denotes service acceptance, not a persisted or OS presentation receipt");
 });
 
 check("a muted preference is a deliberate end state, not a retry loop", () => {
@@ -432,5 +467,214 @@ check("a throwing channel is contained and leaves an honest unknown", () => {
   assert.equal(works.notifications.attempts(f.notification.notificationId).length, after,
     "the host loop does not hammer a broken channel");
 });
+
+// ---------------------------------------------- post-review boundary regressions
+
+check("synchronous reentry records a global trailing scan for newly queued work", () => {
+  const scopes: Array<string | undefined> = [];
+  const queue = ["first"];
+  let host: WorkNotificationHost;
+  host = new WorkNotificationHost({ deliverPendingNotifications(_channel, workId) {
+    scopes.push(workId);
+    const snapshot = queue.splice(0);
+    if (snapshot.includes("first")) {
+      queue.push("second");
+      assert.deepEqual(host.drain("another-work"), []);
+    }
+    return snapshot.map(notificationId => ({ notificationId, delivery: "sent" as const }));
+  } }, { isAuthority: () => true, channels: () => [channel("best-effort")] });
+  const result = host.drain("first-work");
+  assert.deepEqual(result.map(item => item.notificationId), ["first", "second"]);
+  assert.deepEqual(scopes, ["first-work", undefined], "a reentrant request may be outside the original Work scope");
+});
+
+check("stop invalidates reentrant scans and prevents later channels in that drain", () => {
+  let scans = 0;
+  let host: WorkNotificationHost;
+  host = new WorkNotificationHost({ deliverPendingNotifications() {
+    scans++;
+    host.drain();
+    host.stop();
+    return [];
+  } }, { isAuthority: () => true, channels: () => [channel("queryable"), channel("best-effort")] });
+  host.drain();
+  assert.equal(scans, 1);
+});
+
+check("authority loss during a callback prevents the pending trailing scan", () => {
+  let authority = true;
+  let scans = 0;
+  let host: WorkNotificationHost;
+  host = new WorkNotificationHost({ deliverPendingNotifications() {
+    scans++;
+    host.drain();
+    authority = false;
+    return [];
+  } }, { isAuthority: () => authority, channels: () => [channel("best-effort")] });
+  host.drain();
+  assert.equal(scans, 1);
+});
+
+check("projection wakes terminate at the replay budget while preserving unknown", () => {
+  const f = accepted("wake-budget");
+  let host: WorkNotificationHost;
+  const wakingWorks = new WorkService(db.connection, { bots, now: () => clock,
+    emitProjection: () => host.wake() });
+  let sends = 0;
+  let scans = 0;
+  const endpoint: WorkNotificationChannel = { channel: "wake-replay",
+    ...capabilityOfGuarantee("idempotent-unqueryable"), send() {
+      sends++;
+      // Real production wiring: an event emitted while send is on the stack wakes
+      // the host through WorkService.emitProjection, rather than an async API assumption.
+      wakingWorks.emitCurrentProjection(f.work.workId, { force: true });
+      return { ok: false, retryable: false, responseLost: true, error: "receipt unavailable" };
+    } };
+  host = new WorkNotificationHost({ deliverPendingNotifications(active) {
+    scans++;
+    assert.ok(scans < 6, "trailing scans must terminate instead of spinning on unknown");
+    return wakingWorks.deliverPendingNotifications(active, f.work.workId);
+  } }, { isAuthority: () => true, channels: () => [endpoint] });
+  try { host.start(); } finally { host.stop(); }
+  assert.equal(sends, 3);
+  assert.equal(scans, 4);
+  assert.equal(wakingWorks.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+  assert.ok(wakingWorks.notifications.attempts(f.notification.notificationId).every(item => item.status === "unknown"));
+  wakingWorks.deliverPendingNotifications(endpoint, f.work.workId);
+  assert.equal(sends, 3, "later lifecycle wakes cannot reset the same effect's automatic budget");
+  unwrap(wakingWorks.resendWorkNotification(user, {
+    operationId: `budget-manual:${f.suffix}`, workId: f.work.workId, notificationId: f.notification.notificationId,
+    reason: "manual risk confirmed", acknowledgedDuplicateRisk: true, versionGuard: guard(wakingWorks.getWork(f.work.workId)!),
+  }));
+  wakingWorks.deliverPendingNotifications({ ...endpoint, send() { return { ok: true, receipt: "manual-receipt" }; } }, f.work.workId);
+  assert.equal(wakingWorks.notifications.attempts(f.notification.notificationId).at(-1)!.claimGeneration, 1);
+});
+
+check("best-effort unknown ignores trailing projection wakes without a second send", () => {
+  const f = accepted("best-effort-wake");
+  let host: WorkNotificationHost;
+  const wakingWorks = new WorkService(db.connection, { bots, now: () => clock, emitProjection: () => host.wake() });
+  let sends = 0;
+  const endpoint: WorkNotificationChannel = { channel: "wake-best-effort",
+    ...capabilityOfGuarantee("best-effort-unqueryable"), send() {
+      sends++;
+      wakingWorks.emitCurrentProjection(f.work.workId, { force: true });
+      return { ok: false, retryable: false, responseLost: true, error: "lost response" };
+    } };
+  host = new WorkNotificationHost({ deliverPendingNotifications(active) {
+    return wakingWorks.deliverPendingNotifications(active, f.work.workId);
+  } }, { isAuthority: () => true, channels: () => [endpoint] });
+  try { host.start(); } finally { host.stop(); }
+  assert.equal(sends, 1);
+  assert.equal(wakingWorks.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+});
+
+check("recovery cannot send a frozen result after its inputs change or cancellation", () => {
+  for (const change of ["amend", "cancel"] as const) {
+    const f = accepted(`stale-replay-${change}`);
+    let sends = 0;
+    const endpoint: WorkNotificationChannel = { channel: `stale-${change}`,
+      ...capabilityOfGuarantee("idempotent-unqueryable"), send({ notification }) {
+        if (notification.notificationId === f.notification.notificationId) sends++;
+        return { ok: false, retryable: false, responseLost: true, error: "lost response" };
+      } };
+    works.deliverPendingNotifications(endpoint, f.work.workId);
+    if (change === "amend") unwrap(works.amendWork(user, {
+      operationId: `amend-replay:${f.suffix}`, workId: f.work.workId, inputSnapshotId: `new-input:${f.suffix}`,
+    }));
+    else unwrap(works.cancelWork(user, { operationId: `cancel-replay:${f.suffix}`, workId: f.work.workId }));
+    works.deliverPendingNotifications(endpoint, f.work.workId);
+    assert.equal(sends, 1);
+    assert.equal(works.notifications.attempts(f.notification.notificationId).length, 1);
+    assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+  }
+});
+
+check("manual resend retries retain their own effect and budget", () => {
+  const f = accepted("manual-retry");
+  const endpoint = channel("best-effort", { responseLost: true });
+  works.deliverPendingNotifications(endpoint, f.work.workId);
+  unwrap(works.resendWorkNotification(user, { operationId: `manual-retry:${f.suffix}`, workId: f.work.workId,
+    notificationId: f.notification.notificationId, reason: "retry explicitly", acknowledgedDuplicateRisk: true,
+    versionGuard: guard(works.getWork(f.work.workId)!) }));
+  const duplicateAuthorization = works.resendWorkNotification(user, {
+    operationId: `duplicate-manual-retry:${f.suffix}`, workId: f.work.workId,
+    notificationId: f.notification.notificationId, reason: "repeat request", acknowledgedDuplicateRisk: true,
+    versionGuard: guard(works.getWork(f.work.workId)!),
+  });
+  assert.equal(duplicateAuthorization.ok, false, "one pending authorization cannot be multiplied");
+  works.deliverPendingNotifications(channel("best-effort", { ok: false }), f.work.workId);
+  assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "pending");
+  works.deliverPendingNotifications(channel("best-effort", { ok: true }), f.work.workId);
+  const attempts = works.notifications.attempts(f.notification.notificationId);
+  assert.equal(attempts.length, 3);
+  assert.equal(attempts[0]!.status, "unknown");
+  assert.notEqual(attempts[1]!.providerEffectKey, attempts[0]!.providerEffectKey);
+  assert.equal(attempts[2]!.providerEffectKey, attempts[1]!.providerEffectKey);
+  assert.equal(attempts[2]!.claimGeneration, 2);
+  assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "sent");
+});
+
+check("a changed endpoint contract retires an unsent authorization with an honest unknown", () => {
+  const f = accepted("capability-drift");
+  const original = { ...channel("best-effort", { responseLost: true }), channel: "changing-endpoint", targetKey: "same-target" };
+  works.deliverPendingNotifications(original, f.work.workId);
+  const authorize = (suffix: string) => works.resendWorkNotification(user, {
+    operationId: `${suffix}:${f.suffix}`, workId: f.work.workId, notificationId: f.notification.notificationId,
+    reason: "user accepts duplication", acknowledgedDuplicateRisk: true, versionGuard: guard(works.getWork(f.work.workId)!),
+  });
+  unwrap(authorize("before-capability-change"));
+  let sends = 0;
+  const changed: WorkNotificationChannel = { channel: original.channel, targetKey: original.targetKey,
+    ...capabilityOfGuarantee("idempotent-unqueryable"), send() { sends++; return { ok: true, receipt: "new-contract-receipt" }; } };
+  assert.throws(() => works.deliverPendingNotifications(changed, f.work.workId), /渠道能力已改变/);
+  assert.equal(sends, 0);
+  assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "unknown");
+  assert.equal(works.notifications.attempts(f.notification.notificationId).length, 1);
+  works.deliverPendingNotifications(changed, f.work.workId);
+  assert.equal(sends, 0, "an old unknown is not reinterpreted under a stronger capability");
+  unwrap(authorize("after-capability-change"));
+  works.deliverPendingNotifications(changed, f.work.workId);
+  assert.equal(sends, 1);
+  assert.equal(works.notifications.attempts(f.notification.notificationId).at(-1)!.guarantee, "idempotent-unqueryable");
+});
+
+check("a late original receipt cannot consume a newly authorized resend", () => {
+  const f = accepted("late-receipt");
+  works.deliverPendingNotifications(channel("queryable", { responseLost: true, lookup: "unknown" }), f.work.workId);
+  let authorized = false;
+  const endpoint = { ...channel("queryable"), lookup: () => {
+    if (!authorized) {
+      authorized = true;
+      unwrap(works.resendWorkNotification(user, {
+        operationId: `late-receipt-resend:${f.suffix}`, workId: f.work.workId, notificationId: f.notification.notificationId,
+        reason: "explicit resend racing receipt", acknowledgedDuplicateRisk: true,
+        versionGuard: guard(works.getWork(f.work.workId)!),
+      }));
+    }
+    return "delivered" as const;
+  } };
+  works.deliverPendingNotifications(endpoint, f.work.workId);
+  assert.equal(works.notifications.attempts(f.notification.notificationId)[0]!.status, "sent");
+  assert.equal(works.repo.getNotification(f.notification.notificationId)!.delivery, "pending",
+    "late receipt settles only its original attempt, not the new authorization");
+  works.deliverPendingNotifications(endpoint, f.work.workId);
+  const attempts = works.notifications.attempts(f.notification.notificationId);
+  assert.equal(attempts.length, 2);
+  assert.notEqual(attempts[1]!.providerEffectKey, attempts[0]!.providerEffectKey);
+  assert.equal(attempts[1]!.status, "sent");
+});
+
+{
+  let scans = 0;
+  const host = new WorkNotificationHost({ deliverPendingNotifications() { scans++; return []; } }, {
+    isAuthority: () => true, channels: () => [channel("best-effort")],
+  });
+  host.start();
+  host.wake();
+  host.stop();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  check("stop cancels an already queued asynchronous wake callback", () => assert.equal(scans, 1));
+}
 
 console.log(`Phase 5 delivery dedup: ${passes.length} passed`);

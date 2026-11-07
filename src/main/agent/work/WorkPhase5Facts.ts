@@ -143,14 +143,16 @@ export class WorkPhase5Facts {
     const decisions = this.cards.pendingDecisions(workId);
     return {
       workId: work.workId, title: work.title, goal: work.goalDescription, lifecycle: work.lifecycle, mode: work.mode,
+      closureConclusion: work.closureConclusion,
       ownerBotId: work.ownerBotId, ownerEpoch: work.ownerEpoch, intentRevision: work.intentRevision,
       inputSnapshotId: work.inputSnapshotId, stateVersion: work.stateVersion,
+      artifactSnapshotId: projection.phase3?.artifactSnapshotId,
       acceptedCount: projection.acceptedDeliverableIds.length,
       currentCardKeys: currentCards.map(card => card.cardKey),
       currentConclusion: work.closureConclusion ?? (currentCards.at(-1)?.summary || undefined),
       pendingUserDecisions: decisions.map(blocker => blocker.reason),
       nextSteps: projection.nextSteps.slice(0, 6),
-      unverifiedScope: this.cards.unverifiedScope(work, this.works.artifacts.currentSnapshotId(workId)),
+      unverifiedScope: this.cards.unverifiedScope(work, projection.phase3?.artifactSnapshotId),
       delivery: notifications.map(notification => {
         const attempts = this.works.notifications.attempts(notification.notificationId);
         const last = attempts.at(-1);

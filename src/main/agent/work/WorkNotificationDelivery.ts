@@ -7,7 +7,7 @@ import {
   canonicalJson, capabilityOfGuarantee, capabilityIsConsistent, deliveryRecoveryAction,
   type WorkChannelCapability, type WorkDeliveryAttemptDto, type WorkDeliveryGuarantee,
 } from "../../../shared/bot-work-phase5";
-import type { WorkArtifactValidation } from "./WorkArtifactValidation";
+import type { ArtifactInspection, WorkArtifactValidation } from "./WorkArtifactValidation";
 import { ensureWorkCollaborationTables } from "./WorkCollaborationService";
 import type { WorkService } from "./WorkService";
 
@@ -73,6 +73,8 @@ export function resolveChannelCapability(channel: WorkNotificationChannel): Work
 /** Fresh-fact claim, immutable attempt, external call, and receipt settlement are separate steps. */
 export class WorkNotificationDelivery {
   private readonly sending = new Set<string>();
+  // Runtime endpoint declarations are admission evidence, not a second delivery ledger.
+  private readonly channelCapabilities = new Map<string, WorkChannelCapability>();
   constructor(private readonly db: Database.Database, private readonly works: WorkService, private readonly options: Options = {}) {
     ensureWorkCollaborationTables(db);
   }
@@ -105,13 +107,20 @@ export class WorkNotificationDelivery {
     const notification = this.works.repo.getNotification(input.notificationId);
     if (!notification) return { ok: false, message: "找不到通知" };
     const prior = this.lastAttempt(input.notificationId);
-    if (!prior || (prior.status !== "unknown" && notification.delivery !== "unknown")) {
+    if (!prior || prior.status !== "unknown" || notification.delivery !== "unknown") {
       return { ok: false, message: "只有外部投递结果未知的通知需要人工重发" };
     }
-    const capability = capabilityOfGuarantee((prior.delivery_guarantee as WorkDeliveryGuarantee | null) ?? "best-effort-unqueryable");
+    const work = this.works.getWork(notification.workId);
+    const identity = this.identity(notification.notificationId);
+    if (!work || !identity || identity.semanticValidity !== "active" || notification.intentRevision !== work.intentRevision
+      || identity.inputSnapshotId !== work.inputSnapshotId) return { ok: false, message: "过期通知不能授权为当前结论重发" };
+    const targetKey = input.targetKey ?? notification.targetKey;
+    const capability = this.channelCapabilities.get(this.channelKey(prior.channel, targetKey));
+    if (!capability) return { ok: false, message: "通知渠道尚未在当前宿主核验，请等待渠道恢复后再确认重发" };
     const payload: WorkNotificationDto = { ...notification, delivery: "pending",
       attemptCount: notification.attemptCount + 1, channel: notification.channel ?? prior.channel,
-      targetKey: input.targetKey ?? notification.targetKey, semanticValidity: "active" };
+      targetKey, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
+      senderBotId: work.ownerBotId, semanticValidity: "active" };
     const payloadHash = sha256(canonicalJson(payload));
     const effectKey = `effect:${input.notificationId}:resend:${input.operationId}`;
     this.db.prepare(`INSERT OR IGNORE INTO work_notification_effects (
@@ -120,11 +129,11 @@ export class WorkNotificationDelivery {
       authorization_reason,resend_of_attempt_id,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?, 'manual-resend', ?,?,?,?)`).run(
       effectKey, input.notificationId, payloadHash, canonicalJson(payload), prior.channel,
-      input.targetKey ?? null, capability.deliveryGuarantee,
+      targetKey ?? null, capability.deliveryGuarantee,
       capability.supportsIdempotencyKey ? 1 : 0, capability.supportsReceiptQuery ? 1 : 0,
       input.operationId, input.reason, prior.attempt_id, this.now(),
     );
-    this.works.repo.updateNotificationLinks(input.notificationId, { effectKey, cardKey: notification.cardKey, targetKey: input.targetKey });
+    this.works.repo.updateNotificationLinks(input.notificationId, { effectKey, cardKey: notification.cardKey, targetKey });
     this.works.repo.updateNotificationDelivery(input.notificationId, { delivery: "pending", channel: notification.channel ?? prior.channel });
     return { ok: true, effectKey };
   }
@@ -132,23 +141,49 @@ export class WorkNotificationDelivery {
   deliver(channel: WorkNotificationChannel, workId?: string): Outcome[] {
     this.assertAuthority();
     const capability = resolveChannelCapability(channel);
+    this.channelCapabilities.set(this.channelKey(channel.channel, channel.targetKey), capability);
     const works = workId ? [this.works.getWork(workId)].filter((value): value is WorkDto => Boolean(value))
       : this.works.repo.listWorksForNotifications();
     const outcomes: Outcome[] = [];
     // Only IDs survive this loop. A previous send/lookup can synchronously change the next Work.
     for (const work of works) for (const id of this.works.repo.listNotifications(work.workId).map(item => item.notificationId)) {
       if (this.sending.has(id)) continue;
+      this.assertAuthority();
       const current = this.works.repo.getNotification(id);
       if (!current || current.delivery === "sent" || current.delivery === "failed") continue;
       if (current.channel && current.channel !== channel.channel) continue;
-      if (current.targetKey && channel.targetKey && current.targetKey !== channel.targetKey) continue;
+      if (current.targetKey && current.targetKey !== channel.targetKey) continue;
       const prior = this.lastAttempt(id);
       // An explicit resend authorization outranks the automatic recovery path: the user has
       // already accepted the duplicate risk, and the frozen payload is what gets sent.
-      const resendAuthorized = this.pendingResendEffect(id, channel, capability) !== undefined;
+      const authorizedEffect = this.pendingResendEffect(id);
+      if (authorizedEffect && !this.matchesChannel(authorizedEffect, channel, capability)) {
+        // Authorization froze an endpoint contract that no longer applies. Retire only
+        // that unsent authorization, leave the original receipt unknown, and require a
+        // fresh user decision against the newly observed contract.
+        this.works.transaction(() => {
+          this.assertAuthority();
+          const latest = this.works.repo.getNotification(id);
+          if (latest?.delivery !== "pending" || latest.effectKey !== authorizedEffect.effect_key) return;
+          this.works.repo.updateNotificationLinks(id, { effectKey: prior?.provider_effect_key ?? prior?.idempotency_key });
+          this.works.repo.updateNotificationDelivery(id, { delivery: "unknown" });
+          const currentWork = this.works.getWork(latest.workId);
+          if (currentWork) {
+            this.works.repo.updateWork({ ...currentWork, stateVersion: currentWork.stateVersion + 1, updatedAt: this.now() });
+            this.works.emitCurrentProjection(currentWork.workId);
+          }
+        });
+        throw new Error(`通知 ${id} 的人工重发渠道能力已改变；未发送，原回执仍未知，请重新确认重复风险`);
+      }
+      const resendAuthorized = authorizedEffect !== undefined;
 
       if (!resendAuthorized && prior?.status === "unknown") {
         // Resolve the original effect even if its payload is now semantically obsolete.
+        // Its endpoint contract and target must still be the ones that admitted it.
+        const effect = this.effectOf(prior);
+        if (!effect || !this.matchesChannel(effect, channel, capability)) {
+          outcomes.push({ notificationId: id, delivery: "unknown" }); continue;
+        }
         let lookup: "delivered" | "missing" | "unknown" | "unavailable" = "unavailable";
         if (capability.supportsReceiptQuery && channel.lookup) {
           try {
@@ -159,7 +194,7 @@ export class WorkNotificationDelivery {
         const action = deliveryRecoveryAction({ lookup, capability });
         if (action === "settle-sent") {
           this.settle(prior, "sent", "reconciled-by-provider-receipt");
-          outcomes.push({ notificationId: id, delivery: "sent" });
+          outcomes.push({ notificationId: id, delivery: this.works.repo.getNotification(id)!.delivery });
           continue;
         }
         if (action === "stay-unknown" || action === "manual-resend-only") {
@@ -168,7 +203,7 @@ export class WorkNotificationDelivery {
         }
         // Safe replay: reuse the original effect key and the original, immutable payload.
         const replayed = this.claimReplay(id, prior, capability, channel);
-        if (!replayed) { outcomes.push({ notificationId: id, delivery: "unknown" }); continue; }
+        if (!replayed) { outcomes.push({ notificationId: id, delivery: this.works.repo.getNotification(id)!.delivery }); continue; }
         outcomes.push(this.dispatch(channel, replayed));
         continue;
       }
@@ -201,34 +236,15 @@ export class WorkNotificationDelivery {
       if (!notification || !latest || notification.delivery === "sent" || notification.delivery === "failed") return undefined;
       // An unresolved earlier attempt blocks automatic sends, but an explicitly authorized
       // resend is a new physical attempt under a new effect identity and may proceed.
-      const authorized = this.pendingResendEffect(notificationId, channel, capability);
-      if (!authorized && this.lastAttempt(notificationId)?.status === "unknown") return undefined;
-      const identity = this.identity(notificationId);
-      if (!identity || identity.semanticValidity !== "active") return undefined;
-      const cancelled = notification.kind === "result" && (latest.lifecycle === "closing" && latest.pendingConclusion === "cancelled"
-        || latest.lifecycle === "closed" && latest.closureConclusion === "cancelled");
-      const revisionChanged = notification.intentRevision !== latest.intentRevision || identity.inputSnapshotId !== latest.inputSnapshotId;
-      const hasArtifacts = this.works.repo.listDeliverables(latest.workId).some(item => latest.acceptedDeliverableIds.includes(item.deliverableId) && item.artifactRefs.length > 0);
-      const needsArtifactProof = notification.kind === "result" || notification.kind === "closed" && latest.closureConclusion === "succeeded";
-      const artifactsValid = !needsArtifactProof || (inspection !== undefined ? this.options.artifacts!.validate(inspection, this.now()) : !hasArtifacts);
-      const currentDeliverable = notification.kind !== "result" || this.works.repo.listDeliverables(latest.workId).some(item =>
-        latest.acceptedDeliverableIds.includes(item.deliverableId) && item.status === "accepted"
-        && item.intentRevision === latest.intentRevision && item.inputSnapshotId === latest.inputSnapshotId
-        && (`notification-${latest.workId}-${item.deliverableId}` === notification.notificationId
-          || notification.semanticKey === `work:${latest.workId}:result:${item.deliverableId}`));
-      // Closed:succeeded still has a valid delivery obligation.
-      if (cancelled || revisionChanged || !artifactsValid || !currentDeliverable) {
-        this.db.prepare("UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id=?")
-          .run(cancelled ? "cancelled" : "superseded", notificationId);
-        const changed = this.works.getWork(latest.workId)!;
-        this.works.repo.updateWork({ ...changed, stateVersion: changed.stateVersion + 1, updatedAt: this.now() });
-        this.works.emitCurrentProjection(latest.workId);
-        return undefined;
-      }
+      const authorized = this.pendingResendEffect(notificationId);
+      if (authorized && !this.matchesChannel(authorized, channel, capability)) return undefined;
+      const prior = this.lastAttempt(notificationId);
+      if (!authorized && prior?.status === "unknown") return undefined;
+      const identity = this.admit(notification, latest, inspection);
+      if (!identity) return undefined;
       const ownerChanged = identity.ownerEpoch !== latest.ownerEpoch || identity.senderBotId !== latest.ownerBotId;
       const ownerName = z.object({ display_name: z.string() }).parse(this.db.prepare("SELECT display_name FROM bots WHERE bot_id=?").get(latest.ownerBotId)).display_name;
       const ordinal = notification.attemptCount + 1;
-      if (!authorized && ordinal > 3) { this.works.repo.updateNotificationDelivery(notificationId, { delivery: "failed" }); return undefined; }
       // Content identity for the external effect. Delivery bookkeeping (attempt counter,
       // claim state) is not part of the message, so a safe retry of the same intent keeps
       // one provider effect. A changed target, owner line or payload still requires a new
@@ -246,11 +262,16 @@ export class WorkNotificationDelivery {
         channel: channel.channel, targetKey: channel.targetKey,
       };
       const candidateHash = sha256(canonicalJson(candidate));
-      const effect = authorized ?? this.ensureInitialEffect(notificationId, candidate, candidateHash, channel, capability);
-      if (!effect) return undefined;
-      if (!authorized && effect.payload_hash !== candidateHash) return undefined;
+      const continuing = !authorized && prior ? this.effectOf(prior) : undefined;
+      const effect = authorized ?? continuing ?? this.ensureInitialEffect(notificationId, candidate, candidateHash, channel, capability);
+      if (!effect || !this.matchesChannel(effect, channel, capability)) return undefined;
+      if (effect.authorization_kind === "initial" && effect.payload_hash !== candidateHash) return undefined;
       // The physical attempt always sends the frozen effect payload, never a rebuilt one.
       const payload = notificationSchema.parse(JSON.parse(effect.payload_json));
+      if (!this.payloadIsCurrent(payload, latest) || sha256(canonicalJson(payload)) !== effect.payload_hash) return undefined;
+      const siblings = (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
+        .get(effect.effect_key) as { count: number }).count;
+      if (siblings >= 3) { this.works.repo.updateNotificationDelivery(notificationId, { delivery: "failed" }); return undefined; }
       const payloadHash = effect.payload_hash;
       const attemptKey = `${notificationId}:${ordinal}`;
       const providerEffectKey = effect.effect_key;
@@ -259,11 +280,11 @@ export class WorkNotificationDelivery {
       const attempt: Attempt = { attempt_id: attemptKey, notification_id: notificationId, ordinal,
         channel: channel.channel, idempotency_key: providerEffectKey, payload_json: JSON.stringify(payload), status: "unknown",
         provider_effect_key: providerEffectKey, payload_hash: payloadHash,
-        delivery_guarantee: capability.deliveryGuarantee, claim_generation: 1, claimed_at: this.now() };
+        delivery_guarantee: capability.deliveryGuarantee, claim_generation: siblings + 1, claimed_at: this.now() };
       this.db.prepare(`INSERT INTO work_notification_attempts(attempt_id,notification_id,ordinal,channel,idempotency_key,
         provider_effect_key,payload_hash,delivery_guarantee,claim_generation,payload_json,status,claimed_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,'unknown',?)`).run(attempt.attempt_id, notificationId, ordinal, channel.channel,
-        attempt.idempotency_key, providerEffectKey, payloadHash, capability.deliveryGuarantee, 1, attempt.payload_json, this.now());
+        attempt.idempotency_key, providerEffectKey, payloadHash, capability.deliveryGuarantee, attempt.claim_generation, attempt.payload_json, this.now());
       this.db.prepare("UPDATE work_notification_identity SET owner_epoch=?,sender_bot_id=? WHERE notification_id=?")
         .run(latest.ownerEpoch, latest.ownerBotId, notificationId);
       this.works.repo.updateNotificationLinks(notificationId, { cardKey: notification.cardKey, effectKey: providerEffectKey, targetKey: channel.targetKey });
@@ -276,19 +297,29 @@ export class WorkNotificationDelivery {
   /** Safe replay keeps the original effect identity and payload; only the ordinal advances. */
   private claimReplay(notificationId: string, prior: Attempt, capability: WorkChannelCapability,
     channel: WorkNotificationChannel): { attempt: Attempt; notification: WorkNotificationDto } | undefined {
+    const workId = this.works.repo.getNotification(notificationId)?.workId;
+    if (!workId) return undefined;
+    const inspection = this.options.artifacts?.capture(workId);
     return this.works.transaction((): { attempt: Attempt; notification: WorkNotificationDto } | undefined => {
       this.assertAuthority();
       const notification = this.works.repo.getNotification(notificationId);
-      if (!notification) return undefined;
+      const latest = this.works.getWork(workId);
+      if (!notification || !latest || notification.delivery !== "unknown"
+        || this.lastAttempt(notificationId)?.attempt_id !== prior.attempt_id
+        || notification.effectKey !== (prior.provider_effect_key ?? prior.idempotency_key)) return undefined;
+      if (!this.admit(notification, latest, inspection)) return undefined;
       const effectKey = prior.provider_effect_key ?? prior.idempotency_key;
-      const effect = effectSchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?").get(effectKey));
-      if (!effect) return undefined;
+      const effect = this.effectOf(prior);
+      if (!effect || !this.matchesChannel(effect, channel, capability)) return undefined;
       if (effect.payload_hash !== (prior.payload_hash ?? sha256(canonicalJson(JSON.parse(prior.payload_json))))) return undefined;
       const siblingAttempts = (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
         .get(effectKey) as { count: number }).count;
-      if (siblingAttempts >= 3) { this.works.repo.updateNotificationDelivery(notificationId, { delivery: "failed" }); return undefined; }
+      // Exhausting the automatic budget does not prove that an earlier external
+      // effect failed. Keep unknown so receipt reconciliation/manual resend remain valid.
+      if (siblingAttempts >= 3) return undefined;
       const ordinal = notification.attemptCount + 1;
       const payload = notificationSchema.parse(JSON.parse(prior.payload_json));
+      if (!this.payloadIsCurrent(payload, latest) || sha256(canonicalJson(payload)) !== effect.payload_hash) return undefined;
       const attempt: Attempt = { attempt_id: `${notificationId}:${ordinal}`, notification_id: notificationId, ordinal,
         channel: channel.channel, idempotency_key: effectKey, payload_json: prior.payload_json, status: "unknown",
         provider_effect_key: effectKey, payload_hash: effect.payload_hash, delivery_guarantee: effect.delivery_guarantee,
@@ -302,6 +333,54 @@ export class WorkNotificationDelivery {
         attemptCount: ordinal, idempotencyKey: effectKey });
       return { attempt, notification: payload };
     });
+  }
+
+  /** Every new physical send, including recovery, needs current semantic/artifact proof. */
+  private admit(notification: WorkNotificationDto, latest: WorkDto, inspection?: ArtifactInspection): WorkNotificationIdentity | undefined {
+    const notificationId = notification.notificationId;
+    const identity = this.identity(notificationId);
+    if (!identity || identity.semanticValidity !== "active") return undefined;
+    const cancelled = notification.kind === "result" && (latest.lifecycle === "closing" && latest.pendingConclusion === "cancelled"
+      || latest.lifecycle === "closed" && latest.closureConclusion === "cancelled");
+    const revisionChanged = notification.intentRevision !== latest.intentRevision || identity.inputSnapshotId !== latest.inputSnapshotId;
+    const hasArtifacts = this.works.repo.listDeliverables(latest.workId).some(item => latest.acceptedDeliverableIds.includes(item.deliverableId) && item.artifactRefs.length > 0);
+    const needsArtifactProof = notification.kind === "result" || notification.kind === "closed" && latest.closureConclusion === "succeeded";
+    const artifactsValid = !needsArtifactProof || (inspection !== undefined ? this.options.artifacts!.validate(inspection, this.now()) : !hasArtifacts);
+    const currentDeliverable = notification.kind !== "result" || this.works.repo.listDeliverables(latest.workId).some(item =>
+      latest.acceptedDeliverableIds.includes(item.deliverableId) && item.status === "accepted"
+      && item.intentRevision === latest.intentRevision && item.inputSnapshotId === latest.inputSnapshotId
+      && (`notification-${latest.workId}-${item.deliverableId}` === notification.notificationId
+        || notification.semanticKey === `work:${latest.workId}:result:${item.deliverableId}`));
+    // Closed:succeeded still has a valid delivery obligation.
+    if (cancelled || revisionChanged || !artifactsValid || !currentDeliverable) {
+      this.db.prepare("UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id=?")
+        .run(cancelled ? "cancelled" : "superseded", notificationId);
+      const changed = this.works.getWork(latest.workId)!;
+      this.works.repo.updateWork({ ...changed, stateVersion: changed.stateVersion + 1, updatedAt: this.now() });
+      this.works.emitCurrentProjection(latest.workId);
+      return undefined;
+    }
+    return identity;
+  }
+
+  private channelKey(channel: string, targetKey?: string): string { return canonicalJson([channel, targetKey ?? null]); }
+
+  private matchesChannel(effect: Effect, channel: WorkNotificationChannel, capability: WorkChannelCapability): boolean {
+    return effect.channel === channel.channel && (effect.target_key ?? undefined) === channel.targetKey
+      && effect.delivery_guarantee === capability.deliveryGuarantee
+      && Boolean(effect.supports_idempotency_key) === capability.supportsIdempotencyKey
+      && Boolean(effect.supports_receipt_query) === capability.supportsReceiptQuery;
+  }
+
+  private effectOf(attempt: Attempt): Effect | undefined {
+    return effectSchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?")
+      .get(attempt.provider_effect_key ?? attempt.idempotency_key));
+  }
+
+  private payloadIsCurrent(payload: WorkNotificationDto, work: WorkDto): boolean {
+    return payload.workId === work.workId && payload.intentRevision === work.intentRevision
+      && payload.inputSnapshotId === work.inputSnapshotId && payload.ownerEpoch === work.ownerEpoch
+      && payload.senderBotId === work.ownerBotId;
   }
 
   /** One initial effect per notification intent; the payload hash freezes what was sent. */
@@ -321,15 +400,12 @@ export class WorkNotificationDelivery {
   }
 
   /** A manual resend authorization waiting for its physical attempt. */
-  private pendingResendEffect(notificationId: string, channel: WorkNotificationChannel,
-    capability: WorkChannelCapability): Effect | undefined {
+  private pendingResendEffect(notificationId: string): Effect | undefined {
     const effect = effectSchema.optional().parse(this.db.prepare(`SELECT * FROM work_notification_effects
       WHERE notification_id=? AND authorization_kind='manual-resend'
+        AND effect_key=(SELECT effect_key FROM work_notifications WHERE notification_id=?)
         AND effect_key NOT IN (SELECT provider_effect_key FROM work_notification_attempts WHERE provider_effect_key IS NOT NULL)
-      ORDER BY created_at DESC LIMIT 1`).get(notificationId));
-    if (!effect) return undefined;
-    if (effect.channel !== channel.channel) return undefined;
-    if (effect.delivery_guarantee !== capability.deliveryGuarantee) return undefined;
+      ORDER BY created_at DESC LIMIT 1`).get(notificationId, notificationId));
     return effect;
   }
 
@@ -351,7 +427,7 @@ export class WorkNotificationDelivery {
       }
       if (lookup === "delivered") this.settle(claim.attempt, "sent", "reconciled-by-provider-receipt");
       else if (lookup === "missing") this.settle(claim.attempt, "missing", undefined, capability.supportsIdempotencyKey);
-    } else this.settle(claim.attempt, "failed", undefined, response.retryable && claim.attempt.ordinal < 3);
+    } else this.settle(claim.attempt, "failed", undefined, response.retryable && (claim.attempt.claim_generation ?? 1) < 3);
     return { notificationId: id, delivery: this.works.repo.getNotification(id)?.delivery ?? "unknown" };
   }
 
@@ -360,15 +436,21 @@ export class WorkNotificationDelivery {
     this.works.transaction(() => {
       this.assertAuthority();
       const updated = this.db.prepare(`UPDATE work_notification_attempts SET status=?,settled_at=?,receipt=?
-        WHERE attempt_id=? AND status='unknown' AND claim_generation=?`)
-        .run(status, this.now(), receipt ?? null, attempt.attempt_id, attempt.claim_generation ?? 1);
+        WHERE attempt_id=? AND status='unknown' AND claim_generation=? AND payload_hash=? AND provider_effect_key=? AND channel=?`)
+        .run(status, this.now(), receipt ?? null, attempt.attempt_id, attempt.claim_generation ?? 1,
+          attempt.payload_hash, attempt.provider_effect_key, attempt.channel);
       if (!updated.changes) return;
-      this.works.repo.updateNotificationDelivery(attempt.notification_id, {
-        delivery: status === "sent" ? "sent" : status === "missing" || retryable ? "pending" : status === "failed" ? "failed" : "unknown",
-        attemptCount: attempt.ordinal, channel: attempt.channel, idempotencyKey: attempt.idempotency_key,
-        externalReceipt: receipt, sentAt: status === "sent" ? this.now() : undefined,
-      });
       const notification = this.works.repo.getNotification(attempt.notification_id);
+      // The receipt belongs to this original attempt. A newer manual authorization or
+      // claim may already own the notification; its delivery state cannot be overwritten.
+      if (notification?.attemptCount === attempt.ordinal && notification.effectKey === attempt.provider_effect_key
+        && this.lastAttempt(attempt.notification_id)?.attempt_id === attempt.attempt_id) {
+        this.works.repo.updateNotificationDelivery(attempt.notification_id, {
+          delivery: status === "sent" ? "sent" : status === "missing" || retryable ? "pending" : status === "failed" ? "failed" : "unknown",
+          attemptCount: attempt.ordinal, channel: attempt.channel, idempotencyKey: attempt.idempotency_key,
+          externalReceipt: receipt, sentAt: status === "sent" ? this.now() : undefined,
+        });
+      }
       const work = notification ? this.works.getWork(notification.workId) : undefined;
       if (work) {
         this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: this.now() });

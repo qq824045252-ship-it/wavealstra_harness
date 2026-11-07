@@ -5,16 +5,17 @@ import { capabilityOfGuarantee } from "../../../shared/bot-work-phase5";
 /**
  * Real desktop channel for Work cards.
  *
- * The effect is a row in the shared notification store keyed by the provider effect key,
- * so re-running the same logical delivery after a crash reads the row back instead of
- * publishing a second notice. A user preference that mutes this kind of notice is a
- * deliberate choice: it is recorded as done (`suppressed:<reason>`) and never retried.
+ * The local notification store provides best-effort duplicate suppression, not a durable
+ * provider receipt: rows are retained for a limited period and in-app-disabled delivery
+ * uses only an in-memory key. OS presentation also has no queryable receipt. A lost send
+ * therefore stays unknown across restart; only an explicit manual resend may try again.
+ * A muted preference is a deliberate end state and is recorded as suppressed.
  */
 export function createDesktopWorkChannel(notifications: NotificationService): WorkNotificationChannel {
   const effectDedupeKey = (idempotencyKey: string) => `work-delivery:${idempotencyKey}`;
   return {
     channel: "desktop",
-    ...capabilityOfGuarantee("idempotent-queryable"),
+    ...capabilityOfGuarantee("best-effort-unqueryable"),
     targetKey: "desktop",
     send({ notification, idempotencyKey }) {
       const dedupeKey = effectDedupeKey(idempotencyKey);
@@ -31,10 +32,9 @@ export function createDesktopWorkChannel(notifications: NotificationService): Wo
         createdAt: notification.createdAt,
       });
       if (!published) return { ok: true, receipt: `suppressed:${dedupeKey}` };
-      return { ok: true, receipt: `notification:${published.id}` };
-    },
-    lookup({ idempotencyKey }) {
-      return notifications.findByDedupeKey(effectDedupeKey(idempotencyKey)) ? "delivered" : "missing";
+      // The service accepted this notification; its DTO may be transient when in-app
+      // history is disabled. This is not a persisted or OS-level presentation receipt.
+      return { ok: true, receipt: `accepted-notification:${published.id}` };
     },
   };
 }

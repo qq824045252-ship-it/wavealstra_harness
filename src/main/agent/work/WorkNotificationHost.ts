@@ -12,10 +12,12 @@ import type { WorkService } from "./WorkService";
 export class WorkNotificationHost {
   private timer: ReturnType<typeof setInterval> | undefined;
   private draining = false;
-  private wakeRequested = false;
+  private wakeTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingDrain = false;
+  private lifecycleGeneration = 0;
   private started = false;
 
-  constructor(private readonly works: WorkService, private readonly options: {
+  constructor(private readonly works: Pick<WorkService, "deliverPendingNotifications">, private readonly options: {
     isAuthority: () => boolean;
     channels: () => WorkNotificationChannel[];
     intervalMs?: number;
@@ -35,39 +37,54 @@ export class WorkNotificationHost {
 
   stop(): void {
     this.started = false;
+    this.lifecycleGeneration++;
+    this.pendingDrain = false;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = undefined;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
   }
 
   /** Called after a Work fact changes; coalesced so a burst of projections is one drain. */
   wake(): void {
-    if (!this.started || this.wakeRequested) return;
-    this.wakeRequested = true;
-    setTimeout(() => {
-      this.wakeRequested = false;
-      this.drain();
-    }, 0).unref?.();
+    if (!this.started) return;
+    if (this.draining) { this.pendingDrain = true; return; }
+    if (this.wakeTimer) return;
+    const generation = this.lifecycleGeneration;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = undefined;
+      if (this.started && generation === this.lifecycleGeneration) this.drain();
+    }, 0);
+    this.wakeTimer.unref?.();
   }
 
-  /** One bounded pass over every configured channel. Exposed for tests. */
+  /** Drain, then rescan facts if a synchronous channel or projection callback reenters. */
   drain(workId?: string): Array<{ channel: string; notificationId: string; delivery: string }> {
-    if (this.draining) return [];
     if (!this.options.isAuthority()) return [];
+    if (this.draining) { this.pendingDrain = true; return []; }
     this.draining = true;
     const results: Array<{ channel: string; notificationId: string; delivery: string }> = [];
+    const generation = this.lifecycleGeneration;
+    let scope = workId;
     try {
-      for (const channel of this.options.channels()) {
-        if (!this.options.isAuthority()) break;
-        try {
-          for (const outcome of this.works.deliverPendingNotifications(channel, workId)) {
-            results.push({ channel: channel.channel, ...outcome });
+      do {
+        this.pendingDrain = false;
+        for (const channel of this.options.channels()) {
+          if (generation !== this.lifecycleGeneration || !this.options.isAuthority()) break;
+          try {
+            for (const outcome of this.works.deliverPendingNotifications(channel, scope)) {
+              results.push({ channel: channel.channel, ...outcome });
+            }
+          } catch (error) {
+            // One broken channel must not stop the others or crash the host loop.
+            this.options.onError?.(error);
           }
-        } catch (error) {
-          // One broken channel must not stop the others or crash the host loop.
-          this.options.onError?.(error);
         }
-      }
+        // Reentrant requests may concern another Work, so the trailing scan is global.
+        scope = undefined;
+      } while (this.pendingDrain && generation === this.lifecycleGeneration && this.options.isAuthority());
     } finally {
+      this.pendingDrain = false;
       this.draining = false;
     }
     return results;

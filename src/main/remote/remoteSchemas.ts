@@ -102,6 +102,12 @@ export const remoteWorkDiagnosticsSchema = z.object({
   cursor: z.string().max(400).optional(),
 }).strict();
 
+const remoteWorkVersionGuardSchema = z.object({
+  expectedStateVersion: z.number().int().nonnegative(),
+  expectedIntentRevision: z.number().int().positive(),
+  expectedOwnerEpoch: z.number().int().positive(),
+}).strict();
+
 /** Feedback is bound to the tested version; the host re-validates the binding. */
 export const remoteWorkFeedbackSchema = z.object({
   operationId: z.string().min(1).max(200),
@@ -109,6 +115,8 @@ export const remoteWorkFeedbackSchema = z.object({
   environment: z.string().trim().min(1).max(120),
   sourceRef: z.string().trim().min(1).max(400),
   inputSnapshotId: z.string().min(1).max(400),
+  artifactSnapshotId: z.string().min(1).max(400).optional(),
+  versionGuard: remoteWorkVersionGuardSchema,
   failed: z.boolean(),
   detail: z.string().max(2000).optional(),
 }).strict();
@@ -116,4 +124,6 @@ export const remoteWorkFeedbackSchema = z.object({
 export const remoteWorkResendSchema = z.object({
   operationId: z.string().min(1).max(200),
   reason: z.string().trim().min(1).max(1000),
+  acknowledgedDuplicateRisk: z.literal(true),
+  versionGuard: remoteWorkVersionGuardSchema,
 }).strict();

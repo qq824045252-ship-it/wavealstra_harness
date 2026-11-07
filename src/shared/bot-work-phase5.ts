@@ -243,11 +243,15 @@ export interface WorkSummaryProjectionDto {
   title: string;
   goal?: string;
   lifecycle: WorkLifecycle;
+  /** Authoritative closure state; result-card kinds retain their original identity. */
+  closureConclusion?: WorkClosureConclusion;
   mode: "once" | "watch";
   ownerBotId: string;
   ownerEpoch: number;
   intentRevision: number;
   inputSnapshotId: string;
+  /** Current artifact identity required when submitting real-environment feedback. */
+  artifactSnapshotId?: string;
   stateVersion: number;
   acceptedCount: number;
   currentCardKeys: string[];

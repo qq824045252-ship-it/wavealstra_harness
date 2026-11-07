@@ -201,18 +201,23 @@ export class WorkResultCards {
   markRead(input: {
     workId: string; semanticCardKey: string; userId: string; readAt: number;
   }): WorkCardReadResult {
-    const row = cardRowSchema.optional().parse(this.db.prepare(
-      "SELECT * FROM work_result_cards WHERE work_id=? AND (semantic_card_key=? OR card_key=?)")
-      .get(input.workId, input.semanticCardKey, input.semanticCardKey));
-    if (!row) return { ok: false, message: "找不到结果卡片" };
-    if (row.user_id !== input.userId) return { ok: false, message: "无权标记其他用户的结果卡片" };
-    const advanced = this.db.prepare(`UPDATE work_result_cards
-      SET read_at=?, read_by_user_id=?, read_version=read_version+1
-      WHERE card_key=? AND (read_at IS NULL OR read_at < ?)`)
-      .run(input.readAt, input.userId, row.card_key, input.readAt);
-    const current = cardRowSchema.parse(this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(row.card_key));
-    return { ok: true, cardKey: row.card_key, semanticCardKey: row.semantic_card_key,
-      readAt: current.read_at ?? input.readAt, readVersion: current.read_version, replayed: advanced.changes === 0 };
+    // The public facade already owns a transaction. Keep the helper atomic as well:
+    // independent callers must commit authorization, the read fact, its Journal wake
+    // and the returned read version together. Nesting uses a SQLite savepoint.
+    return this.db.transaction((): WorkCardReadResult => {
+      const row = cardRowSchema.optional().parse(this.db.prepare(
+        "SELECT * FROM work_result_cards WHERE work_id=? AND (semantic_card_key=? OR card_key=?)")
+        .get(input.workId, input.semanticCardKey, input.semanticCardKey));
+      if (!row) return { ok: false, message: "找不到结果卡片" };
+      if (row.user_id !== input.userId) return { ok: false, message: "无权标记其他用户的结果卡片" };
+      const advanced = this.db.prepare(`UPDATE work_result_cards
+        SET read_at=?, read_by_user_id=?, read_version=read_version+1
+        WHERE card_key=? AND (read_at IS NULL OR read_at < ?)`)
+        .run(input.readAt, input.userId, row.card_key, input.readAt);
+      const current = cardRowSchema.parse(this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(row.card_key));
+      return { ok: true, cardKey: row.card_key, semanticCardKey: row.semantic_card_key,
+        readAt: current.read_at ?? input.readAt, readVersion: current.read_version, replayed: advanced.changes === 0 };
+    }).immediate();
   }
 
   // ---------------------------------------------------------------- reading
@@ -231,12 +236,12 @@ export class WorkResultCards {
 
   /** Current approval-based view of what is verified for the artifact in play. */
   unverifiedScope(work: WorkDto, artifactSnapshotId?: string): WorkUnverifiedScopeDto[] {
-    const cards = this.list(work).filter(card => card.currency === "current");
     return work.criteria.filter(criterion => criterion.status !== "waived").map(criterion => {
       const evidence = criterion.evidenceRefs.map(id => this.repo.getEvidence(id)).filter(item => item !== undefined);
+      // sourceSha identifies source code, not the aggregate artifacts: snapshot. Artifact
+      // validation reopens criteria and clears their evidence refs when content changes.
       const currentEvidence = evidence.filter(item => item.intentRevision === work.intentRevision
-        && item.inputSnapshotId === work.inputSnapshotId
-        && (!artifactSnapshotId || !item.sourceSha || item.sourceSha === artifactSnapshotId));
+        && item.inputSnapshotId === work.inputSnapshotId);
       const reason: WorkUnverifiedReason = criterion.status === "satisfied" && currentEvidence.length > 0
         ? "auto_verified"
         : criterion.status === "satisfied"
@@ -249,7 +254,7 @@ export class WorkResultCards {
         requiredEnvironment: criterion.requiredEnvironment,
         intentRevision: currentEvidence.at(-1)?.intentRevision ?? evidence.at(-1)?.intentRevision,
         inputSnapshotId: currentEvidence.at(-1)?.inputSnapshotId ?? evidence.at(-1)?.inputSnapshotId,
-        artifactSnapshotId: artifactSnapshotId ?? cards.at(-1)?.cardKey,
+        artifactSnapshotId,
         evidenceIds: criterion.evidenceRefs,
       };
     });

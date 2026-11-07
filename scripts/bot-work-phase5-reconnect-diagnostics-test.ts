@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +84,79 @@ check("a read fact reaches another device without changing the Work version", ()
   assert.equal(after.stateVersion, before.stateVersion, "the read did not bump the Work version");
   assert.equal(event.projection.cards?.[0]?.readAt, clock, "the read still reaches the other device");
   assert.equal(event.projection.stateVersion, before.stateVersion);
+});
+
+check("the card-read helper commits its read fact and Journal wake together", () => {
+  const f = accepted("read-helper-snapshot");
+  const observer = new Database(db.connection.name, { readonly: true });
+  const readCard = () => observer.prepare("SELECT read_at,read_version FROM work_result_cards WHERE card_key=?").get(f.card.cardKey);
+  const readSequence = () => observer.prepare("SELECT sequence FROM work_projection_streams WHERE user_id=?").get(LOCAL_USER_ID);
+  const beforeCard = readCard();
+  const beforeSequence = readSequence();
+  const beforeWork = works.getWork(f.work.workId)!;
+  let observations = 0;
+  db.connection.function("phase5_observe_read", () => {
+    observations += 1;
+    assert.deepEqual(readCard(), beforeCard, "another connection sees no intermediate read fact");
+    assert.deepEqual(readSequence(), beforeSequence, "the Journal wake stays uncommitted with the read fact");
+    return 1;
+  });
+  db.connection.exec(`CREATE TEMP TRIGGER phase5_observe_read AFTER UPDATE OF read_at ON work_result_cards
+    BEGIN SELECT phase5_observe_read(); END`);
+  try {
+    const result = works.cards.markRead({ workId: f.work.workId, semanticCardKey: f.card.semanticCardKey,
+      userId: LOCAL_USER_ID, readAt: clock });
+    assert.equal(result.ok, true);
+    assert.equal(result.readVersion, 1);
+    assert.equal(result.replayed, false);
+    assert.equal(observations, 1);
+    assert.deepEqual(readCard(), { read_at: clock, read_version: result.readVersion });
+    assert.notDeepEqual(readSequence(), beforeSequence, "both facts become visible after commit");
+    assert.deepEqual(works.getWork(f.work.workId), beforeWork, "reading has no Work control side effects");
+
+    const committedSequence = readSequence();
+    const replay = works.cards.markRead({ workId: f.work.workId, semanticCardKey: f.card.semanticCardKey,
+      userId: LOCAL_USER_ID, readAt: clock - 1 });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.readAt, clock);
+    assert.equal(replay.readVersion, result.readVersion);
+    assert.deepEqual(readSequence(), committedSequence, "an older read does not invent a Journal event");
+    assert.equal(observations, 1, "an older read does not update the card");
+    const foreign = works.cards.markRead({ workId: f.work.workId, semanticCardKey: f.card.semanticCardKey,
+      userId: "another-user", readAt: clock + 1 });
+    assert.equal(foreign.ok, false);
+    assert.deepEqual(readSequence(), committedSequence, "a rejected reader cannot wake the owner stream");
+    assert.deepEqual(readCard(), { read_at: clock, read_version: result.readVersion });
+  } finally {
+    db.connection.exec("DROP TRIGGER phase5_observe_read");
+    observer.close();
+  }
+});
+
+check("a card-read readback failure rolls back its update and Journal wake", () => {
+  const f = accepted("read-helper-rollback");
+  const beforeWork = works.getWork(f.work.workId)!;
+  const beforeCard = works.cards.list(beforeWork)[0]!;
+  const readStream = () => db.connection.prepare("SELECT * FROM work_projection_streams WHERE user_id=?").get(LOCAL_USER_ID);
+  const beforeStream = readStream();
+  const beforeEvents = db.connection.prepare("SELECT * FROM work_projection_events WHERE user_id=? ORDER BY sequence").all(LOCAL_USER_ID);
+  // A valid SQLite write with an invalid DTO forces the failure after UPDATE and its
+  // Journal trigger. Without a surrounding transaction these writes would be retained.
+  db.connection.exec(`CREATE TEMP TRIGGER phase5_corrupt_readback AFTER UPDATE OF read_at ON work_result_cards
+    BEGIN UPDATE work_result_cards SET read_version='invalid-read-version' WHERE card_key=NEW.card_key; END`);
+  try {
+    assert.throws(() => works.cards.markRead({ workId: f.work.workId,
+      semanticCardKey: f.card.semanticCardKey, userId: LOCAL_USER_ID, readAt: clock }),
+    error => error instanceof Error && error.name === "ZodError");
+    assert.deepEqual(works.cards.list(works.getWork(f.work.workId)!)[0], beforeCard);
+    assert.deepEqual(readStream(), beforeStream, "a failed readback cannot advance the Journal cursor");
+    assert.deepEqual(db.connection.prepare("SELECT * FROM work_projection_events WHERE user_id=? ORDER BY sequence").all(LOCAL_USER_ID), beforeEvents);
+    assert.deepEqual(works.getWork(f.work.workId), beforeWork);
+  } finally {
+    db.connection.exec("DROP TRIGGER phase5_corrupt_readback");
+  }
+  assert.equal(works.cards.markRead({ workId: f.work.workId, semanticCardKey: f.card.semanticCardKey,
+    userId: LOCAL_USER_ID, readAt: clock }).readVersion, 1, "the next read starts from the rolled-back version");
 });
 
 check("a stale delta cannot roll back a locally newer accepted result", () => {
@@ -209,6 +283,42 @@ check("expanded diagnostics page their sections and expose gaps as gaps", () => 
   assert.ok(gapped.acceptance.missing?.some(text => text.includes("evidence-gone")));
 });
 
+check("artifact identity never falls back to a semantic card key", () => {
+  const f = accepted("artifact-identity");
+  const work = works.getWork(f.work.workId)!;
+  const withoutArtifact = works.cards.unverifiedScope(work);
+  assert.ok(withoutArtifact.every(entry => entry.artifactSnapshotId === undefined),
+    "absence of an artifact snapshot stays unknown even after a card was accepted");
+  const snapshotId = works.artifacts.currentSnapshotId(work.workId);
+  assert.notEqual(snapshotId, f.card.cardKey);
+  const scope = works.cards.unverifiedScope(work, snapshotId);
+  assert.ok(scope.every(entry => entry.artifactSnapshotId === snapshotId));
+  const diagnostics = works.getWorkDiagnostics(LOCAL_USER_ID, { workId: work.workId })!;
+  assert.equal(diagnostics.artifactSnapshotId, snapshotId);
+  assert.ok(diagnostics.unverifiedScope.every(entry => entry.artifactSnapshotId === snapshotId));
+});
+
+check("a source commit SHA is not confused with the artifact snapshot identity", () => {
+  const f = fixture("source-sha");
+  const criterion = f.work.criteria.find(item => item.requiresRealEnvironmentCheck)!;
+  const snapshotId = works.artifacts.currentSnapshotId(f.work.workId);
+  const sourceSha = "a".repeat(40);
+  const current = unwrap(works.recordUserFeedback(user, {
+    operationId: `feedback:${f.suffix}`, workId: f.work.workId, criterionIds: [criterion.id],
+    environment: "omarchy", sourceRef: `git:${sourceSha}`, sourceSha,
+    inputSnapshotId: f.work.inputSnapshotId, artifactSnapshotId: snapshotId, failed: false,
+    versionGuard: guard(works.getWork(f.work.workId)!),
+  }));
+  const scope = works.cards.unverifiedScope(current, snapshotId).find(item => item.criterionId === criterion.id)!;
+  assert.notEqual(sourceSha, snapshotId);
+  assert.equal(scope.reason, "auto_verified", "current evidence can name a source commit independently of its artifact snapshot");
+  assert.equal(scope.artifactSnapshotId, snapshotId);
+  assert.equal(works.repo.getEvidence(scope.evidenceIds[0]!)!.sourceSha, sourceSha);
+  const historical = works.cards.unverifiedScope({ ...current, inputSnapshotId: "a-new-input" }, snapshotId)
+    .find(item => item.criterionId === criterion.id)!;
+  assert.equal(historical.reason, "historical_version_only", "the actual input-version boundary still rejects old evidence");
+});
+
 check("diagnostics respect the requested sections", () => {
   const f = accepted("sections");
   const only = works.getWorkDiagnostics(LOCAL_USER_ID, { workId: f.work.workId, sections: ["acceptance"] })!;
@@ -228,6 +338,28 @@ check("the delivery chain is traceable from the expanded view", () => {
   assert.equal(audit.acceptance.items[0]!.cardKey, f.card.cardKey);
 });
 
+check("a reused acceptance card carries the authoritative successful closure in its projection", () => {
+  const f = accepted("closed-success-card");
+  let current = works.getWork(f.work.workId)!;
+  current = unwrap(works.attestCriteria(user, { operationId: `attest:${f.suffix}`, workId: current.workId,
+    criterionUpdates: [{ criterionId: current.criteria[0]!.id, status: "met", evidence: "checked" }],
+    versionGuard: guard(current) }));
+  current = unwrap(works.recordUserFeedback(user, { operationId: `feedback:${f.suffix}`, workId: current.workId,
+    criterionIds: [current.criteria[1]!.id], environment: "omarchy", sourceRef: "fixture:desktop",
+    inputSnapshotId: current.inputSnapshotId, artifactSnapshotId: works.artifacts.currentSnapshotId(current.workId), failed: false,
+    versionGuard: guard(current) }));
+  unwrap(works.closeWork(user, { operationId: `close-card:${f.suffix}`, workId: current.workId,
+    conclusion: "succeeded", closureSummary: "verified and complete", versionGuard: guard(current) }));
+  const projection = works.getProjection(current.workId)!;
+  assert.equal(projection.lifecycle, "closed");
+  assert.equal(projection.closureConclusion, "succeeded");
+  assert.equal(projection.cards?.length, 1);
+  assert.equal(projection.cards?.[0]?.kind, "accepted_result", "closing preserves the original card identity");
+  assert.equal(projection.cards?.[0]?.cardKey, f.card.cardKey);
+  assert.equal(projection.cards?.[0]?.currency, "current");
+  assert.equal(works.getWorkSummary(LOCAL_USER_ID, current.workId)!.closureConclusion, "succeeded");
+});
+
 check("the acceptance card survives closing and stays addressable", () => {
   const f = accepted("closed-card");
   const work = works.getWork(f.work.workId)!;
@@ -236,9 +368,25 @@ check("the acceptance card survives closing and stays addressable", () => {
   const cards = works.cards.list(works.getWork(f.work.workId)!);
   assert.equal(cards.length, 2, "cancelling after an accepted result records an independent closure fact");
   assert.deepEqual(cards.map(card => card.kind).sort(), ["accepted_result", "closure_cancelled"]);
+  const projection = works.getProjection(work.workId)!;
+  assert.equal(projection.lifecycle, "closed");
+  assert.equal(projection.closureConclusion, "cancelled", "a retained acceptance card does not make cancellation successful");
+  assert.equal(works.getWorkSummary(LOCAL_USER_ID, work.workId)!.closureConclusion, "cancelled");
   assert.ok(cards.every(card => card.currency === "historical" || card.currency === "current"));
   const read = works.markWorkCardRead(user, { workId: f.work.workId, semanticCardKey: cards[1]!.semanticCardKey });
   assert.equal(read.ok, true, "a closed Work can still be read");
+});
+
+check("an unsuccessful closure keeps its own conclusion beside an accepted result", () => {
+  const f = accepted("closed-failed-card");
+  const work = works.getWork(f.work.workId)!;
+  unwrap(works.closeWork(user, { operationId: `close-card:${f.suffix}`, workId: work.workId,
+    conclusion: "ended_unsuccessfully", closureSummary: "remaining check failed", versionGuard: guard(work) }));
+  const projection = works.getProjection(work.workId)!;
+  assert.equal(projection.lifecycle, "closed");
+  assert.equal(projection.closureConclusion, "ended_unsuccessfully");
+  assert.deepEqual(projection.cards?.map(card => card.kind).sort(), ["accepted_result", "closure_failed"]);
+  assert.equal(works.getWorkSummary(LOCAL_USER_ID, work.workId)!.closureConclusion, "ended_unsuccessfully");
 });
 
 console.log(`Phase 5 reconnect diagnostics: ${passes.length} passed`);

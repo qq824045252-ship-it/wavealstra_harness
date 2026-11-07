@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
+import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
+import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const menu = renderToStaticMarkup(createElement(AccountNavigation, { go: () => {}, openProjects: () => {} }));
@@ -99,6 +101,40 @@ function work(overrides: Partial<WorkProjectionDto> & Pick<WorkProjectionDto, "w
     ...overrides,
   };
 }
+// Closing a successfully accepted result keeps its original card kind. The rendered
+// completion badge must use the authoritative closure and the card's current currency.
+const acceptedCard: WorkResultCardDto = {
+  cardKey: "card-accepted", semanticCardKey: "semantic-accepted", workId: "work-result", userId: duty.userId,
+  kind: "accepted_result", intentRevision: 2, inputSnapshotId: "input-1", originOwnerEpoch: 1,
+  canonicalOutcomeHash: "accepted-outcome", title: "成果已验收", summary: "验收记录完整",
+  deliverableIds: ["deliverable-accepted"], evidenceIds: ["evidence-accepted"], sourceRefs: [], artifactRefs: [],
+  unverifiedScope: [], createdAt: 4, currency: "current", readVersion: 0, notificationIds: [],
+};
+const completedWork = work({ workId: acceptedCard.workId, title: "已验收成果", lifecycle: "closed", closureConclusion: "succeeded" });
+function renderCards(workChanges: Partial<WorkProjectionDto> = {}, cardChanges: Partial<WorkResultCardDto> = {}): string {
+  return renderToStaticMarkup(createElement(WorkCardsPanel, {
+    work: { ...completedWork, ...workChanges, cards: [{ ...acceptedCard, ...cardChanges }] }, includeClosed: true,
+  }));
+}
+assert.match(renderCards(), /已完成并关闭/, "a successful close renders on the reused acceptance card");
+assert.match(renderCards({}, { kind: "closure_succeeded" }), /已完成并关闭/);
+const incompleteWorkStates: Array<Partial<WorkProjectionDto>> = [
+  { lifecycle: "active" }, { lifecycle: "closing" }, { closureConclusion: "cancelled" },
+  { closureConclusion: "ended_unsuccessfully" }, { closureConclusion: undefined },
+];
+for (const state of incompleteWorkStates) {
+  assert.doesNotMatch(renderCards(state), /已完成并关闭/,
+    `an accepted card cannot imply successful closure for ${JSON.stringify(state)}`);
+}
+const noncurrentResultStates: Array<Partial<WorkResultCardDto>> = [
+  { currency: "historical" }, { currency: "superseded" }, { kind: "blocked_escalation" },
+  { kind: "closure_cancelled" }, { kind: "closure_failed" },
+];
+for (const state of noncurrentResultStates) {
+  assert.doesNotMatch(renderCards({}, state), /已完成并关闭/,
+    `a successful Work cannot relabel a different card fact: ${JSON.stringify(state)}`);
+}
+
 const night = work({ workId: "work-night", title: "夜间巡检", intentRevision: 2 });
 const handoff = work({
   workId: "work-handoff",

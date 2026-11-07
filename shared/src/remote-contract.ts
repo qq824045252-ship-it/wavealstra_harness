@@ -522,10 +522,12 @@ export interface RemoteWorkSummary {
   title: string
   goal?: string
   lifecycle: 'active' | 'paused' | 'closing' | 'closed'
+  closureConclusion?: 'succeeded' | 'cancelled' | 'ended_unsuccessfully'
   mode: 'once' | 'watch'
   ownerEpoch: number
   intentRevision: number
   inputSnapshotId: string
+  artifactSnapshotId?: string
   stateVersion: number
   acceptedCount: number
   currentCardKeys: string[]
@@ -579,6 +581,8 @@ export interface RemoteWorkFeedbackRequest {
   environment: string
   sourceRef: string
   inputSnapshotId: string
+  artifactSnapshotId?: string
+  versionGuard: RemoteWorkVersionGuard
   failed: boolean
   detail?: string
 }
@@ -587,9 +591,20 @@ export interface RemoteWorkResendRequest {
   operationId: string
   notificationId: string
   reason: string
+  acknowledgedDuplicateRisk: true
+  versionGuard: RemoteWorkVersionGuard
+}
+
+/** The control version the user actually reviewed before confirming an action. */
+export interface RemoteWorkVersionGuard {
+  expectedStateVersion: number
+  expectedIntentRevision: number
+  expectedOwnerEpoch: number
 }
 
 export interface RemoteWorkControlResult {
   ok: boolean
+  code?: string
   message?: string
+  replayed?: boolean
 }

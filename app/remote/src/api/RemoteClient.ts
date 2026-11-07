@@ -201,8 +201,10 @@ export class RemoteClient {
   }
   private headers() { return { authorization: `Bearer ${this.token}` } }
   private static async read<T>(response: Response): Promise<T> {
-    const value = await response.json().catch(() => ({})) as { error?: { message?: string; code?: string } }
-    if (!response.ok) throw new RemoteApiError(value.error?.message || `HTTP ${response.status}`, response.status, value.error?.code)
+    const value = await response.json().catch(() => ({})) as { error?: { message?: string; code?: string }; message?: unknown; code?: unknown }
+    if (!response.ok) throw new RemoteApiError(value.error?.message
+      || (typeof value.message === 'string' ? value.message : `HTTP ${response.status}`), response.status,
+      value.error?.code ?? (typeof value.code === 'string' ? value.code : undefined))
     return value as T
   }
 }

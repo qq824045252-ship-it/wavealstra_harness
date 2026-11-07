@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import type { WorkProjectionDto } from "../../shared/bot-work";
+import type { WorkControlResult, WorkProjectionDto } from "../../shared/bot-work";
 import type { WorkSummaryProjectionDto } from "../../shared/bot-work-phase5";
-import type { RemoteWorkCard, RemoteWorkSummary } from "../../../shared/src/remote-contract";
+import type { RemoteWorkCard, RemoteWorkControlResult, RemoteWorkSummary } from "../../../shared/src/remote-contract";
 import { encodeSemanticTuple } from "../../shared/bot-work-phase5";
 import type { WorkService } from "../agent/work/WorkService";
 import { DESKTOP_USER_GRANTS } from "../agent/work/WorkService";
@@ -38,10 +38,12 @@ export function toRemoteWork(summary: WorkSummaryProjectionDto, cards: RemoteWor
     title: summary.title,
     goal: summary.goal,
     lifecycle: summary.lifecycle,
+    closureConclusion: summary.closureConclusion,
     mode: summary.mode,
     ownerEpoch: summary.ownerEpoch,
     intentRevision: summary.intentRevision,
     inputSnapshotId: summary.inputSnapshotId,
+    artifactSnapshotId: summary.artifactSnapshotId,
     stateVersion: summary.stateVersion,
     acceptedCount: summary.acceptedCount,
     currentCardKeys: summary.currentCardKeys,
@@ -57,6 +59,12 @@ export function toRemoteWork(summary: WorkSummaryProjectionDto, cards: RemoteWor
     updatedAt: summary.updatedAt,
     closedAt: summary.closedAt,
   };
+}
+
+/** Mutation receipts obey the same device boundary as reads, including conflict replies. */
+function toRemoteWorkControlResult(result: WorkControlResult): RemoteWorkControlResult {
+  return result.ok ? { ok: true, replayed: result.replayed }
+    : { ok: false, code: result.code, message: result.message };
 }
 
 /** Stable device-side cursor label; never derived from an SSE event id. */
@@ -116,8 +124,10 @@ export function createRemoteWorkBridge(input: { db: Database.Database; works: Wo
     markCardRead: (request: { workId: string; semanticCardKey: string; readAt?: number }) =>
       input.works.markWorkCardRead({ kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request),
     recordFeedback: (request: unknown) =>
-      input.works.recordUserFeedback({ kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request as never),
+      toRemoteWorkControlResult(input.works.recordUserFeedback(
+        { kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request as never)),
     resend: (request: unknown) =>
-      input.works.resendWorkNotification({ kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request),
+      toRemoteWorkControlResult(input.works.resendWorkNotification(
+        { kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request)),
   };
 }
