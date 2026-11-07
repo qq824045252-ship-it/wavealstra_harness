@@ -88,6 +88,7 @@ export class BotConversationService {
 
   recover(): void {
     if (!this.options.isAuthority()) return;
+    this.options.works.transaction(() => this.messages.pruneTerminalWorkReads(this.options.userId));
     const cancelled = this.options.db.prepare(`SELECT DISTINCT c.bot_id,c.conversation_id FROM bot_conversations c
       JOIN bot_cancel_intents i ON i.conversation_id=c.conversation_id WHERE c.user_id=? AND i.confirmed_at IS NULL`).all(this.options.userId);
     for (const value of cancelled) {
@@ -183,7 +184,11 @@ export class BotConversationService {
         if (!allowed(call.name) || !this.options.isAuthority() || this.options.bots.getBot(bot.botId)?.status !== "active") return { block: "前台工具未授权或 Bot/宿主不可用" };
         const requestId = await botForegroundRequest(api, call.id, ctx);
         const receipt = this.messages.receipt(this.options.userId, bot.botId, requestId);
-        if (!receipt || this.messages.message(receipt.assistant_message_id)?.status === "cancelled") return { block: "原始消息已取消或身份不可核对" };
+        const message = receipt && this.messages.message(receipt.assistant_message_id);
+        if (!receipt || receipt.conversation_id !== conversation.conversation_id || !message ||
+          message.role !== "assistant" || message.conversationId !== receipt.conversation_id ||
+          message.botId !== receipt.bot_id || message.requestId !== requestId ||
+          !["queued", "running", "unknown"].includes(message.status)) return { block: "原始消息已结束或身份不可核对" };
       } },
       onSnapshot: () => {},
     });

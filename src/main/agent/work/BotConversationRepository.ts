@@ -89,11 +89,32 @@ export class BotConversationRepository {
   }
 
   update(messageId: string, status: BotMessageDto["status"], text: string, error?: string): void {
-    const message = this.message(messageId);
-    if (!message) throw new Error("消息不存在");
-    this.db.prepare("UPDATE bot_messages SET status=?,text=?,error=?,updated_at=? WHERE message_id=?")
-      .run(status, text, error ?? null, Date.now(), messageId);
-    this.touch(message.conversationId);
+    this.db.transaction(() => {
+      const message = this.message(messageId);
+      if (!message) throw new Error("消息不存在");
+      this.db.prepare("UPDATE bot_messages SET status=?,text=?,error=?,updated_at=? WHERE message_id=?")
+        .run(status, text, error ?? null, Date.now(), messageId);
+      // A persisted user message is completed before its assistant starts. Only the
+      // assistant's terminal transition ends the request's read-before-write scope.
+      if (message.role === "assistant" && ["completed", "cancelled", "failed"].includes(status)) {
+        this.db.prepare("DELETE FROM bot_work_reads WHERE conversation_id=? AND request_id=?")
+          .run(message.conversationId, message.requestId);
+      }
+      this.touch(message.conversationId);
+    })();
+  }
+
+  /** Prune proven terminal requests on recovery; unknown requests can still resume. */
+  pruneTerminalWorkReads(userId: string): number {
+    return this.db.prepare(`DELETE FROM bot_work_reads WHERE EXISTS (
+      SELECT 1 FROM bot_send_receipts r
+      JOIN bot_conversations c ON c.conversation_id=r.conversation_id
+      JOIN bot_messages m ON m.message_id=r.assistant_message_id
+      WHERE r.user_id=? AND c.user_id=r.user_id AND c.bot_id=r.bot_id
+        AND r.conversation_id=bot_work_reads.conversation_id AND r.request_id=bot_work_reads.request_id
+        AND m.conversation_id=r.conversation_id AND m.bot_id=r.bot_id AND m.request_id=r.request_id
+        AND m.role='assistant' AND m.status IN ('completed','cancelled','failed')
+    )`).run(userId).changes;
   }
 
   linkWork(receipt: BotMessageReceipt, workId: string): void {

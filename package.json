@@ -468,7 +468,11 @@
     "test:bot-work-phase2-recovery": "esbuild scripts/bot-work-phase2-recovery-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-phase2-recovery-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-phase2-recovery-test.mjs",
     "test:bot-work-phase2-invariants": "esbuild scripts/bot-work-phase2-invariants-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-phase2-invariants-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-phase2-invariants-test.mjs",
     "test:bot-work-phase2-usage": "esbuild scripts/bot-work-phase2-usage-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-phase2-usage-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-phase2-usage-test.mjs",
-    "test:bot-work-phase2:dev": "node scripts/bot-work-phase2-dev-test.cjs"
+    "test:bot-work-phase2:dev": "node scripts/bot-work-phase2-dev-test.cjs",
+    "test:bot-work-projection-retention": "esbuild scripts/bot-work-projection-retention-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-projection-retention-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-projection-retention-test.mjs",
+    "test:bot-work-foreground-contract": "esbuild scripts/bot-work-foreground-contract-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-foreground-contract-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-foreground-contract-test.mjs",
+    "test:bot-work-read-lifecycle": "esbuild scripts/bot-work-read-lifecycle-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-read-lifecycle-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-read-lifecycle-test.mjs",
+    "test:bot-work-resume-dispatch": "esbuild scripts/bot-work-resume-dispatch-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-resume-dispatch-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-resume-dispatch-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

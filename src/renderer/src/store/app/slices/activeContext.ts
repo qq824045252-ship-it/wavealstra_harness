@@ -140,13 +140,15 @@ export function createActiveContextActions(
         ]);
         let update = initial;
         let merged = mergeWorkList(get().botWorks, cursor ?? null, update);
-        if (!merged) {
-          update = await apiBot.syncWorks({ includeClosed });
-          merged = mergeWorkList(get().botWorks, null, update);
-        }
         while (merged && update.kind === "delta" && update.hasMore && requestSequence === refreshSequence) {
           update = await apiBot.syncWorks({ includeClosed, cursor: merged.cursor });
           merged = mergeWorkList(merged.works, merged.cursor, update);
+        }
+        if (requestSequence !== refreshSequence) return;
+        // Retention or an epoch change can invalidate any page, not only the first.
+        if (!merged) {
+          update = await apiBot.syncWorks({ includeClosed });
+          merged = mergeWorkList(get().botWorks, null, update);
         }
         if (!merged) throw new Error("列表水位缺口，等待全量同步");
         const botWorks = merged.works;

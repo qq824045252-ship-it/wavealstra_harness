@@ -27,7 +27,7 @@ import { TerminalIpc, formatTerminalContextForPrompt } from "../src/shared/termi
 /* ------------------------------------------------------------------ */
 
 class FakePty implements PtyLike {
-  readonly pid = 1;
+  readonly pid = 0; // In-memory fake: no operating-system process to terminate.
   writes: string[] = [];
   resized: Array<[number, number]> = [];
   killed = false;

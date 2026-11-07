@@ -696,10 +696,34 @@ async function main(): Promise<void> {
   // ------------------------------------------------------------ 12) 进程树终止
   console.log("== 12) platform/processes 进程树终止 ==");
   {
-    const noopChild = (pid: number | null, kills: Array<string | undefined>) => ({
+    const noopChild = (pid: number | null | undefined, kills: Array<string | undefined>) => ({
       pid,
       kill: (signal?: NodeJS.Signals) => kills.push(signal),
     }) as KillableChild;
+
+    // No real signal/process dependency is used, even if this regression fails.
+    for (const pid of [0, 1, -1, -42, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      const effects: string[] = [];
+      for (const mode of [
+        { platform: "linux" }, { platform: "linux", groupKill: false },
+        { platform: "macos" }, { platform: "macos", groupKill: false },
+        { platform: "windows" }, { platform: "windows", windowsMode: "execFile" },
+      ] as const) {
+        const timer = killProcessTree({ pid, kill: () => { effects.push("child.kill"); } }, {
+          ...mode,
+          posixSignal: "SIGTERM", escalateSignal: "SIGKILL", escalateAfterMs: 5,
+          childEscalation: { signal: "SIGKILL", afterMs: 5 },
+          killProcess: () => { effects.push("signal"); return true; },
+          spawnTaskkill: () => { effects.push("spawn taskkill"); return {}; },
+          execFileTaskkill: () => { effects.push("exec taskkill"); return {}; },
+          onMissingPid: () => { effects.push("missing-pid fallback"); },
+          onPosixError: () => { effects.push("POSIX fallback"); },
+          onWindowsError: () => { effects.push("Windows fallback"); },
+        });
+        if (timer) { effects.push("escalation timer"); clearTimeout(timer); }
+      }
+      assertEqual(effects, [], `无效/保留 pid=${String(pid)}：各平台不发信号、不杀 child、不调用回退或创建升级计时器`);
+    }
 
     const spawnTaskkillCalls: Array<{ command: string; args: string[] }> = [];
     const winKills: Array<string | undefined> = [];
@@ -760,8 +784,10 @@ async function main(): Promise<void> {
     assertEqual(freeCadKills, [undefined], "groupKill=false（FreeCAD）：只 child.kill()");
 
     let missingPid = 0;
-    killProcessTree(noopChild(null, []), { platform: "linux", onMissingPid: () => { missingPid += 1; } });
-    assertEqual(missingPid, 1, "拿不到 pid 时调用 onMissingPid（各调用点语义不同）");
+    for (const pid of [null, undefined]) {
+      killProcessTree(noopChild(pid, []), { platform: "linux", onMissingPid: () => { missingPid += 1; } });
+    }
+    assertEqual(missingPid, 2, "pid 为 null/undefined 时仍调用 onMissingPid（各调用点语义不同）");
   }
 
 

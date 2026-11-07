@@ -21,16 +21,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function fixture(listWorks: BotWorkApi["listWorks"]) {
+function fixture(listWorks: BotWorkApi["listWorks"], syncWorks?: BotWorkApi["syncWorks"]) {
   let sequence = 0;
   const api = {
     botWork: {
       listBots: async () => [{ botId: "bot-review" }] as BotDto[],
       listWorks,
-      syncWorks: async () => {
+      syncWorks: syncWorks ?? (async () => {
         const snapshotSequence = ++sequence;
         return { kind: "snapshot", cursor: { epoch: "review", sequence: snapshotSequence, scope: "open" }, works: await listWorks(false) };
-      },
+      }),
       hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "review-host" }),
       markNotificationRead: async () => ({ ok: true }),
     },
@@ -112,7 +112,30 @@ async function main(): Promise<void> {
   notificationPending.resolve([unread]);
   await loading;
   assert.equal(reading.getState().botWorks[0].notifications[0].readAt, readAt, "a stale list snapshot cannot mark an acknowledged notification unread");
-  console.log("bot work review projection: 6 regression scenarios passed");
+
+  // A reader may fall behind retention (or an epoch change) between delta pages.
+  const syncCursors: (number | undefined)[] = [];
+  const pruned = fixture(async () => [], async request => {
+    syncCursors.push(request.cursor?.sequence);
+    if (syncCursors.length === 1) return { kind: "delta", from: 0,
+      cursor: { epoch: "review", sequence: 1, scope: "open" }, hasMore: true,
+      events: [{ kind: "upsert", sequence: 1, projection: work("current", 2) }] };
+    if (syncCursors.length === 2) return { kind: "resync_required" };
+    assert.equal(request.cursor, undefined, "an expired later page must immediately request a full snapshot");
+    return { kind: "snapshot", cursor: { epoch: "review", sequence: 10005, scope: "open" }, works: [work("current", 3)] };
+  });
+  const pendingSend = { request: { botId: "bot-review", requestId: "stable-send", text: "original message" }, sending: false };
+  pruned.setState({ activeBotId: "bot-review", botDraft: "keep draft", botDrafts: { "bot-review": "keep draft" },
+    botPendingSends: { "bot-review": pendingSend }, botWorks: [work("closed-offline"), work("current")],
+    botWorkCursor: { epoch: "review", sequence: 0, scope: "open" }, selectedWorkId: "closed-offline" });
+  await pruned.getState().refreshBotWork();
+  assert.deepEqual(syncCursors, [0, 1, undefined]);
+  assert.deepEqual(pruned.getState().botWorks.map(item => [item.workId, item.stateVersion]), [["current", 3]]);
+  assert.equal(pruned.getState().selectedWorkId, null);
+  assert.equal(pruned.getState().botWorkError, null);
+  assert.equal(pruned.getState().botDraft, "keep draft");
+  assert.deepEqual(pruned.getState().botPendingSends["bot-review"], pendingSend);
+  console.log("bot work review projection: 7 regression scenarios passed");
 }
 
 void main().catch(error => { console.error(error); process.exitCode = 1; });

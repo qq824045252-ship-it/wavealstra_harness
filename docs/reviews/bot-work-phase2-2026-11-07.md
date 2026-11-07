@@ -4,6 +4,8 @@
 
 状态：**M1～M3、P2-00～P2-08 已完成本阶段实施及 Windows 组件验收。** 下方保留 P2-00 原始预检历史，不能将其 319 项结果当作本阶段最终证据。
 
+后续复核：本记录对应原始 Phase 2 提交。暂停/恢复重复执行、工具契约、读取凭据清理与投影保留窗口的修复及本次验证结果，见 [Phase 2 复核与修复](bot-work-phase2-followup-2026-11-07.md)。
+
 代码基线为 `main@63e42fef874216bb770c71d840cc0ee9da6b6d07`；Phase 2 实现与本记录随同一 main 提交交付，提交号可用 `git log -1 -- docs/reviews/bot-work-phase2-2026-11-07.md` 查询。源码 SHA-256 指纹为 `7859b47ea252e7135fb6dd9187db43e89e6b66fac9fd7793b08b4352aaa422f4`，覆盖 49 个变更或新增的源码、脚本和 package.json 文件。逐文件 SHA 保存在 `out/diagnostics/bot-work-phase2/source-manifest.json`，该指纹由提交前的 `node scripts/bot-work-phase2-source-evidence.mjs` 生成；此命令统计当前工作树相对 HEAD 的未提交源码差异。Git 提交身份以实际提交记录为准。
 
 ## 本阶段实现

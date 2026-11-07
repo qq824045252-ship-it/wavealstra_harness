@@ -575,6 +575,7 @@ export class WorkService {
         }
       }
     }
+    this.clearContinuationBlockers(work.workId, now);
     const settled = this.tryCloseSettled(next, now);
     return { ok: true, outboxEventId: settled.ok ? settled.outboxEventId : undefined };
   }
@@ -622,6 +623,7 @@ export class WorkService {
         return this.closeWithConclusion(work, "succeeded", params, now);
       }
       // ended_unsuccessfully: settle first, then close.
+      this.clearContinuationBlockers(work.workId, now);
       if (this.isSettled(work) && this.repo.listOpenBlockers(work.workId).length === 0) {
         return this.closeWithConclusion(work, "ended_unsuccessfully", params, now);
       }
@@ -636,6 +638,14 @@ export class WorkService {
       });
       return { ok: true };
     });
+  }
+
+  /** No further execution is requested when cancelling/ending; effect and usage blockers remain. */
+  private clearContinuationBlockers(workId: string, now: number): void {
+    for (const binding of this.repo.listBindings(workId)) {
+      const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
+      if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
+    }
   }
 
   private closeWithConclusion(

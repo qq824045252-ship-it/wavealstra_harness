@@ -21,7 +21,7 @@ import { TerminalHost, type PtyLike } from "../src/main/terminal/TerminalHost";
 
 interface Metric { name: string; samples: number[]; p50: number; p95: number; min: number; max: number; }
 class PerfPty implements PtyLike {
-  readonly pid = 1;
+  readonly pid = 0; // In-memory fake: no operating-system process to terminate.
   private dataCb: ((data: string) => void) | null = null;
   private exitCb: ((event: { exitCode: number; signal?: number }) => void) | null = null;
   onData(cb: (data: string) => void): void { this.dataCb = cb; }

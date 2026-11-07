@@ -427,6 +427,9 @@ export function killProcessTree(
     options.onMissingPid?.();
     return undefined;
   }
+  // Reserved/invalid PIDs must not reach signals, child fallbacks or timers:
+  // POSIX -1 broadcasts to other processes, while 0 targets the current group.
+  if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
 
   if (platform === "windows") {
     const args = ["/PID", String(pid), "/T", "/F"];

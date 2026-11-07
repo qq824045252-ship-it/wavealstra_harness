@@ -8,7 +8,9 @@ import type { BotRegistry } from "./BotRegistry";
 import type { BotConversationRepository } from "./BotConversationRepository";
 import { botForegroundRequest } from "./BotForegroundIdentity";
 
-const text = z.string().trim().min(1).max(32000);
+// Validate the wire text before trimming so its length and non-blank rules can be
+// represented exactly in the model-visible JSON Schema as well as at execution.
+const text = z.string().min(1).max(32000).regex(/\S/, "文本不能仅包含空白").trim();
 const criterion = z.object({ text, requiresRealEnvironmentCheck: z.boolean().optional(), requiredEnvironment: text.optional() }).strict();
 const fields = { title: text.optional(), goalDescription: text.optional(), constraints: z.array(text).max(30).optional(),
   criteria: z.array(criterion).max(12).optional() };
@@ -18,6 +20,13 @@ const query = z.object({ workId: text.optional() }).strict();
 const create = z.object({ ...fields, title: text }).strict();
 const change = z.object({ ...fields, workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
+const memory = z.object({ query: text }).strict();
+// One source for Function Calling and runtime validation: nested strictness,
+// array bounds and all three positive version guards must not drift apart.
+const parameters = <Schema extends z.ZodType>(schema: Schema) =>
+  Type.Unsafe<z.input<Schema>>(z.toJSONSchema(schema, { target: "draft-7", io: "input" }));
+const inputParameters = { query: parameters(query), create: parameters(create), change: parameters(change),
+  control: parameters(control), memory: parameters(memory) };
 
 export interface BotForegroundToolOptions {
   db: Database.Database;
@@ -41,7 +50,10 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const receipt = (requestId: string) => {
     const value = messages.receipt(userId, botId, requestId);
     if (!value) throw new Error("前台调用缺少持久用户输入身份");
-    if (value.conversation_id !== conversationId || messages.message(value.assistant_message_id)?.status === "cancelled") throw new Error("原始用户消息已取消或不属于当前对话");
+    const message = messages.message(value.assistant_message_id);
+    if (value.conversation_id !== conversationId || !message || message.role !== "assistant"
+      || message.conversationId !== conversationId || message.botId !== botId || message.requestId !== requestId
+      || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
   const available = () => works.listWorks(userId, { includeClosed: true }).filter(work => work.ownerBotId === botId);
@@ -65,15 +77,10 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   };
   const actor = (): WorkActor => ({ kind: "bot", userId, botId, host: "foreground", grants: DESKTOP_USER_GRANTS });
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
-  const typeFields = { title: Type.Optional(Type.String()), goalDescription: Type.Optional(Type.String()),
-    constraints: Type.Optional(Type.Array(Type.String())), criteria: Type.Optional(Type.Array(Type.Object({ text: Type.String(),
-      requiresRealEnvironmentCheck: Type.Optional(Type.Boolean()), requiredEnvironment: Type.Optional(Type.String()) }))) };
-  const typeGuard = Type.Object({ expectedStateVersion: Type.Integer(), expectedIntentRevision: Type.Integer(), expectedOwnerEpoch: Type.Integer() });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: `${name}: 仅对用户明确委托或选中的事项操作。先查询并原样携带读取时三元 versionGuard；冲突须重新判断。不能扩大授权、续权或代替验收。`,
-    parameters: name === "work_create" ? Type.Object({ ...typeFields, title: Type.String() }, { additionalProperties: false })
-      : name === "work_amend" ? Type.Object({ ...typeFields, workId: Type.String(), versionGuard: typeGuard }, { additionalProperties: false })
-      : Type.Object({ workId: Type.String(), versionGuard: typeGuard, reason: Type.Optional(Type.String()) }, { additionalProperties: false }),
+    parameters: name === "work_create" ? inputParameters.create
+      : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -114,7 +121,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     },
   }));
   return [defineTool({ name: "work_query_status", description: "读取当前 Bot 的已知 Work、成果、预算及版本守卫。不会启动业务工具。",
-    parameters: Type.Object({ workId: Type.Optional(Type.String()) }, { additionalProperties: false }), replay: "safe",
+    parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
       return output(works.transaction(() => {
@@ -130,6 +137,6 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       });
     })); } }), ...mutations,
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
-    parameters: Type.Object({ query: Type.String() }, { additionalProperties: false }), replay: "safe",
-    execute: async args => { assertActive(); return output(options.memorySearch(z.object({ query: text }).strict().parse(args).query)); } })];
+    parameters: inputParameters.memory, replay: "safe",
+    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } })];
 }

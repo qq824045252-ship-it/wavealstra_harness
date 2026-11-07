@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
 
+/** Per-user replay window; older cursors recover through an authoritative snapshot. */
+export const WORK_PROJECTION_EVENT_RETENTION = 10_000;
+
 /** Only the current schema is created; old databases retain the existing backup/reset contract. */
 export function ensureBotWorkPhase2Tables(db: Database.Database): void {
   db.exec(`
@@ -61,7 +64,16 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       user_id TEXT NOT NULL, sequence INTEGER NOT NULL, work_id TEXT NOT NULL,
       PRIMARY KEY(user_id,sequence)
     );
+    CREATE TRIGGER IF NOT EXISTS projection_event_retention AFTER INSERT ON work_projection_events BEGIN
+      DELETE FROM work_projection_events
+        WHERE user_id=NEW.user_id AND sequence<=NEW.sequence-${WORK_PROJECTION_EVENT_RETENTION};
+    END;
   `);
+  // Run at startup as well, including when there are no connected readers or new writes.
+  // Keep the stream epoch/sequence: pruning must never reuse a tombstone's sequence.
+  db.prepare(`DELETE FROM work_projection_events WHERE sequence <= (
+    SELECT sequence - ? FROM work_projection_streams WHERE user_id=work_projection_events.user_id
+  )`).run(WORK_PROJECTION_EVENT_RETENTION);
   for (const [name, table, operation, workId, userId] of [
     ["work_insert", "works", "INSERT", "NEW.work_id", "NEW.user_id"],
     ["work_update", "works", "UPDATE", "NEW.work_id", "NEW.user_id"],
