@@ -63,7 +63,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         });
         persist();
         await get().refreshBotHistory(botId);
-        await get().refreshBotWork();
+        await get().refreshBotWork(get().botWorkCursor?.scope === "all");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         set(state => ({ botPendingSends: { ...state.botPendingSends, [botId]: { request, sending: false, error: message } },

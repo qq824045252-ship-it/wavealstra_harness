@@ -122,6 +122,83 @@ try {
   assert.equal(latestRows.find(item => item.eventId !== frozen.eventId)!.payload.value, 11);
   assert.equal(works.ingress.cursor(latestA, "hook", "A")!.highestFrozenVersion, "10");
 
+  // Older consumed/frozen watermarks must not hide a newer accepted source version.
+  const watermarkWork = create("watermark-order");
+  const watermarkSub = subscribe(watermarkWork, "watermark-sub", "latest", 8, "watermark");
+  event("watermark-1", "1", "watermark", 1);
+  clock.at += 1_001;
+  const consumedBatch = works.listDueInbox(watermarkWork.workId, clock.at)[0];
+  assert(works.completeInboxEvent(consumedBatch.eventId, () => {}).ok);
+  event("watermark-3", "3", "watermark", 3);
+  const lateAfterConsume = event("watermark-2", "2", "watermark", 2);
+  assert.equal(lateAfterConsume.outcomes[0].outcome, "skipped",
+    "a lower consumed watermark cannot let a late source overwrite a newer accepted batch");
+  clock.at += 1_001;
+  works.listDueInbox(watermarkWork.workId, clock.at);
+  event("watermark-5", "5", "watermark", 5);
+  assert.equal(event("watermark-4", "4", "watermark", 4).outcomes[0].outcome, "skipped");
+  const watermarks = works.ingress.cursor(watermarkSub, "hook", "watermark")!;
+  assert.equal(watermarks.highestAcceptedVersion, "5");
+  assert.equal(watermarks.highestFrozenVersion, "3");
+  assert.equal(watermarks.highestConsumedVersion, "1");
+
+  // Source counters may exceed JavaScript's exact integer range.
+  const preciseWork = create("precise-source-version");
+  const preciseSub = subscribe(preciseWork, "precise-source-sub", "latest", 8, "precise");
+  event("precise-1", "9007199254740992", "precise", 1);
+  assert.equal(event("precise-2", "9007199254740993", "precise", 2).outcomes[0].outcome, "merged");
+  assert.equal(works.ingress.cursor(preciseSub, "hook", "precise")?.highestAcceptedVersion, "9007199254740993");
+
+  // each keeps every obligation, while its high watermarks and consume counters stay monotonic/idempotent.
+  const orderEach = create("each-watermark");
+  const orderEachSub = subscribe(orderEach, "each-watermark-sub", "each", 8, "ordered-each");
+  event("each-watermark-9", "9", "ordered-each", 9);
+  event("each-watermark-2", "2", "ordered-each", 2);
+  const outOfOrder = works.repo.listInbox(orderEach.workId, ["pending"]);
+  assert.equal(outOfOrder.length, 2);
+  assert.equal(works.ingress.cursor(orderEachSub, "hook", "ordered-each")?.highestAcceptedVersion, "9");
+  for (const row of outOfOrder) works.ingress.markConsumed(row.eventId);
+  works.ingress.markConsumed(outOfOrder[0].eventId);
+  const eachCursor = works.ingress.cursor(orderEachSub, "hook", "ordered-each")!;
+  assert.equal(eachCursor.highestConsumedVersion, "9");
+  assert.equal(eachCursor.consumedEvents, 2, "repeated settlement does not increment the consumed counter twice");
+
+  // A readback of an open batch cannot consume a different batch snapshot after an online merge.
+  const readbackWork = create("readback-cas");
+  subscribe(readbackWork, "readback-cas-sub", "latest", 8, "readback-cas");
+  event("readback-cas-1", "1", "readback-cas", 1);
+  const readbackBatch = works.repo.listInbox(readbackWork.workId, ["merged"])[0];
+  let applyCount = 0;
+  const racedRead = await works.pausedBacklog.consume(readbackBatch.eventId, async () => {
+    event("readback-cas-2", "2", "readback-cas", 2);
+    return "snapshot-before-merge";
+  }, () => { applyCount++; });
+  assert.equal(racedRead.ok, false, "an online merge during readback forces a fresh read of the saved batch");
+  assert.equal(applyCount, 0);
+  assert.equal(works.repo.getInbox(readbackBatch.eventId)?.status, "merged");
+  assert.equal(works.repo.getInbox(readbackBatch.eventId)?.payload.value, 2);
+
+  // Pause/replay preserves target partitions and the same accepted source watermarks.
+  const pausedWork = create("paused-targets");
+  const pausedSub = subscribe(pausedWork, "paused-targets-sub", "latest", 8);
+  unwrap(works.pauseWork(user, { operationId: "paused-targets-pause", workId: pausedWork.workId,
+    versionGuard: guard(works.getWork(pausedWork.workId)!) }));
+  event("paused-a10", "10", "paused-A", 10, pausedWork.workId);
+  event("paused-b11", "11", "paused-B", 11, pausedWork.workId);
+  event("paused-a12", "12", "paused-A", 12, pausedWork.workId);
+  assert.equal(event("paused-a9", "9", "paused-A", 9, pausedWork.workId).outcomes[0].outcome, "skipped");
+  assert.equal(works.ingress.cursor(pausedSub, "hook", "paused-A")?.highestAcceptedVersion, "12");
+  unwrap(works.resumeWork(user, { operationId: "paused-targets-resume", workId: pausedWork.workId,
+    versionGuard: guard(works.getWork(pausedWork.workId)!) }));
+  const resumedTargets = works.repo.listInbox(pausedWork.workId, ["merged"]);
+  assert.deepEqual(resumedTargets.map(row => row.targetKey).sort(), ["paused-A", "paused-B"]);
+  assert.equal(resumedTargets.find(row => row.targetKey === "paused-A")?.sourceVersion, "12");
+  assert.equal(works.ingress.getRoute("hook", "paused-a10", pausedSub)?.inbox_event_id,
+    works.ingress.getRoute("hook", "paused-a12", pausedSub)?.inbox_event_id,
+    "all paused facts merged into one target batch keep a receipt pointing to that batch");
+  assert(works.phase4Control(user, { kind: "stop-subscription", operationId: "paused-targets-stop",
+    workId: pausedWork.workId, subscriptionId: pausedSub, versionGuard: guard(works.getWork(pausedWork.workId)!) }).ok);
+
   // Bounded each queue: finite overflow, then an explicit refusal that never pretends success.
   const tight = create("backpressure");
   const tightSub = subscribe(tight, "sub-tight", "each", 1, "tight", 2);
@@ -142,6 +219,60 @@ try {
   assert.equal(retried.outcomes[0].outcome, "blocked", "a previously refused route can be redelivered");
   assert.equal(works.repo.listInbox(tight.workId, ["pending", "blocked"]).length, 2);
   assert.equal(works.repo.listInbox(tight.workId, ["processed"]).length, 1);
+
+  // Two independent SQLite connections: the version comparison already owns the write
+  // transaction, and another connection cannot observe or alter a partial route/cursor.
+  const atomicOne = create("atomic-fanout-one");
+  const atomicSub = subscribe(atomicOne, "atomic-sub-one", "latest", 8, "atomic");
+  const atomicTwo = create("atomic-fanout-two");
+  const atomicOtherSub = subscribe(atomicTwo, "atomic-sub-two", "latest", 8, "atomic");
+  event("atomic-10", "10", "atomic", 10);
+  const competingDb = new AppDatabase(path);
+  competingDb.connection.pragma("busy_timeout = 0");
+  const competing = new WorkService(competingDb.connection, {
+    bots: new BotRegistry(competingDb.connection), now: () => clock.at,
+  });
+  const originalAdapter = works.ingress.adapter("hook")!;
+  let lockChecks = 0;
+  try {
+    works.ingress.registerAdapter({ ...originalAdapter, compareVersion: (left, right) => {
+      if (left === "12" && right === "10") {
+        assert.equal(db.connection.inTransaction, true);
+        assert.equal(competing.ingress.cursor(atomicSub, "hook", "atomic")?.highestAcceptedVersion, "10");
+        assert.equal(competing.ingress.getRoute("hook", "atomic-12", atomicSub), undefined);
+        assert.throws(() => competingDb.connection.exec("BEGIN IMMEDIATE"),
+          error => (error as { code?: string }).code === "SQLITE_BUSY",
+          "a competing writer cannot change the cursor between version admission and the Inbox update");
+        lockChecks++;
+      }
+      return undefined;
+    } });
+    event("atomic-12", "12", "atomic", 12);
+    assert(lockChecks > 0);
+    works.ingress.registerAdapter(originalAdapter);
+    const late = competing.ingestSourceEvent({ source: "hook", sourceEventId: "atomic-11", eventType: "changed",
+      sourceVersion: "11", payload: { target: "atomic", value: 11 } });
+    assert.equal(late.outcomes.every(route => route.outcome === "skipped"), true);
+    assert.equal(competing.ingress.cursor(atomicSub, "hook", "atomic")?.highestAcceptedVersion, "12");
+
+    // Failure in the second subscription rolls the entire source fanout back, including
+    // the first subscription's merged payload, receipt and high watermark.
+    db.connection.exec(`CREATE TEMP TRIGGER fail_atomic_fanout BEFORE INSERT ON work_ingress_routes
+      WHEN NEW.source_event_id='atomic-14' AND NEW.subscription_id='${atomicOtherSub}'
+      BEGIN SELECT RAISE(ABORT, 'injected atomic fanout failure'); END;`);
+    assert.throws(() => event("atomic-14", "14", "atomic", 14), /injected atomic fanout failure/);
+    db.connection.exec("DROP TRIGGER fail_atomic_fanout");
+    assert.equal(competingDb.connection.prepare("SELECT 1 FROM work_source_events WHERE source='hook' AND source_event_id='atomic-14'").get(), undefined);
+    assert.equal(competing.ingress.getRoute("hook", "atomic-14", atomicSub), undefined);
+    assert.equal(competing.ingress.cursor(atomicSub, "hook", "atomic")?.highestAcceptedVersion, "12");
+    assert.equal(competing.repo.listInbox(atomicOne.workId, ["merged"])[0].payload.value, 12);
+    assert.equal(event("atomic-14", "14", "atomic", 14).sourceNew, true,
+      "the rolled-back event can be delivered again as a new durable source fact");
+  } finally {
+    works.ingress.registerAdapter(originalAdapter);
+    db.connection.exec("DROP TRIGGER IF EXISTS fail_atomic_fanout");
+    competingDb.close();
+  }
 
   // watchRule.subscriptions is a source-name set, never a subscription primary key.
   const watchSource = unwrap(works.createWork(user, { operationId: "watch-source-identity", title: "watch source identity",

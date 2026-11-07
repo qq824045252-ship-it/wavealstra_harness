@@ -1990,7 +1990,7 @@ export class WorkService {
 
   // ============================================================= phase 4 control
 
-  /** Guarded IPC/API entry for subscription, deadline and budget policy changes. */
+  /** Guarded IPC/API entry for subscription, deadline, budget policy and receipt reconciliation. */
   phase4Control(actor: WorkActor, request: unknown): WorkPhase4ControlResult {
     const parsed = phase4ControlRequestSchema.safeParse(request);
     if (!parsed.success) return { ok: false, code: "invalid_request", message: parsed.error.issues[0]?.message ?? "Phase 4 控制请求无效" };
@@ -1998,8 +1998,10 @@ export class WorkService {
     let subscriptionId: string | undefined = "subscriptionId" in input ? input.subscriptionId : undefined;
     const result = this.runWorkControl(actor, `phase4:${input.kind}`, input as unknown as
       { operationId: string; workId: string; versionGuard?: ExpectedVersionGuard }, {
-      guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"],
-    }, (work, _resolved, now) => this.applyPhase4Control(work, input, now));
+      guard: "full", ownerOnly: true,
+      // Accounting for an existing request must remain possible after execution stops.
+      allowLifecycles: input.kind === "reconcile-budget-reservation" ? ["active", "paused", "closing", "closed"] : ["active", "paused"],
+    }, (work, resolved, now) => this.applyPhase4Control(work, input, resolved, now));
     if (!result.ok) return { ok: false, code: result.code, message: result.message };
     if (input.kind === "configure-subscription") subscriptionId = this.lastPhase4SubscriptionId ?? input.subscriptionId;
     if (input.kind === "retry-backlog") subscriptionId = input.subscriptionId;
@@ -2007,7 +2009,15 @@ export class WorkService {
       subscriptionId, deadlineAt: result.work.deadlineAt, budgetWindowId: result.work.budget.windowId };
   }
 
-  private applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, now: number): Mutation {
+  private applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, resolved: ResolvedActor, now: number): Mutation {
+    if (input.kind === "reconcile-budget-reservation") {
+      if (resolved.kind !== "user" && resolved.kind !== "bot") {
+        return { ok: false, code: "unauthorized_actor", message: "只有当前主负责人或用户可以核对未知用量" };
+      }
+      return this.budget.reconcileUnknown(work, input, {
+        kind: resolved.kind, userId: resolved.userId, botId: resolved.bot?.botId,
+      });
+    }
     if (input.kind === "configure-subscription") {
       const existing = input.subscriptionId
         ? this.repo.getSubscription(input.subscriptionId)
@@ -2176,7 +2186,8 @@ export class WorkService {
       }
       const now = this.now();
       if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery")) {
+        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery"
+          || operationType === "phase4:reconcile-budget-reservation")) {
         // Renewing an expired delegation is a user authorization change, not new
         // business execution. Models cannot renew themselves, and the new deadline
         // and capabilities still intersect the current authenticated host grant.

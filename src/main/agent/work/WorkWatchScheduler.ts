@@ -143,6 +143,7 @@ export class WorkWatchScheduler {
     return this.works.transaction(() => {
       const row = this.gapRow(gapId);
       if (!row || !row.subscription_id) return undefined;
+      if (!this.authority() || row.state === "recovered") return this.toGapDto(row);
       const subscription = this.works.repo.getSubscription(String(row.subscription_id));
       if (!subscription) return undefined;
       const queryable = options.queryable ?? (this.works.ingress.adapter(subscription.source)?.canQueryHistory === true);
@@ -177,24 +178,39 @@ export class WorkWatchScheduler {
           this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',updated_at=? WHERE gap_id=?").run(this.now(), gapId);
         }
       } else {
-        const page = (options.events ?? []).slice(0, 32);
+        // Capability metadata is not a completed history query. Host resume calls this
+        // before an adapter has supplied a page; keep that gap visibly unresolved.
+        if (options.events === undefined) {
+          this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
+            gap_reason='等待来源历史回查结果',updated_at=? WHERE gap_id=?`).run(this.now(), gapId);
+          return this.toGapDto(this.gapRow(gapId)!);
+        }
+        const page = options.events.slice(0, 32);
         let ingested = 0;
-        for (const item of page) {
+        let skipped = 0;
+        let cursor = row.continuation_cursor as string | null;
+        let refused = false;
+        // A retry may include the already-committed prefix of the same ordered page.
+        const committedPrefix = page.findIndex(item => item.sourceEventId === cursor);
+        for (const item of page.slice(committedPrefix + 1)) {
           const accepted = this.works.ingress.accept({ source: subscription.source, sourceEventId: item.sourceEventId,
             eventType: item.eventType, sourceVersion: item.sourceVersion, occurredAt: item.occurredAt,
             payload: item.payload ?? {}, trustedOrigin: "offline-replay" },
           { workId: subscription.workId, subscriptionId: subscription.subscriptionId, offline: true,
             offlineGapId: gapId, trust: "host" });
-          if (accepted.acknowledged) ingested++;
+          const route = accepted.outcomes.find(item => item.subscriptionId === subscription.subscriptionId);
+          if (!accepted.acknowledged || !route || route.outcome === "rejected") {
+            refused = true;
+            break;
+          }
+          if (route.outcome === "skipped") skipped++;
+          else if (route.outcome !== "duplicate") ingested++;
+          cursor = item.sourceEventId;
         }
-        const cursor = page.at(-1)?.sourceEventId ?? row.continuation_cursor as string | undefined;
         this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state=?,recovered_count=recovered_count+?,
-          skipped_count=COALESCE(skipped_count,0)+? ,continuation_cursor=?,updated_at=? WHERE gap_id=?`)
-          .run(page.length ? "recovering" : "recovered", ingested, options.skippedCount ?? 0,
-            cursor ?? null, this.now(), gapId);
-        if (!page.length) {
-          this.db.prepare("UPDATE work_offline_gaps SET state='recovered',updated_at=? WHERE gap_id=?").run(this.now(), gapId);
-        }
+          skipped_count=COALESCE(skipped_count,0)+?,continuation_cursor=?,gap_reason=?,updated_at=? WHERE gap_id=?`)
+          .run(page.length ? "recovering" : "recovered", ingested, skipped + (options.skippedCount ?? 0),
+            cursor, refused ? "来源回放受背压阻碍，保留游标等待重试" : null, this.now(), gapId);
       }
       return this.toGapDto(this.gapRow(gapId)!);
     });

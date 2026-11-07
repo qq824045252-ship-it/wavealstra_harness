@@ -83,6 +83,17 @@ export interface WorkOfflineGapDto {
   gapReason?: string;
 }
 
+export interface WorkBudgetUnknownReservationDto {
+  reservationId: string;
+  windowId: string;
+  tokens: number;
+  requestKind?: "dispatch" | "generation" | "compaction" | "child" | "retry";
+  requestId?: string;
+  bindingId?: string;
+  attemptIdentity?: string;
+  createdAt: number;
+}
+
 export interface WorkBudgetWindowDto {
   windowId: string;
   policyRevision: number;
@@ -100,6 +111,8 @@ export interface WorkBudgetWindowDto {
   carryPolicy: "none" | "outstanding";
   status: "open" | "closed" | "exhausted";
   pendingRollover?: string;
+  /** Durable identities for explicit, version-guarded reconciliation; never an assumed zero. */
+  unknownReservations?: WorkBudgetUnknownReservationDto[];
 }
 
 export interface WorkCausalMonitorDto {
@@ -214,6 +227,23 @@ export const phase4ControlRequestSchema = z.discriminatedUnion("kind", [
       expectedIntentRevision: z.number().int().optional(),
       expectedOwnerEpoch: z.number().int().optional(),
     }).optional(),
+  }),
+  z.object({
+    kind: z.literal("reconcile-budget-reservation"),
+    operationId: z.string().min(1).max(200),
+    workId: z.string().min(1),
+    reservationId: z.string().min(1),
+    windowId: z.string().min(1),
+    resolution: z.enum(["committed", "released"]),
+    reportedTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    reason: z.string().trim().min(1).max(2000),
+    evidenceRef: z.string().trim().min(1).max(2000),
+    // Even an authenticated user's decision was based on a previously read ledger.
+    versionGuard: z.object({
+      expectedStateVersion: z.number().int().min(1),
+      expectedIntentRevision: z.number().int().min(1),
+      expectedOwnerEpoch: z.number().int().min(1),
+    }),
   }),
   z.object({
     kind: z.literal("retry-backlog"),

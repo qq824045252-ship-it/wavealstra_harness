@@ -132,6 +132,29 @@ try {
   assert.equal(works.repo.listOpenBlockers(bounded.workId).some(item => item.reasonCode === "backlog-overflow"), false,
     "the same projection removes the resolved backpressure blocker");
 
+  // Paused overflow stored as source routes counts toward the same hard limits.
+  const paused = create("paused-capacity");
+  const pausedSub = subscribe(paused, "paused-capacity-sub", "each", 1, 100, 2);
+  unwrap(works.pauseWork(user, { operationId: "pause-capacity", workId: paused.workId,
+    versionGuard: guard(works.getWork(paused.workId)!) }));
+  const pausedEvent = (id: string) => works.ingestSourceEvent({ workId: paused.workId, subscriptionId: pausedSub,
+    source: "hook", sourceEventId: id, eventType: "changed", sourceVersion: id,
+    payload: { target: "paused-capacity", id } });
+  assert.equal(pausedEvent("paused-capacity-1").outcomes[0].outcome, "pending");
+  assert.equal(pausedEvent("paused-capacity-2").outcomes[0].outcome, "blocked");
+  const pausedRefused = pausedEvent("paused-capacity-3");
+  assert.equal(pausedRefused.outcomes[0].outcome, "rejected");
+  assert.equal(pausedRefused.acknowledged, false, "source-only overflow is bounded before it is acknowledged");
+  assert.equal(works.ingress.queueStats(works.repo.getSubscription(pausedSub)!).blocked, 1);
+  unwrap(works.resumeWork(user, { operationId: "resume-capacity", workId: paused.workId,
+    versionGuard: guard(works.getWork(paused.workId)!) }));
+  assert(works.completeInboxEvent(works.repo.listInbox(paused.workId, ["pending"])[0].eventId, () => {}).ok);
+  works.transaction(() => works.pausedBacklog.refill(paused.workId, clock.at));
+  const refilled = works.repo.listInbox(paused.workId, ["pending"])[0];
+  assert.equal(refilled.sourceEventId, "paused-capacity-2");
+  assert.equal(refilled.targetKey, "paused-capacity");
+  assert.equal(works.ingress.getRoute("hook", "paused-capacity-2", pausedSub)?.inbox_event_id, refilled.eventId);
+
   // Restart keeps the bounded state, routes and batch identities.
   const frozenIds = works.repo.listInbox(continuous.workId, ["merged"]).map(item => item.eventId).sort();
   db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection);

@@ -153,3 +153,11 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 六个 `test:bot-work-phase4-*` 专项覆盖 BW-A36～BW-A41：路由扇出/latest-source/不可变 each、离线 gap 与 latest/each/skip、IANA/DST/回拨/前跳/零 Hook 期限、因果防环与跨 Work 扇出、共享预算三桶与窗口、固定合并截止和有限背压。Phase 3 九项专项和真实 Pi 原生结算回归通过。最终 `pnpm -s typecheck` 通过；`pnpm -s test:all` 为 **343 passed / 0 failed / 0 known failed / 0 new regressions**；`--audit` 为 headless 345 / GUI 54 / NETWORK 29 / DATASET 2 / pending 0。既有 `test:bot-work-phase3:dev` 在隔离 HOME 下真实 `pnpm dev` 通过；本轮在该页面通过 preload/IPC 保存 Phase 4 订阅并断言「关注与运行/共享预算」投影渲染。期限/预算按钮未逐项点击。
 
 未运行/blocked：Phase 4 dev 期限/预算按钮逐项点击、Linux/Omarchy/移动端、发行包桌面、真实外部连接器 webhook。Issue #16 回填未由实施会话执行，按交接约定由主会话完成。完整证据、故障修复和实现 SHA 见 [Phase 4 复核报告](reviews/bot-work-phase4-2026-11-07.md)。
+
+### Phase 4 后续加固（2026-11-07）
+
+基于 `main@60a50eec58fbb96cefb1fa4690e430546f2bb57d` 复核并修复来源水位回退、暂停目标分区/容量/回读 CAS、离线分页越过拒收及无回查结果虚报完成；保留并用双连接竞争和故障回滚验证既有 Ingress 即时事务。补充用户/主负责人三版本守卫的 unknown 预算核销、持久审计、迟到可信回执与历史窗口结算；修正多 Work/多冲突阻碍身份和时钟回拨下的请求归属。页面新增核对表单与已结束事项入口，保持列表读取作用域。
+
+恢复测试改为真实核对被强杀 PID 与持久租约到期，并在全量中串行执行该重型套件；原 timeout、业务断言和失败白名单均保持。最终 `pnpm -s typecheck` 通过；两轮完整 `pnpm -s test:all` 均为 **344 passed / 1 failed / 0 known failed / 1 new regression，退出码 1**，唯一失败 `test:atspi-transport` 在基线源码快照也以 D-Bus socket EPERM 复现。两轮 Phase 4 六项、Phase 3 九项以及恢复/性能专项均通过，恢复套件分别 22.8s / 22.7s。
+
+真实 `pnpm dev` 已尝试，Electron 启动时被 Unix socket EPERM 阻碍，新增按钮实际点击仍为 blocked；不宣称全量门禁全绿、Windows 瞬时失败已完成复验或 Phase 4 整体验收完成。schema 保持 33，版本保持 0.1.107，无发布 build/pack/dist。冻结源码指纹 `cd7c759ccbc14a170b8824586b7a19a1ad70ef03c9731e4b874d7ea690141b26`；完整事实、门禁和逐文件指纹见 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md)。

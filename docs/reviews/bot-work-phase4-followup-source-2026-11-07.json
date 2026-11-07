@@ -1,0 +1,79 @@
+{
+  "baseCommit": "60a50eec58fbb96cefb1fa4690e430546f2bb57d",
+  "branch": "main",
+  "sourceSha256": "cd7c759ccbc14a170b8824586b7a19a1ad70ef03c9731e4b874d7ea690141b26",
+  "files": [
+    {
+      "path": "scripts/bot-work-phase2-recovery-test.ts",
+      "sha256": "fd5dbfd492f91ab4abc849840e963b757e5e1b2e28cf5814207f8f89d0a13548"
+    },
+    {
+      "path": "scripts/bot-work-phase3-dev-test.cjs",
+      "sha256": "d52a4359ca78949c5f3038234b68061fd1b61fdfbfbfe24efdca0aec92901cf8"
+    },
+    {
+      "path": "scripts/bot-work-phase4-backpressure-test.ts",
+      "sha256": "4f8c33cac0e2b274cb0572fd58c86d3d1d3293af1cd29cd89eb92edd7b7f0bfa"
+    },
+    {
+      "path": "scripts/bot-work-phase4-hook-fanout-test.ts",
+      "sha256": "5db567506d1a40ad74ae562a090821862dde9c2f9ad735ac55e73c4c565d07c9"
+    },
+    {
+      "path": "scripts/bot-work-phase4-offline-catchup-test.ts",
+      "sha256": "46a6bf91fafafe9983c904115f14004ff290140d1b15677b6c6c8fb1857d0df3"
+    },
+    {
+      "path": "scripts/bot-work-phase4-shared-budget-test.ts",
+      "sha256": "86563b4e2e5361a4dd670189261e2111249fc7d3ed81b9b146f13265c9b06915"
+    },
+    {
+      "path": "scripts/bot-workspace-test.ts",
+      "sha256": "6cd77adcfd7018d58b39e2d22863297e25fd47c0ce510f2b828a1d668f28f0fb"
+    },
+    {
+      "path": "scripts/test-all.mjs",
+      "sha256": "76cc57546534887afa48a1626f515abc45487cef507511929a940ac2905dd6d3"
+    },
+    {
+      "path": "src/main/agent/work/WorkBudgetService.ts",
+      "sha256": "e0002b5429928eb1b7895fdc4f4fad708c60758d5cb7e4d5d9af403f0535e834"
+    },
+    {
+      "path": "src/main/agent/work/WorkPausedBacklog.ts",
+      "sha256": "29c9133f989f862d2c94b75e5da58c3afb9f0dc724bde7220e497f87df7f7e39"
+    },
+    {
+      "path": "src/main/agent/work/WorkService.ts",
+      "sha256": "8203dcdb499b643bdda302be0f6411498f8df9268b99aea2033993e4f0e0ca7f"
+    },
+    {
+      "path": "src/main/agent/work/WorkWatchIngress.ts",
+      "sha256": "dbda69ed8257b0d5082532db0ae899007979498df4ae784bdc77e65d1939009a"
+    },
+    {
+      "path": "src/main/agent/work/WorkWatchScheduler.ts",
+      "sha256": "3fce9dbc2e57b018ce45a81cfa6a6f6cc48ca49ae4b3c28b9b29224bf9f5327c"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkspacePage.css",
+      "sha256": "e3f978156b5f908e8ca6ac9420cf8ca87a8c4ececa3529cfb8bdfe04e12070a6"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkspacePage.tsx",
+      "sha256": "5dd4fc2abd1aedf400d421598a423827c3be351ce1b1f14090f99e1d1900608b"
+    },
+    {
+      "path": "src/renderer/src/store/app/slices/botConversation.ts",
+      "sha256": "578e30e1806c3f3891b1abdfc1b0f97b6d2e35c9a7240990d2027e4b15113aea"
+    },
+    {
+      "path": "src/shared/bot-work-phase4.ts",
+      "sha256": "d421c704241bf22561ee85754360552d445d810553bd7f9c3b3c4e360f9ac4cd"
+    },
+    {
+      "path": "src/shared/bot-work.ts",
+      "sha256": "05adbe0064c5ab2890f1d6ba27a6da737c097e6ef263e5e5cc38270bde55e512"
+    }
+  ]
+}

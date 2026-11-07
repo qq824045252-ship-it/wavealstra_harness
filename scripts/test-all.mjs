@@ -16,7 +16,7 @@
  *   - 未在 baseline 中且通过的用例正常通过。
  *
  * 用法：
- *   node scripts/test-all.mjs                    # default 套件（headless，并行池 + 串行性能池）
+ *   node scripts/test-all.mjs                    # default 套件（headless，并行池 + 串行负载敏感池）
  *   node scripts/test-all.mjs --include-gui      # default + GUI（需要真实桌面会话/Electron）
  *   node scripts/test-all.mjs --include-live     # 全部（GUI + NETWORK + DATASET）
  *   node scripts/test-all.mjs --list             # 只列分类与选中的用例，不执行
@@ -42,12 +42,14 @@ const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
 
 /**
- * 负载敏感用例：这些用例断言的是墙钟性能（启动 p95、构建耗时等），
- * 与其它用例并行时会被 CPU/IO 争用推过预算，造成确定性 flaky。
+ * 负载敏感用例：性能用例断言墙钟预算（启动 p95、构建耗时等）；
+ * Phase 2 recovery 连续强杀并重开真实 SQLite/JSONL，且持有 1s 的测试宿主租约。
+ * CPU/IO 争用会干扰性能预算或进程/租约交接，故这一个崩溃套件也走串行池。
  * 它们在并行池跑完后串行执行（JOBS=1），并且 `core-performance-all`
- * 内部还会再跑一遍同类用例，所以串行也要放在最后。
+ * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
+ * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/];
+const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/];
 
 /**
  * 排除集合分三类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -514,7 +516,7 @@ async function runPool(items, worker, concurrency = JOBS) {
 console.log(`[test-all] 并发 ${JOBS} · 单用例超时 ${PER_TEST_TIMEOUT}s`);
 await runPool(parallelNames, async (n) => runOne(n));
 if (serialNames.length > 0) {
-  console.log(`\n[test-all] 串行执行负载敏感用例（${serialNames.length} 个，避免并行争用导致性能断言误报）：`);
+  console.log(`\n[test-all] 串行执行负载敏感用例（${serialNames.length} 个，隔离崩溃恢复与性能验证的 CPU/IO 争用）：`);
   for (const n of serialNames) console.log(`    - ${n}`);
   await runPool(serialNames, async (n) => runOne(n), 1);
 }

@@ -68,6 +68,11 @@ try {
 
   // each: bounded replay through the same ingress; worker obligations carry their original payloads.
   const eachGap = gaps.find(gap => gap.subscriptionId === eachSub)!;
+  const awaitingHistory = works.scheduler.applyGap(eachGap.gapId)!;
+  assert.equal(awaitingHistory.state, "recovering",
+    "a queryable adapter declaration is not an empty history result");
+  assert.equal(awaitingHistory.recoveredCount, 0);
+  assert(awaitingHistory.gapReason?.includes("回查"));
   const replay = works.scheduler.applyGap(eachGap.gapId, { events: [
     { sourceEventId: "offline-e1", eventType: "changed", sourceVersion: "1", payload: { target: "each-target", n: 1 } },
     { sourceEventId: "offline-e2", eventType: "changed", sourceVersion: "2", payload: { target: "each-target", n: 2 } },
@@ -76,6 +81,34 @@ try {
   const eachRows = works.repo.listInbox(work.workId, ["pending"]).filter(item => item.subscriptionId === eachSub);
   assert.equal(eachRows.length, 2);
   assert.deepEqual(eachRows.map(item => item.payload.n).sort(), [1, 2]);
+
+  // Backpressure cannot advance the recovery cursor past an unacknowledged obligation.
+  assert(works.phase4Control(user, { kind: "configure-subscription", operationId: "each-offline-capacity",
+    workId: work.workId, subscriptionId: eachSub, source: "repo", catchUpPolicy: "each", maxQueueDepth: 2,
+    maxBacklogEvents: 2, versionGuard: guard(works.getWork(work.workId)!) }).ok);
+  const nextPage = [
+    { sourceEventId: "offline-e3", eventType: "changed", sourceVersion: "3", payload: { target: "each-target", n: 3 } },
+    { sourceEventId: "offline-e4", eventType: "changed", sourceVersion: "4", payload: { target: "each-target", n: 4 } },
+  ];
+  const cursor = () => (db.connection.prepare("SELECT continuation_cursor FROM work_offline_gaps WHERE gap_id=?")
+    .get(eachGap.gapId) as { continuation_cursor: string | null }).continuation_cursor;
+  const refusedPage = works.scheduler.applyGap(eachGap.gapId, { events: nextPage })!;
+  assert.equal(refusedPage.recoveredCount, 2); assert.equal(refusedPage.state, "recovering");
+  assert.equal(cursor(), "offline-e2", "the first refused event leaves the last accepted cursor unchanged");
+  assert.equal(works.ingress.getRoute("repo", "offline-e4", eachSub), undefined,
+    "replay stops at the first refusal instead of accepting later events out of order");
+  assert(works.completeInboxEvent(eachRows[0].eventId, () => {}).ok);
+  const partialPage = works.scheduler.applyGap(eachGap.gapId, { events: nextPage })!;
+  assert.equal(partialPage.recoveredCount, 3); assert.equal(cursor(), "offline-e3");
+  const repeatedPartial = works.scheduler.applyGap(eachGap.gapId, { events: nextPage })!;
+  assert.equal(repeatedPartial.recoveredCount, 3, "replaying an accepted prefix does not inflate the recovered count");
+  assert.equal(cursor(), "offline-e3");
+  assert(works.completeInboxEvent(eachRows[1].eventId, () => {}).ok);
+  const lastPage = works.scheduler.applyGap(eachGap.gapId, { events: nextPage })!;
+  assert.equal(lastPage.recoveredCount, 4); assert.equal(cursor(), "offline-e4");
+  assert.equal(works.scheduler.applyGap(eachGap.gapId, { events: nextPage })!.recoveredCount, 4);
+  const finished = works.scheduler.applyGap(eachGap.gapId, { events: [] })!;
+  assert.equal(finished.state, "recovered", "only an explicit terminal history page closes the gap");
 
   // skip: the missed interval is an explicit, unknowable count; new online events still work.
   const skipGap = gaps.find(gap => gap.subscriptionId === skipSub)!;

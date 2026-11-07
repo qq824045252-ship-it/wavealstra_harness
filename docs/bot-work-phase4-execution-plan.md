@@ -1,8 +1,10 @@
 # Bot / Work — Phase 4 执行规划（供 Codex / agent 实施）
 
-> 状态：**P4-00～P4-08 已实施；六项 Phase 4 行为专项、Phase 3 九项前序专项与完整 headless 门禁已通过。Phase 4 整体验收仍未完成：Phase 4 控制按钮的 dev 点击、Linux/移动端/发行包和真实外部连接器证据尚未取得。**
+> 状态：**P4-00～P4-08 已实施并完成后续加固；六项 Phase 4 行为专项、Phase 3 九项前序专项与类型检查通过。本轮 Linux 完整门禁仍受 AT-SPI socket EPERM 阻碍（两轮 344 passed / 1 failed，基线同样复现）。Phase 4 整体验收仍未完成：控制按钮的 dev 点击、原生桌面/移动端/发行包和真实外部连接器证据尚未取得。**
 >
 > 确认日期：2026-11-07（Asia/Shanghai）。实施与证据：2026-11-07，见 [Phase 4 复核](reviews/bot-work-phase4-2026-11-07.md)。
+>
+> 后续加固：已针对来源水位、暂停/离线回放、未知预算核对与恢复测试完成修复；当前环境的真实门禁及平台阻碍见 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md)。本条不将阶段提前改为整体验收完成。
 >
 > 执行任务：[GitHub Issue #16](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/16)，由 agent 按本文件连续完成并回填证据。
 >

@@ -119,6 +119,7 @@ const savedSnapshot = {
   selectedWorkId: snapshot.selectedWorkId,
   botHostStatus: snapshot.botHostStatus,
   botSubmissionNotice: snapshot.botSubmissionNotice,
+  botWorkCursor: snapshot.botWorkCursor,
 };
 Object.assign(snapshot, {
   page: "bot",
@@ -153,7 +154,10 @@ night.phase4 = {
     gapReason: "来源没有历史回查能力" }],
   budget: { windowId: "bw-1", policyRevision: 3, scope: "window", periodStartAt: 100, periodEndAt: 200,
     timezone: "Asia/Shanghai", limitTokens: 500, committedTokens: 120, reservedTokens: 30, unknownTokens: 20,
-    unknownUsageCount: 2, availableTokens: 330, autoRollover: true, carryPolicy: "none", status: "open" },
+    unknownUsageCount: 2, availableTokens: 330, autoRollover: true, carryPolicy: "none", status: "open",
+    pendingRollover: "仍有未核对用量，等待结算后续期",
+    unknownReservations: [{ reservationId: "unknown-provider-1", windowId: "bw-1", tokens: 20,
+      requestKind: "generation", createdAt: 150 }] },
   causal: [{ chainId: "chain-1", rootEventId: "root-1", originWorkId: night.workId, targetWorkId: night.workId,
     depth: 2, hops: 2, dispatchCount: 3, decision: "blocked-loop", reasonCode: "causal-loop-guard", createdAt: 110 }],
   deadlineAt: 300, deadlineRevision: 4, host: { authorityId: "local", sessionId: "session-1", online: true,
@@ -168,8 +172,21 @@ assert.match(phase4Page, /不可回查/);
 assert.match(phase4Page, /已结算 120/);
 assert.match(phase4Page, /在途预留 30/);
 assert.match(phase4Page, /未知 20/);
+assert.match(phase4Page, /仍有未核对用量，等待结算后续期/);
+assert.match(phase4Page, /unknown-provider-1/);
+assert.match(phase4Page, /原窗口 bw-1/);
+assert.match(phase4Page, /aria-label="已核实 tokens"[^>]*value=""/, "unknown usage is never prefilled as zero");
+assert.match(phase4Page, /<button[^>]*disabled[^>]*>保存预算核对结果<\/button>/, "reconciliation requires explicit amount, reason, evidence and confirmation");
 assert.match(phase4Page, /causal-loop-guard/);
 assert.match(phase4Page, /承诺期限/);
+snapshot.botWorkCursor = { epoch: "closed-budget-fixture", sequence: 1, scope: "all" };
+night.lifecycle = "closed";
+const closedBudgetPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(closedBudgetPage, /隐藏已结束事项/);
+assert.match(closedBudgetPage, /核对未知用量/);
+assert.match(closedBudgetPage, /unknown-provider-1/, "completed Work retains access to outstanding accounting in the all scope");
+night.lifecycle = "active";
+snapshot.botWorkCursor = savedSnapshot.botWorkCursor;
 delete night.phase4;
 night.phase3 = { subitems: [], continuations: [], gaps: [], resourceWaits: [], settlingActions: 1,
   pausedEventCount: 0, handoffs: [], collaborationMessages: [], resourceRecoveries: [{

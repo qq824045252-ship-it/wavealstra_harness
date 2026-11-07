@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { BotDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
+import type { BotDto, WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
-import type { WorkPhase4ControlRequest } from "@shared/bot-work-phase4";
+import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import "./BotWorkspacePage.css";
@@ -44,23 +44,25 @@ export default function BotWorkspacePage(): React.JSX.Element {
   const setSelectedWorkId = useAppStore((s) => s.setSelectedWorkId);
   const hostStatus = useAppStore((s) => s.botHostStatus);
   const workError = useAppStore((s) => s.botWorkError);
+  const allWorksLoaded = useAppStore((s) => s.botWorkCursor?.scope === "all");
+  const [includeClosed, setIncludeClosed] = useState(allWorksLoaded);
   const [inspectorOpen, setInspectorOpen] = useState(() =>
     typeof window === "undefined" || !window.matchMedia?.("(max-width: 900px)").matches,
   );
 
   useEffect(() => {
-    void useAppStore.getState().refreshBotWork();
-  }, []);
+    void useAppStore.getState().refreshBotWork(includeClosed);
+  }, [includeClosed]);
   useEffect(() => {
     if (!activeBotId) return;
-    const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId); void useAppStore.getState().refreshBotWork(); };
+    const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId); void useAppStore.getState().refreshBotWork(includeClosed); };
     refresh();
     const timer = setInterval(refresh, 1500);
     return () => clearInterval(timer);
-  }, [activeBotId]);
+  }, [activeBotId, includeClosed]);
 
   const activeBot = identities.find((bot) => bot.botId === activeBotId) ?? null;
-  const openWorks = works.filter((work) => work.ownerBotId === activeBot?.botId && work.lifecycle !== "closed");
+  const openWorks = works.filter((work) => work.ownerBotId === activeBot?.botId && (includeClosed || work.lifecycle !== "closed"));
   const selected = openWorks.find((work) => work.workId === selectedWorkId) ?? null;
   const decisions = openWorks.filter((work) =>
     work.nextSteps.some((step) => step.startsWith("需要你的决定") || step.startsWith("等待实测"))
@@ -77,6 +79,7 @@ export default function BotWorkspacePage(): React.JSX.Element {
           </div>
           <div className="bot-workspace-actions">
             <button type="button" onClick={() => setPage("chat")}>返回普通模式</button>
+            <button type="button" aria-pressed={includeClosed} onClick={() => setIncludeClosed(value => !value)}>{includeClosed ? "隐藏已结束事项" : "查看已结束事项"}</button>
             <button type="button" aria-expanded={inspectorOpen} aria-controls="bot-work-inspector" onClick={() => setInspectorOpen((open) => !open)}>{inspectorOpen ? "收起详情" : "Work 详情"}</button>
           </div>
         </header>
@@ -95,7 +98,7 @@ export default function BotWorkspacePage(): React.JSX.Element {
             </article>)}
             {workError && <p role="alert">{workError}</p>}
             {openWorks.length === 0 ? (
-              <p>这个 Bot 还没有未结束的事项。普通消息不会自动创建事项。</p>
+              <p>{includeClosed ? "这个 Bot 还没有可显示的事项。" : "这个 Bot 还没有未结束的事项。"}普通消息不会自动创建事项。</p>
             ) : openWorks.map((work) => (
               <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} ownerName={activeBot.displayName} onSelect={() => setSelectedWorkId(work.workId)} />
             ))}
@@ -120,7 +123,7 @@ export default function BotWorkspacePage(): React.JSX.Element {
       </section>
       {inspectorOpen && <aside className="bot-inspector" id="bot-work-inspector" aria-label="Work 详情">
         <button type="button" onClick={() => setInspectorOpen(false)}>关闭详情</button>
-        {selected ? <WorkFacts key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} /> : (
+        {selected ? <WorkFacts key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /> : (
           <>
             <h2>Work 详情</h2>
             <p>{activeBot ? `${activeBot.displayName} 还没有选中的事项。` : "还没有 Work。受理服务尚未接线。"}</p>
@@ -145,8 +148,58 @@ function WorkCard(props: { work: WorkProjectionDto; selected: boolean; ownerName
   );
 }
 
-function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React.JSX.Element {
-  const { work, ownerName } = props;
+function UnknownBudgetReconciliation(props: {
+  work: WorkProjectionDto;
+  reservation: Pick<WorkBudgetReservationDto, "reservationId" | "windowId" | "tokens" | "requestKind" | "createdAt">;
+  busy: boolean;
+  submit: (request: WorkPhase4ControlRequest) => Promise<WorkPhase4ControlResult | undefined>;
+}): React.JSX.Element {
+  const { work, reservation, busy, submit } = props;
+  const [resolution, setResolution] = useState<"committed" | "released">("committed");
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+  const [evidenceRef, setEvidenceRef] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const pending = useRef<{ signature: string; request: WorkPhase4ControlRequest } | null>(null);
+  const tokens = Number(amount);
+  const valid = amount.trim() !== "" && Number.isSafeInteger(tokens) && tokens >= 0
+    && (resolution !== "released" || tokens === 0) && reason.trim() !== "" && evidenceRef.trim() !== "" && confirmed;
+  const reconcile = async () => {
+    if (!valid || busy) return;
+    const payload = { kind: "reconcile-budget-reservation" as const, workId: work.workId,
+      reservationId: reservation.reservationId, windowId: reservation.windowId, resolution,
+      reportedTokens: tokens, reason: reason.trim(), evidenceRef: evidenceRef.trim() };
+    const signature = JSON.stringify(payload);
+    // Keep the exact original command after an unknown transport outcome. A fresh
+    // projection must not turn a retry into a different accounting operation.
+    if (pending.current?.signature !== signature) pending.current = { signature, request: {
+      ...payload, operationId: `desktop:${crypto.randomUUID()}`,
+      versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch },
+    } };
+    const response = await submit(pending.current.request);
+    if (response) pending.current = null;
+  };
+  return <details className="budget-reconciliation">
+    <summary>核对未知用量：预留 {reservation.tokens} tokens</summary>
+    <p>请求 {reservation.reservationId} · 原窗口 {reservation.windowId} · {new Date(reservation.createdAt).toLocaleString()}</p>
+    <p>核对供应商账单或请求凭据后填写实际用量。确认未产生消耗时，填写 0 并选择释放。</p>
+    <label>处理方式<select aria-label="未知用量处理方式" value={resolution}
+      onChange={event => { setResolution(event.target.value as typeof resolution); setConfirmed(false); }}>
+      <option value="committed">按已核实用量结算</option><option value="released">确认未消耗，释放预留</option>
+    </select></label>
+    <label>已核实 tokens<input aria-label="已核实 tokens" type="number" min={0} step={1} value={amount}
+      onChange={event => { setAmount(event.target.value); setConfirmed(false); }} /></label>
+    <label>核对说明<input aria-label="预算核对说明" maxLength={1000} value={reason}
+      onChange={event => { setReason(event.target.value); setConfirmed(false); }} /></label>
+    <label>账单或请求凭据<input aria-label="预算核对凭据" maxLength={1000} value={evidenceRef}
+      onChange={event => { setEvidenceRef(event.target.value); setConfirmed(false); }} /></label>
+    <label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我已核实这笔请求的实际消耗</label>
+    <button type="button" disabled={busy || !valid} onClick={() => { void reconcile(); }}>保存预算核对结果</button>
+  </details>;
+}
+
+function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean }): React.JSX.Element {
+  const { work, ownerName, includeClosed } = props;
   const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
   const identities = useAppStore(s => s.botIdentities);
   const [targetBotId, setTargetBotId] = useState("");
@@ -183,7 +236,7 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         for (const [key, value] of operations.current) if (value === requestId) operations.current.delete(key);
       }
       setControlNotice(response.ok ? "操作已受理，正在读取最新状态。" : response.message);
-      await useAppStore.getState().refreshBotWork();
+      await useAppStore.getState().refreshBotWork(includeClosed);
       return response;
     } catch (error) { setControlNotice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。"); }
     finally { setBusy(false); }
@@ -195,8 +248,8 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
       const api = window.api;
       if (!api) throw new Error("桌面控制接口不可用");
       const response = await api.botWork.phase4Control(request);
-      setPhase4Notice(response.ok ? "关注规则已保存，正在读取最新状态。" : response.message);
-      await useAppStore.getState().refreshBotWork();
+      setPhase4Notice(response.ok ? "操作已保存，正在读取最新状态。" : response.message);
+      await useAppStore.getState().refreshBotWork(includeClosed);
       return response;
     } catch (error) {
       setPhase4Notice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。");
@@ -316,8 +369,11 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         <p>窗口 {work.phase4.budget.windowId} · {new Date(work.phase4.budget.periodStartAt).toLocaleString()} ~ {work.phase4.budget.periodEndAt ? new Date(work.phase4.budget.periodEndAt).toLocaleString() : "无期限"}
           · {work.phase4.budget.timezone ?? "默认时区"} · 策略 r{work.phase4.budget.policyRevision} · {work.phase4.budget.autoRollover ? "允许续期" : "不自动续期"}</p>
         <p>上限 {work.phase4.budget.limitTokens} · 已结算 {work.phase4.budget.committedTokens} · 在途预留 {work.phase4.budget.reservedTokens} · 未知 {work.phase4.budget.unknownTokens}（{work.phase4.budget.unknownUsageCount} 笔）· 可用 {work.phase4.budget.availableTokens}</p>
+        {work.phase4.budget.pendingRollover && <p role="status">{work.phase4.budget.pendingRollover}</p>}
+        {(work.phase4.budget.unknownReservations ?? []).map(reservation => <UnknownBudgetReconciliation
+          key={reservation.reservationId} work={work} reservation={reservation} busy={busy} submit={runPhase4} />)}
         <label>预算上限<input aria-label="预算上限" type="number" min={0} value={budgetLimit} onChange={event => setBudgetLimit(event.target.value)} /></label>
-        <button type="button" disabled={busy || !Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 0}
+        <button type="button" disabled={busy || !["active", "paused"].includes(work.lifecycle) || !Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 0}
           onClick={() => { void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
             workId: work.workId, maxTokens: Number(budgetLimit), versionGuard }); }}>保存预算政策</button>
 

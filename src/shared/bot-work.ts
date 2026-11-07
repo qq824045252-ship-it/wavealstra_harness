@@ -270,6 +270,7 @@ export type WorkBlockerReasonCode =
   | "causal-attribution-unknown"
   | "budget-exhausted"
   | "budget-rollover-pending"
+  | "budget-reconciliation-conflict"
   | "unqueryable-offline-gap"
   | "source-readback"
   | "dispatch-blocked"

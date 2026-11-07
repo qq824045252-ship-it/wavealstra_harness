@@ -215,10 +215,7 @@ export class WorkWatchIngress {
     const stale = policy === "latest" && event.sourceVersion !== undefined
       ? this.isStale(subscription, targetKey, event.sourceVersion) : false;
 
-    if (work.lifecycle === "paused") {
-      return this.safePausedRoute(work, subscription, event, payloadBytes, now, input);
-    }
-    if (work.lifecycle !== "active") {
+    if (work.lifecycle !== "active" && work.lifecycle !== "paused") {
       this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
         workId: work.workId, targetKey, state: "rejected", reasonCode: "work-not-active", sourceVersion: event.sourceVersion,
         trust: input.trust ?? "adapter", acceptedAt: now });
@@ -254,6 +251,9 @@ export class WorkWatchIngress {
         sourceVersion: event.sourceVersion, trust: input.trust ?? "adapter", acceptedAt: now });
       return { workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "skipped",
         reasonCode: "stale-source-version", inboxEventId: eventId, targetKey };
+    }
+    if (work.lifecycle === "paused") {
+      return this.safePausedRoute(work, subscription, event, payloadBytes, now, input);
     }
 
     const canMerge = policy === "latest" && openBatch !== undefined;
@@ -349,19 +349,24 @@ export class WorkWatchIngress {
     const stats = this.queueStats(subscription);
     const hardEventLimit = subscription.maxBacklogEvents ?? Math.max(16, subscription.maxQueueDepth * 4);
     const hardByteLimit = subscription.maxBacklogBytes ?? 8 * 1024 * 1024;
-    if (stats.blocked >= hardEventLimit || this.pendingBytes(subscription.subscriptionId) + payloadBytes > hardByteLimit) {
+    if (stats.ready + stats.frozen + stats.blocked >= hardEventLimit
+      || this.pendingBytes(subscription.subscriptionId) + payloadBytes > hardByteLimit) {
       this.openBackpressure(work, subscription, event, targetKey, stats, now, payloadBytes);
-      this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
-        workId: work.workId, targetKey, state: "rejected", reasonCode: "capacity-refused", sourceVersion: event.sourceVersion,
-        trust: input.trust ?? "adapter", acceptedAt: now });
       return { workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "rejected",
         reasonCode: "capacity-refused", targetKey };
     }
-    const route = this.works.pausedBacklog.enqueue(work, subscription, this.toSourceEvent(event, now), now);
+    const route = this.works.pausedBacklog.enqueue(work, subscription, this.toSourceEvent(event, now), now, targetKey);
+    const pausedRoute = this.db.prepare(`SELECT inbox_event_id FROM work_paused_source_routes
+      WHERE source=? AND source_event_id=? AND subscription_id=?`).get(event.source, event.sourceEventId,
+      subscription.subscriptionId) as { inbox_event_id: string | null } | undefined;
     this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
       workId: work.workId, targetKey, state: route === "blocked" ? "blocked" : route === "duplicate" ? "duplicate" : route,
+      inboxEventId: pausedRoute?.inbox_event_id ?? undefined,
       reasonCode: route === "blocked" ? "backlog-overflow" : undefined, sourceVersion: event.sourceVersion,
       trust: input.trust ?? "adapter", acceptedAt: now });
+    if (route !== "duplicate") this.setCursor(subscription.subscriptionId, event.source, targetKey, {
+      highestAcceptedVersion: event.sourceVersion, acceptedEvents: 1, acceptedBytes: payloadBytes,
+    });
     return { workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: route, targetKey };
   }
 
@@ -390,12 +395,21 @@ export class WorkWatchIngress {
     const details = { subscriptionId: subscription.subscriptionId, targetKey, queue: stats.ready + stats.frozen + stats.blocked,
       bytes: stats.bytes + payloadBytes, maxEvents: subscription.maxQueueDepth, maxBytes: subscription.maxBacklogBytes,
       sourceVersion: event.sourceVersion, oldestAt: stats.oldestAt };
-    const blocker = this.works.repo.getBlocker(blockerId);
+    const blocker = this.works.repo.listOpenBlockers(work.workId).find(item => item.reasonCode === "backlog-overflow")
+      ?? this.works.repo.getBlocker(blockerId);
     if (!blocker) this.works.repo.insertBlocker({ blockerId, workId: work.workId, kind: "backpressure",
       reasonCode: "backlog-overflow", reason: `订阅 ${subscription.subscriptionId} 的合法事件超出有限接纳容量`,
       details, sourceRef: `${event.source}:${event.sourceEventId}`, subscriptionId: subscription.subscriptionId,
       waitingForUserInput: false, status: "open", createdAt: now });
-    else this.works.repo.reopenBlocker(blockerId, work.workId);
+    else this.works.repo.reopenBlocker(blocker.blockerId, work.workId);
+  }
+
+  /** The schema keeps one open reason per Work, shared by all paused/online routes. */
+  reconcileBackpressure(workId: string, now = this.now()): number {
+    if (this.works.repo.listSubscriptions(workId).some(subscription => this.queueStats(subscription).blocked > 0)) return 0;
+    const blockers = this.works.repo.listOpenBlockers(workId).filter(item => item.reasonCode === "backlog-overflow");
+    for (const blocker of blockers) this.works.repo.clearBlocker(blocker.blockerId, workId, now);
+    return blockers.length;
   }
 
   private dedupeKey(subscription: WorkSubscriptionDto, sourceEventId: string): string {
@@ -423,11 +437,14 @@ export class WorkWatchIngress {
     const adapter = this.adapters.get(subscription.source);
     if (adapter?.compareVersion) {
       const direct = adapter.compareVersion(left, right);
-      if (direct !== undefined) return direct;
+      if (direct !== undefined && Number.isFinite(direct)) return direct;
     }
     const mode = this.versionMode(subscription);
     if (mode !== "monotonic" && mode !== "provider-sequence") return undefined;
-    if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) return Number(left) - Number(right);
+    if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
+      const a = BigInt(left), b = BigInt(right);
+      return a < b ? -1 : a > b ? 1 : 0;
+    }
     if (/^\d{4,}[a-z]?$/i.test(left) && /^\d{4,}[a-z]?$/i.test(right)) {
       const a = Number(left.match(/^\d+/)?.[0]), b = Number(right.match(/^\d+/)?.[0]);
       if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a - b;
@@ -437,10 +454,11 @@ export class WorkWatchIngress {
 
   private isStale(subscription: WorkSubscriptionDto, targetKey: string, version: string): boolean {
     const cursor = this.cursor(subscription.subscriptionId, subscription.source, targetKey);
-    const watermark = cursor?.highestConsumedVersion ?? cursor?.highestFrozenVersion ?? cursor?.highestAcceptedVersion;
-    if (!watermark) return false;
-    const order = this.compare(subscription, version, watermark);
-    return order !== undefined && order <= 0;
+    // A consumed/frozen batch may be older than the still-open accepted batch. All three
+    // watermarks constrain admission; selecting the first defined one lets late arrivals
+    // overwrite a newer batch after the first consumption or freeze.
+    return [cursor?.highestAcceptedVersion, cursor?.highestFrozenVersion, cursor?.highestConsumedVersion]
+      .some(watermark => watermark !== undefined && (this.compare(subscription, version, watermark) ?? 1) <= 0);
   }
 
   private openLatestBatch(subscriptionId: string, targetKey: string): WorkInboxEventDto | undefined {
@@ -498,10 +516,7 @@ export class WorkWatchIngress {
       if (promoted) {
         const work = this.works.getWork(subscription.workId);
         if (work) this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: this.now() });
-        if (this.queueStats(subscription).blocked === 0) {
-          this.works.repo.clearBlocker(`backpressure:${subscription.subscriptionId}:${subscription.sourceTarget ?? "default"}`,
-            subscription.workId, this.now());
-        }
+        this.reconcileBackpressure(subscription.workId);
       }
       return promoted;
     });
@@ -509,27 +524,26 @@ export class WorkWatchIngress {
 
   /** Mark an accepted obligation consumed, commit its watermark and route receipt together. */
   markConsumed(eventId: string, consumed: { providerSourceVersion?: string; inputSnapshotId?: string; reason?: string } = {}): void {
-    const event = this.works.repo.getInbox(eventId);
-    if (!event?.subscriptionId) return;
-    const subscription = this.works.repo.getSubscription(event.subscriptionId);
-    if (!subscription) return;
-    const targetKey = event.targetKey ?? "default";
-    this.works.repo.setInboxStatus(eventId, "processed", this.now());
-    this.db.prepare("UPDATE work_ingress_routes SET reason_code='processed' WHERE source=? AND source_event_id=? AND subscription_id=?")
-      .run(event.source, event.sourceEventId, event.subscriptionId);
-    const providerVersion = consumed.providerSourceVersion ?? event.sourceVersion;
-    const current = this.cursor(subscription.subscriptionId, event.source, targetKey)?.highestConsumedVersion;
-    const regresses = providerVersion !== undefined && current !== undefined
-      ? (this.compare(subscription, providerVersion, current) ?? 0) < 0 : false;
-    this.setCursor(subscription.subscriptionId, event.source, targetKey, {
-      highestConsumedVersion: regresses ? current : providerVersion,
-      consumedEvents: 1,
+    this.works.transaction(() => {
+      if (!this.authority()) throw new Error("当前宿主不是事项控制权威，拒绝消费来源事件");
+      const event = this.works.repo.getInbox(eventId);
+      if (!event || event.status === "processed") return;
+      if (!["pending", "merged"].includes(event.status)) throw new Error("事件不可消费");
+      const now = this.now();
+      this.works.repo.setInboxStatus(eventId, "processed", now);
+      if (!event.subscriptionId) return;
+      const subscription = this.works.repo.getSubscription(event.subscriptionId);
+      if (!subscription) throw new Error("事件缺少原订阅，拒绝消费");
+      const targetKey = event.targetKey ?? "default";
+      this.db.prepare(`UPDATE work_ingress_routes SET reason_code='processed'
+        WHERE inbox_event_id=? AND subscription_id=?`).run(eventId, event.subscriptionId);
+      this.setCursor(subscription.subscriptionId, event.source, targetKey, {
+        highestConsumedVersion: consumed.providerSourceVersion ?? event.sourceVersion,
+        consumedEvents: 1,
+      });
+      this.works.repo.updateSubscription({ ...subscription, lastCheckedAt: now, updatedAt: now });
+      this.reconcileBackpressure(event.workId, now);
     });
-    this.works.repo.updateSubscription({ ...subscription, lastCheckedAt: this.now(), updatedAt: this.now() });
-    const blocker = `backpressure:${subscription.subscriptionId}:${targetKey}`;
-    if (this.works.repo.getBlocker(blocker)?.status === "open" && this.queueStats(subscription).blocked === 0) {
-      this.works.repo.clearBlocker(blocker, event.workId, this.now());
-    }
   }
 
   queueStats(subscription: WorkSubscriptionDto): WorkQueueStats {
@@ -548,15 +562,32 @@ export class WorkWatchIngress {
         && (mergeDeadlineAt === undefined || row.merge_deadline_at < mergeDeadlineAt)) mergeDeadlineAt = row.merge_deadline_at;
       if (row.status !== "blocked" && (readySince === undefined || row.received_at < readySince)) readySince = row.received_at;
     }
+    // Paused overflow retains an obligation in the source/route tables before an Inbox
+    // slot is available. It still consumes storage and must be visible to hard limits.
+    const pausedOverflow = this.db.prepare(`SELECT event.received_at,event.payload_json
+      FROM work_paused_source_routes route JOIN work_source_events event
+        ON event.source=route.source AND event.source_event_id=route.source_event_id
+      WHERE route.subscription_id=? AND route.inbox_event_id IS NULL`).all(subscription.subscriptionId) as Array<{
+        received_at: number; payload_json: string }>;
+    for (const row of pausedOverflow) {
+      blocked++;
+      bytes += Buffer.byteLength(row.payload_json, "utf8");
+      if (oldestAt === undefined || row.received_at < oldestAt) oldestAt = row.received_at;
+    }
     return { ready, frozen, blocked, bytes, maxEvents: subscription.maxQueueDepth,
       maxBytes: subscription.maxBacklogBytes ?? 8_388_608, oldestAt, mergeDeadlineAt, readySince,
       waitReason: blocked ? "有限溢出区等待回填" : undefined };
   }
 
   private pendingBytes(subscriptionId: string): number {
-    const row = this.db.prepare(`SELECT COALESCE(SUM(event.payload_bytes),0) AS bytes FROM work_events_inbox inbox
+    const row = this.db.prepare(`SELECT COALESCE(SUM(payload_bytes),0) AS bytes FROM (
+      SELECT event.payload_bytes FROM work_events_inbox inbox
       LEFT JOIN work_source_events event ON event.source=inbox.source AND event.source_event_id=inbox.source_event_id
-      WHERE inbox.subscription_id=? AND inbox.status IN ('pending','merged','blocked')`).get(subscriptionId) as { bytes: number };
+      WHERE inbox.subscription_id=? AND inbox.status IN ('pending','merged','blocked')
+      UNION ALL SELECT event.payload_bytes FROM work_paused_source_routes route
+      JOIN work_source_events event ON event.source=route.source AND event.source_event_id=route.source_event_id
+      WHERE route.subscription_id=? AND route.inbox_event_id IS NULL
+    )`).get(subscriptionId, subscriptionId) as { bytes: number };
     return Number(row.bytes);
   }
 
@@ -585,30 +616,39 @@ export class WorkWatchIngress {
     "highestAcceptedVersion" | "highestConsumedVersion" | "highestFrozenVersion" | "replayCursor" | "enumerationWatermark">> & {
     acceptedEvents?: number; consumedEvents?: number; acceptedBytes?: number;
   }): void {
-    const current = this.cursor(subscriptionId, source, targetKey);
-    const next = {
-      accepted: update.highestAcceptedVersion ?? current?.highestAcceptedVersion,
-      consumed: update.highestConsumedVersion ?? current?.highestConsumedVersion,
-      frozen: update.highestFrozenVersion ?? current?.highestFrozenVersion,
-      replay: update.replayCursor ?? current?.replayCursor,
-      enumeration: update.enumerationWatermark ?? current?.enumerationWatermark,
-      acceptedEvents: (current?.acceptedEvents ?? 0) + (update.acceptedEvents ?? 0),
-      consumedEvents: (current?.consumedEvents ?? 0) + (update.consumedEvents ?? 0),
-      acceptedBytes: (current?.acceptedBytes ?? 0) + (update.acceptedBytes ?? 0),
-    };
-    this.db.prepare(`INSERT INTO work_subscription_cursors
-      (subscription_id,source,target_key,highest_accepted_version,highest_consumed_version,highest_frozen_version,
-       replay_cursor,enumeration_watermark,accepted_events,consumed_events,accepted_bytes,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(subscription_id,source,target_key) DO UPDATE SET
-        highest_accepted_version=excluded.highest_accepted_version,
-        highest_consumed_version=excluded.highest_consumed_version,
-        highest_frozen_version=excluded.highest_frozen_version,
-        replay_cursor=excluded.replay_cursor,enumeration_watermark=excluded.enumeration_watermark,
-        accepted_events=excluded.accepted_events,consumed_events=excluded.consumed_events,
-        accepted_bytes=excluded.accepted_bytes,updated_at=excluded.updated_at`)
-      .run(subscriptionId, source, targetKey, next.accepted ?? null, next.consumed ?? null, next.frozen ?? null,
-        next.replay ?? null, next.enumeration ?? null, next.acceptedEvents, next.consumedEvents, next.acceptedBytes, this.now());
+    this.works.transaction(() => {
+      const current = this.cursor(subscriptionId, source, targetKey);
+      const subscription = this.works.repo.getSubscription(subscriptionId);
+      const advance = (previous: string | undefined, proposed: string | undefined): string | undefined => {
+        if (proposed === undefined) return previous;
+        if (previous === undefined || !subscription) return proposed;
+        const order = this.compare(subscription, proposed, previous);
+        return order !== undefined && order >= 0 ? proposed : previous;
+      };
+      const next = {
+        accepted: advance(current?.highestAcceptedVersion, update.highestAcceptedVersion),
+        consumed: advance(current?.highestConsumedVersion, update.highestConsumedVersion),
+        frozen: advance(current?.highestFrozenVersion, update.highestFrozenVersion),
+        replay: update.replayCursor ?? current?.replayCursor,
+        enumeration: update.enumerationWatermark ?? current?.enumerationWatermark,
+        acceptedEvents: (current?.acceptedEvents ?? 0) + (update.acceptedEvents ?? 0),
+        consumedEvents: (current?.consumedEvents ?? 0) + (update.consumedEvents ?? 0),
+        acceptedBytes: (current?.acceptedBytes ?? 0) + (update.acceptedBytes ?? 0),
+      };
+      this.db.prepare(`INSERT INTO work_subscription_cursors
+        (subscription_id,source,target_key,highest_accepted_version,highest_consumed_version,highest_frozen_version,
+         replay_cursor,enumeration_watermark,accepted_events,consumed_events,accepted_bytes,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(subscription_id,source,target_key) DO UPDATE SET
+          highest_accepted_version=excluded.highest_accepted_version,
+          highest_consumed_version=excluded.highest_consumed_version,
+          highest_frozen_version=excluded.highest_frozen_version,
+          replay_cursor=excluded.replay_cursor,enumeration_watermark=excluded.enumeration_watermark,
+          accepted_events=excluded.accepted_events,consumed_events=excluded.consumed_events,
+          accepted_bytes=excluded.accepted_bytes,updated_at=excluded.updated_at`)
+        .run(subscriptionId, source, targetKey, next.accepted ?? null, next.consumed ?? null, next.frozen ?? null,
+          next.replay ?? null, next.enumeration ?? null, next.acceptedEvents, next.consumedEvents, next.acceptedBytes, this.now());
+    });
   }
 
   getRoute(source: string, sourceEventId: string, subscriptionId: string): {
