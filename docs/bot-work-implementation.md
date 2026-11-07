@@ -104,6 +104,8 @@ Phase 1 交付时，Phase 2 的前台独立对话、Work 受理与控制工具�
 
 Phase 3 继续完成资源门控、结算、部分成果和交接。Phase 4 完成真实订阅、离线补处理、因果防环与原生用量记账。Phase 5 完成通知渠道、双页面交互、跨端同步，以及全部适用 BW 场景与端到端故事。Phase 3～5 及 BOT-WORK-1.0 总体尚未验收完成。
 
+**Phase 3 执行规划已确认（2026-11-07，审核基线 `main@a6bb4a59e2f5fa107f4ad142ecd99a32436603f6`）：[bot-work-phase3-execution-plan.md](bot-work-phase3-execution-plan.md)。** 该计划包含 M1～M3、P3-00～P3-08 和 BW-A26～BW-A35 的行为/故障验收，复用现有资源准入、原生结果消费、暂停恢复去重、`handoffOwner()` 与通知入口，补齐细粒度资源门控、部分成果定向补跑和团队协作。当前仅完成规划确认与文档提交，Phase 3 功能仍待实施，所有任务保持未勾选；Phase 2 后续修复与其全量验证限制见 [后续复核记录](reviews/bot-work-phase2-followup-2026-11-07.md)。
+
 
 ## Phase 2 实施与验收（2026-11-07）
 
