@@ -1,0 +1,92 @@
+{
+  "baseCommit": "f561cc7a2c03d644d724302eb6b0ae92f636dc1c",
+  "sourceScope": [
+    "src",
+    "app/remote/src",
+    "shared/src",
+    "scripts",
+    "package.json"
+  ],
+  "sourceSha256": "5b4fdcbf86cc575a6952678068b3b1b383f18f2d409e703b36f7d7e26788d4ad",
+  "files": [
+    {
+      "path": "app/remote/src/api/RemoteClient.ts",
+      "sha256": "789acb74d479c34a421b44be6d6722d4e42904255e232a898f598be5514f463d"
+    },
+    {
+      "path": "app/remote/src/components/WorkPanel.tsx",
+      "sha256": "c062ad4c874da1e0a56ed4defe6ac62453087439423e082652da2343ba51fe69"
+    },
+    {
+      "path": "app/remote/src/store/remoteStore.ts",
+      "sha256": "453d02befb5af31bd4a56807e4b8d127455d61ed7b9ffc675b21b7a79b3d9716"
+    },
+    {
+      "path": "app/remote/src/store/remoteWork.ts",
+      "sha256": "07a25791cd03407130f4a3232be13e2c157b8971c1919d9b0863af2249889473"
+    },
+    {
+      "path": "scripts/bot-work-phase5-delivery-dedup-test.ts",
+      "sha256": "1ee3daf99c02d81ce9aa622066b4f5c81eb7b47eb69af80538ebb0b9b99a72ec"
+    },
+    {
+      "path": "scripts/bot-work-phase5-reconnect-diagnostics-test.ts",
+      "sha256": "da439cfefdc556085bfba6afdbb8dc78fabea5c12c17778cecb330d3b55c52f7"
+    },
+    {
+      "path": "scripts/bot-work-regressions.ts",
+      "sha256": "4d0bdeb215a96c2763e1994abbc6a22986702da72cc679b5164f51aa9073c93b"
+    },
+    {
+      "path": "scripts/bot-workspace-test.ts",
+      "sha256": "b59924748abf8b25a7b19dda90a50a5c982bb5a0f45fab2249da6688838ea06f"
+    },
+    {
+      "path": "scripts/remote-work-sync-test.ts",
+      "sha256": "35e8f985d9971e6e06fafa01a3e103cbabd4f274018ccf1916c1bf5fab1b1efa"
+    },
+    {
+      "path": "shared/src/remote-contract.ts",
+      "sha256": "537a8a1d4f42085b5ad510539849e00ac920007163502f679ce714eb72a2448e"
+    },
+    {
+      "path": "src/main/agent/work/WorkDesktopNotificationChannel.ts",
+      "sha256": "1d42b5434119b13bd354723fe9b64f5ca074def01f0fd73da18961019e3d9859"
+    },
+    {
+      "path": "src/main/agent/work/WorkNotificationDelivery.ts",
+      "sha256": "a9d470aeb66d655b854fc157a9ae528978f55c1f3efd54b80711973453f83c85"
+    },
+    {
+      "path": "src/main/agent/work/WorkNotificationHost.ts",
+      "sha256": "47470932171766acedd10f4749cfc455f0d952ffdf1b750c133e9f1df3364235"
+    },
+    {
+      "path": "src/main/agent/work/WorkPhase5Facts.ts",
+      "sha256": "dd0cb6136d2b1349222a06f47fc11bd29d7c3d318cb2e9c79ac0d10d3feb000c"
+    },
+    {
+      "path": "src/main/agent/work/WorkResultCards.ts",
+      "sha256": "27a901ed6d6db9e580f383b55606e04876eda6947d1ca3061e898733f0822f58"
+    },
+    {
+      "path": "src/main/remote/remoteSchemas.ts",
+      "sha256": "a2f3340fa2aa2da85cffeea1a09ef5101e3d9d6e5437620f1d8ebbc51a5acdb0"
+    },
+    {
+      "path": "src/main/remote/work-mapper.ts",
+      "sha256": "f9e6c047fce65751a970ffddf9f4df08c005f0cbe519b33a5eef14e4f7657237"
+    },
+    {
+      "path": "src/renderer/src/components/pages/BotWorkCardsPanel.tsx",
+      "sha256": "c89b5060956f7e7b84354899e0a764d5ac573ce901220fab459f06d9180271e9"
+    },
+    {
+      "path": "src/shared/bot-work-phase5.ts",
+      "sha256": "cfe9785d7f90d976e4463f50102fad76dce6fd54698c947c7f26f63072e4f299"
+    }
+  ],
+  "implementationCommit": "877f2cf82d0a586cf305c8ea3b7d59688bcd24b7",
+  "implementationTree": "fe6a3ed98c0051336bc28b6c3346270485632081",
+  "fingerprintMethod": "SHA-256 of compact UTF-8 JSON of files, sorted by path; ensure_ascii=false, separators=[comma, colon]"
+}

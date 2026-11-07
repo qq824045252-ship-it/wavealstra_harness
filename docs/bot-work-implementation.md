@@ -1,8 +1,8 @@
 # Bot / Work 实施记录
 
-实施日期：2026-11-06；交付记录更新：2026-11-07。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
+实施日期：2026-11-06；交付记录更新：2026-11-08。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
-**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md)（规划基线 `main@57e6fbb`，执行基线 `main@02c40ed`）。**实现完成、headless 门禁全绿；实机与外部证据缺失，Phase 5 未验收。** 逐项证据见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。Phase 4 已实施并加固，冻结实现为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`；最新验证边界以 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) 为准，两轮 Linux 全量均为 344 passed / 1 failed，整体验收仍未完成。下文各次实施/测试记录保留为历史证据，本轮只更新规划入口，不将既有测试结果改写为 Phase 5 通过。
+**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md) 已实施并完成本轮代码加固，原始实现冻结 `f561cc7a2c03d644d724302eb6b0ae92f636dc1c`，加固实现冻结 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)。类型检查与相关专项通过；最终 Linux 完整门禁 **348 passed / 1 failed / 0 known failed / 1 new regression，exit 1**，唯一 AT-SPI socket EPERM 在原始基线亦复现。真实 UI、设备与外部证据仍缺，Phase 5 和 BOT-WORK-1.0 整体验收未完成。最新事实见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)，首轮 Windows 347/0/0/0 见 [历史执行复核](reviews/bot-work-phase5-2026-11-07.md)。下文各阶段的实施、规划和测试记录保留为历史证据，不混用为本轮验证结果。
 
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
@@ -164,7 +164,7 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 
 ## Phase 5 规划与执行入口（2026-11-07）
 
-**状态：规划已确认，P5-00～P5-08 待实施，尚未验收。** 完整任务书为 [bot-work-phase5-execution-plan.md](bot-work-phase5-execution-plan.md)。审核基线为已读取远端确认的 `main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`，Phase 4 实现冻结 SHA 为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`。覆盖 BW-A42～BW-A46、冻结验收第 9 节十步故事，终局逐项核对 BW-A01～BW-A46、R09/R10 与 UI-01～UI-10。
+**规划提交时状态（历史）：规划已确认，P5-00～P5-08 待实施，尚未验收。** 后续实施与加固见下方记录。 完整任务书为 [bot-work-phase5-execution-plan.md](bot-work-phase5-execution-plan.md)。审核基线为已读取远端确认的 `main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`，Phase 4 实现冻结 SHA 为 `3153cf09125f946eb6d1a3fad7f634d132f242ee`。覆盖 BW-A42～BW-A46、冻结验收第 9 节十步故事，终局逐项核对 BW-A01～BW-A46、R09/R10 与 UI-01～UI-10。
 
 | 里程碑 | 规划内容 | 完成判据 |
 | --- | --- | --- |
@@ -181,11 +181,11 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 - 有限 watch 已有按 Work 停订阅及可信关闭守卫；十步故事补有效唤醒清理/隔离断言，沿用可信用户入口。Omarchy 反馈须绑定实际 input/source/artifact 版本，不能仅凭相同 intentRevision 验证修复后的新产物。
 - Schema 基于本基线预计 33→34，实施时按当前常量核对；不做旧数据/旧 Pi 兼容，保留不兼容库改名备份。应用版本保持本轮未变。
 
-**本次仅提交规划与实施索引，P5 清单全部未勾选。** 核对了固定 SHA 的设计、验收、代码接线、文件路径、相对链接和文档差异；没有运行 Phase 5 功能门禁，没有开始实现或启动外部执行 agent。
+**规划提交当时仅交付规划与实施索引，P5 清单全部未勾选（历史记录）。** 核对了固定 SHA 的设计、验收、代码接线、文件路径、相对链接和文档差异；没有运行 Phase 5 功能门禁，没有开始实现或启动外部执行 agent。
 
 前序证据继续保留：Phase 4 两轮 Linux 全量均为 **344 passed / 1 failed，exit 1**；真实 dev 因 Unix socket EPERM 受阻。Windows 恢复/BW-A31、宿主 D-Bus/AT-SPI、真实 dev 点击、Omarchy、桌面/手机 Remote、外部连接器与真实用量仍按任务书分别补证。缺少必要证据时不能宣称 Phase 5 或 BOT-WORK-1.0 整体验收完成；发行包只在另行发布授权下验证。
 
-## Phase 5 执行记录（2026-11-07）
+## Phase 5 首轮执行记录（2026-11-07，历史）
 
 **状态：实现完成、headless 门禁全绿；实机与外部证据缺失，未验收。** 完整证据、门禁原始输出、逐项断言与缺口清单见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。
 
@@ -198,3 +198,15 @@ BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返�
 - **桌面/移动同步**：Remote 新增 `/v1/work/*`（设备鉴权 + 版本守卫）与 `createRemoteWorkBridge`；移动端 `shared/src/remote-contract.ts` 契约、`RemoteClient` 方法、`remoteWork` store（epoch/scope 原子替换）、`WorkPanel`（列表/详情/未验证范围/卡片已读/实测反馈/unknown 重发/诊断）；SSE 仅唤醒。桌面 `WorkCardsPanel` 与 R09 `BotExpertReview` 已接线。
 - **门禁**：`pnpm -s typecheck` 通过；`--audit` 分类自检 OK；`pnpm -s test:all` = **347 passed / 0 failed / 0 known / 0 regression**（Windows 跳过 2 个 Linux 限定用例）。四个新专项：delivery-dedup（24）、reconnect-diagnostics（13）、e2e-story（10 步）、remote-work-sync（8）。行数棘轮靠拆分 `WorkResultCards`/`WorkPhase5Facts`/`WorkControlGuards` 守住，未放宽基线。
 - **未完成（实机/外部）**：Gateway/外部连接器 Work 出站适配器与真实回查契约、Windows 强杀与 BW-A31、Omarchy/Hyprland 实测、真实手机配对重连、`pnpm dev` 点击回归、发行包证据。BW-A01～BW-A46 的 46 行矩阵已回填（实机项标注 blocked），未取得证据前不宣称 Phase 5 或 BOT-WORK-1.0 交付。
+
+## Phase 5 后续加固与冻结（2026-11-08）
+
+本轮按用户要求修复并推送 main，加固实现冻结为 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)。通知宿主新增 pendingDrain 尾随补扫与停止代次围栏；恢复重新校验当前语义/产物和冻结渠道契约，人工重发保留独立 effect/预算，迟到回执不能覆盖较新授权。桌面通知改按实际保证声明 best-effort-unqueryable，不以可清理的应用通知行承诺持久供应商回执。
+
+卡片 helper 自身以短 immediate 事务包住授权、条件更新、Journal 和回读；生产 facade 原本已有事务，本次补齐 helper 自身边界。成功关闭时保留 accepted_result 语义身份，桌面与手机根据 closed + succeeded 展示「已完成并关闭」。诊断不再混用 cardKey、源码 SHA 和产物快照身份。
+
+移动端重发与实测反馈补齐风险确认、产物快照和三版本守卫；连接、scope、epoch 的代次隔离拒绝旧异步响应，并在退出、切换服务器或连接流程收到 401/403 时清空旧投影。Remote 控制回包显式白名单裁剪，避免成功/重放/冲突回执夹带内部 Work 快照；真实 HTTP 回归覆盖两个控制接口的六种回包。
+
+最终主项目及 Remote 类型检查通过；architecture-graph 5/5、delivery-dedup 34、reconnect-diagnostics 19、e2e-story 10 步、remote-work-sync 19，以及 bot-workspace、bot-work-control、Phase 3 handoff 通过。最终完整 test:all 为 **348 passed / 1 failed / 0 known failed / 1 new regression（143.82 秒，exit 1）**，唯一失败 test:atspi-transport 在原始 f561cc7 同环境复现 D-Bus socket EPERM。首轮完整门禁的另一失败为旧能力升级夹具，已拆成保留真实数据库重开的正负两例并重跑，不修改失败白名单或削弱产品守卫。
+
+本轮真实 dev 探针启动 Electron 后因 singleton socket EPERM 受阻，未进入页面；Windows 强杀/BW-A31、Omarchy、真实手机、外部连接器及原生完整故事仍需各自补证。版本 0.1.107、schema 34、WorkService.ts 2498 行均保持。19 个变更源码/测试文件的冻结指纹为 `5b4fdcbf86cc575a6952678068b3b1b383f18f2d409e703b36f7d7e26788d4ad`；完整事实与逐文件清单见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)。

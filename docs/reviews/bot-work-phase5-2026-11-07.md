@@ -1,9 +1,11 @@
 # Bot / Work — Phase 5 执行复核（2026-11-07）
 
-> 状态：**实现完成，门禁 headless 全绿；实机（Windows 强杀、Omarchy/Hyprland、真实手机、真实外部连接器）证据仍未取得，Phase 5 整体验收未完成。**
+> 首轮状态（2026-11-07 Windows 历史记录）：**实现完成，headless 347/0/0/0；实机（Windows 强杀、Omarchy/Hyprland、真实手机、真实外部连接器）证据仍未取得，Phase 5 整体验收未完成。**
 >
-> 执行日期：2026-11-07（Asia/Shanghai）。规划基线 `main@02c40ed`（父提交 `57e6fbb`，代码零漂移）。受测实现：本轮工作区变更（§6 指纹）。
+> 执行日期：2026-11-07（Asia/Shanghai）。规划基线 `main@02c40ed`（父提交 `57e6fbb`，代码零漂移）。首轮受测实现冻结：[`f561cc7a2c03d644d724302eb6b0ae92f636dc1c`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/f561cc7a2c03d644d724302eb6b0ae92f636dc1c)（§6 指纹）。
 > 冻结设计/验收：[design](../bot-work-design.md)、[acceptance](../bot-work-acceptance.md)、[Phase 5 规划](../bot-work-phase5-execution-plan.md)。
+>
+> 后续加固（2026-11-08）：实现冻结为 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)，最终 Linux 全量 **348 passed / 1 failed，exit 1**（原基线亦复现的 AT-SPI socket EPERM）。本页正文保留首轮证据；桌面渠道能力、移动端控制/隔离、回包裁剪和最新门禁以 [Phase 5 加固复核](bot-work-phase5-followup-2026-11-08.md) 为准。
 
 ## 1. 交付内容
 
@@ -148,6 +150,10 @@ f01f9215fb2e5dec  scripts/bot-work-phase5-reconnect-diagnostics-test.ts
 b8548cbcffccd731  scripts/remote-work-sync-test.ts
 ```
 
-## 7. 结论
+## 7. 首轮结论（历史）
 
 Phase 5 的**实现与 headless 门禁已完成**：卡片唯一性、投递诚实性、阅读零副作用、桌面/移动同步、分层诊断、生产桌面投递、R09 审阅均落地并有行为测试，`test:all` 347/0/0/0。**实机与外部证据缺失**（Windows/Omarchy/真机/真实连接器/`pnpm dev` 点击），因此不宣称 Phase 5 收官或 BOT-WORK-1.0 交付。
+
+## 8. 实现 SHA 归档与后续复核
+
+首轮实现固定为 `f561cc7a2c03d644d724302eb6b0ae92f636dc1c`，规划提交固定为 `02c40edba09fe9fe32f4feead2ec067bcd779e37`。2026-11-08 的后续实现固定为 `877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`；[加固报告](bot-work-phase5-followup-2026-11-08.md) 与 [逐文件源码指纹](bot-work-phase5-followup-source-2026-11-08.json) 单独记录本轮事实。原 §5 缺证据项仍未取得新实机验收，不沿用历史 Windows 门禁作为新提交的验证结果。

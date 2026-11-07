@@ -1,16 +1,16 @@
 # Bot / Work — Phase 5 执行规划（供 Codex / agent 实施）
 
-> 状态：**实现完成，headless 门禁全绿（347/0/0/0）；实机与外部证据缺失，Phase 5 尚未验收。** 逐项证据与 46 行矩阵见 [Phase 5 执行复核](reviews/bot-work-phase5-2026-11-07.md)。未勾选项表示仍缺实机/外部证据，不是因为“没做代码”。
+> 最新状态（2026-11-08）：**实现已加固，类型检查与相关专项通过；Linux 全量 348 passed / 1 failed，exit 1，Phase 5 尚未整体验收。** 唯一失败为原基线亦复现的 AT-SPI socket EPERM。加固实现冻结 [`877f2cf82d0a586cf305c8ea3b7d59688bcd24b7`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/877f2cf82d0a586cf305c8ea3b7d59688bcd24b7)，详见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md)；原始实现 `f561cc7a2c03d644d724302eb6b0ae92f636dc1c` 与 Windows 347/0/0/0 的历史证据见 [首轮执行复核](reviews/bot-work-phase5-2026-11-07.md)。未勾选的实机/外部项仍需实际取证。
 >
 > 确认日期：2026-11-07（Asia/Shanghai）。
 >
 > 审核代码基线：[`main@57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/57e6fbbdf7977d46ac2d9bf0d606b26da3bb6fe4)，提交本规划前已读取 GitHub 远端确认。
 >
-> Phase 4 实现冻结 SHA：[`3153cf09125f946eb6d1a3fad7f634d132f242ee`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/3153cf09125f946eb6d1a3fad7f634d132f242ee)。当前 schema 为 33，应用版本为 0.1.107；Phase 5 预计使用下一版 schema（基于本基线为 34），本次文档提交不改变二者。
+> Phase 4 实现冻结 SHA：[`3153cf09125f946eb6d1a3fad7f634d132f242ee`](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/3153cf09125f946eb6d1a3fad7f634d132f242ee)。规划时 schema 为 33，应用版本为 0.1.107，预计 Phase 5 schema 为 34；后续实现已使用 schema 34，本轮加固保持 schema 和应用版本不变。
 >
 > 范围：成果验收与稳定结果卡片、通知回执与 unknown、多专家汇总、桌面/移动重连、分层诊断与证据、冻结验收第 9 节十步故事，以及前序遗留实机证据收口。专项覆盖 **BW-A42～BW-A46**，终局核对 **BW-A01～BW-A46、R09/R10 与 UI-01～UI-10**。
 
-产品语义以 [冻结设计](bot-work-design.md) 第 4、6～14 节、[冻结验收](bot-work-acceptance.md) 第 8～10 节、[双页面 UI 规范](bot-work-ui.md) 和 [AGENTS.md](../AGENTS.md) 为准。最新实现和门禁边界见 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) §5～§6；其中待补证项在 **§5.1**，§6 是源码身份。前序资源与交接边界见 [Phase 3 加固复核](reviews/bot-work-phase3-followup-2026-11-07.md)。
+产品语义以 [冻结设计](bot-work-design.md) 第 4、6～14 节、[冻结验收](bot-work-acceptance.md) 第 8～10 节、[双页面 UI 规范](bot-work-ui.md) 和 [AGENTS.md](../AGENTS.md) 为准。最新实现与门禁边界见 [Phase 5 加固复核](reviews/bot-work-phase5-followup-2026-11-08.md) §5～§7；前序 [Phase 4 加固复核](reviews/bot-work-phase4-followup-2026-11-07.md) §5.1 的待补证项继续保留。前序资源与交接边界见 [Phase 3 加固复核](reviews/bot-work-phase3-followup-2026-11-07.md)。
 
 M1～M3 是同一个收官阶段内的依赖顺序。后续实施应连续完成 P5-00～P5-08，不能只交付表结构或 P5-00～P5-03。实施完成、headless 通过、原生集成通过、实机通过和 BOT-WORK-1.0 总体验收是不同结论，必须分别记载。
 
@@ -22,7 +22,7 @@ M1～M3 是同一个收官阶段内的依赖顺序。后续实施应连续完成
 4. **重连后以宿主持久事实为准。** 桌面和手机携带 `epoch / sequence / scope` 读取 Work 投影日志；连续增量追平或原子全量替换，清理墓碑、关闭范围外事项及失效绑定。跨 epoch 的本地高版本也不能压住服务端新快照。不得把客户端缓存、SSE 事件 ID 或本地已读时钟逆向写成业务真源。（F06/F13/F14、R10、BW-A45）
 5. **主视图可决策，展开视图可追证。** 默认只呈现目标、当前负责人、当前有效结论、未决阻碍和下一步；展开查询关联 `(workId, intentRevision, inputSnapshotId, ownerEpoch)`、`bindingId`、执行回执、产物版本、资源/因果/预算与未验证范围。历史证据可见但不能冒充当前结论，截断或缺失证据必须标识。（F12/F13、BW-A46）
 6. **十步故事运行真实持久层与原生执行链。** 同一套临时数据库、同一路径 Durable 存储和真实业务服务连续驱动故事，重启必须重开这些存储。模型/效果可用可控 fixture，执行内核不能全换成假代理，不能用 SQL 直接拼终态或绕过守卫。业务 fixture 的“Omarchy 通过”不等于真实桌面验收。（冻结验收 §1、§9）
-7. **如实保留门禁与环境边界。** 不新增失败白名单、不缩小断言、不把 blocked/未运行改成 passed。当前冻结报告的两轮全量均为 **344 passed / 1 failed，exit 1**；D-Bus/Unix socket EPERM 的基线复现只解释该次失败，不预先解释后续所有失败。Windows、Omarchy、移动端、真实连接器等缺证据时阶段不能宣告整体验收完成。
+7. **如实保留门禁与环境边界。** 不新增失败白名单、不缩小断言、不把 blocked/未运行改成 passed。Phase 4 历史冻结报告的两轮全量均为 **344 passed / 1 failed，exit 1**；本轮 Phase 5 加固的最终全量为 **348 passed / 1 failed，exit 1**；D-Bus/Unix socket EPERM 的基线复现只解释该次失败，不预先解释后续所有失败。Windows、Omarchy、移动端、真实连接器等缺证据时阶段不能宣告整体验收完成。
 8. **沿用唯一权威、既有控制入口及当前版本策略。** Work 事实归 SQLite/WorkService，执行与 checkpoint 归 Pi Durable；不另建 Work/Goal、执行恢复器、控制服务或通知发送账本。允许增加有唯一键、能回溯事实的派生 `work_result_cards`，它不能成为第二套 Work 状态。复用受控 IPC/Remote 接线；必要的新方法须进入既有 API 和库存审查。不引入旧数据迁移/旧 Pi 兼容层，保留数据库不兼容时改名备份后重建的契约。
 
 ## 1. 已核实的基线事实与原位演进
@@ -333,7 +333,7 @@ P5-08 必须逐项列出 **46 行**；下表是查证分组，不是已通过矩
 
 ## 9. 交给后续执行 agent 的任务边界
 
-本次用户要求是“规划 Phase 5 并推送 GitHub”，因此本轮只提交本文和实施索引，不启动实现、不创建新的执行通知或发布。推送文档不证明外部 agent 已运行。
+**规划提交时的授权边界（历史）：** 当时用户要求“规划 Phase 5 并推送 GitHub”，只提交本文和实施索引。随后已获实施与修复推送授权，原始实现及本轮加固见本文开头固定 SHA 与报告；本节保留规划阶段对后续 agent 的要求，不能再据此把当前代码记作未实施。
 
 后续获得实施授权后，从最新 main 核对本审核基线差异，按 P5-00～P5-08 连续完成。先统一共享契约、数据归属和故障边界，再并行实施并集成生产宿主、桌面、Remote、原生执行和证据。不得只添加可被测试调用的孤立服务，或只完成 M1 就宣称收官。
 
