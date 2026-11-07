@@ -2,6 +2,8 @@
 
 实施日期：2026-11-06；交付记录更新：2026-11-07。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
+**最新待执行阶段：** [Phase 4 执行规划](bot-work-phase4-execution-plan.md)（2026-11-07，审核基线 `main@e454341ae3268e7a2ab1cdbc55d84231171f0aa3`）。规划已确认，P4-00～P4-08 待 agent 实施，BW-A36～BW-A41 尚未验收。Phase 3 最新加固证据以 [后续复核报告](reviews/bot-work-phase3-followup-2026-11-07.md) 为准；下文原始实施/测试记录保留为各次执行的历史证据。
+
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
 - [冻结设计](bot-work-design.md)，Git blob `387486928ff2984ab00520b1bd7729fa7758b273`。
@@ -124,3 +126,22 @@ Phase 3 继续完成资源门控、结算、部分成果和交接。Phase 4 完�
 八个 `test:bot-work-phase3-*` headless 用例与 `test:bot-work-phase3:dev` 真实 dev 页面通过；最终 `pnpm -s typecheck` 通过，`pnpm -s test:all` 为 336 passed / 0 failed / 0 known failed / 0 new regressions。本轮较早一次全量门禁的两项新增回归（`test:architecture-graph`、`test:conversation-runtime`）已修复后重跑，未修改失败基线。
 
 BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返回 `FOCUS_FAILED`，真实前台未改变；没有操作用户业务窗口或关闭用户进程。Linux/Omarchy、移动端与发行包桌面未运行，不标通过。逐项场景、故障窗口和门禁日志见 [Phase 3 实施与验证记录](reviews/bot-work-phase3-2026-11-07.md)。用户明确授权实现、提交和推送；没有升级版本、运行发布 build/pack/dist、安装或更新快捷方式。
+
+### Phase 3 加固后的最新验证边界（2026-11-07）
+
+恢复探针 fencing/attempt、Windows 系统浮层及原宿主输入释放回执、交接迟到成果保留已在 `671574ab8e5bfddbdce6e97866c82c6775623ee7` 加固，`e454341ae3268e7a2ab1cdbc55d84231171f0aa3` 冻结 [后续复核报告](reviews/bot-work-phase3-followup-2026-11-07.md)。正常交接本来就原子保存 owner/epoch 和 adoption；`pending_adoption` 继续保护缺接纳的迟到回执，不重复运行或记账。
+
+该次 Linux 环境 typecheck 与九项 Phase 3 headless 专项通过；完整 `test:all` 为 **338 passed / 1 failed，退出码 1**，唯一失败是原始基线亦可复现的 `test:atspi-transport` socket `EPERM`，没有修改失败白名单。dev 编译完成后 Electron singleton socket 同样 `EPERM`，未进入页面；真实 Windows BW-A31、Linux/Omarchy、移动端与发行包没有新增通过证据。不得将上节历史 336 项通过/dev 通过套用到这次加固验证。
+
+## Phase 4 规划与执行入口（2026-11-07）
+
+**状态：规划已确认，待 agent 实施，尚未验收。** 完整任务书为 [bot-work-phase4-execution-plan.md](bot-work-phase4-execution-plan.md)，执行入口为 [GitHub Issue #16](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/16)。基于已核对远端的 `main@e454341ae3268e7a2ab1cdbc55d84231171f0aa3`，覆盖 BW-A36～BW-A41，按 M1～M3 连续完成 P4-00～P4-08。
+
+- M1：真实来源接线、多订阅独立路由、分目标 source-version 比较、固定合并上界/冻结批次、each 队列与有限持久溢出和来源背压。
+- M2：单权威宿主中的注入时钟、IANA/DST 唯一 tick、时钟跳变、宿主/来源离线事实、latest/each/skip 补处理与零 Hook 承诺到期跟进。
+- M3：可信因果链与专家互调收敛、真实 provider 请求上的共享预算、unknown/迟到回执一次结算、跨重启/交接保持额度及受控窗口。
+- 联合交付：受守卫 IPC/配置、真实监控投影和 dev 流程、六项行为专项、适用原生集成与完整门禁、冻结实现 SHA 和独立审查报告。
+
+规划已校正实际方法/路径和预算职责：复用 `ingestSourceEvent/tick`、原 Inbox/Outbox/WorkDispatchQueue，以及 `reserveBudget/commitBudgetUsage/openBudgetWindow`；`EvidenceBudget` 保持上下文注入裁剪职责。新增表、承诺字段、调度/事件生产接线与预算服务均是待实现任务，不能因当前存在基础方法而标记完成。
+
+本次只提交规划和实施入口，P4 清单未勾选；仅核对文档内容、路径、链接和差异，不宣称执行了 Phase 4 功能门禁。开发 agent 完成后须按任务书更新本节和执行 Issue；只有实际任务启动回执才能记录“执行中”。
