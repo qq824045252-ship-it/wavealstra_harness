@@ -1,13 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
 import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import { DESKTOP_USER_GRANTS } from "./WorkService";
+import { WorkSourceObserver,sourceSnapshot } from "./WorkSourceObserver";
 
 const rowSchema = z.object({ operation_id: z.string(), work_id: z.string(), task_id: z.string(), bot_id: z.string(),
-  intent_revision: z.number(), input_snapshot_id: z.string() });
+  intent_revision: z.number(), input_snapshot_id: z.string(), continuation_plan_id: z.string().nullable().optional() });
 const sameInput = (binding: WorkExecutionBindingDto, work: WorkDto) => binding.intentRevision === work.intentRevision
   && binding.inputSnapshotId === work.inputSnapshotId;
 // Invalidating a result never erases execution/effect history. Only an explicitly
@@ -65,6 +66,9 @@ export class WorkDispatchQueue {
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
+    await this.drainSourceEvents();
+    this.prepareSourceIntents();
+    this.prepareContinuations();
     for (const request of this.db.connection.prepare("SELECT * FROM work_dispatch_requests WHERE state='pending' ORDER BY created_at,rowid").all().map(row => rowSchema.parse(row))) {
       if (!this.isAuthority()) return;
       const original = this.works.repo.getBindingByOperation(request.work_id, `dispatch:${request.operation_id}`);
@@ -79,17 +83,26 @@ export class WorkDispatchQueue {
         continue;
       }
       if (work.lifecycle !== "active") continue;
+      if (work.ownerBotId !== request.bot_id) {
+        // Never reinterpret an old owner's unsubmitted decision as new authorization.
+        this.finishRequest(request.operation_id,request.work_id,"cancelled");
+        continue;
+      }
       // A pending request can outlive the caller/crash that created it. Apply the
       // same input dedupe on recovery, before preparing another native namespace.
       // The matching operation above keeps its original binding/receipt instead.
-      if (this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
+      const continuation = request.continuation_plan_id && this.works.partialResults.plans(work.workId).find(plan => plan.planId === request.continuation_plan_id);
+      if (request.continuation_plan_id && (!continuation || continuation.state === "cancelled" || continuation.ownerEpoch !== work.ownerEpoch || continuation.ownerBotId !== work.ownerBotId)) {
+        this.finishRequest(request.operation_id,request.work_id,"cancelled"); continue;
+      }
+      if (!continuation && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
         this.finishRequest(request.operation_id, request.work_id, "cancelled");
         continue;
       }
       try {
         const actor: WorkActor = { kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: DESKTOP_USER_GRANTS };
         const result = await this.adapter.dispatch(actor, { taskId: request.task_id, operationId: `dispatch:${request.operation_id}`,
-          workId: work.workId, botId: request.bot_id, delegatedScope: work.authorization.allowedScopes,
+          workId: work.workId, botId: request.bot_id, delegatedScope: continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"] : work.authorization.allowedScopes,
           reserveTokens: Math.min(4096, Math.max(1, work.budget.maxTokens - work.budget.usedTokens - work.budget.reservedTokens)),
           versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
         if (!result.ok) {
@@ -123,6 +136,101 @@ export class WorkDispatchQueue {
     }
   }
 
+  private prepareSourceIntents():void {
+    this.works.transaction(()=>{
+      if(!this.isAuthority())return;
+      for(const raw of this.db.connection.prepare("SELECT event_id FROM work_events_outbox WHERE event_type='work.source_dispatch_requested' AND delivery_status='pending' ORDER BY created_at,rowid").all()) {
+        const event=this.works.repo.getOutbox(z.object({event_id:z.string()}).parse(raw).event_id);if(!event)continue;
+        const work=this.works.getWork(event.workId);
+        if(!work || ["closing","closed"].includes(work.lifecycle) || work.intentRevision!==event.intentRevision || work.ownerEpoch!==event.ownerEpoch || work.inputSnapshotId!==event.payload.inputSnapshotId) {
+          this.works.repo.markOutboxStatus(event.eventId,"invalidated");continue;
+        }
+        if(work.lifecycle!=="active")continue;
+        this.enqueue(work,`source:${event.eventId}`);
+        this.works.repo.markOutboxStatus(event.eventId,"delivered");
+      }
+    });
+  }
+
+  private async drainSourceEvents():Promise<void> {
+    const ids=this.db.connection.prepare(`SELECT DISTINCT work_id FROM work_events_inbox WHERE status IN ('pending','merged','blocked')
+      UNION SELECT subscription.work_id FROM work_paused_source_routes route JOIN work_subscriptions subscription ON subscription.subscription_id=route.subscription_id WHERE route.inbox_event_id IS NULL`).all().map(row=>z.object({work_id:z.string()}).parse(row).work_id);
+    const observer=new WorkSourceObserver(this.works);
+    for(const workId of ids) {
+      if(!this.isAuthority())return;
+      let work=this.works.getWork(workId);if(!work || work.lifecycle!=="active")continue;
+      this.works.transaction(()=>this.works.pausedBacklog.refill(workId,Date.now()));
+      work=this.works.getWork(workId)!;
+      const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status)
+        || binding.reservationId && ["reserved","unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? ""));
+      const pendingIntent=this.works.repo.listOutbox(workId,["pending","attempted","unknown"]).some(event=>event.eventType==="work.source_dispatch_requested");
+      if(pendingBinding || pendingIntent || this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(workId))continue;
+      const event=this.works.pausedBacklog.due(workId,Date.now())[0];if(!event)continue;
+      const subscription=event.subscriptionId?this.works.repo.getSubscription(event.subscriptionId):undefined;
+      if(event.subscriptionId && !subscription) {this.sourceBlocked(workId,event.eventId,"事件缺少原订阅，等待核对");continue;}
+      try {
+        const result=await this.works.pausedBacklog.consume(event.eventId,async()=>{
+          const source=await observer.readCurrent(work);
+          if(subscription?.catchUpPolicy!=="latest") {
+            const eventSource={sourceType:"external_input" as const,sourceRef:`work-event:${event.subscriptionId ?? event.source}`,inputSnapshotId:`source-event:${createHash("sha256").update(JSON.stringify([event.source,event.sourceEventId,event.sourceVersion,event.payload])).digest("hex")}`,observedAt:Date.now()};
+            const sources=[...source.sources,eventSource];return {inputSnapshotId:sourceSnapshot(sources),sources};
+          }
+          return source;
+        },(current,original,source)=>{
+          const applied=this.works.applyObservedSources(current.workId,`source-inbox:${original.eventId}`,current,source);
+          if(!applied.ok)throw Error(`${applied.code}: ${applied.message}`);
+          this.works.repo.clearBlocker(`source-readback:${original.eventId}`,current.workId,Date.now());
+        });
+        if(result.ok)this.works.emitCurrentProjection(workId);
+      } catch(error) {this.sourceBlocked(workId,event.eventId,error instanceof Error?error.message:String(error));}
+    }
+  }
+  private sourceBlocked(workId:string,eventId:string,reason:string):void {
+    this.works.transaction(()=>{
+      if(!this.isAuthority())return;
+      const work=this.works.getWork(workId),event=this.works.repo.getInbox(eventId);if(!work || work.lifecycle!=="active" || !event || !["pending","merged"].includes(event.status))return;
+      this.works.repo.setInboxStatus(eventId,"blocked");
+      this.db.connection.prepare("UPDATE work_events_inbox SET payload_json=? WHERE event_id=?").run(JSON.stringify({...event.payload,_sourceReadbackError:reason,_sourceReadbackFailedAtSourceVersion:work.sourceVersion}),eventId);
+      const blockerId=`source-readback:${eventId}`;
+      if(!this.works.repo.getBlocker(blockerId))this.works.repo.insertBlocker({blockerId,workId,kind:"operational",reason:`来源回读受阻：${reason}`,waitingForUserInput:true,status:"open",createdAt:Date.now()});
+      else this.works.repo.reopenBlocker(blockerId,workId);
+      this.works.repo.updateWork({...work,stateVersion:work.stateVersion+1,updatedAt:Date.now()});this.works.emitCurrentProjection(workId);
+    });
+  }
+
+  private prepareContinuations(): void {
+    this.works.transaction(() => {
+      if (!this.isAuthority()) return;
+      for (const raw of this.db.connection.prepare("SELECT DISTINCT work_id FROM work_continuation_plans WHERE state='pending'").all()) {
+        const work = this.works.getWork(z.object({work_id:z.string()}).parse(raw).work_id);
+        if (work) this.prepareWorkContinuations(work);
+      }
+    });
+  }
+  private prepareWorkContinuations(work: WorkDto): void {
+    for (const plan of this.works.partialResults.plans(work.workId).filter(plan => plan.state === "pending")) {
+      if (work.intentRevision !== plan.intentRevision || work.inputSnapshotId !== plan.inputSnapshotId || work.ownerEpoch !== plan.ownerEpoch || work.ownerBotId !== plan.ownerBotId || ["closed","closing"].includes(work.lifecycle)) {
+        this.db.connection.prepare("UPDATE work_continuation_plans SET state='cancelled' WHERE plan_id=?").run(plan.planId);
+        this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"invalidated");continue;
+      }
+      if (work.lifecycle !== "active") continue;
+      const request=z.object({operation_id:z.string(),task_id:z.string(),state:z.string()}).optional().parse(this.db.connection.prepare("SELECT operation_id,task_id,state FROM work_dispatch_requests WHERE continuation_plan_id=?").get(plan.planId));
+      if(request) {
+        if(request.state==="cancelled" && !this.works.repo.bindingForTask(request.task_id)
+          && !this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state='pending' AND operation_id!=?").get(work.workId,request.operation_id))
+          this.db.connection.prepare("UPDATE work_dispatch_requests SET state='pending',bot_id=?,error=NULL WHERE operation_id=?").run(work.ownerBotId,request.operation_id);
+        this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");
+        continue;
+      }
+      if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND state='pending'").get(work.workId,work.intentRevision,work.inputSnapshotId)) continue;
+      const taskId = `work-execution-${randomUUID()}`;
+      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:work.workspacePath,projectId:work.projectId,modelId:this.defaultModel(),permissionMode:"default",modePresetId:"native"});
+      this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id)
+        VALUES (?,?,?,?,?,?,'pending',?,?)`).run(plan.planId,work.workId,taskId,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),plan.planId);
+      this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");
+    }
+  }
+
   private syncContinuationBlockers(work: WorkDto, bindings: WorkExecutionBindingDto[]): void {
     const changed = this.works.transaction(() => {
       if (!this.isAuthority()) return false;
@@ -131,13 +239,14 @@ export class WorkDispatchQueue {
       for (const binding of bindings) {
         const blockerId = `continuation:${binding.bindingId}`;
         const blocker = this.works.repo.getBlocker(blockerId);
-        const incomplete = retainsInput(binding, work)
+        const planned = this.works.partialResults.plans(work.workId).some(plan => plan.sourceBindingId === binding.bindingId && plan.state !== "cancelled");
+        const incomplete = !planned && retainsInput(binding, work)
           && (binding.invalidatedAt !== undefined || ["failed", "stopped", "invalidated"].includes(binding.status));
         if (!incomplete && blocker?.status === "open") {
           this.works.repo.clearBlocker(blockerId, work.workId, now); changed = true;
         } else if (incomplete && !blocker) {
           this.works.repo.insertBlocker({ blockerId, workId: work.workId, kind: "operational",
-            reason: "原执行已失败、停止或失效，已有成果与执行事实仍保留。请核对未完成部分并修改要求后继续；恢复不会重新执行整个原始输入。",
+            reason: "原执行已失败、停止或失效，已有成果与执行事实仍保留。请核对必要缺口并受理定向补跑；恢复不会重新执行整个原始输入。",
             waitingForUserInput: true, status: "open", createdAt: now });
           changed = true;
         }
@@ -155,6 +264,8 @@ export class WorkDispatchQueue {
     this.works.transaction(() => {
       if (!this.isAuthority()) return;
       this.db.connection.prepare("UPDATE work_dispatch_requests SET state=?,error=NULL WHERE operation_id=?").run(state, operationId);
+      this.db.connection.prepare(`UPDATE work_continuation_plans SET state=? WHERE plan_id=(SELECT continuation_plan_id FROM work_dispatch_requests WHERE operation_id=?)`)
+        .run(state === "dispatched" ? "dispatched" : "cancelled",operationId);
       const blocker = this.works.repo.getBlocker(`dispatch:${operationId}`);
       const work = this.works.getWork(workId);
       if (blocker?.status === "open" && work) {

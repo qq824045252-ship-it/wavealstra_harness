@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -7,7 +7,7 @@ import { ConversationInteractionRepository } from "../src/main/agent/Conversatio
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
 import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { WorkService } from "../src/main/agent/work/WorkService";
+import { DESKTOP_USER_GRANTS, WorkService } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 import type { AgentUiPatch } from "../src/shared/agent-ipc";
 
@@ -77,6 +77,30 @@ try {
   assert.equal(completed.ok, true);
   assert.equal(completed.ok ? completed.goal.status : undefined, "achieved");
   assert.equal(work.getWork(created.goal.id)?.closureConclusion, "succeeded");
+
+  // Ordinary Goal completion must hash outside the transaction and retain a
+  // committed artifact invalidation when the close request is rejected.
+  const fileGoal = goals.create({ taskId: "task-b", title: "Current artifact", criteria: [{ text: "current content verified" }] });
+  assert(fileGoal.ok);
+  const owner = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS } as const;
+  db.upsertTask({ id: "goal-artifact-worker", title: "artifact worker", updatedAt: Date.now() });
+  const dispatched = work.dispatchExecution(owner, { operationId: "goal-artifact-dispatch", workId: fileGoal.goal.id,
+    botId: DEFAULT_BOT_ID, taskId: "goal-artifact-worker", durableStoreKey: "goal-artifact-store", conversationId: "1",
+    workspaceBinding: root, delegatedScope: ["workspace:read"] });
+  assert(dispatched.ok);
+  const fileBinding = work.repo.listBindings(fileGoal.goal.id)[0]!;
+  const artifact = join(root, "goal-output.txt");
+  writeFileSync(artifact, "verified content");
+  const fingerprint = work.artifacts.register(fileBinding, [artifact]);
+  work.transaction(() => work.artifacts.record(fileBinding, fingerprint));
+  assert(work.reconcileExecution({ kind: "system", reason: "goal-artifact-test" }, { bindingId: fileBinding.bindingId, outcome: "completed", usageTokens: 0 }).ok);
+  const criterionId = work.getWork(fileGoal.goal.id)!.criteria[0]!.id;
+  assert(goals.update({ goalId: fileGoal.goal.id, criterionUpdates: [{ id: criterionId, status: "met", evidence: "checked original artifact" }] }).ok);
+  writeFileSync(artifact, "external replacement");
+  const rejectedClose = goals.update({ goalId: fileGoal.goal.id, status: "achieved" });
+  assert.equal(rejectedClose.ok, false);
+  assert.equal(work.getWork(fileGoal.goal.id)!.lifecycle, "active");
+  assert.equal(work.getWork(fileGoal.goal.id)!.criteria[0]!.status, "pending", "failed close preserves committed artifact invalidation");
 
   assert.ok(patches.some((patch) => patch.type === "conversation_interaction_snapshot"));
   assert.ok(patches.some((patch) => patch.type === "conversation_goal_snapshot"));

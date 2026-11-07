@@ -1016,6 +1016,7 @@ function registerIpc(): void {
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
     agentService.cancelConversationGoal(goalId));
 
+  ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
   ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));

@@ -1,6 +1,9 @@
+import { withManagedResource } from "../platform/managed-resources";
 import type { BrowserHost } from "../browser/BrowserHost";
 import { BrowserContentService } from "../browser/BrowserContentService";
 import { PageCaptureError } from "../artifact/PageInspectionService";
+import { randomUUID } from "node:crypto";
+import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 
 export type BrowserExecAction =
   | "status"
@@ -69,6 +72,8 @@ function jsFailure(error: unknown, action: BrowserExecAction, url?: string): Bro
 
 export class BrowserAutomationService {
   private readonly content: BrowserContentService;
+  private readonly observationSlot = `__mybuddy_${randomUUID().replaceAll("-", "")}`;
+  private readonly observations = new Map<string, { version: number; webContentsId: number; url: string; documentRevision: string }>();
 
   constructor(private readonly host: () => BrowserHost | null) {
     this.content = new BrowserContentService(host);
@@ -79,14 +84,27 @@ export class BrowserAutomationService {
   }
 
   async execute(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
+    return withManagedResource({ kind: "browser", action: input.action, readonly: ["status", "read", "screenshot"].includes(input.action) }, () => this.executeManaged(input, signal));
+  }
+
+  private async executeManaged(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
     if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
     const host = this.host();
     const wc = host?.inspectionWebContents;
     if (!host || !wc) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
+    const invocation = currentDurableInvocation();
+    const owner = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : "direct-host-entry";
+    const remembered = this.observations.get(owner);
+    if (["click", "fill", "press"].includes(input.action) && remembered
+      && (remembered.version !== host.captureVersion || remembered.webContentsId !== wc.id || remembered.url !== wc.getURL()
+        || remembered.documentRevision !== await this.documentRevision(wc))) {
+      throw new BrowserAutomationError("SURFACE_CHANGED", "读取后浏览器页面、导航或焦点已经变化，请重新读取后再操作");
+    }
     if (input.action === "status") {
       return { action: input.action, url: host.url || undefined, detail: host.url ? "ready" : "idle" };
     }
     if (input.action === "navigate") {
+      this.observations.delete(owner);
       const target = assertHttpUrl(requireShort(input.url, "url", 2_000));
       try {
         await host.navigateForAutomation(target, signal);
@@ -101,11 +119,14 @@ export class BrowserAutomationService {
       }
     }
     if (input.action === "read") {
+      const documentRevision = await this.documentRevision(wc);
       let page;
       try { page = await this.content.getCurrentPage(); }
       catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
       if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可读取的页面", { currentUrl: safeUrl(wc) });
+      if (documentRevision !== await this.documentRevision(wc)) throw new BrowserAutomationError("SURFACE_CHANGED", "页面在读取期间变化，请重新读取");
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
+      this.observations.set(owner, { version: host.captureVersion, webContentsId: wc.id, url: wc.getURL(), documentRevision });
       return { action: input.action, url: page.url, title: page.title, text: page.text.slice(0, max) };
     }
     if (input.action === "screenshot") {
@@ -184,6 +205,22 @@ export class BrowserAutomationService {
       return { action: input.action, url: wc.getURL(), detail: `已向 ${selector} 发送按键 ${key}` };
     }
     throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
+  }
+
+  private async documentRevision(wc: NonNullable<BrowserHost["inspectionWebContents"]>): Promise<string> {
+    const result: unknown = await wc.executeJavaScript(`(() => {
+      const key=${JSON.stringify(this.observationSlot)};
+      if (!window[key]) {
+        const state={revision:0, focus:document.activeElement};
+        const observer=new MutationObserver(()=>state.revision++);
+        observer.observe(document,{subtree:true,childList:true,attributes:true,characterData:true});
+        document.addEventListener('focusin',()=>{state.revision++;state.focus=document.activeElement},true);
+        Object.defineProperty(window,key,{value:state});
+      }
+      return String(window[key].revision);
+    })()`);
+    if (typeof result !== "string") throw new BrowserAutomationError("SURFACE_CHANGED", "浏览器观测版本无法确认");
+    return result;
   }
 }
 

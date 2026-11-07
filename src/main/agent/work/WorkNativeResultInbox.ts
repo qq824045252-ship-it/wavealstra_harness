@@ -5,12 +5,8 @@ import type { AgentSubmissionReceipt } from "../../../shared/agent-ipc";
 import type { WorkControlResult, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
 import type { WorkExecutionObservation } from "./WorkExecutionAdapter";
+import { workExecutionObservationSchema as observationSchema } from "../../../shared/bot-work-phase3";
 
-const observationSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("running") }),
-  z.object({ status: z.enum(["completed", "failed", "stopped"]), summary: z.string(), hasWriteConflicts: z.boolean(),
-    artifactRefs: z.array(z.string()), sourceEntryId: z.number().optional(), usageTokens: z.number().nonnegative().optional() }),
-]);
 const factSchema = z.object({ fact_id: z.string(), binding_id: z.string(), namespace_hash: z.string(), payload_json: z.string() });
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const namespace = (binding: WorkExecutionBindingDto) => hash([binding.taskId, binding.durableStoreKey,
@@ -21,13 +17,16 @@ export class WorkNativeResultInbox {
   constructor(private readonly db: Database.Database, private readonly works: WorkService, private readonly isAuthority: () => boolean) {}
 
   receive(binding: WorkExecutionBindingDto, receipt: AgentSubmissionReceipt, observation: WorkExecutionObservation) {
-    const payload = observationSchema.parse(observation);
+    const payload = observationSchema.parse(this.works.partialResults.observe(binding,observationSchema.parse(observation)));
     if (receipt.taskId !== binding.taskId || receipt.operationId !== binding.operationId) throw new Error("结果回执不属于该执行绑定");
     const namespaceHash = namespace(binding);
     const recovery = z.object({ cycle_id: z.string() }).optional().parse(this.db.prepare("SELECT cycle_id FROM work_native_recovery WHERE binding_id=?").get(binding.bindingId));
     const factId = hash([namespaceHash, receipt.submissionId, payload, recovery?.cycle_id ?? null]);
+    const artifactRefs = [...new Set([...(payload.status === "running" ? [] : payload.artifactRefs),...(payload.subitems ?? []).filter(item=>item.origin!=="artifact_revalidation" || item.outcome==="completed").flatMap(item => item.artifactRefs)])];
+    const artifacts = this.works.artifacts.register(binding,artifactRefs);
     this.works.transaction(() => {
       this.assertAuthority();
+      this.works.artifacts.record(binding,artifacts);
       this.db.prepare(`INSERT OR IGNORE INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
         VALUES (?,?,?,?,?)`).run(factId, binding.bindingId, namespaceHash, JSON.stringify(payload), Date.now());
       // This position references a fact already durable in the same transaction. It is
@@ -51,6 +50,7 @@ export class WorkNativeResultInbox {
       const binding = this.works.repo.getBinding(fact.binding_id);
       if (!binding || namespace(binding) !== fact.namespace_hash) throw new Error("结果执行命名空间不匹配");
       const observation = observationSchema.parse(JSON.parse(fact.payload_json));
+      if (observation.subitems?.length) this.works.partialResults.record(binding,observation.subitems);
       {
         for (const blocker of this.works.repo.listOpenBlockers(binding.workId)) {
           if (blocker.blockerId === `inbox:${fact.fact_id}` || blocker.unknownExternalEffectRef === `native-read:${binding.bindingId}`) {
@@ -67,7 +67,9 @@ export class WorkNativeResultInbox {
             deliverableId: `result:${binding.bindingId}`, summary: observation.summary || "原生执行已结束，成果仍待负责人核验",
             artifactRefs: observation.artifactRefs, hasWriteConflicts: observation.hasWriteConflicts,
             evidence: [{ kind: "tool_receipt", sourceRef: `durable:${fact.namespace_hash}:answer:${observation.sourceEntryId ?? binding.bindingId}` }],
-            uncoveredScope: observation.status === "failed" ? ["本次执行失败，必要目标仍待核验"] : [],
+            uncoveredScope: observation.subitems?.filter(item => item.required && item.outcome !== "completed").map(item => `${item.task}：${item.outcome}`)
+              ?? (observation.status === "failed" ? ["本次执行失败，必要目标仍待核验"] : []),
+            uncoveredCriterionIds: [...new Set((observation.subitems ?? []).filter(item => item.required && item.outcome !== "completed").flatMap(item => item.criterionIds))],
           }));
         }
         this.require(this.works.reconcileExecution({ kind: "system", reason: "native-result-inbox" }, {
@@ -75,6 +77,7 @@ export class WorkNativeResultInbox {
           ...(observation.status === "running" ? {} : { note: observation.summary, usageTokens: observation.usageTokens }),
           reservationId: binding.reservationId,
         }));
+        if(observation.status!=="running") this.works.partialResults.settle(binding);
       }
       this.db.prepare("UPDATE work_native_inbox SET consumed_at=?,consume_error=NULL WHERE fact_id=?").run(Date.now(), fact.fact_id);
       }); } catch (error) {

@@ -1,3 +1,6 @@
+import type { WorkResourceRecovery } from "./WorkResourceRecovery";
+import type { z } from "zod";
+import type { workExecutionObservationSchema } from "../../../shared/bot-work-phase3";
 import type { AgentSubmissionReceipt } from "../../../shared/agent-ipc";
 import type { DispatchExecutionParams, WorkActor, WorkControlResult, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { WorkService } from "./WorkService";
@@ -9,12 +12,12 @@ export interface WorkExecutionNamespace {
   workspaceBinding: string;
 }
 
-export type WorkExecutionObservation =
-  | { status: "running" }
-  | { status: "completed" | "failed" | "stopped"; summary: string; hasWriteConflicts: boolean; artifactRefs: string[]; sourceEntryId?: number; usageTokens?: number };
+export type WorkExecutionObservation = z.infer<typeof workExecutionObservationSchema>;
 
 /** The port delegates execution and recovery to the existing native Durable store. */
 export interface WorkExecutionPort {
+  /** Set only by the host composition that installs its gate on every real leaf entry. */
+  resourceBoundary?: "host-action-gate";
   prepare(taskId: string): Promise<WorkExecutionNamespace>;
   find(binding: WorkExecutionBindingDto): Promise<AgentSubmissionReceipt | undefined>;
   submit(binding: WorkExecutionBindingDto, text: string): Promise<AgentSubmissionReceipt>;
@@ -34,6 +37,7 @@ export class WorkExecutionAdapter {
     private readonly userId: string,
     private readonly isAuthority: () => boolean,
     private readonly onError: (bindingId: string, error: unknown) => void,
+    private readonly resourceRecovery?: Pick<WorkResourceRecovery, "recover" | "retryWork">,
   ) {}
 
   async dispatch(actor: WorkActor, input: Omit<DispatchExecutionParams, keyof WorkExecutionNamespace> & { taskId: string }): Promise<WorkControlResult> {
@@ -65,6 +69,7 @@ export class WorkExecutionAdapter {
   }
 
   wakeWork(workId: string): void {
+    if (this.isAuthority()) this.resourceRecovery?.retryWork(workId);
     if (this.isAuthority()) for (const binding of this.service.repo.listBindings(workId)) this.service.nativeResults.allowInspect(binding.bindingId);
     this.wake();
   }
@@ -80,6 +85,8 @@ export class WorkExecutionAdapter {
   }
 
   private async deliver(): Promise<void> {
+    if (!this.isAuthority()) return;
+    await this.resourceRecovery?.recover();
     if (!this.isAuthority()) return;
     for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
     for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
@@ -117,7 +124,7 @@ export class WorkExecutionAdapter {
       }
       if (!this.resourceAvailable(current)) return;
       this.service.markDispatchAttempt(current.bindingId, current.attemptId ?? `attempt:${current.bindingId}`);
-      receipt = await this.native.submit(current, this.service.repo.executionInput(current));
+      receipt = await this.native.submit(current, this.service.partialResults.executionInput(current) ?? this.service.repo.executionInput(current));
     }
     if (!this.isAuthority()) return;
     this.service.recordSubmissionReceipt(current.bindingId, JSON.stringify(receipt));
@@ -150,6 +157,15 @@ export class WorkExecutionAdapter {
   }
 
   private resourceAvailable(candidate: WorkExecutionBindingDto): boolean {
+    if (this.native.resourceBoundary === "host-action-gate") {
+      // A verified native leaf boundary permits inference for independent roots.
+      // Legacy/unclassified unknown effects without resource evidence remain coarse.
+      for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
+        if (this.service.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect"
+          && !blocker.unknownExternalEffectRef?.startsWith("native-read:"))) return false;
+      }
+      return !this.service.resourceGate.live().some(lease => lease.owner.bindingId === candidate.bindingId);
+    }
     const readOnly = (binding: WorkExecutionBindingDto) => binding.delegatedScope.length > 0
       && binding.delegatedScope.every(scope => scope === "workspace:read");
     for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
@@ -158,8 +174,8 @@ export class WorkExecutionAdapter {
           && blocker.unknownExternalEffectRef !== `native-read:${binding.bindingId}`);
         if (binding.bindingId === candidate.bindingId || !binding.attemptId
           || ["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !unknownEffect) continue;
-        // Only independently bound read-only roots prove isolation. Every mutable
-        // capability may reach a shared browser/device until Phase 3 resource claims.
+        // Ports without the real host action boundary cannot prove independent writes.
+        // Keep their conservative admission; ordinary recovery never bypasses it.
         if (!readOnly(candidate) || !readOnly(binding)) return false;
       }
     }

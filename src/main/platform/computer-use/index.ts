@@ -37,7 +37,11 @@ export function createComputerUseBackend(platform: PlatformId = currentPlatformI
   backends.set(platform, backend);
   // Linux 的 ydotool 按住状态跨进程持久：登记一个清理入口，任务结束/取消时由
   // ComputerUseRunCoordinator 调用（Windows 的 SendInput 没有跨调用按住语义，不登记）。
-  if (backend.releaseHeldInput) setHeldInputReleaser(async (taskId) => backend.releaseHeldInput?.(taskId));
+  setHeldInputReleaser(async (taskId) => {
+    if (backend.releaseHeldInput) return backend.releaseHeldInput(taskId);
+    if (backend.waitForIdle) return backend.waitForIdle();
+    throw new Error("当前桌面后端没有可确认的队列/输入清理接口");
+  });
   return backend;
 }
 

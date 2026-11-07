@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BotDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
+import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import "./BotWorkspacePage.css";
@@ -118,7 +119,7 @@ export default function BotWorkspacePage(): React.JSX.Element {
       </section>
       {inspectorOpen && <aside className="bot-inspector" id="bot-work-inspector" aria-label="Work 详情">
         <button type="button" onClick={() => setInspectorOpen(false)}>关闭详情</button>
-        {selected ? <WorkFacts work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} /> : (
+        {selected ? <WorkFacts key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} /> : (
           <>
             <h2>Work 详情</h2>
             <p>{activeBot ? `${activeBot.displayName} 还没有选中的事项。` : "还没有 Work。受理服务尚未接线。"}</p>
@@ -146,6 +147,41 @@ function WorkCard(props: { work: WorkProjectionDto; selected: boolean; ownerName
 function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React.JSX.Element {
   const { work, ownerName } = props;
   const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
+  const identities = useAppStore(s => s.botIdentities);
+  const [targetBotId, setTargetBotId] = useState("");
+  const [question, setQuestion] = useState("");
+  const [controlNotice, setControlNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const operations = useRef(new Map<string, string>());
+  const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
+  const operation = (key: string) => {
+    const prior = operations.current.get(key);
+    if (prior) return prior;
+    const id = `desktop:${crypto.randomUUID()}`;
+    operations.current.set(key, id); return id;
+  };
+  const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
+  const control = async (request: WorkPhase3ControlRequest) => {
+    setBusy(true);
+    const requestId = request.kind === "continue" || request.kind === "handoff" ? request.request.operationId
+      : request.kind === "collaborate" ? request.request.messageId : undefined;
+    const original = requestId ? controlRequests.current.get(requestId) ?? request : request;
+    if (requestId) controlRequests.current.set(requestId, original);
+    try {
+      const api = window.api;
+      if (!api) throw new Error("桌面控制接口不可用");
+      const response = await api.botWork.phase3Control(original);
+      if (!response.ok && requestId) {
+        controlRequests.current.delete(requestId);
+        for (const [key, value] of operations.current) if (value === requestId) operations.current.delete(key);
+      }
+      setControlNotice(response.ok ? "操作已受理，正在读取最新状态。" : response.message);
+      await useAppStore.getState().refreshBotWork();
+      return response;
+    } catch (error) { setControlNotice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。"); }
+    finally { setBusy(false); }
+  };
+
   return (
     <>
       <h2>{work.title}</h2>
@@ -159,6 +195,41 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string }): React
         <dt>目标</dt>
         <dd>{work.mode === "watch" ? "持续查看" : "一次完成"}{work.inputSnapshotBound ? "" : " · 输入快照未绑定"}</dd>
       </dl>
+      {work.phase3 && <section aria-label="事项执行情况">
+        <h3>执行情况</h3>
+        {work.lifecycle === "paused" && <p>{work.phase3.settlingActions ? "已暂停，正在结算在途操作" : "已暂停"}，积压 {work.phase3.pausedEventCount} 条事件。</p>}
+        {work.phase3.resourceWaits.map(reason => <p role="status" key={reason}>{reason}</p>)}
+        <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>
+        {work.phase3.gaps.map(gap => <article key={gap.factId}>
+          <p>{gap.task || gap.summary} · {{ completed: "已完成", blocked: "受阻", rejected: "未获准启动", failed: "失败", stopped: "已停止", unknown: "效果待核对", not_started: "尚未启动" }[gap.outcome]}</p>
+          {gap.writeConflicts.length > 0 && <p>{gap.writeConflicts.join("；")}</p>}
+          <button type="button" disabled={busy || work.lifecycle !== "active" || gap.outcome === "unknown"}
+            onClick={() => { void control({ kind: "continue", request: { operationId: operation(`continue:${gap.factId}`), workId: work.workId,
+              sourceBindingId: gap.bindingId, gapItemIds: [gap.itemId], reason: "用户在事项详情中选择仅补齐此必要缺口", versionGuard } }); }}>仅补跑此项</button>
+        </article>)}
+        {work.phase3.continuations.length > 0 && <p>已受理 {work.phase3.continuations.length} 个定向补跑计划，已有成果继续保留。</p>}
+        <details><summary>当前实测版本</summary><p>输入 {work.inputSnapshotId}</p><p>产物 {work.phase3.artifactSnapshotId ?? "无文件产物"}</p></details>
+        <h3>负责人交接</h3>
+        {work.phase3.handoffs.length === 0 ? <p>尚无交接记录。</p> : work.phase3.handoffs.map(message => <p key={message.messageId}>{message.body}</p>)}
+        <label>交给<select aria-label="新负责人" value={targetBotId} onChange={event => setTargetBotId(event.target.value)}>
+          <option value="">选择 Bot</option>
+          {identities.filter(bot => bot.botId !== work.ownerBotId && bot.status === "active").map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
+        </select></label>
+        <button type="button" disabled={busy || !targetBotId || !["active", "paused"].includes(work.lifecycle)} onClick={() => { void (async () => {
+          const prepared = await control({ kind: "prepare_handoff", workId: work.workId, targetBotId });
+          if (!prepared?.ok || !("preparation" in prepared)) return;
+          const snapshot = prepared.preparation.work;
+          await control({ kind: "handoff", request: { operationId: operation(`handoff:${targetBotId}:${snapshot.ownerEpoch}`), workId: work.workId,
+            targetBotId, preparationId: prepared.preparation.preparationId, versionGuard: { expectedStateVersion: snapshot.stateVersion,
+              expectedIntentRevision: snapshot.intentRevision, expectedOwnerEpoch: snapshot.ownerEpoch } } });
+        })(); }}>核对并交接</button>
+        <h3>协作记录</h3>
+        {work.phase3.collaborationMessages.map(message => <p key={message.messageId}>{message.body}</p>)}
+        <label>向负责人提问<input aria-label="协作问题" value={question} onChange={event => setQuestion(event.target.value)} maxLength={8000} /></label>
+        <button type="button" disabled={busy || !question.trim()} onClick={() => { void control({ kind: "collaborate", request: { messageId: operation(`question:${question}`),
+          workId: work.workId, kind: "question", recipientBotIds: [work.ownerBotId], body: question, versionGuard } }); }}>保存问题</button>
+        {controlNotice && <p role="status">{controlNotice}</p>}
+      </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
         <strong>{{ proposed: "待验收", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>

@@ -83,6 +83,14 @@ export class ConversationGoalService {
   }
 
   update(request: ConversationGoalUpdateRequest, context: GoalCallContext = {}): ConversationGoalMutationResult {
+    // Completion is one Work control operation. Its own transaction commits the
+    // validation and closure; file evidence is read before entering that boundary.
+    if (request.status === "achieved") {
+      const result = this.applyUpdate(request, context);
+      if (result.ok) this.publish(result.goal);
+      return result;
+    }
+
     try {
       const result = this.work.transaction(() => {
         const changed = this.applyUpdate(request, context);

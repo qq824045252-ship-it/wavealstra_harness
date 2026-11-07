@@ -1,4 +1,5 @@
-import type { WorkGoalSourceDto, WorkWatchRuleDto } from "../../../shared/bot-work";
+import { WORK_MAX_CRITERIA } from "../../../shared/bot-work";
+import type { CreateWorkParams, WorkCriterionDto, WorkDto, WorkDeliverableDto, WorkExecutionBindingDto, WorkGoalSourceDto, WorkWatchRuleDto } from "../../../shared/bot-work";
 
 export function normalizeTexts(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map(value => value.trim()).filter(Boolean))].slice(0, 256);
@@ -30,4 +31,50 @@ export function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined)
     stopConditionText: input.stopConditionText?.trim() || undefined,
     nextWakeAt: input.nextWakeAt,
   };
+}
+
+export function normalizeCriteria(
+  inputs: CreateWorkParams["criteria"],
+  intentRevision: number,
+  now: number,
+): WorkCriterionDto[] | string {
+  const criteria = (inputs ?? []).slice(0, WORK_MAX_CRITERIA);
+  const next: WorkCriterionDto[] = [];
+  for (const input of criteria) {
+    const text = input.text?.trim().slice(0, 500);
+    if (!text) continue;
+    if (input.status && input.status !== "pending") return "创建事项时验收条件只能是待验收状态";
+    next.push({
+      id: input.id?.trim() || `criterion-${now}-${next.length}`,
+      text,
+      status: "pending",
+      requiredIntentRevision: intentRevision,
+      requiresRealEnvironmentCheck: Boolean(input.requiresRealEnvironmentCheck),
+      requiredEnvironment: input.requiredEnvironment?.trim() || undefined,
+      evidenceRefs: [],
+    });
+  }
+  return next;
+}
+
+export function currentAcceptedDeliverableIds(work: WorkDto, deliverables: WorkDeliverableDto[], bindings: WorkExecutionBindingDto[]): string[] {
+  const validBindings = new Set(bindings.filter(binding => binding.invalidatedAt === undefined && binding.status !== "invalidated")
+    .map(binding => binding.bindingId));
+  const current = new Set(deliverables.filter(deliverable => deliverable.status === "accepted"
+    && deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId
+    && validBindings.has(deliverable.executionId)).map(deliverable => deliverable.deliverableId));
+  return work.acceptedDeliverableIds.filter(id => current.has(id));
+}
+
+export function matchesFilter(filter: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  for (const [key, expected] of Object.entries(filter ?? {})) {
+    if (expected === undefined) continue;
+    const actual = payload[key];
+    if (Array.isArray(expected)) {
+      if (!expected.includes(actual)) return false;
+    } else if (actual !== expected) {
+      return false;
+    }
+  }
+  return true;
 }

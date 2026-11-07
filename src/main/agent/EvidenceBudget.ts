@@ -22,6 +22,7 @@ export function clipEvidence(text: string, bytes: number, keepLatest = false): s
 }
 
 export type EvidenceAccess =
+  | { kind: "work-collaboration"; workId: string; bindingId: string; botId: string; messageIds: string[] }
   | { kind: "library"; itemId: string; origin: "attached" | "pinned" | "catalog"; projectId: string | null }
   | { kind: "project"; projectId: string; resourceIds: string[] }
   | { kind: "project-note"; projectId: string }

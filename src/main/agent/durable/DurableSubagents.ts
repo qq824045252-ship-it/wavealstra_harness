@@ -26,7 +26,7 @@ import {
 } from "../../capabilities/subagent/write-conflict";
 import { assignDiverseModels, DIVERSE_SUBAGENT_ROLE, resolveSubagentSelection } from "../../capabilities/subagent/selection";
 import { normalizeThinking } from "../../capabilities/subagent/config";
-import { prepareSubagentWorkspace, type PreparedSubagentWorkspace } from "../../capabilities/subagent/worktree";
+import { assertGitIsolationAllowed, repositoryAllowsGitIsolation, prepareSubagentWorkspace, type PreparedSubagentWorkspace } from "../../capabilities/subagent/worktree";
 import {
   DEFAULT_CONFIRM_TOOLS, getResultOutput, isFailedResult, ListParams, loadHostDefaults, loadSubagentConfig,
   parallelPerTaskOutputCap, resolveParallelLimits, resultOutcome, SteerParams, SubagentParams, truncateParallelOutput,
@@ -105,6 +105,7 @@ export interface DurableSubagentOptions {
   permissionMode: () => PermissionMode;
   workspaceNotes?: () => string;
   onChange?: () => void;
+  allowGitBranchOrWorktree?: () => boolean;
 }
 
 type ActiveChild = {
@@ -189,7 +190,10 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       // race; single and chain write in order, and chain steps may legitimately rewrite a prior file.
       const writeGuard = dispatch.mode === "parallel" && workers > 1 ? createParallelWriteGuard() : undefined;
       const detailsOf = () => json({ mode: dispatch.mode, agentScope: dispatch.agentScope, projectAgentsDir: dispatch.projectAgentsDir,
-        concurrency: { workers, queued, maxConcurrency: dispatch.concurrency }, results: results.filter(Boolean) });
+        concurrency: { workers, queued, maxConcurrency: dispatch.concurrency },
+        plan: items.map(item => ({ itemId: item.id, index: item.index, task: item.task, required: true,
+          dependencies: dispatch.mode === "chain" && item.index > 0 && items[item.index - 1] ? [items[item.index - 1]!.id] : [],
+          isolation: item.kind === "run" ? item.workspace.kind : null })), results: results.filter(Boolean) });
       const publish = async () => api.details(detailsOf(), context);
       const execute = async (item: PlanItem) => {
         if (item.kind === "rejected") {
@@ -204,6 +208,7 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
         await publish();
         return result;
       };
+      await publish();
       if (dispatch.mode === "chain") {
         let previous = "";
         for (const item of items) {
@@ -401,13 +406,20 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   // D-5: auto isolation is about concurrent writers. Only items that actually resolved count, so an
   // invalid item can neither force nor prevent isolation for its valid peers. A dispatch that can run
   // only one child at a time resolves to the supplied directory and says why.
-  const plannedWorkers = Math.max(1, Math.min(limits.maxConcurrency, candidates.length));
+  const isolationAllowed = await repositoryAllowsGitIsolation(options.cwd, options.allowGitBranchOrWorktree);
+  const serialFallback = !isolationAllowed && candidates.some(candidate => isWritable(candidate.tools));
+  const effectiveConcurrency = serialFallback ? 1 : limits.maxConcurrency;
+  const plannedWorkers = Math.max(1, Math.min(effectiveConcurrency, candidates.length));
   for (const { base, role, sourceCwd, tools, selection, explicitIsolation } of candidates) {
     const itemBase: PlanBase = { ...base, sourceCwd };
+    if (base.isolation === "worktree" && !isolationAllowed) {
+      plan.set(base.index, { ...itemBase, kind: "rejected", rejection: rejectionOf(new Error("当前 Work 或仓库禁止分支/worktree，显式隔离计划被拒绝；请明确改为串行 shared")) });
+      continue;
+    }
     const workspace = resolveIsolation({ requested: base.isolation, explicit: explicitIsolation, mode,
       writable: isWritable(tools), workers: plannedWorkers, runnable: candidates.length });
     if (workspace.kind === "shared") {
-      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace });
+      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace: serialFallback ? { kind: "shared", note: "Work/仓库禁止分支与 worktree；auto 已明确解析为 shared，有效并发降为 1" } : workspace });
       continue;
     }
     // A repository is probed at most once per dispatch; the receipt check stays per operation.
@@ -424,7 +436,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
     plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace: { kind: "worktree" } });
   }
   const planned = [...plan.values()].sort((a, b) => a.index - b.index);
-  return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: limits.maxConcurrency,
+  return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: effectiveConcurrency,
     permissionMode, timeout, ...(timeoutDiagnostic ? { timeoutDiagnostic } : {}), items: planned };
 }
 
@@ -614,9 +626,10 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
   try {
     // D-5: the isolation decision was made once, in planDispatch. Execute exactly that decision, so
     // the preflight and the child can never disagree about whether a worktree is in play.
+    if (item.workspace.kind === "worktree") await assertGitIsolationAllowed(item.sourceCwd, options.allowGitBranchOrWorktree);
     workspace ??= await prepareSubagentWorkspace({ cwd: item.sourceCwd, isolation: item.workspace.kind,
       parallel: dispatch.mode === "parallel", writable: isWritable(item.tools),
-      baseDir: join(getAgentDir(), "subagent-worktrees"), signal: context.abortSignal, operationId: item.id });
+      baseDir: join(getAgentDir(), "subagent-worktrees"), signal: context.abortSignal, operationId: item.id, authorizeGitIsolation: options.allowGitBranchOrWorktree });
     if (workspace.kind !== item.workspace.kind) throw new Error(`Subagent workspace changed after planning: expected ${item.workspace.kind}, prepared ${workspace.kind}`);
     const shared = inspectSharedContext(item.sourceCwd);
     const instructions = buildSystemPromptContent(item.role.systemPrompt, buildContextBlock({ cwd: workspace.cwd,
@@ -712,6 +725,7 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
       result.usage.cost += message.usage.cost.total; result.usage.turns++;
       result.usage.contextTokens = message.usage.totalTokens;
     }
+    result.nativeConversationId = created.id;
     return { result: withWriteConflicts(result), deadline: created.identity.deadline };
   } catch (error) {
     // Closing the Harness must leave the safe tool pending. Turning cancellation into a result would lose recovery.

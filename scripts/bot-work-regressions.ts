@@ -184,7 +184,8 @@ export function runWorkRegressions(): void {
     unwrap(service.acceptDeliverable(actor, { operationId: op(), workId: staleNotice.workId, deliverableId: "notice-A" }));
     unwrap(service.amendWork(actor, { operationId: op(), workId: staleNotice.workId, inputSnapshotId: "input-B" }));
     const superseded = service.repo.listNotifications(staleNotice.workId)[0];
-    assert.equal(superseded?.delivery, "failed", "source-only change invalidates an unsent A notification");
+    assert.equal(superseded?.delivery, "pending", "semantic invalidation is separate from a failed external send");
+    assert.equal(service.notifications.identity(superseded!.notificationId)?.semanticValidity, "superseded", "source-only change invalidates an unsent A notification");
     assert.equal(superseded?.readAt, undefined, "invalidating a notification does not pretend the user read it");
   } finally {
     db.close();

@@ -6,6 +6,7 @@ import type {
   WorkProjectionDto,
 } from "./bot-work";
 import type { BotSendRequest, BotSendReceipt, BotHistoryRequest, BotHistoryDto, WorkListRequest, WorkListUpdate } from "./bot-conversation";
+import type { WorkPhase3ControlRequest, WorkPhase3ControlResult } from "./bot-work-phase3-control";
 
 export const BotWorkIpc = {
   hostStatus: "bot-work:host-status",
@@ -20,6 +21,7 @@ export const BotWorkIpc = {
   attestCriteria: "bot-work:attest-criteria",
   recordUserFeedback: "bot-work:record-user-feedback",
   markNotificationRead: "bot-work:mark-notification-read",
+  phase3Control: "bot-work:phase3-control",
 } as const;
 
 export interface BotWorkHostStatusDto {
@@ -46,4 +48,5 @@ export interface BotWorkApi {
   attestCriteria(request: AttestCriteriaParams): Promise<WorkControlResult>;
   recordUserFeedback(request: RecordUserFeedbackParams): Promise<WorkControlResult>;
   markNotificationRead(notificationId: string): Promise<BotWorkNotificationReadResult>;
+  phase3Control(request: WorkPhase3ControlRequest): Promise<WorkPhase3ControlResult>;
 }

@@ -1,3 +1,5 @@
+import { isComputerExecReadonly } from "../../../../shared/pi-event-mapper";
+import { withManagedResource } from "../../managed-resources";
 import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -41,7 +43,7 @@ import {
 } from "../protocol";
 import { ocrSearchCandidates, resolveOcrProvider } from "../ocr";
 
-interface CachedObservation { id: string; window: WindowInfo; capturedAt: number }
+interface CachedObservation { id: string; window: WindowInfo; capturedAt: number; taskId?: string; foregroundHandle?: string }
 const OBSERVATION_TTL_MS = 30_000;
 const MAX_OBSERVATIONS = 64;
 /** Pi re-encodes tool images above 2000px; stay below it and report the scale. */
@@ -305,7 +307,16 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
 
   private operationQueue: Promise<unknown> = Promise.resolve();
 
+  async waitForIdle(): Promise<void> {
+    await this.operationQueue;
+    await this.host.waitForQuiescence();
+  }
+
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
+    return withManagedResource({ kind: "desktop", taskId: input.taskId, action: input.action ?? "batch", inputKey: input.action?.startsWith("key_") ? input.key : input.button ?? "left", readonly: isComputerExecReadonly(input) }, () => this.executeManaged(input, signal));
+  }
+
+  private async executeManaged(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
     validateComputerAction(input);
     if (input.taskId) signal = computerUseRunCoordinator.scope(input.taskId, signal);
     assertNotCancelled(signal);
@@ -425,7 +436,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     if (input.action === "active_window") {
       const window = normalizeWindowInfo(await this.request("active_window", {}, signal));
       computerUseRunCoordinator.presentTarget(input, window, "observing");
-      return { action: input.action, window, observationId: this.remember(window), hostPid: this.host.pid };
+      return { action: input.action, window, observationId: await this.remember(window, input.taskId, signal), hostPid: this.host.pid };
     }
     if (input.action === "list_windows") {
       const raw = await this.request<"list_windows", unknown[]>("list_windows", {}, signal);
@@ -444,7 +455,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     if (input.action === "inspect_window") {
       const window = await this.inspect(this.targetFromInput(input), signal);
       computerUseRunCoordinator.presentTarget(input, window, "observing");
-      return { action: input.action, window, observationId: this.remember(window), hostPid: this.host.pid };
+      return { action: input.action, window, observationId: await this.remember(window, input.taskId, signal), hostPid: this.host.pid };
     }
     if (input.action === "focus_window") {
       const target = await this.guardedTarget(input, signal);
@@ -474,7 +485,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
         "inspect_controls", { target, maxDepth: input.maxDepth, maxNodes: input.maxNodes }, signal,
       );
       const window = normalizeWindowInfo(result.window);
-      return { action: input.action, ...result, window, observationId: this.remember(window) };
+      return { action: input.action, ...result, window, observationId: await this.remember(window, input.taskId, signal) };
     }
     if (input.action === "find_control") {
       const target = await this.guardedTarget(input, signal);
@@ -566,7 +577,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       appSessionId: session.id,
       appSession: session,
       window,
-      observationId: this.remember(window),
+      observationId: await this.remember(window, input.taskId, signal),
       detail: "app session attached; pass app_session_id to keep operating this window",
     };
   }
@@ -590,10 +601,10 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     return normalizeWindowInfo(await this.request("inspect_window", { target }, signal));
   }
 
-  private remember(window: WindowInfo): string {
+  private async remember(window: WindowInfo, taskId?: string, signal?: AbortSignal): Promise<string> {
     this.pruneObservations();
     const id = randomUUID();
-    this.observations.set(id, { id, window, capturedAt: Date.now() });
+    this.observations.set(id, { id, window, capturedAt: Date.now(), taskId, foregroundHandle: window.foreground ? window.handle : await this.foregroundHandle(signal) });
     while (this.observations.size > MAX_OBSERVATIONS) {
       const oldest = this.observations.keys().next().value as string | undefined;
       if (!oldest) break;
@@ -617,7 +628,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       return { windowHandle: current.handle, expectedProcessId: current.processId };
     }
     const observation = this.observations.get(input.observationId);
-    if (!observation) throw new WindowsAutomationError("STALE_OBSERVATION", "Observation is missing or expired", { observationId: input.observationId });
+    if (!observation || observation.taskId !== input.taskId) throw new WindowsAutomationError("STALE_OBSERVATION", "Observation is missing or expired", { observationId: input.observationId });
     let current: WindowInfo;
     try {
       current = await this.inspect({ windowHandle: observation.window.handle, expectedProcessId: observation.window.processId }, signal);
@@ -626,7 +637,8 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       throw new WindowsAutomationError("STALE_OBSERVATION", "Observed window no longer has the same identity", { observation: observation.window, cause: error instanceof Error ? error.message : String(error) });
     }
     const geometryChanged = Math.abs(current.clientRect.width - observation.window.clientRect.width) > 1
-      || Math.abs(current.clientRect.height - observation.window.clientRect.height) > 1;
+      || Math.abs(current.clientRect.height - observation.window.clientRect.height) > 1
+      || current.clientOrigin.x !== observation.window.clientOrigin.x || current.clientOrigin.y !== observation.window.clientOrigin.y;
     // A window title is mutable application state, not stable identity.
     // Keep observations valid across normal title changes (document name, progress, dirty marker).
     const identityChanged = current.handle !== observation.window.handle
@@ -636,6 +648,8 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     if (identityChanged || geometryChanged) {
       throw new WindowsAutomationError("STALE_OBSERVATION", "Window identity or client size changed since observation", { observation: observation.window, current });
     }
+    const currentForeground = current.foreground ? current.handle : await this.foregroundHandle(signal);
+    if (!observation.foregroundHandle || currentForeground !== observation.foregroundHandle) throw new WindowsAutomationError("FOCUS_FAILED", "观测后前台窗口已切换或无法确认，请重新观测目标，拒绝基于旧焦点发送输入");
     const selectorMismatch = (requested.windowHandle && requested.windowHandle !== current.handle)
       || (requested.processId && requested.processId !== current.processId)
       || (requested.className && requested.className !== current.className)
@@ -699,7 +713,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
         action: input.action, window: verifiedAfter, screenshot: capture.screenshot,
         screenshotMimeType: capture.details.mimeType, imageScale: capture.details.imageScale, imageSize: capture.details.imageSize,
         artifactFileName: safeArtifactName(verifiedAfter, "jpg"),
-        capture: capture.details, observationId: this.remember(verifiedAfter),
+        capture: capture.details, observationId: await this.remember(verifiedAfter, input.taskId, signal),
         detail: "background PrintWindow capture (no focus change)",
       };
     }
@@ -732,7 +746,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
       action: input.action, window: verifiedAfter, screenshot: capture.screenshot,
       screenshotMimeType: capture.details.mimeType, imageScale: capture.details.imageScale, imageSize: capture.details.imageSize,
       artifactFileName: safeArtifactName(verifiedAfter, "jpg"),
-      capture: capture.details, observationId: this.remember(verifiedAfter), detail: "foreground identity and geometry verified before and after display crop",
+      capture: capture.details, observationId: await this.remember(verifiedAfter, input.taskId, signal), detail: "foreground identity and geometry verified before and after display crop",
     };
   }
 

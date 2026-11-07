@@ -639,6 +639,7 @@ const api = {
   } satisfies ConversationRuntimeApi,
 
   botWork: {
+    phase3Control: request => ipcRenderer.invoke(BotWorkIpc.phase3Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
     listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),

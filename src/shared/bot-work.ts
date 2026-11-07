@@ -1,3 +1,5 @@
+import type { WorkSubitemDto, WorkContinuationDto } from "./bot-work-phase3";
+import type { WorkCollaborationMessage, WorkNotificationIdentity } from "./bot-work-collaboration";
 /**
  * BOT-WORK-1.0 shared contract.
  *
@@ -319,7 +321,7 @@ export interface WorkSubscriptionDto {
   stoppedAt?: number;
 }
 
-export interface WorkNotificationDto {
+export interface WorkNotificationDto extends Partial<WorkNotificationIdentity> {
   notificationId: string;
   workId: string;
   semanticKey: string;
@@ -385,6 +387,18 @@ export interface WorkDto {
 
 /** Reconnect/UI projection. Derived from persisted facts only. */
 export interface WorkProjectionDto {
+  phase3?: {
+    subitems: WorkSubitemDto[];
+    continuations: WorkContinuationDto[];
+    gaps: WorkSubitemDto[];
+    resourceWaits: string[];
+    settlingActions: number;
+    pausedEventCount: number;
+    artifactSnapshotId?: string;
+    handoffs: WorkCollaborationMessage[];
+    collaborationMessages: WorkCollaborationMessage[];
+  };
+
   workId: string;
   title: string;
   mode: WorkMode;
@@ -543,6 +557,7 @@ export interface CancelWorkParams {
 }
 
 export interface HandoffOwnerParams {
+  preparationId?: string;
   operationId: string;
   workId: string;
   targetBotId: string;
@@ -629,6 +644,7 @@ export interface RejectDeliverableParams {
 }
 
 export interface RecordUserFeedbackParams {
+  artifactSnapshotId?: string;
   operationId: string;
   workId: string;
   criterionIds: string[];

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
 import { SkillTrialLedger } from "./SkillTrialLedger";
@@ -23,6 +24,11 @@ import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotR
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
 import { setSubagentIpcBackend } from "./subagent-ipc-host";
 import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
+import { WorkToolResourcePolicy } from "./work/WorkToolResourcePolicy";
+import { installWorkManagedResourceBoundary } from "./work/WorkManagedResourceBoundary";
+import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
+import { WorkResourceRecovery, readResourceEffectEvidence } from "./work/WorkResourceRecovery";
+import { workPhase3ControlSchema, type WorkPhase3ControlResult } from "../../shared/bot-work-phase3-control";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
 import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
 import { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
@@ -800,8 +806,23 @@ export class AgentService {
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
+      resourceHostId: this.workHostAuthority.status().authorityId,
       emitProjection: (projection) => this.emitPatch({ type: "work_projection_snapshot", projection }),
       isAuthority: () => this.workHostAuthority.isAuthority(),
+    });
+    installWorkManagedResourceBoundary(this.workService.resourceGate, taskId => {
+      const invocation = currentDurableInvocation();
+      const binding = taskId ? this.workService.repo.bindingForTask(taskId) : undefined;
+      if (binding) return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
+        conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding,
+        bindingId: binding.bindingId, workId: binding.workId,
+        childId: invocation && String(invocation.native.conversationId) !== binding.conversationId
+          ? String(invocation.native.conversationId) : undefined };
+      const stored = taskId ? z.object({ directory: z.string(), cwd: z.string() }).optional().parse(this.db.connection
+        .prepare("SELECT directory,cwd FROM durable_bot_bindings WHERE task_id=?").get(taskId)) : undefined;
+      return { taskId: taskId ?? "managed-host", durableStoreKey: stored?.directory ?? `managed:${this.getWorkHostStatus().authorityId}`,
+        conversationId: invocation ? String(invocation.native.conversationId) : "direct-service",
+        workspaceBinding: stored?.cwd ?? getMyBuddyDir() };
     });
     this.conversationGoals = new ConversationGoalService(
       this.workService,
@@ -1132,6 +1153,7 @@ export class AgentService {
   }
 
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
+    if (this.workService.getWork(workId)?.userId !== LOCAL_USER_ID) return undefined;
     return this.workService.getProjection(workId);
   }
 
@@ -1154,6 +1176,27 @@ export class AgentService {
     return this.workService.recordUserFeedback({
       kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
     }, request);
+  }
+
+  phase3WorkControl(request: unknown): WorkPhase3ControlResult {
+    const parsed = workPhase3ControlSchema.safeParse(request);
+    if (!parsed.success) return { ok: false, code: "invalid_request", message: "事项控制请求无效" };
+    const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
+    try {
+      const input = parsed.data;
+      if (input.kind === "prepare_handoff") return { ok: true,
+        preparation: this.workService.collaboration.prepareHandoff(actor, input.workId, input.targetBotId) };
+      if (input.kind === "collaborate") {
+        const result = this.workService.collaboration.send(actor, input.request);
+        return { ok: true, messageId: result.message.messageId, replayed: result.replayed };
+      }
+      const result = input.kind === "continue" ? this.workService.continueWork(actor, input.request)
+        : this.workService.handoffOwner(actor, input.request);
+      if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.work.workId); }
+      return result;
+    } catch (error) {
+      return { ok: false, code: "invalid_request", message: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   markWorkNotificationRead(notificationId: string): { ok: boolean; message?: string } {
@@ -1379,8 +1422,11 @@ export class AgentService {
       evidenceProjection: task => ({
         memory: this.memoryService,
         enabled: () => this.settingsStore.read().memoryEnabled,
-        supplementalEvidence: () => this.libraryWorkspaceContext.projectionSources(task.id),
-        validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access),
+        supplementalEvidence: () => [...this.libraryWorkspaceContext.projectionSources(task.id),
+          ...new WorkCollaborationContext(this.workService).sources(task.id)],
+        validateEvidenceAccess: access => access.kind === "work-collaboration"
+          ? new WorkCollaborationContext(this.workService).validate(task.id, access)
+          : this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access),
         scope: () => resolveTaskMemoryScope(task.id, this.db.getTask(task.id)),
       }),
       onTurns: (taskId, turns) => {
@@ -1454,9 +1500,33 @@ export class AgentService {
   /** Bootstrap calls this after window-backed tools are attached, before accepting background work. */
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    this.workExecutions ??= new WorkExecutionAdapter(this.workService, this.durableBots.workExecutionPort(), LOCAL_USER_ID,
+    const nativeWork = this.durableBots.workExecutionPort();
+    const resources = new WorkResourceRecovery(this.db.connection, this.workService.resourceGate, {
+      transaction: fn => this.workService.transaction(fn),
+      inspectExecution: lease => {
+        if (!this.durableBots) throw new Error("原生执行服务尚未就绪");
+        return this.durableBots.resourceQuiescence(lease.owner);
+      },
+      drainInput: async (lease, execution) => {
+        if (lease.resources.some(resource => resource.kind === "desktop")) {
+          if (lease.hostId !== this.workHostAuthority.status().authorityId)
+            throw new Error("旧宿主的桌面输入缺少原驱动释放回执，保持隔离等待核对");
+          return computerUseRunCoordinator.cancelAndWait(lease.owner.taskId);
+        }
+        return { queueDrained: execution.ownedChildrenStopped, inputReleased: true, receipt: execution.receipt };
+      },
+      verifyEffect: async lease => readResourceEffectEvidence(this.db.connection, lease),
+      onRecovered: lease => this.workService.finalizeRecoveredResource(lease),
+    });
+    this.workExecutions ??= new WorkExecutionAdapter(this.workService, { ...nativeWork, resourceBoundary: "host-action-gate",
+      stop: async binding => {
+        await nativeWork.stop(binding);
+        if (this.workService.resourceGate.live().some(lease => lease.owner.taskId === binding.taskId
+          && lease.resources.some(resource => resource.kind === "desktop")))
+          await computerUseRunCoordinator.cancelAndWait(binding.taskId);
+      } }, LOCAL_USER_ID,
       () => this.workHostAuthority.isAuthority(),
-      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
+      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error), resources);
     await this.workExecutions.flush();
     this.workExecutions.start();
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
@@ -1546,9 +1616,25 @@ export class AgentService {
     const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
       writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
     const sessionPolicy = getPolicy();
+    const allowGitBranchOrWorktree = () => {
+      const binding = this.workService.repo.bindingForTask(task.id);
+      return binding ? this.workService.getWork(binding.workId)?.authorization.allowGitBranchOrWorktree === true : getPermissionMode() !== "readonly";
+    };
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
+      resourcePolicy: new WorkToolResourcePolicy(this.workService.resourceGate, context => {
+        const binding = this.workService.repo.bindingForTask(context.taskId);
+        if (binding) return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
+          conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding,
+          bindingId: binding.bindingId, workId: binding.workId,
+          childId: context.conversationId === binding.conversationId ? undefined : context.conversationId };
+        const stored = z.object({ directory: z.string() }).optional().parse(this.db.connection
+          .prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(context.taskId));
+        if (!stored) throw new Error("受管工具缺少真实 Durable 存储身份");
+        return { taskId: context.taskId, durableStoreKey: stored.directory, conversationId: context.conversationId,
+          workspaceBinding: context.taskRoot };
+      }, { allowGitBranchOrWorktree }),
       admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
       settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
@@ -1599,6 +1685,10 @@ export class AgentService {
     };
     return { ...domain, toolHooks, tools: [...domain.tools,
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
+        allowGitBranchOrWorktree: () => {
+          const binding = this.workService.repo.bindingForTask(task.id);
+          return binding ? this.workService.getWork(binding.workId)?.authorization.allowGitBranchOrWorktree === true : getPermissionMode() !== "readonly";
+        },
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
         onChange: () => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(SubagentIpc.event); },
       })] };

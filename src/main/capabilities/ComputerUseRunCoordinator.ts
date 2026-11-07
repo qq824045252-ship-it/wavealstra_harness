@@ -1,5 +1,5 @@
 import type { ComputerExecInput, ComputerExecOutput } from "../platform/computer-use/protocol";
-import { releaseHeldInput } from "../platform/computer-use/heldInput";
+import { releaseHeldInput, waitForHeldInputRelease } from "../platform/computer-use/heldInput";
 import { computerUseOverlayService } from "./ComputerUseOverlayService";
 import { prepareComputerUseInput, verificationFor, type ComputerUsePhase } from "./ComputerUsePolicy";
 import type { ComputerUseRecoveryPlan } from "./ComputerUseRecoveryPolicy";
@@ -69,6 +69,13 @@ export class ComputerUseRunCoordinator {
     state.controller.abort(new WindowsAutomationError("REQUEST_CANCELLED", "用户已停止本轮 Computer Use；请通过其他方式继续，不要再次操作桌面。"));
     computerUseOverlayService.settle(taskId, "failed", 500);
     releaseHeldInput(taskId);
+  }
+
+  async cancelAndWait(taskId: string): Promise<{ inputReleased: true; queueDrained: true; receipt: string }> {
+    const hasRun = this.runs.has(taskId);
+    this.cancel(taskId);
+    if (!hasRun) releaseHeldInput(taskId);
+    return waitForHeldInputRelease(taskId);
   }
 
   prepare(input: ComputerExecInput): ComputerExecInput {

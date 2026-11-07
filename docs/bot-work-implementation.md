@@ -104,7 +104,7 @@ Phase 1 交付时，Phase 2 的前台独立对话、Work 受理与控制工具�
 
 Phase 3 继续完成资源门控、结算、部分成果和交接。Phase 4 完成真实订阅、离线补处理、因果防环与原生用量记账。Phase 5 完成通知渠道、双页面交互、跨端同步，以及全部适用 BW 场景与端到端故事。Phase 3～5 及 BOT-WORK-1.0 总体尚未验收完成。
 
-**Phase 3 执行规划已确认（2026-11-07，审核基线 `main@a6bb4a59e2f5fa107f4ad142ecd99a32436603f6`）：[bot-work-phase3-execution-plan.md](bot-work-phase3-execution-plan.md)。** 该计划包含 M1～M3、P3-00～P3-08 和 BW-A26～BW-A35 的行为/故障验收，复用现有资源准入、原生结果消费、暂停恢复去重、`handoffOwner()` 与通知入口，补齐细粒度资源门控、部分成果定向补跑和团队协作。当前仅完成规划确认与文档提交，Phase 3 功能仍待实施，所有任务保持未勾选；Phase 2 后续修复与其全量验证限制见 [后续复核记录](reviews/bot-work-phase2-followup-2026-11-07.md)。
+**Phase 3 已按 [执行规划](bot-work-phase3-execution-plan.md) 完成 P3-00～P3-08 实施（审核基线 `main@a6bb4a5`），不是只有文档确认。** 资源身份与成组准入（`WorkResourceGate`）、文件/Shell/MCP/Code Mode 统一动作 gate、桌面与浏览器输入边界、多源产物指纹与写前/验收前重验、部分成果与缺口定向补跑、暂停积压与在途结算、八类协作消息与原子交接、通知发送前重验均已接入现有 SQLite schema（32）、Inbox/Outbox 与投影；未引入旧数据迁移层。逐项证据见 [Phase 3 实施与验证记录](reviews/bot-work-phase3-2026-11-07.md)：typecheck 与 `test:all`（336 项，失败 0）通过，`test:bot-work-phase3:dev` 真实 dev 页面通过；BW-A31 真实 Windows 桌面输入仍受 `FOCUS_FAILED` 阻塞，Linux/Omarchy、移动端与发行包桌面未运行，因此 Phase 3 不得整体标记验收通过。
 
 
 ## Phase 2 实施与验收（2026-11-07）
@@ -116,3 +116,11 @@ Phase 3 继续完成资源门控、结算、部分成果和交接。Phase 4 完�
 最后冻结源码后 `pnpm -s typecheck` 通过，`pnpm -s test:all` 为 324 passed / 0 failed / 0 known failed。独立运行 NETWORK 的 durable-bot、durable-subagent，以及临时用户配置下真实 `pnpm dev` 页面发送、后台原生结果、卡片和成果/证据详情，均通过。真实 Omarchy、Linux 专属桌面、移动端未运行，不标通过。
 
 逐项代码、故障计数、最终源码指纹和门禁日志见 [Phase 2 实施与验收记录](reviews/bot-work-phase2-2026-11-07.md)。Git 基线为 `main@63e42fe`，Phase 2 实现与验收记录随同一 main 提交交付，提交号可用 `git log -1 -- docs/reviews/bot-work-phase2-2026-11-07.md` 查询。验收完成后，用户明确授权更新、提交并推送；没有运行发布构建、打包、安装或快捷方式更新。
+
+## Phase 3 实施与验证（2026-11-07）
+
+**P3-00～P3-08 已完成实施，组件与 headless 门禁通过；Phase 3 整体验收未完成。** 资源身份、成组准入与单调 fencing 集中在 `WorkResourceGate`；普通 Task、owned child、Code Mode、文件/Shell/MCP 写、桌面与浏览器输入走同一动作 gate，`WorkResourceRecovery` 在安静的原生图与释放回执后才接管。部分成果、必要缺口与只读重新核验接入统一结果 Inbox；暂停积压只消费原 Inbox，each/latest/skip 各自保存事实。八类协作消息、原子交接、发送前重验与通知认领/投递按当前 schema（32）落地，未写旧版本迁移层。
+
+八个 `test:bot-work-phase3-*` headless 用例与 `test:bot-work-phase3:dev` 真实 dev 页面通过；最终 `pnpm -s typecheck` 通过，`pnpm -s test:all` 为 336 passed / 0 failed / 0 known failed / 0 new regressions。本轮较早一次全量门禁的两项新增回归（`test:architecture-graph`、`test:conversation-runtime`）已修复后重跑，未修改失败基线。
+
+BW-A31 的真实 Windows 桌面输入链仍阻塞：目标窗口聚焦请求返回 `FOCUS_FAILED`，真实前台未改变；没有操作用户业务窗口或关闭用户进程。Linux/Omarchy、移动端与发行包桌面未运行，不标通过。逐项场景、故障窗口和门禁日志见 [Phase 3 实施与验证记录](reviews/bot-work-phase3-2026-11-07.md)。用户明确授权实现、提交和推送；没有升级版本、运行发布 build/pack/dist、安装或更新快捷方式。

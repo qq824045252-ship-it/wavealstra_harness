@@ -1,3 +1,4 @@
+import type { WorkResourceOwner } from "../work/WorkResourceGate";
 import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -543,6 +544,29 @@ export class DurableBotService {
     return submissionResult(request.taskId, state);
   }
 
+  /** Native graph proof for resource recovery. Root status alone is never sufficient. */
+  async resourceQuiescence(owner: WorkResourceOwner): Promise<{ executionStopped: boolean; ownedChildrenStopped: boolean; receipt: string }> {
+    const stored = this.binding(owner.taskId);
+    if (!stored || stored.directory !== owner.durableStoreKey || stored.cwd !== owner.workspaceBinding)
+      throw new Error("资源恢复与原生存储命名空间不一致");
+    const open = await this.open(owner.taskId);
+    const graph = await open.runtime.harness.inspect(context);
+    const tasks = await open.runtime.conversation.commit(async tx => {
+      const statuses: Array<{ id: number; terminal: boolean }> = [];
+      let cursor: Cursor | undefined;
+      do {
+        const page = await tx.scanTasks({}, 200, cursor);
+        for (const task of page.items) statuses.push({ id: task.id, terminal: task.state.status === "terminal" });
+        cursor = page.next;
+      } while (cursor);
+      return statuses;
+    }, context);
+    const quiet = graph.tasks.length === 0 && tasks.every(task => task.terminal);
+    return { executionStopped: quiet, ownedChildrenStopped: quiet,
+      receipt: JSON.stringify({ taskId: owner.taskId, store: owner.durableStoreKey, conversationId: owner.conversationId,
+        workspace: owner.workspaceBinding, activeTasks: graph.tasks.length, tasks, checkedAt: Date.now() }) };
+  }
+
   workExecutionPort(): WorkExecutionPort {
     return {
       prepare: async taskId => {
@@ -571,7 +595,7 @@ export class DurableBotService {
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
-        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record), context);
+        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record, binding.workspaceBinding), context);
         if (observation.status === "running") return observation;
         const dedicated = this.options.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
           .get(binding.taskId, binding.workId);

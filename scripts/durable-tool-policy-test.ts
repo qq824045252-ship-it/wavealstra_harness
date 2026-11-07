@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync as writeFileSyncForFixture } from "node:fs";
 import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +15,8 @@ import { ConversationInteractionRepository } from "../src/main/agent/Conversatio
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
 import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { WorkService } from "../src/main/agent/work/WorkService";
-import { LOCAL_USER_ID } from "../src/shared/bot-work";
+import { DESKTOP_USER_GRANTS, WorkService } from "../src/main/agent/work/WorkService";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
 import { createConversationRuntimeExtension } from "../src/main/agent/conversation-runtime-extension";
 import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
 import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
@@ -23,6 +24,8 @@ import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy"
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { currentDurableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
+import { WorkResourceGate, resourceOwnerKey, fileResource } from "../src/main/agent/work/WorkResourceGate";
+import { WorkToolResourcePolicy } from "../src/main/agent/work/WorkToolResourcePolicy";
 import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
 import { recoverInterruptedExecutions } from "../src/main/agent/ExecutionRestartRecovery";
 import { prepareFileEffect, verifyFileEffect, type ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
@@ -70,11 +73,13 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
       return stream;
     },
   });
-  const state = { permission: "auto" as PermissionMode, allowed: true, deniedTools: new Set<string>() };
+  const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; resourcePolicy?: WorkToolResourcePolicy;
+    admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
+    settle?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
   const open = async () => {
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => state.permission,
       interactions, attempts, failures, getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd, isolatedSourceRoots }),
-      effectRecovery,
+      effectRecovery, resourcePolicy: state.resourcePolicy, admitWorkAction: input => state.admit?.(input), settleWorkAction: (operationId, outcome) => state.settle?.(operationId, outcome),
       toolAllowed: name => !state.deniedTools.has(name) && (state.allowed || !["write", "mcp__filesystem__write_file"].includes(name)),
     });
     const domain = await durableDomainTools([createConversationRuntimeExtension({ interaction: interactions, goal: goals,
@@ -113,6 +118,47 @@ try {
   assert.equal((await verifyFileEffect(editIntent)).status, "passed", "verification agrees with the installed native edit on BOM and mixed newlines");
   assert.equal((await verifyFileEffect({ ...writeIntent, path: root, canonicalPath: root })).status, "inconclusive", "directories cannot become an unbounded verification stream");
   console.log("PASS file recovery compares native output, rejects changed bytes and supports cancellation");
+
+  for (const historicalEffect of [false, true]) {
+    const f = await fixture(`resource-denied-${historicalEffect}`, request => request.messages.at(-1)?.role === "toolResult"
+      ? text("blocked before action") : call("write", { path: "resource.txt", content: "new write" }));
+    const works = new WorkService(db.connection, { bots: policyBots });
+    const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
+    const created = works.createWork(user, { operationId: `${f.taskId}:create`, title: "resource denial", workspacePath: f.cwd,
+      inputSnapshotId: "resource-input", authorization: DESKTOP_USER_GRANTS }); assert(created.ok);
+    const dispatched = works.dispatchExecution(user, { workId: created.work.workId, operationId: `${f.taskId}:dispatch`, botId: DEFAULT_BOT_ID,
+      taskId: f.taskId, durableStoreKey: `store:${f.taskId}`, conversationId: "1", workspaceBinding: f.cwd, delegatedScope: ["workspace:read", "workspace:write"] }); assert(dispatched.ok);
+    const binding = works.repo.bindingForTask(f.taskId); assert(binding);
+    const owner = { taskId: f.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
+      workspaceBinding: binding.workspaceBinding, bindingId: binding.bindingId, workId: binding.workId };
+    const gate = new WorkResourceGate(db.connection, { hostId: `denied:${f.taskId}`, authorize: () => historicalEffect ? undefined : "资源授权已暂停，未执行新动作" });
+    f.state.resourcePolicy = new WorkToolResourcePolicy(gate, () => owner);
+    f.state.admit = input => {
+      const denied = works.admitTaskAction(f.taskId, input);
+      if (!denied && historicalEffect) {
+        const pieces = input.operationId.split(":"), nativeTaskId = pieces[2], callId = pieces.slice(3).join(":");
+        const lease = gate.acquire({ actionId: `resource:${resourceOwnerKey(owner)}:${nativeTaskId}:${callId}`, owner, resources: [fileResource(join(f.cwd, "resource.txt"), "write")] });
+        assert(lease.ok); writeFileSyncForFixture(join(f.cwd, "resource.txt"), "earlier unknown effect"); gate.release(lease.lease, "unknown");
+      }
+      return denied;
+    };
+    f.state.settle = (operationId, outcome) => works.settleTaskAction(f.taskId, operationId, outcome);
+    const r = await f.open();
+    try {
+      assert.equal((await (await r.submit("attempt", `resource-denied-${historicalEffect}`)).wait(ctx)).status, "done");
+      const admissions = works.repo.listAdmissions(binding.workId); assert.equal(admissions.length, 1);
+      assert.equal(admissions[0]?.state, historicalEffect ? "unknown" : "released");
+      if (historicalEffect) {
+        assert.equal(await readFile(join(f.cwd, "resource.txt"), "utf8"), "earlier unknown effect");
+        assert.equal(gate.live()[0] && gate.leaseState(gate.live()[0]!), "quarantined");
+      } else {
+        await assert.rejects(access(join(f.cwd, "resource.txt")));
+        assert.equal(works.repo.listOpenBlockers(binding.workId).filter(blocker => blocker.kind === "external_effect").length, 0);
+        assert.equal(failures.list(f.taskId).filter(failure => failure.sideEffects === "unknown").length, 0);
+      }
+    } finally { await r.close(); }
+  }
+  console.log("PASS native resource denial has persistent not-started proof; released admissions have no unknown effect, while original quarantined effects stay unknown");
 
   let receiptReads = 0;
   let mutations = 0;

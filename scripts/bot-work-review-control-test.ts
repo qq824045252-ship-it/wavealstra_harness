@@ -107,7 +107,7 @@ try {
     const progress = unwrap(service.amendWork(user, { operationId: operation(), workId: work.workId, progressSummary: "已读进展" }));
     assert.deepEqual(progress.acceptedDeliverableIds, [deliverableId]);
     const targetBotId = "review-handoff-owner";
-    bots.registerBot({ botId: targetBotId, userId: LOCAL_USER_ID, displayName: "新负责人" });
+    bots.registerBot({ botId: targetBotId, userId: LOCAL_USER_ID, displayName: "新负责人", authorization: user.grants });
     const handedOff = unwrap(service.handoffOwner(user, { operationId: operation(), workId: work.workId, targetBotId }));
     assert.deepEqual(handedOff.acceptedDeliverableIds, [deliverableId], "ownerEpoch alone does not discard valid results");
     const invalidated = unwrap(service.amendWork(user, {

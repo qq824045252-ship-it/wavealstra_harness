@@ -498,6 +498,7 @@ const GENERIC_WRITE_TOOLS: Array<{ name: string; op: FileAccessOperation }> = [
   { name: "move_file", op: "rename" },
   { name: "rename_file", op: "rename" },
 ];
+const GENERIC_READ_TOOLS = ["read_file", "read_text_file", "read_multiple_files"];
 
 let defaultRegistry: McpSideEffectRegistry | null = null;
 
@@ -516,6 +517,14 @@ export function getDefaultMcpSideEffectRegistry(): McpSideEffectRegistry {
       },
     });
   }
+  for (const toolName of GENERIC_READ_TOOLS) reg.registerAdapter({ providerId: "*", toolName, operation: "read",
+    extractPaths: input => {
+      const paths = extractCommonPathFields(input);
+      if (input && typeof input === "object" && "paths" in input && Array.isArray(input.paths))
+        paths.push(...input.paths.filter((value): value is string => typeof value === "string" && value.trim().length > 0));
+      return paths;
+    },
+  });
   registerManagedRuntimePolicies(reg);
   defaultRegistry = reg;
   return reg;

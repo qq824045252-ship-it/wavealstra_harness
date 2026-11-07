@@ -44,6 +44,8 @@ export interface ComputerUseBackend {
   status(): ComputerUseStatus;
   execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput>;
   shutdown(): Promise<void>;
+  /** Proves previously admitted backend queue work has drained before resource takeover. */
+  waitForIdle?(): Promise<void>;
   /**
    * 可选：刷新会话、总线、compositor 与输入依赖的真实能力证据。
    * status() 保持同步、轻量；异步探测不得隐式截图或发送用户输入。

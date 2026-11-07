@@ -64,8 +64,16 @@ import type { BotDto } from "../../../shared/bot-work";
 import { BotRegistry } from "./BotRegistry";
 import { WorkRepository, newId } from "./WorkRepository";
 import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
-import { normalizeTexts, normalizeSources, normalizeWatchRule } from "./WorkControlNormalization";
+import { normalizeTexts, normalizeSources, normalizeWatchRule, normalizeCriteria, currentAcceptedDeliverableIds, matchesFilter } from "./WorkControlNormalization";
 import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
+import { WorkResourceGate, type ResourceLease } from "./WorkResourceGate";
+import { WorkPartialResults } from "./WorkPartialResults";
+import { WorkArtifactValidation } from "./WorkArtifactValidation";
+import { WorkCollaborationService } from "./WorkCollaborationService";
+import { WorkNotificationDelivery } from "./WorkNotificationDelivery";
+import { WorkPausedBacklog } from "./WorkPausedBacklog";
+import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
+import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
 
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
@@ -77,6 +85,7 @@ export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
 
 export interface WorkServiceOptions {
   bots: BotRegistry;
+  resourceHostId?: string;
   now?: () => number;
   emitProjection?: (projection: WorkProjectionDto) => void;
   computeNextWake?: WorkNextWake;
@@ -102,6 +111,12 @@ const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "t
 export class WorkService {
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
+  readonly resourceGate: WorkResourceGate;
+  readonly partialResults: WorkPartialResults;
+  readonly artifacts: WorkArtifactValidation;
+  readonly collaboration: WorkCollaborationService;
+  readonly notifications: WorkNotificationDelivery;
+  readonly pausedBacklog: WorkPausedBacklog;
   private readonly bots: BotRegistry;
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
@@ -119,7 +134,17 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
+    this.resourceGate = new WorkResourceGate(db, { hostId: options.resourceHostId ?? newId("resource-host"),
+      isAuthority: () => !this.authority || this.authority(), now: this.now,
+      authorize: (owner, resources) => authorizeWorkResourceOwner({ service: this, bots: this.bots, now: this.now, owner, resources }) });
+    this.partialResults = new WorkPartialResults(db, this);
+    this.artifacts = new WorkArtifactValidation(db, this);
+    this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
+    this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
+    this.pausedBacklog = new WorkPausedBacklog(db, this);
+
   }
+
 
   private authorityError(): Fail | undefined {
     if (!this.authority || this.authority()) return undefined;
@@ -194,7 +219,7 @@ export class WorkService {
     const deliverables = this.repo.listDeliverables(work.workId);
     const blockers = this.repo.listBlockers(work.workId);
     const executions = this.repo.listBindings(work.workId);
-    const notifications = this.repo.listNotifications(work.workId);
+    const notifications = this.repo.listNotifications(work.workId).map(notification => ({ ...notification, ...this.notifications.identity(notification.notificationId) }));
     const subscriptions = this.repo.listSubscriptions(work.workId);
     const currentResultIds = new Set(currentAcceptedDeliverableIds(work, deliverables, executions));
     const unresolved = work.criteria.filter((criterion) => !isCriterionResolved(criterion));
@@ -203,7 +228,13 @@ export class WorkService {
       .flatMap((deliverable) => deliverable.uncoveredScope))];
     const nextSteps: string[] = [];
     if (work.lifecycle === "closing") nextSteps.push("等待在途执行与外部效果结算");
-    if (work.lifecycle === "paused") nextSteps.push("事项已暂停，恢复后继续");
+    const resourceWaits = this.resourceGate.waiting(work.workId);
+    const settlingActions = Math.max(this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted" || item.state === "unknown").length,
+      this.resourceGate.live().filter(lease => lease.owner.workId === work.workId).length);
+    const gaps = this.partialResults.gaps(work.workId);
+    if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
+    for (const reason of resourceWaits) nextSteps.push(reason);
+    if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待定向补跑`);
     if (work.lifecycle !== "closed") {
       for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
         nextSteps.push(`需要你的决定：${blocker.reason}`);
@@ -244,6 +275,13 @@ export class WorkService {
       executions,
       notifications,
       subscriptionIds: subscriptions.map(subscription => subscription.subscriptionId),
+      phase3: {
+        subitems: this.partialResults.list(work.workId), continuations: this.partialResults.plans(work.workId),
+        gaps, resourceWaits, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
+        artifactSnapshotId: this.artifacts.currentSnapshotId(work.workId),
+        handoffs: this.collaboration.history(work.workId).filter(message => message.kind === "handoff"),
+        collaborationMessages: this.collaboration.history(work.workId),
+      },
       uncoveredScope,
       nextSteps,
       updatedAt: work.updatedAt,
@@ -305,7 +343,7 @@ export class WorkService {
       }
       const now = this.now();
       const workId = newId("work");
-      const criteria = normalizeCriteria(params.criteria, 1, resolved, now);
+      const criteria = normalizeCriteria(params.criteria, 1, now);
       if (typeof criteria === "string") return { ok: false, code: "invalid_request", message: criteria };
       const authorization = intersectAuthorization(params.authorization, resolved.grants);
       const inputSnapshotId = params.inputSnapshotId?.trim() || "snapshot:unbound";
@@ -369,6 +407,42 @@ export class WorkService {
   amendWork(actor: WorkActor, params: AmendWorkParams): WorkControlResult {
     return this.runWorkControl(actor, "amendWork", params, { guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"] },
       (work, resolved, now) => this.applyAmend(work, resolved, params, now));
+  }
+
+  /** Trusted host source readback. Not exposed as a model tool or IPC actor. */
+  applyObservedSources(workId: string, operationId: string, readBefore: WorkDto,
+    current: { inputSnapshotId: string; sources: WorkGoalSourceDto[] }): WorkControlResult {
+    const params: AmendWorkParams = { operationId, workId, inputSnapshotId: current.inputSnapshotId, goalSources: current.sources };
+    const invalid = this.validatePayload("amendWork", params);
+    if (invalid) return invalid;
+    const outcome = this.transaction((): WorkControlResult => {
+      const denied = this.authorityError(); if (denied) return denied;
+      const work = this.repo.getWork(workId);
+      if (!work || readBefore.workId !== workId) return { ok: false, code: "not_found", message: "找不到 Work" };
+      const payloadHash = this.hash("observedSources", params);
+      const receipt = this.repo.getReceipt(work.userId, operationId);
+      if (receipt) {
+        if (receipt.work_id !== workId || receipt.operation_type !== "observedSources" || receipt.payload_hash !== payloadHash)
+          return { ok: false, code: "idempotency_conflict", message: "来源操作身份已用于不同观察" };
+        return { ok: true, replayed: true, operationId, work };
+      }
+      if (work.stateVersion !== readBefore.stateVersion || work.ownerEpoch !== readBefore.ownerEpoch
+        || work.intentRevision !== readBefore.intentRevision || work.inputSnapshotId !== readBefore.inputSnapshotId)
+        return { ok: false, code: "version_conflict", message: "来源读取期间事项已变化，需要重新观察" };
+      if (!["active", "paused"].includes(work.lifecycle))
+        return { ok: false, code: "invalid_lifecycle_transition", message: "结束中的事项不受理新的来源变化" };
+      const mutation = this.applyAmend(work, { kind: "system", userId: work.userId, grants: work.authorization }, params, this.now());
+      if (!mutation.ok) return mutation;
+      const updated = this.repo.getWork(workId)!;
+      if (updated.inputSnapshotId !== readBefore.inputSnapshotId) this.outbox({ work: updated,
+        eventType: "work.source_dispatch_requested", operationId: `source-dispatch:${operationId}`,
+        payload: { inputSnapshotId: updated.inputSnapshotId, sourceOperationId: operationId } });
+      this.repo.saveReceipt({ userId: work.userId, operationId, workId, operationType: "observedSources", payloadHash,
+        workSnapshot: updated, outboxEventId: mutation.outboxEventId, now: this.now() });
+      this.emitCurrentProjection(workId);
+      return { ok: true, replayed: false, operationId, work: updated, outboxEventId: mutation.outboxEventId };
+    });
+    return outcome;
   }
 
   private applyAmend(work: WorkDto, resolved: ResolvedActor, params: AmendWorkParams, now: number): Mutation {
@@ -516,6 +590,7 @@ export class WorkService {
           ...work, lifecycle: "paused", stateVersion: work.stateVersion + 1, updatedAt: now,
         };
         this.repo.updateWork(next);
+        this.resourceGate.cancelWaiting({ workId: work.workId });
         const outboxEventId = this.outbox({
           work: next, eventType: "work.paused", operationId: params.operationId,
           payload: { reason: params.reason, activeExecutionIds: work.activeExecutionIds },
@@ -534,12 +609,21 @@ export class WorkService {
           ...work, lifecycle: "active", stateVersion: work.stateVersion + 1, updatedAt: now,
         };
         this.repo.updateWork(next);
+        this.pausedBacklog.resume(next, now);
         const outboxEventId = this.outbox({
           work: next, eventType: "work.resumed", operationId: params.operationId,
           payload: { pendingEvents: this.repo.listInbox(work.workId).length },
         });
         return { ok: true, outboxEventId };
       });
+  }
+
+  continueWork(actor: WorkActor, params: ContinuationWorkParams): WorkControlResult {
+    const parsed = continuationWorkSchema.safeParse(params);
+    if (!parsed.success) return { ok: false, code: "invalid_request", message: "缺口补跑请求无效" };
+    return this.runWorkControl(actor, "continueWork", parsed.data, {
+      guard: "full", ownerOnly: true, allowLifecycles: ["active"],
+    }, (work, _resolved, now) => this.partialResults.continue(work, parsed.data, now));
   }
 
   cancelWork(actor: WorkActor, params: CancelWorkParams): WorkControlResult {
@@ -549,6 +633,7 @@ export class WorkService {
   }
 
   private applyCancellation(work: WorkDto, params: { operationId: string; reason?: string }, now: number): Mutation {
+    this.resourceGate.cancelWaiting({ workId: work.workId });
     let next = work;
     if (work.lifecycle !== "closed" && work.lifecycle !== "closing") {
       next = {
@@ -561,7 +646,7 @@ export class WorkService {
         updatedAt: now,
       };
       this.repo.updateWork(next);
-      this.repo.cancelPendingResultNotifications(work.workId);
+      this.notifications.supersede(work.workId, "cancelled");
       this.outbox({
         work: next, eventType: "work.cancel_requested", operationId: params.operationId,
         payload: { reason: params.reason, activeExecutionIds: next.activeExecutionIds },
@@ -581,9 +666,15 @@ export class WorkService {
   }
 
   closeWork(actor: WorkActor, params: CloseWorkParams): WorkControlResult {
+    const artifactInspection = params.conclusion === "succeeded" ? this.artifacts.capture(params.workId) : undefined;
     return this.runWorkControl(actor, "closeWork", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing"],
     }, (work, _resolved, now) => {
+      if (artifactInspection && !this.artifacts.validate(artifactInspection, now)) {
+        this.emitCurrentProjection(work.workId);
+        return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
+      }
+
       if (work.lifecycle === "closed") {
         return {
           ok: false, code: "invalid_lifecycle_transition",
@@ -603,6 +694,8 @@ export class WorkService {
         if (work.lifecycle !== "active") {
           return { ok: false, code: "invalid_lifecycle_transition", message: "只有进行中的事项可以按完成关闭" };
         }
+        if (this.partialResults.gaps(work.workId).length)
+          return { ok: false, code: "unmet_acceptance_criteria", message: "必要子项仍有未覆盖缺口，不能按完成关闭" };
         const unmet = work.criteria.find((criterion) => !isCriterionResolved(criterion));
         if (unmet) {
           return {
@@ -688,8 +781,18 @@ export class WorkService {
     return { ok: true, outboxEventId };
   }
 
+  /** Called by the trusted recovery coordinator within the Work transaction. */
+  finalizeRecoveredResource(lease: ResourceLease): void {
+    this.transaction(() => {
+      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
+      finalizeWorkResource({ db: this.db, service: this, lease, now: this.now,
+        tryClose: (work, now) => this.tryCloseSettled(work, now) });
+    });
+  }
+
   /** Closing work may only finish when no execution, admission, blocker or unknown effect remains. */
   private isSettled(work: WorkDto): boolean {
+    if (this.resourceGate.live().some(lease => lease.owner.workId === work.workId)) return false;
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
     if (bindings.some(binding => binding.reservationId && ["reserved", "unknown"].includes(this.repo.getReservation(binding.reservationId)?.state ?? ""))) return false;
@@ -721,6 +824,12 @@ export class WorkService {
       if (!work.authorization.allowRedelegation) {
         return { ok: false, code: "unauthorized_actor", message: "事项授权不允许转交负责" };
       }
+      const scopeError = this.collaboration.handoffError(work, params.targetBotId);
+      if (scopeError || params.delegatedScope?.some(scope => !work.authorization.allowedScopes.includes(scope)))
+        return { ok: false, code: "unauthorized_actor", message: scopeError ?? "交接范围超出授权" };
+      const preparationId = params.preparationId ?? this.collaboration.prepareHandoff(actor, work.workId, params.targetBotId).preparationId;
+      const preparationError = this.collaboration.preparationError(preparationId, work, params.targetBotId);
+      if (preparationError) return { ok: false, code: "version_conflict", message: preparationError };
       this.repo.upsertParticipant({
         workId: work.workId, botId: target.botId, role: "collaborator",
         delegatedScope: params.delegatedScope ?? [], expertSnapshot: this.snapshotOf(target), addedAt: now,
@@ -733,6 +842,7 @@ export class WorkService {
         updatedAt: now,
       };
       this.repo.updateWork(next);
+      this.collaboration.commitHandoffFacts(work, next, params.operationId, now);
       const outboxEventId = this.outbox({
         work: next, eventType: "work.owner_handed_off", operationId: params.operationId,
         payload: {
@@ -1001,6 +1111,9 @@ export class WorkService {
         if (binding.inputSnapshotId !== work.inputSnapshotId) {
           return { ok: false, code: "version_conflict", message: "执行绑定基于旧输入快照，拒绝新的业务副作用" };
         }
+        if (!this.collaboration.isDelegationAdopted(binding, work)) {
+          return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管原执行委派" };
+        }
         if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
           return { ok: false, code: "unauthorized_actor", message: "worker 只能为自己的绑定申请业务动作" };
         }
@@ -1186,9 +1299,15 @@ export class WorkService {
   }
 
   acceptDeliverable(actor: WorkActor, params: AcceptDeliverableParams): WorkControlResult {
+    const artifactInspection = this.artifacts.capture(params.workId);
     return this.runWorkControl(actor, "acceptDeliverable", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
     }, (work, resolved, now) => {
+      if (!this.artifacts.validate(artifactInspection, now)) {
+        this.emitCurrentProjection(work.workId);
+        return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
+      }
+
       if (!this.isOwnerOrUser(work, resolved)) {
         return { ok: false, code: "unauthorized_actor", message: "仅当前主负责人或用户可验收成果" };
       }
@@ -1196,6 +1315,7 @@ export class WorkService {
       if (!deliverable || deliverable.workId !== work.workId) {
         return { ok: false, code: "not_found", message: "找不到成果记录" };
       }
+      if (deliverable.status === "superseded") return { ok: false, code: "version_conflict", message: "历史成果需要重新核验，不能直接验收" };
       if (deliverable.status === "accepted") {
         return { ok: false, code: "invalid_request", message: "成果已验收；重试请使用原操作 ID" };
       }
@@ -1350,9 +1470,15 @@ export class WorkService {
     const resolved = this.resolveActor(actor);
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
     if (resolved.kind !== "user") return { ok: false, code: "unauthorized_actor", message: "实测反馈必须来自已认证用户入口" };
+    const artifactInspection = this.artifacts.capture(params.workId);
     return this.runWorkControl(actor, "recordUserFeedback", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
     }, (work, _resolved, now) => {
+      if (!this.artifacts.validate(artifactInspection, now)) {
+        this.emitCurrentProjection(work.workId);
+        return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
+      }
+
       if (work.userId !== resolved.userId) return { ok: false, code: "not_found", message: "找不到 Work" };
       if (!params.environment?.trim()) return { ok: false, code: "invalid_request", message: "实测反馈必须注明环境" };
       if (!params.sourceRef?.trim()) return { ok: false, code: "invalid_request", message: "实测反馈必须注明被测版本" };
@@ -1360,6 +1486,8 @@ export class WorkService {
       if (!inputSnapshotId || inputSnapshotId === "snapshot:unbound") {
         return { ok: false, code: "invalid_request", message: "实测反馈必须明确绑定被测输入快照，不能默认使用当前版本" };
       }
+      if (artifactInspection.observed.length && params.artifactSnapshotId !== this.artifacts.snapshotId(artifactInspection))
+        return { ok: false, code: "version_conflict", message: "实测反馈必须绑定被测产物版本，旧产物反馈不能验证当前结果" };
       const historical = inputSnapshotId !== work.inputSnapshotId;
       const criteria = work.criteria.map(criterion => ({ ...criterion }));
       const evidenceId = newId("evidence");
@@ -1790,6 +1918,7 @@ export class WorkService {
   } {
     const now = event.timestamp ?? this.now();
     return this.transaction(() => {
+      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
       const sourceNew = this.repo.recordSourceEvent({
         source: event.source,
         sourceEventId: event.sourceEventId,
@@ -1810,6 +1939,16 @@ export class WorkService {
         if (subscription.stoppedAt) continue;
         const work = this.repo.getWork(subscription.workId);
         if (!work) continue;
+        if (!sourceNew) {
+          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "duplicate" });
+          continue;
+        }
+        if (work.lifecycle === "paused") {
+          const outcome = this.pausedBacklog.enqueue(work, subscription, event, now);
+          outcomes.push({ workId: work.workId, subscriptionId: subscription.subscriptionId, outcome });
+          this.emitCurrentProjection(work.workId);
+          continue;
+        }
         const dedupeKey = `sub:${subscription.subscriptionId}:src:${event.sourceEventId}`;
         const status = options.hostOnline === false && subscription.catchUpPolicy === "skip" ? "skipped" as const : undefined;
         if (status === "skipped") {
@@ -1910,8 +2049,7 @@ export class WorkService {
 
   /** Due inbox rows: `merged` rows become ready at their bounded merge deadline. */
   listDueInbox(workId: string, now = this.now()): WorkInboxEventDto[] {
-    return this.repo.listInbox(workId, ["pending", "merged"])
-      .filter(event => event.status === "pending" || (event.processAfter ?? 0) <= now);
+    return this.pausedBacklog.due(workId, now);
   }
 
   /**
@@ -1920,10 +2058,14 @@ export class WorkService {
    */
   completeInboxEvent(eventId: string, apply: (event: WorkInboxEventDto) => void): { ok: boolean; message?: string } {
     return this.transaction(() => {
+      const denied = this.authorityError(); if (denied) return { ok: false, message: denied.message };
       const event = this.repo.getInbox(eventId);
       if (!event) return { ok: false, message: "找不到事件" };
       if (event.status === "processed") return { ok: true };
       if (event.status !== "pending" && event.status !== "merged") return { ok: false, message: `事件状态 ${event.status} 不能处理` };
+      if (this.getWork(event.workId)?.lifecycle !== "active") return { ok: false, message: "暂停或结束的事项不能处理新业务事件" };
+      if (event.payload.authoritativeReadbackRequired) return { ok: false, message: "合并事件必须通过可信来源回读入口消费" };
+
       apply(event);
       this.repo.setInboxStatus(event.eventId, "processed", this.now());
       return { ok: true };
@@ -1933,6 +2075,7 @@ export class WorkService {
   /** Deterministic trigger tick: one stable identity per subscription and scheduled time. */
   tick(now = this.now()): Array<{ subscriptionId: string; workId: string; scheduledAt: number }> {
     return this.transaction(() => {
+      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
       const fired: Array<{ subscriptionId: string; workId: string; scheduledAt: number }> = [];
       for (const subscription of this.repo.listActiveSubscriptions()) {
         const scheduledAt = subscription.nextWakeAt;
@@ -1940,7 +2083,12 @@ export class WorkService {
         const work = this.repo.getWork(subscription.workId);
         if (!work || work.lifecycle === "closed") continue;
         const dedupeKey = `sub:${subscription.subscriptionId}:tick:${scheduledAt}`;
-        const inserted = this.repo.insertInbox({
+        if (work.lifecycle === "paused") this.repo.recordSourceEvent({ source: "cron", sourceEventId: dedupeKey,
+          eventType: "work.tick", payload: { scheduledAt }, receivedAt: now });
+        const inserted = work.lifecycle === "paused"
+          ? this.pausedBacklog.enqueue(work, subscription, { source: "cron", sourceEventId: dedupeKey,
+            eventType: "work.tick", payload: { scheduledAt } }, now) === "pending"
+          : this.repo.insertInbox({
           eventId: newId("event"),
           dedupeKey,
           source: "cron",
@@ -1973,87 +2121,7 @@ export class WorkService {
    * `unknown`; it is never turned into a second blind send.
    */
   deliverPendingNotifications(channel: WorkNotificationChannel, workId?: string): Array<{ notificationId: string; delivery: WorkNotificationDto["delivery"] }> {
-    const works = workId
-      ? [this.repo.getWork(workId)].filter((item): item is WorkDto => Boolean(item))
-      : this.repo.listWorksForNotifications();
-    const outcomes: Array<{ notificationId: string; delivery: WorkNotificationDto["delivery"] }> = [];
-    for (const work of works) {
-      for (const notification of this.repo.listNotifications(work.workId)) {
-        if (notification.delivery === "sent" || notification.delivery === "failed") continue;
-        if (notification.channel && notification.channel !== channel.channel) continue;
-        const idempotencyKey = notification.idempotencyKey ?? `work-notify:${notification.notificationId}`;
-        if (notification.delivery === "unknown") {
-          if (!channel.idempotent) {
-            outcomes.push({ notificationId: notification.notificationId, delivery: "unknown" });
-            continue;
-          }
-          const lookup = channel.lookup?.({ notification, idempotencyKey }) ?? "unknown";
-          if (lookup === "delivered") {
-            this.repo.updateNotificationDelivery(notification.notificationId, {
-              delivery: "sent", channel: channel.channel, idempotencyKey,
-              externalReceipt: "reconciled-by-idempotency-key", sentAt: this.now(),
-            });
-            outcomes.push({ notificationId: notification.notificationId, delivery: "sent" });
-            continue;
-          }
-          if (lookup === "unknown") {
-            outcomes.push({ notificationId: notification.notificationId, delivery: "unknown" });
-            continue;
-          }
-        }
-        const attemptCount = notification.attemptCount + 1;
-        this.transaction(() => {
-          this.repo.updateNotificationDelivery(notification.notificationId, {
-            delivery: "unknown", channel: channel.channel, attemptCount, idempotencyKey,
-          });
-        });
-        let response: ReturnType<WorkNotificationChannel["send"]>;
-        try {
-          response = channel.send({ notification, idempotencyKey });
-        } catch {
-          outcomes.push({ notificationId: notification.notificationId, delivery: "unknown" });
-          continue;
-        }
-        const outcome = this.transaction((): WorkNotificationDto["delivery"] => {
-          if (response.ok) {
-            this.repo.updateNotificationDelivery(notification.notificationId, {
-              delivery: "sent", channel: channel.channel, attemptCount, externalReceipt: response.receipt,
-              sentAt: this.now(), idempotencyKey,
-            });
-            return "sent";
-          }
-          if (response.responseLost && channel.idempotent) {
-            const lookup = channel.lookup?.({ notification, idempotencyKey }) ?? "unknown";
-            if (lookup === "delivered") {
-              this.repo.updateNotificationDelivery(notification.notificationId, {
-                delivery: "sent", channel: channel.channel, attemptCount, idempotencyKey, sentAt: this.now(),
-                externalReceipt: "reconciled-by-idempotency-key",
-              });
-              return "sent";
-            }
-            if (lookup === "unknown") {
-              this.repo.updateNotificationDelivery(notification.notificationId, {
-                delivery: "unknown", channel: channel.channel, attemptCount, idempotencyKey,
-              });
-              return "unknown";
-            }
-          }
-          if (response.responseLost) {
-            this.repo.updateNotificationDelivery(notification.notificationId, {
-              delivery: "unknown", channel: channel.channel, attemptCount, idempotencyKey,
-            });
-            return "unknown";
-          }
-          const delivery = !response.retryable || attemptCount >= 3 ? "failed" : "pending";
-          this.repo.updateNotificationDelivery(notification.notificationId, {
-            delivery, channel: channel.channel, attemptCount, idempotencyKey,
-          });
-          return delivery;
-        });
-        outcomes.push({ notificationId: notification.notificationId, delivery: outcome });
-      }
-    }
-    return outcomes;
+    return this.notifications.deliver(channel, workId);
   }
 
   markNotificationRead(notificationId: string): { ok: boolean; message?: string } {
@@ -2410,51 +2478,7 @@ function parseWork(value: string): WorkDto | undefined {
   try { return JSON.parse(value) as WorkDto; } catch { return undefined; }
 }
 
-function currentAcceptedDeliverableIds(work: WorkDto, deliverables: WorkDeliverableDto[], bindings: WorkExecutionBindingDto[]): string[] {
-  const validBindings = new Set(bindings.filter(binding => binding.invalidatedAt === undefined && binding.status !== "invalidated")
-    .map(binding => binding.bindingId));
-  const current = new Set(deliverables.filter(deliverable => deliverable.status === "accepted"
-    && deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId
-    && validBindings.has(deliverable.executionId)).map(deliverable => deliverable.deliverableId));
-  return work.acceptedDeliverableIds.filter(id => current.has(id));
-}
 
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }
 
-function normalizeCriteria(
-  inputs: CreateWorkParams["criteria"],
-  intentRevision: number,
-  _resolved: ResolvedActor,
-  now: number,
-): WorkCriterionDto[] | string {
-  const criteria = (inputs ?? []).slice(0, WORK_MAX_CRITERIA);
-  const next: WorkCriterionDto[] = [];
-  for (const input of criteria) {
-    const text = input.text?.trim().slice(0, 500);
-    if (!text) continue;
-    if (input.status && input.status !== "pending") return "创建事项时验收条件只能是待验收状态";
-    next.push({
-      id: input.id?.trim() || `criterion-${now}-${next.length}`,
-      text,
-      status: "pending",
-      requiredIntentRevision: intentRevision,
-      requiresRealEnvironmentCheck: Boolean(input.requiresRealEnvironmentCheck),
-      requiredEnvironment: input.requiredEnvironment?.trim() || undefined,
-      evidenceRefs: [],
-    });
-  }
-  return next;
-}
 
-function matchesFilter(filter: Record<string, unknown>, payload: Record<string, unknown>): boolean {
-  for (const [key, expected] of Object.entries(filter ?? {})) {
-    if (expected === undefined) continue;
-    const actual = payload[key];
-    if (Array.isArray(expected)) {
-      if (!expected.includes(actual)) return false;
-    } else if (actual !== expected) {
-      return false;
-    }
-  }
-  return true;
-}

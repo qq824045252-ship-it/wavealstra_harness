@@ -289,7 +289,7 @@ try {
 
   // P10 — handoff does not reject the old worker's own deliverable.
   bots.registerBot({ botId: "bot-worker", userId: LOCAL_USER_ID, displayName: "执行 Bot" });
-  bots.registerBot({ botId: "bot-next", userId: LOCAL_USER_ID, displayName: "下一任" });
+  bots.registerBot({ botId: "bot-next", userId: LOCAL_USER_ID, displayName: "下一任", authorization: wide });
   const p10 = createWork("p10", "交接后仍可提交", { ownerBotId: DEFAULT_BOT_ID });
   const p10Dispatch = unwrap(service.dispatchExecution(user(LOCAL_USER_ID, wide), {
     operationId: "p10-dispatch",

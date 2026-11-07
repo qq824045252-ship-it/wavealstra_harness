@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
+import type { WorkToolResourcePolicy, ToolResourceContext } from "../work/WorkToolResourcePolicy";
 import { z } from "zod";
 import type { Context } from "@earendil-works/chord/context";
-import type { HookApi, ToolHookCall, ToolHooks } from "@earendil-works/pi-durable";
+import type { HookApi, ToolExecutionResult, ToolHookCall, ToolHooks } from "@earendil-works/pi-durable";
 import type { PermissionMode } from "../../../shared/agent-ipc";
 import { isDangerousTool, isSideEffectTool, summarizeToolInput } from "../../../shared/pi-event-mapper";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
@@ -45,6 +46,7 @@ export interface DurableToolPolicyOptions {
   effectRecovery?: ExternalEffectRecovery;
   admitWorkAction?: (input: { operationId: string; actionKind: string }) => string | undefined;
   settleWorkAction?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void;
+  resourcePolicy?: WorkToolResourcePolicy;
 }
 
 /** Native ToolTask hooks run for model tools, child agents, and Code Mode's nested calls. */
@@ -97,6 +99,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         }
         const paths = mcp?.decision.isLocalWrite ? mcp.decision.paths :
           (call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string" ? [call.arguments.path] : [];
+        const resourcePaths = mcp?.decision.paths.length ? mcp.decision.paths : paths;
         const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
         if (child && child.taskId !== options.taskId) return { block: "子代理身份与宿主任务不一致" };
         const taskRoot = child?.workspace.cwd ?? options.taskRoot;
@@ -124,7 +127,18 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
         const actionKind = ["subagent", "subagent_steer"].includes(call.name) ? "delegate"
           : sideEffect || dangerous ? "workspace:write" : "workspace:read";
-        const admitWork = () => options.admitWorkAction?.({ operationId, actionKind });
+        const resourceContext: ToolResourceContext = { taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot };
+        const admitWork = async () => {
+          const denied = options.admitWorkAction?.({ operationId, actionKind });
+          if (denied) return denied;
+          const resourceInput = { call, context: resourceContext, sideEffect: sideEffect || dangerous, paths: resourcePaths };
+          const resourceDenied = await options.resourcePolicy?.beforeWait(resourceInput, context.abortSignal);
+          if (resourceDenied) {
+            const notStarted = options.resourcePolicy?.refuse(resourceInput, resourceDenied) === true;
+            options.settleWorkAction?.(operationId, notStarted ? "released" : "unknown");
+          }
+          return resourceDenied;
+        };
         if (sideEffect || dangerous) {
           const execution = await durableExecutionContext(options.taskId, api, context);
           const priorIntent = await api.memo("mybuddy.effect-intent", context);
@@ -141,13 +155,13 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           });
           if (intent?.kind === "receipt") {
             const argumentsWithIdentity = { ...call.arguments, [intent.contract.idempotencyArgument]: intent.operationId };
-            const blocked = admitWork();
+            const blocked = await admitWork();
             if (blocked) return { block: blocked };
             return { arguments: jsonArguments.parse(originalCall.name === "mcp_call_tool"
               ? { ...originalCall.arguments, arguments: argumentsWithIdentity } : argumentsWithIdentity) };
           }
         }
-        const blocked = admitWork();
+        const blocked = await admitWork();
         if (blocked) return { block: blocked };
         return undefined;
       },
@@ -158,6 +172,24 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const interrupted = result.diagnostics?.find(item => ["interrupted", "aborted", "abandoned", "restart_limit"].includes(item.code ?? ""));
         const execution = await identity(api, context, call);
         const attempt = options.attempts.findDurable(execution, call.id);
+        const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
+        const mayWrite = mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments));
+        const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
+        const resourcePaths = mcp?.decision.paths.length ? mcp.decision.paths :
+          (call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string" ? [call.arguments.path] : [];
+        const resourceInput = { call, sideEffect: mayWrite, paths: resourcePaths, context: {
+          taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot: child?.workspace.cwd ?? options.taskRoot,
+        } };
+        if (options.resourcePolicy?.wasNotStarted(resourceInput)) {
+          options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, "released");
+          if (attempt) options.attempts.settleDurable({ ...attempt, status: "failed", phase: "finished", finishedAt: Date.now(),
+            transportStatus: "failed", causeCode: "resource-admission-denied", verifierId: "durable-resource-admission", recovery: undefined,
+            verification: { ...execution, attemptId: attempt.id, verifierId: "durable-resource-admission", verifierVersion: 1,
+              target: attempt.target, canonicalTarget: attempt.target, status: "failed", expected: { admitted: true },
+              observed: { admitted: false, effect: "not_started" }, checkedAt: Date.now() } });
+          const blockedResult: ToolExecutionResult = { ...result, isError: true, details: { resourceAdmission: "not_started" } };
+          return blockedResult;
+        }
         const savedIntent = await api.memo("mybuddy.effect-intent", context);
         const intent = savedIntent === undefined ? undefined : effectIntentSchema.parse(savedIntent);
         let evidence: EffectEvidence | undefined;
@@ -170,10 +202,9 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
             observed: { reason: "receipt-verifier-unavailable-or-not-authorized" }, checkedAt: Date.now() };
         }
         const reconciled = evidence?.status === "passed";
-        const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
-        const mayWrite = mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments));
-        options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`,
-          reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released");
+        const settlement = reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released";
+        options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, settlement);
+        options.resourcePolicy?.after(resourceInput, settlement);
         if (attempt) {
           const status = evidence?.status ?? (interrupted ? "inconclusive" : result.isError ? "failed" : "passed");
           options.attempts.settleDurable({ ...attempt, status, phase: "finished", finishedAt: Date.now(),

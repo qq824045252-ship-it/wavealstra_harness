@@ -20,6 +20,7 @@ interface PendingRequest {
 const POWERSHELL_BOOTSTRAP = String.raw`$ErrorActionPreference='Stop';$b=[Convert]::FromBase64String($env:MYBUDDY_AUTOMATION_HOST_GZIP);$env:MYBUDDY_AUTOMATION_HOST_GZIP=$null;$m=New-Object IO.MemoryStream(,$b);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);$s=$r.ReadToEnd();$r.Dispose();Invoke-Expression $s`;
 
 export class WindowsAutomationHost {
+  private readonly terminations = new Set<Promise<void>>();
   private child: ChildProcessWithoutNullStreams | null = null;
   private lines: ReadlineInterface | null = null;
   private readonly pending = new Map<string, PendingRequest>();
@@ -173,7 +174,20 @@ export class WindowsAutomationHost {
     this.child = null;
     this.lines?.close();
     this.lines = null;
-    if (child && child.exitCode == null && !child.killed) child.kill();
+    if (child && child.exitCode == null && child.signalCode == null) {
+      const exited = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("旧桌面宿主尚未确认退出，输入资源保持隔离")), 5_000);
+        child.once("exit", () => { clearTimeout(timer); resolve(); });
+      });
+      this.terminations.add(exited);
+      void exited.then(() => this.terminations.delete(exited), () => undefined);
+      if (!child.killed) child.kill();
+    }
+  }
+
+  async waitForQuiescence(): Promise<void> {
+    await Promise.all(this.terminations);
+    if (this.pending.size) throw new Error("桌面宿主仍有未结算请求，不能转交输入资源");
   }
 
   async shutdown(): Promise<void> {
@@ -182,6 +196,7 @@ export class WindowsAutomationHost {
     const child = this.child;
     if (!child || child.exitCode != null || child.killed) {
       this.terminateHost();
+      await this.waitForQuiescence();
       return;
     }
     try {
@@ -190,6 +205,7 @@ export class WindowsAutomationHost {
       // Best effort; process termination below guarantees no orphan.
     } finally {
       this.terminateHost();
+      await this.waitForQuiescence();
     }
   }
 

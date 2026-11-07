@@ -134,6 +134,14 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
     { agent: "worker", task: "SCENARIO=partial valid two", model, isolation },
   ] };
   // D-5: auto does not isolate single tasks or a one-item tasks array; the result must say why.
+  if (marker("forbidden-auto")) return { tasks: [
+    { agent: "writer", task: "SCENARIO=forbidden-auto WRITE_ONE", model },
+    { agent: "writer", task: "SCENARIO=forbidden-auto WRITE_TWO", model },
+  ] };
+  if (marker("forbidden-explicit")) return { tasks: [
+    { agent: "writer", task: "SCENARIO=forbidden-explicit WRITE_ONE", model, isolation: "worktree" },
+    { agent: "writer", task: "SCENARIO=forbidden-explicit WRITE_TWO", model, isolation: "worktree" },
+  ] };
   if (marker("auto-single")) return { agent: "worker", task: "SCENARIO=auto-single task", model };
   // D-5: an explicit `auto` that cannot isolate must say so instead of reading like a silent choice.
   if (marker("auto-explicit")) return { agent: "worker", task: "SCENARIO=auto-explicit task", model, isolation: "auto" };
@@ -236,6 +244,7 @@ try {
   await writeFile(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: fixture writer\ntools: write\n---\nWrite the file then answer.\n");
   const native = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false });
   let permission: "auto" | "readonly" = "auto";
+  let allowGitIsolation = true;
   const proof = defineTool({ name: "proof", description: "Write proof", parameters: Type.Object({}), replay: "unsafe", execute: async (_args, api) => {
     assert.equal((await api.agent(ctx)).cwd, cwd);
     writes++;
@@ -257,7 +266,7 @@ try {
   const open = async (store: string) => {
     const registry = createRegistry();
     registry.install(defineExtension({ name: "fixture",
-      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission })],
+      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation })],
       // D-2: the same beforeTool entry point AgentService installs for production (a one-line
       // `guardSubagentWriteCall(call, api.conversationId, task.id)`); the guard itself is registered by
       // DurableSubagents.runChild for parallel dispatches with concurrency > 1, keyed by taskId here too
@@ -325,7 +334,7 @@ try {
    * 直接取工具并调 execute，不经模型，避免用 fixture 的调用意图代替断言本身。
    */
   const readLive = async (taskId: string) => {
-    const tool = createDurableSubagentTools({ taskId, cwd, models: native, permissionMode: () => permission })
+    const tool = createDurableSubagentTools({ taskId, cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation })
       .find(candidate => candidate.name === "subagent_list") as unknown as
       { execute: (args: unknown, api: unknown, context: unknown) => Promise<{ details: { active: Array<{ status?: string }> } }> } | undefined;
     assert(tool, "subagent_list must be registered");
@@ -470,6 +479,18 @@ try {
   }
 
   // ---- D-5: auto on a single task (and a one-item tasks array) resolves to shared, with the reason
+  allowGitIsolation = false;
+  const forbiddenAuto = await runScenario("forbidden-auto", "SCENARIO=forbidden-auto");
+  assert.equal(forbiddenAuto.children, 2);
+  assert.equal(writtenFiles.length, 2, "serial shared actually performs both ordered writes, rather than parallel-guard blocking the second");
+  assert.match(forbiddenAuto.output, /Concurrency: 1 worker/);
+  assert(!forbiddenAuto.output.includes("blocked by write conflict"));
+  const forbiddenExplicit = await runScenario("forbidden-explicit", "SCENARIO=forbidden-explicit");
+  assert.equal(forbiddenExplicit.children, 0);
+  assert.equal(writtenFiles.length, 0);
+  assert.match(forbiddenExplicit.output, /禁止分支\/worktree/);
+  allowGitIsolation = true;
+
   const autoSingle = await runScenario("auto-single", "SCENARIO=auto-single");
   assert.equal(autoSingle.isError, false, "isolation:auto must not fail a single task outside Git");
   assert.equal(autoSingle.children, 1);

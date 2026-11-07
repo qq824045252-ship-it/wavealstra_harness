@@ -133,7 +133,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         db.prepare(`INSERT INTO bot_work_reads(conversation_id,request_id,work_id,guard_json) VALUES (?,?,?,?)
           ON CONFLICT(conversation_id,request_id,work_id) DO UPDATE SET guard_json=excluded.guard_json`)
           .run(conversationId, source.request_id, work.workId, JSON.stringify(versionGuard));
-        return { ...works.getProjection(work.workId), budget: work.budget, versionGuard };
+        const projection = works.getProjection(work.workId);
+        const visibleMessages = works.collaboration.list(actor(), work.workId);
+        return { ...projection, phase3: projection?.phase3 ? { ...projection.phase3,
+          collaborationMessages: visibleMessages, handoffs: visibleMessages.filter(message => message.kind === "handoff") } : undefined,
+          budget: work.budget, versionGuard };
       });
     })); } }), ...mutations,
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",

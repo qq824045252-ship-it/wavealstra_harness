@@ -29,6 +29,8 @@ export interface SingleResult {
   agentSource: "user" | "project" | "unknown";
   task: string;
   subagentId: string;
+  /** Actual native child conversation, absent for pre-start rejection. */
+  nativeConversationId?: number;
   /** 可选显示名（纯展示；允许中文；不参与身份/文件名/worker 参数） */
   displayName?: string;
   status: SubagentStatus;

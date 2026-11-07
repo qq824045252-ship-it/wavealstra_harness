@@ -999,18 +999,17 @@ export class WorkRepository {
 
   /** Move a stale completion card to "superseded by newer requirement" without deleting history. */
   supersedeNotifications(workId: string, intentRevision: number, inputSnapshotId: string): void {
-    this.db.prepare(`UPDATE work_notifications SET delivery='failed',
-      body=COALESCE(body,'') || '（已被更新的要求或输入取代）'
-      WHERE work_id=? AND kind='result' AND delivery='pending' AND (intent_revision < ? OR EXISTS (
-        SELECT 1 FROM work_deliverables d WHERE d.work_id=work_notifications.work_id
-        AND work_notifications.notification_id='notification-' || d.work_id || '-' || d.deliverable_id
-        AND d.input_snapshot_id != ?))`)
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_notification_identity'").get()) return;
+    this.db.prepare(`UPDATE work_notification_identity SET semantic_validity='superseded' WHERE notification_id IN (
+      SELECT n.notification_id FROM work_notifications n WHERE n.work_id=? AND n.kind='result'
+      AND (n.intent_revision<>? OR work_notification_identity.input_snapshot_id<>?))`)
       .run(workId, intentRevision, inputSnapshotId);
   }
 
   cancelPendingResultNotifications(workId: string): void {
-    this.db.prepare(`UPDATE work_notifications SET delivery='failed', body=COALESCE(body,'') || '（事项已请求取消，停止发送）'
-      WHERE work_id=? AND kind='result' AND delivery='pending'`).run(workId);
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_notification_identity'").get()) return;
+    this.db.prepare(`UPDATE work_notification_identity SET semantic_validity='cancelled' WHERE notification_id IN (
+      SELECT notification_id FROM work_notifications WHERE work_id=? AND kind='result')`).run(workId);
   }
 
   // ------------------------------------------------------------- telemetry
