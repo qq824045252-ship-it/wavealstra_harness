@@ -12,6 +12,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { RemoteTaskCommandService } from "../src/main/remote/RemoteTaskCommandService";
+import { gatewayInboundIdentity } from "../src/main/gateway/gateway-inbound-identity";
 import { gatewayBotTaskId } from "../src/shared/gateway-task";
 import { GATEWAY_ROOT_SPACE_ID, GATEWAY_ROOT_SPACE_NAME, gatewayChannelSpaceId } from "../src/main/gateway/gateway-task-space";
 
@@ -49,13 +50,20 @@ const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,default
 let durable=createService();
 const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
+const fixtureConnection = "a".repeat(64);
+const scopedTask = (channelId:string, chatId:string) => gatewayInboundIdentity(channelId,fixtureConnection,chatId).taskId;
+// These synthetic inputs bypass provider transport but still supply a verified account.
+for (const channel of ["feishu","wecom","wechat","telegram"]) {
+  (gateway as any).adapters.get(channel+"-default").workConnectionKey=()=>fixtureConnection;
+}
+(gateway as any).adapters.set("custom-default", {workConnectionKey:()=>fixtureConnection,disconnect:async()=>{},isConnected:()=>true});
 const inbound=(gateway as any).createInboundHandler();
 const until=async(check:()=>boolean|Promise<boolean>)=>{const end=Date.now()+15000;while(!await check()){if(Date.now()>end)throw Error("fixture timeout");await new Promise(r=>setTimeout(r,10));}};
 const request=(text:string,userMessageId=text)=>({taskId:"gw-bot-receipts",text,userMessageId,assistantMessageId:"ignored-"+userMessageId});
 try{
   const channelNames: Record<string, string> = { feishu: "飞书", wecom: "企微", wechat: "微信", telegram: "Telegram", slack: "Slack" };
   for(const channel of ["feishu","wecom","wechat","telegram","slack"]){
-    const replies:string[]=[];const source=channel==="slack"?"gw-slack-fixture":`gw-${channel}-default-chat`;
+    const replies:string[]=[];const source=channel==="slack"?"gw-slack-fixture":scopedTask(channel+"-default","chat");
     const input={channelId:channel+"-default",chatId:"chat",messageId:"message-1",text:channel,
       ...(channel==="slack"?{taskId:source,userMessageId:"slack-user-fixture",assistantMessageId:"slack-assistant-fixture"}:{}),
       reply:async(text:string)=>{replies.push(text);}};
@@ -68,10 +76,23 @@ try{
     db.upsertTask({...task,modePresetId:"codemode"});assert.equal(db.getTask(task.id)?.modePresetId,"native");
     if(channel!=="slack"){await inbound(input);assert.equal(replies.length,1);}
   }
-  const feishuId=gatewayBotTaskId("gw-feishu-default-chat"); const created=db.getTask(feishuId)!;
+  const originalAccountTask = scopedTask("feishu-default","chat");
+  const originalAccountHistory = await durable.history(originalAccountTask);
+  (gateway as any).adapters.get("feishu-default").workConnectionKey=()=>"b".repeat(64);
+  const otherAccountReplies:string[]=[];
+  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-1",text:"OTHER_ACCOUNT",reply:async(text:string)=>{otherAccountReplies.push(text);}});
+  assert.deepEqual(otherAccountReplies,["ANSWER:OTHER_ACCOUNT"],"account switch cannot reuse the previous account receipt");
+  const otherAccountTask=gatewayInboundIdentity("feishu-default","b".repeat(64),"chat").taskId;
+  const otherAccountHistory=await durable.history(otherAccountTask);
+  assert.notEqual(otherAccountHistory.cwd,originalAccountHistory.cwd,"account switch gets a separate native workspace");
+  assert.equal(readFileSync(join(originalAccountHistory.cwd!,"proof.txt"),"utf8"),"feishu");
+  assert.equal(readFileSync(join(otherAccountHistory.cwd!,"proof.txt"),"utf8"),"OTHER_ACCOUNT");
+  (gateway as any).adapters.get("feishu-default").workConnectionKey=()=>fixtureConnection;
+  console.log("PASS same provider message ID on another account executes in its own native session and workspace");
+  const feishuId=scopedTask("feishu-default","chat"); const created=db.getTask(feishuId)!;
   await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-2",text:"第二条不应当覆盖标题和文件夹",reply:async()=>{}});
   const followed=db.getTask(feishuId)!; assert.equal(followed.title, created.title); assert.equal(followed.spaceId, created.spaceId);
-  const keptId=gatewayBotTaskId("gw-custom-default-kept");
+  const keptId=scopedTask("custom-default","kept");
   db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
   await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-1",text:"后来的消息",reply:async()=>{}});
   assert.equal(db.getTask(keptId)?.title,"已有会话");
@@ -81,7 +102,7 @@ try{
   await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-2",text:"第二条仍不改标题和文件夹",reply:async()=>{}});
   assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
   db.createSpace({id:"user-folder",name:"用户自己的"});
-  const parkedId=gatewayBotTaskId("gw-custom-default-parked");
+  const parkedId=scopedTask("custom-default","parked");
   db.upsertTask({id:parkedId,title:"已归类",spaceId:"user-folder",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
   await inbound({channelId:"custom-default",chatId:"parked",messageId:"parked-1",text:"不要搬走",reply:async()=>{}});
   assert.equal(db.getTask(parkedId)?.title,"已归类"); assert.equal(db.getTask(parkedId)?.spaceId,"user-folder");

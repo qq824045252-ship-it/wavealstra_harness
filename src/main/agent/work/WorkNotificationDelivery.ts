@@ -38,6 +38,7 @@ type Effect = z.infer<typeof effectSchema>;
 type Options = { now?: () => number; isAuthority?: () => boolean; artifacts?: Pick<WorkArtifactValidation, "capture" | "validate"> };
 export type WorkNotificationOutcome = { notificationId: string; delivery: WorkNotificationDto["delivery"]; blockedReason?: string };
 type Outcome = WorkNotificationOutcome;
+type ScanPosition = { notification_id: string; created_at: number };
 type SendResult = ReturnType<WorkNotificationChannel["send"]>;
 type Endpoint = Omit<WorkNotificationChannel, "send" | "lookup"> & {
   send?: unknown;
@@ -87,6 +88,9 @@ export function resolveChannelCapability(channel: Endpoint): WorkChannelCapabili
 /** Fresh-fact claim, immutable attempt, external call, and receipt settlement are separate steps. */
 export class WorkNotificationDelivery {
   private readonly sending = new Set<string>();
+  // Scheduling cursors only: delivery truth stays in the persisted attempt ledger.
+  // Scope by endpoint and optional Work so one targeted drain cannot move another's scan.
+  private readonly asyncCursors = new Map<string, { after?: ScanPosition; through: ScanPosition }>();
   // Runtime endpoint declarations are admission evidence, not a second delivery ledger.
   private readonly channelCapabilities = new Map<string, WorkChannelCapability>();
   private readonly channelAdmissions = new Map<string, NonNullable<Endpoint["admit"]>>();
@@ -235,13 +239,41 @@ export class WorkNotificationDelivery {
     const endpointKey = this.channelKey(channel.channel, channel.targetKey);
     this.channelCapabilities.set(endpointKey, capability);
     if (channel.admit) this.channelAdmissions.set(endpointKey, channel.admit);
-    const ids = this.db.prepare(`SELECT notification_id FROM work_notifications
+    const scanKey = canonicalJson([channel.channel, channel.targetKey, workId ?? null]);
+    let cursor = this.asyncCursors.get(scanKey);
+    if (!cursor) {
+      // Freeze the tail for this sweep: continuous arrivals must not prevent a return
+      // to old unknown/temporarily blocked intents that now need another check.
+      const through = this.db.prepare(`SELECT notification_id, created_at FROM work_notifications
+        WHERE channel=? AND target_key=? AND delivery IN ('pending','unknown') AND (? IS NULL OR work_id=?)
+        ORDER BY created_at DESC, notification_id DESC LIMIT 1`)
+        .get(channel.channel, channel.targetKey, workId ?? null, workId ?? null) as ScanPosition | undefined;
+      if (!through) return [];
+      cursor = { through };
+      this.asyncCursors.set(scanKey, cursor);
+    }
+    const limit = Math.min(100, Math.max(1, options.limit ?? 25));
+    // Rotate a bounded batch through ALL unresolved intents. Permanently inadmissible
+    // pending rows must not pin the head, and unknown attempts still need receipt lookup
+    // even when their semantic identity has since been superseded or cancelled.
+    const ids = this.db.prepare(`SELECT notification_id, created_at FROM work_notifications
       WHERE channel=? AND target_key=? AND delivery IN ('pending','unknown') AND (? IS NULL OR work_id=?)
-      ORDER BY (delivery='pending') DESC, created_at, notification_id LIMIT ?`)
-      .all(channel.channel, channel.targetKey, workId ?? null, workId ?? null, Math.min(100, Math.max(1, options.limit ?? 25))) as Array<{ notification_id: string }>;
+        AND (? IS NULL OR (created_at, notification_id) > (?, ?))
+        AND (created_at, notification_id) <= (?, ?)
+      ORDER BY created_at, notification_id LIMIT ?`)
+      .all(channel.channel, channel.targetKey, workId ?? null, workId ?? null,
+        cursor.after?.created_at ?? null, cursor.after?.created_at ?? null, cursor.after?.notification_id ?? null,
+        cursor.through.created_at, cursor.through.notification_id, limit) as ScanPosition[];
+    if (!ids.length) this.asyncCursors.delete(scanKey);
     const outcomes: Outcome[] = [];
-    for (const { notification_id: id } of ids) {
+    for (const position of ids) {
       if (!this.asyncActive(options)) break;
+      const id = position.notification_id;
+      cursor.after = position;
+      if (position === ids.at(-1) && (ids.length < limit
+        || position.created_at === cursor.through.created_at && id === cursor.through.notification_id)) {
+        this.asyncCursors.delete(scanKey);
+      }
       if (this.sending.has(id)) continue;
       const current = this.works.repo.getNotification(id);
       if (!current || !["pending", "unknown"].includes(current.delivery)

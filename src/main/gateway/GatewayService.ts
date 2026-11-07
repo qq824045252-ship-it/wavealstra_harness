@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { DEFAULT_WEBHOOK_PORT, listenOnFirstAvailablePort } from "./webhook-port";
-import { createHash, randomUUID } from "node:crypto";
+import { gatewayInboundIdentity } from "./gateway-inbound-identity";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
 import {
@@ -69,7 +69,7 @@ export function createIdempotencyGuard(
 ): ((channelId: string, chatId: string, messageId: string) => boolean) & { forget(channelId: string, chatId: string, messageId: string): void } {
   const processed = new Map<string, number>();
   const guard = (channelId: string, chatId: string, messageId: string): boolean => {
-    const key = `${channelId}:${chatId}:${messageId}`;
+    const key = JSON.stringify([channelId, chatId, messageId]);
     const now = Date.now();
     const existing = processed.get(key);
     if (existing !== undefined) {
@@ -87,7 +87,7 @@ export function createIdempotencyGuard(
     return true;
   };
   return Object.assign(guard, { forget: (channelId: string, chatId: string, messageId: string) => {
-    processed.delete(`${channelId}:${chatId}:${messageId}`);
+    processed.delete(JSON.stringify([channelId, chatId, messageId]));
   } });
 }
 
@@ -258,8 +258,16 @@ export class GatewayService {
         console.warn(`[Gateway] 拒绝未授权用户 ${msg.sender?.id ?? "(unknown)"} @ ${msg.channelId}`);
         return;
       }
+      // Bind native sessions, receipts and dedupe to the verified account before
+      // any persistent side effect. Never adopt an unscoped legacy conversation.
+      const connectionKey = this.adapters.get(msg.channelId)?.workConnectionKey?.();
+      if (!connectionKey) throw new Error("Gateway 缺少已核验的连接账号身份，未执行");
+      if (msg.workTarget && msg.workTarget.connectionKey !== connectionKey) {
+        throw new Error("Gateway 入站连接账号已改变，未执行");
+      }
+      const { taskId, turnId } = gatewayInboundIdentity(msg.channelId, connectionKey, msg.chatId, msg.messageId);
       // ② 幂等：平台失败重试投递同一条消息时不再执行
-      if (msg.messageId && !this.markProcessed(msg.channelId, msg.chatId, msg.messageId)) {
+      if (msg.messageId && !this.markProcessed(taskId, msg.chatId, msg.messageId)) {
         console.warn(`[Gateway] 忽略重复消息 ${msg.messageId} @ ${msg.channelId}`);
         return;
       }
@@ -288,14 +296,10 @@ export class GatewayService {
         console.warn(`[Gateway] 项目投递钩子失败 ${msg.channelId}：`, err);
       }
 
-      const taskId = `gw-${msg.channelId}-${msg.chatId}`;
       const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, taskId);
-      const turnId = msg.messageId
-        ? createHash("sha256").update(JSON.stringify([msg.channelId, msg.chatId, msg.messageId])).digest("hex")
-        : randomUUID();
       try { this.recordWorkTarget(msg, taskId, `gw-user-${turnId}`); }
       catch (error) {
-        if (msg.messageId) this.processed.forget(msg.channelId, msg.chatId, msg.messageId);
+        if (msg.messageId) this.processed.forget(taskId, msg.chatId, msg.messageId);
         throw error;
       }
       let text: string;
@@ -312,6 +316,9 @@ export class GatewayService {
         text = `处理失败：${err instanceof Error ? err.message : String(err)}`;
       }
       try {
+        if (this.stopping || this.adapters.get(msg.channelId)?.workConnectionKey?.() !== connectionKey) {
+          throw new Error("Gateway 回复连接账号已改变，未发送");
+        }
         await msg.reply(text);
         this.emitEvent({
           channelId: msg.channelId,
@@ -322,7 +329,7 @@ export class GatewayService {
         });
       } catch (err) {
         // Re-delivery reuses the native receipt, including after process restart.
-        if (msg.messageId) this.processed.forget(msg.channelId, msg.chatId, msg.messageId);
+        if (msg.messageId) this.processed.forget(taskId, msg.chatId, msg.messageId);
         this.emitEvent({
           channelId: msg.channelId,
           direction: "system",

@@ -8,6 +8,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkResultCards } from "../src/main/agent/work/WorkResultCards";
 import { resolveChannelCapability } from "../src/main/agent/work/WorkNotificationDelivery";
+import type { AsyncWorkNotificationChannel } from "../src/main/agent/work/WorkNotificationDelivery";
 import { WorkNotificationHost } from "../src/main/agent/work/WorkNotificationHost";
 import { createDesktopWorkChannel } from "../src/main/agent/work/WorkDesktopNotificationChannel";
 import { NotificationService } from "../src/main/notification/NotificationService";
@@ -675,6 +676,108 @@ check("a late original receipt cannot consume a newly authorized resend", () => 
   host.stop();
   await new Promise(resolve => setTimeout(resolve, 5));
   check("stop cancels an already queued asynchronous wake callback", () => assert.equal(scans, 1));
+}
+
+// Real WorkService/SQLite regressions for the production async pump's bounded scan.
+{
+  const route = (name: string, targetKey: string, createdAt: number) => {
+    const f = accepted(name);
+    db.connection.prepare("UPDATE work_notifications SET channel=?,target_key=?,created_at=? WHERE notification_id=?")
+      .run("fair-async", targetKey, createdAt, f.notification.notificationId);
+    return f;
+  };
+  const sent: string[] = [];
+  const endpoint: AsyncWorkNotificationChannel = {
+    channel: "fair-async", targetKey: "busy",
+    ...capabilityOfGuarantee("idempotent-queryable"),
+    async send({ notification, assertCurrent }) {
+      assertCurrent();
+      sent.push(notification.notificationId);
+      return { ok: true, receipt: `receipt:${notification.notificationId}` };
+    },
+    async lookup() { return "delivered"; },
+  };
+  const stale = Array.from({ length: 25 }, (_, i) => {
+    const f = route(`starved-old-${i}`, "busy", i);
+    works.notifications.supersede(f.work.workId, i % 2 ? "cancelled" : "superseded");
+    return f;
+  });
+  const valid = route("starved-current", "busy", 25);
+  const other = route("independent-target", "quiet", 0);
+  const host = new WorkNotificationHost(works, {
+    isAuthority: () => true, channels: () => [],
+    asyncChannels: () => [endpoint, { ...endpoint, targetKey: "quiet" }],
+  });
+  const first = await host.drainAsync();
+  check("a full blocked batch stays bounded and does not consume another target's turn", () => {
+    assert.equal(first.filter(item => stale.some(f => f.notification.notificationId === item.notificationId)).length, 25);
+    assert.deepEqual(sent, [other.notification.notificationId]);
+  });
+  await host.drainAsync();
+  check("25 obsolete pending notifications cannot permanently starve a valid intent", () => {
+    assert.ok(sent.includes(valid.notification.notificationId));
+    assert.equal(works.repo.getNotification(valid.notification.notificationId)!.delivery, "sent");
+    assert.ok(stale.every(f => works.notifications.attempts(f.notification.notificationId).length === 0));
+  });
+
+  // A lost response is older than a new pending backlog. It must still get its
+  // original receipt queried, even after its conclusion becomes obsolete.
+  const unknown = route("old-unknown", "unknown-target", 0);
+  let physicalSends = 0;
+  let lookups = 0;
+  const uncertain: AsyncWorkNotificationChannel = {
+    ...endpoint, targetKey: "unknown-target",
+    async send() {
+      physicalSends++;
+      return { ok: false, retryable: false, responseLost: true, error: "lost response" };
+    },
+    async lookup() { lookups++; return "delivered"; },
+  };
+  await works.notifications.deliverAsync(uncertain, unknown.work.workId);
+  const originalAttempt = works.notifications.attempts(unknown.notification.notificationId)[0]!;
+  works.notifications.supersede(unknown.work.workId, "superseded");
+  for (let i = 0; i < 25; i++) {
+    const f = route(`unknown-backlog-${i}`, "unknown-target", i + 1);
+    works.notifications.supersede(f.work.workId, "superseded");
+  }
+  await works.notifications.deliverAsync(uncertain);
+  check("pending backlog cannot starve receipt recovery of a superseded unknown", () => {
+    assert.equal(lookups, 1);
+    assert.equal(physicalSends, 1, "receipt reconciliation must not perform a second send");
+    const attempts = works.notifications.attempts(unknown.notification.notificationId);
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]!.providerEffectKey, originalAttempt.providerEffectKey);
+    assert.equal(attempts[0]!.status, "sent");
+  });
+
+  const blocked = route("temporarily-blocked", "wrap-target", 0);
+  const later = route("wrap-current", "wrap-target", 1);
+  let block = true;
+  const wrapping: AsyncWorkNotificationChannel = { ...endpoint, targetKey: "wrap-target",
+    admit: item => block && item.notificationId === blocked.notification.notificationId ? "temporarily unavailable" : undefined };
+  await works.notifications.deliverAsync(wrapping, undefined, { limit: 1 });
+  await works.notifications.deliverAsync(wrapping, undefined, { limit: 1 });
+  block = false;
+  await works.notifications.deliverAsync(wrapping, undefined, { limit: 1 });
+  check("a skipped intent is reconsidered after cursor wrap and later intents make progress", () => {
+    assert.equal(works.repo.getNotification(later.notification.notificationId)!.delivery, "sent");
+    assert.equal(works.repo.getNotification(blocked.notification.notificationId)!.delivery, "sent");
+  });
+
+  const revisit = route("continuous-old", "continuous-target", 0);
+  route("continuous-tail", "continuous-target", 1);
+  let blockedInitially = true;
+  const continuous: AsyncWorkNotificationChannel = { ...endpoint, targetKey: "continuous-target",
+    admit: item => blockedInitially && item.notificationId === revisit.notification.notificationId ? "wait" : undefined };
+  await works.notifications.deliverAsync(continuous, undefined, { limit: 1 });
+  blockedInitially = false;
+  for (let i = 0; i < 4; i++) {
+    route(`continuous-new-${i}`, "continuous-target", i + 2);
+    await works.notifications.deliverAsync(continuous, undefined, { limit: 1 });
+  }
+  check("continuous arrivals cannot postpone revisiting the frozen sweep's blocked head", () => {
+    assert.equal(works.repo.getNotification(revisit.notification.notificationId)!.delivery, "sent");
+  });
 }
 
 console.log(`Phase 5 delivery dedup: ${passes.length} passed`);

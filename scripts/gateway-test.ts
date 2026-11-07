@@ -1,3 +1,4 @@
+import { gatewayInboundIdentity } from "../src/main/gateway/gateway-inbound-identity";
 /**
  * Gateway 冒烟测试：DB 迁移/消息落库/容量控制、Telegram md→HTML、消息切分、
  * 幂等去重守卫、白名单判断。
@@ -137,6 +138,22 @@ function idempotencyTest(): void {
   assert(guard("tg", "123", "m1") === false, "同键重复拒绝（webhook 重试）");
   assert(guard("tg", "123", "m2") === true, "不同消息放行");
   assert(guard("tg", "456", "m1") === true, "不同 chat 同 messageId 放行");
+
+  assert(guard("a:b", "c", "d") === true, "tuple first key");
+  assert(guard("a", "b:c", "d") === true, "delimiter collision stays independent");
+  guard.forget("a:b", "c", "d");
+  assert(guard("a", "b:c", "d") === false, "forget cannot erase a neighboring tuple");
+  const account = "a".repeat(64);
+  const first = gatewayInboundIdentity("feishu-default", account, "chat", "msg");
+  assert(JSON.stringify(first) === JSON.stringify(gatewayInboundIdentity("feishu-default", account, "chat", "msg")), "stable native identity");
+  const other = gatewayInboundIdentity("feishu-default", "b".repeat(64), "chat", "msg");
+  assert(first.taskId !== other.taskId && first.turnId !== other.turnId, "account scopes sessions and receipts");
+  assert(gatewayInboundIdentity("a-b", account, "c", "d").taskId !== gatewayInboundIdentity("a", account, "b-c", "d").taskId, "task delimiter collision prevented");
+  assert(gatewayInboundIdentity("a", account, "b:c", "d").turnId !== gatewayInboundIdentity("a", account, "b", "c:d").turnId, "turn delimiter collision prevented");
+  assert(gatewayInboundIdentity("a", account, "b").turnId !== gatewayInboundIdentity("a", account, "b").turnId, "missing provider id never dedupes unrelated messages");
+  let rejected = false;
+  try { gatewayInboundIdentity("a", "", "b", "d"); } catch { rejected = true; }
+  assert(rejected, "missing account fails closed");
 
   const shortGuard = createIdempotencyGuard(1, 100);
   assert(shortGuard("a", "b", "c") === true, "短窗口首条放行");

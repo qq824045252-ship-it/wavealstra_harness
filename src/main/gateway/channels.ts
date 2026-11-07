@@ -153,6 +153,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     }
     if (!text.trim() || !this.onInbound) return;
 
+    const replyGeneration = this.generation;
     await this.onInbound({
       channelId: this.id,
       chatId: msg.chat_id,
@@ -165,7 +166,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
         ? { id: payload.event.sender.sender_id.open_id }
         : undefined,
       reply: async (replyText: string) => {
-        await this.sendText(msg.chat_id!, replyText);
+        await this.sendText(msg.chat_id!, replyText, replyGeneration);
       },
     });
   }
@@ -223,8 +224,14 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       } });
   }
 
-  private async sendText(chatId: string, text: string): Promise<void> {
+  private assertReplyGeneration(generation: number): void {
+    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+  }
+
+  private async sendText(chatId: string, text: string, generation: number): Promise<void> {
+    this.assertReplyGeneration(generation);
     const token = await this.refreshToken();
+    this.assertReplyGeneration(generation);
     await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
       method: "POST",
       headers: {
@@ -360,6 +367,7 @@ export class WecomChannelAdapter implements ChannelAdapter {
     }
 
     // 先回 success，避免企微重试；异步跑 Agent
+    const replyGeneration = this.generation;
     void this.onInbound({
       channelId: this.id,
       chatId,
@@ -369,7 +377,7 @@ export class WecomChannelAdapter implements ChannelAdapter {
       messageId: extractXmlTag(message, "MsgId"),
       sender: { id: fromUser, name: fromUser },
       reply: async (replyText: string) => {
-        await this.sendText(chatId, fromUser, replyText);
+        await this.sendText(chatId, fromUser, replyText, replyGeneration);
       },
     }).catch((err) => console.warn("[Wecom] inbound failed", err));
 
@@ -424,8 +432,14 @@ export class WecomChannelAdapter implements ChannelAdapter {
       } });
   }
 
-  private async sendText(chatId: string, fromUser: string, text: string): Promise<void> {
+  private assertReplyGeneration(generation: number): void {
+    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+  }
+
+  private async sendText(chatId: string, fromUser: string, text: string, generation: number): Promise<void> {
+    this.assertReplyGeneration(generation);
     const token = await this.refreshToken();
+    this.assertReplyGeneration(generation);
     const isRoom = chatId !== fromUser && chatId.length > 0;
     const body = isRoom
       ? {
@@ -570,6 +584,7 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
       return { status: 200, body: "success", contentType: "text/plain" };
     }
 
+    const replyGeneration = this.generation;
     void this.onInbound({
       channelId: this.id,
       chatId: fromUser,
@@ -579,7 +594,7 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
       messageId: extractXmlTag(messageXml, "MsgId"),
       sender: { id: fromUser, name: fromUser },
       reply: async (replyText: string) => {
-        await this.sendText(fromUser, replyText);
+        await this.sendText(fromUser, replyText, replyGeneration);
       },
     }).catch((err) => console.warn("[Wechat] inbound failed", err));
 
@@ -627,8 +642,14 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
       } });
   }
 
-  private async sendText(openId: string, text: string): Promise<void> {
+  private assertReplyGeneration(generation: number): void {
+    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+  }
+
+  private async sendText(openId: string, text: string, generation: number): Promise<void> {
+    this.assertReplyGeneration(generation);
     const token = await this.refreshToken();
+    this.assertReplyGeneration(generation);
     await fetch(
       `https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=${encodeURIComponent(token)}`,
       {
@@ -832,6 +853,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           name: msg.from.username ?? msg.from.first_name ?? `TG${msg.from.id}`,
         }
       : undefined;
+    const replyGeneration = this.generation;
     await this.onInbound({
       channelId: this.id,
       chatId,
@@ -843,7 +865,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
           directMessagesTopicId: msg.direct_messages_topic?.topic_id } }) : undefined,
       reply: async (replyText: string) => {
-        await this.sendText(chatId, replyText);
+        await this.sendText(chatId, replyText, replyGeneration);
       },
     });
   }
@@ -871,14 +893,19 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       } });
   }
 
-  private async sendText(chatId: string, text: string): Promise<void> {
+  private assertReplyGeneration(generation: number): void {
+    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+  }
+
+  private async sendText(chatId: string, text: string, generation: number): Promise<void> {
     const html = mdToHtml(text);
     for (const chunk of splitTelegramText(html)) {
-      await this.sendChunk(chatId, chunk, true);
+      await this.sendChunk(chatId, chunk, true, generation);
     }
   }
 
-  private async sendChunk(chatId: string, text: string, useHtml: boolean): Promise<void> {
+  private async sendChunk(chatId: string, text: string, useHtml: boolean, generation: number): Promise<void> {
+    this.assertReplyGeneration(generation);
     const body = { chat_id: Number(chatId), text, ...(useHtml ? { parse_mode: "HTML" } : {}) };
     const res = await fetch(`${this.apiBase}${this.config.botToken}/sendMessage`, {
       method: "POST",
@@ -889,13 +916,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const data = (await res.json().catch(() => null)) as { description?: string } | null;
     if (useHtml && data?.description?.includes("can't parse entities")) {
       // HTML 实体解析失败：退化为纯文本重发
-      await this.sendChunk(chatId, text, false);
+      await this.sendChunk(chatId, text, false, generation);
       return;
     }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after") ?? 5);
       await sleep(Math.min(retryAfter, 60) * 1000 + 500);
-      await this.sendChunk(chatId, text, useHtml);
+      await this.sendChunk(chatId, text, useHtml, generation);
       return;
     }
     throw new Error(`Telegram 发送失败: ${data?.description ?? res.status}`);

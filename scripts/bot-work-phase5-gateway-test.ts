@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { AgentPromptRequest } from "../src/shared/agent-ipc";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ globalThis.fetch = (async (input, init) => {
   if (url.pathname.endsWith("/auth/v3/tenant_access_token/internal")) {
     return refresh ? refresh() : json({ code: 0, tenant_access_token: "fixture-tenant-token", expire: 7200 });
   }
-  if (url.pathname.endsWith("/gettoken") || url.pathname.endsWith("/token")) return json({ access_token: "fixture-token", expires_in: 7200 });
+  if (url.pathname.endsWith("/gettoken") || url.pathname.endsWith("/token")) return refresh ? refresh() : json({ access_token: "fixture-token", expires_in: 7200 });
   if (url.pathname.endsWith("/getMe")) return json({ ok: true, result: { id: 9001, username: "fixture_bot" } });
   if (url.pathname.endsWith("/getUpdates")) return new Promise<Response>(() => {});
   if (url.pathname.endsWith("/auth.test")) return json({ ok: true, team_id: "TTEST", user_id: "UBOT", bot_id: "BTEST" });
@@ -71,20 +72,22 @@ function harness(path = join(root, "db-" + ++serial + ".db")) {
   if (!db.connection.prepare("SELECT 1 FROM bots WHERE bot_id=?").get(DEFAULT_BOT_ID)) {
     bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: "Owner", authorization: grants });
   }
-  const state = { authority: true, executions: 0, host: undefined as WorkNotificationHost | undefined, closed: false };
+  const state = { authority: true, executions: 0, answerGate: undefined as Promise<void> | undefined, host: undefined as WorkNotificationHost | undefined, closed: false };
   const works = new WorkService(db.connection, { bots, isAuthority: () => state.authority,
     emitProjection: () => state.host?.wake() });
   const created: WorkDto[] = [];
+  const requests: AgentPromptRequest[] = [];
   const feishu = new FeishuChannelAdapter("feishu-default", "Fixture Feishu");
   const gateway = new GatewayService(db, { runGatewayTurn: async request => {
     state.executions++;
+    requests.push(request);
     const work = unwrap(works.createWork(user, { operationId: "create:" + request.userMessageId,
       title: request.text, conversationId: request.taskId, sourceMessageId: request.userMessageId,
       authorization: grants, inputSnapshotId: "input:" + request.userMessageId, criteria: [{ text: "Checked evidence" }] }));
-    created.push(work); return "fixture native receipt";
+    created.push(work); await state.answerGate; return "fixture native receipt";
   } }, undefined, { settingsStore: { read: () => ({}) as ReturnType<AppSettingsStore["read"]> }, adapters: { feishu } });
   const bridge = new WorkGatewayNotificationChannels(db.connection, works, gateway, { isAuthority: () => state.authority });
-  const result = { path, db, bots, works, state, gateway, feishu, bridge, created,
+  const result = { path, db, bots, works, state, gateway, feishu, bridge, created, requests,
     async close() { if (state.closed) return; await state.host?.close(); await gateway.stop(); db.close(); state.closed = true; } };
   harnesses.push(result);
   return result;
@@ -125,6 +128,123 @@ class FixtureSocket implements SlackSocket {
 try {
   const h = harness();
   await h.gateway.connect("feishu-default", config);
+  await check("native inputs isolate accounts and preserve receipt identity across reconnect and restart", async () => {
+    const local = harness();
+    const requests = local.requests;
+    await local.gateway.connect("feishu-default", config);
+    await local.feishu.handleWebhookPayload(payload("same-provider-id"));
+    await local.feishu.handleWebhookPayload(payload("same-provider-id"));
+    assert.equal(requests.length, 1, "same-account duplicate is ignored");
+    await local.gateway.connect("feishu-default", { ...config, appId: "other-account" });
+    const other = payload("same-provider-id"); other.header.app_id = "other-account";
+    await local.feishu.handleWebhookPayload(other);
+    assert.equal(requests.length, 2, "other account is not suppressed by the old dedupe entry");
+    assert.notEqual(requests[0]!.taskId, requests[1]!.taskId);
+    assert.notEqual(requests[0]!.userMessageId, requests[1]!.userMessageId);
+    assert.notEqual(requests[0]!.assistantMessageId, requests[1]!.assistantMessageId);
+    assert.equal(local.created.length, 2, "other account creates a separate native Work");
+    await local.gateway.connect("feishu-default", config);
+    await local.feishu.handleWebhookPayload(payload("another-provider-id"));
+    assert.equal(requests[2]!.taskId, requests[0]!.taskId, "returning account resumes its own session");
+    const path = local.path; await local.close();
+    const reopened = harness(path); await reopened.gateway.restoreChannels();
+    await reopened.feishu.handleWebhookPayload(payload("same-provider-id"));
+    const replay = reopened.requests[0];
+    assert.equal(replay?.taskId, requests[0]!.taskId);
+    assert.equal(replay?.userMessageId, requests[0]!.userMessageId);
+    assert.equal(replay?.assistantMessageId, requests[0]!.assistantMessageId);
+    await reopened.close();
+  });
+  await check("account changes during native execution cannot send the old answer through the new account", async () => {
+    const local = harness(); await local.gateway.connect("feishu-default", config);
+    const gate = deferred<void>(); local.state.answerGate = gate.promise;
+    const count = posts.length;
+    const handling = local.feishu.handleWebhookPayload(payload("switch-during-native"));
+    const rejected = assert.rejects(handling, /连接账号已改变/);
+    await until(() => local.state.executions === 1);
+    await local.gateway.connect("feishu-default", { ...config, appId: "new-account" });
+    gate.resolve(); await rejected;
+    assert.equal(posts.length, count, "no answer POST crosses the account boundary");
+    await local.close();
+  });
+  await check("reply generation fences same-account reconnect and token-refresh waits", async () => {
+    const adapter = new FeishuChannelAdapter("reply-fixture", "Reply fixture");
+    try {
+      await adapter.connect(config);
+      let reply: ((text: string) => Promise<void>) | undefined;
+      adapter.setInboundHandler(async message => { reply = message.reply; });
+      await adapter.handleWebhookPayload(payload("capture-reply"));
+      const oldReply = reply!;
+      await adapter.connect(config);
+      const count = posts.length;
+      await assert.rejects(oldReply("old answer"), /回复连接已改变/);
+      assert.equal(posts.length, count);
+      await adapter.handleWebhookPayload(payload("refresh-reply"));
+      const held = deferred<Response>(); let refreshing = false;
+      refresh = () => { refreshing = true; return held.promise; };
+      (adapter as unknown as { tokenExpireAt: number }).tokenExpireAt = 0;
+      const sending = reply!("answer awaiting refresh");
+      const rejected = assert.rejects(sending, /连接已改变/);
+      await until(() => refreshing);
+      refresh = undefined;
+      await adapter.connect({ ...config, appId: "changed-during-refresh" });
+      held.resolve(json({ code: 0, tenant_access_token: "old-token", expire: 7200 }));
+      await rejected;
+      assert.equal(posts.length, count, "refresh completion cannot send through a replaced connection");
+    } finally { refresh = undefined; await adapter.disconnect(); }
+  });
+  await check("WeCom and WeChat ordinary reply token waits stay fenced after reconnect", async () => {
+    const adapters = [new WecomChannelAdapter("reply-wecom", "WeCom"), new WechatMpChannelAdapter("reply-wechat", "WeChat")];
+    for (const adapter of adapters) {
+      const credentials = { corpId: "corp", agentId: "7", secret: "fixture", appId: "wx-app", appSecret: "fixture",
+        token: "verify", encodingAESKey: "a".repeat(43) };
+      try {
+        await adapter.connect(credentials);
+        const internals = adapter as unknown as { generation: number; tokenExpireAt: number;
+          sendText(...args: Array<string | number>): Promise<void> };
+        const generation = internals.generation;
+        const send = () => adapter.type === "wecom"
+          ? internals.sendText("member", "member", "answer", generation)
+          : internals.sendText("member", "answer", generation);
+        const held = deferred<Response>(); let refreshing = false;
+        refresh = () => { refreshing = true; return held.promise; };
+        internals.tokenExpireAt = 0;
+        const count = posts.length;
+        const sending = send(); const rejected = assert.rejects(sending, /连接已改变/);
+        await until(() => refreshing); refresh = undefined;
+        await adapter.connect({ ...credentials, corpId: "new-corp", appId: "new-app" });
+        held.resolve(json({ access_token: "old-token", expires_in: 7200 }));
+        await rejected;
+        await assert.rejects(send(), /回复连接已改变/);
+        assert.equal(posts.length, count, "neither a stale token refresh nor old reply may send");
+      } finally { refresh = undefined; await adapter.disconnect(); }
+    }
+  });
+  await check("Telegram chunk continuation and HTML fallback cannot use a reconnected bot", async () => {
+    const adapter = new TelegramChannelAdapter("reply-telegram", "Reply Telegram");
+    try {
+      await adapter.connect({ botToken: "9001:fixture" });
+      let reply: ((text: string) => Promise<void>) | undefined;
+      adapter.setInboundHandler(async message => { reply = message.reply; });
+      const input = () => (adapter as unknown as { handleUpdate(update: unknown): Promise<void> }).handleUpdate({
+        update_id: 1, message: { message_id: 1, chat: { id: 7 }, from: { id: 8 }, text: "hello" },
+      });
+      for (const fallback of [false, true]) {
+        await input();
+        const held = deferred<Response>(); let started = false;
+        respond = () => { started = true; return held.promise; };
+        const count = posts.length;
+        const sending = reply!(fallback ? "html" : "x".repeat(5000));
+        const rejected = assert.rejects(sending, /回复连接已改变/);
+        await until(() => started);
+        await adapter.connect({ botToken: "9001:replacement" });
+        held.resolve(fallback ? json({ description: "can't parse entities" }, 400) : json({ ok: true }));
+        await rejected;
+        assert.equal(posts.length, count + 1, "only the original account's in-flight request is allowed");
+        respond = undefined;
+      }
+    } finally { respond = undefined; await adapter.disconnect(); }
+  });
   await check("Feishu verification fails closed before native execution and keeps its token redacted", async () => {
     const isolated = new FeishuChannelAdapter("isolated", "Feishu");
     await assert.rejects(isolated.connect({ appId: config.appId, appSecret: config.appSecret }), /verificationToken/);
