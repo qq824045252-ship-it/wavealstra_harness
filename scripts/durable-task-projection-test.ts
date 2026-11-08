@@ -15,7 +15,7 @@ const { DurableTaskProjection } = await import("../src/main/agent/durable/Durabl
 
 try {
   const db = new AppDatabase(join(sandbox, "app.db"));
-  db.upsertTask({ id: "task", title: "task", updatedAt: 100, welcomeMode: "bot" });
+  db.upsertTask({ id: "task", title: "task", updatedAt: 100, welcomeMode: "general" });
   // The service owns this table (created in DurableBotService); the writer only reads/writes it.
   db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

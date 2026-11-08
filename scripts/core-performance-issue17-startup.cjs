@@ -112,7 +112,7 @@ function seedBindings(profile, count) {
   const db = new Database(dbPath);
   try {
     const insertTask = db.prepare(`INSERT OR REPLACE INTO tasks (id, title, status, updated_at, cwd, welcome_mode)
-      VALUES (?, ?, 'pending', ?, ?, 'bot')`);
+      VALUES (?, ?, 'pending', ?, ?, 'general')`);
     const insertBinding = db.prepare(`INSERT OR REPLACE INTO durable_bot_bindings (task_id, backend, directory, cwd)
       VALUES (?, 'pi-durable', ?, ?)`);
     const now = Date.now();

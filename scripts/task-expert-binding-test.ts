@@ -248,7 +248,7 @@ try {
   }
   const bare = new AppDatabase(join(sandbox, "unbound.db"));
   try {
-    bare.upsertTask({ id: "unbound", title: "unbound", updatedAt: 1, welcomeMode: "bot" });
+    bare.upsertTask({ id: "unbound", title: "unbound", updatedAt: 1, welcomeMode: "general" });
     assert.equal(bare.listTasks()[0]!.expertBinding, undefined, "a database without the binding service still lists tasks");
   } finally {
     bare.close();
