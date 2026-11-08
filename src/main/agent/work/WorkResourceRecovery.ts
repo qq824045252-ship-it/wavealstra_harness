@@ -132,7 +132,28 @@ export class WorkResourceRecovery {
   }
 
   private async consume(): Promise<void> {
-    const due = this.gate.fenceLost().filter(lease => {
+    const leases = this.gate.fenceLost();
+    // A host verifier can prove this exact tool never crossed native execution.
+    // Such a receipt is safe even while its parent conversation continues, and
+    // must not be stranded behind an exhausted whole-conversation probe budget.
+    for (const lease of leases) {
+      if (hasPendingResourceRecoveryProbe(this.db, lease.token)) continue;
+      const proof = readResourceNotStartedEvidence(this.db, lease);
+      if (!proof.known) continue;
+      try {
+        this.commit(() => {
+          if (!this.gate.reconcileQuarantine(lease.token, { executionStopped: true, queueDrained: true,
+            inputReleased: true, effectKnown: true, receipt: proof.receipt })) return;
+          this.port.onRecovered?.(lease, proof.receipt);
+          this.db.prepare("UPDATE work_resource_recovery SET receipt_json=?,reason=NULL,exhausted_at=NULL WHERE token=?")
+            .run(JSON.stringify({ notStarted: true, receipt: proof.receipt }), lease.token);
+        });
+      } catch {
+        // Settlement rolls back with the lease. A broken receipt must not stop
+        // unrelated dispatch or turn an uncertain business effect into success.
+      }
+    }
+    const due = leases.filter(lease => this.gate.leaseState(lease) === "quarantined").filter(lease => {
       const state = this.read(lease.token);
       return !hasPendingResourceRecoveryProbe(this.db, lease.token) && (!state || state.exhausted_at === null && state.next_at <= this.now());
     }).slice(0, 4);
@@ -221,4 +242,32 @@ export function readResourceEffectEvidence(db: Database.Database, lease: Resourc
     && proof.target === value.target && proof.verifierId === value.verifierId && proof.checkedAt >= value.startedAt;
   return { known, receipt: known ? JSON.stringify({ attemptId: value.id, verifierId: value.verifierId, checkedAt: proof.checkedAt,
     durableStoreKey: lease.owner.durableStoreKey, conversationId: lease.owner.conversationId, childId: lease.owner.childId }) : "verifier-namespace-mismatch" };
+}
+
+/** Exact host verification only. Neither a tool error nor a terminal parent proves no effect. */
+export function readResourceNotStartedEvidence(db: Database.Database, lease: ResourceLease): { known: boolean; receipt: string } {
+  if (!lease.actionId.startsWith("resource:")) return { known: false, receipt: "not-a-native-tool" };
+  const [, , nativeTaskId, ...callParts] = lease.actionId.split(":");
+  const toolCallId = callParts.join(":");
+  if (!nativeTaskId || !toolCallId) return { known: false, receipt: "missing-action-identity" };
+  const executionId = `durable:${lease.owner.taskId}:${lease.owner.childId ?? lease.owner.conversationId}:${nativeTaskId}`;
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_attempts'").get())
+    return { known: false, receipt: "missing-execution-ledger" };
+  const rows = z.array(z.object({ record_json: z.string() })).parse(db.prepare(`SELECT record_json FROM execution_attempts
+    WHERE task_id=? AND execution_id=? AND tool_call_id=?`).all(lease.owner.taskId, executionId, toolCallId));
+  if (rows.length !== 1) return { known: false, receipt: "ambiguous-execution-ledger" };
+  let record: unknown;
+  try { record = JSON.parse(rows[0].record_json); }
+  catch { return { known: false, receipt: "invalid-execution-ledger" }; }
+  const parsed = z.object({ id: z.string(), taskId: z.literal(lease.owner.taskId), executionId: z.literal(executionId),
+    toolCallId: z.literal(toolCallId), status: z.literal("failed"), verifierId: z.literal("durable-resource-admission"),
+    causeCode: z.literal("resource-admission-denied"), startedAt: z.number(),
+    verification: z.object({ attemptId: z.string(), taskId: z.literal(lease.owner.taskId), executionId: z.literal(executionId),
+      verifierId: z.literal("durable-resource-admission"), status: z.literal("failed"), checkedAt: z.number(),
+      observed: z.object({ admitted: z.literal(false), effect: z.literal("not_started") }) })
+  }).safeParse(record);
+  if (!parsed.success || parsed.data.id !== parsed.data.verification.attemptId
+    || parsed.data.verification.checkedAt < parsed.data.startedAt) return { known: false, receipt: "no-exact-not-started-proof" };
+  return { known: true, receipt: JSON.stringify({ kind: "verified-not-started", attemptId: parsed.data.id,
+    actionId: lease.actionId, token: lease.token, checkedAt: parsed.data.verification.checkedAt }) };
 }

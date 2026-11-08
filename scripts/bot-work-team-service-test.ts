@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, renameSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -10,6 +10,7 @@ import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/
 import { fileResource } from "../src/main/agent/work/WorkResourceGate";
 import { LOCAL_USER_ID, type WorkActor, type WorkDto } from "../src/shared/bot-work";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
+import { collectOwnerSummaryFacts } from "../src/main/agent/work/WorkOwnerSummaryFacts";
 import type { WorkTeamControlResult, WorkTeamPlan } from "../src/shared/bot-work-team";
 
 const root = mkdtempSync(join(tmpdir(), "team-service-")), workspace = join(root, "workspace");
@@ -25,6 +26,7 @@ const submissions: Array<{ taskId: string; botId: string; input: { teamAssignmen
 const failPrepare = new Set<string>();
 const failSummary = new Set<string>();
 const unknownGeneration = new Set<string>();
+const runningTasks = new Set<string>();
 const errors: unknown[] = [];
 const port: WorkExecutionPort = {
   prepare: async taskId => {
@@ -45,7 +47,7 @@ const port: WorkExecutionPort = {
     submissions.push({ taskId: binding.taskId, botId: binding.botId, input: JSON.parse(text) });
     receipts.set(binding.bindingId, receipt); return receipt;
   },
-  inspect: async binding => ({ status: failSummary.has(binding.taskId) ? "failed" : "completed", summary: `actual fixture result from ${binding.botId}`,
+  inspect: async binding => runningTasks.has(binding.taskId) ? ({ status: "running" }) : ({ status: failSummary.has(binding.taskId) ? "failed" : "completed", summary: `actual fixture result from ${binding.botId}`,
     hasWriteConflicts: false, artifactRefs: [], usageTokens: 2 }),
   stop: async () => {},
 };
@@ -117,8 +119,28 @@ try {
   symlinkSync(join(root, "secret.txt"), join(workspace, "escape.txt"));
   assert.match(works.teams.resourceError(binding, [fileResource(join(workspace, "escape.txt"), "read")])!, /超出/);
   assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: "shell", mode: "write" }])!, /不透明/);
+  const verification = { kind: "host" as const, scope: "local-host", key: "scoped-read-verification", mode: "read" as const,
+    readVerification: { root: realpathSync(workspace), target: realpathSync(join(workspace, "input.txt")) } };
+  assert.equal(works.teams.resourceError(binding, [verification]), undefined, "trusted bounded verification is authorized");
+  assert.match(works.teams.resourceError(binding, [{ ...verification, mode: "write" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, key: "unclassified-tool" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: verification.key, mode: "read" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, root } }])!, /执行根/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(root, "secret.txt") } }])!, /工作区/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(workspace, "escape.txt") } }])!, /工作区/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, path: join(workspace, "input.txt") }])!, /不透明/);
+  const savedAuthorization = bots.getBot(binding.botId)!.authorization;
+  for (const authorization of [
+    { ...savedAuthorization, allowedScopes: [] },
+    { ...savedAuthorization, targetWhitelist: [root] },
+  ]) {
+    db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(authorization), binding.botId);
+    assert(works.teams.resourceError(binding, [verification]), "revoked scope/target cannot use trusted verification");
+  }
+  db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(savedAuthorization), binding.botId);
   const oldWorkspace = join(root, "old-workspace"); renameSync(workspace, oldWorkspace); mkdirSync(workspace);
   assert.match(works.teams.resourceError(binding, [fileResource(workspace, "read")])!, /身份已变化/);
+  assert.match(works.teams.resourceError(binding, [verification])!, /身份已变化/);
   rmSync(workspace, { recursive: true }); renameSync(oldWorkspace, workspace);
 
   // Preparation failure can retry only with the current versions and no binding.
@@ -244,6 +266,91 @@ try {
     assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
     assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "reconciliation must not replay the failed request");
   }
+
+  // Parallel plans reserve independent identities while dependencies and the owner
+  // wait for settled results; a bounded slot never means bypassing resource gates.
+  const parallelSetup = setup();
+  const thirdBot = `${parallelSetup.name}-c`;
+  bots.registerBot({ botId: thirdBot, userId: LOCAL_USER_ID, displayName: "dependent", authorization: grants });
+  const parallelRequest = { ...parallelSetup.request, executionPolicy: "parallel" as const, maxConcurrency: 2,
+    members: [...parallelSetup.plan.members, { botId: thirdBot, responsibility: "检查已结算的a结果",
+      delegatedScope: ["workspace:read" as const], dependsOnBotIds: [parallelSetup.plan.members[0]!.botId] }] };
+  reject(works.teams.handle(user, { kind: "create", request: { ...parallelRequest, members: parallelRequest.members.map((member, index) =>
+    index === 0 ? { ...member, dependsOnBotIds: [thirdBot] } : member) } }), "invalid_request");
+  reject(works.teams.handle(user, { kind: "create", request: { ...parallelRequest, maxConcurrency: 5 } }), "invalid_request");
+  reject(works.teams.handle(user, { kind: "create", request: { ...parallelRequest, maxConcurrency: 0 } }), "invalid_request");
+  const parallelTemplate = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "parallel-template", name: "Parallel audit",
+    plan: { ownerBotId: parallelRequest.ownerBotId, ownerResponsibility: parallelRequest.ownerResponsibility,
+      members: parallelRequest.members, executionPolicy: "parallel", maxConcurrency: 2 } } })).template!;
+  assert.equal(parallelTemplate.executionPolicy, "parallel");
+  assert.deepEqual(parallelTemplate.members[2]!.dependsOnBotIds, [parallelRequest.members[0]!.botId]);
+  const parallel = ok(works.teams.handle(user, { kind: "create", request: parallelRequest }));
+  const parallelId = parallel.work!.workId;
+  const [pa, pb, pc, po] = parallel.team!.executions;
+  runningTasks.add(pa!.taskId); runningTasks.add(pb!.taskId);
+  await flush(3);
+  assert.equal(bindings(parallelId).length, 2, "two independent members overlap without starting their dependent or owner");
+  assert.match(works.teams.get(parallelId)!.executions[2]!.waitingReason!, /等待成员/);
+  assert.equal(submissions.filter(item => item.taskId === pb!.taskId)[0]!.input.teamAssignment.previousResults.length, 0,
+    "independent member input does not depend on timing of unrelated results");
+  assert(works.pauseWork(user, { operationId: `parallel-pause:${parallelId}`, workId: parallelId }).ok);
+  await flush(2); assert.equal(bindings(parallelId).length, 2);
+  assert(works.resumeWork(user, { operationId: `parallel-resume:${parallelId}`, workId: parallelId }).ok);
+  runningTasks.delete(pa!.taskId);
+  await flush(3);
+  assert(bindings(parallelId).some(binding => binding.taskId === pc!.taskId), "settled prerequisite enables its dependent");
+  assert(!bindings(parallelId).some(binding => binding.taskId === po!.taskId), "owner still waits for independent member");
+  assert.equal(submissions.filter(item => item.taskId === pc!.taskId)[0]!.input.teamAssignment.previousResults.length, 1);
+  runningTasks.delete(pb!.taskId); await flush(4);
+  assert.equal(works.teams.get(parallelId)!.state, "awaiting_review");
+  for (const member of parallel.team!.executions) assert.equal(submissions.filter(item => item.taskId === member.taskId).length, 1);
+  assert(works.handoffOwner(user, { operationId: `parallel-handoff:${parallelId}`, workId: parallelId,
+    targetBotId: `${parallelSetup.name}-new-owner` }).ok);
+  assert(!collectOwnerSummaryFacts(works, works.getWork(parallelId)!, Date.now()).payload.waitingForBotIds.includes(`${parallelSetup.name}-new-owner`),
+    "handoff after a completed owner summary must not invent an unstarted summary for the new owner");
+  const stoppedSetup = setup();
+  const stopped = ok(works.teams.handle(user, { kind: "create", request: { ...stoppedSetup.request,
+    executionPolicy: "parallel", maxConcurrency: 2, members: stoppedSetup.plan.members.map((member, index) =>
+      index === 1 ? { ...member, dependsOnBotIds: [stoppedSetup.plan.members[0]!.botId] } : member) } }));
+  const stoppedId = stopped.work!.workId, stoppedFirst = stopped.team!.executions[0]!, stoppedSecond = stopped.team!.executions[1]!;
+  runningTasks.add(stoppedFirst.taskId); await flush(2);
+  const stoppedBinding = bindings(stoppedId)[0]!;
+  assert(works.reconcileExecution({ kind: "system", reason: "fixture-native-stop" }, { bindingId: stoppedBinding.bindingId,
+    outcome: "stopped", usageTokens: 0, note: "STOPPED_WITHOUT_ARTIFACT" }).ok);
+  assert.equal(works.repo.listDeliverables(stoppedId).length, 0);
+  await flush(4);
+  const stoppedInput = submissions.find(item => item.taskId === stoppedSecond.taskId)!.input.teamAssignment.previousResults;
+  assert.equal(stoppedInput.length, 1, "a predecessor without a deliverable must remain visible");
+  assert.equal(stoppedInput[0]!.status, "no_deliverable");
+  assert(JSON.stringify(stoppedInput).includes("STOPPED_WITHOUT_ARTIFACT"));
+  assert(JSON.stringify(stoppedInput).includes('"executionStatus":"stopped"'));
+  const debtSetup = setup();
+  const debt = ok(works.teams.handle(user, { kind: "create", request: { ...debtSetup.request,
+    executionPolicy: "parallel", maxConcurrency: 2 } }));
+  const debtId = debt.work!.workId;
+  for (const row of debt.team!.executions.slice(0, 2)) runningTasks.add(row.taskId);
+  await flush(3);
+  const debtBindings = bindings(debtId); assert.equal(debtBindings.length, 2);
+  const charged = debtBindings[0]!;
+  const admission = works.budget.admitProviderRequest({ taskId: charged.taskId, conversationId: charged.conversationId,
+    generationTaskId: 88, sourceKind: "main", requestKind: "generation", estimatedTokens: 100 });
+  assert(admission.allowed && admission.reservationId);
+  assert(works.budget.settleProviderUsage({ taskId: charged.taskId, conversationId: charged.conversationId,
+    generationTaskId: 88, reported: false, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }).ok);
+  for (const row of debt.team!.executions.slice(0, 2)) runningTasks.delete(row.taskId);
+  await flush(3);
+  assert.equal(bindings(debtId).length, 2, "unknown usage fences the owner without replaying or replacing either member");
+  assert(bindings(debtId).every(binding => binding.status === "completed"), "in-flight members can settle their original attempts");
+  assert.equal(works.teams.get(debtId)!.state, "blocked");
+  const reservation = works.repo.getReservation(admission.reservationId)!;
+  assert(works.phase4Control(user, { kind: "reconcile-budget-reservation", operationId: `parallel-debt:${debtId}`, workId: debtId,
+    reservationId: reservation.reservationId, windowId: reservation.windowId, resolution: "released", reportedTokens: 0,
+    reason: "Fixture confirmed rejected provider request had zero usage", evidenceRef: "fixture:parallel-zero-usage",
+    versionGuard: guard(works.getWork(debtId)!) }).ok);
+  await flush(3);
+  assert.equal(works.teams.get(debtId)!.state, "awaiting_review");
+  for (const row of debt.team!.executions) assert.equal(submissions.filter(item => item.taskId === row.taskId).length, 1);
+  console.log("Parallel team: bounded overlapping members, dependency snapshots, owner barrier and pause/resume passed");
 
   // Authority loss is checked before writes; no baseline widening or model-claimed acceptance.
   const deniedSetup = setup(); authority = false;

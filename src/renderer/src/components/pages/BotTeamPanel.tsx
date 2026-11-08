@@ -35,16 +35,20 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
   };
   const team = work.team;
   if (!team) return null;
+  const replanMembers = team.members.filter(member => member.botId !== work.ownerBotId).map(member => ({ ...member,
+    dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== work.ownerBotId), delegatedScope: ["workspace:read" as const] }));
   const name = (botId: string) => identities.find(bot => bot.botId === botId)?.displayName ?? botId;
   const current = work.phase3?.collaborationMessages.filter(message => message.intentRevision === work.intentRevision && message.inputSnapshotId === work.inputSnapshotId) ?? [];
   return <section className="bot-detail-section bot-team-panel" aria-label="团队分工与协作">
     <div className="bot-team-progress"><h3>团队协作</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
-    <p>{team.members.length + 1} 位 Bot · 成员依次执行 · 负责人统一汇总</p>
+    <p>{team.members.length + 1} 位 Bot · {team.executionPolicy === "parallel" ? `按依赖并行（最多 ${team.maxConcurrency ?? 2} 位成员）` : "成员依次执行"} · 负责人统一汇总</p>
     <p>执行结束不代表目标已经验收。请在成果评审中核对证据和验收条件。</p>
     <article><strong>{name(work.ownerBotId)} · 当前负责人</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员全部返回后开始。</p></article>
     {team.executions.map(execution => <article key={execution.taskId} aria-label={`${name(execution.botId)}的团队任务`}>
       <div className="bot-team-progress"><strong>{name(execution.botId)} · {execution.role === "owner_summary" ? "负责人汇总" : "成员"}</strong><span>{executionLabels[execution.status]}</span></div>
       <p>{execution.responsibility}</p><p>范围：{execution.delegatedScope.includes("workspace:write") ? "指定工作区读写" : "指定工作区只读"}</p>
+      {execution.dependsOnBotIds?.length ? <p>前置成员：{execution.dependsOnBotIds.map(name).join("、")}</p> : null}
+      {execution.waitingReason && <p role="status">{execution.waitingReason}</p>}
       {execution.error && <p role="status" className="bot-create-error">{execution.error}</p>}
       {execution.resultSummary && <details><summary>执行结果</summary><p>{execution.resultSummary}</p></details>}
     </article>)}
@@ -57,15 +61,16 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
     </div>}
     {team.state === "superseded" && work.lifecycle === "active" && <details><summary>按新要求只读复核</summary>
       <p>沿用以下历史分工，仅按新要求只读核对历史成果，不重做以前的写入或其他效果。历史结果不自动满足新验收条件，当前负责人负责只读汇总。</p>
-      <ul>{team.members.filter(member => member.botId !== work.ownerBotId).map(member => <li key={member.botId}>{name(member.botId)}：{member.responsibility}（原范围：{member.delegatedScope.includes("workspace:write") ? "工作区读写" : "工作区只读"}；本次仅只读）</li>)}</ul>
-      {team.members.some(member => member.botId === work.ownerBotId) && <p>现负责人从成员执行名单中移除，仅承担汇总职责。</p>}
+      <p>本次安排：{team.executionPolicy === "parallel" ? `按依赖并行，最多 ${team.maxConcurrency ?? 2} 位成员` : "成员依次执行"}，负责人等待全部成员结算后汇总。</p>
+      <ul>{replanMembers.map(member => <li key={member.botId}>{name(member.botId)}：{member.responsibility}（原范围：{team.members.find(original => original.botId === member.botId)?.delegatedScope.includes("workspace:write") ? "工作区读写" : "工作区只读"}；本次仅只读）{team.executionPolicy === "parallel" && <span> · 本次前置：{member.dependsOnBotIds?.length ? member.dependsOnBotIds.map(name).join("、") : "无"}</span>}</li>)}</ul>
+      {team.members.some(member => member.botId === work.ownerBotId) && <p>现负责人从成员执行名单中移除，仅承担汇总职责；其他成员对其旧执行的依赖也从本次计划移除。</p>}
       <label><input type="checkbox" checked={confirmedPlan === planVersion} onChange={event => setConfirmedPlan(event.target.checked ? planVersion : null)} />我已核对旧成果与新要求，同意按以上分工只读复核，不重做旧效果</label>
       <button type="button" disabled={busy || confirmedPlan !== planVersion || !team.members.some(member => member.botId !== work.ownerBotId)} onClick={() => {
         if (confirmedPlan !== planVersion) return;
         void runControl({ kind: "replan", workId: work.workId,
           versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch },
-          plan: { ownerBotId: work.ownerBotId, ownerResponsibility: team.ownerResponsibility,
-            members: team.members.filter(member => member.botId !== work.ownerBotId).map(member => ({ ...member, delegatedScope: ["workspace:read"] })) } },
+          plan: { executionPolicy: team.executionPolicy, maxConcurrency: team.maxConcurrency, ownerBotId: work.ownerBotId, ownerResponsibility: team.ownerResponsibility,
+            members: replanMembers } },
           "只读复核计划已保存，请查看最新执行状态。");
       }}>确认并只读复核</button>
       {notice && <p role="status">{notice}</p>}

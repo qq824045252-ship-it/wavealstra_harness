@@ -40,6 +40,12 @@ export const workReviewControlSchema = z.discriminatedUnion("kind", [
     inputSnapshotId: z.string().min(1).max(2000), reply: z.string().trim().min(1).max(2000),
     evidenceRef: z.string().trim().min(1).max(2000), confirmedInformationOnly: z.literal(true),
   }).strict() }).strict(),
+  z.object({ kind: z.literal("cover_not_started"), request: z.object({
+    ...decision, factIds: z.array(text).min(1).max(100), deliverableId: text,
+    criterionIds: z.array(text).min(1).max(100), inputSnapshotId: z.string().min(1).max(2000),
+    artifactSnapshotId: z.string().min(1).max(2000).optional(),
+    reason: z.string().trim().min(1).max(2000), confirmed: z.literal(true),
+  }).strict() }).strict(),
   z.object({ kind: z.literal("close"), request: z.object({
     ...decision, conclusion: z.enum(["succeeded", "cancelled", "ended_unsuccessfully"]),
     closureSummary: z.string().trim().min(1).max(2000),
@@ -64,3 +70,5 @@ export function userInputBlockerSnapshot(blocker: WorkBlockerDto): string | unde
 export type ReplyUserInputParams = Extract<WorkReviewControlRequest, { kind: "reply_user_input" }>["request"];
 
 export type ReplyLegacyUserInputParams = Extract<WorkReviewControlRequest, { kind: "reply_legacy_user_input" }>["request"];
+
+export type CoverNotStartedParams = Extract<WorkReviewControlRequest, { kind: "cover_not_started" }>["request"];

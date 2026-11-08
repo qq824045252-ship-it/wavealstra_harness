@@ -177,7 +177,7 @@ export class BotConversationService {
     const allowed = (name: string) => BOT_FOREGROUND_TOOLS.has(name) && (this.options.bots.getBot(bot.botId)?.foregroundAllowedTools.includes(name) ?? false);
     const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
-      instructions: () => `${this.options.bots.activeSnapshot(bot.botId)?.configuration?.instructions ?? ""}\n你是独立前台 Bot。普通交流直接答复，不强制创建 Work。用户明确委托业务才创建 Work，后台异步受理后立即回复。联网、文件、代码、桌面等实际业务只能委托后台。查询用已知事实工具；修改前查询并使用返回的 versionGuard，冲突重新判断。多个 Work 含糊不清时先澄清。你不能扩大授权、续权或代替验收。`,
+      instructions: () => `${this.options.bots.activeSnapshot(bot.botId)?.configuration?.instructions ?? ""}\n你是独立前台 Bot。普通交流直接答复，不强制创建 Work。用户明确委托业务才创建 Work，后台异步受理后立即回复。联网、文件、代码、桌面等实际业务只能委托后台。查询用已知事实工具；修改前查询并使用返回的 versionGuard，冲突重新判断。多个 Work 含糊不清时先澄清。你不能扩大授权、续权或代替验收。用户明确要求写文件时，不要仅因当前 workspace:read 就停在口头索要授权；用现有授权创建或继续对应 Work，所需 workspace:write 由后台针对具体工具动作生成单次审批卡，用户可在 Bot 页批准或拒绝。不得把聊天中的同意伪装成已授予权限；如果无法派发，查询并报告真实 blocker 和可操作的入口。`,
       tools: botForegroundTools({ ...this.options, botId: bot.botId, conversationId: conversation.conversation_id, messages: this.messages,
         memorySearch: query => this.options.memorySearch(bot.botId, query) }),
       toolHooks: { beforeTool: async (call, api, ctx) => {

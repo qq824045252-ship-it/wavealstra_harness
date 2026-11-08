@@ -82,7 +82,7 @@ import type {
 import { MemoryOrganizationIpc, type MemoryOrganizationRun } from "../shared/memory-organization";
 import { MemoryIpc, type MemoryCandidateDto, type MemoryCoreProfileDto, type MemoryCreateRequest, type MemoryDismissedProjectionDto, type MemoryKernelStats, type MemoryListRequest, type MemoryProjectionProposalDto, type MemoryRecordDto, type MemoryRevisionDto, type MemoryScenarioDto, type MemoryScopeType, type MemorySearchHit, type MemorySearchRequest, type MemoryTurnDto, type MemoryTurnListRequest, type MemorySkillCandidateDto, type MemorySkillCandidateStatus, type MemorySkillEffectivenessDto, type MemorySkillEffectivenessSummaryDto, type MemorySkillFeedbackKind, type MemorySkillRevisionCandidateDto, type MemorySkillRevisionStatus, type MemoryUpdateRequest } from "../shared/memory-kernel";
 import { MemoryGatewayIpc, type MemoryGatewayAccessGrantDto, type MemoryGatewayConfigureRequest, type MemoryGatewayCreateGrantRequest, type MemoryGatewayIssuedGrantDto, type MemoryGatewayStatusDto, type MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
-import { RemoteAccessIpc, type RemoteConfigureRequest, type RemoteDeviceSummary, type RemotePairWindowDto, type RemotePairingSession, type RemoteStatus } from "../shared/remote-access";
+import { RemoteAccessIpc, type RemoteCloudflaredStatus, type RemoteConfigureRequest, type RemoteDeviceSummary, type RemotePairWindowDto, type RemotePairingSession, type RemoteStatus } from "../shared/remote-access";
 import {
   AgentIpc,
   ArtifactIpc,
@@ -783,6 +783,7 @@ const api = {
     openPairWindow: (): Promise<RemotePairWindowDto> => ipcRenderer.invoke(RemoteAccessIpc.openPairWindow),
     closePairWindow: (): Promise<void> => ipcRenderer.invoke(RemoteAccessIpc.closePairWindow),
     pairWindowState: (): Promise<RemotePairWindowDto | null> => ipcRenderer.invoke(RemoteAccessIpc.pairWindowState),
+    detectCloudflared: (): Promise<RemoteCloudflaredStatus> => ipcRenderer.invoke(RemoteAccessIpc.detectCloudflared),
   },
 
   memory: {

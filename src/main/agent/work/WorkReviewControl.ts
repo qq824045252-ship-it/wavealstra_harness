@@ -19,6 +19,7 @@ export function reviewWork(works: WorkService, actor: WorkActor, request: unknow
   if (input.kind === "attest_criteria") return works.attestCriteria(actor, input.request);
   if (input.kind === "reply_legacy_user_input") return works.replyLegacyUserInput(actor, input.request);
   if (input.kind === "reply_user_input") return works.replyUserInput(actor, input.request);
+  if (input.kind === "cover_not_started") return works.partialResults.coverage.resolve(actor, input.request);
   if (input.kind === "feedback") return works.recordUserFeedback(actor, input.request);
   const { confirmed: _confirmed, ...close } = input.request;
   return works.closeWork(actor, close);

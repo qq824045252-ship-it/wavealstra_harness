@@ -299,6 +299,8 @@ export type WorkBlockerReasonCode =
   | "unqueryable-offline-gap"
   | "source-readback"
   | "dispatch-blocked"
+  | "resource-dispatch-wait"
+  | "resource-recovery-exhausted"
   | "invalid-schedule"
   | "deadline-follow-up";
 

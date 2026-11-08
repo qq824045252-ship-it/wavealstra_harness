@@ -26,7 +26,7 @@ export function runResourceRecoveryControl(actor: WorkActor, params: RetryResour
   if (!parsed.success) return { ok: false, code: "invalid_request", message: "重新核对需要完整的资源身份、版本和环境安全确认" };
   if (actor.kind !== "user") return { ok: false, code: "unauthorized_actor", message: "只有用户确认环境安全后才能重新核对隔离资源" };
   return runControl(actor, "retryResourceRecovery", parsed.data, {
-    guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing"],
+    guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing", "closed"],
   }, (work, _resolved, now) => {
     if (!retryWorkResourceRecovery(db, gate, parsed.data))
       return { ok: false, code: "version_conflict", message: "隔离资源状态已变化或旧核对仍未退出，请读取最新状态" };

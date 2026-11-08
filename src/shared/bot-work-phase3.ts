@@ -34,6 +34,10 @@ export const continuationWorkSchema = z.object({
 }).strict();
 export type ContinuationWorkParams = z.infer<typeof continuationWorkSchema>;
 export interface WorkSubitemDto extends WorkSubitemResult {
+  /** Host-proven eligibility; not permission to execute or erase a refusal. */
+  coverageEligible?: boolean;
+  coverage?: { deliverableId: string; criterionIds: string[]; evidenceRefs: string[];
+    reason: string; resolvedAt: number; operationId: string };
   factId: string; workId: string; bindingId: string; inputSnapshotId: string; intentRevision: number;
   deliverableId?: string; continuationPlanId?: string; createdAt: number;
 }

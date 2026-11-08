@@ -279,6 +279,44 @@ async function main() {
       assert.equal(container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!.disabled, true, "revoked unselected member cannot be added");
       assert.deepEqual(requests, []);
     });
+    await check("parallel plan preserves concurrency, dependency and template settings", async () => {
+      await reset(); await fill();
+      const third = bot("third-bot", "Third assistant");
+      await act(async () => store.setState({ botIdentities: [mybuddy, other, third] }));
+      const select = async (id: string, value: string) => {
+        const node = container.querySelector<HTMLSelectElement>(`#${id}`)!;
+        await act(async () => { Object.defineProperty(node, "value", { configurable: true, value }); node.dispatchEvent(new testWindow.Event("change", { bubbles: true })); });
+      };
+      await select("team-execution-policy", "parallel"); await select("team-concurrency", "3");
+      const thirdToggle = container.querySelectorAll<HTMLInputElement>('.bot-team-member-toggle input')[1];
+      await act(async () => thirdToggle.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+      await edit(container.querySelector<HTMLTextAreaElement>("#team-role-third-bot")!, "Review first member evidence");
+      const dependency = container.querySelector<HTMLInputElement>('fieldset[aria-label="Third assistant的前置成员"] input')!;
+      await act(async () => { dependency.checked = true; dependency.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
+      await edit(container.querySelector<HTMLInputElement>("#team-template-name")!, "Parallel plan");
+      const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "保存团队模板")!;
+      await act(async () => nativeClick(save));
+      const saved = templateCalls[0]; assert.equal(saved.kind, "save_template"); if (saved.kind !== "save_template") throw Error("bad test");
+      assert.equal(saved.request.plan.executionPolicy, "parallel"); assert.equal(saved.request.plan.maxConcurrency, 3);
+      assert.deepEqual(saved.request.plan.members[1].dependsOnBotIds, [other.botId]);
+      await select("team-execution-policy", "sequential"); await select("team-template", "template-a");
+      assert.ok(container.querySelector("#team-concurrency"), "template restores parallel controls");
+      await submit(); assert.equal(requests[0].executionPolicy, "parallel"); assert.equal(requests[0].maxConcurrency, 3);
+      assert.deepEqual(requests[0].members[1].dependsOnBotIds, [other.botId]);
+    });
+    await check("removing a dependency member removes dangling references before submission", async () => {
+      await reset(); await fill();
+      const third = bot("third-bot", "Third assistant");
+      await act(async () => store.setState({ botIdentities: [mybuddy, other, third] }));
+      const policy = container.querySelector<HTMLSelectElement>("#team-execution-policy")!;
+      await act(async () => { Object.defineProperty(policy, "value", { configurable: true, value: "parallel" }); policy.dispatchEvent(new testWindow.Event("change", { bubbles: true })); });
+      await act(async () => container.querySelectorAll<HTMLInputElement>('.bot-team-member-toggle input')[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+      await edit(container.querySelector<HTMLTextAreaElement>("#team-role-third-bot")!, "Independent inspection");
+      const dependency = container.querySelector<HTMLInputElement>('fieldset[aria-label="Third assistant的前置成员"] input')!;
+      await act(async () => { dependency.checked = true; dependency.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
+      await act(async () => container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+      await submit(); assert.equal(requests[0].members.length, 1); assert.deepEqual(requests[0].members[0].dependsOnBotIds, []);
+    });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);
   } finally { await unmount(); }
@@ -307,6 +345,12 @@ async function testRecoveryControls() {
     await act(async () => { checkbox.checked = true; checkbox.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
   };
   try {
+    await check("team panel shows parallel policy, dependency and host waiting reason", async () => {
+      const value = projection("blocked"); value.team!.executionPolicy = "parallel"; value.team!.maxConcurrency = 3;
+      value.team!.executions[0].dependsOnBotIds = [mybuddy.botId]; value.team!.executions[0].waitingReason = "等待前置成员结算";
+      await start(value); assert.match(container.textContent!, /按依赖并行（最多 3 位成员）/);
+      assert.match(container.textContent!, /前置成员：MyBuddy/); assert.match(container.textContent!, /等待前置成员结算/);
+    });
     await check("retry sends the exact current triple guard and not-started confirmation once", async () => {
       await start(projection("blocked", { stateVersion: 7, intentRevision: 3, ownerEpoch: 2 }));
       const retry = button("重试未启动的准备"); await act(async () => { nativeClick(retry); nativeClick(retry); });
@@ -326,6 +370,19 @@ async function testRecoveryControls() {
       assert.deepEqual(calls[0].versionGuard, { expectedStateVersion: 2, expectedIntentRevision: 2, expectedOwnerEpoch: 2 });
       assert.deepEqual(calls[0].plan.members[0].delegatedScope, ["workspace:read"]);
       assert.deepEqual(before.team!.members[0].delegatedScope, ["workspace:read", "workspace:write"], "historical projection remains immutable");
+    });
+    await check("owner handoff replan removes owner dependencies and previews the exact read-only plan", async () => {
+      const value = projection("superseded", { ownerBotId: other.botId, ownerEpoch: 2 });
+      value.team!.executionPolicy = "parallel"; value.team!.maxConcurrency = 2;
+      value.team!.members.push({ botId: mybuddy.botId, responsibility: "Inspect after handoff", delegatedScope: ["workspace:read", "workspace:write"], dependsOnBotIds: [other.botId] });
+      await start(value);
+      assert.match(container.textContent!, /本次前置：无/); assert.match(container.textContent!, /依赖也从本次计划移除/);
+      await confirm(); await act(async () => nativeClick(button("确认并只读复核")));
+      assert.equal(calls[0].kind, "replan"); if (calls[0].kind !== "replan") throw Error("bad test");
+      assert.equal(calls[0].plan.ownerBotId, other.botId); assert.equal(calls[0].plan.executionPolicy, "parallel");
+      assert.equal(calls[0].plan.members.length, 1); assert.equal(calls[0].plan.members[0].botId, mybuddy.botId);
+      assert.deepEqual(calls[0].plan.members[0].dependsOnBotIds, []); assert.deepEqual(calls[0].plan.members[0].delegatedScope, ["workspace:read"]);
+      assert.deepEqual(value.team!.members[1].dependsOnBotIds, [other.botId], "historical plan is not mutated");
     });
     await check("late recovery receipt cannot display success for another Work or after A-B-A navigation", async () => {
       const original = projection("blocked"); await start(original); await act(async () => nativeClick(button("重试未启动的准备")));

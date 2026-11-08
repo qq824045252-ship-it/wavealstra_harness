@@ -1,3 +1,4 @@
+import { syncExhaustedResourceBlockers, syncResourceDispatchBlocker, type ResourceDispatchBlock } from "./WorkResourceBlockers";
 import type { WorkResourceRecovery } from "./WorkResourceRecovery";
 import type { z } from "zod";
 import type { workExecutionObservationSchema } from "../../../shared/bot-work-phase3";
@@ -88,11 +89,14 @@ export class WorkExecutionAdapter {
     this.service.approvals.recover();
     await this.resourceRecovery?.recover();
     if (!this.isAuthority()) return;
+    syncExhaustedResourceBlockers(this.service, this.userId);
     for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
     for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
       for (const binding of this.service.repo.listBindings(work.workId)) {
         const pendingUsage = binding.reservationId && ["reserved", "unknown"].includes(this.service.repo.getReservation(binding.reservationId)?.state ?? "");
-        if (["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !pendingUsage) continue;
+        if (["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !pendingUsage) {
+          syncResourceDispatchBlocker(this.service, binding); continue;
+        }
         if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
         if (!this.isAuthority()) return;
         try { await this.deliverBinding(binding); }
@@ -114,6 +118,7 @@ export class WorkExecutionAdapter {
     if (!receipt) {
       if (["completed", "failed", "stopped", "invalidated"].includes(current.status)) throw new Error("终态预算补读缺少原始回执，保留未知额度且不重新执行");
       if (!canStart) {
+        syncResourceDispatchBlocker(this.service, current);
         if (work.lifecycle === "paused" && !current.invalidatedAt && !current.attemptId) return;
         if (current.attemptId || current.submissionReceipt) throw new Error("已尝试的原始提交缺少可核对回执，结果与用量保留未知");
         this.requireSuccess(this.service.reconcileExecution({ kind: "system", reason: "native-submission-absent" }, {
@@ -122,11 +127,14 @@ export class WorkExecutionAdapter {
         }));
         return;
       }
-      if (!this.resourceAvailable(current)) return;
+      const blocked = this.resourceUnavailable(current);
+      syncResourceDispatchBlocker(this.service, current, blocked);
+      if (blocked) return;
       this.service.markDispatchAttempt(current.bindingId, current.attemptId ?? `attempt:${current.bindingId}`);
       receipt = await this.native.submit(current, this.service.partialResults.executionInput(current) ?? this.service.repo.executionInput(current));
     }
     if (!this.isAuthority()) return;
+    syncResourceDispatchBlocker(this.service, current);
     this.service.recordSubmissionReceipt(current.bindingId, JSON.stringify(receipt));
     let observation = await this.native.inspect(current, receipt);
     if (!this.isAuthority()) return;
@@ -156,15 +164,17 @@ export class WorkExecutionAdapter {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
   }
 
-  private resourceAvailable(candidate: WorkExecutionBindingDto): boolean {
+  private resourceUnavailable(candidate: WorkExecutionBindingDto): ResourceDispatchBlock | undefined {
     if (this.native.resourceBoundary === "host-action-gate") {
       // A verified native leaf boundary permits inference for independent roots.
       // Legacy/unclassified unknown effects without resource evidence remain coarse.
       for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
         if (this.service.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect"
-          && !blocker.unknownExternalEffectRef?.startsWith("native-read:"))) return false;
+          && !blocker.unknownExternalEffectRef?.startsWith("native-read:"))) return {
+            reason: `事项“${work.title}”的原操作效果尚未核实，请打开来源事项核对资源与执行状态`, sourceWorkId: work.workId };
       }
-      return !this.service.resourceGate.live().some(lease => lease.owner.bindingId === candidate.bindingId);
+      const lease = this.service.resourceGate.live().find(lease => lease.owner.bindingId === candidate.bindingId);
+      return lease ? { reason: `共享资源 ${lease.token} 仍在等待原操作结算或隔离核对`, sourceWorkId: lease.owner.workId, token: lease.token } : undefined;
     }
     const readOnly = (binding: WorkExecutionBindingDto) => binding.delegatedScope.length > 0
       && binding.delegatedScope.every(scope => scope === "workspace:read");
@@ -176,9 +186,9 @@ export class WorkExecutionAdapter {
           || ["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !unknownEffect) continue;
         // Ports without the real host action boundary cannot prove independent writes.
         // Keep their conservative admission; ordinary recovery never bypasses it.
-        if (!readOnly(candidate) || !readOnly(binding)) return false;
+        if (!readOnly(candidate) || !readOnly(binding)) return { reason: `事项“${work.title}”仍有在途或未知执行，当前执行端不能证明写入互不影响`, sourceWorkId: work.workId };
       }
     }
-    return true;
+    return undefined;
   }
 }

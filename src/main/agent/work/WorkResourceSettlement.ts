@@ -3,7 +3,7 @@ import type { WorkDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
 import type { WorkService } from "./WorkService";
 import type { WorkResourceOwner, WorkResource, ResourceLease } from "./WorkResourceGate";
-import { readResourceEffectEvidence } from "./WorkResourceRecovery";
+import { readResourceEffectEvidence, readResourceNotStartedEvidence } from "./WorkResourceRecovery";
 
 export function authorizeWorkResourceOwner(input: { service: WorkService; bots: BotRegistry; now: () => number;
   owner: WorkResourceOwner; resources: WorkResource[]; actionId?: string }): string | undefined {
@@ -53,10 +53,11 @@ export function finalizeWorkResource(input: { db: Database.Database; service: Wo
   let changed = false;
   if (admission && (admission.state === "unknown" || admission.state === "admitted")) {
     if (admission.bindingId !== binding.bindingId) throw new Error("资源恢复准入不属于原执行绑定");
-    if (!lease.resources.every(resource => resource.mode === "read") && !readResourceEffectEvidence(db, lease).known)
+    const notStarted = readResourceNotStartedEvidence(db, lease).known;
+    if (!notStarted && !lease.resources.every(resource => resource.mode === "read") && !readResourceEffectEvidence(db, lease).known)
       throw new Error("业务准入尚无原始文件或供应商回执证明");
-    service.repo.updateAdmissionState(admission.admissionId, "consumed", now());
-    service.approvals.settleAction(binding.taskId, admission.operationId, "consumed");
+    service.repo.updateAdmissionState(admission.admissionId, notStarted ? "released" : "consumed", now());
+    service.approvals.settleAction(binding.taskId, admission.operationId, notStarted ? "released" : "consumed");
     for (const blocker of service.repo.listOpenBlockers(work.workId)) if (blocker.unknownExternalEffectRef === admission.admissionId)
       service.repo.clearBlocker(blocker.blockerId, work.workId, now());
     changed = true;

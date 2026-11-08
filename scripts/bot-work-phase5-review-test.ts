@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -59,6 +59,98 @@ try {
       criterionIds: ["one", "three"], failed: true, versionGuard: guard(batch.workId) } });
     assert.equal(mismatch.ok, false);
     assert.deepEqual(works.getWork(batch.workId)!.criteria.map(item => item.status), ["satisfied", "satisfied", "pending"]);
+  });
+  const deniedFixture = (suffix: string) => {
+    const fixture = proposed(`covered:${suffix}`);
+    const work = works.getWork(fixture.workId)!;
+    const binding = works.repo.listBindings(work.workId)[0];
+    const approvalId = `denied:${suffix}`;
+    db.connection.prepare(`INSERT INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json)
+      VALUES (?,?,?,?,?,?)`).run(approvalId, work.workId, binding.bindingId, approvalId, approvalId, JSON.stringify({
+        approvalId, workId: work.workId, bindingId: binding.bindingId, taskId: binding.taskId, operationId: approvalId,
+        toolName: "bash", summary: "Old denied verification", detail: "wc blocked.txt", requiredScope: "workspace:read", scopeMissing: false,
+        intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
+        status: "denied", version: 1, createdAt: 1, expiresAt: 2, outcome: "guard-denied",
+      }));
+    works.repo.insertBlocker({ blockerId: approvalId, workId: work.workId, kind: "operational", reason: "Old refusal",
+      waitingForUserInput: false, status: "open", createdAt: 1 });
+    works.transaction(() => works.partialResults.record(binding, [{ itemId: approvalId, task: "Old refused read", required: true,
+      dependencies: [], criterionIds: [], nativeStatus: "host_approval_not_started", outcome: "not_started", artifactRefs: [],
+      writeConflicts: [], summary: "Never admitted", origin: "native" }], 1));
+    unwrap(works.acceptDeliverable(user, { operationId: `cover-accept:${suffix}`, workId: work.workId, deliverableId: fixture.deliverableId, versionGuard: guard(work.workId) }));
+    unwrap(works.recordUserFeedback(user, { operationId: `cover-evidence:${suffix}`, workId: work.workId,
+      criterionIds: [work.criteria[0].id], environment: "Fixture OS", sourceRef: "later real read receipt", failed: false,
+      inputSnapshotId: work.inputSnapshotId, versionGuard: guard(work.workId) }));
+    const gap = works.partialResults.gaps(work.workId)[0];
+    const request = { kind: "cover_not_started" as const, request: { operationId: `cover:${suffix}`, workId: work.workId,
+      factIds: [gap.factId], deliverableId: fixture.deliverableId, criterionIds: [work.criteria[0].id],
+      inputSnapshotId: work.inputSnapshotId, artifactSnapshotId: works.artifacts.currentSnapshotId(work.workId),
+      reason: "The accepted result and later real read cover this rejected verification attempt", confirmed: true as const,
+      versionGuard: guard(work.workId) } };
+    return { fixture, work, binding, approvalId, gap, request };
+  };
+  check("explicit coverage preserves refusal and evidence while allowing successful closure", () => {
+    const { work, approvalId, gap, request } = deniedFixture("closure");
+    assert.equal(gap.coverageEligible, true);
+    const saved = unwrap(reviewWork(works, user, request));
+    assert.equal(works.partialResults.gaps(work.workId).length, 0);
+    assert.equal(works.repo.getBlocker(approvalId)?.status, "cleared");
+    const history = works.partialResults.list(work.workId)[0];
+    assert.equal(history.outcome, "not_started"); assert.ok(history.coverage?.evidenceRefs.length);
+    assert.equal(works.approvals.list(work.workId)[0].status, "denied");
+    assert.equal(unwrap(reviewWork(works, user, request)).stateVersion, saved.stateVersion);
+    const recovered = new WorkService(db.connection, { bots });
+    assert.equal(recovered.partialResults.gaps(work.workId).length, 0);
+    const result = works.closeWork(user, { operationId: "close-covered", workId: work.workId, conclusion: "succeeded",
+      closureSummary: "All required evidence and explicit substitute review are complete", versionGuard: guard(work.workId) });
+    assert.equal(unwrap(result).closureConclusion, "succeeded");
+  });
+  check("coverage rejects worker, stale guard, mixed invalid batch and does not partly clear", () => {
+    const { fixture, work, approvalId, request } = deniedFixture("guards");
+    assert.equal(reviewWork(works, fixture.worker, request).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request,
+      factIds: [...request.request.factIds, "missing-fact"] } }).ok, false);
+    assert.equal(works.repo.getBlocker(approvalId)?.status, "open");
+    assert.equal(db.connection.prepare("SELECT 1 FROM work_gap_coverages WHERE work_id=?").get(work.workId), undefined);
+    const current = works.getWork(work.workId)!; works.repo.updateWork({ ...current, stateVersion: current.stateVersion + 1 });
+    assert.equal(reviewWork(works, user, request).ok, false);
+  });
+  check("coverage never erases unknown/native gaps and reopens when accepted evidence changes", () => {
+    const { work, gap, request } = deniedFixture("invalidate");
+    unwrap(reviewWork(works, user, request));
+    const current = works.getWork(work.workId)!;
+    works.repo.updateWork({ ...current, criteria: current.criteria.map(c => ({ ...c, status: "failed" as const })),
+      stateVersion: current.stateVersion + 1 });
+    assert.equal(works.partialResults.gaps(work.workId).some(item => item.factId === gap.factId), true);
+    const raw = db.connection.prepare("SELECT result_json FROM work_subitem_results WHERE fact_id=?").get(gap.factId) as { result_json: string };
+    db.connection.prepare("UPDATE work_subitem_results SET result_json=? WHERE fact_id=?")
+      .run(JSON.stringify({ ...JSON.parse(raw.result_json), outcome: "unknown" }), gap.factId);
+    assert.equal(works.partialResults.list(work.workId)[0].coverage, undefined);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, operationId: "unknown-cover",
+      versionGuard: guard(work.workId) } }).ok, false);
+    db.connection.prepare("UPDATE work_subitem_results SET result_json=? WHERE fact_id=?")
+      .run(JSON.stringify({ ...JSON.parse(raw.result_json), nativeStatus: "planned" }), gap.factId);
+    assert.equal(works.partialResults.list(work.workId)[0].coverageEligible, undefined);
+  });
+  check("coverage refuses consumed approvals, pending retry plans and claimed actions", () => {
+    for (const state of ["consumed", "pending-plan", "claimed"] as const) {
+      const { work, binding, approvalId, gap, request } = deniedFixture(`busy:${state}`);
+      if (state === "consumed") db.connection.prepare("UPDATE work_action_approvals SET data_json=json_set(data_json,'$.status','consumed') WHERE approval_id=?").run(approvalId);
+      if (state === "claimed") db.connection.prepare("INSERT INTO work_action_approval_claims(source_gap_id,approval_id) VALUES (?,?)").run(gap.factId, "already-claimed");
+      if (state === "pending-plan") unwrap(works.continueWork(user, { operationId: "pending-gap-plan", workId: work.workId,
+        sourceBindingId: binding.bindingId, gapItemIds: [approvalId], reason: "Retry already queued", versionGuard: guard(work.workId) }));
+      assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, versionGuard: guard(work.workId) } }).ok, false);
+      assert.equal(works.repo.getBlocker(approvalId)?.status, "open");
+    }
+  });
+  check("new artifact evidence invalidates historical coverage instead of silently swallowing the gap", () => {
+    const { work, binding, gap, request } = deniedFixture("artifact-change");
+    unwrap(reviewWork(works, user, request));
+    const path = join(directory, "later-artifact.txt"); writeFileSync(path, "new target");
+    const observed = works.artifacts.register(binding, [path]);
+    works.transaction(() => works.artifacts.record(binding, observed));
+    assert.equal(works.partialResults.gaps(work.workId).some(item => item.factId === gap.factId), true);
+    assert.ok(db.connection.prepare("SELECT 1 FROM work_gap_coverages WHERE fact_id=?").get(gap.factId), "original review receipt remains historical");
   });
   const fixture = proposed("desktop-review");
   const input = { kind: "accept_deliverable" as const, request: { operationId: "ui:accept", workId: fixture.workId,
