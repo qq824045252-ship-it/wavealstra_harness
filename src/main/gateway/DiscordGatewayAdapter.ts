@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { BoundedTTLCache } from './BoundedTTLCache';
+import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from './GatewayReply';
 import { withGatewayMedia, type GatewayMediaSource } from './GatewayMedia';
 import { gatewayConnectionKey } from './work-outbound';
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from './channels';
@@ -51,7 +53,7 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
   private botId = '';
   private attempts = 0;
   private lastError = '';
-  private seen = new Set<string>();
+  private readonly seen = new BoundedTTLCache<string, object>({ maxEntries: 10_000, ttlMs: 24 * 60 * 60_000 });
   private pending: Array<{ data: Record<string, unknown>; generation: number }> = [];
   private queues = new Map<string, Promise<void>>();
   private connectionWaiters = new Set<() => void>();
@@ -122,6 +124,41 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
     this.config = null; this.botId = ''; this.sessionId = ''; this.resumeUrl = ''; this.sequence = null;
     this.lastError = ''; this.attempts = 0;
     // Seen IDs stay on this adapter across reconnects/account changes, namespaced by application and bot.
+  }
+  restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
+    const config = this.config, route = input.route, senderId = input.sender?.id;
+    if (!config || !this.connected || !this.activated || !senderId || !config.allowUsers.includes(senderId)
+      || route?.kind !== 'discord' || route.messageId !== input.messageId
+      || !snowflake(route.channelId) || !snowflake(route.messageId)) return undefined;
+    const scopes = [...config.guildIds, ...(config.allowDirectMessages ? ['dm'] : [])]
+      .map(guild => [this.id, config.applicationId, this.botId, guild, route.channelId, senderId].join(':'));
+    if (!scopes.includes(input.chatId)) return undefined;
+    return this.createReply(route, this.generation, config, input.deliveryId);
+  }
+  private createReply(route: Extract<GatewayReplyRoute, { kind: 'discord' }>, generation: number,
+    config: Config, deliveryId = ''): (reply: string) => Promise<void> {
+    return async reply => {
+      let sentChunks = 0;
+      try {
+        if (!this.current(generation) || this.config !== config) throw new GatewayReplyNotSentError('Discord 连接已更换，本次未发送');
+        const safe = reply.split(config.botToken).join('[凭据已隐藏]') || '任务已处理。';
+        for (let index = 0; index < safe.length; index += 1900) {
+          if (!this.current(generation) || this.config !== config) throw new GatewayReplyNotSentError('Discord 连接已更换，本次未发送');
+          const nonce = createHash('sha256').update(`${route.nonceKey}:${deliveryId}:${index}`).digest('hex').slice(0, 24);
+          const receipt = await this.api(`/channels/${route.channelId}/messages`, generation, {
+            content: safe.slice(index, index + 1900), allowed_mentions: { parse: [], replied_user: false },
+            ...(route.replyToMode === 'all' || (route.replyToMode === 'first' && index === 0)
+              ? { message_reference: { message_id: route.messageId, fail_if_not_exists: false } } : {}), nonce, enforce_nonce: true,
+          });
+          if (!snowflake(receipt.id)) throw new Error('Discord 回复结果无法确认');
+          sentChunks++;
+        }
+      } catch (error) {
+        // A later chunk failure must never replay already-confirmed earlier chunks.
+        if (sentChunks && error instanceof GatewayReplyNotSentError) throw new Error('Discord 回复部分已发送，后续未完成；未自动重发');
+        throw error;
+      }
+    };
   }
   private gatewayUrl(value: unknown): string {
     if (typeof value !== 'string') throw new Error('Discord Gateway 地址无效');
@@ -272,8 +309,8 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
     const scope = [this.id, config.applicationId, this.botId, guild || 'dm', data.channel_id, author.id].join(':');
     const key = `${config.applicationId}:${this.botId}:${data.id}`;
     if (this.seen.has(key)) return;
-    this.seen.add(key);
-    if (this.seen.size > 10000) this.seen.delete(this.seen.values().next().value!);
+    const reservation = {};
+    this.seen.set(key, reservation);
     const messageId = data.id, channelId = data.channel_id;
     const previous = this.queues.get(scope) ?? Promise.resolve();
     let enteredGateway = false;
@@ -308,25 +345,20 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
         this.check(generation);
         // Once invoked, an error may follow real side effects: never auto-execute again.
         enteredGateway = true;
-        await this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, attachments, sender: { id: author.id as string },
-          reply: async reply => {
-            this.check(generation);
-            const safe = reply.split(config.botToken).join('[凭据已隐藏]') || '任务已处理。';
-            for (let index = 0; index < safe.length; index += 1900) {
-              this.check(generation);
-              const nonce = createHash('sha256').update(`${key}:${index}`).digest('hex').slice(0, 24);
-              const receipt = await this.api(`/channels/${channelId}/messages`, generation, {
-                content: safe.slice(index, index + 1900), allowed_mentions: { parse: [], replied_user: false },
-                ...(config.replyToMode === 'all' || (config.replyToMode === 'first' && index === 0)
-                  ? { message_reference: { message_id: messageId, fail_if_not_exists: false } } : {}), nonce, enforce_nonce: true,
-              });
-              if (!snowflake(receipt.id)) throw new Error('Discord 回复结果无法确认');
-            }
-          },
+        const delivery = this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, attachments, sender: { id: author.id as string },
+          replyRoute: { kind: 'discord', channelId, messageId, replyToMode: config.replyToMode, nonceKey: key },
+          reply: this.createReply({ kind: 'discord', channelId, messageId, replyToMode: config.replyToMode, nonceKey: key }, generation, config),
         });
+        if (delivery.accepted) {
+          enteredGateway = false;
+          void delivery.catch(() => { if (this.current(generation)) this.report('Discord 消息处理失败，请检查任务记录；不会自动重复执行'); });
+          await delivery.accepted;
+          enteredGateway = true;
+          // Registry owns session ordering once durable admission has committed.
+        } else await delivery;
       });
     }).catch(() => {
-      if (!enteredGateway) this.seen.delete(key);
+      if (!enteredGateway && this.seen.get(key) === reservation) this.seen.delete(key);
       if (this.current(generation)) this.report('Discord 消息处理失败，请检查任务记录；不会自动重复执行');
     })
       .finally(() => { if (this.queues.get(scope) === next) this.queues.delete(scope); });

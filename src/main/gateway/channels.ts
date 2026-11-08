@@ -6,6 +6,7 @@ import { assertGatewayWorkSend, gatewayConnectionKey, gatewayWorkTarget, Gateway
   postGatewayWork, providerRejected, unknownProviderReceipt, workRequestSignal,
   type GatewayWorkSendInput, type GatewayWorkSendResult, type GatewayWorkTarget } from "./work-outbound";
 import type { GatewayChannelType, GatewayEventDto } from "../../shared/agent-ipc";
+import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from "./GatewayReply";
 
 export interface ChannelConfig {
   [key: string]: unknown;
@@ -22,6 +23,8 @@ export interface ChannelAdapter {
   workConnectionKey?(): string | undefined;
   /** Opaque transport epoch. Never persisted or exposed to the model. */
   gatewayConnectionGeneration?(): unknown;
+  /** Rebuild a reply with the current verified account, never old credentials. */
+  restoreGatewayReply?(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined;
   sendWorkNotification?(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult>;
 }
 
@@ -42,6 +45,9 @@ export interface GatewayInboundMessage {
   sender?: { id: string; name?: string };
   /** Set only by the authenticated adapter; never parsed from user message text. */
   workTarget?: GatewayWorkTarget;
+  replyRoute?: GatewayReplyRoute;
+  /** Registry-owned transport metadata, never added to model instructions. */
+  gatewayDelivery?: { id: string; replay: boolean };
   reply: (text: string) => Promise<void>;
 }
 
@@ -55,7 +61,14 @@ export interface SlackChannelHistory {
   requiredScopes?: string[];
 }
 
-export type GatewayInboundHandler = (msg: GatewayInboundMessage) => Promise<void>;
+export type GatewayInboundDelivery = Promise<void> & { accepted?: Promise<void> };
+export type GatewayInboundHandler = (msg: GatewayInboundMessage) => GatewayInboundDelivery;
+
+/** Early-ACK transports wait for durable admission, not for the entire Agent turn.
+ * Direct adapter tests/embedders without a registry retain their old contract. */
+export function gatewayInboundAccepted(delivery: GatewayInboundDelivery): Promise<void> {
+  return delivery.accepted ?? Promise.resolve();
+}
 
 /** 飞书官方 SDK 长连接；保留已验证的旧 Webhook 配置。 */
 export class FeishuChannelAdapter implements ChannelAdapter {
@@ -270,6 +283,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
             ...(msg.thread_id ? { threadId: msg.thread_id } : {}) } }),
         text: parsed.text.trim(), attachments: attachments.length ? attachments : undefined, messageId: msg.message_id,
         sender: payload.sender?.sender_id?.open_id ? { id: payload.sender.sender_id.open_id } : undefined,
+        replyRoute: { kind: "feishu", chatId: msg.chat_id!, messageId: msg.message_id, inThread: Boolean(msg.thread_id) },
         reply: async text => { await this.sendText(msg.chat_id!, text, generation, epoch, msg.message_id, Boolean(msg.thread_id)); },
       });
     });
@@ -306,6 +320,16 @@ export class FeishuChannelAdapter implements ChannelAdapter {
 
   gatewayConnectionGeneration(): unknown { return this.longConnection?.generation?.() ?? this.generation; }
 
+  restoreGatewayReply(input: GatewayReplyRestoreInput): (text: string) => Promise<void> {
+    const route = input.route;
+    if (route?.kind !== "feishu" || route.chatId !== input.chatId || (route.messageId && route.messageId !== input.messageId)
+      || (this.allowUsers.length && (!input.sender || !this.allowUsers.includes(input.sender.id)))) {
+      throw new GatewayReplyNotSentError("飞书已保存回复地址或授权不匹配");
+    }
+    const generation = this.generation, epoch = this.gatewayConnectionGeneration();
+    return text => this.sendText(route.chatId, text, generation, epoch, route.messageId, route.inThread);
+  }
+
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
   }
@@ -335,12 +359,15 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   }
 
   private assertReplyGeneration(generation: number, epoch: unknown): void {
-    if (!this.connected || generation !== this.generation || epoch !== this.gatewayConnectionGeneration()) throw new Error("Gateway 回复连接已改变，未发送");
+    if (!this.connected || generation !== this.generation || epoch !== this.gatewayConnectionGeneration()) throw new GatewayReplyNotSentError("Gateway 回复连接已改变，未发送");
   }
 
   private async sendText(chatId: string, text: string, generation: number, epoch: unknown, messageId?: string, inThread = false): Promise<void> {
     this.assertReplyGeneration(generation, epoch);
-    const token = await this.refreshToken();
+    const token = await this.refreshToken().catch(() => {
+      this.assertReplyGeneration(generation, epoch);
+      throw new GatewayReplyNotSentError("飞书回复授权暂不可用，未发送", true);
+    });
     this.assertReplyGeneration(generation, epoch);
     const response = await fetch(messageId
       ? `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`
@@ -349,9 +376,10 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ ...(messageId ? { reply_in_thread: inThread } : { receive_id: chatId }),
         msg_type: "text", content: JSON.stringify({ text }) }),
-    });
-    const result = await response.json() as { code?: number };
-    if (!response.ok || result.code !== 0) throw new Error("飞书回复失败");
+    }).catch(() => { throw new Error("飞书回复回执未确认"); });
+    const result = await response.json().catch(() => { throw new Error("飞书回复回执无效"); }) as { code?: number };
+    if (typeof result.code === "number" && result.code !== 0) throw new GatewayReplyNotSentError("飞书回复失败，平台明确拒绝", response.status === 429);
+    if (!response.ok || result.code !== 0) throw new Error("飞书回复失败，回执未确认");
   }
 }
 
@@ -503,9 +531,9 @@ export class WecomChannelAdapter implements ChannelAdapter {
       return { status: 200, body: "success", contentType: "text/plain" };
     }
 
-    // 先回 success，避免企微重试；异步跑 Agent
+    // The registry commits to SQLite before the callback can acknowledge success.
     const replyGeneration = this.generation;
-    void this.onInbound({
+    const delivery = this.onInbound({
       channelId: this.id,
       chatId,
       workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
@@ -513,10 +541,13 @@ export class WecomChannelAdapter implements ChannelAdapter {
       text: text.trim(),
       messageId: extractXmlTag(message, "MsgId"),
       sender: { id: fromUser, name: fromUser },
+      replyRoute: { kind: "wecom", chatId, userId: fromUser },
       reply: async (replyText: string) => {
         await this.sendText(chatId, fromUser, replyText, replyGeneration);
       },
-    }).catch((err) => console.warn("[Wecom] inbound failed", err));
+    });
+    void delivery.catch(() => console.warn("[Wecom] inbound completion failed; transport journal retained"));
+    await gatewayInboundAccepted(delivery);
 
     return { status: 200, body: "success", contentType: "text/plain" };
   }
@@ -543,6 +574,16 @@ export class WecomChannelAdapter implements ChannelAdapter {
   }
 
   gatewayConnectionGeneration(): unknown { return this.smart?.gatewayConnectionGeneration() ?? this.generation; }
+
+  restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
+    if (this.smart) return undefined; // req_id is scoped to the departed Smart Robot socket.
+    const route = input.route;
+    if (route?.kind !== "wecom" || route.chatId !== input.chatId || route.userId !== input.sender?.id) {
+      throw new GatewayReplyNotSentError("企微已保存回复地址不匹配");
+    }
+    const generation = this.generation;
+    return text => this.sendText(route.chatId, route.userId, text, generation);
+  }
 
   workConnectionKey(): string | undefined {
     if (!this.activated) return undefined;
@@ -575,12 +616,15 @@ export class WecomChannelAdapter implements ChannelAdapter {
   }
 
   private assertReplyGeneration(generation: number): void {
-    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+    if (!this.connected || generation !== this.generation) throw new GatewayReplyNotSentError("Gateway 回复连接已改变，未发送");
   }
 
   private async sendText(chatId: string, fromUser: string, text: string, generation: number): Promise<void> {
     this.assertReplyGeneration(generation);
-    const token = await this.refreshToken();
+    const token = await this.refreshToken().catch(() => {
+      this.assertReplyGeneration(generation);
+      throw new GatewayReplyNotSentError("企微回复授权暂不可用，未发送", true);
+    });
     this.assertReplyGeneration(generation);
     const isRoom = chatId !== fromUser && chatId.length > 0;
     const body = isRoom
@@ -596,14 +640,18 @@ export class WecomChannelAdapter implements ChannelAdapter {
           agentid: Number(this.config.agentId),
           text: { content: text },
         };
-    await fetch(
-      `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,
+    const response = await fetch(
+      `https://qyapi.weixin.qq.com/cgi-bin/${isRoom ? "appchat" : "message"}/send?access_token=${encodeURIComponent(token)}`,
       {
-        method: "POST",
+        method: "POST", redirect: "error", signal: workRequestSignal(),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
-    );
+    ).catch(() => { throw new Error("企微回复回执未确认"); });
+    const result = await response.json().catch(() => { throw new Error("企微回复回执无效"); }) as { errcode?: number; invaliduser?: string };
+    if (typeof result.errcode === "number" && result.errcode !== 0) throw new GatewayReplyNotSentError("企微平台拒绝回复", response.status === 429 || result.errcode === 45009);
+    if (result.invaliduser?.split("|").includes(fromUser)) throw new GatewayReplyNotSentError("企微回复目标无效");
+    if (!response.ok || result.errcode !== 0) throw new Error("企微回复回执未确认");
   }
 }
 
@@ -735,7 +783,7 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     }
 
     const replyGeneration = this.generation;
-    void this.onInbound({
+    const delivery = this.onInbound({
       channelId: this.id,
       chatId: fromUser,
       workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
@@ -743,10 +791,13 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
       text: text.trim(),
       messageId: extractXmlTag(messageXml, "MsgId"),
       sender: { id: fromUser, name: fromUser },
+      replyRoute: { kind: "wechat", openId: fromUser },
       reply: async (replyText: string) => {
         await this.sendText(fromUser, replyText, replyGeneration);
       },
-    }).catch((err) => console.warn("[Wechat] inbound failed", err));
+    });
+    void delivery.catch(() => console.warn("[Wechat] inbound completion failed; transport journal retained"));
+    await gatewayInboundAccepted(delivery);
 
     return { status: 200, body: "success", contentType: "text/plain" };
   }
@@ -773,6 +824,15 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
 
   gatewayConnectionGeneration(): unknown { return this.generation; }
 
+  restoreGatewayReply(input: GatewayReplyRestoreInput): (text: string) => Promise<void> {
+    const route = input.route;
+    if (route?.kind !== "wechat" || route.openId !== input.chatId || route.openId !== input.sender?.id) {
+      throw new GatewayReplyNotSentError("公众号已保存回复地址不匹配");
+    }
+    const generation = this.generation;
+    return text => this.sendText(route.openId, text, generation);
+  }
+
   workConnectionKey(): string | undefined {
     return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
   }
@@ -795,17 +855,20 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
   }
 
   private assertReplyGeneration(generation: number): void {
-    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+    if (!this.connected || generation !== this.generation) throw new GatewayReplyNotSentError("Gateway 回复连接已改变，未发送");
   }
 
   private async sendText(openId: string, text: string, generation: number): Promise<void> {
     this.assertReplyGeneration(generation);
-    const token = await this.refreshToken();
+    const token = await this.refreshToken().catch(() => {
+      this.assertReplyGeneration(generation);
+      throw new GatewayReplyNotSentError("公众号回复授权暂不可用，未发送", true);
+    });
     this.assertReplyGeneration(generation);
-    await fetch(
+    const response = await fetch(
       `https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=${encodeURIComponent(token)}`,
       {
-        method: "POST",
+        method: "POST", redirect: "error", signal: workRequestSignal(),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           touser: openId,
@@ -813,7 +876,10 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
           text: { content: text },
         }),
       },
-    );
+    ).catch(() => { throw new Error("公众号回复回执未确认"); });
+    const result = await response.json().catch(() => { throw new Error("公众号回复回执无效"); }) as { errcode?: number };
+    if (typeof result.errcode === "number" && result.errcode !== 0) throw new GatewayReplyNotSentError("公众号平台拒绝回复", response.status === 429 || result.errcode === 45009);
+    if (!response.ok || result.errcode !== 0) throw new Error("公众号回复回执未确认");
   }
 }
 
@@ -1091,6 +1157,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         channelId: this.id, chatId, text,
         ...(attachments.length ? { attachments } : {}),
         messageId: String(msg.message_id), sender,
+        replyRoute: { kind: "telegram", chatId, replyToMessageId: msg.message_id,
+          messageThreadId: msg.message_thread_id, directMessagesTopicId: msg.direct_messages_topic?.topic_id },
         workTarget: !msg.business_connection_id && !msg.sender_chat ? gatewayWorkTarget({ version: 1,
           channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId,
           senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
@@ -1107,6 +1175,21 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   gatewayConnectionGeneration(): unknown { return this.generation; }
+
+  restoreGatewayReply(input: GatewayReplyRestoreInput): (text: string) => Promise<void> {
+    const route = input.route;
+    if (route?.kind !== "telegram" || route.chatId !== input.chatId
+      || (route.replyToMessageId !== undefined && String(route.replyToMessageId) !== input.messageId)
+      || (this.config.allowUsers?.length && (!input.sender || !this.config.allowUsers.includes(input.sender.id)))) {
+      throw new GatewayReplyNotSentError("Telegram 已保存回复地址或授权不匹配");
+    }
+    const generation = this.generation;
+    return text => this.sendText(route.chatId, text, generation, {
+      ...(route.replyToMessageId !== undefined ? { reply_to_message_id: route.replyToMessageId } : {}),
+      ...(route.messageThreadId !== undefined ? { message_thread_id: route.messageThreadId } : {}),
+      ...(route.directMessagesTopicId !== undefined ? { direct_messages_topic_id: route.directMessagesTopicId } : {}),
+    });
+  }
 
   workConnectionKey(): string | undefined {
     return this.connected && this.botId ? gatewayConnectionKey(this.type, [this.botId]) : undefined;
@@ -1132,13 +1215,19 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   private assertReplyGeneration(generation: number): void {
-    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+    if (!this.connected || generation !== this.generation) throw new GatewayReplyNotSentError("Gateway 回复连接已改变，未发送");
   }
 
   private async sendText(chatId: string, text: string, generation: number, address: Record<string, number> = {}): Promise<void> {
     const html = mdToHtml(text);
+    let sent = 0;
     for (const chunk of splitTelegramText(html)) {
-      await this.sendChunk(chatId, chunk, true, generation, address);
+      try { await this.sendChunk(chatId, chunk, true, generation, address); sent++; }
+      catch (error) {
+        // A whole-message retry would duplicate already accepted chunks.
+        if (sent && error instanceof GatewayReplyNotSentError) throw new Error("Telegram 回复部分已发送，未自动重发整条内容");
+        throw error;
+      }
     }
   }
 
@@ -1146,23 +1235,23 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.assertReplyGeneration(generation);
     const body = { chat_id: Number(chatId), ...address, text, ...(useHtml ? { parse_mode: "HTML" } : {}) };
     const res = await fetch(`${this.apiBase}${this.config.botToken}/sendMessage`, {
-      method: "POST",
+      method: "POST", redirect: "error", signal: workRequestSignal(),
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).catch(() => { throw new Error("Telegram 发送请求失败"); });
-    if (res.ok) return;
-    const data = (await res.json().catch(() => null)) as { description?: string } | null;
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; description?: string; parameters?: { retry_after?: number } } | null;
+    if (res.ok && data?.ok === true) return;
     if (useHtml && data?.description?.includes("can't parse entities")) {
       // HTML 实体解析失败：退化为纯文本重发
       await this.sendChunk(chatId, text, false, generation, address);
       return;
     }
     if (res.status === 429) {
-      const retryAfter = Number(res.headers.get("retry-after") ?? 5);
-      await sleep(Math.min(retryAfter, 60) * 1000 + 500);
-      await this.sendChunk(chatId, text, useHtml, generation, address);
-      return;
+      const retryAfter = Number(data?.parameters?.retry_after ?? res.headers.get("retry-after") ?? 5);
+      throw new GatewayReplyNotSentError("Telegram 达到平台发送速率上限，未发送", true,
+        (Number.isFinite(retryAfter) ? Math.max(1, Math.min(retryAfter, 300)) : 5) * 1000);
     }
+    if (data?.ok === false) throw new GatewayReplyNotSentError(`Telegram 平台拒绝回复（HTTP ${res.status}）`);
     throw new Error(`Telegram 发送失败（HTTP ${res.status}）`);
   }
 }

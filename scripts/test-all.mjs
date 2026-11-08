@@ -6,8 +6,8 @@
  * （如断言 Pi 1.0.0 而实际 1.3.0）与「源码文本断言」长期腐烂而无人察觉。
  *
  * 设计（棘轮 ratchet，避免"上线即全红→被忽略"）：
- *   - default 套件只跑 headless 用例；GUI/NETWORK/DATASET 三类显式分类后再排除
- *     （见下方 GUI_TESTS / NETWORK_TESTS / DATASET_TESTS）。
+ *   - default 套件只跑 headless 用例；GUI/NETWORK/DATASET/ARTIFACT 显式分类后再排除
+ *     （见下方显式集合；ARTIFACT 由 CI 在完整构建后单独验收）。
  *   - GUI 类可用 `--include-gui` 单独放行（真实桌面会话）；`--include-live` 放行全部。
  *   - 与 scripts/test-baseline.json 中记录的已知失败对比：
  *       * 新增失败（回归）→ 退出码 1（门禁失败）
@@ -18,7 +18,9 @@
  * 用法：
  *   node scripts/test-all.mjs                    # default 套件（headless，并行池 + 串行负载敏感池）
  *   node scripts/test-all.mjs --include-gui      # default + GUI（需要真实桌面会话/Electron）
- *   node scripts/test-all.mjs --include-live     # 全部（GUI + NETWORK + DATASET）
+ *   node scripts/test-all.mjs --include-live     # 全部（GUI + NETWORK + DATASET + ARTIFACT）
+ *   node scripts/test-all.mjs --artifacts-only   # 仅完整产品构建产物验收（不触发构建）
+ *   node scripts/test-all.mjs --no-batch-build   # 使用原有逐脚本 pnpm/esbuild 入口
  *   node scripts/test-all.mjs --list             # 只列分类与选中的用例，不执行
  *   node scripts/test-all.mjs --audit            # 只做分类自检（GUI 清单 vs electron 命令）
  *   node scripts/test-all.mjs --update-baseline  # 记录当前失败集为基线
@@ -28,8 +30,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareTestBundles } from "./test-bundle-pool.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BASELINE_PATH = join(ROOT, "scripts", "test-baseline.json");
@@ -43,20 +46,21 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
 
 /**
  * 负载敏感用例：性能用例断言墙钟预算（启动 p95、构建耗时等）；
- * Phase 2 recovery 与 Phase 5 native story 连续强杀并重开真实 SQLite/JSONL，且持有短期测试宿主租约。
+ * Phase 2 recovery、Phase 5 native story 与 Gateway inbox crash 强杀并重开真实 SQLite/JSONL，且持有短期测试宿主租约。
  * CPU/IO 争用会干扰性能预算或进程/租约交接，故崩溃套件也走串行池。
  * 它们在并行池跑完后串行执行（JOBS=1），并且 `core-performance-all`
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/];
+const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/];
 
 /**
- * 排除集合分三类（+ 一个临时桶），默认套件只跑 headless 用例：
+ * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
  *
  *   GUI     真实桌面会话/Electron 窗口（--include-gui 放行）
  *   NETWORK 联网、远程设备、浏览器自动化、本地端口服务（--include-live 放行）
  *   DATASET 依赖本机数据集或原生模块（--include-live 放行）
+ *   ARTIFACT 验证真实完整产品构建产物（--artifacts-only / --include-artifacts 放行）
  *   KNOWN_HEADLESS_RED 临时桶：本身 headless，但当前是既有红（见各项原因），
  *           修好后必须移回 default；只有 --include-live 会跑到，避免把它藏进 GUI job。
  *
@@ -159,6 +163,15 @@ const DATASET_TESTS = new Set([
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
   "test:task-terminal:live",
+]);
+
+// These tests inspect real product bundles/embedded assets. Keep them explicit
+// and mandatory after the CI build; a source-only test invocation never builds
+// the product implicitly or treats missing output as a successful assertion.
+const ARTIFACT_TESTS = new Set([
+  "test:image-resize-assets",
+  "test:oauth-build-assets",
+  "test:pi-codemode-assets",
 ]);
 
 /**
@@ -274,11 +287,12 @@ const GUI_PATTERNS = [/-e2e$/, /-desktop$/, /-electron$/, /:desktop$/, /^test:co
 const NETWORK_PATTERNS = [/:live$/, /^test:remote-/, /^test:browser-/];
 const DATASET_PATTERNS = [];
 
-/** @returns {"headless"|"gui"|"network"|"dataset"|"pending"} */
+/** @returns {"headless"|"gui"|"network"|"dataset"|"artifact"|"pending"} */
 function classify(name) {
   if (GUI_TESTS.has(name)) return "gui";
   if (NETWORK_TESTS.has(name)) return "network";
   if (DATASET_TESTS.has(name)) return "dataset";
+  if (ARTIFACT_TESTS.has(name)) return "artifact";
   if (KNOWN_HEADLESS_RED.has(name)) return "pending";
   if (HEADLESS_TESTS.has(name)) return "headless";
   if (GUI_PATTERNS.some((re) => re.test(name))) return "gui";
@@ -291,14 +305,26 @@ const args = process.argv.slice(2);
 const updateBaseline = args.includes("--update-baseline");
 const includeLive = args.includes("--include-live");
 const includeGui = args.includes("--include-gui");
+const artifactsOnly = args.includes("--artifacts-only");
+const includeArtifacts = args.includes("--include-artifacts");
+const batchBuild = !args.includes("--no-batch-build") && process.env.TEST_ALL_BATCH_BUILD !== "0";
+const suiteLabel = artifactsOnly ? "（ARTIFACT：完整产品构建产物）" : includeLive ? "（全部：GUI+NETWORK+DATASET+ARTIFACT）" : `（default${includeGui ? " + GUI" : "：headless"}${includeArtifacts ? " + ARTIFACT" : ""}）`;
+function positiveInteger(value, label, minimum = 1) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    console.error(`[test-all] ${label} 必须是 >= ${minimum} 的整数，收到: ${value}`);
+    process.exit(2);
+  }
+  return parsed;
+}
 const filterArg = args.find((a) => a.startsWith("--filter="));
 const filter = filterArg ? filterArg.slice("--filter=".length) : null;
 const jobsArg = args.find((a) => a.startsWith("--jobs="));
-const JOBS = Math.max(1, Number(jobsArg ? jobsArg.slice("--jobs=".length) : (process.env.TEST_ALL_JOBS ?? 4)));
+const JOBS = positiveInteger(jobsArg ? jobsArg.slice("--jobs=".length) : (process.env.TEST_ALL_JOBS ?? 4), "--jobs / TEST_ALL_JOBS");
 const timeoutArg = args.find((a) => a.startsWith("--timeout="));
 // 单个用例超时（秒）。test-guard 内部是 900s；聚合门禁需要更短的墙钟上限，
 // 否则一个挂死用例就会拖住整条流水线（实测串行跑 250 个用例可超过 45 分钟）。
-const PER_TEST_TIMEOUT = Math.max(30, Number(timeoutArg ? timeoutArg.slice("--timeout=".length) : 300));
+const PER_TEST_TIMEOUT = positiveInteger(timeoutArg ? timeoutArg.slice("--timeout=".length) : 300, "--timeout", 30);
 
 /** 全量 test:*（去掉聚合脚本自身），用于分类统计与自检。 */
 const allTestNames = Object.keys(pkg.scripts)
@@ -307,7 +333,7 @@ const allTestNames = Object.keys(pkg.scripts)
   .sort();
 
 const classOf = (name) => classify(name);
-const classCounts = { headless: 0, gui: 0, network: 0, dataset: 0, pending: 0 };
+const classCounts = { headless: 0, gui: 0, network: 0, dataset: 0, artifact: 0, pending: 0 };
 for (const n of allTestNames) classCounts[classOf(n)] += 1;
 
 /**
@@ -332,6 +358,9 @@ function classificationWarnings() {
   for (const name of PLATFORM_ONLY_TESTS.keys()) {
     if (!pkg.scripts[name]) warnings.push(`平台限定清单里的 ${name} 已不存在于 package.json`);
   }
+  for (const name of ARTIFACT_TESTS) {
+    if (!pkg.scripts[name]) warnings.push(`ARTIFACT 清单里的 ${name} 已不存在于 package.json`);
+  }
   for (const name of GUI_TESTS) {
     if (!pkg.scripts[name]) warnings.push(`GUI 清单里的 ${name} 已不存在于 package.json`);
     else if (!launchers.has(name)) info.push(`${name} 由 node driver 内部 spawn electron（命令串里没有直接 electron，属预期）`);
@@ -340,12 +369,10 @@ function classificationWarnings() {
 }
 
 let names = [...allTestNames];
-if (includeLive) {
-  // 放行全部（GUI + NETWORK + DATASET + pending）。
-} else if (includeGui) {
-  names = names.filter((n) => classOf(n) === "headless" || classOf(n) === "gui");
-} else {
-  names = names.filter((n) => classOf(n) === "headless");
+if (artifactsOnly) {
+  names = names.filter((n) => classOf(n) === "artifact");
+} else if (!includeLive) {
+  names = names.filter((n) => classOf(n) === "headless" || (includeGui && classOf(n) === "gui") || (includeArtifacts && classOf(n) === "artifact"));
 }
 // 非 Windows 上跳过 GUI_WINDOWS_ONLY（它们会直接断言 requires Windows）。
 const skippedWindowsOnly =
@@ -361,14 +388,17 @@ const skippedByPlatform = names.filter((n) => {
 if (skippedByPlatform.length > 0) names = names.filter((n) => !skippedByPlatform.includes(n));
 if (filter) names = names.filter((n) => n.includes(filter));
 names.sort();
+if (!artifactsOnly && !includeArtifacts && !includeLive) {
+  console.log(`[test-all] ARTIFACT 单独验收 ${ARTIFACT_TESTS.size} 项：授权完整构建后运行 pnpm -s test:all:artifacts（本命令不触发产品构建）。`);
+}
 
 if (args.includes("--list") || args.includes("--audit")) {
   const { warnings, info } = classificationWarnings();
   console.log(
-    `[test-all] 分类：headless ${classCounts.headless} · GUI ${classCounts.gui} · NETWORK ${classCounts.network} · DATASET ${classCounts.dataset} · pending ${classCounts.pending}`,
+    `[test-all] 分类：headless ${classCounts.headless} · GUI ${classCounts.gui} · NETWORK ${classCounts.network} · DATASET ${classCounts.dataset} · ARTIFACT ${classCounts.artifact} · pending ${classCounts.pending}`,
   );
   console.log(
-    `[test-all] 选中 ${names.length} 个用例${includeLive ? "（全部：GUI+NETWORK+DATASET）" : includeGui ? "（default + GUI）" : "（default：headless）"}${filter ? ` filter=${filter}` : ""}`,
+    `[test-all] 选中 ${names.length} 个用例${suiteLabel}${filter ? ` filter=${filter}` : ""}`,
   );
   if (skippedWindowsOnly.length > 0) {
     console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
@@ -410,7 +440,7 @@ const baseline = existsSync(BASELINE_PATH)
   : new Set();
 
 console.log(
-  `[test-all] 运行 ${names.length} 个用例${includeLive ? "（全部：GUI+NETWORK+DATASET）" : includeGui ? "（default + GUI）" : "（default：headless）"}${filter ? ` filter=${filter}` : ""}`,
+  `[test-all] 运行 ${names.length} 个用例${suiteLabel}${filter ? ` filter=${filter}` : ""}`,
 );
 if (skippedWindowsOnly.length > 0) {
   console.log(`[test-all] 非 Windows，跳过 ${skippedWindowsOnly.length} 个 Windows-only GUI 用例：${skippedWindowsOnly.join(", ")}`);
@@ -433,6 +463,11 @@ const started = Date.now();
 // 必须真正删除该变量（赋值为 undefined 在部分 Node 版本会变成字符串 "undefined"）。
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
+// Direct node execution must retain the local binary lookup normally supplied
+// by pnpm. Preserve Windows' actual Path key to avoid duplicate PATH entries.
+const pathKey = Object.keys(childEnv).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+childEnv[pathKey] = join(ROOT, "node_modules", ".bin") + delimiter + (childEnv[pathKey] ?? "");
+let preparedBundles = new Map();
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const activeChildren = new Set();
@@ -465,19 +500,26 @@ function killTree(child) {
 function runOne(name) {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const child = spawn("pnpm", ["-s", name], {
+    const prepared = preparedBundles.get(name);
+    if (prepared?.error) {
+      resolve({ name, ok: false, killed: false, secs: "0.0", output: `[bundle error] ${prepared.error}` });
+      return;
+    }
+    const command = prepared ? process.execPath : "pnpm";
+    const commandArgs = prepared ? ["scripts/test-guard.mjs", ...prepared.guardArgs] : ["-s", name];
+    const child = spawn(command, commandArgs, {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "pipe"],
-      env: childEnv,
+      env: { ...childEnv, npm_lifecycle_event: name, npm_lifecycle_script: pkg.scripts[name] },
       // POSIX 直接 spawn pnpm（不再套 sh -c，避免 Node DEP0190 与多一层僵尸进程）；
       // Windows 的 pnpm 是 .cmd，必须经 shell。超时为整组 kill / taskkill /T。
-      shell: process.platform === "win32",
+      shell: !prepared && process.platform === "win32",
       // Headless tests must not open one desktop console per pnpm.cmd invocation.
       windowsHide: true,
       detached: process.platform !== "win32",
     });
     activeChildren.add(child);
-    let output = "";
+    let output = prepared?.warnings ?? "";
     let settled = false;
     let killed = false;
 
@@ -546,6 +588,12 @@ async function runPool(items, worker, concurrency = JOBS) {
 }
 
 console.log(`[test-all] 并发 ${JOBS} · 单用例超时 ${PER_TEST_TIMEOUT}s`);
+if (batchBuild) {
+  const compileStarted = Date.now();
+  const result = await prepareTestBundles(names, pkg.scripts, { root: ROOT, timeoutMs: PER_TEST_TIMEOUT * 1000 });
+  preparedBundles = result.prepared;
+  console.log(`[test-all] 共享 esbuild 进程：${preparedBundles.size} 个用例 / ${result.batches} 批 · ${((Date.now() - compileStarted) / 1000).toFixed(1)}s；其余 ${names.length - preparedBundles.size} 个保留原命令。`);
+}
 await runPool(parallelNames, async (n) => runOne(n));
 if (serialNames.length > 0) {
   console.log(`\n[test-all] 串行执行负载敏感用例（${serialNames.length} 个，隔离崩溃恢复与性能验证的 CPU/IO 争用）：`);

@@ -1,4 +1,6 @@
-import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from "./channels";
+import { gatewayInboundAccepted, type ChannelAdapter, type ChannelConfig, type GatewayInboundHandler } from "./channels";
+import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayRouteCodec, type GatewayReplyRoute } from "./GatewayReply";
+import { BoundedTTLCache } from "./BoundedTTLCache";
 import { withGatewayMedia, GatewayMediaError, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from "./GatewayMedia";
 import { gatewayConnectionKey } from "./work-outbound";
 
@@ -12,6 +14,7 @@ export interface DingTalkSocket {
   close(): void;
 }
 export interface DingTalkOptions {
+  replySecrets?: GatewayRouteCodec;
   deferInboundUntilActivated?: boolean;
   fetch?: typeof fetch;
   socketFactory?: (url: string) => DingTalkSocket;
@@ -24,6 +27,14 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function required(value: unknown): string { return typeof value === "string" ? value.trim() : ""; }
+function sessionWebhook(value: unknown): URL | undefined {
+  if (typeof value !== "string" || !value || value.length > 16_384) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "oapi.dingtalk.com" && !url.port
+      && !url.username && !url.password && !url.hash && url.pathname === "/robot/sendBySession" ? url : undefined;
+  } catch { return undefined; }
+}
 function configFrom(value: ChannelConfig): Config {
   const config = { clientId: required(value.clientId), clientSecret: required(value.clientSecret),
     corpId: required(value.corpId), robotCode: required(value.robotCode),
@@ -76,7 +87,7 @@ function inboundContent(body: Record<string, unknown>): { text: string; media: M
 /** Official application robot Stream protocol (not a custom incoming-webhook robot).
  * Authentication is TLS + a single-use ticket obtained with app credentials. Stream
  * frames have no HTTP callback signature. Never expose an unsigned public callback.
- * Session webhooks are short-lived credentials and remain only in reply closures.
+ * Session webhooks are short-lived credentials; durable recovery requires an injected OS-encrypted codec.
  */
 export class DingTalkStreamAdapter implements ChannelAdapter {
   readonly type = "dingtalk" as const;
@@ -92,8 +103,9 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   private heartbeatTimer?: ReturnType<typeof setTimeout>;
   private cancelOpening?: () => void;
   private controller = new AbortController();
-  private readonly seen = new Map<string, number>();
+  private readonly seen = new BoundedTTLCache<string, number>({ maxEntries: 10_000, ttlMs: 24 * 60 * 60_000 });
   private readonly preparing = new Set<string>();
+  private readonly replyCapabilities = new BoundedTTLCache<string, (text: string) => Promise<void>>({ maxEntries: 1024, ttlMs: 24 * 60 * 60_000 });
   private mediaStatus = "";
   private pending = 0;
   private rateWindow = 0;
@@ -141,6 +153,7 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     if (socket) { socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null; socket.close(); }
     this.config = null;
     this.seen.clear();
+    this.replyCapabilities.clear();
     this.preparing.clear();
     this.mediaStatus = "";
     this.reconnectAttempts = 0;
@@ -225,6 +238,44 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     }, delay);
     this.reconnectTimer.unref?.();
   }
+  restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
+    const route = input.route;
+    if (!this.config || !this.connected || !this.activated || route?.kind !== "dingtalk"
+      || route.chatId !== input.chatId || !input.sender || !this.config.allowUsers.includes(input.sender.id)) return undefined;
+    const cached = this.replyCapabilities.get(JSON.stringify([input.chatId, input.messageId]));
+    if (cached) return cached;
+    try {
+      if (!this.options.replySecrets || !route.encryptedCapability || !this.socket) throw new Error("capability unavailable");
+      const stored = object(JSON.parse(this.options.replySecrets.open(route.encryptedCapability)));
+      const webhook = sessionWebhook(stored?.webhook);
+      if (!stored || !webhook || stored.kind !== "dingtalk" || stored.accountKey !== this.workConnectionKey()
+        || stored.chatId !== input.chatId || stored.messageId !== input.messageId || stored.senderId !== input.sender.id
+        || stored.expiresAt !== route.expiresAt || Date.now() >= route.expiresAt) throw new Error("capability mismatch");
+      return this.createReply(webhook, route.expiresAt, this.generation, this.socket);
+    } catch {
+      return async () => { throw new GatewayReplyNotSentError("钉钉临时回复凭据不可恢复或已过期，请检查任务记录后从钉钉重新发起请求"); };
+    }
+  }
+  private createReply(webhook: URL, expiresAt: number, generation: number, socket: DingTalkSocket): (reply: string) => Promise<void> {
+    return async replyText => {
+      if (!this.active(generation, socket) || !this.activated || Date.now() >= expiresAt) throw new GatewayReplyNotSentError("钉钉回复连接已改变或会话地址已过期，未发送");
+      if (Date.now() - this.rateWindow >= 60_000) { this.rateWindow = Date.now(); this.receivedInWindow = this.sentInWindow = 0; }
+      if (this.sentInWindow >= 20) throw new GatewayReplyNotSentError("钉钉回复达到本地速率上限，未发送", true, Math.max(1, this.rateWindow + 60_000 - Date.now()));
+      if (Buffer.byteLength(replyText) > 20_000) throw new GatewayReplyNotSentError("钉钉回复过长，未发送");
+      // No automatic retry after an uncertain HTTP result (avoids duplicate replies).
+      this.sentInWindow++;
+      let response: Response;
+      try {
+        response = await this.fetcher(webhook.href, { method: "POST", redirect: "error",
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(15_000)]),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ msgtype: "text", text: { content: replyText } }) });
+      } catch { throw new Error("钉钉回复回执未确认，已停止自动重发"); }
+      const receipt = await response.json().catch(() => null);
+      if (response.status === 429) throw new GatewayReplyNotSentError("钉钉未确认回复成功：服务器限流", true);
+      if (!response.ok || object(receipt)?.errcode !== 0) throw new Error("钉钉未确认回复成功，已停止自动重发");
+    };
+  }
   private ack(socket: DingTalkSocket, messageId: string, code = 200, data: unknown = { response: null }): void {
     socket.send(JSON.stringify({ code, message: code === 200 ? "OK" : "Rejected",
       headers: { messageId, contentType: "application/json" }, data: JSON.stringify(data) }));
@@ -296,16 +347,14 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
       return;
     }
     const now = Date.now();
-    for (const [key, at] of this.seen) if (at < now - 24 * 60 * 60_000) this.seen.delete(key);
     const key = JSON.stringify([chatId, eventId]);
     if (this.seen.has(key)) { this.ack(socket, messageId); return; }
     const preparingKey = JSON.stringify([generation, chatId, eventId]);
     if (this.preparing.has(preparingKey)) { this.ack(socket, messageId, 503); return; }
     if (now - this.rateWindow >= 60_000) { this.rateWindow = now; this.receivedInWindow = this.sentInWindow = 0; }
-    if (this.pending >= 32 || this.seen.size >= 10_000 || this.receivedInWindow >= 60) { this.ack(socket, messageId, 429); return; }
-    const webhook = new URL(required(body.sessionWebhook));
-    if (webhook.protocol !== "https:" || webhook.hostname !== "oapi.dingtalk.com" || webhook.port
-      || webhook.username || webhook.password || webhook.pathname !== "/robot/sendBySession") {
+    if (this.pending >= 32 || this.receivedInWindow >= 60) { this.ack(socket, messageId, 429); return; }
+    const webhook = sessionWebhook(body.sessionWebhook);
+    if (!webhook) {
       this.ack(socket, messageId, 403); return;
     }
     const expiresAt = Number(body.sessionWebhookExpiredTime);
@@ -318,32 +367,29 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
       const sources = await this.mediaSources(media, generation, socket, config);
       await withGatewayMedia(sources, async attachments => {
         if (!this.active(generation, socket) || !this.activated) throw new Error("钉钉连接已改变");
-        // Only acknowledge success once attachments are ready. After admission, never
-        // replay an agent turn even if its handler/reply subsequently fails.
-        this.ack(socket, messageId);
-        this.seen.set(key, now);
+        const reply = this.createReply(webhook, expiresAt, generation, socket);
+        this.replyCapabilities.set(key, reply);
+        const replyRoute: Extract<GatewayReplyRoute, { kind: "dingtalk" }> = { kind: "dingtalk", chatId, expiresAt };
+        if (this.options.replySecrets) replyRoute.encryptedCapability = this.options.replySecrets.seal(JSON.stringify({
+          kind: "dingtalk", accountKey: this.workConnectionKey(), chatId, messageId: eventId, senderId, expiresAt, webhook: webhook.href,
+        }));
+        const delivery = this.handler!({ channelId: this.id, chatId, text: text || "请查看附件。", attachments, messageId: eventId,
+          sender: { id: senderId, name: required(body.senderNick) || undefined },
+          replyRoute, reply,
+        });
+        // Observe execution rejection immediately while awaiting durable admission.
+        // ACK only after the inbox commit; a rejected admission must be redeliverable.
+        void delivery.catch(() => {});
+        await gatewayInboundAccepted(delivery);
         admitted = true;
-        this.mediaStatus = "";
-        await this.handler!({ channelId: this.id, chatId, text: text || "请查看附件。", attachments, messageId: eventId,
-        sender: { id: senderId, name: required(body.senderNick) || undefined },
-        reply: async replyText => {
-          if (!this.active(generation, socket) || Date.now() >= expiresAt) throw new Error("钉钉回复连接已改变或会话地址已过期，未发送");
-          if (Date.now() - this.rateWindow >= 60_000) { this.rateWindow = Date.now(); this.receivedInWindow = this.sentInWindow = 0; }
-          if (this.sentInWindow >= 20) throw new Error("钉钉回复达到本地速率上限，未发送");
-          if (Buffer.byteLength(replyText) > 20_000) throw new Error("钉钉回复过长，未发送");
-          // No automatic retry after an uncertain HTTP result (avoids duplicate replies).
-          this.sentInWindow++;
-          let response: Response;
-          try {
-            response = await this.fetcher(webhook.href, { method: "POST", redirect: "error",
-              signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(15_000)]),
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ msgtype: "text", text: { content: replyText } }) });
-          } catch { throw new Error("钉钉回复回执未确认，已停止自动重发"); }
-          const receipt = await response.json().catch(() => null);
-          if (!response.ok || object(receipt)?.errcode !== 0) throw new Error("钉钉未确认回复成功，已停止自动重发");
-        },
-      });
+        if (this.active(generation, socket) && this.activated) {
+          this.seen.set(key, now);
+          this.mediaStatus = "";
+          this.ack(socket, messageId);
+        }
+        if (delivery.accepted) {
+          void delivery.catch(() => { if (this.active(generation, socket)) this.mediaStatus = "；任务处理失败，请检查任务记录"; });
+        } else await delivery;
       });
     } catch (error) {
       if (!admitted && this.active(generation, socket)) {

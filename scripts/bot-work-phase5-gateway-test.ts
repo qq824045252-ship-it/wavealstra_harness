@@ -10,6 +10,7 @@ import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkSer
 import { WorkNotificationHost } from "../src/main/agent/work/WorkNotificationHost";
 import { WorkGatewayNotificationChannels, workGatewayText } from "../src/main/agent/work/WorkGatewayNotificationChannel";
 import { GatewayService, GATEWAY_REDACTED } from "../src/main/gateway/GatewayService";
+import { GatewayReplyNotSentError } from "../src/main/gateway/GatewayReply";
 import { GatewayWorkTargets } from "../src/main/gateway/GatewayWorkTargets";
 import { gatewayWorkTargetSchema, type GatewayWorkTarget, type GatewayWorkSendInput } from "../src/main/gateway/work-outbound";
 import { FeishuChannelAdapter, WecomChannelAdapter, WechatMpChannelAdapter, TelegramChannelAdapter } from "../src/main/gateway/channels";
@@ -149,10 +150,14 @@ try {
     const path = local.path; await local.close();
     const reopened = harness(path); await reopened.gateway.restoreChannels();
     await reopened.feishu.handleWebhookPayload(payload("same-provider-id"));
-    const replay = reopened.requests[0];
-    assert.equal(replay?.taskId, requests[0]!.taskId);
-    assert.equal(replay?.userMessageId, requests[0]!.userMessageId);
-    assert.equal(replay?.assistantMessageId, requests[0]!.assistantMessageId);
+    assert.equal(reopened.requests.length, 0, "a completed transport receipt suppresses redelivery before the native Agent");
+    assert.equal(reopened.created.length, 0, "restart must not recreate a Work for an already answered message");
+    const receipts = reopened.db.connection.prepare(
+      "SELECT account_key,status FROM gateway_inbox WHERE message_id=? ORDER BY account_key",
+    ).all("same-provider-id") as Array<{ account_key: string; status: string }>;
+    assert.equal(receipts.length, 2, "both independently authenticated accounts retain their own receipts");
+    assert.notEqual(receipts[0].account_key, receipts[1].account_key);
+    assert(receipts.every(receipt => receipt.status === "completed"));
     await reopened.close();
   });
   await check("account changes during native execution cannot send the old answer through the new account", async () => {
@@ -235,7 +240,13 @@ try {
         respond = () => { started = true; return held.promise; };
         const count = posts.length;
         const sending = reply!(fallback ? "html" : "x".repeat(5000));
-        const rejected = assert.rejects(sending, /回复连接已改变/);
+        const rejected = assert.rejects(sending, error => {
+          assert(error instanceof Error);
+          if (fallback) assert(error instanceof GatewayReplyNotSentError && /回复连接已改变/.test(error.message));
+          else assert(!(error instanceof GatewayReplyNotSentError) && /部分已发送/.test(error.message),
+            "one accepted chunk makes the whole reply non-retryable even after reconnect");
+          return true;
+        });
         await until(() => started);
         await adapter.connect({ botToken: "9001:replacement" });
         held.resolve(fallback ? json({ description: "can't parse entities" }, 400) : json({ ok: true }));

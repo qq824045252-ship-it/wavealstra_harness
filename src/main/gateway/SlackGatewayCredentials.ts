@@ -1,5 +1,6 @@
 import { safeStorage } from "electron";
 import type { ChannelConfig } from "./channels";
+import { assertGatewayProviderStorage } from "./GatewayProviderConfig";
 
 interface EncryptedSecrets { version: number; ciphertext: string }
 const REDACTED = "••••••";
@@ -10,7 +11,7 @@ function publicConfig(config: ChannelConfig): ChannelConfig {
 
 /** Reuses the desktop host's OS encryption; Slack tokens never enter plaintext gateway config or renderer readback. */
 export function sealSlackGatewayConfig(config: ChannelConfig): ChannelConfig {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("系统凭据加密不可用，Slack 配置未保存");
+  assertGatewayProviderStorage();
   const secrets = JSON.stringify({ botToken: config.botToken, appToken: config.appToken });
   return { ...publicConfig(config), encryptedSecrets: { version: 1, ciphertext: safeStorage.encryptString(secrets).toString("base64") } };
 }
@@ -20,7 +21,7 @@ export function openSlackGatewayConfig(config: ChannelConfig): ChannelConfig {
   if (!encrypted || encrypted.version !== 1 || typeof encrypted.ciphertext !== "string") {
     throw new Error("Slack 连接凭据尚未保存在安全配置中");
   }
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("系统凭据加密不可用，Slack 连接未恢复");
+  assertGatewayProviderStorage();
   try {
     const secrets = JSON.parse(safeStorage.decryptString(Buffer.from(encrypted.ciphertext, "base64"))) as ChannelConfig;
     return { ...publicConfig(config), botToken: secrets.botToken, appToken: secrets.appToken };

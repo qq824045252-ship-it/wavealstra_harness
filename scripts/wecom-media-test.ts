@@ -67,6 +67,23 @@ try {
   socket.receive({ msgtype: 'file', file: media }, 'agent-fail'); await tick();
   assert.equal(messages.length, 7); assert.equal(requests, failedTurnRequests);
   assert.doesNotMatch(robot.statusText(), /secret signed/);
+  // Committed Registry deliveries release the adapter's preparation queue, even
+  // while the first native turn is running. Plain handlers above keep full-await behavior.
+  {
+    let finish!: () => void; const first = new Promise<void>(resolve => { finish = resolve; });
+    const admitted: string[] = [];
+    robot.setInboundHandler(msg => { admitted.push(msg.messageId!);
+      return Object.assign(msg.messageId === 'durable-a' ? first : Promise.resolve(), { accepted: Promise.resolve() }); });
+    socket.receive({ msgtype:'text',text:{content:'first'} },'durable-a');
+    socket.receive({ msgtype:'text',text:{content:'second'} },'durable-b');
+    await until(() => admitted.length === 2); assert.deepEqual(admitted,['durable-a','durable-b']); finish();
+    let attempts = 0;
+    robot.setInboundHandler(() => { attempts++; const result = attempts === 1 ? Promise.reject(new Error('commit failed')) : Promise.resolve();
+      return Object.assign(result,{accepted:result}); });
+    socket.receive({msgtype:'text',text:{content:'retry'}},'durable-reject'); await tick(); await tick();
+    socket.receive({msgtype:'text',text:{content:'retry'}},'durable-reject'); await until(() => attempts === 2);
+    socket.receive({msgtype:'text',text:{content:'retry'}},'durable-reject'); await tick(); assert.equal(attempts,2);
+  }
   robot.setInboundHandler(async msg => { messages.push(msg); });
   release = () => {}; socket.receive({ msgtype: 'image', image: media }, 'stale'); await until(() => requests > failedTurnRequests);
   await robot.disconnect(); release!(); await tick(); await tick(); assert.equal(messages.length, 7);

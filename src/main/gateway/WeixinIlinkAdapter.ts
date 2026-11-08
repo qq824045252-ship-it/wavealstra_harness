@@ -1,9 +1,13 @@
 import { withGatewayMedia, GatewayMediaError, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from './GatewayMedia';
 import { randomUUID } from 'node:crypto';
+import { BoundedTTLCache } from './BoundedTTLCache';
+import { GatewayReplyNotSentError, GatewayRouteEncodingError, type GatewayReplyRestoreInput, type GatewayRouteCodec, type GatewayReplyRoute } from './GatewayReply';
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from './channels';
 import { gatewayConnectionKey } from './work-outbound';
 import { IlinkError, WeixinIlinkClient, ilinkBase, object } from './WeixinIlinkClient';
 
+interface ReplyContext { token: string; expiresAt: number }
+const CONTEXT_RETENTION_MS = 24 * 60 * 60_000;
 interface Config { accountId: string; botToken: string; baseUrl: string; userId: string; allowUsers: string[] }
 /** Personal Weixin iLink, not WeChat MP or WeCom. No webhook or user password. */
 export class WeixinIlinkAdapter implements ChannelAdapter {
@@ -14,13 +18,20 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
   private activated = false;
   private status = '未连接';
   private inbound: GatewayInboundHandler | null = null;
-  private contexts = new Map<string, string>();
-  private seen = new Set<string>();
-  private mediaAttempts = new Map<string, number>();
+  // Retain reply capability only within a bounded local window; the server may expire it earlier.
+  private readonly contexts: BoundedTTLCache<string, ReplyContext>;
+  private readonly seen: BoundedTTLCache<string, 'received' | 'rejected-capability'>;
+  private readonly mediaAttempts: BoundedTTLCache<string, number>;
   private client: WeixinIlinkClient;
   constructor(readonly id: string, readonly name: string, private readonly options: {
     fetch?: typeof fetch; mediaDirectory?: string; deferInboundUntilActivated?: boolean; onStatus?: (text: string) => void;
-  } = {}) { this.client = new WeixinIlinkClient(options.fetch); }
+    now?: () => number; replySecrets?: GatewayRouteCodec;
+  } = {}) {
+    this.client = new WeixinIlinkClient(options.fetch);
+    this.contexts = new BoundedTTLCache({ maxEntries: 1024, ttlMs: CONTEXT_RETENTION_MS, now: options.now });
+    this.seen = new BoundedTTLCache({ maxEntries: 4096, ttlMs: 24 * 60 * 60_000, now: options.now });
+    this.mediaAttempts = new BoundedTTLCache({ maxEntries: 4096, ttlMs: 60 * 60_000, now: options.now });
+  }
   setInboundHandler(handler: GatewayInboundHandler): void { this.inbound = handler; }
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.status; }
@@ -47,6 +58,57 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
   async disconnect(): Promise<void> {
     this.controller.abort(); this.connected = false; this.activated = false; this.config = null;
     this.contexts.clear(); this.seen.clear(); this.mediaAttempts.clear(); this.status = '未连接';
+  }
+  restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
+    const route = input.route, config = this.config;
+    if (!config || !this.connected || !this.activated || route?.kind !== 'weixin'
+      || route.peer !== input.chatId || input.sender?.id !== route.peer || !config.allowUsers.includes(route.peer)) return undefined;
+    let capability: ReplyContext | undefined;
+    if (route.encryptedCapability) {
+      try {
+        if (!this.options.replySecrets) throw new Error('codec unavailable');
+        const stored = object(JSON.parse(this.options.replySecrets.open(route.encryptedCapability)));
+        if (stored.kind !== 'weixin' || stored.accountKey !== this.workConnectionKey() || stored.peer !== route.peer
+          || stored.messageId !== input.messageId || stored.expiresAt !== route.expiresAt
+          || typeof stored.expiresAt !== 'number' || !Number.isFinite(stored.expiresAt) || this.replyNow() > stored.expiresAt
+          || typeof stored.contextToken !== 'string' || !stored.contextToken || stored.contextToken.length >= 16384) throw new Error('capability mismatch');
+        capability = { token: stored.contextToken, expiresAt: stored.expiresAt };
+      } catch {
+        return async () => { throw new GatewayReplyNotSentError('微信临时回复凭据不可恢复或已过期，请检查任务记录后从微信重新发起请求'); };
+      }
+    }
+    return this.createReply(route.peer, this.controller, config, capability);
+  }
+  private replyNow(): number { return this.options.now?.() ?? Date.now(); }
+  private createReply(peer: string, controller: AbortController, config: Config, capability?: ReplyContext): (reply: string) => Promise<void> {
+    return async reply => {
+      if (!reply.trim()) throw new GatewayReplyNotSentError('微信回复不能为空');
+      // Count UTF-16 units conservatively while keeping surrogate pairs intact.
+      const chunks: string[] = []; let chunk = '';
+      for (const point of reply) {
+        if (chunk.length + point.length > 4000) { chunks.push(chunk); chunk = ''; }
+        chunk += point;
+      }
+      if (chunk) chunks.push(chunk);
+      let sentChunks = 0;
+      try {
+        for (const text of chunks) {
+          if (!this.current(controller)) throw new GatewayReplyNotSentError('微信连接已更换，本次未发送');
+          const context = this.contexts.get(peer) ?? capability;
+          if (!context || this.replyNow() > context.expiresAt) throw new GatewayReplyNotSentError('微信会话令牌缺失或本地保留期已过，请先从微信发送新消息');
+          // Only an authenticated callback or a bound, decrypted capability authorizes replies.
+          const receipt = await this.client.request(config.baseUrl, 'sendmessage', config.botToken, { msg: {
+            from_user_id: '', to_user_id: peer, client_id: randomUUID(), message_type: 2, message_state: 2,
+            context_token: context.token, item_list: [{ type: 1, text_item: { text } }],
+          } }, controller.signal);
+          if (receipt.ret !== 0 && receipt.errcode !== 0) throw new Error('微信发送回执未确认，未自动重发');
+          sentChunks++;
+        }
+      } catch (error) {
+        if (sentChunks && error instanceof GatewayReplyNotSentError) throw new Error('微信回复部分已发送，后续未完成；未自动重发');
+        throw error;
+      }
+    };
   }
   private current(controller: AbortController): boolean { return this.controller === controller && !controller.signal.aborted && this.activated; }
   private async pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -80,8 +142,7 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
     }
   }
   private remember(key: string): void {
-    this.seen.add(key);
-    if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value!);
+    this.seen.set(key, 'received');
   }
   private async receive(msg: Record<string, any>, controller: AbortController, config: Config): Promise<void> {
     const peer = msg.from_user_id, id = msg.message_id;
@@ -90,7 +151,11 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
       || (msg.to_user_id && msg.to_user_id !== config.accountId)
       || (typeof id !== 'string' && typeof id !== 'number') || !String(id)) return;
     const key = JSON.stringify([config.accountId, peer, id]);
-    if (typeof msg.context_token === 'string' && msg.context_token && msg.context_token.length < 16384) this.contexts.set(peer, msg.context_token);
+    // A duplicate rejected capability must not replace a newer usable context.
+    if (this.seen.get(key) === 'rejected-capability') return;
+    if (typeof msg.context_token === 'string' && msg.context_token && msg.context_token.length < 16384) {
+      this.contexts.set(peer, { token: msg.context_token, expiresAt: this.replyNow() + CONTEXT_RETENTION_MS });
+    }
     if (this.seen.has(key)) return;
     const items = Array.isArray(msg.item_list) ? msg.item_list : [];
     let text = items.filter(item => item?.type === 1 && typeof item.text_item?.text === 'string').map(item => item.text_item.text).join('\n').trim();
@@ -121,36 +186,48 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
     }
     if ((!text && !sources.length) || text.length > 64_000) return;
     this.remember(key);
-    let dispatched = false;
+    let dispatched = false, admissionFailed = false;
     try { await withGatewayMedia(sources, async attachments => {
       if (!this.current(controller)) return;
       this.mediaAttempts.delete(key);
+      admissionFailed = true;
+      const context = this.contexts.get(peer);
+      const replyRoute: Extract<GatewayReplyRoute, { kind: 'weixin' }> = { kind: 'weixin', peer };
+      if (this.options.replySecrets && context) {
+        replyRoute.expiresAt = context.expiresAt;
+        try {
+          replyRoute.encryptedCapability = this.options.replySecrets.seal(JSON.stringify({ kind: 'weixin',
+            accountKey: this.workConnectionKey(), peer, messageId: String(id), expiresAt: context.expiresAt, contextToken: context.token,
+          }));
+        } catch (error) {
+          if (!(error instanceof GatewayRouteEncodingError)) throw error;
+          // Deterministic encoding failure is a terminal ingress rejection, not
+          // an inbox/keyring outage. Do not let it poison this peer's next input.
+          this.contexts.delete(peer);
+          this.seen.set(key, 'rejected-capability');
+          admissionFailed = false;
+          this.report('微信临时回复凭据无法安全存储，已拒绝此消息；后续消息继续接收');
+          return;
+        }
+      }
+      admissionFailed = false;
       dispatched = true;
-      await this.inbound!({ channelId: this.id, chatId: peer, messageId: String(id), sender: { id: peer }, text: text || '[微信媒体附件]', ...(attachments.length ? { attachments } : {}),
-      reply: async reply => {
-        if (!reply.trim()) throw new Error('微信回复不能为空');
-        // Count UTF-16 units conservatively while keeping surrogate pairs intact.
-        const chunks: string[] = []; let chunk = '';
-        for (const point of reply) {
-          if (chunk.length + point.length > 4000) { chunks.push(chunk); chunk = ''; }
-          chunk += point;
-        }
-        if (chunk) chunks.push(chunk);
-        for (const text of chunks) {
-          if (!this.current(controller)) throw new Error('微信连接已更换，本次未发送');
-          const context = this.contexts.get(peer);
-          if (!context) throw new Error('微信会话令牌缺失，请先从微信发送新消息');
-          // Strictly serial, with no blind retries or continuation after an unknown receipt.
-          const receipt = await this.client.request(config.baseUrl, 'sendmessage', config.botToken, { msg: {
-            from_user_id: '', to_user_id: peer, client_id: randomUUID(), message_type: 2, message_state: 2,
-            context_token: context, item_list: [{ type: 1, text_item: { text } }],
-          } }, controller.signal);
-          if (receipt.ret !== 0 && receipt.errcode !== 0) throw new Error('微信发送回执未确认，未自动重发');
-        }
-      },
+      const delivery = this.inbound!({ channelId: this.id, chatId: peer, messageId: String(id), sender: { id: peer }, text: text || '[微信媒体附件]', ...(attachments.length ? { attachments } : {}),
+        replyRoute, reply: this.createReply(peer, controller, config),
       });
+      if (delivery.accepted) {
+        admissionFailed = true;
+        void delivery.catch(() => { if (this.current(controller)) this.report('微信消息处理或回执未确认，请检查任务记录；未自动重发'); });
+        await delivery.accepted;
+        admissionFailed = false;
+      } else await delivery;
     }, { directory: this.options.mediaDirectory }); } catch (error) {
       if (!this.current(controller)) return;
+      if (admissionFailed) {
+        this.seen.delete(key);
+        // A failed inbox commit cannot advance the provider cursor or consume media retries.
+        throw new Error('微信持久接收暂时失败，等待平台重新投递');
+      }
       // Only retry pre-agent transient failures, and bound attempts so a broken
       // attachment cannot indefinitely block later messages behind this cursor.
       if (!dispatched) {

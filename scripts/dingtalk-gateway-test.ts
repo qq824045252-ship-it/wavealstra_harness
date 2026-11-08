@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { DingTalkStreamAdapter, type DingTalkSocket } from "../src/main/gateway/DingTalkStreamAdapter";
+import { GatewayReplyNotSentError } from "../src/main/gateway/GatewayReply";
 import type { GatewayInboundMessage } from "../src/main/gateway/channels";
 
 class Socket implements DingTalkSocket {
@@ -96,6 +97,109 @@ async function main() {
   await assert.rejects(opening);
   assert.equal(cancelledSocketCreated, false);
   assert.equal(cancelled.isConnected(), false);
+  // ACK is a durable-admission receipt, not merely "handler was called".
+  {
+    const transport = new Socket(); let admissions = 0;
+    let accept!: () => void; let finish!: () => void; let rejectAdmission!: (error: Error) => void;
+    const admission = new Promise<void>((resolve, reject) => { accept = resolve; rejectAdmission = reject; });
+    const execution = new Promise<void>(resolve => { finish = resolve; });
+    const durable = new DingTalkStreamAdapter("durable", "钉钉", {
+      fetch: async () => Response.json({ endpoint: "wss://wss-open-connection.dingtalk.com/connect", ticket: "ticket" }),
+      socketFactory: () => { setTimeout(() => transport.onopen?.(), 0); return transport; },
+    });
+    durable.setInboundHandler(() => { admissions++; return Object.assign(execution, { accepted: admission }); });
+    await durable.connect(config);
+    transport.emit(frame({ msgId: "admission" }, "first")); await tick();
+    assert.equal(transport.sent.length, 0, "cannot ACK before the inbox commit");
+    transport.emit(frame({ msgId: "admission" }, "duplicate-before")); await tick();
+    assert.equal(transport.sent.at(-1)?.code, 503); assert.equal(admissions, 1);
+    accept(); await tick();
+    assert.equal(transport.sent.at(-1)?.headers.messageId, "first"); assert.equal(transport.sent.at(-1)?.code, 200);
+    transport.emit(frame({ msgId: "admission" }, "duplicate-after")); await tick();
+    assert.equal(transport.sent.at(-1)?.code, 200); assert.equal(admissions, 1);
+    finish(); await tick();
+    let attempt = 0;
+    durable.setInboundHandler(() => { attempt++;
+      if (attempt > 1) return Promise.resolve();
+      const pending = new Promise<void>((_resolve, reject) => { rejectAdmission = reject; });
+      return Object.assign(pending, { accepted: pending });
+    });
+    transport.emit(frame({ msgId: "rejected-admission" }, "rejected")); await tick();
+    rejectAdmission(new Error("disk unavailable")); await tick();
+    assert.equal(transport.sent.at(-1)?.code, 503);
+    transport.emit(frame({ msgId: "rejected-admission" }, "retried")); await tick();
+    assert.equal(attempt, 2); assert.equal(transport.sent.at(-1)?.code, 200);
+    let acceptOld!: () => void;
+    durable.setInboundHandler(() => Object.assign(Promise.resolve(), { accepted: new Promise<void>(resolve => { acceptOld = resolve; }) }));
+    transport.emit(frame({ msgId: "generation-race" }, "old-generation")); await tick();
+    await durable.disconnect(); await durable.connect(config);
+    const ackCount = transport.sent.length;
+    acceptOld(); await tick(); assert.equal(transport.sent.length, ackCount, "late admission cannot ACK an obsolete transport");
+    let currentCalls = 0; durable.setInboundHandler(async () => { currentCalls++; });
+    transport.emit(frame({ msgId: "generation-race" }, "new-generation")); await tick();
+    assert.equal(currentCalls, 1, "late admission cannot populate the new connection's dedup cache");
+    await durable.disconnect();
+  }
+  // The real 10,000-entry bound must evict old IDs, not reject all new traffic.
+  {
+    const transport = new Socket(); let count = 0;
+    const saturated = new DingTalkStreamAdapter("capacity", "钉钉", {
+      fetch: async () => Response.json({ endpoint: "wss://wss-open-connection.dingtalk.com/connect", ticket: "ticket" }),
+      socketFactory: () => { setTimeout(() => transport.onopen?.(), 0); return transport; },
+    });
+    saturated.setInboundHandler(async () => { count++; }); await saturated.connect(config);
+    const originalNow = Date.now; let simulatedNow = originalNow();
+    Date.now = () => simulatedNow;
+    try {
+      for (let i = 0; i <= 10_000; i++) {
+        simulatedNow += 60_001; // Independent local rate windows; cache clock remains monotonic.
+        transport.emit(frame({ msgId: `capacity-${i}` }, `wire-${i}`));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(transport.sent.at(-1)?.code, 200);
+      }
+      assert.equal(count, 10_001);
+      transport.emit(frame({ msgId: "capacity-10000" })); await tick(); assert.equal(count, 10_001);
+      transport.emit(frame({ msgId: "capacity-0" })); await tick(); assert.equal(count, 10_002);
+    } finally { Date.now = originalNow; await saturated.disconnect(); }
+  }
+  // A restart can recover a temporary route only through the host codec, with all
+  // bindings revalidated. This mock models opaque encryption, not cryptography.
+  {
+    const vault = new Map<string, string>();
+    const codec = { seal(value: string) { const key = `opaque-${vault.size}`; vault.set(key, value); return key; },
+      open(key: string) { const value = vault.get(key); if (!value) throw new Error("unavailable keyring"); return value; } };
+    let transport!: Socket; let sends = 0; let captured!: GatewayInboundMessage;
+    const recovery = new DingTalkStreamAdapter("sealed", "钉钉", {
+      replySecrets: codec,
+      fetch: async url => {
+        if (String(url).includes("connections/open")) return Response.json({ endpoint: "wss://wss-open-connection.dingtalk.com/connect", ticket: "ticket" });
+        sends++; assert.equal(new URL(String(url)).hostname, "oapi.dingtalk.com"); return Response.json({ errcode: 0 });
+      },
+      socketFactory: () => { transport = new Socket(); setTimeout(() => transport.onopen?.(), 0); return transport; },
+    });
+    recovery.setInboundHandler(async message => { captured = message; });
+    await recovery.connect(config); transport.emit(frame({ msgId: "sealed-message" })); await tick();
+    assert.equal(captured.replyRoute?.kind, "dingtalk");
+    const route = captured.replyRoute!; if (route.kind !== "dingtalk") throw new Error("missing route");
+    assert.ok(route.encryptedCapability); assert.doesNotMatch(JSON.stringify(route), /secret-session|sendBySession/);
+    const envelope = JSON.parse(codec.open(route.encryptedCapability!));
+    const input = { deliveryId: "journal-reply", chatId: captured.chatId, messageId: captured.messageId!, sender: captured.sender, route };
+    await recovery.disconnect(); await recovery.connect(config);
+    const restored = recovery.restoreGatewayReply(input); assert.ok(restored); await restored("after restart"); assert.equal(sends, 1);
+    for (const mutation of [{ accountKey: "other" }, { messageId: "other" }, { senderId: "other" },
+      { webhook: "https://evil.example/robot/sendBySession" }, { expiresAt: Date.now() - 1 }]) {
+      const encryptedCapability = codec.seal(JSON.stringify({ ...envelope, ...mutation }));
+      const wrong = recovery.restoreGatewayReply({ ...input, route: { ...route, encryptedCapability } });
+      assert.ok(wrong); await assert.rejects(wrong("must not send"), GatewayReplyNotSentError);
+    }
+    const unavailable = recovery.restoreGatewayReply({ ...input, route: { ...route, encryptedCapability: "missing-key" } });
+    assert.ok(unavailable); await assert.rejects(unavailable("must not send"), GatewayReplyNotSentError);
+    assert.equal(recovery.restoreGatewayReply({ ...input, sender: { id: "stranger" } }), undefined);
+    assert.equal(sends, 1);
+    await recovery.disconnect(); await recovery.connect({ ...config, corpId: "changed-corp" });
+    await assert.rejects(recovery.restoreGatewayReply(input)!("wrong account"), GatewayReplyNotSentError);
+    assert.equal(sends, 1); await recovery.disconnect();
+  }
   console.log("PASS DingTalk Stream: authentication, activation, identities, ACK/ping, replay, SSRF, receipts, reconnect and stale connection fencing");
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });

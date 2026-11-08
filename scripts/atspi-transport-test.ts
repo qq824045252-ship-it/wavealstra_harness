@@ -49,8 +49,16 @@ async function privateBus(address: string, runtimeDirectory: string): Promise<Pr
       else resolveBus({ child, address: readyAddress! });
     };
     const timer = setTimeout(() => finish(new Error("Private dbus-daemon startup timed out: " + stderr)), 3_000);
-    child.once("error", (error) => finish(error));
-    child.once("exit", (code) => finish(new Error("Private dbus-daemon exited " + String(code) + ": " + stderr)));
+    child.once("error", (error: NodeJS.ErrnoException) => finish(error.code === "ENOENT"
+      ? new Error("AT-SPI transport prerequisite missing: install dbus-daemon to run the real private-bus integration test", { cause: error })
+      : error));
+    child.once("exit", (code) => {
+      const denied = /Failed to (?:open|bind) socket.*(?:Operation not permitted|Permission denied)/is.test(stderr);
+      const detail = denied
+        ? "\nAT-SPI transport requires permission to create Unix domain sockets (AF_UNIX). This host denied the private D-Bus socket; NO_AT_BRIDGE or xvfb cannot grant that permission. Run this test on a Linux host that permits AF_UNIX. This is a failed prerequisite, not a skipped/pass result."
+        : "";
+      finish(new Error("Private dbus-daemon exited " + String(code) + ": " + stderr + detail));
+    });
     child.stdout?.on("data", (chunk) => {
       stdout += String(chunk);
       const line = stdout.split("\n")[0];
@@ -250,7 +258,7 @@ async function main(): Promise<void> {
     console.log("PASS real event invalidation and subscription cleanup");
     let exits = 0;
     client = new AtSpiClient({
-      workerPath: resolve("out/main/atspi-worker.cjs"),
+      workerPath: resolve("out/tests/atspi-worker.cjs"),
       spawnWorker: (workerPath) => fork(workerPath, [], {
         execPath: process.execPath, execArgv: [],
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", DBUS_SESSION_BUS_ADDRESS: session.address },

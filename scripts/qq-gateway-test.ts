@@ -118,6 +118,19 @@ try {
     assert.deepEqual(delivered.map(message => message.messageId), ["first", "second"]);
     buffered.activate(); await pause(); assert.equal(delivered.length, 2);
 
+    const pendingReply = delivered[0];
+    const restoredReply = buffered.restoreGatewayReply({ deliveryId:"qq-durable", chatId:pendingReply.chatId,
+      messageId:pendingReply.messageId!, sender:pendingReply.sender, route:pendingReply.replyRoute });
+    assert.ok(restoredReply); await restoredReply("durable reply");
+    assert.equal(requests.at(-1)?.body.msg_seq,1); assert.equal(requests.at(-1)?.body.msg_id,"first");
+    let admissionAttempts = 0;
+    buffered.setInboundHandler(() => { admissionAttempts++; const result = admissionAttempts === 1 ? Promise.reject(new Error("commit failed")) : Promise.resolve();
+      return Object.assign(result,{accepted:result}); });
+    bufferedSockets.at(-1)!.event(event("durable-admission")); await pause(); await pause();
+    bufferedSockets.at(-1)!.event(event("durable-admission")); await until(() => admissionAttempts === 2);
+    bufferedSockets.at(-1)!.event(event("durable-admission")); await pause(); assert.equal(admissionAttempts,2);
+    buffered.setInboundHandler(async message => { delivered.push(message); });
+
     // A failed persistence/cancel flow calls disconnect; never drain its data later.
     await buffered.connect(config);
     bufferedSockets.at(-1)!.event(event("cancelled")); await pause();

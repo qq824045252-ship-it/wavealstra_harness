@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   }
   const root = await mkdtemp(join(tmpdir(), "mybuddy-guardian-process-"));
   const executable = join(root, "ydotool");
-  const workerPath = resolve("out/main/input-guardian.cjs");
+  const workerPath = resolve("out/tests/input-guardian.cjs");
   const ownedParents = new Set<ChildProcess>();
   const ownedGuardians = new Set<number>();
   let client: InputGuardian | undefined;

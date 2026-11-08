@@ -4,7 +4,7 @@ name: verify
 # 320+ 个 test:* 脚本没有聚合入口、没有 CI，于是"过期常量"（断言 Pi 1.0.0 而实际 1.3.0）
 # 与"源码文本断言"可以长期腐烂。本工作流把 test:all 作为门禁接进回路。
 #
-# 套件分层（scripts/test-all.mjs 的 GUI/NETWORK/DATASET 分类）：
+# 套件分层（scripts/test-all.mjs 的 GUI/NETWORK/DATASET/ARTIFACT 分类）：
 #   - push / PR / 手动 default：两条 verify-* job 跑 headless default 套件；
 #     Windows 额外运行项目/工作空间资料的 Electron UI，避免只编译夹具就交付。
 #   - 每晚 18:00 UTC（北京 02:00）+ 手动 gui/all：额外跑 verify-windows-gui，
@@ -150,6 +150,12 @@ jobs:
           TEST_ALL_JOBS: 2
         run: pnpm -s test:all
 
+      - name: Verify built product assets
+        working-directory: C:\r
+        env:
+          TEST_ALL_JOBS: "2"
+        run: pnpm -s test:all:artifacts
+
   verify-linux:
     # 本机开发/发布目标是 Linux（Omarchy/Wayland），必须有一条 Linux 门禁，
     # 否则托盘/密钥库/打包这类平台代码永远只能靠手测。
@@ -183,8 +189,8 @@ jobs:
       - name: Install Linux runtime deps for Electron
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libnss3 libgbm1 libasound2t64 \
-            || sudo apt-get install -y xvfb libnss3 libgbm1 libasound2
+          sudo apt-get install -y dbus xvfb libnss3 libgbm1 libasound2t64 \
+            || sudo apt-get install -y dbus xvfb libnss3 libgbm1 libasound2
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -207,6 +213,11 @@ jobs:
         env:
           TEST_ALL_JOBS: 2
         run: xvfb-run -a pnpm -s test:all
+
+      - name: Verify built product assets
+        env:
+          TEST_ALL_JOBS: "2"
+        run: pnpm -s test:all:artifacts
 
   verify-windows-gui:
     # GUI 套件：默认套件 + GUI 类（真实 Electron 窗口/Tray/桌面自动化），
@@ -268,7 +279,7 @@ jobs:
           # 环境假红（同一 commit 每次失败的用例都不同）。GUI job 是夜间批处理，
           # 串行更慢但结果可信。
           TEST_ALL_JOBS: 1
-        run: node scripts/test-all.mjs --include-gui
+        run: node scripts/test-all.mjs --include-gui --include-artifacts
 
       - name: Upload GUI test artifacts
         if: always()

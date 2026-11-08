@@ -2,7 +2,9 @@
 
 实施日期：2026-11-06；交付记录更新：2026-11-08。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
-**最新阶段：** [Phase 5](bot-work-phase5-execution-plan.md) 的剩余代码功能已补齐，受测实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**。本轮接通五类真实 Gateway Work 出站适配、独立负责人汇总、桌面成果评审/实测反馈/明确关闭入口，并完成同库 Pi Durable 原生十步故事和两次真实进程强杀恢复。类型、架构与相关专项通过；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在本轮基线 `ac03fd5` 亦复现。真实 Electron UI、Windows/Omarchy、手机、渠道账户及 provider 用量证据仍缺，BOT-WORK-1.0 整体验收未完成。最新事实见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。下文各阶段的实施、规划和测试记录保留为历史证据，不混用为本轮验证结果。
+**2026-11-08 Gateway 更新：** Bot 页面现已接通 `submitBotDraft`、持久会话历史、原请求重试与停止；下文“草稿占位”仅描述 Phase 1 当时的状态。Gateway 已在媒体接入基线 `de5a7496333f1f359991288582b504006d568c1c` 上继续加固有界缓存、全渠道凭据保护与 SQLite 入站/回复恢复。当前架构和本轮测试边界见 [Gateway 架构](hermes-gateway-architecture.md) 与 [加固复核](reviews/gateway-hardening-2026-11-08.md)。本次不把历史 `353 passed / 1 failed` 作为当前测试结果，也不把代码功能完成等同于真实平台验收。
+
+**Phase 5 补全阶段记录（历史）：** [Phase 5](bot-work-phase5-execution-plan.md) 的剩余代码功能已补齐，受测实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**。本轮接通五类真实 Gateway Work 出站适配、独立负责人汇总、桌面成果评审/实测反馈/明确关闭入口，并完成同库 Pi Durable 原生十步故事和两次真实进程强杀恢复。类型、架构与相关专项通过；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在本轮基线 `ac03fd5` 亦复现。真实 Electron UI、Windows/Omarchy、手机、渠道账户及 provider 用量证据仍缺，BOT-WORK-1.0 整体验收未完成。最新事实见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。下文各阶段的实施、规划和测试记录保留为历史证据，不混用为本轮验证结果。
 
 本轮依据以下 GitHub 规划执行，本地文件内容已核对一致：
 
@@ -17,7 +19,7 @@
 
 保留用户已有的 Bot 页面、Bot/Work 模型和 Goal 适配改动。此次修复控制契约，并增加 Phase 2 原生执行适配。执行仍由现有 Pi Durable 调度、保存 checkpoint 和恢复；业务适配器只投递已保存的执行绑定、查回原提交、请求停止和接收成果。
 
-Bot 页面发送仍是草稿占位，没有接成另一种受理流程。当前没有把这个页面当作完整 Bot 对话入口验收。
+在本节记录的 Phase 1 时点，Bot 页面发送还是草稿占位，尚未接成对话受理流程。这是历史状态；当前发送链路见文首更新。
 
 ### 已修复的控制问题
 

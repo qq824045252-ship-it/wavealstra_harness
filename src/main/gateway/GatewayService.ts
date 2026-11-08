@@ -1,7 +1,12 @@
-import { createServer, type Server } from "node:http";
 import { GatewayPlatformRegistry, gatewayCapabilities } from "./GatewayPlatformRegistry";
-import { DEFAULT_WEBHOOK_PORT, listenOnFirstAvailablePort } from "./webhook-port";
-import { gatewayInboundIdentity } from "./gateway-inbound-identity";
+import { GatewayRouter } from "./GatewayRouter";
+import { GatewaySecrets, GATEWAY_SECRET_FIELDS, GATEWAY_REDACTED } from "./GatewaySecrets";
+import { createIdempotencyGuard, isAllowedUser } from "./GatewayRateLimiter";
+export { createIdempotencyGuard, isAllowedUser } from "./GatewayRateLimiter";
+export { GATEWAY_REDACTED } from "./GatewaySecrets";
+import { GatewayLifecycleManager } from "./GatewayLifecycleManager";
+import { GatewayDeliveryJournal } from "./GatewayDeliveryJournal";
+import { gatewayReplySecretCodec } from "./GatewayRouteCredentials";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
 import {
@@ -18,7 +23,7 @@ import type { AgentService } from "../agent/AgentService";
 import type { AppDatabase } from "../db/AppDatabase";
 import { AppSettingsStore } from "../AppSettingsStore";
 import { getGatewayDir } from "../paths";
-import { SlackSocketModeAdapter, safeSlackError, redactSlackText } from "./SlackSocketModeAdapter";
+import { SlackSocketModeAdapter } from "./SlackSocketModeAdapter";
 import { DingTalkStreamAdapter } from "./DingTalkStreamAdapter";
 import { WeixinIlinkAdapter } from "./WeixinIlinkAdapter";
 import { WeixinQrLogin, type WeixinQrState } from "./WeixinQrLogin";
@@ -29,8 +34,6 @@ import { assertGatewayProviderStorage, isSecureGatewayProvider, validateGatewayP
   openGatewayProviderConfig, gatewayProviderConfigView } from "./GatewayProviderConfig";
 import { SlackGatewayJournal } from "./SlackGatewayJournal";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "./SlackGatewayCredentials";
-import { runGatewayAgentTurn, withSlackChannelHistory } from "./GatewayAgentTurn";
-import { ensureGatewayChannelSpace } from "./gateway-task-space";
 import { gatewayBotTaskId } from "../../shared/gateway-task";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 import { GatewayWorkTargets } from "./GatewayWorkTargets";
@@ -46,70 +49,18 @@ import {
   type GatewayInboundMessage,
 } from "./channels";
 
-/** 脱敏占位符：getChannelConfig 返回的 secret 类字段值；connect 时原样提交即复用已存值 */
-export const GATEWAY_REDACTED = "••••••";
-
-/** 各通道需要脱敏的字段（表单回填时打码，留空提交则保留旧值） */
-const REDACTED_FIELDS: Record<GatewayChannelType, string[]> = {
-  feishu: ["appSecret", "verificationToken", "encryptedSecrets"],
-  wecom: ["secret", "token", "encodingAESKey", "encryptedSecrets"],
-  wechat: ["appSecret", "token", "encodingAESKey"],
-  telegram: ["botToken"],
-  slack: ["botToken", "appToken", "encryptedSecrets"],
-  dingtalk: ["clientSecret", "encryptedSecrets"],
-  discord: ["botToken", "encryptedSecrets"],
-  weixin: ["botToken", "encryptedSecrets"],
-  qq: ["appSecret", "encryptedSecrets"],
-};
-
-/** 幂等窗口：平台重试投递的同一条消息只执行一次（10 分钟） */
-const IDEMPOTENCY_WINDOW_MS = 10 * 60 * 1000;
-const IDEMPOTENCY_MAX_ENTRIES = 2000;
+const REDACTED_FIELDS = GATEWAY_SECRET_FIELDS;
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, payload);
+    try { win.webContents.send(channel, payload); }
+    catch { /* A closing observer must not fail an accepted delivery. */ }
   }
 }
 
 function toStrArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((v) => String(v).trim()).filter(Boolean);
-}
-
-/** 幂等去重守卫：同 channelId:chatId:messageId 只放行一次（窗口外自动过期，过期后可重新处理） */
-export function createIdempotencyGuard(
-  windowMs: number = IDEMPOTENCY_WINDOW_MS,
-  maxEntries: number = IDEMPOTENCY_MAX_ENTRIES,
-): ((channelId: string, chatId: string, messageId: string) => boolean) & { forget(channelId: string, chatId: string, messageId: string): void } {
-  const processed = new Map<string, number>();
-  const guard = (channelId: string, chatId: string, messageId: string): boolean => {
-    const key = JSON.stringify([channelId, chatId, messageId]);
-    const now = Date.now();
-    const existing = processed.get(key);
-    if (existing !== undefined) {
-      if (now - existing <= windowMs) return false; // 窗口内重复投递：拒绝
-      processed.delete(key); // 窗口已过期：允许重新处理
-    }
-    processed.set(key, now);
-    if (processed.size > maxEntries) {
-      const oldest = [...processed.entries()].sort((a, b) => a[1] - b[1])[0];
-      if (oldest) processed.delete(oldest[0]);
-    }
-    for (const [k, t] of processed) {
-      if (now - t > windowMs) processed.delete(k);
-    }
-    return true;
-  };
-  return Object.assign(guard, { forget: (channelId: string, chatId: string, messageId: string) => {
-    processed.delete(JSON.stringify([channelId, chatId, messageId]));
-  } });
-}
-
-/** 白名单判断：未配置（空数组）= 不限制 */
-export function isAllowedUser(allowUsers: string[], senderId?: string): boolean {
-  if (allowUsers.length === 0) return true;
-  return Boolean(senderId && allowUsers.includes(senderId));
 }
 
 /**
@@ -123,6 +74,8 @@ export interface GatewayProjectMessageSink {
 
 export interface GatewayServiceOptions {
   settingsStore?: Pick<AppSettingsStore, "read">;
+  /** Production enables the SQLite inbox/outbox; fixtures may exercise memory-only admission. */
+  durableInbox?: boolean;
   adapters?: { feishu?: FeishuChannelAdapter; wecom?: WecomChannelAdapter; wechat?: WechatMpChannelAdapter;
     telegram?: TelegramChannelAdapter; slack?: SlackSocketModeAdapter;
     dingtalk?: DingTalkStreamAdapter; discord?: DiscordGatewayAdapter; qq?: QQChannelAdapter; weixin?: WeixinIlinkAdapter };
@@ -132,7 +85,8 @@ export interface GatewayServiceOptions {
 
 export class GatewayService {
   private readonly adapters = new Map<string, ChannelAdapter>();
-  private readonly platforms = new GatewayPlatformRegistry();
+  private readonly secrets = new GatewaySecrets();
+  private readonly platforms: GatewayPlatformRegistry;
   private readonly feishu: FeishuChannelAdapter;
   private readonly wecom: WecomChannelAdapter;
   private readonly wechat: WechatMpChannelAdapter;
@@ -155,14 +109,24 @@ export class GatewayService {
   private readonly channelPolicies = new Map<string, { allowUsers: string[] }>();
   /** 幂等去重守卫：key = channelId:chatId:messageId */
   private readonly processed = createIdempotencyGuard();
-  private webhookServer: Server | null = null;
-  /**
-   * Webhook 端口。首选 52140（历史值）可能落在 Windows 的 TCP 保留区间内，
-   * 此时由 webhook-port 模块按候选表自动回退；实际绑定端口会写回这里并展示给用户。
-   */
-  private webhookPort = DEFAULT_WEBHOOK_PORT;
+  private readonly lifecycle: GatewayLifecycleManager;
+  private get webhookServer() { return this.lifecycle.server; }
+  private get webhookPort() { return this.lifecycle.port; }
   private running = false;
   private stopping = false;
+  /** Invalidates startup/restore work when shutdown crosses an awaited operation. */
+  private lifecycleEpoch = 0;
+  private readonly channelOperations = new Map<string, symbol>();
+
+  private beginChannelOperation(channelId: string): symbol {
+    const operation = Symbol(channelId);
+    this.channelOperations.set(channelId, operation);
+    return operation;
+  }
+
+  private ownsChannelOperation(channelId: string, operation: symbol, epoch: number): boolean {
+    return this.channelOperations.get(channelId) === operation && this.lifecycleEpoch === epoch && !this.stopping;
+  }
   /** 侧栏删除会把目录移进回收区，绑定仍指向原路径。下一条外部消息到来时移回。 */
   private restoreTrashedWorkspace?: (taskId: string) => void;
 
@@ -174,6 +138,13 @@ export class GatewayService {
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
     this.workTargets = new GatewayWorkTargets(db.connection);
+    this.platforms = new GatewayPlatformRegistry({
+      ...(options.durableInbox !== false && db.connection ? { journal: new GatewayDeliveryJournal(db.connection) } : {}),
+      replayNativeReceipts: true,
+      authorize: message => !this.stopping && this.channelPolicies.has(message.channelId)
+        && this.isAllowed(message.channelId, message.sender?.id),
+      onStatus: (channelId, text) => this.emitEvent({ channelId, direction: "system", text, at: Date.now() }),
+    });
     const inbound = this.createInboundHandler();
     this.feishu = options.adapters?.feishu ?? new FeishuChannelAdapter("feishu-default", "飞书", undefined, { deferInboundUntilActivated: true });
     this.wecom = options.adapters?.wecom ?? new WecomChannelAdapter("wecom-default", "企微", { deferInboundUntilActivated: true });
@@ -185,7 +156,9 @@ export class GatewayService {
       onStatus: text => this.emitEvent({ channelId: "slack-default", direction: "system", text, at: Date.now() }),
       onHistoryRead: value => console.info("[SlackChannelHistory] " + JSON.stringify(value)),
     });
-    this.dingtalk = options.adapters?.dingtalk ?? new DingTalkStreamAdapter("dingtalk-default", "钉钉", { deferInboundUntilActivated: true });
+    this.dingtalk = options.adapters?.dingtalk ?? new DingTalkStreamAdapter("dingtalk-default", "钉钉", {
+      deferInboundUntilActivated: true, replySecrets: gatewayReplySecretCodec,
+    });
     this.discord = options.adapters?.discord ?? new DiscordGatewayAdapter("discord-default", "Discord", {
       deferInboundUntilActivated: true,
       onStatus: text => this.emitEvent({ channelId: "discord-default", direction: "system", text: text || "Discord 连接状态已更新", at: Date.now() }),
@@ -195,11 +168,17 @@ export class GatewayService {
       onAuthorized: (credentials, assertCurrent, signal) => this.acceptQQQrLogin(credentials, assertCurrent, signal),
     };
     this.qqQrLogin = options.qqQrLoginFactory?.(qrOptions) ?? new QQBotQrLogin(qrOptions);
-    this.weixin = options.adapters?.weixin ?? new WeixinIlinkAdapter("weixin-default", "微信 iLink Bot", { deferInboundUntilActivated: true });
+    this.weixin = options.adapters?.weixin ?? new WeixinIlinkAdapter("weixin-default", "微信 iLink Bot", {
+      deferInboundUntilActivated: true, replySecrets: gatewayReplySecretCodec,
+    });
     const weixinQrOptions: ConstructorParameters<typeof WeixinQrLogin>[0] = {
       onAuthorized: (credentials, assertCurrent, signal) => this.acceptWeixinQrLogin(credentials, assertCurrent, signal),
     };
     this.weixinQrLogin = options.weixinQrLoginFactory?.(weixinQrOptions) ?? new WeixinQrLogin(weixinQrOptions);
+    this.lifecycle = new GatewayLifecycleManager({
+      feishu: this.feishu, wecom: this.wecom, wechat: this.wechat,
+      safeError: error => this.secrets.error(error),
+    });
     for (const adapter of [this.feishu, this.wecom, this.wechat, this.telegram, this.slack, this.dingtalk, this.discord, this.qq, this.weixin]) {
       this.platforms.register(adapter, event => inbound(event.message));
       this.adapters.set(adapter.id, adapter);
@@ -245,8 +224,10 @@ export class GatewayService {
 
   private acceptQQQrLogin(credentials: { appId: string; appSecret: string; userOpenid: string },
     assertCurrent: () => void, signal: AbortSignal): Promise<void> {
+    const epoch = this.lifecycleEpoch;
+    const owner = this.beginChannelOperation(this.qq.id);
     const operation = (async () => {
-      const stop = () => { void this.qq.disconnect(); };
+      const stop = () => { if (this.channelOperations.get(this.qq.id) === owner) void this.qq.disconnect().catch(() => {}); };
       signal.addEventListener("abort", stop, { once: true });
       try {
         assertCurrent();
@@ -255,10 +236,11 @@ export class GatewayService {
           appId: credentials.appId, appSecret: credentials.appSecret, allowUsers: [credentials.userOpenid],
         });
         const savedConfig = sealGatewayProviderConfig("qq", config);
+        this.secrets.remember(this.qq.id, this.qq.type, config);
         this.channelPolicies.delete(this.qq.id);
         await this.qq.connect(config);
         assertCurrent();
-        if (signal.aborted || this.stopping) throw new Error("QQ 授权已取消");
+        if (signal.aborted || !this.ownsChannelOperation(this.qq.id, owner, epoch)) throw new Error("QQ 授权已取消");
         // No await between the final cancellation check, synchronous save and activation.
         this.db.connection.transaction(() => {
           this.db.upsertGatewayChannel({ id: this.qq.id, type: this.qq.type, name: this.qq.name,
@@ -266,12 +248,15 @@ export class GatewayService {
           this.qq.activate();
         })();
         this.channelPolicies.set(this.qq.id, { allowUsers: [credentials.userOpenid] });
+        this.platforms.resume(this.qq.id);
         this.running = true;
         // A closed renderer must not turn a committed authorization into a reported failure.
         try { this.emitEvent({ channelId: this.qq.id, direction: "system", text: "QQ 扫码授权完成，连接已启用", at: Date.now() }); } catch { /* state is available through status() */ }
       } catch {
-        await this.qq.disconnect();
-        this.channelPolicies.delete(this.qq.id);
+        if (this.channelOperations.get(this.qq.id) === owner) {
+          await this.qq.disconnect();
+          if (this.channelOperations.get(this.qq.id) === owner) this.channelPolicies.delete(this.qq.id);
+        }
         throw new Error("QQ 连接未启用，请重试扫码；原有保存配置未覆盖");
       } finally { signal.removeEventListener("abort", stop); }
     })();
@@ -320,8 +305,10 @@ export class GatewayService {
 
   private acceptWeixinQrLogin(credentials: { accountId: string; botToken: string; baseUrl: string; userId: string },
     assertCurrent: () => void, signal: AbortSignal): Promise<void> {
+    const epoch = this.lifecycleEpoch;
+    const owner = this.beginChannelOperation(this.weixin.id);
     const operation = (async () => {
-      const stop = () => { void this.weixin.disconnect(); };
+      const stop = () => { if (this.channelOperations.get(this.weixin.id) === owner) void this.weixin.disconnect().catch(() => {}); };
       signal.addEventListener("abort", stop, { once: true });
       try {
         assertCurrent();
@@ -330,10 +317,11 @@ export class GatewayService {
           accountId: credentials.accountId, botToken: credentials.botToken, baseUrl: credentials.baseUrl, userId: credentials.userId, allowUsers: [credentials.userId],
         });
         const savedConfig = sealGatewayProviderConfig("weixin", config);
+        this.secrets.remember(this.weixin.id, this.weixin.type, config);
         this.channelPolicies.delete(this.weixin.id);
         await this.weixin.connect(config);
         assertCurrent();
-        if (signal.aborted || this.stopping) throw new Error("微信 授权已取消");
+        if (signal.aborted || !this.ownsChannelOperation(this.weixin.id, owner, epoch)) throw new Error("微信 授权已取消");
         // No await between the final cancellation check, synchronous save and activation.
         this.db.connection.transaction(() => {
           this.db.upsertGatewayChannel({ id: this.weixin.id, type: this.weixin.type, name: this.weixin.name,
@@ -341,12 +329,15 @@ export class GatewayService {
           this.weixin.activate();
         })();
         this.channelPolicies.set(this.weixin.id, { allowUsers: [credentials.userId] });
+        this.platforms.resume(this.weixin.id);
         this.running = true;
         // A closed renderer must not turn a committed authorization into a reported failure.
         try { this.emitEvent({ channelId: this.weixin.id, direction: "system", text: "微信 扫码授权完成，连接已启用", at: Date.now() }); } catch { /* state is available through status() */ }
       } catch {
-        await this.weixin.disconnect();
-        this.channelPolicies.delete(this.weixin.id);
+        if (this.channelOperations.get(this.weixin.id) === owner) {
+          await this.weixin.disconnect();
+          if (this.channelOperations.get(this.weixin.id) === owner) this.channelPolicies.delete(this.weixin.id);
+        }
         throw new Error("微信 连接未启用，请重试扫码；原有保存配置未覆盖");
       } finally { signal.removeEventListener("abort", stop); }
     })();
@@ -386,9 +377,10 @@ export class GatewayService {
     };
     check();
     const adapter = this.adapters.get(input.target.channelId)!;
-    const result = await adapter.sendWorkNotification!({ ...input, assertCurrent: check });
+    const text = this.secrets.redact(input.text);
+    const result = await adapter.sendWorkNotification!({ ...input, text, assertCurrent: check });
     if (result.ok) this.emitEvent({ channelId: input.target.channelId, chatId: input.target.chatId,
-      direction: "out", text: input.text, at: Date.now() });
+      direction: "out", text, at: Date.now() });
     return result;
   }
 
@@ -407,177 +399,31 @@ export class GatewayService {
     this.workNotificationWake?.();
   }
 
-  private markProcessed(channelId: string, chatId: string, messageId: string): boolean {
-    return this.processed(channelId, chatId, messageId);
-  }
-
   setTrashedWorkspaceRestorer(restore: (taskId: string) => void): void {
     this.restoreTrashedWorkspace = restore;
   }
 
-  /** 已删除的网关会话还有同一条外部聊天。执行前把工作目录从回收区移回，避免「目录不存在」。 */
-  private reviveTrashedGatewayTask(sourceTaskId: string): void {
-    if (!this.restoreTrashedWorkspace) return;
-    const taskId = gatewayBotTaskId(sourceTaskId);
-    if (this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed") return;
-    this.restoreTrashedWorkspace(taskId);
-  }
-
-  /** 还没有文件夹的会话归入渠道空间。已经有归属的不搬走，失败也不挡住这条消息。 */
-  private spaceIdForUnfiledGatewayTask(channelId: string, sourceTaskId: string): string | undefined {
-    if (this.db.getTask(gatewayBotTaskId(sourceTaskId))?.spaceId) return undefined;
-    try {
-      return ensureGatewayChannelSpace(this.db, channelId, this.adapters.get(channelId)?.name ?? channelId);
-    } catch (error) {
-      console.warn(`[Gateway] 未能为 ${channelId} 建立渠道文件夹：`, error);
-      return undefined;
-    }
-  }
-
   private createInboundHandler(): GatewayInboundHandler {
-    return async (msg) => {
-      if (this.stopping) throw new Error("Gateway 正在关闭，消息将在重连后继续");
-      // Slack validates its binding and persists dedupe before acknowledging events.
-      if (msg.channelId === this.slack.id) return this.handleSlackInbound(msg);
-      const inboundAdapter = this.adapters.get(msg.channelId);
-      if (inboundAdapter && isSecureGatewayProvider(inboundAdapter.type) && !this.channelPolicies.has(msg.channelId)) {
-        throw new Error("Gateway 授权配置尚未生效，未执行");
-      }
-      // ① 白名单：未授权用户直接忽略（不发系统事件，避免噪音）
-      if (!this.isAllowed(msg.channelId, msg.sender?.id)) {
-        console.warn(`[Gateway] 拒绝未授权用户 ${msg.sender?.id ?? "(unknown)"} @ ${msg.channelId}`);
-        return;
-      }
-      // Bind native sessions, receipts and dedupe to the verified account before
-      // any persistent side effect. Never adopt an unscoped legacy conversation.
-      const connectionKey = this.adapters.get(msg.channelId)?.workConnectionKey?.();
-      if (!connectionKey) throw new Error("Gateway 缺少已核验的连接账号身份，未执行");
-      if (msg.workTarget && msg.workTarget.connectionKey !== connectionKey) {
-        throw new Error("Gateway 入站连接账号已改变，未执行");
-      }
-      const { taskId, turnId } = gatewayInboundIdentity(msg.channelId, connectionKey, msg.chatId, msg.messageId);
-      // ② 幂等：平台失败重试投递同一条消息时不再执行
-      if (msg.messageId && !this.markProcessed(taskId, msg.chatId, msg.messageId)) {
-        console.warn(`[Gateway] 忽略重复消息 ${msg.messageId} @ ${msg.channelId}`);
-        return;
-      }
-
-      this.emitEvent({
-        channelId: msg.channelId,
-        direction: "in",
-        text: msg.text,
-        at: Date.now(),
-        chatId: msg.chatId,
-        senderId: msg.sender?.id,
-        senderName: msg.sender?.name,
-        messageId: msg.messageId,
-      });
-
-      // 项目投递钩子：命中 `@项目 <名>：内容` 则记录项目事件（fail-open，不影响原流程）
-      try {
-        this.projectMessageSink?.({
-          text: msg.text,
-          channelId: msg.channelId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-          senderName: msg.sender?.name,
-        });
-      } catch (err) {
-        console.warn(`[Gateway] 项目投递钩子失败 ${msg.channelId}：`, err);
-      }
-
-      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, taskId);
-      try { this.recordWorkTarget(msg, taskId, `gw-user-${turnId}`); }
-      catch (error) {
-        if (msg.messageId) this.processed.forget(taskId, msg.chatId, msg.messageId);
-        throw error;
-      }
-      let text: string;
-      try {
-        this.reviveTrashedGatewayTask(taskId);
-        const modelId = this.settingsStore.read().defaultModelId?.trim();
-        text = await runGatewayAgentTurn(this.agent, {
-          taskId, text: msg.text, attachments: msg.attachments, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
-          ...(modelId ? { modelId } : {}),
-          ...(spaceId ? { spaceId } : {}),
-        });
-      } catch (err) {
-        if (this.stopping) throw err;
-        text = `处理失败：${err instanceof Error ? err.message : String(err)}`;
-      }
-      try {
-        if (this.stopping || this.adapters.get(msg.channelId)?.workConnectionKey?.() !== connectionKey) {
-          throw new Error("Gateway 回复连接账号已改变，未发送");
-        }
-        await msg.reply(text);
-        this.emitEvent({
-          channelId: msg.channelId,
-          direction: "out",
-          text,
-          at: Date.now(),
-          chatId: msg.chatId,
-        });
-      } catch (err) {
-        // Re-delivery reuses the native receipt, including after process restart.
-        if (msg.messageId) this.processed.forget(taskId, msg.chatId, msg.messageId);
-        this.emitEvent({
-          channelId: msg.channelId,
-          direction: "system",
-          text: `回复发送失败：${err instanceof Error ? err.message : String(err)}`,
-          at: Date.now(),
-          chatId: msg.chatId,
-        });
-        throw err;
-      }
-    };
-  }
-
-  private async handleSlackInbound(msg: GatewayInboundMessage): Promise<void> {
-    if (!msg.taskId || !msg.userMessageId || !msg.assistantMessageId) throw new Error("Slack 任务身份缺失，未执行");
-    this.recordWorkTarget(msg, msg.taskId, msg.userMessageId);
-    this.emitEvent({
-      channelId: msg.channelId, direction: "in", text: msg.text, at: Date.now(),
-      chatId: msg.chatId, senderId: msg.sender?.id, messageId: msg.messageId,
-    });
-    try {
-      this.projectMessageSink?.({ text: msg.text, channelId: msg.channelId, chatId: msg.chatId,
-        messageId: msg.messageId, senderName: msg.sender?.name });
-    } catch { /* Existing project ingestion remains optional; Pi still receives the instruction. */ }
-    if (msg.slackHistory?.status === "unavailable") {
-      const code = msg.slackHistory.errorCode ?? "request_failed";
-      const text = code === "missing_scope"
-        ? "已收到你的 @，但 Bot 读取这个频道的历史被 Slack 拒绝（missing_scope）。本次尚未读到前面的聊天，需要先确认该频道的历史读取权限。"
-        : "已收到你的 @，但本次未能读取前面的频道聊天（" + code + "）。请稍后重试；本次没有使用其他内容代替频道历史。";
-      await msg.reply(text);
-      this.emitEvent({ channelId: msg.channelId, direction: "out", text, at: Date.now(), chatId: msg.chatId });
-      return;
-    }
-    let text: string;
-    try {
-      this.reviveTrashedGatewayTask(msg.taskId);
-      const settings = this.settingsStore.read();
-      const modelId = settings.defaultModelId?.trim() || undefined;
-      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, msg.taskId);
-      text = await runGatewayAgentTurn(this.agent, {
-        taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
-        assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,
-        streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
-        ...(spaceId ? { spaceId } : {}),
-      });
-    } catch (error) {
-      if (this.stopping) throw error;
-      text = "任务处理失败：" + safeSlackError(error);
-    }
-    text = redactSlackText(text);
-    // Network failure is an outbox failure, not a second native task execution.
-    await msg.reply(text);
-    this.emitEvent({ channelId: msg.channelId, direction: "out", text, at: Date.now(), chatId: msg.chatId });
+    return new GatewayRouter({
+      db: this.db, agent: this.agent, adapters: this.adapters,
+      readSettings: () => this.settingsStore.read(), isStopping: () => this.stopping,
+      slackId: () => this.slack.id, isAuthorized: channelId => this.channelPolicies.has(channelId),
+      isAllowed: (channelId, senderId) => this.isAllowed(channelId, senderId), processed: this.processed,
+      emitEvent: event => this.emitEvent(event),
+      recordWorkTarget: (message, taskId, messageId) => this.recordWorkTarget(message, taskId, messageId),
+      projectMessageSink: this.projectMessageSink,
+      restoreTrashedWorkspace: taskId => this.restoreTrashedWorkspace?.(taskId),
+      redact: text => this.secrets.redact(text), safeError: error => this.secrets.error(error),
+      outboundFilter: () => this.secrets.outboundFilter(),
+    }).handler();
   }
 
   async start(): Promise<void> {
+    const epoch = this.lifecycleEpoch;
     this.stopping = false;
     if (this.webhookServer) return;
     await this.startWebhookServer();
+    if (epoch !== this.lifecycleEpoch || this.stopping) throw new Error("Gateway 启动已取消");
     this.running = true;
     this.emitEvent({
       channelId: "system",
@@ -589,12 +435,19 @@ export class GatewayService {
 
   /** 应用启动时恢复上次已连接的通道（配置从 DB 读回，无需重新手输） */
   async restoreChannels(): Promise<void> {
+    const epoch = this.lifecycleEpoch;
+    const priorOperations = new Map(this.channelOperations);
     this.stopping = false;
+    const current = () => epoch === this.lifecycleEpoch && !this.stopping;
     for (const row of this.db.listGatewayChannels()) {
+      if (!current()) return;
       if (!row.connected) continue;
+      // A user connect/disconnect/QR operation after restore began takes precedence.
+      if (this.channelOperations.get(row.id) !== priorOperations.get(row.id)) continue;
       const adapter = this.adapters.get(row.id);
       if (!adapter) continue;
       let config: Record<string, unknown> = {};
+      const operation = this.beginChannelOperation(row.id);
       try {
         config = JSON.parse(row.configJson || "{}") as Record<string, unknown>;
       } catch {
@@ -602,15 +455,21 @@ export class GatewayService {
         continue;
       }
       try {
-        // Upgrade legacy callback credentials before enabling any transport.
-        if ((adapter.type === "feishu" || adapter.type === "wecom") && !config.encryptedSecrets) {
+        // Encrypt existing plaintext configuration before enabling its transport.
+        if (isSecureGatewayProvider(adapter.type) && !config.encryptedSecrets) {
           config = sealGatewayProviderConfig(adapter.type, validateGatewayProviderConfig(adapter.type, config));
           this.db.upsertGatewayChannel({ ...row, configJson: JSON.stringify(config) });
         }
         const opened = adapter.type === "slack" ? openSlackGatewayConfig(config)
           : isSecureGatewayProvider(adapter.type) ? openGatewayProviderConfig(adapter.type, config) : config;
+        this.secrets.remember(adapter.id, adapter.type, opened);
+        this.channelPolicies.delete(adapter.id);
         if (!this.isSocketOnly(adapter, opened)) await this.start();
+        if (!current()) return;
+        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
         await adapter.connect(opened);
+        if (!current()) return;
+        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
         if (this.isSocketOnly(adapter)) this.running = true;
         this.channelPolicies.set(row.id, { allowUsers: toStrArray(config.allowUsers) });
         if (adapter.type === "feishu") this.feishu.activate();
@@ -618,8 +477,9 @@ export class GatewayService {
         if (adapter.type === "slack") this.slack.activate();
         if (adapter.type === "discord") this.discord.activate();
         if (adapter.type === "dingtalk") this.dingtalk.activate();
-    if (adapter.type === "qq") this.qq.activate();
-    if (adapter.type === "weixin") this.weixin.activate();
+        if (adapter.type === "qq") this.qq.activate();
+        if (adapter.type === "weixin") this.weixin.activate();
+        this.platforms.resume(adapter.id);
         this.emitEvent({
           channelId: row.id,
           direction: "system",
@@ -627,7 +487,9 @@ export class GatewayService {
           at: Date.now(),
         });
       } catch (err) {
-        const message = adapter.type === "slack" ? safeSlackError(err) : err instanceof Error ? err.message : String(err);
+        if (!current()) return;
+        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
+        const message = this.secrets.error(err);
         console.warn(`[Gateway] 恢复 ${row.id} 失败: ${message}`);
         this.emitEvent({
           channelId: row.id,
@@ -640,21 +502,21 @@ export class GatewayService {
   }
 
   async suspend(): Promise<void> {
+    ++this.lifecycleEpoch;
     this.stopping = true;
+    this.platforms.suspend();
     await this.cancelQQQrLogin();
     await this.cancelWeixinQrLogin();
     for (const a of this.adapters.values()) {
-      if (a.isConnected() || this.isSocketOnly(a)) await a.disconnect();
+      // A webhook adapter can still be awaiting token verification while its
+      // public connected flag is false. Disconnect also invalidates that attempt.
+      await a.disconnect();
     }
   }
 
   async stop(): Promise<void> {
     await this.suspend();
-    await new Promise<void>((resolve) => {
-      if (!this.webhookServer) return resolve();
-      this.webhookServer.close(() => resolve());
-    });
-    this.webhookServer = null;
+    await this.lifecycle.stop();
     this.running = false;
   }
 
@@ -666,13 +528,14 @@ export class GatewayService {
   }
 
   listChannels(): GatewayChannelDto[] {
-    return [...this.adapters.values()].map((a) => ({
-      id: a.id,
-      type: a.type,
-      name: a.name,
-      connected: a.isConnected(),
-      statusText: a.statusText(),
-    }));
+    const labels: Record<string, string> = { pending: "排队", running: "处理中", reply_pending: "回复待送达",
+      blocked: "待处理", unknown: "回执待核对" };
+    return [...this.adapters.values()].map((adapter) => {
+      const pending = Object.entries(this.platforms.deliveryStatus(adapter.id))
+        .filter(([, count]) => count > 0).map(([state, count]) => `${labels[state] ?? state} ${count}`);
+      return { id: adapter.id, type: adapter.type, name: adapter.name, connected: adapter.isConnected(),
+        statusText: this.secrets.redact([adapter.statusText(), ...pending].join("；")) };
+    });
   }
 
   /** 已保存配置的脱敏视图（secret 打码；原样提交 connect 即复用旧值） */
@@ -697,8 +560,14 @@ export class GatewayService {
   }
 
   async connect(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
+    try { return await this.connectChannel(channelId, config); }
+    catch (error) { throw new Error(this.secrets.error(error)); }
+  }
+
+  private async connectChannel(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
     if (channelId === this.weixin.id) throw new Error("微信请使用专用扫码授权入口，不接收手工提交的凭据");
     if (channelId === this.qq.id) throw new Error("QQ 请使用专用扫码授权入口，不接收手工提交的凭据");
+    const epoch = this.lifecycleEpoch;
     this.stopping = false;
     const adapter = this.adapters.get(channelId);
     if (!adapter) throw new Error(`unknown channel: ${channelId}`);
@@ -727,9 +596,25 @@ export class GatewayService {
     if (isSecureGatewayProvider(adapter.type)) merged = validateGatewayProviderConfig(adapter.type, merged);
     const savedConfig = adapter.type === "slack" ? sealSlackGatewayConfig(merged)
       : isSecureGatewayProvider(adapter.type) ? sealGatewayProviderConfig(adapter.type, merged) : merged;
+    this.secrets.remember(adapter.id, adapter.type, merged);
+    const originalSecrets = GATEWAY_SECRET_FIELDS[adapter.type].map(key => merged[key])
+      .filter((value): value is string => typeof value === "string");
+    const operation = this.beginChannelOperation(channelId);
     if (!this.isSocketOnly(adapter, merged)) await this.start();
+    if (!this.ownsChannelOperation(channelId, operation, epoch)) throw new Error("Gateway 连接已取消");
     if (isSecureGatewayProvider(adapter.type)) this.channelPolicies.delete(adapter.id);
-    await adapter.connect(merged);
+    try { await adapter.connect(merged); }
+    catch (error) {
+      if (this.ownsChannelOperation(channelId, operation, epoch)) {
+        await adapter.disconnect().catch(() => {});
+        if (this.ownsChannelOperation(channelId, operation, epoch)) {
+          this.channelPolicies.delete(adapter.id);
+          this.running = this.webhookServer !== null || [...this.adapters.values()].some(channel => channel.isConnected());
+        }
+      }
+      throw new Error(this.secrets.error(error, originalSecrets));
+    }
+    if (!this.ownsChannelOperation(channelId, operation, epoch)) throw new Error("Gateway 连接已取消");
     if (this.isSocketOnly(adapter)) this.running = true;
     this.channelPolicies.set(adapter.id, { allowUsers: toStrArray(merged.allowUsers) });
     try {
@@ -740,8 +625,10 @@ export class GatewayService {
     } catch (error) {
       if (adapter.type !== "slack" && !isSecureGatewayProvider(adapter.type)) throw error;
       await adapter.disconnect();
-      this.channelPolicies.delete(adapter.id);
-      this.running = this.webhookServer !== null || [...this.adapters.values()].some(channel => channel.isConnected());
+      if (this.ownsChannelOperation(channelId, operation, epoch)) {
+        this.channelPolicies.delete(adapter.id);
+        this.running = this.webhookServer !== null || [...this.adapters.values()].some(channel => channel.isConnected());
+      }
       throw new Error(`${adapter.name} 安全配置保存失败，接收已暂停；原有配置保留`);
     }
     if (adapter.type === "feishu") this.feishu.activate();
@@ -751,6 +638,7 @@ export class GatewayService {
     if (adapter.type === "dingtalk") this.dingtalk.activate();
     if (adapter.type === "qq") this.qq.activate();
     if (adapter.type === "weixin") this.weixin.activate();
+    this.platforms.resume(adapter.id);
     this.emitEvent({
       channelId,
       direction: "system",
@@ -761,11 +649,22 @@ export class GatewayService {
   }
 
   async disconnect(channelId: string): Promise<GatewayStatusDto> {
-    if (channelId === this.qq.id) await this.cancelQQQrLogin();
-    if (channelId === this.weixin.id) await this.cancelWeixinQrLogin();
+    try { return await this.disconnectChannel(channelId); }
+    catch (error) { throw new Error(this.secrets.error(error)); }
+  }
+
+  private async disconnectChannel(channelId: string): Promise<GatewayStatusDto> {
     const adapter = this.adapters.get(channelId);
     if (!adapter) throw new Error(`unknown channel: ${channelId}`);
+    const epoch = this.lifecycleEpoch;
+    const operation = this.beginChannelOperation(channelId);
+    const current = () => this.channelOperations.get(channelId) === operation && this.lifecycleEpoch === epoch;
+    this.platforms.pause(channelId);
+    if (channelId === this.qq.id) await this.cancelQQQrLogin();
+    if (channelId === this.weixin.id) await this.cancelWeixinQrLogin();
+    if (!current()) return this.status();
     await adapter.disconnect();
+    if (!current()) return this.status();
     const stored = adapter.type === "slack" || isSecureGatewayProvider(adapter.type) ? this.db.listGatewayChannels().find(row => row.id === channelId) : undefined;
     this.channelPolicies.delete(channelId);
     this.db.upsertGatewayChannel({
@@ -790,6 +689,8 @@ export class GatewayService {
   }
 
   private emitEvent(ev: GatewayEventDto): void {
+    ev = { ...ev, text: this.secrets.redact(ev.text),
+      ...(ev.senderName ? { senderName: this.secrets.redact(ev.senderName) } : {}) };
     // 落库（历史可查、重启不丢）
     try {
       this.db.insertGatewayMessage({
@@ -802,82 +703,18 @@ export class GatewayService {
         at: ev.at,
       });
     } catch (err) {
-      console.warn("[Gateway] 消息落库失败", err);
+      console.warn("[Gateway] 消息落库失败", this.secrets.error(err));
     }
     broadcast(GatewayIpc.event, ev);
-    this.workNotificationWake?.();
+    try { this.workNotificationWake?.(); }
+    catch { /* Observation failure cannot roll back a committed transport action. */ }
   }
 
   private isSocketOnly(adapter: ChannelAdapter, config?: Record<string, unknown>): boolean {
     return gatewayCapabilities(adapter, config).transport !== "webhook";
   }
 
-  private createWebhookServer(): Server {
-    return createServer(async (req, res) => {
-      const url = new URL(req.url ?? "/", `http://127.0.0.1:${this.webhookPort}`);
-      const path = url.pathname;
-
-      if (req.method === "POST" && path.startsWith("/feishu")) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk as Buffer);
-        let body: unknown = {};
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString("utf-8") || "{}");
-        } catch {
-          res.writeHead(400);
-          res.end("bad json");
-          return;
-        }
-        try {
-          const result = await this.feishu.handleWebhookPayload(body);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(result ?? { ok: true }));
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          res.writeHead(500);
-          res.end(message);
-        }
-        return;
-      }
-
-      if (
-        (req.method === "GET" || req.method === "POST") &&
-        (path.startsWith("/wecom") || path.startsWith("/wechat"))
-      ) {
-        const chunks: Buffer[] = [];
-        if (req.method === "POST") {
-          for await (const chunk of req) chunks.push(chunk as Buffer);
-        }
-        const rawBody = Buffer.concat(chunks).toString("utf-8");
-        const adapter = path.startsWith("/wecom") ? this.wecom : this.wechat;
-        try {
-          const result = await adapter.handleHttp({
-            method: req.method ?? "GET",
-            query: url.searchParams,
-            rawBody,
-          });
-          res.writeHead(result.status, {
-            "Content-Type": result.contentType ?? "text/plain",
-          });
-          res.end(result.body);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          res.writeHead(500);
-          res.end(message);
-        }
-        return;
-      }
-
-      res.writeHead(404);
-      res.end("not found");
-    });
-  }
-
   private async startWebhookServer(): Promise<void> {
-    if (this.webhookServer) return;
-    // 首选端口在 Windows 保留区间内会 EACCES，这里自动回退到可用候选端口。
-    const { port, server } = await listenOnFirstAvailablePort(() => this.createWebhookServer(), this.webhookPort);
-    this.webhookServer = server;
-    this.webhookPort = port;
+    await this.lifecycle.start();
   }
 }

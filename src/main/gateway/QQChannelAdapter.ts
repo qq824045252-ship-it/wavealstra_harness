@@ -1,3 +1,5 @@
+import { BoundedTTLCache } from './BoundedTTLCache';
+import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from './GatewayReply';
 /** Official QQ bot WS protocol informed by NousResearch/hermes-agent QQ adapter
  * at 72d4433130823f506081cc1189a923b5aa67dbf0 (MIT, Copyright 2025 Nous Research).
  * See docs/third-party/hermes-agent-LICENSE.txt. No personal QQ or HTTP callback.
@@ -68,7 +70,7 @@ export class QQChannelAdapter implements ChannelAdapter {
   private tokenExpiry = 0;
   private tokenRequest?: Promise<string>;
   private inbound?: GatewayInboundHandler;
-  private readonly seen = new Map<string, { expires: number }>();
+  private readonly seen = new BoundedTTLCache<string, { expires: number }>({ maxEntries: 10_000, ttlMs: C2C_WINDOW });
   // READY precedes Gateway persistence. Keep validated messages until activation,
   // including across a resumable socket replacement within this generation.
   private readonly pendingInbound = new Map<string, { payload: Record<string, unknown>; bytes: number; expires: number }>();
@@ -83,6 +85,49 @@ export class QQChannelAdapter implements ChannelAdapter {
   statusText(): string { return this.lastError || (this.connected ? "已连接（QQ 官方机器人 WebSocket）" : "未连接"); }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+  }
+  restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
+    const route = input.route, senderId = input.sender?.id;
+    if (!this.config || !this.connected || !this.activated || route?.kind !== "qq" || !senderId
+      || !this.config.allowUsers.includes(senderId) || route.messageId !== input.messageId
+      || input.chatId !== `${route.group ? "group" : "c2c"}:${route.recipient}`
+      || (!route.group && route.recipient !== senderId)) return undefined;
+    // The durable journal contains one final reply per inbound message. Its first
+    // passive response always uses msg_seq=1, including verified pre-send retries.
+    return this.createReply(route, senderId, this.generation, 1);
+  }
+  private createReply(route: Extract<GatewayReplyRoute, { kind: 'qq' }>, senderId: string,
+    generation: number, fixedSequence?: number): (content: string) => Promise<void> {
+    let sequence = 0;
+    const assertReply = () => {
+      try { this.assertCurrent(generation); }
+      catch (error) { throw new GatewayReplyNotSentError(error instanceof Error ? error.message : "QQ 回复账号已改变"); }
+      if (!this.connected || !this.activated || !this.config!.allowUsers.includes(senderId)) throw new GatewayReplyNotSentError("QQ 回复授权或连接已改变");
+      if (Date.now() >= route.expiresAt || (!fixedSequence && sequence >= 5)) throw new GatewayReplyNotSentError("QQ 被动回复窗口已过期或已达 5 次上限，不支持主动推送");
+    };
+    return async content => {
+      assertReply();
+      if (!content.trim()) return;
+      if (Array.from(content).length > 4000) throw new GatewayReplyNotSentError("QQ 文本回复超过 4000 字符，未发送");
+      let token: string;
+      try { token = await this.refreshToken(generation); }
+      catch { throw new GatewayReplyNotSentError("QQ 回复授权未完成，未发送", true); }
+      assertReply();
+      const msgSeq = fixedSequence ?? ++sequence; // Reserve before I/O. Unknown receipts cannot be retried.
+      let response: Response;
+      try {
+        response = await this.fetcher(`https://api.sgroup.qq.com/v2/${route.group ? "groups" : "users"}/${encodeURIComponent(route.recipient)}/messages`, {
+          method: "POST", redirect: "error", signal: this.signal(), headers: { "Content-Type": "application/json", Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId },
+          body: JSON.stringify({ content, msg_type: 0, msg_id: route.messageId, msg_seq: msgSeq }),
+        });
+      } catch { throw new Error("QQ 回复回执未确认，未自动重试"); }
+      const receipt = obj(await response.json().catch(() => null));
+      if (response.status === 429) {
+        throw new GatewayReplyNotSentError("QQ 回复被限流，未自动重试", true);
+      }
+      if (!response.ok && response.status >= 400 && response.status < 500) throw new GatewayReplyNotSentError("QQ 未返回成功回执，未自动重试");
+      if (!response.ok || !str(receipt.id) || (receipt.code !== undefined && receipt.code !== 0)) throw new Error("QQ 未返回成功回执，未自动重试");
+    };
   }
   activate(): void {
     if (!this.connected || !this.config || this.stopped) throw new Error("QQ 尚未连接");
@@ -241,8 +286,7 @@ export class QQChannelAdapter implements ChannelAdapter {
     if (!recipient || recipient.length > 512 || !messageId || messageId.length > 512 || senderId.length > 512 || (!text && !media.length) || text.length > 64_000 || !Number.isFinite(produced) || produced > Date.now() + 30_000 || expires <= Date.now()) return;
     const chatId = `${group ? "group" : "c2c"}:${recipient}`;
     const identity = JSON.stringify([this.config.appId, chatId, messageId]);
-    for (const [key, entry] of this.seen) if (entry.expires <= Date.now()) this.seen.delete(key);
-    if (this.seen.has(identity) || this.seen.size >= 10_000) return;
+    if (this.seen.has(identity)) return;
     if (!this.activated) {
       for (const [key, entry] of this.pendingInbound) {
         if (entry.expires <= Date.now()) { this.pendingInbound.delete(key); this.pendingInboundBytes -= entry.bytes; }
@@ -265,12 +309,8 @@ export class QQChannelAdapter implements ChannelAdapter {
     const reservation = { expires };
     this.seen.set(identity, reservation);
     let enteredGateway = false;
-    let sequence = 0;
-    const assertReply = () => {
-      this.assertCurrent(generation);
-      if (!this.connected || !this.activated || !this.config!.allowUsers.includes(senderId)) throw new Error("QQ 回复授权或连接已改变");
-      if (Date.now() >= expires || sequence >= 5) throw new Error("QQ 被动回复窗口已过期或已达 5 次上限，不支持主动推送");
-    };
+    const replyRoute: Extract<GatewayReplyRoute, { kind: 'qq' }> = { kind: 'qq', recipient, group, messageId, expiresAt: expires };
+    const reply = this.createReply(replyRoute, senderId, generation);
     void Promise.resolve().then(() => {
       const assertInbound = () => {
         this.assertCurrent(generation);
@@ -286,19 +326,14 @@ export class QQChannelAdapter implements ChannelAdapter {
       return withGatewayMedia(media.map(item => ({ ...item, fetch: guardedFetch })), async attachments => {
         assertInbound();
         enteredGateway = true;
-        return this.inbound!({ channelId: this.id, chatId, messageId, text, attachments, sender: { id: senderId }, reply: async content => {
-          assertReply();
-          if (!content.trim()) return;
-          if (Array.from(content).length > 4000) throw new Error("QQ 文本回复超过 4000 字符，未发送");
-          const token = await this.refreshToken(generation); assertReply();
-          const msgSeq = ++sequence; // Reserve before I/O. Uncertain failures are not automatically retried.
-          const response = await this.fetcher(`https://api.sgroup.qq.com/v2/${group ? "groups" : "users"}/${encodeURIComponent(recipient)}/messages`, {
-            method: "POST", redirect: "error", signal: this.signal(), headers: { "Content-Type": "application/json", Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId },
-            body: JSON.stringify({ content, msg_type: 0, msg_id: messageId, msg_seq: msgSeq }),
-          });
-          const receipt = obj(await response.json());
-          if (!response.ok || !str(receipt.id) || (receipt.code !== undefined && receipt.code !== 0)) throw new Error("QQ 未返回成功回执，未自动重试");
-        } });
+        const delivery = this.inbound!({ channelId: this.id, chatId, messageId, text, attachments, sender: { id: senderId }, replyRoute, reply });
+        if (delivery.accepted) {
+          enteredGateway = false;
+          void delivery.catch(() => {});
+          await delivery.accepted;
+          enteredGateway = true;
+        }
+        return delivery;
       });
     }).catch(() => {
       // Pre-dispatch failures have no native receipt: permit provider redelivery.

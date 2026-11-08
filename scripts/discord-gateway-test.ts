@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import type { GatewayInboundMessage } from '../src/main/gateway/channels';
 import { DiscordGatewayAdapter, type DiscordSocket } from '../src/main/gateway/DiscordGatewayAdapter.ts';
 let interruptResume = false;
 let holdResume = false;
@@ -100,6 +101,31 @@ assert(continueResume); holdResume = false; continueResume(); await tick();
 assert.deepEqual(entered, ['20', '21'], 'pending delivery executes exactly once after recovery');
 event('21'); event('22'); await tick(); event('22'); await tick();
 assert.deepEqual(entered, ['20', '21', '22'], 'executed failures stay deduplicated');
+// Once the durable inbox accepts a delivery, adapter preparation queues must let
+// later messages reach that inbox while Registry serializes native execution.
+{
+  const acceptedMessages: GatewayInboundMessage[] = [];
+  let finish!: () => void;
+  const longTurn = new Promise<void>(resolve => { finish = resolve; });
+  adapter.setInboundHandler(message => { acceptedMessages.push(message);
+    return Object.assign(message.messageId === '30' ? longTurn : Promise.resolve(), { accepted: Promise.resolve() });
+  });
+  event('30'); event('31'); await tick();
+  assert.deepEqual(acceptedMessages.map(message => message.messageId), ['30', '31']);
+  finish(); await tick();
+  const first = acceptedMessages[0];
+  const restored = adapter.restoreGatewayReply({ deliveryId:'persisted-discord',chatId:first.chatId,messageId:first.messageId!,sender:first.sender,route:first.replyRoute });
+  assert.ok(restored); await restored('durable reply'); await restored('durable reply');
+  assert.equal(requests.at(-1)?.body?.nonce, requests.at(-2)?.body?.nonce, 'same outbox delivery keeps its provider nonce');
+  assert.equal(adapter.restoreGatewayReply({ deliveryId:'persisted-discord',chatId:'wrong-room',messageId:first.messageId!,sender:first.sender,route:first.replyRoute }), undefined);
+  let attempts = 0;
+  adapter.setInboundHandler(() => { attempts++;
+    const result = attempts === 1 ? Promise.reject(new Error('inbox unavailable')) : Promise.resolve();
+    return Object.assign(result, { accepted: result });
+  });
+  event('32'); await tick(); event('32'); await tick(); event('32'); await tick();
+  assert.equal(attempts, 2, 'failed admission is redeliverable; committed admission is deduplicated');
+}
 sockets.at(-1)!.onclose?.({ code: 4014 }); await tick(); assert.equal(adapter.isConnected(), false); assert.match(adapter.statusText(), /Intents/);
 await adapter.disconnect();
 console.log('Discord gateway: identity, intents, allowlists, dedup, mention/DM, resume, rate limit, secret redaction and stale replies PASS');
