@@ -661,7 +661,7 @@ export default function ChatInput({
   const fullAccess = permissionMode === "auto";
   // 已允许完全访问时，无需在执行过程中重复显示开关条
   const showExecPermBar =
-    welcomeMode !== "bot" && executing && Boolean(execLabel) && !fullAccess && !execPermDismissed;
+    welcomeMode !== "general" && executing && Boolean(execLabel) && !fullAccess && !execPermDismissed;
 
   useEffect(() => {
     if (!executing) setExecPermDismissed(false);
@@ -677,7 +677,7 @@ export default function ChatInput({
         s.enabled &&
         s.command &&
         isSkillVisibleForMode(s, welcomeMode, skillPolicy, {
-          disableFilter: welcomeMode === "bot" || !skillFilterOn,
+          disableFilter: welcomeMode === "general" || !skillFilterOn,
         }) &&
         (slashQuery === "" || s.command.startsWith(slashQuery) || s.name.includes(slashQuery)),
     );
@@ -1863,7 +1863,7 @@ export default function ChatInput({
               </button>
             </span>
           )}
-          {variant !== "home" && welcomeMode !== "bot" && (
+          {variant !== "home" && welcomeMode !== "general" && (
             <HomePermissionPicker
               compact
               quiet
@@ -2242,7 +2242,7 @@ export default function ChatInput({
               }}
               onClose={() => setProjectOpen(false)}
             />
-            {welcomeMode !== "bot" && <HomePermissionPicker
+            {welcomeMode !== "general" && <HomePermissionPicker
               quiet
               open={homePermOpen}
               onToggle={() => {

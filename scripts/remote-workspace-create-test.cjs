@@ -13,7 +13,7 @@ async function until(code){const end=Date.now()+6000;while(!await evaluate(code)
 async function click(selector){const p=await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing '+${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect(),x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2),hit=document.elementFromPoint(x,y);if(!e.contains(hit))throw Error('Not clickable '+${JSON.stringify(selector)}+' hit '+hit?.outerHTML.slice(0,160));return {x,y}})()`);win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...p});win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...p});await wait(60);}
 async function type(text){await evaluate(`(()=>{const e=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await wait(30);}
 async function select(label,value){
-  const modeLabels={working:'日常办公',coding:'代码开发',bot:'Bot'},tagLabels={'general-office':'通用办公',native:'原生模式',codemode:'Code Mode','custom-dev':'自定义开发'};
+  const modeLabels={working:'日常办公',coding:'代码开发',general:'通用模式'},tagLabels={'general-office':'通用办公',native:'原生模式',codemode:'Code Mode','custom-dev':'自定义开发'};
   if(label==='新任务模式'){
     if(await evaluate('!!document.querySelector(".task-setup-sheet.open")')){await click('[aria-label="关闭任务设置"]');await wait(300);}
     await click('[aria-label="新任务模式"]');await wait(300);await click('[aria-label="模式：'+modeLabels[value]+'"]');
@@ -46,13 +46,13 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   await type('必须先选择');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   assert.match(await evaluate('workspaceFixture.submit().catch(e=>e.message)'),/选择模式和 Tag/);
   await select('新任务模式','working');fs.writeFileSync(path.join(out,'tag-sheet.png'),(await win.webContents.capturePage()).toPNG());assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
-  await select('新任务 Tag','general-office');await select('新任务模式','bot');
+  await select('新任务 Tag','general-office');await select('新任务模式','general');
   assert.equal((await evaluate('workspaceFixture.inspect()')).selectedModePresetId,null);
   assert.equal(await evaluate('!!document.querySelector("[aria-label=权限控制]")'),false);
   assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);
   await select('新任务 Tag','native');
   assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),false);
-  pass('mode and tag require explicit choices; changing mode clears tag; Bot hides MyBuddy permission control');
+  pass('mode and tag require explicit choices; changing mode clears tag; 通用模式 hides MyBuddy permission control');
   await choose();
   await click('[aria-label="选择新任务位置"]');await wait(250);
   assert(await evaluate(`!!document.querySelector('[aria-label="位置：公司空间 / 项目文件夹"]')`));
@@ -67,10 +67,10 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   await click('[aria-label="菜单"]');await wait(250);
   await expandAllSpaces();
   assert.equal(await evaluate('document.querySelector(".drawer-item-btn .task-mode-label").textContent'),'日常办公 · 通用办公');
-  await click('.drawer-new-chat-btn');assert.equal((await evaluate('workspaceFixture.inspect()')).selectedWelcomeMode,null);await choose('bot','codemode');await type('独立任务测试');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().requests.length===2');
+  await click('.drawer-new-chat-btn');assert.equal((await evaluate('workspaceFixture.inspect()')).selectedWelcomeMode,null);await choose('general','codemode');await type('独立任务测试');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().requests.length===2');
   state=await evaluate('workspaceFixture.inspect()');assert.equal(state.requests[1].spaceId,undefined);assert.equal(state.requests[1].projectId,undefined);
-  assert.equal(state.requests[1].welcomeMode,'bot');assert.equal(state.requests[1].modePresetId,'codemode');assert.equal(state.requests[1].permissionMode,undefined);
-  assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'Bot · Code Mode');
+  assert.equal(state.requests[1].welcomeMode,'general');assert.equal(state.requests[1].modePresetId,'codemode');assert.equal(state.requests[1].permissionMode,undefined);
+  assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'通用模式 · Code Mode');
   pass('ordinary new conversation does not inherit the previous folder or project');
   await click('[aria-label="菜单"]');await wait(250);await expandAllSpaces();await click('[aria-label="在 空文件夹 中新建任务"]');await choose('coding','custom-dev');await evaluate('workspaceFixture.failNext()');await type('保留输入和位置');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===1');
   assert.equal(await evaluate('document.querySelector("textarea").value'),'保留输入和位置');assert.equal((await evaluate('workspaceFixture.inspect()')).selectedSpaceId,'empty');
@@ -79,7 +79,7 @@ app.whenReady().then(async()=>{win=new BrowserWindow({width:390,height:844,useCo
   pass('failed submission retains draft and destination; retry creates only one task');
   assert.equal((await evaluate('workspaceFixture.inspect()')).requests[3].welcomeMode,'coding');
   assert.equal(await evaluate('document.querySelector(".header-task-info .task-mode-label").textContent'),'代码开发 · 自定义开发');
-  pass('office, Bot Code Mode and custom coding tags reach requests and task labels unchanged');
+  pass('office, 通用模式 Code Mode and custom coding tags reach requests and task labels unchanged');
   await click('[aria-label="菜单"]');await wait(250);await expandAllSpaces();await click('[aria-label="在 项目文件夹 中新建任务"]');await choose();await evaluate('workspaceFixture.invalidate()');await type('不能静默落到独立任务');await click('[aria-label="发送"]');await until('workspaceFixture.inspect().alerts.length===2');assert.equal((await evaluate('workspaceFixture.inspect()')).requests.length,4);
   pass('deleted destination is rejected without silently creating in another location');
   await evaluate('workspaceFixture.removeTag()');assert.equal(await evaluate('document.querySelector("[aria-label=发送]").disabled'),true);

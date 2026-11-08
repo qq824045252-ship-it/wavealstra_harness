@@ -629,7 +629,7 @@ export class ProfessionalToolRuntimeService {
     return (this.runtimes["drawio-ai"] as unknown as DrawioRuntime).getMcpPayload();
   }
 
-  /** 给 Agent/UI 防御性调用：非受管 provider 不进入 Runtime（design 旧 5 个 + 办公 drawio-ai）。 */
+  /** 给 Agent/UI 防御性调用：非受管 provider 不进入 Runtime（设计类工具旧 5 个 + 办公 drawio-ai）。 */
   static manages(providerId: string): providerId is ManagedToolProviderId {
     return isManagedToolProvider(providerId);
   }

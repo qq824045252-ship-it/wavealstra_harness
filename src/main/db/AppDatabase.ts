@@ -53,6 +53,7 @@ import type {
   TaskDto,
   WelcomeMode,
 } from "../../shared/agent-ipc";
+import { normalizeWelcomeMode } from "../../shared/mode-profile";
 import type {
   ConversationBranchInfoDto,
   ConversationBranchPosition,
@@ -380,8 +381,17 @@ export class AppDatabase {
       ensureBotWorkPhase4Tables(this.db);
       ensureBotWorkPhase5Tables(this.db);
       ensureGatewayDeliveryTables(this.db);
+      this.migrateLegacyWelcomeModeIds();
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();
+  }
+
+  /** Persisted scene id moved from "bot" to "general"; migrate rows in place. */
+  private migrateLegacyWelcomeModeIds(): void {
+    this.db.prepare("UPDATE tasks SET welcome_mode = 'general' WHERE welcome_mode = 'bot'").run();
+    this.db.prepare("UPDATE cron_jobs SET welcome_mode = 'general' WHERE welcome_mode = 'bot'").run();
+    this.db.prepare("UPDATE task_runtime_context_snapshots SET welcome_mode = 'general' WHERE welcome_mode = 'bot'").run();
+    this.db.prepare("UPDATE agent_loadout_observations SET context_json = json_set(context_json, '$.mode', 'general') WHERE json_valid(context_json) AND json_extract(context_json, '$.mode') = 'bot'").run();
   }
 
   private ensureNotificationTables(): void {
@@ -2810,8 +2820,8 @@ export class AppDatabase {
       updatedAt: r.updated_at,
       sessionFile: r.session_file ?? undefined,
       cwd: r.cwd ?? undefined,
-      welcomeMode: (r.welcome_mode as WelcomeMode | null) ?? undefined,
-      executionBackend: r.welcome_mode === "bot" ? "pi-durable" : "pi",
+      welcomeMode: normalizeWelcomeMode(r.welcome_mode) ?? undefined,
+      executionBackend: r.welcome_mode === "general" ? "pi-durable" : "pi",
       modelId: r.model_id ?? undefined,
       permissionMode: (r.permission_mode as TaskDto["permissionMode"] | null) ?? undefined,
       archived: Boolean(r.archived),
@@ -2904,7 +2914,7 @@ export class AppDatabase {
   }
 
   upsertTask(task: TaskDto): void {
-    if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "bot", modePresetId: "native" };
+    if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "general", modePresetId: "native" };
     // UI 仍可能带 mock/遗留 spaceId；spaces 表无对应行时先解析占位，避免 FOREIGN KEY 失败
     const hasSpaceId = task.spaceId !== undefined;
     const hasProjectId = task.projectId !== undefined;
@@ -2944,11 +2954,11 @@ export class AppDatabase {
       | undefined;
 
     const projectId = task.projectId ?? null;
-    if (prev?.welcome_mode === "bot" && task.welcomeMode && task.welcomeMode !== "bot") {
-      throw new Error("Bot 任务的 Durable 后端已固定，请创建新任务以选择其他模式");
+    if (prev?.welcome_mode === "general" && task.welcomeMode && task.welcomeMode !== "general") {
+      throw new Error("通用任务的 Durable 后端已固定，请创建新任务以选择其他模式");
     }
-    if (prev?.session_file && task.welcomeMode === "bot") {
-      throw new Error("旧 Pi 会话不能转换为 Durable 会话，请创建 Bot 任务");
+    if (prev?.session_file && task.welcomeMode === "general") {
+      throw new Error("旧 Pi 会话不能转换为 Durable 会话，请创建通用任务");
     }
     if (hasProjectId && projectId) {
       const project = this.db
@@ -3006,7 +3016,7 @@ export class AppDatabase {
         modelId: task.modelId ?? prev?.model_id ?? null,
         permissionMode: task.permissionMode ?? prev?.permission_mode ?? null,
         expertId: task.expertId ?? prev?.expert_id ?? null,
-        // null = 明确清除（如非 design 任务）；未提供字段时保留旧值
+        // null = 明确清除（如非当前场景任务）；未提供字段时保留旧值
         modePresetId: task.modePresetId !== undefined ? task.modePresetId : (prev?.mode_preset_id ?? null),
         startAt: task.startAt !== undefined ? task.startAt : (prev?.start_at ?? null),
         dueAt: task.dueAt !== undefined ? task.dueAt : (prev?.due_at ?? null),
@@ -3902,7 +3912,7 @@ export class AppDatabase {
 }
 
 function parseCronWelcomeMode(raw: unknown): CronJobDto["welcomeMode"] | undefined {
-  if (raw === "working" || raw === "coding" || raw === "bot") return raw;
+  if (raw === "working" || raw === "coding" || raw === "general") return raw;
   return undefined;
 }
 

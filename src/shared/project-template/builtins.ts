@@ -7,7 +7,7 @@ import type { ProjectTemplateDefinition } from "./types";
  * capability 引用 id 真实性说明（2026-08-13 仓库侦察）：
  * - 真实 id（本机/mybuddy 市场存在，解析时能命中）：
  *   · 专家 code-review-expert、product-management、ui-designer（mybuddyskills-main/experts/ 目录名）
- *   · MCP penpot（src/shared/mode-profile.ts DESIGN_PROVIDER_MCP_IDS + 用户 ~/.mybuddy/plugins/mcp/mcp.json）
+ *   · MCP penpot（src/shared/professional-tools.ts 的受管 provider 注册表 + 用户 ~/.mybuddy/plugins/mcp/mcp.json）
  *   · 技能 github（mybuddyskills-main/skills/github）
  * - 约定值 id（本机不存在同名能力，resolver 会 graceful degrade → missing + warning）：
  *   · debug-expert / requirement-analyst / research-analyst / office-assistant / knowledge-curator

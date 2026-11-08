@@ -1462,7 +1462,7 @@ export class AgentService {
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       resolveNextCwd: id => {
         const task = this.db.getTask(id);
-        if (task?.welcomeMode !== "bot" || this.workService.repo.bindingForTask(id)
+        if (task?.welcomeMode !== "general" || this.workService.repo.bindingForTask(id)
           || resolveWorkContinuationCwd(this.db, this.workService, id)) return undefined;
         return this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })
           ?? this.taskWorkspace.ensureTaskExecutionWorkspace(id);
@@ -1506,7 +1506,7 @@ export class AgentService {
       toolMode: task => {
         if (isGatewayBotTaskId(task.id)) return "native";
         const preset = resolveModePreset(this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode)).policy, task.modePresetId);
-        return preset?.botToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
+        return preset?.durableToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
       instructions: task => this.botInstructions(task),
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
@@ -5364,7 +5364,7 @@ export class AgentService {
       );
       return;
     }
-    if (this.db.getTask(taskId)?.welcomeMode !== "bot" && isInternalTaskPath(filePath)) return;
+    if (this.db.getTask(taskId)?.welcomeMode !== "general" && isInternalTaskPath(filePath)) return;
     try {
       let preview: Awaited<ReturnType<typeof previewWorkspaceFile>>;
       try {

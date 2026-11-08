@@ -72,7 +72,7 @@ console.log("2. coding 全量（entry.modes 放行）");
 
 console.log("3. design entry.modes  alone");
 {
-  const r = filterMcpConfigForMode(full, "bot", {
+  const r = filterMcpConfigForMode(full, "general", {
     mode: "hard",
     allow: [],
     deny: [],
@@ -109,15 +109,14 @@ console.log("5. soft 不剔除");
   );
 }
 
-console.log("6. Penpot 旧模式声明迁入日常办公");
+console.log("6. 退役 bot/design metadata 不再隐式放行");
 for (const modes of [["design"], ["bot"], "design", "bot", ["coding", "design"]]) {
   const config = { mcpServers: { penpot: { url: "http://localhost:9001", modes } } };
   const allowed = filterMcpConfigForMode(config, "working", { mode: "hard", allow: ["penpot"], deny: [] });
-  assert(allowed.enabled.includes("penpot"), `旧声明 ${JSON.stringify(modes)} 在办公可用`);
-  const denied = filterMcpConfigForMode(config, "working", { mode: "hard", allow: [], deny: ["penpot"] });
-  assert(!denied.enabled.includes("penpot"), "迁移不绕过办公显式禁用");
-  const disabled = filterMcpConfigForMode({ mcpServers: { penpot: { ...config.mcpServers.penpot, disabled: true } } }, "working");
-  assert(!disabled.enabled.includes("penpot"), "迁移不绕过 MCP 全局停用");
+  assert(!allowed.enabled.includes("penpot"), `退役声明 ${JSON.stringify(modes)} 不再放行`);
+  assert(allowed.hidden.includes("penpot"), `退役声明 ${JSON.stringify(modes)} 明确隐藏`);
+  const general = filterMcpConfigForMode(config, "general", { mode: "hard", allow: ["penpot"], deny: [] });
+  assert(!general.enabled.includes("penpot"), `退役声明 ${JSON.stringify(modes)} 不迁入 general`);
 }
 
 console.log(`\n[mcp-mode-filter-test] ${passed} passed, ${failed} failed`);

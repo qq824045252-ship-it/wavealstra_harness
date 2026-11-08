@@ -180,7 +180,7 @@ function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
   base.modelId = job.modelId ?? defaultModelId ?? null;
   base.permissionMode = job.permissionMode ?? "auto";
   base.welcomeMode =
-    job.welcomeMode === "coding" || job.welcomeMode === "bot" || job.welcomeMode === "working"
+    job.welcomeMode === "coding" || job.welcomeMode === "general" || job.welcomeMode === "working"
       ? job.welcomeMode
       : "working";
   base.dateStart = msToDateInput(job.effectiveFrom);
@@ -876,14 +876,14 @@ export default function AutomationPage({
           <span className="auto-row-name">{job.name}</span>
           <span
             className="auto-row-mode"
-            title={WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "bot" ? job.welcomeMode : "working"]}
+            title={WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"]}
           >
             <WelcomeModeIcon
-              mode={job.welcomeMode === "coding" || job.welcomeMode === "bot" ? job.welcomeMode : "working"}
+              mode={job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"}
               size={13}
             />
             <span>
-              {WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "bot" ? job.welcomeMode : "working"]}
+              {WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"]}
             </span>
           </span>
           <span className="auto-row-id" title={job.id}>

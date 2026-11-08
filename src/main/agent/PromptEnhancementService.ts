@@ -1,4 +1,4 @@
-import { DEFAULT_WELCOME_MODE } from "../../shared/mode-profile";
+import { DEFAULT_WELCOME_MODE, normalizeWelcomeMode } from "../../shared/mode-profile";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type {
@@ -201,10 +201,11 @@ export class PromptEnhancementService {
   }): string[] {
     const { projectId, spaceId, cwd } = input;
     let explicitMode: WelcomeMode | null = null;
-    if (input.mode) {
+    const normalizedMode = normalizeWelcomeMode(input.mode);
+    if (normalizedMode) {
       try {
-        this.deps.modeProfiles.getProfile(input.mode as WelcomeMode);
-        explicitMode = input.mode as WelcomeMode;
+        this.deps.modeProfiles.getProfile(normalizedMode);
+        explicitMode = normalizedMode;
       } catch { /* invalid mode falls back */ }
     }
 
@@ -275,7 +276,7 @@ export class PromptEnhancementService {
     const lines: string[] = [];
     try {
       const profile = this.deps.modeProfiles.getProfile(args.welcomeMode);
-      lines.push(`- 模式：${args.welcomeMode}（${profile.labelZh}）`);
+      lines.push(`- 模式：${profile.labelZh}`);
     } catch {
       lines.push(`- 模式：${args.welcomeMode}`);
     }

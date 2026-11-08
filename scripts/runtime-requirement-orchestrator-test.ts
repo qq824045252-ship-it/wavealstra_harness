@@ -6,7 +6,7 @@ import type { ManagedToolProviderId, ProfessionalToolStatusDto } from "../src/sh
 // Exercise readiness with the real Penpot preset after its move to office.
 const officePreset = MODE_SEEDS.working.policy.presets!.find(preset => preset.id === "web-prototype")!;
 const profileStore = {
-  getProfile(mode: "working" | "coding" | "bot") {
+  getProfile(mode: "working" | "coding" | "general") {
     return { ...MODE_SEEDS[mode], id: mode, version: "fixture", blocks: [], totalChars: 0, userDir: "", policyPath: "", hasUserOverride: false };
   },
 };
@@ -57,8 +57,8 @@ async function main(): Promise<void> {
   assert(penpot.requiredBy?.includes("web-prototype"), "requiredBy should point to declaring preset");
   assert.equal(penpot.launch, "backend", "idle state should expose requirement default launch policy");
 
-  orchestrator.onModePresetSelected("bot", "web-prototype");
-  await orchestrator.ensurePresetReady(MODE_SEEDS.bot.policy.presets?.find(item => item.id === "web-prototype"));
+  orchestrator.onModePresetSelected("general", "web-prototype");
+  await orchestrator.ensurePresetReady(MODE_SEEDS.general.policy.presets?.find(item => item.id === "web-prototype"));
   assert.equal(calls.starts, 0, "Bot Tags never prewarm or wait for MyBuddy managed runtimes");
   orchestrator.onModePresetSelected("working", "web-prototype");
   await new Promise((resolve) => setTimeout(resolve, 20));

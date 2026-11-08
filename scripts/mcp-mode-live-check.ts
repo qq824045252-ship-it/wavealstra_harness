@@ -106,7 +106,7 @@ console.log("=== 专项断言（相对你当前 policy）===\n");
 {
   const w = filterMcpConfigForMode(mcp, "working", loadMcpPolicy("working"));
   const c = filterMcpConfigForMode(mcp, "coding", loadMcpPolicy("coding"));
-  const d = filterMcpConfigForMode(mcp, "bot", loadMcpPolicy("bot"));
+  const d = filterMcpConfigForMode(mcp, "general", loadMcpPolicy("general"));
 
   // working deny 含 esp-*
   if (mcp.mcpServers["esp-component-registry"] && !mcp.mcpServers["esp-component-registry"].disabled) {

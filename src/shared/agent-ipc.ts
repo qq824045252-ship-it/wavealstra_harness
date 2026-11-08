@@ -616,7 +616,7 @@ export interface AssembleModePreviewRequest {
   spaceId?: string | null;
   /** Optional Project to include in an assembly preview. */
   projectId?: string | null;
-  /** 选中场景预设（Design Mode）；缺省 = base policy 预览 */
+  /** 选中场景预设（场景模式）；缺省 = base policy 预览 */
   modePresetId?: string | null;
   /** 预览当前激活的连接器 id（其 Private Skills 进入候选技能集，与真实 Session 一致） */
   connectorIds?: string[];
@@ -753,7 +753,7 @@ export interface AgentPromptRequest {
   sessionFile?: string;
   /** Expert selected for this session. */
   expertId?: string;
-  /** 选中场景预设（Design Mode）；仅在新建会话时生效，已有会话不热切 */
+  /** 选中场景预设（场景模式）；仅在新建会话时生效，已有会话不热切 */
   modePresetId?: string | null;
   /** 当前会话激活的连接器 id（其 Private Skills 进入候选技能集；新建会话时生效） */
   connectorIds?: string[];
@@ -833,7 +833,7 @@ export interface AgentRegenerateRequest {
    */
   cwd?: string;
   expertId?: string;
-  /** 选中场景预设（Design Mode）；仅新建会话时生效 */
+  /** 选中场景预设（场景模式）；仅新建会话时生效 */
   modePresetId?: string | null;
 }
 
@@ -1864,7 +1864,7 @@ export interface CronJobDto extends CronExecutionSettings {
   /** 执行权限；缺省按 auto（定时任务通常无人值守） */
   permissionMode?: PermissionMode;
   /**
-   * 任务类型 / 场景模式：日常办公 working · 代码开发 coding · 设计创意 design。
+   * 任务类型 / 场景模式：日常办公 working · 代码开发 coding · 通用模式 general。
    * 缺省 working（兼容旧数据）。
    */
   welcomeMode?: WelcomeMode;
@@ -2010,7 +2010,7 @@ export interface TaskDto {
   archived?: boolean;
   /** Expert selected for this session. */
   expertId?: string;
-  /** 选中场景预设 id（Design Mode 任务）；非 design 任务为 null；旧任务无字段 = 未设置 */
+  /** 选中场景预设 id（场景模式任务）；非场景任务为 null；旧任务无字段 = 未设置 */
   modePresetId?: string | null;
   /** 计划开始日（当地 0 点 ms）；undefined = 调用方未改 */
   startAt?: number | null;

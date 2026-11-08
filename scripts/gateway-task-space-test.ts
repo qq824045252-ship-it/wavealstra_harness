@@ -61,7 +61,7 @@ async function assertDeletedGatewayChatRestoresItsWorkspace(root: string, db: Ap
   const workspace = new TaskExecutionWorkspace(join(root, "task-workspaces"));
   const lifecycle = new TaskExecutionWorkspaceLifecycle({ db, workspace, trashRoot: join(root, "task-workspaces-trash") });
   const taskId = gatewayBotTaskId("gw-telegram-default-5664468624");
-  db.upsertTask({ id: taskId, title: "你好。", welcomeMode: "bot", modePresetId: "native", updatedAt: 1 });
+  db.upsertTask({ id: taskId, title: "你好。", welcomeMode: "general", modePresetId: "native", updatedAt: 1 });
   const cwd = workspace.ensureTaskExecutionWorkspace(taskId);
   writeFileSync(join(cwd, "proof.txt"), "kept");
   db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (

@@ -1,5 +1,5 @@
 /**
- * Design Mode Preset Bar 纯逻辑（UI 用，可 node 单测）。
+ * 场景模式 Preset Bar 纯逻辑（UI 用，可 node 单测）。
  * 渲染层只负责把这里的 chips 画出来；可用性/锁定/选中语义全部集中在此。
  */
 import type { ModePresetDto } from "../../../shared/mode-profile";

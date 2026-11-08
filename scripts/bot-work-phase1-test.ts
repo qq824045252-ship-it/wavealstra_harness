@@ -49,7 +49,7 @@ if (!isMainThread) {
     authorization: { allowedScopes: ["workspace:read", "workspace:write"] }, ...extra,
   }));
   const dispatch = (workId: string, taskId: string, botId = DEFAULT_BOT_ID) => {
-    db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now(), welcomeMode: "bot" });
+    db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now(), welcomeMode: "general" });
     ok(work.dispatchExecution(user, { operationId: `dispatch-${taskId}`, workId, botId, taskId,
       durableStoreKey: `store-${taskId}`, conversationId: `execution-${taskId}`, workspaceBinding: root }));
     return work.repo.bindingForTask(taskId)!;
@@ -240,7 +240,7 @@ if (!isMainThread) {
     assert.match(prompt.text, /shared project fact/);
     assert.doesNotMatch(prompt.text, /other bot private|personal global/);
     context.bind(LOCAL_USER_ID, "desktop", "private-bot-chat", "analyst-bot");
-    db.upsertTask({ id: "private-bot-chat", title: "Bot 前台", updatedAt: Date.now(), welcomeMode: "bot" });
+    db.upsertTask({ id: "private-bot-chat", title: "Bot 前台", updatedAt: Date.now(), welcomeMode: "general" });
     const foregroundPrompt = projectMemoryContext(memory, { taskId: "private-bot-chat", limit: 30, trackRecall: false });
     assert.match(foregroundPrompt.text, /other bot private/);
     assert.doesNotMatch(foregroundPrompt.text, /own bot private|personal global/);

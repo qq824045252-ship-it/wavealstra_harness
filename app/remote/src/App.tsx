@@ -986,7 +986,7 @@ function FloatingComposer({
   const modes = bootstrap?.taskModes ?? []
   const selectedMode = modes.find(mode => mode.id === selectedWelcomeMode)
   const validNewTaskMode = !!selectedMode?.tags.some(tag => tag.id === selectedModePresetId)
-  const isBot = (activeTaskId ? bootstrap?.tasks.find(task => task.id === activeTaskId)?.welcomeMode : selectedWelcomeMode) === 'bot'
+  const isGeneral = (activeTaskId ? bootstrap?.tasks.find(task => task.id === activeTaskId)?.welcomeMode : selectedWelcomeMode) === 'general'
   const effectivePermission = bootstrap?.tasks.find(task => task.id === activeTaskId)?.permissionMode ?? bootstrap?.defaultPermissionMode
   const permissionLabel = permissionMode === 'follow' ? effectivePermission === 'auto' ? '完全访问' : effectivePermission === 'readonly' ? '只读模式' : '默认权限' : permissionMode === 'auto' ? '完全访问' : PERMISSION_NAMES[permissionMode]
   const attachments = useRemoteStore((s) => s.attachments)
@@ -1093,7 +1093,7 @@ function FloatingComposer({
             >
               <Sparkles size={17} />
             </button>
-            {!isBot && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
+            {!isGeneral && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
               <Shield size={17} />
             </button>}
             {acpAvailable && (

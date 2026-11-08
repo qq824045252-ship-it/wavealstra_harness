@@ -20,7 +20,7 @@ import { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory, useRem
 const modeProfiles = {
   working: { labelZh: '日常办公', policy: { presets: [{ id: 'general-office', label: '通用办公', promptAddon: 'private prompt' }] } },
   coding: { labelZh: '代码开发', policy: { presets: [{ id: 'custom-dev', label: '自定义开发', promptAddon: 'private prompt' }] } },
-  bot: { labelZh: 'Bot', policy: { presets: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] } },
+  general: { labelZh: '通用模式', policy: { presets: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] } },
 };
 
 const catalogService = new RemoteAccessService({ listSpaces: () => [], listNonTrashedTasks: () => [] } as any,
@@ -406,7 +406,7 @@ try {
     const settings = { read: () => ({ defaultModelId: null, permissionMode: "default" }), getTaskConnectorIds: () => [] };
     const commands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);
 
-    for (const [welcomeMode, modePresetId] of [['working', 'general-office'], ['coding', 'custom-dev'], ['bot', 'native'], ['bot', 'codemode']] as const) {
+    for (const [welcomeMode, modePresetId] of [['working', 'general-office'], ['coding', 'custom-dev'], ['general', 'native'], ['general', 'codemode']] as const) {
       const result = await commands.createAndPrompt({ operationId: randomUUID(), text: 'selected configuration', welcomeMode, modePresetId });
       assert.equal(result.task.welcomeMode, welcomeMode);
       assert.equal(result.task.modePresetId, modePresetId);
@@ -414,7 +414,7 @@ try {
       assert.equal(prompts.at(-1)?.modePresetId, modePresetId);
     }
     const beforeInvalid = savedTasks.size;
-    await assert.rejects(() => commands.createAndPrompt({ operationId: randomUUID(), text: 'wrong tag', welcomeMode: 'bot', modePresetId: 'general-office' }), RemoteValidationError);
+    await assert.rejects(() => commands.createAndPrompt({ operationId: randomUUID(), text: 'wrong tag', welcomeMode: 'general', modePresetId: 'general-office' }), RemoteValidationError);
     assert.equal(savedTasks.size, beforeInvalid, 'invalid mode/tag must not create a task or invoke the runtime');
 
     // P0：readonly 任务、手机端未显式覆盖权限 → 不写回任务（权限保持 readonly），agent 收到 readonly

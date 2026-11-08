@@ -351,7 +351,7 @@ export default function InputAddMenu({
       (s) =>
         s.installed &&
         isSkillVisibleForMode(s, welcomeMode, effSkillPolicy, {
-          disableFilter: welcomeMode === "bot" || !skillFilterOn,
+          disableFilter: welcomeMode === "general" || !skillFilterOn,
         }) &&
         (q === "" ||
           s.name.toLowerCase().includes(q) ||
@@ -1303,7 +1303,7 @@ export default function InputAddMenu({
             <IconChevronRight size={14} className="add-menu-chevron" />
           </button>
 
-          {welcomeMode !== "bot" && <button
+          {welcomeMode !== "general" && <button
             type="button"
             ref={(el) => {
               itemRefs.current.externalAgent = el;

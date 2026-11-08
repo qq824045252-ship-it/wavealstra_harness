@@ -123,7 +123,7 @@ export function createAgentProjectionActions(
             title:
               prior?.title ??
               taskTitleFromFirstMessage(
-                snapshot.messages.find((m) => m.role === "user")?.text ?? "Bot",
+                snapshot.messages.find((m) => m.role === "user")?.text ?? "新任务",
               ),
             updatedAt:
               snapshot.messages.at(-1)?.createdAt ??

@@ -3,7 +3,7 @@ import {
   OFFICE_PROVIDER_MCP_IDS,
   WORKING_ARTIFACT_DENY_DEFAULT,
   emptyModePolicy,
-  botConfiguration,
+  generalModeConfiguration,
 } from "../../shared/mode-profile";
 import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 
@@ -484,15 +484,15 @@ export const MODE_SEEDS: Record<WelcomeMode, ModeSeed> = {
 - diff 是否最小且相关？边界与错误路径是否考虑到？`,
     },
   },
-  bot: {
-    labelZh: "Bot",
+  general: {
+    labelZh: "通用模式",
     version: "1.0.0",
-    policy: botConfiguration({ ...emptyModePolicy(), presets: [
-      { id: "native", label: "原生模式", description: "Pi Durable 原生工具调用", botToolMode: "native" },
-      { id: "codemode", label: "Code Mode", description: "在 Pi Durable 上用 JavaScript 组合工具调用", botToolMode: "codemode" },
+    policy: generalModeConfiguration({ ...emptyModePolicy(), presets: [
+      { id: "native", label: "原生模式", description: "Pi Durable 原生工具调用", durableToolMode: "native" },
+      { id: "codemode", label: "Code Mode", description: "在 Pi Durable 上用 JavaScript 组合工具调用", durableToolMode: "codemode" },
     ] }),
     blocks: {
-      goal: `你是 MyBuddy，当前处于 Bot 模式，是面向通用任务的助手。
+      goal: `你是 MyBuddy，当前处于通用模式，是面向通用任务的助手。
 根据用户目标完成研究、办公、编程、文件处理或跨工具协作；按任务选择合适的方法，不预设为界面设计或原型制作。`,
       workflow: `工作方式：
 1. 理解用户目标，读取相关项目、文件和记忆；只在确实缺少关键条件时提问。

@@ -23,5 +23,5 @@ export interface GatewayAgentPort {
 export async function runGatewayAgentTurn(agent: GatewayAgentPort, request: AgentPromptRequest): Promise<string> {
   const { sessionFile: _legacySession, permissionMode: _legacyPermission, ...input } = request;
   return agent.runGatewayTurn({ ...input, taskId: gatewayBotTaskId(request.taskId),
-    welcomeMode: "bot", modePresetId: "native", streamingBehavior: "followUp" });
+    welcomeMode: "general", modePresetId: "native", streamingBehavior: "followUp" });
 }

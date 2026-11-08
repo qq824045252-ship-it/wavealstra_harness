@@ -2350,7 +2350,7 @@ function registerIpc(): void {
     return true;
   });
 
-  // 受管工具 Runtime（design 专业工具 + 办公 drawio-ai；只接受注册表内 provider id，不暴露任意进程/URL 能力）
+  // 受管工具 Runtime（设计类工具 + 办公 drawio-ai；只接受注册表内 provider id，不暴露任意进程/URL 能力）
   const requireProfessionalProvider = (value: string): ManagedToolProviderId => {
     if (!isManagedToolProvider(value)) throw new Error(`不支持的受管工具 provider: ${value}`);
     return value;

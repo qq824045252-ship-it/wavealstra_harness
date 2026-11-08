@@ -104,7 +104,7 @@ export function createAppSelectors() {
       ? state.tasks.find((t) => t.id === state.activeTaskId)
       : undefined;
     const mode = task?.welcomeMode ?? state.welcomeMode;
-    if (mode === "bot") return base;
+    if (mode === "general") return base;
     const policy = mode ? state.artifactPolicies[mode] : undefined;
     const taskId = state.activeTaskId;
     const descriptors = state.artifactProjection.artifactsByTask[taskId];

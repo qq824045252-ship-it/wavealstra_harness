@@ -192,7 +192,7 @@ function assertIdentity(marker, identity, absent) {
     await api('agent.setSkillEnabled', privateSkillId, false); // Ensure the private package, rather than the global source, supplies this capability.
     report.tests.push('real IPC creates/edits expert template and reads back role, private skill, MCP and connector selections');
 
-    await api('db.upsertTask', { id: taskId, title: 'Expert binding acceptance', welcomeMode: 'bot', modePresetId: 'native', modelId: 'binding-fixture/fixture', cwd: workspace, updatedAt: Date.now() });
+    await api('db.upsertTask', { id: taskId, title: 'Expert binding acceptance', welcomeMode: 'general', modePresetId: 'native', modelId: 'binding-fixture/fixture', cwd: workspace, updatedAt: Date.now() });
     let binding = await api('agent.saveTaskExpertBinding', { taskId, expertId: detail.id, expectedRevision: null });
     assert.equal(binding.desired.instructions, identityA); assert.equal(binding.active, null); assert.equal(binding.pending, true);
     await completePrompt('BIND_FIRST');

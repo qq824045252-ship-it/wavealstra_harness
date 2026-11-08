@@ -47,7 +47,7 @@ async function launchPhase(profile, report, label, pids) {
 }
 
 async function installTask(driver, taskId) {
-  await driver.evaluate(`window.api.db.upsertTask({id:${JSON.stringify(taskId)},title:${JSON.stringify(taskId)},welcomeMode:'bot',modePresetId:'native',permissionMode:'auto',updatedAt:Date.now()})`);
+  await driver.evaluate(`window.api.db.upsertTask({id:${JSON.stringify(taskId)},title:${JSON.stringify(taskId)},welcomeMode:'general',modePresetId:'native',permissionMode:'auto',updatedAt:Date.now()})`);
   return await taskRow(driver, taskId);
 }
 

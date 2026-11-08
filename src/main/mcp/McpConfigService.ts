@@ -595,7 +595,7 @@ export class McpConfigService {
    * - 条目缺失 → 写入 {command, args, env, modes:["working"], disabled:false}；
    * - 条目存在且内容过期（command/args/env 变化）→ 重写，保留 modes；
    * - 条目存在且用户显式停用（disabled:true）→ 尊重用户，不碰。
-   * modes:["working"] 保证 drawio-ai 不泄漏到 coding/design 会话。
+   * modes:["working"] 保证 drawio-ai 不泄漏到 coding/通用模式 会话。
    */
   ensureDrawioServer(payload: DrawioMcpPayload | null): McpInstallResultDto {
     if (!payload) {

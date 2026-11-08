@@ -2,7 +2,7 @@
  * 通用“从当前任务创建关联任务”能力 — 纯函数层（node 可单测）。
  *
  * 与 review 无关：同一条路径支持 coding→code-review、code-review→修复、
- * design→coding 实现、working→working 整理等任何场景，只靠参数组合。
+ * 场景切换实现、同场景整理等任何场景，只靠参数组合。
  * 不新增 DB 关系：源任务引用复用现有 refTask 文本机制（taskReference.ts）。
  */
 import type { PermissionMode } from "@shared/agent-ipc";

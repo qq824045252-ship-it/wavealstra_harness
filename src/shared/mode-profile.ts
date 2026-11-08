@@ -1,14 +1,24 @@
-/** 欢迎三模式（日常办公 / 代码开发 / Bot）资料契约 */
+/** 欢迎三模式（日常办公 / 代码开发 / 通用模式）资料契约 */
 
 import { composeMcpPolicies, composeSkillPolicies } from "./runtime-policy";
 import type { RuntimeRequirementInput } from "./runtime-requirement";
 
-export type WelcomeMode = "working" | "coding" | "bot";
+export type WelcomeMode = "working" | "coding" | "general";
 
 /** A missing scene is ordinary office work, never implicit coding. Explicit persisted scenes win. */
 export const DEFAULT_WELCOME_MODE: WelcomeMode = "working";
+
+/** Canonical scene ids only; persisted legacy ids are migrated before reads. */
+export function normalizeWelcomeMode(value: unknown): WelcomeMode | null {
+  return value === "working" || value === "coding" || value === "general" ? value : null;
+}
+
 export function resolveWelcomeMode(...candidates: unknown[]): WelcomeMode {
-  return candidates.find((mode): mode is WelcomeMode => mode === "working" || mode === "coding" || mode === "bot") ?? DEFAULT_WELCOME_MODE;
+  for (const candidate of candidates) {
+    const mode = normalizeWelcomeMode(candidate);
+    if (mode) return mode;
+  }
+  return DEFAULT_WELCOME_MODE;
 }
 
 export type ModeBlockId = "goal" | "workflow" | "delivery" | "forbid" | "criteria";
@@ -32,10 +42,10 @@ export const MODE_BLOCK_LABELS: Record<ModeBlockId, string> = {
 export const WELCOME_MODE_LABELS: Record<WelcomeMode, string> = {
   working: "日常办公",
   coding: "代码开发",
-  bot: "Bot",
+  general: "通用模式",
 };
 
-export const WELCOME_MODES: WelcomeMode[] = ["coding", "working", "bot"];
+export const WELCOME_MODES: WelcomeMode[] = ["coding", "working", "general"];
 
 export interface ModeSkillPolicy {
   prefer: string[];
@@ -79,7 +89,7 @@ export interface ModeMcpPolicy {
  * 判定顺序：先 deny，再 allow（白名单外也隐藏）。
  */
 export interface ModeArtifactPolicy {
-  /** Bot displays the complete Durable/workspace projection, including intermediate files. */
+  /** 通用模式 displays the complete Durable/workspace projection, including intermediate files. */
   unfiltered?: boolean;
   mode: "soft" | "hard";
   /** B：白名单扩展名（空 = 不启用白名单） */
@@ -236,7 +246,7 @@ export function emptyArtifactPolicy(): ModeArtifactPolicy {
 
 /**
  * 办公模式出厂产物黑名单（仅 deny，allow 空 = 不启用白名单）。
- * 各模式独立配置，不与 design/coding 共用一份名单。
+ * 各模式独立配置，不与 coding 共用一份名单。
  */
 export const WORKING_ARTIFACT_DENY_DEFAULT: string[] = [
   "py",
@@ -288,48 +298,6 @@ export const WORKING_ARTIFACT_DENY_DEFAULT: string[] = [
 /** 办公模式出厂白名单默认空（不强制只允许 Office 扩展，避免过严） */
 export const WORKING_ARTIFACT_ALLOW_DEFAULT: string[] = [];
 
-/**
- * 设计模式出厂产物黑名单：仅本模式自有列表，与 working 独立维护。
- */
-export const DESIGN_ARTIFACT_DENY_DEFAULT: string[] = [
-  "py",
-  "pyw",
-  "pyi",
-  "ipynb",
-  "go",
-  "rs",
-  "java",
-  "kt",
-  "kts",
-  "scala",
-  "c",
-  "cc",
-  "cpp",
-  "cxx",
-  "h",
-  "hpp",
-  "cs",
-  "php",
-  "rb",
-  "swift",
-  "sh",
-  "bash",
-  "zsh",
-  "ps1",
-  "bat",
-  "cmd",
-  "sql",
-  "r",
-  "lua",
-  "pl",
-  "pm",
-  "dart",
-  "ex",
-  "exs",
-];
-
-export const DESIGN_ARTIFACT_ALLOW_DEFAULT: string[] = [];
-
 /** 代码开发：默认黑白名单皆空 */
 export const CODING_ARTIFACT_DENY_DEFAULT: string[] = [];
 export const CODING_ARTIFACT_ALLOW_DEFAULT: string[] = [];
@@ -340,13 +308,13 @@ export interface ModeSceneChip {
 }
 
 /**
- * 场景模式预设（Mode Preset）：Design Mode 下的「专业子模式」配置，不是 provider 本身。
+ * 场景模式预设（Mode Preset）：场景下的「专业子模式」配置，不是 provider 本身。
  * 一个 preset 是一份场景配置：Prompt addon + SkillPolicy + McpPolicy（可后续扩模型/工具）。
  * 挂载在 ModePolicyDto.presets 上，随 policy.json 一起持久化（向后兼容：旧文件缺 presets 时回退出厂）。
  */
 export interface ModePresetDto {
-  /** Bot Tag selects tool presentation; both options run on Pi Durable. */
-  botToolMode?: "native" | "codemode";
+  /** 通用模式 Tag selects durable tool presentation; both options run on Pi Durable. */
+  durableToolMode?: "native" | "codemode";
   /** 场景 preset id（如 web-prototype / general），与 provider 解耦 */
   id: string;
   label: string;
@@ -381,35 +349,20 @@ export interface ModePresetDto {
 }
 
 /**
- * 集中式：全部「设计专用 provider」MCP id。
- * 用于 general preset 的排除合成与 UI 可用性判断；避免 if/else 散落多处。
- * 注意：不迁移用户 mcp.json，只作为 metadata/兼容 fallback。
- * blender 已从受管 runtime 下线，但仍可作为 Hub 已装的普通 MCP 插件使用，
- * 因此不进本名单——否则 general 出厂 deny 会把已装 blender 从设计会话里踢掉。
- */
-export const DESIGN_PROVIDER_MCP_IDS = [
-  "ardot-local",
-  "penpot",
-  "canva",
-  "freecad",
-  "opendesign",
-] as const;
-
-/**
  * 集中式：全部「办公 managed provider」MCP id（当前仅 Draw.io AI）。
  * 用于非流程图办公 tag 的排除合成（deny 并集）
- * 与 UI 可用性判断；与 DESIGN_PROVIDER_MCP_IDS 同构。
+ * 与 UI 可用性判断；与 professional-tools 的受管 provider 注册表同构。
  */
 export const OFFICE_PROVIDER_MCP_IDS = ["drawio-ai"] as const;
 
 /**
  * 各模式出厂默认 preset id（集中式，禁止 UI/store 各自硬编码）。
- * working = 通用办公（default）；coding / design 固定。
+ * working = 通用办公（default）；coding / general 固定。
  */
 export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
   working: "general-office",
   coding: "minimal",
-  bot: "native",
+  general: "native",
 };
 
 /**
@@ -419,7 +372,7 @@ export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
 export const RETIRED_MODE_PRESET_IDS: Record<WelcomeMode, readonly string[]> = {
   working: ["inventory-summary", "documents", "spreadsheets", "presentations"],
   coding: [],
-  bot: ["general", "web-prototype"],
+  general: ["general", "web-prototype"],
 };
 
 export function isRetiredModePresetId(
@@ -451,7 +404,7 @@ export const MODE_SEED_PRESET_IDS: Record<WelcomeMode, string[]> = {
     "plan-design",
     "readonly-explain",
   ],
-  bot: ["native", "codemode"],
+  general: ["native", "codemode"],
 };
 
 /** 去掉已退役 Tag，并把出厂 seed 按 MODE_SEED_PRESET_IDS 排到对应位置。 */
@@ -525,7 +478,7 @@ export interface ModePolicyDto {
   expertPolicy?: import("./project-domain").ProjectSelectionPolicyDto;
   connectorPolicy?: import("./project-domain").ProjectSelectionPolicyDto;
   scenes: ModeSceneChip[];
-  /** 场景预设列表（仅 design 模式出厂内置；其它模式为空数组） */
+  /** 场景预设列表（各模式出厂可内置；无 preset 时为空数组） */
   presets?: ModePresetDto[];
 }
 
@@ -578,8 +531,8 @@ export function emptyModePolicy(): ModePolicyDto {
   };
 }
 
-/** Bot presets supply configuration and prose only; they never restrict execution or display. */
-export function botConfiguration(policy: ModePolicyDto): ModePolicyDto {
+/** 通用模式 presets supply configuration and prose only; they never restrict execution or display. */
+export function generalModeConfiguration(policy: ModePolicyDto): ModePolicyDto {
   return {
     ...emptyModePolicy(),
     artifactPolicy: { mode: "soft", allow: [], deny: [], unfiltered: true },
@@ -590,7 +543,7 @@ export function botConfiguration(policy: ModePolicyDto): ModePolicyDto {
       id: preset.id, label: preset.label, description: preset.description,
       promptAddon: preset.promptAddon, suggestedModelId: preset.suggestedModelId,
       recommendedExpertIds: preset.recommendedExpertIds,
-      botToolMode: preset.botToolMode ?? (preset.id === "codemode" ? "codemode" : "native"),
+      durableToolMode: preset.durableToolMode ?? (preset.id === "codemode" ? "codemode" : "native"),
     })),
   };
 }
