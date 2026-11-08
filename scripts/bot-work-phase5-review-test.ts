@@ -43,6 +43,23 @@ function proposed(suffix: string, ordinary = false) {
   return { workId: work.workId, deliverableId, taskId, worker };
 }
 try {
+  check("batch feedback applies all selected conditions atomically and rejects stale retries", () => {
+    const batch = unwrap(works.createWork(user, { operationId: "batch:create", title: "Batch", inputSnapshotId: "batch:input",
+      authorization: DESKTOP_USER_GRANTS, criteria: [{ id: "one", text: "bytes", requiredEnvironment: "Linux" },
+        { id: "two", text: "contents", requiredEnvironment: "Linux" }, { id: "three", text: "unverified", requiredEnvironment: "Windows" }] }));
+    const request = { kind: "feedback" as const, request: { operationId: "batch:feedback", workId: batch.workId,
+      criterionIds: ["one", "two"], failed: false, environment: "Linux", sourceRef: "real-shell-record", inputSnapshotId: batch.inputSnapshotId,
+      versionGuard: guard(batch.workId) } };
+    const result = reviewWork(works, user, request); const next = unwrap(result);
+    assert.equal(next.stateVersion, batch.stateVersion + 1);
+    assert.deepEqual(next.criteria.map(item => item.status), ["satisfied", "satisfied", "pending"]);
+    assert.equal(unwrap(reviewWork(works, user, request)).stateVersion, next.stateVersion);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, operationId: "batch:stale" } }).ok, false);
+    const mismatch = reviewWork(works, user, { ...request, request: { ...request.request, operationId: "batch:mismatch",
+      criterionIds: ["one", "three"], failed: true, versionGuard: guard(batch.workId) } });
+    assert.equal(mismatch.ok, false);
+    assert.deepEqual(works.getWork(batch.workId)!.criteria.map(item => item.status), ["satisfied", "satisfied", "pending"]);
+  });
   const fixture = proposed("desktop-review");
   const input = { kind: "accept_deliverable" as const, request: { operationId: "ui:accept", workId: fixture.workId,
     deliverableId: fixture.deliverableId, versionGuard: guard(fixture.workId) } };

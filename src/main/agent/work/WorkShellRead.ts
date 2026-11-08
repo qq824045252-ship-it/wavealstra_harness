@@ -3,11 +3,15 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 
 /** Complete literal-only grammar. Accepted verification commands use a pinned
  * system executable and file descriptor, never shell/PATH or user functions. */
-export function workShellRead(name: string, args: unknown): { path: string; directory: boolean; verification?: ScopedReadCommand } | undefined {
+export function workShellRead(name: string, args: unknown): { path: string; directory: boolean; verification?: ScopedReadCommand; echoExitCode?: boolean } | undefined {
   if (name !== "bash" || !args || typeof args !== "object" || !("command" in args) || typeof args.command !== "string") return undefined;
-  const command = args.command.trim();
+  const original = args.command.trim();
+  // This exact suffix is a host-rendered status query, not a second shell
+  // command. Parse the entire preceding literal read before admitting anything.
+  const statusSuffix = /; *echo +\$\?$/.exec(original);
+  const command = statusSuffix ? original.slice(0, statusSuffix.index).trimEnd() : original;
   if (/[;&|<>`$\\\r\n*?\[\]{}()!\x00-\x1f]/.test(command)) return undefined;
-  if (command === "pwd" || command === "ls") return { path: ".", directory: true };
+  if (!statusSuffix && (command === "pwd" || command === "ls")) return { path: ".", directory: true };
   const tokens = command.match(/"[^"\r\n]*"|'[^'\r\n]*'|[^\s'"\\]+/g);
   if (!tokens) return undefined;
   let offset = 0;
@@ -23,18 +27,27 @@ export function workShellRead(name: string, args: unknown): { path: string; dire
   const path = words.at(-1);
   if (!path || path.startsWith("-") || path.startsWith("~")) return undefined;
   const flags = words.slice(0, -1);
-  if ((verb === "cat" || verb === "ls") && !flags.length) return { path, directory: verb === "ls" };
+  if (!statusSuffix && (verb === "cat" || verb === "ls") && !flags.length) return { path, directory: verb === "ls" };
   const supported = verb === "ls" ? flags.length === 1 && /^-[lA1]+$/.test(flags[0])
     : verb === "wc" ? flags.length === 1 && /^-[cl]+$/.test(flags[0])
     : verb === "stat" || verb === "sha256sum" || verb === "sha1sum" || verb === "md5sum" ? flags.length === 0
     : verb === "du" ? flags.length === 1 && flags[0] === "-b"
     : verb === "od" ? flags.length === 1 && flags[0] === "-c" : false;
   if (!supported) return undefined;
-  return { path, directory: verb === "ls", verification: { command: verb as ScopedReadCommand["command"], flags } };
+  return { path, directory: verb === "ls", verification: { command: verb as ScopedReadCommand["command"], flags }, ...(statusSuffix ? { echoExitCode: true } : {}) };
 }
 
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
+
+/** A status query reports the actual command result, never echo's own success. */
+export function presentWorkReadResult(result: Awaited<ReturnType<typeof executeWorkReadCommand>>, echoExitCode = false) {
+  const exitCodeOutput = echoExitCode ? `${result.exitCode}\n` : "";
+  return {
+    output: result.output + exitCodeOutput + `\n[真实系统只读校验：${result.executable} ${result.argv.join(" ")}；文件描述符绑定目标 ${result.requestedPath}${echoExitCode ? "；退出码由宿主回显，未启动 Shell" : ""}]`,
+    structuredOutput: { ...result, ...(echoExitCode ? { exitCodeOutput } : {}) },
+  };
+}
 
 /** The read allowance is backed by host file APIs, never shell -c/PATH/startup
  * scripts or exported functions. Every other command retains the native shell. */
@@ -52,8 +65,9 @@ export function withWorkShellRead(tool: ToolRegistration): ToolRegistration {
       if (!(api.env instanceof NodeExecutionEnv)) throw new Error("可信系统只读校验要求本机执行环境");
       const result = await executeWorkReadCommand(api.env.cwd, path, read.verification, context.abortSignal,
         timeout === undefined ? undefined : timeout * 1000);
-      api.output(result.output + `\n[真实系统只读校验：${result.executable} ${result.argv.join(" ")}；文件描述符绑定目标 ${result.requestedPath}]`);
-      return { structuredOutput: result };
+      const presented = presentWorkReadResult(result, read.echoExitCode);
+      api.output(presented.output);
+      return { structuredOutput: presented.structuredOutput };
     }
     if (api.env instanceof NodeExecutionEnv) validateWorkReadPath(api.env.cwd, path);
     let output: string;

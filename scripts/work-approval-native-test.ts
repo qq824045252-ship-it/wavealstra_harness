@@ -76,7 +76,7 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
     if (last.toolCallId === "ls") return call("bash", { command: "cat proof.txt" }, "cat-proof");
     if (last.toolCallId === "cat-proof") return call("read", { path: "proof.txt" }, "read-proof");
     if (verifyCommands) {
-      const commands = [`ls -l "${join(cwd, "proof.txt")}"`, `wc -c "${join(cwd, "proof.txt")}"`, `stat "${join(cwd, "proof.txt")}"`, `sha256sum "${join(cwd, "proof.txt")}"`];
+      const commands = [`ls -l proof.txt; echo $?`, `wc -c proof.txt; echo $?`, `stat "${join(cwd, "proof.txt")}"`, `sha256sum "${join(cwd, "proof.txt")}"`];
       const index = last.toolCallId === "read-proof" ? 0 : Number(last.toolCallId.replace("verify-", "")) + 1;
       if (index < commands.length) return call("bash", { command: commands[index] }, `verify-${index}`);
     }
@@ -537,6 +537,8 @@ try {
       assert.equal((await submission.wait(ctx)).status, "done");
       assert.equal(f.observed.length, 9); assert(f.observed.every(item => !item.error), JSON.stringify(f.observed));
       assert(f.observed[6].body.includes("13 /proc/self/fd/3"), `wc returns actual system output, not inferred byte count: ${f.observed[6].body}`);
+      assert(f.observed[6].body.includes("/proc/self/fd/3\\n0\\n"), "status suffix echoes real exit code without invoking shell");
+      assert(f.observed[6].body.includes("退出码由宿主回显"));
       assert(f.observed[7].body.includes("Size: 13"));
       assert.equal(f.works.approvals.list(f.binding.workId).length, 1, "read verification adds no scope prompts");
       assert.deepEqual(f.works.getWork(f.binding.workId)!.authorization.allowedScopes, ["workspace:read"]);

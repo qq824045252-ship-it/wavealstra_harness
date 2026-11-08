@@ -5,7 +5,7 @@ import { mkdir, writeFile, symlink, link, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { currentPlatformId } from "../src/main/platform";
 import { executeWorkReadCommand, validateWorkReadPath } from "../src/main/platform/work-shell-read";
-import { workShellRead } from "../src/main/agent/work/WorkShellRead";
+import { workShellRead, presentWorkReadResult } from "../src/main/agent/work/WorkShellRead";
 
 export async function verifyReadonlyCommands(root: string): Promise<void> {
   const cwd = join(root, "verification"), outside = join(root, "outside.txt"); await mkdir(cwd);
@@ -14,8 +14,15 @@ export async function verifyReadonlyCommands(root: string): Promise<void> {
   await writeFile(path, bytes); await writeFile(empty, ""); await writeFile(outside, "must not read");
   for (const command of ["wc --files0-from=/etc/passwd", 'wc -c "x" "y"', "sha256sum -c file", "stat -L file", "ls -R .", "ls -L .", "ls -la .",
     "du -a .", "awk 'END{print NR}' file", "ls -l$(touch pwn)", 'wc -c "$(cat /etc/passwd)"', "ls -l . >output", "ls -l . | cat",
-    "FOO=bar wc -c file", 'wc -c "x"; pwd', 'wc -c "x"\nwhoami', 'wc -c "x""y"', "wc -c --files0-from=x"]) {
+    "wc -c file; echo $?; touch pwn", "wc -c file && echo $?", "wc -c file; echo $PATH", "wc -c file; echo $(touch pwn)",
+    "wc -c file; printf '%s' $?", "wc -c file; echo $? >output", "wc -c file; echo $?\nwhoami", "cat file; echo $?", "pwd; echo $?",
+    "wc -c file; wc -c other; echo $?", "FOO=bar wc -c file", 'wc -c "x"; pwd', 'wc -c "x"\nwhoami', 'wc -c "x""y"', "wc -c --files0-from=x"]) {
     assert.equal(workShellRead("bash", { command }), undefined, command);
+  }
+  for (const command of ["ls -l proof.txt", "wc -c proof.txt", "stat proof.txt", 'wc -c "中文 proof.txt"']) {
+    const direct = workShellRead("bash", { command }); assert(direct?.verification, command);
+    const echoed = workShellRead("bash", { command: `${command}; echo $?` });
+    assert.deepEqual(echoed, { ...direct, echoExitCode: true });
   }
   assert.equal(workShellRead("terminal_exec", { command: `wc -c "${path}"` }), undefined);
   assert.throws(() => validateWorkReadPath(cwd, outside), /工作区/);
@@ -38,6 +45,19 @@ export async function verifyReadonlyCommands(root: string): Promise<void> {
     if (command.startsWith("sha256sum")) assert(result.output.startsWith(createHash("sha256").update(bytes).digest("hex")));
     if (command.startsWith("stat")) assert(result.output.includes(`Size: ${bytes.length}`));
   }
+  // The adapter accepts only parser-approved flags in production. Invoke a
+  // fixed system binary with a deliberately invalid test flag to obtain real
+  // nonzero output, then exercise the same presentation path used by the tool.
+  const failed = await executeWorkReadCommand(cwd, path, { command: "wc", flags: ["--fixture-invalid-option"] });
+  assert.notEqual(failed.exitCode, 0);
+  assert(failed.output.length > 0, "real system stderr is retained");
+  const presented = presentWorkReadResult(failed, true);
+  assert.equal(presented.structuredOutput.exitCode, failed.exitCode, "echo never converts failed command to success");
+  assert.equal(presented.structuredOutput.output, failed.output, "raw system output is unchanged");
+  assert.equal(presented.structuredOutput.exitCodeOutput, `${failed.exitCode}\n`);
+  assert(presented.output.startsWith(failed.output + `${failed.exitCode}\n`));
+  assert.equal(workShellRead("bash", { command: 'wc --fixture-invalid-option "file"; echo $?' }), undefined,
+    "fixture flag is not admitted through the production command parser");
   const zero = await executeWorkReadCommand(cwd, empty, { command: "wc", flags: ["-c"] }); assert.match(zero.output, /^0 /);
   await symlink(outside, join(cwd, "outside-link"));
   await symlink(root, join(cwd, "outside-dir"));

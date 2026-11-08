@@ -17,6 +17,7 @@ export function WorkReviewPanel({ work, includeClosed }: {
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState<WorkReviewControlRequest>();
   const [criterionId, setCriterionId] = useState(work.criteria[0]?.id ?? "");
+  const [batchIds, setBatchIds] = useState<string[]>([]);
   const [environment, setEnvironment] = useState("");
   const [sourceRef, setSourceRef] = useState("");
   const [detail, setDetail] = useState("");
@@ -85,7 +86,7 @@ export function WorkReviewPanel({ work, includeClosed }: {
     } });
   };
   const feedback = (failed: boolean) => {
-    const body = { criterionIds: [criterionId], environment: environment.trim(),
+    const body = { criterionIds: batchIds.length ? batchIds : [criterionId], environment: environment.trim(),
       sourceRef: sourceRef.trim(), detail: detail.trim() || undefined, failed,
       inputSnapshotId: reviewed.inputSnapshotId, artifactSnapshotId: reviewed.phase3?.artifactSnapshotId };
     return run({ kind: "feedback", request: { ...body, workId: reviewed.workId,
@@ -104,6 +105,11 @@ export function WorkReviewPanel({ work, includeClosed }: {
   const proposed = reviewed.deliverables.filter(item => item.status === "proposed"
     && item.intentRevision === reviewed.intentRevision && item.inputSnapshotId === reviewed.inputSnapshotId);
   const criterion = reviewed.criteria.find(item => item.id === criterionId);
+  const feedbackIds = batchIds.length ? batchIds : [criterionId];
+  const feedbackInvalid = feedbackIds.some(id => {
+    const item = reviewed.criteria.find(value => value.id === id);
+    return !item || !!item.requiredEnvironment && item.requiredEnvironment.trim().toLowerCase() !== environment.trim().toLowerCase();
+  });
   const closeDisabledReason = busy ? "正在保存决定，请等待结果。"
     : uncertain ? "上次决定尚未确认，请先重试原评审决定。"
     : stale ? "暂不能结束：事项已有更新。请先核对最新成果、要求与负责人，再确认结束结论。"
@@ -147,6 +153,16 @@ export function WorkReviewPanel({ work, includeClosed }: {
             onClick={() => edit(() => setEnvironment(criterion.requiredEnvironment!))}>带入要求环境</button>
           <p>仅在你确实使用此环境完成验证时带入名称；这不会自动记录实测通过。具体系统和验证过程可填在验证说明中。</p>
         </>}
+        {reviewed.criteria.length > 1 && <fieldset disabled={locked} aria-label="批量实测验收项">
+          <legend>同一环境和记录已验证的条件，可一次提交</legend>
+          {reviewed.criteria.map(item => <label key={item.id}>
+            <input type="checkbox" aria-label={`批量实测 ${item.id}`} checked={batchIds.includes(item.id)}
+              onChange={event => edit(() => setBatchIds(event.target.checked
+                ? [...batchIds, item.id] : batchIds.filter(id => id !== item.id)))} />{item.text}
+            {item.requiredEnvironment && <span>（{item.requiredEnvironment}）</span>}
+          </label>)}
+          <p>已选 {batchIds.length} 项。只勾选你确实验证且本次记录覆盖的条件；不勾选则仅提交上方当前验收项。</p>
+        </fieldset>}
         <label>验证环境<input aria-label="实测环境" value={environment} maxLength={200}
           onChange={event => edit(() => setEnvironment(event.target.value))} disabled={locked} /></label>
         <label>被测版本或测试记录<input aria-label="实测版本或记录" value={sourceRef} maxLength={2000}
@@ -154,9 +170,10 @@ export function WorkReviewPanel({ work, includeClosed }: {
         <label>验证说明<textarea aria-label="实测说明" value={detail} maxLength={8000}
           onChange={event => edit(() => setDetail(event.target.value))} disabled={locked} /></label>
         <p>反馈绑定你评审的输入和产物。要求真实环境的验收项必须完成实际验证后提交。</p>
-        <button type="button" disabled={disabled || !criterion || !environment.trim() || !sourceRef.trim()}
+        {feedbackInvalid && environment.trim() && <p role="status">所选条件的要求环境与填写环境不一致，请按环境分批提交。</p>}
+        <button type="button" disabled={disabled || !criterion || feedbackInvalid || !environment.trim() || !sourceRef.trim()}
           onClick={() => { void feedback(false); }}>记录实测通过</button>
-        <button type="button" disabled={disabled || !criterion || !environment.trim() || !sourceRef.trim()}
+        <button type="button" disabled={disabled || !criterion || feedbackInvalid || !environment.trim() || !sourceRef.trim()}
           onClick={() => { void feedback(true); }}>记录实测失败</button>
       </details>
     </>}
@@ -190,6 +207,14 @@ export function WorkReviewPanel({ work, includeClosed }: {
     })}
     <details>
       <summary>结束事项</summary>
+      {!!reviewed.phase3?.gaps.length && <section aria-label="必要子项缺口">
+        <h4>按完成关闭前仍需处理的必要子项</h4>
+        <ul>{reviewed.phase3.gaps.map(item => <li key={item.factId}>
+          <strong>{item.task || item.itemId}</strong>：{item.summary || item.outcome}
+          <span>（状态：{item.outcome}；执行：{item.bindingId}）</span>
+        </li>)}</ul>
+        <p>验收条件通过不等于这些执行缺口已解决。请核对原执行证据或定向补跑，不要重做已完成的动作。</p>
+      </section>}
       <label>结束结论<select aria-label="事项结束结论" value={conclusion} disabled={locked}
         onChange={event => edit(() => { setConclusion(event.target.value as WorkClosureConclusion); setConfirmed(false); })}>
         <option value="succeeded">已完成</option><option value="ended_unsuccessfully">未达成，停止继续</option>

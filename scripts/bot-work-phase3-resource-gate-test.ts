@@ -139,7 +139,7 @@ try {
     assert.deepEqual(a.prepare("SELECT reason FROM work_resource_denials WHERE action_id=?").get(
       `resource:${resourceOwnerKey(owner("shell"))}:${unsupportedRead.context.nativeTaskId}:${unsupportedRead.call.id}`), { reason });
   }
-  for (const [index, command] of [`wc -c "${other}"`, `stat "${other}"`, `ls -l "${other}"`, `sha256sum "${other}"`].entries()) {
+  for (const [index, command] of [`wc -c "${other}"; echo $?`, `stat "${other}"`, `ls -l "${other}"`, `sha256sum "${other}"`].entries()) {
     const verify = call("shell", `verify-${index}`, "bash", { command }, false);
     assert.equal(policyB.before(verify), undefined, "scoped verification remains available after opaque output");
     const verificationLease = gateB.live().find(lease => lease.owner.taskId === "shell"); assert(verificationLease);

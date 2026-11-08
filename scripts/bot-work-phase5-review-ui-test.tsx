@@ -142,6 +142,40 @@ async function check(name: string, run: () => Promise<void>) {
 
 async function main() {
   try {
+    await check("review: batch evidence submits selected criteria once, preserving snapshot guards", async () => {
+      await reset("review");
+      const value = { ...projection, criteria: [...projection.criteria,
+        { ...projection.criteria[0], id: "second", text: "Second verified condition" },
+        { ...projection.criteria[0], id: "other-os", text: "Other environment", requiredEnvironment: "Linux" }] };
+      await render("review", false, value);
+      await change("批量实测 criterion", true); await change("批量实测 second", true);
+      await click("带入要求环境"); await change("实测版本或记录", "local real test: sha256");
+      await click("记录实测通过");
+      assert.equal(reviewRequests.length, 1);
+      const request = reviewRequests[0]; assert.equal(request.kind, "feedback");
+      if (request.kind !== "feedback") throw Error("wrong request");
+      assert.deepEqual(request.request.criterionIds, ["criterion", "second"]);
+      assert.equal(request.request.versionGuard.expectedStateVersion, 7);
+      assert.equal(request.request.artifactSnapshotId, "artifacts:7");
+      await complete("review");
+      await change("批量实测 other-os", true);
+      assert.equal([...container.querySelectorAll("button")].find(item => item.textContent === "记录实测通过")!.disabled, true);
+      assert.match(container.textContent!, /按环境分批提交/);
+      await render("review", false, { ...value, stateVersion: 8 });
+      assert.match(container.textContent!, /已核对最新状态/);
+      assert.equal(reviewRequests.length, 1, "background changes must not resubmit or auto-confirm evidence");
+    });
+    await check("review: necessary gaps list names, reasons and source bindings before closure", async () => {
+      await reset("review");
+      await render("review", false, { ...projection, phase3: { ...projection.phase3!, gaps: [{
+        factId: "gap-one", workId: work.workId, bindingId: "execution-old", intentRevision: 2, inputSnapshotId: "input:2", createdAt: 1,
+        itemId: "read-size", task: "Read actual byte count", required: true, dependencies: [], criterionIds: ["criterion"],
+        outcome: "blocked", nativeStatus: "completed", summary: "No actual wc receipt", artifactRefs: [], writeConflicts: [],
+      }] } });
+      const gaps = container.querySelector('[aria-label="必要子项缺口"]');
+      assert.ok(gaps); assert.match(gaps.textContent!, /Read actual byte count/);
+      assert.match(gaps.textContent!, /No actual wc receipt/); assert.match(gaps.textContent!, /execution-old/);
+    });
     for (const panel of ["review", "cards"] as const) {
       await check(`${panel}: a deferred button action refreshes only the latest includeClosed scope`, async () => {
         await reset(panel); await begin(panel);

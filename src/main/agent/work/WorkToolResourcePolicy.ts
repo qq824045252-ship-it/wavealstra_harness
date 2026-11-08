@@ -84,7 +84,7 @@ export class WorkToolResourcePolicy {
     if (opaque && sideEffect && !shellRead) {
       if (coarse) return `原 ${opaque.tool_name} 返回了范围未核实的观察；不能据此继续不受限命令。`
         + `恢复方式：用内置 read 指定明确文件路径重新读取；需要行数时，在读到的完整内容上统计，截断时先分段读完。`
-        + `真实只读校验可用 bash 的 ls -l "./dir"、wc -c "./file"、wc -l "./file" 或 stat "./file"；仅支持当前工作区内单个明确字面路径及已列出的选项。`
+        + `真实只读校验可用 bash 的 ls -l "./dir"、wc -c "./file"、wc -l "./file" 或 stat "./file"；支持当前工作区内单个明确字面路径（含 file.txt 这类相对路径）及已列出的选项；可附加 ; echo $? 回显该校验退出码，其他串联请拆成独立工具调用。`
         + `修改请使用明确目标路径的内置 write/edit，覆盖已有文件前逐个重新读取；这不会解除任意 Shell 命令限制。`;
       for (const resource of resources) if (resource.path && resource.entity && !this.gate.observedAfter(owner, resource, opaque.sequence))
         return `已有不透明观察；覆盖现有文件 ${resource.path} 前，必须通过可信读取入口（内置 read）以该明确路径重新读取目标版本，再用同一路径的内置 write/edit 修改。`

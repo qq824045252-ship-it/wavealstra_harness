@@ -751,8 +751,8 @@ export class WorkService {
         if (work.lifecycle !== "active") {
           return { ok: false, code: "invalid_lifecycle_transition", message: "只有进行中的事项可以按完成关闭" };
         }
-        if (this.partialResults.gaps(work.workId).length)
-          return { ok: false, code: "unmet_acceptance_criteria", message: "必要子项仍有未覆盖缺口，不能按完成关闭" };
+        const gaps = this.partialResults.gaps(work.workId);
+        if (gaps.length) return { ok: false, code: "unmet_acceptance_criteria", message: `必要子项仍有未覆盖缺口，不能按完成关闭：${gaps.slice(0, 10).map(item => `${item.task || item.itemId}（${item.outcome}）：${item.summary || "缺少完成凭据"}`).join("；")}${gaps.length > 10 ? `；另有 ${gaps.length - 10} 项，请查看必要子项缺口列表` : ""}` };
         const unmet = work.criteria.find((criterion) => !isCriterionResolved(criterion));
         if (unmet) {
           return {

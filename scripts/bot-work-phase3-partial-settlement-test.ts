@@ -34,7 +34,8 @@ try {
   const partial=works.repo.listDeliverables(work.workId).find(result=>result.deliverableId.startsWith("partial:"))!;
   assert.equal(partial.status,"proposed"); assert.deepEqual(partial.artifactRefs,[join(root,"done.txt")]);
   assert.equal(works.getWork(work.workId)?.budget.usedTokens,7);
-  assert.equal(works.closeWork(user,{operationId:"cannot-close",workId:work.workId,conclusion:"succeeded",versionGuard:guard(works.getWork(work.workId)!)}).ok,false);
+  const gapClose=works.closeWork(user,{operationId:"cannot-close",workId:work.workId,conclusion:"succeeded",versionGuard:guard(works.getWork(work.workId)!)});
+  assert.equal(gapClose.ok,false);if(!gapClose.ok){const gap=works.partialResults.gaps(work.workId)[0];assert.ok(gapClose.message.includes(gap.task));assert.ok(gapClose.message.includes(gap.outcome));}
   const beforeResume=works.repo.listBindings(work.workId).length;
   let state=unwrap(works.pauseWork(user,{operationId:"pause",workId:work.workId,versionGuard:guard(works.getWork(work.workId)!)}));
   state=unwrap(works.resumeWork(user,{operationId:"resume",workId:work.workId,versionGuard:guard(state)}));
