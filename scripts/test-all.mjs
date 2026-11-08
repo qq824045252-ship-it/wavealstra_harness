@@ -45,14 +45,20 @@ const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
 
 /**
- * 负载敏感用例：性能用例断言墙钟预算（启动 p95、构建耗时等）；
- * Phase 2 recovery、Phase 5 native story 与 Gateway inbox crash 强杀并重开真实 SQLite/JSONL，且持有短期测试宿主租约。
+ * 负载敏感 / 机器全局资源用例：
+ *   · 性能用例断言墙钟预算（启动 p95、构建耗时等）；
+ *   · Phase 2 recovery、Phase 5 native story 与 Gateway inbox crash 强杀并重开真实 SQLite/JSONL，
+ *     且持有短期测试宿主租约；
+ *   · gateway-port-fallback 直接绑定产品真实 webhook 端口（52140 / 52330 / 52490 / 39140 / 39141）。
+ *     并行池里任何启动 GatewayLifecycleManager 的用例都会抢同一批端口，把「首选可用时不回退」
+ *     偶发判红（实测 2026-11-08 全量跑出现过一次，单独跑与第二次全量均 PASS）。端口是机器全局资源，
+ *     不能靠重试或放宽容错来掩盖，只能与其它用例串行。
  * CPU/IO 争用会干扰性能预算或进程/租约交接，故崩溃套件也走串行池。
  * 它们在并行池跑完后串行执行（JOBS=1），并且 `core-performance-all`
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/];
+const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -596,7 +602,7 @@ if (batchBuild) {
 }
 await runPool(parallelNames, async (n) => runOne(n));
 if (serialNames.length > 0) {
-  console.log(`\n[test-all] 串行执行负载敏感用例（${serialNames.length} 个，隔离崩溃恢复与性能验证的 CPU/IO 争用）：`);
+  console.log(`\n[test-all] 串行执行负载敏感/机器全局资源用例（${serialNames.length} 个，隔离崩溃恢复、性能验证的 CPU/IO 争用与真实端口争用）：`);
   for (const n of serialNames) console.log(`    - ${n}`);
   await runPool(serialNames, async (n) => runOne(n), 1);
 }

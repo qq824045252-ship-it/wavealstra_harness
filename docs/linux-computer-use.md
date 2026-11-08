@@ -194,6 +194,8 @@ Host: Omarchy (Arch) on `Linux 7.2.14-arch1-1`, Hyprland/Wayland user session, `
 
 This closes the headless wire-fixture prerequisite only.
 
+Re-checked on the same host after `b688530` (Bot creation): `pnpm -s test:atspi-transport` **PASS 5/5** and `node scripts/test-all.mjs` **384/384 PASS** (2.6 min, 0 known-failing, 0 new regressions). The `b688530` commit message still says "existing host AF_UNIX restriction blocking atspi-transport"; that wording is stale — it repeats the 0.1.93/0.1.98 `EPERM` record and does not apply to this host, where the private `dbus-daemon` bus (filesystem path and abstract socket) binds normally. Treat a red `test:atspi-transport` as an execution-environment prerequisite failure, not as a regression, and re-run it on a host that permits AF_UNIX before reporting it as a product failure.
+
 ### Packaged distribution (same day, same host)
 
 | Check | Observed result |
