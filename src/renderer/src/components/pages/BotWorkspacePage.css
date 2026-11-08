@@ -201,3 +201,11 @@
 .bot-team-template-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:10px 0; }
 .bot-team-template-row > span:first-child { flex:1; }
 .bot-team-template button { padding:6px 9px; border:1px solid var(--border-default); border-radius:7px; background:var(--bg-elevated); color:var(--fg); cursor:pointer; }
+
+.bot-work-approvals { margin: 12px 0; padding: 16px; border: 1px solid var(--border-default); border-radius: 14px; }
+.bot-approval-card { display: grid; gap: 10px; margin: 10px 0; }
+.bot-approval-card p { margin: 0; }
+.bot-approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+.bot-approval-card label { display: flex; gap: 8px; align-items: flex-start; }
+.bot-approval-actions { display: flex; gap: 12px; }
+.bot-approval-actions button { border: 1px solid var(--border-default); border-radius: 8px; padding: 8px 14px; }

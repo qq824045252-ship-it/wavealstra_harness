@@ -1,3 +1,4 @@
+import { withWorkShellRead } from "../work/WorkShellRead";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -951,7 +952,7 @@ export class DurableBotRuntime {
  */
 function codingTools(): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : tool),
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withWorkShellRead(tool)),
     ...createPlatformShellTools(),
   ];
 }

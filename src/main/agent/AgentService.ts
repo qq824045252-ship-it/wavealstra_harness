@@ -9,7 +9,9 @@ import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { BotConversationService } from "./work/BotConversationService";
+import { WorkConversationFeedback } from "./work/WorkConversationFeedback";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
+import { resolveWorkContinuationCwd } from "./work/WorkContinuationWorkspace";
 import type { WorkTeamControlResult } from "../../shared/bot-work-team";
 import { WorkProjectionJournal } from "./work/WorkProjectionJournal";
 import { reviewWork } from "./work/WorkReviewControl";
@@ -619,6 +621,7 @@ export class AgentService {
   private workExecutions?: WorkExecutionAdapter;
   private botConversations?: BotConversationService;
   private workDispatchQueue?: WorkDispatchQueue;
+  private workConversationFeedback?: WorkConversationFeedback;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
   private readonly loadoutObservations: AgentLoadoutObservationService;
@@ -816,9 +819,12 @@ export class AgentService {
         this.emitPatch({ type: "work_projection_snapshot", projection });
         // Delivery is a background obligation: a new card wakes the host drain.
         this.workNotificationWake?.();
+        try { this.workConversationFeedback?.drain(projection.workId); } catch (error) { console.warn("[Work] Bot 回写等待恢复", error); }
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
+    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, isAuthority: () => this.workHostAuthority.isAuthority() });
+    this.workConversationFeedback.start();
     this.workService.scheduler.beginHostSession(previousWorkLease);
     installWorkManagedResourceBoundary(this.workService.resourceGate, taskId => {
       const invocation = currentDurableInvocation();
@@ -1021,6 +1027,11 @@ export class AgentService {
       if (this.db.getTask(taskId)?.cwd !== bound) this.db.bindTaskExecutionWorkspaceCwd(taskId, bound);
       return bound;
     }
+    const continuation = this.workService && resolveWorkContinuationCwd(this.db, this.workService, taskId);
+    if (continuation) {
+      this.db.bindTaskExecutionWorkspaceCwd(taskId, continuation);
+      return continuation;
+    }
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
@@ -1184,6 +1195,12 @@ export class AgentService {
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
     if (this.workService.getWork(workId)?.userId !== LOCAL_USER_ID) return undefined;
     return this.workService.getProjection(workId);
+  }
+
+  decideWorkAction(request: unknown) {
+    const result = this.workService.approvals.decide(LOCAL_USER_ID, request);
+    if (result.ok) this.workExecutions?.wakeWork(result.approval.workId);
+    return result;
   }
 
   getWorkService(): WorkService {
@@ -1633,7 +1650,8 @@ export class AgentService {
     this.workExecutions.start();
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
-      () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId);
+      () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
+      () => this.settingsStore.read().permissionMode ?? "default");
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
@@ -1748,6 +1766,8 @@ export class AgentService {
         return { taskId: context.taskId, durableStoreKey: stored.directory, conversationId: context.conversationId,
           workspaceBinding: context.taskRoot };
       }, { allowGitBranchOrWorktree }),
+      workActionApproved: (taskId, operationId, toolName) => this.workService.approvals.approvedTaskAction(taskId, operationId, toolName),
+      approveWorkAction: (input, signal) => this.workService.approvals.request(input, signal),
       admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
       settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
@@ -1872,6 +1892,7 @@ export class AgentService {
     this.expertBindings.purge(taskId);
   }
   async closeDurableBots(): Promise<void> {
+    this.workConversationFeedback?.close();
     await this.botConversations?.close(); await this.workDispatchQueue?.close();
     await this.workExecutions?.close(); await this.durableBots?.close();
   }

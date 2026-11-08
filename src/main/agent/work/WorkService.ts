@@ -1,4 +1,4 @@
-import { settleWorkExecution } from "./WorkExecutionSettlement";
+import { settleWorkAdmission, settleWorkExecution } from "./WorkExecutionSettlement";
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkPhase5Facts } from "./WorkPhase5Facts";
 import { checkControlGuard } from "./WorkControlGuards";
@@ -85,6 +85,7 @@ import { WorkWatchIngress } from "./WorkWatchIngress";
 import { WorkBudgetService } from "./WorkBudgetService";
 import { WorkCausalGuard } from "./WorkCausalGuard";
 import { WorkWatchScheduler } from "./WorkWatchScheduler";
+import { WorkActionApprovals } from "./WorkActionApprovals";
 import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
 import type { RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
@@ -134,6 +135,7 @@ export class WorkService {
   readonly notifications: WorkNotificationDelivery;
   readonly pausedBacklog: WorkPausedBacklog;
   readonly ingress: WorkWatchIngress;
+  readonly approvals: WorkActionApprovals;
   readonly budget: WorkBudgetService;
   readonly causal: WorkCausalGuard;
   readonly scheduler: WorkWatchScheduler;
@@ -157,13 +159,14 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
+    this.approvals = new WorkActionApprovals(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.budget = new WorkBudgetService(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.ingress = new WorkWatchIngress(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.causal = new WorkCausalGuard(db, this, { now: this.now });
     this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.resourceGate = new WorkResourceGate(db, { hostId: options.resourceHostId ?? newId("resource-host"),
       isAuthority: () => !this.authority || this.authority(), now: this.now,
-      authorize: (owner, resources) => authorizeWorkResourceOwner({ service: this, bots: this.bots, now: this.now, owner, resources }) });
+      authorize: (owner, resources, actionId) => authorizeWorkResourceOwner({ service: this, bots: this.bots, now: this.now, owner, resources, actionId }) });
     this.partialResults = new WorkPartialResults(db, this);
     this.artifacts = new WorkArtifactValidation(db, this);
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
@@ -305,6 +308,7 @@ export class WorkService {
       acceptedDeliverableIds: [...currentResultIds],
       deliverables,
       blockers,
+      approvals: this.approvals.list(work.workId),
       executions,
       notifications,
       cards: this.cards.list(work),
@@ -784,6 +788,7 @@ export class WorkService {
   /** Only system-owned blockers for future execution become moot when stopping.
    * Unknown usage/effects and reconciliation conflicts must still be settled. */
   private clearStoppedExecutionBlockers(workId: string, now: number): void {
+    this.approvals.retireForStop(workId);
     for (const binding of this.repo.listBindings(workId)) {
       const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
       if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
@@ -973,10 +978,13 @@ export class WorkService {
   }
 
   settleTaskAction(taskId: string, operationId: string, outcome: "consumed" | "released" | "unknown"): void {
-    const binding = this.repo.bindingForTask(taskId);
-    if (!binding) return;
-    const admission = this.repo.listAdmissions(binding.workId).find(item => item.operationId === operationId);
-    if (admission && admission.state === "admitted") this.settleAdmission(admission.admissionId, outcome);
+    this.transaction(() => {
+      const binding = this.repo.bindingForTask(taskId);
+      if (!binding) return;
+      const admission = this.repo.listAdmissions(binding.workId).find(item => item.operationId === operationId);
+      if (admission && admission.state === "admitted") this.settleAdmission(admission.admissionId, outcome);
+      this.approvals.settleAction(taskId, operationId, outcome);
+    });
   }
 
   /**
@@ -1169,7 +1177,8 @@ export class WorkService {
       if (this.bots.getBot(work.ownerBotId)?.status !== "active") {
         return { ok: false, code: "bot_disabled", message: "主负责人已停用，不能准入新业务动作" };
       }
-      if (!this.authorizedFor(work, params.actionKind)) {
+      const scopedApproval = !!resolved.binding && this.approvals.permits(resolved.binding.bindingId, params.operationId, params.actionKind);
+      if (!this.authorizedFor(work, params.actionKind) && !scopedApproval) {
         return { ok: false, code: "unauthorized_actor", message: `事项授权不允许动作 ${params.actionKind}` };
       }
       if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now()) {
@@ -1202,7 +1211,7 @@ export class WorkService {
         if (this.bots.getBot(binding.botId)?.status !== "active") {
           return { ok: false, code: "bot_disabled", message: "执行 Bot 已暂停或停用，不能准入新业务动作" };
         }
-        if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind)) {
+        if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind) && !scopedApproval) {
           return { ok: false, code: "unauthorized_actor", message: "业务动作超出了本执行的委派范围" };
         }
       }
@@ -1228,31 +1237,8 @@ export class WorkService {
   }
 
   settleAdmission(admissionId: string, outcome: "consumed" | "released" | "unknown", note?: string): { ok: boolean; message?: string } {
-    return this.transaction(() => {
-      const admission = this.repo.getAdmission(admissionId);
-      if (!admission) return { ok: false, message: "找不到准入记录" };
-      const now = this.now();
-      this.repo.updateAdmissionState(admission.admissionId, outcome, now);
-      if (outcome === "unknown") {
-        this.repo.insertBlocker({
-          blockerId: newId("blocker"),
-          workId: admission.workId,
-          reason: note ? `外部效果未知：${note}` : "外部效果未知，需要核对",
-          kind: "external_effect",
-          unknownExternalEffectRef: admission.admissionId,
-          waitingForUserInput: false,
-          status: "open",
-          createdAt: now,
-        });
-      }
-      const work = this.repo.getWork(admission.workId);
-      if (work) {
-        const next = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
-        this.repo.updateWork(next);
-        this.tryCloseSettled(next, now);
-      }
-      return { ok: true };
-    });
+    return this.transaction(() => settleWorkAdmission({ repo: this.repo, admissionId, outcome, note, now: this.now(),
+      tryClose: (work, now) => this.tryCloseSettled(work, now) }));
   }
 
   // ============================================================ deliverables

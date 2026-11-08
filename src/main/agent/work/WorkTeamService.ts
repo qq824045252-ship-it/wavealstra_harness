@@ -76,7 +76,7 @@ export class WorkTeamService {
           const unsettled = this.works.repo.listBindings(work.workId).some(binding => !["completed", "failed", "stopped"].includes(binding.status)
             && !(binding.status === "invalidated" && !binding.attemptId && !binding.submissionReceipt && !binding.submittedAt)
             || binding.reservationId && ["reserved", "unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? ""));
-          if (unsettled || this.works.repo.listAdmissions(work.workId).some(item => ["admitted", "unknown"].includes(item.state))
+          if (unsettled || this.hasUnknownBudget(work.workId) || this.works.repo.listAdmissions(work.workId).some(item => ["admitted", "unknown"].includes(item.state))
             || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
             throw new TeamError("unsettled_effects", "原执行或效果尚未确认，不能重新安排业务动作");
           if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
@@ -224,8 +224,10 @@ export class WorkTeamService {
         error: item.error ?? undefined, resultSummary: deliverable?.summary };
     });
     const superseded = row.intent_revision !== work.intentRevision || row.input_snapshot_id !== work.inputSnapshotId;
-    const state = superseded ? "superseded" : work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? "completed"
-      : work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully" ? "ended_unsuccessfully" : work.lifecycle === "closed" ? "cancelled" : work.lifecycle === "closing" ? "closing" : work.lifecycle === "paused" ? "paused"
+    const state = work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? "completed"
+      : work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully" ? "ended_unsuccessfully"
+        : work.lifecycle === "closed" ? "cancelled" : work.lifecycle === "closing" ? "closing" : work.lifecycle === "paused" ? "paused"
+          : this.hasUnknownBudget(workId) ? "blocked" : superseded ? "superseded"
       : executions.some(item => item.error || item.status === "unknown" || item.status === "blocked")
         || ["failed", "stopped", "invalidated"].includes(executions.at(-1)?.status ?? "") ? "blocked"
         : executions.at(-1)?.status === "completed" ? "awaiting_review"
@@ -235,7 +237,8 @@ export class WorkTeamService {
   }
 
   /** Called by the existing durable dispatch queue. Never replay an already-bound task. */
-  async dispatchPending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined): Promise<void> {
+  async dispatchPending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined,
+    permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default"): Promise<void> {
     for (const raw of this.db.prepare("SELECT * FROM work_teams ORDER BY created_at,work_id").all()) {
       this.works.collaboration.assertAuthority();
       const team = teamRowSchema.parse(raw);
@@ -269,6 +272,11 @@ export class WorkTeamService {
         work = this.works.getWork(work.workId)!;
       }
       if (!next || next.error) continue;
+      // Dispatch reservations do not account for every provider attempt. Generation,
+      // compaction and retry usage may remain unknown after the binding settles.
+      // Keep known results visible, but never start another team stage until the
+      // entire Work ledger has been reconciled through the existing guarded path.
+      if (this.hasUnknownBudget(work.workId)) continue;
       // Unknown external effects anywhere in this Work require reconciliation first.
       if (this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect")) continue;
       try {
@@ -284,6 +292,7 @@ export class WorkTeamService {
         this.works.transaction(() => {
           this.works.collaboration.assertAuthority();
           const current = this.works.getWork(work!.workId)!;
+          if (this.hasUnknownBudget(current.workId)) throw new TeamError("unsettled_effects", "团队仍有未核实的供应商用量，核对原预留后才能继续");
           if (current.lifecycle !== "active" || current.stateVersion !== work!.stateVersion) throw new TeamError("version_conflict", "事项状态已变化");
           if (identity !== next!.bot_id) {
             if (this.works.repo.bindingForTask(next!.task_id)) throw new TeamError("unsettled_effects", "已有负责人汇总绑定，不能替换身份");
@@ -317,7 +326,7 @@ export class WorkTeamService {
               .run(JSON.stringify(input), work!.workId, next!.ordinal);
           }
           app.upsertTask({ id: next!.task_id, title: `${work!.title} · ${next!.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
-            updatedAt: this.now(), cwd: work!.workspacePath, projectId: work!.projectId, modelId: model(), permissionMode: "default", modePresetId: "native" });
+            updatedAt: this.now(), cwd: work!.workspacePath, projectId: work!.projectId, modelId: model(), permissionMode: permission(), modePresetId: "native" });
         });
         work = this.works.getWork(work.workId)!;
         const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
@@ -382,10 +391,15 @@ export class WorkTeamService {
 
   dispatchError(workId: string, taskId: string, botId: string, scopes: string[] | undefined): string | undefined {
     if (!this.row(workId)) return undefined;
+    if (this.hasUnknownBudget(workId)) return "团队仍有未核实的供应商用量，不能派发新的执行";
     const row = this.rows(workId).find(item => item.task_id === taskId);
     if (!row || row.bot_id !== botId || !row.input_json || row.cancelled || row.error) return "团队执行必须使用持久分工与原任务身份，不能追加未授权执行";
     if (hash(scopes) !== hash(JSON.parse(row.scopes_json))) return "团队执行不能改变用户批准的委派范围";
     return undefined;
+  }
+
+  private hasUnknownBudget(workId: string): boolean {
+    return this.works.repo.listReservations(workId).some(reservation => reservation.state === "unknown");
   }
 
   private checkGuard(work: WorkDto, expected: { expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number }): void {

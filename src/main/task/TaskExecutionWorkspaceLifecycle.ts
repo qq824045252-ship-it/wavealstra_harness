@@ -232,6 +232,7 @@ export class TaskExecutionWorkspaceLifecycle {
    */
   async trash(taskId: string, options?: { strict?: boolean; assertAllowed?: () => void }): Promise<TrashResult> {
     this.assertTaskId(taskId);
+    this.assertWorkspaceNotShared(taskId);
     if (this.beforeTrash) {
       try {
         await this.beforeTrash(taskId, options);
@@ -246,6 +247,7 @@ export class TaskExecutionWorkspaceLifecycle {
 
     // Explicit archive purge rechecks authorization after asynchronous session shutdown.
     options?.assertAllowed?.();
+    this.assertWorkspaceNotShared(taskId);
 
     const directoryName = getTaskDirectoryName(taskId);
     const workspaceDir = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
@@ -306,6 +308,19 @@ export class TaskExecutionWorkspaceLifecycle {
     // 无目录：仅 metadata
     this.commitTrashedMetadata(taskId, directoryName, undefined);
     return { taskId, state: "trashed", trashPath: undefined, directoryMissing };
+  }
+
+  /** A host-bound continuation may still use this task's isolated directory.
+   * Check again after async shutdown, before moving bytes; never swallow this
+   * conflict as a best-effort session-stop error. Dependents must be trashed first. */
+  private assertWorkspaceNotShared(taskId: string): void {
+    if (!this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='durable_bot_bindings'").get()) return;
+    const path = normalizePathForComparison(this.workspace.resolveTaskExecutionWorkspaceDir(taskId));
+    const bindings = this.db.connection.prepare("SELECT task_id,cwd FROM durable_bot_bindings WHERE task_id!=?").all(taskId) as Array<{ task_id: string; cwd: string }>;
+    if (bindings.some(binding => normalizePathForComparison(binding.cwd) === path && this.db.getTask(binding.task_id)
+      && this.db.getTaskExecutionWorkspaceState(binding.task_id)?.state !== "trashed")) {
+      throw new TaskLifecycleConflictError("原执行目录仍被其他补跑任务使用，请先回收引用此目录的任务");
+    }
   }
 
   /**

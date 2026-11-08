@@ -6,7 +6,7 @@ import type { WorkResourceOwner, WorkResource, ResourceLease } from "./WorkResou
 import { readResourceEffectEvidence } from "./WorkResourceRecovery";
 
 export function authorizeWorkResourceOwner(input: { service: WorkService; bots: BotRegistry; now: () => number;
-  owner: WorkResourceOwner; resources: WorkResource[] }): string | undefined {
+  owner: WorkResourceOwner; resources: WorkResource[]; actionId?: string }): string | undefined {
   const { service, bots, now, owner, resources } = input;
   const binding = service.repo.bindingForTask(owner.taskId);
   if (!binding) return owner.bindingId || owner.workId ? "资源执行缺少原绑定" : undefined;
@@ -21,7 +21,11 @@ export function authorizeWorkResourceOwner(input: { service: WorkService; bots: 
   const teamError = service.teams?.resourceError(binding, resources);
   if (teamError) return teamError;
   const action = resources.some(resource => resource.mode === "write") ? "workspace:write" : "workspace:read";
-  if (!work.authorization.allowedScopes.includes(action) || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(action))
+  const parts = input.actionId?.split(":");
+  const operationId = input.actionId?.startsWith("resource:") && parts
+    ? `tool:${owner.childId ?? owner.conversationId}:${parts[2]}:${parts.slice(3).join(":")}` : undefined;
+  const approved = operationId && service.approvals.permits(binding.bindingId, operationId, action);
+  if ((!work.authorization.allowedScopes.includes(action) || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(action)) && !approved)
     return "实际资源动作超出事项或执行委派范围";
   if (bots.getBot(binding.botId)?.status !== "active" || bots.getBot(work.ownerBotId)?.status !== "active") return "Bot 不可受理新资源动作";
   if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= now() || work.budget.usedTokens >= work.budget.maxTokens)
@@ -52,6 +56,7 @@ export function finalizeWorkResource(input: { db: Database.Database; service: Wo
     if (!lease.resources.every(resource => resource.mode === "read") && !readResourceEffectEvidence(db, lease).known)
       throw new Error("业务准入尚无原始文件或供应商回执证明");
     service.repo.updateAdmissionState(admission.admissionId, "consumed", now());
+    service.approvals.settleAction(binding.taskId, admission.operationId, "consumed");
     for (const blocker of service.repo.listOpenBlockers(work.workId)) if (blocker.unknownExternalEffectRef === admission.admissionId)
       service.repo.clearBlocker(blocker.blockerId, work.workId, now());
     changed = true;

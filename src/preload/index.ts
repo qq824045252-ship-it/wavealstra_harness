@@ -641,6 +641,7 @@ const api = {
   } satisfies ConversationRuntimeApi,
 
   botWork: {
+    decideAction: request => ipcRenderer.invoke(BotWorkIpc.decideAction, request),
     phase3Control: request => ipcRenderer.invoke(BotWorkIpc.phase3Control, request),
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),

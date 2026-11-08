@@ -803,7 +803,7 @@ export class WorkRepository {
   }
 
   clearBlocker(blockerId: string, workId: string, now: number): void {
-    this.db.prepare("UPDATE work_blockers SET status='cleared', cleared_at=? WHERE blocker_id=? AND work_id=?")
+    this.db.prepare("UPDATE work_blockers SET status='cleared', cleared_at=? WHERE blocker_id=? AND work_id=? AND status='open'")
       .run(now, blockerId, workId);
   }
 

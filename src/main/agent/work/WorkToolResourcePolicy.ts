@@ -1,3 +1,4 @@
+import { workShellRead } from "./WorkShellRead";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -51,7 +52,8 @@ export class WorkToolResourcePolicy {
       && (args.path || args.file_path || args.filePath || args.filename || args.fileName))
       return "MCP 读取缺少可信路径适配器，不能产生无法复核的旧版本；请改用内置 read 或已登记的读取入口";
     const resources: WorkResource[] = [];
-    const shellRead = boundedShellRead(call);
+    const bounded = workShellRead(call.name, call.arguments);
+    const shellRead = bounded?.path ?? boundedShellRead(call);
     const filePaths = shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
       ? [args.path ?? args.file_path].filter((path): path is string => Boolean(path)) : [];
     for (const path of filePaths) {
@@ -90,7 +92,7 @@ export class WorkToolResourcePolicy {
     const cleanup = previous && /^(key_up|mouse_up|mouse_up_client)$/.test(action);
     const denied = cleanup ? this.gate.validateSettlement(admission.lease) : this.gate.validateVersions(admission.lease);
     if (denied) { if (!previous) this.gate.release(admission.lease, "not_started", denied); return denied; }
-    const opaqueObservation = coarse && (/^(bash|shell|shell_exec|terminal_exec|exec_command)$/.test(call.name) || call.name.startsWith("mcp__"));
+    const opaqueObservation = !bounded && coarse && (/^(bash|shell|shell_exec|terminal_exec|exec_command)$/.test(call.name) || call.name.startsWith("mcp__"));
     this.calls.set(actionId, { lease: admission.lease, observed: resources.filter(resource => resource.path), owner, input, boundedRead: Boolean(shellRead), opaqueObservation });
     return undefined;
   }

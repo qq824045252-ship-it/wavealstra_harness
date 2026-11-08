@@ -1,3 +1,4 @@
+import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
 import type { WorkToolResourcePolicy, ToolResourceContext } from "../work/WorkToolResourcePolicy";
 import { z } from "zod";
@@ -44,6 +45,8 @@ export interface DurableToolPolicyOptions {
   ensureRuntimeReady?: (providerId: string) => Promise<void>;
   toolAllowed?: (name: string) => boolean;
   effectRecovery?: ExternalEffectRecovery;
+  workActionApproved?: (taskId: string, operationId: string, toolName: string) => boolean | undefined;
+  approveWorkAction?: (input: import("../work/WorkActionApprovals").WorkActionRequest, signal?: AbortSignal) => Promise<boolean | undefined>;
   admitWorkAction?: (input: { operationId: string; actionKind: string }) => string | undefined;
   settleWorkAction?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void;
   resourcePolicy?: WorkToolResourcePolicy;
@@ -78,21 +81,35 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
     requestApproval: async request => {
       const active = currentDurableInvocation();
       if (!active || active.execution.taskId !== options.taskId) throw new Error("审批缺少当前任务的持久执行身份");
+      if (options.getPermissionMode() === "readonly") return false;
+      if (request.toolCallId !== active.native.callId) throw new Error("工具内部审批身份与当前原生动作不匹配");
+      const workApproved = options.workActionApproved?.(options.taskId,
+        `tool:${active.native.conversationId}:${active.native.taskId}:${active.native.callId}`, request.toolName);
+      if (workApproved !== undefined) return workApproved;
       return approve(request, active.native, active.context);
     },
     hooks: {
       beforeTool: async (call, api, context) => {
         const originalCall = call;
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return { block: `当前任务未授权工具：${call.name}` };
+        const refuseBeforeApproval = async (reason: string) => {
+          const summary = summarizeToolInput(call.name, call.arguments);
+          await options.approveWorkAction?.({ taskId: options.taskId, taskRoot: options.taskRoot,
+            operationId: `tool:${api.conversationId}:${api.taskId}:${call.id}`, toolName: call.name, arguments: call.arguments,
+            actionKind: "workspace:write", summary: summary.summary, detail: summary.detail,
+            permissionMode: options.getPermissionMode(), needsApproval: false, deniedReason: reason }, context.abortSignal);
+          return { block: reason };
+        };
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
         call = policyCall(call);
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return { block: `当前任务未授权工具：${call.name}` };
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
         await identity(api, context, call);
         const mode = options.getPermissionMode();
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
-        const sideEffect = mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments);
+        const shellRead = workShellRead(call.name, call.arguments);
+        const sideEffect = !shellRead && (mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments));
         const dangerous = mcp?.dangerous ?? isDangerousTool(call.name, call.arguments);
-        if (mode === "readonly" && (sideEffect || dangerous)) return { block: "当前为只读/计划/仅问答模式，已阻止写操作与命令执行" };
-        if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return { block: mcp.decision.reason };
+        if (mode === "readonly" && (sideEffect || dangerous)) return refuseBeforeApproval("当前为只读/计划/仅问答模式，已阻止写操作与命令执行");
+        if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return refuseBeforeApproval(mcp.decision.reason);
 
         if (mcp && options.ensureRuntimeReady && isManagedToolProvider(mcp.identity.providerId)) {
           await options.ensureRuntimeReady(mcp.identity.providerId);
@@ -112,30 +129,52 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         for (const path of paths) {
           const absolute = resolve(taskRoot, path);
           const access = filePolicy?.decide("write", absolute);
-          if (access?.scope === "isolated-source") return { block: access.reason };
+          if (access?.scope === "isolated-source") return refuseBeforeApproval(access.reason);
           if (access && !access.allowed) externalPath = absolute;
         }
         // Code Mode and subagent containers grant nothing: each child reaches this hook itself.
         const needsApproval = sideEffect || dangerous || Boolean(mcp?.decision.requiresApproval) || Boolean(externalPath);
-        if (mode !== "auto" && needsApproval) {
+        const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
+        const actionKind = ["subagent", "subagent_steer"].includes(call.name) ? "delegate"
+          : sideEffect || dangerous ? "workspace:write" : "workspace:read";
+        const summary = summarizeToolInput(call.name, call.arguments);
+        const workApproval = await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
+          toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
+          detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
+          permissionMode: mode, needsApproval }, context.abortSignal);
+        if (workApproval === false) return { block: "后台操作未获准继续；本次没有启动新的执行，请查看审批、阻碍和原动作回执" };
+        const refuseWork = async (reason: string) => {
+          await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
+            toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary, detail: summary.detail,
+            permissionMode: options.getPermissionMode(), needsApproval, deniedReason: reason }, context.abortSignal);
+          return { block: reason };
+        };
+        if (options.getPermissionMode() === "readonly" && (sideEffect || dangerous)) return refuseWork("当前为只读模式，已阻止写操作与命令执行");
+        if (options.toolAllowed && (!options.toolAllowed(originalCall.name) || !options.toolAllowed(call.name))) return refuseWork("审批等待期间工具授权已变化，未执行");
+        if (workApproval === undefined && mode !== "auto" && needsApproval) {
           const summary = summarizeToolInput(call.name, call.arguments);
           const allowed = await approve({ toolCallId: call.id, toolName: call.name, dangerous,
             summary: summary.summary, detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
           }, api, context);
           if (!allowed) return { block: "用户已拒绝该操作" };
         }
-        const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
-        const actionKind = ["subagent", "subagent_steer"].includes(call.name) ? "delegate"
-          : sideEffect || dangerous ? "workspace:write" : "workspace:read";
         const resourceContext: ToolResourceContext = { taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot };
         const admitWork = async () => {
           const denied = options.admitWorkAction?.({ operationId, actionKind });
-          if (denied) return denied;
+          if (denied) { await refuseWork(denied); return denied; }
           const resourceInput = { call, context: resourceContext, sideEffect: sideEffect || dangerous, paths: resourcePaths };
           const resourceDenied = await options.resourcePolicy?.beforeWait(resourceInput, context.abortSignal);
           if (resourceDenied) {
             const notStarted = options.resourcePolicy?.refuse(resourceInput, resourceDenied) === true;
             options.settleWorkAction?.(operationId, notStarted ? "released" : "unknown");
+            if (notStarted) await refuseWork(resourceDenied);
+          }
+          if (!resourceDenied && ((sideEffect || dangerous) && options.getPermissionMode() === "readonly"
+            || options.toolAllowed && (!options.toolAllowed(originalCall.name) || !options.toolAllowed(call.name)))) {
+            options.resourcePolicy?.after(resourceInput, "released");
+            options.settleWorkAction?.(operationId, "released");
+            const reason = "资源等待期间权限已变化，动作未执行";
+            await refuseWork(reason); return reason;
           }
           return resourceDenied;
         };
@@ -173,7 +212,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const execution = await identity(api, context, call);
         const attempt = options.attempts.findDurable(execution, call.id);
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
-        const mayWrite = mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments));
+        const mayWrite = !workShellRead(call.name, call.arguments) && (mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments)));
         const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
         const resourcePaths = mcp?.decision.paths.length ? mcp.decision.paths :
           (call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string" ? [call.arguments.path] : [];

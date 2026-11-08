@@ -17,6 +17,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -165,6 +166,78 @@ async function main(): Promise<void> {
       assert.equal(env.db.getTaskExecutionWorkspaceState(id)?.state, undefined);
     } finally {
       env.close();
+    }
+  });
+
+  await check("trash：真实共享绑定阻止源目录回收；先回收引用任务后安全移动源文件", async () => {
+    const env = makeEnv();
+    try {
+      const source = "shared-source", child = "shared-continuation";
+      const dir = env.workspace.ensureTaskExecutionWorkspace(source);
+      writeFileSync(join(dir, "proof.txt"), "shared source bytes");
+      env.db.upsertTask({ id: source, title: source, updatedAt: Date.now(), cwd: dir });
+      env.db.upsertTask({ id: child, title: child, updatedAt: Date.now(), cwd: dir });
+      // Persist the host-owned Durable namespace, not merely renderer-editable Task.cwd.
+      env.db.connection.exec(`CREATE TABLE durable_bot_bindings (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
+      env.db.connection.prepare("INSERT INTO durable_bot_bindings VALUES (?, 'pi-durable', ?, ?)")
+        .run(child, join(env.root, "native-child-store"), dir);
+      const stopped: string[] = [];
+      const lifecycle = new TaskExecutionWorkspaceLifecycle({ db: env.db, workspace: env.workspace, trashRoot: env.trashRoot,
+        beforeTrash: taskId => { stopped.push(taskId); } });
+      await assert.rejects(() => lifecycle.trash(source), TaskLifecycleConflictError);
+      assert.deepEqual(stopped, [], "preflight conflict must not stop the source session");
+      assert.equal(readFileSync(join(dir, "proof.txt"), "utf8"), "shared source bytes");
+      assert.equal(env.db.getTaskExecutionWorkspaceState(source), undefined);
+      assert.equal(env.db.getTask(source)?.archived, false);
+      assert(!existsSync(env.workspace.resolveTaskExecutionWorkspaceDir(child)), "continuation has no separate canonical directory");
+      const childTrash = await lifecycle.trash(child);
+      assert.equal(childTrash.directoryMissing, true); assert.equal(childTrash.trashPath, undefined);
+      assert.equal(env.db.getTaskExecutionWorkspaceState(child)?.state, "trashed");
+      assert.equal(readFileSync(join(dir, "proof.txt"), "utf8"), "shared source bytes",
+        "trashing the reference updates metadata only, never moves source cwd");
+      const sourceTrash = await lifecycle.trash(source);
+      assert(sourceTrash.trashPath); assert.equal(sourceTrash.directoryMissing, false);
+      assert.deepEqual(stopped, [child, source]);
+      assert(!existsSync(dir));
+      assert.equal(readFileSync(join(sourceTrash.trashPath, "proof.txt"), "utf8"), "shared source bytes");
+      assert.equal(env.db.getTaskExecutionWorkspaceState(source)?.state, "trashed");
+    } finally { env.close(); }
+  });
+
+  await check("trash：停止回调等待期间新增共享绑定，第二道检查拒绝且不移动文件", async () => {
+    const env = makeEnv();
+    let release!: () => void;
+    let trash: Promise<unknown> | undefined;
+    try {
+      const source = "shared-race-source", child = "shared-race-continuation";
+      const dir = env.workspace.ensureTaskExecutionWorkspace(source);
+      writeFileSync(join(dir, "race.txt"), "retain through async stop");
+      env.db.upsertTask({ id: source, title: source, updatedAt: Date.now(), cwd: dir });
+      env.db.connection.exec(`CREATE TABLE durable_bot_bindings (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
+      let entered!: () => void;
+      const inCallback = new Promise<void>(resolve => { entered = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      let stops = 0;
+      const lifecycle = new TaskExecutionWorkspaceLifecycle({ db: env.db, workspace: env.workspace, trashRoot: env.trashRoot,
+        beforeTrash: async () => { stops++; entered(); await barrier; } });
+      trash = lifecycle.trash(source); // Default best-effort callback mode must not swallow the conflict.
+      await inCallback;
+      env.db.upsertTask({ id: child, title: child, updatedAt: Date.now(), cwd: dir });
+      env.db.connection.prepare("INSERT INTO durable_bot_bindings VALUES (?, 'pi-durable', ?, ?)")
+        .run(child, join(env.root, "native-race-child-store"), dir);
+      const rejected = assert.rejects(trash, TaskLifecycleConflictError);
+      release(); await rejected;
+      assert.equal(stops, 1);
+      assert.equal(readFileSync(join(dir, "race.txt"), "utf8"), "retain through async stop");
+      assert.equal(env.db.getTaskExecutionWorkspaceState(source), undefined);
+      assert.equal(env.db.getTask(source)?.archived, false);
+      assert.equal(env.db.getTask(child)?.cwd, dir);
+    } finally {
+      release?.(); await trash?.catch(() => {}); env.close();
     }
   });
 

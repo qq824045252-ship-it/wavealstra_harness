@@ -24,6 +24,7 @@ const receipts = new Map<string, AgentSubmissionReceipt>();
 const submissions: Array<{ taskId: string; botId: string; input: { teamAssignment: { role: string; botId: string; previousResults: Array<{ status: string }> } } }> = [];
 const failPrepare = new Set<string>();
 const failSummary = new Set<string>();
+const unknownGeneration = new Set<string>();
 const errors: unknown[] = [];
 const port: WorkExecutionPort = {
   prepare: async taskId => {
@@ -33,6 +34,13 @@ const port: WorkExecutionPort = {
   find: async binding => receipts.get(binding.bindingId),
   submit: async (binding, text) => {
     assert.equal(works.checkTaskInput(binding.taskId, binding.operationId), undefined);
+    if (unknownGeneration.has(binding.taskId)) {
+      const admission = works.budget.admitProviderRequest({ taskId: binding.taskId, conversationId: binding.conversationId,
+        generationTaskId: 1, sourceKind: "main", requestKind: "generation", estimatedTokens: 100 });
+      assert(admission.allowed && admission.reservationId);
+      assert(works.budget.settleProviderUsage({ taskId: binding.taskId, conversationId: binding.conversationId,
+        generationTaskId: 1, reported: false, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }).ok);
+    }
     const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" };
     submissions.push({ taskId: binding.taskId, botId: binding.botId, input: JSON.parse(text) });
     receipts.set(binding.bindingId, receipt); return receipt;
@@ -186,6 +194,56 @@ try {
   assert.equal(bindings(uncertain.work!.workId).length, 1);
   assert.equal(works.teams.get(uncertain.work!.workId)!.state, "blocked");
   works.transaction(() => works.repo.updateBinding(uncertainBinding)); await flush();
+
+  // A failed provider request can release the dispatch envelope while its generation
+  // usage stays unknown. That debt fences all later stages and explicit replanning.
+  for (const replanBeforeReconciliation of [false, true]) {
+    const meteringSetup = setup(), metering = ok(works.teams.handle(user, { kind: "create", request: meteringSetup.request }));
+    const meteringWorkId = metering.work!.workId, firstTask = metering.team!.executions[0]!.taskId;
+    unknownGeneration.add(firstTask); failSummary.add(firstTask);
+    await queue.flush();
+    const firstBinding = bindings(meteringWorkId)[0]!;
+    assert.equal(firstBinding.status, "failed");
+    assert.equal(works.repo.getReservation(firstBinding.reservationId!)!.state, "released");
+    const generation = works.repo.listReservations(meteringWorkId).find(item => item.requestKind === "generation")!;
+    assert.equal(generation.bindingId, firstBinding.bindingId); assert.equal(generation.state, "unknown");
+    const taskCount = db.listTasks().length, submissionCount = submissions.length;
+    await flush();
+    assert.equal(bindings(meteringWorkId).length, 1);
+    assert.equal(db.listTasks().length, taskCount, "unknown generation must not prepare later member/owner tasks");
+    assert.equal(submissions.length, submissionCount);
+    assert.equal(works.teams.get(meteringWorkId)!.state, "blocked");
+    assert(works.repo.listDeliverables(meteringWorkId).some(item => item.executionId === firstBinding.bindingId), "settled result remains visible");
+    assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "blocked"), "result reporting is not suppressed by unknown usage");
+    assert.equal(works.budget.release(meteringWorkId, generation.reservationId).ok, false, "unknown usage cannot be blindly released");
+    assert(works.pauseWork(user, { operationId: `metering-pause:${meteringWorkId}`, workId: meteringWorkId }).ok);
+    assert.equal(works.teams.get(meteringWorkId)!.state, "paused", "unknown metering must not mask an explicit pause");
+    assert.equal(works.repo.getReservation(generation.reservationId)!.state, "unknown", "pause does not settle unknown usage");
+    await flush(); assert.equal(db.listTasks().length, taskCount);
+    assert(works.resumeWork(user, { operationId: `metering-resume:${meteringWorkId}`, workId: meteringWorkId }).ok);
+    assert.equal(works.teams.get(meteringWorkId)!.state, "blocked", "resume does not forgive metering debt");
+    await flush(); assert.equal(db.listTasks().length, taskCount); assert.equal(submissions.length, submissionCount);
+    if (replanBeforeReconciliation) {
+      assert(works.amendWork(user, { operationId: `metering-amend:${meteringWorkId}`, workId: meteringWorkId,
+        goalDescription: "Only inspect the new requirements after reconciling prior provider usage" }).ok);
+      reject(works.teams.handle(user, { kind: "replan", workId: meteringWorkId,
+        versionGuard: guard(works.getWork(meteringWorkId)!), plan: meteringSetup.plan }), "unsettled_effects");
+      assert.equal(works.teams.get(meteringWorkId)!.state, "blocked");
+    }
+    // Use the existing authenticated reconciliation contract, with explicit fixture
+    // evidence of zero usage, rather than mutating the ledger or inventing a receipt.
+    const reconciled = works.phase4Control(user, { kind: "reconcile-budget-reservation", operationId: `metering-reconcile:${meteringWorkId}`,
+      workId: meteringWorkId, reservationId: generation.reservationId, windowId: generation.windowId,
+      resolution: "released", reportedTokens: 0, reason: "Isolated provider fixture verified this rejected request consumed no tokens",
+      evidenceRef: `fixture-confirmed-no-usage:${firstTask}`, versionGuard: guard(works.getWork(meteringWorkId)!) });
+    assert(reconciled.ok, JSON.stringify(reconciled));
+    if (replanBeforeReconciliation) ok(works.teams.handle(user, { kind: "replan", workId: meteringWorkId,
+      versionGuard: guard(works.getWork(meteringWorkId)!), plan: meteringSetup.plan }));
+    await flush();
+    assert.equal(bindings(meteringWorkId).length, replanBeforeReconciliation ? 4 : 3);
+    assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
+    assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "reconciliation must not replay the failed request");
+  }
 
   // Authority loss is checked before writes; no baseline widening or model-claimed acceptance.
   const deniedSetup = setup(); authority = false;

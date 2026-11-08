@@ -96,3 +96,28 @@ export function settleWorkExecution({ repo, work, binding, params, now, commitUs
     work: latest, outboxEventId: settlement.ok ? settlement.outboxEventId : undefined,
   };
 }
+
+/** Admission and its effect blocker settle within the caller's Work transaction. */
+export function settleWorkAdmission({ repo, admissionId, outcome, note, now, tryClose }: {
+  repo: WorkRepository; admissionId: string; outcome: "consumed" | "released" | "unknown"; note?: string; now: number;
+  tryClose: (work: WorkDto, now: number) => unknown;
+}): { ok: boolean; message?: string } {
+  const admission = repo.getAdmission(admissionId);
+  if (!admission) return { ok: false, message: "找不到准入记录" };
+  repo.updateAdmissionState(admission.admissionId, outcome, now);
+  if (outcome === "unknown") {
+    repo.insertBlocker({
+      blockerId: newId("blocker"), workId: admission.workId,
+      reason: note ? `外部效果未知：${note}` : "外部效果未知，需要核对",
+      kind: "external_effect", unknownExternalEffectRef: admission.admissionId,
+      waitingForUserInput: false, status: "open", createdAt: now,
+    });
+  }
+  const work = repo.getWork(admission.workId);
+  if (work) {
+    const next = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
+    repo.updateWork(next);
+    tryClose(next, now);
+  }
+  return { ok: true };
+}

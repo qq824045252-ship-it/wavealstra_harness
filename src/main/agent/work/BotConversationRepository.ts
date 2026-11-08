@@ -126,6 +126,48 @@ export class BotConversationRepository {
     this.touch(receipt.conversation_id);
   }
 
+  /** Resolve the original authenticated send, never the current owner or active chat. */
+  workOrigin(userId: string, workId: string): BotConversation | undefined {
+    const row = this.db.prepare(`SELECT c.* FROM bot_send_receipts r
+      JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.bot_id=r.bot_id AND c.user_id=r.user_id
+      JOIN bot_messages m ON m.message_id=r.user_message_id AND m.conversation_id=c.conversation_id
+        AND m.bot_id=r.bot_id AND m.request_id=r.request_id AND m.role='user'
+      JOIN works w ON w.work_id=? AND w.user_id=r.user_id
+      WHERE r.user_id=? AND (
+        m.message_id=w.source_message_id OR EXISTS (
+          SELECT 1 FROM json_each(m.work_ids_json) j WHERE j.value=w.work_id
+        )
+      ) ORDER BY m.ordinal LIMIT 1`).get(workId, userId);
+    return row ? conversationRow.parse(row) : undefined;
+  }
+
+  /** The message itself is the delivery receipt: append and revision commit together.
+   * Event identity is scoped to this Work, not a mutable owner/intent version. A
+   * changed version after a previous delivery gets a new message, including a
+   * blocker reopening after its cleared version was delivered.
+   */
+  appendWorkFeedback(origin: BotConversation, workId: string, event: string, version: string, text: string): boolean {
+    return this.db.transaction(() => {
+      if (!this.conversation(origin.user_id, origin.bot_id, origin.conversation_id)) return false;
+      const key = createHash("sha256").update(JSON.stringify([workId, event])).digest("hex");
+      const prefix = `work-feedback:${key}:`;
+      const fingerprint = createHash("sha256").update(version).digest("hex");
+      const previous = this.db.prepare(`SELECT message_id,request_id FROM bot_messages
+        WHERE conversation_id=? AND bot_id=? AND role='assistant' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
+        .get(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string; request_id: string } | undefined;
+      if (previous?.request_id.endsWith(`:${fingerprint}`)) return false;
+      const generation = createHash("sha256").update(previous?.message_id ?? "initial").digest("hex").slice(0, 16);
+      const requestId = `${prefix}${generation}:${fingerprint}`;
+      const messageId = `work-feedback-${createHash("sha256").update(JSON.stringify([origin.conversation_id, requestId])).digest("hex")}`;
+      const now = Date.now();
+      this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
+        VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
+        .run(messageId, origin.conversation_id, origin.bot_id, requestId, text, JSON.stringify([workId]), now, now);
+      this.touch(origin.conversation_id);
+      return true;
+    })();
+  }
+
   archive(userId: string, botId: string, conversationId: string): void {
     const conversation = this.conversation(userId, botId, conversationId);
     if (!conversation) throw new Error("对话不属于当前用户与 Bot");

@@ -70,7 +70,7 @@ export function resourcesConflict(a: WorkResource, b: WorkResource): boolean {
 /** Persistent action admission, not a second executor. Expiry only fences and quarantines. */
 export class WorkResourceGate {
   constructor(private readonly db: Database.Database, private readonly options: {
-    hostId: string; isAuthority?: () => boolean; authorize?: (owner: WorkResourceOwner, resources: WorkResource[]) => string | undefined; now?: () => number;
+    hostId: string; isAuthority?: () => boolean; authorize?: (owner: WorkResourceOwner, resources: WorkResource[], actionId?: string) => string | undefined; now?: () => number;
   }) { ensureWorkResourceTables(db); }
 
   acquire(input: { actionId: string; owner: WorkResourceOwner; resources: WorkResource[]; leaseMs?: number }): ResourceAdmission {
@@ -87,7 +87,7 @@ export class WorkResourceGate {
       if (refused) return { ok: false, reason: "原动作已明确拒绝且未启动，请使用新的计划动作身份", conflictingTokens: [] };
       this.db.prepare("UPDATE work_resource_leases SET state='quarantined' WHERE state='active' AND (expires_at<=? OR host_id<>?)")
         .run(now, this.options.hostId);
-      const denied = this.options.authorize?.(owner, resources);
+      const denied = this.options.authorize?.(owner, resources, input.actionId);
       if (denied) return { ok: false, reason: denied, conflictingTokens: [] };
       const existing = this.readAction(input.actionId);
       if (existing) {
@@ -123,7 +123,7 @@ export class WorkResourceGate {
     if (!row || row.action_id !== lease.actionId || row.host_id !== this.options.hostId || row.state !== "active" || row.expires_at <= this.now()
       || resourceOwnerKey(workResourceOwnerSchema.parse(JSON.parse(row.owner_json))) !== resourceOwnerKey(lease.owner)) return "资源 fencing 已失效，拒绝旧持有者操作";
     if (this.options.isAuthority?.() === false) return "资源宿主已失去 authority";
-    return this.options.authorize?.(lease.owner, lease.resources);
+    return this.options.authorize?.(lease.owner, lease.resources, lease.actionId);
   }
 
   validateSettlement(lease: ResourceLease): string | undefined {

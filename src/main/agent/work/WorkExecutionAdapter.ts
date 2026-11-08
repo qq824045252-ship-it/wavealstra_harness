@@ -85,6 +85,7 @@ export class WorkExecutionAdapter {
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
+    this.service.approvals.recover();
     await this.resourceRecovery?.recover();
     if (!this.isAuthority()) return;
     for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);

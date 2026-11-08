@@ -24,7 +24,8 @@ export class WorkDispatchQueue {
   private timer?: ReturnType<typeof setInterval>;
   constructor(private readonly db: AppDatabase, private readonly works: WorkService,
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
-    private readonly defaultModel: () => string | undefined) {}
+    private readonly defaultModel: () => string | undefined,
+    private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default") {}
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
@@ -48,7 +49,7 @@ export class WorkDispatchQueue {
     if (!readOnlyFollowUp && bindings.some(binding => retainsInput(binding, work))) return;
     const taskId = `work-execution-${randomUUID()}`;
     this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath,
-      projectId: work.projectId, modelId: this.defaultModel(), permissionMode: "default", modePresetId: "native" });
+      projectId: work.projectId, modelId: this.defaultModel(), permissionMode: this.permissionMode(), modePresetId: "native" });
     this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
       VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
@@ -71,7 +72,7 @@ export class WorkDispatchQueue {
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
-    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel);
+    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode);
     await this.drainSourceEvents();
     this.prepareSourceIntents();
     this.prepareContinuations();
@@ -253,7 +254,7 @@ export class WorkDispatchQueue {
       }
       if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND state='pending'").get(work.workId,work.intentRevision,work.inputSnapshotId)) continue;
       const taskId = `work-execution-${randomUUID()}`;
-      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:work.workspacePath,projectId:work.projectId,modelId:this.defaultModel(),permissionMode:"default",modePresetId:"native"});
+      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:work.workspacePath,projectId:work.projectId,modelId:this.defaultModel(),permissionMode:this.permissionMode(),modePresetId:"native"});
       this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id)
         VALUES (?,?,?,?,?,?,'pending',?,?)`).run(plan.planId,work.workId,taskId,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),plan.planId);
       this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");

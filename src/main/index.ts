@@ -1,6 +1,7 @@
 import "./platform/credentials";
 import "./agent-environment";
 import "./officecli-environment";
+import { workApprovalIpcHandler } from "./agent/work/WorkApprovalIpc";
 import { ensureOfficeCliSkill } from "./skills/OfficeCliSkill";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { ProjectNotesService } from "./project/ProjectNotesService";
@@ -1027,6 +1028,11 @@ function registerIpc(): void {
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
     agentService.cancelConversationGoal(goalId));
 
+  ipcMain.handle(BotWorkIpc.decideAction, workApprovalIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    decideAction: request => agentService.decideWorkAction(request),
+  }));
   ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());

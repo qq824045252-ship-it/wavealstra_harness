@@ -3,6 +3,7 @@ import type { WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkPro
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
 import { useAppStore } from "@/store/appStore";
+import { BotWorkApprovals } from "./BotWorkApprovals";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
@@ -233,7 +234,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       {/* These siblings must have distinct keys, including across version resets. */}
       <WorkReviewPanel key={JSON.stringify(["review", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
-      <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
+      <BotWorkApprovals work={work} /><WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>

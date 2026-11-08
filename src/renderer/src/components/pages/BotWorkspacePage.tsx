@@ -7,6 +7,7 @@ const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { botParticipatesInWork, botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { BotWorkApprovals } from "./BotWorkApprovals";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
 import { BotExpertReview } from "./BotExpertReview";
@@ -69,6 +70,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
+  const pendingApprovalVersion = botWorks.flatMap(work => work.approvals?.filter(item => item.status === "pending").map(item => `${item.approvalId}:${item.version}`) ?? []).join("|");
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
@@ -109,7 +111,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (view !== "conversation" || !followLatest.current) return;
     const frame = requestAnimationFrame(() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; });
     return () => cancelAnimationFrame(frame);
-  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status]);
+  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, pendingApprovalVersion]);
   useEffect(() => {
     const body = inspectorRef.current?.querySelector(".bot-inspector-body");
     if (body) body.scrollTop = 0;
@@ -186,6 +188,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
           </div> : <div className="bot-message-list">{messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, message.requestId); }} />)}</div>}
+          {botWorks.filter(work => work.approvals?.some(item => item.status === "pending")).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
         </div>
         {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
       </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
