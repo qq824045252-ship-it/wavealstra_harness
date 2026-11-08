@@ -20,6 +20,9 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import { DurableTaskProjection } from "./DurableTaskProjection";
+import { ToolGate } from "./ToolGate";
+import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
 import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { readDurableReadOnlyHistory } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
@@ -79,6 +82,8 @@ export interface DurableBotServiceOptions {
   onTool?: (event: ToolDiagnosticEvent) => void;
   observedUsage?: (taskId: string, conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
   waitingForInput?: (taskId: string) => boolean;
+  /** Startup resumption width; interactive access bypasses the queue and is never throttled here. */
+  resumeConcurrency?: number;
   onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void;
   onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
@@ -115,6 +120,9 @@ export class DurableBotService {
   private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly projections = new Map<string, Promise<void>>();
   private readonly passiveReads = new Map<string, Promise<void>>();
+  private resumeAdmission?: ResumeAdmission;
+  /** Last startup drain outcome: delivered means open+resume was handed over, not that native work finished. */
+  lastResumeReport?: ResumeAdmissionReport;
   constructor(private readonly options: DurableBotServiceOptions) {
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
       task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
@@ -163,13 +171,29 @@ export class DurableBotService {
   }
 
   async resumePersisted(): Promise<void> {
-    const bindings = this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings").all() as BotBinding[];
-    await Promise.all(bindings.map(async binding => {
-      if (this.options.resumeAllowed?.(binding.task_id) === false) return;
-      if (this.options.db.getTaskExecutionWorkspaceState(binding.task_id)?.state === "trashed") return;
-      try { (await this.open(binding.task_id)).runtime.resume(); }
-      catch (error) { console.error(`[Durable] Cannot resume ${binding.task_id}:`, error); }
-    }));
+    const bindings = this.options.db.connection.prepare("SELECT task_id FROM durable_bot_bindings").all() as Array<Pick<BotBinding, "task_id">>;
+    const admission = new ResumeAdmission({
+      concurrency: this.options.resumeConcurrency ?? DEFAULT_DURABLE_RESUME_CONCURRENCY,
+      shouldSkip: taskId => this.resumeSkipReason(taskId),
+      // `open()` deduplicates by taskId, so a session the user opened first is only a no-op open
+      // plus the same resume hand-over. Skipping it here would drop that recovery obligation.
+      run: async taskId => { (await this.open(taskId)).runtime.resume(); },
+    });
+    this.resumeAdmission = admission;
+    admission.enqueue(bindings.map(binding => binding.task_id));
+    const report = await admission.drain();
+    this.lastResumeReport = report;
+    if (report.failed.length) {
+      console.warn(`[Durable] 启动恢复交付 ${report.delivered.length} 个会话，${report.failed.length} 个失败`, report.failed.slice(0, 5));
+    }
+  }
+
+  /** Queue-time conditions can change while an item waits; re-check before spending a slot. */
+  private resumeSkipReason(taskId: string): string | undefined {
+    if (!this.binding(taskId)) return "binding-removed";
+    if (this.options.resumeAllowed?.(taskId) === false) return "not-resumable";
+    if (this.options.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return "trashed";
+    return undefined;
   }
 
   private workspaceMove(taskId: string): { from_cwd: string; to_cwd: string } | undefined {
@@ -177,6 +201,8 @@ export class DurableBotService {
   }
 
   private open(taskId: string, admissionBoundary = false): Promise<OpenBot> {
+    // Interactive access takes over a queued startup item: the drain must not open it again.
+    this.resumeAdmission?.claim(taskId);
     const pending = this.rebinding.get(taskId);
     if (pending) return pending;
     const operation = (async () => {
@@ -359,10 +385,19 @@ export class DurableBotService {
       const projectionCheckpoint = db.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id = ?").get(taskId) as { entry_id: number } | undefined;
       let previousSnapshot: DurableBotSnapshot | undefined;
       let settledKey: string | undefined;
+      // One task + binding read per synchronous permission phase. Approval/resource re-checks
+      // land after a microtask, so the gate has already expired and they read fresh state.
+      // Prepared once per opened Bot; SQL compares the stored value so unchanged projections and
+      // external edits both behave correctly without an in-memory last-value cache.
+      const taskProjection = new DurableTaskProjection(db.connection);
+      const toolGate = new ToolGate(
+        () => db.getTask(taskId) ?? task,
+        (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
+      );
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
-        toolAllowed: name => this.options.toolAllowed?.(db.getTask(taskId) ?? task, name) ?? true,
+        toolAllowed: name => toolGate.allowed(name),
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
         toolHooks: domain?.toolHooks,
@@ -395,11 +430,9 @@ export class DurableBotService {
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
         onSnapshot: snapshot => {
           // Projection only; this status is never consulted to resume or finish durable work.
-          db.connection.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending", taskId);
+          taskProjection.writeStatus(taskId, snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending");
           const messageTime = snapshot.messages.at(-1)?.createdAt;
-          if (messageTime !== undefined) {
-            db.connection.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(messageTime, taskId);
-          }
+          if (messageTime !== undefined) taskProjection.touch(taskId, messageTime);
           const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = snapshot;
           this.options.emit(previousSnapshot?.epoch === snapshot.epoch
             ? { type: "durable_delta", taskId, delta: durableDelta(previousSnapshot, snapshot, state) }
@@ -409,7 +442,7 @@ export class DurableBotService {
           // Relative historical write paths belong to the directory where their message was
           // observed, not the current space. Prime old history before committing a move.
           for (const message of snapshot.messages) if (!messageWorkspaces.has(message.id)) {
-            db.connection.prepare("INSERT OR IGNORE INTO durable_bot_message_workspaces VALUES (?, ?, ?)").run(taskId, message.id, cwd);
+            taskProjection.rememberWorkspace(taskId, message.id, cwd);
             messageWorkspaces.set(message.id, cwd);
           }
           const signature = snapshot.messages.at(-1)?.id ?? "";
@@ -938,6 +971,7 @@ export class DurableBotService {
   }
   async close(): Promise<void> {
     this.closing = true;
+    this.resumeAdmission?.cancel();
     await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }

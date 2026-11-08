@@ -7,6 +7,7 @@ import { applyPatchToMessage } from "../messages/messageReducer";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
 import type { AgentDeltaPatch } from "../types";
 import { hydrateTaskMetadataFromDb } from "./taskHydration";
+import { reloadModelCatalog } from "./bootstrap";
 import { applyDurableDelta, replayDurableDeltas } from "../../../../../../shared/src/durable-sync";
 import type { DurableBotDelta, DurableBotState } from "../../../../../shared/durable-bot";
 import type { ChatMessageDto } from "../../../../../shared/agent-ipc";
@@ -44,6 +45,14 @@ export function createAgentProjectionActions(
     applyAgentPatch: (patch) => {
       if (patch.type === "work_projection_snapshot") {
         get().applyWorkProjection(patch.projection);
+        return;
+      }
+      // Late provider discovery completes after first paint; re-read the catalog without
+      // replacing the user's current model selection (see reloadModelCatalog).
+      if (patch.type === "models_changed") {
+        void reloadModelCatalog(storeContext).catch((error) =>
+          console.warn("[models_changed] 重新读取模型目录失败", error),
+        );
         return;
       }
       // deleteTask is an explicit lifecycle boundary. Main may still emit queued/terminal events while aborting;

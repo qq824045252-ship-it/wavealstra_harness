@@ -190,6 +190,10 @@ export interface PreloadApi {
     electron: string;
     node: string;
   };
+  /** Issue #17 A1 startup phase marks; the main process ignores them unless measurement is enabled. */
+  perf: {
+    mark: (name: string) => void;
+  };
   gadget: GadgetApi;
   blueprint: BlueprintApi;
   workgraph: {

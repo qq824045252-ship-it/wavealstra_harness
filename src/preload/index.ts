@@ -305,6 +305,12 @@ const api = {
     electron: process.versions.electron,
     node: process.versions.node,
   },
+  /** Issue #17 A1 startup phase marks; ignored by the main process unless measurement is on. */
+  perf: {
+    mark: (name: string): void => {
+      ipcRenderer.send("perf:mark", name);
+    },
+  },
   /** 用量统计（账户面板；主进程 usage_events 事实表） */
   usage: {
     summary: (rangeDays: number): Promise<UsageSummaryDto> => ipcRenderer.invoke(UsageIpc.summary, rangeDays),

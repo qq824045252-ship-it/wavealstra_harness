@@ -160,6 +160,7 @@ import type {
   ArtifactDomainTaskRequest,
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
+import { armStartupReport, onStartupReport, startupMark, startupMarkEnabled } from "./perf/startupMarks";
 import { WorkNotificationHost } from "./agent/work/WorkNotificationHost";
 import { publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
 import { createDesktopWorkChannel } from "./agent/work/WorkDesktopNotificationChannel";
@@ -533,15 +534,21 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     icon: appIcon.isEmpty() ? undefined : appIcon,
     backgroundColor: THEME_WINDOW_BG[initialTheme],
     autoHideMenuBar: true,
+    // The A1 baseline needs a visible window: a hidden page never paints, so its "interactive"
+    // mark would measure throttling instead of first paint.
     show: process.env.MYBUDDY_PERF_STARTUP !== "1",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
+      // Measurement keeps the window hidden; without this a hidden window throttles the very
+      // frames the startup marks rely on.
+      ...(startupMarkEnabled() ? { backgroundThrottling: false } : {}),
     },
     ...platformWindowOptions(shellOptions),
   });
 
   botManagementWindow = win;
+  startupMark("windowCreated");
   win.once("closed", () => { if (botManagementWindow === win) botManagementWindow = null; });
   setUiAutomationMainWindow(win);
   applyPlatformWindowIdentity(win, shellOptions);
@@ -601,6 +608,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 
   win.webContents.on("did-finish-load", () => {
     rendererCrashReloads = 0;
+    startupMark("rendererLoaded");
     win.webContents.send("theme:request");
     if (process.env.MYBUDDY_PERF_STARTUP === "1" && !perfStartupReported) {
       perfStartupReported = true;
@@ -2649,6 +2657,13 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  // Issue #17 A1: phase marks are opt-in and exit once the required phases are recorded.
+  if (startupMarkEnabled()) {
+    onStartupReport(() => app.exit(0));
+    armStartupReport(() => ({ resume: agentService?.durableResumeReport() ?? null }));
+    ipcMain.on("perf:mark", (_event, name) => startupMark(String(name)));
+    startupMark("appReady");
+  }
   // Windows 专属初始化（AppUserModelID）收在 platform/app.ts；其它平台 no-op。
   applyPlatformAppIdentity(app);
 
@@ -3371,15 +3386,18 @@ app.whenReady().then(async () => {
   );
   createWindow();
   await agentService.resumePersistedTasks();
+  startupMark("restoreDelivered");
   cronService.start();
+  startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
-  void gatewayService.restoreChannels();
+  void gatewayService.restoreChannels().finally(() => startupMark("gatewayRestored"));
   if (memoryGatewayController) {
     try {
       const status = await memoryGatewayController.start();
       if (status.running) {
         console.log(`[MemoryGateway] listening ${status.mcpUrl} (${status.writeEnabled ? "read-write" : "read-only"})`);
       }
+      startupMark("memoryGatewayReady");
     } catch (error) {
       console.warn(`[MemoryGateway] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -3388,6 +3406,7 @@ app.whenReady().then(async () => {
     try {
       const status = await remoteAccessController.start();
       if (status.running) console.log(`[RemoteAccess] listening http://127.0.0.1:${status.port}`);
+      startupMark("remoteAccessReady");
     } catch (error) {
       console.warn(`[RemoteAccess] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
     }

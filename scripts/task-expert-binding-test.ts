@@ -222,6 +222,38 @@ try {
       assert.deepEqual((agent as any).expertSkillPaths("legacy-valid", "analyst", ["manual-connector"], false), ["manual-connector-path"], "policy-denied expert never contributes retained private skills");
     } finally { (agent as any).connectorsService.getPrivateSkillDirs = oldConnectorPaths; }
     console.log("PASS working/coding custom identity, expert policy gate and manual connector provenance");
+
+  // Batch projection: the task list reads every binding in one query, and a database without the
+  // binding service still lists tasks (no projection, no crash).
+  task("batch-a"); task("batch-b"); task("batch-empty");
+  bindings.save({ taskId: "batch-a", expertId: "analyst", expectedRevision: null });
+  bindings.promote("batch-a");
+  const expectedRevision = bindings.active("batch-a")!.revision;
+  const prepare = db.connection.prepare.bind(db.connection);
+  let bindingQueries = 0;
+  (db.connection as unknown as { prepare: typeof db.connection.prepare }).prepare = ((sql: string) => {
+    if (/FROM task_expert_bindings/.test(sql)) bindingQueries += 1;
+    return prepare(sql);
+  }) as typeof db.connection.prepare;
+  try {
+    const listed = db.listTasks();
+    assert.equal(bindingQueries, 1, "list projection reads every binding in one query");
+    const byId = new Map(listed.map((row) => [row.id, row]));
+    assert.equal(byId.get("batch-a")!.expertBinding!.active!.revision, expectedRevision);
+    assert.equal(byId.get("batch-b")!.expertBinding, undefined, "a task without a binding keeps no projection");
+    assert.equal(byId.get("batch-empty")!.expertBinding, undefined);
+    assert.equal(db.getTask("batch-a")!.expertBinding!.active!.revision, expectedRevision, "single reads keep the per-row reader");
+  } finally {
+    (db.connection as unknown as { prepare: typeof db.connection.prepare }).prepare = prepare;
+  }
+  const bare = new AppDatabase(join(sandbox, "unbound.db"));
+  try {
+    bare.upsertTask({ id: "unbound", title: "unbound", updatedAt: 1, welcomeMode: "bot" });
+    assert.equal(bare.listTasks()[0]!.expertBinding, undefined, "a database without the binding service still lists tasks");
+  } finally {
+    bare.close();
+  }
+  console.log("PASS batched binding projection, single-read parity and unbound database");
   } finally { agent.dispose(); }
   db.deleteTask("bound");
   bindings.purge("bound");

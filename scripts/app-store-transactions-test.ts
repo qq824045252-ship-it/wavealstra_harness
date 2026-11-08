@@ -7,6 +7,10 @@ import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { durableDelta } from "../shared/src/durable-sync";
 import type { TaskHistoryDto } from "../src/shared/agent-ipc";
+import { loadRuntimeBootstrap } from "../src/renderer/src/store/app/runtime/bootstrap";
+import { mapTaskRowToTask } from "../src/renderer/src/store/app/tasks/taskMapper";
+import { recomputeEffectiveArchived } from "../src/renderer/src/store/app/workspaces/spaceHelpers";
+import { EMPTY_SOUL } from "../src/renderer/src/store/app/defaults";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -570,6 +574,11 @@ async function main(): Promise<void> {
     fileChangeProjectionPreservesWorkspacePath,
     durableSnapshotsRetainInteractionCards,
     durableRevisionGapReadsOnceAndReplaysBufferedUpdates,
+    sidebarSelectorSkipsUnchangedTaskRederivation,
+    artifactReconcileNoOpKeepsStoreState,
+    lateModelCatalogKeepsUserSelection,
+    bootstrapAppliesCriticalDataBeforeOptionalCatalogs,
+    bootstrapCriticalFailureLeavesNoPartialScreen,
   ];
   for (const test of tests) {
     await test();
@@ -578,6 +587,191 @@ async function main(): Promise<void> {
   console.log(
     `[app-store-transactions] ${tests.length} behavior groups passed`,
   );
+}
+
+async function sidebarSelectorSkipsUnchangedTaskRederivation(): Promise<void> {
+  const { useAppStore: api, appSelectors } = store({});
+  let reads = 0;
+  const base = task("task");
+  const counted = {
+    ...base,
+    get messages() {
+      reads += 1;
+      return base.messages;
+    },
+  } as Task;
+  api.setState({ tasks: [counted] });
+  const first = appSelectors.selectSidebarTasks(api.getState());
+  const second = appSelectors.selectSidebarTasks(api.getState());
+  assert.equal(second, first, "同一 Task 引用复用侧栏数组");
+  assert.equal(reads, 0, "同一 Task 引用不再重新派生展示状态");
+
+  // A different object with identical summary fields must still be compared (and may read messages).
+  const twin = {
+    ...base,
+    get messages() {
+      reads += 1;
+      return base.messages;
+    },
+  } as Task;
+  assert.notEqual(twin, counted);
+  api.setState({ tasks: [twin] });
+  const third = appSelectors.selectSidebarTasks(api.getState());
+  assert.equal(third, first, "摘要相同的不同对象仍复用旧条目");
+  assert.ok(reads > 0, "摘要相同的不同对象仍执行状态比较");
+
+  const changed = task("task", { title: "changed" });
+  api.setState({ tasks: [changed] });
+  const fourth = appSelectors.selectSidebarTasks(api.getState());
+  assert.notEqual(fourth, first, "内容变化仍产生新侧栏数组");
+  assert.equal(fourth[0], changed);
+}
+
+async function artifactReconcileNoOpKeepsStoreState(): Promise<void> {
+  const descriptor: ArtifactDescriptor = {
+    id: "artifact",
+    taskId: "task",
+    kind: "markdown",
+    title: "note.md",
+    version: 1,
+    source: { type: "managed-content", rootDir: "/test", storagePath: "task/note.md" },
+    capabilities: {},
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const { useAppStore: api } = store({});
+  const messages = [
+    { id: "u1", role: "user" as const, createdAt: 1, blocks: [] },
+    { id: "a1", role: "assistant" as const, createdAt: 2, blocks: [], artifactIds: ["artifact"] },
+  ];
+  api.setState({ tasks: [task("task", { messages })], activeTaskId: "task" });
+  const projection = api.getState().artifactProjection;
+  api.setState({ artifactProjection: { ...projection, artifactsByTask: { task: [descriptor] } } });
+
+  let notifications = 0;
+  const unsubscribe = api.subscribe(() => {
+    notifications += 1;
+  });
+  const before = api.getState().tasks;
+  api.getState().reconcileTaskMessageArtifacts("task");
+  assert.equal(notifications, 0, "已正确关联的产物对账不得发布新 Store 状态");
+  assert.equal(api.getState().tasks, before, "no-op 对账保持 tasks 数组引用");
+
+  // A real change (missing association + an orphan descriptor) must still publish once.
+  api.setState({
+    tasks: [
+      task("task", {
+        messages: [
+          { id: "u1", role: "user" as const, createdAt: 1, blocks: [] },
+          { id: "a1", role: "assistant" as const, createdAt: 2, blocks: [] },
+        ],
+      }),
+    ],
+  });
+  notifications = 0;
+  api.getState().reconcileTaskMessageArtifacts("task");
+  assert.equal(notifications, 1, "真实关联变化只发布一次状态");
+  assert.deepEqual(api.getState().tasks[0].messages[1].artifactIds, ["artifact"]);
+  unsubscribe();
+}
+
+async function lateModelCatalogKeepsUserSelection(): Promise<void> {
+  const { useAppStore: api } = store({
+    agent: {
+      listModels: async () => [
+        { id: "keep", name: "Keep", vendor: "v", supportsImages: false, supportsReasoning: false, enabled: true },
+        { id: "fresh", name: "Fresh", vendor: "v", supportsImages: false, supportsReasoning: false, enabled: true },
+      ],
+    },
+  });
+  api.setState({ models: [], activeModelId: "keep", defaultModelId: "keep" });
+  api.getState().applyAgentPatch({ type: "models_changed" });
+  await tick();
+  await tick();
+  assert.deepEqual(api.getState().models.map((model) => model.id), ["keep", "fresh"]);
+  assert.equal(api.getState().activeModelId, "keep", "晚到的目录不得覆盖已选模型");
+  assert.equal(api.getState().defaultModelId, "keep");
+
+  api.setState({ models: [], activeModelId: "", defaultModelId: "" });
+  api.getState().applyAgentPatch({ type: "models_changed" });
+  await tick();
+  await tick();
+  assert.equal(api.getState().activeModelId, "keep", "空选择回落首个启用模型");
+  assert.equal(api.getState().defaultModelId, "keep");
+}
+
+async function bootstrapAppliesCriticalDataBeforeOptionalCatalogs(): Promise<void> {
+  const calls: string[] = [];
+  const api = {
+    db: {
+      listSpaces: async () => [{ id: "space", name: "Space", path: "/space", archived: false }],
+      listTasks: async () => [{ id: "critical", title: "Critical", updatedAt: 5, welcomeMode: "bot" }],
+      listProjects: async () => [],
+      getSoul: async () => null,
+    },
+    agent: {
+      listModels: async () => [{ id: "model", name: "Model", vendor: "v", supportsImages: false, supportsReasoning: false, enabled: true }],
+      getAppSettings: async () => null,
+      listSkills: async () => { calls.push("skills"); throw new Error("skills unavailable"); },
+      listMarketSkills: async () => { calls.push("market-skills"); return [{ id: "ms", name: "MS" }]; },
+      listExperts: async () => { calls.push("experts"); return [{ id: "e1" }]; },
+      listMarketExperts: async () => [{ id: "me1" }],
+      listConnectors: async () => { calls.push("connectors"); return [{ id: "c1" }]; },
+    },
+  };
+  const app = store(api);
+  const binding = {
+    context: app.context,
+    api: api as unknown as NonNullable<Window["api"]>,
+    isActive: () => true,
+    addCleanup: () => {},
+  };
+  await loadRuntimeBootstrap(binding, {
+    mapTaskRowToTask,
+    recomputeEffectiveArchived,
+    emptySoul: EMPTY_SOUL,
+  });
+  const state = app.useAppStore.getState();
+  assert.deepEqual(state.tasks.map((row) => row.id), ["critical"], "关键数据不受目录失败影响");
+  assert.deepEqual(state.models.map((row) => row.id), ["model"]);
+  assert.deepEqual(state.spaces.map((row) => row.id), ["space"]);
+  assert.deepEqual(state.marketSkills.map((row) => row.id), ["ms"], "其余目录仍独立加载");
+  assert.deepEqual(state.experts.map((row) => row.id), ["e1"]);
+  assert.deepEqual(state.connectors.map((row) => row.id), ["c1"]);
+  assert.equal(state.skills.length, 0, "失败的目录只留下空分片");
+  assert.ok(calls.includes("market-skills") && calls.includes("connectors"), "失败目录不会中断其他目录");
+}
+
+async function bootstrapCriticalFailureLeavesNoPartialScreen(): Promise<void> {
+  let optionalReads = 0;
+  const api = {
+    db: {
+      listSpaces: async () => [],
+      listTasks: async () => { throw new Error("database unavailable"); },
+      listProjects: async () => [],
+      getSoul: async () => null,
+    },
+    agent: {
+      listModels: async () => [],
+      getAppSettings: async () => null,
+      listSkills: async () => { optionalReads += 1; return []; },
+    },
+  };
+  const app = store(api);
+  const tasksBefore = app.useAppStore.getState().tasks;
+  const binding = {
+    context: app.context,
+    api: api as unknown as NonNullable<Window["api"]>,
+    isActive: () => true,
+    addCleanup: () => {},
+  };
+  await loadRuntimeBootstrap(binding, {
+    mapTaskRowToTask,
+    recomputeEffectiveArchived,
+    emptySoul: EMPTY_SOUL,
+  });
+  assert.equal(optionalReads, 0, "没有首屏数据时不继续加载目录");
+  assert.equal(app.useAppStore.getState().tasks, tasksBefore, "关键读取失败不写半成品状态");
 }
 
 async function durableRevisionGapReadsOnceAndReplaysBufferedUpdates(): Promise<void> {

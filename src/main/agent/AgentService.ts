@@ -267,6 +267,7 @@ import {
   assembleProjectContextSegments,
   assemblePrompt,
   resolveSessionToolSelection,
+  type SessionToolSelection,
 } from "./PromptAssembly";
 import { derivePromptContextCharBudget } from "./PromptContextBudget";
 import { filterLoaderSkills } from "./SkillPolicy";
@@ -590,6 +591,7 @@ export class AgentService {
   private modelRuntime: ModelRuntime | null = null;
   private modelConfigFingerprint: string | undefined;
   private modelConfigReload: Promise<void> | undefined;
+  private modelDiscovery: Promise<void> | undefined;
   private readonly patchListeners = new Set<(patch: AgentUiPatch) => void>();
   /** 会话文件历史解析缓存：key = sessionFile + cwd，value = 文件指纹 + 解析结果 */
   private readonly historyCache = new Map<string, { stamp: string; history: TaskHistoryDto }>();
@@ -1441,7 +1443,11 @@ export class AgentService {
       refreshOnCreate: false,
     });
     registerMyBuddyProviders(this.modelRuntime, { magpieConfig: () => this.readMagpieGatewayConfig() });
-    await this.modelRuntime.refresh({ allowNetwork: !suppliedModels, signal: AbortSignal.timeout(15_000) });
+    // The local catalog is enough to create the first window and resolve stored task models.
+    // Waiting for remote discovery here put window creation behind a network round trip (aborted
+    // only after 15s), so it now runs after the window is up and tells the UI to re-read the list.
+    await this.modelRuntime.refresh({ allowNetwork: false });
+    if (!suppliedModels) this.discoverModelsInBackground();
     // Discovery is read-only and must not delay desktop startup or generate media.
     if (!suppliedModels) void this.mediaCapabilityServices.refresh().catch(() => undefined);
     installModelInvocationAdmission(this.modelRuntime, () => createAgentSettingsManager(process.cwd(), getMyBuddyDir()));
@@ -1622,6 +1628,11 @@ export class AgentService {
     });
   }
 
+  /** Startup drain outcome for diagnostics/tests; delivered never implies native work finished. */
+  durableResumeReport(): import("./durable/ResumeAdmission").ResumeAdmissionReport | undefined {
+    return this.durableBots?.lastResumeReport;
+  }
+
   /** Bootstrap calls this after window-backed tools are attached, before accepting background work. */
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
@@ -1747,6 +1758,9 @@ export class AgentService {
   }
 
   private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();
+  /** Keyed by the task object a synchronous permission phase shares; see durableToolAllowed. */
+  private readonly durableAssemblyMemo = new WeakMap<TaskDto, AssemblyTraceDto>();
+  private readonly toolSelectionMemo = new WeakMap<AssemblyTraceDto, Map<string, SessionToolSelection>>();
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
     const getPermissionMode = () => this.db.getTask(task.id)?.permissionMode ?? task.permissionMode ?? "default";
@@ -1835,20 +1849,36 @@ export class AgentService {
   }
 
   private durableAssembly(task: TaskDto): AssemblyTraceDto {
+    // Same task object = same synchronous permission phase (see ToolGate), so the assembly and
+    // its selection can be reused without caching across approval/resource waits.
+    const memoized = this.durableAssemblyMemo.get(task);
+    if (memoized) return memoized;
     const connectorIds = this.settingsStore.getTaskConnectorIds(task.id);
     const key = JSON.stringify([task.welcomeMode, task.projectId, task.spaceId, task.cwd, task.modePresetId, task.expertId, task.permissionMode, connectorIds, this.expertBindings.active(task.id)?.revision]);
     const cached = this.durableAssemblies.get(task.id);
-    if (cached?.key === key) return cached.assembly;
+    if (cached?.key === key) {
+      this.durableAssemblyMemo.set(task, cached.assembly);
+      return cached.assembly;
+    }
     const assembly = this.assembleModePreview({ taskId: task.id, welcomeMode: resolveWelcomeMode(task.welcomeMode),
       projectId: task.projectId, spaceId: task.spaceId ?? undefined, cwd: task.cwd,
       modePresetId: task.modePresetId, expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId,
       connectorIds, permissionMode: task.permissionMode });
     this.durableAssemblies.set(task.id, { key, assembly });
+    this.durableAssemblyMemo.set(task, assembly);
     return assembly;
   }
 
   private durableToolAllowed(task: TaskDto, name: string): boolean {
-    const selection = resolveSessionToolSelection(task.permissionMode ?? "default", this.durableAssembly(task).toolPolicy, this.builtinCapabilities.config());
+    const assembly = this.durableAssembly(task);
+    const permissionMode = task.permissionMode ?? "default";
+    let selections = this.toolSelectionMemo.get(assembly);
+    if (!selections) { selections = new Map(); this.toolSelectionMemo.set(assembly, selections); }
+    let selection = selections.get(permissionMode);
+    if (!selection) {
+      selection = resolveSessionToolSelection(permissionMode, assembly.toolPolicy, this.builtinCapabilities.config());
+      selections.set(permissionMode, selection);
+    }
     if (["subagent", "subagent_list", "subagent_steer"].includes(name) && !this.builtinCapabilities.config().subagent.enabled) return false;
     return !(selection.excludeTools ?? []).some(tool => tool.toLowerCase() === name.toLowerCase());
   }
@@ -2254,6 +2284,25 @@ export class AgentService {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Remote catalog discovery after the window is up. Failures and timeouts leave the locally
+   * loaded catalog in place; a completed refresh only asks the renderer to re-read the list.
+   */
+  private discoverModelsInBackground(): void {
+    if (this.modelDiscovery) return;
+    const runtime = this.modelRuntime;
+    if (!runtime) return;
+    this.modelDiscovery = (async () => {
+      try {
+        const result = await runtime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(15_000) });
+        if (result.aborted) return;
+        this.emitPatch({ type: "models_changed" });
+      } catch (error) {
+        console.warn("[AgentService] 后台模型目录发现失败，沿用本地目录", error);
+      }
+    })().finally(() => { this.modelDiscovery = undefined; });
   }
 
   /** External editors (including Magpie) own their file writes; Pi owns the live catalog.
