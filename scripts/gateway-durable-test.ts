@@ -52,9 +52,10 @@ const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGa
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
 const fixtureConnection = "a".repeat(64);
 const scopedTask = (channelId:string, chatId:string) => gatewayInboundIdentity(channelId,fixtureConnection,chatId).taskId;
-// These synthetic inputs bypass provider transport but still supply a verified account.
+// These synthetic inputs bypass provider transport but still supply a verified account and saved policy.
 for (const channel of ["feishu","wecom","wechat","telegram"]) {
   (gateway as any).adapters.get(channel+"-default").workConnectionKey=()=>fixtureConnection;
+  (gateway as any).channelPolicies.set(channel+"-default", {allowUsers:[]});
 }
 (gateway as any).adapters.set("custom-default", {workConnectionKey:()=>fixtureConnection,disconnect:async()=>{},isConnected:()=>true});
 const inbound=(gateway as any).createInboundHandler();
@@ -122,7 +123,7 @@ try{
 
   (gateway as any).channelPolicies.set("telegram-default",{allowUsers:["owner"]});
   const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});
-  assert.equal(requests,beforeDenied);(gateway as any).channelPolicies.clear();
+  assert.equal(requests,beforeDenied);(gateway as any).channelPolicies.set("telegram-default",{allowUsers:[]});
 
   const first=durable.runGatewayTurn(request("HOLD_FIRST"));await until(()=>held.has("HOLD_FIRST"));
   const duplicate=durable.runGatewayTurn(request("HOLD_FIRST"));

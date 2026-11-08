@@ -102,6 +102,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
   setInboundHandler(handler: GatewayInboundHandler): void { this.onInbound = handler; }
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.lastError || (this.connected ? "已连接（Socket Mode，限定工作区和用户）" : "未连接"); }
+  gatewayConnectionGeneration(): unknown { return this.socket; }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config && this.botUserId
       ? gatewayConnectionKey(this.type, [this.config.teamId, this.config.appId, this.botUserId]) : undefined;

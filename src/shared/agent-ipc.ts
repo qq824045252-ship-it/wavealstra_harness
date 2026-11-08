@@ -291,6 +291,12 @@ export const GatewayIpc = {
   getChannelConfig: "gateway:getChannelConfig",
   listMessages: "gateway:listMessages",
   event: "gateway:event",
+  weixinQrStart: "gateway:weixinQrStart",
+  weixinQrState: "gateway:weixinQrState",
+  weixinQrCancel: "gateway:weixinQrCancel",
+  qqQrStart: "gateway:qqQrStart",
+  qqQrState: "gateway:qqQrState",
+  qqQrCancel: "gateway:qqQrCancel",
 } as const;
 
 /** 浏览器 / HTML 产物预览共享控制台通道。target 仅允许 browser | artifact。 */
@@ -1888,7 +1894,23 @@ export interface CronRunDto {
   taskId?: string;
 }
 
-export type GatewayChannelType = "feishu" | "wechat" | "wecom" | "telegram" | "slack" | "dingtalk" | "discord";
+export type GatewayChannelType = "feishu" | "wechat" | "wecom" | "telegram" | "slack" | "dingtalk" | "discord" | "qq" | "weixin";
+
+/** Public enrollment view. Credentials and polling tickets stay in the main process. */
+export interface GatewayWeixinQrLoginStateDto {
+  state: "idle" | "waiting" | "binding" | "connected" | "cancelled" | "expired" | "error";
+  sessionId?: string;
+  qrUrl?: string;
+  message: string;
+}
+
+export interface GatewayQQQrLoginStateDto {
+  state: "idle" | "waiting" | "binding" | "connected" | "cancelled" | "expired" | "error";
+  sessionId?: string;
+  qrUrl?: string;
+  message: string;
+  appId?: string;
+}
 
 export interface GatewayChannelDto {
   id: string;

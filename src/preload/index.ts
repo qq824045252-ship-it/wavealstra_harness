@@ -154,6 +154,8 @@ import {
   type DbUpsertResult,
   type FileBackupInfoDto,
   type GatewayChannelConfigDto,
+  type GatewayWeixinQrLoginStateDto,
+  type GatewayQQQrLoginStateDto,
   type GatewayEventDto,
   type GatewayListMessagesRequest,
   type GatewayMessageDto,
@@ -982,6 +984,12 @@ const api = {
   },
 
   gateway: {
+    weixinQrStart: (approvedPersistentAccess: boolean): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrStart, approvedPersistentAccess),
+    qqQrStart: (approvedPersistentAccess: boolean): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrStart, approvedPersistentAccess),
+    weixinQrState: (): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrState),
+    qqQrState: (): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrState),
+    weixinQrCancel: (sessionId?: string): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrCancel, sessionId),
+    qqQrCancel: (sessionId?: string): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrCancel, sessionId),
     status: (): Promise<GatewayStatusDto> => ipcRenderer.invoke(GatewayIpc.status),
     listChannels: (): Promise<GatewayStatusDto["channels"]> =>
       ipcRenderer.invoke(GatewayIpc.listChannels),

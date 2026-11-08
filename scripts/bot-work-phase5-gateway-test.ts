@@ -247,7 +247,7 @@ try {
   });
   await check("Feishu verification fails closed before native execution and keeps its token redacted", async () => {
     const isolated = new FeishuChannelAdapter("isolated", "Feishu");
-    await assert.rejects(isolated.connect({ appId: config.appId, appSecret: config.appSecret }), /verificationToken/);
+    await assert.rejects(isolated.connect({ appId: config.appId, appSecret: config.appSecret, transport: "webhook" }), /verificationToken/);
     const before = h.state.executions;
     for (const input of [
       { ...payload("bad-token"), header: { ...payload("x").header, token: "forged" } },

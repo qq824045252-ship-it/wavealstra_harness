@@ -65,6 +65,7 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   setInboundHandler(handler: GatewayInboundHandler): void { this.handler = handler; }
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.connected ? "已连接（钉钉 Stream，限定企业和员工）" : this.stopped ? "未连接" : "钉钉连接恢复中"; }
+  gatewayConnectionGeneration(): unknown { return this.socket; }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config
       ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.clientId, this.config.robotCode]) : undefined;

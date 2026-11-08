@@ -2152,6 +2152,12 @@ function registerIpc(): void {
   });
 
   // Gateway
+  ipcMain.handle(GatewayIpc.weixinQrStart, (_e, approved: boolean) => gatewayService.startWeixinQrLogin(approved));
+  ipcMain.handle(GatewayIpc.qqQrStart, (_e, approved: boolean) => gatewayService.startQQQrLogin(approved));
+  ipcMain.handle(GatewayIpc.weixinQrState, () => gatewayService.getWeixinQrLoginState());
+  ipcMain.handle(GatewayIpc.qqQrState, () => gatewayService.getQQQrLoginState());
+  ipcMain.handle(GatewayIpc.weixinQrCancel, (_e, sessionId?: string) => gatewayService.cancelWeixinQrLogin(sessionId));
+  ipcMain.handle(GatewayIpc.qqQrCancel, (_e, sessionId?: string) => gatewayService.cancelQQQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.status, () => gatewayService.status());
   ipcMain.handle(GatewayIpc.listChannels, () => gatewayService.listChannels());
   ipcMain.handle(

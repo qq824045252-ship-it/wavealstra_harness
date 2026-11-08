@@ -31,6 +31,8 @@ import {
 } from "@/components/common/icons";
 import "./RecordManagement.css";
 import ModelsTab from "./ModelsTab";
+import WeixinGatewaySettings from "./WeixinGatewaySettings";
+import QQGatewaySettings from "./QQGatewaySettings";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
@@ -858,7 +860,9 @@ function GatewayBlock({
   const [busy, setBusy] = useState(false);
   const isSlack = channelId === "slack-default";
   const isDiscord = channelId === "discord-default";
-  const requiresAllowUsers = isSlack || ["dingtalk-default", "discord-default"].includes(channelId);
+  const requiresAllowUsers = isSlack || ["dingtalk-default", "discord-default"].includes(channelId)
+    || (channelId === "feishu-default" && (values.transport === "websocket" || (!values.transport && !values.verificationToken)))
+    || (channelId === "wecom-default" && (values.mode === "smart" || (!values.mode && Boolean(values.botId))));
   const [allowDirectMessages, setAllowDirectMessages] = useState(false);
 
   const refreshStatus = useCallback(async (): Promise<void> => {
@@ -987,6 +991,9 @@ function AssistantTab(): React.JSX.Element {
         连接后符合授权条件的消息会自动开始任务；应用重启后尝试恢复连接。
       </div>
 
+      <QQGatewaySettings />
+      <WeixinGatewaySettings />
+
       <GatewayBlock
         channelId="slack-default"
         title="Slack 私聊"
@@ -1032,8 +1039,9 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="feishu-default"
         title="飞书"
-        desc="在飞书开放平台配置事件回调：http://127.0.0.1:52140/feishu（需要公网）。填写事件订阅的 Verification Token，用于验证回调来源。"
+        desc="推荐 websocket：飞书官方 SDK 长连接，无需公网回调。保留 webhook 模式，需 Verification Token 与公网 /feishu 回调。当前仅文本消息，不含 Hermes 富媒体、卡片等能力。"
         fields={[
+          { key: "transport", label: "接入方式", placeholder: "websocket 或 webhook（旧配置保留 webhook）" },
           { key: "appId", label: "App ID", placeholder: "cli_xxx" },
           { key: "appSecret", label: "App Secret", type: "password", placeholder: "密钥" },
           { key: "verificationToken", label: "Verification Token", type: "password", placeholder: "事件订阅校验令牌" },
@@ -1043,8 +1051,10 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="wecom-default"
         title="企微"
-        desc="在企微管理后台配置回调：http://127.0.0.1:52140/wecom（需要公网）。"
+        desc="smart：官方 Smart Robot 长连接，填写 Bot ID 和 Secret；callback：原自建应用回调，填写下方 Corp ID、Agent ID、Secret、Token 和 AES Key，需公网 /wecom。Smart Robot 当前支持文本收取/Markdown 回复，暂不支持主动 Work 通知、富媒体或原生流式。"
         fields={[
+          { key: "mode", label: "接入方式", placeholder: "smart 或 callback（旧配置保留 callback）" },
+          { key: "botId", label: "Bot ID", placeholder: "Smart Robot ID" },
           { key: "corpId", label: "Corp ID", placeholder: "ww_xxx" },
           { key: "agentId", label: "Agent ID", placeholder: "1000002" },
           { key: "secret", label: "Secret", type: "password", placeholder: "密钥" },

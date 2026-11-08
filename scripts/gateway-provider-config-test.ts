@@ -5,13 +5,15 @@ import { setEncryptionAvailable } from "./gateway-electron-stub";
 import { gatewayWorkTarget } from "../src/main/gateway/work-outbound";
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { DiscordGatewayAdapter } from "../src/main/gateway/DiscordGatewayAdapter";
-import type { GatewayInboundHandler } from "../src/main/gateway/channels";
+import { FeishuChannelAdapter, WecomChannelAdapter, type GatewayInboundHandler } from "../src/main/gateway/channels";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 for (const [type, config, secret] of [
+  ["feishu", { appId: "app", appSecret: "lark-secret", transport: "websocket", allowUsers: ["owner"] }, "appSecret"],
+  ["wecom", { botId: "bot", secret: "wecom-secret", mode: "smart", allowUsers: ["owner"] }, "secret"],
   ["dingtalk", { clientId: "client", clientSecret: "ding-secret", corpId: "corp", robotCode: "robot", allowUsers: ["staff"] }, "clientSecret"],
   ["discord", { applicationId: "123", botToken: "discord-secret", guildIds: ["456"], allowDirectMessages: false, allowUsers: ["789"] }, "botToken"],
 ] as const) {
@@ -28,7 +30,7 @@ for (const [type, config, secret] of [
   assert.throws(() => sealGatewayProviderConfig(type, valid));
   assert.throws(() => openGatewayProviderConfig(type, stored));
   setEncryptionAvailable(true);
-  assert.equal(gatewayWorkTarget({ version: 1, channelId: `${type}-default`, channelType: type,
+  if (type === "dingtalk" || type === "discord") assert.equal(gatewayWorkTarget({ version: 1, channelId: `${type}-default`, channelType: type,
     connectionKey: "a".repeat(64), chatId: "chat", senderId: "sender", address: { chatId: "chat" } }), undefined);
 }
 assert.throws(() => validateGatewayProviderConfig("discord", { applicationId: "123", botToken: "token", allowUsers: ["123"], guildIds: [], allowDirectMessages: false }));
@@ -49,7 +51,7 @@ let turns = 0;
 const service = new GatewayService(db, { runGatewayTurn: async () => { turns++; throw new Error("unused"); } }, undefined,
   { adapters: { discord: adapter } });
 try {
-  assert.deepEqual(service.listChannels().map(c => c.type).sort(), ["dingtalk", "discord", "feishu", "slack", "telegram", "wechat", "wecom"]);
+  assert.deepEqual(service.listChannels().map(c => c.type).sort(), ["dingtalk", "discord", "feishu", "qq", "slack", "telegram", "wechat", "wecom", "weixin"]);
   const config = { applicationId: "123", botToken: "secret-token", guildIds: ["456"], allowDirectMessages: false, allowUsers: ["789"] };
   await service.connect("discord-default", config);
   assert.equal(adapter.active, true);
@@ -69,3 +71,55 @@ try {
   await assert.rejects(() => adapter.handler!({ channelId: adapter.id, chatId: "456", sender: { id: "789" }, text: "stale", reply: async () => {} }));
 } finally { await service.stop(); db.close(); rmSync(root, { recursive: true, force: true }); }
 console.log("gateway provider configuration and registration: PASS");
+
+// Socket mode must persist encrypted policy before activating either transport.
+class TestFeishu extends FeishuChannelAdapter {
+  live = false; active = false; handler?: GatewayInboundHandler;
+  override setInboundHandler(handler: GatewayInboundHandler): void { this.handler = handler; }
+  override async connect(): Promise<void> { this.live = true; this.active = false; }
+  override activate(): void { this.active = true; }
+  override async disconnect(): Promise<void> { this.live = false; this.active = false; }
+  override isConnected(): boolean { return this.live; }
+  override workConnectionKey(): string | undefined { return this.live && this.active ? "a".repeat(64) : undefined; }
+  override gatewayCapabilities() { return { transport: "socket" as const, workNotifications: true }; }
+}
+class TestWecom extends WecomChannelAdapter {
+  live = false; active = false;
+  override async connect(): Promise<void> { this.live = true; this.active = false; }
+  override activate(): void { this.active = true; }
+  override async disconnect(): Promise<void> { this.live = false; this.active = false; }
+  override isConnected(): boolean { return this.live; }
+  override workConnectionKey(): string | undefined { return this.live && this.active ? "b".repeat(64) : undefined; }
+  override gatewayCapabilities() { return { transport: "socket" as const, workNotifications: false }; }
+}
+{
+  const dir = mkdtempSync(join(tmpdir(), "gateway-socket-security-"));
+  const database = new AppDatabase(join(dir, "test.db"));
+  const feishu = new TestFeishu("feishu-default", "飞书");
+  const wecom = new TestWecom("wecom-default", "企微");
+  const gateway = new GatewayService(database, { runGatewayTurn: async () => "answer" }, undefined, { adapters: { feishu, wecom } });
+  try {
+    for (const [adapter, config, secret] of [
+      [feishu, { appId: "app", appSecret: "lark-secret", transport: "websocket", allowUsers: ["owner"] }, "appSecret"],
+      [wecom, { botId: "bot", secret: "wecom-secret", mode: "smart", allowUsers: ["owner"] }, "secret"],
+    ] as const) {
+      const save = database.upsertGatewayChannel.bind(database);
+      database.upsertGatewayChannel = row => {
+        assert.equal(adapter.active, false);
+        assert.equal(JSON.parse(row.configJson)[secret], undefined);
+        save(row);
+      };
+      await gateway.connect(adapter.id, config);
+      database.upsertGatewayChannel = save;
+      assert.equal(adapter.active, true);
+      assert.equal(gateway.getChannelConfig(adapter.id).config[secret], "••••••");
+      assert.equal((gateway as unknown as { webhookServer: unknown }).webhookServer, null);
+      await gateway.disconnect(adapter.id);
+      database.upsertGatewayChannel = () => { throw new Error("disk full"); };
+      await assert.rejects(() => gateway.connect(adapter.id, config), /安全配置保存失败/);
+      database.upsertGatewayChannel = save;
+      assert.equal(adapter.live, false); assert.equal(adapter.active, false);
+    }
+  } finally { await gateway.stop(); database.close(); rmSync(dir, { recursive: true, force: true }); }
+}
+console.log("PASS Lark/WeCom encrypted policy before activation, no HTTP listener, safe persistence failure");

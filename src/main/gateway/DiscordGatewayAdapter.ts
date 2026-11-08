@@ -63,6 +63,7 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
   setInboundHandler(handler: GatewayInboundHandler): void { this.onInbound = handler; }
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.lastError || (this.connected ? '已连接（Discord 官方 Bot Gateway）' : '未连接'); }
+  gatewayConnectionGeneration(): unknown { return this.socket; }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config && this.botId
       ? gatewayConnectionKey(this.type, [this.config.applicationId, this.botId]) : undefined;

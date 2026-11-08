@@ -1,3 +1,5 @@
+import { createFeishuLongConnection, type FeishuLongConnection } from "./FeishuLongConnection";
+import { WecomSmartRobot, type WecomSmartRobotOptions } from "./WecomSmartRobot";
 import type { AgentService } from "../agent/AgentService";
 import { timingSafeEqual } from "node:crypto";
 import { assertGatewayWorkSend, gatewayConnectionKey, gatewayWorkTarget, GatewayWorkNotSentError,
@@ -18,6 +20,8 @@ export interface ChannelAdapter {
   isConnected(): boolean;
   statusText(): string;
   workConnectionKey?(): string | undefined;
+  /** Opaque transport epoch. Never persisted or exposed to the model. */
+  gatewayConnectionGeneration?(): unknown;
   sendWorkNotification?(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult>;
 }
 
@@ -51,18 +55,16 @@ export interface SlackChannelHistory {
 
 export type GatewayInboundHandler = (msg: GatewayInboundMessage) => Promise<void>;
 
-/**
- * 飞书长连接 WebSocket 机器人（MVP）。
- * 配置：{ appId, appSecret }
- * 使用飞书开放平台事件订阅「接收消息」；此处实现简易轮询式 HTTP webhook 服务端点由 GatewayService 托管。
- *
- * 说明：完整长连接需 @larksuiteoapi/node-sdk；MVP 用本地 webhook 接收 + tenant_access_token 回发。
- */
+/** 飞书官方 SDK 长连接；保留已验证的旧 Webhook 配置。 */
 export class FeishuChannelAdapter implements ChannelAdapter {
   readonly type = "feishu" as const;
   private connected = false;
+  private activated = false;
+  private activationWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
   private generation = 0;
   private config: { appId?: string; appSecret?: string; verificationToken?: string } = {};
+  private transport: "webhook" | "websocket" = "webhook";
+  private longConnection: FeishuLongConnection | null = null;
   private token: string | null = null;
   private tokenExpireAt = 0;
   private onInbound: GatewayInboundHandler | null = null;
@@ -70,7 +72,21 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   constructor(
     readonly id: string,
     readonly name: string,
+    private readonly createConnection = createFeishuLongConnection,
+    private readonly options: { deferInboundUntilActivated?: boolean } = {},
   ) {}
+
+  gatewayCapabilities(config?: ChannelConfig): { transport: "socket" | "webhook"; workNotifications: boolean } {
+    const socket = config ? config.transport === "websocket" || (!config.transport && !config.verificationToken) : this.transport === "websocket";
+    return { transport: socket ? "socket" : "webhook", workNotifications: true };
+  }
+
+  activate(): void {
+    if (!this.connected) return;
+    this.activated = true;
+    for (const waiter of this.activationWaiters) waiter.resolve();
+    this.activationWaiters.clear();
+  }
 
   setInboundHandler(handler: GatewayInboundHandler): void {
     this.onInbound = handler;
@@ -84,16 +100,38 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       appSecret: String(config.appSecret ?? ""),
       verificationToken: String(config.verificationToken ?? ""),
     };
-    if (!this.config.appId || !this.config.appSecret || !this.config.verificationToken) {
+    this.transport = config.transport === "websocket" || (!config.transport && !this.config.verificationToken) ? "websocket" : "webhook";
+    if (config.transport && !["websocket", "webhook"].includes(String(config.transport))) throw new Error("飞书 transport 必须是 websocket 或 webhook");
+    if (!this.config.appId || !this.config.appSecret || (this.transport === "webhook" && !this.config.verificationToken)) {
       throw new Error("飞书通道需要 appId、appSecret 与 verificationToken，未核验的 Webhook 不会启动任务");
     }
     await this.refreshToken();
     if (generation !== this.generation) throw new Error("Gateway 连接已取消");
     this.connected = true;
+    this.activated = !this.options.deferInboundUntilActivated;
+    if (this.transport === "websocket") {
+      const connection = this.createConnection(this.config.appId, this.config.appSecret);
+      this.longConnection = connection;
+      try {
+        await connection.start(async event => {
+          if (generation !== this.generation || !this.connected) return;
+          await this.handleMessageEvent(event);
+        });
+        if (generation !== this.generation) { connection.close(); throw new Error("Gateway 连接已取消"); }
+      } catch (error) {
+        connection.close();
+        if (generation === this.generation) await this.disconnect();
+        throw error;
+      }
+    }
   }
 
   async disconnect(): Promise<void> {
     this.generation++;
+    this.activated = false;
+    for (const waiter of this.activationWaiters) waiter.reject(new Error("飞书连接已取消"));
+    this.activationWaiters.clear();
+    this.longConnection?.close(); this.longConnection = null;
     this.connected = false;
     this.token = null;
   }
@@ -104,12 +142,12 @@ export class FeishuChannelAdapter implements ChannelAdapter {
 
   statusText(): string {
     if (!this.connected) return "未连接";
-    return this.token ? "已连接（Webhook）" : "连接中…";
+    return this.transport === "websocket" ? "已启动（飞书官方长连接）" : "已连接（Webhook）";
   }
 
   /** 供 Gateway HTTP webhook 调用 */
   async handleWebhookPayload(body: unknown): Promise<{ challenge?: string } | void> {
-    if (!this.connected || !this.config.verificationToken) throw new Error("飞书 Webhook 身份校验未配置或通道已停用");
+    if (this.transport !== "webhook" || !this.activated || !this.connected || !this.config.verificationToken) throw new Error("飞书 Webhook 身份校验未配置或通道已停用");
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("飞书 Webhook 请求无效");
     const payload = body as {
       schema?: string;
@@ -141,7 +179,23 @@ export class FeishuChannelAdapter implements ChannelAdapter {
 
     const eventType = payload.header?.event_type;
     if (eventType !== "im.message.receive_v1") return;
-    const msg = payload.event?.message;
+    await this.handleMessageEvent(payload.event);
+  }
+
+  private async handleMessageEvent(event: unknown): Promise<void> {
+    const generation = this.generation;
+    if (!this.activated) {
+      if (!this.connected || this.activationWaiters.size >= 100) throw new Error("飞书接收尚未激活");
+      // Hold the SDK acknowledgement until Gateway has persisted policy and activated ingress.
+      await new Promise<void>((resolve, reject) => this.activationWaiters.add({ resolve, reject }));
+    }
+    if (!this.connected || generation !== this.generation) throw new Error("飞书连接已改变");
+    if (!event || typeof event !== "object") return;
+    const payload = { event: event as { message?: { chat_id?: string; message_id?: string; content?: string; message_type?: string }; sender?: { sender_type?: string; sender_id?: { open_id?: string } } } };
+    if (payload.event.sender?.sender_type === "app") return;
+    const msg = payload.event.message;
+    // Do not turn opaque media JSON into an instruction. Rich media is a separate capability.
+    if (msg?.message_type && msg.message_type !== "text") return;
     if (!msg?.chat_id || !msg.content) return;
 
     let text = "";
@@ -200,8 +254,10 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     return this.token;
   }
 
+  gatewayConnectionGeneration(): unknown { return this.longConnection?.generation?.() ?? this.generation; }
+
   workConnectionKey(): string | undefined {
-    return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+    return this.connected && this.activated && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
   }
 
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
@@ -262,6 +318,8 @@ export interface WxHttpResult {
 export class WecomChannelAdapter implements ChannelAdapter {
   readonly type = "wecom" as const;
   private connected = false;
+  private activated = false;
+  private smart: WecomSmartRobot | null = null;
   private generation = 0;
   private config: {
     corpId?: string;
@@ -278,15 +336,38 @@ export class WecomChannelAdapter implements ChannelAdapter {
   constructor(
     readonly id: string,
     readonly name: string,
+    private readonly smartOptions: WecomSmartRobotOptions = {},
   ) {}
+
+  gatewayCapabilities(config?: ChannelConfig): { transport: "socket" | "webhook"; workNotifications: boolean } {
+    const smart = config ? config.mode === "smart" || (!config.mode && Boolean(config.botId)) : Boolean(this.smart);
+    return { transport: smart ? "socket" : "webhook", workNotifications: !smart };
+  }
+
+  activate(): void {
+    this.activated = true;
+    this.smart?.activate();
+  }
 
   setInboundHandler(handler: GatewayInboundHandler): void {
     this.onInbound = handler;
+    this.smart?.setInboundHandler(handler);
   }
 
   async connect(config: ChannelConfig): Promise<void> {
     await this.disconnect();
     const generation = this.generation;
+    this.activated = !this.smartOptions.deferInboundUntilActivated;
+    if (config.mode && !["smart", "callback"].includes(String(config.mode))) throw new Error("企微 mode 必须是 smart 或 callback");
+    if (config.mode === "smart" || (!config.mode && config.botId)) {
+      const smart = new WecomSmartRobot(this.id, this.smartOptions);
+      this.smart = smart;
+      if (this.onInbound) smart.setInboundHandler(this.onInbound);
+      try { await smart.connect(config); }
+      catch (error) { if (this.smart === smart) this.smart = null; await smart.disconnect(); throw error; }
+      if (generation !== this.generation) { await smart.disconnect(); throw new Error("Gateway 连接已取消"); }
+      return;
+    }
     this.config = {
       corpId: String(config.corpId ?? ""),
       agentId: String(config.agentId ?? ""),
@@ -311,16 +392,20 @@ export class WecomChannelAdapter implements ChannelAdapter {
 
   async disconnect(): Promise<void> {
     this.generation++;
+    this.activated = false;
+    const smart = this.smart; this.smart = null;
+    await smart?.disconnect();
     this.connected = false;
     this.accessToken = null;
     this.crypt = null;
   }
 
   isConnected(): boolean {
-    return this.connected;
+    return this.smart ? this.smart.isConnected() : this.connected;
   }
 
   statusText(): string {
+    if (this.smart) return this.smart.statusText();
     if (!this.connected) return "未连接";
     return this.accessToken ? "已连接（Webhook）" : "连接中…";
   }
@@ -330,7 +415,7 @@ export class WecomChannelAdapter implements ChannelAdapter {
     query: URLSearchParams;
     rawBody: string;
   }): Promise<WxHttpResult> {
-    if (!this.connected || !this.crypt) {
+    if (!this.activated || !this.connected || !this.crypt) {
       return { status: 503, body: "wecom not connected" };
     }
     const msgSignature = opts.query.get("msg_signature") ?? "";
@@ -405,12 +490,17 @@ export class WecomChannelAdapter implements ChannelAdapter {
     return this.accessToken;
   }
 
+  gatewayConnectionGeneration(): unknown { return this.smart?.gatewayConnectionGeneration() ?? this.generation; }
+
   workConnectionKey(): string | undefined {
+    if (!this.activated) return undefined;
+    if (this.smart) return this.smart.workConnectionKey();
     return this.connected && this.config.corpId && this.config.agentId
       ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.agentId]) : undefined;
   }
 
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    if (this.smart) throw new GatewayWorkNotSentError("企微 Smart Robot 暂不支持主动 Work 通知");
     assertGatewayWorkSend(input, this);
     if (input.target.channelType !== "wecom") throw new GatewayWorkNotSentError("企微通知目标不匹配");
     let token: string;
@@ -620,6 +710,8 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
     this.tokenExpireAt = Date.now() + (data.expires_in ?? 7200) * 1000;
     return this.accessToken;
   }
+
+  gatewayConnectionGeneration(): unknown { return this.generation; }
 
   workConnectionKey(): string | undefined {
     return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
@@ -865,10 +957,15 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
           directMessagesTopicId: msg.direct_messages_topic?.topic_id } }) : undefined,
       reply: async (replyText: string) => {
-        await this.sendText(chatId, replyText, replyGeneration);
+        await this.sendText(chatId, replyText, replyGeneration, {
+          ...(msg.message_thread_id !== undefined ? { message_thread_id: msg.message_thread_id } : {}),
+          ...(msg.direct_messages_topic?.topic_id !== undefined ? { direct_messages_topic_id: msg.direct_messages_topic.topic_id } : {}),
+        });
       },
     });
   }
+
+  gatewayConnectionGeneration(): unknown { return this.generation; }
 
   workConnectionKey(): string | undefined {
     return this.connected && this.botId ? gatewayConnectionKey(this.type, [this.botId]) : undefined;
@@ -897,16 +994,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
   }
 
-  private async sendText(chatId: string, text: string, generation: number): Promise<void> {
+  private async sendText(chatId: string, text: string, generation: number, address: Record<string, number> = {}): Promise<void> {
     const html = mdToHtml(text);
     for (const chunk of splitTelegramText(html)) {
-      await this.sendChunk(chatId, chunk, true, generation);
+      await this.sendChunk(chatId, chunk, true, generation, address);
     }
   }
 
-  private async sendChunk(chatId: string, text: string, useHtml: boolean, generation: number): Promise<void> {
+  private async sendChunk(chatId: string, text: string, useHtml: boolean, generation: number, address: Record<string, number> = {}): Promise<void> {
     this.assertReplyGeneration(generation);
-    const body = { chat_id: Number(chatId), text, ...(useHtml ? { parse_mode: "HTML" } : {}) };
+    const body = { chat_id: Number(chatId), ...address, text, ...(useHtml ? { parse_mode: "HTML" } : {}) };
     const res = await fetch(`${this.apiBase}${this.config.botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -916,13 +1013,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const data = (await res.json().catch(() => null)) as { description?: string } | null;
     if (useHtml && data?.description?.includes("can't parse entities")) {
       // HTML 实体解析失败：退化为纯文本重发
-      await this.sendChunk(chatId, text, false, generation);
+      await this.sendChunk(chatId, text, false, generation, address);
       return;
     }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after") ?? 5);
       await sleep(Math.min(retryAfter, 60) * 1000 + 500);
-      await this.sendChunk(chatId, text, useHtml, generation);
+      await this.sendChunk(chatId, text, useHtml, generation, address);
       return;
     }
     throw new Error(`Telegram 发送失败: ${data?.description ?? res.status}`);

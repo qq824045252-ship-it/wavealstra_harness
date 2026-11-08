@@ -50,6 +50,8 @@ import type {
   CronRunDto,
   FileBackupInfoDto,
   GatewayChannelConfigDto,
+  GatewayWeixinQrLoginStateDto,
+  GatewayQQQrLoginStateDto,
   GatewayEventDto,
   GatewayListMessagesRequest,
   SubagentSteerResultDto,
@@ -594,6 +596,12 @@ export interface PreloadApi {
     onEvent: (callback: (ev: unknown) => void) => () => void;
   };
   gateway: {
+    weixinQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayWeixinQrLoginStateDto>;
+    qqQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayQQQrLoginStateDto>;
+    weixinQrState: () => Promise<GatewayWeixinQrLoginStateDto>;
+    qqQrState: () => Promise<GatewayQQQrLoginStateDto>;
+    weixinQrCancel: (sessionId?: string) => Promise<GatewayWeixinQrLoginStateDto>;
+    qqQrCancel: (sessionId?: string) => Promise<GatewayQQQrLoginStateDto>;
     status: () => Promise<GatewayStatusDto>;
     listChannels: () => Promise<GatewayStatusDto["channels"]>;
     connect: (channelId: string, config: Record<string, unknown>) => Promise<GatewayStatusDto>;
