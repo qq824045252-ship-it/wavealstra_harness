@@ -1,6 +1,7 @@
 import { validateWorkReadPath } from "../../platform/work-shell-read";
 import { workShellRead } from "./WorkShellRead";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import type { ToolHookCall } from "@earendil-works/pi-durable";
@@ -55,15 +56,17 @@ export class WorkToolResourcePolicy {
       return "MCP 读取缺少可信路径适配器，不能产生无法复核的旧版本；请改用内置 read 或已登记的读取入口";
     const resources: WorkResource[] = [];
     const bounded = workShellRead(call.name, call.arguments);
+    let verifiedTarget: string | undefined;
     if (bounded) {
-      try { validateWorkReadPath(context.taskRoot, bounded.path); }
+      try { verifiedTarget = validateWorkReadPath(context.taskRoot, bounded.path); }
       catch (error) { return error instanceof Error ? error.message : String(error); }
     }
     const shellRead = bounded?.path ?? boundedShellRead(call);
     // Verification never hashes a path before the FD-safe executor opens it. A
     // conservative host read lease excludes all managed writers without a second
     // pathname resolution in acquire/validateVersions (which could race a symlink).
-    if (bounded?.verification) resources.push({ kind: "host", scope: "local-host", key: "scoped-read-verification", mode: "read" });
+    if (bounded?.verification) resources.push({ kind: "host", scope: "local-host", key: "scoped-read-verification", mode: "read",
+      readVerification: { root: realpathSync(context.taskRoot), target: verifiedTarget! } });
     const filePaths = bounded?.verification ? [] : shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
       ? [args.path ?? args.file_path].filter((path): path is string => Boolean(path)) : [];
     for (const path of filePaths) {

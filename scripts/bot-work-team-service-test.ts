@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, renameSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -117,8 +117,28 @@ try {
   symlinkSync(join(root, "secret.txt"), join(workspace, "escape.txt"));
   assert.match(works.teams.resourceError(binding, [fileResource(join(workspace, "escape.txt"), "read")])!, /超出/);
   assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: "shell", mode: "write" }])!, /不透明/);
+  const verification = { kind: "host" as const, scope: "local-host", key: "scoped-read-verification", mode: "read" as const,
+    readVerification: { root: realpathSync(workspace), target: realpathSync(join(workspace, "input.txt")) } };
+  assert.equal(works.teams.resourceError(binding, [verification]), undefined, "trusted bounded verification is authorized");
+  assert.match(works.teams.resourceError(binding, [{ ...verification, mode: "write" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, key: "unclassified-tool" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: verification.key, mode: "read" }])!, /不透明/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, root } }])!, /执行根/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(root, "secret.txt") } }])!, /工作区/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(workspace, "escape.txt") } }])!, /工作区/);
+  assert.match(works.teams.resourceError(binding, [{ ...verification, path: join(workspace, "input.txt") }])!, /不透明/);
+  const savedAuthorization = bots.getBot(binding.botId)!.authorization;
+  for (const authorization of [
+    { ...savedAuthorization, allowedScopes: [] },
+    { ...savedAuthorization, targetWhitelist: [root] },
+  ]) {
+    db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(authorization), binding.botId);
+    assert(works.teams.resourceError(binding, [verification]), "revoked scope/target cannot use trusted verification");
+  }
+  db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(savedAuthorization), binding.botId);
   const oldWorkspace = join(root, "old-workspace"); renameSync(workspace, oldWorkspace); mkdirSync(workspace);
   assert.match(works.teams.resourceError(binding, [fileResource(workspace, "read")])!, /身份已变化/);
+  assert.match(works.teams.resourceError(binding, [verification])!, /身份已变化/);
   rmSync(workspace, { recursive: true }); renameSync(oldWorkspace, workspace);
 
   // Preparation failure can retry only with the current versions and no binding.
