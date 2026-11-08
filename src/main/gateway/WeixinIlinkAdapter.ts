@@ -1,3 +1,4 @@
+import { withGatewayMedia, GatewayMediaError, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from './GatewayMedia';
 import { randomUUID } from 'node:crypto';
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from './channels';
 import { gatewayConnectionKey } from './work-outbound';
@@ -15,9 +16,10 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
   private inbound: GatewayInboundHandler | null = null;
   private contexts = new Map<string, string>();
   private seen = new Set<string>();
+  private mediaAttempts = new Map<string, number>();
   private client: WeixinIlinkClient;
   constructor(readonly id: string, readonly name: string, private readonly options: {
-    fetch?: typeof fetch; deferInboundUntilActivated?: boolean; onStatus?: (text: string) => void;
+    fetch?: typeof fetch; mediaDirectory?: string; deferInboundUntilActivated?: boolean; onStatus?: (text: string) => void;
   } = {}) { this.client = new WeixinIlinkClient(options.fetch); }
   setInboundHandler(handler: GatewayInboundHandler): void { this.inbound = handler; }
   isConnected(): boolean { return this.connected; }
@@ -44,7 +46,7 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
   }
   async disconnect(): Promise<void> {
     this.controller.abort(); this.connected = false; this.activated = false; this.config = null;
-    this.contexts.clear(); this.seen.clear(); this.status = '未连接';
+    this.contexts.clear(); this.seen.clear(); this.mediaAttempts.clear(); this.status = '未连接';
   }
   private current(controller: AbortController): boolean { return this.controller === controller && !controller.signal.aborted && this.activated; }
   private async pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -77,6 +79,10 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
       }
     }
   }
+  private remember(key: string): void {
+    this.seen.add(key);
+    if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value!);
+  }
   private async receive(msg: Record<string, any>, controller: AbortController, config: Config): Promise<void> {
     const peer = msg.from_user_id, id = msg.message_id;
     if (typeof peer !== 'string' || !config.allowUsers.includes(peer) || peer === config.accountId
@@ -87,10 +93,40 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
     if (typeof msg.context_token === 'string' && msg.context_token && msg.context_token.length < 16384) this.contexts.set(peer, msg.context_token);
     if (this.seen.has(key)) return;
     const items = Array.isArray(msg.item_list) ? msg.item_list : [];
-    const text = items.filter(item => item?.type === 1 && typeof item.text_item?.text === 'string').map(item => item.text_item.text).join('\n').trim();
-    if (!text || text.length > 64_000 || !this.inbound) return;
-    this.seen.add(key); if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value!);
-    try { await this.inbound({ channelId: this.id, chatId: peer, messageId: String(id), sender: { id: peer }, text,
+    let text = items.filter(item => item?.type === 1 && typeof item.text_item?.text === 'string').map(item => item.text_item.text).join('\n').trim();
+    if (text.length > 64_000 || !this.inbound) return;
+    const sources: GatewayMediaSource[] = [];
+    try {
+      for (const item of items) {
+        for (const candidate of [object(item), object(object(item?.ref_msg).message_item)]) {
+          const spec = ({ 2: ['image_item', 'image.jpg'], 3: ['voice_item', 'voice.silk'],
+            4: ['file_item', 'document.bin'], 5: ['video_item', 'video.mp4'] } as Record<number, string[]>)[candidate.type];
+          if (!spec) continue;
+          const payload = object(candidate[spec[0]]), media = { ...object(payload.media) };
+          if (candidate.type === 3 && !Object.keys(media).length && typeof payload.text === 'string') {
+            if (!text) text = `[Voice transcription provided by Weixin]\n${payload.text}`;
+            continue;
+          }
+          if (candidate.type === 2 && payload.aeskey) {
+            if (typeof payload.aeskey !== 'string' || !/^[a-f\d]{32}$/i.test(payload.aeskey)) throw new GatewayMediaError('微信媒体密钥无效');
+            media.aes_key = Buffer.from(payload.aeskey, 'hex').toString('base64');
+          }
+          sources.push(this.client.mediaSource(media, candidate.type === 4 && typeof payload.file_name === 'string' ? payload.file_name : spec[1], controller.signal));
+          if (sources.length > GATEWAY_MEDIA_LIMITS.count) throw new GatewayMediaError('微信附件数量超过限制');
+        }
+      }
+    } catch {
+      this.remember(key); this.mediaAttempts.delete(key);
+      this.report('微信附件参数无效，已拒绝此消息；后续消息继续接收'); return;
+    }
+    if ((!text && !sources.length) || text.length > 64_000) return;
+    this.remember(key);
+    let dispatched = false;
+    try { await withGatewayMedia(sources, async attachments => {
+      if (!this.current(controller)) return;
+      this.mediaAttempts.delete(key);
+      dispatched = true;
+      await this.inbound!({ channelId: this.id, chatId: peer, messageId: String(id), sender: { id: peer }, text: text || '[微信媒体附件]', ...(attachments.length ? { attachments } : {}),
       reply: async reply => {
         if (!reply.trim()) throw new Error('微信回复不能为空');
         // Count UTF-16 units conservatively while keeping surrogate pairs intact.
@@ -112,6 +148,25 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
           if (receipt.ret !== 0 && receipt.errcode !== 0) throw new Error('微信发送回执未确认，未自动重发');
         }
       },
-    }); } catch { this.report('微信消息处理或回执未确认，请检查任务记录；未自动重发'); }
+      });
+    }, { directory: this.options.mediaDirectory }); } catch (error) {
+      if (!this.current(controller)) return;
+      // Only retry pre-agent transient failures, and bound attempts so a broken
+      // attachment cannot indefinitely block later messages behind this cursor.
+      if (!dispatched) {
+        const attempts = (this.mediaAttempts.get(key) ?? 0) + 1;
+        if (error instanceof GatewayMediaError && error.retryable && attempts < 3) {
+          this.mediaAttempts.set(key, attempts);
+          this.seen.delete(key);
+          throw new GatewayMediaError('微信附件准备暂时失败', true);
+        }
+        this.mediaAttempts.delete(key);
+        this.report(error instanceof GatewayMediaError && error.retryable
+          ? '微信附件连续3次准备失败，已拒绝此消息；后续消息继续接收'
+          : '微信附件不符合安全、格式或缓存限制，已拒绝此消息；后续消息继续接收');
+        return;
+      }
+      this.report('微信消息处理或回执未确认，请检查任务记录；未自动重发');
+    }
   }
 }

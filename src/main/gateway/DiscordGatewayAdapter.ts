@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { withGatewayMedia, type GatewayMediaSource } from './GatewayMedia';
 import { gatewayConnectionKey } from './work-outbound';
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from './channels';
 
@@ -17,12 +18,13 @@ export interface DiscordGatewayOptions {
   reconnectDelayMs?: number;
   helloTimeoutMs?: number;
 }
-interface Config { botToken: string; applicationId: string; allowUsers: string[]; guildIds: string[]; allowDirectMessages: boolean }
+interface Config { botToken: string; applicationId: string; allowUsers: string[]; guildIds: string[]; allowDirectMessages: boolean; replyToMode: 'off' | 'first' | 'all' }
 const snowflake = (value: unknown): value is string => typeof value === 'string' && /^\d{1,22}$/.test(value);
 function parseConfig(raw: ChannelConfig): Config {
   const list = (key: string): string[] => Array.isArray(raw[key]) ? [...new Set((raw[key] as unknown[]).filter(snowflake))] : [];
   const config = { botToken: String(raw.botToken ?? '').trim(), applicationId: String(raw.applicationId ?? '').trim(),
-    allowUsers: list('allowUsers'), guildIds: list('guildIds'), allowDirectMessages: raw.allowDirectMessages === true };
+    allowUsers: list('allowUsers'), guildIds: list('guildIds'), allowDirectMessages: raw.allowDirectMessages === true,
+    replyToMode: (raw.replyToMode === 'off' || raw.replyToMode === 'all' ? raw.replyToMode : 'first') as Config['replyToMode'] };
   if (!config.botToken || /\s/.test(config.botToken) || !snowflake(config.applicationId)) throw new Error('Discord 需要官方 Bot Token 和 Application ID');
   if (!config.allowUsers.length) throw new Error('Discord 必须设置明确的允许用户 ID');
   if (!config.guildIds.length && !config.allowDirectMessages) throw new Error('Discord 必须指定服务器 ID 或明确启用私信');
@@ -259,9 +261,14 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
       || typeof data.content !== 'string' || (data.type !== undefined && data.type !== 0 && data.type !== 19)) return;
     const guild = data.guild_id;
     if (guild ? !snowflake(guild) || !config.guildIds.includes(guild) : !config.allowDirectMessages) return;
-    if (guild && (!Array.isArray(data.mentions) || !data.mentions.some(value => object(value).id === this.botId))) return;
+    const reference = object(data.message_reference), referenced = object(data.referenced_message);
+    const repliesToBot = data.type === 19 && snowflake(reference.message_id)
+      && reference.channel_id === data.channel_id && referenced.id === reference.message_id
+      && object(referenced.author).id === this.botId && object(referenced.author).bot === true;
+    if (guild && !repliesToBot && (!Array.isArray(data.mentions) || !data.mentions.some(value => object(value).id === this.botId))) return;
     const text = data.content.replace(new RegExp(`<@!?${this.botId}>`, 'g'), '').trim().split(config.botToken).join('[凭据已隐藏]');
-    if (!text) return;
+    const media = Array.isArray(data.attachments) ? data.attachments : [];
+    if (!text && !media.length) return;
     const scope = [this.id, config.applicationId, this.botId, guild || 'dm', data.channel_id, author.id].join(':');
     const key = `${config.applicationId}:${this.botId}:${data.id}`;
     if (this.seen.has(key)) return;
@@ -276,23 +283,47 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
       this.check(generation);
       while (!this.connected) await this.waitForConnection(generation);
       this.check(generation);
-      // There is no await between this check and invoking the Gateway handler.
-      // Once invoked, an error may follow real side effects: never auto-execute again.
-      enteredGateway = true;
-      await this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, sender: { id: author.id as string },
-        reply: async reply => {
-          this.check(generation);
-          const safe = reply.split(config.botToken).join('[凭据已隐藏]') || '任务已处理。';
-          for (let index = 0; index < safe.length; index += 1900) {
+      const sources: GatewayMediaSource[] = media.map(value => {
+        const item = object(value);
+        // Only platform attachment records, never arbitrary links in message content.
+        // The common downloader separately enforces HTTPS, host, redirect and byte limits.
+        if (typeof item.url !== 'string' || typeof item.filename !== 'string'
+          || !Number.isSafeInteger(item.size) || Number(item.size) < 0) throw new Error('Discord 附件元数据无效');
+        const url = new URL(item.url);
+        if (!/^\/attachments\/\d{1,22}\/\d{1,22}\/[^/]+$/.test(url.pathname)) throw new Error('Discord 附件地址无效');
+        return { url: item.url, name: item.filename, expectedSize: Number(item.size),
+          allowedHosts: ['cdn.discordapp.com', 'media.discordapp.net'], fetch: async (input, init) => {
             this.check(generation);
-            const nonce = createHash('sha256').update(`${key}:${index}`).digest('hex').slice(0, 24);
-            const receipt = await this.api(`/channels/${channelId}/messages`, generation, {
-              content: safe.slice(index, index + 1900), allowed_mentions: { parse: [], replied_user: false },
-              message_reference: { message_id: messageId, fail_if_not_exists: false }, nonce, enforce_nonce: true,
-            });
-            if (!snowflake(receipt.id)) throw new Error('Discord 回复结果无法确认');
-          }
-        },
+            const response = await this.fetcher(input, init);
+            if (!this.current(generation)) {
+              await response.body?.cancel().catch(() => {});
+              this.check(generation);
+            }
+            return response;
+          } };
+      });
+      await withGatewayMedia(sources, async attachments => {
+        this.check(generation);
+        while (!this.connected) await this.waitForConnection(generation);
+        this.check(generation);
+        // Once invoked, an error may follow real side effects: never auto-execute again.
+        enteredGateway = true;
+        await this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, attachments, sender: { id: author.id as string },
+          reply: async reply => {
+            this.check(generation);
+            const safe = reply.split(config.botToken).join('[凭据已隐藏]') || '任务已处理。';
+            for (let index = 0; index < safe.length; index += 1900) {
+              this.check(generation);
+              const nonce = createHash('sha256').update(`${key}:${index}`).digest('hex').slice(0, 24);
+              const receipt = await this.api(`/channels/${channelId}/messages`, generation, {
+                content: safe.slice(index, index + 1900), allowed_mentions: { parse: [], replied_user: false },
+                ...(config.replyToMode === 'all' || (config.replyToMode === 'first' && index === 0)
+                  ? { message_reference: { message_id: messageId, fail_if_not_exists: false } } : {}), nonce, enforce_nonce: true,
+              });
+              if (!snowflake(receipt.id)) throw new Error('Discord 回复结果无法确认');
+            }
+          },
+        });
       });
     }).catch(() => {
       if (!enteredGateway) this.seen.delete(key);

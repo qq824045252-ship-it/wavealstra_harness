@@ -1,4 +1,7 @@
+import { withGatewayMedia, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from "./GatewayMedia";
 import { createHash } from "node:crypto";
+import { lstat, open } from "node:fs/promises";
+import { basename } from "node:path";
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler, SlackChannelHistory } from "./channels";
 import { SlackGatewayJournal, slackTaskId, slackTurnIds, type SlackDelivery } from "./SlackGatewayJournal";
 import { assertGatewayWorkSend, gatewayConnectionKey, gatewayWorkTarget, GatewayWorkNotSentError,
@@ -18,6 +21,7 @@ export interface SlackSocketOptions {
   journal: SlackGatewayJournal;
   socketFactory?: (url: string) => SlackSocket;
   fetch?: typeof fetch;
+  mediaDirectory?: string;
   reconnectDelayMs?: number;
   replyRetryDelayMs?: number;
   helloTimeoutMs?: number;
@@ -185,10 +189,10 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     this.resumeDeliveries();
   }
 
-  private async api(method: "auth.test" | "apps.connections.open" | "chat.postMessage" | "conversations.history", token: string, body: Record<string, unknown> = {}): Promise<SlackApiResult> {
+  private async api(method: "auth.test" | "apps.connections.open" | "chat.postMessage" | "conversations.history" | "files.info", token: string, body: Record<string, unknown> = {}): Promise<SlackApiResult> {
     let response: Response;
     try {
-      const readingHistory = method === "conversations.history";
+      const readingHistory = method === "conversations.history" || method === "files.info";
       const query = readingHistory ? "?" + new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)])) : "";
       response = await this.fetcher("https://slack.com/api/" + method + query, {
         method: readingHistory ? "GET" : "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
@@ -196,6 +200,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
         ...(readingHistory ? {} : { body: JSON.stringify(body) }),
       });
     } catch { throw new SlackApiError("Slack 网络请求失败；连接或待发送回复会重试", true); }
+    if (response.redirected) throw new SlackApiError("Slack API 重定向已拒绝");
     if (response.status === 429) {
       const delay = Math.min(60, Math.max(1, Number(response.headers.get("retry-after")) || 3)) * 1000;
       throw new SlackApiError("Slack 请求限流；待发送回复会稍后重试", true, delay);
@@ -281,27 +286,32 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     const event = payload?.event as Record<string, unknown> | undefined;
     if (frame.type !== "events_api" || payload?.type !== "event_callback" || !event || !this.config
       || payload.api_app_id !== this.config.appId || payload.team_id !== this.config.teamId
-      || event.subtype || event.bot_id
+      || (event.subtype && event.subtype !== "file_share") || event.bot_id
       || typeof event.user !== "string" || event.user === this.botUserId || !this.config.allowUsers.includes(event.user)
       || typeof event.channel !== "string"
       || typeof event.ts !== "string" || !/^\d+\.\d+$/.test(event.ts)
-      || typeof event.text !== "string" || !event.text.trim() || typeof payload.event_id !== "string") {
+      || (event.text !== undefined && typeof event.text !== "string") || typeof payload.event_id !== "string") {
       ack(); return;
     }
     const isDirectMessage = event.type === "message" && event.channel_type === "im" && /^D[A-Z0-9]+$/.test(event.channel);
     const isChannelMention = event.type === "app_mention" && /^[CG][A-Z0-9]+$/.test(event.channel);
     if (!isDirectMessage && !isChannelMention) { ack(); return; }
+    const text = typeof event.text === "string" ? event.text : "";
+    const files = Array.isArray(event.files) ? event.files.slice(0, GATEWAY_MEDIA_LIMITS.count + 1).map(file => ({
+      id: file && typeof file.id === "string" && /^F[A-Z0-9]+$/.test(file.id) ? file.id : "",
+    })) : [];
     const botMention = "<@" + this.botUserId + ">";
-    if (isChannelMention && (event.user !== this.ownerUserId() || !event.text.includes(botMention))) { ack(); return; }
-    const instruction = isChannelMention ? event.text.split(botMention).join("").trim() : event.text;
+    if (isChannelMention && (event.user !== this.ownerUserId() || !text.includes(botMention))) { ack(); return; }
+    const instruction = isChannelMention ? text.split(botMention).join("").trim() : text;
     // A bare ping is not an instruction; ordinary channel messages never start tasks.
-    if (!instruction.trim()) { ack(); return; }
+    if (!instruction.trim() && !files.length) { ack(); return; }
     const threadTs = typeof event.thread_ts === "string" ? event.thread_ts : event.ts;
     if (!/^\d+\.\d+$/.test(threadTs)) { ack(); return; }
     const delivery: SlackDelivery = {
       eventId: payload.event_id, appId: this.config.appId, teamId: this.config.teamId,
       channel: event.channel, threadTs, messageTs: event.ts, userId: event.user,
       text: redactSlackText(instruction, [this.config.botToken, this.config.appToken]),
+      ...(files.length ? { files } : {}),
       acceptedAt: Date.now(), state: "pending",
     };
     let fresh: boolean;
@@ -386,8 +396,82 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     const slackHistory = current.state === "running" && current.backend === "pi-durable"
       ? current.slackHistory : await this.readChannelHistory(current);
     if (this.stopped || generation !== this.generation || !this.allows(current)) return;
-    current = this.options.journal.update(current, { state: "running", backend: "pi-durable", slackHistory });
+    const assertActive = (): void => {
+      if (this.stopped || !this.activated || generation !== this.generation || !this.allows(current)) {
+        throw new Error("Slack 附件接收已取消");
+      }
+    };
     try {
+      let attachments = current.attachments;
+      if (current.files?.length && ((current.state === "running" && !attachments)
+        || (attachments && attachments.length !== current.files.length))) {
+        throw new Error("Slack 附件缓存丢失或校验失败；未执行任务，请发送新消息并重新上传附件");
+      }
+      if (!attachments && current.files?.length) {
+        if (current.files.length > GATEWAY_MEDIA_LIMITS.count) throw new Error("Slack 附件数量超过限制");
+        const sources: GatewayMediaSource[] = [];
+        for (const file of current.files) {
+          assertActive();
+          if (!/^F[A-Z0-9]+$/.test(file.id)) throw new Error("Slack 附件 ID 无效");
+          const result = await this.api("files.info", this.config!.botToken, { file: file.id });
+          assertActive();
+          const info = result.file as Record<string, unknown> | undefined;
+          if (!info || info.id !== file.id || info.is_external === true) throw new Error("Slack 附件不可用");
+          const url = info.url_private_download || info.url_private;
+          if (typeof url !== "string") throw new Error("Slack 附件缺少安全下载地址");
+          sources.push({ url, name: redactSlackText(typeof info.name === "string" ? info.name : file.id + ".bin",
+            [this.config!.botToken, this.config!.appToken]), allowedHosts: ["files.slack.com"],
+            ...(info.size !== undefined ? { expectedSize: Number(info.size) } : {}),
+            headers: { Authorization: "Bearer " + this.config!.botToken },
+            fetch: async (input, init) => {
+              assertActive();
+              const response = await this.fetcher(input, init);
+              assertActive();
+              return response;
+            },
+          });
+        }
+        attachments = await withGatewayMedia(sources, async files => { assertActive(); return files; },
+          { directory: this.options.mediaDirectory });
+      }
+      // A native receipt must retain its exact original inputs. Never redownload or
+      // silently omit a missing/corrupt cached attachment during recovery.
+      for (const attachment of attachments ?? []) {
+        assertActive();
+        try {
+          const stat = await lstat(attachment.path);
+          if (!stat.isFile() || stat.isSymbolicLink() || !stat.size || stat.size > GATEWAY_MEDIA_LIMITS.file
+            || (/\.(png|jpe?g|gif|webp|bmp)$/i.test(attachment.name) && stat.size > 12 * 1024 * 1024)) {
+            throw new Error("invalid cached file");
+          }
+          const handle = await open(attachment.path, "r");
+          let bytes: Buffer;
+          try {
+            const opened = await handle.stat();
+            if (!opened.isFile() || opened.ino !== stat.ino || opened.dev !== stat.dev || opened.size !== stat.size) {
+              throw new Error("cached file changed");
+            }
+            // Bounded reads also reject a file growing between stat and read.
+            const buffer = Buffer.alloc(stat.size + 1);
+            let offset = 0;
+            while (offset < buffer.length) {
+              const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+              if (!bytesRead) break;
+              offset += bytesRead;
+            }
+            bytes = buffer.subarray(0, offset);
+          } finally { await handle.close(); }
+          const expected = /^([a-f0-9]{64})\.[a-z0-9]{1,10}$/.exec(basename(attachment.path))?.[1];
+          if (bytes.length !== stat.size || createHash("sha256").update(bytes).digest("hex") !== expected) {
+            throw new Error("invalid cached content");
+          }
+        } catch {
+          throw new Error("Slack 附件缓存丢失或校验失败；未执行任务，请发送新消息并重新上传附件");
+        }
+        assertActive();
+      }
+      assertActive();
+      current = this.options.journal.update(current, { state: "running", backend: "pi-durable", slackHistory, attachments });
       await this.onInbound({
         channelId: this.id, chatId: [current.teamId, current.channel, current.threadTs].join(":"),
         workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
@@ -396,6 +480,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
             channel: current.channel, threadTs: current.threadTs } }),
         taskId: slackTaskId(current), ...slackTurnIds(current), text: current.text,
         ...(slackHistory ? { slackHistory } : {}),
+        ...(attachments?.length ? { attachments } : {}),
         messageId: current.eventId, sender: { id: current.userId },
         reply: async text => {
           const safeText = redactSlackText(text, [this.config?.botToken ?? "", this.config?.appToken ?? ""]);
@@ -407,9 +492,9 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
       const latest = this.options.journal.get(current)!;
       // A closed native wait does not finish its persisted execution. Reacquire it on reconnect.
       if (this.stopped || generation !== this.generation) return;
-      if (latest.state === "running") {
+      if (latest.state === "running" || latest.state === "pending") {
         const message = safeSlackError(error, [this.config?.botToken ?? "", this.config?.appToken ?? ""]);
-        const pending = this.options.journal.update(latest, { state: "reply_pending", replyText: "任务处理失败：" + message });
+        const pending = this.options.journal.update(latest, { state: "reply_pending", replyText: "任务处理失败：" + message, nextChunk: 0 });
         await this.flushReply(pending);
       } else if (latest.state === "reply_pending") {
         throw error;

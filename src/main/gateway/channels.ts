@@ -29,6 +29,8 @@ export interface GatewayInboundMessage {
   channelId: string;
   chatId: string;
   text: string;
+  /** Adapter-downloaded, bounded local media; never platform-supplied local paths. */
+  attachments?: Array<{ name: string; path: string }>;
   /** 平台消息 id：用于幂等去重（webhook 重试 / 轮询重复不重复执行） */
   messageId?: string;
   /** Stable Slack identities passed to the existing native task/session. */
@@ -63,6 +65,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   private activationWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
   private generation = 0;
   private config: { appId?: string; appSecret?: string; verificationToken?: string } = {};
+  private allowUsers: string[] = [];
   private transport: "webhook" | "websocket" = "webhook";
   private longConnection: FeishuLongConnection | null = null;
   private token: string | null = null;
@@ -100,6 +103,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       appSecret: String(config.appSecret ?? ""),
       verificationToken: String(config.verificationToken ?? ""),
     };
+    this.allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(value => String(value).trim()).filter(Boolean) : [];
     this.transport = config.transport === "websocket" || (!config.transport && !this.config.verificationToken) ? "websocket" : "webhook";
     if (config.transport && !["websocket", "webhook"].includes(String(config.transport))) throw new Error("飞书 transport 必须是 websocket 或 webhook");
     if (!this.config.appId || !this.config.appSecret || (this.transport === "webhook" && !this.config.verificationToken)) {
@@ -182,46 +186,92 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     await this.handleMessageEvent(payload.event);
   }
 
+  private parseContent(type: string, raw: string): { text: string; media: Array<{ key: string; type: "image" | "file"; name: string }> } {
+    const result: { text: string; media: Array<{ key: string; type: "image" | "file"; name: string }> } = { text: "", media: [] };
+    let content: Record<string, unknown>;
+    try { content = JSON.parse(raw); } catch { if (type === "text") result.text = raw; return result; }
+    if (!content || typeof content !== "object" || Array.isArray(content)) return result;
+    const str = (value: unknown): string => typeof value === "string" ? value : "";
+    const media = (item: Record<string, unknown>, kind: string): void => {
+      const image = kind === "image" || kind === "img";
+      const key = str(image ? item.image_key : item.file_key);
+      if (!key || result.media.some(entry => entry.key === key)) return;
+      if (!/^[a-zA-Z0-9_-]+$/.test(key)) throw new Error("飞书媒体资源标识无效");
+      result.media.push({ key, type: image ? "image" : "file", name: str(item.file_name) ||
+        (image ? "image.jpg" : kind === "audio" ? "audio.ogg" : ["video", "media"].includes(kind) ? "video.mp4" : "attachment.bin") });
+    };
+    if (type === "text") result.text = str(content.text);
+    else if (["image", "file", "audio", "video", "media"].includes(type)) media(content, type);
+    else if (type === "post") {
+      const wrapper = (content.post && typeof content.post === "object" ? content.post : content) as Record<string, unknown>;
+      const post = (Array.isArray(wrapper.content) ? wrapper : [wrapper.zh_cn, wrapper.en_us, ...Object.values(wrapper)]
+        .find(value => value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).content))) as Record<string, unknown> | undefined;
+      if (!post) return result;
+      const lines = [str(post.title)];
+      for (const row of post.content as unknown[]) {
+        if (!Array.isArray(row)) continue;
+        let line = "";
+        for (const value of row) {
+          if (!value || typeof value !== "object") continue;
+          const item = value as Record<string, unknown>;
+          const tag = str(item.tag);
+          if (["text", "md", "a", "at"].includes(tag)) line += str(item.text) || str(item.user_name);
+          else if (["img", "image", "media", "file", "audio", "video"].includes(tag)) media(item, tag);
+        }
+        lines.push(line);
+      }
+      result.text = lines.filter(Boolean).join("\n");
+    } else throw new Error(`飞书暂不支持此消息类型: ${type}`);
+    return result;
+  }
+
   private async handleMessageEvent(event: unknown): Promise<void> {
     const generation = this.generation;
+    const epoch = this.gatewayConnectionGeneration();
     if (!this.activated) {
       if (!this.connected || this.activationWaiters.size >= 100) throw new Error("飞书接收尚未激活");
-      // Hold the SDK acknowledgement until Gateway has persisted policy and activated ingress.
       await new Promise<void>((resolve, reject) => this.activationWaiters.add({ resolve, reject }));
     }
-    if (!this.connected || generation !== this.generation) throw new Error("飞书连接已改变");
+    const assertCurrent = (): void => this.assertReplyGeneration(generation, epoch);
+    assertCurrent();
     if (!event || typeof event !== "object") return;
-    const payload = { event: event as { message?: { chat_id?: string; message_id?: string; content?: string; message_type?: string }; sender?: { sender_type?: string; sender_id?: { open_id?: string } } } };
-    if (payload.event.sender?.sender_type === "app") return;
-    const msg = payload.event.message;
-    // Do not turn opaque media JSON into an instruction. Rich media is a separate capability.
-    if (msg?.message_type && msg.message_type !== "text") return;
-    if (!msg?.chat_id || !msg.content) return;
-
-    let text = "";
-    try {
-      const content = JSON.parse(msg.content) as { text?: string };
-      text = content.text ?? msg.content;
-    } catch {
-      text = msg.content;
+    const payload = event as { message?: { chat_id?: string; message_id?: string; content?: string; message_type?: string; thread_id?: string }; sender?: { sender_type?: string; sender_id?: { open_id?: string } } };
+    if (payload.sender?.sender_type === "app") return;
+    const senderId = payload.sender?.sender_id?.open_id;
+    if (this.allowUsers.length && (!senderId || !this.allowUsers.includes(senderId))) return;
+    const msg = payload.message;
+    if (!msg?.chat_id || !msg.content || !this.onInbound) return;
+    const parsed = this.parseContent(msg.message_type || "text", msg.content);
+    if (!parsed.text.trim() && !parsed.media.length) return;
+    if (parsed.media.length && (!msg.message_id || !/^[a-zA-Z0-9_-]+$/.test(msg.message_id))) throw new Error("飞书媒体消息缺少有效消息标识");
+    const sources: GatewayMediaSource[] = [];
+    if (parsed.media.length) {
+      const token = await this.refreshToken();
+      assertCurrent();
+      for (const item of parsed.media) sources.push({
+        url: `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(msg.message_id!)}/resources/${encodeURIComponent(item.key)}?type=${item.type}`,
+        name: item.name, allowedHosts: ["open.feishu.cn"], headers: { Authorization: `Bearer ${token}` },
+        fetch: async (url, init) => {
+          assertCurrent();
+          const response = await fetch(url, init);
+          assertCurrent();
+          if ((response.headers.get("content-type") || "").includes("application/json")) throw new Error("飞书媒体资源返回错误");
+          return response;
+        },
+      });
     }
-    if (!text.trim() || !this.onInbound) return;
-
-    const replyGeneration = this.generation;
-    await this.onInbound({
-      channelId: this.id,
-      chatId: msg.chat_id,
-      workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
-        connectionKey: this.workConnectionKey(), chatId: msg.chat_id,
-        senderId: payload.event?.sender?.sender_id?.open_id, address: { chatId: msg.chat_id } }),
-      text: text.trim(),
-      messageId: msg.message_id,
-      sender: payload.event?.sender?.sender_id?.open_id
-        ? { id: payload.event.sender.sender_id.open_id }
-        : undefined,
-      reply: async (replyText: string) => {
-        await this.sendText(msg.chat_id!, replyText, replyGeneration);
-      },
+    await withGatewayMedia(sources, async attachments => {
+      assertCurrent();
+      await this.onInbound!({
+        channelId: this.id, chatId: msg.chat_id!,
+        workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
+          connectionKey: this.workConnectionKey(), chatId: msg.chat_id!, senderId: payload.sender?.sender_id?.open_id,
+          address: { chatId: msg.chat_id!, ...(msg.message_id ? { replyToMessageId: msg.message_id } : {}),
+            ...(msg.thread_id ? { threadId: msg.thread_id } : {}) } }),
+        text: parsed.text.trim(), attachments: attachments.length ? attachments : undefined, messageId: msg.message_id,
+        sender: payload.sender?.sender_id?.open_id ? { id: payload.sender.sender_id.open_id } : undefined,
+        reply: async text => { await this.sendText(msg.chat_id!, text, generation, epoch, msg.message_id, Boolean(msg.thread_id)); },
+      });
     });
   }
 
@@ -231,7 +281,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     const res = await fetch(
       "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
       {
-        method: "POST", signal: workRequestSignal(signal),
+        method: "POST", redirect: "error", signal: workRequestSignal(signal),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           app_id: this.config.appId,
@@ -245,8 +295,8 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       tenant_access_token?: string;
       expire?: number;
     };
-    if (data.code !== 0 || !data.tenant_access_token) {
-      throw new Error(`飞书 token 失败: ${data.msg}`);
+    if (!res.ok || data.code !== 0 || !data.tenant_access_token) {
+      throw new Error("飞书 token 获取失败");
     }
     if (generation !== this.generation) throw new Error("Gateway 连接已改变");
     this.token = data.tenant_access_token;
@@ -268,9 +318,13 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     catch { throw new GatewayWorkNotSentError("飞书连接授权不可用，本次未发送", true); }
     assertGatewayWorkSend(input, this);
     return postGatewayWork({ label: "飞书", signal: input.signal,
-      url: "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+      url: input.target.address.replyToMessageId
+        ? `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(input.target.address.replyToMessageId)}/reply`
+        : "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=" + (input.target.address.threadId ? "thread_id" : "chat_id"),
       headers: { Authorization: `Bearer ${token}` },
-      body: { receive_id: input.target.address.chatId, msg_type: "text", content: JSON.stringify({ text: input.text }) },
+      body: { ...(input.target.address.replyToMessageId ? { reply_in_thread: Boolean(input.target.address.threadId) }
+        : { receive_id: input.target.address.threadId || input.target.address.chatId }),
+        msg_type: "text", content: JSON.stringify({ text: input.text }) },
       interpret(data, response) {
         if (typeof data.code === "number" && data.code !== 0) return providerRejected("飞书", data.code);
         const detail = data.data as { message_id?: unknown; chat_id?: unknown } | undefined;
@@ -280,26 +334,24 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       } });
   }
 
-  private assertReplyGeneration(generation: number): void {
-    if (!this.connected || generation !== this.generation) throw new Error("Gateway 回复连接已改变，未发送");
+  private assertReplyGeneration(generation: number, epoch: unknown): void {
+    if (!this.connected || generation !== this.generation || epoch !== this.gatewayConnectionGeneration()) throw new Error("Gateway 回复连接已改变，未发送");
   }
 
-  private async sendText(chatId: string, text: string, generation: number): Promise<void> {
-    this.assertReplyGeneration(generation);
+  private async sendText(chatId: string, text: string, generation: number, epoch: unknown, messageId?: string, inThread = false): Promise<void> {
+    this.assertReplyGeneration(generation, epoch);
     const token = await this.refreshToken();
-    this.assertReplyGeneration(generation);
-    await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        receive_id: chatId,
-        msg_type: "text",
-        content: JSON.stringify({ text }),
-      }),
+    this.assertReplyGeneration(generation, epoch);
+    const response = await fetch(messageId
+      ? `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`
+      : "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+      method: "POST", redirect: "error", signal: workRequestSignal(),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ ...(messageId ? { reply_in_thread: inThread } : { receive_id: chatId }),
+        msg_type: "text", content: JSON.stringify({ text }) }),
     });
+    const result = await response.json() as { code?: number };
+    if (!response.ok || result.code !== 0) throw new Error("飞书回复失败");
   }
 }
 
@@ -339,9 +391,9 @@ export class WecomChannelAdapter implements ChannelAdapter {
     private readonly smartOptions: WecomSmartRobotOptions = {},
   ) {}
 
-  gatewayCapabilities(config?: ChannelConfig): { transport: "socket" | "webhook"; workNotifications: boolean } {
+  gatewayCapabilities(config?: ChannelConfig): { transport: "socket" | "webhook"; workNotifications: boolean; media?: false | "inbound" } {
     const smart = config ? config.mode === "smart" || (!config.mode && Boolean(config.botId)) : Boolean(this.smart);
-    return { transport: smart ? "socket" : "webhook", workNotifications: !smart };
+    return { transport: smart ? "socket" : "webhook", workNotifications: !smart, media: smart ? "inbound" : false };
   }
 
   activate(): void {
@@ -662,6 +714,14 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
         return { status: 403, body: "invalid signature" };
       }
       messageXml = this.crypt.decrypt(encrypt).message;
+    } else {
+      // Official plaintext compatibility still requires the platform token signature.
+      // Without this check anyone could forge a sender and invoke the native agent.
+      const { createHash } = await import("node:crypto");
+      const expected = createHash("sha1").update([this.config.token!, timestamp, nonce].sort().join("")).digest("hex");
+      const supplied = opts.query.get("signature") ?? "";
+      if (!timestamp || !nonce || !/^[a-f0-9]{40}$/.test(supplied)
+        || !timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))) return { status: 403, body: "invalid signature" };
     }
 
     const msgType = extractXmlTag(messageXml, "MsgType");
@@ -762,8 +822,12 @@ export class WechatMpChannelAdapter implements ChannelAdapter {
  * 配置：{ botToken, allowUsers? }
  * 特点：长轮询（timeout=30s）、409 冲突检测、429 退避、markdown→HTML 格式化、长消息切分。
  */
+import { GatewayMediaError, withGatewayMedia, type GatewayMediaSource } from "./GatewayMedia";
+
 const TG_API = "https://api.telegram.org/bot";
 const TG_MD_TO_HTML_MAX = 4096;
+
+interface TgMedia { file_id: string; file_name?: string; file_size?: number }
 
 interface TgUpdate {
   update_id: number;
@@ -775,6 +839,12 @@ interface TgUpdate {
     sender_chat?: unknown;
     chat: { id: number; type: string; title?: string };
     text?: string;
+    caption?: string;
+    photo?: TgMedia[];
+    document?: TgMedia;
+    video?: TgMedia;
+    audio?: TgMedia;
+    voice?: TgMedia;
     from?: { id: number; username?: string; first_name?: string; last_name?: string };
   };
 }
@@ -829,11 +899,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   readonly type = "telegram" as const;
   private connected = false;
   private generation = 0;
-  private config: { botToken?: string } = {};
+  private config: { botToken?: string; allowUsers?: string[] } = {};
   private botUsername = "";
   private botId = "";
   private lastError = "";
   private offset = 0;
+  private mediaAttempts = new Map<number, number>();
   private polling = false;
   private stopped = true;
   private onInbound: GatewayInboundHandler | null = null;
@@ -852,17 +923,20 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   async connect(config: ChannelConfig): Promise<void> {
     await this.disconnect();
     const generation = this.generation;
-    this.config = { botToken: String(config.botToken ?? "").trim() };
+    this.config = { botToken: String(config.botToken ?? "").trim(),
+      allowUsers: Array.isArray(config.allowUsers) ? config.allowUsers.filter((value): value is string => typeof value === "string").map(value => value.trim()).filter(Boolean) : [] };
     if (!this.config.botToken) {
       throw new Error("Telegram 通道需要 Bot Token（@BotFather 创建）");
     }
-    const res = await fetch(`${this.apiBase}${this.config.botToken}/getMe`);
-    const me = (await res.json()) as { ok?: boolean; result?: { id?: number; username?: string }; description?: string };
+    const res = await fetch(`${this.apiBase}${this.config.botToken}/getMe`)
+      .catch(() => { throw new Error("Telegram 身份验证请求失败"); });
+    const me = (await res.json().catch(() => { throw new Error("Telegram 身份验证响应无效"); })) as { ok?: boolean; result?: { id?: number; username?: string }; description?: string };
     if (!me.ok) {
-      throw new Error(`Telegram token 无效: ${me.description ?? "unknown"}`);
+      throw new Error("Telegram token 无效");
     }
     if (generation !== this.generation) throw new Error("Telegram 连接已取消");
     this.offset = 0;
+    this.mediaAttempts.clear();
     this.botUsername = me.result?.username ?? "";
     this.botId = Number.isSafeInteger(me.result?.id) && me.result!.id! > 0 ? String(me.result!.id) : "";
     this.lastError = "";
@@ -871,7 +945,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.polling = true;
     void this.pollLoop(generation).catch((err) => {
       if (generation !== this.generation) return;
-      this.lastError = err instanceof Error ? err.message : String(err);
+      this.lastError = "Telegram 轮询失败，将重试";
     });
   }
 
@@ -890,7 +964,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   statusText(): string {
     if (!this.connected) return this.lastError ? `连接失败：${this.lastError}` : "未连接";
-    return this.botUsername ? `已连接（@${this.botUsername} 轮询）` : "连接中…";
+    const state = this.botUsername ? `已连接（@${this.botUsername} 轮询）` : "连接中…";
+    return this.lastError ? `${state}；${this.lastError}` : state;
   }
 
   private async pollLoop(generation: number): Promise<void> {
@@ -919,50 +994,116 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         };
         if (generation !== this.generation || this.stopped) return;
         if (!data.ok) {
-          throw new Error(`getUpdates 失败: ${data.description ?? "unknown"}`);
+          throw new Error("Telegram getUpdates 失败");
         }
-        for (const upd of data.result ?? []) {
-          this.offset = Math.max(this.offset, upd.update_id + 1);
-          void this.handleUpdate(upd).catch((err) =>
-            console.warn("[Telegram] handleUpdate failed", err),
-          );
+        if (this.lastError === "Telegram 轮询失败，将重试") this.lastError = "";
+        // Never acknowledge a failed update or let a later update overtake it.
+        for (const upd of [...(data.result ?? [])].sort((a, b) => a.update_id - b.update_id)) {
+          if (generation !== this.generation || this.stopped) return;
+          if (!Number.isSafeInteger(upd.update_id) || upd.update_id < 0) throw new Error("Telegram update_id 无效");
+          if (upd.update_id < this.offset) continue;
+          try { await this.handleUpdate(upd); }
+          catch (error) {
+            if (!(error instanceof GatewayMediaError)) throw error;
+            const attempts = (this.mediaAttempts.get(upd.update_id) ?? 0) + 1;
+            if (error.retryable && attempts < 3) { this.mediaAttempts.set(upd.update_id, attempts); throw error; }
+            this.lastError = `Telegram 附件消息 ${upd.update_id} 已拒绝：${error.message}`;
+          }
+          this.mediaAttempts.delete(upd.update_id);
+          if (generation !== this.generation || this.stopped) return;
+          this.offset = upd.update_id + 1;
         }
       } catch (err) {
         if (this.stopped || generation !== this.generation) return;
-        this.lastError = err instanceof Error ? err.message : String(err);
+        this.lastError = "Telegram 轮询失败，将重试";
         await sleep(3000);
       }
     }
   }
 
+  private async mediaSources(msg: NonNullable<TgUpdate["message"]>, generation: number): Promise<GatewayMediaSource[]> {
+    const media: Array<{ file: TgMedia; fallback: string }> = [];
+    if (msg.photo?.length) media.push({ file: msg.photo[msg.photo.length - 1], fallback: "photo.jpg" });
+    for (const [kind, fallback] of [["document", "document"], ["video", "video.mp4"], ["audio", "audio.mp3"], ["voice", "voice.ogg"]] as const) {
+      if (msg[kind]) media.push({ file: msg[kind]!, fallback });
+    }
+    const sources: GatewayMediaSource[] = [];
+    for (const { file, fallback } of media) {
+      this.assertReplyGeneration(generation);
+      if (typeof file.file_id !== "string" || !file.file_id || file.file_id.length > 1024
+        || (file.file_size !== undefined && (!Number.isSafeInteger(file.file_size) || file.file_size < 0 || file.file_size > 20 * 1024 * 1024))) {
+        throw new GatewayMediaError("Telegram 媒体标识或大小无效");
+      }
+      let result: { file_path?: string; file_size?: number } | undefined;
+      try {
+        // Local Bot API paths and arbitrary API bases must never become download URLs.
+        const res = await fetch(`${TG_API}${this.config.botToken}/getFile`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_id: file.file_id }), redirect: "error", signal: AbortSignal.timeout(30_000),
+        });
+        const data = await res.json() as { ok?: boolean; result?: typeof result };
+        if (!res.ok || !data.ok) throw new GatewayMediaError("Telegram 媒体元数据获取失败", res.status === 408 || res.status === 429 || res.status >= 500);
+        result = data.result;
+      } catch (error) { if (error instanceof GatewayMediaError) throw error; throw new GatewayMediaError("Telegram 媒体元数据获取失败", true); }
+      this.assertReplyGeneration(generation);
+      const path = result?.file_path;
+      if (typeof path !== "string" || path.length > 2048
+        || !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_.-]+)+$/.test(path)
+        || path.split("/").some(part => part === "." || part === "..")) {
+        throw new GatewayMediaError("Telegram 媒体路径无效");
+      }
+      const size = result?.file_size ?? file.file_size;
+      if (size !== undefined && (!Number.isSafeInteger(size) || size < 0 || size > 20 * 1024 * 1024)) throw new GatewayMediaError("Telegram 媒体大小无效");
+      const extension = /\.[a-zA-Z0-9]{1,10}$/.exec(path)?.[0];
+      const fallbackName = extension ? fallback.replace(/\.[a-zA-Z0-9]+$/, "") + extension : fallback;
+      sources.push({ url: `https://api.telegram.org/file/bot${this.config.botToken}/${path}`,
+        name: file.file_name || fallbackName, allowedHosts: ["api.telegram.org"], expectedSize: size,
+        fetch: async (input, init) => {
+          this.assertReplyGeneration(generation);
+          const response = await fetch(input, init);
+          if (!this.connected || generation !== this.generation) {
+            await response.body?.cancel().catch(() => {});
+            this.assertReplyGeneration(generation);
+          }
+          return response;
+        } });
+    }
+    return sources;
+  }
+
   private async handleUpdate(upd: TgUpdate): Promise<void> {
     const msg = upd.message;
-    if (!msg?.text?.trim() || !this.onInbound) return;
+    if (!msg || !this.onInbound) return;
+    if (this.config.allowUsers?.length && (!msg.from || !this.config.allowUsers.includes(String(msg.from.id)))) return;
+    const text = (msg.text || msg.caption || "").trim();
+    const replyGeneration = this.generation;
+    const sources = await this.mediaSources(msg, replyGeneration);
+    if (!text && !sources.length) return;
     const chatId = String(msg.chat.id);
     const sender = msg.from
-      ? {
-          id: String(msg.from.id),
-          name: msg.from.username ?? msg.from.first_name ?? `TG${msg.from.id}`,
-        }
+      ? { id: String(msg.from.id), name: msg.from.username ?? msg.from.first_name ?? `TG${msg.from.id}` }
       : undefined;
-    const replyGeneration = this.generation;
-    await this.onInbound({
-      channelId: this.id,
-      chatId,
-      text: msg.text.trim(),
-      messageId: String(msg.message_id),
-      sender,
-      workTarget: !msg.business_connection_id && !msg.sender_chat ? gatewayWorkTarget({ version: 1,
-        channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId,
-        senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
-          directMessagesTopicId: msg.direct_messages_topic?.topic_id } }) : undefined,
-      reply: async (replyText: string) => {
-        await this.sendText(chatId, replyText, replyGeneration, {
-          ...(msg.message_thread_id !== undefined ? { message_thread_id: msg.message_thread_id } : {}),
-          ...(msg.direct_messages_topic?.topic_id !== undefined ? { direct_messages_topic_id: msg.direct_messages_topic.topic_id } : {}),
-        });
-      },
-    });
+    this.assertReplyGeneration(replyGeneration);
+    // The media helper bounds bytes and disk usage; no upstream error may expose a bot-token URL.
+    await withGatewayMedia(sources, async attachments => {
+      this.assertReplyGeneration(replyGeneration);
+      await this.onInbound!({
+        channelId: this.id, chatId, text,
+        ...(attachments.length ? { attachments } : {}),
+        messageId: String(msg.message_id), sender,
+        workTarget: !msg.business_connection_id && !msg.sender_chat ? gatewayWorkTarget({ version: 1,
+          channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId,
+          senderId: sender?.id, address: { chatId, messageThreadId: msg.message_thread_id,
+            directMessagesTopicId: msg.direct_messages_topic?.topic_id } }) : undefined,
+        reply: async (replyText: string) => {
+          await this.sendText(chatId, replyText, replyGeneration, {
+            reply_to_message_id: msg.message_id,
+            ...(msg.message_thread_id !== undefined ? { message_thread_id: msg.message_thread_id } : {}),
+            ...(msg.direct_messages_topic?.topic_id !== undefined ? { direct_messages_topic_id: msg.direct_messages_topic.topic_id } : {}),
+          });
+        },
+      });
+    }).catch(error => { if (error instanceof GatewayMediaError) throw error; throw new Error("Telegram 消息或媒体处理失败，将重试"); });
   }
 
   gatewayConnectionGeneration(): unknown { return this.generation; }
@@ -1008,7 +1149,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }).catch(() => { throw new Error("Telegram 发送请求失败"); });
     if (res.ok) return;
     const data = (await res.json().catch(() => null)) as { description?: string } | null;
     if (useHtml && data?.description?.includes("can't parse entities")) {
@@ -1022,7 +1163,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       await this.sendChunk(chatId, text, useHtml, generation, address);
       return;
     }
-    throw new Error(`Telegram 发送失败: ${data?.description ?? res.status}`);
+    throw new Error(`Telegram 发送失败（HTTP ${res.status}）`);
   }
 }
 

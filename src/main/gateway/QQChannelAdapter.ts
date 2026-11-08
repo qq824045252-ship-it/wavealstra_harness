@@ -4,6 +4,7 @@
  */
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from "./channels";
 import { gatewayConnectionKey } from "./work-outbound";
+import { GATEWAY_MEDIA_LIMITS, withGatewayMedia, type GatewayMediaSource } from "./GatewayMedia";
 
 export interface QQSocket {
   onmessage: ((event: { data: unknown }) => void) | null;
@@ -24,6 +25,30 @@ const obj = (value: unknown): Record<string, unknown> => value !== null && typeo
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 const C2C_WINDOW = 60 * 60_000, GROUP_WINDOW = 5 * 60_000;
 
+// Exact QQ media origins only. Never infer a trusted host from event content or
+// download URLs embedded in message text. Unknown QQ CDN origins fail closed.
+const QQ_MEDIA_HOSTS = ["multimedia.nt.qq.com", "gchat.qpic.cn", "c2cpicdw.qpic.cn", "grouptalk.c2c.qq.com"] as const;
+function qqMedia(value: unknown): GatewayMediaSource[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > GATEWAY_MEDIA_LIMITS.count) throw new Error("QQ 附件列表无效");
+  return value.map((raw, index) => {
+    const item = obj(raw), original = str(item.url).trim();
+    const url = new URL(original.startsWith("//") ? `https:${original}` : original);
+    if (url.protocol !== "https:" || !QQ_MEDIA_HOSTS.some(host => host === url.hostname)
+      || url.username || url.password || url.hash || (url.port && url.port !== "443")) throw new Error("QQ 附件来源不允许");
+    const size = item.size;
+    if (size !== undefined && (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0 || size > GATEWAY_MEDIA_LIMITS.file)) throw new Error("QQ 附件大小无效");
+    const type = str(item.content_type).toLowerCase().split(";")[0].trim();
+    const extension: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp",
+      "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav", "audio/silk": "silk", "video/mp4": "mp4", "application/pdf": "pdf" };
+    // Images, files, audio and video all enter the existing Agent attachment
+    // pipeline as bytes. This adapter does not claim speech transcription or
+    // video understanding, and does not trust asr_refer_text/voice_wav_url.
+    return { url: url.href, name: str(item.filename) || `qq-attachment-${index + 1}.${extension[type] ?? "bin"}`,
+      allowedHosts: QQ_MEDIA_HOSTS, expectedSize: size as number | undefined };
+  });
+}
+
 export class QQChannelAdapter implements ChannelAdapter {
   readonly type = "qq" as const;
   private generation = 0;
@@ -43,7 +68,7 @@ export class QQChannelAdapter implements ChannelAdapter {
   private tokenExpiry = 0;
   private tokenRequest?: Promise<string>;
   private inbound?: GatewayInboundHandler;
-  private readonly seen = new Map<string, number>();
+  private readonly seen = new Map<string, { expires: number }>();
   // READY precedes Gateway persistence. Keep validated messages until activation,
   // including across a resumable socket replacement within this generation.
   private readonly pendingInbound = new Map<string, { payload: Record<string, unknown>; bytes: number; expires: number }>();
@@ -211,17 +236,19 @@ export class QQChannelAdapter implements ChannelAdapter {
     const recipient = group ? str(data.group_openid) : senderId;
     const messageId = str(data.id), text = str(data.content).trim(), produced = Date.parse(str(data.timestamp));
     const expires = produced + (group ? GROUP_WINDOW : C2C_WINDOW);
-    if (!recipient || recipient.length > 512 || !messageId || messageId.length > 512 || senderId.length > 512 || !text || text.length > 64_000 || !Number.isFinite(produced) || produced > Date.now() + 30_000 || expires <= Date.now()) return;
+    let media: GatewayMediaSource[];
+    try { media = qqMedia(data.attachments); } catch { this.options.onStatus?.("QQ 附件被安全检查拒绝"); return; }
+    if (!recipient || recipient.length > 512 || !messageId || messageId.length > 512 || senderId.length > 512 || (!text && !media.length) || text.length > 64_000 || !Number.isFinite(produced) || produced > Date.now() + 30_000 || expires <= Date.now()) return;
     const chatId = `${group ? "group" : "c2c"}:${recipient}`;
     const identity = JSON.stringify([this.config.appId, chatId, messageId]);
-    for (const [key, expiry] of this.seen) if (expiry <= Date.now()) this.seen.delete(key);
+    for (const [key, entry] of this.seen) if (entry.expires <= Date.now()) this.seen.delete(key);
     if (this.seen.has(identity) || this.seen.size >= 10_000) return;
     if (!this.activated) {
       for (const [key, entry] of this.pendingInbound) {
         if (entry.expires <= Date.now()) { this.pendingInbound.delete(key); this.pendingInboundBytes -= entry.bytes; }
       }
       if (this.pendingInbound.has(identity)) return;
-      const buffered = { t: payload.t, d: { id: messageId, content: text, timestamp: data.timestamp,
+      const buffered = { t: payload.t, d: { id: messageId, content: text, timestamp: data.timestamp, attachments: data.attachments,
         group_openid: group ? recipient : undefined, author: group ? { member_openid: senderId } : { user_openid: senderId } } };
       const bytes = Buffer.byteLength(JSON.stringify(buffered));
       if (this.pendingInbound.size >= 256 || this.pendingInboundBytes + bytes > 1024 * 1024) {
@@ -235,7 +262,9 @@ export class QQChannelAdapter implements ChannelAdapter {
       this.pendingInboundBytes += bytes;
       return;
     }
-    this.seen.set(identity, expires);
+    const reservation = { expires };
+    this.seen.set(identity, reservation);
+    let enteredGateway = false;
     let sequence = 0;
     const assertReply = () => {
       this.assertCurrent(generation);
@@ -243,21 +272,42 @@ export class QQChannelAdapter implements ChannelAdapter {
       if (Date.now() >= expires || sequence >= 5) throw new Error("QQ 被动回复窗口已过期或已达 5 次上限，不支持主动推送");
     };
     void Promise.resolve().then(() => {
-      this.assertCurrent(generation);
-      if (!this.activated) return;
-      return this.inbound!({ channelId: this.id, chatId, messageId, text, sender: { id: senderId }, reply: async content => {
-        assertReply();
-        if (!content.trim()) return;
-        if (Array.from(content).length > 4000) throw new Error("QQ 文本回复超过 4000 字符，未发送");
-        const token = await this.refreshToken(generation); assertReply();
-        const msgSeq = ++sequence; // Reserve before I/O. Uncertain failures are not automatically retried.
-        const response = await this.fetcher(`https://api.sgroup.qq.com/v2/${group ? "groups" : "users"}/${encodeURIComponent(recipient)}/messages`, {
-          method: "POST", redirect: "error", signal: this.signal(), headers: { "Content-Type": "application/json", Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId },
-          body: JSON.stringify({ content, msg_type: 0, msg_id: messageId, msg_seq: msgSeq }),
-        });
-        const receipt = obj(await response.json());
-        if (!response.ok || !str(receipt.id) || (receipt.code !== undefined && receipt.code !== 0)) throw new Error("QQ 未返回成功回执，未自动重试");
-      } });
-    }).catch(() => this.options.onStatus?.("QQ 消息处理失败，详情已隐藏"));
+      const assertInbound = () => {
+        this.assertCurrent(generation);
+        if (!this.connected || !this.activated || !this.config!.allowUsers.includes(senderId) || Date.now() >= expires) throw new Error("QQ 入站授权或连接已改变");
+      };
+      assertInbound();
+      const guardedFetch: typeof fetch = async (input, init) => {
+        assertInbound();
+        const response = await this.fetcher(input, { ...init, signal: AbortSignal.any([this.controller!.signal, ...(init?.signal ? [init.signal] : [])]) });
+        assertInbound();
+        return response;
+      };
+      return withGatewayMedia(media.map(item => ({ ...item, fetch: guardedFetch })), async attachments => {
+        assertInbound();
+        enteredGateway = true;
+        return this.inbound!({ channelId: this.id, chatId, messageId, text, attachments, sender: { id: senderId }, reply: async content => {
+          assertReply();
+          if (!content.trim()) return;
+          if (Array.from(content).length > 4000) throw new Error("QQ 文本回复超过 4000 字符，未发送");
+          const token = await this.refreshToken(generation); assertReply();
+          const msgSeq = ++sequence; // Reserve before I/O. Uncertain failures are not automatically retried.
+          const response = await this.fetcher(`https://api.sgroup.qq.com/v2/${group ? "groups" : "users"}/${encodeURIComponent(recipient)}/messages`, {
+            method: "POST", redirect: "error", signal: this.signal(), headers: { "Content-Type": "application/json", Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId },
+            body: JSON.stringify({ content, msg_type: 0, msg_id: messageId, msg_seq: msgSeq }),
+          });
+          const receipt = obj(await response.json());
+          if (!response.ok || !str(receipt.id) || (receipt.code !== undefined && receipt.code !== 0)) throw new Error("QQ 未返回成功回执，未自动重试");
+        } });
+      });
+    }).catch(() => {
+      // Pre-dispatch failures have no native receipt: permit provider redelivery.
+      // Once handed to Gateway the outcome may be uncertain; never start a
+      // second Agent turn automatically, even if the handler later rejects.
+      if (!enteredGateway && this.seen.get(identity) === reservation) this.seen.delete(identity);
+      if (generation === this.generation && !this.stopped) this.options.onStatus?.(enteredGateway
+        ? "QQ 消息已交给 Agent，但处理失败；为避免重复执行未自动重试"
+        : "QQ 消息处理失败，尚未交给 Agent；允许平台重新投递");
+    });
   }
 }

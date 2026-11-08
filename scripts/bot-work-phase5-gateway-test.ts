@@ -352,7 +352,10 @@ try {
     assert.equal(workPosts().length, before);
     await h.works.notifications.deliverAsync(first.channel, first.workId);
     await h.works.notifications.deliverAsync(second.channel, second.workId);
-    assert.deepEqual(workPosts().slice(before).map(item => item.body.receive_id), ["room-1", "room-2"]);
+    assert.deepEqual([first.input.event.message.chat_id, second.input.event.message.chat_id], ["room-1", "room-2"]);
+    assert.deepEqual(workPosts().slice(before).map(item => decodeURIComponent(item.url.pathname)),
+      [first, second].map(source => `/open-apis/im/v1/messages/${source.input.event.message.message_id}/reply`));
+    assert.ok(workPosts().slice(before).every(item => item.body.reply_in_thread === false));
   });
   await check("manual resend needs current version and duplicate-risk acknowledgement; late old receipts stay fenced", async () => {
     const f = await accepted(h, "late-receipt");

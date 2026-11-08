@@ -6,7 +6,8 @@ import { gatewayWorkTargetSchema } from "./work-outbound";
 export interface GatewayCapabilities {
   transport: "webhook" | "polling" | "socket";
   text: true;
-  media: false;
+  /** inbound means attachment ingestion only; file replies are not yet wired. */
+  media: false | "inbound" | "bidirectional";
   editStreaming: false;
   interactiveApproval: false;
   durableInbound: boolean;
@@ -15,15 +16,15 @@ export interface GatewayCapabilities {
 }
 const common = { text: true, media: false, editStreaming: false, interactiveApproval: false } as const;
 export const GATEWAY_CAPABILITIES = Object.freeze({
-  feishu: { ...common, transport: "webhook", durableInbound: false, workNotifications: true, threads: "none" },
+  feishu: { ...common, media: "inbound", transport: "webhook", durableInbound: false, workNotifications: true, threads: "reply-target" },
   wecom: { ...common, transport: "webhook", durableInbound: false, workNotifications: true, threads: "none" },
   wechat: { ...common, transport: "webhook", durableInbound: false, workNotifications: true, threads: "none" },
-  telegram: { ...common, transport: "polling", durableInbound: false, workNotifications: true, threads: "reply-target" },
-  slack: { ...common, transport: "socket", durableInbound: true, workNotifications: true, threads: "native-session" },
-  dingtalk: { ...common, transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
-  weixin: { ...common, transport: "polling", durableInbound: false, workNotifications: false, threads: "none" },
-  qq: { ...common, transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
-  discord: { ...common, transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
+  telegram: { ...common, media: "inbound", transport: "polling", durableInbound: false, workNotifications: true, threads: "reply-target" },
+  slack: { ...common, media: "inbound", transport: "socket", durableInbound: true, workNotifications: true, threads: "native-session" },
+  dingtalk: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
+  weixin: { ...common, media: "inbound", transport: "polling", durableInbound: false, workNotifications: false, threads: "none" },
+  qq: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
+  discord: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "reply-target" },
 } satisfies Record<GatewayChannelType, GatewayCapabilities>);
 
 /** Internal transport envelope. Account is a public-identity digest, never a token.
@@ -44,10 +45,10 @@ export interface GatewayMessageEvent {
 /** Runtime mode overrides only transport and whether unsolicited Work delivery is supported. */
 export function gatewayCapabilities(adapter: ChannelAdapter, config?: ChannelConfig): Readonly<GatewayCapabilities> {
   const dynamic = (adapter as ChannelAdapter & {
-    gatewayCapabilities?: (config?: ChannelConfig) => Pick<GatewayCapabilities, "transport" | "workNotifications">;
+    gatewayCapabilities?: (config?: ChannelConfig) => Pick<GatewayCapabilities, "transport" | "workNotifications"> & Partial<Pick<GatewayCapabilities, "media">>;
   }).gatewayCapabilities?.(config);
   return Object.freeze({ ...GATEWAY_CAPABILITIES[adapter.type],
-    ...(dynamic ? { transport: dynamic.transport, workNotifications: dynamic.workNotifications } : {}) });
+    ...(dynamic ? { transport: dynamic.transport, workNotifications: dynamic.workNotifications, ...(dynamic.media !== undefined ? { media: dynamic.media } : {}) } : {}) });
 }
 
 export interface RegisteredGatewayAdapter extends ChannelAdapter {
@@ -112,7 +113,8 @@ export class GatewayPlatformRegistry {
       || target.chatId !== message.chatId || target.senderId !== message.sender?.id)) {
       throw new Error("Gateway 入站通知地址与来源不一致，未执行");
     }
-    const threadId = target?.channelType === "slack" ? target.address.threadTs
+    const threadId = target?.channelType === "feishu" ? target.address.threadId
+      : target?.channelType === "slack" ? target.address.threadTs
       : target?.channelType === "telegram" && target.address.messageThreadId !== undefined
         ? String(target.address.messageThreadId) : undefined;
     const reply = message.reply;

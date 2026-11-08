@@ -32,7 +32,7 @@ for (const platform of Object.keys(GATEWAY_CAPABILITIES) as GatewayChannelType[]
   assert.equal(event?.source.accountKey, adapter.key);
   assert.equal(event?.text, "hello");
   assert.equal(event?.message.messageId, "message");
-  assert.equal(event?.capabilities.media, false);
+  assert.equal(event?.capabilities.media, ["telegram", "discord", "feishu", "slack", "dingtalk", "weixin", "qq"].includes(platform) ? "inbound" : false);
   await event!.message.reply("reply");
   assert.equal(replies, 1);
   await assert.rejects(() => adapter.handler({ ...message, channelId: "another-default" }), /身份/);

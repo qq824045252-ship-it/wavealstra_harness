@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, openSync, fsyncSync, closeSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, basename } from "node:path";
 import type { SlackChannelHistory } from "./channels";
 
 export interface SlackDelivery {
@@ -13,6 +13,10 @@ export interface SlackDelivery {
   messageTs?: string;
   userId: string;
   text: string;
+  /** Credential-free file references. Resolve only after authorization and ACK. */
+  files?: Array<{ id: string }>;
+  /** Durable local cache paths retained for native receipt recovery. */
+  attachments?: Array<{ name: string; path: string }>;
   acceptedAt: number;
   state: "pending" | "running" | "reply_pending" | "replied";
   replyText?: string;
@@ -53,6 +57,17 @@ export class SlackGatewayJournal {
           || typeof entry.text !== "string" || !["pending", "running", "reply_pending", "replied"].includes(entry.state)) {
           throw new Error("Slack 消息恢复文件损坏；未启动接收");
         }
+        // New optional fields must not weaken validation of legacy version-1 receipts.
+        if (entry.files !== undefined && (!Array.isArray(entry.files) || entry.files.length > 11
+          || entry.files.some(file => !file || typeof file.id !== "string" || (file.id !== "" && !/^F[A-Z0-9]+$/.test(file.id))))) {
+          throw new Error("Slack 附件恢复记录损坏；未启动接收");
+        }
+        if (entry.attachments !== undefined && (!Array.isArray(entry.attachments) || entry.attachments.length > 10
+          || entry.attachments.some(file => !file || typeof file.name !== "string" || !file.name
+            || typeof file.path !== "string" || !isAbsolute(file.path)
+            || !/^[a-f0-9]{64}\.[a-z0-9]{1,10}$/.test(basename(file.path))))) {
+          throw new Error("Slack 附件缓存恢复记录损坏；未启动接收");
+        }
         this.entries.set(this.key(entry), entry);
       }
     }
@@ -73,7 +88,7 @@ export class SlackGatewayJournal {
     return true;
   }
 
-  update(delivery: SlackDelivery, patch: Partial<Pick<SlackDelivery, "state" | "replyText" | "nextChunk" | "backend" | "slackHistory">>): SlackDelivery {
+  update(delivery: SlackDelivery, patch: Partial<Pick<SlackDelivery, "state" | "replyText" | "nextChunk" | "backend" | "slackHistory" | "attachments">>): SlackDelivery {
     const previous = this.get(delivery);
     if (!previous) throw new Error("Slack 消息恢复记录不存在");
     const next = { ...previous, ...patch };

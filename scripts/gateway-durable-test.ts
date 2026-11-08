@@ -77,6 +77,23 @@ try{
     db.upsertTask({...task,modePresetId:"codemode"});assert.equal(db.getTask(task.id)?.modePresetId,"native");
     if(channel!=="slack"){await inbound(input);assert.equal(replies.length,1);}
   }
+  // Verify real gateway admission passes local media into the unchanged native runtime.
+  const gatewayAttachment = join(root, "gateway-source.txt");
+  writeFileSync(gatewayAttachment, "source content");
+  for (const channel of ["telegram", "slack"]) {
+    const source = channel === "slack" ? "gw-slack-media-fixture" : scopedTask("telegram-default", "media");
+    const replies: string[] = [];
+    await inbound({ channelId: channel + "-default", chatId: "media", messageId: "media-1", text: "MEDIA_INPUT",
+      attachments: [{ name: "gateway-source.txt", path: gatewayAttachment }],
+      ...(channel === "slack" ? { taskId: source, userMessageId: "slack-media-user", assistantMessageId: "slack-media-assistant" } : {}),
+      reply: async (text: string) => { replies.push(text); } });
+    assert.equal(replies.length, 1);
+    assert.ok(replies[0].includes("Attached file: gateway-source.txt"));
+    assert.ok(replies[0].includes(gatewayAttachment));
+    const history = await durable.history(gatewayBotTaskId(source));
+    assert.ok(readFileSync(join(history.cwd!, "proof.txt"), "utf8").includes(gatewayAttachment));
+  }
+  console.log("PASS Telegram and Slack media reach original native durable input and tool context");
   const originalAccountTask = scopedTask("feishu-default","chat");
   const originalAccountHistory = await durable.history(originalAccountTask);
   (gateway as any).adapters.get("feishu-default").workConnectionKey=()=>"b".repeat(64);

@@ -1,4 +1,6 @@
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { withGatewayMedia, GatewayMediaError, type GatewayMediaSource } from './GatewayMedia';
 export const ILINK_BASE = 'https://ilinkai.weixin.qq.com';
 export const ILINK_CDN = 'https://novac2c.cdn.weixin.qq.com/c2c';
 export const object = (v: unknown): Record<string, any> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {};
@@ -35,16 +37,18 @@ export class WeixinIlinkClient {
     try { result = object(JSON.parse(text)); } catch { throw new Error('微信响应格式无效'); }
     checkIlink(result); return result;
   }
+  mediaSource(media: Record<string, any>, name: string, signal: AbortSignal): GatewayMediaSource {
+    const query = media.encrypt_query_param;
+    const url = typeof query === 'string' && query ? `${ILINK_CDN}/download?encrypted_query_param=${encodeURIComponent(query)}`
+      : typeof media.full_url === 'string' ? media.full_url : '';
+    if (!url) throw new GatewayMediaError('微信媒体参数不完整');
+    const key = media.aes_key ? parseWeixinMediaKey(media.aes_key) : undefined;
+    return { url, name, allowedHosts: WEIXIN_MEDIA_HOSTS,
+      fetch: (input, init) => this.fetcher(input, { ...init, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) }),
+      transform: key ? bytes => decryptWeixinMedia(bytes, key) : undefined };
+  }
   async download(media: Record<string, any>, signal: AbortSignal): Promise<Buffer> {
-    if (typeof media.encrypt_query_param !== 'string' || typeof media.aes_key !== 'string') throw new Error('微信媒体参数不完整');
-    const decoded = Buffer.from(media.aes_key, 'base64');
-    const key = decoded.length === 32 && /^[a-f\d]{32}$/i.test(decoded.toString()) ? Buffer.from(decoded.toString(), 'hex') : decoded;
-    if (key.length !== 16) throw new Error('微信媒体密钥无效');
-    const response = await this.fetcher(`${ILINK_CDN}/download?encrypted_query_param=${encodeURIComponent(media.encrypt_query_param)}`, { redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]) });
-    if (!response.ok) throw new Error('微信媒体下载失败');
-    const cipher = await limitedBody(response);
-    const decipher = createDecipheriv('aes-128-ecb', key, null);
-    return Buffer.concat([decipher.update(cipher), decipher.final()]);
+    return withGatewayMedia([this.mediaSource(media, 'attachment.bin', signal)], async attachments => readFile(attachments[0].path));
   }
   async upload(base: string, token: string, peer: string, bytes: Buffer, filename: string, kind: 'image'|'video'|'file', signal: AbortSignal): Promise<Record<string, unknown>> {
     if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('微信附件须为 1 字节至 20 MB');
@@ -69,4 +73,24 @@ async function limitedBody(response: Response, limit = 20 * 1024 * 1024 + 16): P
     if (size > limit) throw new Error('微信响应超过大小限制'); chunks.push(Buffer.from(part.value)); } }
   finally { await reader.cancel(); }
   return Buffer.concat(chunks);
+}
+
+// Hermes 72d4433 plugins/platforms/weixin/adapter.py: CDN allowlist and AES key formats.
+const WEIXIN_MEDIA_HOSTS = ['novac2c.cdn.weixin.qq.com', 'ilinkai.weixin.qq.com', 'wx.qlogo.cn',
+  'thirdwx.qlogo.cn', 'res.wx.qq.com', 'mmbiz.qpic.cn', 'mmbiz.qlogo.cn'] as const;
+export function parseWeixinMediaKey(value: unknown): Buffer {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length > 48) throw new GatewayMediaError('微信媒体密钥无效');
+  const decoded = Buffer.from(value, 'base64');
+  const key = decoded.length === 32 && /^[a-f\d]{32}$/i.test(decoded.toString()) ? Buffer.from(decoded.toString(), 'hex') : decoded;
+  if (key.length !== 16) throw new GatewayMediaError('微信媒体密钥无效');
+  return key;
+}
+export function decryptWeixinMedia(bytes: Uint8Array, key: Buffer): Uint8Array {
+  if (!bytes.byteLength || bytes.byteLength % 16) throw new GatewayMediaError('微信媒体密文无效');
+  const decipher = createDecipheriv('aes-128-ecb', key, null);
+  decipher.setAutoPadding(false);
+  const padded = Buffer.concat([decipher.update(bytes), decipher.final()]);
+  const pad = padded[padded.length - 1];
+  // Match Hermes: remove valid PKCS#7 padding, preserve an unpadded full block.
+  return pad >= 1 && pad <= 16 && padded.subarray(-pad).every(value => value === pad) ? padded.subarray(0, -pad) : padded;
 }

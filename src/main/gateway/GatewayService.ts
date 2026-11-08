@@ -497,7 +497,7 @@ export class GatewayService {
         this.reviveTrashedGatewayTask(taskId);
         const modelId = this.settingsStore.read().defaultModelId?.trim();
         text = await runGatewayAgentTurn(this.agent, {
-          taskId, text: msg.text, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
+          taskId, text: msg.text, attachments: msg.attachments, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
           ...(modelId ? { modelId } : {}),
           ...(spaceId ? { spaceId } : {}),
         });
@@ -560,7 +560,7 @@ export class GatewayService {
       const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, msg.taskId);
       text = await runGatewayAgentTurn(this.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
-        assistantMessageId: msg.assistantMessageId,
+        assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,
         streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
         ...(spaceId ? { spaceId } : {}),
       });

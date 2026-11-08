@@ -10,7 +10,7 @@ const base = z.object({
 
 /** Only routing identities enter the database; message text and credentials never do. */
 export const gatewayWorkTargetSchema = z.discriminatedUnion("channelType", [
-  base.extend({ channelType: z.literal("feishu"), address: z.object({ chatId: identifier }).strict() }).strict(),
+  base.extend({ channelType: z.literal("feishu"), address: z.object({ chatId: identifier, replyToMessageId: identifier.optional(), threadId: identifier.optional() }).strict() }).strict(),
   base.extend({ channelType: z.literal("wecom"), address: z.object({ chatId: identifier, userId: identifier }).strict() }).strict(),
   base.extend({ channelType: z.literal("wechat"), address: z.object({ openId: identifier }).strict() }).strict(),
   base.extend({ channelType: z.literal("telegram"), address: z.object({

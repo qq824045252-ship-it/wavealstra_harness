@@ -1,4 +1,5 @@
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from "./channels";
+import { withGatewayMedia, GatewayMediaError, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from "./GatewayMedia";
 import { gatewayConnectionKey } from "./work-outbound";
 
 const TOPIC = "/v1.0/im/bot/messages/get";
@@ -33,6 +34,45 @@ function configFrom(value: ChannelConfig): Config {
   return config;
 }
 
+// Exact provider-owned hosts only. Additional CDN hosts require verified provider evidence;
+// never derive this allowlist from callback data or the returned signed download URL.
+const MEDIA_HOSTS = ["api.dingtalk.com", "oapi.dingtalk.com", "static.dingtalk.com"] as const;
+interface MediaCode { code: string; name: string; expectedSize?: number }
+function inboundContent(body: Record<string, unknown>): { text: string; media: MediaCode[] } {
+  const content = object(body.content);
+  let text = required(object(body.text)?.content);
+  const media: MediaCode[] = [];
+  const add = (item: Record<string, unknown> | undefined, kind: string) => {
+    if (!item) return;
+    const code = required(item.downloadCode) || required(item.pictureDownloadCode) || required(item.download_code);
+    if (!code) return;
+    const extension = kind === "picture" || kind === "image" ? "png" : kind === "voice" || kind === "audio" ? "ogg" : kind === "video" ? "mp4" : "bin";
+    media.push({ code, name: required(item.fileName) || `attachment-${media.length + 1}.${extension}`,
+      expectedSize: typeof item.fileSize === "number" ? item.fileSize : undefined });
+  };
+  if (["picture", "image", "file", "video"].includes(required(body.msgtype))) add(content, required(body.msgtype));
+  if (body.msgtype === "audio") {
+    text ||= required(content?.recognition);
+    // Hermes preserves provider recognition. Keep unrecognized voice-only messages too.
+    if (!text) add(content, "audio");
+  }
+  if (body.msgtype === "richText") {
+    const items = content?.richText;
+    if (Array.isArray(items)) {
+      const parts: string[] = [];
+      for (const value of items) {
+        const item = object(value);
+        if (!item) continue;
+        const part = required(item.text) || required(item.content);
+        if (part) parts.push(part);
+        add(item, required(item.type));
+      }
+      text ||= parts.join(" ");
+    }
+  }
+  return { text, media };
+}
+
 /** Official application robot Stream protocol (not a custom incoming-webhook robot).
  * Authentication is TLS + a single-use ticket obtained with app credentials. Stream
  * frames have no HTTP callback signature. Never expose an unsigned public callback.
@@ -53,6 +93,8 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   private cancelOpening?: () => void;
   private controller = new AbortController();
   private readonly seen = new Map<string, number>();
+  private readonly preparing = new Set<string>();
+  private mediaStatus = "";
   private pending = 0;
   private rateWindow = 0;
   private receivedInWindow = 0;
@@ -64,7 +106,7 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   activate(): void { if (!this.stopped) this.activated = true; }
   setInboundHandler(handler: GatewayInboundHandler): void { this.handler = handler; }
   isConnected(): boolean { return this.connected; }
-  statusText(): string { return this.connected ? "已连接（钉钉 Stream，限定企业和员工）" : this.stopped ? "未连接" : "钉钉连接恢复中"; }
+  statusText(): string { return this.connected ? "已连接（钉钉 Stream，限定企业和员工）" + this.mediaStatus : this.stopped ? "未连接" : "钉钉连接恢复中"; }
   gatewayConnectionGeneration(): unknown { return this.socket; }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config
@@ -99,6 +141,8 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     if (socket) { socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null; socket.close(); }
     this.config = null;
     this.seen.clear();
+    this.preparing.clear();
+    this.mediaStatus = "";
     this.reconnectAttempts = 0;
   }
   private current(generation: number): boolean { return !this.stopped && generation === this.generation; }
@@ -185,6 +229,40 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     socket.send(JSON.stringify({ code, message: code === 200 ? "OK" : "Rejected",
       headers: { messageId, contentType: "application/json" }, data: JSON.stringify(data) }));
   }
+  private async mediaSources(media: MediaCode[], generation: number, socket: DingTalkSocket, config: Config): Promise<GatewayMediaSource[]> {
+    if (!media.length) return [];
+    const assertActive = () => {
+      if (!this.active(generation, socket) || !this.activated) throw new Error("钉钉附件连接已改变");
+    };
+    const guardedFetch: typeof fetch = async (url, init) => {
+      assertActive();
+      const response = await this.fetcher(url, { ...init, redirect: "error",
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(30_000), ...(init?.signal ? [init.signal] : [])]) });
+      assertActive();
+      if (response.redirected) throw new GatewayMediaError("钉钉附件不允许重定向");
+      return response;
+    };
+    const post = async (path: string, body: unknown, token?: string) => {
+      const response = await guardedFetch(`https://api.dingtalk.com/v1.0/${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...(token ? { "x-acs-dingtalk-access-token": token } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new GatewayMediaError("钉钉附件接口请求失败", response.status === 408 || response.status === 429 || response.status >= 500);
+      const data = object(await response.json());
+      assertActive();
+      return data;
+    };
+    const auth = await post("oauth2/accessToken", { appKey: config.clientId, appSecret: config.clientSecret });
+    const token = required(auth?.accessToken);
+    if (!token) throw new GatewayMediaError("钉钉附件授权失败");
+    const sources: GatewayMediaSource[] = [];
+    for (const item of media) {
+      const data = await post("robot/messageFiles/download", { downloadCode: item.code, robotCode: config.robotCode }, token);
+      sources.push({ url: required(data?.downloadUrl), name: item.name, expectedSize: item.expectedSize,
+        allowedHosts: MEDIA_HOSTS, fetch: guardedFetch });
+    }
+    return sources;
+  }
   private async receive(raw: unknown, generation: number, socket: DingTalkSocket): Promise<void> {
     if (typeof raw !== "string" || Buffer.byteLength(raw) > 256_000) return;
     const frame = object(JSON.parse(raw));
@@ -202,7 +280,7 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     const config = this.config!;
     const senderId = required(body?.senderStaffId);
     const chatId = required(body?.conversationId);
-    const text = required(object(body?.text)?.content);
+
     const eventId = required(body?.msgId);
     if (!body || body.chatbotCorpId !== config.corpId || body.senderCorpId !== config.corpId
       || body.robotCode !== config.robotCode || !config.allowUsers.includes(senderId)
@@ -210,11 +288,19 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
       || (body.conversationType === "2" && body.isInAtList !== true)) {
       this.ack(socket, messageId, 403); return;
     }
-    if (body.msgtype !== "text" || !text || !this.handler) { this.ack(socket, messageId); return; }
+    const { text, media } = inboundContent(body);
+    if ((!text && !media.length) || !this.handler) { this.ack(socket, messageId); return; }
+    if (media.length > GATEWAY_MEDIA_LIMITS.count) {
+      this.mediaStatus = "；附件数量超过限制，请减少附件后重新发送";
+      this.ack(socket, messageId, 200, { response: null, error: "media_rejected" });
+      return;
+    }
     const now = Date.now();
     for (const [key, at] of this.seen) if (at < now - 24 * 60 * 60_000) this.seen.delete(key);
     const key = JSON.stringify([chatId, eventId]);
     if (this.seen.has(key)) { this.ack(socket, messageId); return; }
+    const preparingKey = JSON.stringify([generation, chatId, eventId]);
+    if (this.preparing.has(preparingKey)) { this.ack(socket, messageId, 503); return; }
     if (now - this.rateWindow >= 60_000) { this.rateWindow = now; this.receivedInWindow = this.sentInWindow = 0; }
     if (this.pending >= 32 || this.seen.size >= 10_000 || this.receivedInWindow >= 60) { this.ack(socket, messageId, 429); return; }
     const webhook = new URL(required(body.sessionWebhook));
@@ -225,11 +311,20 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     const expiresAt = Number(body.sessionWebhookExpiredTime);
     if (!Number.isFinite(expiresAt) || expiresAt <= now) { this.ack(socket, messageId, 403); return; }
     this.receivedInWindow++;
-    this.seen.set(key, now);
+    this.preparing.add(preparingKey);
     this.pending++;
+    let admitted = false;
     try {
-      this.ack(socket, messageId);
-      await this.handler({ channelId: this.id, chatId, text, messageId: eventId,
+      const sources = await this.mediaSources(media, generation, socket, config);
+      await withGatewayMedia(sources, async attachments => {
+        if (!this.active(generation, socket) || !this.activated) throw new Error("钉钉连接已改变");
+        // Only acknowledge success once attachments are ready. After admission, never
+        // replay an agent turn even if its handler/reply subsequently fails.
+        this.ack(socket, messageId);
+        this.seen.set(key, now);
+        admitted = true;
+        this.mediaStatus = "";
+        await this.handler!({ channelId: this.id, chatId, text: text || "请查看附件。", attachments, messageId: eventId,
         sender: { id: senderId, name: required(body.senderNick) || undefined },
         reply: async replyText => {
           if (!this.active(generation, socket) || Date.now() >= expiresAt) throw new Error("钉钉回复连接已改变或会话地址已过期，未发送");
@@ -249,6 +344,18 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
           if (!response.ok || object(receipt)?.errcode !== 0) throw new Error("钉钉未确认回复成功，已停止自动重发");
         },
       });
-    } finally { this.pending--; }
+      });
+    } catch (error) {
+      if (!admitted && this.active(generation, socket)) {
+        const permanent = error instanceof GatewayMediaError && !error.retryable;
+        this.mediaStatus = permanent ? "；附件被拒绝，请检查来源、权限和大小后重新发送" : "；附件暂时未接收，等待重投或请稍后重新发送";
+        if (permanent) {
+          this.seen.set(key, now);
+          // A terminal receipt prevents repeated downloads of a rejected file.
+          this.ack(socket, messageId, 200, { response: null, error: "media_rejected" });
+        } else this.ack(socket, messageId, 503);
+      }
+      throw error;
+    } finally { this.preparing.delete(preparingKey); this.pending--; }
   }
 }
