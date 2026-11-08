@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { BotHistoryDto, BotSendReceipt, BotSendRequest, WorkListUpdate } from "../src/shared/bot-conversation";
-import type { WorkProjectionDto } from "../src/shared/bot-work";
+import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import { createAppStore } from "../src/renderer/src/store/app/createAppStore";
 import { mergeWorkList } from "../src/renderer/src/store/app/slices/botWorkSync";
 
@@ -24,7 +24,7 @@ function fixture() {
   const api = { botWork: {
     sendMessage: async (request: BotSendRequest) => { calls.push(request); return send(request); },
     history: ({ botId }: { botId: string }) => read(botId),
-    listBots: async () => [{ botId: "a" }, { botId: "b" }],
+    listBots: async () => ["a", "b"].map(botId => ({ botId, userId: "user", status: "active", authorization: {} })),
     syncWorks: async (): Promise<WorkListUpdate> => ({ kind: "snapshot", cursor: { epoch: "ui", sequence: 0, scope: "open" }, works: [] }),
     hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "ui-host" }),
     cancelSend: async (botId: string, requestId: string) => { cancelled.push(`${botId}:${requestId}`); },
@@ -106,6 +106,148 @@ async function main() {
   assert.equal(mergeWorkList([], cursor, { ...duplicate, from: 6, cursor: { ...cursor, sequence: 7 } }), undefined, "gap requires full snapshot");
   assert.equal(mergeWorkList([], cursor, { ...duplicate, cursor: { ...cursor, epoch: "new-epoch" } }), undefined);
   assert.equal(mergeWorkList([], cursor, { ...duplicate, cursor: { ...cursor, scope: "all" } }), undefined);
+  await testNavigationRecovery(work);
   console.log("PASS Bot UI actual store sending: repeated clicks, per-Bot/Task draft isolation, lost acknowledgement identity, late history, cancel/archive, tombstone/gap/epoch");
+}
+
+async function testNavigationRecovery(work: WorkProjectionDto) {
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  } });
+  const key = "mybuddy.bot-navigation";
+  const bots = ["a", "b"].map(botId => ({ botId, userId: "user", status: "active", authorization: {} } as BotDto));
+  const works = [{ ...work, workId: "work-a" }, { ...work, workId: "work-b", ownerBotId: "b", lifecycle: "paused" as const }];
+  function navigationFixture() {
+    let currentBots = bots;
+    let currentWorks = works;
+    let read: (() => Promise<WorkListUpdate>) | undefined;
+    let syncs = 0;
+    const api = { botWork: {
+      listBots: async () => currentBots,
+      syncWorks: async () => { syncs++; return read ? read() : { kind: "snapshot", cursor: { epoch: `nav-${syncs}`, sequence: 0, scope: "open" }, works: currentWorks }; },
+      hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "test" }),
+      history: async ({ botId }: { botId: string }) => ({ botId, conversationId: botId, revision: 1, archived: false, messages: [] }),
+    } } as unknown as Window["api"];
+    const { useAppStore: store, context } = createAppStore({ getApi: () => api });
+    return { store, context, setBots: (value: BotDto[]) => { currentBots = value; }, setWorks: (value: WorkProjectionDto[]) => { currentWorks = value; },
+      setRead: (value: typeof read) => { read = value; }, syncs: () => syncs };
+  }
+  try {
+    const first = navigationFixture();
+    first.store.getState().initRuntime();
+    assert.equal(first.syncs(), 0, "a first visit has no saved navigation to hydrate");
+    assert.equal(first.store.getState().page, "chat");
+    await first.store.getState().refreshBotWork();
+    first.store.getState().setPage("bot");
+    first.store.getState().setActiveBotId("b");
+    first.store.getState().setSelectedWorkId("work-b");
+    first.store.getState().setBotDraft("重启保留的草稿");
+    const saved = values.get(key)!;
+    assert.deepEqual(JSON.parse(saved), { version: 1, userId: "user", botId: "b", page: "bot", workId: "work-b" });
+
+    const reboot = navigationFixture();
+    const slow = deferred<WorkListUpdate>(); reboot.setRead(() => slow.promise);
+    reboot.store.getState().initRuntime();
+    assert.equal(reboot.syncs(), 1, "startup hydrates saved context even before Bot page mounts");
+    assert.equal(reboot.store.getState().page, "chat", "unverified IDs are not restored synchronously");
+    reboot.context.set(state => state);
+    assert.equal(values.get(key), saved, "loading must not erase the saved location");
+    slow.resolve({ kind: "snapshot", cursor: { epoch: "startup", sequence: 0, scope: "open" }, works });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reboot.store.getState().page, "bot");
+    assert.equal(reboot.store.getState().activeBotId, "b");
+    assert.equal(reboot.store.getState().selectedWorkId, "work-b", "paused Work selection recovers");
+    assert.equal(reboot.store.getState().botDraft, "重启保留的草稿");
+    reboot.store.getState().setPage("chat");
+    const ordinary = navigationFixture();
+    await ordinary.store.getState().refreshBotWork();
+    assert.equal(ordinary.store.getState().page, "chat", "explicit ordinary mode survives restart");
+    assert.equal(ordinary.store.getState().selectedWorkId, "work-b");
+
+    for (const navigate of [
+      (store: typeof ordinary.store) => store.getState().setPage("chat"),
+      (store: typeof ordinary.store) => store.getState().setPage("library"),
+      (store: typeof ordinary.store) => store.getState().startProjectTask({ projectId: "project", welcomeMode: "working", modePresetId: null }),
+    ]) {
+      values.set(key, saved);
+      const late = navigationFixture();
+      const delay = deferred<WorkListUpdate>(); late.setRead(() => delay.promise);
+      const loading = late.store.getState().refreshBotWork();
+      navigate(late.store);
+      const chosenPage = late.store.getState().page;
+      delay.resolve({ kind: "snapshot", cursor: { epoch: "late", sequence: 0, scope: "open" }, works });
+      await loading;
+      assert.equal(late.store.getState().page, chosenPage, "late load cannot override newer navigation, including a same-page write");
+      assert.equal(late.store.getState().selectedWorkId, null, "cancelled restoration cannot bring back the old Work");
+    }
+
+    values.set(key, saved);
+    const retry = navigationFixture();
+    retry.setRead(async () => { throw new Error("temporarily offline"); });
+    await retry.store.getState().refreshBotWork();
+    assert.equal(values.get(key), saved, "failed initial sync preserves the cache for retry");
+    retry.setRead(undefined); await retry.store.getState().refreshBotWork();
+    assert.equal(retry.store.getState().page, "bot");
+    assert.equal(retry.store.getState().selectedWorkId, "work-b");
+
+    for (const invalidBots of [bots.slice(0, 1),
+      bots.map(bot => ({ ...bot, userId: "other-user" })),
+      bots.map(bot => ({ ...bot, status: "disabled" as const })),
+      bots.map(bot => ({ ...bot, authorization: { ...bot.authorization, expiresAt: 1 } })),
+    ]) {
+      values.set(key, saved);
+      const invalid = navigationFixture(); invalid.setBots(invalidBots);
+      await invalid.store.getState().refreshBotWork();
+      assert.equal(invalid.store.getState().page, "chat", "deleted, foreign, disabled or expired Bot cannot restore Bot mode");
+      assert.equal(invalid.store.getState().selectedWorkId, null);
+    }
+    for (const invalidWorks of [[], [{ ...works[1], lifecycle: "closed" as const }], [{ ...works[1], ownerBotId: "a" }]]) {
+      values.set(key, saved);
+      const invalid = navigationFixture(); invalid.setWorks(invalidWorks);
+      await invalid.store.getState().refreshBotWork();
+      assert.equal(invalid.store.getState().page, "bot");
+      assert.equal(invalid.store.getState().selectedWorkId, null, "missing, closed or transferred Work is not reselected");
+      assert.equal(JSON.parse(values.get(key)!).workId, null);
+    }
+
+    values.set(key, saved);
+    const live = navigationFixture(); await live.store.getState().refreshBotWork();
+    live.setWorks([{ ...works[1], lifecycle: "closed" }]);
+    await live.store.getState().refreshBotWork();
+    assert.equal(live.store.getState().selectedWorkId, null, "closure clears selection in the open Work view");
+    await live.store.getState().refreshBotWork(true);
+    live.store.getState().setSelectedWorkId("work-b");
+    await live.store.getState().refreshBotWork(true);
+    assert.equal(live.store.getState().selectedWorkId, "work-b", "explicit closed-history inspection survives polling");
+    assert.equal(JSON.parse(values.get(key)!).workId, null, "closed history selection must not be auto-restored on restart");
+    live.setBots(bots.slice(0, 1)); await live.store.getState().refreshBotWork();
+    assert.equal(live.store.getState().page, "chat", "loss of the active Bot safely leaves Bot mode");
+    live.store.getState().setActiveBotId("a");
+    assert.equal(live.store.getState().selectedWorkId, null, "switching Bot never carries a Work selection across owners");
+
+    for (const readOnlyBot of [{ ...bots[1], status: "paused" as const }, { ...bots[1], status: "disabled" as const },
+      { ...bots[1], authorization: { ...bots[1].authorization, expiresAt: 1 } }]) {
+      values.delete(key);
+      const inspect = navigationFixture(); inspect.setBots([bots[0], readOnlyBot]);
+      await inspect.store.getState().refreshBotWork();
+      inspect.store.getState().setActiveBotId("b"); inspect.store.getState().setPage("bot");
+      await inspect.store.getState().refreshBotWork();
+      assert.equal(inspect.store.getState().activeBotId, "b", "a visible but inactive Bot remains available for explicit read-only inspection");
+      assert.equal(inspect.store.getState().page, "bot");
+      assert.equal(values.has(key), false, "read-only inspection does not authorize automatic restoration");
+    }
+
+    values.set(key, "invalid json");
+    const corrupt = navigationFixture(); await corrupt.store.getState().refreshBotWork();
+    assert.equal(corrupt.store.getState().page, "chat");
+    console.log("PASS Bot navigation recovery: validated user/Bot/Work scope, delayed loading, draft/mode restoration, ordinary navigation races, retry, close/delete/transfer/permission fallback");
+  } finally {
+    if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });

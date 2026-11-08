@@ -58,7 +58,17 @@ export function createAppStore(dependencies: AppStoreDependencies = {}) {
   let context!: AppContext;
   const useAppStore = create<AppState>()((set, get) => {
     context = {
-      set,
+      set: ((partial, replace) => {
+        const observed = typeof partial === "function" ? (state: AppState) => {
+          const patch = partial(state);
+          if (patch !== state) runtime.botNavigation.observePatch(patch);
+          return patch;
+        } : partial;
+        if (typeof observed !== "function") runtime.botNavigation.observePatch(observed);
+        // Preserve Zustand's replace overload while observing explicit page writes.
+        if (replace) set(observed as AppState | ((state: AppState) => AppState), true);
+        else set(observed, false);
+      }) as AppContext["set"],
       get,
       runtime,
       getApi: dependencies.getApi ?? (() => typeof window === "undefined" ? undefined : window.api),
@@ -112,6 +122,11 @@ export function createAppStore(dependencies: AppStoreDependencies = {}) {
       ...createArtifactProjectionActions(context),
       ...createArtifactRenderActions(context),
     };
+  });
+  useAppStore.subscribe((state, previous) => {
+    if (state.page !== previous.page || state.activeBotId !== previous.activeBotId
+      || state.selectedWorkId !== previous.selectedWorkId || state.botIdentities !== previous.botIdentities
+      || state.botWorks !== previous.botWorks) runtime.botNavigation.persist(state);
   });
   return { useAppStore, appSelectors, context };
 }

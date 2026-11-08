@@ -36,6 +36,9 @@ export function createInitRuntimeActions(
       // Replacement retires the entire old lifetime, including queued deltas and async reads.
       storeContext.runtime.activeRuntimeDispose?.();
       const api = storeContext.getApi();
+      if (api?.botWork && storeContext.runtime.botNavigation.hasPendingRestore()) {
+        void storeContext.get().refreshBotWork();
+      }
       if (!api?.agent) return () => undefined;
 
       let active = true;

@@ -155,8 +155,19 @@ export function createActiveContextActions(
         const botWorkCursor = merged.cursor;
         if (requestSequence !== refreshSequence) return;
         set((state) => {
-          const activeBotId = bots.some(bot => bot.botId === state.activeBotId) ? state.activeBotId : bots[0]?.botId ?? null;
+          const restored = storeContext.runtime.botNavigation.restore(bots, botWorks);
+          const previousBot = state.botIdentities.find(bot => bot.botId === state.activeBotId);
+          const requestedId = restored.activeBotId ?? state.activeBotId;
+          // Restoration eligibility is stricter than read-only browsing: a
+          // paused/disabled Bot must remain inspectable when explicitly opened.
+          const activeBot = bots.find(bot => bot.botId === requestedId
+            && (!previousBot || bot.botId !== previousBot.botId || bot.userId === previousBot.userId));
+          const activeBotId = activeBot?.botId ?? bots[0]?.botId ?? null;
+          const invalidatedBot = requestedId !== null && !activeBot;
+          const selectedWorkId = "selectedWorkId" in restored ? restored.selectedWorkId : state.selectedWorkId;
           return {
+            ...restored,
+            ...(invalidatedBot && state.page === "bot" ? { page: "chat" as const } : {}),
             botIdentities: bots,
             botWorks,
             botWorkCursor,
@@ -165,8 +176,9 @@ export function createActiveContextActions(
             botWorkError: null,
             botDraft: activeBotId === state.activeBotId ? state.botDraft : state.botDrafts[activeBotId ?? ""] ?? "",
             activeBotId,
-            selectedWorkId: botWorks.some((work) => work.workId === state.selectedWorkId)
-              ? state.selectedWorkId
+            selectedWorkId: !invalidatedBot && botWorks.some((work) => work.workId === selectedWorkId && work.ownerBotId === activeBotId
+              && (includeClosed || work.lifecycle !== "closed"))
+              ? selectedWorkId ?? null
               : null,
           };
         });

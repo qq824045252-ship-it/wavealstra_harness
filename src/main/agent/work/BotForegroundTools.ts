@@ -59,14 +59,21 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const available = () => works.listWorks(userId, { includeClosed: true }).filter(work => work.ownerBotId === botId);
   const select = (workId: string, source: ReturnType<typeof receipt>) => {
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
-    const userText = messages.message(source.user_message_id)?.text ?? "";
-    const candidates = available().filter(work => work.lifecycle !== "closed");
-    const explicit = available().filter(work => userText.includes(work.workId));
-    const linked = messages.message(source.user_message_id)?.workIds ?? [];
-    const allowed = reference.length ? reference : source.selected_work_id ? [source.selected_work_id]
-      : explicit.length ? explicit.map(work => work.workId) : candidates.length === 1 ? [candidates[0]!.workId] : [];
-    if (!allowed.includes(workId) && !linked.includes(workId)) throw new Error("请明确要控制的 Work 卡片或 workId；多个事项不能按模糊消息全局控制");
-    const target = available().find(work => work.workId === workId);
+    const userMessage = messages.message(source.user_message_id);
+    const known = available();
+    const candidates = known.filter(work => work.lifecycle !== "closed");
+    // Read the actual user input, not model arguments or the current UI selection.
+    // Include unknown/foreign IDs so they cannot fall back to an unrelated card.
+    const explicit = [...new Set(userMessage?.text.match(/(?<![A-Za-z0-9_-])work-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g) ?? [])];
+    const linked = userMessage?.workIds ?? [];
+    const allowed = explicit.length ? explicit.length === 1 ? explicit : []
+      : reference.length ? reference.length === 1 ? reference : []
+      : source.selected_work_id ? [source.selected_work_id]
+      : candidates.length === 1 ? [candidates[0]!.workId] : [];
+    // Links support follow-up calls/replay for Work created in this request, but
+    // cannot override an explicit target or rescue ambiguous explicit IDs.
+    if (!allowed.includes(workId) && !(explicit.length === 0 && linked.includes(workId))) throw new Error("请明确要控制的 Work 卡片或 workId；多个事项不能按模糊消息全局控制");
+    const target = known.find(work => work.workId === workId);
     if (!target) throw new Error("Work 不属于当前用户与 Bot");
     return target;
   };

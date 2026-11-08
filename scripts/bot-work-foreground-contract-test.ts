@@ -32,10 +32,10 @@ const findTool = (name: string) => { const tool = tools.find(item => item.name =
 const schemas = new Map(tools.map(tool => [tool.name, Type.Unsafe(JSON.parse(JSON.stringify(tool.parameters)))]));
 const accepts = (name: string, args: unknown) => Value.Check(schemas.get(name)!, args);
 let nextTask = 0;
-const invoke = async (name: string, args: unknown, requestId = first.requestId): Promise<unknown> => {
+const invoke = async (name: string, args: unknown, requestId = first.requestId, replayTaskId?: string): Promise<unknown> => {
   // Only the native invocation identity is a fixture. Tool parsing, receipts, reads,
   // Work guards, mutations and transaction effects all use the real implementations.
-  const api = { callId: `call-${++nextTask}`, taskId: `tool-${nextTask}`, memo: async () => requestId } as unknown as ToolExecutionApi;
+  const api = { callId: `call-${++nextTask}`, taskId: replayTaskId ?? `tool-${nextTask}`, memo: async () => requestId } as unknown as ToolExecutionApi;
   const result = await findTool(name).execute(args as never, api, BACKGROUND_CONTEXT);
   const output = result.output?.find(block => block.type === "text");
   assert(output?.type === "text");
@@ -175,9 +175,102 @@ try {
     versionGuard: await queryGuard(work.workId), reason: "  finished by user  " }));
   assert.equal(cancelled.closureConclusion, "cancelled");
   assert.equal(scheduled.length, 3);
+
+  // Explicit IDs come from the persisted user message and override stale cards
+  // and reply context. Each mutation still goes through the real read/guard path.
+  const targetA = unwrap(works.createWork(user, { operationId: "target-a", title: "Target A" }));
+  const targetB = unwrap(works.createWork(user, { operationId: "target-b", title: "Target B" }));
+  let targetRequest = 0;
+  const requestFor = (text: string, selectedWorkId?: string, referenceMessageId?: string) => messages.accept(LOCAL_USER_ID, {
+    botId: DEFAULT_BOT_ID, conversationId: first.conversationId, requestId: `target-request-${++targetRequest}`,
+    text, selectedWorkId, referenceMessageId });
+  const assertRejectedTarget = async (requestId: string, target: WorkDto) => {
+    const before = works.getWork(target.workId);
+    await assert.rejects(() => validInvoke("work_pause", { workId: target.workId,
+      versionGuard: guardOf(target) }, requestId), /请明确/);
+    assert.deepEqual(works.getWork(target.workId), before);
+  };
+  const restore = (workId: string) => unwrap(works.resumeWork(user, { workId,
+    operationId: `restore-${++targetRequest}`, versionGuard: guardOf(works.getWork(workId)!) }));
+  const reference = requestFor("卡片上下文");
+  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, reference.requestId)!, targetA.workId);
+  const explicit = requestFor(`请暂停（${targetB.workId}），确认是 ${targetB.workId}。`, targetA.workId, reference.assistantMessageId);
+  await assertRejectedTarget(explicit.requestId, targetA);
+  await assert.rejects(() => validInvoke("work_pause", { workId: targetB.workId,
+    versionGuard: guardOf(targetB) }, explicit.requestId), /必须先查询/);
+  const explicitGuard = await queryGuard(targetB.workId, explicit.requestId);
+  const explicitArgs = { workId: targetB.workId, versionGuard: explicitGuard };
+  assert.equal(unwrap(await invoke("work_pause", explicitArgs, explicit.requestId, "explicit-replay")).lifecycle, "paused");
+  const replayed = await invoke("work_pause", explicitArgs, explicit.requestId, "explicit-replay") as WorkControlResult;
+  assert(replayed.ok && replayed.replayed, "explicit controls remain replay-safe after linkWork changes the message");
+  await assertRejectedTarget(explicit.requestId, targetA);
+  restore(targetB.workId);
+
+  const noIds = requestFor("暂停选中的事项", targetA.workId);
+  assert.equal(unwrap(await validInvoke("work_pause", { workId: targetA.workId,
+    versionGuard: await queryGuard(targetA.workId, noIds.requestId) }, noIds.requestId)).lifecycle, "paused");
+  restore(targetA.workId);
+  const replyOnly = requestFor("暂停这项", targetB.workId, reference.assistantMessageId);
+  await assertRejectedTarget(replyOnly.requestId, targetB);
+  assert.equal(unwrap(await validInvoke("work_pause", { workId: targetA.workId,
+    versionGuard: await queryGuard(targetA.workId, replyOnly.requestId) }, replyOnly.requestId)).lifecycle, "paused");
+  restore(targetA.workId);
+  const noTarget = requestFor("暂停");
+  await assertRejectedTarget(noTarget.requestId, targetA);
+  const multiple = requestFor(`${targetA.workId} 和 ${targetB.workId} 怎么样？`, targetA.workId, reference.assistantMessageId);
+  // Even a same-request link must not turn ambiguous text into permission.
+  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, multiple.requestId)!, targetA.workId);
+  await assertRejectedTarget(multiple.requestId, targetA);
+  await assertRejectedTarget(multiple.requestId, targetB);
+  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, reference.requestId)!, targetB.workId);
+  const multipleReference = requestFor("暂停这些", targetA.workId, reference.assistantMessageId);
+  await assertRejectedTarget(multipleReference.requestId, targetA);
+  await assertRejectedTarget(multipleReference.requestId, targetB);
+
+  bots.registerBot({ userId: LOCAL_USER_ID, botId: "foreign-target-bot", displayName: "Other Bot", authorization: DESKTOP_USER_GRANTS });
+  const foreignBotWork = unwrap(works.createWork(user, { operationId: "foreign-bot-target", title: "Other Bot Work", ownerBotId: "foreign-target-bot" }));
+  bots.registerBot({ userId: "foreign-target-user", botId: "foreign-user-bot", displayName: "Other User", authorization: DESKTOP_USER_GRANTS });
+  const foreignUserWork = unwrap(works.createWork({ ...user, userId: "foreign-target-user" }, {
+    operationId: "foreign-user-target", title: "Other User Work", ownerBotId: "foreign-user-bot" }));
+  const beforeUnavailable = works.getWork(targetB.workId);
+  for (const unavailable of [foreignBotWork.workId, foreignUserWork.workId, "work-00000000-0000-4000-8000-000000000000",
+    `${targetB.workId}_typo`, `${targetB.workId}--typo`, `${targetB.workId}-`]) {
+    const request = requestFor(`暂停 ${unavailable}`, targetA.workId);
+    await assertRejectedTarget(request.requestId, targetA);
+    assert.deepEqual(await validInvoke("work_query_status", { workId: unavailable }, request.requestId), []);
+    await assert.rejects(() => validInvoke("work_pause", { workId: unavailable,
+      versionGuard: guardOf(targetA) }, request.requestId), /不属于当前用户与 Bot/);
+    const mixed = requestFor(`${targetA.workId} 还是 ${unavailable}？`, targetA.workId);
+    await assertRejectedTarget(mixed.requestId, targetA);
+    assert.deepEqual(works.getWork(targetB.workId), beforeUnavailable, "a malformed ID must not authorize its valid prefix");
+  }
+  assert.equal(works.getWork(foreignBotWork.workId)?.lifecycle, "active");
+  assert.equal(works.getWork(foreignUserWork.workId)?.lifecycle, "active");
+  const closedRequest = requestFor(`暂停 ${cancelled.workId}`, targetA.workId);
+  await assertRejectedTarget(closedRequest.requestId, targetA);
+  const closedResult = await validInvoke("work_pause", { workId: cancelled.workId,
+    versionGuard: await queryGuard(cancelled.workId, closedRequest.requestId) }, closedRequest.requestId) as WorkControlResult;
+  assert(!closedResult.ok, "explicit target selection does not bypass closed lifecycle rejection");
+  assert.equal(works.getWork(cancelled.workId)?.lifecycle, "closed");
+
+  // A newly created Work is linked during this request and remains controllable
+  // despite stale selection; repeat execution keeps the same operation identity.
+  const createRequest = requestFor("创建一个新事项，然后暂停它", targetA.workId);
+  const created = unwrap(await validInvoke("work_create", { title: "Created in request" }, createRequest.requestId));
+  const createdArgs = { workId: created.workId, versionGuard: await queryGuard(created.workId, createRequest.requestId) };
+  assert.equal(unwrap(await invoke("work_pause", createdArgs, createRequest.requestId, "created-replay")).lifecycle, "paused");
+  const createdReplay = await invoke("work_pause", createdArgs, createRequest.requestId, "created-replay") as WorkControlResult;
+  assert(createdReplay.ok && createdReplay.replayed);
+  const explicitWithLink = requestFor(`暂停 ${targetB.workId}`, targetA.workId);
+  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, explicitWithLink.requestId)!, targetA.workId);
+  await assertRejectedTarget(explicitWithLink.requestId, targetA);
+  assert.equal(unwrap(await validInvoke("work_pause", { workId: targetB.workId,
+    versionGuard: await queryGuard(targetB.workId, explicitWithLink.requestId) }, explicitWithLink.requestId)).lifecycle, "paused");
+
   messages.archive(LOCAL_USER_ID, DEFAULT_BOT_ID, first.conversationId);
   const newConversation = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "contract-new-conversation", text: "新对话查询" });
   assert.notEqual(newConversation.conversationId, first.conversationId);
   await assert.rejects(() => validInvoke("work_query_status", {}, newConversation.requestId), /不属于当前对话/);
   console.log(`PASS foreground Function Calling/runtime contract (${invalid.length} invalid inputs), create/amend/control execution, exact request/work/conversation reads, stale guards and terminal-request rejection`);
+  console.log("PASS foreground target resolution: unique/repeated explicit ID, stale selection/reference, no/multiple IDs, reference ambiguity, unknown/foreign/closed targets, same-request links and replay");
 } finally { db.close(); await rm(root, { recursive: true, force: true }); }

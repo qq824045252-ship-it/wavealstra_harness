@@ -25,7 +25,7 @@ function fixture(listWorks: BotWorkApi["listWorks"], syncWorks?: BotWorkApi["syn
   let sequence = 0;
   const api = {
     botWork: {
-      listBots: async () => [{ botId: "bot-review" }] as BotDto[],
+      listBots: async () => [{ botId: "bot-review", userId: "user", status: "active", authorization: {} }] as BotDto[],
       listWorks,
       syncWorks: syncWorks ?? (async () => {
         const snapshotSequence = ++sequence;

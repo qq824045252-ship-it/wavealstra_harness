@@ -1,7 +1,9 @@
 import type { RenderHydration } from "../../../lib/renderHydration";
+import { createBotNavigationPersistence } from "./botNavigation";
 
 /** Mutable resources belong to one store instance, never a React effect. */
 export interface AppRuntimeState {
+  botNavigation: ReturnType<typeof createBotNavigationPersistence>;
   activeRuntimeDispose?: () => void;
   pendingPinTaskIds: Set<string>;
   pendingMoveSpaceIds: Set<string>;
@@ -18,6 +20,7 @@ export interface AppRuntimeState {
 
 export function createAppRuntimeState(): AppRuntimeState {
   return {
+    botNavigation: createBotNavigationPersistence(),
     pendingPinTaskIds: new Set(),
     pendingMoveSpaceIds: new Set(),
     pendingMoveTaskIds: new Set(),
