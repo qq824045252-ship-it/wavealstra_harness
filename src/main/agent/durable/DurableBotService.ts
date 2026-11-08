@@ -20,6 +20,7 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { readDurableReadOnlyHistory } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
@@ -34,7 +35,7 @@ import { DurableStorageOwnedError } from "./DurableStorageLease";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkExecutionPort } from "../work/WorkExecutionAdapter";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
-import { SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
+import { AgentDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
@@ -63,6 +64,8 @@ export interface DurableBotServiceOptions {
   mcpDir: string;
   assetsDir?: string;
   resolveCwd: (taskId: string) => string;
+  /** Desired organization root; undefined pins an execution-owned workspace. No projection writes. */
+  resolveNextCwd?: (taskId: string) => string | undefined;
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions;
@@ -81,7 +84,7 @@ export interface DurableBotServiceOptions {
   toolMode: (task: TaskDto) => BotToolMode;
   defaultModel: () => string | undefined;
   emit: (patch: AgentUiPatch) => void;
-  projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string) => Promise<void>;
+  projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
   auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit;
@@ -101,6 +104,7 @@ export interface DurableBotServiceOptions {
 
 /** One process owns each store. SQLite only binds product IDs; all execution state is in Durable. */
 export class DurableBotService {
+  private readonly rebinding = new Map<string, Promise<OpenBot>>();
   private readonly opening = new Map<string, Promise<OpenBot>>();
   private readonly opened = new Map<string, OpenBot>();
   private readonly config: McpConfigService;
@@ -117,6 +121,12 @@ export class DurableBotService {
       backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_memory_projection (
       task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, entry_id INTEGER NOT NULL)`);
+    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_workspace_moves (
+      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      from_cwd TEXT NOT NULL, to_cwd TEXT NOT NULL)`);
+    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL, cwd TEXT NOT NULL, PRIMARY KEY(task_id, message_id))`);
     this.config = new McpConfigService();
     this.credentials = new McpOAuthCredentialStore(
       new McpCredentialBackend(join(options.mcpDir, "mcp-native-auth.encrypted.json")), join(options.mcpDir, "mcp-native-refresh-locks"));
@@ -129,7 +139,7 @@ export class DurableBotService {
     const snapshot = this.opened.get(taskId)?.runtime.snapshot;
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
   }
-  cwd(taskId: string): string | undefined { return this.binding(taskId)?.cwd; }
+  cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
   lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id; }
   contextUsage(taskId: string) {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
@@ -162,18 +172,95 @@ export class DurableBotService {
     }));
   }
 
-  private open(taskId: string): Promise<OpenBot> {
+  private workspaceMove(taskId: string): { from_cwd: string; to_cwd: string } | undefined {
+    return this.options.db.connection.prepare("SELECT from_cwd, to_cwd FROM durable_bot_workspace_moves WHERE task_id = ?").get(taskId) as { from_cwd: string; to_cwd: string } | undefined;
+  }
+
+  private open(taskId: string, admissionBoundary = false): Promise<OpenBot> {
+    const pending = this.rebinding.get(taskId);
+    if (pending) return pending;
+    const operation = (async () => {
+      let open: OpenBot;
+      try { open = await this.openBound(taskId); }
+      catch (error) {
+        if (!(error instanceof WorkspaceMigrationBusyError) || !this.workspaceMove(taskId)) throw error;
+        this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
+        open = await this.openBound(taskId);
+      }
+      if (!admissionBoundary && this.admissions.get(taskId)?.size) return open;
+      if (!this.options.resolveNextCwd || this.options.waitingForInput?.(taskId)) return open;
+      let desired: string | undefined;
+      try { desired = this.options.resolveNextCwd(taskId); }
+      catch (error) {
+        // A broken destination must not prevent cancellation or recovery of the old namespace.
+        if (!await open.runtime.canRebindWorkspace()) return open;
+        throw error;
+      }
+      const current = this.binding(taskId);
+      if (!desired || !current || resolve(desired) === resolve(current.cwd)) return open;
+      // Scan the native graph only when the directory actually changes, not on every UI read.
+      if (!await open.runtime.canRebindWorkspace()) return open;
+      if (!existsSync(desired) || !statSync(desired).isDirectory()) throw new Error(`Bot 工作目录不存在：${desired}`);
+      await this.rememberWorkspaceHistory(taskId, open);
+      await this.invalidate(taskId, open);
+      await this.projections.get(taskId);
+      // Persist intent before mutating the native store. A restart resumes this exact migration,
+      // including the crash window after native commit and before the SQLite projection commits.
+      this.options.db.connection.prepare("INSERT INTO durable_bot_workspace_moves VALUES (?, ?, ?)")
+        .run(taskId, current.cwd, desired);
+      try { return await this.openBound(taskId); }
+      catch (error) {
+        if (!(error instanceof WorkspaceMigrationBusyError)) throw error;
+        // Native transaction refused before changing any cwd. Restore the original namespace
+        // so pending recovery/approval remains reachable; retry the desired move after it settles.
+        this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
+        return this.openBound(taskId);
+      }
+    })();
+    this.rebinding.set(taskId, operation);
+    void operation.finally(() => { if (this.rebinding.get(taskId) === operation) this.rebinding.delete(taskId); }).catch(() => {});
+    return operation;
+  }
+
+  private async rememberWorkspaceHistory(taskId: string, open: OpenBot): Promise<void> {
+    // UI snapshots are windowed. Record all historical branches before the first directory
+    // change so a later fork/history page cannot reinterpret an older relative file path.
+    const rows = await open.runtime.harness.commit(async tx => {
+      const result: Array<[string, string]> = [];
+      let conversations: Cursor | undefined;
+      do {
+        const page = await tx.scanConversations({}, 100, conversations);
+        for (const conversation of page.items) {
+          const cwd = (await tx.doc(AgentDoc, conversation.id)).cwd ?? this.binding(taskId)!.cwd;
+          let entries: Cursor | undefined;
+          do {
+            const history = await tx.scanEntries({ conversationId: conversation.id, order: "ascending" }, 500, entries);
+            for (const entry of history.items) result.push([`durable-${entry.id}`, cwd]);
+            entries = history.next;
+          } while (entries);
+        }
+        conversations = page.next;
+      } while (conversations);
+      return result;
+    }, context);
+    this.options.db.connection.transaction(() => {
+      const insert = this.options.db.connection.prepare("INSERT OR IGNORE INTO durable_bot_message_workspaces VALUES (?, ?, ?)");
+      for (const [id, cwd] of rows) insert.run(taskId, id, cwd);
+    }).immediate();
+  }
+
+  private openBound(taskId: string): Promise<OpenBot> {
     if (this.closing) return Promise.reject(new Error("Bot runtime is closing"));
     const passive = this.passiveReads.get(taskId);
-    if (passive) return passive.then(() => this.open(taskId));
+    if (passive) return passive.then(() => this.openBound(taskId));
     // A failed Session is being torn down; reopen only after its lease/MCP are released.
     const invalidating = this.invalidations.get(taskId);
-    if (invalidating) return invalidating.then(() => this.open(taskId));
+    if (invalidating) return invalidating.then(() => this.openBound(taskId));
     const existing = this.opened.get(taskId);
     if (existing) {
       if (!existing.runtime.isSessionFailed()) return Promise.resolve(existing);
       this.opened.delete(taskId);
-      return this.invalidate(taskId, existing).then(() => this.open(taskId));
+      return this.invalidate(taskId, existing).then(() => this.openBound(taskId));
     }
     const opening = this.opening.get(taskId);
     if (opening) return opening;
@@ -230,15 +317,17 @@ export class DurableBotService {
     const task = db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
     const prior = this.binding(taskId);
-    const cwd = prior?.cwd ?? this.options.resolveCwd(taskId);
+    const move = this.workspaceMove(taskId);
+    const cwd = move?.to_cwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
-    // Sidebar moves change task organization; native checkpoints keep their execution directory.
-    // Repair old projections which incorrectly overwrote Task.cwd with the new space's path.
-    if (task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+    // Pending native operations retain their root; idle moves are committed below.
+    if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+    task.cwd = cwd;
     const directory = prior?.directory ?? join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
     db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
     const config = this.mcpConfiguration(taskId);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
+    let openedRuntime: DurableBotRuntime | undefined;
     try {
       // Existing project files are not newly produced artifacts on reconnect. Persisted native
       // write/edit records restore their cards independently of this workspace diff baseline.
@@ -247,6 +336,7 @@ export class DurableBotService {
       // pre-existing project file look like a newly produced artifact of the current turn.
       let workspaceBefore = await snapshotWorkspace(cwd);
       let projected = "";
+      const messageWorkspaces = new Map((db.connection.prepare("SELECT message_id, cwd FROM durable_bot_message_workspaces WHERE task_id = ?").all(taskId) as Array<{ message_id: string; cwd: string }>).map(row => [row.message_id, row.cwd]));
       // 打开会话/读历史不是「发请求」：模型目录暂时解析不到也不能阻断，先沿用任务记录的坐标。
       const resolvedModel = await this.resolveTaskModelForOpen(task);
       const selected = resolvedModel?.target;
@@ -270,6 +360,7 @@ export class DurableBotService {
       let previousSnapshot: DurableBotSnapshot | undefined;
       let settledKey: string | undefined;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
+        workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => this.options.toolAllowed?.(db.getTask(taskId) ?? task, name) ?? true,
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
@@ -315,11 +406,17 @@ export class DurableBotService {
             : { type: "durable_snapshot", taskId, snapshot });
           previousSnapshot = snapshot;
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
+          // Relative historical write paths belong to the directory where their message was
+          // observed, not the current space. Prime old history before committing a move.
+          for (const message of snapshot.messages) if (!messageWorkspaces.has(message.id)) {
+            db.connection.prepare("INSERT OR IGNORE INTO durable_bot_message_workspaces VALUES (?, ?, ?)").run(taskId, message.id, cwd);
+            messageWorkspaces.set(message.id, cwd);
+          }
           const signature = snapshot.messages.at(-1)?.id ?? "";
           if (!snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
             const projection = (this.projections.get(taskId) ?? Promise.resolve()).then(async () => {
-              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd);
+              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd, messageWorkspaces);
               workspaceBefore = await snapshotWorkspace(cwd);
             }).catch(error => console.warn("[Durable] Artifact projection failed", taskId, error));
             this.projections.set(taskId, projection);
@@ -333,8 +430,14 @@ export class DurableBotService {
           }
         },
       });
+      openedRuntime = runtime;
+      if (move) db.connection.transaction(() => {
+        db.connection.prepare("UPDATE durable_bot_bindings SET cwd = ? WHERE task_id = ?").run(cwd, taskId);
+        db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+        db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
+      }).immediate();
       return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), ...(modelRepair ? { modelRepair } : {}) };
-    } catch (error) { await mcp.close(); throw error; }
+    } catch (error) { await openedRuntime?.close(); await mcp.close(); throw error; }
   }
 
   private mcpConfiguration(taskId: string) {
@@ -472,7 +575,10 @@ export class DurableBotService {
 
   private trackAdmission<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.admissionTails.get(taskId) ?? Promise.resolve();
-    const pending = prior.catch(() => {}).then(operation);
+    const pending = prior.catch(() => {}).then(async () => {
+      if (this.options.db.getTask(taskId)) await this.open(taskId, true);
+      return operation();
+    });
     this.admissionTails.set(taskId, pending);
     const admissions = this.admissions.get(taskId) ?? new Set();
     admissions.add(pending); this.admissions.set(taskId, admissions);
@@ -811,7 +917,7 @@ export class DurableBotService {
     try { if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort()); }
     finally { this.options.onRelease?.(taskId); }
   }
-  async compact(taskId: string): Promise<void> { await this.withRecovery(taskId, open => open.runtime.compact()); }
+  async compact(taskId: string): Promise<void> { await this.trackAdmission(taskId, () => this.withRecovery(taskId, open => open.runtime.compact())); }
   async abortCompaction(taskId: string): Promise<boolean> { return await this.opened.get(taskId)?.runtime.abortCompaction() ?? false; }
   async purge(taskId: string): Promise<void> {
     if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");

@@ -1,3 +1,4 @@
+import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { withWorkShellRead } from "../work/WorkShellRead";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -58,6 +59,8 @@ export interface DurableBotOptions {
   readOnly?: boolean;
   directory: string;
   cwd: string;
+  /** Host-persisted migration source; only an idle native store may adopt cwd. */
+  workspaceMigrationFrom?: string;
   models: Models;
   model?: { provider: string; modelId: string };
   toolMode: BotToolMode;
@@ -264,6 +267,11 @@ export class DurableBotRuntime {
       runtime.nativeTools = native;
       runtime.compatibilityTools = compatibility;
       runtime.codemode = codemode;
+      if (options.workspaceMigrationFrom) {
+        if (options.readOnly) throw new Error("Read-only history cannot migrate a Bot workspace");
+        if (options.waitingForInput?.()) throw new WorkspaceMigrationBusyError();
+        await migrateDurableWorkspace(harness, options.workspaceMigrationFrom, options.cwd, ctx);
+      }
       const bound = await conversation.agent(ctx);
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
       finishOpening(runtime.evidence);
@@ -353,6 +361,12 @@ export class DurableBotRuntime {
   async isIdle(): Promise<boolean> {
     const snapshot = await this.refresh();
     return !snapshot.busy && snapshot.queued === 0;
+  }
+
+  /** Root idle is insufficient: include child tasks, queues and pending regeneration. */
+  async canRebindWorkspace(): Promise<boolean> {
+    this.assertSessionHealthy();
+    return this.options.waitingForInput?.() !== true && await canRebindDurableWorkspace(this.harness, ctx);
   }
 
   /**

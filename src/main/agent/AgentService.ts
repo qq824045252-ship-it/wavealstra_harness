@@ -1021,7 +1021,7 @@ export class AgentService {
    * 但回合末 snapshot 在共享目录下可能互相看见——这是「能干活」与「强隔离」的权衡，无 Space path 时仍强隔离。
    */
   resolveTaskExecutionWorkspaceCwd(taskId: string): string {
-    // A Bot's native checkpoint owns cwd. Moving its sidebar entry does not migrate execution.
+    // The live/native binding is authoritative until Durable safely commits an idle workspace move.
     const bound = this.durableBots?.cwd(taskId);
     if (bound) {
       if (this.db.getTask(taskId)?.cwd !== bound) this.db.bindTaskExecutionWorkspaceCwd(taskId, bound);
@@ -1454,6 +1454,13 @@ export class AgentService {
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
+      resolveNextCwd: id => {
+        const task = this.db.getTask(id);
+        if (task?.welcomeMode !== "bot" || this.workService.repo.bindingForTask(id)
+          || resolveWorkContinuationCwd(this.db, this.workService, id)) return undefined;
+        return this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })
+          ?? this.taskWorkspace.ensureTaskExecutionWorkspace(id);
+      },
       defaultModel: () => this.settingsStore.read().defaultModelId,
       prepareTask: request => this.prepareDurableTask(request),
       beforeSubmit: request => {
@@ -1589,7 +1596,7 @@ export class AgentService {
         if (request.reasoningPreference && request.reasoningPreferenceModelId === id) return this.nativeReasoningLevel(model, request.reasoningPreference);
         return createAgentSettingsManager(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
       },
-      projectArtifacts: async (taskId, snapshot, before, cwd) => {
+      projectArtifacts: async (taskId, snapshot, before, cwd, messageWorkspaces) => {
         const messageId = snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id;
         if (!messageId) return;
         await this.emitChangedArtifacts(taskId, messageId, cwd, before);
@@ -1599,7 +1606,7 @@ export class AgentService {
           if (tool.status !== "success" || !["write", "edit"].includes(tool.tool)) continue;
           const target = argsPathOf(tool.detail) ?? argsPathOf(tool.summary) ?? tool.summary;
           try {
-            const file = resolve(cwd, target);
+            const file = resolve(messageWorkspaces?.get(message.id) ?? cwd, target);
             if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file, tool.id);
           } catch { /* Non-file results remain visible verbatim in the Durable transcript. */ }
         }
@@ -1849,7 +1856,8 @@ export class AgentService {
   private async prepareDurableTask(request: AgentPromptRequest): Promise<AgentPromptRequest> {
     this.durableAssemblies.delete(request.taskId);
     assertSingleExpertId(request.expertId);
-    const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId);
+    const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId,
+      () => this.resolveTaskExecutionWorkspaceCwd(request.taskId));
     const binding = this.workService.repo.bindingForTask(request.taskId);
     if (binding) this.botExpertBindings.install(binding);
     else this.expertBindings.ensureLegacy(request.taskId);

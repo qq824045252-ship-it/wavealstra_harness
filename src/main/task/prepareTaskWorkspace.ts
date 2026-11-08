@@ -4,9 +4,9 @@ import { resolveTaskWorkspaceCwd } from "./TaskWorkspaceResolver";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import type { ExecutionFailureRepository } from "../agent/ExecutionFailureRepository";
 
-export function prepareTaskWorkspace(db: AppDatabase, workspace: TaskExecutionWorkspace, failures: ExecutionFailureRepository, taskId: string, assistantMessageId?: string): string {
+export function prepareTaskWorkspace(db: AppDatabase, workspace: TaskExecutionWorkspace, failures: ExecutionFailureRepository, taskId: string, assistantMessageId?: string, resolveCwd: () => string = () => resolveTaskWorkspaceCwd(db, workspace, taskId)): string {
   try {
-    const cwd = resolveTaskWorkspaceCwd(db, workspace, taskId);
+    const cwd = resolveCwd();
     failures.resolveWorkspaceFailures(taskId);
     return cwd;
   } catch (error) {
