@@ -260,6 +260,7 @@ import {
   type RemoteConfigureRequest,
 } from "../shared/remote-access";
 import { RemoteAccessController } from "./remote/RemoteAccessController";
+import { detectCloudflared } from "./remote/CloudflaredCli";
 import { cleanupRemoteUploads } from "./remote/RemoteTaskCommandService";
 import {
   copyExternalIntoWorkspace,
@@ -710,6 +711,8 @@ function registerIpc(): void {
   });
   ipcMain.handle(RemoteAccessIpc.closePairWindow, () => remoteAccessController?.closePairWindow());
   ipcMain.handle(RemoteAccessIpc.pairWindowState, () => remoteAccessController?.pairWindowState() ?? null);
+  // 只读探测本机 cloudflared CLI（不启动隧道、不改配置）；结果用于设置页提示
+  ipcMain.handle(RemoteAccessIpc.detectCloudflared, () => detectCloudflared());
 
   // 窗口创建前先挂上 subagent 通道，避免概览一启动 invoke 打出 No handler registered
   registerSubagentIpcHost(ipcMain);

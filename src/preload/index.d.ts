@@ -2,7 +2,7 @@ import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleT
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../shared/archive-deletion";
 import type { MemoryCandidateDto, MemoryCoreProfileDto, MemoryCreateRequest, MemoryDismissedProjectionDto, MemoryKernelStats, MemoryListRequest, MemoryProjectionProposalDto, MemoryRecordDto, MemoryRevisionDto, MemoryScenarioDto, MemoryScopeType, MemorySearchHit, MemorySearchRequest, MemoryTurnDto, MemoryTurnListRequest, MemorySkillCandidateDto, MemorySkillCandidateStatus, MemorySkillEffectivenessDto, MemorySkillEffectivenessSummaryDto, MemorySkillFeedbackKind, MemorySkillRevisionCandidateDto, MemorySkillRevisionStatus, MemoryUpdateRequest } from "../shared/memory-kernel";
 import type { MemoryGatewayAccessGrantDto, MemoryGatewayConfigureRequest, MemoryGatewayCreateGrantRequest, MemoryGatewayIssuedGrantDto, MemoryGatewayStatusDto, MemoryGatewayUpdateGrantRequest } from "../shared/memory-gateway";
-import type { RemoteConfigureRequest, RemoteDeviceSummary, RemotePairingSession, RemoteStatus } from "../shared/remote-access";
+import type { RemoteCloudflaredStatus, RemoteConfigureRequest, RemoteDeviceSummary, RemotePairingSession, RemoteStatus } from "../shared/remote-access";
 import type { NotificationChangedEvent, NotificationDto, NotificationListRequest } from "../shared/notification";
 import type { ExternalAgentDescriptorDto, ExternalAgentHistoryDto, ExternalAgentId, ExternalAgentPromptRequest, ExternalAgentPromptResult, ExternalAgentResolvePermissionRequest, ExternalAgentRunDto, ExternalAgentSetConfigOptionRequest, ExternalAgentTestResultDto, ExternalAgentUiEvent } from "../shared/external-agent";
 import type { AgentLoadoutObservationDto, RuntimeAuditClearResultDto } from "../shared/agent-loadout";
@@ -458,6 +458,7 @@ export interface PreloadApi {
     openPairWindow: () => Promise<RemotePairWindowDto>;
     closePairWindow: () => Promise<void>;
     pairWindowState: () => Promise<RemotePairWindowDto | null>;
+    detectCloudflared: () => Promise<RemoteCloudflaredStatus>;
   };
   memory: {
     organization: () => Promise<import("../shared/memory-organization").MemoryOrganizationRun | null>;
