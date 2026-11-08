@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkReviewControlRequest } from "@shared/bot-work-review";
 
@@ -17,9 +17,17 @@ export function WorkGapCoveragePanel({ work, disabled, locked, onEdit, onSubmit 
   const [criterionIds, setCriterionIds] = useState<string[]>([]);
   const [reason, setReason] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [confirmNotice, setConfirmNotice] = useState("");
+  // 只在"确实被重置"时提示；首次挂载或本来就未确认时不刷屏。
+  const confirmedRef = useRef(false);
+  const updateConfirmed = (value: boolean) => { confirmedRef.current = value; setConfirmed(value); };
   const snapshot = JSON.stringify([work.workId, work.stateVersion, work.intentRevision,
     work.ownerEpoch, work.inputSnapshotId, work.phase3?.artifactSnapshotId]);
-  useEffect(() => { setConfirmed(false); }, [snapshot]);
+  useEffect(() => {
+    if (!confirmedRef.current) return;
+    updateConfirmed(false);
+    setConfirmNotice("事项已更新，填写内容已保留，请重新核对并勾选确认后再提交");
+  }, [snapshot]);
   const gaps = work.phase3?.gaps ?? [];
   const covered = work.phase3?.subitems.filter(item => item.coverage) ?? [];
   if (!gaps.length && !covered.length) return null;
@@ -33,7 +41,19 @@ export function WorkGapCoveragePanel({ work, disabled, locked, onEdit, onSubmit 
   const validSelection = factIds.length > 0 && factIds.every(id => eligible.some(item => item.factId === id))
     && accepted.some(item => item.deliverableId === deliverableId)
     && criterionIds.length > 0 && criterionIds.every(id => verified.some(item => item.id === id));
-  const edit = (change: () => void) => onEdit(() => { change(); setConfirmed(false); });
+  const edit = (change: () => void) => onEdit(() => {
+    change();
+    // 已勾选后再次修改任何字段：确认失效（不静默），并告诉用户原因。
+    if (confirmed) { updateConfirmed(false); setConfirmNotice("内容已变更，确认已失效，请重新勾选后再提交"); }
+  });
+  // 提交按钮 disabled 时必须说明还差什么，而不是只变灰。
+  const missing = [
+    !factIds.length && "选择要覆盖的未执行缺口",
+    !accepted.some(item => item.deliverableId === deliverableId) && "选择覆盖这些动作的已采纳成果",
+    !criterionIds.length && "选择作为证据的已通过验收项",
+    !reason.trim() && "填写覆盖依据",
+    !confirmed && "勾选确认所选动作不再需要执行",
+  ].filter((item): item is string => Boolean(item));
   return <section aria-label="必要子项缺口">
     {!!gaps.length && <>
       <h4>按完成关闭前仍需处理的必要子项（{gaps.length}）</h4>
@@ -66,11 +86,13 @@ export function WorkGapCoveragePanel({ work, disabled, locked, onEdit, onSubmit 
       <label>覆盖依据<textarea aria-label="缺口覆盖依据" value={reason} maxLength={2000} disabled={locked}
         onChange={event => edit(() => setReason(event.target.value))} /></label>
       <label><input type="checkbox" aria-label="确认未执行动作已覆盖" checked={confirmed} disabled={locked}
-        onChange={event => onEdit(() => setConfirmed(event.target.checked))} />
+        onChange={event => onEdit(() => { updateConfirmed(event.target.checked); if (event.target.checked) setConfirmNotice(""); })} />
         我已核对所选动作不再需要执行，选定成果和验收证据已覆盖其目标；不授权补跑，也不豁免其他缺口</label>
+      {confirmNotice && <p role="status">{confirmNotice}</p>}
+      {!locked && !!missing.length && <p role="status">还不能提交：请{missing.join("、")}。</p>}
       <button type="button" disabled={disabled || !validSelection || !reason.trim() || !confirmed}
         onClick={() => {
-          setConfirmed(false);
+          updateConfirmed(false);
           onSubmit({ factIds, deliverableId, criterionIds, reason: reason.trim(), confirmed: true,
             inputSnapshotId: work.inputSnapshotId, artifactSnapshotId: work.phase3?.artifactSnapshotId });
         }}>记录已由后续证据覆盖</button>

@@ -1,3 +1,4 @@
+import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { withWorkShellRead } from "../work/WorkShellRead";
 import { randomUUID } from "node:crypto";
@@ -233,7 +234,7 @@ export class DurableBotRuntime {
     let finishOpening!: (projection: DurableEvidenceProjection | undefined) => void;
     const openingEvidence = new Promise<DurableEvidenceProjection | undefined>(resolve => { finishOpening = resolve; });
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
-      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context)));
+      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context)));
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
@@ -320,7 +321,7 @@ export class DurableBotRuntime {
       const names = new Set(available.map(tool => tool.name));
       const registered = [...available, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
       this.registry.install(botExtension(this.options, registered, this.codemode, (id, message) => this.recordResponse(id, message),
-        (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context)));
+        (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context)));
     }
     this.options.toolMode = toolMode;
     await this.conversation.configure({
@@ -339,7 +340,7 @@ export class DurableBotRuntime {
     const names = new Set(this.nativeTools.map(tool => tool.name));
     this.registry.install(botExtension(this.options, [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))], this.codemode,
       (id, message) => this.recordResponse(id, message),
-      (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context)));
+      (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context)));
   }
   /** Install Code Mode's dynamically discovered tools before the nested ToolTask freezes its registry snapshot. */
   private async prewarmCodeMode(code: string, context: Parameters<ToolRegistration["execute"]>[2], conversationId = this.conversation.id): Promise<void> {
@@ -1076,6 +1077,7 @@ function botExtension(
   prewarmCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2], conversationId: Conversation["id"]) => Promise<void> | void,
   evidence?: () => DurableEvidenceProjection | undefined | Promise<DurableEvidenceProjection | undefined>,
   recordSkillRead?: (call: Parameters<ToolHooks["afterTool"]>[0], api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<void> | void,
+  readNativeTask?: (id: Parameters<Harness["getTask"]>[0], context: Parameters<Harness["getTask"]>[1]) => ReturnType<Harness["getTask"]>,
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
@@ -1091,7 +1093,11 @@ function botExtension(
       return decision;
     },
     afterTool: async (call, result, api, context) => {
-      const changed = await options.toolHooks?.afterTool?.(call, result, api, context);
+      const task = await readNativeTask?.(api.taskId, context);
+      const checkpoint = task?.state.status !== "terminal" ? task?.state.checkpoint : undefined;
+      const proof = checkpoint && typeof checkpoint === "object" && "phase" in checkpoint && checkpoint.phase === "call"
+        ? { taskId: api.taskId, conversationId: String(api.conversationId) } : undefined;
+      const changed = await withNativeNotStarted(proof, () => options.toolHooks?.afterTool?.(call, result, api, context));
       const observed = changed ?? result;
       if (call.name === "read" && !observed.isError) await recordSkillRead?.(call, api, context);
       try {

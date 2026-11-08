@@ -1,3 +1,4 @@
+import { isNativeNotStarted } from "./DurableToolLifecycle";
 import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
 import type { WorkToolResourcePolicy, ToolResourceContext } from "../work/WorkToolResourcePolicy";
@@ -219,6 +220,9 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const resourceInput = { call, sideEffect: mayWrite, paths: resourcePaths, context: {
           taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot: child?.workspace.cwd ?? options.taskRoot,
         } };
+        if (isNativeNotStarted(api.taskId, String(api.conversationId))) {
+          options.resourcePolicy?.confirmNotStarted(resourceInput, "native-tool-checkpoint:call");
+        }
         if (options.resourcePolicy?.wasNotStarted(resourceInput)) {
           options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, "released");
           if (attempt) options.attempts.settleDurable({ ...attempt, status: "failed", phase: "finished", finishedAt: Date.now(),

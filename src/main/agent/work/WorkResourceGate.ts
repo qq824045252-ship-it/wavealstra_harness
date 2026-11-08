@@ -12,7 +12,9 @@ export const workResourceOwnerSchema = z.object({ taskId: z.string().min(1), dur
 export type WorkResourceOwner = z.infer<typeof workResourceOwnerSchema>;
 export const workResourceSchema = z.object({ kind: z.enum(["file", "directory", "git_worktree", "git_metadata", "browser", "desktop", "host"]),
   scope: z.string().min(1), key: z.string().min(1), mode: z.enum(["read", "write"]), path: z.string().optional(), sourcePath: z.string().optional(),
-  entity: z.string().nullable().optional(), expectedVersion: z.string().optional() }).strict();
+  entity: z.string().nullable().optional(), expectedVersion: z.string().optional(),
+  // Host-authored authorization target, not a pathname fingerprint or write baseline.
+  readVerification: z.object({ root: z.string().min(1), target: z.string().min(1) }).strict().optional() }).strict();
 export type WorkResource = z.infer<typeof workResourceSchema>;
 const leaseSchema = z.object({ token: z.number(), action_id: z.string(), owner_json: z.string(), resources_json: z.string(),
   host_id: z.string(), state: z.enum(["active", "quarantined", "released"]), expires_at: z.number() });

@@ -466,6 +466,17 @@ export interface RemotePairingSession {
   pairingUrl: string
 }
 
+export interface RemoteCloudflaredStatus {
+  /** 本机 PATH（及常见安装目录）里能找到 cloudflared 可执行文件 */
+  installed: boolean
+  /** 解析到的绝对路径 */
+  binary?: string
+  /** `cloudflared --version` 中解析出的版本号，如 2026.10.2 */
+  version?: string
+  /** 找得到但跑不起来（权限 / 超时 / 输出无法解析）时的原因 */
+  error?: string
+}
+
 export interface RemoteConfigureRequest {
   enabled?: boolean
   port?: number
@@ -482,6 +493,7 @@ export const RemoteAccessIpc = {
   openPairWindow: 'remoteAccess:openPairWindow',
   closePairWindow: 'remoteAccess:closePairWindow',
   pairWindowState: 'remoteAccess:pairWindowState',
+  detectCloudflared: 'remoteAccess:detectCloudflared',
 } as const
 
 // ---------------------------------------------------------------- Work (Bot)

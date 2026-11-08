@@ -6,6 +6,7 @@ import { z } from "zod";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import { syncExhaustedResourceBlockers } from "../src/main/agent/work/WorkResourceBlockers";
 import { WorkResourceRecovery } from "../src/main/agent/work/WorkResourceRecovery";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult, type WorkDto } from "../src/shared/bot-work";
 import { workPhase3ControlSchema, type RetryResourceRecoveryParams } from "../src/shared/bot-work-phase3-control";
@@ -40,6 +41,11 @@ try {
   db.connection.prepare("INSERT INTO work_resource_recovery(token,attempts,next_at,exhausted_at,reason) VALUES (?,4,?,?,?)")
     .run(lease.token, now, now, "fixture exhausted checks");
   assert(stream() > beforeStream, "recovery-only changes must enter the reconnect projection journal");
+  syncExhaustedResourceBlockers(works, LOCAL_USER_ID);
+  assert(works.repo.listOpenBlockers(work.workId).some(item => item.reasonCode === "resource-recovery-exhausted"));
+  const exhaustedVersion = works.getWork(work.workId)!.stateVersion;
+  syncExhaustedResourceBlockers(works, LOCAL_USER_ID);
+  assert.equal(works.getWork(work.workId)!.stateVersion, exhaustedVersion, "polling exhaustion must not spam status changes");
   const projected = works.getProjection(work.workId)!.phase3!.resourceRecoveries;
   assert.equal(projected.length, 1); assert.equal(projected[0]!.exhaustedAt, now);
   assert(works.getProjection(work.workId)!.nextSteps.some(step => step.includes("确认环境安全")));
@@ -71,6 +77,9 @@ try {
   assert.equal(state(lease.token).exhausted_at, null);
   assert.equal(works.resourceGate.leaseState(lease), "quarantined", "human confirmation never releases a lease");
   assert.equal(works.repo.listBindings(work.workId).length, 1, "recheck never creates or repeats a business execution");
+  syncExhaustedResourceBlockers(works, LOCAL_USER_ID);
+  assert(!works.repo.listOpenBlockers(work.workId).some(item => item.reasonCode === "resource-recovery-exhausted"));
+  work = works.getWork(work.workId)!;
   const retryState = state(lease.token);
   const replay = works.retryResourceRecovery(user, request);
   assert(replay.ok && replay.replayed); assert.deepEqual(state(lease.token), retryState);
@@ -90,5 +99,18 @@ try {
   assert.equal(works.getProjection(work.workId)!.phase3!.resourceRecoveries.length, 0);
   assert.equal(works.getWork(work.workId)!.lifecycle, "paused");
   assert.deepEqual(works.getWork(work.workId)!.budget, work.budget);
+  // A restored closed Work can still own an unresolved historical lease. Rechecking
+  // that lease must be possible without reopening or resubmitting the Work.
+  const closed = { ...works.getWork(work.workId)!, lifecycle: "closed" as const,
+    closureConclusion: "cancelled" as const, closedAt: now, stateVersion: works.getWork(work.workId)!.stateVersion + 1 };
+  works.repo.updateWork(closed);
+  db.connection.prepare("UPDATE work_resource_leases SET state='quarantined' WHERE token=?").run(lease.token);
+  db.connection.prepare("UPDATE work_resource_recovery SET attempts=8,exhausted_at=?,next_at=? WHERE token=?").run(now, now, lease.token);
+  const closedRetry = works.retryResourceRecovery(user, { operationId: "closed-recheck", workId: closed.workId,
+    token: lease.token, expectedAttempts: 8, expectedExhaustedAt: now, confirmEnvironmentSafe: true, versionGuard: guard(closed) });
+  assert(closedRetry.ok);
+  assert.equal(works.getWork(work.workId)!.lifecycle, "closed");
+  assert.equal(works.resourceGate.leaseState(lease), "quarantined", "closed recheck must not force release");
+  assert.equal(works.repo.listBindings(work.workId).length, 1);
   console.log("Phase3 recovery control passed: user confirmation, authority/ownership/CAS, exact exhausted lease, idempotent receipt, durable projection, and three-proof release without business resume.");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

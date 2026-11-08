@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconGlobe, IconLink, IconRefresh, IconShield } from "@/components/common/icons";
-import type { RemoteDeviceSummary, RemotePairWindowDto, RemoteStatus } from "@shared/remote-access";
+import type { RemoteCloudflaredStatus, RemoteDeviceSummary, RemotePairWindowDto, RemoteStatus } from "@shared/remote-access";
 
 function RemoteToggle({
   on,
@@ -44,6 +44,8 @@ export default function RemoteAccessTab(): React.JSX.Element {
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [pairWindow, setPairWindow] = useState<RemotePairWindowDto | null>(null);
+  const [cloudflared, setCloudflared] = useState<RemoteCloudflaredStatus | null>(null);
+  const [cloudflaredBusy, setCloudflaredBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
   const pairWindowRef = useRef<RemotePairWindowDto | null>(null);
@@ -63,6 +65,23 @@ export default function RemoteAccessTab(): React.JSX.Element {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** 只读探测本机 cloudflared CLI；不启动隧道，也不影响连接地址 */
+  const detectCloudflaredCli = useCallback(async (): Promise<void> => {
+    setCloudflaredBusy(true);
+    try {
+      const next = await window.api?.remoteAccess?.detectCloudflared?.();
+      setCloudflared(next ?? { installed: false });
+    } catch (error) {
+      setCloudflared({ installed: false, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setCloudflaredBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void detectCloudflaredCli();
+  }, [detectCloudflaredCli]);
 
   useEffect(() => {
     if (!pairWindow) return;
@@ -209,6 +228,25 @@ export default function RemoteAccessTab(): React.JSX.Element {
             <div className="remote-panel-title">连接地址</div>
             <div className="remote-panel-desc">手机端「连接电脑端 Mybuddy」里要填的地址。Tailscale Serve 或 Cloudflare 隧道都行，必须是 https。</div>
           </div>
+          <div className="remote-panel-action">
+            <span className={`remote-service-pill ${cloudflared?.installed ? "good" : cloudflared ? "warn" : "neutral"}`}>
+              <span className="remote-status-dot" />
+              {cloudflared === null
+                ? "检测 cloudflared…"
+                : cloudflared.installed
+                  ? `cloudflared${cloudflared.version ? ` v${cloudflared.version}` : ""}`
+                  : "未检测到 cloudflared"}
+            </span>
+            <button
+              type="button"
+              className="remote-icon-button"
+              disabled={cloudflaredBusy}
+              title="重新检测本机 cloudflared CLI"
+              onClick={() => void detectCloudflaredCli()}
+            >
+              <IconRefresh size={15} />
+            </button>
+          </div>
         </div>
         <div className="remote-panel-body">
           <div className="remote-field-line">
@@ -242,6 +280,18 @@ export default function RemoteAccessTab(): React.JSX.Element {
             <button type="button" className="btn" onClick={() => void copy(`tailscale serve --bg ${port}`, "命令")}>复制命令</button>
           </div>
           <div className="remote-setting-hint">Serve 只对 tailnet 内可见；MyBuddy 不会自动登录 Tailscale、改 ACL 或开 Funnel。</div>
+          <div className="remote-setting-hint">
+            {cloudflared?.installed ? (
+              <span>
+                cloudflared 已安装{cloudflared.binary ? <code>{cloudflared.binary}</code> : null}：只检测，不会自动启动隧道。
+              </span>
+            ) : (
+              <span>
+                未检测到 cloudflared CLI：装好后可以自己用 <code>cloudflared tunnel</code> 拿到 https 地址（MyBuddy 只检测，不代跑）。
+              </span>
+            )}
+            {cloudflared?.error ? <span>（{cloudflared.error}）</span> : null}
+          </div>
         </div>
       </section>
 

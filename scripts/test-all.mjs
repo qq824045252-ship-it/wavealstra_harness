@@ -236,6 +236,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:cloudflared-cli-detect",
   "test:work-conversation-feedback",
   "test:wechat-callback-auth",
   "test:wecom-media",

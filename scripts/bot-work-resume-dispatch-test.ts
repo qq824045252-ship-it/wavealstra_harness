@@ -263,6 +263,34 @@ try {
     } finally { await f.close(); }
   }
 
+  // Host-boundary admission waits are user-visible and preserve exactly one pending identity.
+  {
+    const f = await fixture("visible-quarantine");
+    f.native.resourceBoundary = "host-action-gate";
+    try {
+      const source = f.create("source"); await f.queue.flush();
+      f.works.repo.insertBlocker({ blockerId: "effect:source", workId: source.workId, kind: "external_effect",
+        reason: "unknown original effect", unknownExternalEffectRef: "effect:original", waitingForUserInput: true, status: "open", createdAt: Date.now() });
+      const target = f.create("waiting"); await f.queue.flush();
+      const pending = f.works.repo.listBindings(target.workId)[0]!;
+      assert.equal(pending.attemptId, undefined); assert.equal(f.effects(), 1);
+      let blockers = f.works.repo.listOpenBlockers(target.workId);
+      assert.equal(blockers.filter(item => item.reasonCode === "resource-dispatch-wait").length, 1);
+      assert.equal(blockers.find(item => item.reasonCode === "resource-dispatch-wait")?.details?.sourceWorkId, source.workId);
+      assert(f.works.getProjection(target.workId)!.nextSteps.some(item => item.includes("尚未提交")));
+      const version = f.works.getWork(target.workId)!.stateVersion;
+      await f.queue.flush(); await f.queue.flush();
+      assert.equal(f.works.getWork(target.workId)!.stateVersion, version, "polling is a stable fact, not repeated notifications");
+      assert.equal(f.works.repo.listBindings(target.workId)[0]!.bindingId, pending.bindingId);
+      f.works.repo.clearBlocker("effect:source", source.workId, Date.now());
+      await f.queue.flush();
+      assert.equal(f.effects(), 2, "recovered original pending binding submits once");
+      blockers = f.works.repo.listOpenBlockers(target.workId);
+      assert(!blockers.some(item => item.reasonCode === "resource-dispatch-wait"));
+      assert.deepEqual(f.errors, []);
+    } finally { await f.close(); }
+  }
+
   // An explicitly invalidated pending binding with proof of no submission can be replaced.
   {
     const f = await fixture("unsubmitted-invalidated", "running");

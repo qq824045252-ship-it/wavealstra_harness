@@ -23203,6 +23203,7 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 
 .remote-service-pill {
   display: inline-flex;
+  white-space: nowrap;
   align-items: center;
   gap: 7px;
   height: 28px;
@@ -23300,6 +23301,9 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 }
 
 .remote-panel-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
   flex: 0 0 auto;
 }

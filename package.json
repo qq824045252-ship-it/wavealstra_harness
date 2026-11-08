@@ -37,6 +37,7 @@
     "remote:android:sync": "pnpm --filter @mybuddy/remote cap:sync",
     "remote:reverse": "adb reverse tcp:3352 tcp:3352",
     "test:remote-access": "esbuild scripts/remote-access-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-access-test.mjs --external:electron --external:better-sqlite3 && node scripts/test-guard.mjs out/tests/remote-access-test.mjs",
+    "test:cloudflared-cli-detect": "esbuild scripts/cloudflared-cli-detect-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/cloudflared-cli-detect-test.mjs && node scripts/test-guard.mjs out/tests/cloudflared-cli-detect-test.mjs",
     "test:remote-renderer-stdio": "node scripts/test-guard.mjs scripts/remote-renderer-stdio-test.cjs",
     "test:remote-connection": "esbuild scripts/remote-connection-setup-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs scripts/remote-connection-ui-test.cjs",
     "dev": "electron-vite dev",

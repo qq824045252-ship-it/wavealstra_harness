@@ -140,6 +140,20 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
     });
   };
+  const openResourceWork = (workId: string) => {
+    requestedWork.current = workId;
+    const originBotId = activeBotId;
+    setNavigationNotice("正在读取资源来源事项…");
+    void useAppStore.getState().refreshBotWork(true).then(() => {
+      const state = useAppStore.getState();
+      if (requestedWork.current !== workId || state.activeBotId !== originBotId) return;
+      const target = state.botWorks.find(item => item.workId === workId);
+      if (!target) { setNavigationNotice("来源事项不可访问，请核对当前账号和事项列表。"); return; }
+      setIncludeClosed(true);
+      if (!botParticipatesInWork(target, originBotId)) state.setActiveBotId(target.ownerBotId);
+      state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
+    }).catch(() => setNavigationNotice("读取资源来源事项失败，请稍后重试。"));
+  };
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
     setView(next); setQuery("");
@@ -224,7 +238,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
-      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onOpenResourceWork={openResourceWork} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}
     <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>

@@ -39,7 +39,11 @@ export function collectOwnerSummaryFacts(works: WorkService, work: WorkDto, now:
   // must carry the current epoch, so they cannot manufacture this ownership history.
   for (const message of messages) if (message.kind === "handoff" && message.senderBotId
     && message.versionGuard.expectedOwnerEpoch === message.ownerEpoch - 1) owners.set(message.ownerEpoch - 1, message.senderBotId);
-  const members = sorted([
+  const team = works.teams.get(work.workId);
+  const members = sorted(team ? [
+    ...team.executions.map(execution => execution.role === "owner_summary" && !execution.bindingId ? work.ownerBotId : execution.botId),
+    ...bindings.map(binding => binding.botId),
+  ] : [
     ...work.participants.filter(member => member.botId !== work.ownerBotId && member.role !== "watcher").map(member => member.botId),
     ...bindings.map(binding => binding.botId),
     ...messages.filter(message => message.kind === "delegate").flatMap(message => message.recipientBotIds),
