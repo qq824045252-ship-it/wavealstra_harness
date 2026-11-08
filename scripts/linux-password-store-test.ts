@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  credentialCommandLineError,
   describeLinuxSecretStore,
   installLinuxPasswordStore,
   installPlatformCredentialBackend,
@@ -56,6 +57,15 @@ if (process.platform === "linux") {
 } else {
   assert.equal(switchValue("password-store"), undefined);
 }
+
+// 拿不到 Chromium commandLine 时要给出可诊断文案，而不是 undefined 的 TypeError
+const runAsNodeMessage = credentialCommandLineError({ ELECTRON_RUN_AS_NODE: "1" });
+assert.match(runAsNodeMessage, /ELECTRON_RUN_AS_NODE=1/);
+assert.match(runAsNodeMessage, /env -u ELECTRON_RUN_AS_NODE pnpm dev/);
+assert.match(runAsNodeMessage, /safeStorage/);
+const plainNodeMessage = credentialCommandLineError({});
+assert.match(plainNodeMessage, /Electron 主进程/);
+assert.doesNotMatch(plainNodeMessage, /ELECTRON_RUN_AS_NODE=/);
 
 const firstImport = readFileSync("src/main/index.ts", "utf8")
   .split(/\r?\n/)

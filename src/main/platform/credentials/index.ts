@@ -34,24 +34,57 @@ function nodePlatform(platform: PlatformId): NodeJS.Platform {
 
 type SecretStorageLike = Parameters<typeof describeLinuxSecretStore>[0];
 
+type CommandLineLike = { appendSwitch(key: string, value: string): void };
+
+/**
+ * 惰性取 Electron 主进程的 commandLine。
+ *
+ * 不能在默认参数里写 `app.commandLine`：Electron 以纯 Node 运行时（`ELECTRON_RUN_AS_NODE=1`，
+ * 或直接用 node 载入本模块）`electron.app` 是 undefined，求值默认参数会抛
+ * `Cannot read properties of undefined (reading 'commandLine')`，把真正的环境问题藏成 TypeError。
+ */
+function appCommandLine(): CommandLineLike | undefined {
+  return (app as unknown as { commandLine?: CommandLineLike } | undefined)?.commandLine;
+}
+
+/** 拿不到 Chromium commandLine 时的可诊断文案（含 ELECTRON_RUN_AS_NODE 的具体修法）。 */
+export function credentialCommandLineError(env: NodeJS.ProcessEnv = process.env): string {
+  const runAsNode = Boolean(env.ELECTRON_RUN_AS_NODE);
+  const head = `[safeStorage] 无法安装 Linux 凭据后端：当前进程拿不到 electron.app.commandLine（backend=${LINUX_PASSWORD_STORE_BACKEND}）。`;
+  if (runAsNode) {
+    return `${head}检测到 ELECTRON_RUN_AS_NODE=${env.ELECTRON_RUN_AS_NODE} —— Electron 被当作纯 Node 运行，主进程没有 Chromium 开关。请 unset 该变量后重启（env -u ELECTRON_RUN_AS_NODE pnpm dev）。`;
+  }
+  return `${head}请从 Electron 主进程启动（pnpm dev 或打包后的应用），不要用 node 直接载入主进程入口。`;
+}
+
 /**
  * 在 app ready 前安装平台凭据后端开关。
- * Linux：注入 gnome-libsecret；其它平台：no-op。返回是否真的注入了开关。
+ * Linux：注入 gnome-libsecret；其它平台：no-op（不需要 commandLine）。
+ * 返回是否真的注入了开关；Linux 上拿不到 commandLine 时抛出可诊断错误，而不是 TypeError。
  */
 export function installPlatformCredentialBackend(
-  commandLine: { appendSwitch(key: string, value: string): void } = app.commandLine,
+  commandLine?: CommandLineLike,
   platform: PlatformId = currentPlatformId,
 ): boolean {
-  return installLinuxPasswordStore(commandLine, nodePlatform(platform));
+  const node = nodePlatform(platform);
+  if (node !== "linux") return false;
+  const resolved = commandLine ?? appCommandLine();
+  if (!resolved) throw new Error(credentialCommandLineError());
+  return installLinuxPasswordStore(resolved, node);
 }
 
 /** app ready 后打印一次实际后端；非 Linux no-op。 */
 export function reportPlatformCredentialBackend(
-  storage: SecretStorageLike = safeStorage,
+  storage?: SecretStorageLike,
   platform: PlatformId = currentPlatformId,
 ): void {
   try {
-    const status = describeLinuxSecretStore(storage, nodePlatform(platform));
+    const resolved = storage ?? (safeStorage as SecretStorageLike | undefined);
+    if (!resolved) {
+      console.warn("[safeStorage] 拿不到 electron.safeStorage（不是 Electron 主进程），跳过后端报告");
+      return;
+    }
+    const status = describeLinuxSecretStore(resolved, nodePlatform(platform));
     if (!status) return;
     console.log(`[safeStorage] linux backend=${status.backend} available=${status.available}`);
     if (!status.ready) {
