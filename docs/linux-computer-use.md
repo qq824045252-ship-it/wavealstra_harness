@@ -179,6 +179,33 @@ Version **0.1.93** was checked on 2026-11-04 UTC / 2026-11-05 Asia/Shanghai agai
 
 The final classification audit passed: 283 headless, 48 GUI, 27 network, 1 dataset and no pending classification. The archive contains the final command logs, both GUI prerequisite reports, exact development worker handshakes and checksums of those evidence files. These checksums are not package hashes. Earlier pinned-lock verification passed online without disabling pnpm's supply-chain policy; no separate raw setup log was retained. Windows desktop/distribution validation remains separate from the headless Windows contracts recorded here.
 
+## AT-SPI private-bus verification (2026-11-08)
+
+The remaining AT-SPI item above was an environment prerequisite, not a product defect: the 0.1.93/0.1.98 hosts denied `socket(AF_UNIX, SOCK_STREAM)` with `EPERM`, so no private `dbus-daemon` bus could be created. It has now been executed and passed on a host that permits AF_UNIX, at repository state `aa03635`:
+
+| Check | Observed result |
+| --- | --- |
+| `pnpm -s test:atspi-transport` | **PASS, exit 0** — 5 real wire checks: private `dbus-daemon` over a filesystem path **and** a Linux abstract socket, AT-SPI signatures/variants/state words/parent-child refs/hit tests/Unicode-Value readback, event invalidation and subscription cleanup, queue cancellation without `Action.DoAction`, worker crash invalidating old references without replay. |
+| `pnpm -s test:input-guardian-process` | **PASS, exit 0** — 2 real child-process cases (parent SIGKILL drain, guardian SIGKILL fencing) with a private fake ydotool sink. Still not evidence of desktop input delivery. |
+| `pnpm -s test:computer-use-linux` | **PASS, exit 0** — 23 checks against isolated Electron and GTK targets in the real Hyprland session at the host's actual output scale. |
+| `pnpm -s test:all` | **PASS, exit 0** — 382 passed / 0 failed / 0 known-failing / 0 new regressions. `scripts/test-baseline.json` was not modified. |
+
+Host: Omarchy (Arch) on `Linux 7.2.14-arch1-1`, Hyprland/Wayland user session, `dbus-daemon 1.16.2`, Electron **44.5.1** (embedded Node **24.21.0**), test process Node **v26.13.0**. Raw logs: [`artifacts/atspi-private-bus-2026-11-08/validation.md`](../artifacts/atspi-private-bus-2026-11-08/validation.md) (local, git-ignored).
+
+This closes the headless wire-fixture prerequisite only.
+
+### Packaged distribution (same day, same host)
+
+| Check | Observed result |
+| --- | --- |
+| `pnpm -s pack:linux` | **PASS, exit 0**. `release/linux-unpacked` built (`0.1.107`); in-build payload gate: 402 unpacked entries, 0 missing, AT-SPI worker + input guardian + Pi **1.5.0** worker handshakes via the packaged Electron; root `package.json` restored from HEAD by `check-root-package-json.cjs`. |
+| `pnpm -s verify:packaged -- --app-dir release/linux-unpacked` | **PASS**. 18,444 asar entries, 402 unpacked, 0 missing, 0 legacy Linux payloads. |
+| `pnpm -s test:computer-use-linux:packaged` | **PASS, exit 0** in 38 s, mode `packaged-main`, **23/23 checks passed** on output scale 1.6 (Hyprland 0.57.1, GTK fixture 4.2.2). |
+
+Evidence: [`artifacts/packaged-acceptance-2026-11-08/validation.md`](../artifacts/packaged-acceptance-2026-11-08/validation.md). A bounded 5-cycle repeated cold start against one isolated profile also passed (5/5 reached tray readiness, exit 0, schema stayed at 35, no `app.db.discarded-*`, no crash dumps); that is a restart check, **not** a soak.
+
+Still not claimed: Windows packaging/distribution acceptance (requires a Windows host or the `verify-windows*` CI jobs; cross-building on Linux is not supported), and long-duration multi-session behaviour (no soak gate exists).
+
 ## Protocol sources
 
 - [AT-SPI bus discovery](https://github.com/GNOME/at-spi2-core/blob/main/bus/README.md)
