@@ -335,15 +335,20 @@ try {
   assert.equal(JSON.parse(works.repo.getEvidence("budget-reconciliation:handoff-unknown")!.detail!).actor.botId, "budget-next-owner");
 
   // Settling an already emitted request remains available after cancellation and expiry;
-  // it neither restores execution permission nor reopens the Work.
+  // unknown usage holds closing until verified, without restoring execution permission.
   const expired = unwrap(works.createWork(user, { operationId: "expired-budget", title: "expired budget",
     authorization: { ...DESKTOP_USER_GRANTS, expiresAt: clock.at + 1 }, budget: { maxTokens: 100 } }));
   assert(works.budget.reserve({ workId: expired.workId, reservationId: "expired-unknown", tokens: 10 }).ok);
   works.budget.commit(expired.workId, "expired-unknown"); clock.at += 2;
   unwrap(works.cancelWork(user, { operationId: "expired-cancel", workId: expired.workId }));
-  assert.equal(works.getWork(expired.workId)!.lifecycle, "closed");
+  assert.equal(works.getWork(expired.workId)!.lifecycle, "closing", "expiry and cancellation cannot erase unbound unknown usage");
+  assert.equal(works.repo.getReservation("expired-unknown")!.state, "unknown");
   assert.equal(works.phase4Control(user, reconciliation(expired.workId, "expired-unknown", 3)).ok, true);
-  assert.equal(works.getWork(expired.workId)!.lifecycle, "closed");
+  assert.equal(works.getWork(expired.workId)!.lifecycle, "closed", "verified final obligation settles the pending cancellation");
+  assert.equal(works.getWork(expired.workId)!.closureConclusion, "cancelled");
+  assert.equal(works.repo.getReservation("expired-unknown")!.state, "committed");
+  assert.equal(works.repo.getReservation("expired-unknown")!.reportedTokens, 3);
+  assert.equal(works.budget.snapshot(expired.workId).unknownTokens, 0);
   assert.equal(works.phase4Control(user, { kind: "set-budget-policy", operationId: "expired-policy", workId: expired.workId,
     maxTokens: 200, versionGuard: guard(works.getWork(expired.workId)!) }).ok, false);
 

@@ -89,9 +89,10 @@ export interface DurableBotServiceOptions {
   prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
   beforeModelRequest?: (taskId: string) => void;
+  providerBudgetControlled?: (taskId: string) => boolean;
   onProviderRequest?: (taskId: string, input: { conversationId: string; generationTaskId: number;
     sourceKind: "main" | "subagent"; requestKind: "generation" | "compaction";
-    modelId: string; estimatedTokens: number }) => void | Promise<void>;
+    modelId: string; modelApi: string; estimatedTokens: number }) => void | Promise<void>;
   onProviderUsage?: (taskId: string, input: { conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   resumeAllowed?: (taskId: string) => boolean;
@@ -280,6 +281,7 @@ export class DurableBotService {
         onResponse: (message, info) => this.options.onResponse?.(taskId, message, info),
         onRequest: info => this.options.onRequest?.(taskId, info),
         beforeProviderRequest: () => this.options.beforeModelRequest?.(taskId),
+        providerBudgetControlled: () => this.options.providerBudgetControlled?.(taskId) ?? false,
         onProviderRequest: input => this.options.onProviderRequest?.(taskId, input),
         onProviderUsage: input => this.options.onProviderUsage?.(taskId, input),
         onTool: this.options.onTool,

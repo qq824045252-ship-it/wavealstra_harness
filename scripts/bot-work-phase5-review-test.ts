@@ -61,6 +61,9 @@ try {
     assert.equal(works.repo.getDeliverable(fixture.deliverableId)?.status, "accepted");
     assert.equal(work.criteria[0].status, "pending"); assert.equal(work.criteria[0].evidenceRefs.length, 0);
     assert.equal(works.cards.list(work).filter(card => card.kind === "accepted_result").length, 1);
+    assert.equal(works.cards.list(work).find(card => card.kind === "accepted_result")?.title, `成果已采纳：${work.title}`);
+    assert.equal(works.repo.listNotifications(work.workId).find(item => item.kind === "result")?.title, `成果已采纳：${work.title}`);
+    assert.equal(work.lifecycle, "active", "accepting an output is not successful Work closure");
   });
   check("response-loss retry reuses the operation and creates no duplicate card or intent", () => {
     const before = works.getWork(fixture.workId)!;

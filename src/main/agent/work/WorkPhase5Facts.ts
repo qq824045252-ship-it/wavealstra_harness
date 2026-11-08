@@ -42,7 +42,7 @@ export class WorkPhase5Facts {
     const card = this.cards.ensure({
       work, kind: "accepted_result",
       outcome: WorkResultCards.acceptedOutcome(work, this.repo.listDeliverables(work.workId)),
-      title: `成果已验收：${work.title}`,
+      title: `成果已采纳：${work.title}`,
       summary: deliverable.summary,
       unverifiedScope: this.unverifiedText(work),
       now,
@@ -52,7 +52,7 @@ export class WorkPhase5Facts {
     else this.repo.insertNotification({
       notificationId: `notification-${work.workId}-${deliverable.deliverableId}`,
       workId: work.workId, semanticKey: `work:${work.workId}:result:${deliverable.deliverableId}`,
-      kind: "result", title: `成果已验收：${work.title}`, body: deliverable.summary,
+      kind: "result", title: `成果已采纳：${work.title}`, body: deliverable.summary,
       stateVersion: work.stateVersion, intentRevision: work.intentRevision, delivery: "pending", createdAt: now,
       attemptCount: 0, cardKey: card.cardKey,
     });

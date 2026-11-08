@@ -72,7 +72,7 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
 
   return <section aria-label="结果卡片与证据">
     <h3>结果卡片</h3>
-    {cards.length === 0 && <p>还没有验收成果。</p>}
+    {cards.length === 0 && <p>还没有结果卡片。</p>}
     {cards.map(card => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>
       {card.kind === "owner_summary" && <p>主负责人汇总{card.previousCardKey

@@ -147,6 +147,58 @@ try {
   assert.equal(works.getWork(pendingUsageWork.workId)?.closureConclusion, "cancelled");
   assert.equal(works.getWork(pendingUsageWork.workId)?.budget.usedTokens, 4);
 
+  // Stopping does not require funding another execution, but does require settlement.
+  const exhaust = (work: WorkDto) => {
+    assert.equal(works.reserveBudget(work.workId, `over-budget:${work.workId}`, work.budget.maxTokens + 1).ok, false);
+    assert.equal(works.repo.getBlocker(`budget:exhausted:${work.workId}`)?.status, "open");
+  };
+  for (const conclusion of ["ended_unsuccessfully", "cancelled"] as const) {
+    const target = create(`stop-exhausted-${conclusion}`);
+    const execution = bind(target, `settled-${conclusion}`, 10);
+    unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-complete" }, { bindingId: execution.bindingId, outcome: "completed", usageTokens: 2 }));
+    exhaust(works.getWork(target.workId)!);
+    const completed = works.closeWork(user, { workId: target.workId, operationId: `reject-success-${conclusion}`, conclusion: "succeeded" });
+    assert.equal(completed.ok, false, "completion must not dismiss a budget blocker");
+    assert.equal(works.repo.getBlocker(`budget:exhausted:${target.workId}`)?.status, "open");
+    const closed = unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${conclusion}`, conclusion, closureSummary: "Owner stopped with remaining gaps" }));
+    assert.equal(closed.lifecycle, "closed"); assert.equal(closed.closureConclusion, conclusion);
+    assert.equal(closed.budget.usedTokens, 2);
+    assert.equal(works.repo.getBlocker(`budget:exhausted:${target.workId}`)?.status, "cleared");
+
+    // Non-binding reservations are real obligations even without an accompanying blocker.
+    for (const state of ["reserved", "unknown"] as const) {
+      const pending = create(`unbound-${state}-${conclusion}`);
+      const reservationId = `unbound:${pending.workId}`;
+      assert(works.reserveBudget(pending.workId, reservationId, 5).ok);
+      if (state === "unknown") db.connection.prepare("UPDATE work_budget_reservations SET state='unknown' WHERE reservation_id=?").run(reservationId);
+      exhaust(works.getWork(pending.workId)!);
+      const closing = unwrap(works.closeWork(user, { workId: pending.workId, operationId: `stop-${pending.workId}`, conclusion, closureSummary: "Stop without hiding unsettled usage" }));
+      assert.equal(closing.lifecycle, "closing", `${state} unbound usage still prevents ${conclusion}`);
+      assert.equal(works.repo.getReservation(reservationId)?.state, state);
+    }
+
+    const live = create(`live-${conclusion}`), running = bind(live, `live-root-${conclusion}`, 10);
+    exhaust(works.getWork(live.workId)!);
+    assert.equal(unwrap(works.closeWork(user, { workId: live.workId, operationId: `live-stop-${conclusion}`, conclusion, closureSummary: "Wait for actual execution settlement" })).lifecycle, "closing");
+    unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-settled" }, { bindingId: running.bindingId, outcome: "stopped", usageTokens: 3 }));
+    assert.equal(works.getWork(live.workId)?.closureConclusion, conclusion);
+  }
+  for (const blockerCase of ["unknown-effect", "receipt-conflict", "other-operational", "wrong-budget-code"] as const) {
+    const target = create(`preserve-${blockerCase}`);
+    const budgetId = `budget:exhausted:${target.workId}`;
+    const blockerId = blockerCase === "unknown-effect" || blockerCase === "wrong-budget-code" ? budgetId : `fixture:${target.workId}`;
+    works.repo.insertBlocker({ blockerId, workId: target.workId, kind: "operational", reason: blockerCase,
+      reasonCode: blockerCase === "receipt-conflict" || blockerCase === "wrong-budget-code" ? "budget-reconciliation-conflict" : "budget-exhausted",
+      unknownExternalEffectRef: blockerCase === "unknown-effect" ? "unverified-receipt" : undefined,
+      waitingForUserInput: true, status: "open", createdAt: Date.now() });
+    assert.equal(unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${blockerCase}`, conclusion: "ended_unsuccessfully", closureSummary: "Do not discard unknown obligations" })).lifecycle, "closing");
+    assert.equal(works.repo.getBlocker(blockerId)?.status, "open");
+  }
+  const stuck = create("legacy-closing-budget"); exhaust(stuck);
+  works.repo.updateWork({ ...works.getWork(stuck.workId)!, lifecycle: "closing", pendingConclusion: "ended_unsuccessfully", closureSummary: "Previously requested stop" });
+  db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
+  assert.equal(unwrap(works.closeWork(user, { workId: stuck.workId, operationId: "retry-legacy-stop", conclusion: "ended_unsuccessfully", closureSummary: "Previously requested stop" })).closureConclusion, "ended_unsuccessfully");
+
   // Snapshot epochs and per-user sequences persist across reopen and list scopes stay distinct.
   const journal = new WorkProjectionJournal(db.connection, works);
   const snapshot = journal.sync(LOCAL_USER_ID, { includeClosed: false }); assert.equal(snapshot.kind, "snapshot");

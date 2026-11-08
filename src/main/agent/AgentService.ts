@@ -1426,6 +1426,7 @@ export class AgentService {
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
         if (blocked) throw new Error(blocked);
       },
+      providerBudgetControlled: taskId => Boolean(this.workService.repo.bindingForTask(taskId)),
       beforeModelRequest: taskId => {
         const binding = this.workService.repo.bindingForTask(taskId);
         if (!binding) return;
@@ -1436,14 +1437,15 @@ export class AgentService {
         const result = this.workService.budget.admitProviderRequest({ taskId, conversationId: input.conversationId,
           generationTaskId: input.generationTaskId, sourceKind: input.sourceKind,
           requestKind: input.requestKind === "compaction" ? "compaction" : input.sourceKind === "subagent" ? "child" : "generation",
-          estimatedTokens: input.estimatedTokens });
+          estimatedTokens: input.estimatedTokens, modelApi: input.modelApi });
         if (!result.allowed) throw new Error(result.message ?? "Work 共享预算已耗尽，未发送新的模型请求");
       },
       onProviderUsage: (taskId, input) => {
-        try { this.workService.budget.settleProviderUsage({ taskId, conversationId: input.conversationId,
+        try { const result = this.workService.budget.settleProviderUsage({ taskId, conversationId: input.conversationId,
           generationTaskId: input.generationTaskId, reported: input.reported,
           inputTokens: input.inputTokens, outputTokens: input.outputTokens,
-          cacheReadTokens: input.cacheReadTokens, cacheWriteTokens: input.cacheWriteTokens }); }
+          cacheReadTokens: input.cacheReadTokens, cacheWriteTokens: input.cacheWriteTokens });
+          if (!result.ok) console.warn("[Work] 压缩用量结算待核对", taskId, result.message); }
         catch (error) { console.warn("[Work] 压缩用量结算待核对", taskId, error); }
       },
       resumeAllowed: taskId => {
@@ -1685,10 +1687,11 @@ export class AgentService {
     if (this.workService.repo.bindingForTask(taskId) && info.generationTaskId > 0) {
       const trusted = message.stopReason !== "error" && message.stopReason !== "aborted";
       try {
-        this.workService.budget.settleProviderUsage({ taskId, conversationId: info.conversationId,
+        const result = this.workService.budget.settleProviderUsage({ taskId, conversationId: info.conversationId,
           generationTaskId: info.generationTaskId, reported: trusted,
           inputTokens: message.usage.input, outputTokens: message.usage.output,
           cacheReadTokens: message.usage.cacheRead, cacheWriteTokens: message.usage.cacheWrite });
+        if (!result.ok) console.warn("[Work] 预算回执结算待核对", taskId, result.message);
       } catch (error) { console.warn("[Work] 预算回执结算待核对", taskId, error); }
     }
     this.runtimeSnapshots.finish(`durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,

@@ -92,7 +92,10 @@ export default function BotWorkspacePage(): React.JSX.Element {
             {sendErrors[activeBot.botId] && <p role="alert">{sendErrors[activeBot.botId]}</p>}
             {(histories[activeBot.botId]?.messages ?? []).map(message => <article key={message.messageId} data-message-id={message.messageId}>
               <strong>{message.role === "user" ? "你" : activeBot.displayName}</strong>
-              <p style={{ whiteSpace: "pre-wrap" }}>{message.text || (message.status === "queued" ? "等待回复" : "处理中")}</p>
+              <p style={{ whiteSpace: "pre-wrap" }}>{message.text || {
+                queued: "等待回复", running: "处理中", cancelled: "回复已停止", failed: "未能生成回复",
+                unknown: "回复结果待核对", completed: "没有文本回复",
+              }[message.status]}</p>
               <small>{message.status === "completed" ? message.role === "user" ? "已发送" : "已回复"
                 : { queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" }[message.status]}</small>
               {message.error && <p role="alert">{message.error}</p>}
@@ -218,7 +221,14 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeC
   const [watchSource, setWatchSource] = useState("hook");
   const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
   const [deadlineInput, setDeadlineInput] = useState("");
-  const [budgetLimit, setBudgetLimit] = useState(String(work.phase4?.budget.limitTokens ?? 500000));
+  const remoteBudgetLimit = work.phase4?.budget.limitTokens ?? 500000;
+  // A draft belongs to the policy it was edited against. A remote policy change
+  // invalidates it, while unrelated Work refreshes must retain local edits.
+  const [budgetDraft, setBudgetDraft] = useState<{ base: number; value: string } | null>(null);
+  const budgetLimit = budgetDraft?.base === remoteBudgetLimit ? budgetDraft.value : String(remoteBudgetLimit);
+  useEffect(() => { setBudgetDraft(null); }, [remoteBudgetLimit]);
+  const budgetDirty = budgetLimit.trim() !== "" && Number.isSafeInteger(Number(budgetLimit))
+    && Number(budgetLimit) >= 0 && Number(budgetLimit) !== remoteBudgetLimit;
   const operations = useRef(new Map<string, string>());
   const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
   const operation = (key: string) => {
@@ -379,9 +389,10 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeC
         {work.phase4.budget.pendingRollover && <p role="status">{work.phase4.budget.pendingRollover}</p>}
         {(work.phase4.budget.unknownReservations ?? []).map(reservation => <UnknownBudgetReconciliation
           key={reservation.reservationId} work={work} reservation={reservation} busy={busy} submit={runPhase4} />)}
-        <label>预算上限<input aria-label="预算上限" type="number" min={0} value={budgetLimit} onChange={event => setBudgetLimit(event.target.value)} /></label>
-        <button type="button" disabled={busy || !["active", "paused"].includes(work.lifecycle) || !Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 0}
-          onClick={() => { void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
+        <label>预算上限<input aria-label="预算上限" type="number" min={0} step={1} disabled={busy} value={budgetLimit}
+          onChange={event => setBudgetDraft({ base: remoteBudgetLimit, value: event.target.value })} /></label>
+        <button type="button" disabled={busy || !["active", "paused"].includes(work.lifecycle) || !budgetDirty}
+          onClick={() => { if (!budgetDirty || busy) return; void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
             workId: work.workId, maxTokens: Number(budgetLimit), versionGuard }); }}>保存预算政策</button>
 
         <h3>因果准入</h3>
@@ -392,15 +403,16 @@ function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeC
       </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
-        <strong>{{ proposed: "待验收", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
+        <strong>{{ proposed: "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
         <p style={{ whiteSpace: "pre-wrap" }}>{deliverable.summary}</p>
         {deliverable.artifactRefs.length > 0 && <ul>{deliverable.artifactRefs.map(ref => <li key={ref}>{ref}</li>)}</ul>}
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
       <h3>验收</h3>
-      <WorkCardsPanel key={JSON.stringify([work.workId, work.intentRevision, work.inputSnapshotId,
+      {/* These siblings must have distinct keys, including across version resets. */}
+      <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
-      <WorkReviewPanel key={JSON.stringify([work.workId, work.intentRevision, work.inputSnapshotId,
+      <WorkReviewPanel key={JSON.stringify(["review", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>

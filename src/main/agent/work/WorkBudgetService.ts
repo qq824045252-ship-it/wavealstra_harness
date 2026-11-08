@@ -18,6 +18,7 @@ export interface WorkBudgetReserveInput {
 }
 
 export interface WorkProviderRequestInput {
+  modelApi?: string;
   taskId: string;
   conversationId: string;
   generationTaskId: number;
@@ -337,6 +338,11 @@ export class WorkBudgetService {
         this.reconcile(binding.workId);
       }
     }
+    // Pi's Bedrock adapter does not expose the AWS SDK maxAttempts option.
+    // Its default internal retries bypass payload admission. Fail closed only
+    // after resolving a Work binding; ordinary unbound conversations stay allowed.
+    if (input.modelApi === "bedrock-converse-stream") return { allowed: false,
+      message: "此 Work 暂不支持 Bedrock：SDK 内部重试无法逐次进行预算准入，未发送模型请求。请选择其它供应商。" };
     const estimate = Math.max(1, Math.min(1_000_000, Math.ceil(input.estimatedTokens)));
     const result = this.reserve({ workId: work.workId, reservationId, tokens: estimate,
       requestKind: input.requestKind ?? (input.sourceKind === "subagent" ? "child" : "generation"),
@@ -363,7 +369,31 @@ export class WorkBudgetService {
       if (!work) return { ok: true };
       const receiptKey = `gen:${input.taskId}:${input.conversationId}:${input.generationTaskId}`;
       const requests = this.requestsForGeneration(input.taskId, input.conversationId, input.generationTaskId);
-      if (!requests.length) return { ok: true };
+      if (!requests.length) {
+        if (!input.reported) return { ok: true }; // Local refusal/abort is not a provider receipt.
+        const message = "供应商报告了用量，但找不到已准入的请求，需核对预算账目";
+        const evidenceId = `budget-unmatched-receipt:${receiptKey}`;
+        if (!this.works.repo.getEvidence(evidenceId)) {
+          const now = this.now();
+          const details = { receiptKey, conversationId: input.conversationId, generationTaskId: input.generationTaskId,
+            inputTokens: input.inputTokens, outputTokens: input.outputTokens,
+            cacheReadTokens: input.cacheReadTokens, cacheWriteTokens: input.cacheWriteTokens };
+          this.works.repo.insertEvidence({ evidenceId, workId: work.workId, criterionIds: [], kind: "tool_receipt",
+            provenance: "system", sourceRef: receiptKey, inputSnapshotId: work.inputSnapshotId,
+            intentRevision: work.intentRevision, detail: JSON.stringify(details), recordedAt: now });
+          // Keep visible reconciliation debt without guessing which historical window
+          // to charge or fabricating a reservation for an unadmitted request.
+          const blockerId = `budget:receipt-conflict:${work.workId}`;
+          const existing = this.works.repo.getBlocker(blockerId);
+          const blockerDetails = { ...existing?.details, unmatchedReceiptEvidenceId: evidenceId };
+          if (!existing) this.works.repo.insertBlocker({ blockerId, workId: work.workId, kind: "operational",
+            reasonCode: "budget-reconciliation-conflict", reason: message, details: blockerDetails,
+            sourceRef: evidenceId, waitingForUserInput: true, status: "open", createdAt: now });
+          else this.db.prepare(`UPDATE work_blockers SET reason=?,details_json=?,source_ref=?,status='open',cleared_at=NULL
+            WHERE blocker_id=? AND work_id=?`).run(message, JSON.stringify(blockerDetails), evidenceId, blockerId, work.workId);
+        }
+        return { ok: false, message };
+      }
       const reservations = this.works.repo.listReservations(binding.workId);
       const reservationFor = (request: RequestRow) => reservations.find(item => item.attemptIdentity === request.attempt_identity);
       if (!input.reported) {
@@ -429,11 +459,17 @@ export class WorkBudgetService {
   /** Persist an explicit user policy; existing usage/causality is never cleared. */
   setPolicy(work: WorkDto, input: { maxTokens: number; windowMs?: number; timezone?: string; autoRollover?: boolean }): WorkDto | string {
     return this.works.transaction(() => {
-      const current = this.summary(work.workId);
-      if (current.reservations.some(item => item.state === "reserved" || item.state === "unknown")) return "仍有在途或未知用量，不能修改预算政策";
+      // Re-read the ledger projection: callers may hold a pre-settlement snapshot.
+      this.summary(work.workId);
+      work = this.works.getWork(work.workId)!;
+      const currentPolicy = this.policyOf(work);
       const authorizationLimit = work.authorization.budgetLimitTokens;
       const maxTokens = Math.min(input.maxTokens, authorizationLimit ?? Number.MAX_SAFE_INTEGER);
       if (!Number.isSafeInteger(maxTokens) || maxTokens < 0) return "预算上限必须是非负安全整数";
+      const autoRollover = Boolean(input.autoRollover) && input.windowMs !== undefined;
+      if (currentPolicy.maxTokens === maxTokens && currentPolicy.windowDurationMs === input.windowMs
+        && currentPolicy.timezone === input.timezone && Boolean(currentPolicy.autoRollover) === autoRollover) return work;
+      if (this.works.repo.listReservations(work.workId).some(item => item.state === "reserved" || item.state === "unknown")) return "仍有在途或未知用量，不能修改预算政策";
       const now = this.now();
       const nextRevision = (work.budgetPolicy?.policyRevision ?? work.budget.policyRevision ?? 1) + 1;
       const policy: WorkBudgetPolicyDto = { policyRevision: nextRevision, scope: "window",

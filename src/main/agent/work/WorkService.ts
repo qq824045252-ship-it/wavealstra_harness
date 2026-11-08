@@ -704,7 +704,6 @@ export class WorkService {
         }
       }
     }
-    this.clearContinuationBlockers(work.workId, now);
     const settled = this.tryCloseSettled(next, now);
     return { ok: true, outboxEventId: settled.ok ? settled.outboxEventId : undefined };
   }
@@ -760,8 +759,9 @@ export class WorkService {
         return this.closeWithConclusion(work, "succeeded", params, now);
       }
       // ended_unsuccessfully: settle first, then close.
-      this.clearContinuationBlockers(work.workId, now);
-      if (this.isSettled(work) && this.repo.listOpenBlockers(work.workId).length === 0) {
+      this.resourceGate.cancelWaiting({ workId: work.workId });
+      this.clearStoppedExecutionBlockers(work.workId, now);
+      if (this.isSettled(work)) {
         return this.closeWithConclusion(work, "ended_unsuccessfully", params, now);
       }
       const next: WorkDto = {
@@ -777,11 +777,16 @@ export class WorkService {
     });
   }
 
-  /** No further execution is requested when cancelling/ending; effect and usage blockers remain. */
-  private clearContinuationBlockers(workId: string, now: number): void {
+  /** Only system-owned blockers for future execution become moot when stopping.
+   * Unknown usage/effects and reconciliation conflicts must still be settled. */
+  private clearStoppedExecutionBlockers(workId: string, now: number): void {
     for (const binding of this.repo.listBindings(workId)) {
       const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
       if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
+    }
+    const budget = this.repo.getBlocker(`budget:exhausted:${workId}`);
+    if (budget?.kind === "operational" && budget.reasonCode === "budget-exhausted" && !budget.unknownExternalEffectRef) {
+      this.repo.clearBlocker(budget.blockerId, workId, now);
     }
   }
 
@@ -841,7 +846,8 @@ export class WorkService {
     if (this.resourceGate.live().some(lease => lease.owner.workId === work.workId)) return false;
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
-    if (bindings.some(binding => binding.reservationId && ["reserved", "unknown"].includes(this.repo.getReservation(binding.reservationId)?.state ?? ""))) return false;
+    // Provider requests can reserve independently of an execution binding.
+    if (this.repo.listReservations(work.workId).some(reservation => reservation.state === "reserved" || reservation.state === "unknown")) return false;
     const admissions = this.repo.listAdmissions(work.workId);
     if (admissions.some((admission) => admission.state === "admitted" || admission.state === "unknown")) return false;
     if (this.repo.listOpenBlockers(work.workId).length > 0) return false;
@@ -850,6 +856,9 @@ export class WorkService {
 
   private tryCloseSettled(work: WorkDto, now: number): Mutation {
     if (work.lifecycle !== "closing" || !work.pendingConclusion) return { ok: true };
+    if (work.pendingConclusion === "cancelled" || work.pendingConclusion === "ended_unsuccessfully") {
+      this.clearStoppedExecutionBlockers(work.workId, now);
+    }
     if (!this.isSettled(work)) return { ok: true };
     return this.closeWithConclusion(work, work.pendingConclusion, {
       operationId: `settle-${work.workId}-${work.stateVersion}`,
@@ -1388,7 +1397,7 @@ export class WorkService {
       }
       if (deliverable.status === "superseded") return { ok: false, code: "version_conflict", message: "历史成果需要重新核验，不能直接验收" };
       if (deliverable.status === "accepted") {
-        return { ok: false, code: "invalid_request", message: "成果已验收；重试请使用原操作 ID" };
+        return { ok: false, code: "invalid_request", message: "成果已采纳；重试请使用原操作 ID" };
       }
       if (deliverable.isSpeculation) {
         return { ok: false, code: "speculation_not_acceptable", message: "未经确认的推测不能成为已确认事实" };
@@ -2058,9 +2067,11 @@ export class WorkService {
       if (resolved.kind !== "user" && resolved.kind !== "bot") {
         return { ok: false, code: "unauthorized_actor", message: "只有当前主负责人或用户可以核对未知用量" };
       }
-      return this.budget.reconcileUnknown(work, input, {
+      const result = this.budget.reconcileUnknown(work, input, {
         kind: resolved.kind, userId: resolved.userId, botId: resolved.bot?.botId,
       });
+      if (result.ok) this.tryCloseSettled(this.repo.getWork(work.workId)!, now);
+      return result;
     }
     if (input.kind === "configure-subscription") {
       const existing = input.subscriptionId

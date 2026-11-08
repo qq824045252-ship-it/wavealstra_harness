@@ -38,6 +38,9 @@ import { mergeContextUsage } from "../../usage/context-usage-merge";
 import { GenerationTiming, generationContentTokens } from "../../usage/generation-timing";
 
 type BotInputMetadata = DurableInputMetadata;
+const CompactionRequestSequence = defineDoc({ kind: "mybuddy.compaction-request-sequence", version: 1, scope: "session",
+  initial: () => ({ next: 0 }), checkpointWhen: () => false,
+});
 const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ settled: {} as Record<string, number> }),
 });
@@ -63,10 +66,11 @@ export interface DurableBotOptions {
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
+  providerBudgetControlled?: () => boolean;
   /** Async admission at the real provider request boundary (generation and compaction). */
   onProviderRequest?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
     sourceKind: "main" | "subagent"; requestKind: "generation" | "compaction";
-    modelId: string; estimatedTokens: number }) => void | Promise<void>;
+    modelId: string; modelApi: string; estimatedTokens: number }) => void | Promise<void>;
   onProviderUsage?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   executionIdentity?: { taskId?: string; sourceKind: DiagnosticSource; executionScope: string };
@@ -179,8 +183,19 @@ export class DurableBotRuntime {
   }
 
   static async open(options: DurableBotOptions): Promise<DurableBotRuntime> {
+    let resolveRequestHarness!: (harness: Harness | undefined) => void;
+    const requestHarness = new Promise<Harness | undefined>(resolve => { resolveRequestHarness = resolve; });
+    const nextCompactionRequest = async () => {
+      const harness = await requestHarness;
+      if (!harness) throw new Error("压缩请求的持久身份存储不可用");
+      return harness.commit(async tx => {
+        const sequence = await tx.doc(CompactionRequestSequence);
+        if (!Number.isSafeInteger(sequence.next) || sequence.next >= Number.MAX_SAFE_INTEGER) throw new Error("压缩请求序列已耗尽");
+        return ++sequence.next;
+      }, ctx);
+    };
     options = { ...options, models: taskScopedModels(options.models, options.cwd, options.onProviderRequest,
-      options.executionIdentity?.taskId, options.onProviderUsage) };
+      options.executionIdentity?.taskId, options.onProviderUsage, options.beforeProviderRequest, nextCompactionRequest, options.providerBudgetControlled) };
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
@@ -226,6 +241,7 @@ export class DurableBotRuntime {
           return new NodeExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
         },
       }, ctx);
+      resolveRequestHarness(harness);
       const root = await harness.root(ctx, { agent: { cwd: options.cwd, model: options.model },
         init: async (tx, id) => {
           if (options.initialBranch) return;
@@ -267,6 +283,7 @@ export class DurableBotRuntime {
       }
       return runtime;
     } catch (error) {
+      resolveRequestHarness(undefined);
       finishOpening(undefined);
       if (harness) await harness.close(ctx); else await storage.close(ctx);
       handle?.lease.release();
@@ -940,6 +957,7 @@ function codingTools(): ToolRegistration[] {
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
+const modelRequestIdentities = new WeakMap<Models, WeakMap<AbortSignal, { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }>>();
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, () => void>>();
 
 /**
@@ -952,10 +970,11 @@ function traceBoundary(api: HookApi, operation: CacheTraceOperation): () => Cach
 
 function taskScopedModels(models: Models, cwd: string,
   onProviderRequest?: DurableBotOptions["onProviderRequest"], taskId?: string,
-  onProviderUsage?: DurableBotOptions["onProviderUsage"]): Models {
-  let compactionSequence = 0;
+  onProviderUsage?: DurableBotOptions["onProviderUsage"], beforeProviderRequest?: () => void,
+  nextCompactionRequest?: () => Promise<number>, providerBudgetControlled?: () => boolean): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, () => void>();
+  const identities = new WeakMap<AbortSignal, { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }>();
   const scoped = new Proxy(models, { get(target, key) {
     if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
     if (key === "streamSimple") return (...args: Parameters<Models["streamSimple"]>) => {
@@ -963,21 +982,53 @@ function taskScopedModels(models: Models, cwd: string,
       const signal = args[2]?.signal;
       const validate = signal ? guards.get(signal) : undefined;
       validate?.();
-      return withModelInvocationSettings(settings, () => target.streamSimple(...args), validate);
+      // Pi deliberately swallows extension-hook errors. Admission must live outside that
+      // chain, in the provider's awaited payload transform, before any HTTP send.
+      const options = args[2];
+      return withModelInvocationSettings(settings, () => target.streamSimple(args[0], args[1], {
+        ...options,
+        // Pi-level HTTP retries bypass onPayload. Disable them and let Durable
+        // retry through admission. SDK-owned retries (notably Bedrock) require
+        // separate adapter support; maxRetries does not control those SDKs.
+        ...durableBudgetRequestOptions(args[0].api, providerBudgetControlled?.() ?? false),
+        onPayload: async (payload, model) => {
+          const replacement = await options?.onPayload?.(payload, model);
+          signal?.throwIfAborted();
+          validate?.();
+          beforeProviderRequest?.();
+          const identity = signal ? identities.get(signal) : undefined;
+          if (onProviderRequest && !identity) throw new Error("模型请求缺少预算准入身份，未发送请求");
+          if (identity) await onProviderRequest?.({ taskId, ...identity, requestKind: "generation",
+            modelId: `${model.provider}/${model.id}`, modelApi: model.api, estimatedTokens: estimatePayloadTokens(replacement === undefined ? payload : replacement) });
+          return replacement;
+        },
+      }), validate);
     };
     if (key === "completeSimple") return async (...args: Parameters<Models["completeSimple"]>) => {
       // Pi's compaction task is the harness's only completeSimple caller. A summarization resumed from its
       // `summarize` checkpoint never reruns `beforeCompact`, so keep the operation its call form proves
       // instead of letting that request join the unbound chain with a generation request.
       const signal = args[2]?.signal;
-      const generationTaskId = -1 - (++compactionSequence);
-      await onProviderRequest?.({ taskId, conversationId: String(args[2]?.sessionId ?? ""), generationTaskId,
-        sourceKind: "main", requestKind: "compaction", modelId: `${args[0].provider}/${args[0].id}`,
-        estimatedTokens: estimatePayloadTokens(args[1]) });
-      const result = await withModelInvocationSettings(settings, () => target.completeSimple(...args), undefined,
+      beforeProviderRequest?.();
+      signal?.throwIfAborted();
+      const generationTaskId = -(await nextCompactionRequest!());
+      // Separate persisted IDs from legacy per-open negative counters.
+      const conversationId = `${String(args[2]?.sessionId ?? "")}:compaction-v2`;
+      const result = await withModelInvocationSettings(settings, () => target.completeSimple(args[0], args[1], {
+        ...args[2], ...durableBudgetRequestOptions(args[0].api, providerBudgetControlled?.() ?? false),
+        onPayload: async (payload, model) => {
+          const replacement = await args[2]?.onPayload?.(payload, model);
+          signal?.throwIfAborted();
+          beforeProviderRequest?.();
+          await onProviderRequest?.({ taskId, conversationId, generationTaskId,
+            sourceKind: "main", requestKind: "compaction", modelId: `${model.provider}/${model.id}`, modelApi: model.api,
+            estimatedTokens: estimatePayloadTokens(replacement === undefined ? payload : replacement) });
+          return replacement;
+        },
+      }), undefined,
         requestTraceBoundary(signal) ?? (() => ({ operation: "compact" })));
       const message = result as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }; stopReason?: string };
-      if (message.usage) onProviderUsage?.({ taskId, conversationId: String(args[2]?.sessionId ?? ""), generationTaskId,
+      if (message.usage) onProviderUsage?.({ taskId, conversationId, generationTaskId,
         reported: message.stopReason !== "error" && message.stopReason !== "aborted",
         inputTokens: message.usage.input ?? 0, outputTokens: message.usage.output ?? 0,
         cacheReadTokens: message.usage.cacheRead ?? 0, cacheWriteTokens: message.usage.cacheWrite ?? 0 });
@@ -987,7 +1038,15 @@ function taskScopedModels(models: Models, cwd: string,
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
   modelRequestGuards.set(scoped, guards);
+  modelRequestIdentities.set(scoped, identities);
   return scoped;
+}
+
+/** Work requests must not reuse an admitted payload for hidden HTTP/WS retries. */
+export function durableBudgetRequestOptions(api: string, controlled: boolean) {
+  return controlled ? { maxRetries: 0,
+    ...(api === "openai-codex-responses" ? { transport: "sse" as const } : {}),
+  } : {};
 }
 
 export function estimatePayloadTokens(payload: unknown): number {
@@ -1051,6 +1110,9 @@ function botExtension(
       if (context.abortSignal) guards?.set(context.abortSignal, () => validate());
       try {
         const child = await childConversation(api, context);
+        if (context.abortSignal) modelRequestIdentities.get(options.models)?.set(context.abortSignal, {
+          conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main",
+        });
         try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
         if (child) { validate = () => {}; return; }
@@ -1073,11 +1135,7 @@ function botExtension(
         throw error;
       }
     }, beforeProviderRequest: async (request, api, context) => {
-      options.beforeProviderRequest?.();
       const child = await childConversation(api, context);
-      await options.onProviderRequest?.({ taskId: options.executionIdentity?.taskId, conversationId: String(api.conversationId),
-        generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main", requestKind: "generation",
-        modelId: `${request.model.provider}/${request.model.id}`, estimatedTokens: estimatePayloadTokens(request.payload) });
       identifyModelInvocation({ taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,
         sourceKind: options.executionIdentity?.sourceKind ?? (child ? "subagent" : "main") });
