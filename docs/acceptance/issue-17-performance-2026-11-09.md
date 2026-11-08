@@ -79,7 +79,7 @@
 
 ## 三、未完成 / 未验证
 
-- **发布态与 GUI**：`test:all:gui`、`test:all:artifacts`、打包产物启动均未运行（按工作流未 build/pack）。A1 的绝对基线必须在授权构建后用相同脚本与相同数据集复测。
+- **发布态与 GUI**：`test:all:gui`、`test:all:artifacts`、打包产物启动均未运行（按工作流未 build/pack）。实测 `test:durable-bot-desktop`、`test:task-status-dot-desktop`、`test:sidebar-space-collapse-desktop` 均停在 "app ready"/"sidebar mounted" 超时：工作区没有 `out/renderer`（只有 `pnpm dev` 生成的 `out/main`），桌面用例加载不到生产 renderer。GUI 门禁需要先 `pnpm build`，属于未授权的发布工作流。A1 的绝对基线必须在授权构建后用相同脚本与相同数据集复测。
 - **大数据集**：100/1,000/10,000 任务与 2,000/10,000 持久消息未运行；当前只验证 0 与 30 个真实 Durable 绑定。
 - **renderer React 提交**：未采集每帧 Store 通知 → React commit 计数与真实输入延迟。
 - **D 条件项**：Bot 回合缓存、消息行订阅、超大代码块高亮、虚拟列表测量、内存回收、图片/预览资源均未改动，需按 Issue D 以复现证据决定。
