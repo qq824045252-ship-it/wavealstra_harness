@@ -16,6 +16,10 @@ import type { AppDatabase } from "../db/AppDatabase";
 import { AppSettingsStore } from "../AppSettingsStore";
 import { getGatewayDir } from "../paths";
 import { SlackSocketModeAdapter, safeSlackError, redactSlackText } from "./SlackSocketModeAdapter";
+import { DingTalkStreamAdapter } from "./DingTalkStreamAdapter";
+import { DiscordGatewayAdapter } from "./DiscordGatewayAdapter";
+import { isSecureGatewayProvider, validateGatewayProviderConfig, sealGatewayProviderConfig,
+  openGatewayProviderConfig, gatewayProviderConfigView } from "./GatewayProviderConfig";
 import { SlackGatewayJournal } from "./SlackGatewayJournal";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "./SlackGatewayCredentials";
 import { runGatewayAgentTurn, withSlackChannelHistory } from "./GatewayAgentTurn";
@@ -45,6 +49,8 @@ const REDACTED_FIELDS: Record<GatewayChannelType, string[]> = {
   wechat: ["appSecret", "token", "encodingAESKey"],
   telegram: ["botToken"],
   slack: ["botToken", "appToken", "encryptedSecrets"],
+  dingtalk: ["clientSecret", "encryptedSecrets"],
+  discord: ["botToken", "encryptedSecrets"],
 };
 
 /** 幂等窗口：平台重试投递的同一条消息只执行一次（10 分钟） */
@@ -109,7 +115,8 @@ export interface GatewayProjectMessageSink {
 export interface GatewayServiceOptions {
   settingsStore?: Pick<AppSettingsStore, "read">;
   adapters?: { feishu?: FeishuChannelAdapter; wecom?: WecomChannelAdapter; wechat?: WechatMpChannelAdapter;
-    telegram?: TelegramChannelAdapter; slack?: SlackSocketModeAdapter };
+    telegram?: TelegramChannelAdapter; slack?: SlackSocketModeAdapter;
+    dingtalk?: DingTalkStreamAdapter; discord?: DiscordGatewayAdapter };
 }
 
 export class GatewayService {
@@ -119,6 +126,8 @@ export class GatewayService {
   private readonly wechat: WechatMpChannelAdapter;
   private readonly telegram: TelegramChannelAdapter;
   private readonly slack: SlackSocketModeAdapter;
+  private readonly dingtalk: DingTalkStreamAdapter;
+  private readonly discord: DiscordGatewayAdapter;
   private readonly settingsStore: Pick<AppSettingsStore, "read">;
   private readonly workTargets: GatewayWorkTargets;
   private workNotificationWake?: () => void;
@@ -156,6 +165,15 @@ export class GatewayService {
       onStatus: text => this.emitEvent({ channelId: "slack-default", direction: "system", text, at: Date.now() }),
       onHistoryRead: value => console.info("[SlackChannelHistory] " + JSON.stringify(value)),
     });
+    this.dingtalk = options.adapters?.dingtalk ?? new DingTalkStreamAdapter("dingtalk-default", "钉钉", { deferInboundUntilActivated: true });
+    this.discord = options.adapters?.discord ?? new DiscordGatewayAdapter("discord-default", "Discord", {
+      deferInboundUntilActivated: true,
+      onStatus: text => this.emitEvent({ channelId: "discord-default", direction: "system", text: text || "Discord 连接状态已更新", at: Date.now() }),
+    });
+    for (const adapter of [this.dingtalk, this.discord]) {
+      adapter.setInboundHandler(inbound);
+      this.adapters.set(adapter.id, adapter);
+    }
     this.feishu.setInboundHandler(inbound);
     this.wecom.setInboundHandler(inbound);
     this.wechat.setInboundHandler(inbound);
@@ -253,6 +271,10 @@ export class GatewayService {
       if (this.stopping) throw new Error("Gateway 正在关闭，消息将在重连后继续");
       // Slack validates its binding and persists dedupe before acknowledging events.
       if (msg.channelId === this.slack.id) return this.handleSlackInbound(msg);
+      const inboundAdapter = this.adapters.get(msg.channelId);
+      if (inboundAdapter && isSecureGatewayProvider(inboundAdapter.type) && !this.channelPolicies.has(msg.channelId)) {
+        throw new Error("Gateway 授权配置尚未生效，未执行");
+      }
       // ① 白名单：未授权用户直接忽略（不发系统事件，避免噪音）
       if (!this.isAllowed(msg.channelId, msg.sender?.id)) {
         console.warn(`[Gateway] 拒绝未授权用户 ${msg.sender?.id ?? "(unknown)"} @ ${msg.channelId}`);
@@ -412,11 +434,14 @@ export class GatewayService {
         continue;
       }
       try {
-        if (adapter.type !== "slack") await this.start();
-        await adapter.connect(adapter.type === "slack" ? openSlackGatewayConfig(config) : config);
-        if (adapter.type === "slack") this.running = true;
+        if (!this.isSocketOnly(adapter)) await this.start();
+        await adapter.connect(adapter.type === "slack" ? openSlackGatewayConfig(config)
+          : isSecureGatewayProvider(adapter.type) ? openGatewayProviderConfig(adapter.type, config) : config);
+        if (this.isSocketOnly(adapter)) this.running = true;
         this.channelPolicies.set(row.id, { allowUsers: toStrArray(config.allowUsers) });
         if (adapter.type === "slack") this.slack.activate();
+        if (adapter.type === "discord") this.discord.activate();
+        if (adapter.type === "dingtalk") this.dingtalk.activate();
         this.emitEvent({
           channelId: row.id,
           direction: "system",
@@ -439,7 +464,7 @@ export class GatewayService {
   async suspend(): Promise<void> {
     this.stopping = true;
     for (const a of this.adapters.values()) {
-      if (a.isConnected() || a.type === "slack") await a.disconnect();
+      if (a.isConnected() || this.isSocketOnly(a)) await a.disconnect();
     }
   }
 
@@ -480,6 +505,8 @@ export class GatewayService {
     } catch {
       return { hasConfig: true, config: {} };
     }
+    if (isSecureGatewayProvider(row.type as GatewayChannelType)) return { hasConfig: true,
+      config: gatewayProviderConfigView(row.type as "dingtalk" | "discord", config) };
     const redacted = { ...config };
     if (row.type === "slack") return { hasConfig: true, config: slackGatewayConfigView(config) };
     const fields = REDACTED_FIELDS[row.type as GatewayChannelType] ?? [];
@@ -504,18 +531,24 @@ export class GatewayService {
         // ignore
       }
     }
-    const merged: Record<string, unknown> = { ...config };
+    let merged: Record<string, unknown> = { ...config };
     const storedSecrets = adapter.type === "slack" && storedConfig.encryptedSecrets
-      ? openSlackGatewayConfig(storedConfig) : storedConfig;
+      ? openSlackGatewayConfig(storedConfig)
+      : isSecureGatewayProvider(adapter.type) && storedConfig.encryptedSecrets
+        && REDACTED_FIELDS[adapter.type].some(key => merged[key] === GATEWAY_REDACTED)
+        ? openGatewayProviderConfig(adapter.type, storedConfig) : storedConfig;
     for (const [key, value] of Object.entries(merged)) {
-      if (value === GATEWAY_REDACTED && storedSecrets[key]) merged[key] = storedSecrets[key];
+      if (REDACTED_FIELDS[adapter.type].includes(key) && value === GATEWAY_REDACTED && storedSecrets[key]) merged[key] = storedSecrets[key];
     }
 
     // Socket Mode needs no HTTP listener. Seal before connecting, refuse plaintext fallback.
-    const savedConfig = adapter.type === "slack" ? sealSlackGatewayConfig(merged) : merged;
-    if (adapter.type !== "slack") await this.start();
+    if (isSecureGatewayProvider(adapter.type)) merged = validateGatewayProviderConfig(adapter.type, merged);
+    const savedConfig = adapter.type === "slack" ? sealSlackGatewayConfig(merged)
+      : isSecureGatewayProvider(adapter.type) ? sealGatewayProviderConfig(adapter.type, merged) : merged;
+    if (!this.isSocketOnly(adapter)) await this.start();
+    if (isSecureGatewayProvider(adapter.type)) this.channelPolicies.delete(adapter.id);
     await adapter.connect(merged);
-    if (adapter.type === "slack") this.running = true;
+    if (this.isSocketOnly(adapter)) this.running = true;
     this.channelPolicies.set(adapter.id, { allowUsers: toStrArray(merged.allowUsers) });
     try {
       this.db.upsertGatewayChannel({
@@ -523,13 +556,15 @@ export class GatewayService {
         configJson: JSON.stringify(savedConfig), connected: true, statusText: adapter.statusText(),
       });
     } catch (error) {
-      if (adapter.type !== "slack") throw error;
+      if (adapter.type !== "slack" && !isSecureGatewayProvider(adapter.type)) throw error;
       await adapter.disconnect();
       this.channelPolicies.delete(adapter.id);
       this.running = this.webhookServer !== null || [...this.adapters.values()].some(channel => channel.isConnected());
-      throw new Error("Slack 安全配置保存失败，接收已暂停；原有配置保留");
+      throw new Error(`${adapter.name} 安全配置保存失败，接收已暂停；原有配置保留`);
     }
     if (adapter.type === "slack") this.slack.activate();
+    if (adapter.type === "discord") this.discord.activate();
+    if (adapter.type === "dingtalk") this.dingtalk.activate();
     this.emitEvent({
       channelId,
       direction: "system",
@@ -543,7 +578,7 @@ export class GatewayService {
     const adapter = this.adapters.get(channelId);
     if (!adapter) throw new Error(`unknown channel: ${channelId}`);
     await adapter.disconnect();
-    const stored = adapter.type === "slack" ? this.db.listGatewayChannels().find(row => row.id === channelId) : undefined;
+    const stored = adapter.type === "slack" || isSecureGatewayProvider(adapter.type) ? this.db.listGatewayChannels().find(row => row.id === channelId) : undefined;
     this.channelPolicies.delete(channelId);
     this.db.upsertGatewayChannel({
       id: adapter.id,
@@ -583,6 +618,10 @@ export class GatewayService {
     }
     broadcast(GatewayIpc.event, ev);
     this.workNotificationWake?.();
+  }
+
+  private isSocketOnly(adapter: ChannelAdapter): boolean {
+    return adapter.type === "slack" || adapter.type === "discord" || adapter.type === "dingtalk";
   }
 
   private createWebhookServer(): Server {

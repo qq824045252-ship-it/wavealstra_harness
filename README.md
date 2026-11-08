@@ -64,7 +64,7 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
   - 本地视觉与语音：本地 PDF/图像 OCR 路径与本地 Whisper 语音转写（`src/main/voice/`）。
   - 内嵌环境：受控浏览器（`src/main/browser/`）、集成终端 PTY（`src/main/terminal/`）、HTML 编辑与办公文档 / Artifact 预览（`src/main/artifact/`）。
 - **多通道网关与远程协同**：
-  - 消息连接器（`src/main/connectors/`、`src/main/gateway/`、`src/main/cron/`）：Slack Socket Mode、Webhook 与 Cron 调度。
+  - 消息连接器（`src/main/connectors/`、`src/main/gateway/`、`src/main/cron/`）：Slack Socket Mode、Webhook 与 Cron 调度。新增 [钉钉企业机器人 Stream](docs/dingtalk-gateway.md)、[Discord 官方 Bot](docs/discord-gateway.md)；需配置平台权限与用户白名单，这两个新渠道当前仅支持入站及原会话回复，不提供主动 Work 通知。
   - 远程配对（`src/main/remote/`）：局域网 / 远程移动端或副屏客户端配对访问。
 
 ## 系统边界与已知限制（请勿误读）

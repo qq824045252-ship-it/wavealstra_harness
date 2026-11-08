@@ -825,7 +825,7 @@ function PersonalizeTab(): React.JSX.Element {
 interface GatewayField {
   key: string;
   label: string;
-  type?: "text" | "password";
+  type?: "text" | "password" | "list";
   placeholder?: string;
 }
 
@@ -835,6 +835,8 @@ const CHANNEL_COLORS: Record<string, string> = {
   "wecom-default": "#0082EF",
   "wechat-default": "#07C160",
   "slack-default": "#4A154B",
+  "dingtalk-default": "#0089FF",
+  "discord-default": "#5865F2",
 };
 
 /** 通用通道配置块：彩色标识 + 状态圆点 + 表单 + 连接/断开 */
@@ -855,6 +857,9 @@ function GatewayBlock({
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const isSlack = channelId === "slack-default";
+  const isDiscord = channelId === "discord-default";
+  const requiresAllowUsers = isSlack || ["dingtalk-default", "discord-default"].includes(channelId);
+  const [allowDirectMessages, setAllowDirectMessages] = useState(false);
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     try {
@@ -881,13 +886,14 @@ function GatewayBlock({
       for (const f of fields) {
         const raw = c.config[f.key];
         if (typeof raw === "string" && raw) v[f.key] = raw;
+        if (f.type === "list" && Array.isArray(raw)) v[f.key] = raw.join(", ");
       }
       setValues(v);
+      setAllowDirectMessages(c.config.allowDirectMessages === true);
       const users = c.config.allowUsers;
       if (Array.isArray(users)) setAllowUsers(users.join(", "));
     });
     void refreshStatus();
-    if (!isSlack) return;
     const unsubscribe = window.api?.gateway?.onEvent(event => {
       if (event.channelId === channelId && event.direction === "system") void refreshStatus();
     });
@@ -899,12 +905,16 @@ function GatewayBlock({
     setStatus("连接中…");
     try {
       const config: Record<string, unknown> = { ...values };
+      for (const field of fields) {
+        if (field.type === "list") config[field.key] = (values[field.key] ?? "").split(/[,，;；\s]+/).filter(Boolean);
+      }
+      if (isDiscord) config.allowDirectMessages = allowDirectMessages;
       config.allowUsers = allowUsers
         .split(/[,，;；\s]+/)
         .map((s) => s.trim())
         .filter(Boolean);
       await window.api?.gateway?.connect(channelId, config);
-      if (isSlack) setValues(v => ({ ...v, botToken: "••••••", appToken: "••••••" }));
+      setValues(v => ({ ...v, ...Object.fromEntries(fields.filter(f => f.type === "password").map(f => [f.key, "••••••"])) }));
       await refreshStatus();
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
@@ -930,7 +940,7 @@ function GatewayBlock({
       <div className="settings-card-head">
         <span className="channel-dot" style={{ background: CHANNEL_COLORS[channelId] }} />
         <span className="settings-card-title">{title}</span>
-        <span className={`channel-status${connected ? " on" : ""}`}>{isSlack ? status || "未连接" : connected ? status : "未连接"}</span>
+        <span className={`channel-status${connected ? " on" : ""}`}>{status || "未连接"}</span>
       </div>
       <div className="settings-card-desc">{desc}</div>
       {fields.map((f) => (
@@ -938,15 +948,18 @@ function GatewayBlock({
           <input
             className="settings-input"
             type={f.type === "password" ? "password" : "text"}
-            aria-label={isSlack ? f.label : undefined}
-            autoComplete={isSlack ? f.type === "password" ? "new-password" : "off" : undefined}
+            aria-label={f.label}
+            autoComplete={f.type === "password" ? "new-password" : "off"}
             value={values[f.key] ?? ""}
             placeholder={f.placeholder ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
           />
         </Row>
       ))}
-      <Row label="允许的用户" desc={isSlack ? "必填：只接受这些 Slack Member ID 的私聊，逗号分隔。" : "只允许这些用户使用，逗号分隔；留空则谁都能用。"}>
+      {isDiscord && <Row label="允许 Discord 私聊" desc="默认关闭；打开后也仅允许下方用户 ID。">
+        <input type="checkbox" aria-label="允许 Discord 私聊" checked={allowDirectMessages} onChange={e => setAllowDirectMessages(e.target.checked)} />
+      </Row>}
+      <Row label="允许的用户" desc={isSlack ? "必填：允许触发机器人的 Slack Member ID，逗号分隔。" : requiresAllowUsers ? "必填：平台用户 ID（钉钉为员工 senderStaffId），逗号分隔。" : "只允许这些用户使用，逗号分隔；留空则谁都能用。"}>
         <input
           className="settings-input"
           aria-label={isSlack ? "允许的 Slack 用户" : undefined}
@@ -956,7 +969,7 @@ function GatewayBlock({
         />
       </Row>
       <div className="settings-card-footer">
-        <button className="btn primary" disabled={busy || (isSlack && (!allowUsers.trim() || !values.appId?.trim() || !values.teamId?.trim() || !values.botToken?.trim() || !values.appToken?.trim()))} onClick={() => void connect()}>
+        <button className="btn primary" disabled={busy || (requiresAllowUsers && !allowUsers.trim()) || (isSlack && (!allowUsers.trim() || !values.appId?.trim() || !values.teamId?.trim() || !values.botToken?.trim() || !values.appToken?.trim()))} onClick={() => void connect()}>
           连接
         </button>
         <button className="btn" disabled={busy} onClick={() => void disconnect()}>
@@ -971,7 +984,7 @@ function AssistantTab(): React.JSX.Element {
   return (
     <>
       <div className="settings-row-desc" style={{ marginBottom: 12 }}>
-        连接后收到消息会自动开始任务，重启应用不会掉线。
+        连接后符合授权条件的消息会自动开始任务；应用重启后尝试恢复连接。
       </div>
 
       <GatewayBlock
@@ -995,6 +1008,27 @@ function AssistantTab(): React.JSX.Element {
         ]}
       />
 
+      <GatewayBlock
+        channelId="dingtalk-default"
+        title="钉钉企业机器人"
+        desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，回复原会话；回复受会话有效期限制，暂不支持主动 Work 通知。凭据加密保存。"
+        fields={[
+          { key: "clientId", label: "Client ID", placeholder: "应用 AppKey" },
+          { key: "clientSecret", label: "Client Secret", type: "password", placeholder: "应用 AppSecret" },
+          { key: "corpId", label: "企业 Corp ID", placeholder: "企业标识" },
+          { key: "robotCode", label: "Robot Code", placeholder: "机器人编码" },
+        ]}
+      />
+      <GatewayBlock
+        channelId="discord-default"
+        title="Discord 官方 Bot"
+        desc="使用官方 Bot Token 和 Gateway 长连接，服务器中仅接受 @Bot，私聊需显式启用；仅使用基本消息 intents，无需 Message Content 特权。暂不支持主动 Work 通知。凭据加密保存，不支持个人账号 Token。"
+        fields={[
+          { key: "applicationId", label: "Application ID", placeholder: "Discord 应用 ID" },
+          { key: "botToken", label: "Bot Token", type: "password", placeholder: "官方机器人 Token" },
+          { key: "guildIds", label: "允许的服务器 ID", type: "list", placeholder: "多个 ID 用逗号分隔" },
+        ]}
+      />
       <GatewayBlock
         channelId="feishu-default"
         title="飞书"

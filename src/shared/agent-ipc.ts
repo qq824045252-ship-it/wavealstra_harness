@@ -1888,7 +1888,7 @@ export interface CronRunDto {
   taskId?: string;
 }
 
-export type GatewayChannelType = "feishu" | "wechat" | "wecom" | "telegram" | "slack";
+export type GatewayChannelType = "feishu" | "wechat" | "wecom" | "telegram" | "slack" | "dingtalk" | "discord";
 
 export interface GatewayChannelDto {
   id: string;
