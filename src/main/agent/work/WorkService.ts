@@ -91,8 +91,8 @@ import { WorkWatchScheduler } from "./WorkWatchScheduler";
 import { WorkActionApprovals } from "./WorkActionApprovals";
 import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
-import type { RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
-import { resourceRecoveryProjection, runResourceRecoveryControl } from "./WorkResourceRecoveryControl";
+import type { PrepareResourceEffectParams, ReconcileResourceEffectParams, RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
+import { resourceRecoveryProjection, runResourceRecoveryControl, runResourceEffectReviewControl, runPrepareResourceEffectControl } from "./WorkResourceRecoveryControl";
 
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
@@ -883,10 +883,13 @@ export class WorkService {
 
   // ============================================================ delegation
 
-  retryResourceRecovery(actor: WorkActor, params: RetryResourceRecoveryParams): WorkControlResult {
-    return runResourceRecoveryControl(actor, params, this.db, this.resourceGate, this.repo,
-      this.runWorkControl.bind(this), this.outbox.bind(this));
-  }
+  prepareResourceEffect = (actor: WorkActor, params: PrepareResourceEffectParams): WorkControlResult =>
+    runPrepareResourceEffectControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
+  reconcileResourceEffect = (actor: WorkActor, params: ReconcileResourceEffectParams): WorkControlResult =>
+    runResourceEffectReviewControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
+
+  retryResourceRecovery = (actor: WorkActor, params: RetryResourceRecoveryParams): WorkControlResult =>
+    runResourceRecoveryControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
 
   handoffOwner(actor: WorkActor, params: HandoffOwnerParams): WorkControlResult {
     return this.runWorkControl(actor, "handoffOwner", params, {
@@ -2244,7 +2247,7 @@ export class WorkService {
       }
       const now = this.now();
       if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery"
+        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery" || operationType === "reconcileResourceEffect" || operationType === "prepareResourceEffect"
           || operationType === "phase4:reconcile-budget-reservation")) {
         // Renewing an expired delegation is a user authorization change, not new
         // business execution. Models cannot renew themselves, and the new deadline

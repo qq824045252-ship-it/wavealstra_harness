@@ -1,3 +1,4 @@
+import { readUserResourceEffectReview } from "./WorkResourceEffectReview";
 import type Database from "better-sqlite3";
 import type { WorkDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
@@ -53,7 +54,8 @@ export function finalizeWorkResource(input: { db: Database.Database; service: Wo
   let changed = false;
   if (admission && (admission.state === "unknown" || admission.state === "admitted")) {
     if (admission.bindingId !== binding.bindingId) throw new Error("资源恢复准入不属于原执行绑定");
-    const notStarted = readResourceNotStartedEvidence(db, lease).known;
+    const review = readUserResourceEffectReview(db, lease);
+    const notStarted = readResourceNotStartedEvidence(db, lease).known || review.known && review.conclusion === "not_occurred";
     if (!notStarted && !lease.resources.every(resource => resource.mode === "read") && !readResourceEffectEvidence(db, lease).known)
       throw new Error("业务准入尚无原始文件或供应商回执证明");
     service.repo.updateAdmissionState(admission.admissionId, notStarted ? "released" : "consumed", now());

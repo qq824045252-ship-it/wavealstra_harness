@@ -1252,6 +1252,8 @@ export class AgentService {
         return { ok: true, messageId: result.message.messageId, replayed: result.replayed };
       }
       const result = input.kind === "continue" ? this.workService.continueWork(actor, input.request)
+        : input.kind === "prepare_resource_effect" ? this.workService.prepareResourceEffect(actor, input.request)
+        : input.kind === "reconcile_resource_effect" ? this.workService.reconcileResourceEffect(actor, input.request)
         : input.kind === "retry_resource_recovery" ? this.workService.retryResourceRecovery(actor, input.request)
           : this.workService.handoffOwner(actor, input.request);
       if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.work.workId); }
@@ -1639,6 +1641,17 @@ export class AgentService {
     const nativeWork = this.durableBots.workExecutionPort();
     const resources = new WorkResourceRecovery(this.db.connection, this.workService.resourceGate, {
       transaction: fn => this.workService.transaction(fn),
+      stopOriginal: async (lease, recovery) => {
+        recovery.assertCurrent();
+        const binding = lease.owner.bindingId ? this.workService.repo.getBinding(lease.owner.bindingId) : undefined;
+        if (!binding || this.workService.repo.bindingForTask(binding.taskId)?.bindingId !== binding.bindingId
+          || binding.workId !== lease.owner.workId || binding.taskId !== lease.owner.taskId
+          || binding.durableStoreKey !== lease.owner.durableStoreKey || binding.conversationId !== lease.owner.conversationId
+          || binding.workspaceBinding !== lease.owner.workspaceBinding)
+          throw new Error("原操作绑定身份不一致，不能停止其他执行");
+        await nativeWork.stop(binding);
+        recovery.assertCurrent();
+      },
       inspectExecution: (lease, recovery) => {
         if (!this.durableBots) throw new Error("原生执行服务尚未就绪");
         return this.durableBots.resourceQuiescence(lease.owner, recovery);

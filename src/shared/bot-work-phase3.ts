@@ -50,6 +50,13 @@ export interface WorkContinuationDto {
 /** Persisted quarantine checks. Retrying never grants or releases the resource. */
 export interface WorkResourceRecoveryDto {
   token: number;
+  actionId?: string;
+  actionDescription?: string;
+  taskId?: string;
+  workspacePath?: string;
+  resourceScope?: string[];
+  effectReviewPrepared?: { preparedAt: number; readyAt?: number };
+  effectReview?: { conclusion: "not_occurred" | "occurred"; evidence: string; reviewedAt: number };
   resourceKinds: string[];
   attempts: number;
   pendingProbe?: boolean;

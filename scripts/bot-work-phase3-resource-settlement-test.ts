@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapter";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { fileResource, resourceOwnerKey, type WorkResourceOwner } from "../src/main/agent/work/WorkResourceGate";
 import { WorkResourceRecovery, readResourceEffectEvidence, readResourceNotStartedEvidence } from "../src/main/agent/work/WorkResourceRecovery";
@@ -104,8 +105,130 @@ async function assertExactNotStartedRecovery(): Promise<void> {
   }
 }
 
+async function assertUserEffectReview(): Promise<void> {
+  for (const conclusion of ["not_occurred", "occurred"] as const) {
+    const path = join(root, `user-review-${conclusion}.db`), taskId = `user-review-${conclusion}`;
+    let db = new AppDatabase(path), bots = new BotRegistry(db.connection);
+    bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: "review fixture", authorization: DESKTOP_USER_GRANTS });
+    let works = new WorkService(db.connection, { bots, resourceHostId: "host" });
+    try {
+      const created = unwrap(works.createWork(user, { operationId: "create", title: conclusion, inputSnapshotId: "snapshot", workspacePath: root, authorization: DESKTOP_USER_GRANTS }));
+      db.upsertTask({ id: taskId, title: conclusion, cwd: root, updatedAt: Date.now() });
+      unwrap(works.dispatchExecution(user, { operationId: "dispatch", workId: created.workId, botId: DEFAULT_BOT_ID,
+        taskId, durableStoreKey: path + ".native", conversationId: "1", workspaceBinding: root, delegatedScope: ["workspace:write"] }));
+      const binding = works.repo.bindingForTask(taskId)!;
+      const owner: WorkResourceOwner = { taskId, workId: created.workId, bindingId: binding.bindingId, durableStoreKey: binding.durableStoreKey,
+        conversationId: binding.conversationId, workspaceBinding: root };
+      const admitted = works.admitNewAction({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
+        admissionId: "effect", workId: created.workId, bindingId: binding.bindingId, operationId: "tool:1:10:call", actionKind: "workspace:write" });
+      assert(admitted.ok);
+      const acquired = works.resourceGate.acquire({ actionId: `resource:${resourceOwnerKey(owner)}:10:call`, owner,
+        resources: [{ kind: "host", scope: "local-host", key: "unclassified-tool", mode: "write" }] });
+      assert(acquired.ok); const lease = acquired.lease;
+      works.resourceGate.release(lease, "unknown", "legacy original effect missing");
+      works.settleAdmission(admitted.admission.admissionId, "unknown", "original receipt missing");
+      const exhaustedAt = Date.now();
+      db.connection.prepare("INSERT INTO work_resource_recovery(token,attempts,next_at,exhausted_at,reason) VALUES (?,4,0,?,?)")
+        .run(lease.token, exhaustedAt, "original effect unknown");
+      const params = { operationId: "review", workId: created.workId, token: lease.token, actionId: lease.actionId,
+        expectedAttempts: 4, expectedExhaustedAt: exhaustedAt, expectedReadyAt: 0, conclusion, evidence: "Checked the exact original workspace files and operation effects.",
+        confirmScopeReviewed: true as const, confirmStopOriginal: true as const, versionGuard: guard(works.getWork(created.workId)!) };
+      assert(!works.reconcileResourceEffect({ kind: "user", userId: "other", grants: DESKTOP_USER_GRANTS }, params).ok);
+      assert(!works.reconcileResourceEffect(user, { ...params, actionId: "different" }).ok);
+      assert(!works.reconcileResourceEffect(user, { ...params, expectedAttempts: 3 }).ok);
+      assert(!works.reconcileResourceEffect(user, params).ok, "cannot attest an effect before native execution has stopped");
+      const prepared = works.prepareResourceEffect(user, { operationId: "prepare-review", workId: created.workId, token: lease.token,
+        actionId: lease.actionId, expectedAttempts: 4, expectedExhaustedAt: exhaustedAt, confirmStopOriginal: true,
+        versionGuard: guard(works.getWork(created.workId)!) });
+      assert(prepared.ok);
+      assert(works.repo.getBinding(binding.bindingId)?.invalidatedAt, "fences new original tools before stop");
+      let stopCalls = 0;
+      const preparationRecovery = new WorkResourceRecovery(db.connection, works.resourceGate, {
+        transaction: fn => works.transaction(fn), stopOriginal: async () => { stopCalls++; },
+        inspectExecution: async () => ({ executionStopped: true, ownedChildrenStopped: true, receipt: "stopped-execution-proof" }),
+        drainInput: async () => ({ queueDrained: true, inputReleased: true, receipt: "input-released-proof" }),
+        verifyEffect: async () => { throw new Error("prepare cannot reconcile unknown effect"); },
+      });
+      await preparationRecovery.recover(); assert.equal(stopCalls, 1);
+      assert.equal(works.resourceGate.leaseState(lease), "quarantined");
+      const readiness = works.getProjection(created.workId)!.phase3!.resourceRecoveries[0]!;
+      assert(readiness.effectReviewPrepared?.readyAt !== undefined);
+      params.expectedAttempts = readiness.attempts; params.expectedExhaustedAt = readiness.exhaustedAt!;
+      params.expectedReadyAt = readiness.effectReviewPrepared.readyAt;
+      params.versionGuard = guard(works.getWork(created.workId)!);
+      db.connection.exec("CREATE TRIGGER reject_user_review BEFORE UPDATE ON works BEGIN SELECT RAISE(ABORT,'review crash'); END");
+      assert.throws(() => works.reconcileResourceEffect(user, params), /review crash/);
+      assert.equal(db.connection.prepare("SELECT 1 FROM work_resource_effect_reviews").get(), undefined, "audit and rearm rollback together");
+      db.connection.exec("DROP TRIGGER reject_user_review");
+      const result = works.reconcileResourceEffect(user, params); assert(result.ok);
+      assert.equal(works.resourceGate.leaseState(lease), "quarantined", "user evidence alone cannot release running effects");
+      const replay = works.reconcileResourceEffect(user, params); assert(replay.ok && replay.replayed);
+      assert.equal(readResourceNotStartedEvidence(db.connection, lease).known, false, "human conclusion is not a fabricated native proof");
+      assert(readResourceEffectEvidence(db.connection, lease).known);
+      db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection);
+      works = new WorkService(db.connection, { bots, resourceHostId: "restart" });
+      let quiet = conclusion === "occurred", inputReleased = false, clock = Date.now() + 10000, stops = 0;
+      const recovery = new WorkResourceRecovery(db.connection, works.resourceGate, {
+        transaction: fn => works.transaction(fn),
+        stopOriginal: async () => { stops++; },
+        inspectExecution: async () => ({ executionStopped: quiet, ownedChildrenStopped: quiet, receipt: "native-graph-proof" }),
+        drainInput: async () => ({ queueDrained: inputReleased, inputReleased, receipt: "native-cleanup-proof" }),
+        verifyEffect: async original => readResourceEffectEvidence(db.connection, original),
+        onRecovered: original => works.finalizeRecoveredResource(original),
+      }, () => clock);
+      await recovery.recover(); assert.equal(stops, 0, "final review does not issue a new stop after user inspection");
+      assert.equal(works.resourceGate.leaseState(lease), "quarantined", "active children still fence a human reviewed effect");
+      quiet = true; inputReleased = true; clock += 10000; await recovery.recover();
+      assert.equal(works.resourceGate.leaseState(lease), "quarantined", "later quiet probe must not resurrect stale human evidence");
+      assert.equal(readResourceEffectEvidence(db.connection, lease).known, false);
+      assert.equal(db.connection.prepare("SELECT 1 FROM work_resource_effect_preparations WHERE token=?").get(lease.token), undefined);
+      const invalidated = works.getProjection(created.workId)!.phase3!.resourceRecoveries[0]!;
+      assert(invalidated.exhaustedAt !== undefined);
+      assert(!works.reconcileResourceEffect(user, { ...params, operationId: "stale-review",
+        expectedAttempts: invalidated.attempts, expectedExhaustedAt: invalidated.exhaustedAt!,
+        versionGuard: guard(works.getWork(created.workId)!) }).ok, "old readyAt cannot attest after failed quiet/input probe");
+      assert(works.prepareResourceEffect(user, { operationId: "renew-prepare", workId: created.workId, token: lease.token,
+        actionId: lease.actionId, expectedAttempts: invalidated.attempts, expectedExhaustedAt: invalidated.exhaustedAt!,
+        confirmStopOriginal: true, versionGuard: guard(works.getWork(created.workId)!) }).ok);
+      clock = Date.now(); await recovery.recover();
+      assert.equal(stops, 1, "new inspection requires a newly authorized stop and quiet proof");
+      const renewed = works.getProjection(created.workId)!.phase3!.resourceRecoveries[0]!;
+      assert(renewed.effectReviewPrepared?.readyAt !== undefined);
+      assert(works.reconcileResourceEffect(user, { ...params, operationId: "renew-review",
+        expectedAttempts: renewed.attempts, expectedExhaustedAt: renewed.exhaustedAt!,
+        expectedReadyAt: renewed.effectReviewPrepared.readyAt, versionGuard: guard(works.getWork(created.workId)!) }).ok);
+      clock = Date.now(); await recovery.recover();
+      assert.equal(stops, 1, "fresh final review is not followed by another stop");
+      assert.equal(works.resourceGate.leaseState(lease), "released");
+      assert.equal(works.repo.getAdmission(admitted.admission.admissionId)?.state, conclusion === "not_occurred" ? "released" : "consumed");
+      assert(!works.repo.listOpenBlockers(created.workId).some(item => item.unknownExternalEffectRef === admitted.admission.admissionId));
+      assert.equal(works.repo.listBindings(created.workId).length, 1, "no business replay");
+      works.repo.updateBinding({ ...works.repo.getBinding(binding.bindingId)!, status: "stopped", settledAt: Date.now() });
+      const nextWork = unwrap(works.createWork(user, { operationId: "next-create", title: "new write after reconciliation",
+        inputSnapshotId: "next-input", workspacePath: root, authorization: DESKTOP_USER_GRANTS }));
+      db.upsertTask({ id: "next-task", title: "next", cwd: root, updatedAt: Date.now() });
+      unwrap(works.dispatchExecution(user, { operationId: "next-dispatch", workId: nextWork.workId, botId: DEFAULT_BOT_ID,
+        taskId: "next-task", durableStoreKey: "next-store", conversationId: "2", workspaceBinding: root, delegatedScope: ["workspace:write"] }));
+      let submissions = 0;
+      const adapter = new WorkExecutionAdapter(works, {
+        resourceBoundary: "host-action-gate", prepare: async () => { throw new Error("already prepared"); },
+        find: async () => undefined,
+        submit: async candidate => { submissions++; return { taskId: candidate.taskId, operationId: candidate.operationId, submissionId: 2, status: "done" }; },
+        inspect: async () => ({ status: "completed", summary: "transport accepted", hasWriteConflicts: false, artifactRefs: [], usageTokens: 0 }),
+        stop: async () => {},
+      }, LOCAL_USER_ID, () => true, (_id, error) => { throw error; });
+      await adapter.flush(); await adapter.close();
+      assert.equal(submissions, 1, "cleared exact external effect no longer silently blocks new pending dispatch");
+      const before = works.getWork(created.workId)!.stateVersion; await recovery.recover();
+      assert.equal(works.getWork(created.workId)!.stateVersion, before);
+      console.log(`PASS audited user effect ${conclusion}: identity/CAS/rollback/restart/quiet proof/exact settlement`);
+    } finally { db.close(); }
+  }
+}
+
 try {
   await assertExactNotStartedRecovery();
+  await assertUserEffectReview();
   for (const injectRollback of [false, true]) {
     const label = injectRollback ? "rollback-closing" : "active-exact-blocker";
     const path = join(root, `${label}.db`), effectPath = join(root, `${label}.txt`), taskId = `native-${label}`;

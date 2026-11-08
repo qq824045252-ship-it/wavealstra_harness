@@ -1,3 +1,4 @@
+import { readUserResourceEffectReview, readResourceEffectPreparation, markResourceEffectReady, invalidateResourceEffectReview } from "./WorkResourceEffectReview";
 import type Database from "better-sqlite3";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -11,6 +12,8 @@ export interface ResourceExecutionQuiet {
   receipt: string;
 }
 export interface WorkResourceRecoveryPort {
+  /** Explicit user control stops only the original execution before normal safety checks. */
+  stopOriginal?(lease: ResourceLease, recovery: ResourceRecoveryAttempt): Promise<void>;
   inspectExecution(lease: ResourceLease, recovery: ResourceRecoveryAttempt): Promise<ResourceExecutionQuiet>;
   drainInput(lease: ResourceLease, execution: ResourceExecutionQuiet, recovery: ResourceRecoveryAttempt): Promise<{ queueDrained: boolean; inputReleased: boolean; receipt: string }>;
   verifyEffect(lease: ResourceLease, recovery: ResourceRecoveryAttempt): Promise<{ known: boolean; receipt: string }>;
@@ -161,11 +164,28 @@ export class WorkResourceRecovery {
       const flight = this.claim(lease);
       if (!flight) continue;
       const recovery = flight.context;
+      let checkingInspectionWindow = false;
       try {
+        const preparation = readResourceEffectPreparation(this.db, lease);
+        if (preparation && preparation.readyAt === undefined) {
+          if (!this.port.stopOriginal) throw new Error("原执行停止接口未就绪，已保存核对准备请求，资源保持隔离");
+          await this.bounded(flight, () => this.port.stopOriginal!(lease, recovery));
+        }
+        checkingInspectionWindow = preparation?.readyAt !== undefined;
         const execution = await this.bounded(flight, () => this.port.inspectExecution(lease, recovery));
         if (!execution.executionStopped || !execution.ownedChildrenStopped || !execution.receipt) throw new Error("旧执行或 owned child 仍活动，资源保持隔离");
         const cleanup = await this.bounded(flight, () => this.port.drainInput(lease, execution, recovery));
         if (!cleanup.queueDrained || !cleanup.inputReleased || !cleanup.receipt) throw new Error("后端队列或本驱动输入释放尚未确认");
+        checkingInspectionWindow = false;
+        if (preparation && preparation.readyAt === undefined) {
+          this.commit(() => {
+            recovery.assertCurrent();
+            markResourceEffectReady(this.db, lease, JSON.stringify({ execution: execution.receipt, cleanup: cleanup.receipt }), this.now());
+            this.db.prepare("UPDATE work_resource_recovery SET exhausted_at=?,reason=?,receipt_json=? WHERE token=? AND attempts=?")
+              .run(this.now(), "原执行及子任务已停止，请现在核对最终效果并保存结论", JSON.stringify({ awaitingUserEffect: true }), lease.token, recovery.attempt);
+          });
+          continue;
+        }
         const effect = lease.resources.every(resource => resource.mode === "read")
           ? { known: true, receipt: "read-only-action-no-mutation" } : await this.bounded(flight, () => this.port.verifyEffect(lease, recovery));
         if (!effect.known || !effect.receipt) throw new Error("原动作外部效果仍未知，没有重复执行");
@@ -183,11 +203,19 @@ export class WorkResourceRecovery {
         this.commit(() => {
           this.gate.assertAuthority();
           const now = this.now();
+          const current = this.read(lease.token);
+          const invalidated = checkingInspectionWindow && current?.attempts === recovery.attempt
+            && this.gate.leaseState(lease) === "quarantined" && invalidateResourceEffectReview(this.db, lease);
+          if (invalidated) {
+            this.db.prepare("UPDATE work_resource_recovery SET exhausted_at=? WHERE token=? AND attempts=?")
+              .run(now, lease.token, recovery.attempt);
+          }
           this.db.prepare(`UPDATE work_resource_recovery SET next_at=?,reason=?,
             exhausted_at=CASE WHEN attempts%4=0 THEN ? ELSE exhausted_at END
             WHERE token=? AND attempts=? AND token IN (SELECT token FROM work_resource_leases WHERE state='quarantined')`)
             .run(now + (((recovery.attempt - 1) % MAX_ATTEMPTS) + 1) * 1_000,
-              error instanceof Error ? error.message : String(error), now, lease.token, recovery.attempt);
+              invalidated ? "原执行或输入状态已变化，先前效果核对已失效；请重新停止原执行并核对最终效果"
+                : error instanceof Error ? error.message : String(error), now, lease.token, recovery.attempt);
         });
       } finally {
         flight.finished = true;
@@ -222,6 +250,8 @@ export class WorkResourceRecovery {
 
 /** Matches persisted verifier evidence to this exact native tool task, not root terminal status. */
 export function readResourceEffectEvidence(db: Database.Database, lease: ResourceLease): { known: boolean; receipt: string } {
+  const reviewed = readUserResourceEffectReview(db, lease);
+  if (reviewed.known) return reviewed;
   if (!lease.actionId.startsWith("resource:")) return { known: false, receipt: "direct-managed-effect-needs-backend-readback" };
   const parts = lease.actionId.split(":");
   const nativeTaskId = parts[2], toolCallId = parts.slice(3).join(":");

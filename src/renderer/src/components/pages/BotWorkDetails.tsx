@@ -7,6 +7,7 @@ import { useAppStore } from "@/store/appStore";
 import { BotWorkApprovals } from "./BotWorkApprovals";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
+import { ResourceEffectReview } from "./ResourceEffectReview";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
 
 export function lifecycleLabel(lifecycle: WorkLifecycle): string {
@@ -108,7 +109,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
   const control = async (request: WorkPhase3ControlRequest) => {
     setBusy(true);
-    const requestId = request.kind === "continue" || request.kind === "handoff" || request.kind === "retry_resource_recovery" ? request.request.operationId
+    const requestId = request.kind === "continue" || request.kind === "handoff" || request.kind === "retry_resource_recovery" || request.kind === "reconcile_resource_effect" || request.kind === "prepare_resource_effect" ? request.request.operationId
       : request.kind === "collaborate" ? request.request.messageId : undefined;
     const original = requestId ? controlRequests.current.get(requestId) ?? request : request;
     if (requestId) controlRequests.current.set(requestId, original);
@@ -231,6 +232,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
                 } }); }}>重新核对隔离资源</button>
               <p>此操作只重试恢复核对，不重做业务、不清除未知效果。已结束事项也可核对其遗留隔离资源。</p>
             </>}
+            <ResourceEffectReview work={work} recovery={recovery} busy={busy} submit={control} />
           </article>;
         })}
         <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>

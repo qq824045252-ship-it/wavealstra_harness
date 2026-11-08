@@ -26,6 +26,9 @@ import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
 import { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapter";
 import { workShellRead } from "../src/main/agent/work/WorkShellRead";
 import type { PermissionMode } from "../src/shared/agent-ipc";
+import { WorkResourceRecovery, readResourceEffectEvidence } from "../src/main/agent/work/WorkResourceRecovery";
+import { resourceOwnerKey } from "../src/main/agent/work/WorkResourceGate";
+import type { Cursor } from "@earendil-works/pi-durable";
 import { WorkToolResourcePolicy } from "../src/main/agent/work/WorkToolResourcePolicy";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-work-approval-native-"));
@@ -571,6 +574,70 @@ try {
       assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0);
     } finally { await runtime.close(); }
     console.log("PASS task-scoped auto: two actual files, nested directory, readonly verification, no per-command approval or stranded lease");
+  }
+  {
+    const f = await fixture("legacy-user-effect", false, false, "block", true);
+    let runtime = await f.open();
+    try {
+      assert.equal((await (await runtime.submit("Original denied write", "legacy-write")).wait(ctx)).status, "done");
+      await assert.rejects(access(join(f.cwd, "proof.txt")));
+      const owner = { taskId: f.binding.taskId, workId: f.binding.workId, bindingId: f.binding.bindingId,
+        durableStoreKey: f.binding.durableStoreKey, conversationId: f.binding.conversationId, workspaceBinding: f.binding.workspaceBinding };
+      // Reconstruct only a legacy missing-proof lease in isolated data. No forged host not_started evidence.
+      const acquired = f.works.resourceGate.acquire({ actionId: `resource:${resourceOwnerKey(owner)}:999:legacy-no-receipt`, owner,
+        resources: [{ kind: "host", scope: "local-host", key: "unclassified-tool", mode: "write" }] });
+      assert(acquired.ok); const lease = acquired.lease;
+      f.works.resourceGate.release(lease, "unknown", "legacy lost effect receipt");
+      const exhaustedAt = Date.now();
+      db.connection.prepare("INSERT INTO work_resource_recovery(token,attempts,next_at,exhausted_at,reason) VALUES (?,4,0,?,?)")
+        .run(lease.token, exhaustedAt, "legacy exhausted");
+      const work = f.works.getWork(f.binding.workId)!;
+      const prepare = f.works.prepareResourceEffect(user, { operationId: "prepare-legacy-review", workId: work.workId,
+        token: lease.token, actionId: lease.actionId, expectedAttempts: 4, expectedExhaustedAt: exhaustedAt,
+        confirmStopOriginal: true, versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
+      assert(prepare.ok);
+      await runtime.close(); runtime = await f.open();
+      const recovery = new WorkResourceRecovery(db.connection, f.works.resourceGate, {
+        transaction: fn => f.works.transaction(fn),
+        stopOriginal: async () => { await runtime.abort(); },
+        inspectExecution: async () => {
+          const graph = await runtime.harness.inspect(ctx);
+          const tasks = await runtime.conversation.commit(async tx => {
+            let cursor: Cursor | undefined; const states: string[] = [];
+            do { const page = await tx.scanTasks({}, 200, cursor); states.push(...page.items.map(t => t.state.status)); cursor = page.next; } while (cursor);
+            return states;
+          }, ctx);
+          const quiet = graph.tasks.length === 0 && tasks.every(status => status === "terminal");
+          return { executionStopped: quiet, ownedChildrenStopped: quiet, receipt: JSON.stringify({ graphTasks: graph.tasks.length, tasks }) };
+        },
+        drainInput: async (_lease, quiet) => ({ queueDrained: quiet.ownedChildrenStopped, inputReleased: true, receipt: "non-desktop-native-graph-drained" }),
+        verifyEffect: async original => readResourceEffectEvidence(db.connection, original),
+        onRecovered: original => f.works.finalizeRecoveredResource(original),
+      }, () => f.works.getWork(f.binding.workId)!.updatedAt);
+      await recovery.recover();
+      assert.equal(f.works.resourceGate.leaseState(lease), "quarantined", "stop preparation cannot imply effect outcome");
+      const readiness = f.works.getProjection(work.workId)!.phase3!.resourceRecoveries[0]!;
+      const readyWork = f.works.getWork(work.workId)!;
+      const reviewed = f.works.reconcileResourceEffect(user, { operationId: "legacy-human-review", workId: work.workId,
+        token: lease.token, actionId: lease.actionId, expectedAttempts: readiness.attempts, expectedExhaustedAt: readiness.exhaustedAt!,
+        expectedReadyAt: readiness.effectReviewPrepared!.readyAt!, conclusion: "not_occurred",
+        evidence: `After native stop, inspected ${f.cwd}/proof.txt: file is absent; original write was refused.`,
+        confirmScopeReviewed: true, confirmStopOriginal: true,
+        versionGuard: { expectedStateVersion: readyWork.stateVersion, expectedIntentRevision: readyWork.intentRevision, expectedOwnerEpoch: readyWork.ownerEpoch } });
+      assert(reviewed.ok);
+      await recovery.recover();
+      assert.equal(f.works.resourceGate.leaseState(lease), "released", "actual reopened native store is quiet after explicit stop");
+      await assert.rejects(access(join(f.cwd, "proof.txt")), "reconciliation did not execute the original denied write");
+      const next = await fixture("after-legacy-reconciliation", false, true, undefined, true), nextRuntime = await next.open();
+      try {
+        assert.equal((await (await nextRuntime.submit("New authorized multi-file task", "new-write")).wait(ctx)).status, "done");
+        assert.equal(await readFile(join(next.cwd, "daily-report/second.txt"), "utf8"), "second report\n");
+        assert(next.observed.every(item => !item.error), JSON.stringify(next.observed));
+        assert.equal(next.works.approvals.list(next.binding.workId).length, 0);
+        assert.equal(next.works.resourceGate.live().length, 0);
+      } finally { await nextRuntime.close(); }
+      console.log("PASS legacy human effect review: actual native abort/quiescence after reopen, no original replay, next authorized multi-file task succeeds without prompts");
+    } finally { await runtime.close(); }
   }
   for (const mode of ["block", "throw"] as const) {
     const f = await fixture(`late-guard-${mode}`, false, false, mode);

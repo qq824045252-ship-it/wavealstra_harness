@@ -33,6 +33,15 @@ export function ensureWorkResourceTables(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS work_resource_recovery (
       token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), attempts INTEGER NOT NULL DEFAULT 0,
       next_at INTEGER NOT NULL DEFAULT 0, exhausted_at INTEGER, reason TEXT, receipt_json TEXT);
+    CREATE TABLE IF NOT EXISTS work_resource_effect_preparations (
+      token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), action_id TEXT NOT NULL,
+      owner_json TEXT NOT NULL, resources_json TEXT NOT NULL, user_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+      prepared_at INTEGER NOT NULL, ready_at INTEGER, quiet_receipt TEXT);
+    CREATE TABLE IF NOT EXISTS work_resource_effect_reviews (
+      token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), action_id TEXT NOT NULL,
+      owner_json TEXT NOT NULL, resources_json TEXT NOT NULL, user_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL, conclusion TEXT NOT NULL CHECK(conclusion IN ('not_occurred','occurred')),
+      evidence TEXT NOT NULL, reviewed_at INTEGER NOT NULL, receipt_json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS work_resource_waiters (
       action_id TEXT PRIMARY KEY, owner_json TEXT NOT NULL CHECK(json_valid(owner_json)),
       reason TEXT NOT NULL, updated_at INTEGER NOT NULL, deadline_at INTEGER NOT NULL);
