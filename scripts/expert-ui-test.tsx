@@ -87,6 +87,9 @@ export async function run(): Promise<string[]> {
   mount(<HubAuthoringModal mode="expert" skills={skills as any} onClose={() => {}} onCreated={() => {}} />);
   fill(".expert-editor-inline textarea", "生成项目助理"); click("AI 生成草稿");
   check(button("创建").disabled, "cannot save while AI draft is running");
+  // 草稿请求前还有一次异步辅助操作（crypto.subtle 摘要 + localStorage 幂等键），
+  // 所以 mock 的 Promise 要等一轮微任务才存在；先等请求真正发出，再测取消。
+  await until(() => Boolean(lateResolve), "draft request starts");
   click("取消生成"); fill(".expert-editor-field input", "用户手写名字");
   lateResolve({ name: "迟到草稿", description: "迟到", instructions: "迟到", skillIds: [] }); await settle();
   check(Boolean(cancellation) && (document.querySelector(".expert-editor-field input") as HTMLInputElement).value === "用户手写名字", "cancel must reach API and ignore late result");
