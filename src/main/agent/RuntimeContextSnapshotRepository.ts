@@ -4,9 +4,8 @@ import type {
   RuntimeMaterialUseDto,
   RuntimeAuditInstructionDto,
   RuntimeContextSnapshotDto,
-  WelcomeMode,
 } from "../../shared/agent-ipc";
-import type { AssemblySegmentDto } from "../../shared/mode-profile";
+import { normalizeWelcomeMode, type AssemblySegmentDto } from "../../shared/mode-profile";
 import type { ResolvedCapabilityDto } from "../../shared/runtime-policy";
 import {
   compactRuntimeAuditInstructions,
@@ -74,7 +73,7 @@ function mapRow(row: SnapshotRow): RuntimeContextSnapshotDto {
     assemblyHash: row.assembly_hash ?? "",
     modelId: row.model_id ?? undefined,
     permissionMode: (row.permission_mode as RuntimeContextSnapshotDto["permissionMode"]) ?? undefined,
-    mode: row.welcome_mode as WelcomeMode,
+    mode: normalizeWelcomeMode(row.welcome_mode) ?? "working",
     tagId: row.tag_id ?? undefined,
     projectId: row.project_id ?? undefined,
     projectUpdatedAt: row.project_updated_at ?? undefined,

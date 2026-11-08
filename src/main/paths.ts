@@ -238,7 +238,7 @@ export function getConnectorsDir(): string {
   return getPluginDirectory("connectors");
 }
 
-/** 场景模式用户覆盖：~/.mybuddy/modes/<working|coding|design>/ */
+/** 场景模式用户覆盖：~/.mybuddy/modes/<working|coding|general>/ */
 export function getModesDir(): string {
   const dir = join(getMyBuddyDir(), "modes");
   mkdirSync(dir, { recursive: true });

@@ -1,8 +1,11 @@
 import previousModeBlocks from "./previous-mode-blocks.json";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -17,7 +20,7 @@ import {
   WELCOME_MODES,
   emptyArtifactPolicy,
   emptyModePolicy,
-  botConfiguration,
+  generalModeConfiguration,
   normalizeArtifactExtensions,
   type ModeArtifactPolicy,
   type ModeBlockId,
@@ -181,7 +184,7 @@ function normalizePresets(raw: unknown, seedPresets?: ModePresetDto[]): ModePres
       return {
         id,
         label,
-        botToolMode: item.botToolMode === "codemode" ? "codemode" : item.botToolMode === "native" ? "native" : undefined,
+        durableToolMode: item.durableToolMode === "codemode" ? "codemode" : item.durableToolMode === "native" ? "native" : undefined,
         description:
           item.description === undefined || item.description === null
             ? undefined
@@ -350,8 +353,8 @@ function policiesEqual(a: ModePolicyDto, b: ModePolicyDto): boolean {
 export class ModeProfileStore {
   private penpotPreset(current?: ModePresetDto): ModePresetDto {
     let preset = { ...PENPOT_PRESET };
-    // Read the bot-era original before Bot strips execution metadata. Working edits win.
-    for (const source of ["bot"]) {
+    // Read the legacy general/policy original before the mode strips execution metadata. Working edits win.
+    for (const source of ["general"]) {
       const raw = readText(join(getModesDir(), source, "policy.json"));
       if (!raw) continue;
       try {
@@ -360,7 +363,7 @@ export class ModeProfileStore {
       } catch { /* Invalid legacy files do not block the working preset. */ }
     }
     if (current) preset = { ...preset, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== undefined)) };
-    return { ...preset, label: "Penpot", botToolMode: undefined,
+    return { ...preset, label: "Penpot", durableToolMode: undefined,
       promptAddon: preset.promptAddon?.replaceAll("网页原型 · Penpot", "Penpot"),
     };
   }
@@ -378,10 +381,71 @@ export class ModeProfileStore {
   }
 
   /**
+   * One-way migration for the retired "bot" mode id: modes/bot -> modes/general.
+   * If both exist, copy files missing from the target and move the old directory
+   * aside; never delete user-edited prompts.
+   */
+  private migrateLegacyModeDirs(): void {
+    const root = getModesDir();
+    const legacy = join(root, "bot");
+    const target = join(root, "general");
+    if (!existsSync(legacy)) return;
+    try {
+      if (!existsSync(target)) {
+        renameSync(legacy, target);
+        return;
+      }
+      for (const entry of readdirSync(legacy, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const to = join(target, entry.name);
+        if (!existsSync(to)) copyFileSync(join(legacy, entry.name), to);
+      }
+      renameSync(legacy, join(root, `general.legacy-${Date.now()}`));
+    } catch (error) {
+      console.warn("[ModeProfile] legacy bot mode directory migration failed", error);
+    }
+  }
+
+  /** Keep the generated general README label in sync with the migrated directory name. */
+  private migrateLegacyReadme(): void {
+    const path = join(this.modeDir("general"), "README.md");
+    const text = readText(path);
+    if (!text?.startsWith("# Bot（bot）")) return;
+    writeText(path, text.replace(/^# Bot（bot）/, "# 通用模式（general）"));
+  }
+
+  /** Rewrite the retired botToolMode preset key to durableToolMode without touching other fields. */
+  private migrateLegacyPolicyKeys(): void {
+    for (const mid of WELCOME_MODES) {
+      const path = this.policyFilePath(mid);
+      if (!existsSync(path)) continue;
+      try {
+        const raw = JSON.parse(readFileSync(path, "utf-8")) as { presets?: Array<Record<string, unknown>> };
+        if (!Array.isArray(raw.presets)) continue;
+        let changed = false;
+        for (const preset of raw.presets) {
+          if (!preset || typeof preset !== "object") continue;
+          if (preset.durableToolMode === undefined && preset.botToolMode !== undefined) {
+            preset.durableToolMode = preset.botToolMode;
+            changed = true;
+          }
+          if ("botToolMode" in preset) { delete preset.botToolMode; changed = true; }
+        }
+        if (changed) writeText(path, JSON.stringify(raw, null, 2));
+      } catch {
+        // Invalid policy files are handled by the normal normalize/fallback path.
+      }
+    }
+  }
+
+  /**
    * 将出厂文案/策略写入磁盘（已存在则不覆盖）。
    * 打开设置、列模式、打开目录/文件时调用，保证 .md 与 policy.json 都在。
    */
   ensureMaterialized(id?: WelcomeMode): void {
+    this.migrateLegacyModeDirs();
+    this.migrateLegacyReadme();
+    this.migrateLegacyPolicyKeys();
     const ids = id && isWelcomeMode(id) ? [id] : [...WELCOME_MODES];
     for (const mid of ids) {
       try {
@@ -592,7 +656,7 @@ export class ModeProfileStore {
       labelZh: WELCOME_MODE_LABELS[id],
       version: seed.version,
       blocks,
-      policy: id === "bot" ? botConfiguration(policy) : policy,
+      policy: id === "general" ? generalModeConfiguration(policy) : policy,
       hasUserOverride,
       totalChars,
       userDir: this.modeDir(id),
@@ -652,7 +716,7 @@ export class ModeProfileStore {
   savePolicy(id: WelcomeMode, policy: ModePolicyDto): ModeProfileDto {
     if (!isWelcomeMode(id)) throw new Error(`未知场景模式: ${id}`);
     // 保存时同样兼容：缺 presets 的旧 policy 回退出厂预设
-    const normalized = id === "bot" ? botConfiguration(normalizePolicy(policy, MODE_SEEDS[id].policy.presets)) : normalizePolicy(policy, MODE_SEEDS[id].policy.presets);
+    const normalized = id === "general" ? generalModeConfiguration(normalizePolicy(policy, MODE_SEEDS[id].policy.presets)) : normalizePolicy(policy, MODE_SEEDS[id].policy.presets);
     const err = validatePolicy(normalized);
     if (err) throw new Error(err);
     ensureDir(this.modeDir(id));

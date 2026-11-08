@@ -69,7 +69,7 @@ export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX
         presets,
         selectedPresetId,
         availableMcpServerNames,
-        locked: welcomeMode !== "bot" && isTaskModeLocked(task),
+        locked: welcomeMode !== "general" && isTaskModeLocked(task),
       }),
     [presets, selectedPresetId, availableMcpServerNames, task, welcomeMode],
   );
@@ -98,7 +98,7 @@ export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX
       <button
         type="button"
         className="pill-select as-btn workspace-trigger"
-        title={isGatewayBotTaskId(task?.id) ? "助理任务使用 Bot 原生模式" : selected?.title ?? selected?.description ?? "选择标签"}
+        title={isGatewayBotTaskId(task?.id) ? "助理任务使用原生模式" : selected?.title ?? selected?.description ?? "选择标签"}
         disabled={isGatewayBotTaskId(task?.id)}
         onClick={onToggle}
       >

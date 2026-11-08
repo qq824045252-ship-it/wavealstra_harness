@@ -1,4 +1,4 @@
-import { Bot, Briefcase, Check, ChevronDown, ChevronLeft, ChevronRight, Code2, Folder, Tag, X } from 'lucide-react'
+import { LayoutGrid, Briefcase, Check, ChevronDown, ChevronLeft, ChevronRight, Code2, Folder, Tag, X } from 'lucide-react'
 import { useRemoteStore } from '../store/remoteStore'
 import { spaceBreadcrumb } from '../lib/spaceGroups'
 
@@ -13,7 +13,7 @@ export function NewTaskSetupChips() {
       <Folder size={14} /><span>{space?.name ?? (s.selectedSpaceId ? '空间不可用' : '独立任务')}{project ? ` · ${project.name}` : ''}</span><ChevronDown size={12} />
     </button>
     <button className={`task-setup-chip ${mode ? 'chosen' : ''}`} aria-label="新任务模式" disabled={s.creating} onClick={() => s.setTaskSetupSection('mode')}>
-      {mode?.id === 'bot' ? <Bot size={14} /> : mode?.id === 'coding' ? <Code2 size={14} /> : <Briefcase size={14} />}<span>{mode?.label ?? '选择模式'}</span>
+      {mode?.id === 'general' ? <LayoutGrid size={14} /> : mode?.id === 'coding' ? <Code2 size={14} /> : <Briefcase size={14} />}<span>{mode?.label ?? '选择模式'}</span>
     </button>
     <button className={`task-setup-chip ${tag ? 'chosen' : ''}`} aria-label="新任务 Tag" disabled={s.creating} onClick={() => s.setTaskSetupSection(mode ? 'tag' : 'mode')}>
       <Tag size={13} /><span>{tag?.label ?? '选择 Tag'}</span>
@@ -47,9 +47,9 @@ export function NewTaskSetupSheet() {
             onClick={() => { s.setSelectedSpaceId(space.id); close() }}><Folder size={20} /><span><strong>{space.name}</strong><small>{space.pathMissing ? '文件夹不可用' : space.parentId ? spaceBreadcrumb(spaces, space.parentId) : '空间文件夹'}</small></span>{s.selectedSpaceId === space.id && <Check size={18} />}</button>)}
         </>}
         {section === 'mode' && modes.map(option => {
-          const Icon = option.id === 'bot' ? Bot : option.id === 'coding' ? Code2 : Briefcase
+          const Icon = option.id === 'general' ? LayoutGrid : option.id === 'coding' ? Code2 : Briefcase
           return <button key={option.id} className="setup-choice" aria-label={`模式：${option.label}`} aria-pressed={mode?.id === option.id} onClick={() => { if (s.selectedWelcomeMode !== option.id) s.setSelectedWelcomeMode(option.id); s.setTaskSetupSection('tag') }}>
-            <Icon size={22} /><span><strong>{option.label}</strong><small>{option.id === 'bot' ? '自主执行，持续完成任务' : option.id === 'coding' ? '开发、调试与代码维护' : '文档、分析与日常事务'}</small></span>{mode?.id === option.id ? <Check size={18} /> : <ChevronRight size={17} />}
+            <Icon size={22} /><span><strong>{option.label}</strong><small>{option.id === 'general' ? '通用任务，按需执行与交付' : option.id === 'coding' ? '开发、调试与代码维护' : '文档、分析与日常事务'}</small></span>{mode?.id === option.id ? <Check size={18} /> : <ChevronRight size={17} />}
           </button>
         })}
         {section === 'mode' && !modes.length && <p className="setup-empty">电脑端尚未提供模式，请更新电脑端并刷新连接。</p>}

@@ -15,17 +15,17 @@ async function main(): Promise<void> {
     await new Promise<void>(resolve => { releaseSave = resolve; });
   };
   api.agent.prompt = async (request) => { requests.push(request); return { queued: false }; };
-  const seed = (mode: "bot" | "coding" | "working", globalMode: "bot" | "coding" | "working") => {
+  const seed = (mode: "general" | "coding" | "working", globalMode: "general" | "coding" | "working") => {
     saved.length = 0; requests.length = 0; releaseSave = undefined;
     useAppStore.setState({
-      tasks: [{ ...minimalTask("bound-task"), welcomeMode: mode, modePresetId: mode === "bot" ? "native" : undefined,
-        ...(mode === "bot" ? {} : { sessionFile: "existing-pi.jsonl", messages: [{ id: "prior", role: "user", text: "first message", blocks: [] }] }) }],
+      tasks: [{ ...minimalTask("bound-task"), welcomeMode: mode, modePresetId: mode === "general" ? "native" : undefined,
+        ...(mode === "general" ? {} : { sessionFile: "existing-pi.jsonl", messages: [{ id: "prior", role: "user", text: "first message", blocks: [] }] }) }],
       activeTaskId: "bound-task", welcomeMode: globalMode, modePresetId: "native", activeModelId: "fixture/model",
       models: [], modelExplicit: false, permissionMode: "auto", permissionExplicit: false, draft: null,
       chatSelections: [], activeConnectorIds: [], pendingRefTask: null,
     });
   };
-  for (const [taskMode, globalMode] of [["bot", "coding"], ["coding", "bot"], ["working", "bot"]] as const) {
+  for (const [taskMode, globalMode] of [["general", "coding"], ["coding", "general"], ["working", "general"]] as const) {
     seed(taskMode,globalMode);
     const completion = useAppStore.getState().sendMessage("continue bound task");
     assert.equal(saved[0]?.welcomeMode,taskMode,"Persistence must use the task mode, not the global new-task selection");
@@ -36,14 +36,14 @@ async function main(): Promise<void> {
     assert.equal(requests[0]?.welcomeMode,taskMode);
     assert.equal(useAppStore.getState().tasks[0].welcomeMode,taskMode);
   }
-  seed("bot","bot");
+  seed("general","general");
   const completion = useAppStore.getState().sendMessage("first Bot submission");
   useAppStore.getState().setWelcomeMode("coding");
-  assert.equal(useAppStore.getState().tasks[0].welcomeMode,"bot","A pending Bot submission already locks its execution backend");
+  assert.equal(useAppStore.getState().tasks[0].welcomeMode,"general","A pending Bot submission already locks its execution backend");
   assert(releaseSave); releaseSave(); await completion;
-  assert.equal(requests[0].welcomeMode,"bot");
+  assert.equal(requests[0].welcomeMode,"general");
 
-  seed("bot","bot");
+  seed("general","general");
   api.db.upsertTask = async () => { throw new Error("SAVE_REJECTED"); };
   await useAppStore.getState().sendMessage("must not execute after failed save");
   assert.equal(requests.length,0);

@@ -39,7 +39,7 @@ export interface RemoteTaskSummary {
   projectId: string | null
   status?: string
   updatedAt: number
-  welcomeMode?: 'working' | 'coding' | 'bot'
+  welcomeMode?: 'working' | 'coding' | 'general'
   modelId?: string
   permissionMode?: 'default' | 'readonly' | 'auto'
   archived: boolean
@@ -146,7 +146,7 @@ export interface RemoteAcpPermissionUpdate {
 export interface RemoteAcpCreateRequest extends RemoteAcpPromptRequest {
   spaceId?: string
   projectId?: string
-  welcomeMode?: 'working' | 'coding' | 'bot'
+  welcomeMode?: 'working' | 'coding' | 'general'
   modePresetId?: string | null
 }
 
@@ -344,7 +344,7 @@ export interface RemoteModelRefreshResult {
   errors: Array<{ providerId: string; message: string }>
 }
 
-export type RemoteWelcomeMode = 'working' | 'coding' | 'bot'
+export type RemoteWelcomeMode = 'working' | 'coding' | 'general'
 
 /** Display/configuration metadata only. Execution remains owned by the selected runtime. */
 export interface RemoteTaskMode {
@@ -389,7 +389,7 @@ export interface RemotePromptRequest {
   text: string
   spaceId?: string
   projectId?: string
-  welcomeMode?: 'working' | 'coding' | 'bot'
+  welcomeMode?: 'working' | 'coding' | 'general'
   modePresetId?: string | null
   /** 显式指定模型（须在服务端 models 目录内）；缺省跟随任务/服务端默认 */
   modelId?: string

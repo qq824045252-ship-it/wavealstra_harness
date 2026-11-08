@@ -44,7 +44,7 @@ console.log("=== 出厂种子 mcpPolicy × 已装 MCP ===\n");
 
 for (const mode of WELCOME_MODES) {
   const policy = MODE_SEEDS[mode].policy.mcpPolicy;
-  const r = mode === "bot" ? emptyMcpFilterResult(installed) : filterMcpConfigForMode(installed, mode, policy);
+  const r = mode === "general" ? emptyMcpFilterResult(installed) : filterMcpConfigForMode(installed, mode, policy);
   console.log(`\n[${mode}] policy=`, JSON.stringify(policy));
   console.log(`  enabled: [${r.enabled.join(", ")}]`);
   console.log(`  hidden:  [${r.hidden.join(", ")}]`);
@@ -57,7 +57,7 @@ for (const mode of WELCOME_MODES) {
     assert(!r.config.mcpServers.codegraph, `${mode}: codegraph 被硬禁`);
     assert(!!r.config.mcpServers.filesystem, `${mode}: 通用 filesystem 仍可用`);
   }
-  if (mode === "coding" || mode === "bot") {
+  if (mode === "coding" || mode === "general") {
     assert(!!r.config.mcpServers.serena, "coding: serena 可用");
     assert(!!r.config.mcpServers.codegraph, "coding: codegraph 可用");
     assert(!!r.config.mcpServers.filesystem, "coding: filesystem 可用");

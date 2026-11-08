@@ -3,6 +3,7 @@ import type { BtwStartRequest, BtwUiPatch, ChatMessageDto } from "../../../share
 import type { DurableBotSnapshot, DurableBotDelta, DurableBotState } from "../../../shared/durable-bot";
 import { applyDurableDelta, replayDurableDeltas } from "../../../../shared/src/durable-sync";
 import type { ChatMessage } from "@/types";
+import { normalizeWelcomeMode } from "../../../shared/mode-profile";
 import { useAppStore } from "./appStore";
 import { applyPatchToMessage } from "./app/messages/messageReducer";
 import { historyMessageToChatMessage } from "./app/messages/historyMapper";
@@ -31,9 +32,10 @@ function savedBtwObservation(parentTaskId: string): { request: BtwStartRequest; 
     const value: unknown = JSON.parse(localStorage.getItem(btwObservationKey(parentTaskId)) ?? "null");
     if (!value || typeof value !== "object" || !("btwId" in value) || typeof value.btwId !== "string" || !value.btwId.startsWith("btw-")
       || !("parentTaskId" in value) || value.parentTaskId !== parentTaskId) return undefined;
+    const welcomeMode = "welcomeMode" in value ? normalizeWelcomeMode(value.welcomeMode) : null;
     const request: BtwStartRequest = { btwId: value.btwId, parentTaskId,
       ...("modelId" in value && typeof value.modelId === "string" ? { modelId: value.modelId } : {}),
-      ...("welcomeMode" in value && (value.welcomeMode === "working" || value.welcomeMode === "coding" || value.welcomeMode === "bot") ? { welcomeMode: value.welcomeMode } : {}) };
+      ...(welcomeMode ? { welcomeMode } : {}) };
     const pending = "pending" in value ? value.pending : undefined;
     return { request, ...(pending && typeof pending === "object" && "text" in pending && typeof pending.text === "string"
       && "userMessageId" in pending && typeof pending.userMessageId === "string" && "assistantMessageId" in pending && typeof pending.assistantMessageId === "string"

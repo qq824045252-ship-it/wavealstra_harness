@@ -3,7 +3,7 @@ import type { WelcomeMode } from "@shared/agent-ipc";
 export const HERO_SUBTITLE: Record<WelcomeMode, string> = {
   working: "在知识的星空里翱翔",
   coding: "对着仓库问、改、查",
-  bot: "交给 Bot，持续执行并随时接续",
+  general: "通用任务，按需执行并随时接续",
 };
 
 const HERO_HEADLINE: Record<string, string> = {
@@ -49,7 +49,7 @@ const HERO_SUBLINE: Record<string, string> = {
 
 export function heroSubline(mode: WelcomeMode, presetId: string | null | undefined): string {
   if (presetId && HERO_SUBLINE[presetId]) return HERO_SUBLINE[presetId];
-  if (mode === "bot") return "读取资料、调用工具、验证结果，接着上次的工作继续";
+  if (mode === "general") return "读取资料、调用工具、验证结果，接着上次的工作继续";
   return HERO_SUBTITLE[mode] ?? HERO_SUBTITLE.working;
 }
 
@@ -66,7 +66,7 @@ const HERO_SUGGESTIONS: Record<WelcomeMode, string[]> = {
     "写一个可运行的最小示例",
     "帮我排查这个报错",
   ],
-  bot: [
+  general: [
     "帮我查清这个问题，并给出依据",
     "整理项目资料，找出下一步要做的事",
     "处理这些文件，并检查结果",
@@ -195,7 +195,7 @@ const HERO_PLACEHOLDER_BY_PRESET: Record<string, string> = {
 const HERO_PLACEHOLDER_BY_MODE: Record<WelcomeMode, string> = {
   working: "拖入文件，或输入指令",
   coding: "贴代码、报错，或说你想改什么",
-  bot: "告诉 Bot 要完成什么，或拖入文件",
+  general: "描述要完成的任务，或拖入文件",
 };
 
 export function heroPlaceholder(mode: WelcomeMode, presetId: string | null | undefined): string {

@@ -82,7 +82,7 @@ export interface PendingRegeneration {
 
 export interface CreateRelatedTaskOptions {
   sourceTaskId: string;
-  /** 目标 Mode（working/coding/design） */
+  /** 目标 Mode（working/coding/general） */
   welcomeMode: WelcomeMode;
   /** 目标 Tag/Preset；缺省 = 目标模式默认 tag */
   modePresetId?: string;

@@ -78,13 +78,13 @@ export function createSendMessageActions(
       const task = tasks.find((x) => x.id === activeTaskId);
       if (!task) return;
       const welcomeMode = task.welcomeMode ?? defaultWelcomeMode;
-      const isBot = task.welcomeMode === "bot";
+      const isGeneral = task.welcomeMode === "general";
 
       // ACP 路由：瞬态选择（+ 菜单/「继续」按钮）优先；任务级 pin 兜底并自动续接
       // 最近一个可恢复 run。「本轮新会话」= 不带 continueFromRunId 的同 agent 瞬态选择，
       // 走瞬态分支，pin 保持不变；新 run 随后自动成为续链新头。
       const pinnedAgent = task.externalAgentPin;
-      const effectiveExternalAgent = isBot
+      const effectiveExternalAgent = isGeneral
         ? undefined
         : (externalAgent ??
           (pinnedAgent

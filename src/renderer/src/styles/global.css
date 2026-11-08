@@ -4039,7 +4039,7 @@ html[data-theme="dark"] .full-access-btn.primary {
   --hero-mode: #10b981;
 }
 
-.hero[data-mode="bot"] {
+.hero[data-mode="general"] {
   --hero-glow: rgba(168, 85, 247, 0.17);
   --hero-mode: #a855f7;
 }
@@ -4054,7 +4054,7 @@ html[data-theme="dark"] .hero[data-mode="coding"] {
   --hero-mode: #34d399;
 }
 
-html[data-theme="dark"] .hero[data-mode="bot"] {
+html[data-theme="dark"] .hero[data-mode="general"] {
   --hero-glow: rgba(192, 132, 252, 0.2);
   --hero-mode: #c084fc;
 }
@@ -18303,7 +18303,7 @@ html[data-theme="dark"] .input-expert-chip {
 }
 .welcome-mode-icon--working { color: #3b82f6; }
 .welcome-mode-icon--coding { color: #10b981; }
-.welcome-mode-icon--bot { color: #a855f7; }
+.welcome-mode-icon--general { color: #a855f7; }
 
 .task-item .welcome-mode-icon {
   color: var(--fg-muted);
@@ -18322,8 +18322,8 @@ html[data-theme="dark"] .input-expert-chip {
 .task-item.active .welcome-mode-icon--coding {
   color: #10b981;
 }
-.task-item:hover .welcome-mode-icon--bot,
-.task-item.active .welcome-mode-icon--bot {
+.task-item:hover .welcome-mode-icon--general,
+.task-item.active .welcome-mode-icon--general {
   color: #a855f7;
 }
 .welcome-mode-icon-label {
@@ -22875,7 +22875,7 @@ html[data-theme="dark"] .extension-artifact-item.active {
   --hero-mode: #10b981;
 }
 
-.chat-column.task-ambient[data-mode="bot"] {
+.chat-column.task-ambient[data-mode="general"] {
   --hero-glow: rgba(168, 85, 247, 0.15);
   --hero-mode: #a855f7;
 }
@@ -22890,7 +22890,7 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="coding"] {
   --hero-mode: #34d399;
 }
 
-html[data-theme="dark"] .chat-column.task-ambient[data-mode="bot"] {
+html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   --hero-glow: rgba(192, 132, 252, 0.16);
   --hero-mode: #c084fc;
 }

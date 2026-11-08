@@ -1,4 +1,4 @@
-/** Design Mode 专业工具 Runtime IPC / DTO（不包含任何 MCP secret）。 */
+/** 设计类工具 Runtime IPC / DTO（不包含任何 MCP secret）。 */
 export const PROFESSIONAL_TOOL_PROVIDER_IDS = [
   "penpot",
 ] as const;
@@ -6,7 +6,7 @@ export const PROFESSIONAL_TOOL_PROVIDER_IDS = [
 export type ProfessionalToolProviderId = (typeof PROFESSIONAL_TOOL_PROVIDER_IDS)[number];
 
 /**
- * 跨模式 managed provider 全集（design 专业工具 + 办公 Draw.io AI）。
+ * 跨模式 managed provider 全集（设计类工具 + 办公 Draw.io AI）。
  * createSession 的 providerMcpIds gate 与 ProfessionalToolRuntimeService 统一走此集合；
  * 新 provider 只需：注册 id → 加 Runtime 类 → 加 mcp.json 条目（modes 限模式）。
  */
@@ -18,7 +18,7 @@ export const MANAGED_TOOL_PROVIDER_IDS = [
 export type ManagedToolProviderId = (typeof MANAGED_TOOL_PROVIDER_IDS)[number];
 export type ProfessionalToolState = "missing" | "stopped" | "ready" | "error" | "starting";
 
-/** providerId 是否为受管工具（跨模式注册表；design 旧谓词 isProfessionalToolProvider 保持兼容） */
+/** providerId 是否为受管工具（跨模式注册表；设计类工具旧谓词 isProfessionalToolProvider 保持兼容） */
 export function isManagedToolProvider(id: string): id is ManagedToolProviderId {
   return (MANAGED_TOOL_PROVIDER_IDS as readonly string[]).includes(id);
 }
@@ -119,7 +119,7 @@ export function isProfessionalToolProvider(id: string): id is ProfessionalToolPr
   return (PROFESSIONAL_TOOL_PROVIDER_IDS as readonly string[]).includes(id);
 }
 
-/** OpenDesign MCP server 名（集中式；与 DESIGN_PROVIDER_MCP_IDS 的 opendesign 一致）。 */
+/** OpenDesign MCP server 名（集中式；与受管 provider 注册表的 opendesign 一致）。 */
 export const OPENDESIGN_MCP_SERVER_ID = "opendesign";
 
 /* ------------------------- Draw.io AI（办公 provider） ------------------------- */

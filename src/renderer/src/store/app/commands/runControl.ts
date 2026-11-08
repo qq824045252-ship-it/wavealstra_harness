@@ -10,7 +10,7 @@ export async function abortTask(
   const { get, set } = storeContext;
   const owner = get().tasks.find((task) => task.id === taskId);
   const externalRun = owner?.messages.some(message => message.externalAgent && message.streaming);
-  if (!externalRun && (owner?.durable || owner?.botPendingSubmission || owner?.welcomeMode === "bot")) {
+  if (!externalRun && (owner?.durable || owner?.botPendingSubmission || owner?.welcomeMode === "general")) {
     await storeContext.getApi()?.agent?.abort?.(taskId);
     const history = await storeContext
       .getApi()

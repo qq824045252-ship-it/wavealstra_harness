@@ -11,7 +11,7 @@ export const durableInputAuditSchema = z.object({
   userMessageId: z.string(), assistantMessageId: z.string(), cwd: z.string(),
   skills: z.array(z.object({ id: z.string(), name: z.string(), path: z.string(), learned: learned.optional() })),
   recommendation: z.object({
-    query: z.string(), mode: z.enum(["coding", "working", "bot"]),
+    query: z.string(), mode: z.enum(["coding", "working", "general", "bot"]).transform(mode => mode === "bot" ? "general" : mode),
     projectId: z.string().optional(), workspaceId: z.string().optional(), tagId: z.string().optional(),
     context: z.object({ memoryIds: strings, scenarioIds: strings, profileIds: strings }),
     capabilities: z.array(z.object({ kind: z.enum(["expert", "skill", "connector", "mcp"]), id: z.string(), label: z.string(),

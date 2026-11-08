@@ -375,7 +375,7 @@ export function resolveMcpCapability(
   }
   if (
     options.welcomeMode &&
-    ref.modes?.length &&
+    ref.modes != null &&
     !ref.modes.includes(options.welcomeMode)
   ) {
     traces.push({ source: "mode", sourceId: options.welcomeMode, decision: "denied" });

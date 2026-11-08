@@ -16,7 +16,7 @@ let bootstrap = { apiVersion: 1, server: { apiVersion: 1, service: 'mybuddy-remo
   taskModes: [
     { id: 'working', label: '日常办公', tags: [{ id: 'general-office', label: '通用办公' }, { id: 'web-prototype', label: 'Penpot' }] },
     { id: 'coding', label: '代码开发', tags: [{ id: 'minimal', label: '极简' }, { id: 'custom-dev', label: '自定义开发' }] },
-    { id: 'bot', label: 'Bot', tags: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] },
+    { id: 'general', label: '通用模式', tags: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] },
   ],
   device: { id: 'fixture', name: 'Fixture', capabilities: [], createdAt: 1, lastSeenAt: 1 } } as RemoteBootstrap
 const requests: RemotePromptRequest[] = [], alerts: string[] = []

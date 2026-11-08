@@ -24,7 +24,7 @@ export async function verifyNativeInputProvenance(host: NativeHost) {
     return invocation?.execution.taskId === taskId ? invocation.sourceUserMessageId : undefined;
   } });
   const audits = (userMessageId: string): DurableInputAudit => ({ userMessageId, assistantMessageId: `assistant:${userMessageId}`,
-    cwd: host.cwd, skills: [], recommendation: { query: "explicit isolated Goal request", mode: "bot",
+    cwd: host.cwd, skills: [], recommendation: { query: "explicit isolated Goal request", mode: "general",
       context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] } });
   const metadata = (id: string) => ({ text: "explicit isolated Goal request", displayText: "explicit isolated Goal request", attachments: [], audit: audits(id) });
   const evidence: Array<Record<string, unknown>> = [];

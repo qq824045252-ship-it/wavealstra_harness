@@ -33,10 +33,10 @@ function fixture() {
   const current = workResult(work.createWork(actor, { operationId: "create", title: "Review", ownerBotId: DEFAULT_BOT_ID,
     inputSnapshotId: "input-review", projectId: "shared-project", authorization: { allowedScopes: ["workspace:read", "workspace:write"] } }));
   // The durable Work binding, not mutable UI task metadata, owns execution context.
-  db.upsertTask({ id: "worker", title: "worker", welcomeMode: "bot", projectId: "unrelated-project", updatedAt: Date.now() });
+  db.upsertTask({ id: "worker", title: "worker", welcomeMode: "general", projectId: "unrelated-project", updatedAt: Date.now() });
   workResult(work.dispatchExecution(actor, { operationId: "dispatch", workId: current.workId, botId: DEFAULT_BOT_ID,
     taskId: "worker", durableStoreKey: "worker-store", conversationId: "worker-execution", workspaceBinding: root }));
-  db.upsertTask({ id: "foreground", title: "foreground", welcomeMode: "bot", projectId: "shared-project", updatedAt: Date.now() });
+  db.upsertTask({ id: "foreground", title: "foreground", welcomeMode: "general", projectId: "shared-project", updatedAt: Date.now() });
   new BotWorkContextService(db.connection, bots, work).bind(LOCAL_USER_ID, "desktop", "foreground", DEFAULT_BOT_ID);
   db.upsertTask({ id: "ordinary", title: "ordinary", projectId: "shared-project", updatedAt: Date.now() });
   const memory = new MemoryService(db, { semantic: false });

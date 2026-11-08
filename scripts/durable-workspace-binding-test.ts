@@ -89,7 +89,7 @@ function service() {
 const open = (svc: DurableBotService, taskId: string, admission = false) => (svc as any).open(taskId, admission);
 const binding = (id: string) => db.connection.prepare("SELECT directory,cwd FROM durable_bot_bindings WHERE task_id=?").get(id) as { directory: string; cwd: string };
 const intent = (id: string) => db.connection.prepare("SELECT * FROM durable_bot_workspace_moves WHERE task_id=?").get(id);
-function task(id: string) { db.upsertTask({ id, title: id, updatedAt: 1, welcomeMode: "bot", modelId: "fixture/fixture" }); }
+function task(id: string) { db.upsertTask({ id, title: id, updatedAt: 1, welcomeMode: "general", modelId: "fixture/fixture" }); }
 let svc = service();
 try {
   task("idle"); await open(svc, "idle"); const directory = binding("idle").directory;

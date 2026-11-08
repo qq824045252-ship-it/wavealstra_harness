@@ -41,8 +41,8 @@ export function getBundledMcpExtensionsDir(): string {
 function parseModes(raw: unknown): WelcomeMode[] {
   if (!Array.isArray(raw)) return ["coding"];
   return raw
-    .map(String).map(value => value === "design" ? "bot" : value)
-    .filter((s): s is WelcomeMode => s === "working" || s === "coding" || s === "bot");
+    .map(String).map(value => value.trim())
+    .filter((s): s is WelcomeMode => s === "working" || s === "coding" || s === "general");
 }
 
 export function listBundledMcpExtensions(): BundledMcpExtension[] {
