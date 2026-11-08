@@ -234,6 +234,16 @@ try {
         await assert.rejects(access(join(f.cwd, "proof.txt")));
         assert.equal(f.observed.length, 2); assert(f.observed[1]?.error);
         assert(f.works.repo.listOpenBlockers(f.binding.workId).length > 0, "retain actionable blocker");
+        const terminalBlocker = f.works.repo.getBlocker(final[0]!.approvalId)!;
+        assert.equal(terminalBlocker.waitingForUserInput, false, "terminal approval cannot advertise an unavailable approve action");
+        db.connection.prepare("UPDATE work_blockers SET waiting_for_user_input=1 WHERE blocker_id=?").run(terminalBlocker.blockerId);
+        const beforeRecovery = f.works.getWork(f.binding.workId)!;
+        f.works.approvals.recover();
+        assert.equal(f.works.repo.getBlocker(terminalBlocker.blockerId)?.waitingForUserInput, false);
+        assert.equal(f.works.repo.getBlocker(terminalBlocker.blockerId)?.status, "open", "recovery never clears missing work");
+        assert.equal(f.works.getWork(f.binding.workId)?.stateVersion, beforeRecovery.stateVersion + 1);
+        f.works.approvals.recover();
+        assert.equal(f.works.getWork(f.binding.workId)?.stateVersion, beforeRecovery.stateVersion + 1, "flag repair is idempotent");
       }
       if (scenario === "deny" || scenario === "pause-restart") {
         f.works.repo.updateBinding({ ...f.binding, status: "completed" });
@@ -497,7 +507,7 @@ try {
       "delegate refusal is a durable blocker, never a workspace write continuation gap");
     const blockers = delegate.works.repo.listOpenBlockers(delegate.binding.workId);
     assert.equal(blockers.length, 1); assert.equal(blockers[0]?.blockerId, approval.approvalId);
-    assert.equal(blockers[0]?.waitingForUserInput, true);
+    assert.equal(blockers[0]?.waitingForUserInput, false, "terminal refusal has no pending approval input");
     if (priorState !== "none") {
       assert(approval.outcome?.includes("原动作已有执行准入或未知效果"));
       assert(!blockers[0]!.reason.includes("未执行"), "admitted/unknown delegation must not be described as never executed");

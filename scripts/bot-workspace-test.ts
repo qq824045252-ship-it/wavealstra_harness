@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -168,6 +168,7 @@ function renderCards(workChanges: Partial<WorkProjectionDto> = {}, cardChanges: 
   }));
 }
 assert.match(renderCards(), /已完成并关闭/, "a successful close renders on the reused acceptance card");
+assert.match(renderCards({}, { unverifiedScope: ["已在采纳后核验的条件"] }), /生成此卡时尚未验证：.*当前验收状态请查看上方进度/, "immutable acceptance-card gaps are historical, not a contradictory current criterion status");
 assert.match(renderCards({}, { kind: "closure_succeeded" }), /已完成并关闭/);
 const incompleteWorkStates: Array<Partial<WorkProjectionDto>> = [
   { lifecycle: "active" }, { lifecycle: "closing" }, { closureConclusion: "cancelled" },
@@ -436,3 +437,33 @@ useAppStore.getState().submitBotDraft();
 assert.equal(useAppStore.getState().tasks, tasksAfterProjection);
 assert.equal(useAppStore.getState().activeTaskId, "task-a");
 console.log("bot workspace tests: ok");
+
+// Structured Work feedback folds only routine progress or superseded versions.
+const feedbackMessage = (messageId: string, workId: string, eventId: string,
+  category: "progress" | "decision" | "result"): BotMessageDto => ({
+  messageId, workIds: [workId], conversationId: "chat", botId: "bot", requestId: messageId,
+  ordinal: 1, role: "assistant", text: "Identical text must not drive grouping", status: "completed",
+  createdAt: 1, updatedAt: 1, workFeedback: { workId, eventId, kind: category === "result" ? "result" : "blocker", category },
+});
+const timeline = [feedbackMessage("p1", "work-a", "binding:one", "progress"),
+  feedbackMessage("p2", "work-a", "blocker:resolved", "progress"),
+  feedbackMessage("r1", "work-a", "result:member-one", "result"),
+  feedbackMessage("r2", "work-a", "result:member-two", "result"),
+  feedbackMessage("open", "work-a", "blocker:one", "decision"),
+  feedbackMessage("clear", "work-a", "blocker:one", "progress"),
+  feedbackMessage("reopen", "work-a", "blocker:one", "decision"),
+  feedbackMessage("unknown", "work-a", "binding:unknown-effect", "decision"),
+  feedbackMessage("other", "work-b", "result:member-one", "result")];
+const timelineBefore = JSON.stringify(timeline);
+const timelineRows = botWorkTimeline(timeline);
+assert.equal(timelineRows[0].kind, "progress");
+assert.equal(timelineRows[0].kind === "progress" && timelineRows[0].messages.length, 2);
+assert.deepEqual(timelineRows.filter(row => row.kind === "message").map(row => row.message.messageId), ["r1", "r2", "reopen", "unknown", "other"]);
+assert.equal(JSON.stringify(timeline), timelineBefore, "folding must never change persisted records");
+assert.deepEqual(timelineRows.flatMap(row => row.kind === "message" ? [row.message] : row.messages), timeline, "every original message remains available in original order");
+const untyped = { ...timeline[0], workFeedback: undefined };
+assert.equal(botWorkTimeline([untyped])[0].kind, "message", "legacy/unclassified text is never silently hidden");
+const userFeedback = { ...timeline[0], role: "user" as const };
+assert.equal(botWorkTimeline([userFeedback])[0].kind, "message", "a user message cannot be folded as system progress");
+const separateChat = { ...timeline[0], conversationId: "another-chat", workFeedback: { ...timeline[0].workFeedback!, category: "decision" as const } };
+assert.equal(botWorkTimeline([separateChat, timeline[1]])[0].kind, "message");

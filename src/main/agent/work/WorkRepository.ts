@@ -807,6 +807,11 @@ export class WorkRepository {
       .run(now, blockerId, workId);
   }
 
+  recordBlockerResponse(blocker: WorkBlockerDto, response: Record<string, unknown>, now: number): void {
+    this.db.prepare("UPDATE work_blockers SET details_json=?,status='cleared',cleared_at=? WHERE blocker_id=? AND work_id=? AND status='open'")
+      .run(jsonText({ ...blocker.details, response }), now, blocker.blockerId, blocker.workId);
+  }
+
   getBlocker(blockerId: string): WorkBlockerDto | undefined {
     const row = this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as BlockerRow | undefined;
     return row ? mapBlocker(row) : undefined;

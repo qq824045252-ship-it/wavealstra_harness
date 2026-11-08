@@ -196,6 +196,20 @@ export class WorkActionApprovals {
   recover(): void {
     if (!this.options.isAuthority()) return;
     this.works.transaction(() => {
+      // Repair presentation flags from prior versions without clearing the blocker,
+      // changing approval outcomes, or granting a fresh execution.
+      const terminal = this.db.prepare(`SELECT a.* FROM work_action_approvals a
+        JOIN work_blockers b ON b.blocker_id=a.approval_id
+        WHERE b.status='open' AND b.waiting_for_user_input=1
+        AND json_extract(a.data_json,'$.status') IN ('denied','expired','invalidated')`).all();
+      const changed = new Set<string>();
+      for (const row of terminal) {
+        const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
+        this.db.prepare("UPDATE work_blockers SET waiting_for_user_input=0 WHERE blocker_id=? AND work_id=?")
+          .run(value.approvalId, value.workId);
+        changed.add(value.workId);
+      }
+      for (const workId of changed) this.touch(workId);
       for (const row of this.db.prepare("SELECT * FROM work_action_approvals WHERE json_extract(data_json,'$.status') IN ('pending','approved')").all()) {
         const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
         if (!this.current(value)) this.settle(value, "invalidated", "事项、负责人或执行身份已失效，未恢复原动作");
@@ -235,9 +249,10 @@ export class WorkActionApprovals {
         artifactRefs: [], writeConflicts: [], summary: reason, origin: "native" }], this.options.now());
     }
     const text = `${value.summary}：${reason}`;
+    const waitingForUserInput = value.status === "pending";
     if (!this.works.repo.getBlocker(value.approvalId)) this.works.repo.insertBlocker({ blockerId: value.approvalId,
-      workId: value.workId, kind: "operational", reason: text, waitingForUserInput: true, status: "open", createdAt: this.options.now() });
-    else this.db.prepare("UPDATE work_blockers SET reason=?,waiting_for_user_input=1,status='open',cleared_at=NULL WHERE blocker_id=?").run(text, value.approvalId);
+      workId: value.workId, kind: "operational", reason: text, waitingForUserInput, status: "open", createdAt: this.options.now() });
+    else this.db.prepare("UPDATE work_blockers SET reason=?,waiting_for_user_input=?,status='open',cleared_at=NULL WHERE blocker_id=?").run(text, waitingForUserInput ? 1 : 0, value.approvalId);
     if (value.outcome === "continuation-outside-plan") this.works.repo.clearBlocker(value.approvalId, value.workId, this.options.now());
     this.touch(value.workId);
   }

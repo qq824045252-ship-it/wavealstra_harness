@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
 import type { WorkService } from "./WorkService";
@@ -62,18 +63,29 @@ export class WorkConversationFeedback {
         const origin = this.messages.workOrigin(userId, work.workId);
         if (!origin) return 0; // Never guess an active conversation as a fallback.
         let count = 0;
-        const emit = (event: string, version: unknown, body: string) => {
-          if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`)) count++;
+        const emit = (event: string, version: unknown, body: string, metadata: Omit<WorkFeedbackDto, "workId" | "eventId">) => {
+          if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event })) count++;
         };
+        const results = works.repo.listDeliverables(work.workId);
         for (const binding of works.repo.listBindings(work.workId)) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status)) continue;
           const labels: Record<string, string> = { completed: "后台执行已结束，成果仍需核验；不代表用户已验收。",
             failed: "后台执行失败，事项尚未因此完成。", stopped: "后台执行已停止。",
             invalidated: "该后台执行已失效，其结果不能作为当前事项完成的依据。", unknown: "后台执行结果暂不确定，需要核对。" };
+          // The execution note and deliverable often originate from the same
+          // native observation. Keep both durable facts, but report its body once.
+          // Only the exact aggregate Inbox result can replace an identical body.
+          // Partial results and distinct/unknown terminal diagnostics are retained.
+          const hasResult = binding.status === "completed" && results.some(result => result.deliverableId === `result:${binding.bindingId}`
+            && result.executionId === binding.bindingId && result.ownerEpoch === binding.ownerEpoch
+            && result.intentRevision === binding.intentRevision && result.inputSnapshotId === binding.inputSnapshotId
+            && result.summary === binding.settlementNote);
           emit(`binding:${binding.bindingId}`, [binding.status, binding.settlementNote ?? null, binding.settledAt ?? null],
-            [labels[binding.status], binding.settlementNote].filter(Boolean).join("\n"));
+            [labels[binding.status], hasResult ? undefined : binding.settlementNote].filter(Boolean).join("\n"),
+            { kind: "binding", category: binding.status === "completed" ? "progress" : "decision",
+              executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId });
         }
-        for (const result of works.repo.listDeliverables(work.workId)) {
+        for (const result of results) {
           const current = result.intentRevision === work.intentRevision && result.inputSnapshotId === work.inputSnapshotId;
           const review = { proposed: "待负责人核验", accepted: "负责人核验通过", rejected: "未通过负责人核验", superseded: "已被后续成果替代" }[result.status];
           const label = !current ? "历史执行成果（不代表当前要求已完成）" : "后台成果（不代表用户已验收）";
@@ -82,17 +94,20 @@ export class WorkConversationFeedback {
             + `${result.uncoveredScope.length ? `\n尚未覆盖：${result.uncoveredScope.join("；")}` : ""}`
             + `${result.isSpeculation ? "\n该成果包含推测，仍需验证。" : ""}`
             + `${result.hasWriteConflicts ? "\n存在写入冲突，仍需处理。" : ""}`
-            + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`);
+            + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`,
+            { kind: "result", category: "result", executionId: result.executionId,
+              intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId });
         }
         for (const blocker of works.repo.listBlockers(work.workId)) {
           emit(`blocker:${blocker.blockerId}`, blocker,
             blocker.status === "open"
               ? `后台事项受阻：${blocker.reason}\n${blocker.waitingForUserInput ? "需要你的输入或决定后才能继续。" : "需要进一步处理，事项尚未完成。"}`
-              : `阻塞已解除：${blocker.reason}`);
+              : `阻塞已解除：${blocker.reason}`,
+            { kind: "blocker", category: blocker.status === "open" ? "decision" : "progress" });
         }
         if (work.lifecycle === "closed") {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
-            `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`);
+            `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
         return count;
       }); } catch (error) {

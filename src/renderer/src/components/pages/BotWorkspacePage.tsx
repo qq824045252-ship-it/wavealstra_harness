@@ -6,7 +6,7 @@ import { useAppStore } from "@/store/appStore";
 const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { botParticipatesInWork, botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkApprovals } from "./BotWorkApprovals";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
@@ -150,6 +150,21 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     followLatest.current = true; setAwayFromBottom(false); setView("conversation"); void submitBotDraft();
   };
   const draftExample = (text: string) => { setBotDraft(text); setView("conversation"); composerRef.current?.focus(); };
+  const replyToBlocker = (work: WorkProjectionDto, blocker: WorkProjectionDto["blockers"][number]) => {
+    const state = useAppStore.getState();
+    const owner = state.botIdentities.find(bot => bot.botId === work.ownerBotId && bot.status === "active");
+    if (!owner) { setNavigationNotice("负责人暂不可用，请先核对 Bot 状态；问题和已有草稿均已保留。"); return; }
+    const marker = `问题引用：${work.workId} / ${blocker.blockerId}`;
+    const existing = state.activeBotId === owner.botId ? state.botDraft : state.botDrafts[owner.botId] ?? "";
+    const quote = `${marker}\n事项：${work.title}\n查看版本：要求 r${work.intentRevision}，负责人代次 ${work.ownerEpoch}，状态 v${work.stateVersion}\n原问题：${blocker.reason}\n我的回复：\n\n请先核对当前状态和这条回复；不要把回复本身当作授权、预算核对完成或重跑整个任务的许可。`;
+    const draft = existing.includes(marker) ? existing : [existing, quote].filter(Boolean).join("\n\n");
+    if (draft.length > 32000) { setNavigationNotice("现有草稿较长，请先整理后再引用问题。没有覆盖或发送任何内容。"); return; }
+    // setActiveBotId retains the previous Bot's draft and restores the owner's.
+    if (state.activeBotId !== owner.botId) state.setActiveBotId(owner.botId);
+    state.setSelectedWorkId(work.workId); state.setBotDraft(draft);
+    setView("conversation"); setInspectorOpen(false);
+    requestAnimationFrame(() => { setInspectorOpen(false); composerRef.current?.focus(); });
+  };
   const filteredWorks = botWorks.filter(work => workMatchesView(work, view) && work.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
@@ -187,7 +202,12 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "创建一个 Bot，给它名称和职责，就能开始独立的对话。"}</p>
             {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
-          </div> : <div className="bot-message-list">{messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, message.requestId); }} />)}</div>}
+          </div> : <div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
+            ? <BotMessage key={row.key} message={row.message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, row.message.requestId); }} />
+            : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
+              <summary>{botWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条进展与历史记录（展开查看）</summary>
+              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
+            </details>)}</div>}
           {botWorks.filter(work => work.approvals?.some(item => item.status === "pending")).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
         </div>
         {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
@@ -204,7 +224,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
-      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /></div>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}
     <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>

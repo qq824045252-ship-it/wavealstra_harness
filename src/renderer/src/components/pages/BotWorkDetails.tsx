@@ -1,3 +1,4 @@
+import { userInputBlockerSnapshot } from "@shared/bot-work-review";
 import { useEffect, useRef, useState } from "react";
 import type { WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
@@ -73,7 +74,8 @@ function UnknownBudgetReconciliation(props: {
   </details>;
 }
 
-export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean }): React.JSX.Element {
+export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
+  onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void }): React.JSX.Element {
   const { work, ownerName, includeClosed } = props;
   const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
   const identities = useAppStore(s => s.botIdentities);
@@ -174,7 +176,19 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       {(openBlockers.length > 0 || !work.inputSnapshotBound || work.uncoveredScope.length > 0) && <section className="bot-work-alert" aria-label="需要关注的阻碍">
         <h3>需要关注</h3>
         {!work.inputSnapshotBound && <p role="status">输入版本尚未绑定，不能据此确认成果已验证。</p>}
-        {openBlockers.map(blocker => <p key={blocker.blockerId}>{blocker.waitingForUserInput ? "等待你的回复：" : "阻碍："}{blocker.reason}</p>)}
+        {openBlockers.map(blocker => <article key={blocker.blockerId}>
+          <p>{blocker.waitingForUserInput ? "需要处理：" : "阻碍："}{blocker.reason}</p>
+          {userInputBlockerSnapshot(blocker) || blocker.legacyUserInput ? <p>请在下方「回复待补充信息」中填写回复和依据。</p>
+            : work.approvals?.some(item => item.approvalId === blocker.blockerId && item.status === "pending") ? <p>请在下方「后台操作审批」中决定本次操作。</p>
+              : blocker.reasonCode?.startsWith("budget-") || blocker.windowId ? <p>请在运行提醒或高级设置中核对预算与实际用量，普通回复不能解除。</p>
+                : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
+                  : work.approvals?.some(item => item.approvalId === blocker.blockerId) || blocker.blockerId.startsWith("continuation:") ? <p>原操作不会自动重跑。请在执行情况中核对并仅补跑必要缺口；新动作仍需通过授权检查。</p>
+                    : <p>请核对执行情况或高级设置中的对应控制。此阻碍不能用普通回复强制解除。</p>}
+          {!userInputBlockerSnapshot(blocker) && props.onReplyToBlocker && work.lifecycle !== "closed" && <>
+            <button type="button" onClick={() => props.onReplyToBlocker?.(blocker)}>向负责人回复此问题</button>
+            <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留；权限、预算和未知效果仍走专门入口。</p>
+          </>}
+        </article>)}
         {work.uncoveredScope.length > 0 && <p>尚未覆盖：{work.uncoveredScope.join("、")}</p>}
       </section>}
       {work.phase4 && (!work.phase4.host.online || work.phase4.budget.unknownUsageCount > 0 || work.phase4.budget.availableTokens <= 0
@@ -223,6 +237,13 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         </article>)}
         {work.phase3.continuations.length > 0 && <p>已受理 {work.phase3.continuations.length} 个定向补跑计划，已有成果继续保留。</p>}
       </section>}
+      {work.blockers.some(blocker => blocker.details?.response) && <details>
+        <summary>已保存的问题回复</summary>
+        {work.blockers.filter(blocker => blocker.details?.response).map(blocker => {
+          const response = blocker.details!.response as { reply?: string; evidenceRef?: string };
+          return <article key={blocker.blockerId}><p>{blocker.reason}</p><p>{response.reply}</p><p>依据：{response.evidenceRef}</p></article>;
+        })}
+      </details>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
         <strong>{{ proposed: work.lifecycle === "closed" ? "未采纳（已结束）" : "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
@@ -231,9 +252,8 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
       <h3>{work.lifecycle === "closed" ? "成果记录与验收" : "需要你决定"}</h3>
-      {/* These siblings must have distinct keys, including across version resets. */}
-      <WorkReviewPanel key={JSON.stringify(["review", work.workId, work.intentRevision, work.inputSnapshotId,
-        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
+      {/* Review drafts retain their reviewed snapshot across background updates. */}
+      <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
       <BotWorkApprovals work={work} /><WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (

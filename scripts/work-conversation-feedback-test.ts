@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,8 +40,8 @@ try {
   works.repo.insertBinding({ bindingId: "binding-1", workId: work.workId, operationId: "binding-operation", botId: DEFAULT_BOT_ID,
     taskId: "background-task", durableStoreKey: "store", conversationId: "background-native-conversation", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
-    delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: "测试已完成" });
-  works.repo.insertDeliverable({ deliverableId: "result-1", workId: work.workId, executionId: "binding-1", producerBotId: DEFAULT_BOT_ID,
+    delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: "产出成果" });
+  works.repo.insertDeliverable({ deliverableId: "result:binding-1", workId: work.workId, executionId: "binding-1", producerBotId: DEFAULT_BOT_ID,
     intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, status: "proposed",
     summary: "产出成果", artifactRefs: ["artifact:report"], evidenceRefs: [], uncoveredScope: ["发行包验证"], uncoveredCriterionIds: [],
     isSpeculation: false, hasWriteConflicts: false, createdAt: 3 });
@@ -57,6 +58,20 @@ try {
   assert(history().messages.some(m => m.text.includes("需要你的输入")));
   assert(history().messages.slice(2).every(m => m.role === "assistant" && m.status === "completed" && m.workIds[0] === work.workId));
   assert.equal(messages.next(source.conversationId), undefined, "feedback must not queue a model turn");
+  assert.equal(history().messages.filter(m => m.text.includes("产出成果")).length, 1, "one native observation is not repeated as binding + deliverable bodies");
+  const initialFeedback = history().messages.slice(2);
+  assert.deepEqual(initialFeedback.map(m => m.workFeedback?.category), ["progress", "result", "decision"]);
+  assert.equal(initialFeedback[0].workFeedback?.executionId, "binding-1");
+  assert.equal(initialFeedback[1].workFeedback?.executionId, "binding-1");
+  // Upgrade an already-delivered legacy history in place: only additive metadata,
+  // no reset, no body mutation, no repeated send, and no lifecycle/criteria change.
+  db.connection.exec("DELETE FROM bot_work_feedback");
+  const legacyBodies = history().messages.map(m => [m.messageId, m.text]);
+  assert.equal(feedback.drain(), 0);
+  assert.deepEqual(history().messages.map(m => [m.messageId, m.text]), legacyBodies);
+  assert(history().messages.slice(2).every(m => m.workFeedback));
+  assert.deepEqual(works.getWork(work.workId), before);
+
   const revision = history().revision;
   assert.throws(() => db.connection.transaction(() => { messages.appendWorkFeedback(messages.workOrigin(LOCAL_USER_ID, work.workId)!, work.workId, "crash", "1", "rollback"); throw Error("crash"); })());
   assert.equal(history().revision, revision, "failed delivery rolls back message and revision together");
@@ -74,8 +89,13 @@ try {
   works.repo.clearBlocker("blocker-1", work.workId, 6);
   assert.equal(works.repo.getBlocker("blocker-1")?.clearedAt, 5, "repeat settlement retains the original clearance receipt");
   assert.equal(feedback.drain(work.workId), 0, "approval then consumption cannot send duplicate blocker-cleared feedback");
+  db.connection.exec("DELETE FROM bot_work_feedback"); // Also upgrade older event versions after a status change.
   works.repo.reopenBlocker("blocker-1", work.workId);
   assert.equal(feedback.drain(work.workId), 1, "reopened blocker gets a new version");
+  assert(history().messages.filter(m => m.requestId.startsWith("work-feedback:")).every(m => m.workFeedback));
+  const blockerVersions = history().messages.filter(m => m.workFeedback?.eventId === "blocker:blocker-1");
+  assert.equal(blockerVersions.at(-1)?.workFeedback?.category, "decision");
+  assert(blockerVersions.slice(0, -1).every(m => m.workFeedback?.category === "progress"));
   assert.equal(feedback.drain(work.workId), 0);
   assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.length, 2);
   assert.equal(messages.history(LOCAL_USER_ID, { botId: "new-owner" }).messages.length, 2);
@@ -86,6 +106,7 @@ try {
   assert.equal(feedback.drain(orphan.workId), 0, "unlinked Work never falls back to active chat");
   works.repo.updateWork({ ...works.getWork(work.workId)!, lifecycle: "closed", closedAt: 8, closureConclusion: "cancelled", closureSummary: "已取消" });
   const finalCount = history().messages.length;
+  db.connection.exec("DROP TABLE bot_work_feedback"); // Existing v35 database upgrade, not a schema reset.
   db.close(); db = new AppDatabase(path);
   ({ bots, works, messages, feedback } = open());
   assert.equal(feedback.recover(), 1, "recovery discovers closure after restart");
@@ -115,5 +136,53 @@ try {
     assert.equal(history().messages.length, countBeforeRetry + 1, "close cancels background polling");
     assert.equal(feedback.drain(), 1, "synchronous drain remains available");
   } finally { feedback.close(); }
+  const independent = create("independent-results");
+  for (const id of ["member-a", "member-b"]) {
+    works.repo.insertBinding({ bindingId: id, workId: independent.workId, operationId: `operation:${id}`, botId: DEFAULT_BOT_ID,
+      taskId: `task:${id}`, durableStoreKey: "store", conversationId: `native:${id}`, intentRevision: independent.intentRevision,
+      ownerEpoch: independent.ownerEpoch, inputSnapshotId: independent.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
+      delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: "独立同文成果" });
+    works.repo.insertDeliverable({ deliverableId: `result:${id}`, workId: independent.workId, executionId: id, producerBotId: DEFAULT_BOT_ID,
+      intentRevision: independent.intentRevision, ownerEpoch: independent.ownerEpoch, inputSnapshotId: independent.inputSnapshotId, status: "proposed",
+      summary: "独立同文成果", artifactRefs: [], evidenceRefs: [], uncoveredScope: [], uncoveredCriterionIds: [],
+      isSpeculation: false, hasWriteConflicts: false, createdAt: 3 });
+  }
+  assert.equal(feedback.drain(independent.workId), 4);
+  const memberReports = history().messages.filter(m => m.workFeedback?.workId === independent.workId);
+  assert.equal(memberReports.filter(m => m.text.includes("独立同文成果")).length, 2, "identical outputs from different bindings both remain visible");
+  assert.equal(new Set(memberReports.filter(m => m.workFeedback?.kind === "result").map(m => m.workFeedback?.executionId)).size, 2);
+  assert.equal(feedback.drain(independent.workId), 0);
+  for (const status of ["unknown", "stopped", "completed"] as const) {
+    const id = `partial-${status}`;
+    works.repo.insertBinding({ bindingId: id, workId: independent.workId, operationId: `operation:${id}`, botId: DEFAULT_BOT_ID,
+      taskId: `task:${id}`, durableStoreKey: "store", conversationId: `native:${id}`, intentRevision: independent.intentRevision,
+      ownerEpoch: independent.ownerEpoch, inputSnapshotId: independent.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
+      delegatedScope: [], workspaceBinding: root, status, admittedAt: 1, settledAt: 2, settlementNote: `独立诊断:${status}` });
+    works.repo.insertDeliverable({ deliverableId: `partial:${id}`, workId: independent.workId, executionId: id, producerBotId: DEFAULT_BOT_ID,
+      intentRevision: independent.intentRevision, ownerEpoch: independent.ownerEpoch, inputSnapshotId: independent.inputSnapshotId, status: "proposed",
+      summary: "仅部分步骤成功", artifactRefs: [], evidenceRefs: [], uncoveredScope: [], uncoveredCriterionIds: [],
+      isSpeculation: false, hasWriteConflicts: false, createdAt: 3 });
+  }
+  assert.equal(feedback.drain(independent.workId), 6);
+  for (const status of ["unknown", "stopped", "completed"]) {
+    const diagnostic = history().messages.find(m => m.workFeedback?.eventId === `binding:partial-${status}`);
+    assert(diagnostic);
+    assert(diagnostic.text.includes(`独立诊断:${status}`), "a partial deliverable must not erase its parent binding diagnostic");
+    if (status !== "completed") assert.equal(diagnostic.workFeedback?.category, "decision");
+  }
+
+  const origin = messages.workOrigin(LOCAL_USER_ID, independent.workId)!;
+  const spoofKey = createHash("sha256").update(JSON.stringify([independent.workId, "blocker:spoof"])).digest("hex");
+  const spoofVersion = createHash("sha256").update("1").digest("hex");
+  const spoofRequest = `work-feedback:${spoofKey}:0000000000000000:${spoofVersion}`;
+  // A normal user-chosen request ID can resemble feedback but its message ID
+  // was allocated by accept(), not the host's feedback delivery namespace.
+  db.connection.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
+    VALUES ('bot-message-spoof',?,?,?,'assistant','ordinary reply','completed',1,1)`)
+    .run(origin.conversation_id, origin.bot_id, spoofRequest);
+  assert.equal(messages.appendWorkFeedback(origin, independent.workId, "blocker:spoof", "1", "real alert", {
+    workId: independent.workId, eventId: "blocker:spoof", kind: "blocker", category: "decision",
+  }), true, "a user-controlled request ID cannot suppress host feedback");
+  assert.equal(messages.message("bot-message-spoof")?.workFeedback, undefined, "ordinary model reply cannot be relabeled by a forged event key");
   console.log("PASS durable Work feedback: origin, archive, handoff, result/blocker versions, restart, rollback, authority, no model turns, retry lifecycle");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

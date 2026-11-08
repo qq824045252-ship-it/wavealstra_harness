@@ -21,6 +21,11 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       UNIQUE(conversation_id,request_id,role)
     );
+    -- Additive metadata only: never reset existing Work or rewrite message history.
+    CREATE TABLE IF NOT EXISTS bot_work_feedback (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json))
+    );
     CREATE TABLE IF NOT EXISTS bot_send_receipts (
       user_id TEXT NOT NULL, bot_id TEXT NOT NULL, request_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
       conversation_id TEXT NOT NULL REFERENCES bot_conversations(conversation_id),

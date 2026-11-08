@@ -82,7 +82,7 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
       <p>{card.summary}</p>
       <p>包含 {card.deliverableIds.length} 项成果</p>
       <details><summary>卡片版本记录</summary><p>要求 r{card.intentRevision} · 阅读版本 {card.readVersion}</p></details>
-      {card.unverifiedScope.length > 0 && <p>未验证：{card.unverifiedScope.join("、")}</p>}
+      {card.unverifiedScope.length > 0 && <p>生成此卡时尚未验证：{card.unverifiedScope.join("、")}。当前验收状态请查看上方进度。</p>}
       {card.readAt
         ? <p role="status">已读 {new Date(card.readAt).toLocaleString()}</p>
         : <button type="button" disabled={busy} onClick={() => { void read(card.semanticCardKey); }}>标记已读</button>}

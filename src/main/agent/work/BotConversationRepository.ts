@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { botMessageSchema, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
+import { botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -146,16 +146,32 @@ export class BotConversationRepository {
    * changed version after a previous delivery gets a new message, including a
    * blocker reopening after its cleared version was delivered.
    */
-  appendWorkFeedback(origin: BotConversation, workId: string, event: string, version: string, text: string): boolean {
+  appendWorkFeedback(origin: BotConversation, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto): boolean {
     return this.db.transaction(() => {
       if (!this.conversation(origin.user_id, origin.bot_id, origin.conversation_id)) return false;
       const key = createHash("sha256").update(JSON.stringify([workId, event])).digest("hex");
       const prefix = `work-feedback:${key}:`;
       const fingerprint = createHash("sha256").update(version).digest("hex");
       const previous = this.db.prepare(`SELECT message_id,request_id FROM bot_messages
-        WHERE conversation_id=? AND bot_id=? AND role='assistant' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
+        WHERE conversation_id=? AND bot_id=? AND role='assistant' AND message_id LIKE 'work-feedback-%' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
         .get(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string; request_id: string } | undefined;
-      if (previous?.request_id.endsWith(`:${fingerprint}`)) return false;
+      const unchanged = previous?.request_id.endsWith(`:${fingerprint}`);
+      let annotated = false;
+      if (metadata) {
+        // Backfill only authenticated host-generated identities from this exact
+        // event. Older versions remain expandable history, never deleted or
+        // reinterpreted from their human-written text.
+        const legacy = this.db.prepare(`SELECT m.message_id FROM bot_messages m
+          LEFT JOIN bot_work_feedback f ON f.message_id=m.message_id
+          WHERE m.conversation_id=? AND m.bot_id=? AND m.role='assistant' AND m.message_id LIKE 'work-feedback-%'
+            AND m.request_id LIKE ? AND f.message_id IS NULL`).all(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string }[];
+        for (const item of legacy) annotated = this.saveFeedbackMetadata(item.message_id,
+          unchanged && item.message_id === previous?.message_id ? metadata : { ...metadata, category: "progress" }) || annotated;
+      }
+      if (unchanged) {
+        if (annotated) this.touch(origin.conversation_id);
+        return false;
+      }
       const generation = createHash("sha256").update(previous?.message_id ?? "initial").digest("hex").slice(0, 16);
       const requestId = `${prefix}${generation}:${fingerprint}`;
       const messageId = `work-feedback-${createHash("sha256").update(JSON.stringify([origin.conversation_id, requestId])).digest("hex")}`;
@@ -163,6 +179,7 @@ export class BotConversationRepository {
       this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
         VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
         .run(messageId, origin.conversation_id, origin.bot_id, requestId, text, JSON.stringify([workId]), now, now);
+      if (metadata) this.saveFeedbackMetadata(messageId, metadata);
       this.touch(origin.conversation_id);
       return true;
     })();
@@ -179,9 +196,17 @@ export class BotConversationRepository {
     this.db.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=?").run(Date.now(), conversationId);
   }
 
+  private saveFeedbackMetadata(messageId: string, metadata: WorkFeedbackDto): boolean {
+    const json = JSON.stringify(workFeedbackSchema.parse(metadata));
+    return this.db.prepare("INSERT OR IGNORE INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)").run(messageId, json).changes > 0;
+  }
+
   private mapMessage(value: unknown): BotMessageDto {
     const row = messageRow.parse(value);
+    const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
+    const parsed = metadata ? workFeedbackSchema.safeParse(JSON.parse(metadata.metadata_json)) : undefined;
     return { messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+      workFeedback: parsed?.success ? parsed.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };

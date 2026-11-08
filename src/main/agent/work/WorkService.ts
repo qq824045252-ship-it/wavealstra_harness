@@ -1,3 +1,6 @@
+import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInputMutation } from "./WorkUserInputControls";
+import { legacyUserInputSource } from "./WorkLegacyUserInput";
+import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../shared/bot-work-review";
 import { settleWorkAdmission, settleWorkExecution } from "./WorkExecutionSettlement";
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkPhase5Facts } from "./WorkPhase5Facts";
@@ -250,7 +253,10 @@ export class WorkService {
 
   private project(work: WorkDto): WorkProjectionDto {
     const deliverables = this.repo.listDeliverables(work.workId);
-    const blockers = this.repo.listBlockers(work.workId);
+    const blockers = this.repo.listBlockers(work.workId).map(blocker => {
+      const legacyUserInput = legacyUserInputSource(this.db, work, blocker);
+      return legacyUserInput ? { ...blocker, legacyUserInput } : blocker;
+    });
     const executions = this.repo.listBindings(work.workId);
     const notifications = this.repo.listNotifications(work.workId).map(notification => ({ ...notification, ...this.notifications.identity(notification.notificationId) }));
     const subscriptions = this.repo.listSubscriptions(work.workId);
@@ -1605,11 +1611,18 @@ export class WorkService {
    * criteria cannot be satisfied here: they need explicit environment feedback.
    */
   attestCriteria(actor: WorkActor, params: AttestCriteriaParams): WorkControlResult {
+    const artifactInspection = params.inputSnapshotId !== undefined ? this.artifacts.capture(params.workId) : undefined;
     return this.runWorkControl(actor, "attestCriteria", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
     }, (work, resolved, now) => {
       if (resolved.kind !== "user" || resolved.userId !== work.userId) {
         return { ok: false, code: "unauthorized_actor", message: "只有用户可以确认验收条件" };
+      }
+      if (params.inputSnapshotId !== undefined && (params.inputSnapshotId !== work.inputSnapshotId
+        || params.inputSnapshotId === "snapshot:unbound" || !artifactInspection
+        || !this.artifacts.validate(artifactInspection, now)
+        || artifactInspection.observed.length > 0 && params.artifactSnapshotId !== this.artifacts.snapshotId(artifactInspection))) {
+        return { ok: false, code: "version_conflict", message: "验收依据的输入或产物已变化，请核对当前版本" };
       }
       const criteria = work.criteria.map(criterion => ({ ...criterion }));
       const evidenceId = newId("evidence");
@@ -1677,27 +1690,25 @@ export class WorkService {
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
     return this.runWorkControl(actor, "reportBlocker", params, {
       guard: "versions", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, _resolved, now) => {
-      if (resolved.kind !== "user" && resolved.kind !== "worker" && !this.isOwnerOrUser(work, resolved)) {
-        return { ok: false, code: "unauthorized_actor", message: "只有负责人、协作者或执行者可上报阻碍" };
-      }
-      this.repo.insertBlocker({
-        blockerId: newId("blocker"),
-        workId: work.workId,
-        reportedByBotId: resolved.bot?.botId,
-        reason: params.reason.trim().slice(0, 2000),
-        kind: params.kind ?? "operational",
-        unknownExternalEffectRef: params.unknownExternalEffectRef,
-        waitingForUserInput: Boolean(params.waitingForUserInput),
-        status: "open",
-        createdAt: now,
-      });
-      const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
-      this.repo.updateWork(next);
-      if (params.waitingForUserInput) this.phase5.recordEscalation(next, params.reason, now);
-      else this.phase5.refreshSummary(next.workId);
-      return { ok: true };
-    });
+    }, (work, _resolved, now) => reportWorkBlockerMutation({ repo: this.repo, phase5: this.phase5 }, work, resolved, params, now, this.isOwnerOrUser(work, resolved))
+    );
+  }
+
+  /** Records an explicit answer, not authorization to resume or perform an action. */
+  replyUserInput(actor: WorkActor, params: ReplyUserInputParams): WorkControlResult {
+    return this.runWorkControl(actor, "replyUserInput", params, {
+      guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused"],
+    }, (work, resolved, now) => replyUserInputMutation({ repo: this.repo }, work, resolved, params, now)
+    );
+  }
+
+  /** Trusted user classification of a uniquely proven historical owner report.
+   * No tool permission, effect, budget, execution or acceptance fact is changed. */
+  replyLegacyUserInput(actor: WorkActor, params: ReplyLegacyUserInputParams): WorkControlResult {
+    return this.runWorkControl(actor, "replyLegacyUserInput", params, {
+      guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused"],
+    }, (work, resolved, now) => replyLegacyUserInputMutation({ repo: this.repo, db: this.db }, work, resolved, params, now)
+    );
   }
 
   clearBlocker(actor: WorkActor, params: ClearBlockerParams): WorkControlResult {

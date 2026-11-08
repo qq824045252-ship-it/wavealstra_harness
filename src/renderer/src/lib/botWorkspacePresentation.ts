@@ -37,3 +37,29 @@ export function shouldSendBotComposer(event: { key: string; shiftKey: boolean; i
 export function botParticipatesInWork(work: WorkProjectionDto, botId: string | null | undefined): boolean {
   return Boolean(botId && (work.ownerBotId === botId || work.team?.members.some(member => member.botId === botId)));
 }
+
+export type BotTimelineEntry = { key: string; kind: "message"; message: BotMessageDto }
+  | { key: string; kind: "progress"; workId: string; messages: BotMessageDto[] };
+
+/** Presentation only. Durable messages and order remain intact inside each fold.
+ * Latest decisions/results stay visible; ordinary progress and older versions of
+ * the exact same event can be expanded. Never classify by human-written text.
+ */
+export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
+  const latest = new Map<string, string>();
+  const eventKey = (message: BotMessageDto) => JSON.stringify([message.conversationId,
+    message.workFeedback?.workId, message.workFeedback?.eventId]);
+  for (const message of messages) if (message.role === "assistant" && message.workFeedback)
+    latest.set(eventKey(message), message.messageId);
+  const rows: BotTimelineEntry[] = [];
+  for (const message of messages) {
+    const feedback = message.role === "assistant" && message.status === "completed" ? message.workFeedback : undefined;
+    const fold = feedback && !message.error && (feedback.category === "progress" || latest.get(eventKey(message)) !== message.messageId);
+    const previous = rows.at(-1);
+    if (!fold) rows.push({ key: message.messageId, kind: "message", message });
+    else if (previous?.kind === "progress" && previous.workId === feedback.workId)
+      previous.messages.push(message);
+    else rows.push({ key: `progress:${message.messageId}`, kind: "progress", workId: feedback.workId, messages: [message] });
+  }
+  return rows;
+}

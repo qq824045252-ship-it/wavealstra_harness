@@ -9,11 +9,18 @@ export const botSendSchema = z.object({
 export type BotSendRequest = z.infer<typeof botSendSchema>;
 export const botHistorySchema = z.object({ botId: id, conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
 export type BotHistoryRequest = z.infer<typeof botHistorySchema>;
+/** Host-authored durable Work feedback, never inferred from message wording. */
+export const workFeedbackSchema = z.object({
+  workId: id, eventId: z.string().min(1).max(500), kind: z.enum(["binding", "result", "blocker", "closure"]),
+  category: z.enum(["progress", "decision", "result"]), executionId: id.optional(),
+  intentRevision: z.number().int().positive().optional(), inputSnapshotId: z.string().min(1).max(2000).optional(),
+}).strict();
+export type WorkFeedbackDto = z.infer<typeof workFeedbackSchema>;
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, requestId: id, ordinal: z.number().int().positive(),
   role: z.enum(["user", "assistant"]), text: z.string(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
-  workIds: z.array(id), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
+  workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
 });
 export type BotMessageDto = z.infer<typeof botMessageSchema>;
 export interface BotHistoryDto { conversationId: string; botId: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }

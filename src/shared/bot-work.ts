@@ -286,6 +286,7 @@ export interface WorkDeliverableDto {
 }
 
 export type WorkBlockerReasonCode =
+  | "user-input"
   | "backlog-overflow"
   | "merge-wait"
   | "causal-loop-guard"
@@ -302,6 +303,9 @@ export type WorkBlockerReasonCode =
   | "deadline-follow-up";
 
 export interface WorkBlockerDto {
+  /** Read-only host proof for narrowly resolving an untyped historical owner report. */
+  legacyUserInput?: { reportOperationId: string; blockerSnapshot: string; inputSnapshotId: string;
+    intentRevision: number; ownerEpoch: number };
   blockerId: string;
   workId: string;
   reportedByBotId?: string;
@@ -774,6 +778,8 @@ export interface RecordUserFeedbackParams {
 
 /** User-confirmed criterion change from the conversation UI (not a model decision). */
 export interface AttestCriteriaParams {
+  inputSnapshotId?: string;
+  artifactSnapshotId?: string;
   operationId: string;
   workId: string;
   criterionUpdates: Array<{ criterionId: string; status: "pending" | "met" | "not_met" | "waived"; evidence?: string }>;
@@ -782,6 +788,8 @@ export interface AttestCriteriaParams {
 }
 
 export interface ReportBlockerParams {
+  /** Explicit information request only, never permission or effect reconciliation. */
+  userInput?: { kind: "reply" };
   operationId: string;
   workId: string;
   reason: string;
@@ -981,7 +989,7 @@ export function intersectAuthorization(
 }
 
 export function criterionNeedsEnvironment(criterion: WorkCriterionDto): boolean {
-  return criterion.requiresRealEnvironmentCheck;
+  return criterion.requiresRealEnvironmentCheck || Boolean(criterion.requiredEnvironment?.trim());
 }
 
 /**

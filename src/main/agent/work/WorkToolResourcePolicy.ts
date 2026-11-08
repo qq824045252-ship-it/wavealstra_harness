@@ -72,9 +72,13 @@ export class WorkToolResourcePolicy {
     const coarse = resources.some(resource => resource.kind === "host");
     const opaque = this.gate.opaqueObservation(owner);
     if (opaque && sideEffect && !shellRead) {
-      if (coarse) return `原 ${opaque.tool_name} 返回了范围未核实的观察；不能据此继续不受限修改，请改用明确路径的读取/写入或可信资源计划`;
+      if (coarse) return `原 ${opaque.tool_name} 返回了范围未核实的观察；不能据此继续不受限命令。`
+        + `恢复方式：用内置 read 指定明确文件路径重新读取；需要行数时，在读到的完整内容上统计，截断时先分段读完。`
+        + `列目录可用 bash 的 ls "./dir"（单个明确字面路径，不带选项）。wc -l 和 ls -1 即使补上路径也不属于可信读取。`
+        + `修改请使用明确目标路径的内置 write/edit，覆盖已有文件前逐个重新读取；这不会解除任意 Shell 命令限制。`;
       for (const resource of resources) if (resource.path && resource.entity && !this.gate.observedAfter(owner, resource, opaque.sequence))
-        return "已有不透明观察；覆盖现有文件前必须通过可信读取入口重新读取该目标版本";
+        return `已有不透明观察；覆盖现有文件 ${resource.path} 前，必须通过可信读取入口（内置 read）以该明确路径重新读取目标版本，再用同一路径的内置 write/edit 修改。`
+          + `读取其他文件或列目录不能代替该目标的重读，也不会解除任意 Shell 命令限制。`;
     }
     if (coarse && sideEffect) {
       for (const observed of this.gate.observedResources(owner)) {

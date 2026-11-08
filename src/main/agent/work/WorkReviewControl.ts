@@ -16,6 +16,9 @@ export function reviewWork(works: WorkService, actor: WorkActor, request: unknow
   if (!work || work.userId !== actor.userId) return { ok: false, code: "not_found", message: "找不到事项" };
   if (input.kind === "accept_deliverable") return works.acceptDeliverable(actor, input.request);
   if (input.kind === "reject_deliverable") return works.rejectDeliverable(actor, input.request);
+  if (input.kind === "attest_criteria") return works.attestCriteria(actor, input.request);
+  if (input.kind === "reply_legacy_user_input") return works.replyLegacyUserInput(actor, input.request);
+  if (input.kind === "reply_user_input") return works.replyUserInput(actor, input.request);
   if (input.kind === "feedback") return works.recordUserFeedback(actor, input.request);
   const { confirmed: _confirmed, ...close } = input.request;
   return works.closeWork(actor, close);

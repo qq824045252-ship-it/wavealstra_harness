@@ -209,3 +209,9 @@
 .bot-approval-card label { display: flex; gap: 8px; align-items: flex-start; }
 .bot-approval-actions { display: flex; gap: 12px; }
 .bot-approval-actions button { border: 1px solid var(--border-default); border-radius: 8px; padding: 8px 14px; }
+
+/* Routine Work updates retain their durable history without filling the chat. */
+.bot-work-progress { margin: 8px 0; color: var(--fg-secondary); border: 1px solid var(--border-default); border-radius: 10px; padding: 10px 14px; }
+.bot-work-progress > summary { cursor: pointer; font-size: 13px; line-height: 1.5; }
+.bot-work-progress[open] > summary { margin-bottom: 14px; }
+.bot-work-progress .bot-message { margin-top: 12px; }

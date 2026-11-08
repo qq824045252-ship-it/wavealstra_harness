@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { DESKTOP_USER_GRANTS, WorkService } from "../src/main/agent/work/WorkService";
+import { randomUUID } from "node:crypto";
+import { legacyUserInputSource } from "../src/main/agent/work/WorkLegacyUserInput";
+import { userInputBlockerSnapshot } from "../src/shared/bot-work-review";
 import { reviewWork } from "../src/main/agent/work/WorkReviewControl";
 import { publishTaskLifecycleNotification } from "../src/main/notification/TaskLifecycleNotifications";
 import type { NotificationService } from "../src/main/notification/NotificationService";
@@ -23,9 +26,9 @@ const guard = (workId: string) => {
   const work = works.getWork(workId)!;
   return { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
 };
-function proposed(suffix: string) {
+function proposed(suffix: string, ordinary = false) {
   const work = unwrap(works.createWork(user, { operationId: `create:${suffix}`, title: suffix, authorization: DESKTOP_USER_GRANTS,
-    inputSnapshotId: `input:${suffix}`, criteria: [{ text: "User verifies this output", requiredEnvironment: "Fixture OS" }] }));
+    inputSnapshotId: `input:${suffix}`, criteria: [{ text: "User verifies this output", requiredEnvironment: ordinary ? undefined : "Fixture OS" }] }));
   const taskId = `task:${suffix}`;
   db.upsertTask({ id: taskId, title: suffix, updatedAt: Date.now() });
   unwrap(works.dispatchExecution(user, { operationId: `dispatch:${suffix}`, workId: work.workId,
@@ -134,6 +137,199 @@ try {
     assert.equal(published.length, 2); assert.equal(published[1].type, "task.action_required");
     publish({ kind: "completed", taskId: "cron-owned", assistantMessageId: "cron-result" });
     assert.equal(published.length, 2);
+  });
+  check("ordinary output is adopted, explicitly verified and closed without inventing a test environment", () => {
+    const fixture = proposed("ordinary-review", true);
+    const current = works.getWork(fixture.workId)!;
+    assert.equal(current.criteria[0].status, "pending");
+    unwrap(reviewWork(works, user, { kind: "accept_deliverable", request: { operationId: "ordinary:accept",
+      workId: fixture.workId, deliverableId: fixture.deliverableId, versionGuard: guard(fixture.workId) } }));
+    const request = { kind: "attest_criteria", request: { operationId: "ordinary:verify", workId: fixture.workId,
+      inputSnapshotId: current.inputSnapshotId, criterionUpdates: [{ criterionId: current.criteria[0].id,
+        status: "met", evidence: "Read the full result and checked every requested entry" }], versionGuard: guard(fixture.workId) } };
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, inputSnapshotId: "wrong-input" } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request,
+      criterionUpdates: [{ criterionId: current.criteria[0].id, status: "met", evidence: " " }] } }).ok, false);
+    const verified = unwrap(reviewWork(works, user, request));
+    assert.equal(verified.criteria[0].status, "satisfied");
+    const evidence = works.repo.getEvidence(verified.criteria[0].evidenceRefs[0])!;
+    assert.equal(evidence.kind, "user_attestation"); assert.equal(evidence.inputSnapshotId, current.inputSnapshotId);
+    const retry = reviewWork(works, user, request); assert(retry.ok && retry.replayed);
+    const closed = unwrap(reviewWork(works, user, { kind: "close", request: { operationId: "ordinary:close",
+      workId: fixture.workId, conclusion: "succeeded", closureSummary: "Reviewed and verified current result",
+      confirmed: true, versionGuard: guard(fixture.workId) } }));
+    assert.equal(closed.lifecycle, "closed");
+  });
+  check("ordinary verification never substitutes for required real-environment feedback", () => {
+    const fixture = proposed("real-review");
+    const current = works.getWork(fixture.workId)!;
+    const result = reviewWork(works, user, { kind: "attest_criteria", request: { operationId: "real:verify", workId: fixture.workId,
+      inputSnapshotId: current.inputSnapshotId, criterionUpdates: [{ criterionId: current.criteria[0].id,
+        status: "met", evidence: "The executor said it completed" }], versionGuard: guard(fixture.workId) } });
+    assert.equal(result.ok, false); if (!result.ok) assert.equal(result.code, "unmet_acceptance_criteria");
+    assert.equal(works.getWork(fixture.workId)?.criteria[0].status, "pending");
+  });
+  check("typed question reply retains its source, answer and evidence, without dispatch or accepting results", () => {
+    const fixture = proposed("question-reply", true);
+    unwrap(works.reportBlocker(user, { operationId: "question:report", workId: fixture.workId,
+      reason: "Which report date should the summary cover?", userInput: { kind: "reply" }, waitingForUserInput: true }));
+    const blocker = works.repo.listOpenBlockers(fixture.workId)[0];
+    const request = { kind: "reply_user_input", request: { operationId: "question:reply", workId: fixture.workId,
+      blockerId: blocker.blockerId, blockerSnapshot: userInputBlockerSnapshot(blocker),
+      inputSnapshotId: works.getWork(fixture.workId)!.inputSnapshotId, reply: "Use November 8", evidenceRef: "User's reporting plan",
+      versionGuard: guard(fixture.workId) } };
+    const before = works.getWork(fixture.workId)!;
+    assert.equal(reviewWork(works, fixture.worker, request).ok, false);
+    assert.equal(reviewWork(works, { ...user, userId: "other" }, request).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, reply: " " } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, blockerSnapshot: "changed" } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request,
+      versionGuard: { ...request.request.versionGuard, expectedStateVersion: before.stateVersion - 1 } } }).ok, false);
+    const after = unwrap(reviewWork(works, user, request));
+    assert.deepEqual(after.activeExecutionIds, before.activeExecutionIds);
+    assert.deepEqual(after.criteria, before.criteria); assert.deepEqual(after.authorization, before.authorization);
+    assert.equal(works.repo.getDeliverable(fixture.deliverableId)?.status, "proposed");
+    const saved = works.repo.getBlocker(blocker.blockerId)!;
+    assert.equal(saved.status, "cleared");
+    assert.deepEqual(saved.details!.userInput, blocker.details!.userInput);
+    assert.equal((saved.details!.response as { sourceSnapshot: string }).sourceSnapshot, request.request.blockerSnapshot);
+    const evidenceCount = works.repo.listEvidence(fixture.workId).length;
+    const retry = reviewWork(works, user, request); assert(retry.ok && retry.replayed);
+    assert.equal(works.repo.listEvidence(fixture.workId).length, evidenceCount);
+    const reopened = new WorkService(db.connection, { bots });
+    assert.equal((reopened.getProjection(fixture.workId)!.blockers[0].details!.response as { reply: string }).reply, "Use November 8");
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, reply: "Use another date" } }).ok, false);
+  });
+  check("budget, unknown effects and untyped operational blockers cannot be force-cleared by a reply", () => {
+    for (const kind of ["operational", "external_effect", "backpressure", "write_conflict"] as const) {
+      const fixture = proposed(`blocked-${kind}`, true);
+      unwrap(works.reportBlocker(user, { operationId: `report:${kind}`, workId: fixture.workId,
+        reason: "Needs specialist reconciliation", kind, waitingForUserInput: true,
+        unknownExternalEffectRef: kind === "external_effect" ? "effect" : undefined }));
+      const blocker = works.repo.listOpenBlockers(fixture.workId)[0];
+      assert.equal(userInputBlockerSnapshot(blocker), undefined);
+      assert.equal(reviewWork(works, user, { kind: "reply_user_input", request: { operationId: `reply:${kind}`, workId: fixture.workId,
+        blockerId: blocker.blockerId, blockerSnapshot: "forged", inputSnapshotId: works.getWork(fixture.workId)!.inputSnapshotId,
+        reply: "Force clear", evidenceRef: "none", versionGuard: guard(fixture.workId) } }).ok, false);
+      assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, "open");
+    }
+  });
+  check("a question from an old input cannot be answered using a fresh guard", () => {
+    const fixture = proposed("stale-question", true);
+    unwrap(works.reportBlocker(user, { operationId: "stale:report", workId: fixture.workId,
+      reason: "Question about A", userInput: { kind: "reply" }, waitingForUserInput: true }));
+    const blocker = works.repo.listOpenBlockers(fixture.workId)[0];
+    unwrap(works.amendWork(user, { operationId: "stale:amend", workId: fixture.workId, inputSnapshotId: "input:B" }));
+    const result = reviewWork(works, user, { kind: "reply_user_input", request: { operationId: "stale:reply", workId: fixture.workId,
+      blockerId: blocker.blockerId, blockerSnapshot: userInputBlockerSnapshot(blocker), inputSnapshotId: "input:B",
+      reply: "Old answer", evidenceRef: "Old record", versionGuard: guard(fixture.workId) } });
+    assert.equal(result.ok, false); if (!result.ok) assert.equal(result.code, "version_conflict");
+    assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, "open");
+  });
+  const legacyQuestion = (suffix: string) => {
+    const fixture = proposed(`legacy-${suffix}`, true);
+    const current = works.getWork(fixture.workId)!;
+    const owner: WorkActor = { kind: "bot", userId: LOCAL_USER_ID, botId: current.ownerBotId, host: "foreground", grants: DESKTOP_USER_GRANTS };
+    unwrap(works.reportBlocker(owner, { operationId: `legacy:report:${suffix}`, workId: fixture.workId,
+      reason: "Which reporting date should the summary use?", waitingForUserInput: true, versionGuard: guard(fixture.workId) }));
+    const blocker = works.getProjection(fixture.workId)!.blockers[0];
+    assert.ok(blocker.legacyUserInput, "an authentic uniquely identifiable report has host provenance");
+    const request = { kind: "reply_legacy_user_input" as const, request: { operationId: `legacy:reply:${suffix}`, workId: fixture.workId,
+      blockerId: blocker.blockerId, ...blocker.legacyUserInput, reply: "November 8", evidenceRef: "Reporting plan dated November 8",
+      confirmedInformationOnly: true, versionGuard: guard(fixture.workId) } };
+    // Projection-only identity metadata is not part of the decision wire schema.
+    const { intentRevision: _intent, ownerEpoch: _owner, ...body } = request.request;
+    return { fixture, blocker, owner, request: { ...request, request: body } };
+  };
+  check("legacy owner information report can be explicitly classified/replied and then successfully closed", () => {
+    const { fixture, blocker, request } = legacyQuestion("close");
+    const before = works.getWork(fixture.workId)!;
+    assert.equal(reviewWork(works, fixture.worker, request).ok, false);
+    assert.equal(reviewWork(works, { ...user, userId: "other" }, request).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, confirmedInformationOnly: false } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, evidenceRef: " " } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, blockerSnapshot: "forged" } }).ok, false);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request,
+      versionGuard: { ...request.request.versionGuard, expectedStateVersion: before.stateVersion - 1 } } }).ok, false);
+    const answered = unwrap(reviewWork(works, user, request));
+    assert.deepEqual(answered.criteria, before.criteria); assert.deepEqual(answered.authorization, before.authorization);
+    assert.deepEqual(answered.activeExecutionIds, before.activeExecutionIds); assert.deepEqual(answered.budget, before.budget);
+    const saved = works.repo.getBlocker(blocker.blockerId)!;
+    assert.equal(saved.status, "cleared");
+    assert.equal((saved.details!.response as { reportOperationId: string }).reportOperationId, request.request.reportOperationId);
+    assert.equal((saved.details!.response as { classification: string }).classification, "information_only");
+    const evidenceCount = works.repo.listEvidence(fixture.workId).length;
+    const reopened = new WorkService(db.connection, { bots });
+    const replay = reviewWork(reopened, user, request); assert(replay.ok && replay.replayed);
+    assert.equal(works.repo.listEvidence(fixture.workId).length, evidenceCount);
+    assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, reply: "Different" } }).ok, false);
+    unwrap(reviewWork(works, user, { kind: "accept_deliverable", request: { operationId: "legacy:accept", workId: fixture.workId,
+      deliverableId: fixture.deliverableId, versionGuard: guard(fixture.workId) } }));
+    unwrap(reviewWork(works, user, { kind: "attest_criteria", request: { operationId: "legacy:attest", workId: fixture.workId,
+      inputSnapshotId: before.inputSnapshotId, criterionUpdates: [{ criterionId: before.criteria[0].id, status: "met", evidence: "Checked original output" }],
+      versionGuard: guard(fixture.workId) } }));
+    const closed = unwrap(reviewWork(works, user, { kind: "close", request: { operationId: "legacy:close", workId: fixture.workId,
+      conclusion: "succeeded", closureSummary: "Question answered and original result verified", confirmed: true, versionGuard: guard(fixture.workId) } }));
+    assert.equal(closed.lifecycle, "closed");
+  });
+  check("legacy classification rejects forged/system metadata, machine references and unknown effects", () => {
+    const { fixture, blocker, request } = legacyQuestion("excluded");
+    const current = works.getWork(fixture.workId)!;
+    for (const mutation of [ { reportedByBotId: undefined }, { reportedByBotId: "different-owner" },
+      { blockerId: "approval:system" }, { reasonCode: "budget-exhausted" as const }, { unknownExternalEffectRef: "effect" },
+      { details: { resource: "desktop" } }, { sourceRef: "source" }, { subscriptionId: "subscription" },
+      { windowId: "budget" }, { causalChainId: "chain" }, { reason: "Forged question" }, { createdAt: blocker.createdAt + 1 } ]) {
+      assert.equal(legacyUserInputSource(db.connection, current, { ...blocker, ...mutation }), undefined);
+    }
+    const binding = works.repo.listBindings(fixture.workId)[0];
+    for (const status of ["pending", "denied"]) {
+      db.connection.prepare(`INSERT INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json)
+        VALUES (?,?,?,?,?,?)`).run(`machine:${status}`, fixture.workId, binding.bindingId, request.request.reportOperationId, "fixture", JSON.stringify({ status }));
+      assert.equal(legacyUserInputSource(db.connection, current, blocker), undefined);
+      assert.equal(reviewWork(works, user, request).ok, false);
+      db.connection.prepare("DELETE FROM work_action_approvals WHERE approval_id=?").run(`machine:${status}`);
+    }
+    db.connection.prepare("INSERT INTO work_resource_denials(action_id,owner_key,reason,recorded_at) VALUES (?,?,?,?)")
+      .run(request.request.reportOperationId, "owner", "resource not safe", blocker.createdAt);
+    assert.equal(legacyUserInputSource(db.connection, current, blocker), undefined);
+    assert.equal(reviewWork(works, user, request).ok, false);
+    assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, "open");
+    const forged = { ...blocker, blockerId: `blocker-${randomUUID()}`, createdAt: blocker.createdAt + 5, legacyUserInput: undefined };
+    works.repo.insertBlocker(forged);
+    assert.equal(legacyUserInputSource(db.connection, current, forged), undefined, "owner-looking metadata alone never proves a report");
+  });
+  check("legacy report ambiguity is rejected for both duplicate rows and duplicate receipt candidates", () => {
+    const first = legacyQuestion("duplicate-row");
+    works.repo.insertBlocker({ ...first.blocker, blockerId: `blocker-${randomUUID()}`, legacyUserInput: undefined });
+    assert.equal(legacyUserInputSource(db.connection, works.getWork(first.fixture.workId)!, first.blocker), undefined);
+    assert.equal(reviewWork(works, user, first.request).ok, false);
+    const second = legacyQuestion("duplicate-receipt");
+    const timed = new WorkService(db.connection, { bots, now: () => second.blocker.createdAt });
+    unwrap(timed.reportBlocker(second.owner, { operationId: "legacy:ambiguous", workId: second.fixture.workId,
+      reason: second.blocker.reason, waitingForUserInput: true, versionGuard: guard(second.fixture.workId) }));
+    // Even if only the original blocker remains, two valid hashes cannot uniquely
+    // attribute it. Exercise receipt ambiguity independently of sibling checking.
+    const duplicate = works.repo.listBlockers(second.fixture.workId).find(item => item.blockerId !== second.blocker.blockerId)!;
+    db.connection.prepare("DELETE FROM work_blockers WHERE blocker_id=?").run(duplicate.blockerId);
+    assert.equal(legacyUserInputSource(db.connection, works.getWork(second.fixture.workId)!, second.blocker), undefined);
+    assert.equal(reviewWork(works, user, { ...second.request, request: { ...second.request.request, versionGuard: guard(second.fixture.workId) } }).ok, false);
+  });
+  check("legacy reports cannot be rebound after input, intent or owner changes even using a fresh guard", () => {
+    for (const change of ["input", "intent", "owner"] as const) {
+      const { fixture, blocker, request } = legacyQuestion(`changed-${change}`);
+      if (change === "owner") {
+        const botId = "legacy-new-owner";
+        if (!bots.getBot(botId)) bots.registerBot({ botId, userId: LOCAL_USER_ID, displayName: "New owner", authorization: DESKTOP_USER_GRANTS });
+        // Persist a later owner snapshot directly: this case tests provenance
+        // identity, not the separately covered handoff authorization workflow.
+        const current = works.getWork(fixture.workId)!;
+        works.repo.updateWork({ ...current, ownerBotId: botId, ownerEpoch: current.ownerEpoch + 1, stateVersion: current.stateVersion + 1 });
+      } else unwrap(works.amendWork(user, { operationId: `legacy:change:${change}`, workId: fixture.workId,
+        ...(change === "input" ? { inputSnapshotId: "input:changed" } : { title: "Changed requirement" }) }));
+      assert.equal(works.getProjection(fixture.workId)!.blockers[0].legacyUserInput, undefined);
+      assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, versionGuard: guard(fixture.workId) } }).ok, false);
+      assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, "open");
+    }
   });
   console.log(`Bot Work review controls: ${count} passed`);
 } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }

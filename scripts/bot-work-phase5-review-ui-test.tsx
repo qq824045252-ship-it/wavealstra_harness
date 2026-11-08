@@ -82,7 +82,7 @@ const identity = (value: WorkProjectionDto) => JSON.stringify([value.workId, val
 async function render(panel: Panel, includeClosed: boolean, value = projection) {
   await act(async () => {
     root!.render(<StrictMode>{panel === "review"
-      ? <WorkReviewPanel key={identity(value)} work={value} includeClosed={includeClosed} />
+      ? <WorkReviewPanel key={value.workId} work={value} includeClosed={includeClosed} />
       : <WorkCardsPanel key={identity(value)} work={value} includeClosed={includeClosed} />}</StrictMode>);
   });
 }
@@ -100,6 +100,13 @@ async function click(label: string) {
   assert.ok(button, `expected an actual button labelled ${label}`);
   assert.equal(button.disabled, false, `${label} must be enabled before dispatch`);
   await act(async () => { button.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
+}
+async function change(label: string, value: string | boolean) {
+  const field = container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+  assert.ok(field, `expected mounted field ${label}`);
+  const key = Object.keys(field).find(key => key.startsWith("__reactProps$"))!;
+  const props = (field as unknown as Record<string, { onChange: (event: { target: { value?: string; checked?: boolean } }) => void }>)[key];
+  await act(async () => props.onChange({ target: typeof value === "boolean" ? { checked: value } : { value } }));
 }
 async function reset(panel: Panel) {
   await unmount(); testDocument.body.replaceChildren();
@@ -162,6 +169,150 @@ async function main() {
       assert.match(container.textContent ?? "", /Current evidence changed/);
       assert.doesNotMatch(container.textContent ?? "", /决定已保存/);
     });
+    await check("review: ordinary criteria have an evidence-backed explicit verification action", async () => {
+      await reset("review");
+      assert.equal(container.querySelector('[aria-label="普通验收确认"]'), null, "real-environment criteria cannot be attested");
+      const ordinary = { ...projection, criteria: [{ ...projection.criteria[0], requiresRealEnvironmentCheck: false, requiredEnvironment: undefined }] };
+      await render("review", false, ordinary);
+      await change("普通验收依据", "Checked each result against the requested list");
+      await click("确认此项通过");
+      assert.equal(reviewRequests.length, 1);
+      const request = reviewRequests[0]; assert.equal(request.kind, "attest_criteria");
+      if (request.kind === "attest_criteria") {
+        assert.equal(request.request.inputSnapshotId, projection.inputSnapshotId);
+        assert.equal(request.request.artifactSnapshotId, projection.phase3!.artifactSnapshotId);
+        assert.deepEqual(request.request.criterionUpdates, [{ criterionId: "criterion", status: "met", evidence: "Checked each result against the requested list" }]);
+      }
+      await complete("review");
+    });
+    await check("review: background versions retain all edits and require explicit rebasing before submission", async () => {
+      await reset("review");
+      await change("实测环境", "Windows"); await change("实测版本或记录", "fixture:original-version");
+      await change("实测说明", "Original test details"); await change("事项结束依据", "Reviewed closure basis");
+      await change("确认事项结束", true);
+      for (let version = 8; version <= 10; version++) {
+        await render("review", false, { ...projection, stateVersion: version });
+        assert.equal(container.querySelector<HTMLInputElement>('[aria-label="实测环境"]')!.value, "Windows");
+        assert.equal(container.querySelector<HTMLInputElement>('[aria-label="实测版本或记录"]')!.value, "fixture:original-version");
+        assert.equal(container.querySelector<HTMLTextAreaElement>('[aria-label="实测说明"]')!.value, "Original test details");
+        assert.equal(container.querySelector<HTMLTextAreaElement>('[aria-label="事项结束依据"]')!.value, "Reviewed closure basis");
+        assert.match(container.textContent!, /已保留你的填写内容和原评审版本/);
+        assert.equal([...container.querySelectorAll("button")].find(b => b.textContent === "记录实测通过")!.disabled, true);
+      }
+      assert.equal(reviewRequests.length, 0);
+      await click("已核对最新状态，继续评审");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="确认事项结束"]')!.checked, false, "closure confirmation must be renewed after rebasing");
+      await click("记录实测通过");
+      assert.equal(reviewRequests[0].request.versionGuard.expectedStateVersion, 10);
+      await complete("review");
+    });
+    for (const control of ["accept", "reply"] as const) for (const changeKind of ["input", "intent", "artifact"] as const) {
+      await check(`review: ${control} success keeps other drafts pinned before a later ${changeKind} change`, async () => {
+        await reset("review");
+        const question = (id: string) => ({ blockerId: id, workId: projection.workId, reason: `Question ${id}`, kind: "operational" as const,
+          reasonCode: "user-input" as const, sourceRef: `source:${id}`, waitingForUserInput: true, status: "open" as const, createdAt: 1,
+          details: { userInput: { kind: "reply", inputSnapshotId: projection.inputSnapshotId, intentRevision: 2, ownerEpoch: 3 } } });
+        const original = { ...projection, criteria: [{ ...projection.criteria[0], requiresRealEnvironmentCheck: false, requiredEnvironment: undefined }],
+          blockers: [question("first"), question("second")] };
+        await render("review", false, original);
+        await change("普通验收依据", "Attestation for A"); await change("实测环境", "Windows");
+        await change("实测版本或记录", "record:A"); await change("实测说明", "Test detail for A");
+        await change("事项结束依据", "Closure for A"); await change("确认事项结束", true);
+        for (const id of ["first", "second"]) {
+          await change(`问题回复 ${id}`, `Answer for A ${id}`); await change(`回复依据 ${id}`, `Evidence for A ${id}`);
+        }
+        await click(control === "accept" ? "采纳成果" : "保存回复");
+        assert.equal(reviewRequests[0].kind, control === "accept" ? "accept_deliverable" : "reply_user_input");
+        await complete("review");
+        // A later push, after the successful request has fully settled, must not
+        // silently relabel evidence entered for A as evidence about B.
+        const next = { ...original, stateVersion: 8,
+          ...(changeKind === "input" ? { inputSnapshotId: "input:B" } : {}),
+          ...(changeKind === "intent" ? { intentRevision: 3 } : {}),
+          ...(changeKind === "artifact" ? { phase3: { ...original.phase3!, artifactSnapshotId: "artifacts:B" } } : {}) };
+        await render("review", false, next);
+        assert.match(container.textContent!, /已保留你的填写内容和原评审版本/);
+        for (const [label, expected] of [["普通验收依据", "Attestation for A"], ["实测环境", "Windows"],
+          ["实测版本或记录", "record:A"], ["实测说明", "Test detail for A"], ["事项结束依据", "Closure for A"],
+          ["问题回复 second", "Answer for A second"], ["回复依据 second", "Evidence for A second"]]) {
+          assert.equal(container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!.value, expected);
+        }
+        for (const label of ["确认此项通过", "记录实测通过", "保存回复", "确认结束事项"]) {
+          assert.equal([...container.querySelectorAll("button")].find(button => button.textContent === label)!.disabled, true);
+        }
+        assert.equal(reviewRequests.length, 1, "no retained draft can submit to B implicitly");
+        await click("已核对最新状态，继续评审");
+        reviewReply = deferred<WorkControlResult>();
+        await click("确认此项通过");
+        const deliberate = reviewRequests[1]; assert.equal(deliberate.kind, "attest_criteria");
+        if (deliberate.kind === "attest_criteria") {
+          assert.equal(deliberate.request.inputSnapshotId, next.inputSnapshotId);
+          assert.equal(deliberate.request.artifactSnapshotId, next.phase3!.artifactSnapshotId);
+          assert.equal(deliberate.request.versionGuard.expectedIntentRevision, next.intentRevision);
+          assert.equal(deliberate.request.versionGuard.expectedStateVersion, 8);
+          assert.equal(deliberate.request.criterionUpdates[0].evidence, "Attestation for A", "only explicit review can rebind retained evidence");
+        }
+        await complete("review");
+        await render("review", false, { ...next, stateVersion: 9 });
+        assert.match(container.textContent!, /已保留你的填写内容和原评审版本/, "even successful verification does not unpin other retained drafts");
+      });
+    }
+    await check("review: uncertain decisions retry their original operation and snapshot even after remote changes", async () => {
+      await reset("review"); await begin("review"); const original = reviewRequests[0];
+      await complete("review", true);
+      await render("review", false, { ...projection, stateVersion: 8, ownerEpoch: 4, inputSnapshotId: "input:new" });
+      assert.equal([...container.querySelectorAll("button")].find(b => b.textContent === "采纳成果")!.disabled, true);
+      reviewReply = deferred<WorkControlResult>();
+      await click("重试原评审决定");
+      assert.deepEqual(reviewRequests[1], original);
+      await complete("review");
+    });
+    await check("review: only typed input questions expose a reply and unsafe blockers have no clear action", async () => {
+      await reset("review");
+      const blocker = { blockerId: "question", workId: projection.workId, reason: "Which date?", kind: "operational" as const,
+        reasonCode: "user-input" as const, sourceRef: "question:source", waitingForUserInput: true, status: "open" as const, createdAt: 1,
+        details: { userInput: { kind: "reply", inputSnapshotId: projection.inputSnapshotId, intentRevision: 2, ownerEpoch: 3 } } };
+      const value = { ...projection, blockers: [blocker,
+        { ...blocker, blockerId: "budget", reasonCode: "budget-exhausted" as const },
+        { ...blocker, blockerId: "unknown", unknownExternalEffectRef: "effect" },
+        { ...blocker, blockerId: "generic", reasonCode: undefined, details: undefined }] };
+      await render("review", false, value);
+      assert.equal(container.querySelectorAll('[aria-label="回复待补充信息"]').length, 1);
+      await change("问题回复 question", "November 8"); await change("回复依据 question", "User reporting plan");
+      await click("保存回复");
+      const request = reviewRequests[0]; assert.equal(request.kind, "reply_user_input");
+      if (request.kind === "reply_user_input") {
+        assert.equal(request.request.blockerId, "question"); assert.equal(request.request.reply, "November 8");
+        assert.match(request.request.blockerSnapshot, /question:source/);
+      }
+      await complete("review");
+    });
+    await check("review: proven legacy report needs explicit information-only classification and preserves proof", async () => {
+      await reset("review");
+      const blocker = { blockerId: "legacy-proven", workId: projection.workId, reason: "Which date?", kind: "operational" as const,
+        reportedByBotId: projection.ownerBotId, waitingForUserInput: true, status: "open" as const, createdAt: 1,
+        legacyUserInput: { reportOperationId: "original-report", blockerSnapshot: "original-proof", inputSnapshotId: projection.inputSnapshotId,
+          intentRevision: projection.intentRevision, ownerEpoch: projection.ownerEpoch } };
+      const value = { ...projection, blockers: [blocker] };
+      await render("review", false, value);
+      await change("问题回复 legacy-proven", "November 8"); await change("回复依据 legacy-proven", "User's dated reporting plan");
+      const save = () => [...container.querySelectorAll("button")].find(button => button.textContent === "保存回复")!;
+      assert.equal(save().disabled, true, "reply text alone never classifies an untyped question");
+      await change("确认仅信息问题 legacy-proven", true);
+      await render("review", false, { ...value, stateVersion: 8 });
+      assert.equal(save().disabled, true, "classification does not bypass version changes");
+      await click("已核对最新状态，继续评审");
+      assert.equal(save().disabled, true, "latest-state review requires renewing the information-only confirmation");
+      await change("确认仅信息问题 legacy-proven", true);
+      await click("保存回复");
+      const request = reviewRequests[0]; assert.equal(request.kind, "reply_legacy_user_input");
+      if (request.kind === "reply_legacy_user_input") {
+        assert.equal(request.request.reportOperationId, "original-report"); assert.equal(request.request.blockerSnapshot, "original-proof");
+        assert.equal(request.request.confirmedInformationOnly, true); assert.equal(request.request.versionGuard.expectedStateVersion, 8);
+      }
+      await complete("review");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="确认仅信息问题 legacy-proven"]')!.checked, false);
+    });
     await check("cards: a previous version's deferred diagnostics cannot populate the replacement card view", async () => {
       await reset("cards");
       await click("读取诊断");
@@ -173,13 +324,46 @@ async function main() {
       assert.deepEqual(refreshes, []);
       assert.equal([...container.querySelectorAll("button")].find(item => item.textContent === "读取诊断")?.disabled, false);
     });
+    await check("workspace: a legacy blocker opens an owner reply draft without overwriting, sending or clearing", async () => {
+      await unmount(); testDocument.body.replaceChildren();
+      const originalState = useAppStore.getState(); const beforeReviews = reviewRequests.length; let sends = 0;
+      const owner = { botId: "owner", displayName: "Owner", status: "active", authorization: work.authorization } as BotDto;
+      const member = { botId: "member", displayName: "Member", status: "active", authorization: work.authorization } as BotDto;
+      const legacy: WorkProjectionDto = { ...projection, team: { workId: projection.workId,
+        intentRevision: projection.intentRevision, inputSnapshotId: projection.inputSnapshotId,
+        ownerEpoch: projection.ownerEpoch, ownerBotId: projection.ownerBotId, createdAt: work.createdAt,
+        state: "awaiting_review", ownerResponsibility: "Review results",
+        members: [{ botId: "member", responsibility: "Read sources", delegatedScope: ["workspace:read"] }], executions: [] },
+        blockers: [{ blockerId: "legacy-question", workId: work.workId, reason: "Please clarify the expected date", kind: "operational" as const,
+          waitingForUserInput: true, status: "open" as const, createdAt: 1 }] };
+      try {
+        useAppStore.setState({ activeBotId: "member", botIdentities: [owner, member], selectedWorkId: legacy.workId,
+          botWorks: [legacy], botDraft: "Member unfinished draft", botDrafts: { member: "Member unfinished draft", owner: "Owner unfinished draft" },
+          refreshBotHistory: async () => {}, refreshBotWork: async () => {}, submitBotDraft: async () => { sends += 1; } });
+        const { createRoot } = await import("react-dom/client");
+        container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+        await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
+        await click("向负责人回复此问题");
+        const after = useAppStore.getState();
+        assert.equal(after.activeBotId, "owner"); assert.equal(after.selectedWorkId, legacy.workId);
+        assert.equal(after.botDrafts.member, "Member unfinished draft");
+        assert.ok(after.botDraft.startsWith("Owner unfinished draft"));
+        assert.match(after.botDraft, /legacy-question/); assert.match(after.botDraft, /Please clarify the expected date/);
+        assert.equal(after.botWorks[0].blockers[0].status, "open"); assert.equal(sends, 0); assert.equal(reviewRequests.length, beforeReviews);
+        const draft = after.botDraft;
+        await click("向负责人回复此问题");
+        assert.equal(useAppStore.getState().botDraft, draft, "repeat click does not append duplicate question text");
+        await act(async () => useAppStore.setState({ botWorks: [{ ...legacy, stateVersion: 8 }] }));
+        assert.equal(useAppStore.getState().botDraft, draft, "background refresh retains the reply draft");
+      } finally { await unmount(); useAppStore.setState(originalState, true); }
+    });
     await check("workspace: repeated state refreshes keep one inspector panel and both historical/current cards", async () => {
       await unmount(); testDocument.body.replaceChildren();
       const originalState = useAppStore.getState();
       const errors: unknown[][] = [];
       const originalError = console.error;
       console.error = (...args: unknown[]) => { errors.push(args); originalError(...args); };
-      const owner = { botId: "owner", displayName: "Owner", status: "active" } as BotDto;
+      const owner = { botId: "owner", displayName: "Owner", status: "active", authorization: work.authorization } as BotDto;
       let current: WorkProjectionDto = { ...projection, cards: [
         { ...projection.cards![0], cardKey: "history", semanticCardKey: "history", intentRevision: 1, currency: "historical" },
         projection.cards![0],

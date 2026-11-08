@@ -3,8 +3,9 @@ import Database from "better-sqlite3";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileResource, WorkResourceGate, type ResourceAdmission, type WorkResourceOwner } from "../src/main/agent/work/WorkResourceGate";
+import { fileResource, resourceOwnerKey, WorkResourceGate, type ResourceAdmission, type WorkResourceOwner } from "../src/main/agent/work/WorkResourceGate";
 import { WorkToolResourcePolicy, type ToolResourceCall } from "../src/main/agent/work/WorkToolResourcePolicy";
+import { workShellRead } from "../src/main/agent/work/WorkShellRead";
 import { classifyMcpToolCall } from "../src/main/security/McpSideEffectPolicy";
 import { directoryContentVersion } from "../src/main/platform/resource-identity";
 import { directorySymlinkType } from "../src/main/platform/paths";
@@ -121,10 +122,36 @@ try {
   policyA.after(shell, "consumed");
   assert.match(policyB.before(call("shell", "later-unbounded-write", "bash", { command: "some later writer" }, true)) ?? "", /范围未核实|不受限修改/);
   assert.match(policyB.before(call("shell", "stale-existing", "write", { path: other, content: "from opaque output" }, true)) ?? "", /可信读取/);
+  // An explicit path is not enough to classify arbitrary commands or flags as trusted reads.
+  for (const [index, command] of ["wc -l", 'wc -l "./proof.txt"', "ls -1", 'ls -1 "./tree"', 'cat -n "./proof.txt"', 'ls -- "./tree"'].entries()) {
+    assert.equal(workShellRead("bash", { command }), undefined);
+    const unsupportedRead = call("shell", `unsupported-read-${index}`, "bash", { command }, true);
+    const reason = policyB.before(unsupportedRead);
+    assert(reason);
+    assert.match(reason, /范围未核实/);
+    assert.match(reason, /内置 read.*明确文件路径/);
+    assert.match(reason, /完整内容上统计.*分段读完/);
+    assert.match(reason, /ls "\.\/dir".*不带选项/);
+    assert.match(reason, /wc -l 和 ls -1 即使补上路径也不属于可信读取/);
+    assert.match(reason, /内置 write\/edit.*逐个重新读取.*不会解除任意 Shell 命令限制/);
+    assert.equal(policyB.refuse(unsupportedRead, reason), true);
+    assert.equal(policyA.wasNotStarted(unsupportedRead), true, "another SQLite connection sees the durable not-started proof");
+    assert.deepEqual(a.prepare("SELECT reason FROM work_resource_denials WHERE action_id=?").get(
+      `resource:${resourceOwnerKey(owner("shell"))}:${unsupportedRead.context.nativeTaskId}:${unsupportedRead.call.id}`), { reason });
+  }
+  const directoryRead = call("shell", "trusted-directory-read", "bash", { command: 'ls "./"' }, false);
+  assert.deepEqual(workShellRead("bash", directoryRead.call.arguments), { path: "./", directory: true });
+  assert.equal(policyB.before(directoryRead), undefined); policyB.after(directoryRead, "consumed");
+  assert.match(policyB.before(call("shell", "write-after-list", "write", { path: other, content: "not reread" }, true)) ?? "",
+    /内置 read.*重新读取目标版本.*内置 write\/edit.*列目录不能代替/);
   const trustedAfterOpaque = call("shell", "trusted-current-read", "read", { path: other }, false);
   assert.equal(policyB.before(trustedAfterOpaque), undefined); policyB.after(trustedAfterOpaque, "consumed");
   const scopedAfterOpaque = call("shell", "scoped-write", "write", { path: other, content: "fresh after opaque" }, true);
   assert.equal(policyB.before(scopedAfterOpaque), undefined); writeFileSync(other, "fresh after opaque"); policyB.after(scopedAfterOpaque, "consumed");
+  assert.match(policyB.before(call("shell", "other-target-not-reread", "write", { path: file, content: "outside reread target" }, true)) ?? "", /可信读取/,
+    "rereading one file does not authorize overwriting another existing file");
+  assert.match(policyB.before(call("shell", "still-unbounded", "bash", { command: 'wc -l "./other.txt"' }, true)) ?? "", /不会解除任意 Shell 命令限制/,
+    "a scoped reread/write cannot clear the original opaque command boundary");
   const newAfterOpaque = call("shell", "new-file", "write", { path: join(directory, "new-after-opaque.txt"), content: "new target" }, true);
   assert.equal(policyB.before(newAfterOpaque), undefined); writeFileSync(join(directory, "new-after-opaque.txt"), "new target"); policyB.after(newAfterOpaque, "consumed");
 
