@@ -53,7 +53,8 @@ export class RemoteAccessController {
     this.commands = new RemoteTaskCommandService(db, agent, this.settings, projects,
       join(getMyBuddyDir(), "remote-uploads"), lifecycle, workGraph, externalAgent);
     this.unsubscribePatch = agent.onPatch((patch) => {
-      this.events.publish("agent.patch", mapAgentPatchToRemoteEvent(patch));
+      // A local catalog refresh has no remote projection; do not push an unknown patch type.
+      if (patch.type !== "models_changed") this.events.publish("agent.patch", mapAgentPatchToRemoteEvent(patch));
       if (patch.type === "tool_start" || patch.type === "tool_update") {
         queueMicrotask(() => this.events.publish("pending_action.changed", {
           taskId: patch.taskId,

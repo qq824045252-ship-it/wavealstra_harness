@@ -97,6 +97,9 @@ export function reconcileMessagesArtifactIds(
   const hintByMessage = new Map(hints.map((h) => [h.messageId, h.items] as const));
   const used = new Set<string>();
 
+  // Reconciliation runs after every accepted projection with artifacts. Rebuilding the array for
+  // an already-correct association made the store publish a new Task on every stream tick.
+  let changed = false;
   let next = messages.map((m) => {
     const resolved: string[] = [];
 
@@ -120,11 +123,13 @@ export function reconcileMessagesArtifactIds(
 
     const artifactIds = resolved.length ? resolved : undefined;
     if (sameIds(artifactIds, m.artifactIds)) return m;
+    changed = true;
     return { ...m, artifactIds };
   });
+  const settled = (): ChatMessage[] => (changed ? next : messages);
 
   const orphans = descriptors.filter((d) => !used.has(d.id));
-  if (orphans.length === 0) return next;
+  if (orphans.length === 0) return settled();
 
   let lastAsst = -1;
   for (let i = next.length - 1; i >= 0; i -= 1) {
@@ -133,12 +138,13 @@ export function reconcileMessagesArtifactIds(
       break;
     }
   }
-  if (lastAsst < 0) return next;
+  if (lastAsst < 0) return settled();
 
   const m = next[lastAsst]!;
   const merged = [...new Set([...(m.artifactIds ?? []), ...orphans.map((o) => o.id)])];
-  if (sameIds(merged, m.artifactIds)) return next;
+  if (sameIds(merged, m.artifactIds)) return settled();
   next = next.slice();
   next[lastAsst] = { ...m, artifactIds: merged };
+  changed = true;
   return next;
 }

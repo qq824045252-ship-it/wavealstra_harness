@@ -1046,6 +1046,10 @@ export type AgentUiPatch =
       projection: import("./bot-work").WorkProjectionDto;
     }
   | {
+      /** Late provider discovery changed the catalog; the renderer re-reads it without touching the user's selection. */
+      type: "models_changed";
+    }
+  | {
       type: "text_delta";
       taskId: string;
       messageId: string;

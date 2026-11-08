@@ -8,6 +8,8 @@ import type { ExpertService } from "./ExpertService";
 import { copyExpertPackages } from "./ExpertSnapshotFiles";
 
 interface SkillCopy { id: string; relativePath: string; origin: "private" | "global" }
+/** Stay well below SQLite's bound-variable limit for one list query. */
+const TASK_BINDING_BATCH = 400;
 interface BindingRow {
   task_id: string;
   desired_json: string | null;
@@ -50,6 +52,7 @@ export class TaskExpertBindingService {
       desired_skills_json TEXT NOT NULL DEFAULT '[]', active_skills_json TEXT NOT NULL DEFAULT '[]',
       warnings_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`);
     db.setTaskExpertBindingReader(taskId => this.get(taskId));
+    db.setTaskExpertBindingBatchReader(taskIds => this.list(taskIds));
   }
 
   private row(taskId: string): BindingRow | undefined {
@@ -58,10 +61,31 @@ export class TaskExpertBindingService {
   /** Pure table read: also used by AppDatabase.mapTaskRow, so it must not call getTask. */
   get(taskId: string): TaskExpertBindingDto | null {
     const row = this.row(taskId);
-    if (!row) return null;
+    return row ? this.decode(row) : null;
+  }
+
+  /**
+   * List projection: one query per chunk instead of one per task. Ids without a row decode to
+   * null so a task list keeps its "no binding" shape.
+   */
+  list(taskIds: readonly string[]): Map<string, TaskExpertBindingDto | null> {
+    const unique = [...new Set(taskIds)];
+    const result = new Map<string, TaskExpertBindingDto | null>();
+    for (let offset = 0; offset < unique.length; offset += TASK_BINDING_BATCH) {
+      const chunk = unique.slice(offset, offset + TASK_BINDING_BATCH);
+      const rows = this.db.connection
+        .prepare(`SELECT * FROM task_expert_bindings WHERE task_id IN (${chunk.map(() => "?").join(",")})`)
+        .all(...chunk) as BindingRow[];
+      for (const row of rows) result.set(row.task_id, this.decode(row));
+    }
+    for (const taskId of unique) if (!result.has(taskId)) result.set(taskId, null);
+    return result;
+  }
+
+  private decode(row: BindingRow): TaskExpertBindingDto {
     const desired = parseSnapshot(row.desired_json), active = parseSnapshot(row.active_json);
     const warnings: string[] = JSON.parse(row.warnings_json);
-    return { taskId, desired, active, pending: revision(desired) !== revision(active), ...(warnings.length ? { warnings } : {}) };
+    return { taskId: row.task_id, desired, active, pending: revision(desired) !== revision(active), ...(warnings.length ? { warnings } : {}) };
   }
   active(taskId: string): TaskExpertSnapshot | null { return this.get(taskId)?.active ?? null; }
 

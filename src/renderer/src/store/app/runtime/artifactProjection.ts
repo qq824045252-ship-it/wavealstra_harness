@@ -101,20 +101,25 @@ export function createArtifactProjectionActions(
 
     reconcileTaskMessageArtifacts: (taskId) => {
       if (!taskId) return;
-      const descriptors = get().artifactProjection.artifactsByTask[taskId];
+      const state = get();
+      const descriptors = state.artifactProjection.artifactsByTask[taskId];
       if (!descriptors?.length) return;
-      set((s) => ({
-        tasks: s.tasks.map((t) => {
-          if (t.id !== taskId || !t.messages.length) return t;
-          const messages = reconcileMessagesArtifactIds(
-            t.messages,
-            descriptors,
-            taskId,
-          );
-          if (messages === t.messages) return t;
-          return { ...t, messages };
-        }),
-      }));
+      let changed = false;
+      const tasks = state.tasks.map((t) => {
+        if (t.id !== taskId || !t.messages.length) return t;
+        const messages = reconcileMessagesArtifactIds(
+          t.messages,
+          descriptors,
+          taskId,
+        );
+        if (messages === t.messages) return t;
+        changed = true;
+        return { ...t, messages };
+      });
+      // A rebuilt `tasks` array notifies every subscriber, so an unchanged association must
+      // return before publishing: only a real Task replacement may reach the store.
+      if (!changed) return;
+      set({ tasks });
     },
 
     applyArtifactSnapshot: (snapshot) => {

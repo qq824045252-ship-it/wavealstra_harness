@@ -55,6 +55,9 @@ export function mapAgentPatchToRemoteEvent(patch: AgentUiPatch): Record<string, 
     case "conversation_goal_snapshot":
     case "work_projection_snapshot":
       return { ...patch };
+    case "models_changed":
+      // Desktop-only catalog refresh: remote clients read their own model list.
+      return { type: patch.type };
   }
 }
 

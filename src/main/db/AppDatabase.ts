@@ -298,9 +298,15 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
 export class AppDatabase {
   private readonly db: Database.Database;
   private expertBindingReader?: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null;
+  /** List projection reads every task's binding in one query instead of one per row. */
+  private expertBindingBatchReader?: (taskIds: readonly string[]) => Map<string, import("../../shared/expert-binding").TaskExpertBindingDto | null>;
 
   setTaskExpertBindingReader(reader: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null): void {
     this.expertBindingReader = reader;
+  }
+
+  setTaskExpertBindingBatchReader(reader: (taskIds: readonly string[]) => Map<string, import("../../shared/expert-binding").TaskExpertBindingDto | null>): void {
+    this.expertBindingBatchReader = reader;
   }
 
   constructor(dbPath = getDbPath()) {
@@ -2757,7 +2763,15 @@ export class AppDatabase {
          FROM tasks ORDER BY updated_at DESC`,
       )
       .all() as TaskRow[];
-    return rows.map((r) => this.mapTaskRow(r));
+    return this.projectTaskRows(rows);
+  }
+
+  /** Batch readers keep list projection at one query per relation regardless of task count. */
+  private projectTaskRows(rows: readonly TaskRow[]): TaskDto[] {
+    const bindings = this.expertBindingBatchReader?.(rows.map((row) => row.id));
+    return rows.map((row) => this.mapTaskRow(row, bindings
+      ? bindings.get(row.id) ?? null
+      : this.expertBindingReader?.(row.id)));
   }
 
   /**
@@ -2782,12 +2796,12 @@ export class AppDatabase {
          FROM tasks WHERE id = ?`,
       )
       .get(taskId) as TaskRow | undefined;
-    return row ? this.mapTaskRow(row) : undefined;
+    return row ? this.mapTaskRow(row, this.expertBindingReader?.(row.id)) : undefined;
   }
 
-  private mapTaskRow(r: TaskRow): TaskDto {
+  private mapTaskRow(r: TaskRow, binding?: import("../../shared/expert-binding").TaskExpertBindingDto | null): TaskDto {
     return {
-      expertBinding: this.expertBindingReader?.(r.id) ?? undefined,
+      expertBinding: binding ?? undefined,
       id: r.id,
       title: r.title,
       spaceId: r.space_id ?? undefined,

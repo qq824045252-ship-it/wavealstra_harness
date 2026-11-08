@@ -15,6 +15,9 @@ import type { AppState } from "./types";
 const EMPTY_ARTIFACTS: Artifact[] = [];
 
 function sameSidebarTask(previous: Task, current: Task): boolean {
+  // Streaming replaces the task object only when the stored projection changed. An untouched
+  // task entering the selector again must not re-derive approval/running status from its messages.
+  if (previous === current) return true;
   return (
     previous.id === current.id &&
     previous.title === current.title &&
