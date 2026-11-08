@@ -20,7 +20,7 @@ function readPendingTemplate(): TemplateRequest | null {
 function clearPendingTemplate(operationId: string) {
   try { if (readPendingTemplate()?.operationId === operationId) localStorage.removeItem(pendingTemplateKey); } catch { /* Retaining a request permits safe replay. */ }
 }
-type MemberDraft = { botId: string; responsibility: string; delegatedScope: Array<"workspace:read" | "workspace:write"> };
+type MemberDraft = { botId: string; responsibility: string; delegatedScope: Array<"workspace:read" | "workspace:write">; dependsOnBotIds?: string[] };
 
 /** An explicit human delegation: nothing is dispatched until the form is submitted. */
 export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () => void }): React.JSX.Element {
@@ -33,6 +33,8 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
   const [owner, setOwner] = useState(pending?.ownerBotId ?? activeBotId ?? "");
   const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
   const [members, setMembers] = useState<MemberDraft[]>(pending?.members ?? []);
+  const [executionPolicy, setExecutionPolicy] = useState<"sequential" | "parallel">(pending?.executionPolicy ?? "sequential");
+  const [maxConcurrency, setMaxConcurrency] = useState(pending?.maxConcurrency ?? 2);
   const [criteria, setCriteria] = useState(pending?.criteria.join("\n") ?? "");
   const [budget, setBudget] = useState(String(pending?.budgetTokens ?? 30000));
   const [templates, setTemplates] = useState<WorkTeamTemplateDto[]>([]);
@@ -80,7 +82,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
   const submit = async () => {
     if (inFlight.current || (!pending && !valid)) return;
     const request = pending ?? { operationId: `desktop-team:${crypto.randomUUID()}`, title: title.trim(), goalDescription: goal.trim(),
-      workspacePath: workspace.trim(), ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
+      workspacePath: workspace.trim(), executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
       members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })),
       criteria: criteria.split("\n").map(line => line.trim()).filter(Boolean), budgetTokens: Number(budget) };
     const parsed = createTeamWorkSchema.safeParse(request);
@@ -110,7 +112,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
   };
   const saveTemplate = async () => {
     if (templateInFlight.current || (!pendingTemplate && (!templateName.trim() || !owner || members.length === 0 || !ownerResponsibility.trim() || members.some(member => !member.responsibility.trim())))) return;
-    const request = pendingTemplate ?? { name: templateName.trim(), plan: { ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(), members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })) }, operationId: `desktop-template:${crypto.randomUUID()}` };
+    const request = pendingTemplate ?? { name: templateName.trim(), plan: { executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(), members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })) }, operationId: `desktop-template:${crypto.randomUUID()}` };
     try { localStorage.setItem(pendingTemplateKey, JSON.stringify(request)); }
     catch { setTemplateNotice("无法保存模板请求，尚未提交。"); return; }
     setPendingTemplate(request); templateInFlight.current = true; setTemplateBusy(true); setTemplateNotice("");
@@ -141,7 +143,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
     finally { if (mounted.current) setTemplateBusy(false); }
   };
   const toggleMember = (botId: string) => setMembers(current => current.some(member => member.botId === botId)
-    ? current.filter(member => member.botId !== botId) : [...current, { botId, responsibility: "", delegatedScope: ["workspace:read"] }]);
+    ? current.filter(member => member.botId !== botId).map(member => ({ ...member, dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== botId) })) : [...current, { botId, responsibility: "", delegatedScope: ["workspace:read"] }]);
   return <dialog ref={dialog} className="bot-create-dialog bot-team-dialog" aria-labelledby="bot-team-title"
     onCancel={event => { event.preventDefault(); close(); }} onKeyDownCapture={event => {
       if (event.key === "Enter" && (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) event.preventDefault();
@@ -150,13 +152,14 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
     <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
       <div><h2 id="bot-team-title">组队开工</h2><p>一个目标，明确分工，由负责人统一汇总</p></div>
       <button type="button" className="icon-btn" aria-label="关闭组队开工" onClick={close}><IconX size={18} /></button></header>
-    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员在各自范围内依次执行，负责人随后核对和汇总。执行结束仍需验收。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
+    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。执行结束仍需验收。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
       : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
         <p>选择负责人和至少一位成员。每位成员使用自己的身份和已有权限，不共享私人记忆。</p>
         <fieldset disabled={Boolean(pending)}>
           {templates.length > 0 && <><label htmlFor="team-template">使用团队模板</label><select id="team-template" defaultValue="" onChange={event => {
             const template = templates.find(item => item.templateId === event.target.value); if (!template) return;
             setOwner(template.ownerBotId); setOwnerResponsibility(template.ownerResponsibility);
+            setExecutionPolicy(template.executionPolicy ?? "sequential"); setMaxConcurrency(template.maxConcurrency ?? 2);
             setMembers(template.members.map(member => ({ ...member, delegatedScope: member.delegatedScope.filter(scope => candidate(member.botId)?.authorization.allowedScopes.includes(scope)) })));
             setTemplateNotice("已填入模板。请核对成员、分工与当前权限，再填写本次目标和工作区。");
           }}><option value="">选择模板（可选）</option>{templates.map(template => <option key={template.templateId} value={template.templateId}>{template.name}</option>)}</select></>}
@@ -165,9 +168,12 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
           <label htmlFor="team-title">事项名称</label><input id="team-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={200} required placeholder="例如：梳理项目现状与改进建议" />
           <label htmlFor="team-goal">共同目标</label><textarea id="team-goal" value={goal} onChange={event => setGoal(event.target.value)} maxLength={2000} rows={3} required placeholder="说明希望得到什么，以及不需要做什么。" />
           <label htmlFor="team-workspace">工作区绝对路径</label><input id="team-workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} maxLength={2000} required placeholder="指定这次团队可以处理的本地目录" />
-          <label htmlFor="team-owner">主负责人</label><select id="team-owner" value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value)); }} required>
+          <label htmlFor="team-owner">主负责人</label><select id="team-owner" value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value).map(member => ({ ...member, dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== event.target.value) }))); }} required>
             <option value="">选择负责人</option>{candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}</select>
           <label htmlFor="team-owner-role">负责人的汇总职责</label><textarea id="team-owner-role" value={ownerResponsibility} onChange={event => setOwnerResponsibility(event.target.value)} maxLength={2000} rows={2} required />
+          <label htmlFor="team-execution-policy">执行方式</label><select id="team-execution-policy" value={executionPolicy} onChange={event => setExecutionPolicy(event.target.value as "sequential" | "parallel")}>
+            <option value="sequential">依次执行</option><option value="parallel">按依赖并行</option></select>
+          {executionPolicy === "parallel" && <><label htmlFor="team-concurrency">最多同时执行的成员数</label><select id="team-concurrency" value={maxConcurrency} onChange={event => setMaxConcurrency(Number(event.target.value))}>{[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}</select><p>无依赖的成员可同时开始；共享文件仍受资源互斥保护。需要使用他人成果时请明确选择前置成员。</p></>}
           <h3 className="bot-team-members-heading">团队成员与分工</h3>
           {owner && !candidate(owner) && <p role="alert">模板负责人已停用或不存在，请重新选择。</p>}
           {members.filter(member => !candidate(member.botId)).map(member => <p key={member.botId} role="alert">成员 {bots.find(bot => bot.botId === member.botId)?.displayName ?? member.botId} 已不可用。<button type="button" onClick={() => toggleMember(member.botId)}>移除此成员</button></p>)}
@@ -179,6 +185,10 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
               <label className="bot-team-member-toggle"><input type="checkbox" checked={Boolean(member)} disabled={!readable && !member} onChange={() => toggleMember(bot.botId)} /><span><strong>{bot.displayName}</strong><small>{readable ? bot.responsibilitySummary || "尚未设置长期职责" : "当前没有工作区读取权限"}</small></span></label>
               {member && <><label htmlFor={`team-role-${bot.botId}`}>这次负责什么</label><textarea id={`team-role-${bot.botId}`} value={member.responsibility} required rows={2} maxLength={2000} placeholder="限定任务与产出，避免成员重复处理同一工作。"
                 onChange={event => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, responsibility: event.target.value } : item))} />
+                {executionPolicy === "parallel" && <fieldset aria-label={`${bot.displayName}的前置成员`}><legend>等待哪些成员先结束</legend>
+                  {members.slice(0, members.findIndex(item => item.botId === bot.botId)).map(prior => <label key={prior.botId}><input type="checkbox" checked={member.dependsOnBotIds?.includes(prior.botId) ?? false} onChange={event => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, dependsOnBotIds: event.target.checked ? [...(item.dependsOnBotIds ?? []), prior.botId] : (item.dependsOnBotIds ?? []).filter(id => id !== prior.botId) } : item))} />{candidate(prior.botId)?.displayName ?? prior.botId}</label>)}
+                  {members.findIndex(item => item.botId === bot.botId) === 0 && <p>没有前置成员，可先开始。</p>}
+                </fieldset>}
                 <p className="bot-team-scope">工作范围：读取指定工作区</p>{bot.authorization.allowedScopes.includes("workspace:write") && <label className="bot-team-member-toggle"><input type="checkbox" checked={member.delegatedScope.includes("workspace:write")}
                   onChange={event => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, delegatedScope: event.target.checked ? ["workspace:read", "workspace:write"] : ["workspace:read"] } : item))} /><span>允许在该工作区写入（仅使用已有授权）</span></label>}</>}
             </section>;
@@ -188,7 +198,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
           <details className="bot-team-template"><summary>将成员与分工保存为可复用模板</summary>{pendingTemplate && <p role="status">模板「{pendingTemplate.name}」的原保存请求尚待核对。当前分工修改不会改变原请求。</p>}<label htmlFor="team-template-name">模板名称</label><input id="team-template-name" value={templateName} maxLength={120} onChange={event => setTemplateName(event.target.value)} /><button type="button" disabled={templateBusy || (!pendingTemplate && (!templateName.trim() || !owner || members.length === 0 || members.some(member => !member.responsibility.trim())))} onClick={() => { void saveTemplate(); }}>{templateBusy ? "正在保存…" : pendingTemplate ? "核对原模板" : "保存团队模板"}</button><p className="bot-team-scope">模板不会保存工作区、任务目标、预算或新增授权，也不会启动工作。</p></details>
         </fieldset>
         {templateNotice && <p role="status">{templateNotice}</p>}
-        <p className="bot-create-boundary">成员依次执行，避免争用共享文件。负责人只读汇总；不自动批准成果，不支持任意 Shell、外部连接或桌面操作，不对外发送、不新增服务访问权。关闭窗口不会停止已提交的工作，请在事项中暂停或取消。</p>
+        <p className="bot-create-boundary">成员按所选执行方式与依赖安排，共享文件仍受资源互斥保护。负责人等待全部成员结算后只读汇总；不自动批准成果，不支持任意 Shell、外部连接或桌面操作，不对外发送、不新增服务访问权。关闭窗口不会停止已提交的工作，请在事项中暂停或取消。</p>
         {error && <p role="alert" className="bot-create-error">{error}</p>}
         {pending && <p role="status" className="bot-create-pending">{busy ? "正在提交团队事项…" : "保留上次请求，重试只核对同一事项，不会重新建队。"}</p>}
         <footer className="bot-create-actions"><button type="button" onClick={close}>关闭</button><button type="submit" className="bot-create-primary" disabled={busy || (!pending && !valid)}>{busy ? "正在提交…" : pending ? "核对原请求" : "创建并开工"}</button></footer>

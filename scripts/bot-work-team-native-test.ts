@@ -22,6 +22,7 @@ import { ConversationInteractionRepository } from "../src/main/agent/Conversatio
 import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
 import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
 import { LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
+import { collectOwnerSummaryFacts } from "../src/main/agent/work/WorkOwnerSummaryFacts";
 import type { CreateTeamWorkRequest } from "../src/shared/bot-work-team";
 
 const root = mkdtempSync(join(tmpdir(), "bot-team-native-"));
@@ -36,6 +37,8 @@ const modelCalls: Array<{ input: string; role: string; tool?: string; error?: bo
 const toolsObserved: Array<{ taskId: string; name: string; error: boolean }> = [];
 const errors: string[] = [];
 let sequence = 0;
+let holdAlpha = false;
+let releaseAlpha: (() => void) | undefined;
 const text = (value: string): AssistantMessage["content"] => [{ type: "text", text: value }];
 const tool = (name: string, args: Record<string, string>): AssistantMessage["content"] => [{ type: "toolCall", id: `team-call-${++sequence}`, name, arguments: args }];
 const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
@@ -44,12 +47,14 @@ models.registerProvider("teamfixture", { api: "openai-completions", apiKey: "loc
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
   streamSimple: (model, request) => {
     const stream = createAssistantMessageEventStream();
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       const last = request.messages.at(-1), user = [...request.messages].reverse().find(message => message.role === "user");
       const input = user ? body(user.content) : "";
       modelCalls.push({ input, role: last?.role ?? "", tool: last?.role === "toolResult" ? last.toolName : undefined,
         error: last?.role === "toolResult" ? last.isError : undefined });
       const assignment = JSON.parse(input).teamAssignment;
+      if (holdAlpha && assignment.responsibility === "READ_ALPHA_ASSIGNMENT" && last?.role !== "toolResult")
+        await new Promise<void>(resolve => { releaseAlpha = resolve; });
       let content: AssistantMessage["content"];
       if (assignment.role === "owner_summary") {
         assert(input.includes("ALPHA_REAL_SOURCE_17") && input.includes("BETA_REAL_SOURCE_29"), "owner must receive actual member results");
@@ -165,6 +170,7 @@ try {
   assert.equal(works.getWork(workId)?.lifecycle, "active");
   assert(works.repo.listDeliverables(workId).every(item => item.status === "proposed"));
   assert.equal(works.repo.listDeliverables(workId).length, 3);
+  assert(!collectOwnerSummaryFacts(works, works.getWork(workId)!, Date.now()).payload.waitingForBotIds.includes(ids[0]!), "former owner recipient is not a missing executor after handoff");
   assert.equal(works.getWork(workId)?.acceptedDeliverableIds.length, 0);
   assert(!existsSync(forbidden));
   assert.equal(toolsObserved.filter(item => item.name === "bash" && !item.error).length, hasSystemVerification ? 3 : 0);
@@ -195,6 +201,26 @@ try {
     }
   }
   assert.equal(works.collaboration.history(workId).length, messages.length);
+  // Real durable roots overlap only when explicitly selected. Hold the alpha model
+  // response while beta reads its real file; the owner cannot start early.
+  holdAlpha = true;
+  const parallelRequest: CreateTeamWorkRequest = { ...request, operationId: randomUUID(), title: "Parallel native team",
+    executionPolicy: "parallel", maxConcurrency: 2 };
+  const parallel = works.teams.handle(actor, { kind: "create", request: parallelRequest });
+  assert(parallel.ok && parallel.work, JSON.stringify(parallel));
+  const parallelId = parallel.work.workId;
+  await until(() => works.teams.get(parallelId)?.executions[1]?.status === "completed", "independent beta finishes while alpha is held");
+  assert.equal(works.teams.get(parallelId)!.executions[0]!.status, "running");
+  assert.equal(works.repo.listBindings(parallelId).length, 2, "owner barrier retains both original member identities");
+  assert(releaseAlpha); holdAlpha = false; releaseAlpha();
+  await until(() => works.teams.get(parallelId)?.state === "awaiting_review", "parallel native owner result");
+  const parallelCalls = modelCalls.length;
+  await close(); open();
+  for (let pass = 0; pass < 4; pass++) { await queue.flush(); await delay(20); }
+  assert.equal(modelCalls.length, parallelCalls, "parallel reopening does not replay effects");
+  assert.equal(works.repo.listBindings(parallelId).length, 3);
+  assert.equal(works.resourceGate.live().length, 0);
+  console.log("PASS native parallel team: real overlapping roots, real file verification, owner barrier and reopened idempotency");
   assert.deepEqual(errors, []);
   console.log("PASS real native team: separate identities/namespaces, actual file reads, denied write/outside read, sequential results, owner synthesis, proposed acceptance and reopened idempotency");
 } finally { await close(); rmSync(root, { recursive: true, force: true }); }

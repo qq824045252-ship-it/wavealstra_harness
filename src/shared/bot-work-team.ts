@@ -6,6 +6,7 @@ const responsibility = z.string().trim().min(1).max(2000);
 export const workTeamMemberSchema = z.object({
   botId: id,
   responsibility,
+  dependsOnBotIds: z.array(id).max(24).optional(),
   delegatedScope: z.array(z.enum(["workspace:read", "workspace:write"])).min(1).max(2)
     .refine(scopes => new Set(scopes).size === scopes.length, "范围不能重复"),
 }).strict();
@@ -13,10 +14,17 @@ export const workTeamPlanSchema = z.object({
   ownerBotId: id,
   ownerResponsibility: responsibility,
   members: z.array(workTeamMemberSchema).min(1).max(24),
+  executionPolicy: z.enum(["sequential", "parallel"]).optional(),
+  maxConcurrency: z.number().int().min(1).max(4).optional(),
 }).strict().superRefine((plan, ctx) => {
   const ids = plan.members.map(member => member.botId);
   if (new Set(ids).size !== ids.length || ids.includes(plan.ownerBotId)) {
     ctx.addIssue({ code: "custom", message: "成员必须唯一，负责人不能同时作为成员" });
+  }
+  for (const [index, member] of plan.members.entries()) {
+    const dependencies = member.dependsOnBotIds ?? [];
+    if (new Set(dependencies).size !== dependencies.length || dependencies.some(botId => !ids.slice(0, index).includes(botId)))
+      ctx.addIssue({ code: "custom", message: "依赖只能选择排在前面的不同成员，不能重复、自依赖或形成循环" });
   }
 });
 export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
@@ -52,6 +60,7 @@ export interface WorkTeamExecution extends WorkTeamMember {
   status: WorkExecutionStatus | "queued" | "blocked" | "cancelled";
   error?: string;
   resultSummary?: string;
+  waitingReason?: string;
 }
 export interface WorkTeamDto extends WorkTeamPlan {
   workId: string;
