@@ -32,3 +32,8 @@ export function botMessageStatus(message: BotMessageDto): string {
 export function shouldSendBotComposer(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
 }
+
+/** Visibility does not confer owner control authority. The host validates every action. */
+export function botParticipatesInWork(work: WorkProjectionDto, botId: string | null | undefined): boolean {
+  return Boolean(botId && (work.ownerBotId === botId || work.team?.members.some(member => member.botId === botId)));
+}

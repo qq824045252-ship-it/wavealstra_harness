@@ -179,3 +179,25 @@
 .bot-create-success h3 { margin:12px 0; font-size:17px; }
 .bot-settings-identity { margin:10px 0 20px; padding:12px 0; border-bottom:1px solid var(--border-default); }
 .bot-settings-identity p { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.bot-team-dialog { width:min(640px,calc(100vw - 32px)); }
+.bot-team-dialog fieldset { border:0; padding:0; margin:0; min-width:0; }
+.bot-team-dialog select { box-sizing:border-box; width:100%; padding:11px 12px; border:1px solid var(--border-default); border-radius:9px; background:var(--bg-input); color:var(--fg); font:inherit; font-size:13px; }
+.bot-team-dialog textarea { min-height:68px; }
+.bot-team-members-heading { font-size:14px; margin:24px 0 12px; }
+.bot-team-member { border:1px solid var(--border-default); border-radius:12px; padding:12px 14px; margin:10px 0; }
+.bot-team-member.is-selected { border-color:color-mix(in srgb,var(--accent) 60%,var(--border-default)); background:var(--bg-sidebar); }
+.bot-team-dialog .bot-team-member-toggle { display:flex; gap:10px; align-items:flex-start; margin:0; font-weight:400; cursor:pointer; }
+.bot-team-dialog input[type="checkbox"] { width:16px; height:16px; flex-shrink:0; margin-top:2px; accent-color:var(--accent); }
+.bot-team-dialog .bot-team-member-toggle span { color:var(--fg); font-size:12px; }
+.bot-team-member-toggle strong, .bot-team-member-toggle small { display:block; }
+.bot-team-member-toggle small { margin-top:5px; line-height:1.5; color:var(--fg-secondary); }
+.bot-team-scope { color:var(--fg-secondary); font-size:11px; margin:10px 0; }
+.bot-team-panel .bot-team-progress { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.bot-team-panel article p { white-space:pre-wrap; }
+.bot-team-panel .bot-team-log { margin:8px 0; padding-left:13px; border-left:2px solid var(--border-default); }
+.bot-team-panel .bot-team-log small { color:var(--fg-secondary); }
+@media (max-width:900px) { .bot-heading-description { display:none; } .bot-workspace-header { flex-wrap:wrap; } .bot-workspace-actions { flex-wrap:wrap; } }
+.bot-team-template { margin-top:16px; font-size:12px; }
+.bot-team-template-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:10px 0; }
+.bot-team-template-row > span:first-child { flex:1; }
+.bot-team-template button { padding:6px 9px; border:1px solid var(--border-default); border-radius:7px; background:var(--bg-elevated); color:var(--fg); cursor:pointer; }

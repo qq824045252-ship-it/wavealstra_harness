@@ -68,6 +68,7 @@ import type { ConversationInteractionRespondRequest } from "../shared/conversati
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
 import { BotWorkIpc } from "../shared/bot-work-ipc";
 import { createBotIpcHandler } from "./agent/work/BotCreationIpc";
+import { createWorkTeamIpcHandler } from "./agent/work/WorkTeamIpc";
 import type { AttestCriteriaParams, RecordUserFeedbackParams } from "../shared/bot-work";
 import {
   GadgetIpc,
@@ -1034,6 +1035,11 @@ function registerIpc(): void {
     getMainWindow: () => botManagementWindow,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
     createBot: request => agentService.createBot(request),
+  }));
+  ipcMain.handle(BotWorkIpc.teamControl, createWorkTeamIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    control: request => agentService.teamWorkControl(request),
   }));
   ipcMain.handle(BotWorkIpc.listBotExpertVersions, (_e, botId: string) => agentService.listBotExpertVersions(botId));
   ipcMain.handle(BotWorkIpc.adoptBotExpertVersion, (_e, botId: string, expected: { pendingVersion: number; snapshotId: string }) =>

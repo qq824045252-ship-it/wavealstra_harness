@@ -646,6 +646,7 @@ const api = {
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
     createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
+    teamControl: request => ipcRenderer.invoke(BotWorkIpc.teamControl, request),
     listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
     adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),
     listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),

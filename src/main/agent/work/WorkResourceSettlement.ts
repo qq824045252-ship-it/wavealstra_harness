@@ -18,6 +18,8 @@ export function authorizeWorkResourceOwner(input: { service: WorkService; bots: 
     || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
     || ["completed", "failed", "stopped", "invalidated"].includes(binding.status)) return "事项暂停、终止或执行输入已失效，拒绝新动作";
   if (!service.collaboration.isDelegationAdopted(binding, work)) return "新负责人尚未接管此执行委派";
+  const teamError = service.teams?.resourceError(binding, resources);
+  if (teamError) return teamError;
   const action = resources.some(resource => resource.mode === "write") ? "workspace:write" : "workspace:read";
   if (!work.authorization.allowedScopes.includes(action) || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(action))
     return "实际资源动作超出事项或执行委派范围";

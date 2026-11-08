@@ -242,6 +242,9 @@ export class BotConversationService {
   }
   private assertWork(botId: string, workId: string) {
     const work = this.options.works.getWork(workId);
-    if (!work || work.userId !== this.options.userId || work.ownerBotId !== botId) throw new Error("Work 不属于当前用户与 Bot");
+    if (!work || work.userId !== this.options.userId
+      || work.ownerBotId !== botId && !work.participants.some(member => member.botId === botId)) {
+      throw new Error("Work 不属于当前用户与 Bot");
+    }
   }
 }

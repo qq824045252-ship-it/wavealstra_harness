@@ -30,6 +30,7 @@ export class WorkDispatchQueue {
     const current = this.works.getWork(work.workId);
     if (!current || current.lifecycle !== "active" || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId) return;
     work = current;
+    if (this.works.teams.get(work.workId)) return;
     if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE operation_id=?").get(operationId)) return;
     const bindings = this.works.repo.listBindings(work.workId);
     this.syncContinuationBlockers(work, bindings);
@@ -70,6 +71,7 @@ export class WorkDispatchQueue {
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
+    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel);
     await this.drainSourceEvents();
     this.prepareSourceIntents();
     this.prepareContinuations();

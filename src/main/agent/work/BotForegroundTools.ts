@@ -56,7 +56,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
-  const available = () => works.listWorks(userId, { includeClosed: true }).filter(work => work.ownerBotId === botId);
+  const available = () => works.listWorks(userId, { includeClosed: true })
+    .filter(work => work.ownerBotId === botId || work.participants.some(member => member.botId === botId));
   const select = (workId: string, source: ReturnType<typeof receipt>) => {
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
     const userMessage = messages.message(source.user_message_id);
@@ -105,7 +106,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
             authorization: bot.authorization });
         } else {
           const input = name === "work_amend" ? change.parse(args) : control.parse(args);
-          select(input.workId, source);
+          const target = select(input.workId, source);
+          // Team membership grants shared facts, not control of the owner's Work.
+          if (target.ownerBotId !== botId) throw new Error("团队成员只能查看和讨论此事项；请联系负责人修改、暂停或取消");
           const read = db.prepare(`SELECT guard_json FROM bot_work_reads WHERE conversation_id=? AND request_id=? AND work_id=?`)
             .get(conversationId, source.request_id, input.workId);
           const readGuard = z.object({ guard_json: z.string() }).safeParse(read);

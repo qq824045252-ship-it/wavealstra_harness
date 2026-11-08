@@ -70,6 +70,7 @@ import type { BotDto } from "../../../shared/bot-work";
 import type { WorkSubscriptionMonitorDto, WorkPhase4ControlRequest, WorkPhase4ControlResult } from "../../../shared/bot-work-phase4";
 import { phase4ControlRequestSchema } from "../../../shared/bot-work-phase4";
 import { BotRegistry } from "./BotRegistry";
+import { WorkTeamService } from "./WorkTeamService";
 import { WorkRepository, newId } from "./WorkRepository";
 import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
 import { normalizeTexts, normalizeSources, normalizeWatchRule, normalizeCriteria, currentAcceptedDeliverableIds, matchesFilter } from "./WorkControlNormalization";
@@ -123,6 +124,7 @@ const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "sub
 const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "tool_receipt", "inspection", "artifact"]);
 
 export class WorkService {
+  readonly teams: WorkTeamService;
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
   readonly resourceGate: WorkResourceGate;
@@ -169,6 +171,7 @@ export class WorkService {
     this.cards = new WorkResultCards(db, this.repo);
     this.phase5 = new WorkPhase5Facts(this, this.now, db);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
+    this.teams = new WorkTeamService(db, this, this.bots, this.now);
   }
 
   private authorityError(): Fail | undefined {
@@ -290,6 +293,7 @@ export class WorkService {
       closureConclusion: work.closureConclusion,
       closureSummary: work.closureSummary,
       ownerBotId: work.ownerBotId,
+      team: this.teams?.get(work.workId),
       ownerEpoch: work.ownerEpoch,
       intentRevision: work.intentRevision,
       sourceVersion: work.sourceVersion,
@@ -998,6 +1002,8 @@ export class WorkService {
         }
         return { ok: true };
       }
+      const teamError = this.teams.dispatchError(work.workId, params.taskId, params.botId, params.delegatedScope);
+      if (teamError) return { ok: false, code: "unauthorized_actor", message: teamError };
       const occupied = this.repo.bindingForTask(params.taskId);
       if (occupied && (occupied.workId !== work.workId || occupied.botId !== params.botId)) {
         return { ok: false, code: "invalid_request", message: "执行 Task 已属于另一事项或 Bot，不能复用其上下文" };

@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 499,
-  "allRegistrations": 510,
-  "uniqueChannels": 499,
+  "mainRegistrations": 500,
+  "allRegistrations": 511,
+  "uniqueChannels": 500,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -162,6 +162,7 @@
     "bot-work:review-control",
     "bot-work:send-message",
     "bot-work:sync-works",
+    "bot-work:team-control",
     "bot-work:work-diagnostics",
     "bot-work:work-summary",
     "browser:addBlocker",

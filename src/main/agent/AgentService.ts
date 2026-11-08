@@ -10,6 +10,7 @@ import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { BotConversationService } from "./work/BotConversationService";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
+import type { WorkTeamControlResult } from "../../shared/bot-work-team";
 import { WorkProjectionJournal } from "./work/WorkProjectionJournal";
 import { reviewWork } from "./work/WorkReviewControl";
 import { resolveBotModel } from "./durable/BotModelCatalog";
@@ -1153,6 +1154,15 @@ export class AgentService {
     return new BotCreationService(this.db.connection, this.botRegistry, {
       userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
     }).createBot(request);
+  }
+
+  teamWorkControl(request: unknown): WorkTeamControlResult {
+    // The trusted desktop form explicitly selects this Work's members. This does
+    // not change any Bot grant or allow an execution to redelegate further.
+    const result = this.workService.teams.handle({ kind: "user", userId: LOCAL_USER_ID,
+      entry: "desktop", grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } }, request);
+    if (result.ok && result.work) this.workDispatchQueue?.wake();
+    return result;
   }
 
   syncWorkProjections(request: unknown) {

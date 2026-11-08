@@ -11,6 +11,7 @@ import type { WorkPhase3ControlRequest, WorkPhase3ControlResult } from "./bot-wo
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "./bot-work-phase4";
 import type { WorkReviewControlRequest } from "./bot-work-review";
 import type { BotCreateRequest, BotCreateResult } from "./bot-create";
+import type { WorkTeamControlRequest, WorkTeamControlResult } from "./bot-work-team";
 export type { BotCreateRequest, BotCreateResult, BotCreateErrorCode } from "./bot-create";
 import type {
   WorkCardReadRequest, WorkCardReadResult, WorkDiagnosticsRequest, WorkExpandedDiagnosticsDto,
@@ -21,6 +22,7 @@ export const BotWorkIpc = {
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
   createBot: "bot-work:create-bot",
+  teamControl: "bot-work:team-control",
   listBotExpertVersions: "bot-work:list-bot-expert-versions",
   adoptBotExpertVersion: "bot-work:adopt-bot-expert-version",
   listWorks: "bot-work:list-works",
@@ -64,6 +66,7 @@ export interface BotWorkApi {
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
   createBot(request: BotCreateRequest): Promise<BotCreateResult>;
+  teamControl(request: WorkTeamControlRequest): Promise<WorkTeamControlResult>;
   listBotExpertVersions(botId: string): Promise<BotExpertVersionDto[]>;
   adoptBotExpertVersion(botId: string, expected: { pendingVersion: number; snapshotId: string }): Promise<BotExpertAdoptionResult>;
   listWorks(includeClosed?: boolean): Promise<WorkProjectionDto[]>;

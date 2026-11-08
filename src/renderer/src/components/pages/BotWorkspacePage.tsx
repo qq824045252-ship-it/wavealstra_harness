@@ -6,8 +6,9 @@ import { useAppStore } from "@/store/appStore";
 const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { botParticipatesInWork, botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkDetails } from "./BotWorkDetails";
+import { BotTeamDialog } from "./BotTeamDialog";
 import { BotExpertReview } from "./BotExpertReview";
 import "./BotWorkspacePage.css";
 
@@ -53,6 +54,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const compact = useMediaQuery("(max-width: 1180px)");
   const [inspectorOpen, setInspectorOpen] = useState(Boolean(selectedWorkId));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState("");
@@ -66,7 +68,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const followLatest = useRef(true);
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
-  const botWorks = works.filter(work => work.ownerBotId === activeBot?.botId);
+  const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
@@ -131,7 +133,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     void useAppStore.getState().refreshBotWork(true).then(() => {
       const state = useAppStore.getState();
       if (requestedWork.current !== workId || state.activeBotId !== botId) return;
-      if (state.botWorks.some(work => work.workId === workId && work.ownerBotId === botId)) {
+      if (state.botWorks.some(work => work.workId === workId && botParticipatesInWork(work, botId))) {
         state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
       } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
     });
@@ -156,6 +158,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
         <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
         <div className="bot-workspace-actions">
+          <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); setTeamOpen(true); }}>组队开工</button>
           {props.onCreateBot && <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); props.onCreateBot?.(); }}>+ 新建 Bot</button>}
           <button type="button" className="bot-quiet-button bot-return" onClick={() => setPage("chat")}>返回普通模式</button>
           <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
@@ -198,8 +201,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
-      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /></div>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /></div>
     </dialog>}
+    <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
       <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
@@ -222,7 +226,7 @@ function WorkCard({ work, selected, onSelect }: { work: WorkProjectionDto; selec
   const attention = needsWorkDecision(work);
   const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
   return <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
-    <div className="bot-work-card-top"><span className={`bot-status-badge ${attention ? "attention" : work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
+    <div className="bot-work-card-top"><span className={`bot-status-badge ${attention ? "attention" : work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
     <strong>{work.title}</strong><p>{work.nextSteps[0] ?? latest?.summary ?? "打开查看目标、进展与成果。"}</p>
     <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><IconChevronRight size={16} /></div>
   </button>;

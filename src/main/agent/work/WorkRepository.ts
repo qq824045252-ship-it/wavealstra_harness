@@ -524,7 +524,11 @@ export class WorkRepository {
         .get(binding.inboxEventId) as { source: string; source_event_id: string; event_type: string; source_version: string | null;
           payload_json: string; received_at: number } | undefined
       : undefined;
+    const hasTeams = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_execution_history'").get();
+    const team = hasTeams ? this.db.prepare("SELECT input_json FROM work_team_executions WHERE task_id=? AND work_id=? UNION ALL SELECT input_json FROM work_team_execution_history WHERE task_id=? AND work_id=? LIMIT 1")
+      .get(binding.taskId, binding.workId, binding.taskId, binding.workId) as { input_json: string | null } | undefined : undefined;
     return JSON.stringify({
+      ...(team?.input_json ? { teamAssignment: JSON.parse(team.input_json) } : {}),
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
       title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
       criteria: json<WorkDto["criteria"]>(row.criteria_json, []), delegatedScope: binding.delegatedScope,

@@ -4,6 +4,7 @@ import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
 import { useAppStore } from "@/store/appStore";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
+import { BotTeamPanel } from "./BotTeamPanel";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
 
 export function lifecycleLabel(lifecycle: WorkLifecycle): string {
@@ -162,6 +163,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         </> : <p>尚未设置验收条件，暂不能确认完成进度。</p>}
         {work.closureSummary && <p>{work.closureSummary}</p>}
       </section>
+      <BotTeamPanel work={work} identities={identities} />
       <section className="bot-detail-section bot-work-next" aria-label="下一步">
         <h3>下一步</h3>
         {work.nextSteps.length === 0 ? <p>{work.lifecycle === "closed" ? "事项已结束。" : "暂无已记录的下一步。"}</p>

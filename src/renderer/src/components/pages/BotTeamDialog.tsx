@@ -1,0 +1,197 @@
+import { useEffect, useRef, useState } from "react";
+import { useAppStore } from "@/store/appStore";
+import { IconBot, IconX } from "@/components/common/icons";
+import { createTeamWorkSchema, workTeamControlSchema, type WorkTeamControlRequest, type CreateTeamWorkRequest, type WorkTeamTemplateDto } from "@shared/bot-work-team";
+
+const pendingKey = "mybuddy.pending-team-creation";
+function readPending(): CreateTeamWorkRequest | null {
+  try { const parsed = createTeamWorkSchema.safeParse(JSON.parse(localStorage.getItem(pendingKey) ?? "null")); return parsed.success ? parsed.data : null; }
+  catch { return null; }
+}
+function clearPending(operationId: string) {
+  try { if (readPending()?.operationId === operationId) localStorage.removeItem(pendingKey); } catch { /* The original request remains replayable. */ }
+}
+const pendingTemplateKey = "mybuddy.pending-team-template";
+type TemplateRequest = Extract<WorkTeamControlRequest, { kind: "save_template" }>["request"];
+function readPendingTemplate(): TemplateRequest | null {
+  try { const parsed = workTeamControlSchema.safeParse({ kind: "save_template", request: JSON.parse(localStorage.getItem(pendingTemplateKey) ?? "null") }); return parsed.success && parsed.data.kind === "save_template" ? parsed.data.request : null; }
+  catch { return null; }
+}
+function clearPendingTemplate(operationId: string) {
+  try { if (readPendingTemplate()?.operationId === operationId) localStorage.removeItem(pendingTemplateKey); } catch { /* Retaining a request permits safe replay. */ }
+}
+type MemberDraft = { botId: string; responsibility: string; delegatedScope: Array<"workspace:read" | "workspace:write"> };
+
+/** An explicit human delegation: nothing is dispatched until the form is submitted. */
+export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () => void }): React.JSX.Element {
+  const bots = useAppStore(s => s.botIdentities);
+  const activeBotId = useAppStore(s => s.activeBotId);
+  const [pending, setPending] = useState(readPending);
+  const [title, setTitle] = useState(pending?.title ?? "");
+  const [goal, setGoal] = useState(pending?.goalDescription ?? "");
+  const [workspace, setWorkspace] = useState(pending?.workspacePath ?? "");
+  const [owner, setOwner] = useState(pending?.ownerBotId ?? activeBotId ?? "");
+  const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
+  const [members, setMembers] = useState<MemberDraft[]>(pending?.members ?? []);
+  const [criteria, setCriteria] = useState(pending?.criteria.join("\n") ?? "");
+  const [budget, setBudget] = useState(String(pending?.budgetTokens ?? 30000));
+  const [templates, setTemplates] = useState<WorkTeamTemplateDto[]>([]);
+  const [templateName, setTemplateName] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [pendingTemplate, setPendingTemplate] = useState(readPendingTemplate);
+  const templateInFlight = useRef(false);
+  const [templateNotice, setTemplateNotice] = useState("");
+  const [deleteTemplateId, setDeleteTemplateId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<{ workId: string; ownerBotId: string; title: string } | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const mounted = useRef(true), inFlight = useRef(false), epoch = useRef(0), openRef = useRef(open), previousOpen = useRef(open);
+  if (open !== previousOpen.current) { epoch.current++; previousOpen.current = open; }
+  openRef.current = open;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; epoch.current++; }; }, []);
+  useEffect(() => useAppStore.subscribe((state, previous) => {
+    if (state.page !== previous.page || state.activeBotId !== previous.activeBotId || state.selectedWorkId !== previous.selectedWorkId || state.activeTaskId !== previous.activeTaskId) epoch.current++;
+  }), []);
+  useEffect(() => {
+    if (open && !dialog.current?.open) dialog.current?.showModal();
+    else if (!open && dialog.current?.open) dialog.current.close();
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
+      if (live && result.ok) setTemplates(result.templates ?? []);
+    }).catch(() => { if (live) setTemplateNotice("暂时无法读取团队模板，可直接填写本次分工。"); });
+    return () => { live = false; };
+  }, [open]);
+  const close = () => { epoch.current++; openRef.current = false; onClose(); };
+  const candidates = bots.filter(bot => bot.status === "active");
+  const candidate = (id: string) => candidates.find(bot => bot.botId === id);
+  const valid = title.trim() && goal.trim() && workspace.trim() && ownerResponsibility.trim()
+    && candidate(owner)?.authorization.allowedScopes.includes("workspace:read") && members.length > 0
+    && members.every(member => member.botId !== owner && member.responsibility.trim() && candidate(member.botId)
+      && member.delegatedScope.includes("workspace:read") && member.delegatedScope.every(scope => candidate(member.botId)?.authorization.allowedScopes.includes(scope)))
+    && criteria.split("\n").some(line => line.trim()) && Number.isSafeInteger(Number(budget)) && Number(budget) >= 1024 && Number(budget) <= 1000000;
+  const openWork = (result: { workId: string; ownerBotId: string }) => {
+    const state = useAppStore.getState();
+    state.setActiveBotId(result.ownerBotId); state.setSelectedWorkId(result.workId); state.setPage("bot"); close();
+  };
+  const submit = async () => {
+    if (inFlight.current || (!pending && !valid)) return;
+    const request = pending ?? { operationId: `desktop-team:${crypto.randomUUID()}`, title: title.trim(), goalDescription: goal.trim(),
+      workspacePath: workspace.trim(), ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
+      members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })),
+      criteria: criteria.split("\n").map(line => line.trim()).filter(Boolean), budgetTokens: Number(budget) };
+    const parsed = createTeamWorkSchema.safeParse(request);
+    if (!parsed.success) { setError("请核对团队目标、工作区、分工、验收条件和预算是否完整有效。"); return; }
+    try { localStorage.setItem(pendingKey, JSON.stringify(parsed.data)); }
+    catch { setError("无法保存请求，尚未派发。请检查本地存储后重试。"); return; }
+    setPending(parsed.data); setError(""); setBusy(true); inFlight.current = true;
+    const submittedEpoch = epoch.current;
+    try {
+      const api = window.api?.botWork;
+      if (!api) throw new Error("桌面组队接口不可用。");
+      const result = await api.teamControl({ kind: "create", request: parsed.data });
+      if (!result.ok) {
+        const rejected = ["invalid_request", "unauthorized_actor", "invalid_team", "not_found", "scope_denied", "budget_exceeded", "invalid_workspace"].includes(result.code);
+        if (rejected) clearPending(parsed.data.operationId);
+        if (mounted.current) { if (rejected) setPending(null); setError(result.message); }
+        return;
+      }
+      if (result.operationId !== parsed.data.operationId || !result.work?.workId || !result.team || result.team.workId !== result.work.workId) throw new Error("组队回执与原请求不符，请保留原请求核对。");
+      clearPending(parsed.data.operationId);
+      if (!mounted.current) return;
+      setPending(null); setCreated(result.work);
+      await useAppStore.getState().refreshBotWork(true);
+      if (mounted.current && openRef.current && epoch.current === submittedEpoch) openWork(result.work);
+    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "组队结果尚未确认，请按原请求核对。"); }
+    finally { inFlight.current = false; if (mounted.current) setBusy(false); }
+  };
+  const saveTemplate = async () => {
+    if (templateInFlight.current || (!pendingTemplate && (!templateName.trim() || !owner || members.length === 0 || !ownerResponsibility.trim() || members.some(member => !member.responsibility.trim())))) return;
+    const request = pendingTemplate ?? { name: templateName.trim(), plan: { ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(), members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })) }, operationId: `desktop-template:${crypto.randomUUID()}` };
+    try { localStorage.setItem(pendingTemplateKey, JSON.stringify(request)); }
+    catch { setTemplateNotice("无法保存模板请求，尚未提交。"); return; }
+    setPendingTemplate(request); templateInFlight.current = true; setTemplateBusy(true); setTemplateNotice("");
+    try {
+      const result = await window.api?.botWork.teamControl({ kind: "save_template", request });
+      if (!mounted.current) return;
+      if (!result?.ok) {
+        if (result && !result.ok && ["invalid_request", "unauthorized_actor", "name_conflict", "not_found"].includes(result.code)) { clearPendingTemplate(request.operationId); setPendingTemplate(null); }
+        setTemplateNotice(result && !result.ok ? result.message : "模板接口不可用。"); return;
+      }
+      if (!result.template || result.template.name !== request.name) throw new Error("模板回执不匹配");
+      clearPendingTemplate(request.operationId); setPendingTemplate(null);
+      setTemplates(current => [...current.filter(item => item.templateId !== result.template!.templateId), result.template!]);
+      setTemplateNotice("团队模板已保存。仅保存成员和分工，使用时仍会重新核对权限。");
+    } catch { if (mounted.current) setTemplateNotice("模板保存结果尚未确认，核对原请求不会重复保存。"); }
+    finally { templateInFlight.current = false; if (mounted.current) setTemplateBusy(false); }
+  };
+  const deleteTemplate = async (templateId: string) => {
+    if (templateBusy) return;
+    setTemplateBusy(true);
+    try {
+      const result = await window.api?.botWork.teamControl({ kind: "delete_template", templateId });
+      if (!mounted.current) return;
+      if (!result?.ok) { setTemplateNotice(result && !result.ok ? result.message : "模板接口不可用。"); return; }
+      setTemplates(current => current.filter(item => item.templateId !== templateId)); setDeleteTemplateId(null);
+      setTemplateNotice("模板已删除；既有团队事项和 Bot 不受影响。");
+    } catch { if (mounted.current) setTemplateNotice("删除结果未确认，请刷新模板列表后核对。"); }
+    finally { if (mounted.current) setTemplateBusy(false); }
+  };
+  const toggleMember = (botId: string) => setMembers(current => current.some(member => member.botId === botId)
+    ? current.filter(member => member.botId !== botId) : [...current, { botId, responsibility: "", delegatedScope: ["workspace:read"] }]);
+  return <dialog ref={dialog} className="bot-create-dialog bot-team-dialog" aria-labelledby="bot-team-title"
+    onCancel={event => { event.preventDefault(); close(); }} onKeyDownCapture={event => {
+      if (event.key === "Enter" && (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) event.preventDefault();
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") close();
+    }}>
+    <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
+      <div><h2 id="bot-team-title">组队开工</h2><p>一个目标，明确分工，由负责人统一汇总</p></div>
+      <button type="button" className="icon-btn" aria-label="关闭组队开工" onClick={close}><IconX size={18} /></button></header>
+    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员在各自范围内依次执行，负责人随后核对和汇总。执行结束仍需验收。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
+      : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
+        <p>选择负责人和至少一位成员。每位成员使用自己的身份和已有权限，不共享私人记忆。</p>
+        <fieldset disabled={Boolean(pending)}>
+          {templates.length > 0 && <><label htmlFor="team-template">使用团队模板</label><select id="team-template" defaultValue="" onChange={event => {
+            const template = templates.find(item => item.templateId === event.target.value); if (!template) return;
+            setOwner(template.ownerBotId); setOwnerResponsibility(template.ownerResponsibility);
+            setMembers(template.members.map(member => ({ ...member, delegatedScope: member.delegatedScope.filter(scope => candidate(member.botId)?.authorization.allowedScopes.includes(scope)) })));
+            setTemplateNotice("已填入模板。请核对成员、分工与当前权限，再填写本次目标和工作区。");
+          }}><option value="">选择模板（可选）</option>{templates.map(template => <option key={template.templateId} value={template.templateId}>{template.name}</option>)}</select></>}
+
+          {templates.length > 0 && <details className="bot-team-template"><summary>管理团队模板</summary>{templates.map(template => <div className="bot-team-template-row" key={template.templateId}><span>{template.name}</span>{deleteTemplateId === template.templateId ? <><span>仅删除模板？</span><button type="button" disabled={templateBusy} onClick={() => { void deleteTemplate(template.templateId); }}>确认删除</button><button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(null)}>保留</button></> : <button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(template.templateId)}>删除模板</button>}</div>)}</details>}
+          <label htmlFor="team-title">事项名称</label><input id="team-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={200} required placeholder="例如：梳理项目现状与改进建议" />
+          <label htmlFor="team-goal">共同目标</label><textarea id="team-goal" value={goal} onChange={event => setGoal(event.target.value)} maxLength={2000} rows={3} required placeholder="说明希望得到什么，以及不需要做什么。" />
+          <label htmlFor="team-workspace">工作区绝对路径</label><input id="team-workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} maxLength={2000} required placeholder="指定这次团队可以处理的本地目录" />
+          <label htmlFor="team-owner">主负责人</label><select id="team-owner" value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value)); }} required>
+            <option value="">选择负责人</option>{candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}</select>
+          <label htmlFor="team-owner-role">负责人的汇总职责</label><textarea id="team-owner-role" value={ownerResponsibility} onChange={event => setOwnerResponsibility(event.target.value)} maxLength={2000} rows={2} required />
+          <h3 className="bot-team-members-heading">团队成员与分工</h3>
+          {owner && !candidate(owner) && <p role="alert">模板负责人已停用或不存在，请重新选择。</p>}
+          {members.filter(member => !candidate(member.botId)).map(member => <p key={member.botId} role="alert">成员 {bots.find(bot => bot.botId === member.botId)?.displayName ?? member.botId} 已不可用。<button type="button" onClick={() => toggleMember(member.botId)}>移除此成员</button></p>)}
+          {candidates.filter(bot => bot.botId !== owner).length === 0 && <p>至少需要两个 Bot。请先关闭此窗口，通过「新建 Bot」添加成员。</p>}
+          {candidates.filter(bot => bot.botId !== owner).map(bot => {
+            const member = members.find(item => item.botId === bot.botId);
+            const readable = bot.authorization.allowedScopes.includes("workspace:read");
+            return <section key={bot.botId} className={`bot-team-member ${member ? "is-selected" : ""}`}>
+              <label className="bot-team-member-toggle"><input type="checkbox" checked={Boolean(member)} disabled={!readable && !member} onChange={() => toggleMember(bot.botId)} /><span><strong>{bot.displayName}</strong><small>{readable ? bot.responsibilitySummary || "尚未设置长期职责" : "当前没有工作区读取权限"}</small></span></label>
+              {member && <><label htmlFor={`team-role-${bot.botId}`}>这次负责什么</label><textarea id={`team-role-${bot.botId}`} value={member.responsibility} required rows={2} maxLength={2000} placeholder="限定任务与产出，避免成员重复处理同一工作。"
+                onChange={event => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, responsibility: event.target.value } : item))} />
+                <p className="bot-team-scope">工作范围：读取指定工作区</p>{bot.authorization.allowedScopes.includes("workspace:write") && <label className="bot-team-member-toggle"><input type="checkbox" checked={member.delegatedScope.includes("workspace:write")}
+                  onChange={event => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, delegatedScope: event.target.checked ? ["workspace:read", "workspace:write"] : ["workspace:read"] } : item))} /><span>允许在该工作区写入（仅使用已有授权）</span></label>}</>}
+            </section>;
+          })}
+          <label htmlFor="team-criteria">验收条件 <span>每行一项</span></label><textarea id="team-criteria" value={criteria} onChange={event => setCriteria(event.target.value)} maxLength={12000} rows={3} required placeholder="例如：结论注明来源，未验证事项明确列出" />
+          <label htmlFor="team-budget">全团队 token 预算上限</label><input id="team-budget" type="number" min={1024} max={1000000} step={1} value={budget} onChange={event => setBudget(event.target.value)} required />
+          <details className="bot-team-template"><summary>将成员与分工保存为可复用模板</summary>{pendingTemplate && <p role="status">模板「{pendingTemplate.name}」的原保存请求尚待核对。当前分工修改不会改变原请求。</p>}<label htmlFor="team-template-name">模板名称</label><input id="team-template-name" value={templateName} maxLength={120} onChange={event => setTemplateName(event.target.value)} /><button type="button" disabled={templateBusy || (!pendingTemplate && (!templateName.trim() || !owner || members.length === 0 || members.some(member => !member.responsibility.trim())))} onClick={() => { void saveTemplate(); }}>{templateBusy ? "正在保存…" : pendingTemplate ? "核对原模板" : "保存团队模板"}</button><p className="bot-team-scope">模板不会保存工作区、任务目标、预算或新增授权，也不会启动工作。</p></details>
+        </fieldset>
+        {templateNotice && <p role="status">{templateNotice}</p>}
+        <p className="bot-create-boundary">成员依次执行，避免争用共享文件。负责人只读汇总；不自动批准成果，不支持任意 Shell、外部连接或桌面操作，不对外发送、不新增服务访问权。关闭窗口不会停止已提交的工作，请在事项中暂停或取消。</p>
+        {error && <p role="alert" className="bot-create-error">{error}</p>}
+        {pending && <p role="status" className="bot-create-pending">{busy ? "正在提交团队事项…" : "保留上次请求，重试只核对同一事项，不会重新建队。"}</p>}
+        <footer className="bot-create-actions"><button type="button" onClick={close}>关闭</button><button type="submit" className="bot-create-primary" disabled={busy || (!pending && !valid)}>{busy ? "正在提交…" : pending ? "核对原请求" : "创建并开工"}</button></footer>
+      </form>}
+  </dialog>;
+}

@@ -1,3 +1,4 @@
+import { botParticipatesInWork } from "@/lib/botWorkspacePresentation";
 import { z } from "zod";
 import type { BotDto, WorkProjectionDto } from "../../../../../shared/bot-work";
 import type { AppState } from "../types";
@@ -45,7 +46,7 @@ export function createBotNavigationPersistence() {
       if (!value) return {};
       const bot = bots.find(item => item.botId === value.botId && item.userId === value.userId && navigableBot(item));
       if (!bot) return {};
-      const work = works.find(item => item.workId === value.workId && item.ownerBotId === bot.botId && item.lifecycle !== "closed");
+      const work = works.find(item => item.workId === value.workId && botParticipatesInWork(item, bot.botId) && item.lifecycle !== "closed");
       return { activeBotId: bot.botId, selectedWorkId: work?.workId ?? null,
         ...(value.page === "bot" ? { page: "bot" as const } : {}) };
     },
@@ -53,7 +54,7 @@ export function createBotNavigationPersistence() {
       // An error or an unfinished first load is not evidence of deletion.
       if (pending || !state.botIdentitiesLoaded || state.botWorkError) return;
       const bot = state.botIdentities.find(item => item.botId === state.activeBotId && navigableBot(item));
-      const work = state.botWorks.find(item => item.workId === state.selectedWorkId && item.ownerBotId === bot?.botId && item.lifecycle !== "closed");
+      const work = state.botWorks.find(item => item.workId === state.selectedWorkId && botParticipatesInWork(item, bot?.botId) && item.lifecycle !== "closed");
       saved = bot ? { version: 1, userId: bot.userId, botId: bot.botId,
         page: state.page === "bot" ? "bot" : "chat", workId: work?.workId ?? null } : null;
       write();

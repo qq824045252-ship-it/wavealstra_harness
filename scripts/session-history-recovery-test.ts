@@ -1,6 +1,7 @@
 import { userMessage, assistantMessage } from "./test-pi-messages";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,8 +59,10 @@ try {
     assert.equal(hash(session.file), before, "middle-record recovery must preserve the exact damaged original");
   }
 
-  // 3) Structurally invalid but JSON-valid line: duplicate entry id makes Pi reject the source.
-  // MyBuddy opens the largest readable prefix in a temp copy and still keeps the source untouched.
+  // 3) Structurally invalid but JSON-valid line: a duplicate entry id forms a parent cycle.
+  // Probe Pi in a bounded child: this version walks the cycle until OOM rather than
+  // throwing a catchable RangeError. Never let a dependency probe exhaust the test host.
+  // The production recovery assertions below still exercise the actual safe reader.
   {
     const beforeDirs = recoveryDirs();
     const session = makeSession(root, "fallback", 2);
@@ -70,7 +73,21 @@ try {
     lines[lines.length - 1] = JSON.stringify(last);
     writeFileSync(session.file, `${lines.join("\n")}\n`, "utf8");
     const before = hash(session.file);
-    assert.throws(() => SessionManager.open(session.file, undefined, session.cwd).buildContextEntries(), /Invalid array length|valid pi session/);
+    const probe = spawnSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "-e", `
+      import { SessionManager } from "@earendil-works/pi-coding-agent";
+      const manager = SessionManager.open(process.argv[1], undefined, process.argv[2]);
+      process.stdout.write("PROBE_READY\\n");
+      try { manager.buildContextEntries(); }
+      catch (error) {
+        if (/Invalid array length|valid pi session/.test(String(error))) process.exit(42);
+        throw error;
+      }
+    `, session.file, session.cwd], { encoding: "utf8", timeout: 4_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024 });
+    assert.match(probe.stdout ?? "", /PROBE_READY/, "upstream probe must reach the corrupt fixture before its bound");
+    const boundedFailure = probe.status === 42
+      || probe.signal === "SIGABRT" && /heap out of memory|Allocation failed/.test(probe.stderr ?? "")
+      || (probe.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    assert.ok(boundedFailure, `corrupt upstream traversal must reject or hit its isolated bound: status=${probe.status}, signal=${probe.signal}, error=${probe.error?.message}`);
     const history = loadTaskHistoryFromSession(session.file, session.cwd);
     assert.equal(history.sessionFile, session.file, "temporary recovery path must never escape into Task history");
     assert.equal(history.sessionRecovery?.kind, "read-only-fallback");
