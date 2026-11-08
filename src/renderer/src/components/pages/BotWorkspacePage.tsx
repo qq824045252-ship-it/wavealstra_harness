@@ -1,61 +1,80 @@
-import { useEffect, useRef, useState } from "react";
-import type { BotDto, WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
-import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
-import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
+import type { BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
-import { WorkCardsPanel } from "./BotWorkCardsPanel";
-import { WorkReviewPanel } from "./BotWorkReviewPanel";
+const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
+import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { BotWorkDetails } from "./BotWorkDetails";
 import { BotExpertReview } from "./BotExpertReview";
 import "./BotWorkspacePage.css";
 
 function presenceLabel(bot: BotDto, host: BotWorkHostStatusDto | null): string {
   if (bot.status === "disabled") return "已停用";
   if (bot.status === "paused") return "已暂停";
-  if (!host) return "未核实";
+  if (!host) return "状态待核实";
   return host.online ? "在线" : "离线";
 }
 
-function lifecycleLabel(lifecycle: WorkLifecycle): string {
-  if (lifecycle === "active") return "进行中";
-  if (lifecycle === "paused") return "已暂停";
-  if (lifecycle === "closing") return "结算中";
-  return "已结束";
-}
+const examples = [
+  { title: "梳理今天的重点", text: "帮我梳理今天最重要的三件事。先问我必要的背景。" },
+  { title: "持续跟进一件事", text: "我想让你持续跟进一件事，先帮我明确目标、检查频率和需要我确认的边界。" },
+  { title: "一起推进一个目标", text: "我想把一个目标拆成可执行的步骤，先和我确认目标与验收条件。" },
+];
+const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }> = [
+  { id: "conversation", label: "对话", icon: IconMessageDashed },
+  { id: "active", label: "进行中", icon: IconClock },
+  { id: "decisions", label: "待你决定", icon: IconListTodo },
+  { id: "closed", label: "已结束", icon: IconCheck },
+];
 
-function criterionLabel(criterion: WorkCriterionDto): string {
-  if (criterion.status === "satisfied") return "已满足";
-  if (criterion.status === "failed") return "未满足";
-  if (criterion.status === "waived") return "已豁免";
-  if (criterion.status === "blocked") return "受阻";
-  return "待验收";
-}
-
-export default function BotWorkspacePage(): React.JSX.Element {
-  const setPage = useAppStore((s) => s.setPage);
-  const botDraft = useAppStore((s) => s.botDraft);
-  const setBotDraft = useAppStore((s) => s.setBotDraft);
-  const submitBotDraft = useAppStore((s) => s.submitBotDraft);
-  const notice = useAppStore((s) => s.botSubmissionNotice);
-  const histories = useAppStore((s) => s.botHistories);
-  const sendErrors = useAppStore((s) => s.botConversationErrors);
-  const pendingSends = useAppStore((s) => s.botPendingSends);
-  const identities = useAppStore((s) => s.botIdentities);
-  const works = useAppStore((s) => s.botWorks);
-  const activeBotId = useAppStore((s) => s.activeBotId);
-  const selectedWorkId = useAppStore((s) => s.selectedWorkId);
-  const setSelectedWorkId = useAppStore((s) => s.setSelectedWorkId);
-  const hostStatus = useAppStore((s) => s.botHostStatus);
-  const workError = useAppStore((s) => s.botWorkError);
-  const allWorksLoaded = useAppStore((s) => s.botWorkCursor?.scope === "all");
+export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean } = {}): React.JSX.Element {
+  const setPage = useAppStore(s => s.setPage);
+  const botDraft = useAppStore(s => s.botDraft);
+  const setBotDraft = useAppStore(s => s.setBotDraft);
+  const submitBotDraft = useAppStore(s => s.submitBotDraft);
+  const notice = useAppStore(s => s.botSubmissionNotice);
+  const histories = useAppStore(s => s.botHistories);
+  const sendErrors = useAppStore(s => s.botConversationErrors);
+  const pendingSends = useAppStore(s => s.botPendingSends);
+  const identities = useAppStore(s => s.botIdentities);
+  const works = useAppStore(s => s.botWorks);
+  const activeBotId = useAppStore(s => s.activeBotId);
+  const selectedWorkId = useAppStore(s => s.selectedWorkId);
+  const setSelectedWorkId = useAppStore(s => s.setSelectedWorkId);
+  const hostStatus = useAppStore(s => s.botHostStatus);
+  const workError = useAppStore(s => s.botWorkError);
+  const allWorksLoaded = useAppStore(s => s.botWorkCursor?.scope === "all");
   const [includeClosed, setIncludeClosed] = useState(allWorksLoaded);
-  const [inspectorOpen, setInspectorOpen] = useState(() =>
-    typeof window === "undefined" || !window.matchMedia?.("(max-width: 900px)").matches,
-  );
+  const [view, setView] = useState<BotWorkspaceView>("conversation");
+  const [query, setQuery] = useState("");
+  const compact = useMediaQuery("(max-width: 1180px)");
+  const [inspectorOpen, setInspectorOpen] = useState(Boolean(selectedWorkId));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
+  const [navigationNotice, setNavigationNotice] = useState("");
+  const requestedWork = useRef<string | null>(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const inspectorRef = useRef<HTMLDialogElement>(null);
+  const settingsRef = useRef<HTMLDialogElement>(null);
+  const followLatest = useRef(true);
+  const lastBot = useRef(activeBotId);
+  const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
+  const botWorks = works.filter(work => work.ownerBotId === activeBot?.botId);
+  const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
+  const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
+  const lastMessage = messages[messages.length - 1];
+  const sending = Boolean(activeBotId && pendingSends[activeBotId]?.sending);
+  const canSend = Boolean(activeBotId && botDraft.trim() && !sending);
 
-  useEffect(() => {
-    void useAppStore.getState().refreshBotWork(includeClosed);
-  }, [includeClosed]);
+  useEffect(() => () => { requestedWork.current = null; }, []);
+  useEffect(() => { void useAppStore.getState().refreshBotWork(includeClosed); }, [includeClosed]);
   useEffect(() => {
     if (!activeBotId) return;
     const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId); void useAppStore.getState().refreshBotWork(includeClosed); };
@@ -63,368 +82,146 @@ export default function BotWorkspacePage(): React.JSX.Element {
     const timer = setInterval(refresh, 1500);
     return () => clearInterval(timer);
   }, [activeBotId, includeClosed]);
+  useEffect(() => {
+    if (lastBot.current === activeBotId) return;
+    lastBot.current = activeBotId;
+    requestedWork.current = null; setNavigationNotice("");
+    setView("conversation"); setQuery(""); setSettingsOpen(false); setArchiveConfirm(false); setInspectorOpen(false);
+    followLatest.current = true;
+  }, [activeBotId]);
+  useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
+  useEffect(() => {
+    const dialog = inspectorRef.current;
+    if (!dialog) return;
+    if (!inspectorOpen || !selected) { if (dialog.open) dialog.close(); return; }
+    // The same mounted details tree survives resizing. Only the native dialog mode changes.
+    if (dialog.open) dialog.close();
+    if (compact) dialog.showModal(); else dialog.show();
+    return () => { if (dialog.open) dialog.close(); };
+  }, [inspectorOpen, Boolean(selected), compact]);
+  useEffect(() => {
+    const dialog = settingsRef.current;
+    if (settingsOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
+  }, [settingsOpen]);
+  useEffect(() => {
+    if (view !== "conversation" || !followLatest.current) return;
+    const frame = requestAnimationFrame(() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    return () => cancelAnimationFrame(frame);
+  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status]);
+  useEffect(() => {
+    const body = inspectorRef.current?.querySelector(".bot-inspector-body");
+    if (body) body.scrollTop = 0;
+  }, [selected?.workId]);
+  useEffect(() => {
+    const textarea = composerRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+  }, [botDraft, view]);
 
-  const activeBot = identities.find((bot) => bot.botId === activeBotId) ?? null;
-  const openWorks = works.filter((work) => work.ownerBotId === activeBot?.botId && (includeClosed || work.lifecycle !== "closed"));
-  const selected = openWorks.find((work) => work.workId === selectedWorkId) ?? null;
-  const decisions = openWorks.filter((work) =>
-    work.nextSteps.some((step) => step.startsWith("需要你的决定") || step.startsWith("等待实测"))
-    || work.blockers.some((blocker) => blocker.status === "open" && blocker.waitingForUserInput),
-  );
-
-  return (
-    <div className="bot-workspace">
-      <section className="bot-conversation" aria-label="Bot 对话">
-        <header className="bot-workspace-header">
-          <div>
-            <h1>Bot 模式</h1>
-            <p>{activeBot ? `${activeBot.displayName} · ${presenceLabel(activeBot, hostStatus)}` : "长期对话与 Work"}</p>
-          </div>
-          <div className="bot-workspace-actions">
-            <button type="button" onClick={() => setPage("chat")}>返回普通模式</button>
-            <button type="button" aria-pressed={includeClosed} onClick={() => setIncludeClosed(value => !value)}>{includeClosed ? "隐藏已结束事项" : "查看已结束事项"}</button>
-            <button type="button" aria-expanded={inspectorOpen} aria-controls="bot-work-inspector" onClick={() => setInspectorOpen((open) => !open)}>{inspectorOpen ? "收起详情" : "Work 详情"}</button>
-          </div>
-        </header>
-        {activeBot ? (
-          <div className="bot-thread">
-            <button type="button" onClick={() => { void useAppStore.getState().archiveBotConversation(activeBot.botId); }}>归档对话</button>
-            {sendErrors[activeBot.botId] && <p role="alert">{sendErrors[activeBot.botId]}</p>}
-            {(histories[activeBot.botId]?.messages ?? []).map(message => <article key={message.messageId} data-message-id={message.messageId}>
-              <strong>{message.role === "user" ? "你" : activeBot.displayName}</strong>
-              <p style={{ whiteSpace: "pre-wrap" }}>{message.text || {
-                queued: "等待回复", running: "处理中", cancelled: "回复已停止", failed: "未能生成回复",
-                unknown: "回复结果待核对", completed: "没有文本回复",
-              }[message.status]}</p>
-              <small>{message.status === "completed" ? message.role === "user" ? "已发送" : "已回复"
-                : { queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" }[message.status]}</small>
-              {message.error && <p role="alert">{message.error}</p>}
-              {message.workIds.map(workId => <button type="button" key={workId} onClick={() => setSelectedWorkId(workId)}>{works.find(work => work.workId === workId)?.title ?? workId}</button>)}
-              {message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status) && <button type="button" onClick={() => { void useAppStore.getState().cancelBotSend(activeBot.botId, message.requestId); }}>停止回复</button>}
-            </article>)}
-            {workError && <p role="alert">{workError}</p>}
-            {openWorks.length === 0 ? (
-              <p>{includeClosed ? "这个 Bot 还没有可显示的事项。" : "这个 Bot 还没有未结束的事项。"}普通消息不会自动创建事项。</p>
-            ) : openWorks.map((work) => (
-              <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} ownerName={activeBot.displayName} onSelect={() => setSelectedWorkId(work.workId)} />
-            ))}
-            <h3>待决事项</h3>
-            {decisions.length === 0 ? <p>暂无可显示的待决事项。</p> : (
-              <ul>{decisions.map((work) => <li key={work.workId}>{work.title}：{work.nextSteps[0] ?? "需要处理"}</li>)}</ul>
-            )}
-            {activeBot && <details className="bot-expert-config">
-              <summary>专家配置审阅</summary>
-              <BotExpertReview botId={activeBot.botId} />
-            </details>}
-          </div>
-        ) : (
-          <div className="bot-conversation-empty">
-            <h2>还没有 Bot</h2>
-            <p>{workError ?? "受理服务尚未接线，暂时无法开始对话或受理事项。"}</p>
-            <p>待决事项：暂无可显示的事项。</p>
-          </div>
-        )}
-        <form className="bot-composer" onSubmit={(event) => { event.preventDefault(); submitBotDraft(); }}>
-          {notice && <p role="status">消息已持久受理。</p>}
-          <label htmlFor="bot-draft">Bot 对话草稿</label>
-          <textarea id="bot-draft" value={botDraft} onChange={(event) => setBotDraft(event.target.value)} placeholder="输入草稿" rows={3} />
-          <button type="submit" disabled={!activeBotId || !botDraft.trim() || pendingSends[activeBotId]?.sending}>{activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送"}</button>
-        </form>
-      </section>
-      {inspectorOpen && <aside className="bot-inspector" id="bot-work-inspector" aria-label="Work 详情">
-        <button type="button" onClick={() => setInspectorOpen(false)}>关闭详情</button>
-        {selected ? <WorkFacts key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /> : (
-          <>
-            <h2>Work 详情</h2>
-            <p>{activeBot ? `${activeBot.displayName} 还没有选中的事项。` : "还没有 Work。受理服务尚未接线。"}</p>
-            <h3>待决事项</h3>
-            <p>暂无可显示的待决事项。</p>
-          </>
-        )}
-      </aside>}
-    </div>
-  );
-}
-
-function WorkCard(props: { work: WorkProjectionDto; selected: boolean; ownerName: string; onSelect: () => void }): React.JSX.Element {
-  const { work, selected, ownerName, onSelect } = props;
-  return (
-    <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
-      <strong>{work.title}</strong>
-      <span>{lifecycleLabel(work.lifecycle)} · {work.mode === "watch" ? "持续" : "一次"}</span>
-      <span>负责人 {ownerName}</span>
-      {work.nextSteps[0] && <span>{work.nextSteps[0]}</span>}
-    </button>
-  );
-}
-
-function UnknownBudgetReconciliation(props: {
-  work: WorkProjectionDto;
-  reservation: Pick<WorkBudgetReservationDto, "reservationId" | "windowId" | "tokens" | "requestKind" | "createdAt">;
-  busy: boolean;
-  submit: (request: WorkPhase4ControlRequest) => Promise<WorkPhase4ControlResult | undefined>;
-}): React.JSX.Element {
-  const { work, reservation, busy, submit } = props;
-  const [resolution, setResolution] = useState<"committed" | "released">("committed");
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
-  const [evidenceRef, setEvidenceRef] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-  const pending = useRef<{ signature: string; request: WorkPhase4ControlRequest } | null>(null);
-  const tokens = Number(amount);
-  const valid = amount.trim() !== "" && Number.isSafeInteger(tokens) && tokens >= 0
-    && (resolution !== "released" || tokens === 0) && reason.trim() !== "" && evidenceRef.trim() !== "" && confirmed;
-  const reconcile = async () => {
-    if (!valid || busy) return;
-    const payload = { kind: "reconcile-budget-reservation" as const, workId: work.workId,
-      reservationId: reservation.reservationId, windowId: reservation.windowId, resolution,
-      reportedTokens: tokens, reason: reason.trim(), evidenceRef: evidenceRef.trim() };
-    const signature = JSON.stringify(payload);
-    // Keep the exact original command after an unknown transport outcome. A fresh
-    // projection must not turn a retry into a different accounting operation.
-    if (pending.current?.signature !== signature) pending.current = { signature, request: {
-      ...payload, operationId: `desktop:${crypto.randomUUID()}`,
-      versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch },
-    } };
-    const response = await submit(pending.current.request);
-    if (response) pending.current = null;
+  const openWork = (workId: string) => {
+    requestedWork.current = workId;
+    setNavigationNotice("");
+    if (botWorks.some(work => work.workId === workId)) { setSelectedWorkId(workId); setInspectorOpen(true); return; }
+    // A historic message can point to an ended work outside the open-only projection.
+    // Resolve it before changing selection, and ignore a late lookup after switching Bot.
+    const botId = activeBotId;
+    setIncludeClosed(true);
+    setNavigationNotice("正在读取关联事项…");
+    void useAppStore.getState().refreshBotWork(true).then(() => {
+      const state = useAppStore.getState();
+      if (requestedWork.current !== workId || state.activeBotId !== botId) return;
+      if (state.botWorks.some(work => work.workId === workId && work.ownerBotId === botId)) {
+        state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
+      } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
+    });
   };
-  return <details className="budget-reconciliation">
-    <summary>核对未知用量：预留 {reservation.tokens} tokens</summary>
-    <p>请求 {reservation.reservationId} · 原窗口 {reservation.windowId} · {new Date(reservation.createdAt).toLocaleString()}</p>
-    <p>核对供应商账单或请求凭据后填写实际用量。确认未产生消耗时，填写 0 并选择释放。</p>
-    <label>处理方式<select aria-label="未知用量处理方式" value={resolution}
-      onChange={event => { setResolution(event.target.value as typeof resolution); setConfirmed(false); }}>
-      <option value="committed">按已核实用量结算</option><option value="released">确认未消耗，释放预留</option>
-    </select></label>
-    <label>已核实 tokens<input aria-label="已核实 tokens" type="number" min={0} step={1} value={amount}
-      onChange={event => { setAmount(event.target.value); setConfirmed(false); }} /></label>
-    <label>核对说明<input aria-label="预算核对说明" maxLength={1000} value={reason}
-      onChange={event => { setReason(event.target.value); setConfirmed(false); }} /></label>
-    <label>账单或请求凭据<input aria-label="预算核对凭据" maxLength={1000} value={evidenceRef}
-      onChange={event => { setEvidenceRef(event.target.value); setConfirmed(false); }} /></label>
-    <label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我已核实这笔请求的实际消耗</label>
-    <button type="button" disabled={busy || !valid} onClick={() => { void reconcile(); }}>保存预算核对结果</button>
-  </details>;
-}
-
-function WorkFacts(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean }): React.JSX.Element {
-  const { work, ownerName, includeClosed } = props;
-  const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
-  const identities = useAppStore(s => s.botIdentities);
-  const [targetBotId, setTargetBotId] = useState("");
-  const [question, setQuestion] = useState("");
-  const [controlNotice, setControlNotice] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [safeRecovery, setSafeRecovery] = useState<string | null>(null);
-  const [phase4Notice, setPhase4Notice] = useState("");
-  const [watchSource, setWatchSource] = useState("hook");
-  const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
-  const [deadlineInput, setDeadlineInput] = useState("");
-  const remoteBudgetLimit = work.phase4?.budget.limitTokens ?? 500000;
-  // A draft belongs to the policy it was edited against. A remote policy change
-  // invalidates it, while unrelated Work refreshes must retain local edits.
-  const [budgetDraft, setBudgetDraft] = useState<{ base: number; value: string } | null>(null);
-  const budgetLimit = budgetDraft?.base === remoteBudgetLimit ? budgetDraft.value : String(remoteBudgetLimit);
-  useEffect(() => { setBudgetDraft(null); }, [remoteBudgetLimit]);
-  const budgetDirty = budgetLimit.trim() !== "" && Number.isSafeInteger(Number(budgetLimit))
-    && Number(budgetLimit) >= 0 && Number(budgetLimit) !== remoteBudgetLimit;
-  const operations = useRef(new Map<string, string>());
-  const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
-  const operation = (key: string) => {
-    const prior = operations.current.get(key);
-    if (prior) return prior;
-    const id = `desktop:${crypto.randomUUID()}`;
-    operations.current.set(key, id); return id;
+  const changeView = (next: BotWorkspaceView) => {
+    requestedWork.current = null; setNavigationNotice("");
+    setView(next); setQuery("");
+    if (next === "closed") setIncludeClosed(true);
   };
-  const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
-  const control = async (request: WorkPhase3ControlRequest) => {
-    setBusy(true);
-    const requestId = request.kind === "continue" || request.kind === "handoff" || request.kind === "retry_resource_recovery" ? request.request.operationId
-      : request.kind === "collaborate" ? request.request.messageId : undefined;
-    const original = requestId ? controlRequests.current.get(requestId) ?? request : request;
-    if (requestId) controlRequests.current.set(requestId, original);
-    try {
-      const api = window.api;
-      if (!api) throw new Error("桌面控制接口不可用");
-      const response = await api.botWork.phase3Control(original);
-      if (!response.ok && requestId) {
-        controlRequests.current.delete(requestId);
-        for (const [key, value] of operations.current) if (value === requestId) operations.current.delete(key);
-      }
-      setControlNotice(response.ok ? "操作已受理，正在读取最新状态。" : response.message);
-      await useAppStore.getState().refreshBotWork(includeClosed);
-      return response;
-    } catch (error) { setControlNotice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。"); }
-    finally { setBusy(false); }
+  const send = () => {
+    if (!canSend) return;
+    followLatest.current = true; setAwayFromBottom(false); setView("conversation"); void submitBotDraft();
   };
+  const draftExample = (text: string) => { setBotDraft(text); setView("conversation"); composerRef.current?.focus(); };
+  const filteredWorks = botWorks.filter(work => workMatchesView(work, view) && work.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
-  const runPhase4 = async (request: WorkPhase4ControlRequest) => {
-    setBusy(true);
-    try {
-      const api = window.api;
-      if (!api) throw new Error("桌面控制接口不可用");
-      const response = await api.botWork.phase4Control(request);
-      setPhase4Notice(response.ok ? "操作已保存，正在读取最新状态。" : response.message);
-      await useAppStore.getState().refreshBotWork(includeClosed);
-      return response;
-    } catch (error) {
-      setPhase4Notice(error instanceof Error ? error.message : "操作尚未确认，请核对最新状态后重试。");
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <>
-      <h2>{work.title}</h2>
-      <dl>
-        <dt>状态</dt>
-        <dd>{lifecycleLabel(work.lifecycle)}{work.closureConclusion ? ` · ${work.closureConclusion}` : ""}</dd>
-        <dt>负责人</dt>
-        <dd>{ownerName} · 代次 {work.ownerEpoch}</dd>
-        <dt>版本</dt>
-        <dd>要求 r{work.intentRevision} · 来源 v{work.sourceVersion} · 状态 v{work.stateVersion}</dd>
-        <dt>目标</dt>
-        <dd>{work.mode === "watch" ? "持续查看" : "一次完成"}{work.inputSnapshotBound ? "" : " · 输入快照未绑定"}</dd>
-      </dl>
-      {work.phase3 && <section aria-label="事项执行情况">
-        <h3>执行情况</h3>
-        {work.lifecycle === "paused" && <p>{work.phase3.settlingActions ? "已暂停，正在结算在途操作" : "已暂停"}，积压 {work.phase3.pausedEventCount} 条事件。</p>}
-        {work.phase3.resourceWaits.map(reason => <p role="status" key={reason}>{reason}</p>)}
-        {work.phase3.resourceRecoveries.map(recovery => {
-          const confirmationKey = `${recovery.token}:${recovery.attempts}:${recovery.exhaustedAt}:${work.stateVersion}`;
-          const resourceLabel = recovery.resourceKinds.some(kind => kind === "desktop" || kind === "browser") ? "桌面或浏览器输入" : "共享资源";
-          return <article key={recovery.token} aria-label="资源隔离恢复">
-            <p role="status">{resourceLabel}仍被隔离。{recovery.reason}</p>
-            {recovery.pendingProbe && <p>恢复核对仍有在途步骤，资源继续隔离。</p>}
-            {recovery.exhaustedAt !== undefined && !recovery.pendingProbe && <>
-              <p>自动核对已停止。请先收起遮挡面板并确认旧操作已经停止，再重新核对。只有执行、输入清理和原操作效果均得到确认后，资源才会释放。</p>
-              <label><input type="checkbox" checked={safeRecovery === confirmationKey} disabled={busy}
-                onChange={event => setSafeRecovery(event.target.checked ? confirmationKey : null)} />我已确认环境安全，可以重新核对</label>
-              <button type="button" disabled={busy || safeRecovery !== confirmationKey}
-                onClick={() => { void control({ kind: "retry_resource_recovery", request: {
-                  operationId: operation(`recovery:${confirmationKey}`), workId: work.workId, token: recovery.token,
-                  expectedAttempts: recovery.attempts, expectedExhaustedAt: recovery.exhaustedAt!, confirmEnvironmentSafe: true, versionGuard,
-                } }); }}>重新核对隔离资源</button>
-            </>}
-          </article>;
+  return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { setInspectorOpen(false); setSettingsOpen(false); } }}>
+    <section className="bot-conversation" aria-label="Bot 对话">
+      <header className="bot-workspace-header">
+        {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
+        <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
+        <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
+        <div className="bot-workspace-actions">
+          <button type="button" className="bot-quiet-button bot-return" onClick={() => setPage("chat")}>返回普通模式</button>
+          <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
+        </div>
+      </header>
+      <nav className="bot-view-tabs" aria-label="对话与事项">
+        {views.map(item => {
+          const count = item.id === "conversation" ? undefined : item.id === "closed" && !allWorksLoaded ? undefined : botWorks.filter(work => workMatchesView(work, item.id)).length;
+          return <button type="button" key={item.id} aria-current={view === item.id ? "page" : undefined} onClick={() => changeView(item.id)}><item.icon size={15} /><span>{item.label}</span>{count !== undefined && <span className={`bot-tab-count ${item.id === "decisions" && count ? "needs-attention" : ""}`}>{count}</span>}</button>;
         })}
-        <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>
-        {work.phase3.gaps.map(gap => <article key={gap.factId}>
-          <p>{gap.task || gap.summary} · {{ completed: "已完成", blocked: "受阻", rejected: "未获准启动", failed: "失败", stopped: "已停止", unknown: "效果待核对", not_started: "尚未启动" }[gap.outcome]}</p>
-          {gap.writeConflicts.length > 0 && <p>{gap.writeConflicts.join("；")}</p>}
-          <button type="button" disabled={busy || work.lifecycle !== "active" || gap.outcome === "unknown"}
-            onClick={() => { void control({ kind: "continue", request: { operationId: operation(`continue:${gap.factId}`), workId: work.workId,
-              sourceBindingId: gap.bindingId, gapItemIds: [gap.itemId], reason: "用户在事项详情中选择仅补齐此必要缺口", versionGuard } }); }}>仅补跑此项</button>
-        </article>)}
-        {work.phase3.continuations.length > 0 && <p>已受理 {work.phase3.continuations.length} 个定向补跑计划，已有成果继续保留。</p>}
-        <details><summary>当前实测版本</summary><p>输入 {work.inputSnapshotId}</p><p>产物 {work.phase3.artifactSnapshotId ?? "无文件产物"}</p></details>
-        <h3>负责人交接</h3>
-        {work.phase3.handoffs.length === 0 ? <p>尚无交接记录。</p> : work.phase3.handoffs.map(message => <p key={message.messageId}>{message.body}</p>)}
-        <label>交给<select aria-label="新负责人" value={targetBotId} onChange={event => setTargetBotId(event.target.value)}>
-          <option value="">选择 Bot</option>
-          {identities.filter(bot => bot.botId !== work.ownerBotId && bot.status === "active").map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
-        </select></label>
-        <button type="button" disabled={busy || !targetBotId || !["active", "paused"].includes(work.lifecycle)} onClick={() => { void (async () => {
-          const prepared = await control({ kind: "prepare_handoff", workId: work.workId, targetBotId });
-          if (!prepared?.ok || !("preparation" in prepared)) return;
-          const snapshot = prepared.preparation.work;
-          await control({ kind: "handoff", request: { operationId: operation(`handoff:${targetBotId}:${snapshot.ownerEpoch}`), workId: work.workId,
-            targetBotId, preparationId: prepared.preparation.preparationId, versionGuard: { expectedStateVersion: snapshot.stateVersion,
-              expectedIntentRevision: snapshot.intentRevision, expectedOwnerEpoch: snapshot.ownerEpoch } } });
-        })(); }}>核对并交接</button>
-        <h3>协作记录</h3>
-        {work.phase3.collaborationMessages.map(message => <p key={message.messageId}>{message.body}</p>)}
-        <label>向负责人提问<input aria-label="协作问题" value={question} onChange={event => setQuestion(event.target.value)} maxLength={8000} /></label>
-        <button type="button" disabled={busy || !question.trim()} onClick={() => { void control({ kind: "collaborate", request: { messageId: operation(`question:${question}`),
-          workId: work.workId, kind: "question", recipientBotIds: [work.ownerBotId], body: question, versionGuard } }); }}>保存问题</button>
-        {controlNotice && <p role="status">{controlNotice}</p>}
+      </nav>
+      {workError && <p className="bot-alert" role="alert">{workError}</p>}
+      {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
+      {view === "conversation" ? <>
+        <div className="bot-thread" ref={threadRef} role="log" aria-label="对话记录" aria-live="off" onScroll={() => {
+          const el = threadRef.current; if (!el) return;
+          followLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72;
+          setAwayFromBottom(!followLatest.current);
+        }}>
+          {messages.length === 0 ? <div className="bot-conversation-empty">
+            <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
+            <span className="bot-eyebrow">从一句话开始</span>
+            <h2>{activeBot ? "有什么想一起推进的？" : "还没有 Bot"}</h2>
+            <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "受理服务尚未接线，暂时无法开始对话。"}</p>
+            {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
+          </div> : <div className="bot-message-list">{messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, message.requestId); }} />)}</div>}
+        </div>
+        {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
+      </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
+        <header className="bot-list-heading"><div><h2>{view === "active" ? "正在为你推进" : view === "decisions" ? "等你给个方向" : "每一件事，都有记录"}</h2><p>{view === "active" ? "进行、暂停和结算中的事项都在这里。" : view === "decisions" ? "需要你的判断、补充信息或实测确认。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
+        {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "decisions" ? "暂时没有需要你决定的事" : view === "closed" ? "还没有结束的事项" : "还没有进行中的事项"}</h3><p>{query ? "试试其他关键词。" : view === "decisions" ? "需要你参与时，会在这里清楚地列出来。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
       </section>}
-      {work.phase4 && <section aria-label="关注、离线与预算">
-        <h3>关注与运行</h3>
-        <p>{work.phase4.host.online ? "权威宿主在线" : "权威宿主离线，不能宣称持续运行"}
-          {work.phase4.host.lastScanAt ? ` · 最近实际检查 ${new Date(work.phase4.host.lastScanAt).toLocaleString()}` : " · 尚无实际检查记录"}
-          {work.phase4.host.suspendEvidence ? ` · 休眠证据 ${work.phase4.host.suspendEvidence}` : ""}</p>
-        <p>承诺期限 {work.phase4.deadlineAt ? new Date(work.phase4.deadlineAt).toLocaleString() : "未设置"}（revision {work.phase4.deadlineRevision}）</p>
-        {work.phase4.subscriptions.length === 0 ? <p>尚无关注规则。</p> : work.phase4.subscriptions.map(subscription => <article key={subscription.subscriptionId} aria-label="关注规则">
-          <strong>{subscription.source} · {subscription.targetKey ?? "默认目标"} · {{ online: "在线", paused: "暂停积压", offline: "宿主离线", stopped: "已停止", closing: "结算中" }[subscription.status]}</strong>
-          <p>策略 {subscription.catchUpPolicy} · 时区 {subscription.timezone ?? "默认"} · 规则 r{subscription.scheduleRevision} · 配置 r{subscription.configRevision}</p>
-          <p>下一唤醒 {subscription.nextWakeAt ? new Date(subscription.nextWakeAt).toLocaleString() : "无"} · 最近检查 {subscription.lastCheckedAt ? new Date(subscription.lastCheckedAt).toLocaleString() : "无"}</p>
-          <p>队列 ready {subscription.queue.ready} · frozen {subscription.queue.frozen} · blocked {subscription.queue.blocked} / 上限 {subscription.queue.maxEvents} 条 · {subscription.queue.bytes}/{subscription.queue.maxBytes} 字节
-            {subscription.queue.mergeDeadlineAt ? ` · 固定合并截止 ${new Date(subscription.queue.mergeDeadlineAt).toLocaleString()}` : ""}
-            {subscription.queue.waitReason ? ` · ${subscription.queue.waitReason}` : ""}</p>
-          {subscription.cursors.map(cursor => <p key={`${cursor.source}:${cursor.targetKey}`}>目标 {cursor.targetKey} · 已接纳 {cursor.highestAcceptedVersion ?? "无"} · 已消费 {cursor.highestConsumedVersion ?? "无"} · 已冻结 {cursor.highestFrozenVersion ?? "无"}</p>)}
-          <button type="button" disabled={busy || subscription.status === "stopped" || work.lifecycle === "closed"}
-            onClick={() => { void runPhase4({ kind: "stop-subscription", operationId: operation(`stop-sub:${subscription.subscriptionId}`),
-              workId: work.workId, subscriptionId: subscription.subscriptionId, reason: "用户在事项详情中停止关注", versionGuard }); }}>停止此关注</button>
-          <button type="button" disabled={busy || subscription.status === "stopped"} onClick={() => { void runPhase4({ kind: "retry-backlog",
-            operationId: operation(`retry-backlog:${subscription.subscriptionId}:${work.stateVersion}`), workId: work.workId,
-            subscriptionId: subscription.subscriptionId, versionGuard }); }}>重试积压与拒收路由</button>
-        </article>)}
-        <label>来源<input aria-label="关注来源" value={watchSource} onChange={event => setWatchSource(event.target.value)} maxLength={100} /></label>
-        <label>合并策略<select aria-label="合并策略" value={watchPolicy} onChange={event => setWatchPolicy(event.target.value as typeof watchPolicy)}>
-          <option value="latest">latest</option><option value="each">each</option><option value="skip">skip</option>
-        </select></label>
-        <button type="button" disabled={busy || !watchSource.trim() || !["active", "paused"].includes(work.lifecycle)}
-          onClick={() => { void runPhase4({ kind: "configure-subscription", operationId: operation(`subscribe:${watchSource}:${watchPolicy}:${work.stateVersion}`),
-            workId: work.workId, source: watchSource.trim(), catchUpPolicy: watchPolicy, versionGuard }); }}>保存关注规则</button>
-        <label>承诺期限<input aria-label="承诺期限" type="datetime-local" value={deadlineInput} onChange={event => setDeadlineInput(event.target.value)} /></label>
-        <button type="button" disabled={busy || !deadlineInput || work.lifecycle === "closed"}
-          onClick={() => { void runPhase4({ kind: "set-deadline", operationId: operation(`deadline:${deadlineInput}:${work.stateVersion}`),
-            workId: work.workId, deadlineAt: new Date(deadlineInput).getTime(), versionGuard }); }}>保存期限</button>
-        <button type="button" disabled={busy || work.phase4.deadlineAt === undefined || work.lifecycle === "closed"}
-          onClick={() => { void runPhase4({ kind: "set-deadline", operationId: operation(`deadline-clear:${work.stateVersion}`),
-            workId: work.workId, deadlineAt: null, versionGuard }); }}>取消期限</button>
+      <form className="bot-composer" onSubmit={event => { event.preventDefault(); send(); }}>
+        {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
+        {selected && <div className="bot-composer-context"><button type="button" onClick={() => setInspectorOpen(true)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
+        <div className="bot-composer-box"><label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><textarea ref={composerRef} id="bot-draft" value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} /><div className="bot-composer-toolbar"><span role="status">{sending ? "正在发送…" : notice ? "消息已发送" : "Enter 发送 · Shift + Enter 换行"}</span><button type="submit" className="bot-send-button" disabled={!canSend} aria-label={activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送消息"}><span>{activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送"}</span><IconArrowUp size={17} /></button></div></div>
+        <p className="bot-composer-note">{selected ? "消息将关联到当前事项。切换或取消关联，不会删除记录。" : "重要操作仍需遵守你的授权与确认。"}</p>
+      </form>
+    </section>
+    {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
+      <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={activeBot?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} /></div>
+    </dialog>}
+    <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
+      <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
+      <div className="bot-settings-body">{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
+    </dialog>
+  </div>;
+}
 
-        <h3>离线补处理</h3>
-        {work.phase4.offlineGaps.length === 0 ? <p>没有记录的离线缺口。</p> : work.phase4.offlineGaps.map(gap => <article key={gap.gapId}>
-          <p>{new Date(gap.offlineGapFrom).toLocaleString()} ~ {new Date(gap.offlineGapTo).toLocaleString()} · 依据 {gap.detectedBy} / {gap.confidence === "evidence" ? "有证据" : "推断"}
-            · 策略 {gap.policy} · {{ open: "待恢复", recovering: "恢复中", recovered: "已恢复", unqueryable: "不可回查" }[gap.state]}</p>
-          <p>已补 {gap.recoveredCount} · 已合并 {gap.mergedCount} · 已跳过 {gap.skippedCount} · 未知 {gap.unknownCount ?? "未统计"}{gap.gapReason ? ` · ${gap.gapReason}` : ""}</p>
-        </article>)}
+function BotMessage({ message, botName, works, onOpenWork, onCancel }: { message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
+  const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
+  return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
+    {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
+    {message.role === "user" ? <div className="user-bubble"><div className="user-bubble-text">{message.text}</div></div> : <div className="bot-assistant-content">{message.text ? <Suspense fallback={<p style={{ whiteSpace: "pre-wrap" }}>{message.text}</p>}><ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={message.status === "running"} /></Suspense> : <p className="bot-reply-placeholder">{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
+    {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
+    <div className="bot-message-meta"><span>{botMessageStatus(message)}</span><time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={11} />停止回复</button>}</div>
+    {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
+  </article>;
+}
 
-        <h3>共享预算</h3>
-        <p>窗口 {work.phase4.budget.windowId} · {new Date(work.phase4.budget.periodStartAt).toLocaleString()} ~ {work.phase4.budget.periodEndAt ? new Date(work.phase4.budget.periodEndAt).toLocaleString() : "无期限"}
-          · {work.phase4.budget.timezone ?? "默认时区"} · 策略 r{work.phase4.budget.policyRevision} · {work.phase4.budget.autoRollover ? "允许续期" : "不自动续期"}</p>
-        <p>上限 {work.phase4.budget.limitTokens} · 已结算 {work.phase4.budget.committedTokens} · 在途预留 {work.phase4.budget.reservedTokens} · 未知 {work.phase4.budget.unknownTokens}（{work.phase4.budget.unknownUsageCount} 笔）· 可用 {work.phase4.budget.availableTokens}</p>
-        {work.phase4.budget.pendingRollover && <p role="status">{work.phase4.budget.pendingRollover}</p>}
-        {(work.phase4.budget.unknownReservations ?? []).map(reservation => <UnknownBudgetReconciliation
-          key={reservation.reservationId} work={work} reservation={reservation} busy={busy} submit={runPhase4} />)}
-        <label>预算上限<input aria-label="预算上限" type="number" min={0} step={1} disabled={busy} value={budgetLimit}
-          onChange={event => setBudgetDraft({ base: remoteBudgetLimit, value: event.target.value })} /></label>
-        <button type="button" disabled={busy || !["active", "paused"].includes(work.lifecycle) || !budgetDirty}
-          onClick={() => { if (!budgetDirty || busy) return; void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
-            workId: work.workId, maxTokens: Number(budgetLimit), versionGuard }); }}>保存预算政策</button>
-
-        <h3>因果准入</h3>
-        {work.phase4.causal.length === 0 ? <p>尚无因果准入记录。</p> : <details><summary>最近 {work.phase4.causal.length} 次准入</summary>
-          {work.phase4.causal.map(item => <p key={item.chainId}>{item.decision === "admitted" ? "已准入" : "已拦截"} · 深度 {item.depth} · 互调 {item.hops} 跳 · 派发 {item.dispatchCount} · {item.reasonCode ?? item.rootEventId}</p>)}
-        </details>}
-        {phase4Notice && <p role="status">{phase4Notice}</p>}
-      </section>}
-      <h3>成果与证据</h3>
-      {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
-        <strong>{{ proposed: "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
-        <p style={{ whiteSpace: "pre-wrap" }}>{deliverable.summary}</p>
-        {deliverable.artifactRefs.length > 0 && <ul>{deliverable.artifactRefs.map(ref => <li key={ref}>{ref}</li>)}</ul>}
-        <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
-      </article>)}
-      <h3>验收</h3>
-      {/* These siblings must have distinct keys, including across version resets. */}
-      <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
-        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
-      <WorkReviewPanel key={JSON.stringify(["review", work.workId, work.intentRevision, work.inputSnapshotId,
-        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
-      {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
-        <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
-      )}
-      <h3>下一步</h3>
-      {work.nextSteps.length === 0 ? <p>没有未完成的下一步。</p> : (
-        <ul>{work.nextSteps.map((step) => <li key={step}>{step}</li>)}</ul>
-      )}
-      <h3>阻碍</h3>
-      {openBlockers.length === 0 ? <p>没有未解除的阻碍。</p> : (
-        <ul>{openBlockers.map((blocker) => <li key={blocker.blockerId}>{blocker.reason}</li>)}</ul>
-      )}
-    </>
-  );
+function WorkCard({ work, selected, onSelect }: { work: WorkProjectionDto; selected: boolean; onSelect: () => void }): React.JSX.Element {
+  const attention = needsWorkDecision(work);
+  const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
+  return <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
+    <div className="bot-work-card-top"><span className={`bot-status-badge ${attention ? "attention" : work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
+    <strong>{work.title}</strong><p>{work.nextSteps[0] ?? latest?.summary ?? "打开查看目标、进展与成果。"}</p>
+    <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><IconChevronRight size={16} /></div>
+  </button>;
 }

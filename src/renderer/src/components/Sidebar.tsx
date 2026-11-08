@@ -28,6 +28,8 @@ import {
   IconBarChart,
   IconBell,
   IconBot,
+  IconMessageDashed,
+  IconListTodo,
   IconBroom,
   IconChevronDown,
   IconChevronRight,
@@ -102,17 +104,14 @@ function botPresenceLabel(status: "active" | "paused" | "disabled", hostOnline: 
   return hostOnline ? "在线" : "离线";
 }
 
-export default function Sidebar(): React.JSX.Element {
+export default function Sidebar({ onClose }: { onClose?: () => void } = {}): React.JSX.Element {
   const tasks = useSidebarTasks();
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
   const botIdentities = useAppStore((s) => s.botIdentities);
-  const botWorks = useAppStore((s) => s.botWorks);
   const activeBotId = useAppStore((s) => s.activeBotId);
-  const selectedWorkId = useAppStore((s) => s.selectedWorkId);
   const botHostStatus = useAppStore((s) => s.botHostStatus);
   const setActiveBotId = useAppStore((s) => s.setActiveBotId);
-  const setSelectedWorkId = useAppStore((s) => s.setSelectedWorkId);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const draft = useAppStore((s) => s.draft);
@@ -805,12 +804,8 @@ export default function Sidebar(): React.JSX.Element {
   const go = (p: Page): void => {
     setPage(p);
     setPopup(null);
+    onClose?.();
   };
-  const activeBotWorks = botWorks.filter((work) => work.ownerBotId === activeBotId && work.lifecycle !== "closed");
-  const botDecisions = activeBotWorks.filter((work) =>
-    work.blockers.some((blocker) => blocker.status === "open" && blocker.waitingForUserInput)
-    || work.nextSteps.some((step) => step.startsWith("需要你的决定") || step.startsWith("等待实测")),
-  );
 
   return (
     <aside className="sidebar">
@@ -822,8 +817,8 @@ export default function Sidebar(): React.JSX.Element {
           <div className="sidebar-version">v{APP_VERSION}</div>
         </div>
         <div className="sidebar-header-actions">
-          <button className="icon-btn" title="收起侧边栏" onClick={toggleSidebar}><IconPanel size={15} /></button>
-          <button className="icon-btn" title="搜索 (Ctrl+K)" onClick={() => setSearchOpen(true)}><IconSearch size={15} /></button>
+          <button className="icon-btn" title="收起侧边栏" onClick={onClose ?? toggleSidebar}><IconPanel size={15} /></button>
+          <button className="icon-btn" title="搜索 (Ctrl+K)" onClick={() => { onClose?.(); setSearchOpen(true); }}><IconSearch size={15} /></button>
           <div className="filter-anchor" ref={filterAnchorRef}>
             <button className={`icon-btn ${filterOpen ? "toggled" : ""}`} title="筛选" onClick={() => { const next = !filterOpen; closeSidebarPopups(); setFilterOpen(next); }}>
               <IconFilter size={15} />
@@ -838,44 +833,19 @@ export default function Sidebar(): React.JSX.Element {
         </div>
       </div>
 
+      <nav className="sidebar-mode-nav" aria-label="工作模式">
+        <button type="button" aria-current={page === "chat" ? "page" : undefined} onClick={() => go("chat")}><IconMessageDashed size={16} />普通模式</button>
+        <button type="button" aria-current={page === "bot" ? "page" : undefined} onClick={() => go("bot")}><IconBot size={16} />Bot 模式</button>
+      </nav>
       {page === "bot" ? (
         <div className="sidebar-scroll" aria-label="Bot 导航">
-          <div className="sidebar-ia-label">Bot</div>
-          <div className="sidebar-tree-header"><span className="section-title">Bot 列表</span></div>
-          {botIdentities.length === 0 ? (
-            <div className="sidebar-empty">还没有 Bot，受理服务尚未接线。</div>
-          ) : botIdentities.map((bot) => (
-            <div key={bot.botId}>
-              <button
-                type="button"
-                className="sidebar-bot-row"
-                aria-pressed={bot.botId === activeBotId}
-                onClick={() => setActiveBotId(bot.botId)}
-              >
-                {bot.displayName}
-                <span>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</span>
-              </button>
-              {bot.botId === activeBotId && activeBotWorks.map((work) => (
-                <button
-                  key={work.workId}
-                  type="button"
-                  className="sidebar-bot-row"
-                  aria-pressed={work.workId === selectedWorkId}
-                  onClick={() => setSelectedWorkId(work.workId)}
-                >
-                  {work.title}
-                </button>
-              ))}
-            </div>
-          ))}
-          <div className="sidebar-tree-header sidebar-tree-header--spaced"><span className="section-title">待决事项</span></div>
-          {botDecisions.length === 0 ? (
-            <div className="sidebar-empty">暂无可显示的待决事项。</div>
-          ) : botDecisions.map((work) => (
-            <button key={work.workId} type="button" className="sidebar-bot-row" aria-pressed={work.workId === selectedWorkId} onClick={() => setSelectedWorkId(work.workId)}>
-              {work.title}
+          <div className="sidebar-tree-header"><span className="section-title">我的 Bot</span><span className="sidebar-section-count">{botIdentities.length}</span></div>
+          {botIdentities.length === 0 ? <div className="sidebar-empty">还没有 Bot，受理服务尚未接线。</div> : botIdentities.map(bot => (
+            <button key={bot.botId} type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={bot.botId === activeBotId} onClick={() => { setActiveBotId(bot.botId); onClose?.(); }}>
+              <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{bot.displayName}</strong><small>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</small></span>
             </button>
           ))}
+          <div className="sidebar-bot-tip"><IconListTodo size={18} /><strong>事项始终在手边</strong><p>在顶部查看进行中、待你决定和已结束的事项。对话与记录，随时接着聊。</p></div>
         </div>
       ) : <>
       <div className="sidebar-primary-action">
@@ -950,14 +920,14 @@ export default function Sidebar(): React.JSX.Element {
         {popup === "account" && (
           <div className="sidebar-popup account-popup">
             <div className="account-popup-name">{userLabel}</div>
-            <AccountNavigation go={go} openProjects={() => { useAppStore.getState().requestProjectsRoot(); setPopup(null); }} />
+            <AccountNavigation go={go} openProjects={() => { useAppStore.getState().requestProjectsRoot(); setPopup(null); onClose?.(); }} />
             <div className="sidebar-popup-sep" />
             <button className="sidebar-popup-item" onClick={() => go("gadgets")}><IconGrid size={14} /> 我的工作台</button>
             <button className="sidebar-popup-item" onClick={() => go("files")}><IconFile size={14} /> 任务成果</button>
             <div className="sidebar-popup-sep" />
-            <button className="sidebar-popup-item" onClick={() => { setSettingsOpen(true); setPopup(null); }}><IconSettings size={14} /> 设置</button>
-            <button className="sidebar-popup-item" onClick={() => { openUsageStats(); setPopup(null); }}><IconBarChart size={14} /> 用量统计</button>
-            <button className="sidebar-popup-item" onClick={() => { openApiAggregation(); setPopup(null); }}><IconKeyRound size={14} /> API 聚合</button>
+            <button className="sidebar-popup-item" onClick={() => { onClose?.(); setSettingsOpen(true); setPopup(null); }}><IconSettings size={14} /> 设置</button>
+            <button className="sidebar-popup-item" onClick={() => { onClose?.(); openUsageStats(); setPopup(null); }}><IconBarChart size={14} /> 用量统计</button>
+            <button className="sidebar-popup-item" onClick={() => { onClose?.(); openApiAggregation(); setPopup(null); }}><IconKeyRound size={14} /> API 聚合</button>
             <div className="sidebar-popup-item spread as-row">
               <span className="sidebar-popup-item-label">
                 <IconPalette size={14} /> 外观
@@ -1084,14 +1054,14 @@ export default function Sidebar(): React.JSX.Element {
               <button
                 type="button"
                 className="notification-settings-link"
-                onClick={() => { setNotificationOpen(false); setSettingsOpen(true, "notifications"); }}
+                onClick={() => { setNotificationOpen(false); onClose?.(); setSettingsOpen(true, "notifications"); }}
               >
                 通知设置
               </button>
             </div>
           )}
         </div>
-        <button className="icon-btn" title="设置" onClick={() => setSettingsOpen(true)}><IconSettings size={15} /></button>
+        <button className="icon-btn" title="设置" onClick={() => { onClose?.(); setSettingsOpen(true); }}><IconSettings size={15} /></button>
       </div>
       <ConfirmDialog open={relocateNotice !== null} title="无法重新定位" body={relocateNotice} confirmLabel="知道了" onCancel={() => setRelocateNotice(null)} onConfirm={() => setRelocateNotice(null)} />
       <ConfirmDialog open={confirmDeleteSpace !== null} title="删除空间？" body={confirmDeleteSpace ? (<>确定要删除空间「{confirmDeleteSpace.name}」吗？<br />仅空空间可删除：该空间下不能有子空间、任务或自有资料，请先处理这些内容后再删除。<br />若为空空间，删除时会一并清理该空间的记忆，操作不可恢复。</>) : null} confirmLabel="删除" danger onCancel={() => setConfirmDeleteSpace(null)} onConfirm={async () => { const target = confirmDeleteSpace; setConfirmDeleteSpace(null); if (!target) return; try { await deleteSpace(target.id); } catch (err) { const msg = err instanceof Error ? err.message : String(err); if (msg.includes("非空") || msg.includes("workspace_not_empty") || msg.includes("尚有")) { setDeleteError("该空间下还有子空间、任务或自有资料，请先处理后再删除。取消资料引用不会删除原文。"); } else { setDeleteError(msg || "删除失败，请稍后重试"); } } }} />

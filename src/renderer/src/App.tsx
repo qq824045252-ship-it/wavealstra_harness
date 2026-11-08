@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { applyTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import Sidebar from "@/components/Sidebar";
@@ -36,6 +37,18 @@ export default function App(): React.JSX.Element {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
+  const searchOpen = useAppStore((s) => s.searchOpen);
+  const compactBotLayout = useMediaQuery("(max-width: 1180px)");
+  const [botNavigationOpen, setBotNavigationOpen] = useState(false);
+  const botNavigationRef = useRef<HTMLDialogElement>(null);
+  const botSidebarVisible = compactBotLayout ? botNavigationOpen : !sidebarCollapsed;
+  useEffect(() => { setBotNavigationOpen(false); }, [page, compactBotLayout]);
+  useEffect(() => { if (searchOpen || settingsOpen) setBotNavigationOpen(false); }, [searchOpen, settingsOpen]);
+  useEffect(() => {
+    const dialog = botNavigationRef.current;
+    if (page === "bot" && compactBotLayout && botNavigationOpen) dialog?.showModal();
+    else if (dialog?.open) dialog.close();
+  }, [page, compactBotLayout, botNavigationOpen]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -124,12 +137,14 @@ export default function App(): React.JSX.Element {
   }, [showArtifactPanel]);
 
   return (
-    <div className="app">
-      {!sidebarCollapsed && <Sidebar />}
+    <div className={`app ${page === "bot" ? "app--bot" : ""}`}>
+      {page === "bot" && compactBotLayout ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
+        <Sidebar onClose={() => setBotNavigationOpen(false)} />
+      </dialog> : !sidebarCollapsed && <Sidebar />}
       <div
         className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
       >
-        {sidebarCollapsed && page !== "chat" && (
+        {sidebarCollapsed && page !== "chat" && page !== "bot" && (
           <button className="icon-btn sidebar-expand-float" title="展开侧边栏" onClick={toggleSidebar}>
             <IconPanel size={15} />
           </button>
@@ -147,7 +162,7 @@ export default function App(): React.JSX.Element {
             )}
           </>
         ) : page === "bot" ? (
-          <BotWorkspacePage />
+          <BotWorkspacePage navigationVisible={botSidebarVisible} onToggleNavigation={() => { if (compactBotLayout) setBotNavigationOpen(open => !open); else toggleSidebar(); }} />
         ) : page === "assistant" ? (
           <AssistantPage />
         ) : page === "projects" ? (

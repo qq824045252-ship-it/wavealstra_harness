@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { BotMessageDto } from "../src/shared/bot-conversation";
+import { botMessageStatus, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
+import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
+import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
@@ -30,9 +34,14 @@ assert.match(botSidebar, /还没有 Bot/);
 const botPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(botPage, /返回普通模式/);
 assert.match(botPage, /受理服务尚未接线/);
-assert.match(botPage, /待决事项/);
+const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
+assert.ok(navigation);
+assert.equal((navigation.match(/<button /g) ?? []).length, 4, "navigation has exactly four stable entry points");
+for (const title of ["对话", "进行中", "待你决定", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
+assert.match(navigation, /aria-current="page"/);
 assert.match(botPage, /还没有 Bot/);
-assert.doesNotMatch(botPage, /进行中|进度|负责人|<progress/);
+assert.doesNotMatch(botPage, /<progress|class="bot-work-details"|aria-label="事项详情"/, "empty state cannot fabricate Work details or progress");
+assert.match(botPage, /<button[^>]*disabled[^>]*aria-label="发送消息"/);
 
 const draft = { title: "普通任务草稿" };
 useAppStore.setState({ page: "chat", draft, activeTaskId: "task-a", botDraft: "" });
@@ -102,6 +111,47 @@ function work(overrides: Partial<WorkProjectionDto> & Pick<WorkProjectionDto, "w
     ...overrides,
   };
 }
+// Pure presentation behavior: lifecycle truth wins over stale decision text.
+const blocker: WorkProjectionDto["blockers"][number] = { blockerId: "b1", workId: "decision", reason: "请确认范围",
+  kind: "operational", waitingForUserInput: true, status: "open", createdAt: 1 };
+const plain = work({ workId: "plain", title: "普通事项", nextSteps: [] });
+assert.equal(needsWorkDecision(plain), false);
+assert.equal(needsWorkDecision({ ...plain, blockers: [blocker] }), true);
+assert.equal(needsWorkDecision({ ...plain, blockers: [{ ...blocker, status: "cleared" }] }), false);
+assert.equal(needsWorkDecision({ ...plain, blockers: [{ ...blocker, waitingForUserInput: false }] }), false);
+for (const step of ["需要你的决定：选择范围", "等待实测反馈：日志齐全"]) {
+  const decision = { ...plain, nextSteps: [step] };
+  assert.equal(needsWorkDecision(decision), true);
+  assert.equal(workMatchesView(decision, "decisions"), true);
+  assert.equal(workStatusLabel(decision), "待你决定");
+  assert.equal(needsWorkDecision({ ...decision, lifecycle: "closed" }), false);
+}
+for (const lifecycle of ["active", "paused", "closing", "closed"] as const) {
+  const candidate = { ...plain, lifecycle };
+  assert.equal(workMatchesView(candidate, "active"), lifecycle !== "closed");
+  assert.equal(workMatchesView(candidate, "conversation"), lifecycle !== "closed");
+  assert.equal(workMatchesView(candidate, "closed"), lifecycle === "closed");
+}
+assert.equal(workStatusLabel(plain), "进行中");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "paused" }), "已暂停");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "closing" }), "正在结算");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: "succeeded" }), "已完成");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: "cancelled" }), "已取消");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: "ended_unsuccessfully" }), "已结束 · 未完成");
+assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: undefined }), "已结束",
+  "missing closure evidence cannot imply failure or success");
+const message = { role: "assistant", status: "completed" } as BotMessageDto;
+assert.equal(botMessageStatus(message), "已回复");
+assert.equal(botMessageStatus({ ...message, role: "user" }), "已发送");
+for (const [status, label] of Object.entries({ queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" })) {
+  assert.equal(botMessageStatus({ ...message, status: status as BotMessageDto["status"] }), label);
+}
+const enter = { key: "Enter", shiftKey: false, isComposing: false, keyCode: 13 };
+assert.equal(shouldSendBotComposer(enter), true);
+for (const change of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { key: "Escape" }, { key: "a" }]) {
+  assert.equal(shouldSendBotComposer({ ...enter, ...change }), false, "newline, IME confirmation and ordinary keys never submit");
+}
+
 // Closing a successfully accepted result keeps its original card kind. The rendered
 // completion badge must use the authoritative closure and the card's current currency.
 const acceptedCard: WorkResultCardDto = {
@@ -145,6 +195,20 @@ const proposedOutput: WorkProjectionDto["deliverables"][number] = {
   status: "proposed", summary: "Current proposal", artifactRefs: [], evidenceRefs: [], uncoveredScope: [],
   uncoveredCriterionIds: [], isSpeculation: false, hasWriteConflicts: false, createdAt: 5,
 };
+const proposalDecision = { ...plain, deliverables: [proposedOutput] };
+assert.equal(needsWorkDecision(proposalDecision), true, "a current proposal needs review even without a next-step hint");
+assert.equal(workMatchesView(proposalDecision, "decisions"), true);
+for (const change of [
+  { intentRevision: proposedOutput.intentRevision - 1 }, { inputSnapshotId: "different-input" },
+  { ownerEpoch: proposedOutput.ownerEpoch + 1 }, { status: "accepted" as const }, { status: "rejected" as const },
+]) {
+  const candidate = { ...proposalDecision, deliverables: [{ ...proposedOutput, ...change }] };
+  assert.equal(needsWorkDecision(candidate), false, `noncurrent or settled proposal cannot need review: ${JSON.stringify(change)}`);
+  assert.equal(workMatchesView(candidate, "decisions"), false);
+}
+assert.equal(needsWorkDecision({ ...proposalDecision, lifecycle: "closed" }), false,
+  "a closed matter cannot need proposal review");
+
 const renderReview = (changes: Partial<WorkProjectionDto> = {}) => renderToStaticMarkup(createElement(WorkReviewPanel, {
   work: { ...completedWork, lifecycle: "active", deliverables: [proposedOutput], ...changes }, includeClosed: true,
 }));
@@ -156,8 +220,45 @@ assert.match(reviewPanel, /<button[^>]*disabled[^>]*>确认结束事项<\/button
 for (const flags of [{ hasWriteConflicts: true }, { isSpeculation: true }]) {
   assert.match(renderReview({ deliverables: [{ ...proposedOutput, ...flags }] }), /<button[^>]*disabled[^>]*>采纳成果<\/button>/);
 }
-assert.doesNotMatch(renderReview({ deliverables: [{ ...proposedOutput, intentRevision: 1 }] }), /采纳成果/);
+assert.doesNotMatch(renderReview({ deliverables: [{ ...proposedOutput, intentRevision: 1 }] }), /<button[^>]*>采纳成果<\/button>/, "stale proposals have no accept action");
 assert.equal(renderReview({ lifecycle: "closed" }), "", "closed Work has no additional review controls");
+
+const renderDetails = (changes: Partial<WorkProjectionDto>) => renderToStaticMarkup(createElement(BotWorkDetails, {
+  work: { ...completedWork, ...changes }, ownerName: duty.displayName, includeClosed: true,
+}));
+for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully"] as const) {
+  const closedDetails = renderDetails({ closureConclusion, deliverables: [proposedOutput] });
+  assert.doesNotMatch(closedDetails, /class="bot-work-decision-hint"|<h3>需要你决定<\/h3>|<button[^>]*>采纳成果<\/button>/,
+    "closed matters must not solicit review decisions that cannot be acted on");
+  assert.match(closedDetails, /未采纳（已结束）/);
+  assert.match(closedDetails, /成果记录与验收/);
+}
+const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [], resourceWaits: [],
+  resourceRecoveries: [], settlingActions: 0, pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
+assert.doesNotMatch(renderDetails({ lifecycle: "active", phase3: emptyExecution }), /aria-label="事项执行情况"/,
+  "empty execution diagnostics should not occupy the everyday overview");
+assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, resourceWaits: ["正在等待共享资源"] } }),
+  /aria-label="事项执行情况"/, "real resource waits remain visible");
+
+assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, settlingActions: 1 } }),
+  /仍有 1 项在途操作等待结算/, "unsettled effects are not empty diagnostics and remain visible");
+
+const actionableDetails = renderDetails({ lifecycle: "active", deliverables: [proposedOutput], cards: [acceptedCard] });
+assert.ok(actionableDetails.indexOf('aria-label="成果评审与结束"') < actionableDetails.indexOf('aria-label="结果卡片与证据"'),
+  "review decisions must precede result ledgers and diagnostics");
+const emptyCards = renderToStaticMarkup(createElement(WorkCardsPanel, { work: { ...completedWork, cards: [], notifications: [] }, includeClosed: true }));
+assert.doesNotMatch(emptyCards, /<h3>结果卡片<\/h3>|<h3>外部通知<\/h3>|还没有结果卡片|还没有外部通知记录/,
+  "empty ledgers must not distract from the actual review action");
+assert.match(emptyCards, /高级诊断与证据/, "diagnostics remain available even with no cards");
+const unknownNotification = renderToStaticMarkup(createElement(WorkCardsPanel, { work: { ...completedWork, cards: [], notifications: [{
+  notificationId: "unknown-delivery", workId: completedWork.workId, kind: "result", title: "待核对通知", body: "通知内容",
+  semanticKey: "unknown-delivery", stateVersion: completedWork.stateVersion, intentRevision: completedWork.intentRevision,
+  delivery: "unknown", attemptCount: 1, createdAt: 1,
+}] }, includeClosed: true }));
+assert.match(unknownNotification, /外部结果未确认/);
+assert.match(unknownNotification, /确认风险后重发/);
+assert.ok(unknownNotification.indexOf("确认风险后重发") < unknownNotification.indexOf("高级诊断与证据"),
+  "uncertain delivery risk and confirmation remain outside the diagnostic fold");
 
 const night = work({ workId: "work-night", title: "夜间巡检", intentRevision: 2 });
 const handoff = work({
@@ -180,6 +281,8 @@ const savedSnapshot = {
   botHostStatus: snapshot.botHostStatus,
   botSubmissionNotice: snapshot.botSubmissionNotice,
   botWorkCursor: snapshot.botWorkCursor,
+  botHistories: snapshot.botHistories,
+  activeTaskId: snapshot.activeTaskId,
 };
 Object.assign(snapshot, {
   page: "bot",
@@ -190,15 +293,60 @@ Object.assign(snapshot, {
   botHostStatus: { online: true, isAuthority: true, authorityId: "local" },
   botSubmissionNotice: false,
 });
+snapshot.botHistories = {};
+const emptyConversation = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(emptyConversation, /有什么想一起推进的？/);
+for (const title of ["梳理今天的重点", "持续跟进一件事", "一起推进一个目标"]) {
+  assert.match(emptyConversation, new RegExp(`<button type="button"[^>]*><span>${title}</span>`),
+    "welcome examples only draft a message, never submit the composer");
+}
+const exampleGrid = emptyConversation.match(/<div class="bot-example-grid">([\s\S]*?)<\/div>/)?.[1];
+assert.ok(exampleGrid);
+assert.equal((exampleGrid.match(/<button /g) ?? []).length, 3);
+snapshot.botHistories = savedSnapshot.botHistories;
+
+// Real shared Markdown renderer and real Bot page: a local-file reference must
+// stay inert in Bot history, even when an ordinary Task remains selected.
+const localFileMarkdown = "[产物](report.pdf) 和 `C:/private/report.pdf`，另见 [官网](https://example.com)";
+snapshot.activeTaskId = "unrelated-ordinary-task";
+const ordinaryMarkdown = renderToStaticMarkup(createElement(ChatMarkdown, { text: "[产物](report.pdf)", streaming: false }));
+assert.match(ordinaryMarkdown, /md-file-link/, "ordinary Task rendering still supports file actions");
+snapshot.botHistories = { [duty.botId]: { conversationId: "scope-test", botId: duty.botId, revision: 1, archived: false, messages: [{
+  messageId: "scope-message", conversationId: "scope-test", botId: duty.botId, requestId: "scope-request", ordinal: 1,
+  role: "assistant", text: localFileMarkdown, status: "completed", workIds: [], createdAt: 1, updatedAt: 1,
+}] } };
+const scopedBotPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+const scopedMessage = scopedBotPage.match(/<article[^>]*data-message-id="scope-message"[^>]*>([\s\S]*?)<\/article>/)?.[1];
+assert.ok(scopedMessage, "the fixture renders through the actual Bot message component");
+// Bot lazily loads Markdown, so static SSR can legitimately show its inert
+// Suspense fallback. Exercise the loaded shared renderer separately as well.
+const scopedMarkdown = renderToStaticMarkup(createElement(ChatMarkdown, { text: localFileMarkdown, streaming: false, resolveTaskFiles: false }));
+assert.match(scopedMarkdown, /请从关联事项查看/);
+assert.match(scopedMarkdown, /<code class="inline-code">C:\/private\/report.pdf<\/code>/);
+assert.match(scopedMarkdown, /href="https:\/\/example.com"/);
+assert.doesNotMatch(scopedMessage + scopedMarkdown, /md-file-link|local-file-chip|href="report.pdf"/,
+  "Bot file references cannot borrow ordinary Task file actions");
+snapshot.botHistories = savedSnapshot.botHistories;
+snapshot.activeTaskId = savedSnapshot.activeTaskId;
+
 const populatedSidebar = renderToStaticMarkup(createElement(Sidebar));
 const populatedPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(populatedSidebar, /值班/);
-assert.match(populatedSidebar, /夜间巡检/);
+assert.doesNotMatch(populatedSidebar, /夜间巡检|交接记录/, "sidebar selects the Bot, not a second duplicate Work list");
 assert.match(populatedSidebar, /在线/);
 assert.doesNotMatch(populatedSidebar, /独立任务|新建任务/);
 assert.match(populatedPage, /夜间巡检/);
 assert.match(populatedPage, /日志齐全/);
-assert.match(populatedPage, /负责人 值班/);
+assert.match(populatedPage, /值班 · 一次性事项/);
+assert.match(populatedPage, /<dialog[^>]*aria-label="事项详情"/);
+assert.match(populatedPage, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
+const detailsStart = populatedPage.indexOf('class="bot-work-details"');
+const overview = populatedPage.slice(detailsStart);
+const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "需要你决定"];
+for (let index = 1; index < orderedHeadings.length; index++) {
+  assert.ok(overview.indexOf(`<h3>${orderedHeadings[index - 1]}</h3>`) < overview.indexOf(`<h3>${orderedHeadings[index]}</h3>`), "details prioritize actionable information");
+}
+assert.ok(overview.indexOf("高级设置与诊断") < overview.indexOf("要求 r2"), "technical versions live in advanced settings");
 assert.match(populatedPage, /要求 r2/);
 assert.doesNotMatch(populatedPage, /要求 r5/);
 night.phase4 = {
@@ -226,7 +374,7 @@ night.phase4 = {
 const phase4Page = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(phase4Page, /关注与运行/);
 assert.match(phase4Page, /repo-a/);
-assert.match(phase4Page, /latest/);
+assert.match(phase4Page, /合并为最新一次/);
 assert.match(phase4Page, /固定合并截止/);
 assert.match(phase4Page, /不可回查/);
 assert.match(phase4Page, /已结算 120/);
@@ -239,10 +387,11 @@ assert.match(phase4Page, /aria-label="已核实 tokens"[^>]*value=""/, "unknown 
 assert.match(phase4Page, /<button[^>]*disabled[^>]*>保存预算核对结果<\/button>/, "reconciliation requires explicit amount, reason, evidence and confirmation");
 assert.match(phase4Page, /causal-loop-guard/);
 assert.match(phase4Page, /承诺期限/);
+assert.ok(phase4Page.indexOf("unknown-provider-1") < phase4Page.indexOf("高级设置与诊断"), "unknown usage confirmation remains visible outside advanced settings");
 snapshot.botWorkCursor = { epoch: "closed-budget-fixture", sequence: 1, scope: "all" };
 night.lifecycle = "closed";
 const closedBudgetPage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(closedBudgetPage, /隐藏已结束事项/);
+assert.match(closedBudgetPage, /已结束/);
 assert.match(closedBudgetPage, /核对未知用量/);
 assert.match(closedBudgetPage, /unknown-provider-1/, "completed Work retains access to outstanding accounting in the all scope");
 night.lifecycle = "active";
@@ -254,6 +403,7 @@ night.phase3 = { subitems: [], continuations: [], gaps: [], resourceWaits: [], s
   }] };
 const exhaustedPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(exhaustedPage, /自动核对已停止/);
+assert.ok(exhaustedPage.indexOf("重新核对隔离资源") < exhaustedPage.indexOf("高级设置与诊断"), "isolation recovery must not be hidden in advanced settings");
 assert.match(exhaustedPage, /我已确认环境安全，可以重新核对/);
 assert.match(exhaustedPage, /<button[^>]*disabled[^>]*>重新核对隔离资源<\/button>/, "rendered retry is disabled before explicit confirmation");
 night.phase3.resourceRecoveries[0]!.pendingProbe = true;
@@ -268,7 +418,7 @@ assert.match(handoffPage, /交接说明已读/);
 assert.doesNotMatch(handoffPage, /要求 r2/);
 snapshot.botSubmissionNotice = true;
 const noticePage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(noticePage, /消息已持久受理/);
+assert.match(noticePage, /消息已发送/);
 Object.assign(snapshot, savedSnapshot);
 
 useAppStore.setState({

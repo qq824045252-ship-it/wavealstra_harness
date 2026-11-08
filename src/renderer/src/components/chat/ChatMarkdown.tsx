@@ -55,13 +55,26 @@ interface MarkstreamInlineCodeNode {
 
 // ---------- 自定义节点 ----------
 
+const TaskFileScopeContext = createContext(true);
+
 function ChatLinkNode({ node }: NodeComponentProps<MarkstreamLinkNode>): React.JSX.Element {
+  const resolveTaskFiles = useContext(TaskFileScopeContext);
+  if (!resolveTaskFiles) {
+    // Bot history has no ordinary Task scope. Never resolve a basename against
+    // whichever unrelated Task happens to remain selected behind Bot mode.
+    if (/^https?:\/\//i.test(node.href)) return <a href={node.href} className="md-link" onClick={event => {
+      event.preventDefault(); window.api?.browser?.openExternal?.(node.href);
+    }}>{node.text}</a>;
+    if (node.href.startsWith("#")) return <a href={node.href} className="md-link md-anchor">{node.text}</a>;
+    return <span title={`文件引用：${node.href}（请从关联事项查看）`}>{node.text}</span>;
+  }
   return <MdFileLink href={node.href}>{node.text}</MdFileLink>;
 }
 
 function ChatInlineCodeNode({ node }: NodeComponentProps<MarkstreamInlineCodeNode>): React.JSX.Element {
   const code = node.code ?? "";
-  if (looksLikeLocalFilePath(code)) return <LocalFileChip path={code.trim()} />;
+  const resolveTaskFiles = useContext(TaskFileScopeContext);
+  if (resolveTaskFiles && looksLikeLocalFilePath(code)) return <LocalFileChip path={code.trim()} />;
   return <code className="inline-code">{code}</code>;
 }
 
@@ -69,6 +82,7 @@ const MD_FENCE_LANGS = new Set(["markdown", "md", "gfm"]);
 
 /** ```md 围栏 → Markdown 文档预览卡（预览/源码切换 + 复制）；深度防护防递归。 */
 function ChatMdFenceCard({ code, depth }: { code: string; depth: number }): React.JSX.Element {
+  const resolveTaskFiles = useContext(TaskFileScopeContext);
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [copied, setCopied] = useState(false);
   const copy = (): void => {
@@ -102,7 +116,7 @@ function ChatMdFenceCard({ code, depth }: { code: string; depth: number }): Reac
               text={code}
               streaming={false}
               variant="document"
-              fenceDepth={depth + 1}
+              fenceDepth={depth + 1} resolveTaskFiles={resolveTaskFiles}
             />
           )}
         </div>
@@ -402,6 +416,8 @@ export interface ChatMarkdownProps {
   variant?: "chat" | "document";
   /** ```md 围栏预览卡递归深度防护（内部预览渲染使用） */
   fenceDepth?: number;
+  /** False for Bot conversations, which must not borrow the selected ordinary Task. */
+  resolveTaskFiles?: boolean;
 }
 
 function ChatMarkdown({
@@ -409,6 +425,7 @@ function ChatMarkdown({
   streaming,
   variant = "chat",
   fenceDepth = 0,
+  resolveTaskFiles = true,
 }: ChatMarkdownProps): React.JSX.Element {
   const theme = useAppStore((s) => s.theme);
   const content = useMemo(
@@ -426,7 +443,7 @@ function ChatMarkdown({
 
   return (
     <div className={`md ${variant === "document" ? "md-doc" : "md-chat"}`}>
-      <FenceDepthContext.Provider value={fenceDepth}>
+      <TaskFileScopeContext.Provider value={resolveTaskFiles}><FenceDepthContext.Provider value={fenceDepth}>
         <MarkdownRender
           content={content}
           final={markstreamFinal}
@@ -449,7 +466,7 @@ function ChatMarkdown({
           isDark={theme === "dark"}
           customId={CHAT_MARKSTREAM_CUSTOM_ID}
         />
-      </FenceDepthContext.Provider>
+      </FenceDepthContext.Provider></TaskFileScopeContext.Provider>
     </div>
   );
 }

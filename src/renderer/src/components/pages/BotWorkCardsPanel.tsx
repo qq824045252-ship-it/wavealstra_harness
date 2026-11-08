@@ -70,9 +70,8 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
     } finally { if (mounted.current) setBusy(false); }
   };
 
-  return <section aria-label="结果卡片与证据">
-    <h3>结果卡片</h3>
-    {cards.length === 0 && <p>还没有结果卡片。</p>}
+  return <section className="bot-detail-section bot-result-cards" aria-label="结果卡片与证据">
+    {cards.length > 0 && <h3>结果卡片</h3>}
     {cards.map(card => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>
       {card.kind === "owner_summary" && <p>主负责人汇总{card.previousCardKey
@@ -81,15 +80,15 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
         && card.currency === "current" && (card.kind === "accepted_result" || card.kind === "closure_succeeded")
         && <p role="status">已完成并关闭</p>}
       <p>{card.summary}</p>
-      <p>要求 r{card.intentRevision} · 成果 {card.deliverableIds.length} 项 · 阅读版本 {card.readVersion}</p>
+      <p>包含 {card.deliverableIds.length} 项成果</p>
+      <details><summary>卡片版本记录</summary><p>要求 r{card.intentRevision} · 阅读版本 {card.readVersion}</p></details>
       {card.unverifiedScope.length > 0 && <p>未验证：{card.unverifiedScope.join("、")}</p>}
       {card.readAt
         ? <p role="status">已读 {new Date(card.readAt).toLocaleString()}</p>
         : <button type="button" disabled={busy} onClick={() => { void read(card.semanticCardKey); }}>标记已读</button>}
     </article>)}
 
-    <h3>外部通知</h3>
-    {work.notifications.length === 0 && <p>还没有通知意图。</p>}
+    {work.notifications.length > 0 && <h3>外部通知</h3>}
     {work.notifications.map(notification => <article key={notification.notificationId} aria-label="通知投递">
       <p>{notification.title} · {deliveryText(notification.delivery)}</p>
       <p>尝试 {notification.attemptCount} 次{notification.externalReceipt ? ` · 回执 ${notification.externalReceipt}` : ""}</p>
@@ -97,8 +96,8 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
         onClick={() => { void resend(notification.notificationId); }}>确认风险后重发</button>}
     </article>)}
 
-    <details>
-      <summary>展开诊断证据</summary>
+    <details className="bot-advanced">
+      <summary>高级诊断与证据</summary>
       <button type="button" disabled={busy} onClick={() => { void loadDiagnostics(); }}>
         {diagnostics ? "重新读取" : "读取诊断"}
       </button>

@@ -15,6 +15,14 @@ import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const { window: testWindow, document: testDocument } = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: testWindow, document: testDocument, IS_REACT_ACT_ENVIRONMENT: true });
+// linkedom has no layout engine, matchMedia or native dialog methods. Supply only
+// those browser contracts here; actual modal focus/resize is verified in Electron.
+Object.defineProperty(testWindow, "matchMedia", { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
+Object.assign(globalThis, { requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
+Object.assign(testWindow.HTMLElement.prototype, {
+  show() { this.setAttribute("open", ""); }, showModal() { this.setAttribute("open", ""); }, close() { this.removeAttribute("open"); },
+});
+
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -211,7 +219,7 @@ async function main() {
           assert.equal(saveBudget().disabled, true, `invalid or numerically unchanged budget ${invalid} cannot save`);
         }
         await editBudget("600000");
-        assert.match(container.querySelector('[data-message-id="stopped"]')!.textContent!, /回复已停止/);
+        assert.match(container.querySelector('[data-message-id="stopped"]')!.textContent!, /已停止/);
         assert.doesNotMatch(container.querySelector('[data-message-id="stopped"]')!.textContent!, /处理中|正在回复|等待回复/);
         for (let version = 8; version <= 14; version++) {
           current = { ...current, stateVersion: version,
@@ -221,8 +229,8 @@ async function main() {
           assert.equal(container.querySelectorAll('[aria-label="结果卡片与证据"]').length, 1);
           assert.equal(container.querySelectorAll('[aria-label="成果评审与结束"]').length, 1);
           assert.equal(container.querySelectorAll('[aria-label="结果卡片"]').length, 2, "distinct history is retained, not deduplicated away");
-          assert.equal([...container.querySelectorAll("summary")].filter(item => item.textContent === "展开诊断证据").length, 1);
-          assert.equal([...container.querySelectorAll("h3")].filter(item => item.textContent === "外部通知").length, 1);
+          assert.equal([...container.querySelectorAll("summary")].filter(item => item.textContent === "高级诊断与证据").length, 1);
+          assert.equal([...container.querySelectorAll("h3")].filter(item => item.textContent === "外部通知").length, 0);
           assert.match(container.textContent!, new RegExp(`Current result ${version}`));
           if (version > 8) assert.doesNotMatch(container.textContent!, new RegExp(`Current result ${version - 1}`));
           assert.equal(input().value, String(version * 100000), "remote policy changes replace the old input");

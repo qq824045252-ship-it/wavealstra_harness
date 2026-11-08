@@ -68,13 +68,14 @@ export function WorkReviewPanel({ work, includeClosed }: {
   const proposed = work.deliverables.filter(item => item.status === "proposed"
     && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId);
   const criterion = work.criteria.find(item => item.id === criterionId);
-  return <section className="bot-work-review" aria-label="成果评审与结束">
-    <h3>成果评审</h3>
-    <p>采纳会保留当前成果；验收条件仍按已保存的证据核对。</p>
+  return <section className="bot-work-review bot-detail-section" aria-label="成果评审与结束">
+    <h3>评审与确认</h3>
+    <p>请确认成果是否符合你的要求。采纳成果后，仍需按证据核对验收条件。</p>
     {proposed.length === 0 && <p>没有当前版本待评审的成果。</p>}
     {proposed.map(item => <article key={item.deliverableId} data-deliverable-id={item.deliverableId}>
       <p>{item.summary}</p>
-      {item.hasWriteConflicts && <p>存在写入冲突，请先补齐必要缺口。</p>}
+      {item.hasWriteConflicts && <p role="status">存在写入冲突，请先补齐必要缺口。</p>}
+      {item.isSpeculation && <p role="status">这份成果仍是推测，补充实际证据前不能采纳。</p>}
       <button type="button" disabled={busy || item.hasWriteConflicts || item.isSpeculation}
         onClick={() => { void accept(item.deliverableId); }}>采纳成果</button>
       <button type="button" disabled={busy} onClick={() => { void reject(item.deliverableId); }}>拒绝成果</button>
