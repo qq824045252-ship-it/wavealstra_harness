@@ -180,11 +180,18 @@ async function main() {
       await change("缺口覆盖依据", "The actual scoped wc receipt verifies the same requested byte count");
       const button = () => [...container.querySelectorAll("button")].find(item => item.textContent === "记录已由后续证据覆盖")!;
       assert.equal(button().disabled, true);
+      assert.match(gaps.textContent ?? "", /还不能提交：请勾选确认所选动作不再需要执行/,
+        "a disabled coverage submit must state which inputs are still missing");
       await change("确认未执行动作已覆盖", true);
       await render("review", false, { ...value, stateVersion: 8 });
       assert.equal(button().disabled, true, "external updates cannot silently rebase the decision");
       await click("已核对最新状态，继续评审");
       assert.equal(container.querySelector<HTMLInputElement>('[aria-label="确认未执行动作已覆盖"]')!.checked, false);
+      await change("确认未执行动作已覆盖", true);
+      await change("缺口覆盖依据", "The scoped wc receipt still verifies the same byte count after review");
+      assert.equal(button().disabled, true, "editing after confirmation must invalidate the confirmation");
+      assert.match(container.textContent ?? "", /内容已变更，确认已失效/,
+        "editing after confirmation must say the confirmation was invalidated");
       await change("确认未执行动作已覆盖", true);
       await click("记录已由后续证据覆盖");
       assert.equal(button().disabled, true, "pending request cannot submit again");
