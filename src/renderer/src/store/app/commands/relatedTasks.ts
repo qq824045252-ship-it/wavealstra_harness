@@ -63,7 +63,7 @@ export function createRelatedTasksActions(
       const task: Task = {
         id: uid(storeContext),
         title: source?.title
-          ? `${source.title}（${mode === "working" ? "办公" : mode === "bot" ? "Bot" : "编码"}）`
+          ? `${source.title}（${mode === "working" ? "办公" : mode === "general" ? "通用" : "编码"}）`
           : "新任务",
         spaceId: source?.spaceId,
         projectId: source?.projectId,

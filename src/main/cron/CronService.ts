@@ -17,7 +17,7 @@ import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer
 
 const storedCronInput = z.object({
   taskId: z.string().min(1), text: z.string(), userMessageId: z.string().min(1), assistantMessageId: z.string().min(1),
-  permissionMode: z.enum(["default", "auto", "readonly"]).optional(), welcomeMode: z.enum(["working", "coding", "bot"]).optional(),
+  permissionMode: z.enum(["default", "auto", "readonly"]).optional(), welcomeMode: z.enum(["working", "coding", "general"]).optional(),
   spaceId: z.string().optional(), modelId: z.string().optional(), expertId: z.string().optional(),
   modePresetId: z.string().nullable().optional(), connectorIds: z.array(z.string()).optional(),
 });
@@ -107,6 +107,13 @@ export class CronService {
   ) {
     db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
       run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL)`);
+    try {
+      db.connection.prepare(`UPDATE cron_run_inputs
+        SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
+        WHERE json_valid(request_json) AND json_extract(request_json, '$.request.welcomeMode') = 'bot'`).run();
+    } catch (error) {
+      console.warn("[Cron] legacy welcomeMode migration skipped", error);
+    }
   }
 
   start(): void {

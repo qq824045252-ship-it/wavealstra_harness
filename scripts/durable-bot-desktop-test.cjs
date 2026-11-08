@@ -14,7 +14,7 @@ const tinyPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQ
 const imageInput=path.join(workspace,'input.png');fs.writeFileSync(imageInput,tinyPng);
 fs.writeFileSync(path.join(agentDir,'modes/bot/goal.md'),'PRESERVED_USER_BOT_PROMPT');
 fs.writeFileSync(path.join(agentDir,'modes/bot/policy.json'),JSON.stringify({toolPolicy:{mode:'hard',deny:['write','bash','mcp__fixture__read_seed']},mcpPolicy:{mode:'hard',deny:['fixture']},artifactPolicy:{mode:'hard',deny:['py'],allow:['pdf']},presets:[{id:'kept',label:'保留的预设',promptAddon:'PRESERVED_TAG',providerMcpIds:['nonexistent'] },{id:'general',label:'通用设计'},{id:'web-prototype',label:'网页原型 · Penpot',promptAddon:'PRESERVED_PENPOT_PROMPT'}]}));
-fs.writeFileSync(path.join(agentDir,'plugins/mcp/mcp.json'),JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[path.join(root,'scripts/pi-codemode-auto-fixture.mjs'),workspace],modes:['working','bot'],exposure:'direct',timeout:15}}}));
+fs.writeFileSync(path.join(agentDir,'plugins/mcp/mcp.json'),JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[path.join(root,'scripts/pi-codemode-auto-fixture.mjs'),workspace],modes:['working','general'],exposure:'direct',timeout:15}}}));
 const requests=[];
 let releasePresentationStart, releasePresentationFinish, releaseQueueHold;
 let queueHoldReleased = false;
@@ -183,9 +183,9 @@ const report={temp,tests:[],status:'running'};
   fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({defaultProvider:'durable-fixture',defaultModel:'fixture',enabledModels:['durable-fixture/fixture','durable-fixture/alternate'],memoryEnabled:true,memoryGatewayEnabled:false,remoteAccessEnabled:false,conversationBranchEnabled:true,closeToTray:false,theme:'light',permissionMode:'auto'}));
   await launch();
   if(process.argv.includes('--review')) { await require('./durable-review-desktop.cjs')({evaluate,until,send,click,rpc,report,out,requests}); report.status='passed'; return; }
-  const profile=await evaluate('window.api.agent.getModeProfile("bot")');
+  const profile=await evaluate('window.api.agent.getModeProfile("general")');
   assert(profile.blocks.some(b=>b.content.trim()==='PRESERVED_USER_BOT_PROMPT'));assert.equal(profile.policy.presets.find(p=>p.id==='kept').promptAddon,'PRESERVED_TAG');assert.equal(profile.policy.presets.find(p=>p.id==='kept').providerMcpIds,undefined);assert.equal(profile.policy.artifactPolicy.unfiltered,true);report.tests.push('legacy prompts and Tags preserved; all scene policies removed');
-  const modeLabels=await evaluate('[...document.querySelectorAll(".hero-categories button")].map(b=>b.textContent.trim())');assert.deepEqual(modeLabels.sort(),['日常办公','代码开发','Bot'].sort());
+  const modeLabels=await evaluate('[...document.querySelectorAll(".hero-categories button")].map(b=>b.textContent.trim())');assert.deepEqual(modeLabels.sort(),['日常办公','代码开发','通用模式'].sort());
   assert(!profile.policy.presets.some(p=>['general','web-prototype'].includes(p.id)));
   const office=await evaluate('window.api.agent.getModeProfile("working")');
   const penpot=office.policy.presets.find(p=>p.id==='web-prototype');
@@ -197,7 +197,7 @@ const report={temp,tests:[],status:'running'};
   assert(officeTags.includes('Penpot'));assert(!officeTags.some(t=>t==='通用设计'||t.includes('网页原型')));
   const officeShot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'office-penpot.png'),Buffer.from(officeShot.data,'base64'));
   report.tests.push('Penpot appears in office with preserved prompt, MCP and runtime; general design and old Penpot removed from Bot');
-  await click('.hero-categories button','Bot');await until(()=>evaluate('document.querySelector(".hero")?.dataset.mode==="bot"'),'Bot mode');
+  await click('.hero-categories button','通用模式');await until(()=>evaluate('document.querySelector(".hero")?.dataset.mode==="general"'),'通用模式');
   const greetingStart=Date.now();
   await send('BOT_GREETING: 你好');
   await until(()=>evaluate('window.__botEvents.some(e=>e.type==="durable_snapshot"&&!e.snapshot.busy&&e.snapshot.messages.at(-1)?.text==="DURABLE_DESKTOP_COMPLETE")'),'plain greeting with an unused 30-second MCP',5000);
@@ -223,7 +223,7 @@ const report={temp,tests:[],status:'running'};
   await until(()=>evaluate('!document.querySelector(".context-usage-popup")'),'context popup close');
   report.tests.push('Bot composer replaces mode controls with the office/code context ring and popup; native token use, cache rate and manual compaction control are shown');
   await click('.sidebar-cta-btn','新建任务');await until(()=>evaluate('Boolean(document.querySelector(".hero"))'),'new task after greeting');
-  await click('.hero-categories button','Bot');
+  await click('.hero-categories button','通用模式');
   await evaluate('window.__botEvents=[];true');
   await evaluate('window.__entryTiming={};document.addEventListener("keydown",e=>{if(e.key==="Enter"&&!window.__entryTiming.sent)window.__entryTiming.sent=performance.now()},true);new MutationObserver(()=>{if(window.__entryTiming.sent&&!window.__entryTiming.chat&&document.querySelector(".task-chat-header"))window.__entryTiming.chat=performance.now()}).observe(document.body,{childList:true,subtree:true});true');
   await send('BOT_NATIVE: run deterministic verification');
@@ -362,7 +362,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
     assert(!restoredCards.artifacts.some(a=>['existing.md','old-record.json'].some(name=>a.source?.entryFile===path.join(moveRoot,name))),'target baseline remains preexisting');
     report.tests.push('whole-app restart preserves native store and space binding; relative Code Mode write lands only in target; old artifacts keep original paths');
     const activeId='workspace-busy-defer-fixture';
-    await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(activeId)},title:'Active move fixture',welcomeMode:'bot',modePresetId:'native',permissionMode:'auto',updatedAt:Date.now()})`);
+    await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(activeId)},title:'Active move fixture',welcomeMode:'general',modePresetId:'native',permissionMode:'auto',updatedAt:Date.now()})`);
     await evaluate(`window.__workspaceHeld=window.api.agent.prompt({taskId:${JSON.stringify(activeId)},text:'BOT_QUEUE_HOLD',userMessageId:'active-move-user',assistantMessageId:'active-move-assistant',modePresetId:'native',permissionMode:'auto'});true`);
     await until(()=>Boolean(releaseQueueHold),'active task provider held');
     const activeBefore=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===activeId);
@@ -478,7 +478,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   assert(contextHistory.durable.contextUsage?.contextWindow===128000);
   report.tests.push('actual Bot context, project resources, native domain tools via Code Mode, automatic L0 and project memory extraction, current usage');
   const nativeTaskId='bot-shared-project-memory';
-  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(nativeTaskId)},title:'Native project recall',welcomeMode:'bot',projectId:${JSON.stringify(projectId)},modePresetId:'native',updatedAt:Date.now()})`);
+  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(nativeTaskId)},title:'Native project recall',welcomeMode:'general',projectId:${JSON.stringify(projectId)},modePresetId:'native',updatedAt:Date.now()})`);
   await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(nativeTaskId)},text:'BOT_MEMORY_NATIVE',userMessageId:'native-memory-user',assistantMessageId:'native-memory-placeholder'})`);
   const nativeHistory=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(nativeTaskId)})`);
   const recall=nativeHistory.messages.flatMap(m=>m.tools??[]).find(t=>t.tool==='memory_search');assert.equal(recall?.status,'success');assert(recall.output.includes('BOT_EXTRACTED_MEDIUM'),'a second Bot must recall the first Bot project memory');
@@ -489,7 +489,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   const refreshed=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(nativeTaskId)})`);assert(refreshed.messages.some(m=>m.tools?.some(t=>t.tool==='mcp_call_tool'&&t.summary.includes('added')&&t.status==='success')),'existing Bot did not use changed MCP config');
   report.tests.push('an existing Bot refreshes MCP configuration on its next input');
   for(const [id,prompt,expected] of [['bot-cron-ok','BOT_MEMORY_NATIVE','success'],['bot-cron-failed','BOT_FAIL','error']]){
-    await evaluate(`window.api.cron.upsert({id:${JSON.stringify(id)},name:'Bot scheduled fixture',prompt:${JSON.stringify(prompt)},welcomeMode:'bot',projectId:${JSON.stringify(projectId)},permissionMode:'auto',scheduleType:'every',scheduleExpr:'1h',timezone:'Asia/Shanghai',enabled:false,createdAt:Date.now(),updatedAt:Date.now()})`);
+    await evaluate(`window.api.cron.upsert({id:${JSON.stringify(id)},name:'Bot scheduled fixture',prompt:${JSON.stringify(prompt)},welcomeMode:'general',projectId:${JSON.stringify(projectId)},permissionMode:'auto',scheduleType:'every',scheduleExpr:'1h',timezone:'Asia/Shanghai',enabled:false,createdAt:Date.now(),updatedAt:Date.now()})`);
     await evaluate(`window.api.cron.runNow(${JSON.stringify(id)})`);
     await until(async()=>{const runs=await evaluate('window.api.cron.runs()');return runs.some(r=>r.jobId===id&&r.status!=='running');},'Bot cron completion');
     const run=(await evaluate('window.api.cron.runs()')).find(r=>r.jobId===id);assert.equal(run.status,expected,JSON.stringify(run));
@@ -499,7 +499,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   // Use a fresh Bot for the interrupted unrestricted shell. The primary task has
   // observed opaque MCP output; its guard correctly forbids an arbitrary shell afterward.
   const recoveryTaskId='desktop-bot-interrupted-recovery';
-  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(recoveryTaskId)},title:'Interrupted recovery fixture',welcomeMode:'bot',modePresetId:'codemode',permissionMode:'auto',updatedAt:Date.now()})`);
+  await evaluate(`window.api.db.upsertTask({id:${JSON.stringify(recoveryTaskId)},title:'Interrupted recovery fixture',welcomeMode:'general',modePresetId:'codemode',permissionMode:'auto',updatedAt:Date.now()})`);
   await evaluate(`window.__holdRequest=window.api.agent.prompt({taskId:${JSON.stringify(recoveryTaskId)},text:'BOT_HOLD: checkpoint during nested Bash',userMessageId:'desktop-hold',assistantMessageId:'desktop-hold-placeholder',modePresetId:'codemode',permissionMode:'auto'});true`);
   let recoveryTask;
   await until(async()=>{recoveryTask=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===recoveryTaskId);return recoveryTask?.cwd&&fs.existsSync(path.join(recoveryTask.cwd,'resume-marker.txt'));},'nested Bash started');
@@ -585,7 +585,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   await send('MODE_BOUND_BOT_CONTINUE');
   await until(async()=>{const h=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);return !h.durable.busy&&h.messages.some(m=>m.role==='user'&&m.text==='MODE_BOUND_BOT_CONTINUE')&&h.messages.at(-1)?.text==='DURABLE_DESKTOP_COMPLETE';},'Bot continuation after switching from Pi coding task');
   const botModeTask=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===taskId);
-  assert.equal(botModeTask.welcomeMode,'bot');assert.equal(botModeTask.sessionFile,undefined);assert.equal(botModeTask.executionBackend,'pi-durable');
+  assert.equal(botModeTask.welcomeMode,'general');assert.equal(botModeTask.sessionFile,undefined);assert.equal(botModeTask.executionBackend,'pi-durable');
   assert.equal(botModeTask.modelId,'durable-fixture/alternate');
   report.tests.push('switching back from a restored coding task and changing models keeps the existing Bot on Durable for the next composer submission');
   const legacyGateway={id:'gw-telegram-default-desktop-fixture',title:'Legacy gateway fixture',welcomeMode:'working',modePresetId:'summary',sessionFile:'legacy-gateway.jsonl',updatedAt:123};
@@ -596,7 +596,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   const gatewayResult=await evaluate(`window.api.agent.prompt({taskId:${JSON.stringify(gatewayTaskId)},text:'BOT_NATIVE gateway verification',userMessageId:'gateway-desktop-user',assistantMessageId:'gateway-desktop-assistant',modePresetId:'codemode',permissionMode:'auto'})`);
   assert(!gatewayResult.error,JSON.stringify(gatewayResult));
   const gatewayTask=(await evaluate('window.api.db.listTasks()')).find(t=>t.id===gatewayTaskId);
-  assert.equal(gatewayTask.welcomeMode,'bot');assert.equal(gatewayTask.modePresetId,'native');assert.equal(gatewayTask.projectId,projectId);
+  assert.equal(gatewayTask.welcomeMode,'general');assert.equal(gatewayTask.modePresetId,'native');assert.equal(gatewayTask.projectId,projectId);
   const gatewayHistory=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(gatewayTaskId)})`);
   assert.equal(gatewayHistory.durable.toolMode,'native');
   assert.equal(fs.readFileSync(path.join(gatewayTask.cwd,'proof.py'),'utf8'),'DURABLE_PROOF');

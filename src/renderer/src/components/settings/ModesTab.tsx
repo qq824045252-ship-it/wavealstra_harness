@@ -16,7 +16,6 @@ import type {
   WelcomeMode,
 } from "@shared/agent-ipc";
 import {
-  DESIGN_ARTIFACT_DENY_DEFAULT,
   defaultModePresetId,
   isRetiredModePresetId,
   sanitizeModePresets,
@@ -289,12 +288,7 @@ function ArtifactPolicyEditor({
   /** 填入当前模式出厂默认（只改对应侧，不动另一侧） */
   const fillSeedSide = (side: ArtifactAccessSubTab): void => {
     if (side === "deny") {
-      const seed =
-        mode === "working"
-          ? WORKING_ARTIFACT_DENY_DEFAULT
-          : mode === "bot"
-            ? DESIGN_ARTIFACT_DENY_DEFAULT
-            : [];
+      const seed = mode === "working" ? WORKING_ARTIFACT_DENY_DEFAULT : [];
       const seedSet = new Set(seed);
       onChange({
         ...value,
@@ -600,7 +594,7 @@ function CatalogPickList({
  * promptAddon + skillPolicy + mcpPolicy。所有改动走 onChange 上抛，由父级持有列表草稿。
  */
 function PresetEditor({
-  bot = false,
+  general = false,
   preset,
   idLocked,
   onChange,
@@ -611,7 +605,7 @@ function PresetEditor({
   modelCatalog,
   catalogLoading,
 }: {
-  bot?: boolean;
+  general?: boolean;
   preset: ModePresetDto;
   /** 出厂 seed preset 的 id 不可改（避免破坏 defaultModePresetId 解析） */
   idLocked: boolean;
@@ -635,13 +629,13 @@ function PresetEditor({
     [p.suggestedModelId, modelCatalog],
   );
 
-  if (bot) return (
+  if (general) return (
     <div className="modes-preset-form-body">
       <label className="modes-preset-field"><span>名称</span><input value={p.label} onChange={e => patch({ label: e.target.value })} /></label>
       <label className="modes-preset-field"><span>ID</span><input value={p.id} disabled={idLocked} onChange={e => patch({ id: e.target.value.trim() })} /></label>
       <label className="modes-preset-field"><span>描述</span><input value={p.description ?? ""} onChange={e => patch({ description: e.target.value })} /></label>
       <label className="modes-preset-field"><span>工具模式</span>
-        <select aria-label="Bot 工具模式" value={p.botToolMode ?? "native"} onChange={e => patch({ botToolMode: e.target.value as "native" | "codemode" })}>
+        <select aria-label="工具模式" value={p.durableToolMode ?? "native"} onChange={e => patch({ durableToolMode: e.target.value as "native" | "codemode" })}>
           <option value="native">原生模式</option><option value="codemode">Code Mode</option>
         </select>
       </label>
@@ -966,7 +960,7 @@ export default function ModesTab(): React.JSX.Element {
   const [mode, setMode] = useState<WelcomeMode>("working");
   const [pane, setPane] = useState<EditPane>("goal");
   useEffect(() => {
-    if (mode === "bot" && ["skills", "mcp", "artifacts", "policy"].includes(pane)) setPane("goal");
+    if (mode === "general" && ["skills", "mcp", "artifacts", "policy"].includes(pane)) setPane("goal");
   }, [mode, pane]);
   const [profile, setProfile] = useState<ModeProfileDto | null>(null);
   const visiblePresetCount = sanitizeModePresets(mode, profile?.policy.presets ?? []).length;
@@ -1681,7 +1675,7 @@ export default function ModesTab(): React.JSX.Element {
               </div>
               <div className="modes-nav-group">
                 <div className="modes-nav-label">能力面</div>
-                {mode !== "bot" && <>
+                {mode !== "general" && <>
                 <button
                   type="button"
                   className={`modes-nav-item${pane === "skills" ? " active" : ""}`}
@@ -1724,7 +1718,7 @@ export default function ModesTab(): React.JSX.Element {
                   {visiblePresetCount ? <span className="modes-nav-tag">{visiblePresetCount}</span> : null}
                 </button>
               </div>
-              {mode !== "bot" && <div className="modes-nav-group">
+              {mode !== "general" && <div className="modes-nav-group">
                 <div className="modes-nav-label">高级</div>
                 <button
                   type="button"
@@ -1863,7 +1857,7 @@ export default function ModesTab(): React.JSX.Element {
                           </button>
                         </div>
                         <PresetEditor
-                          bot={mode === "bot"}
+                          general={mode === "general"}
                           preset={selectedPreset}
                           idLocked={isSeedPreset(mode, selectedPreset.id)}
                           onChange={updateSelectedPreset}

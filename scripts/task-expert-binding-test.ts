@@ -26,7 +26,7 @@ const experts: any = {
 const options = { rootDir: join(sandbox, "bindings"), resolveSkillDirectory: (id: string) => id === "global-skill" ? globalRoot : undefined,
   isSkillEnabled: (id: string) => id !== "global-skill" || globalEnabled };
 let bindings = new TaskExpertBindingService(db, experts, options);
-const task = (id: string, expertId?: string) => db.upsertTask({ id, title: id, updatedAt: Date.now(), welcomeMode: "bot", expertId });
+const task = (id: string, expertId?: string) => db.upsertTask({ id, title: id, updatedAt: Date.now(), welcomeMode: "general", expertId });
 try {
   task("bound");
   const initial = bindings.save({ taskId: "bound", expertId: "analyst", expectedRevision: null });

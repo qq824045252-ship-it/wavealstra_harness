@@ -416,7 +416,7 @@ try {
       userMessageId: "user-turn", assistantMessageId: "assistant-turn", text: "fixture",
       sender: { id: config.allowUsers[0] }, reply: async (text: string) => { replies.push(text); } });
     assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, undefined);
-    assert.equal(requests[0].sessionFile, undefined); assert.equal(requests[0].welcomeMode, "bot");
+    assert.equal(requests[0].sessionFile, undefined); assert.equal(requests[0].welcomeMode, "general");
     assert.equal(requests[0].modePresetId, "native"); assert.equal(requests[0].taskId, "gw-bot-native-task");
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-channel", taskId: "native-channel",
       userMessageId: "channel-user", assistantMessageId: "channel-assistant", text: "总结下内容", sender: { id: config.allowUsers[0] },
@@ -445,7 +445,7 @@ try {
     const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user" };
     const port: GatewayAgentPort = {
       runGatewayTurn: async input => {
-        assert.equal(input.welcomeMode,"bot"); assert.equal(input.modePresetId,"native");
+        assert.equal(input.welcomeMode,"general"); assert.equal(input.modePresetId,"native");
         return new Promise<string>(resolve => { finish = resolve; });
       },
     };

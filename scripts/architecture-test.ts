@@ -224,8 +224,8 @@ async function main(): Promise<void> {
     );
     // 未知/非法字段被安全归一化（不会破坏读取）
     const dirty = { ...customPolicy, presets: [{ id: "bad", label: "坏", suggestedPermissionMode: "banana" }] };
-    write(join(sandbox, ".mybuddy", "modes", "bot", "policy.json"), JSON.stringify(dirty));
-    const pd = store.getProfile("bot");
+    write(join(sandbox, ".mybuddy", "modes", "general", "policy.json"), JSON.stringify(dirty));
+    const pd = store.getProfile("general");
     assert(pd.policy.presets?.[0]?.suggestedPermissionMode === undefined, "Bot 不继承旧权限字段");
   }
 
@@ -443,7 +443,7 @@ async function main(): Promise<void> {
     const full: McpConfig = {
       mcpServers: {
         "drawio-ai": { command: "npx", args: [], modes: ["working"], disabled: false },
-        penpot: { url: "http://x", modes: ["bot"], disabled: false },
+        penpot: { url: "http://x", modes: ["working"], disabled: false },
         serena: { command: "serena", args: [], modes: ["coding"], disabled: false },
         plain: { command: "echo", args: [], disabled: false },
       },
@@ -1763,7 +1763,7 @@ async function main(): Promise<void> {
     // ---- N6. 三 Mode + 5+1 受管 provider 回归；私有技能不污染 Global Skill Center ----
     const modeStoreN = new ModeProfileStore();
     const working = modeStoreN.getProfile("working");
-    const design = modeStoreN.getProfile("bot");
+    const design = modeStoreN.getProfile("general");
     const coding = modeStoreN.getProfile("coding");
     const workingPreset = resolveModePreset(working.policy, "drawio-ai");
     assert(workingPreset != null, "N6：working/drawio-ai 预设存在");

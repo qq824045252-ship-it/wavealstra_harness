@@ -191,17 +191,17 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
 
   // 不同 Task 不同 Mode：Task A=coding、Task B=design —— 各自独立
   const modeA = makeTask({ welcomeMode: "coding", modePresetId: "code-review", updatedAt: 1000 });
-  const modeB = makeTask({ welcomeMode: "bot", modePresetId: "ai-ui", updatedAt: 2000 });
+  const modeB = makeTask({ welcomeMode: "general", modePresetId: "ai-ui", updatedAt: 2000 });
   const latestMode = resolveProjectTaskDefaults({
     tasks: [modeA, modeB],
     projectId: "p1",
     templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
   });
-  assert.equal(latestMode.welcomeMode, "bot", "最近 Task 是 design → 默认 design，不被模板的 coding 限制（§0.2 / Rule 6）");
+  assert.equal(latestMode.welcomeMode, "general", "最近 Task 是通用模式 → 默认通用模式，不被模板的 coding 限制（§0.2 / Rule 6）");
 
   // 其它 Project 的任务不参与默认值
   const foreign = pickDefaults(resolveProjectTaskDefaults({
-    tasks: [makeTask({ projectId: "other-project", welcomeMode: "bot", modePresetId: "ai-ui", updatedAt: 9999 })],
+    tasks: [makeTask({ projectId: "other-project", welcomeMode: "general", modePresetId: "ai-ui", updatedAt: 9999 })],
     projectId: "p1",
     templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
   }));

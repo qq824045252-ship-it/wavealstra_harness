@@ -18,31 +18,17 @@ export interface McpFilterResult {
   capabilities: ResolvedCapabilityDto[];
 }
 
-function entryModes(name: string, entry: McpServerEntry): WelcomeMode[] | null {
-  // Penpot moved to office; installed MCP files may still declare the old design/Bot mode.
+function entryModes(entry: McpServerEntry): WelcomeMode[] | null {
   const raw = entry.modes;
   if (raw == null) return null;
-  if (Array.isArray(raw)) {
-    const modes = raw
-      .map(String)
-      .map((value) => value.trim() === "design" ? "bot" : value.trim())
-      .map((value) => name === "penpot" && value === "bot" ? "working" : value)
-      .filter((value): value is WelcomeMode =>
-        value === "working" || value === "coding" || value === "bot",
-      );
-    return modes.length ? modes : null;
-  }
-  if (typeof raw === "string") {
-    const modes = raw
-      .split(/[,\s]+/)
-      .map((value) => value.trim() === "design" ? "bot" : value.trim())
-      .map((value) => name === "penpot" && value === "bot" ? "working" : value)
-      .filter((value): value is WelcomeMode =>
-        value === "working" || value === "coding" || value === "bot",
-      );
-    return modes.length ? modes : null;
-  }
-  return null;
+  const values = Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/[,\s]+/) : [];
+  const modes = values
+    .map((value) => value.trim())
+    .filter((value): value is WelcomeMode =>
+      value === "working" || value === "coding" || value === "general",
+    );
+  // A retired/unknown mode metadata list must not become unrestricted.
+  return modes.length ? modes : [];
 }
 
 export function emptyMcpFilterResult(base?: McpConfig): McpFilterResult {
@@ -66,7 +52,9 @@ function formatReason(
   if (!code) return null;
   if (code === "global_disabled") return "全局已停用";
   if (code === "mode_not_supported") {
-    return `仅限模式 [${modes?.join(", ")}], 当前 ${welcomeMode}`;
+    return modes?.length
+      ? `仅限模式 [${modes.join(", ")}], 当前 ${welcomeMode}`
+      : `仅限已退役或未知模式, 当前 ${welcomeMode}`;
   }
   if (code.endsWith("_policy_denied")) {
     return `mcpPolicy.deny 命中（场景 ${welcomeMode}）`;
@@ -94,7 +82,7 @@ export function filterMcpConfigForMode(
 
   for (const [name, entry] of Object.entries(servers)) {
     if (!entry || typeof entry !== "object") continue;
-    const modes = entryModes(name, entry);
+    const modes = entryModes(entry);
     const decision = resolveMcpCapability(
       { id: name, disabled: entry.disabled === true || entry.enabled === false, modes },
       policySources ?? [{ source: "mode", sourceId: welcomeMode, policy }],

@@ -115,12 +115,12 @@ function HomeHero(): React.JSX.Element {
   const categoryToMode: Record<string, WelcomeMode> = {
     日常办公: "working",
     代码开发: "coding",
-    Bot: "bot",
+    通用模式: "general",
   };
   const modeToCategory: Record<string, string> = {
     working: "日常办公",
     coding: "代码开发",
-    bot: "Bot",
+    bot: "通用模式",
   };
   const category = modeToCategory[welcomeMode] ?? heroCategories[0];
 
@@ -573,7 +573,7 @@ export default function ChatView(): React.JSX.Element {
   const displayMessages = useMemo(() => {
     const live = task?.messages ?? [];
     const messages = visibleWindow ? mergeHistoryWindow([visibleWindow.messages], live) : live;
-    return task?.durable !== undefined || task?.welcomeMode === "bot"
+    return task?.durable !== undefined || task?.welcomeMode === "general"
       ? botMessagePresentation(messages, task.durable?.pendingInputs) : messages;
   }, [visibleWindow, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
@@ -868,7 +868,7 @@ export default function ChatView(): React.JSX.Element {
     onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
 
   // Admission and errors remain visible before the first native message arrives.
-  if (!task || (task.welcomeMode !== "bot" && task.messages.length === 0 && !task.sessionFile && !task.durable && !task.botPendingSubmission && !task.botInputError)) {
+  if (!task || (task.welcomeMode !== "general" && task.messages.length === 0 && !task.sessionFile && !task.durable && !task.botPendingSubmission && !task.botInputError)) {
     const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
@@ -887,7 +887,7 @@ export default function ChatView(): React.JSX.Element {
   }
 
   const taskMode: WelcomeMode =
-    task.welcomeMode === "working" || task.welcomeMode === "bot" || task.welcomeMode === "coding"
+    task.welcomeMode === "working" || task.welcomeMode === "general" || task.welcomeMode === "coding"
       ? task.welcomeMode
       : "coding";
 
@@ -899,7 +899,7 @@ export default function ChatView(): React.JSX.Element {
           {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
           <WorkspaceCrumb spaceId={task.spaceId ?? null} />
           <div className="chat-header-title">{task.title || "任务"}</div>
-          {task.welcomeMode !== "bot" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
+          {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
           <ConversationBranchChip />
           <span
             className="chat-mode-chip"
@@ -928,8 +928,8 @@ export default function ChatView(): React.JSX.Element {
           </div>}
           {!task.botPendingSubmission && !task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
-            <div className="empty-block-title">{task.durable || task.welcomeMode === "bot" ? "会话" : "正在加载历史对话…"}</div>
-            <div style={{ fontSize: 12.5 }}>{task.durable || task.welcomeMode === "bot" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
+            <div className="empty-block-title">{task.durable || task.welcomeMode === "general" ? "会话" : "正在加载历史对话…"}</div>
+            <div style={{ fontSize: 12.5 }}>{task.durable || task.welcomeMode === "general" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
           </div>}
           {task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }} role="alert" data-testid="history-error">
@@ -940,7 +940,7 @@ export default function ChatView(): React.JSX.Element {
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
         <TaskModelRecoveryNotice recovery={task.modelRecovery} />
-        {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
+        {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
         <ChatInput variant="chat" />
       </div>
     );
@@ -981,7 +981,7 @@ export default function ChatView(): React.JSX.Element {
           )}
         </div>
         <div className="chat-header-sub" />
-        {task.welcomeMode !== "bot" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
+        {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
         <ConversationBranchChip />
         <span
           className="chat-mode-chip"
@@ -1117,7 +1117,7 @@ export default function ChatView(): React.JSX.Element {
 
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
       <TaskModelRecoveryNotice recovery={task.modelRecovery} />
-      {task.welcomeMode !== "bot" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
+      {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
       {task.durable && <div className="durable-bot-state" role="status">
         {task.durable.compacting && <div>Pi Durable 正在压缩上下文</div>}

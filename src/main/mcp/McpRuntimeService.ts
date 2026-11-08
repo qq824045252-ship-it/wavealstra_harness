@@ -81,7 +81,7 @@ export class McpRuntimeService {
       // Pi's models facade exposes catalog lookup, explicit classification and image generation.
       // It uses this session's native ModelRegistry/auth; no chat stream or automatic router is added.
       ...(codeModeEnabled ? [createCodemodeExtension({ mode: 'on', models: true })] : []),
-      // Discovery remains native and usable in office/design scenes without Code Mode.
+      // Discovery remains native and usable in office/general scenes without Code Mode.
       createToolSearchExtension(),
       createPolicyAwareNativeMcpExtension({
         loadConfig: () => structuredClone(config),

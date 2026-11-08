@@ -413,7 +413,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   const taskChangesCount = useMemo(() => {
     return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
   }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
-  const isBot = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "bot");
+  const isGeneral = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "general");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);
   const continueExternalAgent = useAppStore((s) => s.continueExternalAgent);
   const deleteUserMessage = useAppStore((s) => s.deleteUserMessage);
@@ -424,7 +424,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
   );
   /** 对话分支来源 chip：源自本任务（用于「查看分支」入口的 disable 判断；未用于本文件展示） */
   const canBranch = Boolean(
-    !isBot && conversationBranchEnabled && !btw && !message.streaming && message.createdAt > 0,
+    !isGeneral && conversationBranchEnabled && !btw && !message.streaming && message.createdAt > 0,
   );
   const onBranchFromMessage = (): void => {
     if (!canBranch || branchCreating) return;
@@ -640,7 +640,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                       void navigator.clipboard.writeText(text).catch(() => undefined);
                     },
                   },
-                  ...(!isBot ? [{
+                  ...(!isGeneral ? [{
                     label: "删除此消息",
                     danger: true,
                     onClick: () => setDeleteConfirmOpen(true),
@@ -802,7 +802,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                 <button className="icon-btn" title="踩">
                   <IconThumbsDown size={14} />
                 </button>
-                {!isBot && !message.externalAgent && (
+                {!isGeneral && !message.externalAgent && (
                   <button
                     type="button"
                     className="icon-btn"

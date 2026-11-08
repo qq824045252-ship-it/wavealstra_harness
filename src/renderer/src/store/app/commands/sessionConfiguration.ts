@@ -37,7 +37,7 @@ export function createSessionConfigurationActions(
             task.durable),
       );
       if (locked) {
-        // 全局 selection 必须对新模式合法（不能把 design preset 带到 coding）
+        // 全局 selection 必须对新模式合法（不能把其它模式 preset 带到 coding）
         set({ welcomeMode: mode, modePresetId: defaultModePresetId(mode) });
         return;
       }
@@ -87,7 +87,7 @@ export function createSessionConfigurationActions(
         .catch(() => undefined);
       // Bot Tags configure the next Durable input; other modes retain their session lock.
       const locked =
-        task?.welcomeMode !== "bot" &&
+        task?.welcomeMode !== "general" &&
         Boolean(task && (task.messages.length > 0 || task.sessionFile));
       if (locked) {
         set({ modePresetId: presetId });

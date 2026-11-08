@@ -35,6 +35,11 @@ function assert(cond: unknown, label: string): void {
 
 async function main(): Promise<void> {
   console.log("[mode-profile-test] sandbox:", sandbox);
+  const legacyBotDir = join(sandbox, ".mybuddy", "modes", "bot");
+  mkdirSync(legacyBotDir, { recursive: true });
+  writeFileSync(join(legacyBotDir, "goal.md"), "LEGACY_BOT_GOAL");
+  writeFileSync(join(legacyBotDir, "policy.json"), JSON.stringify({ presets: [{ id: "legacy-tag", label: "Legacy", botToolMode: "codemode" }] }));
+  writeFileSync(join(legacyBotDir, "README.md"), "# Bot（bot）\n\nlegacy readme\n");
   const store = new ModeProfileStore();
 
   console.log("\n1. 种子加载");
@@ -70,12 +75,28 @@ async function main(): Promise<void> {
   assert(codingSeed.policy.mcpPolicy.deny.length === 0, "coding 默认不 deny MCP");
   assert(codingSeed.policy.artifactPolicy.deny.length === 0, "coding 默认不限制产物扩展名");
   assert(codingSeed.policy.artifactPolicy.allow.length === 0, "coding 默认白名单空");
-  const bot = store.getProfile("bot");
-  assert(bot.labelZh === "Bot", "Bot 标签");
+  const bot = store.getProfile("general");
+  assert(bot.labelZh === "通用模式", "通用模式标签");
+  const legacyBotDirAfter = join(sandbox, ".mybuddy", "modes", "bot");
+  const generalDir = join(sandbox, ".mybuddy", "modes", "general");
+  assert(!existsSync(legacyBotDirAfter) && existsSync(generalDir), "modes/bot 目录迁移为 modes/general");
+  assert(bot.blocks.find(b => b.id === "goal")?.content === "LEGACY_BOT_GOAL", "迁移保留用户 goal.md");
+  assert(bot.policy.presets?.find(p => p.id === "legacy-tag")?.durableToolMode === "codemode", "迁移 botToolMode 为 durableToolMode");
+  const migratedReadme = (await import("node:fs")).readFileSync(join(generalDir, "README.md"), "utf-8");
+  assert(migratedReadme.startsWith("# 通用模式（general）"), "迁移 README 标题");
   assert(bot.policy.skillPolicy.allow.length === 0 && bot.policy.skillPolicy.hide.length === 0, "Bot 不应用技能名单");
   assert(bot.policy.mcpPolicy.allow.length === 0 && bot.policy.mcpPolicy.deny.length === 0, "Bot 不应用 MCP 名单");
   assert(bot.policy.toolPolicy.deny.length === 0, "Bot 不拦截原生工具");
   assert(bot.policy.artifactPolicy.unfiltered === true, "Bot 不过滤产物显示");
+  // 已落盘的旧出厂 goal 文案应随显示名升级；用户自定义内容不受影响。
+  const botSeedGoalPath = bot.blocks.find((b) => b.id === "goal")!.filePath;
+  writeFileSync(botSeedGoalPath, previousModeBlocks.general.goal + "\n");
+  const migratedBot = store.getProfile("general");
+  assert(
+    migratedBot.blocks.find((b) => b.id === "goal")?.content.trimEnd() === MODE_SEEDS.general.blocks.goal,
+    "旧 Bot goal 出厂文案升级为通用模式",
+  );
+  assert(migratedBot.blocks.find((b) => b.id === "goal")?.source === "seed", "升级后仍为 seed");
 
   for (const mode of ["working", "coding"] as const) {
     const profile = store.getProfile(mode);
@@ -109,9 +130,9 @@ async function main(): Promise<void> {
   assert(store.getProfile("working").blocks.find((b) => b.id === "goal")?.source === "seed", "goal 恢复 seed");
   store.resetPolicy("coding");
   assert(!store.getProfile("coding").policy.scenes.some((s) => s.label === "测"), "policy 恢复");
-  store.saveBlock("bot", "forbid", "用户禁令测试");
-  store.resetProfile("bot");
-  assert(store.getProfile("bot").hasUserOverride === false, "Bot 整模式恢复");
+  store.saveBlock("general", "forbid", "用户禁令测试");
+  store.resetProfile("general");
+  assert(store.getProfile("general").hasUserOverride === false, "Bot 整模式恢复");
 
   console.log("\n5. 非法空内容");
   let threw = false;
@@ -270,10 +291,10 @@ async function main(): Promise<void> {
     { id: "web-prototype", label: "旧设计 Penpot", promptAddon: "旧设计提示词", suggestedModelId: "design-only-model" },
   ] }));
   writeFileSync(join(legacyDir, "goal.md"), "旧设计目标文案，不应再被读取");
-  const botGoalPath = join(sandbox, ".mybuddy", "modes", "bot", "goal.md");
+  const botGoalPath = join(sandbox, ".mybuddy", "modes", "general", "goal.md");
   rmSync(botGoalPath, { force: true });
-  const botAfterRemoval = store.getProfile("bot");
-  assert(botAfterRemoval.blocks.find(b => b.id === "goal")?.content.trim() === MODE_SEEDS.bot.blocks.goal.trim(), "bot 缺失块回退出厂文案，不再从 design 复制");
+  const botAfterRemoval = store.getProfile("general");
+  assert(botAfterRemoval.blocks.find(b => b.id === "goal")?.content.trim() === MODE_SEEDS.general.blocks.goal.trim(), "bot 缺失块回退出厂文案，不再从 design 复制");
   writeFileSync(bot.policyPath, JSON.stringify({ ...bot.policy, presets: [
     { id: "general", label: "通用设计" },
     { id: "web-prototype", label: "网页原型 · Penpot", promptAddon: "网页原型 · Penpot：最新提示词", suggestedModelId: "custom-model" },
@@ -288,7 +309,7 @@ async function main(): Promise<void> {
   assert(penpot?.suggestedModelId !== "design-only-model", "design 目录的旧模型推荐不再被读取");
   assert(penpot?.providerMcpIds?.includes("penpot") && penpot.mcpPolicy?.allow.includes("penpot"), "保留 Penpot MCP 能力");
   assert(penpot?.requiredRuntimes?.some(r => typeof r !== "string" && r.providerId === "penpot" && r.launchPolicy === "backend" && r.readinessPolicy === "http" && r.openUi === "browser"), "保留后端启动、HTTP 就绪与浏览器打开");
-  const cleanBot = store.getProfile("bot");
+  const cleanBot = store.getProfile("general");
   assert(!cleanBot.policy.presets?.some(p => ["general", "web-prototype"].includes(p.id)), "旧磁盘 Tag 不在 Bot 复活");
   assert(cleanBot.policy.presets?.some(p => p.id === "custom-bot"), "保留其它自定义 Bot Tag");
   store.savePolicy("working", { ...migrated.policy, presets: migrated.policy.presets?.map(p => p.id === "web-prototype" ? { ...p, promptAddon: "办公编辑优先" } : p) });

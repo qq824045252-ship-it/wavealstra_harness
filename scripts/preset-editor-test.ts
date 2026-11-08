@@ -208,7 +208,7 @@ async function main(): Promise<void> {
       drawio?.providerMcpIds?.join(",") === "drawio-ai" && drawio?.mcpPolicy?.allow.includes("drawio-ai"),
       "working drawio-ai 出厂 preset 可回读（providerMcpIds 不回归）",
     );
-    const design = store.getProfile("bot");
+    const design = store.getProfile("general");
     const blender = design.policy.presets?.find((p) => p.id === "3d-blender");
     const freecad = design.policy.presets?.find((p) => p.id === "mechanical-cad");
     const aiUi = design.policy.presets?.find((p) => p.id === "ai-ui");
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     assert(!opendesign, "OpenDesign Tag 已退役");
     // 三模式 seed 一致
     assert(MODE_SEEDS.working.policy.presets?.length === 8, "working 出厂 8 presets");
-    assert(MODE_SEEDS.bot.policy.presets?.length === 2, "Bot 出厂 2 Tags");
+    assert(MODE_SEEDS.general.policy.presets?.length === 2, "Bot 出厂 2 Tags");
     assert(MODE_SEEDS.coding.policy.presets?.length === 8, "coding 出厂 8 presets");
   }
 
@@ -267,9 +267,9 @@ async function main(): Promise<void> {
     assert(isSeedPreset("coding", "code-review") === true, "coding code-review 是 seed（不可删）");
     assert(isSeedPreset("working", "general-office") === true, "working general-office 是 seed");
     assert(isSeedPreset("working", "web-prototype") === true, "办公 Penpot 是 seed");
-    assert(isSeedPreset("bot", "web-prototype") === false, "Bot Penpot 已移除");
-    assert(isSeedPreset("bot", "ai-ui") === false, "design ai-ui 已退役");
-    assert(isSeedPreset("bot", "opendesign") === false, "design opendesign 已退役");
+    assert(isSeedPreset("general", "web-prototype") === false, "Bot Penpot 已移除");
+    assert(isSeedPreset("general", "ai-ui") === false, "design ai-ui 已退役");
+    assert(isSeedPreset("general", "opendesign") === false, "design opendesign 已退役");
     assert(isSeedPreset("coding", "custom-tag") === false, "自定义 preset 不是 seed（可删）");
     assert(isSeedPreset("working", "project-management") === true, "working project-management 是 seed");
     assert(isSeedPreset("working", "inventory-summary") === false, "库存摘要已退役，不再是 seed");

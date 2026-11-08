@@ -86,7 +86,7 @@
 
 - [src/renderer/src/types.ts](../src/renderer/src/types.ts)：`Page` 联合类型新增 `"bot"`，保留 `"chat"`、`"assistant"`、`"automation"` 等旧值不变。
 - [src/renderer/src/App.tsx](../src/renderer/src/App.tsx)：新增 `page === "bot"` 路由，加载独立 `BotWorkspacePage`，不渲染普通 `ChatView`。普通页路由和右侧工具面板行为保持原样。
-- 「Bot 模式」与现有 `WelcomeMode = "working" | "coding" | "bot"` **不是同一个概念**：现有 Task 的 `welcomeMode="bot"` 不等于长期 Bot 的独立 Work UI；不可把换 `welcomeMode` 当作跳转。
+- 「Bot 模式」与现有 `WelcomeMode = "working" | "coding" | "general"` **不是同一个概念**：现有 Task 的 `welcomeMode="general"`（显示名为「通用模式」）不等于长期 Bot 的独立 Work UI；不可把换 `welcomeMode` 当作跳转。
 - 原 [AssistantPage.tsx](../src/renderer/src/components/pages/AssistantPage.tsx) 是 Gateway/IM 会话查看页，先保持原职能；其渠道会话后续通过持久 Bot 绑定映射到新 Bot 页面，不直接把该页替换掉。
 - 账户菜单继续作为所有页面的统一导航；Bot 页面内另有「返回普通模式」入口（`setPage("chat")`，恢复上次普通 Task 或普通首页）。点击菜单中的其他现有入口也正常退出 Bot 页面。
 

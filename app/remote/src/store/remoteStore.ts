@@ -431,7 +431,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     }
   },
   setSelectedWelcomeMode: (selectedWelcomeMode) => set({ selectedWelcomeMode, selectedModePresetId: null,
-    ...(selectedWelcomeMode === 'bot' ? { toolAccessMode: 'follow' as const, isPermissionSheetOpen: false } : {}) }),
+    ...(selectedWelcomeMode === 'general' ? { toolAccessMode: 'follow' as const, isPermissionSheetOpen: false } : {}) }),
   setSelectedModePresetId: (selectedModePresetId) => set({ selectedModePresetId }),
   taskSetupSection: null,
   setTaskSetupSection: (taskSetupSection) => set({ taskSetupSection }),

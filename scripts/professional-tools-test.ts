@@ -11,7 +11,6 @@ import {
   isRetiredDesignSkill,
   isRetiredManagedProvider,
 } from "../src/shared/professional-tools";
-import { DESIGN_PROVIDER_MCP_IDS } from "../src/shared/mode-profile";
 
 let passed = 0;
 let failed = 0;
@@ -342,10 +341,6 @@ async function main(): Promise<void> {
     assert(chips.includes("openHubMcp"), "聊天 runtime chip 跳到插件 MCP 卡片");
     assert(isRetiredManagedProvider("blender"), "blender 不再作为受管 runtime 自动拉起");
     assert(!isRetiredDesignSkill("blender-core"), "blender 技能仍可在场景模式列出");
-    assert(
-      !(DESIGN_PROVIDER_MCP_IDS as readonly string[]).includes("blender"),
-      "general 出厂 deny 不再把已装 blender MCP 当专用 provider 排除",
-    );
   }
 
   console.log(`\n[professional-tools-test] ${passed} passed, ${failed} failed`);

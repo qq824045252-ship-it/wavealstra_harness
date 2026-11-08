@@ -68,14 +68,14 @@ const service = new ProjectService(repository, memory);
   const defaults = resolveProjectTaskDefaults({
     tasks: [
       { projectId: "p", spaceId: "old", welcomeMode: "working", modePresetId: "old-tag", updatedAt: 1 },
-      { projectId: "p", spaceId: "recent", welcomeMode: "bot", modePresetId: "ui", updatedAt: 2 },
+      { projectId: "p", spaceId: "recent", welcomeMode: "general", modePresetId: "ui", updatedAt: 2 },
       { projectId: "other", spaceId: "wrong", updatedAt: 3 },
     ],
     projectId: "p",
   });
   assert.deepEqual(defaults, {
     spaceId: "recent",
-    welcomeMode: "bot",
+    welcomeMode: "general",
     modePresetId: "ui",
     source: "recent-task",
   });
@@ -637,7 +637,7 @@ try {
   assert.ok(compactedAudit.storageBytes < Buffer.byteLength(longContent));
   const sanitized = sanitizeRuntimeAuditSnapshot(compactedAudit) as { instructions: Array<Record<string, unknown>> };
   assert.equal("content" in sanitized.instructions[0]!, false, "Redacted export must omit instruction bodies");
-  const changedForDiff = { ...compactedAudit, assemblyHash: "hash-next", mode: "bot" as const };
+  const changedForDiff = { ...compactedAudit, assemblyHash: "hash-next", mode: "general" as const };
   assert.ok(diffRuntimeAuditSnapshots(compactedAudit, changedForDiff).some((change) => change.startsWith("Mode:")));
   const capabilityAddedForDiff = {
     ...compactedAudit,

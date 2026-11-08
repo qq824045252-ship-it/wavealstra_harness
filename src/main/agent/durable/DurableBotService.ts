@@ -503,7 +503,7 @@ export class DurableBotService {
     await this.options.models.refresh({ allowNetwork: false });
     this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
-    if (!task) throw new Error("Bot 任务不存在");
+    if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
     this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId,
       permissionMode: request.permissionMode ?? task.permissionMode,
@@ -640,7 +640,7 @@ export class DurableBotService {
     this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
       title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
       ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
-      welcomeMode: "bot", modePresetId: "native", updatedAt: Date.now() });
+      welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
     const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
     try {
       return await open.runtime.reply(submission);

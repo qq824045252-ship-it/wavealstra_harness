@@ -11,13 +11,13 @@ export default function PiCodeModeChip({ taskId, welcomeMode }: {
   welcomeMode?: WelcomeMode;
 }): React.JSX.Element {
   const [observed, setObserved] = useState<{ taskId: string; state: PiCodeModeState | null } | null>(null);
-  const botMode = useAppStore(s => {
+  const toolMode = useAppStore(s => {
     const task = s.tasks.find(t => t.id === taskId);
     const preset = task?.modePresetId ?? s.modePresetId;
     return task?.durable?.toolMode ?? (preset === "codemode" ? "codemode" : "native");
   });
   useEffect(() => {
-    if (!taskId || welcomeMode === "bot") return;
+    if (!taskId || welcomeMode === "general") return;
     let disposed = false, eventRevision = 0;
     const apply = (snapshot: McpStatusSnapshotDto | null): void => {
       if (!disposed && (!snapshot || snapshot.sessionId === taskId)) {
@@ -36,8 +36,8 @@ export default function PiCodeModeChip({ taskId, welcomeMode }: {
     }).catch(() => { if (revision === eventRevision) apply(null); });
     return () => { disposed = true; unsubscribe?.(); };
   }, [taskId, welcomeMode]);
-  if (welcomeMode === "bot") return <span className="pi-codemode-chip" role="status" data-testid="pi-durable-status">
-    <Code2 size={12} /><span>Pi Durable</span><span>{botMode === "codemode" ? "Code Mode" : "原生模式"}</span>
+  if (welcomeMode === "general") return <span className="pi-codemode-chip" role="status" data-testid="pi-durable-status">
+    <Code2 size={12} /><span>Pi Durable</span><span>{toolMode === "codemode" ? "Code Mode" : "原生模式"}</span>
   </span>;
   const state = observed && observed.taskId === taskId ? observed.state : null;
   const label = piCodeModeLabel(welcomeMode, state);

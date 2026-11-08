@@ -242,7 +242,7 @@ export interface Task {
    * 发送时仅 expertId 与此不同才贴专家芯片；取消专家时清空以便再次引用可再贴。
    */
   lastAnnouncedExpertId?: string;
-  /** 选中场景预设 id（Design Mode）；非 design 任务为 null */
+  /** 选中场景预设 id（场景模式）；非场景任务为 null */
   modePresetId?: string | null;
   /** 计划开始日（当地 0 点 ms） */
   startAt?: number;
@@ -364,7 +364,7 @@ export interface ModelConfig {
   metadata?: import("../../shared/model-metadata").ModelMetadataDto;
 }
 
-export type WelcomeMode = "working" | "coding" | "bot";
+export type WelcomeMode = "working" | "coding" | "general";
 
 /** 助理人设（对应数据目录中的 SOUL.md / IDENTITY.md） */
 export interface Soul {

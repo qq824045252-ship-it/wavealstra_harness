@@ -45,7 +45,7 @@ const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:as
 }};
 models.completeSimple=(m:any,c:any,o:any)=>models.streamSimple(m,c,o).result();
 let failAssembly = false;
-const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:task=>task.welcomeMode === "bot" ? "codemode" : "native",
+const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:task=>task.welcomeMode === "general" ? "codemode" : "native",
   instructions:()=>"fixture",tools:async()=>{ if (failAssembly) throw new Error("FIXTURE_POLICY_UNAVAILABLE"); return { tools:[hold], contextHooks:[] }; },emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
 let durable=createService();
 const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
@@ -69,7 +69,7 @@ try{
       ...(channel==="slack"?{taskId:source,userMessageId:"slack-user-fixture",assistantMessageId:"slack-assistant-fixture"}:{}),
       reply:async(text:string)=>{replies.push(text);}};
     await inbound(input);assert.deepEqual(replies,["ANSWER:"+channel]);
-    const task=db.getTask(gatewayBotTaskId(source))!;assert.equal(task.welcomeMode,"bot");assert.equal(task.modePresetId,"native");assert.equal(task.sessionFile,undefined);
+    const task=db.getTask(gatewayBotTaskId(source))!;assert.equal(task.welcomeMode,"general");assert.equal(task.modePresetId,"native");assert.equal(task.sessionFile,undefined);
     assert.equal(task.spaceId, gatewayChannelSpaceId(channel+"-default")); assert.equal(task.title, channel);
     const folder=db.getSpace(task.spaceId!)!; assert.equal(folder.name, channelNames[channel]); assert.equal(folder.parentId, GATEWAY_ROOT_SPACE_ID); assert.equal(folder.path, undefined);
     const gatewayRoot=db.getSpace(GATEWAY_ROOT_SPACE_ID)!; assert.equal(gatewayRoot.name, GATEWAY_ROOT_SPACE_NAME); assert.equal(gatewayRoot.parentId, null); assert.equal(gatewayRoot.path, undefined);
@@ -111,7 +111,7 @@ try{
   await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-2",text:"第二条不应当覆盖标题和文件夹",reply:async()=>{}});
   const followed=db.getTask(feishuId)!; assert.equal(followed.title, created.title); assert.equal(followed.spaceId, created.spaceId);
   const keptId=scopedTask("custom-default","kept");
-  db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
+  db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"general",modePresetId:"native",updatedAt:1});
   await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-1",text:"后来的消息",reply:async()=>{}});
   assert.equal(db.getTask(keptId)?.title,"已有会话");
   assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
@@ -121,7 +121,7 @@ try{
   assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
   db.createSpace({id:"user-folder",name:"用户自己的"});
   const parkedId=scopedTask("custom-default","parked");
-  db.upsertTask({id:parkedId,title:"已归类",spaceId:"user-folder",welcomeMode:"bot",modePresetId:"native",updatedAt:1});
+  db.upsertTask({id:parkedId,title:"已归类",spaceId:"user-folder",welcomeMode:"general",modePresetId:"native",updatedAt:1});
   await inbound({channelId:"custom-default",chatId:"parked",messageId:"parked-1",text:"不要搬走",reply:async()=>{}});
   assert.equal(db.getTask(parkedId)?.title,"已归类"); assert.equal(db.getTask(parkedId)?.spaceId,"user-folder");
   assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; unfiled chats join channel folders; filed chats and legacy tasks stay put");

@@ -134,7 +134,7 @@ async function main() {
 
     cron.upsert(job("resume", { restartPolicy: "resume" }));
     cron.upsert(job("pause", { restartPolicy: "pause" }));
-    const savedRequest: AgentPromptRequest = { taskId: "source", text: "saved prompt", userMessageId: "cron-saved-input", assistantMessageId: "cron-saved-assistant", permissionMode: "readonly" };
+    const savedRequest = { taskId: "source", text: "saved prompt", userMessageId: "cron-saved-input", assistantMessageId: "cron-saved-assistant", permissionMode: "readonly", welcomeMode: "bot" } as unknown as AgentPromptRequest;
     db.insertCronRun({ id: "saved", jobId: "resume", taskId: "source", startedAt: 1, status: "running" });
     db.connection.prepare("INSERT INTO cron_run_inputs VALUES (?, ?)").run("saved", JSON.stringify({ request: savedRequest, newTask: false, job: { id: "resume", name: "Original schedule" } }));
     db.insertCronRun({ id: "interrupted", jobId: "resume", startedAt: 1, status: "running" });
@@ -145,7 +145,9 @@ async function main() {
     assert.equal(db.getCronJob("resume")?.enabled, true);
     assert.equal(db.listCronRuns().find(run => run.id === "interrupted")?.status, "error");
     await until(() => db.listCronRuns().find(run => run.id === "saved")?.status === "success", "saved receipt resumed");
-    assert.deepEqual(prompts.at(-1), savedRequest, "restart resubmits the persisted operation identity and input");
+    assert.deepEqual(prompts.at(-1), { ...savedRequest, welcomeMode: "general" }, "restart resubmits the persisted operation identity and input with canonical mode");
+    const recoveredCronInput = JSON.parse((db.connection.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get("saved") as { request_json: string }).request_json);
+    assert.equal(recoveredCronInput.request.welcomeMode, "general", "cron_run_inputs legacy welcomeMode migrated");
     assert.equal(db.getTask("source")?.title, "Keep title", "editing the plan target cannot rename its original task on recovery");
     assert.ok((cron.list().find(item => item.id === "resume")?.nextRunAt ?? 0) > Date.now());
     assert.equal(db.getTask("source")?.cwd, root);

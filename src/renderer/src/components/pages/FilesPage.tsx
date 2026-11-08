@@ -201,7 +201,7 @@ export default function FilesPage(): React.JSX.Element {
                           {taskArtifacts[task.id]?.filter(
                             (a) =>
                               matches(a.name) &&
-                              (task.welcomeMode === "bot" || artifactVisibleForDisplay(
+                              (task.welcomeMode === "general" || artifactVisibleForDisplay(
                                 a.path ?? a.name,
                                 task.welcomeMode ? artifactPolicies[task.welcomeMode] : undefined,
                                 (taskArtifacts[task.id] ?? []).map((item) => item.path ?? item.name),

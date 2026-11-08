@@ -1,7 +1,7 @@
 import type { ModelConfig, Skill, Soul, Space, Task } from "@/types";
 
 /** 欢迎页三模式标签（产品文案，非演示数据） */
-export const heroCategories = ["代码开发", "日常办公", "Bot"];
+export const heroCategories = ["代码开发", "日常办公", "通用模式"];
 
 /** 场景 chip：空列表，不再塞演示场景 */
 export const heroScenes: string[] = [];
@@ -57,7 +57,7 @@ export interface AutomationTemplate {
   everyUnit?: "h" | "d";
   everyN?: number;
   /** 默认任务类型；缺省 working */
-  welcomeMode?: "working" | "coding" | "bot";
+  welcomeMode?: "working" | "coding" | "general";
 }
 
 export const mockExperts: MockExpert[] = [];
@@ -217,7 +217,7 @@ export const automationTemplates: AutomationTemplate[] = [
     scheduleExpr: "0 0 12 * * *",
     periodUnit: "day",
     periodTime: "12:00",
-    welcomeMode: "bot",
+    welcomeMode: "general",
   },
 ];
 

@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
-import { botConfiguration, emptyModePolicy, artifactVisibleForDisplay } from "../src/shared/mode-profile";
+import { generalModeConfiguration, emptyModePolicy, artifactVisibleForDisplay } from "../src/shared/mode-profile";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-test-"));
 console.log("Isolated test directory:", root);
@@ -44,7 +44,7 @@ const text = (value: string) => [{ type: "text" as const, text: value }];
 let toolCallSequence = 0;
 const call = (name: string, args: object) => [{ type: "toolCall", id: `fixture-call-${++toolCallSequence}`, name, arguments: args }];
 const forbidden = { ...emptyModePolicy(), artifactPolicy: { mode: "hard" as const, allow: ["pdf"], deny: ["py"] }, presets: [{id: "old", label: "kept", promptAddon: "user prompt", mcpPolicy: { mode: "hard" as const, allow: [], deny: ["*"] } }] };
-const policy = botConfiguration(forbidden);
+const policy = generalModeConfiguration(forbidden);
 assert.equal(policy.presets?.[0].promptAddon, "user prompt");
 assert.equal(policy.presets?.[0].mcpPolicy, undefined);
 // Bot 产物策略 soft + unfiltered：任何产物都不隐藏（含 .py；不再有 CAD/FreeCAD 临时脚本特判）
@@ -462,7 +462,7 @@ for (const mode of ["native", "codemode"] as const) {
   const taskId = "purge-bot", siblingId = "keep-bot";
   const directory = (id: string) => join(agentDir, "durable", createHash("sha256").update(id).digest("hex"));
   for (const id of [taskId, siblingId]) {
-    db.upsertTask({ id, title: id, welcomeMode: "bot", updatedAt: Date.now() });
+    db.upsertTask({ id, title: id, welcomeMode: "general", updatedAt: Date.now() });
     await mkdir(directory(id), { recursive: true });
     await writeFile(join(directory(id), "history.jsonl"), id);
   }
@@ -542,7 +542,7 @@ for (const mode of ["native", "codemode"] as const) {
   const cwd = join(agentDir, "cwd"); await mkdir(cwd);
   const db = new AppDatabase(join(agentDir, "app.db"));
   const taskId = "drifted-bot", staleId = "magpie/commandcode/z-ai/glm-5.3-flash";
-  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "bot", modelId: staleId, cwd, updatedAt: Date.now() });
+  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "general", modelId: staleId, cwd, updatedAt: Date.now() });
   const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
   await mkdir(directory, { recursive: true });
   const magpie = (id: string, name: string): any => ({ ...model, provider: "magpie", id, name });
@@ -599,7 +599,7 @@ for (const mode of ["native", "codemode"] as const) {
   const cwd = join(agentDir, "cwd"); await mkdir(cwd);
   const db = new AppDatabase(join(agentDir, "app.db"));
   const taskId = "no-model-bot", storedModel = "magpie/commandcode/z-ai/glm-5.3-flash";
-  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "bot", modelId: storedModel, cwd, updatedAt: Date.now() });
+  db.upsertTask({ id: taskId, title: "录音笔", welcomeMode: "general", modelId: storedModel, cwd, updatedAt: Date.now() });
   const directory = join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
   await mkdir(directory, { recursive: true });
   const emptyModels: any = { getAuth: async () => undefined, getModel: () => undefined, getModels: () => [], getAvailable: async () => [], refresh: async () => ({}) };

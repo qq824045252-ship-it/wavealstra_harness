@@ -535,10 +535,10 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
         className="task-context-item"
         onClick={() => {
           closeMenu();
-          duplicateTaskWithMode("bot", task.id);
+          duplicateTaskWithMode("general", task.id);
         }}
       >
-        <WelcomeModeIcon mode="bot" size={14} /> 复制为 Bot 任务
+        <WelcomeModeIcon mode="general" size={14} /> 复制为通用任务
       </button>
       <div className="task-context-sep" />
       <div className={`task-context-item-wrap ${subMenu === "share" ? "open" : ""}`}>

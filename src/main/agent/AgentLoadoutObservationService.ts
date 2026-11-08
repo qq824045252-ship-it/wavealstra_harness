@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
+import { normalizeWelcomeMode } from "../../shared/mode-profile";
 import type {
   AgentLoadoutCapabilityKind,
   AgentLoadoutObservationContextDto,
@@ -44,7 +45,7 @@ function parseContext(value: string): AgentLoadoutObservationContextDto {
     const parsed = JSON.parse(value) as Partial<AgentLoadoutObservationContextDto> | null;
     if (!parsed || typeof parsed !== "object") throw new Error("invalid context");
     return {
-      mode: parsed.mode === "working" || parsed.mode === "bot" ? parsed.mode : "coding",
+      mode: normalizeWelcomeMode(parsed.mode) ?? "coding",
       projectId: typeof parsed.projectId === "string" && parsed.projectId ? parsed.projectId : undefined,
       workspaceId: typeof parsed.workspaceId === "string" && parsed.workspaceId ? parsed.workspaceId : undefined,
       tagId: typeof parsed.tagId === "string" && parsed.tagId ? parsed.tagId : undefined,
