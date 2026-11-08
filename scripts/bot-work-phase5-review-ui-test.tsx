@@ -185,6 +185,68 @@ async function main() {
       }
       await complete("review");
     });
+    await check("review: required environment is copied only by an explicit click and is not test evidence", async () => {
+      await reset("review");
+      const environment = () => container.querySelector<HTMLInputElement>('[aria-label="实测环境"]')!;
+      const pass = () => [...container.querySelectorAll("button")].find(button => button.textContent === "记录实测通过")!;
+      assert.equal(environment().value, "", "a requirement is not proof of the user's environment");
+      await click("带入要求环境");
+      assert.equal(environment().value, "Windows");
+      assert.equal(pass().disabled, true, "copying a name cannot substitute for a test record");
+      assert.equal(reviewRequests.length, 0);
+      await click("带入要求环境");
+      assert.equal(reviewRequests.length, 0, "repeated copy has no backend effect");
+      await change("实测版本或记录", "actual-machine:record-1");
+      await click("记录实测通过");
+      const request = reviewRequests[0]; assert.equal(request.kind, "feedback");
+      if (request.kind === "feedback") {
+        assert.equal(request.request.environment, "Windows");
+        assert.equal(request.request.sourceRef, "actual-machine:record-1");
+        assert.equal(request.request.versionGuard.expectedStateVersion, 7);
+      }
+      await complete("review");
+      await render("review", false, { ...projection, stateVersion: 8,
+        criteria: [{ ...projection.criteria[0], requiredEnvironment: "Omarchy/Wayland" }] });
+      assert.equal(environment().value, "Windows", "new requirements cannot silently relabel old evidence");
+      assert.equal([...container.querySelectorAll("button")].find(button => button.textContent === "带入要求环境")!.disabled, true);
+      await click("已核对最新状态，继续评审");
+      await click("带入要求环境");
+      assert.equal(environment().value, "Omarchy/Wayland");
+      assert.equal(reviewRequests.length, 1, "explicit rebasing and copy still do not submit feedback");
+    });
+    await check("review: closure explains its disabled state beside the button and offers guarded latest review", async () => {
+      await reset("review");
+      const closeButton = () => [...container.querySelectorAll("button")].find(button => button.textContent === "确认结束事项")!;
+      const reason = () => testDocument.getElementById(closeButton().getAttribute("aria-describedby")!)?.textContent;
+      assert.match(reason()!, /填写结束依据/);
+      await change("事项结束依据", "Checked current output");
+      assert.match(reason()!, /勾选确认/);
+      await change("确认事项结束", true);
+      assert.equal(closeButton().disabled, false);
+      await render("review", false, { ...projection, stateVersion: 8 });
+      assert.equal(closeButton().disabled, true);
+      assert.match(reason()!, /事项已有更新.*核对最新成果/);
+      assert.equal(closeButton().closest("details")!.textContent!.includes("已核对最新状态，继续结束"), true);
+      assert.equal(reviewRequests.length, 0);
+      await click("已核对最新状态，继续结束");
+      assert.equal(closeButton().disabled, true, "renewed state review does not renew the closure confirmation");
+      assert.match(reason()!, /勾选确认/);
+      assert.equal(container.querySelector<HTMLTextAreaElement>('[aria-label="事项结束依据"]')!.value, "Checked current output");
+      await change("确认事项结束", true);
+      await click("确认结束事项");
+      assert.equal(reviewRequests[0].kind, "close");
+      assert.equal(reviewRequests[0].request.versionGuard.expectedStateVersion, 8);
+      assert.match(reason()!, /正在保存决定/);
+      await complete("review", true);
+      assert.match(reason()!, /上次决定尚未确认.*重试原评审决定/);
+      await render("review", false, { ...projection, stateVersion: 9 });
+      assert.equal([...container.querySelectorAll("button")].find(button => button.textContent === "已核对最新状态，继续结束")!.disabled, true,
+        "uncertain original decisions cannot be rebound by the local recovery button");
+      reviewReply = deferred<WorkControlResult>();
+      await click("重试原评审决定");
+      assert.deepEqual(reviewRequests[1], reviewRequests[0]);
+      await complete("review");
+    });
     await check("review: background versions retain all edits and require explicit rebasing before submission", async () => {
       await reset("review");
       await change("实测环境", "Windows"); await change("实测版本或记录", "fixture:original-version");

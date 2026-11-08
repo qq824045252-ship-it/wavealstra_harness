@@ -123,7 +123,7 @@ try {
   assert.match(policyB.before(call("shell", "later-unbounded-write", "bash", { command: "some later writer" }, true)) ?? "", /范围未核实|不受限修改/);
   assert.match(policyB.before(call("shell", "stale-existing", "write", { path: other, content: "from opaque output" }, true)) ?? "", /可信读取/);
   // An explicit path is not enough to classify arbitrary commands or flags as trusted reads.
-  for (const [index, command] of ["wc -l", 'wc -l "./proof.txt"', "ls -1", 'ls -1 "./tree"', 'cat -n "./proof.txt"', 'ls -- "./tree"'].entries()) {
+  for (const [index, command] of ["wc --files0-from=secrets", 'wc --files0-from "./proof.txt"', "ls -R", 'ls -R "./tree"', 'cat -n "./proof.txt"', 'ls -- "./tree"'].entries()) {
     assert.equal(workShellRead("bash", { command }), undefined);
     const unsupportedRead = call("shell", `unsupported-read-${index}`, "bash", { command }, true);
     const reason = policyB.before(unsupportedRead);
@@ -131,14 +131,27 @@ try {
     assert.match(reason, /范围未核实/);
     assert.match(reason, /内置 read.*明确文件路径/);
     assert.match(reason, /完整内容上统计.*分段读完/);
-    assert.match(reason, /ls "\.\/dir".*不带选项/);
-    assert.match(reason, /wc -l 和 ls -1 即使补上路径也不属于可信读取/);
+    assert.match(reason, /ls -l "\.\/dir"/);
+    assert.match(reason, /wc -c.*单个明确字面路径/);
     assert.match(reason, /内置 write\/edit.*逐个重新读取.*不会解除任意 Shell 命令限制/);
     assert.equal(policyB.refuse(unsupportedRead, reason), true);
     assert.equal(policyA.wasNotStarted(unsupportedRead), true, "another SQLite connection sees the durable not-started proof");
     assert.deepEqual(a.prepare("SELECT reason FROM work_resource_denials WHERE action_id=?").get(
       `resource:${resourceOwnerKey(owner("shell"))}:${unsupportedRead.context.nativeTaskId}:${unsupportedRead.call.id}`), { reason });
   }
+  for (const [index, command] of [`wc -c "${other}"`, `stat "${other}"`, `ls -l "${other}"`, `sha256sum "${other}"`].entries()) {
+    const verify = call("shell", `verify-${index}`, "bash", { command }, false);
+    assert.equal(policyB.before(verify), undefined, "scoped verification remains available after opaque output");
+    const verificationLease = gateB.live().find(lease => lease.owner.taskId === "shell"); assert(verificationLease);
+    assert(verificationLease.resources.every(resource => resource.kind === "host" && !resource.path && !resource.expectedVersion),
+      "verification uses a conservative read lease, not a race-prone pathname content hash");
+    assert.match(policyA.before(call("concurrent-writer", `write-during-verify-${index}`, "write", { path: other, content: "race" }, true)) ?? "", /等待共享资源/);
+    policyB.after(verify, "consumed");
+    assert.match(policyB.before(call("shell", `write-after-verify-${index}`, "write", { path: other, content: "not read" }, true)) ?? "", /可信读取/,
+      "metadata/hash/count output cannot authorize overwrite without content reread");
+  }
+  const externalVerify = call("shell", "external-verify", "bash", { command: `wc -c "${join(directory, "..", "outside.txt")}"` }, false);
+  assert.match(policyB.before(externalVerify) ?? "", /工作区|ENOENT/, "scope rejection precedes resource content hashing");
   const directoryRead = call("shell", "trusted-directory-read", "bash", { command: 'ls "./"' }, false);
   assert.deepEqual(workShellRead("bash", directoryRead.call.arguments), { path: "./", directory: true });
   assert.equal(policyB.before(directoryRead), undefined); policyB.after(directoryRead, "consumed");
@@ -150,7 +163,7 @@ try {
   assert.equal(policyB.before(scopedAfterOpaque), undefined); writeFileSync(other, "fresh after opaque"); policyB.after(scopedAfterOpaque, "consumed");
   assert.match(policyB.before(call("shell", "other-target-not-reread", "write", { path: file, content: "outside reread target" }, true)) ?? "", /可信读取/,
     "rereading one file does not authorize overwriting another existing file");
-  assert.match(policyB.before(call("shell", "still-unbounded", "bash", { command: 'wc -l "./other.txt"' }, true)) ?? "", /不会解除任意 Shell 命令限制/,
+  assert.match(policyB.before(call("shell", "still-unbounded", "bash", { command: 'awk "END{print NR}" "./other.txt"' }, true)) ?? "", /不会解除任意 Shell 命令限制/,
     "a scoped reread/write cannot clear the original opaque command boundary");
   const newAfterOpaque = call("shell", "new-file", "write", { path: join(directory, "new-after-opaque.txt"), content: "new target" }, true);
   assert.equal(policyB.before(newAfterOpaque), undefined); writeFileSync(join(directory, "new-after-opaque.txt"), "new target"); policyB.after(newAfterOpaque, "consumed");

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { criterionNeedsEnvironment, type WorkProjectionDto, type WorkClosureConclusion } from "@shared/bot-work";
 import { userInputBlockerSnapshot, type WorkReviewControlRequest } from "@shared/bot-work-review";
 import { useAppStore } from "@/store/appStore";
@@ -10,6 +10,7 @@ const identity = (work: WorkProjectionDto) => JSON.stringify([work.workId, work.
 export function WorkReviewPanel({ work, includeClosed }: {
   work: WorkProjectionDto; includeClosed: boolean;
 }): React.JSX.Element | null {
+  const closeHintId = useId();
   const [reviewed, setReviewed] = useState(work);
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState("");
@@ -47,6 +48,7 @@ export function WorkReviewPanel({ work, includeClosed }: {
     return id;
   };
   const edit = (fn: () => void) => { setDirty(true); fn(); };
+  const reviewLatest = () => { setReviewed(work); setConfirmed(false); setLegacyConfirmed({}); };
   const run = async (request: WorkReviewControlRequest) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -102,12 +104,17 @@ export function WorkReviewPanel({ work, includeClosed }: {
   const proposed = reviewed.deliverables.filter(item => item.status === "proposed"
     && item.intentRevision === reviewed.intentRevision && item.inputSnapshotId === reviewed.inputSnapshotId);
   const criterion = reviewed.criteria.find(item => item.id === criterionId);
+  const closeDisabledReason = busy ? "正在保存决定，请等待结果。"
+    : uncertain ? "上次决定尚未确认，请先重试原评审决定。"
+    : stale ? "暂不能结束：事项已有更新。请先核对最新成果、要求与负责人，再确认结束结论。"
+    : !closureSummary.trim() ? "请先填写结束依据。"
+    : !confirmed ? "请勾选确认以上结论和结束依据。" : "";
   const inputBlockers = reviewed.blockers.filter(item => item.status === "open" && (userInputBlockerSnapshot(item) || item.legacyUserInput));
   return <section className="bot-work-review bot-detail-section" aria-label="成果评审与结束">
     <h3>评审与确认</h3>
     <p>依次采纳成果、核对验收条件，再确认结束。执行完成不会自动完成这三步。</p>
     {stale && <div role="alert"><p>事项已有更新，已保留你的填写内容和原评审版本。请核对最新成果、要求与负责人后再提交。</p>
-      <button type="button" disabled={locked} onClick={() => { setReviewed(work); setConfirmed(false); setLegacyConfirmed({}); }}>已核对最新状态，继续评审</button>
+      <button type="button" disabled={locked} onClick={reviewLatest}>已核对最新状态，继续评审</button>
     </div>}
     {proposed.length === 0 && <p>没有当前版本待评审的成果。</p>}
     {proposed.map(item => <article key={item.deliverableId} data-deliverable-id={item.deliverableId}>
@@ -134,7 +141,12 @@ export function WorkReviewPanel({ work, includeClosed }: {
       </section>}
       <details>
         <summary>记录当前版本实测</summary>
-        {criterion?.requiredEnvironment && <p>要求环境：{criterion.requiredEnvironment}</p>}
+        {criterion?.requiredEnvironment && <>
+          <p>要求环境：{criterion.requiredEnvironment}</p>
+          <button type="button" disabled={disabled}
+            onClick={() => edit(() => setEnvironment(criterion.requiredEnvironment!))}>带入要求环境</button>
+          <p>仅在你确实使用此环境完成验证时带入名称；这不会自动记录实测通过。具体系统和验证过程可填在验证说明中。</p>
+        </>}
         <label>验证环境<input aria-label="实测环境" value={environment} maxLength={200}
           onChange={event => edit(() => setEnvironment(event.target.value))} disabled={locked} /></label>
         <label>被测版本或测试记录<input aria-label="实测版本或记录" value={sourceRef} maxLength={2000}
@@ -188,7 +200,10 @@ export function WorkReviewPanel({ work, includeClosed }: {
       <p>按完成结束会重新核对当前验收、必要缺口、在途效果和持续关注的停止条件。</p>
       <label><input type="checkbox" aria-label="确认事项结束" checked={confirmed} disabled={locked}
         onChange={event => edit(() => setConfirmed(event.target.checked))} />我确认以上结论和结束依据</label>
-      <button type="button" disabled={disabled || !confirmed || !closureSummary.trim()}
+      {closeDisabledReason && <p id={closeHintId} role="status">{closeDisabledReason}</p>}
+      {stale && <button type="button" disabled={locked} onClick={reviewLatest}>已核对最新状态，继续结束</button>}
+      <button type="button" disabled={!!closeDisabledReason}
+        aria-describedby={closeDisabledReason ? closeHintId : undefined}
         onClick={() => { void close(); }}>确认结束事项</button>
     </details>
     {uncertain && <button type="button" disabled={busy} onClick={() => { void run(uncertain); }}>重试原评审决定</button>}

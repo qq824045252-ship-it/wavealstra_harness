@@ -1,3 +1,4 @@
+import { validateWorkReadPath } from "../../platform/work-shell-read";
 import { workShellRead } from "./WorkShellRead";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -22,6 +23,7 @@ const idOf = (owner: WorkResourceOwner, call: ToolHookCall, context: ToolResourc
   `resource:${resourceOwnerKey(owner)}:${context.nativeTaskId}:${call.id}`;
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 function boundedShellRead(call: ToolHookCall): string | undefined {
+  if (call.name === "bash") return undefined; // bash must match the exact trusted execution adapter, never a broader fallback.
   if (!/^(bash|shell|shell_exec|terminal_exec|exec_command)$/.test(call.name)) return undefined;
   const value = z.object({ command: z.string().optional() }).passthrough().parse(call.arguments).command;
   if (!value || /[;&|<>`$\r\n]/.test(value)) return undefined;
@@ -53,8 +55,16 @@ export class WorkToolResourcePolicy {
       return "MCP 读取缺少可信路径适配器，不能产生无法复核的旧版本；请改用内置 read 或已登记的读取入口";
     const resources: WorkResource[] = [];
     const bounded = workShellRead(call.name, call.arguments);
+    if (bounded) {
+      try { validateWorkReadPath(context.taskRoot, bounded.path); }
+      catch (error) { return error instanceof Error ? error.message : String(error); }
+    }
     const shellRead = bounded?.path ?? boundedShellRead(call);
-    const filePaths = shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
+    // Verification never hashes a path before the FD-safe executor opens it. A
+    // conservative host read lease excludes all managed writers without a second
+    // pathname resolution in acquire/validateVersions (which could race a symlink).
+    if (bounded?.verification) resources.push({ kind: "host", scope: "local-host", key: "scoped-read-verification", mode: "read" });
+    const filePaths = bounded?.verification ? [] : shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
       ? [args.path ?? args.file_path].filter((path): path is string => Boolean(path)) : [];
     for (const path of filePaths) {
       // Only trusted adapters supply paths; resolve relative names against the actual child workspace.
@@ -74,13 +84,13 @@ export class WorkToolResourcePolicy {
     if (opaque && sideEffect && !shellRead) {
       if (coarse) return `原 ${opaque.tool_name} 返回了范围未核实的观察；不能据此继续不受限命令。`
         + `恢复方式：用内置 read 指定明确文件路径重新读取；需要行数时，在读到的完整内容上统计，截断时先分段读完。`
-        + `列目录可用 bash 的 ls "./dir"（单个明确字面路径，不带选项）。wc -l 和 ls -1 即使补上路径也不属于可信读取。`
+        + `真实只读校验可用 bash 的 ls -l "./dir"、wc -c "./file"、wc -l "./file" 或 stat "./file"；仅支持当前工作区内单个明确字面路径及已列出的选项。`
         + `修改请使用明确目标路径的内置 write/edit，覆盖已有文件前逐个重新读取；这不会解除任意 Shell 命令限制。`;
       for (const resource of resources) if (resource.path && resource.entity && !this.gate.observedAfter(owner, resource, opaque.sequence))
         return `已有不透明观察；覆盖现有文件 ${resource.path} 前，必须通过可信读取入口（内置 read）以该明确路径重新读取目标版本，再用同一路径的内置 write/edit 修改。`
           + `读取其他文件或列目录不能代替该目标的重读，也不会解除任意 Shell 命令限制。`;
     }
-    if (coarse && sideEffect) {
+    if (coarse && sideEffect && !bounded?.verification) {
       for (const observed of this.gate.observedResources(owner)) {
         if (fileResourceIdentity(observed.path).version !== observed.version) return `version_conflict: 先前读取的文件已变化：${observed.path}`;
       }
@@ -134,7 +144,9 @@ export class WorkToolResourcePolicy {
     this.calls.delete(actionId);
     // Persist the version that produced the read, even if the resource changed during it.
     // Omitting that observation would let a later write silently adopt the new content.
-    if (!input.sideEffect || state.boundedRead) for (const resource of state.observed) this.gate.observe(owner, resource);
+    // Metadata/count/hash verification is evidence, not a content read that grants a later overwrite baseline.
+    const verification = workShellRead(input.call.name, input.call.arguments)?.verification;
+    if ((!input.sideEffect || state.boundedRead) && !verification) for (const resource of state.observed) this.gate.observe(owner, resource);
     if (state.opaqueObservation) this.gate.noteOpaqueObservation(owner, input.call.name);
     const action = actionOf.parse(input.call.arguments);
     const key = resourceOwnerKey(owner);

@@ -173,8 +173,8 @@ try {
         assert(last.isError, "unsupported shell reads stay refused even with an explicit path");
         assert.match(body, /范围未核实.*内置 read.*明确文件路径/);
         assert.match(body, /完整内容上统计.*分段读完/);
-        assert.match(body, /ls "\.\/dir".*不带选项/);
-        assert.match(body, /wc -l 和 ls -1 即使补上路径也不属于可信读取/);
+        assert.match(body, /ls -l "\.\/dir"/);
+        assert.match(body, /wc -c.*单个明确字面路径/);
         assert.match(body, /内置 write\/edit.*逐个重新读取.*不会解除任意 Shell 命令限制/);
         refusals.push(body);
         return last.toolCallId === "unsupported-read" ? call("bash", { command: 'ls "./"' }, "scoped-directory")
@@ -193,7 +193,7 @@ try {
         return call("write", { path: "proof.txt", content: "trusted scoped recovery\n" }, "scoped-write");
       }
       assert.equal(last.toolCallId, "scoped-write"); assert(!last.isError);
-      return call("bash", { command: 'wc -l "./proof.txt"' }, "still-unbounded");
+      return call("bash", { command: 'wc --files0-from "./proof.txt"' }, "still-unbounded");
     });
     const works = new WorkService(db.connection, { bots: policyBots });
     const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };

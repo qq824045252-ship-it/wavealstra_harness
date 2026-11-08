@@ -1,3 +1,5 @@
+import { currentPlatformId } from "../src/main/platform";
+import { verifyReadonlyCommands } from "./work-readonly-verification-cases";
 /** Native runtime + SQLite + real filesystem regression. The scripted provider is
  * deliberately a fixture, NOT live-provider or desktop/UI acceptance evidence. */
 import assert from "node:assert/strict";
@@ -31,7 +33,7 @@ const hostileBin = join(root, "hostile-bin"), shellMarker = join(root, "shell-st
 await mkdir(hostileBin);
 const bashEnv = join(root, "hostile-bash-env");
 await writeFile(bashEnv, `printf triggered >> '${shellMarker}'\n`);
-for (const command of ["ls", "cat"]) {
+for (const command of ["ls", "cat", "wc", "stat", "du", "od", "sha256sum", "sha1sum", "md5sum"]) {
   const file = join(hostileBin, command);
   await writeFile(file, `#!/bin/sh\nprintf triggered >> '${pathMarker}'\nexit 81\n`); await chmod(file, 0o755);
 }
@@ -50,7 +52,7 @@ async function until(check: () => boolean) {
   const end = Date.now() + 15_000;
   while (!check()) { if (Date.now() > end) throw new Error("Native fixture did not reach expected state"); await new Promise(r => setTimeout(r, 10)); }
 }
-async function fixture(taskId: string, withoutWorkPath = false) {
+async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false) {
   const cwd = join(root, taskId); await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
   let now = Date.now();
@@ -73,6 +75,11 @@ async function fixture(taskId: string, withoutWorkPath = false) {
     if (last.toolCallId === "write-proof") return call("bash", { command: "ls" }, "ls");
     if (last.toolCallId === "ls") return call("bash", { command: "cat proof.txt" }, "cat-proof");
     if (last.toolCallId === "cat-proof") return call("read", { path: "proof.txt" }, "read-proof");
+    if (verifyCommands) {
+      const commands = [`ls -l "${join(cwd, "proof.txt")}"`, `wc -c "${join(cwd, "proof.txt")}"`, `stat "${join(cwd, "proof.txt")}"`, `sha256sum "${join(cwd, "proof.txt")}"`];
+      const index = last.toolCallId === "read-proof" ? 0 : Number(last.toolCallId.replace("verify-", "")) + 1;
+      if (index < commands.length) return call("bash", { command: commands[index] }, `verify-${index}`);
+    }
     return text("Read back native proof. Await independent acceptance.");
   };
   const models = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, modelsStorePath: join(cwd, "catalog.json"), refreshOnCreate: false });
@@ -114,15 +121,16 @@ async function fixture(taskId: string, withoutWorkPath = false) {
     restart: () => { works = new WorkService(db.connection, { bots, now: () => now }); } };
 }
 try {
+  await verifyReadonlyCommands(root);
   for (const command of ["pwd;touch injected", "pwd && touch injected", "ls >file", "cat $(touch injected)",
-    "cat `touch injected`", "pwd\ntouch injected", "ls -la", "cat -n file", "bash -c pwd", "ls -- file", "cat *", "cat ~/file"]) {
+    "cat `touch injected`", "pwd\ntouch injected", "ls -R file", "cat -n file", "bash -c pwd", "ls -- file", "cat *", "cat ~/file"]) {
     assert.equal(workShellRead("bash", { command }), undefined, `unsafe/unsupported command stays gated: ${command}`);
   }
   for (const name of ["powershell", "terminal_exec", "mcp_call_tool"]) assert.equal(workShellRead(name, { command: "pwd" }), undefined);
   assert.deepEqual(workShellRead("bash", { command: "pwd" }), { path: ".", directory: true });
   assert.deepEqual(workShellRead("bash", { command: "ls" }), { path: ".", directory: true });
   assert.deepEqual(workShellRead("bash", { command: 'cat "file with spaces.txt"' }), { path: "file with spaces.txt", directory: false });
-  console.log("PASS Work shell reads use complete narrow grammar; compound commands, expansion, redirects and flags remain gated");
+  console.log("PASS Work shell reads use complete narrow grammar; compound commands, expansion, redirects and unsupported flags remain gated");
 
   const queuedWorks = new WorkService(db.connection, { bots });
   const forbiddenPort = async (): Promise<never> => { throw new Error("Queue persistence test must not invoke a model/native execution port"); };
@@ -521,6 +529,24 @@ try {
       "duplicate refused operation does not create approval/blocker/version churn");
   }
   console.log("PASS delegate policy fallback remains unchanged; explicit refusals persist once, cannot grant scope, and preserve prior effect uncertainty without write gaps");
+  if (currentPlatformId === "linux") {
+    const f = await fixture("readonly-native-verification", false, true), runtime = await f.open();
+    try {
+      const submission = await runtime.submit("Real file write, read, ls -l, wc -c, stat and sha256sum", "readonly-verification");
+      await until(() => !!f.pending()); assert(f.works.approvals.decide(LOCAL_USER_ID, f.decision(f.pending()!)).ok);
+      assert.equal((await submission.wait(ctx)).status, "done");
+      assert.equal(f.observed.length, 9); assert(f.observed.every(item => !item.error), JSON.stringify(f.observed));
+      assert(f.observed[6].body.includes("13 /proc/self/fd/3"), `wc returns actual system output, not inferred byte count: ${f.observed[6].body}`);
+      assert(f.observed[7].body.includes("Size: 13"));
+      assert.equal(f.works.approvals.list(f.binding.workId).length, 1, "read verification adds no scope prompts");
+      assert.deepEqual(f.works.getWork(f.binding.workId)!.authorization.allowedScopes, ["workspace:read"]);
+      await runtime.close(); const reopened = await f.open();
+      try { const restored = await reopened.harness.submission(submission.id, ctx); assert(restored); assert.equal((await restored.wait(ctx)).status, "done"); }
+      finally { await reopened.close(); }
+      assert.equal(f.observed.length, 9, "persisted verification output survives restart without reexecution");
+      console.log("PASS native read/write + ls -l/wc/stat/hash complete under read scope, actual system stdout, no duplicate approval or replay");
+    } finally { await runtime.close(); }
+  }
   await assert.rejects(access(shellMarker), "native pwd/ls/cat reads must not source attacker BASH_ENV");
   await assert.rejects(access(pathMarker), "native ls/cat reads must not execute attacker PATH commands");
   console.log("PASS native pwd/ls/cat bypass hostile BASH_ENV and PATH commands using actual environment file APIs");
