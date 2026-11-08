@@ -228,13 +228,15 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
           </article>;
         })}
         <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>
-        {work.phase3.gaps.map(gap => <article key={gap.factId}>
+        {work.phase3.gaps.map(gap => <details key={gap.factId}>
+          <summary>{(gap.task || gap.itemId).slice(0, 110)}{(gap.task || gap.itemId).length > 110 ? "…" : ""} · {gap.outcome}</summary>
           <p>{gap.task || gap.summary} · {{ completed: "已完成", blocked: "受阻", rejected: "未获准启动", failed: "失败", stopped: "已停止", unknown: "效果待核对", not_started: "尚未启动" }[gap.outcome]}</p>
+          {gap.coverageEligible && <p>若已用后续成果完成同一目标，可在下方“结束事项”中关联证据覆盖此未执行动作，无需重跑。</p>}
           {gap.writeConflicts.length > 0 && <p>{gap.writeConflicts.join("；")}</p>}
           <button type="button" disabled={busy || work.lifecycle !== "active" || gap.outcome === "unknown"}
             onClick={() => { void control({ kind: "continue", request: { operationId: operation(`continue:${gap.factId}`), workId: work.workId,
               sourceBindingId: gap.bindingId, gapItemIds: [gap.itemId], reason: "用户在事项详情中选择仅补齐此必要缺口", versionGuard } }); }}>仅补跑此项</button>
-        </article>)}
+        </details>)}
         {work.phase3.continuations.length > 0 && <p>已受理 {work.phase3.continuations.length} 个定向补跑计划，已有成果继续保留。</p>}
       </section>}
       {work.blockers.some(blocker => blocker.details?.response) && <details>

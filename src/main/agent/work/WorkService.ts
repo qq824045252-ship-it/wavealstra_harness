@@ -275,7 +275,7 @@ export class WorkService {
     if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
     for (const reason of resourceWaits) nextSteps.push(reason);
     nextSteps.push(...recoverySteps);
-    if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待定向补跑`);
+    if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
     if (work.lifecycle !== "closed") {
       for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
         nextSteps.push(`需要你的决定：${blocker.reason}`);

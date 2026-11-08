@@ -142,6 +142,66 @@ async function check(name: string, run: () => Promise<void>) {
 
 async function main() {
   try {
+    await check("review: mixed environments are visible before entry and groups select the actual batch", async () => {
+      await reset("review");
+      const value = { ...projection, criteria: [...projection.criteria,
+        { ...projection.criteria[0], id: "linux-one", text: "Linux bytes", requiredEnvironment: "Linux shell" },
+        { ...projection.criteria[0], id: "linux-two", text: "Linux metadata", requiredEnvironment: "Linux shell" }] };
+      await render("review", false, value);
+      await change("批量实测 criterion", true); await change("批量实测 linux-one", true);
+      assert.match(container.textContent!, /所选条件要求不同环境/);
+      assert.equal([...container.querySelectorAll("button")].find(item => item.textContent === "带入要求环境")!.disabled, true);
+      await click("选择此组并带入环境：Linux shell");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="实测环境"]')!.value, "Linux shell");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="批量实测 criterion"]')!.checked, false);
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="批量实测 linux-two"]')!.checked, true);
+      // The single selector still points at Windows. Bring must use the batch.
+      await change("实测环境", ""); await click("带入要求环境");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="实测环境"]')!.value, "Linux shell");
+      assert.equal(reviewRequests.length, 0, "group selection is not evidence submission");
+    });
+    await check("review: cover only selected eligible attempts with explicit current evidence and one guarded request", async () => {
+      await reset("review");
+      const gap = { factId: "gap-denied", workId: work.workId, bindingId: "execution-old", intentRevision: 2,
+        inputSnapshotId: "input:2", createdAt: 1, itemId: "approval-denied", task: "Old denied read command",
+        required: true, dependencies: [], criterionIds: [], outcome: "not_started" as const,
+        nativeStatus: "host_approval_not_started", summary: "The earlier command was not admitted", artifactRefs: [],
+        writeConflicts: [], coverageEligible: true };
+      const value: WorkProjectionDto = { ...projection,
+        criteria: [{ ...projection.criteria[0], status: "satisfied", verifiedIntentRevision: 2, evidenceRefs: ["evidence-real"] }],
+        phase3: { ...projection.phase3!, gaps: [gap, { ...gap, factId: "gap-unknown", outcome: "unknown", coverageEligible: false }] } };
+      await render("review", false, value);
+      const gaps = container.querySelector('[aria-label="必要子项缺口"]')!;
+      const entry = gaps.querySelector("li details")!;
+      assert.equal(entry.hasAttribute("open"), false, "long gap details begin collapsed");
+      assert.equal(container.querySelector('[aria-label="覆盖未执行缺口 gap-unknown"]'), null);
+      await change("覆盖未执行缺口 gap-denied", true);
+      await change("缺口覆盖成果", "accepted"); await change("缺口覆盖验收 criterion", true);
+      await change("缺口覆盖依据", "The actual scoped wc receipt verifies the same requested byte count");
+      const button = () => [...container.querySelectorAll("button")].find(item => item.textContent === "记录已由后续证据覆盖")!;
+      assert.equal(button().disabled, true);
+      await change("确认未执行动作已覆盖", true);
+      await render("review", false, { ...value, stateVersion: 8 });
+      assert.equal(button().disabled, true, "external updates cannot silently rebase the decision");
+      await click("已核对最新状态，继续评审");
+      assert.equal(container.querySelector<HTMLInputElement>('[aria-label="确认未执行动作已覆盖"]')!.checked, false);
+      await change("确认未执行动作已覆盖", true);
+      await click("记录已由后续证据覆盖");
+      assert.equal(button().disabled, true, "pending request cannot submit again");
+      const request = reviewRequests[0]; assert.equal(request.kind, "cover_not_started");
+      if (request.kind !== "cover_not_started") throw Error("wrong request");
+      assert.deepEqual(request.request.factIds, ["gap-denied"]);
+      assert.deepEqual(request.request.criterionIds, ["criterion"]);
+      assert.equal(request.request.deliverableId, "accepted");
+      assert.equal(request.request.versionGuard.expectedStateVersion, 8);
+      assert.equal(request.request.artifactSnapshotId, "artifacts:7");
+      assert.equal(reviewRequests.length, 1);
+      await complete("review", true);
+      reviewReply = deferred<WorkControlResult>();
+      await click("重试原评审决定");
+      assert.deepEqual(reviewRequests[1], request, "uncertain retry preserves original decision and identity");
+      await complete("review");
+    });
     await check("review: batch evidence submits selected criteria once, preserving snapshot guards", async () => {
       await reset("review");
       const value = { ...projection, criteria: [...projection.criteria,

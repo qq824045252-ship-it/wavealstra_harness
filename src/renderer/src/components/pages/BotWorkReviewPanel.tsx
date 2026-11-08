@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { criterionNeedsEnvironment, type WorkProjectionDto, type WorkClosureConclusion } from "@shared/bot-work";
 import { userInputBlockerSnapshot, type WorkReviewControlRequest } from "@shared/bot-work-review";
 import { useAppStore } from "@/store/appStore";
+import { WorkEnvironmentGroups } from "./BotWorkEnvironmentGroups";
+import { WorkGapCoveragePanel } from "./BotWorkGapCoveragePanel";
 
 const identity = (work: WorkProjectionDto) => JSON.stringify([work.workId, work.stateVersion,
   work.intentRevision, work.ownerEpoch, work.inputSnapshotId, work.phase3?.artifactSnapshotId]);
@@ -147,12 +149,9 @@ export function WorkReviewPanel({ work, includeClosed }: {
       </section>}
       <details>
         <summary>记录当前版本实测</summary>
-        {criterion?.requiredEnvironment && <>
-          <p>要求环境：{criterion.requiredEnvironment}</p>
-          <button type="button" disabled={disabled}
-            onClick={() => edit(() => setEnvironment(criterion.requiredEnvironment!))}>带入要求环境</button>
-          <p>仅在你确实使用此环境完成验证时带入名称；这不会自动记录实测通过。具体系统和验证过程可填在验证说明中。</p>
-        </>}
+        <WorkEnvironmentGroups criteria={reviewed.criteria} selectedIds={feedbackIds} disabled={disabled}
+          onBring={value => edit(() => setEnvironment(value))}
+          onSelect={(ids, value) => edit(() => { setBatchIds(ids); setEnvironment(value); })} />
         {reviewed.criteria.length > 1 && <fieldset disabled={locked} aria-label="批量实测验收项">
           <legend>同一环境和记录已验证的条件，可一次提交</legend>
           {reviewed.criteria.map(item => <label key={item.id}>
@@ -207,14 +206,9 @@ export function WorkReviewPanel({ work, includeClosed }: {
     })}
     <details>
       <summary>结束事项</summary>
-      {!!reviewed.phase3?.gaps.length && <section aria-label="必要子项缺口">
-        <h4>按完成关闭前仍需处理的必要子项</h4>
-        <ul>{reviewed.phase3.gaps.map(item => <li key={item.factId}>
-          <strong>{item.task || item.itemId}</strong>：{item.summary || item.outcome}
-          <span>（状态：{item.outcome}；执行：{item.bindingId}）</span>
-        </li>)}</ul>
-        <p>验收条件通过不等于这些执行缺口已解决。请核对原执行证据或定向补跑，不要重做已完成的动作。</p>
-      </section>}
+      <WorkGapCoveragePanel work={reviewed} disabled={disabled} locked={locked} onEdit={edit}
+        onSubmit={body => { void run({ kind: "cover_not_started", request: { ...body,
+          workId: reviewed.workId, operationId: operation("cover-not-started", body), versionGuard } }); }} />
       <label>结束结论<select aria-label="事项结束结论" value={conclusion} disabled={locked}
         onChange={event => edit(() => { setConclusion(event.target.value as WorkClosureConclusion); setConfirmed(false); })}>
         <option value="succeeded">已完成</option><option value="ended_unsuccessfully">未达成，停止继续</option>

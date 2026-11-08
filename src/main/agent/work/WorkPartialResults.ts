@@ -1,3 +1,4 @@
+import { WorkGapCoverage } from "./WorkGapCoverage";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -32,14 +33,17 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 
 /** Facts and continuation intents share the WorkService business transaction. */
 export class WorkPartialResults {
-  constructor(private readonly db: Database.Database, private readonly works: WorkService) { ensureWorkPartialTables(db); }
+  readonly coverage: WorkGapCoverage;
+  constructor(private readonly db: Database.Database, private readonly works: WorkService) {
+    ensureWorkPartialTables(db); this.coverage = new WorkGapCoverage(db, works);
+  }
 
   list(workId: string): WorkSubitemDto[] {
     return this.db.prepare("SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid").all(workId).map(raw => {
       const row = itemRow.parse(raw); const binding = this.works.repo.getBinding(row.binding_id);
       if (!binding) throw new Error("逐项事实缺少原执行绑定");
-      return { ...workSubitemSchema.parse(JSON.parse(row.result_json)), factId: row.fact_id, workId, bindingId: row.binding_id,
-        intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId, deliverableId: row.deliverable_id ?? undefined, createdAt: row.created_at };
+      return this.coverage.project({ ...workSubitemSchema.parse(JSON.parse(row.result_json)), factId: row.fact_id, workId, bindingId: row.binding_id,
+        intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId, deliverableId: row.deliverable_id ?? undefined, createdAt: row.created_at });
     });
   }
   plans(workId: string): WorkContinuationDto[] {
@@ -58,7 +62,7 @@ export class WorkPartialResults {
       return item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
         && binding && this.works.collaboration.isDelegationAdopted(binding, work);
     });
-    return all.filter(item => item.required && item.outcome !== "completed" && !this.resolvedByContinuation(item));
+    return all.filter(item => item.required && item.outcome !== "completed" && !item.coverage && !this.resolvedByContinuation(item));
   }
   settle(binding:WorkExecutionBindingDto):void {
     if(!this.db.inTransaction) throw Error("补跑结算必须与原生 Inbox 同事务提交");
