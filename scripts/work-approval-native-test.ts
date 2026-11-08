@@ -52,17 +52,18 @@ async function until(check: () => boolean) {
   const end = Date.now() + 15_000;
   while (!check()) { if (Date.now() > end) throw new Error("Native fixture did not reach expected state"); await new Promise(r => setTimeout(r, 10)); }
 }
-async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false) {
+async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false, lateGuard: "block" | "throw" | undefined = undefined, taskWriteGrant = false) {
   const cwd = join(root, taskId); await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
   let now = Date.now();
   let permissionMode: PermissionMode = "auto";
   let works = new WorkService(db.connection, { bots, now: () => now });
+  const scopes = taskWriteGrant ? ["workspace:read", "workspace:write"] : ["workspace:read"];
   const created = works.createWork(user, { operationId: `${taskId}:create`, title: taskId, workspacePath: withoutWorkPath ? undefined : cwd,
-    inputSnapshotId: `${taskId}:input`, authorization: { ...DESKTOP_USER_GRANTS, allowedScopes: ["workspace:read"] } });
+    inputSnapshotId: `${taskId}:input`, authorization: { ...DESKTOP_USER_GRANTS, allowedScopes: scopes } });
   assert(created.ok);
   const dispatched = works.dispatchExecution(user, { workId: created.work.workId, operationId: `${taskId}:dispatch`, botId: DEFAULT_BOT_ID,
-    taskId, durableStoreKey: `store:${taskId}`, conversationId: "1", workspaceBinding: cwd, delegatedScope: ["workspace:read"] });
+    taskId, durableStoreKey: `store:${taskId}`, conversationId: "1", workspaceBinding: cwd, delegatedScope: scopes });
   assert(dispatched.ok);
   const binding = works.repo.bindingForTask(taskId)!;
   const observed: Array<{ name: string; error: boolean; body: string }> = [];
@@ -72,7 +73,8 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
     observed.push({ name: last.toolName, error: !!last.isError, body: JSON.stringify(last.content) });
     if (last.isError) return text("Blocked; retain completed work and await a new authorized step.");
     if (last.toolCallId === "pwd") return call("write", { path: "proof.txt", content: "native proof\n" }, "write-proof");
-    if (last.toolCallId === "write-proof") return call("bash", { command: "ls" }, "ls");
+    if (last.toolCallId === "write-proof" && taskWriteGrant) return call("write", { path: "daily-report/second.txt", content: "second report\n" }, "write-second");
+    if (last.toolCallId === "write-proof" || last.toolCallId === "write-second") return call("bash", { command: "ls" }, "ls");
     if (last.toolCallId === "ls") return call("bash", { command: "cat proof.txt" }, "cat-proof");
     if (last.toolCallId === "cat-proof") return call("read", { path: "proof.txt" }, "read-proof");
     if (verifyCommands) {
@@ -106,7 +108,15 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
         durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding })),
     });
     return DurableBotRuntime.open({ taskId, cwd, directory: join(cwd, "state"), models, model: { provider: "fixture", modelId: "model" },
-      toolMode: "native", toolHooks: policy.hooks, instructions: () => "scripted regression fixture", onSnapshot: () => {} });
+      toolMode: "native", toolHooks: { ...policy.hooks, beforeTool: async (call, api, context) => {
+        const result = await policy.hooks.beforeTool?.(call, api, context);
+        if (result && "block" in result) return result;
+        if (lateGuard && call.name === "write") {
+          if (lateGuard === "throw") throw new Error("late host guard refused before native execute");
+          return { block: "late host guard refused before native execute" };
+        }
+        return result;
+      } }, instructions: () => "scripted regression fixture", onSnapshot: () => {} });
   };
   const pending = () => works.approvals.list(binding.workId).find(a => a.status === "pending");
   const decision = (a: WorkActionApprovalDto, approved = true) => {
@@ -549,6 +559,40 @@ try {
       console.log("PASS native read/write + ls -l/wc/stat/hash complete under read scope, actual system stdout, no duplicate approval or replay");
     } finally { await runtime.close(); }
   }
+  {
+    const f = await fixture("task-scope-autonomous", false, true, undefined, true);
+    const runtime = await f.open();
+    try {
+      assert.equal((await (await runtime.submit("Complete the scoped multi-file task", "scoped-task")).wait(ctx)).status, "done");
+      assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
+      assert.equal(await readFile(join(f.cwd, "daily-report/second.txt"), "utf8"), "second report\n");
+      assert(f.observed.every(item => !item.error));
+      assert.equal(f.works.approvals.list(f.binding.workId).length, 0, "existing task write grant plus auto runs consecutive tools without per-command prompts");
+      assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0);
+    } finally { await runtime.close(); }
+    console.log("PASS task-scoped auto: two actual files, nested directory, readonly verification, no per-command approval or stranded lease");
+  }
+  for (const mode of ["block", "throw"] as const) {
+    const f = await fixture(`late-guard-${mode}`, false, false, mode);
+    const runtime = await f.open();
+    try {
+      const submission = await runtime.submit("write once", `late-${mode}`);
+      await until(() => !!f.pending());
+      assert(f.works.approvals.decide(LOCAL_USER_ID, f.decision(f.pending()!)).ok);
+      assert.equal((await submission.wait(ctx)).status, "done");
+      await assert.rejects(access(join(f.cwd, "proof.txt")));
+      assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0,
+        "native call checkpoint proves a late guard never executed and releases its acquired lease");
+      assert.equal(f.works.repo.listAdmissions(f.binding.workId).filter(a => a.state === "unknown").length, 0);
+      assert.equal(f.works.repo.listAdmissions(f.binding.workId).filter(a => a.actionKind === "workspace:write").at(-1)?.state, "released");
+      assert(f.observed.at(-1)?.error);
+    } finally { await runtime.close(); }
+    const reopened = await f.open();
+    try { assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0); }
+    finally { await reopened.close(); }
+    console.log(`PASS native late guard ${mode}: no effect, no host quarantine, no unknown admission after restart`);
+  }
+
   await assert.rejects(access(shellMarker), "native pwd/ls/cat reads must not source attacker BASH_ENV");
   await assert.rejects(access(pathMarker), "native ls/cat reads must not execute attacker PATH commands");
   console.log("PASS native pwd/ls/cat bypass hostile BASH_ENV and PATH commands using actual environment file APIs");

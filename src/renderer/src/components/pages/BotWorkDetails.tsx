@@ -75,6 +75,7 @@ function UnknownBudgetReconciliation(props: {
 }
 
 export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
+  onOpenResourceWork?: (workId: string) => void;
   onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void }): React.JSX.Element {
   const { work, ownerName, includeClosed } = props;
   const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
@@ -178,6 +179,10 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {!work.inputSnapshotBound && <p role="status">输入版本尚未绑定，不能据此确认成果已验证。</p>}
         {openBlockers.map(blocker => <article key={blocker.blockerId}>
           <p>{blocker.waitingForUserInput ? "需要处理：" : "阻碍："}{blocker.reason}</p>
+          {blocker.reasonCode === "resource-dispatch-wait" && typeof blocker.details?.sourceWorkId === "string"
+            && blocker.details.sourceWorkId !== work.workId && props.onOpenResourceWork && <button type="button"
+              onClick={() => props.onOpenResourceWork?.(String(blocker.details!.sourceWorkId))}>打开来源事项核对资源</button>}
+          {blocker.reasonCode?.startsWith("resource-") && <p>资源恢复不会重跑原动作，也不会强制释放未知效果。请查看来源事项的“执行情况”。</p>}
           {userInputBlockerSnapshot(blocker) || blocker.legacyUserInput ? <p>请在下方「回复待补充信息」中填写回复和依据。</p>
             : work.approvals?.some(item => item.approvalId === blocker.blockerId && item.status === "pending") ? <p>请在下方「后台操作审批」中决定本次操作。</p>
               : blocker.reasonCode?.startsWith("budget-") || blocker.windowId ? <p>请在运行提醒或高级设置中核对预算与实际用量，普通回复不能解除。</p>
@@ -216,7 +221,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
             <p role="status">{resourceLabel}仍被隔离。{recovery.reason}</p>
             {recovery.pendingProbe && <p>恢复核对仍有在途步骤，资源继续隔离。</p>}
             {recovery.exhaustedAt !== undefined && !recovery.pendingProbe && <>
-              <p>自动核对已停止。请先收起遮挡面板并确认旧操作已经停止，再重新核对。只有执行、输入清理和原操作效果均得到确认后，资源才会释放。</p>
+              <p>自动核对已停止（重试次数已耗尽），资源仍被隔离。请先核对并停止旧执行及其子任务，再重新核对；桌面操作还需确认输入已释放。只有执行、输入清理和原操作效果均得到确认后，资源才会释放。</p>
               <label><input type="checkbox" checked={safeRecovery === confirmationKey} disabled={busy}
                 onChange={event => setSafeRecovery(event.target.checked ? confirmationKey : null)} />我已确认环境安全，可以重新核对</label>
               <button type="button" disabled={busy || safeRecovery !== confirmationKey}
@@ -224,6 +229,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
                   operationId: operation(`recovery:${confirmationKey}`), workId: work.workId, token: recovery.token,
                   expectedAttempts: recovery.attempts, expectedExhaustedAt: recovery.exhaustedAt!, confirmEnvironmentSafe: true, versionGuard,
                 } }); }}>重新核对隔离资源</button>
+              <p>此操作只重试恢复核对，不重做业务、不清除未知效果。已结束事项也可核对其遗留隔离资源。</p>
             </>}
           </article>;
         })}

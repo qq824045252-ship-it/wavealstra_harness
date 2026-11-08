@@ -130,6 +130,19 @@ export class WorkToolResourcePolicy {
     const owner = this.owner(input.context);
     return this.gate.recordNotStarted(idOf(owner, input.call, input.context), owner, reason);
   }
+  /** Only the native ToolTask call checkpoint proves execution has not begun. */
+  confirmNotStarted(input: ToolResourceCall, proof: string): boolean {
+    if (containers.has(input.call.name)) return false;
+    const owner = this.owner(input.context), actionId = idOf(owner, input.call, input.context);
+    const state = this.calls.get(actionId);
+    const lease = state?.lease.actionId === actionId ? state.lease : this.gate.readAction(actionId);
+    if (lease && (resourceOwnerKey(lease.owner) !== resourceOwnerKey(owner)
+      || state?.lease.actionId !== actionId || this.gate.leaseState(lease) !== "active")) return false;
+    if (lease && !this.gate.release(lease, "not_started", proof)) return false;
+    this.calls.delete(actionId);
+    return this.gate.recordNotStarted(actionId, owner, proof);
+  }
+
   wasNotStarted(input: ToolResourceCall): boolean {
     if (containers.has(input.call.name)) return false;
     const owner = this.owner(input.context);
