@@ -103,6 +103,7 @@ export function createActiveContextActions(
   | "cancelBotSend"
   | "archiveBotConversation"
   | "setActiveBotId"
+  | "createBot"
   | "setSelectedWorkId"
   | "refreshBotWork"
   | "applyWorkProjection"
@@ -126,6 +127,23 @@ export function createActiveContextActions(
       }),
 
     ...createBotConversationActions(storeContext),
+    createBot: async request => {
+      const api = getApi()?.botWork;
+      if (!api?.createBot) throw new Error("当前应用尚未连接创建接口，请重新启动最新版应用后重试。");
+      const result = await api.createBot(request);
+      if (result.ok) {
+        if (!result.bot?.botId || result.bot.displayName !== request.displayName.trim()
+          || result.bot.responsibilitySummary !== (request.responsibilitySummary ?? "").trim()) {
+          throw new Error("创建回执与原请求不匹配，请按原请求重试核对。");
+        }
+        // A list request started before this committed creation cannot remove its
+        // identity or roll back a newer selection when it eventually resolves.
+        refreshSequence += 1;
+        set(state => ({ botIdentitiesLoaded: true,
+          botIdentities: [...state.botIdentities.filter(bot => bot.botId !== result.bot.botId), result.bot] }));
+      }
+      return result;
+    },
     setSelectedWorkId: (workId) => set({ selectedWorkId: workId }),
     refreshBotWork: async (includeClosed = false) => {
       const api = getApi();

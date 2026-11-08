@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, openSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
 import appIconPath from "./assets/app.ico?asset";
 import appPngPath from "./assets/app.png?asset";
@@ -67,6 +67,7 @@ import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
 import { BotWorkIpc } from "../shared/bot-work-ipc";
+import { createBotIpcHandler } from "./agent/work/BotCreationIpc";
 import type { AttestCriteriaParams, RecordUserFeedbackParams } from "../shared/bot-work";
 import {
   GadgetIpc,
@@ -357,6 +358,7 @@ let selectionPopover: SelectionPopover | null = null;
 let htmlEditService: HtmlEditService | null = null;
 let reopenSelectionComment: (() => void) | null = null;
 let perfStartupReported = false;
+let botManagementWindow: BrowserWindow | null = null;
 
 // §5-7 崩溃可观测性（必须在 app ready 前装配）：
 // - crashDumps 固定到 <MyBuddyDir>/crashdumps，crashReporter 只落本地、不上传；
@@ -536,6 +538,8 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     ...platformWindowOptions(shellOptions),
   });
 
+  botManagementWindow = win;
+  win.once("closed", () => { if (botManagementWindow === win) botManagementWindow = null; });
   setUiAutomationMainWindow(win);
   applyPlatformWindowIdentity(win, shellOptions);
 
@@ -1026,6 +1030,11 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
+  ipcMain.handle(BotWorkIpc.createBot, createBotIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    createBot: request => agentService.createBot(request),
+  }));
   ipcMain.handle(BotWorkIpc.listBotExpertVersions, (_e, botId: string) => agentService.listBotExpertVersions(botId));
   ipcMain.handle(BotWorkIpc.adoptBotExpertVersion, (_e, botId: string, expected: { pendingVersion: number; snapshotId: string }) =>
     agentService.adoptBotExpertVersion(botId, expected));

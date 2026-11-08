@@ -30,7 +30,7 @@ const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }
   { id: "closed", label: "已结束", icon: IconCheck },
 ];
 
-export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean } = {}): React.JSX.Element {
+export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean; onCreateBot?: () => void } = {}): React.JSX.Element {
   const setPage = useAppStore(s => s.setPage);
   const botDraft = useAppStore(s => s.botDraft);
   const setBotDraft = useAppStore(s => s.setBotDraft);
@@ -156,6 +156,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
         <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
         <div className="bot-workspace-actions">
+          {props.onCreateBot && <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); props.onCreateBot?.(); }}>+ 新建 Bot</button>}
           <button type="button" className="bot-quiet-button bot-return" onClick={() => setPage("chat")}>返回普通模式</button>
           <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
         </div>
@@ -178,7 +179,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
             <span className="bot-eyebrow">从一句话开始</span>
             <h2>{activeBot ? "有什么想一起推进的？" : "还没有 Bot"}</h2>
-            <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "受理服务尚未接线，暂时无法开始对话。"}</p>
+            <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "创建一个 Bot，给它名称和职责，就能开始独立的对话。"}</p>
+            {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
           </div> : <div className="bot-message-list">{messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, message.requestId); }} />)}</div>}
         </div>
@@ -200,7 +202,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     </dialog>}
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
-      <div className="bot-settings-body">{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
+      <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
     </dialog>
   </div>;
 }

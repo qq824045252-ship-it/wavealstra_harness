@@ -147,6 +147,7 @@ export interface AppActions {
   refreshBotHistory: (botId: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;
   archiveBotConversation: (botId: string) => Promise<void>;
+  createBot: (request: import("../../../../shared/bot-create").BotCreateRequest) => Promise<import("../../../../shared/bot-create").BotCreateResult>;
   setActiveBotId: (botId: string | null) => void;
   setSelectedWorkId: (workId: string | null) => void;
   refreshBotWork: (includeClosed?: boolean) => Promise<void>;

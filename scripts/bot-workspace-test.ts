@@ -33,7 +33,7 @@ assert.doesNotMatch(botSidebar, /独立任务|新建任务/);
 assert.match(botSidebar, /还没有 Bot/);
 const botPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(botPage, /返回普通模式/);
-assert.match(botPage, /受理服务尚未接线/);
+assert.match(botPage, /创建一个 Bot，给它名称和职责/);
 const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
 assert.ok(navigation);
 assert.equal((navigation.match(/<button /g) ?? []).length, 4, "navigation has exactly four stable entry points");

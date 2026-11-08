@@ -123,7 +123,7 @@
 .bot-work-details textarea { min-height:72px; resize:vertical; }
 .bot-work-details progress { width:100%; height:6px; accent-color:var(--accent); }
 .budget-reconciliation { margin:12px 0; overflow-wrap:anywhere; }
-.bot-settings-dialog { width:min(560px,calc(100vw - 40px)); max-height:calc(100dvh - 64px); padding:0; border:1px solid var(--border-default); border-radius:16px; color:var(--fg); background:var(--bg-panel); box-shadow:var(--shadow-lg); }
+.bot-settings-dialog { position:fixed; inset:0; margin:auto; height:fit-content; width:min(560px,calc(100vw - 40px)); max-height:calc(100dvh - 64px); padding:0; border:1px solid var(--border-default); border-radius:16px; color:var(--fg); background:var(--bg-panel); box-shadow:var(--shadow-lg); }
 .bot-settings-dialog .bot-inspector-header h2 { font-size:15px; color:var(--fg); }
 .bot-settings-body { padding:4px 22px 24px; font-size:12px; }
 .bot-archive-section { border-top:1px solid var(--border-default); padding-top:18px; margin-top:20px; }
@@ -151,3 +151,31 @@
 .sidebar-bot-identity .sidebar-bot-avatar { flex:0 0 34px; }
 .sidebar-bot-identity.sidebar-bot-row > span { margin-left:0; }
 .bot-work-details > h3 { margin-top:22px; }
+.sidebar-tree-header .sidebar-bot-create { margin-left:auto; border:0; padding:5px 6px; border-radius:6px; background:transparent; color:var(--fg-secondary); font:inherit; font-size:11px; cursor:pointer; }
+.sidebar-tree-header .sidebar-bot-create:hover { background:var(--bg-hover); color:var(--fg); }
+.bot-empty-create { margin-top:20px; }
+.bot-create-dialog { position:fixed; inset:0; margin:auto; width:min(500px,calc(100vw - 40px)); height:fit-content; max-height:calc(100dvh - 48px); padding:0; border:1px solid var(--border-default); border-radius:18px; background:var(--bg-panel); color:var(--fg); box-shadow:var(--shadow-lg); overflow:auto; }
+.bot-create-dialog::backdrop { background:var(--overlay); }
+.bot-create-header { display:flex; align-items:center; gap:12px; padding:22px 24px 18px; border-bottom:1px solid var(--border-subtle); }
+.bot-create-header .bot-avatar { width:42px; height:42px; border-radius:13px; }
+.bot-create-header > div { flex:1; }
+.bot-create-header h2 { margin:0; font-size:18px; font-weight:650; }
+.bot-create-header p { margin:5px 0 0; font-size:12px; color:var(--fg-secondary); }
+.bot-create-dialog form, .bot-create-success { padding:22px 24px; }
+.bot-create-dialog form > p, .bot-create-success p { margin:0 0 18px; font-size:12px; line-height:1.7; color:var(--fg-secondary); }
+.bot-create-dialog label { display:flex; align-items:center; gap:8px; margin:20px 0 8px; font-size:13px; font-weight:550; }
+.bot-create-dialog label span { font-size:11px; font-weight:400; color:var(--fg-muted); }
+.bot-create-dialog :is(input,textarea) { box-sizing:border-box; width:100%; padding:11px 12px; border:1px solid var(--border-default); border-radius:9px; background:var(--bg-input); color:var(--fg); font:inherit; font-size:13px; line-height:1.6; }
+.bot-create-dialog textarea { resize:vertical; min-height:100px; max-height:240px; }
+.bot-create-dialog :is(input,textarea):disabled { opacity:.7; }
+.bot-create-dialog :is(button,input,textarea):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.bot-create-dialog form > .bot-create-boundary { padding:12px; margin-top:14px; border-radius:9px; background:var(--bg-sidebar); font-size:11px; }
+.bot-create-dialog form > .bot-create-error { color:var(--danger); margin:10px 0; }
+.bot-create-dialog form > .bot-create-pending { color:var(--fg-secondary); margin:10px 0; }
+.bot-create-actions { display:flex; justify-content:flex-end; gap:9px; margin-top:24px; }
+.bot-create-actions button { padding:9px 14px; border:1px solid var(--border-default); border-radius:9px; background:var(--bg-elevated); color:var(--fg); cursor:pointer; font:inherit; font-size:12px; }
+.bot-create-actions .bot-create-primary { background:var(--primary); border-color:var(--primary); color:var(--primary-fg); }
+.bot-create-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.bot-create-success h3 { margin:12px 0; font-size:17px; }
+.bot-settings-identity { margin:10px 0 20px; padding:12px 0; border-bottom:1px solid var(--border-default); }
+.bot-settings-identity p { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; }

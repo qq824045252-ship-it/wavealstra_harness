@@ -279,6 +279,7 @@ import { ConversationInteractionRepository } from "./ConversationInteractionRepo
 import { ConversationInteractionService } from "./ConversationInteractionService";
 import { ConversationGoalService } from "./ConversationGoalService";
 import { BotRegistry } from "./work/BotRegistry";
+import { BotCreationService } from "./work/BotCreationService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
@@ -1146,6 +1147,12 @@ export class AgentService {
 
   listBots(): BotDto[] {
     return this.botRegistry.listBots(LOCAL_USER_ID);
+  }
+
+  createBot(request: unknown) {
+    return new BotCreationService(this.db.connection, this.botRegistry, {
+      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
+    }).createBot(request);
   }
 
   syncWorkProjections(request: unknown) {

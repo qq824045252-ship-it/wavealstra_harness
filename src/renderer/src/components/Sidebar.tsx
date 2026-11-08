@@ -104,7 +104,7 @@ function botPresenceLabel(status: "active" | "paused" | "disabled", hostOnline: 
   return hostOnline ? "在线" : "离线";
 }
 
-export default function Sidebar({ onClose }: { onClose?: () => void } = {}): React.JSX.Element {
+export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void; onCreateBot?: () => void } = {}): React.JSX.Element {
   const tasks = useSidebarTasks();
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
@@ -839,8 +839,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       </nav>
       {page === "bot" ? (
         <div className="sidebar-scroll" aria-label="Bot 导航">
-          <div className="sidebar-tree-header"><span className="section-title">我的 Bot</span><span className="sidebar-section-count">{botIdentities.length}</span></div>
-          {botIdentities.length === 0 ? <div className="sidebar-empty">还没有 Bot，受理服务尚未接线。</div> : botIdentities.map(bot => (
+          <div className="sidebar-tree-header"><span className="section-title">我的 Bot</span><span className="sidebar-section-count">{botIdentities.length}</span>{onCreateBot && <button type="button" className="sidebar-bot-create" onClick={() => { onClose?.(); onCreateBot(); }}>+ 新建 Bot</button>}</div>
+          {botIdentities.length === 0 ? <div className="sidebar-empty">还没有 Bot，点击「新建 Bot」开始。</div> : botIdentities.map(bot => (
             <button key={bot.botId} type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={bot.botId === activeBotId} onClick={() => { setActiveBotId(bot.botId); onClose?.(); }}>
               <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{bot.displayName}</strong><small>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</small></span>
             </button>

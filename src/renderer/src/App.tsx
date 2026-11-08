@@ -14,6 +14,7 @@ import HubPage from "@/components/pages/HubPage";
 import ProjectsPage from "@/components/pages/ProjectsPage";
 import AutomationPage from "@/components/pages/AutomationPage";
 import BotWorkspacePage from "@/components/pages/BotWorkspacePage";
+import { BotCreateDialog } from "@/components/pages/BotCreateDialog";
 import FilesPage from "@/components/pages/FilesPage";
 import LibraryPage from "@/components/pages/library/LibraryPage";
 import MailboxPage from "@/components/pages/MailboxPage";
@@ -40,10 +41,12 @@ export default function App(): React.JSX.Element {
   const searchOpen = useAppStore((s) => s.searchOpen);
   const compactBotLayout = useMediaQuery("(max-width: 1180px)");
   const [botNavigationOpen, setBotNavigationOpen] = useState(false);
+  const [botCreateOpen, setBotCreateOpen] = useState(false);
+  const openBotCreation = () => { setBotNavigationOpen(false); setBotCreateOpen(true); };
   const botNavigationRef = useRef<HTMLDialogElement>(null);
   const botSidebarVisible = compactBotLayout ? botNavigationOpen : !sidebarCollapsed;
   useEffect(() => { setBotNavigationOpen(false); }, [page, compactBotLayout]);
-  useEffect(() => { if (searchOpen || settingsOpen) setBotNavigationOpen(false); }, [searchOpen, settingsOpen]);
+  useEffect(() => { if (searchOpen || settingsOpen) { setBotNavigationOpen(false); setBotCreateOpen(false); } }, [searchOpen, settingsOpen]);
   useEffect(() => {
     const dialog = botNavigationRef.current;
     if (page === "bot" && compactBotLayout && botNavigationOpen) dialog?.showModal();
@@ -139,8 +142,8 @@ export default function App(): React.JSX.Element {
   return (
     <div className={`app ${page === "bot" ? "app--bot" : ""}`}>
       {page === "bot" && compactBotLayout ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
-        <Sidebar onClose={() => setBotNavigationOpen(false)} />
-      </dialog> : !sidebarCollapsed && <Sidebar />}
+        <Sidebar onClose={() => setBotNavigationOpen(false)} onCreateBot={openBotCreation} />
+      </dialog> : !sidebarCollapsed && <Sidebar onCreateBot={openBotCreation} />}
       <div
         className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
       >
@@ -162,7 +165,7 @@ export default function App(): React.JSX.Element {
             )}
           </>
         ) : page === "bot" ? (
-          <BotWorkspacePage navigationVisible={botSidebarVisible} onToggleNavigation={() => { if (compactBotLayout) setBotNavigationOpen(open => !open); else toggleSidebar(); }} />
+          <BotWorkspacePage onCreateBot={openBotCreation} navigationVisible={botSidebarVisible} onToggleNavigation={() => { if (compactBotLayout) setBotNavigationOpen(open => !open); else toggleSidebar(); }} />
         ) : page === "assistant" ? (
           <AssistantPage />
         ) : page === "projects" ? (
@@ -207,6 +210,7 @@ export default function App(): React.JSX.Element {
       <SubagentDrawer />
       <UsageStatsModal />
       <ApiAggregationModal />
+      <BotCreateDialog open={botCreateOpen} onClose={() => setBotCreateOpen(false)} />
     </div>
   );
 }

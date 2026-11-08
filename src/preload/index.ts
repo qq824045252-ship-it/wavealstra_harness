@@ -645,6 +645,7 @@ const api = {
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
+    createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
     listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
     adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),
     listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),
