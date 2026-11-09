@@ -136,8 +136,9 @@ export function WorkReviewPanel({ work, includeClosed }: {
     {reviewed.criteria.length > 0 && <>
       <label>验收项<select aria-label="实测验收项" value={criterionId}
         onChange={event => edit(() => setCriterionId(event.target.value))} disabled={locked}>
-        {reviewed.criteria.map(item => <option key={item.id} value={item.id}>{item.text}</option>)}
+        {reviewed.criteria.map(item => <option key={item.id} value={item.id}>{item.origin === "assistant_proposal" ? "建议检查：" : ""}{item.text}</option>)}
       </select></label>
+      {criterion?.origin === "assistant_proposal" && <p>这是助理建议的检查，不要求你额外验收。若你主动记录通过、未通过或待核验，它将成为你确认的验收项。</p>}
       {criterion && !criterionNeedsEnvironment(criterion) && <section aria-label="普通验收确认">
         <label>验收依据<textarea aria-label="普通验收依据" value={attestation} maxLength={2000} disabled={locked}
           onChange={event => edit(() => setAttestation(event.target.value))} /></label>

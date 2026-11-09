@@ -242,7 +242,7 @@ export class WorkResultCards {
 
   /** Current approval-based view of what is verified for the artifact in play. */
   unverifiedScope(work: WorkDto, artifactSnapshotId?: string): WorkUnverifiedScopeDto[] {
-    return work.criteria.filter(criterion => criterion.status !== "waived").map(criterion => {
+    return work.criteria.filter(criterion => criterion.origin !== "assistant_proposal" && criterion.status !== "waived").map(criterion => {
       const evidence = criterion.evidenceRefs.map(id => this.repo.getEvidence(id)).filter(item => item !== undefined);
       // sourceSha identifies source code, not the aggregate artifacts: snapshot. Artifact
       // validation reopens criteria and clears their evidence refs when content changes.

@@ -47,6 +47,7 @@ export function normalizeCriteria(
     next.push({
       id: input.id?.trim() || `criterion-${now}-${next.length}`,
       text,
+      ...(input.origin === "assistant_proposal" ? { origin: input.origin } : {}),
       status: "pending",
       requiredIntentRevision: intentRevision,
       requiresRealEnvironmentCheck: Boolean(input.requiresRealEnvironmentCheck),

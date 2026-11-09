@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { botActivitySchema, type BotActivityDto, botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
+import type { WorkDto } from "../../../shared/bot-work";
+import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -45,7 +47,7 @@ export class BotConversationRepository {
       conversation = this.conversation(userId, input.botId, conversationId)!;
     }
     const receipt: BotSendReceipt = { botId: input.botId, conversationId: conversation.conversation_id, requestId: input.requestId,
-      userMessageId: `bot-message-${randomUUID()}`, assistantMessageId: `bot-message-${randomUUID()}`, replayed: false };
+      userMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, assistantMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, replayed: false };
     const insert = this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`);
     insert.run(receipt.userMessageId, receipt.conversationId, input.botId, input.requestId, "user", input.text, "completed", now, now);
@@ -124,6 +126,37 @@ export class BotConversationRepository {
     )`).run(userId).changes;
   }
 
+  /** Work-owned request evidence survives removal of the original Bot/chat. */
+  linkWorkUserInput(receipt: BotMessageReceipt, work: WorkDto): void {
+    if (!this.db.inTransaction) throw new Error("用户原文必须与委托受理同事务保存");
+    if (work.userId !== receipt.user_id || !this.conversation(receipt.user_id, receipt.bot_id, receipt.conversation_id))
+      throw new Error("委托与用户原文不属于同一用户和会话");
+    const current = this.message(receipt.user_message_id);
+    if (!current || current.role !== "user" || current.botId !== receipt.bot_id
+      || current.conversationId !== receipt.conversation_id || current.requestId !== receipt.request_id)
+      throw new Error("缺少可核验的原始用户输入");
+    // Retain the unresolved dialogue, including clarification answers. A prior
+    // delegated request is a boundary, not an excuse to copy another Work's chat.
+    const boundary = this.db.prepare(`SELECT MAX(ordinal) AS ordinal FROM bot_messages
+      WHERE conversation_id=? AND role='user' AND ordinal<? AND json_array_length(work_ids_json)>0`)
+      .get(receipt.conversation_id, current.ordinal) as { ordinal: number | null };
+    const dialogue = this.db.prepare(`SELECT m.* FROM bot_messages m
+      JOIN bot_send_receipts r ON r.conversation_id=m.conversation_id AND r.bot_id=m.bot_id AND r.request_id=m.request_id
+        AND r.user_id=? AND (r.user_message_id=m.message_id OR r.assistant_message_id=m.message_id)
+      WHERE m.conversation_id=? AND m.ordinal>? AND m.ordinal<=? ORDER BY m.ordinal`)
+      .all(receipt.user_id, receipt.conversation_id, boundary.ordinal ?? 0, current.ordinal).map(row => this.mapMessage(row));
+    const compact = (message: BotMessageDto) => ({ messageId: message.messageId, conversationId: message.conversationId,
+      role: message.role, text: message.text, ordinal: message.ordinal,
+      intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
+      ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
+    const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
+    const references = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id
+      && reference.ordinal < current.ordinal ? [compact(reference)] : [];
+    this.db.prepare(`INSERT OR IGNORE INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
+      VALUES (?,?,?,?,?,?)`).run(work.workId, current.messageId, work.intentRevision, work.sourceVersion,
+        JSON.stringify(dialogue.map(compact)), JSON.stringify(references));
+  }
+
   /** Immutable input attachment snapshot, independent of human-readable goal length. */
   linkWorkAttachments(receipt: BotMessageReceipt, workId: string, inputSnapshotId: string, previousSnapshotId?: string): void {
     const existing = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
@@ -131,8 +164,13 @@ export class BotConversationRepository {
     const current = this.message(receipt.user_message_id);
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
     const referenced = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id ? reference.attachments ?? [] : [];
+    const source = this.db.prepare("SELECT messages_json,references_json FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?")
+      .get(workId, receipt.user_message_id) as { messages_json: string; references_json: string } | undefined;
+    const contextAttachments = source ? [source.messages_json, source.references_json].flatMap(value =>
+      z.array(z.object({ attachments: z.array(botAttachmentSchema).optional() })).parse(JSON.parse(value))
+        .flatMap(message => message.attachments ?? [])) : [];
     const inherited = existing ? z.array(botAttachmentSchema).parse(JSON.parse(existing.attachments_json)) : [];
-    const attachments = [...new Map([...inherited, ...(current?.attachments ?? []), ...referenced].map(item => [item.path, item])).values()];
+    const attachments = [...new Map([...inherited, ...contextAttachments, ...(current?.attachments ?? []), ...referenced].map(item => [item.path, item])).values()];
     if (attachments.length) this.db.prepare("INSERT OR IGNORE INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?,?,?)")
       .run(workId, inputSnapshotId, JSON.stringify(attachments));
   }

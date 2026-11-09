@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { WorkProjectionDto } from "./bot-work";
 
+/** Host-generated Bot-chat identity namespace, distinct from native Task input IDs. */
+export const BOT_MESSAGE_ID_PREFIX = "bot-message-";
+export const isBotConversationMessageId = (value: string): boolean => value.startsWith(BOT_MESSAGE_ID_PREFIX);
+
 const id = z.string().trim().min(1).max(200);
 export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
 export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;

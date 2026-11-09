@@ -85,7 +85,9 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
     } finally { setBusy(false); }
   };
 
-  const satisfied = work.criteria.filter(item => item.status === "satisfied").length;
+  const requiredCriteria = work.criteria.filter(item => item.origin !== "assistant_proposal");
+  const suggestedCriteria = work.criteria.filter(item => item.origin === "assistant_proposal");
+  const satisfied = requiredCriteria.filter(item => item.status === "satisfied").length;
 
   return (
     <div className="bot-work-details">
@@ -97,11 +99,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
         <p>{work.title}</p>
-        {work.criteria.length > 0 && <p className="bot-work-goal-note">以以下验收条件确认目标是否达成。</p>}
+        {requiredCriteria.length > 0 && <p className="bot-work-goal-note">以以下验收条件确认目标是否达成。</p>}
         <h3>进度</h3>
-        {work.criteria.length > 0 ? <>
-          <p>已通过 {satisfied} / {work.criteria.length} 项验收{work.criteria.some(item => item.status === "waived") ? "（另有已豁免项）" : ""}</p>
-          <progress value={satisfied} max={work.criteria.length} aria-label="已通过的验收项" />
+        {requiredCriteria.length > 0 ? <>
+          <p>已通过 {satisfied} / {requiredCriteria.length} 项验收{requiredCriteria.some(item => item.status === "waived") ? "（另有已豁免项）" : ""}</p>
+          <progress value={satisfied} max={requiredCriteria.length} aria-label="已通过的验收项" />
         </> : <p>尚未设置验收条件，暂不能确认完成进度。</p>}
         {work.closureSummary && <p>{work.closureSummary}</p>}
       </section>
@@ -186,9 +188,13 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
       <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
-      {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
-        <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
+      {requiredCriteria.length === 0 ? <p>没有用户设置的验收条件。</p> : (
+        <ul>{requiredCriteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
       )}
+      {suggestedCriteria.length > 0 && <section aria-label="助理建议检查">
+        <h4>建议检查</h4><p>助理提出的质量检查，不是额外的用户验收门槛。</p>
+        <ul>{suggestedCriteria.map(criterion => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
+      </section>}
       <details className="bot-advanced">
         <summary>高级设置与诊断</summary>
         <p>交接、关注规则与版本记录。这里的操作可能影响后续运行。</p>

@@ -267,6 +267,14 @@ assert.doesNotMatch(renderDetails({ lifecycle: "active", phase3: emptyExecution 
 assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, settlingActions: 1 } }),
   /仍有 1 项在途操作等待结算/, "unsettled effects are not empty diagnostics and remain visible");
 
+const proposalCriterion = { id: "suggested", text: "模型建议核算总数", origin: "assistant_proposal" as const,
+  status: "pending" as const, requiredIntentRevision: completedWork.intentRevision, requiresRealEnvironmentCheck: false, evidenceRefs: [] };
+const proposalDetails = renderDetails({ lifecycle: "active", criteria: [proposalCriterion] });
+assert.match(proposalDetails, /助理建议检查/); assert.match(proposalDetails, /不是额外的用户验收门槛/);
+assert.doesNotMatch(proposalDetails, /aria-label="已通过的验收项"/, "model suggestions do not inflate mandatory user acceptance progress");
+assert.match(renderReview({ criteria: [proposalCriterion] }), /建议检查：模型建议核算总数/);
+assert.match(renderReview({ criteria: [proposalCriterion] }), /若你主动记录通过、未通过或待核验/);
+
 const actionableDetails = renderDetails({ lifecycle: "active", deliverables: [proposedOutput], cards: [acceptedCard] });
 assert.ok(actionableDetails.indexOf('aria-label="成果评审与结束"') < actionableDetails.indexOf('aria-label="结果卡片与证据"'),
   "review decisions must precede result ledgers and diagnostics");

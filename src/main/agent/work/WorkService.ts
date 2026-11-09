@@ -70,6 +70,7 @@ import {
   criterionNeedsEnvironment,
   intersectAuthorization,
   isCriterionResolved,
+  isRequiredCriterion,
   minimumAuthorization,
 } from "../../../shared/bot-work";
 import type { BotDto } from "../../../shared/bot-work";
@@ -253,7 +254,7 @@ export class WorkService {
     const notifications = this.repo.listNotifications(work.workId).map(notification => ({ ...notification, ...this.notifications.identity(notification.notificationId) }));
     const subscriptions = this.repo.listSubscriptions(work.workId);
     const currentResultIds = new Set(currentAcceptedDeliverableIds(work, deliverables, executions));
-    const unresolved = work.criteria.filter((criterion) => !isCriterionResolved(criterion));
+    const unresolved = work.criteria.filter((criterion) => isRequiredCriterion(criterion) && !isCriterionResolved(criterion));
     const uncoveredScope = [...new Set(deliverables
       .filter((deliverable) => currentResultIds.has(deliverable.deliverableId))
       .flatMap((deliverable) => deliverable.uncoveredScope))];
@@ -514,7 +515,7 @@ export class WorkService {
       ? this.mergeCriteria(work, params.criteria ?? [], work.intentRevision + 1, resolved, false)
       : work.criteria;
     if (typeof candidateCriteria === "string") return { ok: false, code: "invalid_request", message: candidateCriteria };
-    const definition = (criterion: WorkCriterionDto) => [criterion.id, criterion.text, criterion.requiresRealEnvironmentCheck, criterion.requiredEnvironment ?? ""];
+    const definition = (criterion: WorkCriterionDto) => [criterion.id, criterion.text, criterion.origin, criterion.requiresRealEnvironmentCheck, criterion.requiredEnvironment ?? ""];
     const criteriaDefinitionsChanged = hasNewCriteria
       && JSON.stringify(candidateCriteria.map(definition)) !== JSON.stringify(work.criteria.map(definition));
     const requirementChanged = nextTitle !== work.title
@@ -733,7 +734,7 @@ export class WorkService {
         }
         const gaps = this.partialResults.gaps(work.workId);
         if (gaps.length) return { ok: false, code: "unmet_acceptance_criteria", message: `必要子项仍有未覆盖缺口，不能按完成关闭：${gaps.slice(0, 10).map(item => `${item.task || item.itemId}（${item.outcome}）：${item.summary || "缺少完成凭据"}`).join("；")}${gaps.length > 10 ? `；另有 ${gaps.length - 10} 项，请查看必要子项缺口列表` : ""}` };
-        const unmet = work.criteria.find((criterion) => !isCriterionResolved(criterion));
+        const unmet = work.criteria.find((criterion) => isRequiredCriterion(criterion) && !isCriterionResolved(criterion));
         if (unmet) {
           return {
             ok: false, code: "unmet_acceptance_criteria",
@@ -1558,6 +1559,9 @@ export class WorkService {
           };
         }
         criterion.status = params.failed ? "failed" : "satisfied";
+        // Explicit user feedback adopts this check as a user requirement, even
+        // when the initial check was only a model suggestion.
+        delete criterion.origin;
         criterion.verifiedIntentRevision = criterion.requiredIntentRevision;
         criterion.evidenceRefs = [...new Set([...criterion.evidenceRefs, evidenceId])];
         affected.push(criterion.id);
@@ -1611,6 +1615,7 @@ export class WorkService {
       for (const update of params.criterionUpdates) {
         const criterion = criteria.find(item => item.id === update.criterionId);
         if (!criterion) return { ok: false, code: "not_found", message: `找不到验收条件 ${update.criterionId}` };
+        delete criterion.origin;
         if (update.status === "pending") {
           criterion.status = "pending";
           criterion.verifiedIntentRevision = undefined;
@@ -2342,6 +2347,7 @@ export class WorkService {
       const before = previous.get(id);
       const sameDefinition = before
         && before.text === text
+        && before.origin === input.origin
         && Boolean(before.requiresRealEnvironmentCheck) === Boolean(input.requiresRealEnvironmentCheck)
         && (before.requiredEnvironment ?? "") === (input.requiredEnvironment ?? "");
       const waiverRequested = input.status === "waived";
@@ -2359,6 +2365,7 @@ export class WorkService {
       next.push({
         id,
         text,
+        ...(input.origin === "assistant_proposal" ? { origin: input.origin } : {}),
         status: waiverRequested ? "waived" : "pending",
         requiredIntentRevision: nextIntentRevision,
         requiresRealEnvironmentCheck: Boolean(input.requiresRealEnvironmentCheck),

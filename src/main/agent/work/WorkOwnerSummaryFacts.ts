@@ -74,7 +74,7 @@ export function collectOwnerSummaryFacts(works: WorkService, work: WorkDto, now:
     const accepted = deliverable.status === "accepted" && work.acceptedDeliverableIds.includes(deliverable.deliverableId);
     const rejected = deliverable.status === "rejected";
     const uncovered = sorted([...deliverable.uncoveredScope, ...work.criteria.filter(criterion =>
-      deliverable.uncoveredCriterionIds.includes(criterion.id) && !["satisfied", "waived"].includes(criterion.status)).map(criterion => criterion.text)]);
+      criterion.origin !== "assistant_proposal" && deliverable.uncoveredCriterionIds.includes(criterion.id) && !["satisfied", "waived"].includes(criterion.status)).map(criterion => criterion.text)]);
     awaitingReview ||= !accepted && !rejected;
     add({ ...empty, kind: accepted ? "accepted" : rejected ? "rejected" : "awaiting_review",
       botId: deliverable.producerBotId, text: rejected ? deliverable.rejectedReason ?? deliverable.summary
@@ -142,7 +142,7 @@ export function collectOwnerSummaryFacts(works: WorkService, work: WorkDto, now:
       [`blocker:${blocker.blockerId}`], blocker.createdAt, true, true);
   }
   const hasResults = items.size > 0;
-  if (hasResults) for (const criterion of work.criteria.filter(item => item.requiresRealEnvironmentCheck && !["satisfied", "waived"].includes(item.status))) {
+  if (hasResults) for (const criterion of work.criteria.filter(item => item.origin !== "assistant_proposal" && item.requiresRealEnvironmentCheck && !["satisfied", "waived"].includes(item.status))) {
     add({ ...empty, kind: "awaiting_environment", text: `待实测：${criterion.text}${criterion.requiredEnvironment ? `（${criterion.requiredEnvironment}）` : ""}`,
       criterionIds: [criterion.id] }, [`criterion:${criterion.id}`], Math.min(...times), true);
   }

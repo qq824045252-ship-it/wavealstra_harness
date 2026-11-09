@@ -20,6 +20,7 @@ import type {
   WorkWatchRuleDto,
 } from "../../../shared/bot-work";
 import type { ExpertConfigSnapshotDto, WorkAuthorizationDto } from "../../../shared/bot-work";
+import { botDelegationInput, BOT_DELEGATION_INSTRUCTIONS } from "./BotDelegationInput";
 
 function json<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -499,11 +500,26 @@ export class WorkRepository {
   }
 
   executionInput(binding: WorkExecutionBindingDto): string {
-    const row = this.db.prepare(`SELECT title,goal_description,constraints_json,criteria_json
+    const row = this.db.prepare(`SELECT title,goal_description,constraints_json,criteria_json,source_version,created_by
       FROM work_intent_snapshots WHERE work_id=? AND intent_revision=? AND input_snapshot_id=?
       ORDER BY source_version DESC LIMIT 1`).get(binding.workId, binding.intentRevision, binding.inputSnapshotId) as
-      { title: string; goal_description: string | null; constraints_json: string; criteria_json: string } | undefined;
+      { title: string; goal_description: string | null; constraints_json: string; criteria_json: string;
+        source_version: number; created_by: "user" | "bot" } | undefined;
     if (!row) throw new Error("执行缺少持久化的要求与输入快照");
+    const userRequest = botDelegationInput(this.db, binding, row.source_version);
+    const definition = { title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
+      criteria: json<WorkDto["criteria"]>(row.criteria_json, []) };
+    const userDefinition: Partial<typeof definition> = {}, planDefinition: Partial<typeof definition> = {};
+    if (userRequest) for (const field of ["title", "description"] as const) {
+      Object.assign(userRequest.definitionOrigins[field] === "user" ? userDefinition : planDefinition, { [field]: definition[field] });
+    }
+    if (userRequest) {
+      const requiredConstraints = definition.constraints.filter(text => userRequest.constraintOrigins[text] === "user");
+      if (requiredConstraints.length) userDefinition.constraints = requiredConstraints;
+      planDefinition.constraints = definition.constraints.filter(text => userRequest.constraintOrigins[text] !== "user");
+      userDefinition.criteria = definition.criteria.filter(item => item.origin !== "assistant_proposal");
+      planDefinition.criteria = definition.criteria.filter(item => item.origin === "assistant_proposal");
+    }
     const sourceEvent = binding.inboxEventId
       ? this.db.prepare("SELECT source,source_event_id,event_type,source_version,payload_json,received_at FROM work_events_inbox WHERE event_id=?")
         .get(binding.inboxEventId) as { source: string; source_event_id: string; event_type: string; source_version: string | null;
@@ -515,8 +531,9 @@ export class WorkRepository {
     return JSON.stringify({
       ...(team?.input_json ? { teamAssignment: JSON.parse(team.input_json) } : {}),
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
-      title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
-      criteria: json<WorkDto["criteria"]>(row.criteria_json, []), delegatedScope: binding.delegatedScope,
+      ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
+        : definition),
+      delegatedScope: binding.delegatedScope,
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
@@ -525,7 +542,8 @@ export class WorkRepository {
         deadlineAt: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineAt,
         instructions: "这是承诺到期的只读跟进。整理已有成果、未完成项和缺口，不重跑原业务副作用，不重复已确认的外部效果。",
       } } : {}),
-      instructions: "按上述持久要求执行。只提交成果、证据和未覆盖范围，不自行宣布整个 Work 已验收。",
+      instructions: userRequest ? BOT_DELEGATION_INSTRUCTIONS
+        : "按上述持久要求执行。只提交成果、证据和未覆盖范围，不自行宣布整个 Work 已验收。",
     });
   }
 

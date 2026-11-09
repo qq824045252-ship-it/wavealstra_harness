@@ -158,6 +158,8 @@ export interface BotDto {
 export interface WorkCriterionDto {
   id: string;
   text: string;
+  /** Host-labelled planning checks are not user acceptance requirements. */
+  origin?: "assistant_proposal";
   status: WorkCriterionStatus;
   requiredIntentRevision: number;
   verifiedIntentRevision?: number;
@@ -541,6 +543,7 @@ export type WorkControlResult =
     };
 
 export interface WorkCriterionInput {
+  origin?: "assistant_proposal";
   id?: string;
   text: string;
   requiresRealEnvironmentCheck?: boolean;
@@ -929,6 +932,10 @@ export function intersectAuthorization(
 
 export function criterionNeedsEnvironment(criterion: WorkCriterionDto): boolean {
   return criterion.requiresRealEnvironmentCheck || Boolean(criterion.requiredEnvironment?.trim());
+}
+
+export function isRequiredCriterion(criterion: WorkCriterionDto): boolean {
+  return criterion.origin !== "assistant_proposal";
 }
 
 /**

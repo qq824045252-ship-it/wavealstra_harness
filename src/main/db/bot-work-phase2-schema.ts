@@ -35,6 +35,13 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       input_snapshot_id TEXT NOT NULL, attachments_json TEXT NOT NULL CHECK(json_valid(attachments_json)),
       PRIMARY KEY(work_id, input_snapshot_id)
     );
+    CREATE TABLE IF NOT EXISTS bot_work_user_inputs (
+      work_id TEXT NOT NULL REFERENCES works(work_id) ON DELETE CASCADE,
+      source_message_id TEXT NOT NULL, intent_revision INTEGER NOT NULL, source_version INTEGER NOT NULL,
+      messages_json TEXT NOT NULL CHECK(json_valid(messages_json)),
+      references_json TEXT NOT NULL CHECK(json_valid(references_json)),
+      PRIMARY KEY(work_id, source_message_id)
+    );
     CREATE TABLE IF NOT EXISTS bot_work_feedback (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json))

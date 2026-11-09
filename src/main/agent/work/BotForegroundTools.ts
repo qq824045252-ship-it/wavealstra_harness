@@ -51,8 +51,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     const value = messages.receipt(userId, botId, requestId);
     if (!value) throw new Error("前台调用缺少持久用户输入身份");
     const message = messages.message(value.assistant_message_id);
+    const userMessage = messages.message(value.user_message_id);
     if (value.conversation_id !== conversationId || !message || message.role !== "assistant"
       || message.conversationId !== conversationId || message.botId !== botId || message.requestId !== requestId
+      || !userMessage || userMessage.role !== "user" || userMessage.conversationId !== conversationId
+      || userMessage.botId !== botId || userMessage.requestId !== requestId
       || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
@@ -87,13 +90,14 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
-      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已开始。"
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已开始。"
       : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
+      let preservedUserCriteria: Array<{ id: string; text: string }> = [];
       const result = works.transaction(() => {
         const bot = assertActive();
         if (["work_create", "work_amend", "work_resume"].includes(name)
@@ -104,7 +108,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         let previousSnapshotId: string | undefined;
         if (name === "work_create") {
           const input = create.parse(args);
-          result = works.createWork(actor(), { ...input, operationId, ownerBotId: botId,
+          result = works.createWork(actor(), { ...input,
+            criteria: input.criteria?.map(item => ({ ...item, origin: "assistant_proposal" as const })), operationId, ownerBotId: botId,
             conversationId, sourceMessageId: source.user_message_id, inputSnapshotId: `input:${source.user_message_id}`,
             authorization: bot.authorization });
         } else {
@@ -117,14 +122,26 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
             .get(conversationId, source.request_id, input.workId);
           const readGuard = z.object({ guard_json: z.string() }).safeParse(read);
           if (!readGuard.success || readGuard.data.guard_json !== JSON.stringify(input.versionGuard)) throw new Error("必须先查询 Work，并使用本回合读取的完整版本守卫");
-          if (name === "work_amend") result = works.amendWork(actor(), { ...change.parse(args), operationId,
-            inputSnapshotId: `input:${source.user_message_id}`, sourceMessageId: source.user_message_id });
+          if (name === "work_amend") {
+            const amendment = change.parse(args);
+            // The model may revise its plan, never silently remove user-entered requirements.
+            const retained = target.criteria.filter(item => item.origin !== "assistant_proposal");
+            if (amendment.criteria) preservedUserCriteria = retained.map(item => ({ id: item.id, text: item.text }));
+            result = works.amendWork(actor(), { ...amendment, operationId,
+              criteria: amendment.criteria ? [...retained.map(item => ({ id: item.id, text: item.text,
+                requiresRealEnvironmentCheck: item.requiresRealEnvironmentCheck, requiredEnvironment: item.requiredEnvironment })),
+                ...amendment.criteria.map(item => ({ ...item, origin: "assistant_proposal" as const }))] : undefined,
+              inputSnapshotId: `input:${source.user_message_id}`, sourceMessageId: source.user_message_id });
+          }
           else if (name === "work_pause") result = works.pauseWork(actor(), { ...input, operationId });
           else if (name === "work_resume") result = works.resumeWork(actor(), { ...input, operationId });
           else result = works.cancelWork(actor(), { ...input, operationId });
         }
         if (result.ok) {
-          if (["work_create", "work_amend"].includes(name)) messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId, previousSnapshotId);
+          if (["work_create", "work_amend"].includes(name)) {
+            messages.linkWorkUserInput(source, result.work);
+            messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId, previousSnapshotId);
+          }
           messages.linkWork(source, result.work.workId);
           works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
           if (["work_create", "work_amend", "work_resume"].includes(name)) options.schedule(result.work, operationId, name === "work_resume");
@@ -132,7 +149,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         return result;
       });
       options.wake(result.ok ? result.work.workId : undefined);
-      return output(result);
+      return output({ ...result, ...(result.ok && preservedUserCriteria.length ? { preservedUserCriteria,
+        amendmentNotice: "用户直接设置或确认的验收条件仍然保留；criteria 只更新助理建议检查。本次没有删除或改写这些用户验收条件，不得声称已经撤销。修改用户验收条件请使用现有用户编辑入口。" } : {}) });
     },
   }));
   return [defineTool({ name: "work_query_status", description: "读取当前 Bot 的已知 Work、成果及版本守卫。不会启动业务工具。",
